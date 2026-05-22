@@ -1242,9 +1242,9 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                 target_user=target,
                 title="[plan/actual 불일치]",
                 body=(
-                    f"{product}/{root}"
-                    + (f" W{wafer}" if wafer else "")
-                    + f" {column}: plan={payload['plan']}, actual={payload['actual']}"
+                    f"! {product}/{root}"
+                    + (f" WF{wafer}" if wafer else "")
+                    + f" {column}: [plan] {payload['plan']} → [actual] {payload['actual']}"
                 ),
                 payload=payload,
             )

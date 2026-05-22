@@ -1,199 +1,113 @@
-# Flow-i Agent
+# Flow Agent Runtime
 
-Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 판단한 뒤 기능별 단위기능으로 연결한다.
+Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent runtime surface에서 추상 목표를 실행 가능한 상태 흐름으로 분해한다. 현재 visible Agent 표면은 두 가지다.
 
-현재 미션은 **Agent 탭이 Inform Log / SplitTable / FileBrowser 의 driver로 동작하는 것**이다. Agent 페이지는 prompt → orchestrator → feature subagent → unit_action → API/handler → result 흐름이 한 화면에서 모두 보여야 한다. Diagnosis와는 시각적으로 분리한다.
+- `런타임 설계`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
+- `LLM 연결`: 기존 LLM runtime 연결 상태와 admin 설정
 
-예시 prompt와 사용자가 실행한 prompt를 `POST /api/llm/flowi/orchestrator/preview` dry-run 결과로 비교하고, 선택한 prompt는 `POST /api/llm/flowi/agent/chat` 실행 결과를 같이 보여준다.
-`POST /api/agent/prompt-review`는 수동 프롬프트 점검용이다. LLM은 개선 문장과 모호점 질문만 제안하며, 실행 판단은 기존 deterministic preview와 guardrail 결과를 유지한다. LLM 실패 또는 미설정 시 missing slot 기반 fallback을 반환한다.
-
-- prompt별 오케스트레이터 활성화 표: prompt, feature subagent, unit action, API/data target, missing field
-- single prompt dry-run은 `context.ask_llm_to_guess_missing=true`일 때 공개 가능한 `guessed.values` / `guessed.rationale`만 보여준다.
-- 입력 prompt와 user
-- 오케스트레이터가 판단한 intent, feature subagent, unit action
-- 실제 전달 prompt, 활성화된 feature/action, 호출 API를 한 줄 흐름으로 보여주는 activation map
-- 서버가 검증한 단위기능 payload
-- FastAPI endpoint -> 오케스트레이터 -> 기능 subagent -> 내부 API/cache/table -> answer payload 호출 그래프
-- 각 API/handler 호출의 target, 목적, output, status
-- 공개 가능한 단계별 trace
-- answer, table/chart, next action 요약
-
-여기서 feature subagent는 독립 LLM worker가 아니라 `FileBrowser`, `SplitTable`, `Inform`, `Tracker`, `Dashboard` 등 기능별 deterministic handler/skill을 뜻한다. LLM은 JSON draft와 답변 정리에만 쓰고, 실제 실행은 서버 schema/권한/확인 플로우가 결정한다.
-
-`trace.call_graph`와 `trace.api_calls`는 사용자가 검증할 수 있는 실행 이벤트만 담는다. 내부 chain-of-thought나 모델 추론 원문은 노출하지 않는다.
-
-Home에서 chart를 만든 뒤 `raw data csv`, `원본 데이터 다운로드`처럼 이어서 요청하면 직전 `chart_session_id`를 사용해 `GET /api/llm/flowi/chart-session/raw-data.csv` 다운로드를 안내한다. `24.0 SORT KNOB으로 컬러링`, `B 제외`, `1차식 fitting line과 R2 넣어줘` 같은 후속 요청도 같은 chart session의 product/metric/lot scope를 이어받는다. CSV는 FileBrowser의 `csv_download_max_rows` / `csv_download_max_bytes` / wide-column guard를 그대로 통과해야 한다.
+기존 Wiki/schema/unit-AI 운영 endpoint는 호환을 위해 보존하지만, Agent 탭의 기본 작업면에서는 노출하지 않는다.
 
 ## Owns
 
-- feature intent routing
-- FileBrowser/SplitTable/Inform/Tracker/Dashboard 등 앱 기능 질의
-- RAG/knowledge lookup과 답변 근거 구성
-- app 내부 action 후보 제안
+- 사용자 목표를 semantic frame으로 정규화
+- slot/product/lot/wafer/step/column 후보 해석
+- 단위 에이전트 계획 생성
+- FastAPI SSE 실시간 상태 업데이트
+- LangGraph `astream` 기반 orchestration hook
+- LangSmith tracing metadata와 traceable node hook
+- LLM 연결 상태 표시와 선택적 최종 문장 정리
 
 ## Does Not Own
 
-- 일반 사용자 prompt에서 source code 변경
-- raw DB 파일 직접 수정
-- 관리자 확인 없는 destructive operation
-- feature별 업무 규칙의 단독 판단
+- FileBrowser AI SQL endpoint/UI 제거
+- raw DB/file 직접 수정
+- 관리자 확인 없는 저장성 작업
+- Home Flow-i의 기존 deterministic feature routing 교체
+- LLM이 라우팅/권한/저장 판단을 단독 결정하는 흐름
 
 ## Code Entrypoints
 
 | Layer | Path |
 |---|---|
-| LLM router | `backend/routers/llm.py` |
-| Agent router | `backend/routers/agent.py` |
-| Knowledge router | `backend/routers/knowledge.py` |
-| Agent tab components | `frontend/src/components/agent/` |
-| Agent scenario smoke | `scripts/agent_scenario_check.py` |
-| Feature prompts | `data/flow-data/flowi_agent_features/` |
-| User notes | `data/flow-data/flowi_users/` |
-| Entry docs | `data/flow-data/flowi_agent_entrypoints.md` |
+| Runtime schemas | `backend/app_v2/modules/agent_runtime/schemas.py` |
+| Semantic layer | `backend/app_v2/modules/agent_runtime/semantic.py` |
+| LangGraph/LangSmith graph | `backend/app_v2/modules/agent_runtime/graph.py` |
+| FastAPI routes | `backend/routers/agent.py` (`/api/agent/runtime/*`) |
+| EventSource auth fallback | `backend/app_v2/runtime/security.py` |
+| Agent page | `frontend/src/pages/My_Diagnosis.jsx` |
+| Runtime UI | `frontend/src/components/agent/AgentRuntime.jsx` |
+| LLM config UI | `frontend/src/components/agent/LlmTab.jsx`, `LlmCfgPanel.jsx` |
+
+## API Contract
+
+`GET /api/agent/runtime/blueprint`
+
+- Returns unit-agent specs, LangGraph availability, LangSmith tracing readiness, LLM redacted status, and endpoint names.
+
+`POST /api/agent/runtime/semantic/resolve`
+
+```json
+{
+  "goal": "PRODA A1000 #21 현재 step과 KNOB 영향을 확인해줘",
+  "max_terms": 32
+}
+```
+
+Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `semantic.coverage`, `semantic.polars_profile`.
+
+`POST /api/agent/runtime/run`
+
+- Runs the same graph once and returns collected events plus the final conclusion as JSON.
+
+`GET /api/agent/runtime/stream?goal=...&use_llm=false&max_terms=32`
+
+- Server-Sent Events endpoint.
+- Browser `EventSource` uses `?t=<session_token>` because custom headers are unavailable.
+- Event names: `status`, `final`, `done`.
+
+## Runtime Flow
+
+1. `semantic_layer`
+   - Tokenizes the goal.
+   - Normalizes Korean/English aliases such as `루트랏`, `wafer`, `KNOB`, `AI SQL`, `LangSmith`.
+   - Scores column candidates from `schema_relations.json` column catalog and existing Unit AI `ColumnDoc`.
+   - Uses Polars to sort/dedupe/profile candidate evidence.
+2. `task_planner`
+   - Builds the unit-agent sequence from the semantic intent.
+3. `unit_agents`
+   - Produces read-only execution artifacts and readiness checks.
+   - This is the boilerplate hook where real feature API calls can be attached.
+4. `conclusion`
+   - Produces missing-slot warnings, next actions, and final answer.
+   - LLM is optional and only polishes the final wording when enabled and configured.
+
+## LangGraph And LangSmith
+
+- `backend/requirements.txt` includes `langgraph` and `langsmith`.
+- If they are installed, the graph runs through LangGraph `StateGraph.astream(..., stream_mode="updates")`.
+- If they are not installed in a local checkout, the same node contract runs through a deterministic async fallback so Flow remains usable.
+- LangSmith tracing is activated by environment, for example:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_PROJECT=flow-agent-runtime
+export LANGSMITH_API_KEY=...
+```
+
+The UI shows whether LangGraph, LangSmith, SSE, and LLM are ready without exposing secrets.
 
 ## Guardrails
 
-- 불명확한 product, lot, wafer, module은 action 전에 확인한다.
-- feature docs의 책임 경계를 우선한다.
-- raw DB write, code mutation, admin 설정 변경은 명시적 확인과 권한을 요구한다.
-- 답변에는 사용자가 확인할 수 있는 app link나 파일/컬럼 근거를 남긴다.
-- 저장성 작업은 draft/confirmation 상태까지만 Agent 페이지에서 보여주고, 확인 없는 저장은 하지 않는다.
-
-## Current Method
-
-- v1은 LangGraph hard dependency 없이 Flow 자체 라우터와 상태 요약을 사용한다.
-- 오케스트레이터는 prompt를 `intent`, `feature`, `unit_action`, `slots`로 정리한다.
-- 기능별 subagent는 앱 내부 deterministic 단위기능이다.
-- 장기 실행, 병렬 step, replay/checkpoint가 필요해지면 그때 Skill Runner 내부에만 durable orchestration을 붙인다.
-
-## LLM Usage
-
-Agent는 LLM이 설정된 경우에만 JSON draft, 짧은 문장 정리, 요약 보조에 사용한다. 실제 라우팅·권한·확인은 deterministic handler가 결정한다.
-
-- 어댑터: `backend/core/llm_adapter.py` (`provider="openai"`, `"openai_compatible"`, `"vertex_gemini"` 등).
-- profile 예시:
-  - `local_test_openai`: OpenAI small/nano급 연결 확인용.
-  - `vertex_gemini`: Google ADC/OAuth access token을 요청 직전 refresh해 Bearer로 전송 (`auth_mode="google_adc"`).
-- 설정 위치: `data/flow-data/admin_settings.json` 의 `llm` / `llm_profiles` 블록 — `enabled`, `api_url`, `model`, `provider`, `auth_mode`, `headers`, `format`, `timeout_s`.
-- caller 규약(이미 어댑터 docstring에 적힘):
-  - LLM 응답은 JSON draft / 문장 정리 등 **rephrasing 영역**에서만 사용. 실제 라우팅·권한·확인은 deterministic handler가 결정.
-  - 프롬프트는 짧고 단순하게 작성. 긴 chain-of-thought 강요하지 않는다.
-  - JSON draft는 schema validation을 거치고 parse 실패 시 1회 repair prompt 후 deterministic fallback을 사용한다.
-  - `HTTP 429` 또는 응답 실패/미설정 시 `{"ok": False}`로 처리하고 사용자에게 직접 입력 fallback 또는 local deterministic router 결과를 제공한다.
-- LLM 사용 가능 여부는 `llm_adapter.is_available()`로 확인하고, UI 카드(예: 자동 답변, 자동 요약)는 이 값이 `True`일 때만 표시한다.
-- 응답 본문에는 사내 endpoint URL이나 token이 노출되지 않게 한다 (admin only redacted view).
-
-## Slot Rules
-
-- 제품명은 product config, ML_TABLE 파일명, FAB product directory에서 확인되는 이름을 우선한다.
-- `lot_id`/`fab_lot_id`는 주로 `A1001A.1`, `A1000.1`, `A1000.XX`처럼 영문/숫자 5~6자 이상과 `.` suffix 조합으로 본다.
-- `root_lot_id`는 dot lot의 왼쪽 head 5글자다. 예: `A1001A.3` -> `A1001`.
-- `wafer_id`는 `#21`, `WF21`, `21번 wafer`를 같은 물리 wafer `21`로 정규화한다.
-- `lot_wf`는 `root_lot_id + "_" + wafer_id`다. 예: `A1000 #21` -> `A1000_21`.
-
-## Routing Examples
-
-- `PRODA A1001A.1 KNOB Split Table 보여줘`는 SplitTable view API를 호출하고 `KNOB` prefix row만 보여준다.
-- `A1000 #21 현재 step이 어디야`는 FileBrowser latest progress cache에서 `step_id`와 `function_step`을 찾는다.
-- `PRODA A1000 KNOB_ALPHA 보여줘`처럼 root lot이 명시된 ML_TABLE feature/knob 조회는 `/api/filebrowser/ml-table/lookup`과 `core.ml_table_lookup.query_root_lot` cache를 우선 사용한다.
-- `PRODA 24.0 SORT KNOB PPID_24_1인 WF 중에 가장 빠른게 뭐야`는 ML_TABLE에서 matching `lot_wf`를 찾고 latest progress cache의 step 순서로 정렬한다. 이처럼 root lot 없는 value 역검색은 전체 후보 탐색이 필요하므로 별도 검색 경로를 쓴다.
-- `PRODA A1000 test2 커스텀 세트로 인폼남겨줘`는 Inform Log draft로 보내며 module, note, 수신처가 없으면 확인 질문을 먼저 만든다.
-- `A1001A.3 이거 무슨랏이야`는 Tracker issue lot 목적(`purpose`)을 조회한다.
-- `raw data csv로 다운받게 해줘`는 직전 chart session을 이어받아 chart에 실제 사용된 point/group row를 CSV로 내려받게 한다. session이 없거나 FileBrowser 제한을 넘으면 차단 사유를 답변과 trace validation에 남긴다.
-
-## Agent Wiki
-
-Agent Wiki 운영은 다음 단계의 지식 운영 계층이다. 현재 Agent 페이지 메인 흐름에는 노출하지 않는다.
-
-- Raw source는 `data/flow-data/knowledge/raw/sources/` 아래 append-only로 저장하며 원본 DB/Fab 파일은 수정하지 않는다.
-- Maintained wiki page는 `data/flow-data/knowledge/wiki/agent_wiki/` 아래 markdown으로 저장한다.
-- Wiki page frontmatter의 최소 필드는 `doc_id`, `kind=agent_wiki`, `title`, `summary`, `source_ids`, `updated_at`, `tags`이다.
-- Search entrypoint는 `data/flow-data/knowledge/index/wiki_index.json`이며 Agent 탭 검색은 `agent_wiki` kind를 우선한다.
-- Chronological 운영 기록은 `data/flow-data/knowledge/index/wiki_log.jsonl`에 append-only로 남긴다.
-- Lint는 broken `[[wiki_link]]`, missing source, orphan page, stale summary, contradiction 후보를 점검한다.
-- Source 등록, ingest commit, lint는 admin 또는 `diagnosis`/`knowledge` page admin만 수행한다. 읽기와 preview는 로그인 사용자가 수행할 수 있다.
-
-### Default Agent Wiki Seed
-
-- Home Flow-i는 반도체 배경지식 seed를 자동 설치하지 않는다.
-- 운영 용어와 컬럼 의미의 source of truth는 runtime Agent Wiki와 `schema_relations.json`의 `column_catalog`다.
-- `backend/core/default_agent_wiki_seed/`는 seed 설치 장치와 template만 보존한다. 새 seed가 필요하면 배경 설명이 아니라 실행에 필요한 최소 scaffold만 새 `doc_id`로 추가한다.
-- 서버 기동과 `setup.py extract`는 runtime `flow-data`에 같은 `doc_id`가 없을 때만 seed 문서를 생성한다.
-- 생성된 runtime 문서는 Agent 지식 Wiki에서 수정 가능하며, 이후 seed/install 경로가 덮어쓰지 않는다.
-- Agent 지식 Wiki의 기존 문서 수정은 `/api/agent/wiki/page/save`로 runtime `flow-data` markdown을 갱신하고 graph를 다시 만든다.
-- 새 지식은 가능한 한 runtime Wiki/schema_doc/단일 파일 실행 지식 등록으로 추가한다.
-
-## Agent Tab UX (single-page flow)
-
-Agent 탭은 다음 7개 카드를 한 페이지에서 위에서 아래로 순서대로 본다. 사용자 평가 "보기가 불편" 의 1차 원인은 Diagnosis와 한 페이지를 공유하던 점이며, 이 화면은 진단/지식 카드와 섞이지 않는다.
-
-1. **Persona / Do / Don't** — `GET /api/llm/flowi/persona-card`. Agent의 책임 범위 한 줄 요약.
-2. **Prompt 입력 + 예시 drop-down** — `data/flow-data/flowi_agent_features/*.md`의 examples를 자동 수집한 prompt 후보. 사용자는 직접 입력하거나 후보 선택.
-3. **Activation Map (5단계)** — 아래 "Activation Map (5 stages)" 참조.
-4. **Call Graph** — FastAPI → orchestrator → feature subagent → 내부 API/data → answer 의 노드/엣지.
-5. **API Calls 표** — 각 호출의 `stage / method / target / callee / purpose / output / status / payload`.
-6. **Trace Steps** — 공개 가능한 단계별 진행 (`trace.steps`). 현재 비어있어 채워야 함.
-7. **Answer + next action + 보강 질문** — 답변, 권고 next action, 부족한 정보 질문.
-
-좌측(또는 사이드)에는 Inform walkthrough 진입과 최근 inform draft 세션 목록을 둔다. SplitTable view 호출/FileBrowser preview 호출도 동일 페이지의 응답 카드에 인라인 결과를 보여줄 수 있다.
-
-## Activation Map (5 stages)
-
-`trace.call_graph.activation`은 항상 다음 키를 채운다.
-
-| stage | 카드 표시 | 채울 필드 |
-|---|---|---|
-| 01 prompt | 에이전트가 받은 prompt | `prompt`, `endpoint` |
-| 02 orchestrator | intent 판정 | `intent`, `feature`, `action`, `status` |
-| 03 feature subagent | 활성화된 기능 | `feature`, `handler` |
-| 04 unit_action | 호출된 단위기능 | `action`, `api`, `payload_summary` |
-| 05 result | 호출 결과 | `output`, `status`, `next_action`, `missing` |
-
-`status ∈ {ready, done, needs_input, awaiting_confirmation, blocked, error}`. `needs_input` / `blocked` / `error`인 경우 카드 위에 cause + missing slot을 강조 배너로 표시.
-
-## 용어 해석 (Wiki + Schema Registry)
-
-자연어 용어를 DB 컬럼으로 연결할 때 의미 설명과 구조 메타를 분리한다. Wiki는 `kind=schema_doc` 문서로 DB/테이블/컬럼의 의미, 도메인 설명, 사용 예, 주의사항을 markdown으로 저장하고 frontmatter에 `relation_id`와 `column_refs`(`RELATION.column_name`)를 둔다.
-
-구조 메타는 `data/flow-data/schema_relations.json`의 `column_catalog`에 둔다. 각 항목은 `relation_id`, 정규화된 `column`, `raw_names`, `dtype`, `canonical_alias`, `unit`, `fk`, `sample_values`, `wiki_doc_id`를 가지며, `wiki_doc_id`와 schema_doc의 `column_refs`로 양쪽을 연결한다.
-
-Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", q=term)`를 먼저 사용해 wiki hit를 찾고, frontmatter의 `relation_id`/`column_refs`를 `column_catalog`와 매칭해 후보를 만든다. wiki hit가 없을 때만 기존 `_RELATION_ALIASES` fallback을 사용한다. Home Flow-i의 multi-source 실행은 `backend/core/flowi_multisource.py`에서 이 lookup 근거와 `schema_relations.json`의 `status=confirmed` relation만 사용해 source/filter/selected column/join key/chart draft를 만든다. confirmed relation이 없거나 source/column이 실제 resolver에서 확인되지 않으면 join을 실행하지 않고 trace에 missing evidence를 남긴다.
-
-## Backend Trace Contract
-
-`POST /api/llm/flowi/agent/chat` 응답의 `trace`는 다음을 항상 포함한다.
-
-- `trace.activation` — 위 5단계 Activation Map dict (누락 없음)
-- `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보, Wiki/schema로 해석한 knowledge_terms, missing/filled slot 공개 요약
-- `trace.interpretation.term_resolution` — 사용자 단어별 공개 해석 로그. 각 항목은 `token`, `meaning`, `wiki_refs`, `query_filter`, `status`를 담으며 hidden chain-of-thought가 아니라 검증 가능한 schema/Wiki/filter 근거만 표시한다.
-- `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
-- `trace.evidence.source_ids` / `trace.evidence.relation_ids` / `trace.evidence.join_keys` / `trace.evidence.join_plan` — multi-source filter/join/chart 요청에서 실제 사용한 source와 confirmed relation 근거
-- `trace.evidence.knowledge_sources` / `trace.retrieved_knowledge` — prompt 용어를 Agent Wiki `schema_doc`와 `column_catalog`에 대조한 공개 근거
-- `trace.evidence.impact_context` — lot 이상 / split 영향 / MTS 변경 / Anchor item 질문에서 `GET /api/knowledge/impact-context`가 사용한 Wiki/event 근거
-- `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부
-- `trace.call_graph.nodes` / `trace.call_graph.edges` — 노드/엣지 (빈 배열 아님)
-- `trace.call_graph.activation` — `trace.activation`과 동일 내용 동봉 (frontend fallback용)
-- `trace.api_calls` — list (이미 채워짐)
-- `trace.steps` — list of `{stage, title, detail, status, ts}` (현재 빈 배열, **이번 보강 대상**)
-
-`POST /api/llm/flowi/orchestrator/preview` row schema는 `{prompt, feature, action, api, missing, status}`를 항상 채운다. `action`은 feature md의 Agent Driver Contract unit action이며, 내부 handler 이름이 다르면 `handler_action`에 별도로 남긴다.
-
-## Acceptance Criteria (Codex 인계)
-
-Agent 탭이 다음을 모두 만족하면 본 미션의 완료 조건이다.
-
-- [x] Agent 탭이 Diagnosis와 시각적으로 분리되어 있다 (별도 탭 또는 명확한 section + sticky header).
-- [x] Activation Map 5단계 카드가 모두 채워져 표시된다 (빈 칸/`-` 만 있는 카드 없음).
-- [x] `trace.steps`가 비어있지 않다 (Backend Trace Contract 충족).
-- [x] 예시 prompt 5개를 orchestrator preview에 입력하면 표에 `prompt/feature/action/api/status/missing` 모두 채워진다.
-- [x] failure 케이스(`needs_input` / `blocked` / `error`)에서 cause·missing slot이 카드 상단 배너로 보인다.
-- [x] Inform Log / SplitTable / FileBrowser 의 unit action(각 feature md의 Agent Driver Contract 참조)이 호출 가능하고, 응답 카드가 Agent 탭 안에서 인라인 결과로 보인다.
-- [x] Linux 사내 환경(`/config/work/sharedworkspace/...` 마운트)에서도 hardcoded 경로/URL 의존 없이 동일하게 동작한다 (`scripts/preflight_internal.py --write-probe` pass).
+- Runtime layer is read-only by default.
+- LLM never decides permissions or writes.
+- Semantic coverage below threshold is shown as a warning, not hidden.
+- Missing product/lot/column evidence is returned in `final.missing` / `final.warnings`.
+- Existing FileBrowser AI SQL endpoints stay owned by FileBrowser.
 
 ## Verify
 
 ```bash
-git diff --check
-python3 scripts/smoke_test.py
-python3 scripts/agent_scenario_check.py
+python3 -m pytest tests/test_agent_runtime.py tests/test_feature_contracts.py -q
+python3 -m py_compile backend/app_v2/modules/agent_runtime/*.py backend/routers/agent.py backend/app_v2/runtime/security.py
+cd frontend && npm run build
 ```

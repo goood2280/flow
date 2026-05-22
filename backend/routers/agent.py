@@ -11,8 +11,18 @@ from typing import Any
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app_v2.modules.agent_runtime import (
+    AgentRuntimeRequest,
+    SemanticResolveRequest,
+    build_runtime_blueprint,
+    encode_sse_event,
+    resolve_semantic_frame,
+    run_agent_runtime_once,
+    stream_agent_runtime,
+)
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import llm_adapter
@@ -181,6 +191,53 @@ class SchemaSingleFileRegisterReq(SchemaSingleFilePreviewReq):
     doc_id: str = ""
     title: str = ""
     summary: str = ""
+
+
+@router.get("/runtime/blueprint")
+def agent_runtime_blueprint(request: Request) -> dict[str, Any]:
+    current_user(request)
+    return build_runtime_blueprint()
+
+
+@router.post("/runtime/semantic/resolve")
+def agent_runtime_semantic_resolve(req: SemanticResolveRequest, request: Request) -> dict[str, Any]:
+    current_user(request)
+    frame = resolve_semantic_frame(req.goal, max_terms=req.max_terms)
+    return {"ok": True, "semantic": frame.model_dump(mode="json")}
+
+
+@router.post("/runtime/run")
+async def agent_runtime_run(req: AgentRuntimeRequest, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    result = await run_agent_runtime_once(req, str(me.get("username") or "user"))
+    return {"ok": True, "run": result.model_dump(mode="json")}
+
+
+@router.get("/runtime/stream")
+async def agent_runtime_stream(
+    request: Request,
+    goal: str = Query(..., min_length=1, max_length=4000),
+    use_llm: bool = Query(False),
+    max_terms: int = Query(24, ge=1, le=80),
+):
+    me = current_user(request)
+    req = AgentRuntimeRequest(goal=goal, use_llm=use_llm, max_terms=max_terms)
+
+    async def _gen():
+        async for event in stream_agent_runtime(req, str(me.get("username") or "user")):
+            yield encode_sse_event(event)
+            if await request.is_disconnected():
+                break
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 def _now_iso() -> str:

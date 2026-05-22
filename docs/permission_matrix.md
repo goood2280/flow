@@ -63,6 +63,10 @@ Generated from `backend/routers/*.py` and `frontend/src` API call sites.
 | `/api/agent/prompt-review` | `POST` | `current_user` | frontend/src/components/agent/AgentLegacy.jsx:2334 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/agent/recent-rag` | `GET` | `current_user` | frontend/src/components/agent/AgentLegacy.jsx:879 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/agent/resolve_term` | `GET` | `current_user` | - | - | `ok` |
+| `/api/agent/runtime/blueprint` | `GET` | `current_user` | frontend/src/components/agent/AgentRuntime.jsx | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/agent/runtime/run` | `POST` | `current_user` | frontend/src/components/agent/AgentRuntime.jsx | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/agent/runtime/semantic/resolve` | `POST` | `current_user` | frontend/src/components/agent/AgentRuntime.jsx | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/agent/runtime/stream` | `GET` | `current_user` | frontend/src/components/agent/AgentRuntime.jsx | EventSource uses query token fallback | `ok` |
 | `/api/agent/schema-relations/delete` | `POST` | `require_page_manager:diagnosis` | frontend/src/components/agent/AgentLegacy.jsx:1621 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/agent/schema-relations/graph` | `GET` | `current_user` | frontend/src/components/agent/AgentLegacy.jsx:1492 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/agent/schema-relations/preview` | `POST` | `current_user` | frontend/src/components/agent/AgentLegacy.jsx:1575 | admin/page helper or inline role guard where rendered | `ok` |

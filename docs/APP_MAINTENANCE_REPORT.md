@@ -51,7 +51,7 @@ Browser
 | FileBrowser | DB/file 탐색, 100행 preview, AI SQL draft, CSV download, LOT progress cache 운영 | `backend/routers/filebrowser.py`, `backend/core/lot_progress_cache.py` |
 | SplitTable | 제품별 split/KNOB table 조회, plan 편집, note/history, cache 기반 lot 후보 | `backend/routers/splittable.py` |
 | Dashboard | chart CRUD, Flow-i chart draft, Plotly trend/scatter 표시 | `backend/routers/dashboard.py` |
-| Agent | prompt -> orchestrator -> unit action -> API trace 확인, Wiki/Schema 관리 | `backend/routers/agent.py`, `backend/routers/knowledge.py` |
+| Agent | goal -> semantic layer -> unit-agent graph -> SSE trace -> conclusion, LLM 연결 | `backend/routers/agent.py`, `backend/app_v2/modules/agent_runtime/` |
 | Tracker | issue/lot 상태 추적, meeting/inform/wiki evidence 연결 | `backend/routers/tracker.py` |
 | Inform | product/module/reason 기반 inform 작성, mail preview, split snapshot 첨부 | `backend/routers/informs.py` |
 | Meeting / Calendar | 회의록, action/decision recall, calendar event 관리 | `backend/routers/meetings.py`, `backend/routers/calendar.py` |

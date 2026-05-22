@@ -451,7 +451,23 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
       .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
   };
   const recent = notifs.slice(-8).reverse();
-  const typeColor = { approval: "var(--warn)", message: "var(--info)", info: "var(--muted)" };
+  const notificationType = (type) => {
+    const raw = String(type || "info").trim().toLowerCase();
+    return raw === "warn" ? "warning" : raw;
+  };
+  const notificationLabel = (type) => {
+    const normalized = notificationType(type);
+    return normalized === "warning" ? "! warning" : normalized;
+  };
+  const notificationBody = (n) => {
+    const payload = n?.payload || {};
+    if (n?.event === "my_plan_actual_mismatch" && payload.product && payload.root_lot_id && payload.column) {
+      const wafer = payload.wafer_id ? ` WF${payload.wafer_id}` : "";
+      return `! ${payload.product}/${payload.root_lot_id}${wafer} ${payload.column}: [plan] ${payload.plan || ""} → [actual] ${payload.actual || ""}`;
+    }
+    return n?.body || "";
+  };
+  const typeColor = { approval: "var(--warn)", message: "var(--info)", info: "var(--muted)", warning: "var(--danger)" };
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
@@ -485,12 +501,12 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: "#fff", padding: "1px 5px", borderRadius: 3,
-                    background: typeColor[n.type] || "var(--muted)", textTransform: "uppercase" }}>{n.type}</span>
+                    background: typeColor[notificationType(n.type)] || "var(--muted)", textTransform: "uppercase" }}>{notificationLabel(n.type)}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
                     whiteSpace: "nowrap" }}>{n.title}</span>
                 </div>
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis",
-                  whiteSpace: "nowrap" }}>{n.body}</div>
+                  whiteSpace: "nowrap" }}>{notificationBody(n)}</div>
               </div>
               <span style={{ fontSize: 14, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
                 {(n.timestamp || "").slice(11, 16)}

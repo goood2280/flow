@@ -36,11 +36,11 @@ flow/
 └── docs/                  # active operation/development docs
 ```
 
-현재 우선 흐름은 Flow-i Agent 탭이 Inform Log, SplitTable, FileBrowser를 app-action driver로 호출하고, `prompt -> orchestrator -> feature unit_action -> API/handler -> result` trace를 한 화면에서 보여주는 것이다.
+현재 우선 흐름은 Agent 탭이 FileBrowser AI SQL은 그대로 두고, `goal -> semantic_layer -> task_planner -> unit_agents -> conclusion` runtime trace를 FastAPI SSE로 보여주는 것이다.
 
 현재 운영 상태:
 
-- Flow-i는 Home/Agent에서 자연어 요청을 기능별 unit action으로 라우팅하고, Wiki/Schema/실행 근거 trace를 같이 남긴다.
+- Flow-i Home은 자연어 요청을 기능별 unit action으로 라우팅하고, Agent 탭은 LangGraph/LangSmith-ready runtime 설계와 시멘틱 해석을 보여준다.
 - FileBrowser는 대형 파일을 sample-first로 열고, AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.

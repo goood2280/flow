@@ -14,6 +14,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from backend.routers import informs  # noqa: E402
+from routers import auth as auth_router  # noqa: E402
 
 
 def _request():
@@ -50,6 +51,17 @@ def test_user_modules_save_does_not_overwrite_broken_admin_settings(tmp_path, mo
 
     assert excinfo.value.status_code == 500
     assert admin_settings.read_text(encoding="utf-8") == original
+
+
+def test_inform_page_access_sees_all_modules_even_with_legacy_module_map(monkeypatch):
+    monkeypatch.setattr(auth_router, "read_users", lambda: [
+        {"username": "viewer", "role": "user", "status": "approved", "tabs": "inform"},
+        {"username": "other", "role": "user", "status": "approved", "tabs": "dashboard"},
+    ])
+    monkeypatch.setattr(informs, "_get_inform_user_mods", lambda *_, **__: {"viewer": []})
+
+    assert informs._effective_modules("viewer", "user") == {"__all__"}
+    assert informs._effective_modules("other", "user") == set()
 
 
 def test_audit_record_logs_best_effort_write_failure(monkeypatch, caplog):

@@ -719,6 +719,126 @@ table.tbl tbody tr:hover {
   max-width: none !important;
 }
 
+.agent-runtime-shell {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.agent-runtime-section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-runtime-section:last-child {
+  border-bottom: 0;
+}
+
+.agent-runtime-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.agent-runtime-control textarea,
+.agent-runtime-control .agent-runtime-check {
+  grid-column: 1 / -1;
+}
+
+.agent-runtime-eyebrow {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-runtime-control h2,
+.agent-runtime-title h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.agent-runtime-actions,
+.agent-runtime-status,
+.agent-runtime-status-item,
+.agent-runtime-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-runtime-check {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.agent-runtime-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.agent-runtime-title span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.agent-runtime-split,
+.agent-runtime-columns {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(320px, 1.3fr);
+  gap: 10px;
+}
+
+.agent-runtime-columns {
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+}
+
+.agent-runtime-json {
+  margin: 10px 0 0;
+  padding: 10px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.agent-runtime-final p {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+}
+
+.agent-runtime-list-title {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.agent-runtime-columns ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.agent-runtime-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+@media (max-width: 920px) {
+  .agent-runtime-control,
+  .agent-runtime-split,
+  .agent-runtime-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
 .flow-connected-page {
   --radius-sm: 3px;
   --radius-md: 4px;

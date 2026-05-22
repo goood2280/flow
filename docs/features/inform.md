@@ -36,15 +36,16 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 ## Guardrails
 
 - product가 불명확하면 생성 전에 후보를 확인한다.
-- 신규 등록용 `/config.products`는 `1.RAWDATA_DB_FAB/<product folder>`와 LOT progress 최신 캐시의 `product` 값을 합친다. `/products`와 sidebar product 후보는 FAB DB 기준을 유지한다. 기존 Inform record의 `product` 값은 보존하지만 이 두 소스에 없는 product는 신규 선택/필터 후보에 넣지 않는다.
+- 신규 등록용 `/config.products`, `/products`, sidebar product 후보는 LOT progress cache의 unique `product` 값에서 자동 생성한다. 별도 Inform product catalog를 관리하지 않는다.
+- Inform product와 SplitTable product는 `ML_TABLE_` prefix와 대소문자가 달라도 같은 product로 본다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
 - 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
 - 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
-- Config/modules, product catalog, product contacts 변경은 `inform` page manager 이상만 수행한다.
+- Config/modules, product contacts 변경은 `inform` page manager 이상만 수행한다.
 - SplitTable snapshot endpoint는 같은 product/lot/custom_cols 요청이 겹치면 짧은 in-memory cache로 중복 계산을 피하되, 저장되는 embed payload shape는 유지한다.
 - SplitTable snapshot은 사용자가 선택한 KNOB/CUSTOM/세트 컬럼만 포함한다. 저장된 plan 값은 선택된 컬럼 row 안에 overlay할 수 있지만, 선택하지 않은 plan-only 컬럼 row를 자동으로 추가하지 않는다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
-- `admin_settings.json` 읽기 실패 시 user-modules 조회/저장은 빈 설정으로 진행하지 않고 HTTP detail과 warning log를 남긴다.
+- Inform 페이지 권한이 있는 사용자는 별도 유저별 모듈 조회 권한 없이 모든 module의 Inform을 조회한다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
 - 상세 화면의 `수정`은 원문을 덮어쓰지 않고 `재인폼 작성` wizard를 열어 기존 인폼의 `parent_id` 아래에 `[RE]` 재인폼을 새로 만든다. 원본의 lot/product/module/text와 기존 SplitTable 첨부 상태를 초기값으로 가져오며, 저장 시 새 SplitTable snapshot을 남긴다. 원문 edit endpoint는 첨부 제거 같은 내부 유지보수 흐름에만 사용한다.

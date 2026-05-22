@@ -11,14 +11,15 @@ ViewLoader = Callable[..., dict[str, Any]]
 
 def strip_ml_prefix(value: str) -> str:
     text = str(value or "").strip()
-    return text[len("ML_TABLE_"):] if text.startswith("ML_TABLE_") else text
+    return text[len("ML_TABLE_"):] if text.casefold().startswith("ml_table_") else text
 
 
 def ml_product_name(product: str) -> str:
     text = str(product or "").strip()
     if not text:
         return ""
-    return text if text.startswith("ML_TABLE_") else f"ML_TABLE_{text}"
+    tail = text[len("ML_TABLE_"):] if text.casefold().startswith("ml_table_") else text
+    return f"ML_TABLE_{tail}".upper()
 
 
 def looks_like_fab_lot(lot_id: str) -> bool:

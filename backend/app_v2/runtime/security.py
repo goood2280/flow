@@ -20,6 +20,7 @@ QUERY_TOKEN_PREFIXES = (
     "/api/admin/dismiss",
     "/api/admin/dismiss-batch",
     "/api/admin/notify-rules",
+    "/api/agent/runtime/stream",
 )
 
 

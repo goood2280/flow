@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+EventStatus = Literal["pending", "running", "completed", "failed", "skipped"]
+RunStatus = Literal["queued", "running", "completed", "failed"]
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class SemanticResolveRequest(BaseModel):
+    goal: str = Field(default="", min_length=1, max_length=4000)
+    max_terms: int = Field(default=24, ge=1, le=80)
+
+
+class SemanticCandidate(BaseModel):
+    token: str = ""
+    normalized: str = ""
+    relation_id: str = ""
+    column: str = ""
+    canonical_alias: str = ""
+    meaning: str = ""
+    source: str = ""
+    unit: str = ""
+    sample_values: list[Any] = Field(default_factory=list)
+    used_by: list[str] = Field(default_factory=list)
+    wiki_doc_id: str = ""
+    score: float = 0.0
+
+
+class SemanticFrame(BaseModel):
+    goal: str = ""
+    tokens: list[str] = Field(default_factory=list)
+    normalized_terms: dict[str, str] = Field(default_factory=dict)
+    intent: str = "general_orchestration"
+    slots: dict[str, Any] = Field(default_factory=dict)
+    candidates: list[SemanticCandidate] = Field(default_factory=list)
+    coverage: float = 0.0
+    warnings: list[str] = Field(default_factory=list)
+    polars_profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnitAgentSpec(BaseModel):
+    agent_id: str
+    title: str
+    role: str
+    outputs: list[str] = Field(default_factory=list)
+
+
+class UnitAgentPlan(BaseModel):
+    agent_id: str
+    title: str
+    status: EventStatus = "pending"
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    outputs: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class UnitAgentResult(BaseModel):
+    agent_id: str
+    status: EventStatus = "completed"
+    summary: str = ""
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRuntimeRequest(SemanticResolveRequest):
+    context: dict[str, Any] = Field(default_factory=dict)
+    use_llm: bool = False
+
+
+class AgentRuntimeEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str = ""
+    event: str = "status"
+    run_id: str = ""
+    stage: str = ""
+    status: EventStatus = "running"
+    message: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+    ts: str = Field(default_factory=utc_now)
+
+
+class AgentRuntimeResult(BaseModel):
+    run_id: str = ""
+    status: RunStatus = "completed"
+    goal: str = ""
+    semantic: SemanticFrame = Field(default_factory=SemanticFrame)
+    plan: list[UnitAgentPlan] = Field(default_factory=list)
+    results: list[UnitAgentResult] = Field(default_factory=list)
+    conclusion: dict[str, Any] = Field(default_factory=dict)
+    events: list[AgentRuntimeEvent] = Field(default_factory=list)
+    langsmith: dict[str, Any] = Field(default_factory=dict)
+    langgraph: dict[str, Any] = Field(default_factory=dict)

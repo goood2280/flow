@@ -78,19 +78,17 @@ def test_home_flowi_empty_chat_greeting_copy():
 
 def test_agent_page_focuses_on_flowi_execution_trace():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
-    assert "Flow-i 실행 흐름" in ui
-    assert "프롬프트별 오케스트레이터 활성화" in ui
-    assert "/api/llm/flowi/orchestrator/preview" in ui
-    assert "Activation Map (5단계)" in ui
-    assert "에이전트가 받은 prompt" in ui
-    assert "활성화된 기능" in ui
-    assert "호출 결과" in ui
-    assert "예시 prompt" in ui
-    assert "API 호출 그래프" in ui
-    assert "FastAPI / handler 호출" in ui
-    assert "call_graph" in ui
-    assert "/api/llm/flowi/agent/chat" in ui
-    assert "feature_subagent" in ui
+    component = (ROOT / "frontend" / "src" / "components" / "agent" / "AgentRuntime.jsx").read_text(encoding="utf-8")
+    assert "단위 에이전트 오케스트레이션" in ui + component
+    assert "시멘틱 레이어" in ui + component
+    assert "실시간 상태 업데이트" in ui + component
+    assert "최종 결론" in ui + component
+    assert "FastAPI SSE" in ui + component
+    assert "LangGraph astream" in ui + component
+    assert "LangSmith tracing" in ui + component
+    assert "/api/agent/runtime/stream" in ui + component
+    assert "/api/agent/runtime/semantic/resolve" in ui
+    assert "/api/agent/runtime/run" in ui
     assert "Flowi agent workflow, persona, RAG" not in ui
 
 

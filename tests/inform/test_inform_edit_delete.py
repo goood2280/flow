@@ -64,7 +64,6 @@ def test_edit_permission_patch_and_audit(tmp_path, monkeypatch):
 def test_delete_soft_delete_permission_default_exclusion_and_audit(tmp_path, monkeypatch):
     current = {"username": "module_owner", "role": "user"}
     _install_files(tmp_path, monkeypatch, current)
-    monkeypatch.setattr(informs, "user_modules", lambda _username, _role: {"GATE"})
     informs._save([{
         "id": "inf_a",
         "product": "PRODA",

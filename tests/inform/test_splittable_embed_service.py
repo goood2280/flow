@@ -71,6 +71,12 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
     assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "MASK_ID"]
 
 
+def test_splittable_embed_normalizes_product_case_for_split_table():
+    assert embed_service.ml_product_name("proda") == "ML_TABLE_PRODA"
+    assert embed_service.ml_product_name("ml_table_proda") == "ML_TABLE_PRODA"
+    assert embed_service.strip_ml_prefix("ml_table_proda") == "proda"
+
+
 def test_splittable_embed_from_current_view_preserves_plan_cells():
     embed = build_splittable_embed_from_view(
         "PRODA",

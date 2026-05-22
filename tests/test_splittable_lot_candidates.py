@@ -174,6 +174,8 @@ def test_save_plan_notifies_owner_once_when_existing_actual_mismatches(tmp_path,
     assert events[0][0][0] == "my_plan_actual_mismatch"
     assert events[0][1]["target_user"] == "plan_owner"
     assert events[0][1]["actor"] == "flow"
+    assert "WF1" in events[0][1]["body"]
+    assert "[plan] R2 → [actual] R1" in events[0][1]["body"]
     assert events[0][1]["payload"]["actual"] == "R1"
     assert events[0][1]["payload"]["plan"] == "R2"
 
@@ -247,8 +249,15 @@ def test_view_plan_actual_mismatch_notification_is_deduped(tmp_path, monkeypatch
     assert len(events) == 1
     assert events[0][0][0] == "my_plan_actual_mismatch"
     assert events[0][1]["target_user"] == "plan_owner"
+    assert "WF1" in events[0][1]["body"]
     saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
     assert len(saved["mismatch_alerts"]) == 1
+
+
+def test_plan_actual_mismatch_notification_uses_warning_tone():
+    import core.notify as flow_notify
+
+    assert flow_notify._EVENT_META["my_plan_actual_mismatch"][1] == "warning"
 
 
 def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):

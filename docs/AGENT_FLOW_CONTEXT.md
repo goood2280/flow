@@ -4,10 +4,11 @@
 
 ## Mission
 
-현재 우선 미션은 **Flow-i Agent 탭이 Inform Log, SplitTable, FileBrowser를 app-action driver로 호출해 매끄럽게 동작하도록 만드는 것**이다.
+현재 우선 미션은 **Agent 탭을 LangGraph/LangSmith-ready runtime surface로 재설계하고, FileBrowser AI SQL은 기존 FileBrowser 소유로 보존하는 것**이다.
 
-- Agent는 자연어 prompt를 feature unit action으로 라우팅한다.
-- `prompt -> orchestrator -> feature unit_action -> API/handler -> result` 흐름이 한 화면에서 보여야 한다.
+- Agent는 자연어 목표를 semantic layer로 정규화하고 unit-agent graph 실행 상태를 SSE로 보여준다.
+- `goal -> semantic_layer -> task_planner -> unit_agents -> conclusion` 흐름이 한 화면에서 보여야 한다.
+- LLM 연결 탭은 Agent에 유지하되, LLM은 최종 문장 정리 보조에만 사용한다.
 - Diagnosis 단독 화면은 현재 우선순위가 아니다. 제거하지는 않고 비중만 낮춘다.
 
 ## Source Of Truth

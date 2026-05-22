@@ -23,7 +23,7 @@
   GET  /api/informs/by-lot?lot_id=...   — 해당 lot 의 모든 스레드 (root+전체뷰)
   GET  /api/informs/by-product?product= — 해당 product 인폼 목록
   GET  /api/informs/my                  — 내 모듈 범위 인폼 (담당자용)
-  GET  /api/informs/products            — 인폼 기록된 product 목록
+  GET  /api/informs/products            — LOT progress cache 기준 product 목록
   GET  /api/informs/lots                — 인폼 기록된 lot 목록
   GET  /api/informs/modules             — 모듈 드롭다운 옵션 (constants)
   POST /api/informs                     — 생성
@@ -61,9 +61,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.paths import PATHS
-from core.product_dedup import canonical_product, find_duplicate_product, normalize_products
+from core.product_dedup import canonical_product
 from core.utils import load_json, save_json
-from core.auth import current_user, is_page_manager, require_admin, require_page_manager
+from core.auth import canonical_page_id, current_user, is_page_manager, require_page_manager
 from core.audit import record as _audit
 from core.splittable_sets_cache import list_sets as list_cached_splittable_sets
 from app_v2.shared.source_adapter import resolve_column
@@ -71,7 +71,6 @@ from app_v2.modules.informs.splittable_embed import (
     build_splittable_embed,
     build_splittable_embed_from_view,
 )
-from routers.groups import user_modules
 
 router = APIRouter(prefix="/api/informs", tags=["informs"])
 logger = logging.getLogger(__name__)
@@ -152,29 +151,6 @@ def _load_config() -> dict:
             "raw_db_root": raw_root, "reason_templates": rt_clean}
 
 
-def _fab_db_products() -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    root = PATHS.db_root / "1.RAWDATA_DB_FAB"
-    try:
-        if not root.is_dir():
-            return out
-        for sub in sorted(root.iterdir()):
-            if not sub.is_dir():
-                continue
-            name = _canonical_product(sub.name)
-            if not name:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(name)
-    except Exception:
-        return out
-    return out
-
-
 def _lot_progress_cache_products() -> list[str]:
     try:
         from core.lot_progress_cache import list_products
@@ -196,19 +172,8 @@ def _lot_progress_cache_products() -> list[str]:
 
 
 def _merged_catalog_products(extra: list[str] | None = None) -> list[str]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for source_products in (_fab_db_products(), _lot_progress_cache_products()):
-        for src in source_products:
-            name = _canonical_product(str(src or ""))
-            if not name:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(name)
-    return merged
+    """Return the Inform product catalog generated from the LOT progress cache."""
+    return _lot_progress_cache_products()
 
 
 def _save_config(cfg: dict) -> None:
@@ -268,11 +233,11 @@ def _module_highlight_knobs(module: str) -> set[str]:
     return {str(k or "").strip().upper() for k in knobs if str(k or "").strip()}
 
 
-# v8.8.13: 유저별 인폼 모듈 조회 권한. admin_settings.json 의 `inform_user_modules` 에 저장.
+# Legacy module->user map. It is kept for auto module mail recipients only;
+# Inform visibility no longer uses per-user module permissions.
+# admin_settings.json 의 `inform_user_modules` 에 저장.
 #   스키마: { username: [module, ...] }.
-#   - admin 은 항상 전체(all_rounder) — 설정값과 무관.
-#   - username 이 키에 없으면 기존 `/api/groups/my-modules` 동작 fallback.
-#   - 빈 배열은 "아무 모듈도 조회 못함" 으로 해석.
+#   - module-wise mail auto recipients에서만 사용한다.
 _INFORM_USER_MODS_KEY = "inform_user_modules"
 
 
@@ -357,29 +322,35 @@ def _module_recipient_rows(module: str) -> list[dict]:
 
 
 def _user_module_scope(username: str, role: str):
-    """인폼 목록 필터링용 모듈 scope 반환.
-      - None          : 필터 off (admin 또는 권한 설정 없음 → 기존 group 기반).
-      - set({...})    : 이 모듈들만 통과. module 비어있는 인폼은 항상 통과(legacy 보호).
-    """
-    if role == "admin":
-        return None
-    um = _get_inform_user_mods()
-    if username and username in um:
-        return set([str(m) for m in (um[username] or [])])
+    """Legacy no-op scope helper kept for imports."""
     return None
 
 
-def _effective_modules(username: str, role: str) -> set:
-    """admin → {"__all__"} sentinel.
-    inform_user_modules 에 지정이 있으면 그 set 을 사용(빈 set 포함 = 아무것도 못 봄).
-    없으면 groups 기반 user_modules fallback."""
-    from routers.groups import user_modules as _um
+def _has_inform_page_access(username: str, role: str) -> bool:
     if role == "admin":
+        return True
+    try:
+        from routers.auth import read_users
+        for user in read_users():
+            if str(user.get("username") or "").strip() != str(username or "").strip():
+                continue
+            if user.get("status") != "approved":
+                return False
+            tabs = str(user.get("tabs") or "").strip()
+            if tabs == "__all__":
+                return True
+            return "inform" in [canonical_page_id(t.strip()) for t in tabs.split(",")]
+        return True
+    except Exception:
+        logger.warning("inform page access lookup failed for user=%s", username, exc_info=True)
+    return True
+
+
+def _effective_modules(username: str, role: str) -> set:
+    """Inform page access means all modules are visible; no user-module filter."""
+    if _has_inform_page_access(username, role):
         return {"__all__"}
-    um = _get_inform_user_mods()
-    if username and username in um:
-        return set(um[username] or [])
-    return _um(username, role)
+    return set()
 
 
 # legacy 변수 — 다른 모듈에서 import 해도 기본값 세트로 동작.
@@ -2475,8 +2446,7 @@ def set_module_knob_map(
 
 @router.get("/config")
 def get_config():
-    """v8.8.33: products 필드를 읽는 시점에 normalize (trim + case-insensitive dedup).
-    기존 admin_settings 에 'PRODA' / 'PRODA ' 같은 잉여가 있어도 FE 에서는 1개로 노출."""
+    """Return Inform config with products generated from the LOT progress cache."""
     cfg = _load_config()
     cfg = dict(cfg)
     cfg["products"] = _merged_catalog_products()
@@ -2497,8 +2467,6 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_manager("in
         cfg["modules"] = [m.strip() for m in req.modules if m and m.strip()]
     if req.reasons is not None:
         cfg["reasons"] = [r.strip() for r in req.reasons if r and r.strip()]
-    if req.products is not None:
-        cfg["products"] = [p.strip() for p in req.products if p and p.strip()]
     if req.raw_db_root is not None:
         cfg["raw_db_root"] = req.raw_db_root.strip()
     # v8.8.17: 사유별 메일 템플릿 upsert. None = 변경 없음, {} = 전체 비움.
@@ -2516,7 +2484,7 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_manager("in
     # de-dup 유지 순서
     cfg["modules"] = list(dict.fromkeys(cfg["modules"]))
     cfg["reasons"] = list(dict.fromkeys(cfg["reasons"]))
-    cfg["products"] = list(dict.fromkeys(cfg.get("products") or []))
+    cfg["products"] = []
     if not cfg["modules"]:
         cfg["modules"] = list(DEFAULT_MODULES)
     if not cfg["reasons"]:
@@ -2707,7 +2675,7 @@ def splittable_sets(request: Request, product: str = Query("")):
     return list_cached_splittable_sets(product)
 
 
-# v8.8.13: 유저별 인폼 모듈 조회 권한 엔드포인트 ────────────────────────
+# Legacy user-module recipient map endpoints ───────────────────────────
 class UserModulesSaveReq(BaseModel):
     username: str
     modules: List[str] = []
@@ -2715,8 +2683,7 @@ class UserModulesSaveReq(BaseModel):
 
 @router.get("/user-modules")
 def list_user_modules(request: Request):
-    """Admin: 인폼 탭 접근 가능한 유저 + 각자의 현재 모듈 권한.
-    인폼 탭 권한이 있는 유저(tabs 에 'inform' 또는 '__all__') 만 노출."""
+    """Admin legacy endpoint for the module-recipient map, not visibility."""
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
@@ -2743,7 +2710,7 @@ def list_user_modules(request: Request):
 
 @router.post("/user-modules/save")
 def save_user_modules(req: UserModulesSaveReq, request: Request):
-    """Admin: 특정 유저의 인폼 모듈 조회 권한 저장. 빈 배열 = '아무 모듈도 조회 못함'."""
+    """Admin legacy endpoint for auto module mail recipients."""
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
@@ -2763,7 +2730,7 @@ def save_user_modules(req: UserModulesSaveReq, request: Request):
 
 @router.post("/user-modules/clear")
 def clear_user_modules(req: UserModulesSaveReq, request: Request):
-    """Admin: 특정 유저의 권한 설정 완전 제거 → group 기반 fallback 으로 복귀."""
+    """Admin legacy endpoint for clearing auto module mail recipient mapping."""
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
@@ -2780,35 +2747,24 @@ def clear_user_modules(req: UserModulesSaveReq, request: Request):
 
 @router.get("/my-modules")
 def my_inform_modules(request: Request):
-    """현재 유저의 인폼 모듈 조회 권한.
-      - admin → all_rounder=True
-      - inform_user_modules 에 저장된 값 있으면 그걸 사용
-      - 그 외엔 /api/groups/my-modules 값으로 fallback
-    """
+    """현재 유저의 인폼 조회 범위. Inform page access means all modules."""
     me = current_user(request)
     uname = me.get("username") or ""
     role = me.get("role") or "user"
-    if role == "admin":
-        return {"modules": [], "all_rounder": True, "source": "admin"}
-    um = _get_inform_user_mods()
-    if uname in um:
-        return {"modules": list(um[uname]), "all_rounder": False, "source": "inform_user_modules"}
-    # fallback: groups.user_modules 에서 compute
-    try:
-        from routers.groups import user_modules
-        mods = user_modules(uname, role) or set()
-        # "__all__" sentinel 은 admin 경로에서만 나오므로 여기선 없음.
-        return {"modules": list(mods), "all_rounder": False, "source": "groups"}
-    except Exception:
-        return {"modules": [], "all_rounder": False, "source": "fallback"}
+    has_access = _has_inform_page_access(uname, role)
+    return {"modules": [], "all_rounder": bool(has_access), "source": "inform_page"}
 
 
-# v8.8.1: 제품 카탈로그 CRUD (모든 로그인 유저 — 등록된 제품 선택용).
-# v8.8.33: 모든 요청 시 catalog 자체를 normalize (trim + case-insensitive dedup) —
-#   기존 데이터에 "PRODA", "PRODA " 같은 중복이 있으면 이 경로에서 한번에 정리.
-def _normalize_products(products: list) -> list:
-    """Back-compat wrapper around core.product_dedup.normalize_products."""
-    return normalize_products(products)
+# 제품 후보는 LOT progress cache 에서 자동 생성한다. 아래 helpers/endpoints 는 cached
+# legacy client 호환용이며 config.json product catalog 를 더 이상 수정하지 않는다.
+def _cache_managed_products_response(ignored_product: str = "") -> dict:
+    return {
+        "ok": True,
+        "products": _merged_catalog_products(),
+        "source": "lot_progress_cache",
+        "managed_by": "lot_progress_cache",
+        "ignored_product": ignored_product,
+    }
 
 
 @router.post("/products/add")
@@ -2818,23 +2774,13 @@ def _normalize_products(products: list) -> list:
 @router.put("/product/add")
 @router.patch("/product/add")
 def add_product(req: ProductReq, request: Request):
-    # v8.8.33 보안: admin 또는 page_manager('inform') 만 카탈로그 변경.
     me = current_user(request)
     if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin or inform page manager only")
     p = _canonical_product(req.product or "")
     if not p:
         raise HTTPException(400, "product required")
-    cfg = _load_config()
-    products = _normalize_products(list(cfg.get("products") or []))
-    dup = find_duplicate_product(products, p)
-    if dup:
-        raise HTTPException(409, {"code": "duplicate_product", "existing_product": dup})
-    products.append(p)
-    cfg["products"] = products
-    _save_config(cfg)
-    _audit(request, "inform:product_add", detail=f"product={p} by={me['username']}", tab="inform")
-    return {"ok": True, "products": products}
+    return _cache_managed_products_response(p)
 
 
 @router.post("/products")
@@ -2854,23 +2800,13 @@ def add_product_get_compat(request: Request, product: str = Query("")):
 
 @router.post("/products/dedup")
 def dedup_products_all_sources(request: Request):
-    """v8.8.33: admin 전용 one-shot — config.json.products, product_contacts.json.products 키,
-    심지어 informs.json 레코드의 product 값까지 trim + case-insensitive 로 정규화하고 저장.
-    사이드바 'PRODA 2개' 같은 유령 중복을 근본 청소.
-    """
+    """Admin one-shot cleanup for contacts and saved Inform product text."""
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
     report = {}
-    # 1) config.products
-    cfg = _load_config()
-    before = list(cfg.get("products") or [])
-    after = _normalize_products(before)
-    if before != after:
-        cfg["products"] = after
-        _save_config(cfg)
-    report["catalog"] = {"before": len(before), "after": len(after), "values": after}
-    # 2) product_contacts.json
+    report["catalog"] = {"source": "lot_progress_cache", "values": _merged_catalog_products()}
+    # product_contacts.json
     pc = _load_product_contacts()   # 로드 단계에서 이미 병합됨
     _save_product_contacts(pc)       # 병합 결과 디스크 기록
     report["contacts"] = {"products": list(pc.get("products", {}).keys())}
@@ -2895,26 +2831,14 @@ def dedup_products_all_sources(request: Request):
 
 @router.post("/products/delete")
 def delete_product(req: ProductReq, request: Request):
-    """v8.8.1: 카탈로그에서 제품 삭제. admin 또는 등록자(추적불가시 admin) 권한.
-    실제 인폼 레코드(product 필드)는 건드리지 않음 — 드롭다운에서만 제외.
-    v8.8.33: case-insensitive 매칭 + 중복 전부 제거 → 기존 PRODA/"PRODA " 같은 유령 제거.
-    v8.8.33 보안: admin 또는 page_manager('inform') 만 삭제 가능."""
+    """Legacy compatibility: products are cache-managed and are not deleted here."""
     me = current_user(request)
     if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin or inform page manager only")
     p = (req.product or "").strip()
     if not p:
         raise HTTPException(400, "product required")
-    cfg = _load_config()
-    before = _normalize_products(list(cfg.get("products") or []))
-    target_key = p.lower()
-    after = [x for x in before if x.lower() != target_key]
-    if len(after) == len(before):
-        raise HTTPException(404, "product not in catalog")
-    cfg["products"] = after
-    _save_config(cfg)
-    _audit(request, "inform:product_delete", detail=f"product={p} by={me['username']}", tab="inform")
-    return {"ok": True, "products": after}
+    return _cache_managed_products_response(_canonical_product(p))
 
 
 @router.get("/product-lots")
@@ -3094,8 +3018,8 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
     wafers_seen: dict = {}
     products_seen: dict = {}
     lots_seen: dict = {}
-    fab_products = _fab_db_products()
-    fab_lookup = {item.lower(): item for item in fab_products}
+    cache_products = _lot_progress_cache_products()
+    cache_lookup = {item.casefold(): item for item in cache_products}
 
     for x in items:
         if not _visible_to(x, username, role, my_mods):
@@ -3125,9 +3049,9 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
         p = x.get("product")
         if p and isinstance(p, str):
             canon = _canonical_product(p)
-            if canon and canon.lower() in fab_lookup:
-                key = canon.lower()
-                ps = products_seen.setdefault(key, {"product": fab_lookup[key], "count": 0, "last": ""})
+            if canon and canon.casefold() in cache_lookup:
+                key = canon.casefold()
+                ps = products_seen.setdefault(key, {"product": cache_lookup[key], "count": 0, "last": ""})
                 ps["count"] += 1
                 if ts > ps["last"]:
                     ps["last"] = ts
@@ -3153,8 +3077,8 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
                 ls["source_root_lot_id"] = source_root
             ls["fab_lots"].add(lot_key)
 
-    for p in fab_products:
-        key = p.lower()
+    for p in cache_products:
+        key = p.casefold()
         products_seen.setdefault(key, {"product": p, "count": 0, "last": ""})
 
     wafers = sorted(wafers_seen.values(), key=lambda v: v.get("last", ""), reverse=True)[:wafer_limit]
@@ -3279,7 +3203,7 @@ def by_product(request: Request, product: str = Query(..., min_length=1),
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded(), include_deleted)
     want = _canonical_product(product)
-    hits = [x for x in items if _canonical_product(x.get("product") or "") == want]
+    hits = [x for x in items if _canonical_product(x.get("product") or "").casefold() == want.casefold()]
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
     # 루트 우선 최근순
     roots = [x for x in hits if not x.get("parent_id")]
@@ -3293,7 +3217,7 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
     """현재 유저 모듈 범위의 인폼 루트 (담당자 대시보드)."""
     me = current_user(request)
     role = me.get("role", "user")
-    my_mods = user_modules(me["username"], role)
+    my_mods = _effective_modules(me["username"], role)
     items = _without_deleted(_load_upgraded())
     roots = [x for x in items if not x.get("parent_id")]
     if role == "admin" or "__all__" in my_mods:
@@ -3316,14 +3240,15 @@ def _canonical_product(s: str) -> str:
 
 @router.get("/products")
 def list_products(request: Request):
-    """v9.0.0: product 키를 canonical 로 병합 — ML_TABLE_PRODA + PRODA + 'PRODA ' 변형 전부 1개로.
-    레코드 count 는 canonical 기준 합산.
+    """List Inform products from the LOT progress cache, with record counts folded by product.
+
+    ML_TABLE_PRODA, PRODA, and casing variants count as the same cache product.
     """
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded())
-    fab_products = _fab_db_products()
-    fab_lookup = {p.lower(): p for p in fab_products}
+    cache_products = _lot_progress_cache_products()
+    cache_lookup = {p.casefold(): p for p in cache_products}
     seen: dict = {}
     for x in items:
         p = x.get("product")
@@ -3334,16 +3259,16 @@ def list_products(request: Request):
         canon = _canonical_product(p)
         if not canon:
             continue
-        key = canon.lower()
-        if key not in fab_lookup:
+        key = canon.casefold()
+        if key not in cache_lookup:
             continue
-        s = seen.setdefault(key, {"product": fab_lookup[key], "count": 0, "last": ""})
+        s = seen.setdefault(key, {"product": cache_lookup[key], "count": 0, "last": ""})
         s["count"] += 1
         ts = x.get("created_at", "")
         if ts > s["last"]:
             s["last"] = ts
-    for p in fab_products:
-        key = p.lower()
+    for p in cache_products:
+        key = p.casefold()
         seen.setdefault(key, {"product": p, "count": 0, "last": ""})
     arr = sorted(seen.values(), key=lambda v: (v["last"], v["product"]), reverse=True)
     return {"products": arr}

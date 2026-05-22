@@ -30,7 +30,7 @@ _DEFAULT_RULES = {
 
 _EVENT_META = {
     "my_plan_changed": ("plan 변경", "info"),
-    "my_plan_actual_mismatch": ("plan/actual 불일치", "warn"),
+    "my_plan_actual_mismatch": ("plan/actual 불일치", "warning"),
     "my_meeting_minutes_added": ("회의록 갱신", "info"),
     "my_meeting_action_changed": ("회의 액션 갱신", "info"),
     "my_tracker_comment": ("이슈 댓글", "info"),

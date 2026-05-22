@@ -99,6 +99,26 @@ const WHITE = "var(--bg-secondary)";
 const SKY = chartPalette.series[13];
 const SLATE = "rgba(107,114,128,0.95)";
 const SILVER = "rgba(148,163,184,0.95)";
+function notificationType(type){
+  const raw=String(type||"info").trim().toLowerCase();
+  return raw==="warn"?"warning":raw;
+}
+function notificationLabel(type){
+  const normalized=notificationType(type);
+  return normalized==="warning"?"! warning":normalized;
+}
+function notificationColor(type){
+  const normalized=notificationType(type);
+  return normalized==="approval"?WARN.fg:normalized==="message"?INFO.fg:normalized==="warning"?BAD.fg:SLATE;
+}
+function notificationBody(n){
+  const payload=_obj(n?.payload);
+  if(n?.event==="my_plan_actual_mismatch"&&payload.product&&payload.root_lot_id&&payload.column){
+    const wafer=payload.wafer_id?` WF${payload.wafer_id}`:"";
+    return `! ${payload.product}/${payload.root_lot_id}${wafer} ${payload.column}: [plan] ${payload.plan||""} → [actual] ${payload.actual||""}`;
+  }
+  return n?.body||"";
+}
 
 // v8.7.5: Admin 탭 전환 시 서브 패널에서 던진 에러가 페이지 전체를 마비시키지 않도록.
 class TabBoundary extends Component{
@@ -568,11 +588,11 @@ export default function My_Admin({user}){
             <input type="checkbox" checked={!!n.read} onChange={()=>{if(!n.read)toggleRead(n);}} disabled={!!n.read} title={n.read?"읽음":"읽음으로 표시"} style={{marginTop:2,accentColor:OK.fg,flexShrink:0,cursor:n.read?"default":"pointer"}}/>
             <div style={{flex:1}}>
               <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
-                <span style={{fontSize:14,padding:"2px 6px",borderRadius:3,fontWeight:700,color:WHITE,background:n.type==="approval"?WARN.fg:n.type==="message"?INFO.fg:SLATE}}>{n.type}</span>
+                <span style={{fontSize:14,padding:"2px 6px",borderRadius:3,fontWeight:700,color:WHITE,background:notificationColor(n.type),textTransform:"uppercase"}}>{notificationLabel(n.type)}</span>
                 <span style={{fontWeight:n.read?400:600}}>{n.title}</span>
                 <span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{n.timestamp?.slice(0,16)}</span>
               </div>
-              <div style={{color:"var(--text-secondary)",fontSize:14,paddingLeft:4}}>{n.body}</div>
+              <div style={{color:"var(--text-secondary)",fontSize:14,paddingLeft:4}}>{notificationBody(n)}</div>
             </div>
           </div>))}
         </div>

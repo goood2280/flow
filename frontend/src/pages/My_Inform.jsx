@@ -190,12 +190,6 @@ function embedSnapshotRowCount(embed) {
   return rows.length;
 }
 
-function parseDuplicateProductError(error) {
-  const text = String(error?.message || error || "");
-  const match = text.match(/existing_product['"]?\s*:\s*['"]?([^'",}\]]+)/i);
-  return match?.[1] ? stripMlPrefix(match[1].trim()) : "";
-}
-
 const STATUS_META = {
   registered:      { label: "등록", tone: "info", color: INFO.fg, dot: "○" },
   mail_completed:  { label: "메일완료", tone: "brand", color: WARN.fg, dot: "◑" },
@@ -1919,12 +1913,11 @@ export default function My_Inform({ user }) {
   const [auditRows, setAuditRows] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
-  // v8.8.1: 설정에 products(카탈로그) + raw_db_root 추가.
+  // 제품 후보는 backend LOT progress cache 기준으로 채워진다.
   const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "", reason_templates: {} });
   // v8.8.1: 선택 제품의 Lot 후보 (RAWDATA_DB 에서 폴더 스캔).
   const [productLots, setProductLots] = useState({ product: "", lots: [], source: "" });
   const [mode, setMode] = useState("all");           // all | mine | product | lot | wafer
-  const [myMods, setMyMods] = useState({ modules: [], all_rounder: false });
 
   const [wafers, setWafers] = useState([]);
   const [products, setProducts] = useState([]);
@@ -1962,8 +1955,7 @@ export default function My_Inform({ user }) {
   const [moduleFilter, setModuleFilter] = useState([]);  // 체크된 모듈만 표시 (빈 배열=모두 해제)
   // v8.8.15: 제품 필터 nav — 체크된 제품만 통과. 빈 배열은 "모두 해제"라서 목록을 비운다.
   const [productFilter, setProductFilter] = useState([]);
-  // v8.8.13: moduleFilter 기본 = 내 조회 권한 모든 모듈. admin 또는 all_rounder 이면 전체.
-  //   myMods/constants 가 로딩되면 1회 자동 셋업. 이후엔 사용자 체크 토글이 우선.
+  // moduleFilter 기본 = 모든 모듈. 이후엔 사용자 체크 토글이 우선.
   const [moduleFilterInit, setModuleFilterInit] = useState(false);
   const [productFilterInit, setProductFilterInit] = useState(false);
 
@@ -2022,26 +2014,6 @@ export default function My_Inform({ user }) {
   }, [wizardMailMeta]);
 
   const isAdmin = user?.role === "admin";
-  const addCatalogProduct = async (rawProduct, { onAdded, onDuplicate } = {}) => {
-    const product = stripMlPrefix(String(rawProduct || "").trim());
-    if (!product) return null;
-    try {
-      const d = await postJson(API + "/products/add", { product });
-      if (onAdded) onAdded(product, d);
-      return d;
-    } catch (error) {
-      const existing = parseDuplicateProductError(error);
-      if (String(error?.message || "").includes("duplicate_product") || existing) {
-        const target = existing || product;
-        setMsg("기존 제품으로 이동");
-        try { toast.info("기존 제품으로 이동"); } catch (_) {}
-        if (onDuplicate) onDuplicate(target);
-        return { duplicate: true, existing_product: target };
-      }
-      throw error;
-    }
-  };
-
   const loadLotMatrix = () => {
     const q = new URLSearchParams();
     if ((sharedFilters.lot || "").trim()) q.set("search", sharedFilters.lot.trim());
@@ -2232,9 +2204,8 @@ export default function My_Inform({ user }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeTab, informView]);
 
-  /* Load constants + my modules */
+  /* Load constants */
   useEffect(() => {
-    // v8.8.1: /config 에서 products + raw_db_root 까지 같이 받는다.
     sf(API + "/config").then(d => setConstants({
       modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
       products: d.products || [], raw_db_root: d.raw_db_root || "",
@@ -2244,19 +2215,13 @@ export default function My_Inform({ user }) {
         modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
       }))).catch(() => {});
     });
-    // v8.8.13: 인폼 전용 my-modules — admin 이 유저별로 설정한 inform_user_modules 우선, 없으면 groups fallback.
-    sf("/api/informs/my-modules").then(d => setMyMods({
-      modules: d.modules || [], all_rounder: !!d.all_rounder,
-    })).catch(() => setMyMods({ modules: [], all_rounder: !!isAdmin }));
   }, []);
 
   const moduleFilterOptions = useMemo(() => {
-    const all = constants.modules || [];
-    const my = (myMods.all_rounder || isAdmin) ? all : (myMods.modules || []).filter(m => all.includes(m));
-    return my.length ? my : all;
-  }, [constants.modules, myMods, isAdmin]);
+    return constants.modules || [];
+  }, [constants.modules]);
 
-  // v8.8.13: moduleFilter 기본값 = 내 권한 모듈 전체 체크. 최초 한 번만.
+  // moduleFilter 기본값 = 전체 모듈 체크. 최초 한 번만.
   useEffect(() => {
     if (moduleFilterInit) return;
     if (moduleFilterOptions.length === 0) return;
@@ -2334,14 +2299,6 @@ export default function My_Inform({ user }) {
       : "/api/informs/product-contacts";
     postJson(url, { product, name, role, email, phone, note })
       .then(() => {
-        // v8.8.7: 담당자가 붙은 제품은 카탈로그에도 자동 등록 (이미 있으면 no-op).
-        //   이렇게 하면 새 인폼 폼 드롭다운에 바로 노출됨 (이전엔 productContacts 키에만 존재해서 누락).
-        if (!(constants.products || []).includes(product)) {
-          addCatalogProduct(product, {
-            onAdded: (_product, d) => setConstants(c => ({ ...c, products: d.products || c.products })),
-          })
-            .catch(() => {});
-        }
         setEditContact(null);
         loadProductContacts();
       })
@@ -2374,13 +2331,6 @@ export default function My_Inform({ user }) {
     })
       .then(r => {
         setBulkBusy(false);
-        // v8.8.7: bulk add 도 동일 — 제품이 카탈로그에 없으면 자동 등록.
-        if (!(constants.products || []).includes(bulkPickProduct)) {
-          addCatalogProduct(bulkPickProduct, {
-            onAdded: (_product, d) => setConstants(c => ({ ...c, products: d.products || c.products })),
-          })
-            .catch(() => {});
-        }
         const msg = `추가 ${r.added?.length || 0}명 / 스킵 ${r.skipped?.length || 0}명 (중복/차단).`;
         toast.ok(msg);
         setBulkPickProduct("");
@@ -3273,23 +3223,9 @@ export default function My_Inform({ user }) {
     }}>
       <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-          카탈로그, 모듈 순서, 권한, 메일 템플릿을 여기에서 관리합니다.
+          제품 후보는 LOT progress cache 기준으로 자동 표시합니다. 여기서는 모듈 순서와 메일 템플릿만 관리합니다.
         </div>
-        <ProductCatalogPanel
-          products={[
-            ...(constants.products || []),
-            ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
-            ...Object.keys(productContacts || {}),
-          ]}
-          canEdit={isAdmin}
-          onAdd={(product) => addCatalogProduct(product, {
-            onAdded: (_product, d) => setConstants(c => ({ ...c, products: d.products || c.products })),
-          })}
-          onDelete={(product) => postJson(API + "/products/delete", { product })
-            .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
-            .catch(e => toast.error("제품 삭제 실패: " + (e.message || e)))}
-        />
-        <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+        <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
             모듈 표시 순서를 관리합니다.
           </div>
@@ -3332,7 +3268,6 @@ export default function My_Inform({ user }) {
             onSave={saveReasonTemplates}
           />
         )}
-        {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
       </PageGear>
 
       <header className="flow-surface-header" style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px 8px 18px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
@@ -3358,11 +3293,6 @@ export default function My_Inform({ user }) {
             </button>
           ))}
         </div>
-        {!myMods.all_rounder && (
-          <div style={{ color: "var(--text-secondary)", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            내 담당: {(myMods.modules || []).length ? (myMods.modules || []).join(", ") : "미지정"}
-          </div>
-        )}
       </header>
 
       <CommonInformFilters
@@ -3713,100 +3643,6 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
   );
 }
 
-
-function UserModulePermsPanel({ allModules }) {
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [savingFor, setSavingFor] = useState("");
-  const [q, setQ] = useState("");
-  const load = () => {
-    setLoading(true);
-    sf("/api/informs/user-modules").then(d => {
-      setUsers(d.users || []); setLoading(false);
-    }).catch(e => { setLoading(false); toast.error("로드 실패: " + (e.message || e)); });
-  };
-  useEffect(() => { load(); }, []);
-  const toggleOne = (username, module, on) => {
-    const u = users.find(x => x.username === username); if (!u) return;
-    const next = on
-      ? [...(u.modules || []), module]
-      : (u.modules || []).filter(m => m !== module);
-    persist(username, next);
-  };
-  const setAllFor = (username, on) => persist(username, on ? [...allModules] : []);
-  const clearFor = (username) => {
-    setSavingFor(username);
-    sf("/api/informs/user-modules/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, modules: [] }) })
-      .then(() => { setSavingFor(""); load(); })
-      .catch(e => { setSavingFor(""); toast.error("초기화 실패: " + (e.message || e)); });
-  };
-  const persist = (username, modules) => {
-    setSavingFor(username);
-    // optimistic
-    setUsers(list => list.map(u => u.username === username ? { ...u, modules, has_setting: true } : u));
-    sf("/api/informs/user-modules/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, modules }) })
-      .then(() => setSavingFor(""))
-      .catch(e => { setSavingFor(""); toast.error("저장 실패: " + (e.message || e)); load(); });
-  };
-  const filtered = q ? users.filter(u => (u.username || "").toLowerCase().includes(q.toLowerCase()) || (u.email || "").toLowerCase().includes(q.toLowerCase())) : users;
-  return (
-    <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>🔒 유저별 모듈 조회 권한</div>
-      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6, lineHeight: 1.5 }}>
-        인폼 탭 권한이 있는 유저에게 <b>모듈별 조회 권한</b> 을 부여합니다.
-        체크된 모듈의 인폼만 목록·검색에 노출됩니다. admin 은 항상 전체. 설정을 초기화하면 그룹 기반으로 돌아갑니다.
-      </div>
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔎 유저/이메일 검색"
-        style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, marginBottom: 6, boxSizing: "border-box" }} />
-      {loading && <div style={{ padding: 10, fontSize: 14, color: "var(--text-secondary)" }}>로딩...</div>}
-      {!loading && filtered.length === 0 && <div style={{ padding: 10, fontSize: 14, color: "var(--text-secondary)" }}>해당 유저 없음</div>}
-      <div style={{ maxHeight: 380, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-        {filtered.map(u => {
-          const modsSet = new Set(u.modules || []);
-          const allOn = allModules.length > 0 && allModules.every(m => modsSet.has(m));
-          const busy = savingFor === u.username;
-          return (
-            <div key={u.username} style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", opacity: busy ? 0.6 : 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>{u.username}</span>
-                {u.role === "admin" && <Pill tone="danger">admin</Pill>}
-                {u.email && <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{u.email}</span>}
-                <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 14, color: u.has_setting ? "var(--ok)" : "var(--text-secondary)" }}>
-                  {u.has_setting ? `✓ 설정됨 (${(u.modules || []).length})` : "기본(그룹 기반)"}
-                </span>
-                <span onClick={() => setAllFor(u.username, !allOn)}
-                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid var(--border)", color: "var(--accent)" }}>
-                  {allOn ? "전체 해제" : "전체 선택"}
-                </span>
-                {u.has_setting && <span onClick={() => clearFor(u.username)}
-                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid var(--danger)", color: "var(--danger)" }}
-                  title="이 유저의 권한 설정을 초기화 (groups 기반으로 복귀)">× 초기화</span>}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {allModules.map(m => {
-                  const on = modsSet.has(m);
-                  const mc = moduleColor(m);
-                  return (
-                    <label key={m}
-                      style={{ fontSize: 14, padding: "1px 7px", borderRadius: 999, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3,
-                        background: on ? (mc + "22") : "transparent",
-                        color: on ? mc : "var(--text-secondary)",
-                        fontWeight: on ? 700 : 500,
-                        border: "1px solid " + (on ? (mc + "55") : "var(--border)") }}>
-                      <input type="checkbox" checked={on} onChange={() => toggleOne(u.username, m, !on)} style={{ accentColor: mc }} />
-                      {m}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function ModulePill({ module, solid = false }) {
   const mc = moduleColor(module || "기타");
@@ -4704,42 +4540,6 @@ function InformAttachmentsPanel({ root }) {
         <section style={images.length > 0 ? informConnectedSectionLast : informConnectedSectionOnly}>
           <EmbedTableView embed={root.embed_table} product={root.product} />
         </section>
-      )}
-    </div>
-  );
-}
-
-function ProductCatalogPanel({ products, canEdit, onAdd, onDelete }) {
-  const [draft, setDraft] = useState("");
-  const seen = new Map();
-  (products || []).forEach(p => {
-    const value = stripMlPrefix(String(p || "").trim());
-    if (value) seen.set(value.toLowerCase(), value);
-  });
-  const list = Array.from(seen.values()).sort();
-  const add = () => {
-    const v = draft.trim();
-    if (!v) return;
-    Promise.resolve(onAdd(v)).then(() => setDraft("")).catch(e => toast.error(e.message || e));
-  };
-  return (
-    <div>
-      <div style={{ fontWeight: 900, marginBottom: 6 }}>제품 카탈로그</div>
-      <div style={{ maxHeight: 150, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)" }}>
-        {list.length === 0 && <div style={{ padding: 10, color: "var(--text-secondary)" }}>등록된 제품 없음</div>}
-        {list.map(p => (
-          <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>
-            <span style={{ flex: 1 }}>{p}</span>
-            {canEdit && <button type="button" onClick={() => onDelete(p)} style={{ border: "1px solid " + BAD.fg, background: "transparent", color: BAD.fg, borderRadius: 6, cursor: "pointer", fontSize: 14 }}>삭제</button>}
-          </div>
-        ))}
-      </div>
-      {canEdit && (
-        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-          <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") add(); }}
-            placeholder="신규 제품명" style={inputStyle({ flex: 1 })} />
-          <button type="button" onClick={add} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>추가</button>
-        </div>
       )}
     </div>
   );
