@@ -9,7 +9,25 @@ from core.flowi_units import UNIT_AIS
 from core.paths import PATHS
 from core.utils import load_json
 
-from .schemas import SemanticCandidate, SemanticFrame
+from .schemas import (
+    ActivationRow,
+    IntentDecision,
+    SemanticCandidate,
+    SemanticFrame,
+    ThoughtTrace,
+)
+
+try:  # P3-wire-up: lexicon store is optional at semantic-resolution time.
+    from app_v2.modules.semantic_lexicon import (
+        effective_alias_groups,
+        effective_intent_hints,
+    )
+except Exception:  # pragma: no cover — store is best-effort.
+    def effective_alias_groups(seed: dict[str, list[str]]) -> dict[str, list[str]]:
+        return dict(seed or {})
+
+    def effective_intent_hints(seed: dict[str, list[str]]) -> dict[str, list[str]]:
+        return dict(seed or {})
 
 
 SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
@@ -63,24 +81,34 @@ def _tokens(goal: str, max_terms: int) -> list[str]:
     return out
 
 
+def _active_alias_groups() -> dict[str, list[str]]:
+    """Merged view of in-code seed + admin-edited lexicon disk file."""
+    return effective_alias_groups(_ALIAS_GROUPS)
+
+
+def _active_intent_hints() -> dict[str, list[str]]:
+    return effective_intent_hints(_INTENT_HINTS)
+
+
 def _normalized_terms(goal: str, tokens: list[str]) -> dict[str, str]:
     goal_norm = _norm(goal)
     terms: dict[str, str] = {}
+    alias_groups = _active_alias_groups()
     for token in tokens:
         t_norm = _norm(token)
-        for canonical, aliases in _ALIAS_GROUPS.items():
+        for canonical, aliases in alias_groups.items():
             alias_norms = [_norm(x) for x in aliases]
             if t_norm == _norm(canonical) or t_norm in alias_norms:
                 terms[token] = canonical
                 break
         if token in terms:
             continue
-        for canonical, aliases in _ALIAS_GROUPS.items():
+        for canonical, aliases in alias_groups.items():
             if any(alias and alias in goal_norm for alias in [_norm(x) for x in aliases if len(_norm(x)) >= 3]):
                 if t_norm and any(t_norm in _norm(x) or _norm(x) in t_norm for x in aliases):
                     terms[token] = canonical
                     break
-    for canonical, aliases in _ALIAS_GROUPS.items():
+    for canonical, aliases in alias_groups.items():
         if canonical in terms.values():
             continue
         if any(alias and alias in goal_norm for alias in [_norm(x) for x in aliases if len(_norm(x)) >= 4]):
@@ -182,19 +210,34 @@ def _slot_extract(goal: str) -> dict[str, Any]:
 
 
 def _infer_intent(normalized_terms: dict[str, str], goal: str) -> str:
+    return _infer_intent_decision(normalized_terms, goal).chosen
+
+
+def _infer_intent_decision(normalized_terms: dict[str, str], goal: str) -> IntentDecision:
     terms = set(normalized_terms.values())
     goal_norm = _norm(goal)
     if "schema" in goal_norm or "wiki" in goal_norm or "지식" in goal:
         terms.add("wiki")
         terms.add("schema")
+    scores: list[dict[str, Any]] = []
     best = "general_orchestration"
     best_score = 0
-    for intent, hints in _INTENT_HINTS.items():
-        score = sum(1 for hint in hints if hint in terms)
+    best_matched: list[str] = []
+    for intent, hints in _active_intent_hints().items():
+        matched = [hint for hint in hints if hint in terms]
+        score = len(matched)
+        scores.append({"intent": intent, "score": score, "matched": matched, "required": list(hints)})
         if score > best_score:
             best = intent
             best_score = score
-    return best
+            best_matched = matched
+    scores.sort(key=lambda row: (-int(row.get("score") or 0), str(row.get("intent") or "")))
+    rationale = (
+        f"intent='{best}' chosen with {best_score} hint(s): {', '.join(best_matched)}"
+        if best_score
+        else "no intent hint matched; falling back to general_orchestration"
+    )
+    return IntentDecision(chosen=best, rationale=rationale, scores=scores)
 
 
 def _alias_candidate(token: str, normalized: str) -> SemanticCandidate | None:
@@ -260,14 +303,69 @@ def resolve_semantic_frame(goal: str, *, max_terms: int = 24) -> SemanticFrame:
         warnings.append("column catalog is empty; semantic layer is using aliases only")
     if coverage < 0.35 and tokens:
         warnings.append("low semantic coverage; add schema column docs or wiki aliases")
+    intent_decision = _infer_intent_decision(normalized_terms, goal)
+    activation_rows = _activation_table_from_scored(scored, max_rows=max(24, max_terms * 4))
+    slot_summary = _slot_extraction_summary(slots, tokens)
+    thought = ThoughtTrace(
+        activation_table=activation_rows,
+        intent_decision=intent_decision,
+        slot_extraction=slot_summary,
+    )
     return SemanticFrame(
         goal=goal,
         tokens=tokens,
         normalized_terms=normalized_terms,
-        intent=_infer_intent(normalized_terms, goal),
+        intent=intent_decision.chosen,
         slots=slots,
         candidates=sorted(candidates, key=lambda c: c.score, reverse=True)[: max(12, max_terms * 3)],
         coverage=round(coverage, 3),
         warnings=warnings,
         polars_profile=profile,
+        thought=thought,
     )
+
+
+def _activation_table_from_scored(scored: list[dict[str, Any]], *, max_rows: int) -> list[ActivationRow]:
+    if not scored:
+        return []
+    out: list[ActivationRow] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    sorted_rows = sorted(
+        scored,
+        key=lambda r: (-float(r.get("score") or 0.0), str(r.get("source") or ""), str(r.get("column") or "")),
+    )
+    for row in sorted_rows:
+        token = str(row.get("token") or "")
+        column = str(row.get("column") or "")
+        source = str(row.get("source") or "")
+        relation_id = str(row.get("relation_id") or "")
+        dedupe_key = (token, column, source, relation_id)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        try:
+            score = float(row.get("score") or 0.0)
+        except Exception:
+            score = 0.0
+        out.append(ActivationRow(
+            token=token,
+            normalized=str(row.get("normalized") or ""),
+            relation_id=relation_id,
+            column=column,
+            canonical_alias=str(row.get("canonical_alias") or ""),
+            source=source,
+            score=round(score, 3),
+            used_by=list(row.get("used_by") or []),
+        ))
+        if len(out) >= max_rows:
+            break
+    return out
+
+
+def _slot_extraction_summary(slots: dict[str, Any], tokens: list[str]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in (slots or {}).items():
+        if value:
+            summary[key] = value
+    summary["token_count"] = len(tokens or [])
+    return summary

@@ -16,13 +16,19 @@ export default function ExecutionFlowTab({ user }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
+  const [thought, setThought] = useState(null);
 
   async function runPrompt() {
     if (!prompt.trim()) { setErr("prompt를 입력해주세요"); return; }
-    setBusy(true); setErr(""); setResult(null);
+    setBusy(true); setErr(""); setResult(null); setThought(null);
     try {
-      const d = await postJson("/api/llm/flowi/chat", { prompt, product, source: "agent_v2_execution_flow" });
-      setResult(d);
+      const [chatResp, semResp] = await Promise.all([
+        postJson("/api/llm/flowi/chat", { prompt, product, source: "agent_v2_execution_flow" }),
+        postJson("/api/agent/runtime/semantic/resolve", { goal: prompt, max_terms: 32 }).catch(() => null),
+      ]);
+      setResult(chatResp);
+      const frame = semResp && semResp.semantic ? semResp.semantic : null;
+      setThought(frame && frame.thought ? frame.thought : null);
     } catch (e) {
       setErr(e?.message || "실행 실패");
     } finally {
@@ -37,7 +43,7 @@ export default function ExecutionFlowTab({ user }) {
       <header>
         <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>🔎 최근 실행 흐름</h2>
         <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
-          prompt를 직접 실행해서 단위 AI가 어떻게 해석하고 진행했는지 한눈에 봅니다 — token 해석 / 5단계 activation / call graph / evidence.
+          prompt를 직접 실행해서 단위 AI가 어떻게 해석하고 진행했는지 한눈에 봅니다 — 어휘 활성화 / 의도 결정 / 단위 AI 선택 / token 해석 / evidence.
         </p>
       </header>
 
@@ -68,12 +74,113 @@ export default function ExecutionFlowTab({ user }) {
       {busy && <Loading text="단위 AI 실행 중..." size="md" />}
 
       {result && <AnswerCard result={result} />}
+      {thought && <ActivationTableCard rows={thought.activation_table || []} />}
+      {thought && <IntentDecisionCard decision={thought.intent_decision || {}} />}
+      {thought && <SlotExtractionCard slots={thought.slot_extraction || {}} />}
       {trace && <ActivationCard activation={trace.activation || (trace.call_graph && trace.call_graph.activation) || {}} />}
       {trace && trace.interpretation && <InterpretationCard interpretation={trace.interpretation} />}
       {trace && trace.evidence && <EvidenceCard evidence={trace.evidence} />}
       {trace && Array.isArray(trace.steps) && trace.steps.length > 0 && <StepsCard steps={trace.steps} />}
       {trace && trace.call_graph && <CallGraphCard graph={trace.call_graph} />}
     </div>
+  );
+}
+
+// ── Thought trace panels (P2) ──────────────────────
+function ActivationTableCard({ rows }) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return (
+    <Section title="어휘 활성화 표" hint="token이 어떤 alias→column→source를 깨웠는지, Polars score 순">
+      <div style={{ overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+              <th style={th()}>token</th>
+              <th style={th()}>normalized</th>
+              <th style={th()}>column</th>
+              <th style={th()}>canonical alias</th>
+              <th style={th()}>source</th>
+              <th style={th()}>used by</th>
+              <th style={th()}>score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 60).map((r, i) => (
+              <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={td("140px", true)}><code>{r.token || "—"}</code></td>
+                <td style={td("140px", true)}><code>{r.normalized || "—"}</code></td>
+                <td style={td("160px", true)}>{r.column || "—"}</td>
+                <td style={td("160px", true)}>{r.canonical_alias || "—"}</td>
+                <td style={td("180px")}>{r.source || "—"}</td>
+                <td style={td("160px")}>{(r.used_by || []).join(", ") || "—"}</td>
+                <td style={td("70px", true)}>{Number(r.score || 0).toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
+function IntentDecisionCard({ decision }) {
+  const chosen = decision.chosen || "general_orchestration";
+  const rationale = decision.rationale || "";
+  const scores = Array.isArray(decision.scores) ? decision.scores : [];
+  return (
+    <Section title="의도 결정" hint="intent_hints 평가 점수 + 선택 근거">
+      <div style={{ display: "flex", gap: 12, alignItems: "baseline", marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>chosen: <code>{chosen}</code></span>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{rationale}</span>
+      </div>
+      {scores.length === 0 ? (
+        <Banner tone="info">no intent hint matched.</Banner>
+      ) : (
+        <div style={{ overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                <th style={th()}>intent</th>
+                <th style={th()}>score</th>
+                <th style={th()}>matched hints</th>
+                <th style={th()}>required hints</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scores.map((row, i) => (
+                <tr key={i} style={{ borderTop: "1px solid var(--border)", background: row.intent === chosen ? "var(--bg-secondary)" : "transparent" }}>
+                  <td style={td("200px", true)}><code>{row.intent || "—"}</code></td>
+                  <td style={td("70px", true)}>{Number(row.score || 0)}</td>
+                  <td style={td("260px")}>{(row.matched || []).join(", ") || "—"}</td>
+                  <td style={td("260px")}>{(row.required || []).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function SlotExtractionCard({ slots }) {
+  const entries = Object.entries(slots || {}).filter(([k]) => k !== "token_count");
+  const tokenCount = Number(slots && slots.token_count || 0);
+  return (
+    <Section title="슬롯 추출" hint={`prompt에서 자동 식별된 product/lot/wafer/step/knob 슬롯 (토큰 ${tokenCount}개)`}>
+      {entries.length === 0 ? (
+        <Banner tone="info">슬롯이 비어 있습니다. prompt에 product/lot/wafer 같은 식별자가 없습니다.</Banner>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {entries.map(([k, v]) => (
+            <div key={k} style={{ fontSize: 11, padding: "4px 8px", background: "var(--bg-secondary)", borderRadius: 4, border: "1px solid var(--border)" }}>
+              <span style={{ color: "var(--text-secondary)" }}>{k}: </span>
+              <code>{Array.isArray(v) ? v.join(", ") : String(v ?? "—")}</code>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 

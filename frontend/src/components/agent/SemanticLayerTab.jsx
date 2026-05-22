@@ -1,9 +1,9 @@
-// SemanticLayerTab — AgentV2의 "시멘틱 레이어" 항목 본체 (M7).
-// 3가지 sub-view 한 페이지: 스키마 관계 / 운영 Wiki / 컬럼 카탈로그.
+// SemanticLayerTab — AgentV2의 "시멘틱 레이어" 항목 본체 (M7 + P3-wire-up).
+// 5가지 sub-view 한 페이지: DB/파일 인벤토리 / 스키마 관계 / 운영 Wiki / 컬럼 카탈로그 / 어휘 사전.
 // 스키마 관계와 운영 Wiki는 기존 AgentLegacy의 panel을 재사용 (코드 복제 X).
 import { useEffect, useMemo, useState } from "react";
-import { sf } from "../../lib/api";
-import { Banner, EmptyState, TabStrip } from "../UXKit";
+import { sf, postJson, putJson } from "../../lib/api";
+import { Banner, Button, EmptyState, Field, TabStrip } from "../UXKit";
 import { AgentWikiPanel, SchemaRelationsPanel } from "./AgentLegacy";
 import Loading from "../Loading";
 
@@ -12,6 +12,7 @@ const SUB_TABS = [
   { k: "relations", l: "스키마 관계" },
   { k: "wiki", l: "운영 Wiki" },
   { k: "columns", l: "컬럼 카탈로그" },
+  { k: "lexicon", l: "어휘 사전" },
 ];
 
 export default function SemanticLayerTab({ user, canManageWiki }) {
@@ -23,7 +24,7 @@ export default function SemanticLayerTab({ user, canManageWiki }) {
         <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>🧠 시멘틱 레이어</h2>
         <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
           단위 AI들이 자연어 prompt를 데이터로 연결할 때 쓰는 의미 자원입니다.
-          DB·파일 인벤토리 / 스키마 관계 / agent_wiki / 컬럼 카탈로그 (ColumnDoc) 네 가지를 한 화면에서 운영합니다.
+          DB·파일 인벤토리 / 스키마 관계 / agent_wiki / 컬럼 카탈로그 / 어휘 사전 (회사 용어 alias) 다섯 가지를 한 화면에서 운영합니다.
         </p>
       </header>
       <TabStrip items={SUB_TABS} active={tab} onChange={setTab} />
@@ -32,10 +33,182 @@ export default function SemanticLayerTab({ user, canManageWiki }) {
         {tab === "relations" && <SchemaRelationsPanel canManage={!!canManageWiki} />}
         {tab === "wiki" && <AgentWikiPanel canManage={!!canManageWiki} />}
         {tab === "columns" && <ColumnCatalogView />}
+        {tab === "lexicon" && <LexiconView canManage={!!canManageWiki} />}
       </div>
     </div>
   );
 }
+
+// ── 어휘 사전 (P3-wire-up) ───────────────────────────
+function LexiconView({ canManage }) {
+  const [scope, setScope] = useState("alias-groups");
+  const [data, setData] = useState({ rows: [], seed_keys: [], disk_keys: [] });
+  const [changes, setChanges] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [keyInput, setKeyInput] = useState("");
+  const [valuesInput, setValuesInput] = useState("");
+
+  const endpoint = scope === "alias-groups" ? "/api/agent/semantic/alias-groups" : "/api/agent/semantic/intent-hints";
+
+  const reload = () => {
+    setBusy(true); setErr("");
+    Promise.all([
+      sf(endpoint),
+      sf("/api/agent/semantic/changes?limit=50").catch(() => ({ changes: [] })),
+    ]).then(([d, c]) => {
+      setData({ rows: d?.rows || [], seed_keys: d?.seed_keys || [], disk_keys: d?.disk_keys || [] });
+      setChanges(Array.isArray(c?.changes) ? c.changes : []);
+    }).catch((e) => setErr(e?.message || "어휘 사전 로딩 실패"))
+      .finally(() => setBusy(false));
+  };
+
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [scope]);
+
+  const save = () => {
+    if (!canManage) return;
+    const key = keyInput.trim();
+    if (!key) { setErr("key를 입력하세요"); return; }
+    const values = valuesInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+    setBusy(true); setErr("");
+    putJson(endpoint, { key, values })
+      .then(() => { setKeyInput(""); setValuesInput(""); reload(); })
+      .catch((e) => setErr(e?.message || "저장 실패"))
+      .finally(() => setBusy(false));
+  };
+
+  const remove = (key) => {
+    if (!canManage) return;
+    if (!window.confirm(`'${key}' 디스크 override를 삭제할까요? (seed 값은 그대로 유지됩니다)`)) return;
+    setBusy(true); setErr("");
+    postJson(`${endpoint}/delete`, { key })
+      .then(() => reload())
+      .catch((e) => setErr(e?.message || "삭제 실패"))
+      .finally(() => setBusy(false));
+  };
+
+  const fillFromRow = (row) => {
+    setKeyInput(row.key || "");
+    setValuesInput((row.effective || []).join(", "));
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <TabStrip
+          items={[{ k: "alias-groups", l: "Alias 그룹" }, { k: "intent-hints", l: "Intent hint" }]}
+          active={scope}
+          onChange={setScope}
+        />
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          seed {data.seed_keys.length}개 / disk override {data.disk_keys.length}개
+        </span>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
+        Seed는 코드 안에 박힌 기본 사전, disk는 admin이 추가/수정한 override입니다. seed 키 삭제는 불가 — 값을 빈 리스트로 upsert하면 무력화됩니다. 모든 변경은 `data/flow-data/semantic/changes.jsonl`에 audit됩니다.
+      </p>
+      {err && <Banner tone="warn">{err}</Banner>}
+      {canManage && (
+        <section style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>{scope === "alias-groups" ? "Alias 그룹 upsert" : "Intent hint upsert"}</div>
+          <Field label={scope === "alias-groups" ? "canonical key (예: oxide)" : "intent key (예: knob_analysis)"}>
+            <input
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder={scope === "alias-groups" ? "wafer_id, knob, oxide ..." : "knob_analysis, meeting_recall ..."}
+              style={{ width: 260, padding: "4px 8px", fontSize: 13, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }}
+            />
+          </Field>
+          <Field label={scope === "alias-groups" ? "aliases (콤마 또는 줄바꿈으로 구분)" : "required canonicals (콤마 또는 줄바꿈)"}>
+            <textarea
+              value={valuesInput}
+              onChange={(e) => setValuesInput(e.target.value)}
+              rows={2}
+              placeholder={scope === "alias-groups" ? "wafer, wf, 웨이퍼, shot" : "knob, semantic_layer"}
+              style={{ width: "100%", padding: 8, fontSize: 13, fontFamily: "inherit", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }}
+            />
+          </Field>
+          <div>
+            <Button onClick={save} disabled={busy}>{busy ? "저장 중..." : "저장"}</Button>
+          </div>
+        </section>
+      )}
+      <section>
+        {busy ? <Loading text="로딩..." size="md" /> : (
+          data.rows.length === 0 ? <EmptyState title="비어있음" hint="아직 등록된 항목이 없습니다." /> : (
+            <div style={{ overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                    <th style={lexTh()}>key</th>
+                    <th style={lexTh()}>seed</th>
+                    <th style={lexTh()}>disk override</th>
+                    <th style={lexTh()}>effective</th>
+                    <th style={lexTh()}>source</th>
+                    {canManage && <th style={lexTh()}>actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rows.map((row) => (
+                    <tr key={row.key} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={lexTd("160px", true)}><code>{row.key}</code></td>
+                      <td style={lexTd("240px")}>{(row.seed || []).join(", ") || "—"}</td>
+                      <td style={lexTd("240px")}>{row.disk === null || row.disk === undefined ? <span style={{ color: "var(--text-secondary)" }}>—</span> : ((row.disk || []).join(", ") || <span style={{ color: "var(--text-secondary)" }}>(empty)</span>)}</td>
+                      <td style={lexTd("240px")}>{(row.effective || []).join(", ") || "—"}</td>
+                      <td style={lexTd("90px")}>
+                        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: row.source === "disk" ? "#fbbf2422" : "#9ca3af22", color: row.source === "disk" ? "#a16207" : "#374151", fontWeight: 700 }}>{row.source}</span>
+                      </td>
+                      {canManage && (
+                        <td style={lexTd("160px")}>
+                          <Button onClick={() => fillFromRow(row)} style={{ fontSize: 11, padding: "2px 6px" }}>edit</Button>
+                          {row.source === "disk" && <Button onClick={() => remove(row.key)} style={{ fontSize: 11, padding: "2px 6px", marginLeft: 4 }}>delete</Button>}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </section>
+      {changes.length > 0 && (
+        <section>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>변경 이력 ({changes.length})</div>
+          <div style={{ overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, maxHeight: 200 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                  <th style={lexTh()}>ts</th>
+                  <th style={lexTh()}>scope</th>
+                  <th style={lexTh()}>key</th>
+                  <th style={lexTh()}>before</th>
+                  <th style={lexTh()}>after</th>
+                  <th style={lexTh()}>by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {changes.slice().reverse().map((c, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={lexTd("160px", true)}>{c.timestamp || "—"}</td>
+                    <td style={lexTd("120px", true)}>{c.scope || "—"}</td>
+                    <td style={lexTd("140px", true)}><code>{c.key || "—"}</code></td>
+                    <td style={lexTd("200px")}>{(c.before || []).join(", ") || "—"}</td>
+                    <td style={lexTd("200px")}>{(c.after || []).join(", ") || "—"}</td>
+                    <td style={lexTd("90px")}>{c.by || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+const lexTh = () => ({ textAlign: "left", padding: "6px 10px", fontWeight: 700, fontSize: 11 });
+const lexTd = (width = "auto", mono = false) => ({ padding: "6px 10px", verticalAlign: "top", width, fontFamily: mono ? "monospace" : "inherit" });
 
 function SourceInventoryView() {
   const [sources, setSources] = useState([]);

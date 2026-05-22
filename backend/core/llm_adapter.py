@@ -477,6 +477,23 @@ def _redact_error_text(text: Any) -> str:
     return out[:240]
 
 
+def _call_summary(cfg: Dict[str, Any], *, prompt_chars: int = 0, response_chars: int = 0,
+                  started_at: float = 0.0, ok: bool = False, error: str = "") -> Dict[str, Any]:
+    """Safe call metadata for the thought trace. Never includes prompt/response text."""
+    elapsed = max(0.0, time.monotonic() - started_at) if started_at else 0.0
+    return {
+        "invoked": True,
+        "ok": bool(ok),
+        "model": str(cfg.get("model") or "").strip(),
+        "profile": str(cfg.get("provider") or "").strip(),
+        "provider": str(cfg.get("provider") or "").strip(),
+        "prompt_chars": int(prompt_chars or 0),
+        "response_chars": int(response_chars or 0),
+        "latency_ms": int(elapsed * 1000),
+        "error": str(error or "")[:200],
+    }
+
+
 def complete(prompt: str, *, system: Optional[str] = None,
              timeout: Optional[int] = None,
              auth_token: Optional[str] = None) -> Dict[str, Any]:
@@ -484,23 +501,32 @@ def complete(prompt: str, *, system: Optional[str] = None,
 
     사내 LLM 이 `openai` 호환이면 messages 형식으로 POST.  `raw` 면 {"prompt": ...}.
     extra_body 로 temperature/top_p 등 추가 가능.
+
+    응답에는 PII-safe `meta` 필드가 함께 담긴다 — prompt_chars / response_chars /
+    latency_ms / model / provider 만 노출하고 본문은 절대 넣지 않는다.
     """
     if not prompt or not isinstance(prompt, str):
-        return {"ok": False, "text": "", "error": "empty prompt"}
+        return {"ok": False, "text": "", "error": "empty prompt",
+                "meta": {"invoked": False, "ok": False, "model": "", "profile": "", "provider": "",
+                         "prompt_chars": 0, "response_chars": 0, "latency_ms": 0, "error": "empty prompt"}}
     cfg = _raw_config()
     if not cfg.get("enabled"):
-        return {"ok": False, "text": "", "error": "llm disabled"}
+        return {"ok": False, "text": "", "error": "llm disabled",
+                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm disabled")}
     fmt = cfg.get("format") or "openai"
     url = _openai_chat_url(cfg.get("api_url") or "", fmt)
     if not url:
-        return {"ok": False, "text": "", "error": "llm api_url missing"}
+        return {"ok": False, "text": "", "error": "llm api_url missing",
+                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm api_url missing")}
     body = _build_request_body(cfg, prompt, system)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     to = int(timeout or cfg.get("timeout_s") or 20)
     hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
     if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
-        return {"ok": False, "text": "", "error": "google adc token unavailable"}
+        return {"ok": False, "text": "", "error": "google adc token unavailable",
+                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="google adc token unavailable")}
     last_error = ""
+    started_at = time.monotonic()
     for attempt in range(2):
         try:
             req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
@@ -509,9 +535,13 @@ def complete(prompt: str, *, system: Optional[str] = None,
             try:
                 obj = json.loads(raw)
             except Exception:
-                return {"ok": True, "text": raw, "raw": raw}
+                return {"ok": True, "text": raw, "raw": raw,
+                        "meta": _call_summary(cfg, prompt_chars=len(prompt), response_chars=len(raw),
+                                              started_at=started_at, ok=True)}
             text = _extract_response_text(obj)
-            return {"ok": True, "text": text, "raw": obj}
+            return {"ok": True, "text": text, "raw": obj,
+                    "meta": _call_summary(cfg, prompt_chars=len(prompt), response_chars=len(text or ""),
+                                          started_at=started_at, ok=True)}
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -528,12 +558,16 @@ def complete(prompt: str, *, system: Optional[str] = None,
                     delay = 0.8
                 time.sleep(delay)
                 continue
-            return {"ok": False, "text": "", "error": last_error, "status_code": e.code}
+            return {"ok": False, "text": "", "error": last_error, "status_code": e.code,
+                    "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
         except Exception as e:
             last_error = _redact_error_text(e)
             logger.warning("llm error: %s", last_error)
-            return {"ok": False, "text": "", "error": last_error}
-    return {"ok": False, "text": "", "error": last_error or "llm request failed"}
+            return {"ok": False, "text": "", "error": last_error,
+                    "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
+    return {"ok": False, "text": "", "error": last_error or "llm request failed",
+            "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at,
+                                  error=last_error or "llm request failed")}
 
 
 def complete_json(prompt: str, *, system: Optional[str] = None,

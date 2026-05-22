@@ -23,6 +23,19 @@ from app_v2.modules.agent_runtime import (
     run_agent_runtime_once,
     stream_agent_runtime,
 )
+from app_v2.modules.agent_runtime.semantic import _ALIAS_GROUPS as _SEMANTIC_ALIAS_SEED
+from app_v2.modules.agent_runtime.semantic import _INTENT_HINTS as _SEMANTIC_INTENT_SEED
+from app_v2.modules.semantic_lexicon import (
+    delete_alias_group as _lex_delete_alias_group,
+    delete_intent_hint as _lex_delete_intent_hint,
+    effective_alias_groups as _lex_effective_alias_groups,
+    effective_intent_hints as _lex_effective_intent_hints,
+    list_changes as _lex_list_changes,
+    load_alias_groups as _lex_load_alias_groups,
+    load_intent_hints as _lex_load_intent_hints,
+    upsert_alias_group as _lex_upsert_alias_group,
+    upsert_intent_hint as _lex_upsert_intent_hint,
+)
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import llm_adapter
@@ -132,6 +145,15 @@ class AgentWikiPageDeleteReq(BaseModel):
     doc_id: str = ""
 
 
+class LexiconUpsertReq(BaseModel):
+    key: str = ""
+    values: list[str] = Field(default_factory=list)
+
+
+class LexiconDeleteReq(BaseModel):
+    key: str = ""
+
+
 class SchemaRelationSource(BaseModel):
     source_type: str = "file"  # file | db
     root: str = ""
@@ -204,6 +226,94 @@ def agent_runtime_semantic_resolve(req: SemanticResolveRequest, request: Request
     current_user(request)
     frame = resolve_semantic_frame(req.goal, max_terms=req.max_terms)
     return {"ok": True, "semantic": frame.model_dump(mode="json")}
+
+
+def _lexicon_view(*, seed: dict[str, list[str]], disk: dict[str, list[str]]) -> dict[str, Any]:
+    """Render a unified lexicon view for the UI: seed / disk override / effective."""
+    effective: dict[str, list[str]] = {}
+    for key, aliases in seed.items():
+        effective[key] = list(aliases or [])
+    for key, aliases in disk.items():
+        effective[key] = list(aliases or [])
+    rows: list[dict[str, Any]] = []
+    for key in sorted(set(seed.keys()) | set(disk.keys())):
+        seed_aliases = list(seed.get(key) or [])
+        disk_aliases = disk.get(key)
+        rows.append({
+            "key": key,
+            "seed": seed_aliases,
+            "disk": list(disk_aliases or []) if disk_aliases is not None else None,
+            "effective": list(effective.get(key) or []),
+            "source": "disk" if key in disk else "seed",
+        })
+    return {"rows": rows, "seed_keys": sorted(seed.keys()), "disk_keys": sorted(disk.keys())}
+
+
+@router.get("/semantic/alias-groups")
+def agent_semantic_alias_groups(request: Request) -> dict[str, Any]:
+    """List the alias-group lexicon (seed + disk override + effective merge)."""
+    current_user(request)
+    disk = _lex_load_alias_groups()
+    return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_ALIAS_SEED), disk=disk)}
+
+
+@router.put("/semantic/alias-groups")
+def agent_semantic_alias_groups_upsert(req: LexiconUpsertReq, request: Request) -> dict[str, Any]:
+    me = _require_agent_wiki_admin(request)
+    key = str(req.key or "").strip()
+    if not key:
+        raise HTTPException(400, "key is required")
+    by = str(me.get("username") or "")
+    _lex_upsert_alias_group(key, list(req.values or []), by=by, seed=dict(_SEMANTIC_ALIAS_SEED))
+    disk = _lex_load_alias_groups()
+    return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_ALIAS_SEED), disk=disk)}
+
+
+@router.post("/semantic/alias-groups/delete")
+def agent_semantic_alias_groups_delete(req: LexiconDeleteReq, request: Request) -> dict[str, Any]:
+    me = _require_agent_wiki_admin(request)
+    key = str(req.key or "").strip()
+    if not key:
+        raise HTTPException(400, "key is required")
+    removed = _lex_delete_alias_group(key, by=str(me.get("username") or ""))
+    disk = _lex_load_alias_groups()
+    return {"ok": True, "removed": bool(removed), **_lexicon_view(seed=dict(_SEMANTIC_ALIAS_SEED), disk=disk)}
+
+
+@router.get("/semantic/intent-hints")
+def agent_semantic_intent_hints(request: Request) -> dict[str, Any]:
+    current_user(request)
+    disk = _lex_load_intent_hints()
+    return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_INTENT_SEED), disk=disk)}
+
+
+@router.put("/semantic/intent-hints")
+def agent_semantic_intent_hints_upsert(req: LexiconUpsertReq, request: Request) -> dict[str, Any]:
+    me = _require_agent_wiki_admin(request)
+    key = str(req.key or "").strip()
+    if not key:
+        raise HTTPException(400, "key is required")
+    by = str(me.get("username") or "")
+    _lex_upsert_intent_hint(key, list(req.values or []), by=by, seed=dict(_SEMANTIC_INTENT_SEED))
+    disk = _lex_load_intent_hints()
+    return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_INTENT_SEED), disk=disk)}
+
+
+@router.post("/semantic/intent-hints/delete")
+def agent_semantic_intent_hints_delete(req: LexiconDeleteReq, request: Request) -> dict[str, Any]:
+    me = _require_agent_wiki_admin(request)
+    key = str(req.key or "").strip()
+    if not key:
+        raise HTTPException(400, "key is required")
+    removed = _lex_delete_intent_hint(key, by=str(me.get("username") or ""))
+    disk = _lex_load_intent_hints()
+    return {"ok": True, "removed": bool(removed), **_lexicon_view(seed=dict(_SEMANTIC_INTENT_SEED), disk=disk)}
+
+
+@router.get("/semantic/changes")
+def agent_semantic_changes(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    current_user(request)
+    return {"ok": True, "changes": _lex_list_changes(limit=limit)}
 
 
 @router.post("/runtime/run")
