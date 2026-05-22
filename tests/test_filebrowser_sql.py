@@ -885,8 +885,10 @@ def test_filebrowser_sql_llm_draft_sends_schema_samples_and_reports_values(monke
     assert out["ok"] is True
     assert out["resolved_values"] == ["ETCH"]
     assert calls[0]["schema"][0] == {"name": "step_id", "dtype": "String", "sample_values": ["ETCH"]}
-    assert calls[0]["sample_rows"] == [{"step_id": "ETCH", "value": "1.2"}]
+    assert calls[0]["sample_rows"] == []
     assert calls[0]["sample_profile"]["rows_sampled"] == 1
+    assert calls[0]["sample_profile"]["sampling_policy"]["row_dump_in_prompt"] is False
+    assert calls[0]["sample_profile"]["sampling_policy"]["profile_value_limit"] == 3
 
 
 def test_filebrowser_sql_llm_draft_sanitizes_selected_columns(monkeypatch):
@@ -942,7 +944,7 @@ def test_filebrowser_sql_llm_draft_profiles_server_source(monkeypatch):
 
     out = filebrowser.filebrowser_sql_llm_draft(
         filebrowser.FileBrowserSqlLlmDraftReq(
-            natural_language="wafer 21만 보여줘",
+            natural_language="조건 없이 구조 확인",
             root="ROOT",
             product="PRODA",
             scope="hive",
@@ -953,9 +955,86 @@ def test_filebrowser_sql_llm_draft_profiles_server_source(monkeypatch):
     assert out["ok"] is True
     assert out["columns"] == ["lot_id", "wafer_id", "step_id"]
     assert out["sample_profile"]["source_sampled"] is True
-    assert out["sample_profile"]["rows_sampled"] == 200
-    assert calls[0]["sample_profile"]["rows_sampled"] == 200
-    assert calls[0]["schema"][0]["sample_values"][:2] == ["A0000", "A0001"]
+    assert out["sample_profile"]["rows_sampled"] == 20
+    assert out["sample_profile"]["columns_profiled"] == 3
+    assert out["sample_profile"]["sampling_policy"]["rows_limit"] == 20
+    assert calls[0]["sample_profile"]["rows_sampled"] == 20
+    assert calls[0]["sample_rows"] == []
+    assert calls[0]["schema"][0]["sample_values"] == ["A0000", "A0001", "A0002"]
+
+
+def test_filebrowser_sql_llm_draft_extends_profile_for_value_terms(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_lazy_read_source(**_kwargs):
+        return pl.DataFrame({
+            "lot_id": [f"A{i:04d}" for i in range(250)],
+            "wafer_id": list(range(250)),
+            "step_id": ["ETCH"] * 250,
+        }).lazy()
+
+    def fake_complete(ask, **_kwargs):
+        calls.append(json.loads(ask))
+        return {"ok": True, "text": json.dumps({"sql": "lot_id = 'A0049'"})}
+
+    monkeypatch.setattr(filebrowser, "lazy_read_source", fake_lazy_read_source)
+    monkeypatch.setattr(llm_adapter, "complete", fake_complete)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="lot_id가 A0049인 행",
+            root="ROOT",
+            product="PRODA",
+            scope="hive",
+        ),
+        _Request("viewer", "user"),
+    )
+
+    lot_profile = next(item for item in out["sample_profile"]["columns"] if item["name"] == "lot_id")
+    assert out["ok"] is True
+    assert out["sample_profile"]["rows_sampled"] == 50
+    assert out["sample_profile"]["sampling_policy"]["extra_rows_for_value_terms"] is True
+    assert "A0049" in lot_profile["sample_values"]
+    assert len(lot_profile["sample_values"]) <= 3
+    assert calls[0]["sample_profile"]["rows_sampled"] == 50
+
+
+def test_filebrowser_sql_llm_draft_profiles_wide_table_columns_selectively(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_complete(ask, **_kwargs):
+        calls.append(json.loads(ask))
+        return {"ok": True, "text": json.dumps({"sql": "c119 >= 0"})}
+
+    monkeypatch.setattr(llm_adapter, "complete", fake_complete)
+    columns = [f"c{i:03d}" for i in range(120)]
+    sample_rows = [
+        {col: idx + col_idx for col_idx, col in enumerate(columns)}
+        for idx in range(60)
+    ]
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="c119 큰순서",
+            columns=columns,
+            dtypes={col: "Int64" for col in columns},
+            sample_rows=sample_rows,
+            preferred_selected_columns=["c118"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    profile_names = [item["name"] for item in out["sample_profile"]["columns"]]
+    assert out["ok"] is True
+    assert out["sample_profile"]["rows_sampled"] == 20
+    assert out["sample_profile"]["columns_scanned"] == 120
+    assert out["sample_profile"]["columns_profiled"] == 80
+    assert profile_names[:2] == ["c119", "c118"]
+    assert calls[0]["sample_rows"] == []
 
 
 def test_filebrowser_sql_llm_draft_selection_only_prompt(monkeypatch):

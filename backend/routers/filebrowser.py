@@ -92,6 +92,10 @@ SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 100
 LATEST_PREVIEW_MAX_FILES = 4
+AI_SQL_DEFAULT_SAMPLE_ROWS = 20
+AI_SQL_MAX_SAMPLE_ROWS = 50
+AI_SQL_PROFILE_VALUE_LIMIT = 3
+AI_SQL_MAX_PROFILE_COLUMNS = 80
 LIST_CACHE_TTL_SEC = 5.0
 MAX_WAFER_ID = 25
 _SINGLE_FILE_STEP_CACHE_DIR = "cache"
@@ -139,6 +143,18 @@ _LATEST_COLUMN_PRIORITY = (
 )
 
 _WAFER_COLUMN_CANDIDATES = ("wafer_id", "wf_id")
+_AI_SQL_IDENTITY_COLUMN_HINTS = {
+    "product", "product_id", "prod_id", "root_lot_id", "lot_id", "fab_lot_id",
+    "wafer_id", "wf_id", "step_id", "function_step", "process_id", "item_id",
+    "eqp_id", "chamber_id", "ppid",
+}
+_AI_SQL_TIME_COLUMN_TERMS = (
+    "time", "date", "timestamp", "updated", "created", "tkin", "tkout",
+)
+_AI_SQL_VALUE_COLUMN_TERMS = (
+    "value", "val", "measure", "measurement", "result", "score", "count",
+    "qty", "amount", "avg", "mean", "median", "min", "max", "sum", "rate",
+)
 
 
 def _wafer_column(columns: list[str] | tuple[str, ...] | None) -> str | None:
@@ -7058,7 +7074,7 @@ def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> l
 def _ai_sql_context_columns(columns: list[str], dtypes: dict | None, sample_rows: list[dict] | None) -> list[dict]:
     dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
     samples: dict[str, list[str]] = {c: [] for c in columns}
-    for row in (sample_rows or [])[:20]:
+    for row in (sample_rows or [])[:AI_SQL_DEFAULT_SAMPLE_ROWS]:
         if not isinstance(row, dict):
             continue
         for col in columns:
@@ -7068,7 +7084,7 @@ def _ai_sql_context_columns(columns: list[str], dtypes: dict | None, sample_rows
             if text and text not in samples[col]:
                 samples[col].append(text)
     return [
-        {"name": col, "dtype": dtype_map.get(col, ""), "sample_values": samples.get(col, [])[:5]}
+        {"name": col, "dtype": dtype_map.get(col, ""), "sample_values": samples.get(col, [])[:AI_SQL_PROFILE_VALUE_LIMIT]}
         for col in columns[:200]
     ]
 
@@ -7204,15 +7220,125 @@ def _looks_datetime_like_value(value: str) -> bool:
     )
 
 
+def _ai_sql_prompt_priority_values(prompt: str, columns: list[str]) -> list[str]:
+    values: list[str] = []
+    for value in [*_fallback_values(prompt, columns), *_extract_ai_sql_datetime_values(prompt)]:
+        text = _cache_safe_text(value, 160).strip()
+        if text and text not in values:
+            values.append(text)
+    return values[:20]
+
+
+def _ai_sql_profile_row_limit(prompt: str, columns: list[str], priority_values: list[str] | None = None) -> int:
+    values = priority_values if priority_values is not None else _ai_sql_prompt_priority_values(prompt, columns)
+    return AI_SQL_MAX_SAMPLE_ROWS if values else AI_SQL_DEFAULT_SAMPLE_ROWS
+
+
+def _ai_sql_dtype_is_numeric(dtype: str) -> bool:
+    text = str(dtype or "").casefold()
+    return any(term in text for term in ("int", "float", "decimal", "numeric", "double"))
+
+
+def _ai_sql_add_profile_column(out: list[str], lookup: dict[str, str], value) -> None:
+    hit = lookup.get(str(value or "").casefold())
+    if hit and hit not in out:
+        out.append(hit)
+
+
+def _ai_sql_profile_column_candidates(columns: list[str], dtypes: dict | None = None, *,
+                                      prompt: str = "",
+                                      preferred_selected_columns: list[str] | None = None) -> list[str]:
+    columns = _settings_context_columns(columns)
+    if not columns:
+        return []
+    lookup = _column_lookup(columns)
+    dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
+    out: list[str] = []
+
+    resolved_columns, _unknown = _resolve_ai_sql_prompt_columns(prompt, columns)
+    for col in resolved_columns:
+        _ai_sql_add_profile_column(out, lookup, col)
+    for col in preferred_selected_columns or []:
+        _ai_sql_add_profile_column(out, lookup, col)
+
+    for col in columns:
+        name = str(col).casefold()
+        if name in _AI_SQL_IDENTITY_COLUMN_HINTS:
+            _ai_sql_add_profile_column(out, lookup, col)
+    for col in columns:
+        name = str(col).casefold()
+        if any(term in name for term in _AI_SQL_TIME_COLUMN_TERMS):
+            _ai_sql_add_profile_column(out, lookup, col)
+    for col in columns:
+        name = str(col).casefold()
+        if any(term in name for term in _AI_SQL_VALUE_COLUMN_TERMS) or _ai_sql_dtype_is_numeric(dtype_map.get(str(col), "")):
+            _ai_sql_add_profile_column(out, lookup, col)
+
+    if len(columns) <= AI_SQL_MAX_PROFILE_COLUMNS:
+        for col in columns:
+            _ai_sql_add_profile_column(out, lookup, col)
+    if not out:
+        for col in columns:
+            _ai_sql_add_profile_column(out, lookup, col)
+    return out[:AI_SQL_MAX_PROFILE_COLUMNS]
+
+
+def _ai_sql_project_sample_rows(rows: list[dict], profile_columns: list[str]) -> list[dict]:
+    if not profile_columns:
+        return []
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lower_keys = {str(key).casefold(): key for key in row.keys()}
+        clean: dict = {}
+        for col in profile_columns[:AI_SQL_MAX_PROFILE_COLUMNS]:
+            key = lower_keys.get(str(col).casefold())
+            if key is not None:
+                clean[col] = row.get(key)
+        out.append(clean)
+    return out
+
+
+def _ai_sql_profile_sample_values(examples: list[str], priority_examples: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in [*priority_examples, *examples]:
+        if value not in out:
+            out.append(value)
+        if len(out) >= AI_SQL_PROFILE_VALUE_LIMIT:
+            break
+    return out
+
+
 def _build_ai_sql_sample_profile(columns: list[str], dtypes: dict | None, sample_rows: list[dict] | None,
                                  *, source: str = "request", source_sampled: bool = False,
-                                 warnings: list[str] | None = None) -> dict:
+                                 warnings: list[str] | None = None, prompt: str = "",
+                                 preferred_selected_columns: list[str] | None = None,
+                                 max_rows: int | None = None,
+                                 profile_columns: list[str] | None = None,
+                                 priority_values: list[str] | None = None) -> dict:
     columns = _settings_context_columns(columns, sample_rows)
     dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
-    rows = [row for row in (sample_rows or [])[:200] if isinstance(row, dict)]
+    priority_values = priority_values if priority_values is not None else _ai_sql_prompt_priority_values(prompt, columns)
+    rows_limit = _ai_sql_profile_row_limit(prompt, columns, priority_values)
+    if max_rows is not None:
+        try:
+            rows_limit = max(0, min(AI_SQL_MAX_SAMPLE_ROWS, int(max_rows)))
+        except Exception:
+            rows_limit = _ai_sql_profile_row_limit(prompt, columns, priority_values)
+    rows = [row for row in (sample_rows or [])[:rows_limit] if isinstance(row, dict)]
+    profile_columns = profile_columns or _ai_sql_profile_column_candidates(
+        columns,
+        dtype_map,
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+    )
+    profile_columns = _settings_context_columns(profile_columns)[:AI_SQL_MAX_PROFILE_COLUMNS]
+    priority_lookup = {str(value).casefold() for value in priority_values}
     profiles: list[dict] = []
-    for col in columns[:200]:
+    for col in profile_columns:
         examples: list[str] = []
+        priority_examples: list[str] = []
         null_count = 0
         blank_count = 0
         numeric_like_count = 0
@@ -7237,12 +7363,14 @@ def _build_ai_sql_sample_profile(columns: list[str], dtypes: dict | None, sample
                 numeric_like_count += 1
             if _looks_datetime_like_value(text):
                 datetime_like_count += 1
-            if text not in examples:
+            if text.casefold() in priority_lookup and text not in priority_examples:
+                priority_examples.append(text)
+            elif text not in examples:
                 examples.append(text)
         profiles.append({
             "name": col,
             "dtype": dtype_map.get(col, ""),
-            "sample_values": examples[:5],
+            "sample_values": _ai_sql_profile_sample_values(examples, priority_examples),
             "null_count": null_count,
             "blank_count": blank_count,
             "non_blank_count": non_blank_count,
@@ -7252,26 +7380,44 @@ def _build_ai_sql_sample_profile(columns: list[str], dtypes: dict | None, sample
     return {
         "source": source,
         "source_sampled": bool(source_sampled),
-        "max_rows": 200,
+        "max_rows": AI_SQL_MAX_SAMPLE_ROWS,
         "rows_sampled": len(rows),
         "columns_scanned": len(columns),
         "columns_profiled": len(profiles),
         "columns": profiles,
+        "sampling_policy": {
+            "default_rows": AI_SQL_DEFAULT_SAMPLE_ROWS,
+            "max_rows": AI_SQL_MAX_SAMPLE_ROWS,
+            "rows_limit": rows_limit,
+            "profile_value_limit": AI_SQL_PROFILE_VALUE_LIMIT,
+            "max_profile_columns": AI_SQL_MAX_PROFILE_COLUMNS,
+            "column_strategy": "prompt_selected_identity_time_value_candidates",
+            "row_dump_in_prompt": False,
+            "extra_rows_for_value_terms": bool(priority_values and rows_limit > AI_SQL_DEFAULT_SAMPLE_ROWS),
+        },
         "warnings": list(warnings or []),
     }
 
 
-def _collect_ai_sql_lazy_context(lf, *, source: str) -> tuple[list[str], dict, list[dict], dict]:
+def _collect_ai_sql_lazy_context(lf, *, source: str, prompt: str = "",
+                                 preferred_selected_columns: list[str] | None = None) -> tuple[list[str], dict, list[dict], dict]:
     schema_obj = lf.collect_schema()
     columns = list(schema_obj.names())
     dtypes = {name: str(schema_obj[name]) for name in columns}
-    sample_cols = columns[:200]
+    priority_values = _ai_sql_prompt_priority_values(prompt, columns)
+    rows_limit = _ai_sql_profile_row_limit(prompt, columns, priority_values)
+    sample_cols = _ai_sql_profile_column_candidates(
+        columns,
+        dtypes,
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+    )
     sample_lf = lf.select(sample_cols) if sample_cols else lf
     try:
         from core.parquet_perf import collect_streaming
-        sample_df = collect_streaming(sample_lf.head(200))
+        sample_df = collect_streaming(sample_lf.head(rows_limit))
     except Exception:
-        sample_df = sample_lf.head(200).collect()
+        sample_df = sample_lf.head(rows_limit).collect()
     sample_rows = serialize_rows(sample_df.to_dicts())
     profile = _build_ai_sql_sample_profile(
         columns,
@@ -7279,6 +7425,11 @@ def _collect_ai_sql_lazy_context(lf, *, source: str) -> tuple[list[str], dict, l
         sample_rows,
         source=source,
         source_sampled=True,
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+        max_rows=rows_limit,
+        profile_columns=sample_cols,
+        priority_values=priority_values,
     )
     return columns, dtypes, sample_rows, profile
 
@@ -7310,7 +7461,8 @@ def _resolve_ai_sql_profile_file(scope: str, file: str) -> Path | None:
 
 def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: str,
                                 columns: list[str], dtypes: dict | None,
-                                sample_rows: list[dict] | None) -> tuple[list[str], dict, list[dict], dict, list[str]]:
+                                sample_rows: list[dict] | None, prompt: str = "",
+                                preferred_selected_columns: list[str] | None = None) -> tuple[list[str], dict, list[dict], dict, list[str]]:
     warnings: list[str] = []
     try:
         if root and product:
@@ -7325,6 +7477,8 @@ def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: st
                 cols, dtype_map, rows, profile = _collect_ai_sql_lazy_context(
                     lf,
                     source=f"hive:{_cache_safe_text(root, 80)}/{_cache_safe_text(product, 80)}",
+                    prompt=prompt,
+                    preferred_selected_columns=preferred_selected_columns,
                 )
                 return cols, dtype_map, rows, profile, warnings
         fp = _resolve_ai_sql_profile_file(scope, file)
@@ -7334,12 +7488,23 @@ def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: st
                 cols, dtype_map, rows, profile = _collect_ai_sql_lazy_context(
                     lf,
                     source=f"file:{_cache_safe_text(file, 160)}",
+                    prompt=prompt,
+                    preferred_selected_columns=preferred_selected_columns,
                 )
                 return cols, dtype_map, rows, profile, warnings
     except Exception as exc:
         _draft_warning(warnings, f"sample profile source scan failed: {type(exc).__name__}: {exc}")
     clean_columns = _settings_context_columns(columns, sample_rows)
-    clean_rows = _safe_sample_rows(sample_rows or [], max_rows=200, max_cols=200, max_value_len=120)
+    priority_values = _ai_sql_prompt_priority_values(prompt, clean_columns)
+    rows_limit = _ai_sql_profile_row_limit(prompt, clean_columns, priority_values)
+    profile_columns = _ai_sql_profile_column_candidates(
+        clean_columns,
+        dtypes or {},
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+    )
+    clean_rows = _safe_sample_rows(sample_rows or [], max_rows=rows_limit, max_cols=500, max_value_len=120)
+    clean_rows = _ai_sql_project_sample_rows(clean_rows, profile_columns)
     profile = _build_ai_sql_sample_profile(
         clean_columns,
         dtypes or {},
@@ -7347,6 +7512,11 @@ def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: st
         source="request",
         source_sampled=False,
         warnings=warnings,
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+        max_rows=rows_limit,
+        profile_columns=profile_columns,
+        priority_values=priority_values,
     )
     return clean_columns, dict(dtypes or {}), clean_rows, profile, warnings
 
@@ -7373,7 +7543,14 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "file": _cache_safe_text(file, 240),
     }
     column_context = _ai_sql_context_columns(columns, dtypes, sample_rows)
-    profile = sample_profile or _build_ai_sql_sample_profile(columns, dtypes, sample_rows, source="request")
+    profile = sample_profile or _build_ai_sql_sample_profile(
+        columns,
+        dtypes,
+        sample_rows,
+        source="request",
+        prompt=prompt,
+        preferred_selected_columns=preferred_selected_columns,
+    )
     warnings: list[str] = list(context_warnings or [])
     resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
     if unknown_column_terms:
@@ -7415,7 +7592,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "current_sql": current_sql,
                 "columns": columns[:200],
                 "schema": column_context,
-                "sample_rows": _safe_sample_rows(sample_rows or [], max_rows=5, max_cols=40, max_value_len=120),
+                "sample_rows": [],
                 "sample_profile": profile,
                 "step_mapping_context": _public_ai_sql_step_mapping_context(step_mapping_context),
                 "feedback_context": {
@@ -9181,6 +9358,8 @@ def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
         columns=req.columns or [],
         dtypes=req.dtypes or {},
         sample_rows=req.sample_rows or [],
+        prompt=req.natural_language,
+        preferred_selected_columns=req.preferred_selected_columns or [],
     )
     return _draft_filebrowser_ai_sql(
         natural_language=req.natural_language,
