@@ -2163,7 +2163,6 @@ export default function My_SplitTable({user}){
     {notesOpen && (()=>{
       // param_global 은 목록에서 완전 제외 (전역 태그 제거 요구).
       const base=notes.filter(n=>n.scope!=="param_global");
-      const drawerRoot=lotId;
       let filtered=(!noteFilter)?base
         :noteFilter.scope==="wafer"?base.filter(n=>n.scope==="wafer"&&n.key===noteFilter.key)
         :noteFilter.scope==="cell"?base.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${noteFilter.wafer_id}__${noteFilter.param}`)
@@ -2225,13 +2224,6 @@ export default function My_SplitTable({user}){
             placeholder="🔍 wafer id · param 이름 · 본문 검색"
             style={{width:"100%",padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,boxSizing:"border-box"}}/>
         </div>
-        {/* lot 노트 추가 버튼 — root_lot_id 있을 때만 (param/wafer 는 테이블에서 진입) */}
-        {lotId && !noteDraftScope && (
-          <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:14}}>
-            <button onClick={()=>setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId})}
-              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:14,cursor:"pointer"}}>+ LOT 노트 ({drawerRoot})</button>
-          </div>
-        )}
         <div style={{flex:1,overflow:"auto",padding:"8px 14px",display:"flex",flexDirection:"column",gap:4}}>
           {filtered.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>기록된 노트 없음</div>}
           {/* 최신순 정렬 */}
@@ -2317,9 +2309,6 @@ export default function My_SplitTable({user}){
             })()}
             </span>
           </div>
-        </div>}
-        {!noteDraftScope&&<div style={{padding:"8px 16px",borderTop:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>
-          위 목록 아래에 직접 답글/태그를 추가하려면 테이블에서 해당 셀(wafer·param·lot)을 클릭하세요.
         </div>}
         </div>
       </Modal>);
