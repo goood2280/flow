@@ -45,6 +45,16 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
             "workflows": [{"key": "blocked_lot", "title": "LOT step 확인", "status": "blocked", "tone": "bad"}],
         }],
     })
+    monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_workflow_map, "build_workflow_map", lambda username="", days=30, limit=40, reference_limit=160, focus_tag="": {
+        "counts": {
+            "nodes": 18,
+            "edges": 22,
+            "workflow_templates_visible": 3,
+            "tools_visible": 8,
+            "tools_total": 12,
+        },
+        "warnings": [{"key": "missing_evidence", "tone": "warn", "message": "refs"}],
+    })
     monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_timeline, "build_timeline", lambda days=30, limit=12, category="": {
         "items": [
             {
@@ -81,12 +91,18 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
     assert cards["workflow_runbook"]["value"] == "1/3"
     assert cards["workflow_runbook"]["tone"] == "bad"
     assert cards["workflow_runbook"]["detail"] == "blocked 1 · attention 1 · unchecked 1 · actions 4"
+    assert cards["workflow_map"]["value"] == "18/22"
+    assert cards["workflow_map"]["tone"] == "warn"
+    assert cards["workflow_map"]["detail"] == "workflows 3 · tools 8/12 · warnings 1"
     assert cards["deep_eval"]["value"] == "131/131"
     assert cards["wiki"]["detail"] == "sources 10 · lint 0 · graph 490/1347"
     assert cards["timeline"]["detail"] == "wiki 1"
     assert out["counts"]["runbook_blocked"] == 1
+    assert out["counts"]["workflow_map_nodes"] == 18
+    assert out["counts"]["workflow_map_warnings"] == 1
     assert out["export_links"][0]["href"].startswith("/api/ai-hub/ops-export/download?format=obsidian&days=7")
     assert out["sources"]["workflow_runbook"] == "/api/ai-hub/workflow-runbook"
+    assert out["sources"]["workflow_map"] == "/api/ai-hub/workflow-map"
     assert out["sources"]["timeline"] == "/api/ai-hub/timeline"
 
 

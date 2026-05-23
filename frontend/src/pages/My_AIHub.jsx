@@ -155,7 +155,7 @@ export default function My_AIHub() {
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
-      <WorkflowMapPanel days={days} />
+      <WorkflowMapPanel days={days} focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null} />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -1425,7 +1425,7 @@ function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
 }
 
 
-function WorkflowMapPanel({ days }) {
+function WorkflowMapPanel({ days, focusIntent }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [map, setMap] = useState(null);
@@ -1434,6 +1434,7 @@ function WorkflowMapPanel({ days }) {
   const [exporting, setExporting] = useState("");
   const [nodeActionBusy, setNodeActionBusy] = useState("");
   const [nodeActionResult, setNodeActionResult] = useState(null);
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadMap() {
@@ -1497,7 +1498,13 @@ function WorkflowMapPanel({ days }) {
     }
   }
 
-  useEffect(() => { if (open) loadMap(); }, [open, days, focusTag]);
+  useEffect(() => {
+    if (!focusIntent?.nonce) return;
+    setOpen(true);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadMap(); }, [open, days, focusTag, focusNonce]);
   useEffect(() => { setNodeActionResult(null); }, [selectedId]);
 
   const nodes = map?.nodes || [];
@@ -1511,6 +1518,7 @@ function WorkflowMapPanel({ days }) {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>워크플로우 지도</div>
+        {focusIntent?.nonce && <BoardPill tone="info">focus {focusIntent.title || "워크플로우 지도"}</BoardPill>}
         <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
           Prompt/Workflow → Policy → Unit/Function → Wiki/Schema → Improve
         </div>

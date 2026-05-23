@@ -12,6 +12,7 @@ from core import ai_hub_deep_eval
 from core import ai_hub_readiness
 from core import ai_hub_timeline
 from core import ai_hub_wiki_health
+from core import ai_hub_workflow_map
 from core import ai_hub_workflow_runbook
 
 
@@ -24,11 +25,13 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
     deep_eval = ai_hub_deep_eval.load_latest_report()
     wiki_health = ai_hub_wiki_health.build_wiki_health(limit=max(12, limit))
     runbook = ai_hub_workflow_runbook.build_runbook(username=username, days=days, limit=max(12, limit))
+    workflow_map = ai_hub_workflow_map.build_workflow_map(username=username, days=days, limit=40, reference_limit=160)
     timeline = ai_hub_timeline.build_timeline(days=days, limit=max(12, limit))
 
     cards = [
         _readiness_card(readiness),
         _runbook_card(runbook),
+        _workflow_map_card(workflow_map),
         _deep_eval_card(deep_eval),
         _wiki_card(wiki_health),
         _timeline_card(timeline),
@@ -53,6 +56,9 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
             "runbook_attention": _runbook_count(runbook, "attention"),
             "runbook_blocked": _runbook_count(runbook, "blocked"),
             "runbook_next_actions": _runbook_count(runbook, "next_actions"),
+            "workflow_map_nodes": _workflow_map_count(workflow_map, "nodes"),
+            "workflow_map_edges": _workflow_map_count(workflow_map, "edges"),
+            "workflow_map_warnings": len(workflow_map.get("warnings") if isinstance(workflow_map.get("warnings"), list) else []),
             "timeline_items": len(timeline.get("items") if isinstance(timeline.get("items"), list) else []),
             "summary_cards": len(cards),
         },
@@ -61,6 +67,7 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
             "deep_eval_report": "/api/ai-hub/deep-eval-report",
             "wiki_health": "/api/ai-hub/wiki-health",
             "workflow_runbook": "/api/ai-hub/workflow-runbook",
+            "workflow_map": "/api/ai-hub/workflow-map",
             "timeline": "/api/ai-hub/timeline",
             "ops_export": "/api/ai-hub/ops-export/download",
         },
@@ -136,6 +143,25 @@ def _wiki_card(health: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _workflow_map_card(workflow_map: dict[str, Any]) -> dict[str, Any]:
+    counts = workflow_map.get("counts") if isinstance(workflow_map.get("counts"), dict) else {}
+    warnings = workflow_map.get("warnings") if isinstance(workflow_map.get("warnings"), list) else []
+    nodes = _int(counts.get("nodes"))
+    edges = _int(counts.get("edges"))
+    workflows = _int(counts.get("workflow_templates_visible"))
+    tools_visible = _int(counts.get("tools_visible"))
+    tools_total = _int(counts.get("tools_total"))
+    issue_count = len(warnings)
+    return {
+        "key": "workflow_map",
+        "label": "워크플로우 지도",
+        "value": f"{nodes}/{edges}",
+        "tone": _workflow_map_tone(warnings),
+        "detail": f"workflows {workflows} · tools {tools_visible}/{tools_total} · warnings {issue_count}",
+        "route": "/api/ai-hub/workflow-map",
+    }
+
+
 def _timeline_card(timeline: dict[str, Any]) -> dict[str, Any]:
     items = timeline.get("items") if isinstance(timeline.get("items"), list) else []
     counts = timeline.get("counts") if isinstance(timeline.get("counts"), dict) else {}
@@ -201,6 +227,11 @@ def _runbook_action_queue(runbook: dict[str, Any], *, limit: int) -> list[dict[s
         if len(rows) >= limit:
             break
     return rows
+
+
+def _workflow_map_count(workflow_map: dict[str, Any], key: str) -> int:
+    counts = workflow_map.get("counts") if isinstance(workflow_map.get("counts"), dict) else {}
+    return _int(counts.get(key))
 
 
 def _recent_events(value: Any, *, limit: int) -> list[dict[str, Any]]:
@@ -276,6 +307,15 @@ def _deep_eval_tone(status: str, failed: int) -> str:
     if status in {"missing", "invalid"}:
         return "warn"
     return "bad"
+
+
+def _workflow_map_tone(warnings: list[Any]) -> str:
+    tones = {str(row.get("tone") or "") for row in warnings if isinstance(row, dict)}
+    if "bad" in tones:
+        return "bad"
+    if warnings:
+        return "warn"
+    return "ok"
 
 
 def _runbook_tone(*, workflows: int, blocked: int, attention: int, unchecked: int) -> str:

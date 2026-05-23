@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 스냅샷에 workflow map summary card 추가
 - (Codex) AI Hub 운영 스냅샷 최근 이벤트에서 timeline category focus 이동
 - (Codex) AI Hub 운영 스냅샷 요약 카드에서 관리 패널 열기
 - (Codex) AI Hub 운영 스냅샷 상위 개선에서 readiness 백로그 focus 이동
