@@ -1684,6 +1684,7 @@ function WorkflowRunbookDetail({ row }) {
 function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
+  const [nodeSearch, setNodeSearch] = useState("");
   const [map, setMap] = useState(null);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1768,9 +1769,19 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
   const edges = map?.edges || [];
   const selected = nodes.find((node) => node.id === selectedId) || null;
   const topTags = map?.top_tags || [];
+  const nodeSearchText = nodeSearch.trim().toLowerCase();
+  const nodeSearchMatches = useMemo(() => {
+    if (!nodeSearchText) return [];
+    return nodes.filter((node) => node.type !== "stage" && workflowNodeSearchText(node).includes(nodeSearchText));
+  }, [nodes, nodeSearchText]);
+  const visibleNodes = useMemo(() => {
+    if (!nodeSearchText) return nodes;
+    const matched = new Set(nodeSearchMatches.map((node) => node.id));
+    return nodes.filter((node) => node.type === "stage" || matched.has(node.id));
+  }, [nodes, nodeSearchText, nodeSearchMatches]);
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
           {open ? "▾" : "▸"}
         </button>
@@ -1792,6 +1803,18 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
                 <option key={row.tag} value={row.tag}>{row.tag} ({row.count})</option>
               ))}
             </select>
+            <input
+              type="text"
+              value={nodeSearch}
+              onChange={(e) => setNodeSearch(e.target.value)}
+              placeholder="노드 검색"
+              style={{ ...inputStyle, width: 190, marginBottom: 0, padding: "4px 8px" }}
+            />
+            {nodeSearch && (
+              <button type="button" onClick={() => setNodeSearch("")} style={btnGhost}>
+                검색 지우기
+              </button>
+            )}
             <button onClick={loadMap} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
             <button onClick={() => exportMap("n8n")} disabled={!!exporting} style={btnGhost}>
               {exporting === "n8n" ? "내보내는 중" : "n8n JSON"}
@@ -1810,6 +1833,13 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
           ) : map ? (
             <>
               <WorkflowMapSummary map={map} />
+              <WorkflowMapSearchResults
+                query={nodeSearchText}
+                rows={nodeSearchMatches}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onClear={() => setNodeSearch("")}
+              />
               <WorkflowMapWarnings rows={map.warnings || []} focusedKey={focusIntent?.warning || ""} onSelect={onWarningSelect} />
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 8, alignItems: "stretch" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(130px, 1fr))", gap: 6, overflowX: "auto" }}>
@@ -1817,7 +1847,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
                     <WorkflowStageColumn
                       key={stage.id}
                       stage={stage}
-                      nodes={nodes.filter((node) => node.stage === stage.id)}
+                      nodes={visibleNodes.filter((node) => node.stage === stage.id)}
                       selectedId={selectedId}
                       onSelect={setSelectedId}
                     />
@@ -1872,6 +1902,73 @@ function WorkflowMapSummary({ map }) {
       {map.focus_tag && <BoardPill tone="info">focus {map.focus_tag}</BoardPill>}
     </div>
   );
+}
+
+
+function WorkflowMapSearchResults({ query, rows, selectedId, onSelect, onClear }) {
+  if (!query) return null;
+  const visible = rows.slice(0, 10);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>노드 검색</div>
+          <BoardPill tone={rows.length ? "info" : "warn"}>{rows.length}</BoardPill>
+          <div style={{ fontSize: 10, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{query}</div>
+        </div>
+        <button type="button" onClick={onClear} style={{ ...btnGhost, padding: "3px 7px" }}>전체 보기</button>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>일치하는 노드 없음</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 5 }}>
+          {visible.map((node) => {
+            const selected = selectedId === node.id;
+            return (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() => onSelect(node.id)}
+                style={{
+                  textAlign: "left",
+                  border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                  background: selected ? "var(--accent-glow)" : "var(--bg-primary)",
+                  color: "var(--text-primary)",
+                  borderRadius: 4,
+                  padding: "5px 6px",
+                  cursor: "pointer",
+                  minWidth: 0,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                  <Tag>{node.type}</Tag>
+                  <span style={{ fontSize: 11, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label || node.id}</span>
+                </div>
+                <div style={{ marginTop: 3, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.id}</div>
+              </button>
+            );
+          })}
+          {rows.length > visible.length && <div style={{ fontSize: 10, color: "var(--muted)", alignSelf: "center" }}>+{rows.length - visible.length} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function workflowNodeSearchText(node) {
+  const tags = Array.isArray(node?.tags) ? node.tags.join(" ") : "";
+  return [
+    node?.id,
+    node?.type,
+    node?.stage,
+    node?.label,
+    node?.detail,
+    node?.tool_name,
+    node?.workflow_key,
+    node?.kind,
+    tags,
+  ].filter(Boolean).join(" ").toLowerCase();
 }
 
 

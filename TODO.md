@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub Workflow Map node 검색 추가
 - (Codex) AI Hub Workflow Map edge 클릭 탐색 추가
 - (Codex) AI Hub Workflow Map node에서 Runbook row focus 연결
 - (Codex) AI Hub Workflow Runbook row 지도 focus 연결
