@@ -128,7 +128,9 @@ export default function My_AIHub() {
   }
 
   function focusToolCatalogNode(node) {
-    const name = String(node?.tool_name || (node?.id || "").replace(/^tool:/, "") || "").trim();
+    const name = typeof node === "string"
+      ? node.trim()
+      : String(node?.tool_name || (node?.id || "").replace(/^tool:/, "") || "").trim();
     if (!name) return;
     setKindFilter("");
     setTagFilter("");
@@ -216,14 +218,20 @@ export default function My_AIHub() {
     }));
   }
 
-  function focusWorkflowMapNode(row) {
-    if (!row?.key) return;
+  function focusWorkflowMapNodeId(nodeId, title) {
+    const id = String(nodeId || "").trim();
+    if (!id) return;
     setOpsPanelFocus((prev) => ({
       target: "workflow_map",
-      nodeId: `workflow:${row.key}`,
-      title: row.title || row.key,
+      nodeId: id,
+      title: title || id,
       nonce: (prev?.nonce || 0) + 1,
     }));
+  }
+
+  function focusWorkflowMapNode(row) {
+    if (!row?.key) return;
+    focusWorkflowMapNodeId(`workflow:${row.key}`, row.title || row.key);
   }
 
   return (
@@ -242,7 +250,13 @@ export default function My_AIHub() {
       <DeepEvalPanel focusIntent={opsPanelFocus?.target === "deep_eval" ? opsPanelFocus : null} />
       <WikiHealthPanel focusIntent={opsPanelFocus?.target === "wiki" ? opsPanelFocus : null} />
       <OperationsBoard days={days} onChanged={loadCatalog} />
-      <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} onWorkflowMapFocus={focusWorkflowMapNode} />
+      <WorkflowRunbookPanel
+        days={days}
+        focusIntent={runbookFocus}
+        onWorkflowMapFocus={focusWorkflowMapNode}
+        onWorkflowMapNodeFocus={focusWorkflowMapNodeId}
+        onToolFocus={focusToolCatalogNode}
+      />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
       <WorkflowMapPanel
         days={days}
@@ -1315,7 +1329,7 @@ function ReadinessBacklog({ rows, activeId, canManage, actionBusy, onAction }) {
 }
 
 
-function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
+function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus, onWorkflowMapNodeFocus, onToolFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1521,6 +1535,8 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
                       actionResult={actionResult}
                       onAction={runAction}
                       onMapFocus={() => onWorkflowMapFocus?.(row)}
+                      onMapNodeFocus={onWorkflowMapNodeFocus}
+                      onToolFocus={onToolFocus}
                       onToggle={() => setExpandedKey((key) => key === row.key ? "" : row.key)}
                     />
                   ))}
@@ -1576,7 +1592,7 @@ function WorkflowNextActionQueue({ rows, activeIssue, onFilter }) {
 }
 
 
-function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onMapFocus, onToggle }) {
+function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onMapFocus, onMapNodeFocus, onToolFocus, onToggle }) {
   const issues = row.issues || [];
   const nextActions = row.next_actions || [];
   const nextAction = nextActions[0] || null;
@@ -1633,7 +1649,7 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
           })}
         </div>
       </div>
-      {expanded && <WorkflowRunbookDetail row={row} />}
+      {expanded && <WorkflowRunbookDetail row={row} onMapNodeFocus={onMapNodeFocus} onToolFocus={onToolFocus} />}
       {actionResult?.key === row.key && (
         <div style={{ padding: "0 8px 8px 118px" }}>
           <WorkflowActionResult payload={actionResult.payload} />
@@ -1644,7 +1660,7 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
 }
 
 
-function WorkflowRunbookDetail({ row }) {
+function WorkflowRunbookDetail({ row, onMapNodeFocus, onToolFocus }) {
   const steps = row.steps || [];
   const evidence = row.evidence_node_ids || [];
   const nextActions = row.next_actions || [];
@@ -1659,32 +1675,72 @@ function WorkflowRunbookDetail({ row }) {
             <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>step 없음</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {steps.map((step) => (
-                <div key={`${row.key}:${step.index}`} style={{ display: "grid", gridTemplateColumns: "38px minmax(160px, 1fr) minmax(130px, 0.8fr)", gap: 6, alignItems: "center", fontSize: 11 }}>
-                  <Tag>{step.index}</Tag>
-                  <div style={{ minWidth: 0, color: "var(--text-primary)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {step.unit_ai || "-"}{step.action ? `.${step.action}` : ""}
+              {steps.map((step) => {
+                const toolName = String(step.unit_ai || "").trim();
+                const stepNodeId = row.key && step.index ? `workflow_step:${row.key}:${step.index}` : "";
+                return (
+                  <div key={`${row.key}:${step.index}`} style={{ display: "grid", gridTemplateColumns: "38px minmax(160px, 1fr) minmax(130px, 0.8fr)", gap: 6, alignItems: "center", fontSize: 11 }}>
+                    <Tag>{step.index}</Tag>
+                    <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
+                      {stepNodeId && onMapNodeFocus ? (
+                        <button
+                          type="button"
+                          onClick={() => onMapNodeFocus(stepNodeId, `${row.key} step ${step.index}`)}
+                          style={runbookInlineButton}
+                          title="워크플로우 지도에서 step 노드 보기"
+                        >
+                          {toolName || "-"}{step.action ? `.${step.action}` : ""}
+                        </button>
+                      ) : (
+                        <span style={{ minWidth: 0, color: "var(--text-primary)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {toolName || "-"}{step.action ? `.${step.action}` : ""}
+                        </span>
+                      )}
+                      {toolName && onToolFocus && (
+                        <button type="button" onClick={() => onToolFocus(toolName)} style={runbookMiniButton} title="도구 카탈로그 상세 보기">
+                          도구
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, minWidth: 0 }}>
+                      {(step.bind_slots || []).slice(0, 3).map((slot) => <Tag key={slot}>{slot}</Tag>)}
+                      {Object.keys(step.fixed_slots || {}).slice(0, 2).map((key) => <Tag key={key}>{key}</Tag>)}
+                    </div>
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, minWidth: 0 }}>
-                    {(step.bind_slots || []).slice(0, 3).map((slot) => <Tag key={slot}>{slot}</Tag>)}
-                    {Object.keys(step.fixed_slots || {}).slice(0, 2).map((key) => <Tag key={key}>{key}</Tag>)}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
         <div>
           <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", marginBottom: 5, textTransform: "uppercase" }}>Evidence / Actions</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
-            {evidence.slice(0, 6).map((id) => <Tag key={id}>{id}</Tag>)}
+            {evidence.slice(0, 6).map((id) => (
+              onMapNodeFocus ? (
+                <button key={id} type="button" onClick={() => onMapNodeFocus(id, id)} style={runbookTagButton} title="워크플로우 지도에서 evidence 노드 보기">
+                  {id}
+                </button>
+              ) : <Tag key={id}>{id}</Tag>
+            ))}
             {evidence.length > 6 && <Tag>+{evidence.length - 6}</Tag>}
             {!evidence.length && <Tag>근거 없음</Tag>}
           </div>
           {(missingTools.length > 0 || disabledTools.length > 0) && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
-              {missingTools.map((name) => <BoardPill key={`missing:${name}`} tone="bad">missing {name}</BoardPill>)}
-              {disabledTools.map((name) => <BoardPill key={`disabled:${name}`} tone="bad">disabled {name}</BoardPill>)}
+              {missingTools.map((name) => (
+                onToolFocus ? (
+                  <button key={`missing:${name}`} type="button" onClick={() => onToolFocus(name)} style={runbookBadButton} title="도구 카탈로그에서 이름 검색">
+                    missing {name}
+                  </button>
+                ) : <BoardPill key={`missing:${name}`} tone="bad">missing {name}</BoardPill>
+              ))}
+              {disabledTools.map((name) => (
+                onToolFocus ? (
+                  <button key={`disabled:${name}`} type="button" onClick={() => onToolFocus(name)} style={runbookBadButton} title="도구 카탈로그 상세 보기">
+                    disabled {name}
+                  </button>
+                ) : <BoardPill key={`disabled:${name}`} tone="bad">disabled {name}</BoardPill>
+              ))}
             </div>
           )}
           {nextActions.length === 0 ? (
@@ -1788,7 +1844,12 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus, 
   useEffect(() => {
     if (!focusIntent?.nonce) return;
     setOpen(true);
-    if (focusIntent.nodeId) setSelectedId(focusIntent.nodeId);
+    if (focusIntent.nodeId) {
+      setFocusTag("");
+      setNodeSearch("");
+      setNodeTypeFilter("");
+      setSelectedId(focusIntent.nodeId);
+    }
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 
@@ -3304,5 +3365,56 @@ const btnGhost = {
   color: "var(--text-secondary)",
   borderRadius: 4,
   fontSize: 11,
+  cursor: "pointer",
+};
+
+const runbookInlineButton = {
+  minWidth: 0,
+  maxWidth: "100%",
+  border: "0",
+  background: "transparent",
+  color: "var(--accent)",
+  cursor: "pointer",
+  padding: 0,
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 11,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const runbookMiniButton = {
+  padding: "1px 5px",
+  border: "1px solid var(--border)",
+  borderRadius: 3,
+  background: "var(--bg-primary)",
+  color: "var(--text-secondary)",
+  cursor: "pointer",
+  fontSize: 10,
+  flexShrink: 0,
+};
+
+const runbookTagButton = {
+  display: "inline-block",
+  padding: "1px 6px",
+  border: "1px solid var(--border)",
+  borderRadius: 3,
+  fontSize: 10,
+  color: "var(--accent)",
+  background: "var(--bg-primary)",
+  cursor: "pointer",
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+const runbookBadButton = {
+  padding: "1px 7px",
+  borderRadius: 999,
+  border: "1px solid var(--border)",
+  background: "rgba(239,68,68,0.14)",
+  color: "var(--danger)",
+  fontSize: 10,
+  fontWeight: 800,
   cursor: "pointer",
 };

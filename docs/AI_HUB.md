@@ -91,7 +91,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node
 - `attention`: 실행은 가능하지만 최근 검증이나 evidence가 부족한 workflow
 - `blocked`: step 정의 누락, 미등록 unit_ai, 비활성 도구처럼 운영 전에 고쳐야 하는 workflow
 - `status`, `issue`, `workflow_key` query로 `blocked`, `not_checked`, `missing_tools`, `no_evidence` 같은 운영 대상이나 지도에서 선택한 특정 workflow만 좁혀 볼 수 있다.
-- 화면의 row `상세`는 workflow step, bind/fixed slot, evidence node, missing/disabled tool, next action route를 펼쳐 보여주고, row `지도`는 `workflow:<key>` 노드를 워크플로우 지도에서 바로 focus한다.
+- 화면의 row `상세`는 workflow step, bind/fixed slot, evidence node, missing/disabled tool, next action route를 펼쳐 보여주고, row `지도`는 `workflow:<key>` 노드를 워크플로우 지도에서 바로 focus한다. 상세의 step은 `workflow_step:<key>:<n>` 지도 노드로, evidence tag는 해당 evidence 지도 노드로, `도구`/missing/disabled tool 버튼은 AI Hub 도구 카탈로그 상세 또는 검색으로 이어진다.
 - 각 row는 issue key에 맞춘 `next_actions[]`를 내려준다. 예: `missing_tools`는 ToolRegistry/workflow step 수정, `not_checked`는 Dry-run 재검증, `no_evidence`는 Wiki/schema 근거 연결로 안내한다.
 - 응답의 `next_action_queue[]`는 현재 Runbook 필터 결과에서 같은 조치를 요구하는 workflow를 묶은 운영 큐다. AI Hub 패널에서는 큐 항목을 눌러 해당 issue 필터로 좁혀 볼 수 있다.
 - 각 row의 `Dry-run` action은 기존 `/api/agent/workflows/execute`를 `dry_run=true`로 호출하고, 실제 권한/guardrail은 Agent workflow endpoint가 다시 검증한다.

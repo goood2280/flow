@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub Workflow Runbook 상세 tool/evidence 관리 focus 연결
 - (Codex) AI Hub Workflow Map tool node에서 도구 카탈로그 상세 focus 연결
 - (Codex) AI Hub Workflow Map evidence node에서 Wiki 상태 focus 연결
 - (Codex) AI Hub Workflow Map node type 필터 추가
