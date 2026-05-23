@@ -78,6 +78,41 @@ def test_ai_hub_deep_eval_report_missing_is_explicit(tmp_path, monkeypatch):
     assert out["path"] == "reports/flowi_agent_deep_eval_latest.json"
 
 
+def test_ai_hub_deep_eval_run_endpoint_regenerates_report(tmp_path, monkeypatch):
+    from core import ai_hub_deep_eval
+    from routers import ai_hub
+
+    monkeypatch.setattr(ai_hub.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
+
+    def fake_run_latest_report(*, cleanup_knowledge=False, min_cases=80):
+        assert cleanup_knowledge is True
+        assert min_cases == 12
+        return {
+            "ok": True,
+            "status": "pass",
+            "summary": {"passed": 12, "failed": 0, "total": 12},
+            "report": {
+                "ok": True,
+                "exists": True,
+                "status": "pass",
+                "summary": {"passed": 12, "failed": 0, "total": 12},
+            },
+        }
+
+    monkeypatch.setattr(ai_hub_deep_eval, "run_latest_report", fake_run_latest_report)
+
+    out = ai_hub.deep_eval_report_run(
+        _req(),
+        ai_hub.DeepEvalRunRequest(cleanup_knowledge=True, min_cases=12),
+    )
+
+    assert out["ok"] is True
+    assert out["status"] == "pass"
+    assert out["is_admin"] is True
+    assert out["report"]["is_admin"] is True
+    assert out["report"]["summary"] == {"passed": 12, "failed": 0, "total": 12}
+
+
 class _State:
     user = {"username": "alice", "role": "admin"}
 

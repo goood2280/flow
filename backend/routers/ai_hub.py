@@ -13,6 +13,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
   GET    /api/ai-hub/deep-eval-report       Agent deep-eval 최신 리포트
+  POST   /api/ai-hub/deep-eval-report/run   Agent deep-eval 최신 리포트 재생성 (admin)
   POST   /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
   POST   /api/ai-hub/tools/{name}/toggle    enabled on/off (admin)
 
@@ -38,6 +39,11 @@ router = APIRouter(prefix="/api/ai-hub", tags=["ai-hub"])
 
 class ToggleRequest(BaseModel):
     enabled: bool
+
+
+class DeepEvalRunRequest(BaseModel):
+    cleanup_knowledge: bool = False
+    min_cases: int = 80
 
 
 def _require_admin(request: Request) -> dict[str, Any]:
@@ -109,6 +115,27 @@ def deep_eval_report(request: Request):
     me = current_user(request)
     out = ai_hub_deep_eval.load_latest_report()
     out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
+
+
+@router.post("/deep-eval-report/run")
+def deep_eval_report_run(request: Request, body: DeepEvalRunRequest | None = None):
+    me = _require_admin(request)
+    body = body or DeepEvalRunRequest()
+    out = ai_hub_deep_eval.run_latest_report(
+        cleanup_knowledge=bool(body.cleanup_knowledge),
+        min_cases=int(body.min_cases or 80),
+    )
+    summary = out.get("summary") if isinstance(out.get("summary"), dict) else {}
+    audit.record(
+        request,
+        action="ai_hub_deep_eval_run",
+        detail=f"status={out.get('status')} passed={summary.get('passed')} failed={summary.get('failed')}",
+        tab="ai_hub",
+    )
+    out["is_admin"] = True
+    if isinstance(out.get("report"), dict):
+        out["report"]["is_admin"] = True
     return out
 
 

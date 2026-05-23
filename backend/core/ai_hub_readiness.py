@@ -318,6 +318,7 @@ def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, A
             "detail": "AI Hub가 읽을 최신 semantic/wiki/sql 검증 결과가 없습니다.",
             "action": "python3 scripts/flowi_agent_deep_eval.py --report-json 실행",
             "route": "/api/ai-hub/deep-eval-report",
+            "actions": [_deep_eval_run_action()],
         }]
     if report.get("status") == "invalid":
         return [{
@@ -328,6 +329,7 @@ def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, A
             "detail": str(report.get("message") or "JSON report를 읽을 수 없습니다."),
             "action": "deep eval을 다시 실행해 최신 리포트를 재생성",
             "route": "/api/ai-hub/deep-eval-report",
+            "actions": [_deep_eval_run_action()],
         }]
     out: list[dict[str, Any]] = []
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
@@ -342,6 +344,7 @@ def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, A
             "detail": failed_names or "semantic/wiki/sql 검증 실패 항목이 있습니다.",
             "action": "실패 assertion detail을 확인하고 semantic/wiki/sql 경로를 수정",
             "route": "/api/ai-hub/deep-eval-report",
+            "actions": [_deep_eval_run_action()],
         })
     age_seconds = int(report.get("age_seconds") or 0)
     if age_seconds > max(1, int(days or 1)) * 86400:
@@ -353,8 +356,24 @@ def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, A
             "detail": f"최근 {days}일 기준보다 오래된 검증 리포트입니다.",
             "action": "python3 scripts/flowi_agent_deep_eval.py --report-json 로 최신 상태 재검증",
             "route": "/api/ai-hub/deep-eval-report",
+            "actions": [_deep_eval_run_action()],
         })
     return out
+
+
+def _deep_eval_run_action() -> dict[str, Any]:
+    return {
+        "id": "run_deep_eval",
+        "label": "재검증",
+        "tone": "ok",
+        "method": "POST",
+        "endpoint": "/api/ai-hub/deep-eval-report/run",
+        "body": {
+            "cleanup_knowledge": False,
+            "min_cases": 80,
+        },
+        "confirm": True,
+    }
 
 
 def _workflow_validation_summary(workflow: dict[str, Any], *, fallback_total: int = 0) -> dict[str, int]:

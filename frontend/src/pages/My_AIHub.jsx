@@ -209,6 +209,7 @@ function DeepEvalPanel() {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState(false);
   const [err, setErr] = useState("");
 
   async function loadReport() {
@@ -225,6 +226,20 @@ function DeepEvalPanel() {
   }
 
   useEffect(() => { if (open) loadReport(); }, [open]);
+
+  async function runDeepEval() {
+    if (!data?.is_admin) return;
+    setRunning(true);
+    setErr("");
+    try {
+      const out = await postJson("/api/ai-hub/deep-eval-report/run", { cleanup_knowledge: false, min_cases: 80 });
+      setData({ ...(out.report || out), is_admin: true });
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
 
   const summary = data?.summary || {};
   const statusTone = !data ? "neutral" : data.status === "pass" ? "ok" : data.status === "missing" ? "warn" : "bad";
@@ -244,6 +259,9 @@ function DeepEvalPanel() {
           </>
         )}
         <div style={{ flex: 1 }} />
+        {open && data?.is_admin && (
+          <button onClick={runDeepEval} disabled={running} style={btnGhost}>{running ? "검증 중..." : "검증 실행"}</button>
+        )}
         {open && <button onClick={loadReport} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
       </div>
       {open && (

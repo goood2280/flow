@@ -220,6 +220,11 @@ def test_ai_hub_readiness_tracks_deep_eval_backlog(monkeypatch):
     assert "agent_deep_eval:stale" in backlog_ids
     by_id = {item["id"]: item for item in out["backlog"]}
     assert by_id["agent_deep_eval:failed"]["route"] == "/api/ai-hub/deep-eval-report"
+    assert by_id["agent_deep_eval:failed"]["actions"][0]["endpoint"] == "/api/ai-hub/deep-eval-report/run"
+    assert by_id["agent_deep_eval:failed"]["actions"][0]["body"] == {
+        "cleanup_knowledge": False,
+        "min_cases": 80,
+    }
     assert "sql/raw join/rows" in by_id["agent_deep_eval:failed"]["detail"]
 
 

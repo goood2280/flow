@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub deep eval 리포트 재생성 관리 액션 연결
 - (Codex) AI Hub workflow map Agent deep eval evidence 노드 연결
 - (Codex) AI Hub readiness Agent deep eval 상태 반영
 - (Codex) AI Hub Agent deep eval 최신 리포트 패널 연결
