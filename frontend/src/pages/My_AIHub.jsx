@@ -31,6 +31,7 @@ export default function My_AIHub() {
   const [history, setHistory] = useState([]);
   const [runbookFocus, setRunbookFocus] = useState(null);
   const [readinessFocus, setReadinessFocus] = useState(null);
+  const [opsPanelFocus, setOpsPanelFocus] = useState(null);
 
   async function loadCatalog() {
     setLoading(true);
@@ -113,21 +114,36 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusOpsSummaryCard(card) {
+    if (!card?.key) return;
+    const title = card.label || card.key;
+    if (card.key === "readiness") {
+      setReadinessFocus((prev) => ({ title, nonce: (prev?.nonce || 0) + 1 }));
+      return;
+    }
+    if (card.key === "workflow_runbook") {
+      setRunbookFocus((prev) => ({ title, nonce: (prev?.nonce || 0) + 1 }));
+      return;
+    }
+    setOpsPanelFocus((prev) => ({ target: card.key, title, nonce: (prev?.nonce || 0) + 1 }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OpsSnapshotPanel
         days={days}
+        onSummaryCard={focusOpsSummaryCard}
         onReadinessBacklog={focusReadinessBacklog}
         onRunbookIssue={focusRunbookIssue}
       />
       <OrchestratorPanel />
       <ReadinessPanel days={days} focusIntent={readinessFocus} onChanged={loadCatalog} />
-      <DeepEvalPanel />
-      <WikiHealthPanel />
+      <DeepEvalPanel focusIntent={opsPanelFocus?.target === "deep_eval" ? opsPanelFocus : null} />
+      <WikiHealthPanel focusIntent={opsPanelFocus?.target === "wiki" ? opsPanelFocus : null} />
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} />
-      <TimelinePanel days={days} />
+      <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
 
@@ -233,7 +249,7 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OpsSnapshotPanel({ days, onReadinessBacklog, onRunbookIssue }) {
+function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIssue }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -299,7 +315,7 @@ function OpsSnapshotPanel({ days, onReadinessBacklog, onRunbookIssue }) {
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
           ) : data ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
-              <OpsSnapshotSummary data={data} />
+              <OpsSnapshotSummary data={data} onSelect={onSummaryCard} />
               <OpsSnapshotActions rows={data.top_actions || []} onSelect={onReadinessBacklog} />
               <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} onSelect={onRunbookIssue} />
               <OpsSnapshotEvents rows={data.recent_events || []} />
@@ -316,7 +332,31 @@ function OpsSnapshotPanel({ days, onReadinessBacklog, onRunbookIssue }) {
 }
 
 
-function OpsSnapshotSummary({ data }) {
+function OpsSnapshotSummary({ data, onSelect }) {
+  const cardStyle = {
+    border: "0",
+    borderTop: "1px dashed var(--border)",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    padding: "6px 0 0",
+    textAlign: "left",
+    minWidth: 0,
+    width: "100%",
+  };
+  function cardContent(card) {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.label}</span>
+          <BoardPill tone={card.tone}>{card.value}</BoardPill>
+        </div>
+        <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {card.detail}
+        </div>
+      </>
+    );
+  }
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 10, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
@@ -327,15 +367,21 @@ function OpsSnapshotSummary({ data }) {
       </div>
       <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(2, minmax(120px, 1fr))", gap: 6 }}>
         {(data.summary_cards || []).map((card) => (
-          <div key={card.key} style={{ borderTop: "1px dashed var(--border)", paddingTop: 6, minWidth: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 5 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.label}</span>
-              <BoardPill tone={card.tone}>{card.value}</BoardPill>
+          onSelect && card.key ? (
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => onSelect(card)}
+              style={{ ...cardStyle, cursor: "pointer" }}
+              title={`${card.label} 패널 열기`}
+            >
+              {cardContent(card)}
+            </button>
+          ) : (
+            <div key={card.key} style={cardStyle}>
+              {cardContent(card)}
             </div>
-            <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {card.detail}
-            </div>
-          </div>
+          )
         ))}
       </div>
     </div>
@@ -497,11 +543,12 @@ function OpsSnapshotEvents({ rows }) {
 }
 
 
-function DeepEvalPanel() {
+function DeepEvalPanel({ focusIntent }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadReport() {
@@ -517,7 +564,13 @@ function DeepEvalPanel() {
     }
   }
 
-  useEffect(() => { if (open) loadReport(); }, [open]);
+  useEffect(() => {
+    if (!focusIntent?.nonce) return;
+    setOpen(true);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadReport(); }, [open, focusNonce]);
 
   async function runDeepEval() {
     if (!data?.is_admin) return;
@@ -543,6 +596,7 @@ function DeepEvalPanel() {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Agent 검증 리포트</div>
+        {focusIntent?.nonce && <BoardPill tone="info">focus {focusIntent.title || "Agent 검증"}</BoardPill>}
         <BoardPill tone={statusTone}>{statusText}</BoardPill>
         {data?.exists && (
           <>
@@ -699,10 +753,11 @@ function DeepEvalCases({ rows, total }) {
 }
 
 
-function WikiHealthPanel() {
+function WikiHealthPanel({ focusIntent }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadHealth() {
@@ -718,7 +773,13 @@ function WikiHealthPanel() {
     }
   }
 
-  useEffect(() => { if (open) loadHealth(); }, [open]);
+  useEffect(() => {
+    if (!focusIntent?.nonce) return;
+    setOpen(true);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadHealth(); }, [open, focusNonce]);
 
   const counts = data?.counts || {};
   const statusTone = !data ? "neutral" : data.status === "pass" ? "ok" : data.status === "missing" ? "warn" : "bad";
@@ -730,6 +791,7 @@ function WikiHealthPanel() {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Agent Wiki 상태</div>
+        {focusIntent?.nonce && <BoardPill tone="info">focus {focusIntent.title || "Agent Wiki"}</BoardPill>}
         <BoardPill tone={statusTone}>{statusText}</BoardPill>
         {data && (
           <>
@@ -891,9 +953,9 @@ function ReadinessPanel({ days, focusIntent, onChanged }) {
   }
 
   useEffect(() => {
-    if (!focusIntent?.id) return;
+    if (!focusIntent?.nonce) return;
     setOpen(true);
-    setActiveBacklogId(focusIntent.id);
+    setActiveBacklogId(focusIntent.id || "");
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 
@@ -901,7 +963,7 @@ function ReadinessPanel({ days, focusIntent, onChanged }) {
 
   const score = Number(data?.score || 0);
   const backlog = data?.backlog || [];
-  const focusLabel = activeBacklogId && activeBacklogId === focusIntent?.id ? (focusIntent.title || activeBacklogId) : "";
+  const focusLabel = focusIntent?.nonce ? (focusIntent.title || activeBacklogId || "운영 준비도") : "";
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1102,9 +1164,9 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
   }
 
   useEffect(() => {
-    if (!focusIntent?.issue) return;
+    if (!focusIntent?.nonce) return;
     setOpen(true);
-    setIssueFilter(focusIntent.issue);
+    setIssueFilter(focusIntent.issue || "");
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 
@@ -1116,7 +1178,7 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
   const issueOptions = data?.issue_options || [];
   const nextActionQueue = data?.next_action_queue || [];
   const runbookActions = data?.is_admin ? (data?.actions || []) : [];
-  const focusLabel = focusIntent?.issue && issueFilter === focusIntent.issue ? (focusIntent.title || focusIntent.issue) : "";
+  const focusLabel = focusIntent?.nonce ? (focusIntent.title || focusIntent.issue || "Workflow Runbook") : "";
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1899,12 +1961,13 @@ function boardActionStyle(tone) {
 }
 
 
-function TimelinePanel({ days }) {
+function TimelinePanel({ days, focusIntent }) {
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState("");
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadTimeline() {
@@ -1941,7 +2004,13 @@ function TimelinePanel({ days }) {
     }
   }
 
-  useEffect(() => { if (open) loadTimeline(); }, [open, days, category]);
+  useEffect(() => {
+    if (!focusIntent?.nonce) return;
+    setOpen(true);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadTimeline(); }, [open, days, category, focusNonce]);
 
   const items = data?.items || [];
   const counts = data?.counts || {};
@@ -1953,6 +2022,7 @@ function TimelinePanel({ days }) {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>운영 타임라인</div>
+        {focusIntent?.nonce && <BoardPill tone="info">focus {focusIntent.title || "운영 타임라인"}</BoardPill>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {Object.entries(counts).slice(0, 5).map(([key, count]) => <BoardPill key={key} tone="neutral">{key} {count}</BoardPill>)}
         </div>
