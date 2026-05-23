@@ -98,6 +98,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - AI Hub의 `Workflow Runbook` 패널이 읽는 workflow별 관리 표다.
 - 기존 workflow map에서 workflow/template node, step, tool, evidence edge, 최근 dry-run/execute 이력을 정규화한다.
 - row는 `ready`, `attention`, `blocked` 상태와 issue 목록을 포함한다. `Dry-run` action은 기존 `/api/agent/workflows/execute`를 호출한다.
+- workflow template이 0건이면 admin용 `시작 템플릿 생성` action을 내려 기존 `/api/ai-hub/readiness/bootstrap-workflows`로 starter workflow를 만들 수 있게 한다.
 
 `POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
 

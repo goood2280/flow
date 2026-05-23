@@ -31,6 +31,7 @@ def build_runbook(
 
     nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
     edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    graph_counts = graph.get("counts") if isinstance(graph.get("counts"), dict) else {}
     by_id = {str(node.get("id") or ""): node for node in nodes if isinstance(node, dict)}
     rows = [
         _runbook_row(node, by_id=by_id, edges=edges)
@@ -46,6 +47,7 @@ def build_runbook(
         "unchecked": sum(1 for row in rows if int(row.get("run_count") or 0) <= 0),
         "shared": sum(1 for row in rows if row.get("shared")),
         "personal": sum(1 for row in rows if not row.get("shared")),
+        "workflow_templates_total": _int(graph_counts.get("workflow_templates_total")) or len(rows),
     }
     return {
         "ok": True,
@@ -56,6 +58,7 @@ def build_runbook(
         "counts": counts,
         "top_tags": graph.get("top_tags") if isinstance(graph.get("top_tags"), list) else [],
         "warnings": graph.get("warnings") if isinstance(graph.get("warnings"), list) else [],
+        "actions": _runbook_actions(counts),
         "items": rows,
         "sources": {
             "workflow_map": "/api/ai-hub/workflow-map",
@@ -201,6 +204,19 @@ def _actions(key: str) -> list[dict[str, Any]]:
         "method": "POST",
         "endpoint": "/api/agent/workflows/execute",
         "body": {"key": key, "slots": {}, "dry_run": True},
+    }]
+
+
+def _runbook_actions(counts: dict[str, int]) -> list[dict[str, Any]]:
+    if _int(counts.get("workflow_templates_total")) > 0:
+        return []
+    return [{
+        "id": "bootstrap_workflows",
+        "label": "시작 템플릿 생성",
+        "method": "POST",
+        "endpoint": "/api/ai-hub/readiness/bootstrap-workflows",
+        "body": {},
+        "tone": "ok",
     }]
 
 

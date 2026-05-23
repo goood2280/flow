@@ -64,8 +64,10 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
 
     assert out["ok"] is True
     assert out["counts"]["workflows"] == 2
+    assert out["counts"]["workflow_templates_total"] == 2
     assert out["counts"]["ready"] == 1
     assert out["counts"]["blocked"] == 1
+    assert out["actions"] == []
     rows = {row["key"]: row for row in out["items"]}
     assert rows["ready_knob"]["status"] == "ready"
     assert rows["ready_knob"]["trigger_summary"]["intent"] == "knob_analysis"
@@ -74,6 +76,26 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert rows["blocked_lot"]["status"] == "blocked"
     assert rows["blocked_lot"]["missing_tools"] == ["ghost"]
     assert {issue["key"] for issue in rows["blocked_lot"]["issues"]} >= {"missing_tools", "not_checked", "no_evidence"}
+
+
+def test_ai_hub_workflow_runbook_exposes_bootstrap_action_when_empty(monkeypatch):
+    from core import ai_hub_workflow_runbook
+
+    monkeypatch.setattr(ai_hub_workflow_runbook.ai_hub_workflow_map, "build_workflow_map", lambda **kwargs: {
+        "ok": True,
+        "counts": {"workflow_templates_total": 0},
+        "top_tags": [],
+        "warnings": [],
+        "nodes": [],
+        "edges": [],
+    })
+
+    out = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10)
+
+    assert out["counts"]["workflows"] == 0
+    assert out["counts"]["workflow_templates_total"] == 0
+    assert out["actions"][0]["id"] == "bootstrap_workflows"
+    assert out["actions"][0]["endpoint"] == "/api/ai-hub/readiness/bootstrap-workflows"
 
 
 def test_ai_hub_workflow_runbook_endpoint_passes_user(monkeypatch):

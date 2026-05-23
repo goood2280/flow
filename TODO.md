@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Workflow Runbook 시작 템플릿 생성 액션 연결
 - (Codex) AI Hub Agent workflow runbook 관리 표 추가
 - (Codex) AI Hub 운영 스냅샷 관리 홈 추가
 - (Codex) AI Hub 운영 타임라인에 Agent Wiki 변경 로그 연결

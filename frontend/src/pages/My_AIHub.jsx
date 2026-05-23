@@ -740,6 +740,7 @@ function ReadinessPanel({ days, onChanged }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
   const [err, setErr] = useState("");
 
@@ -937,11 +938,27 @@ function WorkflowRunbookPanel({ days }) {
     }
   }
 
+  async function runBootstrap(action) {
+    if (!data?.is_admin || !action?.endpoint || action.method !== "POST") return;
+    setBootstrapBusy(true);
+    setErr("");
+    setActionResult(null);
+    try {
+      await postJson(action.endpoint, action.body || {});
+      await loadRunbook();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBootstrapBusy(false);
+    }
+  }
+
   useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag]);
 
   const counts = data?.counts || {};
   const rows = data?.items || [];
   const topTags = data?.top_tags || [];
+  const runbookActions = data?.is_admin ? (data?.actions || []) : [];
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -970,6 +987,11 @@ function WorkflowRunbookPanel({ days }) {
                 <option key={row.tag} value={row.tag}>{row.tag} ({row.count})</option>
               ))}
             </select>
+            {runbookActions.map((action) => (
+              <button key={action.id} onClick={() => runBootstrap(action)} disabled={bootstrapBusy} style={boardActionStyle(action.tone)}>
+                {bootstrapBusy ? "생성 중" : action.label}
+              </button>
+            ))}
             <button onClick={loadRunbook} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
           </>
         )}
