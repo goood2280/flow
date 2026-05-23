@@ -35,13 +35,14 @@ _CATALOG_CACHE: dict[str, Any] = {"path": "", "mtime": None, "rows": None}
 
 
 _ALIAS_GROUPS: dict[str, list[str]] = {
-    "filebrowser": ["filebrowser", "file browser", "파일탐색기", "파일 탐색기", "파일", "parquet", "csv", "raw data", "원본"],
+    "filebrowser": ["filebrowser", "file browser", "파일탐색기", "파일 탐색기", "파일", "parquet", "csv", "raw data", "raw", "data", "db", "database", "원본"],
     "ai_sql": ["ai sql", "sql", "쿼리", "필터", "정렬", "aggregate", "집계"],
     "semantic_layer": ["semantic", "semantic layer", "시멘틱", "시멘틱레이어", "단어", "용어", "의미"],
-    "langgraph": ["langgraph", "랭그래프", "그래프", "orchestration", "오케스트레이션"],
+    "langgraph": ["langgraph", "랭그래프", "orchestration", "오케스트레이션"],
     "langsmith": ["langsmith", "랭스미스", "trace", "tracing", "추적", "개선"],
     "root_lot_id": ["root_lot_id", "root lot", "root lot id", "rootlot", "루트랏", "루트 lot", "루트"],
     "fab_lot_id": ["fab_lot_id", "fab lot", "lot id", "lot_id", "랏", "lot"],
+    "lot_wf": ["lot_wf", "lot wf", "lot-wafer", "lot wafer", "lotwf", "랏웨이퍼"],
     "wafer_id": ["wafer_id", "wafer", "wf", "웨이퍼"],
     "step_id": ["step_id", "step", "스텝", "공정", "공정스텝"],
     "function_step": ["function_step", "function step", "기능공정", "모듈공정"],
@@ -82,6 +83,17 @@ def _tokens(goal: str, max_terms: int) -> list[str]:
     return out
 
 
+def _pattern_normalized_term(token: str) -> str:
+    token_norm = _norm(token)
+    if re.fullmatch(r"(?:wf|wafer)\d{1,2}", token_norm):
+        return "wafer_id"
+    if re.fullmatch(r"[a-z]\d{4,}(?:w|wf)\d{1,2}", token_norm):
+        return "lot_wf"
+    if re.fullmatch(r"aa\d{4,}", token_norm):
+        return "step_id"
+    return ""
+
+
 def _active_alias_groups() -> dict[str, list[str]]:
     """Merged view of in-code seed + admin-edited lexicon disk file."""
     return effective_alias_groups(_ALIAS_GROUPS)
@@ -102,6 +114,10 @@ def _normalized_terms(goal: str, tokens: list[str]) -> dict[str, str]:
             if t_norm == _norm(canonical) or t_norm in alias_norms:
                 terms[token] = canonical
                 break
+        if token not in terms:
+            pattern_term = _pattern_normalized_term(token)
+            if pattern_term:
+                terms[token] = pattern_term
         if token in terms:
             continue
         for canonical, aliases in alias_groups.items():
@@ -202,16 +218,20 @@ def _slot_extract(goal: str) -> dict[str, Any]:
     upper = text.upper()
     products = sorted(set(re.findall(r"\bPROD[A-Z0-9_]*\b", upper)))
     products.extend([m for m in re.findall(r"\bML_TABLE_([A-Z0-9_]+)\b", upper) if m not in products])
-    lots = sorted(set(re.findall(r"\b[A-Z]\d{4,}[A-Z]?(?:\.\d+)?\b", upper)))
+    lots = sorted(set(re.findall(r"(?<![A-Z0-9])([A-Z]\d{4,}[A-Z]?(?:\.\d+)?)(?![A-Z0-9])", upper)))
     fab_lots = [lot for lot in lots if "." in lot]
     root_lots = sorted(set([lot.split(".", 1)[0] for lot in lots]))
-    wafers = sorted(set(int(m) for m in re.findall(r"(?:#|WF|WAFER\s*)(\d{1,2})\b", upper)))
-    steps = sorted(set(re.findall(r"\b\d{1,3}\.\d+\s*[A-Z]{2,}\b|\bAA\d{4,}\b", upper)))
+    lot_wfs = sorted(set(re.findall(r"(?<![A-Z0-9])([A-Z]\d{4,}[_-](?:W|WF)?\d{1,2})(?![A-Z0-9])", upper)))
+    wafers = sorted(set(int(m) for m in re.findall(r"(?:#|WF|WAFER\s*|웨이퍼\s*)(\d{1,2})(?!\d)", upper)))
+    sort_steps = re.findall(r"(?<![A-Z0-9])\d{1,3}\.\d+\s*[A-Z]{2,}(?![A-Z0-9])", upper)
+    aa_steps = re.findall(r"(?<![A-Z0-9])(AA\d{4,})(?![A-Z0-9])", upper)
+    steps = sorted(set(sort_steps + aa_steps))
     knobs = sorted(set(re.findall(r"\b(?:KNOB|PPID)[A-Z0-9_.-]*\b", upper)))
     return {
         "products": products,
         "root_lot_ids": root_lots,
         "fab_lot_ids": fab_lots,
+        "lot_wfs": lot_wfs,
         "wafer_ids": wafers,
         "steps": steps,
         "knobs": knobs,
@@ -253,7 +273,7 @@ def _alias_candidate(token: str, normalized: str) -> SemanticCandidate | None:
     if not normalized:
         return None
     column_like = normalized if normalized in {
-        "root_lot_id", "fab_lot_id", "wafer_id", "step_id", "function_step", "product", "knob"
+        "root_lot_id", "fab_lot_id", "lot_wf", "wafer_id", "step_id", "function_step", "product", "knob"
     } else ""
     return SemanticCandidate(
         token=token,

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Flow-i Agent 단어 인식/임시 지식/multi-DB deep eval 추가
 - (Codex) AI Hub 운영 보드 항목 액션 연결
 - (Codex) AI Hub 운영 보드로 제안/스킬/workflow 큐 통합
 - (Codex) AI Hub 도구별 관리 플로우/Wiki 참조 보강

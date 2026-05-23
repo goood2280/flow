@@ -90,8 +90,10 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 cd flow
 python -m pytest tests/test_tool_registry.py tests/test_sql_workspace.py \
                   tests/test_home_orchestrator.py tests/test_skill_miner.py -v
-# 34 passed
+python3 scripts/flowi_agent_deep_eval.py
 ```
+
+`flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다.
 
 엔드 투 엔드 시나리오 (Plan 의 Verification 절 참조):
 1. AI 허브 → 도구 27개 표시 + on-off + 30일 호출수
