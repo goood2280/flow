@@ -97,7 +97,7 @@ export default function My_AIHub() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
-      <OperationsBoard days={days} />
+      <OperationsBoard days={days} onChanged={loadCatalog} />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -202,10 +202,11 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OperationsBoard({ days }) {
+function OperationsBoard({ days, onChanged }) {
   const [open, setOpen] = useState(true);
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState("");
   const [err, setErr] = useState("");
 
   async function loadBoard() {
@@ -218,6 +219,23 @@ function OperationsBoard({ days }) {
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runAction(item, action) {
+    if (!action?.endpoint || action.method !== "POST") return;
+    if (action.confirm && !confirm(`${action.label} 처리할까요? ${item.title || item.id}`)) return;
+    const key = `${item.id}:${action.id}`;
+    setActionBusy(key);
+    setErr("");
+    try {
+      await postJson(action.endpoint, action.body || {});
+      await loadBoard();
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setActionBusy("");
     }
   }
 
@@ -245,7 +263,15 @@ function OperationsBoard({ days }) {
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8 }}>
-              {lanes.map((lane) => <BoardLane key={lane.id} lane={lane} />)}
+              {lanes.map((lane) => (
+                <BoardLane
+                  key={lane.id}
+                  lane={lane}
+                  canManage={!!board?.is_admin}
+                  actionBusy={actionBusy}
+                  onAction={runAction}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -255,7 +281,7 @@ function OperationsBoard({ days }) {
 }
 
 
-function BoardLane({ lane }) {
+function BoardLane({ lane, canManage, actionBusy, onAction }) {
   const items = lane.items || [];
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, minWidth: 0, padding: 8 }}>
@@ -286,12 +312,46 @@ function BoardLane({ lane }) {
                   {item.detail}
                 </div>
               )}
+              {canManage && (item.actions || []).length > 0 && (
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>
+                  {(item.actions || []).map((action) => {
+                    const busy = actionBusy === `${item.id}:${action.id}`;
+                    return (
+                      <button
+                        key={action.id}
+                        type="button"
+                        onClick={() => onAction(item, action)}
+                        disabled={busy}
+                        style={boardActionStyle(action.tone)}
+                      >
+                        {busy ? "처리 중" : action.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+
+function boardActionStyle(tone) {
+  const color = tone === "bad" ? "var(--danger)" : tone === "ok" ? "var(--ok)" : "var(--text-secondary)";
+  const bg = tone === "bad" ? "var(--danger-50)" : tone === "ok" ? "var(--ok-50)" : "var(--bg-primary)";
+  return {
+    border: "1px solid var(--border)",
+    background: bg,
+    color,
+    borderRadius: 3,
+    fontSize: 10,
+    fontWeight: 800,
+    padding: "2px 7px",
+    cursor: "pointer",
+  };
 }
 
 

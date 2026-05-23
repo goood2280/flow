@@ -25,7 +25,7 @@ GET  /api/ai-hub/tools                      통합 카탈로그 + 30일 호출�
 GET  /api/ai-hub/tools/{name}               단일 도구 상세
 GET  /api/ai-hub/tools/{name}/history       최근 호출 이력
 GET  /api/ai-hub/tags                       태그 목록 (필터용)
-GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구
+GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구 + 승인/거부/활성화 action metadata
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
 POST /api/sql-workspace/run                 cells 실행 → result + 셀 trace

@@ -61,6 +61,10 @@ def test_ai_hub_board_combines_operations_queues(tmp_path, monkeypatch):
     assert lanes["skill_candidates"]["items"][0]["id"] == "sk_parallel_review"
     assert lanes["workflow_templates"]["items"][0]["id"] == "lot_step_review"
     assert any(item["id"] == "filebrowser" for item in lanes["disabled_tools"]["items"])
+    assert {a["id"] for a in lanes["semantic_proposals"]["items"][0]["actions"]} == {"approve", "reject"}
+    assert {a["id"] for a in lanes["skill_candidates"]["items"][0]["actions"]} == {"approve", "reject"}
+    filebrowser_item = next(item for item in lanes["disabled_tools"]["items"] if item["id"] == "filebrowser")
+    assert filebrowser_item["actions"][0]["body"] == {"enabled": True}
 
     api_out = ai_hub.operations_board(_req(), days=30, limit=5)
     assert api_out["is_admin"] is True

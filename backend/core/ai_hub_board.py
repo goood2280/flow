@@ -126,24 +126,64 @@ def _recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
 
 def _semantic_item(row: dict[str, Any]) -> dict[str, Any]:
     origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    proposal_id = str(row.get("id") or "")
     return {
-        "id": str(row.get("id") or ""),
+        "id": proposal_id,
         "title": str(row.get("term") or ""),
         "status": str(row.get("status") or "pending"),
         "meta": str(row.get("category") or ""),
         "detail": str(row.get("rationale") or origin.get("ref") or ""),
         "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+        "actions": [
+            {
+                "id": "approve",
+                "label": "승인",
+                "tone": "ok",
+                "method": "POST",
+                "endpoint": "/api/agent/semantic/proposals/decide",
+                "body": {"id": proposal_id, "status": "approved"},
+            },
+            {
+                "id": "reject",
+                "label": "거부",
+                "tone": "bad",
+                "method": "POST",
+                "endpoint": "/api/agent/semantic/proposals/decide",
+                "body": {"id": proposal_id, "status": "rejected"},
+                "confirm": True,
+            },
+        ] if proposal_id else [],
     }
 
 
 def _skill_candidate_item(row: dict[str, Any]) -> dict[str, Any]:
+    key = str(row.get("key") or "")
     return {
-        "id": str(row.get("key") or ""),
+        "id": key,
         "title": str(row.get("title") or row.get("key") or ""),
         "status": "pending",
         "meta": f"freq {row.get('freq') or 0} · users {len(row.get('users') or [])}",
         "detail": str(row.get("description") or ""),
         "updated_at": str(row.get("last_seen") or row.get("created_at") or ""),
+        "actions": [
+            {
+                "id": "approve",
+                "label": "승인",
+                "tone": "ok",
+                "method": "POST",
+                "endpoint": f"/api/skills/candidates/{key}/approve",
+                "body": {"title": str(row.get("title") or key)},
+            },
+            {
+                "id": "reject",
+                "label": "거부",
+                "tone": "bad",
+                "method": "POST",
+                "endpoint": f"/api/skills/candidates/{key}/reject",
+                "body": {},
+                "confirm": True,
+            },
+        ] if key else [],
     }
 
 
@@ -161,11 +201,22 @@ def _workflow_item(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_item(row: dict[str, Any]) -> dict[str, Any]:
+    name = str(row.get("name") or "")
     return {
-        "id": str(row.get("name") or ""),
+        "id": name,
         "title": str(row.get("title") or row.get("name") or ""),
         "status": "disabled",
         "meta": str(row.get("kind") or ""),
         "detail": str(row.get("description") or ""),
         "updated_at": str(row.get("last_run") or ""),
+        "actions": [
+            {
+                "id": "enable",
+                "label": "활성화",
+                "tone": "ok",
+                "method": "POST",
+                "endpoint": f"/api/ai-hub/tools/{name}/toggle",
+                "body": {"enabled": True},
+            },
+        ] if name else [],
     }
