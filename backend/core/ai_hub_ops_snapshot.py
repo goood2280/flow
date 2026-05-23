@@ -12,6 +12,7 @@ from core import ai_hub_deep_eval
 from core import ai_hub_readiness
 from core import ai_hub_timeline
 from core import ai_hub_wiki_health
+from core import ai_hub_workflow_runbook
 
 
 def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dict[str, Any]:
@@ -22,10 +23,12 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
     readiness = ai_hub_readiness.build_readiness(username=username, days=days)
     deep_eval = ai_hub_deep_eval.load_latest_report()
     wiki_health = ai_hub_wiki_health.build_wiki_health(limit=max(12, limit))
+    runbook = ai_hub_workflow_runbook.build_runbook(username=username, days=days, limit=max(12, limit))
     timeline = ai_hub_timeline.build_timeline(days=days, limit=max(12, limit))
 
     cards = [
         _readiness_card(readiness),
+        _runbook_card(runbook),
         _deep_eval_card(deep_eval),
         _wiki_card(wiki_health),
         _timeline_card(timeline),
@@ -44,6 +47,10 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
         "export_links": _export_links(days),
         "counts": {
             "backlog": len(readiness.get("backlog") if isinstance(readiness.get("backlog"), list) else []),
+            "runbook_workflows": _runbook_count(runbook, "workflows"),
+            "runbook_ready": _runbook_count(runbook, "ready"),
+            "runbook_attention": _runbook_count(runbook, "attention"),
+            "runbook_blocked": _runbook_count(runbook, "blocked"),
             "timeline_items": len(timeline.get("items") if isinstance(timeline.get("items"), list) else []),
             "summary_cards": len(cards),
         },
@@ -51,6 +58,7 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
             "readiness": "/api/ai-hub/readiness",
             "deep_eval_report": "/api/ai-hub/deep-eval-report",
             "wiki_health": "/api/ai-hub/wiki-health",
+            "workflow_runbook": "/api/ai-hub/workflow-runbook",
             "timeline": "/api/ai-hub/timeline",
             "ops_export": "/api/ai-hub/ops-export/download",
         },
@@ -89,6 +97,22 @@ def _deep_eval_card(report: dict[str, Any]) -> dict[str, Any]:
         "tone": _deep_eval_tone(status, failed),
         "detail": detail,
         "route": "/api/ai-hub/deep-eval-report",
+    }
+
+
+def _runbook_card(runbook: dict[str, Any]) -> dict[str, Any]:
+    workflows = _runbook_count(runbook, "workflows")
+    ready = _runbook_count(runbook, "ready")
+    attention = _runbook_count(runbook, "attention")
+    blocked = _runbook_count(runbook, "blocked")
+    unchecked = _runbook_count(runbook, "unchecked")
+    return {
+        "key": "workflow_runbook",
+        "label": "Workflow Runbook",
+        "value": f"{ready}/{workflows}",
+        "tone": _runbook_tone(workflows=workflows, blocked=blocked, attention=attention, unchecked=unchecked),
+        "detail": f"blocked {blocked} · attention {attention} · unchecked {unchecked}",
+        "route": "/api/ai-hub/workflow-runbook",
     }
 
 
@@ -220,6 +244,14 @@ def _deep_eval_tone(status: str, failed: int) -> str:
     return "bad"
 
 
+def _runbook_tone(*, workflows: int, blocked: int, attention: int, unchecked: int) -> str:
+    if blocked > 0:
+        return "bad"
+    if workflows <= 0 or attention > 0 or unchecked > 0:
+        return "warn"
+    return "ok"
+
+
 def _status_tone(status: str) -> str:
     if status == "pass":
         return "ok"
@@ -251,3 +283,8 @@ def _int(value: Any) -> int:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _runbook_count(runbook: dict[str, Any], key: str) -> int:
+    counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
+    return _int(counts.get(key))

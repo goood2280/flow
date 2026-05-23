@@ -32,6 +32,9 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
         "status": "pass",
         "counts": {"docs": 15, "sources": 10, "lint_issues": 0, "graph_nodes": 490, "graph_edges": 1347},
     })
+    monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=12: {
+        "counts": {"workflows": 3, "ready": 1, "attention": 1, "blocked": 1, "unchecked": 1},
+    })
     monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_timeline, "build_timeline", lambda days=30, limit=12, category="": {
         "items": [
             {
@@ -52,18 +55,23 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
 
     out = ai_hub_ops_snapshot.build_snapshot(username="alice", days=7, limit=2)
 
-    assert out["status"] == "warn"
-    assert out["headline"] == "Agent 운영 점검 필요"
+    assert out["status"] == "bad"
+    assert out["headline"] == "Agent 운영 문제 확인 필요"
     assert out["counts"]["backlog"] == 3
     assert len(out["top_actions"]) == 2
     assert out["top_actions"][0]["tone"] == "bad"
     assert out["recent_events"][0]["category"] == "wiki"
     cards = {row["key"]: row for row in out["summary_cards"]}
     assert cards["readiness"]["value"] == "74점"
+    assert cards["workflow_runbook"]["value"] == "1/3"
+    assert cards["workflow_runbook"]["tone"] == "bad"
+    assert cards["workflow_runbook"]["detail"] == "blocked 1 · attention 1 · unchecked 1"
     assert cards["deep_eval"]["value"] == "131/131"
     assert cards["wiki"]["detail"] == "sources 10 · lint 0 · graph 490/1347"
     assert cards["timeline"]["detail"] == "wiki 1"
+    assert out["counts"]["runbook_blocked"] == 1
     assert out["export_links"][0]["href"].startswith("/api/ai-hub/ops-export/download?format=obsidian&days=7")
+    assert out["sources"]["workflow_runbook"] == "/api/ai-hub/workflow-runbook"
     assert out["sources"]["timeline"] == "/api/ai-hub/timeline"
 
 

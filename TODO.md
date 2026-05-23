@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 스냅샷에 Workflow Runbook 상태 반영
 - (Codex) Workflow Runbook 상태/issue 필터 추가
 - (Codex) Workflow Runbook 시작 템플릿 생성 액션 연결
 - (Codex) AI Hub Agent workflow runbook 관리 표 추가
