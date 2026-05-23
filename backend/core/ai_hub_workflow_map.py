@@ -84,6 +84,8 @@ def build_workflow_map(
     tool_refs_loaded: set[str] = set()
     tools_without_refs: set[str] = set()
     workflow_missing_tools: set[str] = set()
+    workflow_empty_templates: set[str] = set()
+    workflow_incomplete_steps: set[str] = set()
     workflow_step_edges = 0
 
     def add_node(node: dict[str, Any]) -> bool:
@@ -195,10 +197,14 @@ def build_workflow_map(
         add_edge("stage:trigger", workflow_id, "template", "workflow")
         add_edge(workflow_id, "stage:policy", "guardrail", "workflow")
         if not steps:
+            workflow_empty_templates.add(key)
             add_edge(workflow_id, "stage:improve", "fill steps", "workflow")
             continue
         for step in steps:
             unit_ai = str(step.get("unit_ai") or "").strip()
+            action = str(step.get("action") or "").strip()
+            if not unit_ai or not action:
+                workflow_incomplete_steps.add(f"{key}#{int(step.get('index') or 0) + 1}")
             if not unit_ai:
                 continue
             tool = tool_by_name.get(unit_ai) or _missing_tool_row(unit_ai)
@@ -222,6 +228,8 @@ def build_workflow_map(
         "workflow_templates_personal": sum(1 for row in visible_workflows if not row.get("shared")),
         "workflow_step_edges": workflow_step_edges,
         "workflow_missing_tools": len(workflow_missing_tools),
+        "workflow_empty_templates": len(workflow_empty_templates),
+        "workflow_incomplete_steps": len(workflow_incomplete_steps),
         "nodes": len(nodes),
         "edges": len(edges),
         "reference_nodes": ref_count,
@@ -247,7 +255,13 @@ def build_workflow_map(
         ],
         "nodes": nodes,
         "edges": edges,
-        "warnings": _warnings(counts, sorted(tools_without_refs), sorted(workflow_missing_tools)),
+        "warnings": _warnings(
+            counts,
+            sorted(tools_without_refs),
+            sorted(workflow_missing_tools),
+            sorted(workflow_empty_templates),
+            sorted(workflow_incomplete_steps),
+        ),
     }
 
 
@@ -727,6 +741,8 @@ def _warnings(
     counts: dict[str, Any],
     tools_without_refs: list[str],
     workflow_missing_tools: list[str],
+    workflow_empty_templates: list[str],
+    workflow_incomplete_steps: list[str],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if counts["tools_disabled_visible"]:
@@ -748,5 +764,19 @@ def _warnings(
             "tone": "warn",
             "message": f"workflow step이 참조하지만 등록되지 않은 도구 {len(workflow_missing_tools)}개가 있습니다.",
             "items": workflow_missing_tools[:12],
+        })
+    if workflow_empty_templates:
+        out.append({
+            "key": "workflow_empty_templates",
+            "tone": "warn",
+            "message": f"step이 비어 있는 workflow template {len(workflow_empty_templates)}개가 있습니다.",
+            "items": workflow_empty_templates[:12],
+        })
+    if workflow_incomplete_steps:
+        out.append({
+            "key": "workflow_incomplete_steps",
+            "tone": "warn",
+            "message": f"unit_ai/action이 불완전한 workflow step {len(workflow_incomplete_steps)}개가 있습니다.",
+            "items": workflow_incomplete_steps[:12],
         })
     return out

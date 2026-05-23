@@ -46,6 +46,9 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
             },
             "warnings": [
                 {"key": "missing_evidence", "items": ["tool_a", "tool_b"]},
+                {"key": "workflow_empty_templates", "items": ["empty_workflow"]},
+                {"key": "workflow_incomplete_steps", "items": ["incomplete_step#1"]},
+                {"key": "workflow_missing_tools", "items": ["ghost_unit"]},
             ],
         }
 
@@ -68,6 +71,9 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     assert "missing_evidence:tool_a" in backlog_ids
     assert "semantic_proposal:p1" in backlog_ids
     assert "skill_candidate:sk1" in backlog_ids
+    assert "workflow_empty_templates:empty_workflow" in backlog_ids
+    assert "workflow_incomplete_steps:incomplete_step#1" in backlog_ids
+    assert "workflow_missing_tools:ghost_unit" in backlog_ids
     assert "workflow_assets:none" in backlog_ids
     assert "skills:none" in backlog_ids
     by_id = {item["id"]: item for item in out["backlog"]}

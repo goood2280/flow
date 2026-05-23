@@ -226,3 +226,52 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
     assert any(row["path"] == "nodes/workflow-ops-knob-lotwf-review.md" for row in obsidian["files"])
     index_note = next(row for row in obsidian["files"] if row["path"] == "Flow AI Hub Workflow Map.md")
     assert "## Workflows" in index_note["body"]
+
+
+def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_path):
+    from core import ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
+
+    def fake_list_tools(include_stats=True, days=30):
+        assert include_stats is True
+        return [{
+            "kind": "unit_ai",
+            "name": "filebrowser",
+            "title": "FileBrowser",
+            "description": "raw data preview",
+            "enabled": True,
+            "tags": ["filebrowser"],
+            "count_30d": 0,
+            "user_count_30d": 0,
+            "knowledge_refs": {"wiki_doc_ids": ["filebrowser_schema_manual"]},
+        }]
+
+    monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
+    monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
+
+    wf_templates.save_template({
+        "key": "empty_workflow",
+        "title": "비어 있는 workflow",
+        "shared": True,
+    }, by="admin", is_admin=True)
+    wf_templates.save_template({
+        "key": "incomplete_step",
+        "title": "action 누락 workflow",
+        "steps": [{"unit_ai": "filebrowser", "action": ""}],
+        "shared": True,
+    }, by="admin", is_admin=True)
+    wf_templates.save_template({
+        "key": "missing_tool",
+        "title": "미등록 unit_ai workflow",
+        "steps": [{"unit_ai": "ghost_unit", "action": "lookup"}],
+        "shared": True,
+    }, by="admin", is_admin=True)
+
+    out = ai_hub_workflow_map.build_workflow_map(username="operator", days=30, limit=10)
+
+    assert out["counts"]["workflow_empty_templates"] == 1
+    assert out["counts"]["workflow_incomplete_steps"] == 1
+    assert out["counts"]["workflow_missing_tools"] == 1
+    warnings = {row["key"]: row for row in out["warnings"]}
+    assert warnings["workflow_empty_templates"]["items"] == ["empty_workflow"]
+    assert warnings["workflow_incomplete_steps"]["items"] == ["incomplete_step#1"]
+    assert warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]

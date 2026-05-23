@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 워크플로우 품질 경고/backlog 연결
 - (Codex) AI Hub 워크플로우 노드 dry-run 관리 연결
 - (Codex) AI Hub 워크플로우 템플릿 지도 노드 연결
 - (Codex) AI Hub 운영 시작 workflow bootstrap 액션 추가

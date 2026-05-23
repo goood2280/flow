@@ -158,6 +158,29 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "action": "feature doc, schema relation, wiki_doc_id, required args 중 하나 이상 연결",
             "route": "/api/ai-hub/workflow-map",
         })
+    workflow_warning_specs = {
+        "workflow_missing_tools": ("medium", "워크플로우 도구 참조 확인", "template step이 ToolRegistry에 없는 unit_ai를 참조합니다."),
+        "workflow_empty_templates": ("medium", "워크플로우 step 추가", "template은 있지만 실행 step이 비어 있습니다."),
+        "workflow_incomplete_steps": ("medium", "워크플로우 step 정의 보강", "template step의 unit_ai 또는 action이 비어 있습니다."),
+    }
+    for warning in workflow.get("warnings") or []:
+        if not isinstance(warning, dict):
+            continue
+        key = str(warning.get("key") or "")
+        spec = workflow_warning_specs.get(key)
+        if not spec:
+            continue
+        severity, title, detail = spec
+        for target in [str(v) for v in (warning.get("items") or []) if str(v).strip()][:8]:
+            out.append({
+                "id": f"{key}:{target}",
+                "severity": severity,
+                "title": title,
+                "target": target,
+                "detail": detail,
+                "action": "Agent workflow template에서 step/action/도구 키를 정리",
+                "route": "/api/agent/workflows",
+            })
     for item in (lanes.get("semantic_proposals", {}).get("items") or [])[:8]:
         out.append({
             "id": "semantic_proposal:" + str(item.get("id") or item.get("title") or ""),
