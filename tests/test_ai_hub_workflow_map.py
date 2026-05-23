@@ -185,6 +185,8 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
     nodes = {node["id"]: node for node in out["nodes"]}
     assert nodes["workflow:ops_knob_lotwf_review"]["type"] == "workflow"
     assert nodes["workflow:ops_knob_lotwf_review"]["metrics"]["steps"] == 2
+    assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["endpoint"] == "/api/agent/workflows/execute"
+    assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["body"]["dry_run"] is True
     assert nodes["workflow:personal_lot_step"]["shared"] is False
     assert "workflow:other_private" not in nodes
     edges = {(edge["from"], edge["to"], edge["label"], edge["kind"]) for edge in out["edges"]}

@@ -190,6 +190,7 @@ def build_workflow_map(
             "tags": _workflow_tags(workflow, steps),
             "metrics": {"steps": len(steps)},
             "steps": steps,
+            "actions": _workflow_actions(key),
         })
         add_edge("stage:trigger", workflow_id, "template", "workflow")
         add_edge(workflow_id, "stage:policy", "guardrail", "workflow")
@@ -650,6 +651,20 @@ def _workflow_detail(row: dict[str, Any], steps: list[dict[str, Any]]) -> str:
     if len(steps) > 8:
         step_lines.append(f"+{len(steps) - 8} more")
     return "\n".join(parts + ["steps:"] + step_lines).strip()
+
+
+def _workflow_actions(key: str) -> list[dict[str, Any]]:
+    return [{
+        "id": "dry_run",
+        "label": "Dry-run",
+        "method": "POST",
+        "endpoint": "/api/agent/workflows/execute",
+        "body": {
+            "key": key,
+            "slots": {},
+            "dry_run": True,
+        },
+    }]
 
 
 def _missing_tool_row(name: str) -> dict[str, Any]:

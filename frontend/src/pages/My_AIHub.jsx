@@ -371,6 +371,8 @@ function WorkflowMapPanel({ days }) {
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState("");
+  const [nodeActionBusy, setNodeActionBusy] = useState("");
+  const [nodeActionResult, setNodeActionResult] = useState(null);
   const [err, setErr] = useState("");
 
   async function loadMap() {
@@ -415,7 +417,23 @@ function WorkflowMapPanel({ days }) {
     }
   }
 
+  async function runNodeAction(node, action) {
+    if (!node?.id || !action?.endpoint || action.method !== "POST") return;
+    const key = `${node.id}:${action.id}`;
+    setNodeActionBusy(key);
+    setErr("");
+    try {
+      const out = await postJson(action.endpoint, action.body || {});
+      setNodeActionResult({ nodeId: node.id, actionId: action.id, payload: out });
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setNodeActionBusy("");
+    }
+  }
+
   useEffect(() => { if (open) loadMap(); }, [open, days, focusTag]);
+  useEffect(() => { setNodeActionResult(null); }, [selectedId]);
 
   const nodes = map?.nodes || [];
   const edges = map?.edges || [];
@@ -479,7 +497,14 @@ function WorkflowMapPanel({ days }) {
                     />
                   ))}
                 </div>
-                <WorkflowNodeDetail node={selected} edges={edges} nodes={nodes} />
+                <WorkflowNodeDetail
+                  node={selected}
+                  edges={edges}
+                  nodes={nodes}
+                  onAction={runNodeAction}
+                  actionBusy={nodeActionBusy}
+                  actionResult={nodeActionResult}
+                />
               </div>
             </>
           ) : (
@@ -587,7 +612,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
 }
 
 
-function WorkflowNodeDetail({ node, edges, nodes }) {
+function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionResult }) {
   if (!node) {
     return (
       <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
@@ -618,6 +643,25 @@ function WorkflowNodeDetail({ node, edges, nodes }) {
             <Tag>{node.metrics?.steps || 0} steps</Tag>
             {node.owner && <Tag>{node.owner}</Tag>}
           </div>
+          {(node.actions || []).length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+              {(node.actions || []).map((action) => {
+                const busy = actionBusy === `${node.id}:${action.id}`;
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    onClick={() => onAction && onAction(node, action)}
+                    disabled={busy}
+                    style={btnGhost}
+                  >
+                    {busy ? "실행 중" : action.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {actionResult?.nodeId === node.id && <WorkflowActionResult payload={actionResult.payload} />}
           {(node.steps || []).length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 8 }}>
               {(node.steps || []).slice(0, 8).map((step) => (
@@ -639,6 +683,27 @@ function WorkflowNodeDetail({ node, edges, nodes }) {
       )}
       <WorkflowEdgeList title="입력" edges={incoming} other={(edge) => byId.get(edge.from)} />
       <WorkflowEdgeList title="출력" edges={outgoing} other={(edge) => byId.get(edge.to)} />
+    </div>
+  );
+}
+
+
+function WorkflowActionResult({ payload }) {
+  const execution = payload?.execution || {};
+  const steps = Array.isArray(execution.steps) ? execution.steps : [];
+  const statuses = [...new Set(steps.map((step) => step.status).filter(Boolean))];
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", borderRadius: 4, padding: 6, marginBottom: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 5 }}>
+        <Tag>{execution.dry_run ? "dry-run" : "execute"}</Tag>
+        <Tag>{steps.length} steps</Tag>
+        <Tag>{execution.confirm_required ? "confirm" : "guarded"}</Tag>
+      </div>
+      {statuses.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {statuses.slice(0, 6).map((status) => <Tag key={status}>{status}</Tag>)}
+        </div>
+      )}
     </div>
   );
 }
