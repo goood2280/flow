@@ -127,6 +127,21 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusToolCatalogNode(node) {
+    const name = String(node?.tool_name || (node?.id || "").replace(/^tool:/, "") || "").trim();
+    if (!name) return;
+    setKindFilter("");
+    setTagFilter("");
+    setEnabledOnly(false);
+    setSearch(name);
+    const match = items.find((it) => String(it.name || "") === name);
+    if (match) openDetail(match);
+    else {
+      setSelected(null);
+      setHistory([]);
+    }
+  }
+
   function focusReadinessBacklog(row) {
     if (!row?.id) return;
     setReadinessFocus((prev) => ({
@@ -235,6 +250,7 @@ export default function My_AIHub() {
         onWarningSelect={focusWorkflowMapWarning}
         onRunbookFocus={focusRunbookWorkflow}
         onWikiFocus={focusWikiEvidenceNode}
+        onToolFocus={focusToolCatalogNode}
       />
       <SkillsPanel />
 
@@ -1694,7 +1710,7 @@ function WorkflowRunbookDetail({ row }) {
 }
 
 
-function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus, onWikiFocus }) {
+function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus, onWikiFocus, onToolFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [nodeSearch, setNodeSearch] = useState("");
@@ -1901,6 +1917,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus, 
                   onAction={runNodeAction}
                   onRunbookFocus={onRunbookFocus}
                   onWikiFocus={onWikiFocus}
+                  onToolFocus={onToolFocus}
                   actionBusy={nodeActionBusy}
                   actionResult={nodeActionResult}
                 />
@@ -2177,7 +2194,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
 }
 
 
-function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunbookFocus, onWikiFocus, actionBusy, actionResult }) {
+function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunbookFocus, onWikiFocus, onToolFocus, actionBusy, actionResult }) {
   if (!node) {
     return (
       <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
@@ -2195,12 +2212,21 @@ function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunb
       <div style={{ color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all", marginBottom: 6 }}>{node.id}</div>
       <div style={{ color: "var(--text-secondary)", lineHeight: 1.45, marginBottom: 8 }}>{node.detail}</div>
       {node.type === "tool" && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
-          <Tag>{node.kind}</Tag>
-          <Tag>{node.enabled ? "enabled" : "disabled"}</Tag>
-          <Tag>{node.metrics?.count || 0} calls</Tag>
-          <Tag>{node.metrics?.users || 0} users</Tag>
-        </div>
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+            <Tag>{node.kind}</Tag>
+            <Tag>{node.enabled ? "enabled" : "disabled"}</Tag>
+            <Tag>{node.metrics?.count || 0} calls</Tag>
+            <Tag>{node.metrics?.users || 0} users</Tag>
+          </div>
+          {onToolFocus && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+              <button type="button" onClick={() => onToolFocus(node)} style={btnGhost}>
+                도구 상세
+              </button>
+            </div>
+          )}
+        </>
       )}
       {node.type === "workflow" && (
         <>
