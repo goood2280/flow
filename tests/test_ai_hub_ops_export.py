@@ -42,6 +42,20 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         "recent_sources": [{"source_id": "src_1", "source_type": "markdown", "title": "Source", "actor": "alice"}],
         "recent_log": [{"action": "ingest_commit", "doc_id": "agent_terms", "message": "Committed Agent terms"}],
     })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
+        "counts": {"workflows": 1, "ready": 1, "attention": 0, "blocked": 0, "checked": 1},
+        "items": [{
+            "key": "ops_knob_lotwf_review",
+            "title": "KNOB 기반 lot_wf 영향 확인",
+            "status": "ready",
+            "shared": True,
+            "step_count": 2,
+            "tool_names": ["splittable", "filebrowser"],
+            "last_status": "dry_run:2",
+            "issues": [],
+            "steps": [{"index": 1, "unit_ai": "splittable", "action": "knob_impact"}],
+        }],
+    })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
         "days": days,
         "items": [{
@@ -62,26 +76,30 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     assert out["format"] == "obsidian_ops"
     assert out["counts"]["readiness_backlog"] == 1
     paths = [row["path"] for row in out["files"]]
-    assert paths[:5] == [
+    assert paths[:6] == [
         "Flow AI Hub Operations.md",
         "operations/readiness.md",
         "operations/deep-eval.md",
         "operations/wiki-health.md",
+        "operations/workflow-runbook.md",
         "operations/timeline.md",
     ]
     assert "Flow AI Hub Workflow Map.md" in paths
     index = out["files"][0]["body"]
     assert "[[operations/readiness|Readiness]]" in index
     assert "[[operations/wiki-health|Agent Wiki Health]]" in index
+    assert "[[operations/workflow-runbook|Workflow Runbook]]" in index
     assert "[[Flow AI Hub Workflow Map|Workflow Map]]" in index
 
     archive = ai_hub_ops_export.export_obsidian_zip(out)
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         assert "operations/readiness.md" in zf.namelist()
         assert "operations/wiki-health.md" in zf.namelist()
+        assert "operations/workflow-runbook.md" in zf.namelist()
         assert "Wiki 보강" in zf.read("operations/readiness.md").decode("utf-8")
         assert "semantic/step_id simple question" in zf.read("operations/deep-eval.md").decode("utf-8")
         assert "Agent terms" in zf.read("operations/wiki-health.md").decode("utf-8")
+        assert "KNOB 기반 lot_wf 영향 확인" in zf.read("operations/workflow-runbook.md").decode("utf-8")
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -102,6 +120,10 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
         "status": "warn",
         "counts": {"docs": 4, "agent_wiki_pages": 2, "sources": 3, "graph_nodes": 8, "graph_edges": 7, "lint_issues": 1},
     })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
+        "counts": {"workflows": 1, "ready": 0, "attention": 1, "blocked": 0},
+        "items": [{"key": "ops_lot_step_review", "title": "LOT step", "status": "attention", "step_count": 2, "last_status": "", "issues": [{"label": "최근 검증 없음"}]}],
+    })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
         "days": days,
         "items": [{"category": "validation", "title": "Agent deep-eval 재검증", "username": "alice"}],
@@ -118,14 +140,16 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     workflow = out["workflow"]
     assert workflow["name"] == "Flow AI Hub operations"
     node_ids = {node["id"] for node in workflow["nodes"]}
-    assert {"ops:index", "ops:readiness", "ops:deep_eval", "ops:wiki_health", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
+    assert {"ops:index", "ops:readiness", "ops:runbook", "ops:deep_eval", "ops:wiki_health", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
     assert workflow["connections"]["ops:index"]["main"][0][0]["node"] == "ops:readiness"
-    assert workflow["connections"]["ops:readiness"]["main"][0][0]["node"] == "ops:deep_eval"
+    assert workflow["connections"]["ops:readiness"]["main"][0][0]["node"] == "ops:runbook"
+    assert workflow["connections"]["ops:runbook"]["main"][0][0]["node"] == "ops:deep_eval"
     assert workflow["connections"]["ops:deep_eval"]["main"][0][0]["node"] == "ops:wiki_health"
     assert any(row["node"] == "ops:backlog:1" for row in workflow["connections"]["ops:readiness"]["main"][0])
     assert workflow["staticData"]["readiness_score"] == 74
     assert workflow["staticData"]["deep_eval_status"] == "fail"
     assert workflow["staticData"]["wiki_health_status"] == "warn"
+    assert workflow["staticData"]["runbook_workflows"] == 1
 
 
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):

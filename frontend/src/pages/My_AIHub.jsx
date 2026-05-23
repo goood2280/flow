@@ -102,6 +102,7 @@ export default function My_AIHub() {
       <DeepEvalPanel />
       <WikiHealthPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
+      <WorkflowRunbookPanel days={days} />
       <TimelinePanel days={days} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
@@ -888,6 +889,174 @@ function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WorkflowRunbookPanel({ days }) {
+  const [open, setOpen] = useState(false);
+  const [focusTag, setFocusTag] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState("");
+  const [actionResult, setActionResult] = useState(null);
+  const [err, setErr] = useState("");
+
+  async function loadRunbook() {
+    setLoading(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({ days: String(days), limit: "40" });
+      if (focusTag) qs.set("focus_tag", focusTag);
+      const out = await sf(`/api/ai-hub/workflow-runbook?${qs.toString()}`);
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runAction(row, action) {
+    if (!action?.endpoint || action.method !== "POST") return;
+    const key = `${row.key}:${action.id}`;
+    setActionBusy(key);
+    setErr("");
+    setActionResult(null);
+    try {
+      const out = await postJson(action.endpoint, action.body || {});
+      setActionResult({ key: row.key, payload: out });
+      await loadRunbook();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag]);
+
+  const counts = data?.counts || {};
+  const rows = data?.items || [];
+  const topTags = data?.top_tags || [];
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Workflow Runbook</div>
+        {data && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            <BoardPill tone="neutral">전체 {counts.workflows || 0}</BoardPill>
+            <BoardPill tone="ok">ready {counts.ready || 0}</BoardPill>
+            <BoardPill tone="warn">attention {counts.attention || 0}</BoardPill>
+            <BoardPill tone="bad">blocked {counts.blocked || 0}</BoardPill>
+          </div>
+        )}
+        <div style={{ flex: 1 }} />
+        {open && (
+          <>
+            <select
+              value={focusTag}
+              onChange={(e) => setFocusTag(e.target.value)}
+              style={{ ...selectStyle, width: 170, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 태그</option>
+              {topTags.map((row) => (
+                <option key={row.tag} value={row.tag}>{row.tag} ({row.count})</option>
+              ))}
+            </select>
+            <button onClick={loadRunbook} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
+          </>
+        )}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : data ? (
+            <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, overflowX: "auto" }}>
+              <div style={{ minWidth: 920, display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                <div>상태</div>
+                <div>Workflow</div>
+                <div>Step</div>
+                <div>Tools</div>
+                <div>검증</div>
+                <div>Issues</div>
+                <div>Action</div>
+              </div>
+              <div style={{ minWidth: 920, maxHeight: 280, overflowY: "auto" }}>
+                {rows.length === 0 ? (
+                  <div style={{ padding: 12, fontSize: 11, color: "var(--text-secondary)" }}>등록된 workflow template 없음</div>
+                ) : rows.map((row) => (
+                  <WorkflowRunbookRow
+                    key={row.key}
+                    row={row}
+                    actionBusy={actionBusy}
+                    actionResult={actionResult}
+                    onAction={runAction}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>Runbook을 열면 workflow별 준비 상태를 불러옵니다.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
+  const issues = row.issues || [];
+  return (
+    <div style={{ borderBottom: "1px dashed var(--border)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "7px 8px", alignItems: "center", fontSize: 11 }}>
+        <div><BoardPill tone={row.tone}>{row.status}</BoardPill></div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 850, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
+          <div style={{ marginTop: 2, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {row.shared ? "shared" : "personal"}{row.owner ? ` · ${row.owner}` : ""} · {row.key}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          <Tag>{row.step_count || 0}</Tag>
+          <Tag>{row.evidence_count || 0} refs</Tag>
+        </div>
+        <div style={{ minWidth: 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {(row.tool_names || []).slice(0, 5).map((name) => <Tag key={name}>{name}</Tag>)}
+          {(row.tool_names || []).length > 5 && <Tag>+{row.tool_names.length - 5}</Tag>}
+        </div>
+        <div style={{ minWidth: 0, color: "var(--text-secondary)" }}>
+          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.last_status || "미검증"}</div>
+          <div style={{ color: "var(--muted)", fontSize: 10 }}>{row.run_count || 0} checks</div>
+        </div>
+        <div style={{ minWidth: 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {issues.length === 0 ? <BoardPill tone="ok">ready</BoardPill> : issues.slice(0, 4).map((issue) => (
+            <BoardPill key={issue.key} tone={issue.tone}>{issue.label}</BoardPill>
+          ))}
+        </div>
+        <div>
+          {(row.actions || []).slice(0, 1).map((action) => {
+            const busy = actionBusy === `${row.key}:${action.id}`;
+            return (
+              <button key={action.id} type="button" onClick={() => onAction(row, action)} disabled={busy} style={btnGhost}>
+                {busy ? "실행 중" : action.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {actionResult?.key === row.key && (
+        <div style={{ padding: "0 8px 8px 118px" }}>
+          <WorkflowActionResult payload={actionResult.payload} />
         </div>
       )}
     </div>

@@ -1,8 +1,8 @@
 """AI Hub Obsidian operations export.
 
 Builds a point-in-time vault bundle from existing AI Hub derived views:
-readiness, deep-eval, timeline, and the workflow map. No runtime state is
-created or modified.
+readiness, deep-eval, workflow runbook, timeline, and the workflow map. No
+runtime state is created or modified.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from core import ai_hub_readiness
 from core import ai_hub_timeline
 from core import ai_hub_wiki_health
 from core import ai_hub_workflow_map
+from core import ai_hub_workflow_runbook
 
 
 def build_obsidian_export(
@@ -33,6 +34,7 @@ def build_obsidian_export(
     readiness = ai_hub_readiness.build_readiness(username=username, days=days)
     deep_eval = ai_hub_deep_eval.load_latest_report()
     wiki_health = ai_hub_wiki_health.build_wiki_health(limit=limit)
+    runbook = ai_hub_workflow_runbook.build_runbook(username=username, days=days, limit=limit, focus_tag=focus_tag)
     timeline = ai_hub_timeline.build_timeline(days=days, limit=min(80, max(30, limit)))
     workflow_export = ai_hub_workflow_map.export_workflow_map(
         export_format="obsidian",
@@ -43,10 +45,11 @@ def build_obsidian_export(
         focus_tag=focus_tag,
     )
     files = [
-        {"path": "Flow AI Hub Operations.md", "body": _index_note(readiness, deep_eval, wiki_health, timeline, workflow_export)},
+        {"path": "Flow AI Hub Operations.md", "body": _index_note(readiness, deep_eval, wiki_health, runbook, timeline, workflow_export)},
         {"path": "operations/readiness.md", "body": _readiness_note(readiness)},
         {"path": "operations/deep-eval.md", "body": _deep_eval_note(deep_eval)},
         {"path": "operations/wiki-health.md", "body": _wiki_health_note(wiki_health)},
+        {"path": "operations/workflow-runbook.md", "body": _workflow_runbook_note(runbook)},
         {"path": "operations/timeline.md", "body": _timeline_note(timeline)},
     ]
     files.extend([row for row in workflow_export.get("files") or [] if isinstance(row, dict)])
@@ -64,6 +67,7 @@ def build_obsidian_export(
             "readiness_backlog": len(readiness.get("backlog") or []),
             "deep_eval_failed": int(((deep_eval.get("summary") or {}) if isinstance(deep_eval.get("summary"), dict) else {}).get("failed") or 0),
             "wiki_lint_issues": int(((wiki_health.get("counts") or {}) if isinstance(wiki_health.get("counts"), dict) else {}).get("lint_issues") or 0),
+            "runbook_workflows": int(((runbook.get("counts") or {}) if isinstance(runbook.get("counts"), dict) else {}).get("workflows") or 0),
             "timeline_items": len(timeline.get("items") or []),
             "workflow_files": len(workflow_export.get("files") or []),
         },
@@ -71,6 +75,7 @@ def build_obsidian_export(
             "readiness": "/api/ai-hub/readiness",
             "deep_eval": "/api/ai-hub/deep-eval-report",
             "wiki_health": "/api/ai-hub/wiki-health",
+            "workflow_runbook": "/api/ai-hub/workflow-runbook",
             "timeline": "/api/ai-hub/timeline",
             "workflow_map": "/api/ai-hub/workflow-map",
         },
@@ -92,6 +97,7 @@ def build_n8n_export(
     readiness = ai_hub_readiness.build_readiness(username=username, days=days)
     deep_eval = ai_hub_deep_eval.load_latest_report()
     wiki_health = ai_hub_wiki_health.build_wiki_health(limit=limit)
+    runbook = ai_hub_workflow_runbook.build_runbook(username=username, days=days, limit=limit, focus_tag=focus_tag)
     timeline = ai_hub_timeline.build_timeline(days=days, limit=min(40, max(20, limit)))
     workflow = ai_hub_workflow_map.build_workflow_map(
         username=username,
@@ -102,12 +108,13 @@ def build_n8n_export(
     )
 
     nodes: list[dict[str, Any]] = []
-    nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, wiki_health, timeline, workflow), 0, 0))
+    nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, wiki_health, runbook, timeline, workflow), 0, 0))
     nodes.append(_n8n_note("ops:readiness", "Readiness", _n8n_readiness_content(readiness), 340, 0))
-    nodes.append(_n8n_note("ops:deep_eval", "Agent Deep Eval", _n8n_deep_eval_content(deep_eval), 680, 0))
-    nodes.append(_n8n_note("ops:wiki_health", "Agent Wiki Health", _n8n_wiki_health_content(wiki_health), 1020, 0))
-    nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1360, 0))
-    nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 1700, 0))
+    nodes.append(_n8n_note("ops:runbook", "Workflow Runbook", _n8n_runbook_content(runbook), 680, 0))
+    nodes.append(_n8n_note("ops:deep_eval", "Agent Deep Eval", _n8n_deep_eval_content(deep_eval), 1020, 0))
+    nodes.append(_n8n_note("ops:wiki_health", "Agent Wiki Health", _n8n_wiki_health_content(wiki_health), 1360, 0))
+    nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1700, 0))
+    nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 2040, 0))
     for idx, row in enumerate((readiness.get("backlog") if isinstance(readiness.get("backlog"), list) else [])[:10]):
         if not isinstance(row, dict):
             continue
@@ -122,7 +129,8 @@ def build_n8n_export(
 
     connections: dict[str, dict[str, list[list[dict[str, Any]]]]] = {
         "ops:index": {"main": [[{"node": "ops:readiness", "type": "main", "index": 0}]]},
-        "ops:readiness": {"main": [[{"node": "ops:deep_eval", "type": "main", "index": 0}]]},
+        "ops:readiness": {"main": [[{"node": "ops:runbook", "type": "main", "index": 0}]]},
+        "ops:runbook": {"main": [[{"node": "ops:deep_eval", "type": "main", "index": 0}]]},
         "ops:deep_eval": {"main": [[{"node": "ops:wiki_health", "type": "main", "index": 0}]]},
         "ops:wiki_health": {"main": [[{"node": "ops:timeline", "type": "main", "index": 0}]]},
         "ops:timeline": {"main": [[{"node": "ops:workflow_map", "type": "main", "index": 0}]]},
@@ -152,6 +160,8 @@ def build_n8n_export(
                 "deep_eval_status": deep_eval.get("status"),
                 "wiki_health_status": wiki_health.get("status"),
                 "wiki_lint_issues": (wiki_health.get("counts") or {}).get("lint_issues") if isinstance(wiki_health.get("counts"), dict) else 0,
+                "runbook_workflows": (runbook.get("counts") or {}).get("workflows") if isinstance(runbook.get("counts"), dict) else 0,
+                "runbook_ready": (runbook.get("counts") or {}).get("ready") if isinstance(runbook.get("counts"), dict) else 0,
                 "timeline_items": len(timeline.get("items") or []),
                 "workflow_nodes": len(workflow.get("nodes") or []),
             },
@@ -178,14 +188,16 @@ def _n8n_note(node_id: str, name: str, content: str, x: int, y: int, *, width: i
     }
 
 
-def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], timeline: dict[str, Any], workflow: dict[str, Any]) -> str:
+def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], runbook: dict[str, Any], timeline: dict[str, Any], workflow: dict[str, Any]) -> str:
     summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
     wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
+    runbook_counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
     return "\n".join([
         "## Flow AI Hub Operations",
         f"- readiness: {readiness.get('score') or 0} / {readiness.get('level') or ''}",
         f"- deep-eval: {deep_eval.get('status') or 'missing'} {summary.get('passed') or 0}/{summary.get('total') or 0}",
         f"- wiki-health: {wiki_health.get('status') or 'missing'} docs={wiki_counts.get('docs') or 0} lint={wiki_counts.get('lint_issues') or 0}",
+        f"- workflow-runbook: {runbook_counts.get('ready') or 0}/{runbook_counts.get('workflows') or 0} ready",
         f"- timeline: {len(timeline.get('items') or [])} items",
         f"- workflow graph: {len(workflow.get('nodes') or [])} nodes",
         "",
@@ -232,6 +244,25 @@ def _n8n_wiki_health_content(health: dict[str, Any]) -> str:
     ])
 
 
+def _n8n_runbook_content(runbook: dict[str, Any]) -> str:
+    counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
+    lines = [
+        "## Workflow Runbook",
+        f"workflows: {counts.get('workflows') or 0}",
+        f"ready: {counts.get('ready') or 0}",
+        f"attention: {counts.get('attention') or 0}",
+        f"blocked: {counts.get('blocked') or 0}",
+        "",
+    ]
+    for row in (runbook.get("items") if isinstance(runbook.get("items"), list) else [])[:8]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(f"- {row.get('status')}: {row.get('title') or row.get('key')} steps={row.get('step_count') or 0} last={row.get('last_status') or '-'}")
+    if len(lines) == 6:
+        lines.append("- no workflow templates")
+    return "\n".join(lines)
+
+
 def _n8n_timeline_content(timeline: dict[str, Any]) -> str:
     lines = ["## Timeline", f"days: {timeline.get('days') or 0}", ""]
     for row in (timeline.get("items") if isinstance(timeline.get("items"), list) else [])[:8]:
@@ -266,9 +297,10 @@ def _n8n_backlog_content(row: dict[str, Any]) -> str:
     ])
 
 
-def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], timeline: dict[str, Any], workflow_export: dict[str, Any]) -> str:
+def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], runbook: dict[str, Any], timeline: dict[str, Any], workflow_export: dict[str, Any]) -> str:
     summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
     wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
+    runbook_counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
     workflow_files = workflow_export.get("files") if isinstance(workflow_export.get("files"), list) else []
     return "\n".join([
         "---",
@@ -284,6 +316,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         f"- readiness: `{readiness.get('score') or 0}` / `{readiness.get('level') or ''}`",
         f"- deep_eval: `{deep_eval.get('status') or 'missing'}` `{summary.get('passed') or 0}/{summary.get('total') or 0}`",
         f"- wiki_health: `{wiki_health.get('status') or 'missing'}` docs `{wiki_counts.get('docs') or 0}` lint `{wiki_counts.get('lint_issues') or 0}`",
+        f"- workflow_runbook: ready `{runbook_counts.get('ready') or 0}/{runbook_counts.get('workflows') or 0}` blocked `{runbook_counts.get('blocked') or 0}`",
         f"- timeline_items: `{len(timeline.get('items') or [])}`",
         f"- workflow_notes: `{len(workflow_files)}`",
         "",
@@ -292,6 +325,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         "- [[operations/readiness|Readiness]]",
         "- [[operations/deep-eval|Agent Deep Eval]]",
         "- [[operations/wiki-health|Agent Wiki Health]]",
+        "- [[operations/workflow-runbook|Workflow Runbook]]",
         "- [[operations/timeline|Operations Timeline]]",
         "- [[Flow AI Hub Workflow Map|Workflow Map]]",
         "",
@@ -422,6 +456,53 @@ def _wiki_health_note(health: dict[str, Any]) -> str:
         if isinstance(row, dict):
             lines.append(f"- `{_cell(row.get('action'))}` `{_cell(row.get('doc_id'))}` {_cell(row.get('message') or row.get('title'))}")
     lines.append("")
+    return "\n".join(lines)
+
+
+def _workflow_runbook_note(runbook: dict[str, Any]) -> str:
+    counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
+    lines = [
+        "---",
+        'title: "Agent Workflow Runbook"',
+        'kind: "ai_hub_workflow_runbook"',
+        "---",
+        "",
+        "# Agent Workflow Runbook",
+        "",
+        f"- workflows: `{counts.get('workflows') or 0}`",
+        f"- ready: `{counts.get('ready') or 0}`",
+        f"- attention: `{counts.get('attention') or 0}`",
+        f"- blocked: `{counts.get('blocked') or 0}`",
+        f"- checked: `{counts.get('checked') or 0}`",
+        "",
+        "| status | workflow | scope | steps | tools | last check | issues |",
+        "|---|---|---|---:|---|---|---|",
+    ]
+    rows = runbook.get("items") if isinstance(runbook.get("items"), list) else []
+    if not rows:
+        lines.append("| none | - | - | 0 | - | - | - |")
+    for row in rows[:80]:
+        if not isinstance(row, dict):
+            continue
+        issue_text = ", ".join(_cell(issue.get("label")) for issue in (row.get("issues") or []) if isinstance(issue, dict)) or "ready"
+        scope = "shared" if row.get("shared") else "personal"
+        tools = ", ".join(_cell(tool) for tool in (row.get("tool_names") or [])[:8])
+        lines.append(
+            f"| {_cell(row.get('status'))} | {_cell(row.get('title') or row.get('key'))} | {scope} | "
+            f"{_cell(row.get('step_count'))} | {tools} | {_cell(row.get('last_status') or row.get('last_run'))} | {issue_text} |"
+        )
+    lines.extend(["", "## Steps", ""])
+    for row in rows[:40]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(f"### {_cell(row.get('title') or row.get('key'))}")
+        steps = row.get("steps") if isinstance(row.get("steps"), list) else []
+        if not steps:
+            lines.append("- no steps")
+        for step in steps[:20]:
+            if isinstance(step, dict):
+                lines.append(f"- `{_cell(step.get('index'))}` `{_cell(step.get('unit_ai'))}`.`{_cell(step.get('action'))}`")
+        lines.append("")
     return "\n".join(lines)
 
 

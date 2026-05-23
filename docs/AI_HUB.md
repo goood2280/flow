@@ -32,6 +32,7 @@ GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백
 GET  /api/ai-hub/deep-eval-report           Agent semantic/wiki/sql deep-eval 최신 리포트
 POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성 (admin)
 GET  /api/ai-hub/wiki-health                Agent Wiki/Knowledge Vault 문서·소스·graph·lint 운영 상태
+GET  /api/ai-hub/workflow-runbook           Agent workflow별 준비도/runbook 표: step, tool, 검증, Wiki/schema 근거, issue
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
@@ -80,6 +81,16 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다. 화면의 `Obsidian ZIP` 버튼은 같은 note 묶음을 zip으로 내려받는다.
 - `ops-export/download?format=obsidian`: readiness, deep-eval, wiki-health, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다.
 - `ops-export/download?format=n8n`: readiness, deep-eval, wiki-health, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export다.
+
+## Workflow Runbook
+
+`core/ai_hub_workflow_runbook.py` 는 workflow map을 표 형태로 정규화한다. 운영자는 `Workflow Runbook` 패널에서 각 Agent workflow template의 scope(shared/personal), step 수, 연결 도구, Wiki/schema evidence count, 최근 dry-run/execute 상태, issue를 한 줄로 비교한다.
+
+- `ready`: step, 도구, Wiki/schema 근거, 최근 검증이 모두 확인된 workflow
+- `attention`: 실행은 가능하지만 최근 검증이나 evidence가 부족한 workflow
+- `blocked`: step 정의 누락, 미등록 unit_ai, 비활성 도구처럼 운영 전에 고쳐야 하는 workflow
+- 각 row의 `Dry-run` action은 기존 `/api/agent/workflows/execute`를 `dry_run=true`로 호출하고, 실제 권한/guardrail은 Agent workflow endpoint가 다시 검증한다.
+- 운영 Obsidian ZIP은 `operations/workflow-runbook.md`를 포함하고, 운영 n8n JSON은 `ops:runbook` sticky note를 readiness와 deep-eval 사이에 둔다.
 
 ## 운영 준비도
 

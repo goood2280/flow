@@ -12,6 +12,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/ops-snapshot           운영 스냅샷 관리 홈
   GET    /api/ai-hub/timeline               AI Hub 운영 이벤트 타임라인
   GET    /api/ai-hub/wiki-health            Agent Wiki/Knowledge Vault 운영 상태
+  GET    /api/ai-hub/workflow-runbook       Agent workflow 운영 runbook
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/workflow-map/export/download  지도 export 다운로드 (Obsidian ZIP / JSON)
@@ -42,6 +43,7 @@ from core import ai_hub_readiness
 from core import ai_hub_timeline
 from core import ai_hub_wiki_health
 from core import ai_hub_workflow_map
+from core import ai_hub_workflow_runbook
 from core import audit
 from core import tool_registry
 from core.auth import current_user
@@ -220,6 +222,24 @@ def workflow_map(
         reference_limit=reference_limit,
         focus_tag=focus_tag,
     )
+
+
+@router.get("/workflow-runbook")
+def workflow_runbook(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=40, ge=1, le=120),
+    focus_tag: str = Query(default=""),
+):
+    me = current_user(request)
+    out = ai_hub_workflow_runbook.build_runbook(
+        username=str((me or {}).get("username") or ""),
+        days=days,
+        limit=limit,
+        focus_tag=focus_tag,
+    )
+    out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
 
 
 @router.get("/workflow-map/export")
