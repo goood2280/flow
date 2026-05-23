@@ -81,7 +81,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다. 화면의 `Obsidian ZIP` 버튼은 같은 note 묶음을 zip으로 내려받는다.
 - `ops-export/download?format=obsidian`: readiness, deep-eval, wiki-health, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다. index note는 Runbook 조치 큐와 workflow map 경고 요약을 포함하고, `operations/workflow-map-warnings.md`에 경고별 대상과 근거 보강 대상을 남긴다.
 - `ops-export/download?format=n8n`: readiness, deep-eval, wiki-health, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export이며 `ops:index`, `ops:runbook`, `ops:workflow_warnings`에 Runbook 조치 큐와 workflow map 경고가 표시된다.
-- Workflow map 경고는 `message`, `items`, `action`, `route`를 함께 갖는다. AI Hub 화면의 스냅샷/지도 경고 큐와 운영 export는 같은 action 문구를 표시해 운영자가 Wiki 근거 보강, workflow step 수정, deep-eval 재검증 같은 다음 조치를 바로 확인한다.
+- Workflow map 경고는 `message`, `items`, `action`, `route`를 함께 갖는다. AI Hub 화면의 스냅샷/지도 경고 큐와 운영 export는 같은 action 문구를 표시해 운영자가 Wiki 근거 보강, workflow step 수정, deep-eval 재검증 같은 다음 조치를 바로 확인한다. 화면에서 경고를 누르면 `route`에 따라 Agent Wiki 상태, Agent 검증 리포트, Workflow Runbook issue filter, 또는 워크플로우 지도 패널이 열린다.
 
 ## Workflow Runbook
 

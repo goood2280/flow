@@ -140,6 +140,37 @@ export default function My_AIHub() {
 
   function focusWorkflowMapWarning(row) {
     const title = row?.title || row?.key || "워크플로우 지도";
+    const route = row?.route || "";
+    if (route.includes("/workflow-runbook")) {
+      setRunbookFocus((prev) => ({
+        issue: workflowWarningToRunbookIssue(row?.key),
+        title: `지도 경고: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (route.includes("/wiki-health")) {
+      setOpsPanelFocus((prev) => ({
+        target: "wiki",
+        title: `지도 경고: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (route.includes("/deep-eval-report")) {
+      setOpsPanelFocus((prev) => ({
+        target: "deep_eval",
+        title: `지도 경고: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (route.includes("/tools")) {
+      setKindFilter("");
+      setEnabledOnly(false);
+      setSearch((row?.items || [])[0] || "");
+      return;
+    }
     setOpsPanelFocus((prev) => ({
       target: "workflow_map",
       warning: row?.key || "",
@@ -166,7 +197,7 @@ export default function My_AIHub() {
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
-      <WorkflowMapPanel days={days} focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null} />
+      <WorkflowMapPanel days={days} focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null} onWarningSelect={focusWorkflowMapWarning} />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -268,6 +299,17 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function workflowWarningToRunbookIssue(key) {
+  return {
+    workflow_missing_tools: "missing_tools",
+    workflow_empty_templates: "no_steps",
+    workflow_incomplete_steps: "incomplete_steps",
+    missing_evidence: "no_evidence",
+    disabled_tools: "disabled_tools",
+  }[key] || key || "";
 }
 
 
@@ -580,7 +622,7 @@ function OpsSnapshotWorkflowMapWarnings({ rows, onSelect }) {
                 type="button"
                 onClick={() => onSelect(row)}
                 style={{ ...rowStyle, cursor: "pointer" }}
-                title="워크플로우 지도에서 경고 확인"
+                title="조치 대상 패널 열기"
               >
                 {rowContent(row)}
               </button>
@@ -1503,7 +1545,7 @@ function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
 }
 
 
-function WorkflowMapPanel({ days, focusIntent }) {
+function WorkflowMapPanel({ days, focusIntent, onWarningSelect }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [map, setMap] = useState(null);
@@ -1631,7 +1673,7 @@ function WorkflowMapPanel({ days, focusIntent }) {
           ) : map ? (
             <>
               <WorkflowMapSummary map={map} />
-              <WorkflowMapWarnings rows={map.warnings || []} focusedKey={focusIntent?.warning || ""} />
+              <WorkflowMapWarnings rows={map.warnings || []} focusedKey={focusIntent?.warning || ""} onSelect={onWarningSelect} />
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 8, alignItems: "stretch" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(130px, 1fr))", gap: 6, overflowX: "auto" }}>
                   {(map.stages || []).map((stage) => (
@@ -1694,7 +1736,7 @@ function WorkflowMapSummary({ map }) {
 }
 
 
-function WorkflowMapWarnings({ rows, focusedKey }) {
+function WorkflowMapWarnings({ rows, focusedKey, onSelect }) {
   const visible = rows.slice(0, 8);
   if (!visible.length) return null;
   return (
@@ -1727,6 +1769,16 @@ function WorkflowMapWarnings({ rows, focusedKey }) {
                 <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-primary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                   조치 {row.action}
                 </div>
+              )}
+              {onSelect && (
+                <button
+                  type="button"
+                  onClick={() => onSelect({ ...row, title: row.key || "workflow map warning" })}
+                  style={{ ...btnGhost, marginTop: 5, padding: "3px 7px" }}
+                  title="조치 대상 패널 열기"
+                >
+                  조치 보기
+                </button>
               )}
               <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 }}>
                 {items.slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
