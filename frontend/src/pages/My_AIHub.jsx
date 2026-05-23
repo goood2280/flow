@@ -277,6 +277,7 @@ function OpsSnapshotPanel({ days }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
               <OpsSnapshotSummary data={data} />
               <OpsSnapshotActions rows={data.top_actions || []} />
+              <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} />
               <OpsSnapshotEvents rows={data.recent_events || []} />
             </div>
           ) : (
@@ -338,6 +339,38 @@ function OpsSnapshotActions({ rows }) {
               </div>
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action || row.detail}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function OpsSnapshotRunbookQueue({ rows }) {
+  const visible = rows.slice(0, 6);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>Runbook 조치 큐</div>
+        <BoardPill tone={rows.length ? "warn" : "ok"}>{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>대기 조치 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.key || row.title} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
+                <BoardPill tone={row.tone}>{row.count || 0}</BoardPill>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail || row.route}</div>
+              <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {(row.workflows || []).slice(0, 3).map((item) => <Tag key={item.key}>{item.title || item.key}</Tag>)}
+                {(row.count || 0) > (row.workflows || []).slice(0, 3).length && <Tag>+{(row.count || 0) - (row.workflows || []).slice(0, 3).length}</Tag>}
+              </div>
             </div>
           ))}
         </div>

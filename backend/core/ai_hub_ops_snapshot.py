@@ -43,6 +43,7 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
         "headline": _headline(status),
         "summary_cards": cards,
         "top_actions": _top_actions(readiness.get("backlog"), limit=limit),
+        "runbook_action_queue": _runbook_action_queue(runbook, limit=limit),
         "recent_events": _recent_events(timeline.get("items"), limit=limit),
         "export_links": _export_links(days),
         "counts": {
@@ -51,6 +52,7 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
             "runbook_ready": _runbook_count(runbook, "ready"),
             "runbook_attention": _runbook_count(runbook, "attention"),
             "runbook_blocked": _runbook_count(runbook, "blocked"),
+            "runbook_next_actions": _runbook_count(runbook, "next_actions"),
             "timeline_items": len(timeline.get("items") if isinstance(timeline.get("items"), list) else []),
             "summary_cards": len(cards),
         },
@@ -106,12 +108,13 @@ def _runbook_card(runbook: dict[str, Any]) -> dict[str, Any]:
     attention = _runbook_count(runbook, "attention")
     blocked = _runbook_count(runbook, "blocked")
     unchecked = _runbook_count(runbook, "unchecked")
+    next_actions = _runbook_count(runbook, "next_actions")
     return {
         "key": "workflow_runbook",
         "label": "Workflow Runbook",
         "value": f"{ready}/{workflows}",
         "tone": _runbook_tone(workflows=workflows, blocked=blocked, attention=attention, unchecked=unchecked),
-        "detail": f"blocked {blocked} · attention {attention} · unchecked {unchecked}",
+        "detail": f"blocked {blocked} · attention {attention} · unchecked {unchecked} · actions {next_actions}",
         "route": "/api/ai-hub/workflow-runbook",
     }
 
@@ -163,6 +166,37 @@ def _top_actions(value: Any, *, limit: int) -> list[dict[str, Any]]:
             "detail": str(row.get("detail") or "")[:220],
             "action": str(row.get("action") or "")[:220],
             "route": str(row.get("route") or ""),
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _runbook_action_queue(runbook: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    queue = runbook.get("next_action_queue") if isinstance(runbook.get("next_action_queue"), list) else []
+    for row in queue:
+        if not isinstance(row, dict):
+            continue
+        workflows = row.get("workflows") if isinstance(row.get("workflows"), list) else []
+        rows.append({
+            "key": str(row.get("key") or ""),
+            "tone": str(row.get("tone") or "neutral"),
+            "title": str(row.get("title") or row.get("key") or ""),
+            "detail": str(row.get("detail") or "")[:220],
+            "route": str(row.get("route") or "/api/ai-hub/workflow-runbook"),
+            "count": _int(row.get("count")),
+            "workflow_keys": [str(v) for v in (row.get("workflow_keys") if isinstance(row.get("workflow_keys"), list) else [])[:12]],
+            "workflows": [
+                {
+                    "key": str(item.get("key") or ""),
+                    "title": str(item.get("title") or item.get("key") or ""),
+                    "status": str(item.get("status") or ""),
+                    "tone": str(item.get("tone") or ""),
+                }
+                for item in workflows[:4]
+                if isinstance(item, dict)
+            ],
         })
         if len(rows) >= limit:
             break

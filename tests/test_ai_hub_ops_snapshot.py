@@ -33,7 +33,17 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
         "counts": {"docs": 15, "sources": 10, "lint_issues": 0, "graph_nodes": 490, "graph_edges": 1347},
     })
     monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=12: {
-        "counts": {"workflows": 3, "ready": 1, "attention": 1, "blocked": 1, "unchecked": 1},
+        "counts": {"workflows": 3, "ready": 1, "attention": 1, "blocked": 1, "unchecked": 1, "next_actions": 4},
+        "next_action_queue": [{
+            "key": "missing_tools",
+            "title": "미등록 도구 연결",
+            "detail": "ToolRegistry 등록 또는 workflow step unit_ai 값을 수정",
+            "route": "/api/ai-hub/workflow-map",
+            "tone": "bad",
+            "count": 2,
+            "workflow_keys": ["blocked_lot", "blocked_knob"],
+            "workflows": [{"key": "blocked_lot", "title": "LOT step 확인", "status": "blocked", "tone": "bad"}],
+        }],
     })
     monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_timeline, "build_timeline", lambda days=30, limit=12, category="": {
         "items": [
@@ -58,14 +68,19 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
     assert out["status"] == "bad"
     assert out["headline"] == "Agent 운영 문제 확인 필요"
     assert out["counts"]["backlog"] == 3
+    assert out["counts"]["runbook_next_actions"] == 4
     assert len(out["top_actions"]) == 2
+    assert len(out["runbook_action_queue"]) == 1
+    assert out["runbook_action_queue"][0]["key"] == "missing_tools"
+    assert out["runbook_action_queue"][0]["count"] == 2
+    assert out["runbook_action_queue"][0]["workflows"][0]["key"] == "blocked_lot"
     assert out["top_actions"][0]["tone"] == "bad"
     assert out["recent_events"][0]["category"] == "wiki"
     cards = {row["key"]: row for row in out["summary_cards"]}
     assert cards["readiness"]["value"] == "74점"
     assert cards["workflow_runbook"]["value"] == "1/3"
     assert cards["workflow_runbook"]["tone"] == "bad"
-    assert cards["workflow_runbook"]["detail"] == "blocked 1 · attention 1 · unchecked 1"
+    assert cards["workflow_runbook"]["detail"] == "blocked 1 · attention 1 · unchecked 1 · actions 4"
     assert cards["deep_eval"]["value"] == "131/131"
     assert cards["wiki"]["detail"] == "sources 10 · lint 0 · graph 490/1347"
     assert cards["timeline"]["detail"] == "wiki 1"
