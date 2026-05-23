@@ -17943,6 +17943,36 @@ def _flowi_plain_answer_text(value: Any) -> str:
     return text.strip()
 
 
+FLOWI_ACTION_LOG_DISCLAIMER = "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+
+
+def _flowi_clean_public_summary_line(value: Any) -> str:
+    text = _flowi_plain_answer_text(value)
+    text = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:240]
+
+
+def _flowi_parse_public_polish_text(raw: Any) -> dict[str, Any]:
+    text = _flowi_plain_answer_text(raw)
+    if not text:
+        return {"summary": [], "final_answer": ""}
+    summary_match = re.search(r"\[생각요약\]\s*(.*?)(?=\n\s*\[최종답변\]|\Z)", text, flags=re.S)
+    final_match = re.search(r"\[최종답변\]\s*(.*)\Z", text, flags=re.S)
+    if not final_match:
+        return {"summary": [], "final_answer": ""}
+    summary_raw = summary_match.group(1) if summary_match else ""
+    final_answer = _flowi_plain_answer_text(final_match.group(1))
+    if not final_answer or len(final_answer) > 1000:
+        return {"summary": [], "final_answer": ""}
+    summary = [
+        line
+        for line in (_flowi_clean_public_summary_line(line) for line in summary_raw.splitlines())
+        if line and not re.search(r"chain[-_ ]?of[-_ ]?thought|내부 추론 원문|hidden reasoning", line, flags=re.I)
+    ][:6]
+    return {"summary": summary, "final_answer": final_answer}
+
+
 def _flowi_llm_polish_payload(tool: dict[str, Any]) -> dict[str, Any]:
     slots: dict[str, Any] = {}
     for src_key in ("arguments", "slots", "filters"):
@@ -17972,11 +18002,16 @@ def _flowi_llm_polish_payload(tool: dict[str, Any]) -> dict[str, Any]:
 def _flowi_llm_polish_prompt(prompt: str, tool: dict[str, Any]) -> str:
     payload = _flowi_llm_polish_payload(tool)
     return (
-        "아래 Flow 서버의 deterministic 해석/실행 결과를 사용자에게 짧은 한국어 문장으로만 정리하세요.\n"
+        "아래 Flow 서버의 deterministic 해석/실행 결과를 사용자에게 짧은 한국어 공개 요약으로만 정리하세요.\n"
         "라우팅, 권한, product, lot, wafer, step, plan 값은 새로 추론하지 마세요.\n"
         "입력 JSON에 있는 slots, feature, source, result_summary만 사용하세요.\n"
         "이전 context JSON은 보강 요청 해석에만 사용하고, tool/cache 결과에 없는 값은 만들지 마세요.\n"
-        "출력은 2-5줄 plain text입니다. markdown, 표, JSON, 내부 intent/action/schema id는 쓰지 마세요.\n\n"
+        "raw reasoning, chain-of-thought, 숨겨진 사고과정 원문은 절대 쓰지 마세요.\n"
+        "출력은 반드시 아래 형식만 사용하세요. markdown 표, JSON, 내부 schema id는 쓰지 마세요.\n"
+        "[생각요약]\n"
+        "- 선택한 intent/action, 사용 근거, 검증 결과만 3-6줄로 씁니다.\n"
+        "[최종답변]\n"
+        "사용자에게 보여줄 최종 답변만 씁니다.\n\n"
         f"사용자 질문: {str(prompt or '').strip()[:1000]}\n"
         f"입력 JSON: {json.dumps(payload, ensure_ascii=False, default=str)[:5000]}"
     )
@@ -19396,6 +19431,203 @@ def _flowi_public_trace(
     }
 
 
+def _flowi_action_log_refs(values: Any, limit: int = 8) -> list[str]:
+    refs: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in refs:
+            refs.append(text[:160])
+
+    if isinstance(values, dict):
+        for key in ("id", "doc_id", "knowledge_id", "relation_id", "source_id", "event_id", "path", "callee"):
+            add(values.get(key))
+    elif isinstance(values, list):
+        for item in values:
+            if isinstance(item, dict):
+                for key in ("id", "doc_id", "knowledge_id", "relation_id", "source_id", "event_id", "path", "callee"):
+                    add(item.get(key))
+            else:
+                add(item)
+    else:
+        add(values)
+    return refs[:limit]
+
+
+def _flowi_action_log_api_refs(api_calls: list[dict[str, Any]], stages: set[str], limit: int = 6) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for call in api_calls:
+        if not isinstance(call, dict) or (stages and call.get("stage") not in stages):
+            continue
+        ref = {
+            key: call.get(key)
+            for key in ("stage", "name", "method", "path", "callee", "status", "output")
+            if call.get(key) not in (None, "", [], {})
+        }
+        if ref:
+            refs.append(ref)
+    return refs[:limit]
+
+
+def _flowi_action_log_evidence_refs(trace: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+
+    def extend(values: Any) -> None:
+        for ref in _flowi_action_log_refs(values):
+            if ref not in refs:
+                refs.append(ref)
+
+    extend(trace.get("retrieved_knowledge") if isinstance(trace.get("retrieved_knowledge"), list) else [])
+    evidence = trace.get("evidence") if isinstance(trace.get("evidence"), dict) else {}
+    for key in ("source_ids", "relation_ids", "join_keys"):
+        extend(evidence.get(key))
+    impact = evidence.get("impact_context") if isinstance(evidence.get("impact_context"), dict) else {}
+    extend(impact.get("wiki_refs") if isinstance(impact.get("wiki_refs"), list) else [])
+    extend(impact.get("event_refs") if isinstance(impact.get("event_refs"), list) else [])
+    return refs[:12]
+
+
+def _flowi_action_log_summary(result: dict[str, Any], trace: dict[str, Any]) -> list[str]:
+    llm = result.get("llm") if isinstance(result.get("llm"), dict) else {}
+    public_summary = llm.get("public_summary") if isinstance(llm.get("public_summary"), list) else []
+    if public_summary:
+        return [line for line in (_flowi_clean_public_summary_line(x) for x in public_summary) if line][:6]
+
+    activation = trace.get("activation") if isinstance(trace.get("activation"), dict) else {}
+    evidence = trace.get("evidence") if isinstance(trace.get("evidence"), dict) else {}
+    validation = trace.get("validation") if isinstance(trace.get("validation"), dict) else {}
+    semantic = trace.get("semantic") if isinstance(trace.get("semantic"), dict) else {}
+    plan = trace.get("plan") if isinstance(trace.get("plan"), list) else []
+    api_calls = trace.get("api_calls") if isinstance(trace.get("api_calls"), list) else []
+    knowledge = trace.get("retrieved_knowledge") if isinstance(trace.get("retrieved_knowledge"), list) else []
+    lines: list[str] = []
+
+    intent = activation.get("intent") or semantic.get("intent") or "general"
+    feature = evidence.get("used_feature_ai") or activation.get("feature") or "Flow-i"
+    action = activation.get("action") or ""
+    lines.append(f"선택한 intent/action은 {intent}" + (f" / {action}" if action else "") + f"이며 {feature} 기능으로 처리했습니다.")
+    if knowledge:
+        ids = _flowi_action_log_refs(knowledge, limit=3)
+        lines.append(f"사용 근거는 Wiki/schema {len(knowledge)}건" + (f"({', '.join(ids)})" if ids else "") + "입니다.")
+    elif evidence.get("source_ids") or evidence.get("relation_ids"):
+        refs = _flowi_action_log_evidence_refs(trace)[:4]
+        lines.append("사용 근거는 등록 source/relation " + ", ".join(refs) + "입니다.")
+    if plan:
+        delegated = [str(row.get("unit_ai") or row.get("action") or "").strip() for row in plan if isinstance(row, dict)]
+        delegated = [x for x in delegated if x]
+        if delegated:
+            lines.append(f"실행 계획은 {', '.join(delegated[:4])} 단위 기능 후보를 확인했습니다.")
+    feature_calls = [c for c in api_calls if isinstance(c, dict) and c.get("stage") == "feature_api"]
+    if feature_calls:
+        names = [str(c.get("name") or c.get("callee") or c.get("path") or "").strip() for c in feature_calls]
+        names = [name for name in names if name]
+        lines.append(f"실행 경로는 {', '.join(names[:3])}입니다.")
+    rows = validation.get("rows")
+    warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+    result_bits = []
+    if rows not in (None, ""):
+        result_bits.append(f"결과 {rows}건")
+    if validation.get("chart_readiness"):
+        result_bits.append(f"chart {validation.get('chart_readiness')}")
+    if validation.get("fallback"):
+        result_bits.append("fallback 사용")
+    if warnings:
+        result_bits.append(f"warning {len(warnings)}건")
+    if result_bits:
+        lines.append("검증 결과: " + ", ".join(result_bits) + ".")
+    if llm.get("used"):
+        lines.append("LLM은 서버 결과를 재판단하지 않고 최종 문장 정리에만 사용했습니다.")
+    elif llm.get("error"):
+        lines.append("LLM 정리는 실패해 deterministic 결과를 그대로 사용했습니다.")
+    return [line for line in lines if line][:6] or ["Flow-i가 허용된 기능 범위에서 요청을 처리했습니다."]
+
+
+def _flowi_action_log_timeline(trace: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    activation = trace.get("activation") if isinstance(trace.get("activation"), dict) else {}
+    semantic = trace.get("semantic") if isinstance(trace.get("semantic"), dict) else {}
+    interpretation = trace.get("interpretation") if isinstance(trace.get("interpretation"), dict) else {}
+    guardrail = trace.get("guardrail") if isinstance(trace.get("guardrail"), dict) else {}
+    validation = trace.get("validation") if isinstance(trace.get("validation"), dict) else {}
+    plan = trace.get("plan") if isinstance(trace.get("plan"), list) else []
+    api_calls = trace.get("api_calls") if isinstance(trace.get("api_calls"), list) else []
+    evidence_refs = _flowi_action_log_evidence_refs(trace)
+    status = str(activation.get("status") or "done")
+    guard_status = "blocked" if guardrail.get("tool_blocked") or status == "blocked" else ("waiting" if status.startswith("awaiting") or status == "needs_input" else "done")
+    rows = validation.get("rows")
+    warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+
+    slots = semantic.get("slots") if isinstance(semantic.get("slots"), dict) else {}
+    filled_slots = interpretation.get("filled_slots") if isinstance(interpretation.get("filled_slots"), dict) else {}
+    slot_keys = list((slots or filled_slots or {}).keys())[:8]
+    plan_titles = [
+        str(row.get("unit_ai") or row.get("action") or "").strip()
+        for row in plan
+        if isinstance(row, dict) and (row.get("unit_ai") or row.get("action"))
+    ][:5]
+    feature_calls = [call for call in api_calls if isinstance(call, dict) and call.get("stage") == "feature_api"]
+    feature_names = [
+        str(call.get("name") or call.get("callee") or call.get("path") or "").strip()
+        for call in feature_calls
+    ][:4]
+
+    return [
+        {
+            "stage": "semantic_layer",
+            "title": "질문 해석",
+            "detail": f"intent={semantic.get('intent') or activation.get('intent') or 'general'}"
+            + (f", coverage={semantic.get('coverage')}" if semantic.get("coverage") not in (None, "") else "")
+            + (f", slots={', '.join(slot_keys)}" if slot_keys else ""),
+            "status": "done",
+            "evidence_refs": evidence_refs[:6],
+            "api_refs": _flowi_action_log_api_refs(api_calls, {"ingress", "knowledge"}, limit=4),
+        },
+        {
+            "stage": "task_planner",
+            "title": "실행 계획",
+            "detail": ", ".join(plan_titles) if plan_titles else f"feature={activation.get('feature') or 'flowi'}, action={activation.get('action') or '-'}",
+            "status": guard_status,
+            "evidence_refs": evidence_refs[:6],
+            "api_refs": _flowi_action_log_api_refs(api_calls, {"orchestrator"}, limit=3),
+        },
+        {
+            "stage": "unit_agents",
+            "title": "단위 기능 실행",
+            "detail": ", ".join(feature_names) if feature_names else ("권한/입력값 검증에서 실행 대기" if guard_status != "done" else "local Flow-i result"),
+            "status": "blocked" if guard_status == "blocked" else ("waiting" if guard_status == "waiting" else "done"),
+            "evidence_refs": evidence_refs[:8],
+            "api_refs": _flowi_action_log_api_refs(api_calls, {"feature_api"}, limit=6),
+        },
+        {
+            "stage": "conclusion",
+            "title": "결과 검증과 답변",
+            "detail": ", ".join(
+                [
+                    bit
+                    for bit in (
+                        f"rows={rows}" if rows not in (None, "") else "",
+                        f"warnings={len(warnings)}" if warnings else "",
+                        f"answer_chars={len(str(result.get('answer') or ''))}",
+                    )
+                    if bit
+                ]
+            ),
+            "status": "blocked" if guard_status == "blocked" else "done",
+            "evidence_refs": evidence_refs[:8],
+            "api_refs": _flowi_action_log_api_refs(api_calls, {"response"}, limit=3),
+        },
+    ]
+
+
+def _flowi_action_log(result: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
+    trace = trace if isinstance(trace, dict) else {}
+    return {
+        "summary": _flowi_action_log_summary(result, trace),
+        "timeline": _flowi_action_log_timeline(trace, result),
+        "final_answer": result.get("answer") or "",
+        "disclaimer": FLOWI_ACTION_LOG_DISCLAIMER,
+    }
+
+
 def _attach_flowi_trace(
     result: dict[str, Any],
     *,
@@ -19424,6 +19656,7 @@ def _attach_flowi_trace(
         result=result,
         agent_context=agent_context,
     )
+    result["action_log"] = _flowi_action_log(result, result["trace"])
     clarification_loop = result["trace"].get("clarification_loop") if isinstance(result.get("trace"), dict) else {}
     if isinstance(clarification_loop, dict) and clarification_loop.get("needs_input"):
         result["needs_input"] = True
@@ -19541,6 +19774,8 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
         }
     if public_tool:
         out["tool"] = public_tool
+    if isinstance(result.get("action_log"), dict):
+        out["action_log"] = deepcopy(result.get("action_log") or {})
     trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
     if trace:
         out["trace"] = {
@@ -20250,11 +20485,18 @@ def _run_flowi_chat(
             timeout=12,
         )
         if out.get("ok") and out.get("text"):
-            polished = (
-                _flowi_validate_llm_polish_text(out.get("text"))
-                if tool.get("handled")
-                else _flowi_plain_answer_text(out.get("text"))
-            )
+            parsed_public = _flowi_parse_public_polish_text(out.get("text")) if tool.get("handled") else {}
+            polished = parsed_public.get("final_answer") if parsed_public else ""
+            if polished:
+                public_summary = parsed_public.get("summary") if isinstance(parsed_public.get("summary"), list) else []
+                if public_summary:
+                    llm_info["public_summary"] = public_summary[:6]
+            else:
+                polished = (
+                    _flowi_validate_llm_polish_text(out.get("text"))
+                    if tool.get("handled")
+                    else _flowi_plain_answer_text(out.get("text"))
+                )
             if polished:
                 answer = polished
                 llm_info["used"] = True

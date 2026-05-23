@@ -95,6 +95,47 @@ def test_flowi_general_query_returns_deterministic_unit_action():
     assert out["slots"]["fab_lot_ids"] == ["A10001"]
 
 
+def test_flowi_public_polish_parser_splits_action_log_and_answer():
+    parsed = llm_router._flowi_parse_public_polish_text(
+        "[생각요약]\n"
+        "- SplitTable intent를 선택했습니다.\n"
+        "- Wiki 근거 1건과 결과 2건을 확인했습니다.\n"
+        "[최종답변]\n"
+        "A10001의 plan/actual 확인에는 product가 추가로 필요합니다."
+    )
+
+    assert parsed["summary"] == ["SplitTable intent를 선택했습니다.", "Wiki 근거 1건과 결과 2건을 확인했습니다."]
+    assert parsed["final_answer"] == "A10001의 plan/actual 확인에는 product가 추가로 필요합니다."
+
+
+def test_flowi_chat_attaches_public_action_log_for_home_users(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+
+    out = _run_flowi_chat(
+        prompt="A10001 1.0 STI 스플릿테이블에서 plan actual 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+    )
+    action_log = out["action_log"]
+
+    assert action_log["final_answer"] == out["answer"]
+    assert action_log["disclaimer"] == llm_router.FLOWI_ACTION_LOG_DISCLAIMER
+    assert [row["stage"] for row in action_log["timeline"]] == [
+        "semantic_layer",
+        "task_planner",
+        "unit_agents",
+        "conclusion",
+    ]
+    assert action_log["summary"]
+
+    public = llm_router._flowi_home_response_for_role(out, {"username": "user", "role": "user"})
+    assert public["answer"] == out["answer"]
+    assert public["action_log"]["final_answer"] == public["answer"]
+    assert public["action_log"]["timeline"][0]["stage"] == "semantic_layer"
+
+
 def test_flowi_feature_router_prefers_tablemap_relation_terms():
     out = _handle_flowi_query("테이블맵 relation에서 inline item과 knob 연결 보여줘", "", 12)
 

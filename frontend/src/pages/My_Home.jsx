@@ -351,8 +351,8 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>
-    <FlowiInterpretationSummary trace={result.trace} tool={tool}/>
     <FlowiMarkdown text={result.answer||emptyHint}/>
+    <FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
@@ -600,12 +600,10 @@ function FlowiSplitView({view}){
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
 
 const FLOWI_LIVE_STEPS=[
-  ["요청 접수","질문과 최근 대화 context를 서버로 보냅니다."],
-  ["LLM 상태","현재 연결 모델과 사용 가능 여부를 확인합니다."],
-  ["요청 해석","의도, 필요한 값, 호출할 단위기능을 정리합니다."],
-  ["Wiki/업무 근거","Agent Wiki, 인폼, 회의, DB schema 근거를 대조합니다."],
-  ["단위기능 실행","SplitTable, Dashboard, FileBrowser, Inform, Meeting handler를 호출합니다."],
-  ["결과 구성","표, 차트, 선택지, 피드백 요청을 한 응답으로 묶습니다."],
+  ["semantic_layer","질문 해석","의도, slot, Wiki/schema 후보를 정리합니다."],
+  ["task_planner","실행 계획","권한과 read-only 정책 안에서 실행할 단위 기능을 고릅니다."],
+  ["unit_agents","단위 기능 실행","SplitTable, Dashboard, FileBrowser, Inform, Meeting handler를 호출합니다."],
+  ["conclusion","결과 검증","결과, 경고, 최종 답변을 분리해 구성합니다."],
 ];
 
 function flowiTraceStatusColor(status){
@@ -617,11 +615,62 @@ function FlowiLiveTrace({step=0}){
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 10px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:8}}>
       <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
-      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>처리 중</span>
+      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>사고과정</span>
       <span style={{fontSize:14,color:"#f97316",fontWeight:800}}>{active[0]}</span>
-      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{active[1]}</span>
+      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{active[2]}</span>
+    </div>
+    <div style={{marginTop:8,display:"grid",gap:5}}>
+      {FLOWI_LIVE_STEPS.map((row,i)=>{
+        const status=i<step?"done":i===step?"running":"pending";
+        const color=status==="done"?"#22c55e":status==="running"?"#f97316":"#525252";
+        return <div key={row[0]} style={{display:"grid",gridTemplateColumns:"18px minmax(108px,150px) minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+          <span style={{width:13,height:13,borderRadius:999,border:`1px solid ${color}99`,color,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10}}>{status==="done"?"✓":i+1}</span>
+          <span style={{color:status==="pending"?"#737373":"#d4d4d4",fontWeight:800}}>{row[0]}</span>
+          <span style={{color:status==="pending"?"#525252":"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row[1]}</span>
+        </div>;
+      })}
     </div>
   </div>);
+}
+
+function FlowiActionLogPanel({actionLog,trace}){
+  const summary=Array.isArray(actionLog?.summary)?actionLog.summary.filter(Boolean):[];
+  const timeline=Array.isArray(actionLog?.timeline)?actionLog.timeline.filter(Boolean):[];
+  const fallbackSummary=!summary.length?flowiInterpretationLines(trace,{}):[];
+  const lines=(summary.length?summary:fallbackSummary).slice(0,6);
+  if(!lines.length&&!timeline.length)return null;
+  const disclaimer=actionLog?.disclaimer||trace?.note||"내부 추론 원문이 아니라 검증 가능한 실행 요약입니다.";
+  return <div style={{marginTop:10,border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:lines.length?7:0}}>
+      <span style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>사고과정</span>
+      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap"}}>public action log</span>
+    </div>
+    {lines.length>0&&<div style={{display:"grid",gap:4}}>
+      {lines.map((line,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"14px minmax(0,1fr)",gap:7,fontSize:14,lineHeight:1.45}}>
+        <span style={{color:"#f97316"}}>{i+1}</span>
+        <span style={{color:i===0?"#d4d4d4":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</span>
+      </div>)}
+    </div>}
+    {timeline.length>0&&<details style={{marginTop:8}}>
+      <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontWeight:800}}>Action Log 상세</summary>
+      <div style={{marginTop:8,display:"grid",gap:6}}>
+        {timeline.slice(0,8).map((item,i)=><FlowiActionLogStep key={item.stage||i} item={item}/>)}
+      </div>
+    </details>}
+    {disclaimer&&<div style={{marginTop:7,fontSize:14,color:"#737373",lineHeight:1.4}}>{disclaimer}</div>}
+  </div>;
+}
+
+function FlowiActionLogStep({item}){
+  const color=flowiTraceStatusColor(item?.status);
+  const apiRefs=Array.isArray(item?.api_refs)?item.api_refs:[];
+  const evidenceRefs=Array.isArray(item?.evidence_refs)?item.evidence_refs:[];
+  const detail=[item?.detail,evidenceRefs.length?`근거 ${evidenceRefs.slice(0,4).join(", ")}`:"",apiRefs.length?`API ${apiRefs.length}`:""].filter(Boolean).join(" · ");
+  return <div style={{display:"grid",gridTemplateColumns:"18px minmax(104px,150px) minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.38}}>
+    <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10,border:`1px solid ${color}99`,color}}>{item?.status==="done"?"✓":item?.status==="blocked"?"!":"•"}</span>
+    <span style={{color:"#d4d4d4",fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={item?.stage||""}>{item?.stage||item?.title||"-"}</span>
+    <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={detail}>{item?.title||""}{detail?` · ${detail}`:""}</span>
+  </div>;
 }
 
 function FlowiTraceStrip({trace}){

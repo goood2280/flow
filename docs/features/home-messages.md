@@ -36,6 +36,8 @@ Home은 로그인 직후 필요한 상태와 최근 변경을 보여주고, Mess
 - read state와 bell count는 서로 어긋나지 않아야 한다.
 - Flow-i 결과는 가능하면 Home card 안에서 answer, table/chart/preview, warnings, evidence trace를 같이 보여주고 화면 이동 버튼은 보조 동작으로 둔다.
 - 공개 trace는 입력 해석, 사용한 기능 AI, endpoint/payload 요약, rows/source/warnings/fallback 상태만 보여주며 모델 사고과정 원문은 표시하지 않는다.
+- Home Flow-i 응답은 `answer`와 별도로 공개 `action_log`를 내려준다. `action_log.summary`는 사용자용 사고과정 요약, `action_log.timeline`은 `semantic_layer -> task_planner -> unit_agents -> conclusion` 단계별 실행 로그, `action_log.final_answer`는 `answer`와 같은 최종답변이다.
+- LLM polish는 raw reasoning을 요청하지 않고 `[생각요약]`과 `[최종답변]` 공개 형식만 파싱한다. deterministic 결과도 기존 public trace에서 `action_log`를 생성한다.
 
 ## Verify
 
