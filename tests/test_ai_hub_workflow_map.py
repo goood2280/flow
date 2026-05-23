@@ -72,3 +72,17 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch):
     focused_nodes = {node["id"] for node in focused["nodes"]}
     assert "tool:find_lots_by_knob_value" in focused_nodes
     assert "tool:filebrowser" not in focused_nodes
+
+    n8n = ai_hub.workflow_map_export(format="n8n", days=30, limit=10, reference_limit=80, focus_tag="")
+    assert n8n["format"] == "n8n"
+    workflow = n8n["workflow"]
+    assert workflow["name"] == "Flow AI Hub workflow map"
+    assert any(node["id"] == "tool:filebrowser" for node in workflow["nodes"])
+    assert workflow["connections"]["stage:policy"]["main"][0][0]["node"] == "stage:execute"
+
+    obsidian = ai_hub.workflow_map_export(format="obsidian", days=30, limit=10, reference_limit=80, focus_tag="")
+    assert obsidian["format"] == "obsidian"
+    assert any(row["path"] == "Flow AI Hub Workflow Map.md" for row in obsidian["files"])
+    filebrowser_note = next(row for row in obsidian["files"] if row["path"] == "nodes/tool-filebrowser.md")
+    assert "# FileBrowser" in filebrowser_note["body"]
+    assert "[[wiki-filebrowser-schema-manual|filebrowser_schema_manual]]" in filebrowser_note["body"]

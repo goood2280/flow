@@ -10,6 +10,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/tools/{name}/history   최근 호출 이력
   GET    /api/ai-hub/tags                   태그 목록 (필터용)
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
+  GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   POST   /api/ai-hub/tools/{name}/toggle    enabled on/off (admin)
 
 상태 저장: data_root/tool_registry_state.json (admin_settings.json 사용 X)
@@ -97,6 +98,26 @@ def workflow_map(
         reference_limit=reference_limit,
         focus_tag=focus_tag,
     )
+
+
+@router.get("/workflow-map/export")
+def workflow_map_export(
+    format: str = Query(default="n8n", pattern="^(n8n|obsidian|markdown|md|json)$"),
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=40, ge=1, le=120),
+    reference_limit: int = Query(default=160, ge=20, le=400),
+    focus_tag: str = Query(default=""),
+):
+    try:
+        return ai_hub_workflow_map.export_workflow_map(
+            export_format=format,
+            days=days,
+            limit=limit,
+            reference_limit=reference_limit,
+            focus_tag=focus_tag,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tools/{name}")

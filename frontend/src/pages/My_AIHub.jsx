@@ -209,6 +209,7 @@ function WorkflowMapPanel({ days }) {
   const [map, setMap] = useState(null);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState("");
   const [err, setErr] = useState("");
 
   async function loadMap() {
@@ -230,6 +231,26 @@ function WorkflowMapPanel({ days }) {
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function exportMap(format) {
+    setExporting(format);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({
+        format,
+        days: String(days),
+        limit: "40",
+        reference_limit: "160",
+      });
+      if (focusTag) qs.set("focus_tag", focusTag);
+      const out = await sf(`/api/ai-hub/workflow-map/export?${qs.toString()}`);
+      downloadJson(out.filename || `flow-ai-hub-workflow-map.${format}.json`, out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setExporting("");
     }
   }
 
@@ -263,6 +284,12 @@ function WorkflowMapPanel({ days }) {
               ))}
             </select>
             <button onClick={loadMap} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
+            <button onClick={() => exportMap("n8n")} disabled={!!exporting} style={btnGhost}>
+              {exporting === "n8n" ? "내보내는 중" : "n8n JSON"}
+            </button>
+            <button onClick={() => exportMap("obsidian")} disabled={!!exporting} style={btnGhost}>
+              {exporting === "obsidian" ? "내보내는 중" : "Obsidian MD"}
+            </button>
           </>
         )}
       </div>
@@ -301,6 +328,19 @@ function WorkflowMapPanel({ days }) {
       )}
     </div>
   );
+}
+
+
+function downloadJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 

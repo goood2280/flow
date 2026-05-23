@@ -27,6 +27,7 @@ GET  /api/ai-hub/tools/{name}/history       최근 호출 이력
 GET  /api/ai-hub/tags                       태그 목록 (필터용)
 GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구 + 승인/거부/활성화 action metadata
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
+GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
 POST /api/sql-workspace/run                 cells 실행 → result + 셀 trace
@@ -60,6 +61,11 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
 AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 실행 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
+
+지도는 저장성 export 없이 즉석 산출물로도 꺼낼 수 있다.
+
+- `format=n8n`: n8n sticky-note workflow JSON. Flow 내부 실행을 외부 자동화로 우회하지 않고, 운영 리뷰/설계용 노드와 connection만 내보낸다.
+- `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다.
 
 ## SQL 작업대 — 멀티 셀 조인
 
@@ -103,6 +109,7 @@ python -m pytest tests/test_tool_registry.py tests/test_sql_workspace.py \
                   tests/test_home_orchestrator.py tests/test_skill_miner.py -v
 python3 -m pytest tests/test_ai_hub_workflow_map.py tests/test_ai_hub_board.py -q
 python3 scripts/flowi_agent_deep_eval.py
+python3 -m py_compile backend/core/ai_hub_workflow_map.py backend/routers/ai_hub.py
 ```
 
 `flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다.

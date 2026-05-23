@@ -252,6 +252,14 @@ edges_len = len((body or {}).get("edges") or []) if isinstance(body, dict) else 
 check("GET /api/ai-hub/workflow-map (n8n/Obsidian 운영 지도)", status, 200,
       f"nodes={nodes_len} edges={edges_len}")
 
+status, body = _req("GET", "/api/ai-hub/workflow-map/export?format=n8n&limit=20&reference_limit=80", token=TOKEN)
+n8n_nodes = len(((body or {}).get("workflow") or {}).get("nodes") or []) if isinstance(body, dict) else 0
+check("GET /api/ai-hub/workflow-map/export (n8n)", status, 200, f"nodes={n8n_nodes}")
+
+status, body = _req("GET", "/api/ai-hub/workflow-map/export?format=obsidian&limit=20&reference_limit=80", token=TOKEN)
+obsidian_files = len((body or {}).get("files") or []) if isinstance(body, dict) else 0
+check("GET /api/ai-hub/workflow-map/export (Obsidian)", status, 200, f"files={obsidian_files}")
+
 status, body = _req("POST", "/api/sql-workspace/run", {
     "cells": [
         {"name": "lot_meta", "sql": "SELECT * FROM (VALUES ('A1','R1'),('A2','R2')) AS t(lot_id, root_lot_id)"},
