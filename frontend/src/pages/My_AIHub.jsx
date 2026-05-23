@@ -59,8 +59,8 @@ export default function My_AIHub() {
     if (!isAdmin) return;
     try {
       await postJson(`/api/ai-hub/tools/${encodeURIComponent(name)}/toggle`, { enabled });
-      setItems((arr) => arr.map((it) => it.name === name ? { ...it, enabled } : it));
-      if (selected && selected.name === name) setSelected({ ...selected, enabled });
+      setItems((arr) => arr.map((it) => it.name === name ? withEnabledState(it, enabled) : it));
+      if (selected && selected.name === name) setSelected(withEnabledState(selected, enabled));
     } catch (e) {
       alert(`토글 실패: ${e.message || e}`);
     }
@@ -189,6 +189,15 @@ export default function My_AIHub() {
       </div>
     </div>
   );
+}
+
+
+function withEnabledState(item, enabled) {
+  const flow = item.management_flow || {};
+  const nodes = (flow.nodes || []).map((node) => (
+    node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
+  ));
+  return { ...item, enabled, management_flow: { ...flow, nodes } };
 }
 
 
@@ -524,6 +533,9 @@ function Detail({ item, history, days }) {
       <Stat label={`최근 ${days}일 사용자`} value={item.user_count_30d ?? 0} />
       <Stat label="마지막 실행" value={relTime(item.last_run) || "-"} />
 
+      <ManagementFlow flow={item.management_flow} />
+      <KnowledgeRefs refs={item.knowledge_refs} />
+
       {item.kind === "function" && (
         <Section title="Input Schema">
           {(item.required_args && item.required_args.length > 0) ? (
@@ -594,6 +606,80 @@ function Detail({ item, history, days }) {
         ))}
       </Section>
     </div>
+  );
+}
+
+
+function ManagementFlow({ flow }) {
+  const nodes = flow?.nodes || [];
+  if (!nodes.length) return null;
+  return (
+    <Section title="Management Flow">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
+        {nodes.map((node, idx) => (
+          <div key={node.id || idx}>
+            <div style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "start" }}>
+              <div style={{
+                fontSize: 10,
+                textTransform: "uppercase",
+                color: node.state === "disabled" ? "var(--danger)" : "var(--text-secondary)",
+                fontWeight: 800,
+                letterSpacing: 0.4,
+              }}>
+                {node.kind}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>{node.label}</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45, wordBreak: "break-word" }}>
+                  {node.detail}
+                </div>
+              </div>
+            </div>
+            {idx < nodes.length - 1 && (
+              <div style={{ marginLeft: 32, height: 12, borderLeft: "1px solid var(--border)" }} />
+            )}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+
+function KnowledgeRefs({ refs }) {
+  if (!refs) return null;
+  const rows = [
+    { label: "Wiki docs", values: refs.wiki_doc_ids || [] },
+    { label: "Graph nodes", values: refs.graph_node_ids || [] },
+    { label: "Relations", values: refs.relation_ids || [] },
+    { label: "Column keys", values: refs.column_catalog_keys || [] },
+    { label: "Required args", values: refs.required_args || [] },
+  ].filter((row) => row.values.length > 0);
+  const hasFeature = !!refs.feature_md;
+  if (!rows.length && !hasFeature && !refs.data_source_count && !refs.few_shot_count) return null;
+  return (
+    <Section title="Wiki / Graph Refs">
+      {hasFeature && (
+        <div style={{ fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: "var(--text-secondary)", wordBreak: "break-all", marginBottom: 6 }}>
+          feature: {refs.feature_md}
+        </div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: rows.length ? 6 : 0 }}>
+        {Number(refs.data_source_count || 0) > 0 && <Tag>{refs.data_source_count} data sources</Tag>}
+        {Number(refs.few_shot_count || 0) > 0 && <Tag>{refs.few_shot_count} examples</Tag>}
+      </div>
+      {rows.map((row) => (
+        <div key={row.label} style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 3 }}>{row.label}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {row.values.slice(0, 12).map((value) => (
+              <Tag key={`${row.label}:${value}`}>{String(value)}</Tag>
+            ))}
+            {row.values.length > 12 && <Tag>+{row.values.length - 12}</Tag>}
+          </div>
+        </div>
+      ))}
+    </Section>
   );
 }
 

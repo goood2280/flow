@@ -115,6 +115,97 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
     return sorted(set(tags))
 
 
+def _listify(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if value in (None, ""):
+        return []
+    return [value]
+
+
+def _knowledge_refs_for_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    semantic = tool.get("semantic_bindings") if isinstance(tool.get("semantic_bindings"), dict) else {}
+    data_sources = tool.get("data_sources") if isinstance(tool.get("data_sources"), list) else []
+    return {
+        "wiki_doc_ids": _listify(semantic.get("wiki_doc_ids")),
+        "graph_node_ids": _listify(semantic.get("graph_node_ids")),
+        "relation_ids": _listify(semantic.get("relation_ids")),
+        "column_catalog_keys": _listify(semantic.get("column_catalog_keys")),
+        "feature_md": str(tool.get("feature_md") or ""),
+        "data_source_count": len(data_sources),
+        "required_args": _listify(tool.get("required_args")),
+        "few_shot_count": len(tool.get("few_shot") or []),
+    }
+
+
+def _management_flow_for_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    kind = str(tool.get("kind") or "")
+    name = str(tool.get("name") or "")
+    endpoint = "core.flowi_units.dispatcher.try_dispatch" if kind == "unit_ai" else "/api/llm/flowi/chat"
+    if kind == "function":
+        endpoint = f"function:{name}"
+    refs = _knowledge_refs_for_tool(tool)
+    evidence_bits = []
+    if refs["wiki_doc_ids"]:
+        evidence_bits.append(f"wiki {len(refs['wiki_doc_ids'])}")
+    if refs["relation_ids"]:
+        evidence_bits.append(f"relation {len(refs['relation_ids'])}")
+    if refs["data_source_count"]:
+        evidence_bits.append(f"data source {refs['data_source_count']}")
+    if refs["required_args"]:
+        evidence_bits.append(f"args {len(refs['required_args'])}")
+    return {
+        "nodes": [
+            {
+                "id": "trigger",
+                "label": "Prompt / Signal",
+                "kind": "trigger",
+                "detail": "사용자 질문, Home prompt, 또는 반복 실행 로그",
+            },
+            {
+                "id": "guardrail",
+                "label": "Policy Gate",
+                "kind": "guardrail",
+                "detail": "enabled 상태, read-only/write approval, raw data write 차단",
+                "state": "enabled" if tool.get("enabled") else "disabled",
+            },
+            {
+                "id": "execute",
+                "label": "Execute",
+                "kind": kind or "tool",
+                "detail": endpoint,
+            },
+            {
+                "id": "evidence",
+                "label": "Wiki / Schema",
+                "kind": "knowledge",
+                "detail": " · ".join(evidence_bits) or "등록된 지식 참조 없음",
+            },
+            {
+                "id": "improve",
+                "label": "Improve",
+                "kind": "feedback",
+                "detail": "feedback, workflow template, skill, wiki proposal로 승격",
+            },
+        ],
+        "edges": [
+            {"from": "trigger", "to": "guardrail"},
+            {"from": "guardrail", "to": "execute"},
+            {"from": "execute", "to": "evidence"},
+            {"from": "evidence", "to": "improve"},
+        ],
+    }
+
+
+def _attach_management_fields(tool: dict[str, Any]) -> dict[str, Any]:
+    tool = dict(tool)
+    tool["knowledge_refs"] = _knowledge_refs_for_tool(tool)
+    tool["management_flow"] = _management_flow_for_tool(tool)
+    return tool
+
+
 # ── 상태 파일 (enabled toggle) ────────────────────────────────────────────────
 def _load_state() -> dict[str, Any]:
     try:
@@ -271,7 +362,7 @@ def list_function_tools() -> list[dict[str, Any]]:
     for name in name_order:
         spec = _flowi_function_schema(name) or {}
         few_shots = [s for s in (FLOWI_FUNCTION_FEW_SHOTS or []) if s.get("function") == name]
-        out.append({
+        row = {
             "kind": "function",
             "name": name,
             "title": titles.get(name) or name,
@@ -281,7 +372,8 @@ def list_function_tools() -> list[dict[str, Any]]:
             "tags": _infer_tags_for_function(name),
             "few_shot": few_shots,
             "enabled": get_enabled(name),
-        })
+        }
+        out.append(_attach_management_fields(row))
     return out
 
 
@@ -342,7 +434,7 @@ def list_unit_ai_tools() -> list[dict[str, Any]]:
                 "description": getattr(handler, "description", "") or "",
             } if handler else None
             feature_md = unit.feature_md_path()
-            out.append({
+            row = {
                 "kind": "unit_ai",
                 "name": key,
                 "title": title,
@@ -354,7 +446,8 @@ def list_unit_ai_tools() -> list[dict[str, Any]]:
                 "feature_md": str(feature_md) if feature_md else "",
                 "tags": _infer_tags_for_unit_ai(key, title),
                 "enabled": get_enabled(key),
-            })
+            }
+            out.append(_attach_management_fields(row))
         except Exception as e:
             logger.warning("unit_ai %s catalog row failed: %s", key, e)
     return out

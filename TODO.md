@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 도구별 관리 플로우/Wiki 참조 보강
 - (Codex) Home Flow-i Action Log 공개 실행요약 패널
 - (Codex) GitHub data 추적 제거와 empty-root 부팅 검증
 - (Codex) Flow Agent runtime action/trace 운영 계약 연결

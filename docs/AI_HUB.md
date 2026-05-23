@@ -14,6 +14,7 @@ flow 본진에 흩어져 있던 두 단계 추상화를 한 화면에서 보고�
 
 - 신규 Unit AI 추가 → `flowi_units/<key>.py` 하나 만들면 자동 카드 등장
 - 신규 Function 추가 → `llm.py` 의 schema/few-shot 둘 다 등록하면 자동 카드 등장
+- 각 도구 상세는 `management_flow` 와 `knowledge_refs` 를 같이 반환해 Prompt → Policy Gate → Execute → Wiki/Schema → Improve 흐름과 Wiki/Graph/schema 참조를 한 화면에서 확인한다.
 
 상태 (enabled toggle, by, ts) 는 `data_root/tool_registry_state.json` 에 저장 — **admin_settings.json 미사용**.
 

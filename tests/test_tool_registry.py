@@ -89,6 +89,8 @@ def test_get_tool_returns_full_detail_for_unit_ai():
     assert tool["kind"] == "unit_ai"
     assert isinstance(tool.get("data_sources"), list)
     assert "semantic_bindings" in tool
+    assert tool["management_flow"]["nodes"][0]["id"] == "trigger"
+    assert isinstance(tool["knowledge_refs"]["wiki_doc_ids"], list)
     assert "count_30d" in tool
     assert "user_count_30d" in tool
 
@@ -100,6 +102,20 @@ def test_get_tool_returns_full_detail_for_function():
     assert tool["kind"] == "function"
     assert tool.get("description")
     assert isinstance(tool.get("input_schema"), dict)
+    assert tool["management_flow"]["nodes"][2]["id"] == "execute"
+    assert "required_args" in tool["knowledge_refs"]
+
+
+def test_management_flow_is_stable_for_catalog_items():
+    from core import tool_registry
+    items = tool_registry.list_tools(include_stats=False)
+    for item in items:
+        flow = item.get("management_flow") or {}
+        node_ids = [node.get("id") for node in flow.get("nodes") or []]
+        assert node_ids == ["trigger", "guardrail", "execute", "evidence", "improve"]
+        edges = flow.get("edges") or []
+        assert edges[0] == {"from": "trigger", "to": "guardrail"}
+        assert edges[-1] == {"from": "evidence", "to": "improve"}
 
 
 def test_get_tool_missing_returns_none():
