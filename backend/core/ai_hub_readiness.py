@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from core import ai_hub_board, ai_hub_workflow_map, flowi_workflow_templates as wf_templates
+from core import ai_hub_board, ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates
 
 
 STARTER_WORKFLOWS: list[dict[str, Any]] = [
@@ -66,6 +66,7 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         limit=120,
         reference_limit=400,
     )
+    deep_eval = ai_hub_deep_eval.load_latest_report()
     board_counts = board.get("counts") if isinstance(board.get("counts"), dict) else {}
     map_counts = workflow.get("counts") if isinstance(workflow.get("counts"), dict) else {}
 
@@ -79,6 +80,7 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
     skills = int(board_counts.get("skills") or 0)
     workflows = int(board_counts.get("workflows") or 0)
     workflow_validation = _workflow_validation_summary(workflow, fallback_total=workflows)
+    deep_eval_summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
 
     catalog_score = _pct(tools_enabled, tools_total)
     grounding_score = _pct(max(0, tools_visible - tools_without_refs), tools_visible)
@@ -91,15 +93,17 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         max(0, workflow_validation["checked"] - workflow_validation["warnings"]),
         workflow_validation["total"],
     )
+    deep_eval_score = _deep_eval_score(deep_eval, days=days)
     score = round(
-        (catalog_score * 0.24)
-        + (grounding_score * 0.30)
-        + (learning_score * 0.18)
-        + (asset_score * 0.16)
+        (catalog_score * 0.20)
+        + (grounding_score * 0.26)
+        + (learning_score * 0.16)
+        + (asset_score * 0.14)
         + (validation_score * 0.12)
+        + (deep_eval_score * 0.12)
     )
 
-    backlog = _build_backlog(board=board, workflow=workflow, counts={
+    backlog = _build_backlog(board=board, workflow=workflow, deep_eval=deep_eval, days=days, counts={
         "tools_total": tools_total,
         "tools_disabled": tools_disabled,
         "tools_without_refs": tools_without_refs,
@@ -123,6 +127,12 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
             validation_score,
             f"{workflow_validation['checked']}/{workflow_validation['total']} checked, {workflow_validation['warnings']} warning",
         ),
+        _check(
+            "agent_deep_eval",
+            "Agent deep eval",
+            deep_eval_score,
+            _deep_eval_detail(deep_eval),
+        ),
     ]
     return {
         "ok": True,
@@ -144,18 +154,24 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
             "workflow_validation_checked": workflow_validation["checked"],
             "workflow_validation_unverified": workflow_validation["unverified"],
             "workflow_validation_warnings": workflow_validation["warnings"],
+            "deep_eval_total": int(deep_eval_summary.get("total") or 0),
+            "deep_eval_passed": int(deep_eval_summary.get("passed") or 0),
+            "deep_eval_failed": int(deep_eval_summary.get("failed") or 0),
+            "deep_eval_age_seconds": int(deep_eval.get("age_seconds") or 0),
             "backlog": len(backlog),
         },
         "backlog": backlog,
         "sources": {
             "board": "/api/ai-hub/board",
             "workflow_map": "/api/ai-hub/workflow-map",
+            "deep_eval_report": "/api/ai-hub/deep-eval-report",
         },
     }
 
 
-def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: dict[str, int]) -> list[dict[str, Any]]:
+def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], deep_eval: dict[str, Any], days: int, counts: dict[str, int]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    out.extend(_deep_eval_backlog(deep_eval, days=days))
     lanes = {str(lane.get("id") or ""): lane for lane in (board.get("lanes") or []) if isinstance(lane, dict)}
     for item in (lanes.get("disabled_tools", {}).get("items") or [])[:8]:
         out.append({
@@ -260,6 +276,85 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
         })
     severity_order = {"high": 0, "medium": 1, "low": 2}
     return sorted(out, key=lambda row: (severity_order.get(str(row.get("severity")), 9), str(row.get("title") or ""), str(row.get("target") or "")))[:40]
+
+
+def _deep_eval_score(report: dict[str, Any], *, days: int) -> int:
+    if not report.get("exists"):
+        return 0
+    if report.get("status") == "invalid":
+        return 0
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    total = int(summary.get("total") or 0)
+    failed = int(summary.get("failed") or 0)
+    passed = int(summary.get("passed") or 0)
+    if total <= 0:
+        return 0
+    score = _pct(passed, total)
+    if failed > 0:
+        return min(score, 55)
+    age_seconds = int(report.get("age_seconds") or 0)
+    if age_seconds > max(1, int(days or 1)) * 86400:
+        return min(score, 65)
+    return score
+
+
+def _deep_eval_detail(report: dict[str, Any]) -> str:
+    if not report.get("exists"):
+        return "latest report missing"
+    if report.get("status") == "invalid":
+        return "latest report invalid"
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    age_days = int(int(report.get("age_seconds") or 0) / 86400)
+    return f"{int(summary.get('passed') or 0)}/{int(summary.get('total') or 0)} passed, {int(summary.get('failed') or 0)} failed, {age_days}d old"
+
+
+def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, Any]]:
+    if not report.get("exists"):
+        return [{
+            "id": "agent_deep_eval:missing",
+            "severity": "high",
+            "title": "Agent deep eval 리포트 없음",
+            "target": str(report.get("path") or "reports/flowi_agent_deep_eval_latest.json"),
+            "detail": "AI Hub가 읽을 최신 semantic/wiki/sql 검증 결과가 없습니다.",
+            "action": "python3 scripts/flowi_agent_deep_eval.py --report-json 실행",
+            "route": "/api/ai-hub/deep-eval-report",
+        }]
+    if report.get("status") == "invalid":
+        return [{
+            "id": "agent_deep_eval:invalid",
+            "severity": "high",
+            "title": "Agent deep eval 리포트 손상",
+            "target": str(report.get("path") or ""),
+            "detail": str(report.get("message") or "JSON report를 읽을 수 없습니다."),
+            "action": "deep eval을 다시 실행해 최신 리포트를 재생성",
+            "route": "/api/ai-hub/deep-eval-report",
+        }]
+    out: list[dict[str, Any]] = []
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    failed = int(summary.get("failed") or 0)
+    if failed > 0:
+        failed_names = ", ".join(str(row.get("name") or "") for row in (report.get("failed_results") or [])[:3] if isinstance(row, dict))
+        out.append({
+            "id": "agent_deep_eval:failed",
+            "severity": "high",
+            "title": "Agent deep eval 실패",
+            "target": f"{failed} failed assertion",
+            "detail": failed_names or "semantic/wiki/sql 검증 실패 항목이 있습니다.",
+            "action": "실패 assertion detail을 확인하고 semantic/wiki/sql 경로를 수정",
+            "route": "/api/ai-hub/deep-eval-report",
+        })
+    age_seconds = int(report.get("age_seconds") or 0)
+    if age_seconds > max(1, int(days or 1)) * 86400:
+        out.append({
+            "id": "agent_deep_eval:stale",
+            "severity": "medium",
+            "title": "Agent deep eval 리포트 오래됨",
+            "target": str(report.get("generated_at") or report.get("updated_at") or ""),
+            "detail": f"최근 {days}일 기준보다 오래된 검증 리포트입니다.",
+            "action": "python3 scripts/flowi_agent_deep_eval.py --report-json 로 최신 상태 재검증",
+            "route": "/api/ai-hub/deep-eval-report",
+        })
+    return out
 
 
 def _workflow_validation_summary(workflow: dict[str, Any], *, fallback_total: int = 0) -> dict[str, int]:

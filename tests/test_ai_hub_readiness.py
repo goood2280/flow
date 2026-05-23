@@ -12,7 +12,7 @@ for p in (_BACKEND, _FLOW_ROOT):
 
 
 def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
-    from core import ai_hub_board, ai_hub_readiness, ai_hub_workflow_map
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
     from routers import ai_hub
 
     def fake_board(username="", days=30, limit=12):
@@ -54,6 +54,7 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
 
     monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
     monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
 
     out = ai_hub_readiness.build_readiness(username="alice", days=30)
 
@@ -66,6 +67,7 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
         "learning_queue",
         "workflow_assets",
         "workflow_validation",
+        "agent_deep_eval",
     }
     backlog_ids = {item["id"] for item in out["backlog"]}
     assert "disabled_tool:filebrowser" in backlog_ids
@@ -86,11 +88,12 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     api_out = ai_hub.readiness(_req(), days=30)
     assert api_out["counts"]["tools_total"] == 4
     assert api_out["counts"]["workflow_validation_total"] == 0
+    assert api_out["counts"]["deep_eval_failed"] == 0
     assert api_out["is_admin"] is True
 
 
 def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
-    from core import ai_hub_board, ai_hub_readiness, ai_hub_workflow_map
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
 
     def fake_board(username="", days=30, limit=12):
         return {
@@ -138,6 +141,7 @@ def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
 
     monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
     monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
 
     out = ai_hub_readiness.build_readiness(username="alice", days=30)
 
@@ -156,6 +160,67 @@ def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
         "dry_run": True,
     }
     assert by_id["workflow_validation_warning:warned"]["actions"][0]["body"]["key"] == "warned"
+
+
+def test_ai_hub_readiness_tracks_deep_eval_backlog(monkeypatch):
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
+
+    def fake_board(username="", days=30, limit=12):
+        return {
+            "ok": True,
+            "counts": {
+                "tools_total": 2,
+                "tools_enabled": 2,
+                "tools_disabled": 0,
+                "semantic_proposals_pending": 0,
+                "skill_candidates": 0,
+                "skills": 1,
+                "workflows": 1,
+            },
+            "lanes": [],
+        }
+
+    def fake_map(username="", days=30, limit=120, reference_limit=400, focus_tag=""):
+        return {
+            "ok": True,
+            "counts": {"tools_total": 2, "tools_visible": 2, "tools_without_refs_visible": 0},
+            "nodes": [
+                {
+                    "id": "workflow:checked",
+                    "type": "workflow",
+                    "workflow_key": "checked",
+                    "metrics": {"run_count": 1, "warning_count": 0},
+                },
+            ],
+            "warnings": [],
+        }
+
+    def failing_deep_eval():
+        return {
+            "ok": True,
+            "exists": True,
+            "status": "fail",
+            "summary": {"passed": 130, "failed": 2, "total": 132},
+            "age_seconds": 99 * 86400,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "failed_results": [{"name": "sql/raw join/rows", "detail": "bad rows"}],
+        }
+
+    monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
+    monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", failing_deep_eval)
+
+    out = ai_hub_readiness.build_readiness(username="alice", days=30)
+
+    assert out["counts"]["deep_eval_total"] == 132
+    assert out["counts"]["deep_eval_failed"] == 2
+    assert next(check for check in out["checks"] if check["key"] == "agent_deep_eval")["score"] == 55
+    backlog_ids = {item["id"] for item in out["backlog"]}
+    assert "agent_deep_eval:failed" in backlog_ids
+    assert "agent_deep_eval:stale" in backlog_ids
+    by_id = {item["id"]: item for item in out["backlog"]}
+    assert by_id["agent_deep_eval:failed"]["route"] == "/api/ai-hub/deep-eval-report"
+    assert "sql/raw join/rows" in by_id["agent_deep_eval:failed"]["detail"]
 
 
 def test_ai_hub_readiness_bootstrap_workflows_is_idempotent(tmp_path, monkeypatch):
@@ -190,3 +255,16 @@ class _Req:
 
 def _req():
     return _Req()
+
+
+def _passing_deep_eval():
+    return {
+        "ok": True,
+        "exists": True,
+        "status": "pass",
+        "summary": {"passed": 131, "failed": 0, "total": 131},
+        "age_seconds": 60,
+        "generated_at": "2026-05-24T01:30:00+00:00",
+        "groups": {"semantic": {"passed": 108, "failed": 0, "total": 108}},
+        "failed_results": [],
+    }

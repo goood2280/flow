@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub readiness Agent deep eval 상태 반영
 - (Codex) AI Hub Agent deep eval 최신 리포트 패널 연결
 - (Codex) Flow-i Agent deep eval JSON report 산출물 추가
 - (Codex) AI Hub workflow 실행 이력 skill mining 정규화
