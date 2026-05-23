@@ -234,6 +234,44 @@ check("GET /api/dashboard/charts", status, 200)
 status, _ = _req("GET", "/api/dbmap/tables", token=TOKEN)
 check("GET /api/dbmap/tables", status, 200)
 
+# ── 9.1. AI 허브 (v9.1.0 신규) ─────────────────────────────────
+section("9.1 AI 허브 + SQL 작업대 + 스킬 + 홈 에이전트")
+status, body = _req("GET", "/api/ai-hub/tools", token=TOKEN)
+items = (body or {}).get("items", []) if isinstance(body, dict) else []
+counts = (body or {}).get("counts", {}) if isinstance(body, dict) else {}
+check("GET /api/ai-hub/tools (Unit AI + Function 카탈로그)", status, 200,
+      f"items={len(items)} unit_ai={counts.get('unit_ai')} function={counts.get('function')}")
+
+status, body = _req("GET", "/api/ai-hub/tags", token=TOKEN)
+tags_len = len((body or {}).get("tags") or []) if isinstance(body, dict) else 0
+check("GET /api/ai-hub/tags", status, 200, f"tags={tags_len}")
+
+status, body = _req("POST", "/api/sql-workspace/run", {
+    "cells": [
+        {"name": "lot_meta", "sql": "SELECT * FROM (VALUES ('A1','R1'),('A2','R2')) AS t(lot_id, root_lot_id)"},
+        {"name": "et_results", "sql": "SELECT * FROM (VALUES ('A1',10.0),('A1',20.0),('A2',30.0)) AS t(lot_id, value)"},
+        {"name": None, "sql": "SELECT m.root_lot_id, AVG(e.value) AS v FROM lot_meta m JOIN et_results e USING(lot_id) GROUP BY 1 ORDER BY 1"}
+    ]
+}, token=TOKEN)
+rc = (body or {}).get("result", {}).get("rowcount", -1) if isinstance(body, dict) else -1
+check("POST /api/sql-workspace/run (2 view + JOIN)", status, 200, f"rowcount={rc}")
+
+status, body = _req("POST", "/api/sql-workspace/run", {
+    "cells": [{"name": None, "sql": "DROP TABLE foo"}]
+}, token=TOKEN)
+check("SQL workspace DROP 거부 400", status, 400)
+
+status, _ = _req("GET", "/api/skills/list", token=TOKEN)
+check("GET /api/skills/list", status, 200)
+
+status, _ = _req("GET", "/api/skills/candidates", token=TOKEN)
+check("GET /api/skills/candidates", status, 200)
+
+status, body = _req("POST", "/api/home-agent/orchestrate", {"prompt": "lot SQL JOIN"}, token=TOKEN)
+trace_len = len((body or {}).get("trace") or []) if isinstance(body, dict) else 0
+check("POST /api/home-agent/orchestrate", status, 200, f"trace={trace_len}")
+
+
 # ── 10. 인증 실패 경로 ─────────────────────────────────────────
 section("10. 인증 방어")
 status, _ = _req("POST", "/api/auth/login", {"username": "noexist", "password": "bad"})

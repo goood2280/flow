@@ -1,7 +1,20 @@
 {
-  "version": "9.0.4",
+  "version": "9.1.0",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.1.0",
+      "date": "2026-05-23",
+      "title": "AI 허브 — 단위 AI 카탈로그·홈 에이전트 오케스트레이터·스킬·SQL 작업대",
+      "tag": "feat",
+      "changes": [
+        "**AI 허브 페이지 신설** — `core/tool_registry.py` 가 기존 11개 Unit AI(`flowi_units/`) + 16개 Function-call(`FLOWI_FUNCTION_FEW_SHOTS`) 을 한 카탈로그로 통합해 노출. 카드별 데이터 소스, 시맨틱 바인딩, input schema, 30일 호출수, on-off 토글을 한 화면에서 관리. 사이드바 `🧩 AI 허브` 신규 탭. 기존 dispatch 경로/`llm.py` 무수정 — 회귀 0.",
+        "**홈 에이전트 오케스트레이터** — `core/home_orchestrator.py` + `routers/home_agent.py` 가 자연어 prompt 를 받아 ToolRegistry 의 태그/이름을 휴리스틱 매칭해 1~N개 도구를 자동 선택·실행 후 trace(어떤 도구를 왜 골랐는지)를 응답에 포함. AI 허브 상단의 🎯 패널에서 prompt 입력만으로 시연 가능.",
+        "**SQL 작업대 (멀티 SQL 조인 → 차트/값)** — `core/sql_workspace.py` 가 여러 SQL 셀을 named TEMP VIEW 로 연쇄 등록 후 최종 SELECT 결과를 반환. DROP/INSERT/ATTACH/COPY/PRAGMA 등 14종 차단, read_parquet/csv 경로 화이트리스트, 5000 row 상한·comment 제거·multi-statement 거부. 사이드바 `🧪 SQL 작업대` 탭에서 추가/이동/실행, 결과 표·간단 차트(막대/선)·값 찾기 필터·스킬로 저장 한 화면.",
+        "**스킬 시스템** — `core/skill_miner.py` 가 `activity.jsonl` 누적 로그에서 5분 윈도우 도구 호출 시퀀스를 추출해 freq≥3 + users≥2 조건으로 스킬 후보 자동 생성. AI 허브의 💡 스킬 패널에서 admin 이 승인/거부, SQL 작업대에서 직접 저장도 지원. 정식 스킬은 `data_root/skills/<key>.json`, 후보는 `_candidates/` 분리 저장. admin_settings.json 미사용.",
+        "**회귀 0 + 신규 pytest 34건 PASS** — `test_tool_registry`(9), `test_sql_workspace`(12), `test_home_orchestrator`(7), `test_skill_miner`(6). 기존 `flowi_units/registry`·`FLOWI_FUNCTION_FEW_SHOTS`·`_flowi_function_schema`·`_run_flowi_chat` 손대지 않음."
+      ]
+    },
     {
       "version": "9.0.4",
       "date": "2026-04-26",
