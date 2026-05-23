@@ -110,6 +110,7 @@ def _timeline_item(rec: dict[str, Any]) -> dict[str, Any] | None:
         "detail": _detail_summary(detail, detail_text),
         "tone": _tone(category, action, detail, detail_text),
         "workflow_key": _workflow_key(action, detail),
+        "tool_name": _tool_name(action),
     }
 
 
@@ -215,6 +216,12 @@ def _workflow_key(action: str, detail: dict[str, Any]) -> str:
     if action.startswith("ai_hub_run:workflow:"):
         return action.split("ai_hub_run:workflow:", 1)[-1]
     return str(detail.get("workflow") or "")
+
+
+def _tool_name(action: str) -> str:
+    if action.startswith("ai_hub_toggle:"):
+        return action.split("ai_hub_toggle:", 1)[-1]
+    return ""
 
 
 def _json_detail(value: str) -> dict[str, Any]:

@@ -81,6 +81,7 @@ def test_ai_hub_timeline_groups_management_events(tmp_path, monkeypatch):
     assert out["counts"] == {"tool": 1, "wiki": 1, "validation": 1, "semantic": 1, "workflow": 1}
     assert [row["category"] for row in out["items"]] == ["tool", "wiki", "validation", "semantic", "workflow"]
     assert out["items"][0]["title"] == "filebrowser"
+    assert out["items"][0]["tool_name"] == "filebrowser"
     assert out["items"][1]["title"] == "Agent terms"
     assert out["items"][1]["action"] == "wiki:ingest_commit"
     assert out["items"][2]["tone"] == "ok"

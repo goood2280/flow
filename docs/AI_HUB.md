@@ -110,7 +110,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 - AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수, 실패 assertion, 통과/실패 케이스 샘플을 보여준다. admin은 같은 패널의 `검증 실행` 또는 readiness backlog action으로 최신 리포트를 재생성할 수 있다.
 - AI Hub 화면의 `Agent Wiki 상태` 패널은 기존 Knowledge Vault에서 Agent Wiki page/source, graph node/edge count, Wiki lint 이슈, 최근 변경 로그를 읽어 LLM Wiki/Obsidian 근거 품질을 운영 표면으로 보여준다.
-- AI Hub 화면의 `운영 타임라인` 패널은 기존 `activity.jsonl`과 Knowledge Vault `wiki_log`를 읽어 workflow dry-run/execute, Agent Wiki source/page 변경, semantic proposal/lexicon 변경, deep-eval, tool toggle, skill 승인/거부 이력을 시간순으로 보여준다.
+- AI Hub 화면의 `운영 타임라인` 패널은 기존 `activity.jsonl`과 Knowledge Vault `wiki_log`를 읽어 workflow dry-run/execute, Agent Wiki source/page 변경, semantic proposal/lexicon 변경, deep-eval, tool toggle, skill 승인/거부 이력을 시간순으로 보여준다. 이벤트 제목은 workflow를 Runbook, tool을 도구 카탈로그, wiki를 Agent Wiki 상태, validation을 Agent 검증 리포트, skill을 스킬 패널로 focus한다.
 
 ## SQL 작업대 — 멀티 셀 조인
 

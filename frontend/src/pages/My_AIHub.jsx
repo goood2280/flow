@@ -177,6 +177,55 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusTimelineItem(item) {
+    const category = String(item?.category || "");
+    const title = item?.title || item?.action || "운영 이벤트";
+    if (category === "workflow") {
+      if (item?.workflow_key) {
+        focusRunbookWorkflow({ workflow_key: item.workflow_key, label: title });
+        return;
+      }
+      setRunbookFocus((prev) => ({ title: `Workflow 이벤트: ${title}`, nonce: (prev?.nonce || 0) + 1 }));
+      return;
+    }
+    if (category === "tool") {
+      const name = String(item?.tool_name || item?.title || "").trim();
+      if (name) focusToolCatalogNode(name);
+      return;
+    }
+    if (category === "wiki") {
+      setOpsPanelFocus((prev) => ({
+        target: "wiki",
+        title: `Wiki 이벤트: ${title}`,
+        nodeId: item?.doc_id ? `wiki:${item.doc_id}` : "",
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (category === "validation") {
+      setOpsPanelFocus((prev) => ({
+        target: "deep_eval",
+        title: `검증 이벤트: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (category === "skill") {
+      setOpsPanelFocus((prev) => ({
+        target: "skills",
+        title: `스킬 이벤트: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    setOpsPanelFocus((prev) => ({
+      target: "timeline",
+      category,
+      title: category ? `운영 이벤트: ${category}` : title,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   function focusWorkflowMapWarning(row) {
     const title = row?.title || row?.key || "워크플로우 지도";
     const route = row?.route || "";
@@ -350,7 +399,7 @@ export default function My_AIHub() {
         onToolFocus={focusToolCatalogNode}
         onNextActionFocus={focusRunbookNextAction}
       />
-      <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
+      <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} onEventFocus={focusTimelineItem} />
       <WorkflowMapPanel
         days={days}
         focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null}
@@ -2748,7 +2797,7 @@ function boardActionStyle(tone) {
 }
 
 
-function TimelinePanel({ days, focusIntent }) {
+function TimelinePanel({ days, focusIntent, onEventFocus }) {
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState("");
   const [data, setData] = useState(null);
@@ -2842,7 +2891,7 @@ function TimelinePanel({ days, focusIntent }) {
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 6, maxHeight: 220, overflowY: "auto" }}>
-              {items.map((item) => <TimelineItem key={item.id} item={item} />)}
+              {items.map((item) => <TimelineItem key={item.id} item={item} onEventFocus={onEventFocus} />)}
             </div>
           )}
         </div>
@@ -2852,13 +2901,19 @@ function TimelinePanel({ days, focusIntent }) {
 }
 
 
-function TimelineItem({ item }) {
+function TimelineItem({ item, onEventFocus }) {
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-        <div style={{ minWidth: 0, fontSize: 12, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.title || item.action}
-        </div>
+        {onEventFocus ? (
+          <button type="button" onClick={() => onEventFocus(item)} style={timelineItemTitleButton} title="관련 관리 패널 열기">
+            {item.title || item.action}
+          </button>
+        ) : (
+          <div style={{ minWidth: 0, fontSize: 12, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {item.title || item.action}
+          </div>
+        )}
         <BoardPill tone={item.tone || "neutral"}>{item.category}</BoardPill>
       </div>
       <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -3625,6 +3680,21 @@ const boardItemTitleButton = {
   padding: 0,
   fontSize: 12,
   fontWeight: 700,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  textAlign: "left",
+};
+
+const timelineItemTitleButton = {
+  minWidth: 0,
+  border: "0",
+  background: "transparent",
+  color: "var(--accent)",
+  cursor: "pointer",
+  padding: 0,
+  fontSize: 12,
+  fontWeight: 800,
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
