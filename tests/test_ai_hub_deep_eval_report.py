@@ -56,6 +56,11 @@ def test_ai_hub_deep_eval_report_reads_latest_runtime_report(tmp_path, monkeypat
     assert out["groups"]["sql"] == {"passed": 2, "failed": 1, "total": 3}
     assert out["catalog"]["source_views"] == ["fab_db", "split_db"]
     assert out["doc_id"] == "agent_deep_eval_semiconductor_terms"
+    assert out["result_samples"] == [
+        {"name": "semantic/a", "group": "semantic", "ok": True, "detail": "ok"},
+        {"name": "sql/b", "group": "sql", "ok": False, "detail": "bad row"},
+    ]
+    assert out["result_sample_count"] == 2
     assert out["failed_results"] == [{"name": "sql/b", "detail": "bad row"}]
     assert out["path"] == "reports/flowi_agent_deep_eval_latest.json"
 
@@ -76,6 +81,30 @@ def test_ai_hub_deep_eval_report_missing_is_explicit(tmp_path, monkeypatch):
     assert out["exists"] is False
     assert out["status"] == "missing"
     assert out["path"] == "reports/flowi_agent_deep_eval_latest.json"
+
+
+def test_ai_hub_deep_eval_report_failure_scan_is_not_sample_limited(tmp_path, monkeypatch):
+    from core import ai_hub_deep_eval
+    from core.paths import PATHS
+
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
+    report_path = ai_hub_deep_eval.default_report_path()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    results = [{"name": f"semantic/pass/{idx}", "ok": True, "detail": "ok"} for idx in range(170)]
+    results.append({"name": "sql/late-failure", "ok": False, "detail": "late bad row"})
+    report_path.write_text(
+        json.dumps({
+            "summary": {"passed": 170, "failed": 1, "total": 171},
+            "groups": {"semantic": {"passed": 170, "failed": 0, "total": 170}, "sql": {"passed": 0, "failed": 1, "total": 1}},
+            "results": results,
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    out = ai_hub_deep_eval.load_latest_report()
+
+    assert out["result_sample_count"] == 160
+    assert out["failed_results"] == [{"name": "sql/late-failure", "detail": "late bad row"}]
 
 
 def test_ai_hub_deep_eval_run_endpoint_regenerates_report(tmp_path, monkeypatch):

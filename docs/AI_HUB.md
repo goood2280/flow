@@ -84,7 +84,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부, workflow Dry-run 재검증, deep-eval 리포트 재생성을 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
-- AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수와 실패 assertion을 보여준다. admin은 같은 패널의 `검증 실행` 또는 readiness backlog action으로 최신 리포트를 재생성할 수 있다.
+- AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수, 실패 assertion, 통과/실패 케이스 샘플을 보여준다. admin은 같은 패널의 `검증 실행` 또는 readiness backlog action으로 최신 리포트를 재생성할 수 있다.
 
 ## SQL 작업대 — 멀티 셀 조인
 

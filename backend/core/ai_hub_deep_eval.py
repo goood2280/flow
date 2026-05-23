@@ -19,6 +19,7 @@ from core.paths import PATHS
 REPORT_RELATIVE_PATH = Path("reports") / "flowi_agent_deep_eval_latest.json"
 _FLOW_ROOT = Path(__file__).resolve().parents[2]
 _DEEP_EVAL_SCRIPT = _FLOW_ROOT / "scripts" / "flowi_agent_deep_eval.py"
+RESULT_SAMPLE_LIMIT = 160
 
 
 def default_report_path() -> Path:
@@ -43,6 +44,44 @@ def _clean_count_dict(value: Any) -> dict[str, int]:
         except Exception:
             out[key] = 0
     return out
+
+
+def _result_group(name: str) -> str:
+    head = str(name or "").split("/", 1)[0].split(":", 1)[0].strip()
+    return head or "case"
+
+
+def _clean_result_rows(results: list[Any], *, limit: int = RESULT_SAMPLE_LIMIT) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        rows.append({
+            "name": name,
+            "group": _result_group(name),
+            "ok": bool(row.get("ok")),
+            "detail": str(row.get("detail") or ""),
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _failed_result_rows(results: list[Any], *, limit: int = 20) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in results:
+        if not isinstance(row, dict) or bool(row.get("ok")):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        rows.append({"name": name, "detail": str(row.get("detail") or "")})
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def load_latest_report() -> dict[str, Any]:
@@ -77,14 +116,8 @@ def load_latest_report() -> dict[str, Any]:
         if isinstance(name, str)
     }
     results = payload.get("results") if isinstance(payload.get("results"), list) else []
-    failed_results = [
-        {
-            "name": str(row.get("name") or ""),
-            "detail": str(row.get("detail") or ""),
-        }
-        for row in results
-        if isinstance(row, dict) and not bool(row.get("ok"))
-    ]
+    result_samples = _clean_result_rows(results)
+    failed_results = _failed_result_rows(results)
     status = "pass" if summary["failed"] == 0 else "fail"
 
     return {
@@ -102,7 +135,9 @@ def load_latest_report() -> dict[str, Any]:
         "cleanup_knowledge": bool(payload.get("cleanup_knowledge")),
         "min_cases": int(payload.get("min_cases") or 0),
         "result_count": len(results),
-        "failed_results": failed_results[:20],
+        "result_samples": result_samples,
+        "result_sample_count": len(result_samples),
+        "failed_results": failed_results,
     }
 
 

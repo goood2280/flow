@@ -274,6 +274,7 @@ function DeepEvalPanel() {
               <DeepEvalSummary report={data} />
               <DeepEvalGroups groups={data.groups || {}} catalog={data.catalog || {}} />
               <DeepEvalFailures rows={data.failed_results || []} status={data.status} />
+              <DeepEvalCases rows={data.result_samples || []} total={data.result_count || 0} />
             </div>
           ) : data ? (
             <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8 }}>
@@ -363,6 +364,42 @@ function DeepEvalFailures({ rows, status }) {
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail}</div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function DeepEvalCases({ rows, total }) {
+  const visible = rows.slice(0, 14);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>검증 케이스</div>
+        <BoardPill tone="neutral">{rows.length}/{total || rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>케이스 detail 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 190, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.name} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "48px 62px 1fr", gap: 5, alignItems: "center" }}>
+                <BoardPill tone={row.ok ? "ok" : "bad"}>{row.ok ? "PASS" : "FAIL"}</BoardPill>
+                <Tag>{row.group || "case"}</Tag>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>
+                  {row.name}
+                </span>
+              </div>
+              {row.detail && (
+                <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                  {row.detail}
+                </div>
+              )}
+            </div>
+          ))}
+          {rows.length > visible.length && <div style={{ fontSize: 10, color: "var(--muted)" }}>+{rows.length - visible.length} more</div>}
         </div>
       )}
     </div>
