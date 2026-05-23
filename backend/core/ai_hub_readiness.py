@@ -78,6 +78,7 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
     skill_candidates = int(board_counts.get("skill_candidates") or 0)
     skills = int(board_counts.get("skills") or 0)
     workflows = int(board_counts.get("workflows") or 0)
+    workflow_validation = _workflow_validation_summary(workflow, fallback_total=workflows)
 
     catalog_score = _pct(tools_enabled, tools_total)
     grounding_score = _pct(max(0, tools_visible - tools_without_refs), tools_visible)
@@ -86,7 +87,17 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
     asset_score = min(100, (skills * 18) + (workflows * 12))
     if skills == 0 and workflows == 0:
         asset_score = 35 if tools_total else 0
-    score = round((catalog_score * 0.28) + (grounding_score * 0.34) + (learning_score * 0.20) + (asset_score * 0.18))
+    validation_score = _pct(
+        max(0, workflow_validation["checked"] - workflow_validation["warnings"]),
+        workflow_validation["total"],
+    )
+    score = round(
+        (catalog_score * 0.24)
+        + (grounding_score * 0.30)
+        + (learning_score * 0.18)
+        + (asset_score * 0.16)
+        + (validation_score * 0.12)
+    )
 
     backlog = _build_backlog(board=board, workflow=workflow, counts={
         "tools_total": tools_total,
@@ -96,12 +107,22 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         "skill_candidates": skill_candidates,
         "skills": skills,
         "workflows": workflows,
+        "workflow_validation_total": workflow_validation["total"],
+        "workflow_validation_checked": workflow_validation["checked"],
+        "workflow_validation_unverified": workflow_validation["unverified"],
+        "workflow_validation_warnings": workflow_validation["warnings"],
     })
     checks = [
         _check("tool_catalog", "도구 카탈로그", catalog_score, f"{tools_enabled}/{tools_total} enabled"),
         _check("knowledge_grounding", "Wiki/schema grounding", grounding_score, f"{tools_without_refs} tools missing evidence"),
         _check("learning_queue", "학습/승인 큐", learning_score, f"semantic {semantic_pending}, skill {skill_candidates}"),
         _check("workflow_assets", "워크플로우/스킬 자산", asset_score, f"workflow {workflows}, skill {skills}"),
+        _check(
+            "workflow_validation",
+            "워크플로우 검증",
+            validation_score,
+            f"{workflow_validation['checked']}/{workflow_validation['total']} checked, {workflow_validation['warnings']} warning",
+        ),
     ]
     return {
         "ok": True,
@@ -119,6 +140,10 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
             "skill_candidates": skill_candidates,
             "skills": skills,
             "workflows": workflows,
+            "workflow_validation_total": workflow_validation["total"],
+            "workflow_validation_checked": workflow_validation["checked"],
+            "workflow_validation_unverified": workflow_validation["unverified"],
+            "workflow_validation_warnings": workflow_validation["warnings"],
             "backlog": len(backlog),
         },
         "backlog": backlog,
@@ -203,6 +228,7 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "route": "/api/skills/candidates",
             "actions": _skill_actions(item),
         })
+    out.extend(_workflow_validation_backlog(workflow))
     if counts["workflows"] == 0:
         out.append({
             "id": "workflow_assets:none",
@@ -234,6 +260,63 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
         })
     severity_order = {"high": 0, "medium": 1, "low": 2}
     return sorted(out, key=lambda row: (severity_order.get(str(row.get("severity")), 9), str(row.get("title") or ""), str(row.get("target") or "")))[:40]
+
+
+def _workflow_validation_summary(workflow: dict[str, Any], *, fallback_total: int = 0) -> dict[str, int]:
+    nodes = [
+        node for node in (workflow.get("nodes") or [])
+        if isinstance(node, dict) and node.get("type") == "workflow"
+    ]
+    total = len(nodes) or max(0, int(fallback_total or 0))
+    checked = 0
+    warnings = 0
+    for node in nodes:
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        run_count = int(metrics.get("run_count") or 0)
+        warning_count = int(metrics.get("warning_count") or 0)
+        if run_count > 0:
+            checked += 1
+        if warning_count > 0:
+            warnings += 1
+    return {
+        "total": total,
+        "checked": checked,
+        "unverified": max(0, total - checked),
+        "warnings": warnings,
+    }
+
+
+def _workflow_validation_backlog(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for node in (workflow.get("nodes") or []):
+        if not isinstance(node, dict) or node.get("type") != "workflow":
+            continue
+        key = str(node.get("workflow_key") or node.get("id") or "").replace("workflow:", "")
+        title = str(node.get("label") or key)
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        run_count = int(metrics.get("run_count") or 0)
+        warning_count = int(metrics.get("warning_count") or 0)
+        if run_count <= 0:
+            out.append({
+                "id": f"workflow_unverified:{key}",
+                "severity": "medium",
+                "title": "워크플로우 검증 필요",
+                "target": title,
+                "detail": "최근 기간에 dry-run 또는 execute 검증 이력이 없습니다.",
+                "action": "AI Hub 워크플로우 지도에서 Dry-run을 실행해 guardrail/step 상태를 확인",
+                "route": "/api/ai-hub/workflow-map",
+            })
+        elif warning_count > 0:
+            out.append({
+                "id": f"workflow_validation_warning:{key}",
+                "severity": "medium",
+                "title": "워크플로우 검증 경고",
+                "target": title,
+                "detail": f"최근 검증에서 warning 성격 step 상태가 {warning_count}회 기록되었습니다.",
+                "action": "Agent workflow template과 step action을 확인한 뒤 다시 Dry-run",
+                "route": "/api/ai-hub/workflow-map",
+            })
+    return out[:16]
 
 
 def bootstrap_starter_workflows(*, by: str = "system") -> dict[str, Any]:

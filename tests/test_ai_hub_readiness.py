@@ -65,6 +65,7 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
         "knowledge_grounding",
         "learning_queue",
         "workflow_assets",
+        "workflow_validation",
     }
     backlog_ids = {item["id"] for item in out["backlog"]}
     assert "disabled_tool:filebrowser" in backlog_ids
@@ -84,7 +85,69 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
 
     api_out = ai_hub.readiness(_req(), days=30)
     assert api_out["counts"]["tools_total"] == 4
+    assert api_out["counts"]["workflow_validation_total"] == 0
     assert api_out["is_admin"] is True
+
+
+def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
+    from core import ai_hub_board, ai_hub_readiness, ai_hub_workflow_map
+
+    def fake_board(username="", days=30, limit=12):
+        return {
+            "ok": True,
+            "counts": {
+                "tools_total": 2,
+                "tools_enabled": 2,
+                "tools_disabled": 0,
+                "semantic_proposals_pending": 0,
+                "skill_candidates": 0,
+                "skills": 1,
+                "workflows": 2,
+            },
+            "lanes": [],
+        }
+
+    def fake_map(username="", days=30, limit=120, reference_limit=400, focus_tag=""):
+        return {
+            "ok": True,
+            "counts": {
+                "tools_total": 2,
+                "tools_visible": 2,
+                "tools_without_refs_visible": 0,
+                "workflow_runs_recent": 1,
+                "workflow_run_warnings": 1,
+            },
+            "nodes": [
+                {
+                    "id": "workflow:unchecked",
+                    "type": "workflow",
+                    "label": "검증 안 된 workflow",
+                    "workflow_key": "unchecked",
+                    "metrics": {"run_count": 0, "warning_count": 0},
+                },
+                {
+                    "id": "workflow:warned",
+                    "type": "workflow",
+                    "label": "경고 workflow",
+                    "workflow_key": "warned",
+                    "metrics": {"run_count": 2, "warning_count": 1},
+                },
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
+    monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
+
+    out = ai_hub_readiness.build_readiness(username="alice", days=30)
+
+    assert out["counts"]["workflow_validation_total"] == 2
+    assert out["counts"]["workflow_validation_checked"] == 1
+    assert out["counts"]["workflow_validation_unverified"] == 1
+    assert out["counts"]["workflow_validation_warnings"] == 1
+    backlog_ids = {item["id"] for item in out["backlog"]}
+    assert "workflow_unverified:unchecked" in backlog_ids
+    assert "workflow_validation_warning:warned" in backlog_ids
 
 
 def test_ai_hub_readiness_bootstrap_workflows_is_idempotent(tmp_path, monkeypatch):
