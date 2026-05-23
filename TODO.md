@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 보드 항목 관리 focus 연결
 - (Codex) AI Hub 도구 상세 Wiki/Graph refs 워크플로우 지도 focus 연결
 - (Codex) AI Hub Workflow Runbook next action 관리 focus 연결
 - (Codex) AI Hub Workflow Runbook 상세 tool/evidence 관리 focus 연결

@@ -290,6 +290,42 @@ export default function My_AIHub() {
     focusWorkflowMapNode(row);
   }
 
+  function focusOperationsBoardItem(lane, item) {
+    const laneId = String(lane?.id || "");
+    const itemId = String(item?.id || "").trim();
+    const title = item?.title || itemId;
+    if (!itemId && laneId !== "workflow_runs") return;
+    if (laneId === "disabled_tools") {
+      focusToolCatalogNode(itemId);
+      return;
+    }
+    if (laneId === "workflow_templates") {
+      focusRunbookWorkflow({ workflow_key: itemId, label: title });
+      return;
+    }
+    if (laneId === "workflow_runs") {
+      const key = String(item?.workflow_key || itemId.split(":").slice(-1)[0] || "").trim();
+      if (key) focusRunbookWorkflow({ workflow_key: key, label: title || key });
+      return;
+    }
+    if (laneId === "skill_candidates") {
+      setOpsPanelFocus((prev) => ({
+        target: "skills",
+        title: `스킬 후보: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (laneId === "semantic_proposals") {
+      setOpsPanelFocus((prev) => ({
+        target: "timeline",
+        category: "semantic",
+        title: `시멘틱 제안: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+    }
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
@@ -305,7 +341,7 @@ export default function My_AIHub() {
       <ReadinessPanel days={days} focusIntent={readinessFocus} onChanged={loadCatalog} />
       <DeepEvalPanel focusIntent={opsPanelFocus?.target === "deep_eval" ? opsPanelFocus : null} />
       <WikiHealthPanel focusIntent={opsPanelFocus?.target === "wiki" ? opsPanelFocus : null} />
-      <OperationsBoard days={days} onChanged={loadCatalog} />
+      <OperationsBoard days={days} onChanged={loadCatalog} onItemFocus={focusOperationsBoardItem} />
       <WorkflowRunbookPanel
         days={days}
         focusIntent={runbookFocus}
@@ -323,7 +359,7 @@ export default function My_AIHub() {
         onWikiFocus={focusWikiEvidenceNode}
         onToolFocus={focusToolCatalogNode}
       />
-      <SkillsPanel />
+      <SkillsPanel focusIntent={opsPanelFocus?.target === "skills" ? opsPanelFocus : null} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
       {/* 좌측 필터 패널 */}
@@ -2552,7 +2588,7 @@ function WorkflowEdgeList({ title, edges, other, onNodeSelect }) {
 }
 
 
-function OperationsBoard({ days, onChanged }) {
+function OperationsBoard({ days, onChanged, onItemFocus }) {
   const [open, setOpen] = useState(true);
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2620,6 +2656,7 @@ function OperationsBoard({ days, onChanged }) {
                   canManage={!!board?.is_admin}
                   actionBusy={actionBusy}
                   onAction={runAction}
+                  onItemFocus={onItemFocus}
                 />
               ))}
             </div>
@@ -2631,7 +2668,7 @@ function OperationsBoard({ days, onChanged }) {
 }
 
 
-function BoardLane({ lane, canManage, actionBusy, onAction }) {
+function BoardLane({ lane, canManage, actionBusy, onAction, onItemFocus }) {
   const items = lane.items || [];
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, minWidth: 0, padding: 8 }}>
@@ -2649,9 +2686,15 @@ function BoardLane({ lane, canManage, actionBusy, onAction }) {
           {items.map((item) => (
             <div key={item.id} style={{ minWidth: 0, borderTop: "1px dashed var(--border)", paddingTop: 6 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                <div style={{ minWidth: 0, fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {item.title || item.id}
-                </div>
+                {onItemFocus ? (
+                  <button type="button" onClick={() => onItemFocus(lane, item)} style={boardItemTitleButton} title="관련 관리 패널 열기">
+                    {item.title || item.id}
+                  </button>
+                ) : (
+                  <div style={{ minWidth: 0, fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.title || item.id}
+                  </div>
+                )}
                 <Tag>{item.status}</Tag>
               </div>
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2952,7 +2995,7 @@ const btnPrimary = {
 };
 
 
-function SkillsPanel() {
+function SkillsPanel({ focusIntent }) {
   const [open, setOpen] = useState(false);
   const [candidates, setCandidates] = useState([]);
   const [skills, setSkills] = useState([]);
@@ -2980,6 +3023,10 @@ function SkillsPanel() {
   }
 
   useEffect(() => { if (open) loadAll(); }, [open]);
+  useEffect(() => {
+    if (!focusIntent?.nonce) return;
+    setOpen(true);
+  }, [focusIntent?.nonce]);
 
   async function mineNow() {
     if (!isAdmin) return;
@@ -3025,6 +3072,7 @@ function SkillsPanel() {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>💡 스킬</div>
+        {focusIntent?.nonce && <BoardPill tone="info">focus {focusIntent.title || "스킬"}</BoardPill>}
         <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
           누적 로그에서 자주 쓰인 도구 시퀀스를 스킬로 응축
         </div>
@@ -3564,5 +3612,21 @@ const runbookActionButton = {
   cursor: "pointer",
   fontSize: 10,
   lineHeight: 1.35,
+  textAlign: "left",
+};
+
+const boardItemTitleButton = {
+  minWidth: 0,
+  flex: 1,
+  border: "0",
+  background: "transparent",
+  color: "var(--accent)",
+  cursor: "pointer",
+  padding: 0,
+  fontSize: 12,
+  fontWeight: 700,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
   textAlign: "left",
 };

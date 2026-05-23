@@ -262,6 +262,7 @@ def _workflow_run_item(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": f"{rec.get('timestamp') or ''}:{key}",
         "title": str(detail.get("title") or key),
+        "workflow_key": str(detail.get("workflow") or key),
         "status": "dry-run" if dry_run else "executed",
         "meta": f"{steps} steps",
         "detail": status_text,
