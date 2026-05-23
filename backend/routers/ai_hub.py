@@ -11,6 +11,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/tags                   태그 목록 (필터용)
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
+  GET    /api/ai-hub/workflow-map/export/download  지도 export 다운로드 (Obsidian ZIP / JSON)
   GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
   GET    /api/ai-hub/deep-eval-report       Agent deep-eval 최신 리포트
   POST   /api/ai-hub/deep-eval-report/run   Agent deep-eval 최신 리포트 재생성 (admin)
@@ -21,9 +22,12 @@ core/tool_registry.py 의 read 함수만 호출한다.
 """
 from __future__ import annotations
 
+import io
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core import ai_hub_board
@@ -191,6 +195,47 @@ def workflow_map_export(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/workflow-map/export/download")
+def workflow_map_export_download(
+    request: Request,
+    format: str = Query(default="obsidian", pattern="^(obsidian|markdown|md|n8n|json)$"),
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=40, ge=1, le=120),
+    reference_limit: int = Query(default=160, ge=20, le=400),
+    focus_tag: str = Query(default=""),
+):
+    me = current_user(request)
+    try:
+        payload = ai_hub_workflow_map.export_workflow_map(
+            export_format=format,
+            username=str((me or {}).get("username") or ""),
+            days=days,
+            limit=limit,
+            reference_limit=reference_limit,
+            focus_tag=focus_tag,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    fmt = str(format or "").lower()
+    if fmt in {"obsidian", "markdown", "md"}:
+        data = ai_hub_workflow_map.export_obsidian_zip(payload)
+        filename = "flow-ai-hub-workflow-map.obsidian.zip"
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = str(payload.get("filename") or "flow-ai-hub-workflow-map.json")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/tools/{name}")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 _FLOW_ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +98,11 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
     assert any(row["path"] == "Flow AI Hub Workflow Map.md" for row in obsidian["files"])
     deep_eval_note = next(row for row in obsidian["files"] if row["path"] == "nodes/deep-eval-latest.md")
     assert "## Agent Deep Eval" in deep_eval_note["body"]
+    archive = ai_hub_workflow_map.export_obsidian_zip(obsidian)
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        assert "Flow AI Hub Workflow Map.md" in zf.namelist()
+        assert "nodes/deep-eval-latest.md" in zf.namelist()
+        assert "## Agent Deep Eval" in zf.read("nodes/deep-eval-latest.md").decode("utf-8")
     filebrowser_note = next(row for row in obsidian["files"] if row["path"] == "nodes/tool-filebrowser.md")
     assert "# FileBrowser" in filebrowser_note["body"]
     assert "[[wiki-filebrowser-schema-manual|filebrowser_schema_manual]]" in filebrowser_note["body"]
@@ -349,6 +357,44 @@ def test_ai_hub_workflow_map_warns_failed_deep_eval(monkeypatch, tmp_path):
     assert warnings["deep_eval_failed"]["items"] == ["sql/raw join/rows"]
 
 
+def test_ai_hub_workflow_map_download_endpoint_streams_obsidian_zip(monkeypatch):
+    from routers import ai_hub
+
+    def fake_export_workflow_map(export_format, username="", days=30, limit=40, reference_limit=160, focus_tag=""):
+        assert export_format == "obsidian"
+        assert username == "alice"
+        assert days == 7
+        assert limit == 5
+        assert reference_limit == 20
+        assert focus_tag == "knob"
+        return {
+            "format": "obsidian",
+            "filename": "flow-ai-hub-workflow-map.obsidian.json",
+            "files": [
+                {"path": "Flow AI Hub Workflow Map.md", "body": "# Index"},
+                {"path": "nodes/tool-splittable.md", "body": "# Split Table"},
+            ],
+        }
+
+    monkeypatch.setattr(ai_hub.ai_hub_workflow_map, "export_workflow_map", fake_export_workflow_map)
+
+    response = ai_hub.workflow_map_export_download(
+        _req(),
+        format="obsidian",
+        days=7,
+        limit=5,
+        reference_limit=20,
+        focus_tag="knob",
+    )
+
+    assert response.media_type == "application/zip"
+    assert "flow-ai-hub-workflow-map.obsidian.zip" in response.headers["content-disposition"]
+    archive = asyncio.run(_streaming_response_body(response))
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        assert zf.read("Flow AI Hub Workflow Map.md").decode("utf-8") == "# Index"
+        assert zf.read("nodes/tool-splittable.md").decode("utf-8") == "# Split Table"
+
+
 def _passing_deep_eval():
     return {
         "ok": True,
@@ -366,3 +412,23 @@ def _passing_deep_eval():
         "failed_results": [],
         "age_seconds": 60,
     }
+
+
+async def _streaming_response_body(response):
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
+    return b"".join(chunks)
+
+
+class _State:
+    user = {"username": "alice", "role": "admin"}
+
+
+class _Req:
+    state = _State()
+    headers = {}
+
+
+def _req():
+    return _Req()

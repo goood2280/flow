@@ -3,7 +3,7 @@
 // 백엔드 /api/ai-hub/tools 가 단일 진실이며, 이 페이지는 표시·필터·toggle 만 담당한다.
 
 import { useEffect, useMemo, useState } from "react";
-import { sf, postJson } from "../lib/api";
+import { sf, postJson, dl } from "../lib/api";
 
 const KIND_LABELS = {
   unit_ai: "Unit AI",
@@ -568,12 +568,16 @@ function WorkflowMapPanel({ days }) {
     setErr("");
     try {
       const qs = new URLSearchParams({
-        format,
+        format: format === "obsidian_zip" ? "obsidian" : format,
         days: String(days),
         limit: "40",
         reference_limit: "160",
       });
       if (focusTag) qs.set("focus_tag", focusTag);
+      if (format === "obsidian_zip") {
+        await dl(`/api/ai-hub/workflow-map/export/download?${qs.toString()}`, "flow-ai-hub-workflow-map.obsidian.zip");
+        return;
+      }
       const out = await sf(`/api/ai-hub/workflow-map/export?${qs.toString()}`);
       downloadJson(out.filename || `flow-ai-hub-workflow-map.${format}.json`, out);
     } catch (e) {
@@ -632,8 +636,8 @@ function WorkflowMapPanel({ days }) {
             <button onClick={() => exportMap("n8n")} disabled={!!exporting} style={btnGhost}>
               {exporting === "n8n" ? "내보내는 중" : "n8n JSON"}
             </button>
-            <button onClick={() => exportMap("obsidian")} disabled={!!exporting} style={btnGhost}>
-              {exporting === "obsidian" ? "내보내는 중" : "Obsidian MD"}
+            <button onClick={() => exportMap("obsidian_zip")} disabled={!!exporting} style={btnGhost}>
+              {exporting === "obsidian_zip" ? "내보내는 중" : "Obsidian ZIP"}
             </button>
           </>
         )}

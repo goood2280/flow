@@ -6,7 +6,9 @@ extra runtime store, no writes.
 """
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -323,6 +325,20 @@ def export_workflow_map(
     raise ValueError(f"unsupported export format: {export_format}")
 
 
+def export_obsidian_zip(export_payload: dict[str, Any]) -> bytes:
+    files = export_payload.get("files") if isinstance(export_payload.get("files"), list) else []
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for row in files:
+            if not isinstance(row, dict):
+                continue
+            path = _safe_zip_path(str(row.get("path") or ""))
+            body = str(row.get("body") or "")
+            if path:
+                zf.writestr(path, body)
+    return buf.getvalue()
+
+
 def _export_n8n(graph: dict[str, Any]) -> dict[str, Any]:
     """Return an n8n-compatible-ish workflow document.
 
@@ -598,6 +614,12 @@ def _slug(value: str) -> str:
     while "--" in slug:
         slug = slug.replace("--", "-")
     return slug or "node"
+
+
+def _safe_zip_path(value: str) -> str:
+    normalized = str(value or "").replace("\\", "/").lstrip("/")
+    parts = [part for part in normalized.split("/") if part and part not in {".", ".."}]
+    return "/".join(parts) or "Flow AI Hub Workflow Map.md"
 
 
 def _tag_slug(value: str) -> str:

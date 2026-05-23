@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub workflow map Obsidian ZIP export 추가
 - (Codex) AI Hub workflow map deep eval 노드 재검증 액션 연결
 - (Codex) AI Hub deep eval 리포트 재생성 관리 액션 연결
 - (Codex) AI Hub workflow map Agent deep eval evidence 노드 연결
