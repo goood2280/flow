@@ -305,6 +305,7 @@ def _workflow_validation_backlog(workflow: dict[str, Any]) -> list[dict[str, Any
                 "detail": "최근 기간에 dry-run 또는 execute 검증 이력이 없습니다.",
                 "action": "AI Hub 워크플로우 지도에서 Dry-run을 실행해 guardrail/step 상태를 확인",
                 "route": "/api/ai-hub/workflow-map",
+                "actions": [_workflow_dry_run_action(key)],
             })
         elif warning_count > 0:
             out.append({
@@ -315,8 +316,24 @@ def _workflow_validation_backlog(workflow: dict[str, Any]) -> list[dict[str, Any
                 "detail": f"최근 검증에서 warning 성격 step 상태가 {warning_count}회 기록되었습니다.",
                 "action": "Agent workflow template과 step action을 확인한 뒤 다시 Dry-run",
                 "route": "/api/ai-hub/workflow-map",
+                "actions": [_workflow_dry_run_action(key)],
             })
     return out[:16]
+
+
+def _workflow_dry_run_action(key: str) -> dict[str, Any]:
+    return {
+        "id": "dry_run",
+        "label": "Dry-run",
+        "tone": "ok",
+        "method": "POST",
+        "endpoint": "/api/agent/workflows/execute",
+        "body": {
+            "key": str(key or ""),
+            "slots": {},
+            "dry_run": True,
+        },
+    }
 
 
 def bootstrap_starter_workflows(*, by: str = "system") -> dict[str, Any]:

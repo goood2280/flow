@@ -76,7 +76,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 - 점수 축: 도구 활성도, Wiki/schema grounding, semantic/skill 승인 큐, workflow/skill 자산, workflow dry-run/execute 검증 coverage
 - backlog: 비활성 도구, 지식 근거가 빈 도구, semantic 승인 대기, skill 후보, workflow/skill 부재, 비어 있거나 step 정의가 불완전한 workflow template, 최근 검증이 없거나 warning이 있는 workflow
-- 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부를 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
+- 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부, workflow Dry-run 재검증을 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 

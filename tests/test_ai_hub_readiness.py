@@ -148,6 +148,14 @@ def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
     backlog_ids = {item["id"] for item in out["backlog"]}
     assert "workflow_unverified:unchecked" in backlog_ids
     assert "workflow_validation_warning:warned" in backlog_ids
+    by_id = {item["id"]: item for item in out["backlog"]}
+    assert by_id["workflow_unverified:unchecked"]["actions"][0]["endpoint"] == "/api/agent/workflows/execute"
+    assert by_id["workflow_unverified:unchecked"]["actions"][0]["body"] == {
+        "key": "unchecked",
+        "slots": {},
+        "dry_run": True,
+    }
+    assert by_id["workflow_validation_warning:warned"]["actions"][0]["body"]["key"] == "warned"
 
 
 def test_ai_hub_readiness_bootstrap_workflows_is_idempotent(tmp_path, monkeypatch):
