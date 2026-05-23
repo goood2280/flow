@@ -128,6 +128,16 @@ export default function My_AIHub() {
     setOpsPanelFocus((prev) => ({ target: card.key, title, nonce: (prev?.nonce || 0) + 1 }));
   }
 
+  function focusTimelineEvent(row) {
+    const category = row?.category || "";
+    setOpsPanelFocus((prev) => ({
+      target: "timeline",
+      category,
+      title: category ? `운영 이벤트: ${category}` : "운영 이벤트",
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
@@ -136,6 +146,7 @@ export default function My_AIHub() {
         onSummaryCard={focusOpsSummaryCard}
         onReadinessBacklog={focusReadinessBacklog}
         onRunbookIssue={focusRunbookIssue}
+        onTimelineEvent={focusTimelineEvent}
       />
       <OrchestratorPanel />
       <ReadinessPanel days={days} focusIntent={readinessFocus} onChanged={loadCatalog} />
@@ -249,7 +260,7 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIssue }) {
+function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIssue, onTimelineEvent }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -318,7 +329,7 @@ function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIs
               <OpsSnapshotSummary data={data} onSelect={onSummaryCard} />
               <OpsSnapshotActions rows={data.top_actions || []} onSelect={onReadinessBacklog} />
               <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} onSelect={onRunbookIssue} />
-              <OpsSnapshotEvents rows={data.recent_events || []} />
+              <OpsSnapshotEvents rows={data.recent_events || []} onSelect={onTimelineEvent} />
             </div>
           ) : (
             <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)" }}>
@@ -508,8 +519,36 @@ function OpsSnapshotRunbookQueue({ rows, onSelect }) {
 }
 
 
-function OpsSnapshotEvents({ rows }) {
+function OpsSnapshotEvents({ rows, onSelect }) {
   const visible = rows.slice(0, 6);
+  const rowStyle = {
+    border: "0",
+    borderTop: "1px dashed var(--border)",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    padding: "5px 0 0",
+    textAlign: "left",
+    width: "100%",
+  };
+  function rowContent(row) {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+          <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.action}</div>
+          <BoardPill tone={row.tone || "neutral"}>{row.category || "event"}</BoardPill>
+        </div>
+        <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          <Tag>{row.username || "unknown"}</Tag>
+          <Tag>{relTime(row.timestamp)}</Tag>
+          {row.meta && <Tag>{row.meta}</Tag>}
+        </div>
+        {row.detail && (
+          <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail}</div>
+        )}
+      </>
+    );
+  }
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
@@ -521,20 +560,21 @@ function OpsSnapshotEvents({ rows }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
           {visible.map((row) => (
-            <div key={row.id || `${row.timestamp}:${row.action}`} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.action}</div>
-                <BoardPill tone={row.tone || "neutral"}>{row.category || "event"}</BoardPill>
+            onSelect ? (
+              <button
+                key={row.id || `${row.timestamp}:${row.action}`}
+                type="button"
+                onClick={() => onSelect(row)}
+                style={{ ...rowStyle, cursor: "pointer" }}
+                title="운영 타임라인에서 이 category로 보기"
+              >
+                {rowContent(row)}
+              </button>
+            ) : (
+              <div key={row.id || `${row.timestamp}:${row.action}`} style={rowStyle}>
+                {rowContent(row)}
               </div>
-              <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", gap: 4 }}>
-                <Tag>{row.username || "unknown"}</Tag>
-                <Tag>{relTime(row.timestamp)}</Tag>
-                {row.meta && <Tag>{row.meta}</Tag>}
-              </div>
-              {row.detail && (
-                <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail}</div>
-              )}
-            </div>
+            )
           ))}
         </div>
       )}
@@ -2007,6 +2047,7 @@ function TimelinePanel({ days, focusIntent }) {
   useEffect(() => {
     if (!focusIntent?.nonce) return;
     setOpen(true);
+    setCategory(focusIntent.category || "");
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 
