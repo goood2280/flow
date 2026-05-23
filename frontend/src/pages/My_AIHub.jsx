@@ -179,6 +179,16 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusWorkflowMapNode(row) {
+    if (!row?.key) return;
+    setOpsPanelFocus((prev) => ({
+      target: "workflow_map",
+      nodeId: `workflow:${row.key}`,
+      title: row.title || row.key,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
@@ -195,7 +205,7 @@ export default function My_AIHub() {
       <DeepEvalPanel focusIntent={opsPanelFocus?.target === "deep_eval" ? opsPanelFocus : null} />
       <WikiHealthPanel focusIntent={opsPanelFocus?.target === "wiki" ? opsPanelFocus : null} />
       <OperationsBoard days={days} onChanged={loadCatalog} />
-      <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} />
+      <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} onWorkflowMapFocus={focusWorkflowMapNode} />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
       <WorkflowMapPanel days={days} focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null} onWarningSelect={focusWorkflowMapWarning} />
       <SkillsPanel />
@@ -1261,7 +1271,7 @@ function ReadinessBacklog({ rows, activeId, canManage, actionBusy, onAction }) {
 }
 
 
-function WorkflowRunbookPanel({ days, focusIntent }) {
+function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1434,6 +1444,7 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
                       actionBusy={actionBusy}
                       actionResult={actionResult}
                       onAction={runAction}
+                      onMapFocus={() => onWorkflowMapFocus?.(row)}
                       onToggle={() => setExpandedKey((key) => key === row.key ? "" : row.key)}
                     />
                   ))}
@@ -1489,7 +1500,7 @@ function WorkflowNextActionQueue({ rows, activeIssue, onFilter }) {
 }
 
 
-function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onToggle }) {
+function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onMapFocus, onToggle }) {
   const issues = row.issues || [];
   const nextActions = row.next_actions || [];
   const nextAction = nextActions[0] || null;
@@ -1528,6 +1539,11 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
           )}
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {onMapFocus && (
+            <button type="button" onClick={onMapFocus} style={btnGhost}>
+              지도
+            </button>
+          )}
           <button type="button" onClick={onToggle} style={btnGhost}>
             {expanded ? "닫기" : "상세"}
           </button>
@@ -1694,6 +1710,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect }) {
   useEffect(() => {
     if (!focusIntent?.nonce) return;
     setOpen(true);
+    if (focusIntent.nodeId) setSelectedId(focusIntent.nodeId);
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 

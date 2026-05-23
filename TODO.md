@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub Workflow Runbook row 지도 focus 연결
 - (Codex) AI Hub Workflow Runbook row 상세 펼침 추가
 - (Codex) AI Hub workflow map warning route 패널 연결
 - (Codex) AI Hub workflow map warning 조치 문구/상세 표시
