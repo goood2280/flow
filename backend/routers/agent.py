@@ -2877,12 +2877,105 @@ def _unit_ai_summary(unit) -> dict[str, Any]:
     }
 
 
+class UnitAIRuntimeImprovementReq(BaseModel):
+    goal: str = ""
+    run: dict[str, Any] = Field(default_factory=dict)
+    semantic: dict[str, Any] = Field(default_factory=dict)
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    conclusion: dict[str, Any] = Field(default_factory=dict)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
 @router.get("/unit-ai/catalog")
 def unit_ai_catalog(request: Request) -> dict[str, Any]:
     """Return summary metadata for all 11 unit AIs (read-only)."""
     current_user(request)
     items = [_unit_ai_summary(UNIT_AIS[k]) for k in UNIT_AIS.keys()]
     return {"ok": True, "items": items, "total": len(items)}
+
+
+@router.get("/unit-ai/{key}/runtime/blueprint")
+def unit_ai_runtime_blueprint(key: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    return build_runtime_blueprint(unit_ai_scope=unit.key())
+
+
+@router.post("/unit-ai/{key}/runtime/run")
+async def unit_ai_runtime_run(key: str, req: AgentRuntimeRequest, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    context = dict(req.context or {})
+    context["unit_ai_scope"] = unit.key()
+    scoped_req = AgentRuntimeRequest(
+        goal=req.goal,
+        max_terms=req.max_terms,
+        use_llm=req.use_llm,
+        context=context,
+        unit_ai_scope=unit.key(),
+    )
+    result = await run_agent_runtime_once(scoped_req, str(me.get("username") or "user"))
+    return {"ok": True, "unit_ai_scope": unit.key(), "run": result.model_dump(mode="json")}
+
+
+@router.get("/unit-ai/{key}/runtime/stream")
+async def unit_ai_runtime_stream(
+    key: str,
+    request: Request,
+    goal: str = Query(..., min_length=1, max_length=4000),
+    use_llm: bool = Query(False),
+    max_terms: int = Query(24, ge=1, le=80),
+):
+    me = current_user(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    scoped_key = unit.key()
+    req = AgentRuntimeRequest(
+        goal=goal,
+        use_llm=use_llm,
+        max_terms=max_terms,
+        context={"unit_ai_scope": scoped_key},
+        unit_ai_scope=scoped_key,
+    )
+
+    async def _gen():
+        async for event in stream_agent_runtime(req, str(me.get("username") or "user")):
+            yield encode_sse_event(event)
+            if await request.is_disconnected():
+                break
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/unit-ai/{key}/runtime/improvement-proposals")
+def unit_ai_runtime_improvement_proposals(key: str, req: UnitAIRuntimeImprovementReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    can_apply = _can_manage_agent_knowledge(me)
+    proposals = _build_unit_ai_runtime_improvement_proposals(unit, req, can_apply=can_apply)
+    return {
+        "ok": True,
+        "unit_ai_scope": unit.key(),
+        "can_apply": can_apply,
+        "proposals": proposals,
+        "total": len(proposals),
+    }
 
 
 @router.get("/unit-ai/{key}/inspect")
@@ -2940,6 +3033,235 @@ def unit_ai_inspect(key: str, request: Request) -> dict[str, Any]:
         "semantic_bindings": _semantic_bindings_dict(unit.semantic_bindings()),
         "handler_entry": _handler_entry_dict(unit.handler_entry()),
     }
+
+
+def _runtime_req_run(req: UnitAIRuntimeImprovementReq) -> dict[str, Any]:
+    run = req.run if isinstance(req.run, dict) else {}
+    return {
+        "goal": str(run.get("goal") or req.goal or ""),
+        "semantic": run.get("semantic") if isinstance(run.get("semantic"), dict) else dict(req.semantic or {}),
+        "plan": run.get("plan") if isinstance(run.get("plan"), list) else list(req.plan or []),
+        "results": run.get("results") if isinstance(run.get("results"), list) else list(req.results or []),
+        "conclusion": run.get("conclusion") if isinstance(run.get("conclusion"), dict) else dict(req.conclusion or {}),
+        "events": run.get("events") if isinstance(run.get("events"), list) else list(req.events or []),
+    }
+
+
+def _runtime_issue_tags(run: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    semantic = run.get("semantic") if isinstance(run.get("semantic"), dict) else {}
+    try:
+        coverage = float(semantic.get("coverage") or 0)
+    except (TypeError, ValueError):
+        coverage = 0.0
+    if coverage and coverage < 0.35:
+        tags.append("low_semantic_coverage")
+    if semantic and not semantic.get("candidates"):
+        tags.append("low_semantic_coverage")
+    for result in run.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        if result.get("status") == "failed":
+            tags.append("failed")
+        guardrail = result.get("guardrail") if isinstance(result.get("guardrail"), dict) else {}
+        guardrail_status = str(guardrail.get("status") or "")
+        if guardrail_status in {"missing_slots", "approval_required", "blocked", "no_handler", "error"}:
+            tags.append(guardrail_status)
+        for warning in result.get("warnings") or []:
+            text = str(warning or "")
+            if "missing" in text:
+                tags.append("missing_slots")
+            if "no_handler" in text:
+                tags.append("no_handler")
+    conclusion = run.get("conclusion") if isinstance(run.get("conclusion"), dict) else {}
+    for warning in conclusion.get("warnings") or []:
+        text = str(warning or "")
+        if "missing" in text:
+            tags.append("missing_slots")
+        if "approval_required" in text:
+            tags.append("approval_required")
+        if "blocked" in text:
+            tags.append("blocked")
+    out: list[str] = []
+    for tag in tags:
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
+def _proposal_id(unit_key: str, target: str, payload: dict[str, Any]) -> str:
+    raw = json.dumps({"unit": unit_key, "target": target, "payload": payload}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _append_feature_note(text: str, unit_key: str, tags: list[str], goal: str) -> str:
+    note = "\n\n## Runtime improvement note\n"
+    note += f"- unit_ai: {unit_key}\n"
+    if tags:
+        note += "- issue: " + ", ".join(tags) + "\n"
+    if goal:
+        note += "- sample_goal: " + goal[:240] + "\n"
+    note += "- policy: 승인 후 feature md/prompt/template/semantic 사전 중 하나로만 반영\n"
+    base = text or ""
+    if "## Runtime improvement note" in base and goal and goal[:120] in base:
+        return base
+    return base.rstrip() + note + "\n"
+
+
+def _prompt_template_payload(unit, tags: list[str], goal: str) -> dict[str, Any] | None:
+    path = unit.prompt_template_path()
+    if path is None or not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+        parsed = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    notes = parsed.get("runtime_improvement_notes")
+    if not isinstance(notes, list):
+        notes = []
+    note = {
+        "issue": tags,
+        "sample_goal": goal[:240],
+        "policy": "approved_only",
+    }
+    if note not in notes:
+        notes.append(note)
+    parsed["runtime_improvement_notes"] = notes[-8:]
+    return {"text": json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"}
+
+
+def _first_action_row(run: dict[str, Any], unit_key: str) -> dict[str, Any]:
+    for row in run.get("plan") or []:
+        if isinstance(row, dict) and row.get("unit_ai") == unit_key and row.get("action"):
+            return row
+    return {"unit_ai": unit_key, "action": "inspect", "missing_slots": []}
+
+
+def _unknown_semantic_terms(semantic: dict[str, Any]) -> list[str]:
+    normalized = semantic.get("normalized_terms") if isinstance(semantic.get("normalized_terms"), dict) else {}
+    out: list[str] = []
+    for token in semantic.get("tokens") or []:
+        text = str(token or "").strip()
+        if len(text) < 2:
+            continue
+        if normalized.get(text):
+            continue
+        if text not in out:
+            out.append(text)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _build_unit_ai_runtime_improvement_proposals(unit, req: UnitAIRuntimeImprovementReq, *, can_apply: bool) -> list[dict[str, Any]]:
+    run = _runtime_req_run(req)
+    unit_key = unit.key()
+    goal = str(run.get("goal") or "")
+    semantic = run.get("semantic") if isinstance(run.get("semantic"), dict) else {}
+    tags = _runtime_issue_tags(run)
+    action = _first_action_row(run, unit_key)
+    missing = [str(v) for v in (action.get("missing_slots") or []) if str(v).strip()]
+    proposals: list[dict[str, Any]] = []
+
+    def add(target: str, title: str, rationale: str, endpoint: str, method: str, payload: dict[str, Any]) -> None:
+        proposals.append({
+            "id": _proposal_id(unit_key, target, payload),
+            "target": target,
+            "title": title,
+            "rationale": rationale,
+            "issue_tags": tags,
+            "method": method,
+            "endpoint": endpoint,
+            "payload": payload,
+            "can_apply": bool(can_apply),
+            "approval_required": True,
+        })
+
+    if not tags:
+        return proposals
+
+    unknown_terms = _unknown_semantic_terms(semantic)
+    if unknown_terms and ("low_semantic_coverage" in tags or "no_handler" in tags):
+        alias_key = f"{unit_key}_runtime_terms"
+        add(
+            "semantic_alias",
+            "시멘틱 alias 후보",
+            "선택 AI 질문에서 해석되지 않은 단어가 있어 alias group 후보를 만듭니다.",
+            "/api/agent/semantic/alias-groups",
+            "PUT",
+            {"key": alias_key, "values": unknown_terms},
+        )
+
+    if "low_semantic_coverage" in tags or "no_handler" in tags:
+        hint_values = [unit_key, unit.title(), *(unknown_terms[:4] or [goal[:80]])]
+        add(
+            "semantic_intent",
+            "intent hint 후보",
+            "질문이 일반 orchestration으로 흐르거나 선택 AI handler로 충분히 좁혀지지 않았습니다.",
+            "/api/agent/semantic/intent-hints",
+            "PUT",
+            {"key": f"{unit_key}_runtime", "values": [v for v in hint_values if str(v).strip()]},
+        )
+
+    if any(tag in tags for tag in ("no_handler", "missing_slots", "approval_required", "blocked", "failed")):
+        feature_path = unit.feature_md_path()
+        try:
+            current_md = feature_path.read_text(encoding="utf-8") if feature_path.exists() else ""
+        except OSError:
+            current_md = ""
+        add(
+            "feature_md",
+            "Feature 규칙 md 보강 후보",
+            "실행 중 발견된 missing/no-handler/approval 상태를 이 unit AI의 공개 규칙 문서에 남기는 후보입니다.",
+            f"/api/agent/unit-ai/{unit_key}/feature-md",
+            "PUT",
+            {"text": _append_feature_note(current_md, unit_key, tags, goal)},
+        )
+
+    prompt_payload = _prompt_template_payload(unit, tags, goal)
+    if prompt_payload is not None and any(tag in tags for tag in ("no_handler", "low_semantic_coverage", "failed")):
+        add(
+            "prompt_template",
+            "Prompt template 보강 후보",
+            "선택 AI가 처리하지 못한 예시를 승인형 template note로 남기는 후보입니다.",
+            f"/api/agent/unit-ai/{unit_key}/prompt-template",
+            "PUT",
+            prompt_payload,
+        )
+
+    if any(tag in tags for tag in ("missing_slots", "approval_required", "no_handler")):
+        action_name = str(action.get("action") or "inspect")
+        prompt_terms = [unit_key, action_name]
+        if goal:
+            prompt_terms.append(goal[:80])
+        workflow_payload = {
+            "key": _safe_slug(f"{unit_key}_{action_name}_runtime_fix"),
+            "title": f"{unit.title()} {action_name} 실행 템플릿",
+            "trigger": {
+                "intent_in": [semantic.get("intent") or "general_orchestration"],
+                "prompt_contains": prompt_terms,
+                "slots_required": missing,
+            },
+            "steps": [{
+                "unit_ai": unit_key,
+                "action": action_name,
+                "bind_slots": missing,
+            }],
+            "shared": False,
+        }
+        add(
+            "workflow_template",
+            "Workflow template 후보",
+            "반복되는 missing slot 또는 승인형 흐름을 명시적인 workflow로 고정하는 후보입니다.",
+            "/api/agent/workflows",
+            "POST",
+            workflow_payload,
+        )
+
+    return proposals
 
 
 # ─── Unit AI inline editing (M4, admin only) ─────────────────────────

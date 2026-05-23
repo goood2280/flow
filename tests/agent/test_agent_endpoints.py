@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -323,6 +324,82 @@ def test_workflow_test_returns_runtime_plan_contract(tmp_path, monkeypatch):
     assert out["runtime_plan"][0]["unit_ai"] == "splittable"
     assert out["runtime_plan"][0]["policy"] == "read_only"
     assert out["guardrail"]["status"] == "allowed"
+
+
+def test_unit_ai_runtime_endpoints_validate_unknown_key():
+    with pytest.raises(HTTPException) as exc:
+        agent.unit_ai_runtime_blueprint("missing_unit", req())
+    assert exc.value.status_code == 404
+
+
+def test_unit_ai_runtime_run_passes_selected_scope(monkeypatch):
+    captured = {}
+
+    class DummyRun:
+        def model_dump(self, mode="json"):
+            return {"goal": "hello", "plan": [], "results": [], "events": [], "conclusion": {}}
+
+    async def fake_run(req_obj, username):
+        captured["unit_ai_scope"] = req_obj.unit_ai_scope
+        captured["context_scope"] = req_obj.context.get("unit_ai_scope")
+        captured["username"] = username
+        return DummyRun()
+
+    monkeypatch.setattr(agent, "run_agent_runtime_once", fake_run)
+
+    out = asyncio.run(agent.unit_ai_runtime_run(
+        "filebrowser",
+        agent.AgentRuntimeRequest(goal="hello", max_terms=8),
+        req(username="alice"),
+    ))
+
+    assert out["ok"] is True
+    assert out["unit_ai_scope"] == "filebrowser"
+    assert captured == {
+        "unit_ai_scope": "filebrowser",
+        "context_scope": "filebrowser",
+        "username": "alice",
+    }
+
+
+def test_unit_ai_runtime_improvement_proposals_are_readable_but_apply_gated():
+    payload = agent.UnitAIRuntimeImprovementReq(run={
+        "goal": "mystery_runtime_term filebrowser로 조회",
+        "semantic": {
+            "goal": "mystery_runtime_term filebrowser로 조회",
+            "tokens": ["mystery_runtime_term", "filebrowser"],
+            "normalized_terms": {"filebrowser": "filebrowser"},
+            "intent": "general_orchestration",
+            "coverage": 0.1,
+            "candidates": [],
+        },
+        "plan": [{
+            "agent_id": "filebrowser.inspect",
+            "unit_ai": "filebrowser",
+            "action": "inspect",
+            "missing_slots": [],
+        }],
+        "results": [{
+            "agent_id": "filebrowser.inspect",
+            "status": "skipped",
+            "handled": False,
+            "guardrail": {"status": "no_handler"},
+            "warnings": ["no_handler"],
+        }],
+        "conclusion": {"warnings": []},
+        "events": [],
+    })
+
+    user_out = agent.unit_ai_runtime_improvement_proposals("filebrowser", payload, req(username="alice"))
+    admin_out = agent.unit_ai_runtime_improvement_proposals("filebrowser", payload, req(role="admin", username="root"))
+
+    assert user_out["ok"] is True
+    assert user_out["can_apply"] is False
+    assert admin_out["can_apply"] is True
+    assert {row["target"] for row in user_out["proposals"]} >= {"semantic_alias", "semantic_intent", "feature_md", "workflow_template"}
+    assert all(row["approval_required"] is True for row in user_out["proposals"])
+    assert all(row["can_apply"] is False for row in user_out["proposals"])
+    assert all(row["can_apply"] is True for row in admin_out["proposals"])
 
 
 def test_prompt_review_uses_missing_slot_fallback(monkeypatch):

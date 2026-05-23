@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -9,10 +10,16 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from app_v2.modules.agent_runtime import build_action_plans, build_runtime_blueprint, resolve_semantic_frame  # noqa: E402
+from app_v2.modules.agent_runtime import (  # noqa: E402
+    AgentRuntimeRequest,
+    build_action_plans,
+    build_runtime_blueprint,
+    resolve_semantic_frame,
+    stream_agent_runtime,
+)
 from app_v2.modules.agent_runtime.graph import encode_sse_event  # noqa: E402
 from app_v2.modules.agent_runtime.schemas import AgentRuntimeEvent  # noqa: E402
-from app_v2.runtime.security import QUERY_TOKEN_PREFIXES  # noqa: E402
+from app_v2.runtime.security import QUERY_TOKEN_PREFIXES, _allow_query_token  # noqa: E402
 
 
 def test_agent_runtime_semantic_layer_resolves_core_terms():
@@ -43,6 +50,8 @@ def test_agent_runtime_blueprint_exposes_langgraph_langsmith_sse_contract():
 
 def test_agent_runtime_sse_allows_query_token_auth_for_eventsource():
     assert "/api/agent/runtime/stream" in QUERY_TOKEN_PREFIXES
+    assert _allow_query_token("/api/agent/unit-ai/filebrowser/runtime/stream") is True
+    assert _allow_query_token("/api/agent/unit-ai/filebrowser/inspect") is False
 
 
 def test_agent_runtime_action_planner_marks_read_only_and_blocked_policies():
@@ -58,6 +67,56 @@ def test_agent_runtime_action_planner_marks_read_only_and_blocked_policies():
     blocked_plans, blocked_meta = build_action_plans(goal=blocked.goal, semantic=blocked.model_dump(), username="hol")
     assert blocked_plans[0].policy == "blocked"
     assert blocked_meta["guardrail"]["status"] == "blocked"
+
+
+def test_agent_runtime_unit_scope_keeps_selected_ai_only_and_adds_inspect_fallback():
+    frame = resolve_semantic_frame("PRODA A1000 #21 KNOB 영향을 확인해줘")
+    plans, meta = build_action_plans(
+        goal=frame.goal,
+        semantic=frame.model_dump(),
+        username="hol",
+        unit_ai_scope="filebrowser",
+    )
+
+    assert {plan.unit_ai for plan in plans} == {"filebrowser"}
+    assert plans[0].action == "inspect"
+    assert meta["unit_ai_scope"] == ["filebrowser"]
+    assert any(row["unit_ai"] == "splittable" for row in meta["scoped_out_actions"])
+
+
+def test_agent_runtime_unit_scope_blueprint_uses_hybrid_node_contract():
+    blueprint = build_runtime_blueprint(unit_ai_scope="filebrowser")
+
+    assert blueprint["ok"] is True
+    assert blueprint["unit_ai_scope"] == "filebrowser"
+    graph = blueprint["graph"]
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert {"semantic_layer", "task_planner", "critic", "conclusion"} <= node_ids
+    assert any(node.get("unit_ai") == "filebrowser" for node in graph["nodes"])
+    assert all({"from", "to"} <= set(edge.keys()) for edge in graph["edges"])
+    assert blueprint["endpoints"]["run"].startswith("POST /api/agent/unit-ai/filebrowser/runtime/run")
+
+
+def test_agent_runtime_unit_scope_stream_events_expose_node_matching_fields():
+    async def _collect():
+        req = AgentRuntimeRequest(
+            goal="PRODA A1000 #21 KNOB 영향을 확인해줘",
+            max_terms=32,
+            use_llm=False,
+            unit_ai_scope="filebrowser",
+        )
+        out = []
+        async for event in stream_agent_runtime(req, "hol"):
+            out.append(event)
+        return out
+
+    events = asyncio.run(_collect())
+    action_events = [event for event in events if event.unit_ai == "filebrowser" and event.action != "stream"]
+
+    assert action_events
+    assert all(event.agent_id.startswith("filebrowser.") for event in action_events)
+    assert any(event.action == "inspect" for event in action_events)
+    assert all(event.data.get("node_id") == event.agent_id for event in action_events)
 
 
 def test_agent_runtime_sse_encode_keeps_status_final_done_contract():

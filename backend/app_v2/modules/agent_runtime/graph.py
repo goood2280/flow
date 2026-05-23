@@ -7,6 +7,7 @@ import uuid
 from typing import Any, TypedDict
 
 from core import llm_adapter
+from core.flowi_units import UNIT_AIS
 
 from .actions import (
     build_action_blueprint,
@@ -51,6 +52,7 @@ class RuntimeState(TypedDict, total=False):
     context: dict[str, Any]
     use_llm: bool
     max_terms: int
+    unit_ai_scope: str
     semantic: dict[str, Any]
     plan: list[dict[str, Any]]
     results: list[dict[str, Any]]
@@ -113,27 +115,86 @@ def _new_run_id() -> str:
     return "agent_" + uuid.uuid4().hex[:12]
 
 
-def _event(run_id: str, stage: str, status: str, message: str, data: dict[str, Any] | None = None, event: str = "status") -> dict[str, Any]:
+def _event(
+    run_id: str,
+    stage: str,
+    status: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    event: str = "status",
+    *,
+    agent_id: str = "",
+    unit_ai: str = "",
+    action: str = "",
+) -> dict[str, Any]:
+    payload = dict(data or {})
+    payload.setdefault("node_id", agent_id or stage)
     return AgentRuntimeEvent(
         event_id=uuid.uuid4().hex[:12],
         event=event,
         run_id=run_id,
         stage=stage,
+        agent_id=agent_id or stage,
+        unit_ai=unit_ai,
+        action=action,
         status=status,  # type: ignore[arg-type]
         message=message,
-        data=data or {},
+        data=payload,
         ts=utc_now(),
     ).model_dump()
 
 
-def _append_event(state: RuntimeState, stage: str, status: str, message: str, data: dict[str, Any] | None = None, event: str = "status") -> list[dict[str, Any]]:
+def _append_event(
+    state: RuntimeState,
+    stage: str,
+    status: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    event: str = "status",
+    *,
+    agent_id: str = "",
+    unit_ai: str = "",
+    action: str = "",
+) -> list[dict[str, Any]]:
     events = list(state.get("events") or [])
-    events.append(_event(str(state.get("run_id") or ""), stage, status, message, data, event))
+    events.append(_event(
+        str(state.get("run_id") or ""),
+        stage,
+        status,
+        message,
+        data,
+        event,
+        agent_id=agent_id,
+        unit_ai=unit_ai,
+        action=action,
+    ))
     return events
 
 
-def _append_to_events(events: list[dict[str, Any]], state: RuntimeState, stage: str, status: str, message: str, data: dict[str, Any] | None = None, event: str = "status") -> None:
-    events.append(_event(str(state.get("run_id") or ""), stage, status, message, data, event))
+def _append_to_events(
+    events: list[dict[str, Any]],
+    state: RuntimeState,
+    stage: str,
+    status: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    event: str = "status",
+    *,
+    agent_id: str = "",
+    unit_ai: str = "",
+    action: str = "",
+) -> None:
+    events.append(_event(
+        str(state.get("run_id") or ""),
+        stage,
+        status,
+        message,
+        data,
+        event,
+        agent_id=agent_id,
+        unit_ai=unit_ai,
+        action=action,
+    ))
 
 
 def _base_plan_rows(semantic: dict[str, Any]) -> list[UnitAgentPlan]:
@@ -207,6 +268,19 @@ def _with_unit_selection(semantic: dict[str, Any], plans: list[UnitAgentPlan]) -
     return out
 
 
+def _result_anomaly(result: UnitAgentResult | dict[str, Any]) -> str:
+    row = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result or {})
+    guardrail = row.get("guardrail") if isinstance(row.get("guardrail"), dict) else {}
+    guardrail_status = str(guardrail.get("status") or "")
+    if guardrail_status in {"missing_slots", "approval_required", "blocked", "no_handler", "error"}:
+        return guardrail_status
+    if row.get("status") == "failed":
+        return "failed"
+    if row.get("status") == "skipped" and not row.get("handled"):
+        return guardrail_status or "skipped"
+    return ""
+
+
 def langsmith_status() -> dict[str, Any]:
     tracing_raw = os.environ.get("LANGSMITH_TRACING") or os.environ.get("LANGCHAIN_TRACING_V2") or ""
     project = os.environ.get("LANGSMITH_PROJECT") or os.environ.get("LANGCHAIN_PROJECT") or "flow-agent-runtime"
@@ -230,10 +304,13 @@ def langgraph_status() -> dict[str, Any]:
 
 def _select_plan(state: RuntimeState) -> list[UnitAgentPlan]:
     semantic = state.get("semantic") or {}
+    context = state.get("context") if isinstance(state.get("context"), dict) else {}
+    unit_ai_scope = str(state.get("unit_ai_scope") or context.get("unit_ai_scope") or "").strip()
     action_plans, _meta = build_action_plans(
         goal=str(state.get("goal") or semantic.get("goal") or ""),
         semantic=semantic,
         username=str(state.get("username") or ""),
+        unit_ai_scope=unit_ai_scope,
     )
     plans = _base_plan_rows(semantic) + action_plans + _final_plan_rows()
     previous = ""
@@ -258,8 +335,12 @@ async def semantic_node(state: RuntimeState) -> RuntimeState:
             "tokens": frame.tokens,
             "candidate_count": len(frame.candidates),
             "warnings": frame.warnings,
+            "low_coverage": frame.coverage < 0.35,
             "semantic": frame.model_dump(mode="json"),
         },
+        agent_id="semantic_interpreter",
+        unit_ai="agent_runtime",
+        action="resolve_semantic",
     )
     return {"semantic": frame.model_dump(), "events": events, "status": "running"}
 
@@ -281,6 +362,9 @@ async def planning_node(state: RuntimeState) -> RuntimeState:
             "actions": action_rows,
             "guardrail": guardrail,
         },
+        agent_id="task_planner",
+        unit_ai="agent_runtime",
+        action="plan",
     )
     return {"semantic": semantic, "plan": [p.model_dump() for p in plan], "events": events, "status": "running"}
 
@@ -300,10 +384,13 @@ async def execution_node(state: RuntimeState) -> RuntimeState:
         _append_to_events(
             events,
             state,
-            "unit_agent_start",
+            plan.agent_id,
             "running",
             f"{plan.unit_ai}.{plan.action} policy={plan.policy}",
             {"plan": plan.model_dump(mode="json")},
+            agent_id=plan.agent_id,
+            unit_ai=plan.unit_ai,
+            action=plan.action,
         )
         result = await asyncio.to_thread(
             execute_action_plan,
@@ -318,19 +405,30 @@ async def execution_node(state: RuntimeState) -> RuntimeState:
             _append_to_events(
                 events,
                 state,
-                "approval_required",
+                plan.agent_id,
                 "completed",
                 f"{plan.unit_ai}.{plan.action} requires approval",
-                {"plan": plan.model_dump(mode="json"), "result": result.model_dump(mode="json")},
+                {"plan": plan.model_dump(mode="json"), "result": result.model_dump(mode="json"), "anomaly": "approval_required"},
+                agent_id=plan.agent_id,
+                unit_ai=plan.unit_ai,
+                action=plan.action,
             )
         _append_to_events(
             events,
             state,
-            "unit_agent_done",
+            plan.agent_id,
             result.status,
             result.summary or f"{plan.unit_ai}.{plan.action} completed",
-            {"plan": plan.model_dump(mode="json"), "result": result.model_dump(mode="json")},
+            {
+                "plan": plan.model_dump(mode="json"),
+                "result": result.model_dump(mode="json"),
+                "anomaly": _result_anomaly(result),
+            },
+            agent_id=plan.agent_id,
+            unit_ai=plan.unit_ai,
+            action=plan.action,
         )
+    guardrail = guardrail_summary_from_plans(state.get("plan") or [])
     _append_to_events(
         events,
         state,
@@ -339,8 +437,22 @@ async def execution_node(state: RuntimeState) -> RuntimeState:
         f"{len(results)} unit-agent result(s) prepared",
         {
             "results": [r.model_dump(mode="json") for r in results],
-            "guardrail": guardrail_summary_from_plans(state.get("plan") or []),
+            "guardrail": guardrail,
         },
+        agent_id="unit_agents",
+        unit_ai="agent_runtime",
+        action="execute",
+    )
+    _append_to_events(
+        events,
+        state,
+        "critic",
+        "completed",
+        f"guardrail status={guardrail.get('status') or 'allowed'}",
+        {"guardrail": guardrail},
+        agent_id="critic",
+        unit_ai="agent_runtime",
+        action="review_guardrail",
     )
     return {"results": [r.model_dump() for r in results], "events": events, "status": "running"}
 
@@ -430,6 +542,9 @@ async def conclusion_node(state: RuntimeState) -> RuntimeState:
         "final conclusion prepared",
         {"conclusion": conclusion},
         event="final",
+        agent_id="conclusion",
+        unit_ai="agent_runtime",
+        action="conclude",
     )
     return {"conclusion": conclusion, "events": events, "status": "completed"}
 
@@ -450,8 +565,116 @@ def _build_graph():
     return graph.compile()
 
 
-def build_runtime_blueprint() -> dict[str, Any]:
+def _scoped_action_blueprint(unit_ai_scope: str, action_blueprint: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = [
+        dict(action)
+        for action in action_blueprint.get("actions") or []
+        if isinstance(action, dict) and action.get("unit_ai") == unit_ai_scope
+    ]
+    unit = UNIT_AIS.get(unit_ai_scope)
+    inspect_action = {
+        "key": f"{unit_ai_scope}.inspect",
+        "unit_ai": unit_ai_scope,
+        "action": "inspect",
+        "title": f"{unit.title()} 라우팅 진단" if unit is not None else f"{unit_ai_scope} 라우팅 진단",
+        "policy": "read_only",
+        "approval_required": False,
+        "endpoint": "core.flowi_units.dispatcher.try_dispatch",
+        "required_slots": [],
+        "description": "선택한 unit AI에 고정해 처리 가능 여부를 read-only로 점검",
+    }
+    if not any(action.get("key") == inspect_action["key"] for action in actions):
+        actions.append(inspect_action)
+    return actions
+
+
+def _build_scoped_graph(unit_ai_scope: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "semantic_layer",
+            "label": "Semantic",
+            "kind": "semantic",
+            "stage": "semantic_layer",
+            "agent_id": "semantic_interpreter",
+        },
+        {
+            "id": "task_planner",
+            "label": "Planner",
+            "kind": "control",
+            "stage": "task_planner",
+            "agent_id": "task_planner",
+        },
+    ]
+    for action in actions:
+        nodes.append({
+            "id": action.get("key") or f"{unit_ai_scope}.{action.get('action') or 'inspect'}",
+            "label": action.get("action") or "inspect",
+            "kind": "unit_action",
+            "stage": action.get("key") or "",
+            "agent_id": action.get("key") or "",
+            "unit_ai": unit_ai_scope,
+            "action": action.get("action") or "",
+            "policy": action.get("policy") or "read_only",
+        })
+    nodes.extend([
+        {
+            "id": "critic",
+            "label": "Critic",
+            "kind": "guardrail",
+            "stage": "critic",
+            "agent_id": "critic",
+        },
+        {
+            "id": "conclusion",
+            "label": "Conclusion",
+            "kind": "output",
+            "stage": "conclusion",
+            "agent_id": "conclusion",
+        },
+    ])
+    edges: list[dict[str, str]] = [{"from": "semantic_layer", "to": "task_planner"}]
+    for action in actions:
+        node_id = str(action.get("key") or f"{unit_ai_scope}.{action.get('action') or 'inspect'}")
+        edges.append({"from": "task_planner", "to": node_id})
+        edges.append({"from": node_id, "to": "critic"})
+    if not actions:
+        edges.append({"from": "task_planner", "to": "critic"})
+    edges.append({"from": "critic", "to": "conclusion"})
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        **langgraph_status(),
+    }
+
+
+def build_runtime_blueprint(unit_ai_scope: str = "") -> dict[str, Any]:
     action_blueprint = build_action_blueprint()
+    unit_ai_scope = str(unit_ai_scope or "").strip()
+    if unit_ai_scope:
+        actions = _scoped_action_blueprint(unit_ai_scope, action_blueprint)
+        unit = UNIT_AIS.get(unit_ai_scope)
+        return {
+            "ok": True,
+            "runtime": "agent_runtime",
+            "unit_ai_scope": unit_ai_scope,
+            "selected_unit": {
+                "key": unit_ai_scope,
+                "title": unit.title() if unit is not None else unit_ai_scope,
+            },
+            "graph": _build_scoped_graph(unit_ai_scope, actions),
+            "langsmith": langsmith_status(),
+            "unit_agents": [spec.model_dump() for spec in UNIT_AGENT_SPECS],
+            "actions": actions,
+            "policies": action_blueprint["policies"],
+            "workflow_enabled": action_blueprint["workflow_enabled"],
+            "endpoints": {
+                "blueprint": f"GET /api/agent/unit-ai/{unit_ai_scope}/runtime/blueprint",
+                "run": f"POST /api/agent/unit-ai/{unit_ai_scope}/runtime/run",
+                "stream": f"GET /api/agent/unit-ai/{unit_ai_scope}/runtime/stream?goal=...",
+                "improvement_proposals": f"POST /api/agent/unit-ai/{unit_ai_scope}/runtime/improvement-proposals",
+            },
+            "llm": {"available": llm_adapter.is_available(), "config": llm_adapter.get_config(redact=True)},
+        }
     return {
         "ok": True,
         "runtime": "agent_runtime",
@@ -479,13 +702,16 @@ def build_runtime_blueprint() -> dict[str, Any]:
 
 
 def _initial_state(req: AgentRuntimeRequest, username: str) -> RuntimeState:
+    context = req.context if isinstance(req.context, dict) else {}
+    unit_ai_scope = str(req.unit_ai_scope or context.get("unit_ai_scope") or "").strip()
     return {
         "run_id": _new_run_id(),
         "goal": req.goal.strip(),
         "username": username,
-        "context": req.context if isinstance(req.context, dict) else {},
+        "context": {**context, **({"unit_ai_scope": unit_ai_scope} if unit_ai_scope else {})},
         "use_llm": bool(req.use_llm),
         "max_terms": int(req.max_terms or 24),
+        "unit_ai_scope": unit_ai_scope,
         "events": [],
         "status": "queued",
     }
@@ -498,9 +724,10 @@ def _trace_config(state: RuntimeState) -> dict[str, Any]:
             "run_id": state.get("run_id"),
             "username": state.get("username"),
             "goal": state.get("goal"),
+            "unit_ai_scope": state.get("unit_ai_scope"),
             "flow_surface": "agent",
         },
-        "tags": ["flow", "agent-runtime", "langgraph"],
+        "tags": ["flow", "agent-runtime", "langgraph"] + ([f"unit-ai:{state.get('unit_ai_scope')}"] if state.get("unit_ai_scope") else []),
     }
 
 
@@ -530,7 +757,10 @@ async def stream_agent_runtime(req: AgentRuntimeRequest, username: str):
         "start",
         "running",
         "agent runtime stream opened",
-        {"langgraph": langgraph_status(), "langsmith": langsmith_status()},
+        {"langgraph": langgraph_status(), "langsmith": langsmith_status(), "unit_ai_scope": state.get("unit_ai_scope") or ""},
+        agent_id="start",
+        unit_ai=str(state.get("unit_ai_scope") or "agent_runtime"),
+        action="stream",
     )
     yield AgentRuntimeEvent(**start)
     seen = {start["event_id"]}
@@ -550,7 +780,17 @@ async def stream_agent_runtime(req: AgentRuntimeRequest, username: str):
                 if event_id:
                     seen.add(event_id)
                 yield AgentRuntimeEvent(**raw_event)
-    done = _event(str(state["run_id"]), "done", "completed", "agent runtime stream closed", {}, event="done")
+    done = _event(
+        str(state["run_id"]),
+        "done",
+        "completed",
+        "agent runtime stream closed",
+        {"unit_ai_scope": state.get("unit_ai_scope") or ""},
+        event="done",
+        agent_id="done",
+        unit_ai=str(state.get("unit_ai_scope") or "agent_runtime"),
+        action="stream",
+    )
     yield AgentRuntimeEvent(**done)
 
 
@@ -577,7 +817,13 @@ async def run_agent_runtime_once(req: AgentRuntimeRequest, username: str) -> Age
         if event.stage == "unit_agents" and isinstance(event.data, dict):
             result_rows = event.data.get("results") if isinstance(event.data.get("results"), list) else result_rows
     semantic = resolve_semantic_frame(req.goal, max_terms=req.max_terms)
-    plans = [UnitAgentPlan(**row) for row in plan_rows] if plan_rows else _select_plan({"semantic": semantic.model_dump(), "goal": req.goal, "username": username})
+    plans = [UnitAgentPlan(**row) for row in plan_rows] if plan_rows else _select_plan({
+        "semantic": semantic.model_dump(),
+        "goal": req.goal,
+        "username": username,
+        "context": req.context if isinstance(req.context, dict) else {},
+        "unit_ai_scope": str(req.unit_ai_scope or ""),
+    })
     if semantic_data:
         try:
             semantic = type(semantic)(**semantic_data)

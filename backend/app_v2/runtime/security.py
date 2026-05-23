@@ -24,6 +24,12 @@ QUERY_TOKEN_PREFIXES = (
 )
 
 
+def _allow_query_token(path: str) -> bool:
+    if any(path.startswith(prefix) for prefix in QUERY_TOKEN_PREFIXES):
+        return True
+    return path.startswith("/api/agent/unit-ai/") and path.endswith("/runtime/stream")
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """/api/* paths require a valid session token except auth bootstrap routes."""
 
@@ -31,7 +37,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith("/api/") and path not in AUTH_EXEMPT_API_PATHS:
             token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
-            if not token and any(path.startswith(prefix) for prefix in QUERY_TOKEN_PREFIXES):
+            if not token and _allow_query_token(path):
                 token = request.query_params.get("t", "")
             user = validate_token(token)
             if not user:

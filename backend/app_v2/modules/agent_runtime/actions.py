@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 from core.flowi_units import UNIT_AIS
 
@@ -269,6 +269,7 @@ def build_action_plans(
     goal: str,
     semantic: dict[str, Any],
     username: str = "",
+    unit_ai_scope: str | Sequence[str] | None = None,
 ) -> tuple[list[UnitAgentPlan], dict[str, Any]]:
     slots = _normalized_slots(semantic.get("slots") if isinstance(semantic.get("slots"), dict) else {})
     intent = str(semantic.get("intent") or "general_orchestration")
@@ -276,6 +277,7 @@ def build_action_plans(
     evidence_refs = _evidence_refs(semantic)
     specs: list[UnitActionSpec] = []
     workflow_key = ""
+    scope = _normalize_scope(unit_ai_scope)
     if _is_raw_write_request(goal):
         specs = [UNIT_ACTIONS["raw_data.write"]]
     elif workflow:
@@ -290,6 +292,11 @@ def build_action_plans(
     else:
         specs = _infer_specs(goal, intent, semantic)
     specs = _dedupe_specs(specs)
+    scoped_out_specs: list[UnitActionSpec] = []
+    if scope:
+        scoped_specs = [spec for spec in specs if spec.unit_ai in scope]
+        scoped_out_specs = [spec for spec in specs if spec.unit_ai not in scope]
+        specs = scoped_specs or [_scoped_inspect_spec(scope[0])]
     plans: list[UnitAgentPlan] = []
     for idx, spec in enumerate(specs, start=1):
         missing = _missing_slots(spec, slots)
@@ -297,6 +304,7 @@ def build_action_plans(
             "intent": intent,
             "slots": slots,
             "workflow": workflow_key,
+            "unit_ai_scope": scope,
         }
         plans.append(UnitAgentPlan(
             agent_id=spec.key,
@@ -316,6 +324,8 @@ def build_action_plans(
         "workflow": workflow,
         "guardrail": guardrail_summary_from_plans(plans),
         "actions": compact_plan_rows(plans),
+        "unit_ai_scope": scope,
+        "scoped_out_actions": [spec_to_dict(spec) for spec in scoped_out_specs],
     }
     return plans, meta
 
@@ -469,6 +479,34 @@ def _ad_hoc_spec(unit_ai: str, action: str) -> UnitActionSpec:
         title=f"{unit_ai or 'Flow-i'} {action or 'run'}",
         policy=policy,
         endpoint="core.flowi_units.dispatcher.try_dispatch" if policy == "read_only" else "approval_required",
+    )
+
+
+def _normalize_scope(unit_ai_scope: str | Sequence[str] | None) -> list[str]:
+    if unit_ai_scope in (None, "", [], ()):
+        return []
+    if isinstance(unit_ai_scope, str):
+        raw = [unit_ai_scope]
+    else:
+        raw = list(unit_ai_scope)
+    out: list[str] = []
+    for item in raw:
+        key = str(item or "").strip()
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def _scoped_inspect_spec(unit_ai: str) -> UnitActionSpec:
+    unit = UNIT_AIS.get(unit_ai)
+    title = f"{unit.title()} 라우팅 진단" if unit is not None else f"{unit_ai} 라우팅 진단"
+    return UnitActionSpec(
+        unit_ai=unit_ai or "agent_runtime",
+        action="inspect",
+        title=title,
+        policy="read_only",
+        endpoint="core.flowi_units.dispatcher.try_dispatch",
+        description="선택한 unit AI에 고정해 dispatcher 처리 가능 여부를 read-only로 점검",
     )
 
 

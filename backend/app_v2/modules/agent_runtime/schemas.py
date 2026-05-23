@@ -150,6 +150,7 @@ class UnitAgentResult(BaseModel):
 class AgentRuntimeRequest(SemanticResolveRequest):
     context: dict[str, Any] = Field(default_factory=dict)
     use_llm: bool = False
+    unit_ai_scope: str = ""
 
 
 class AgentRuntimeEvent(BaseModel):
@@ -159,6 +160,9 @@ class AgentRuntimeEvent(BaseModel):
     event: str = "status"
     run_id: str = ""
     stage: str = ""
+    agent_id: str = ""
+    unit_ai: str = ""
+    action: str = ""
     status: EventStatus = "running"
     message: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
