@@ -73,7 +73,7 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 - `deep_eval:latest`: 최신 Agent deep-eval 리포트. semantic/wiki/sql 검증 통과 수와 실패 assertion 상태를 Improve 단계의 evidence로 연결하고, 노드 detail에서 admin 재검증 action을 실행할 수 있다.
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
-AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node 검색/type filter, node detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다. node 검색은 id/label/detail/type/tag를 대상으로 결과를 바로 선택하고, type filter는 workflow/step/tool/wiki/schema/deep-eval 영역만 stage column에 남긴다. 노드 detail의 입력/출력 엣지는 연결 노드로 바로 이동하고, workflow 노드 detail의 `Runbook` 버튼은 같은 workflow row만 Runbook에서 펼쳐 운영 issue와 다음 조치를 이어서 볼 수 있게 한다.
+AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node 검색/type filter, node detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다. node 검색은 id/label/detail/type/tag를 대상으로 결과를 바로 선택하고, type filter는 workflow/step/tool/wiki/schema/deep-eval 영역만 stage column에 남긴다. 노드 detail의 입력/출력 엣지는 연결 노드로 바로 이동한다. workflow 노드 detail의 `Runbook` 버튼은 같은 workflow row만 Runbook에서 펼치고, wiki/schema evidence 노드 detail의 `Wiki 상태` 버튼은 Agent Wiki 운영 패널로 이동해 graph/lint/source 상태를 이어서 보게 한다.
 
 지도는 저장성 export 없이 즉석 산출물로도 꺼낼 수 있다.
 

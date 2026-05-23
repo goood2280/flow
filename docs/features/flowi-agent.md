@@ -95,6 +95,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - workflow map 경고는 `action`과 `route`를 포함해 Wiki/source 연결, workflow step 수정, deep-eval 재검증 같은 다음 조치를 화면의 스냅샷/지도 경고 큐에 함께 표시하고, route에 맞는 관리 패널 focus로 이어진다.
 - 워크플로우 지도는 node 검색과 type filter로 id/label/detail/type/tag 또는 workflow/step/tool/wiki/schema/deep-eval 영역을 찾아 결과를 바로 선택하고 stage column을 matching 노드로 좁혀 보여준다.
 - 워크플로우 지도 노드 detail의 입력/출력 엣지는 연결된 workflow step, tool, Wiki/schema 노드로 바로 이동한다.
+- 워크플로우 지도에서 wiki/schema evidence 노드를 선택하면 `Wiki 상태` 버튼으로 Agent Wiki 운영 패널을 열어 graph/lint/source 상태를 이어서 확인할 수 있다.
 - 워크플로우 지도에서 workflow 노드를 선택하면 `Runbook` 버튼으로 같은 workflow row를 `workflow_key` filter와 상세 펼침 상태로 바로 열 수 있다.
 - 운영 export는 같은 workflow map 경고를 Obsidian `operations/workflow-map-warnings.md` note와 n8n `ops:workflow_warnings` sticky note에 포함한다.
 - 새 runtime state를 만들지 않고 각 원천 API의 읽기 전용 builder만 호출한다.

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub Workflow Map evidence node에서 Wiki 상태 focus 연결
 - (Codex) AI Hub Workflow Map node type 필터 추가
 - (Codex) AI Hub Workflow Map node 검색 추가
 - (Codex) AI Hub Workflow Map edge 클릭 탐색 추가

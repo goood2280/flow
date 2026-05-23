@@ -15,6 +15,8 @@ const KIND_COLORS = {
   function: "var(--info)",
 };
 
+const WORKFLOW_EVIDENCE_NODE_TYPES = new Set(["wiki", "relation", "column", "arg", "feature"]);
+
 export default function My_AIHub() {
   const [days, setDays] = useState(30);
   const [items, setItems] = useState([]);
@@ -111,6 +113,16 @@ export default function My_AIHub() {
     setRunbookFocus((prev) => ({
       workflowKey: key,
       title: node?.label || key,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
+  function focusWikiEvidenceNode(node) {
+    if (!node?.id) return;
+    setOpsPanelFocus((prev) => ({
+      target: "wiki",
+      title: node.label || node.id,
+      nodeId: node.id,
       nonce: (prev?.nonce || 0) + 1,
     }));
   }
@@ -222,6 +234,7 @@ export default function My_AIHub() {
         focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null}
         onWarningSelect={focusWorkflowMapWarning}
         onRunbookFocus={focusRunbookWorkflow}
+        onWikiFocus={focusWikiEvidenceNode}
       />
       <SkillsPanel />
 
@@ -1681,7 +1694,7 @@ function WorkflowRunbookDetail({ row }) {
 }
 
 
-function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }) {
+function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus, onWikiFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [nodeSearch, setNodeSearch] = useState("");
@@ -1887,6 +1900,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
                   onNodeSelect={setSelectedId}
                   onAction={runNodeAction}
                   onRunbookFocus={onRunbookFocus}
+                  onWikiFocus={onWikiFocus}
                   actionBusy={nodeActionBusy}
                   actionResult={nodeActionResult}
                 />
@@ -2163,7 +2177,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
 }
 
 
-function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunbookFocus, actionBusy, actionResult }) {
+function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunbookFocus, onWikiFocus, actionBusy, actionResult }) {
   if (!node) {
     return (
       <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
@@ -2243,6 +2257,13 @@ function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunb
           <Tag>{node.metrics?.passed || 0}/{node.metrics?.total || 0} passed</Tag>
           <Tag>{node.metrics?.failed || 0} failed</Tag>
           {node.metrics?.path && <Tag>{node.metrics.path}</Tag>}
+        </div>
+      )}
+      {onWikiFocus && WORKFLOW_EVIDENCE_NODE_TYPES.has(node.type) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          <button type="button" onClick={() => onWikiFocus(node)} style={btnGhost}>
+            Wiki 상태
+          </button>
         </div>
       )}
       {nodeActions.length > 0 && (
