@@ -154,8 +154,36 @@ def test_reject_removes_candidate(isolated):
     assert not (isolated["candidates"] / "sk_test.json").exists()
 
 
+def test_mine_preserves_workflow_key_in_signatures(isolated):
+    from core import skill_miner
+
+    rows = []
+    for user, offset in (("user1", 500), ("user2", 200)):
+        rows.append(_ev(user, "ai_hub_run:workflow:ops_knob_lotwf_review", offset + 2))
+        rows.append(_ev(user, "home_agent:orchestrate", offset + 1))
+        rows.append(_ev(user, "ai_hub_run:workflow:ops_lot_step_review", offset - 30))
+        rows.append(_ev(user, "home_agent:orchestrate", offset - 31))
+    _write_events(isolated["log"], rows)
+
+    out = skill_miner.mine(days=1, window_sec=300, min_freq=2, min_users=2)
+    signatures = {tuple(c["signature"]) for c in out["candidates"]}
+
+    assert (
+        "ai_hub_run:workflow:ops_knob_lotwf_review",
+        "home_agent:orchestrate",
+    ) in signatures
+    assert (
+        "ai_hub_run:workflow:ops_lot_step_review",
+        "home_agent:orchestrate",
+    ) in signatures
+
+
 def test_action_normalize():
     from core import skill_miner
     assert skill_miner._normalize_action("tool:foo extra") == "tool:foo"
     assert skill_miner._normalize_action("ai_hub_run:bar/baz") == "ai_hub_run:bar/baz"
+    assert (
+        skill_miner._normalize_action("ai_hub_run:workflow:ops_knob_lotwf_review dry_run")
+        == "ai_hub_run:workflow:ops_knob_lotwf_review"
+    )
     assert skill_miner._normalize_action("nothing") == "nothing"

@@ -5,6 +5,7 @@
   - "filebrowser_sql:workspace_run"   (SQL Workspace)
   - "home_agent:orchestrate"           (홈 에이전트)
   - "ai_hub_run:<name>"                (AI Hub 직접 실행)
+  - "ai_hub_run:workflow:<key>"        (AI Hub workflow dry-run/execute)
   - "tool:<name>", "unit_ai:<key>"     (기타)
 
 마이닝 룰:
@@ -51,8 +52,10 @@ def _normalize_action(action: str) -> str:
     if not action:
         return ""
     head = action.split()[0]
-    # detail 영역 (콜론 두 번째 이상) 은 보존 — 세분화된 의미 유지
+    # Workflow 실행은 template key 까지 보존해야 반복 검증이 특정 workflow skill 후보로 모인다.
     parts = head.split(":")
+    if len(parts) >= 3 and parts[0] == "ai_hub_run" and parts[1] == "workflow":
+        return ":".join(parts[:3])
     if len(parts) >= 2:
         return parts[0] + ":" + parts[1]
     return head

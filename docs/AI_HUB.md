@@ -108,6 +108,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 `core/skill_miner.py`:
 - `activity.jsonl` 의 도구 호출 prefix (`tool:`, `unit_ai:`, `home_agent:`, `filebrowser_sql:`, `ai_hub_run:`, `flowi_function:`) 를 인식
+- workflow 실행 이력은 `ai_hub_run:workflow:<key>` 형태로 template key까지 보존해서 workflow별 반복 검증/실행 패턴을 별도 skill 후보로 모은다.
 - 같은 user 의 연속 이벤트를 시간 window (기본 5분) 로 묶음
 - 도구 호출 시퀀스 시그너처 = 정규화된 action 의 tuple
 - freq ≥ 3 + users ≥ 2 만족 → 후보 등록
