@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 보드로 제안/스킬/workflow 큐 통합
 - (Codex) AI Hub 도구별 관리 플로우/Wiki 참조 보강
 - (Codex) Home Flow-i Action Log 공개 실행요약 패널
 - (Codex) GitHub data 추적 제거와 empty-root 부팅 검증

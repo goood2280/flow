@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from core import ai_hub_board
 from core import audit
 from core import tool_registry
 from core.auth import current_user
@@ -66,6 +67,19 @@ def list_tools(
         "days": days,
         "is_admin": (me or {}).get("role") == "admin",
     }
+
+
+@router.get("/board")
+def operations_board(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=8, ge=1, le=50),
+):
+    me = current_user(request)
+    username = str((me or {}).get("username") or "")
+    board = ai_hub_board.build_board(username=username, days=days, limit=limit)
+    board["is_admin"] = (me or {}).get("role") == "admin"
+    return board
 
 
 @router.get("/tools/{name}")

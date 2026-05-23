@@ -95,8 +95,9 @@ export default function My_AIHub() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
-      {/* 오케스트레이터 + 스킬 패널 */}
+      {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
+      <OperationsBoard days={days} />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -198,6 +199,116 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function OperationsBoard({ days }) {
+  const [open, setOpen] = useState(true);
+  const [board, setBoard] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadBoard() {
+    setLoading(true);
+    setErr("");
+    try {
+      const out = await sf(`/api/ai-hub/board?days=${days}&limit=6`);
+      setBoard(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadBoard(); }, [open, days]);
+
+  const health = board?.health || [];
+  const lanes = board?.lanes || [];
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>운영 보드</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {health.map((h) => <BoardPill key={h.key} tone={h.tone}>{h.label} {h.value}</BoardPill>)}
+        </div>
+        <div style={{ flex: 1 }} />
+        {open && <button onClick={loadBoard} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!board && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8 }}>
+              {lanes.map((lane) => <BoardLane key={lane.id} lane={lane} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function BoardLane({ lane }) {
+  const items = lane.items || [];
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, minWidth: 0, padding: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>{lane.title}</div>
+        <BoardPill tone={lane.tone}>{lane.count}</BoardPill>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {lane.target}
+      </div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>대기 항목 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 170, overflowY: "auto" }}>
+          {items.map((item) => (
+            <div key={item.id} style={{ minWidth: 0, borderTop: "1px dashed var(--border)", paddingTop: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                <div style={{ minWidth: 0, fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {item.title || item.id}
+                </div>
+                <Tag>{item.status}</Tag>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {item.meta || relTime(item.updated_at)}
+              </div>
+              {item.detail && (
+                <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                  {item.detail}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function BoardPill({ tone, children }) {
+  const colors = {
+    ok: ["rgba(22,163,74,0.14)", "var(--ok)"],
+    warn: ["rgba(245,158,11,0.16)", "var(--warn)"],
+    bad: ["rgba(239,68,68,0.14)", "var(--danger)"],
+    info: ["rgba(59,130,246,0.14)", "var(--info)"],
+    neutral: ["var(--bg-primary)", "var(--text-secondary)"],
+  };
+  const [bg, color] = colors[tone] || colors.neutral;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", padding: "1px 7px", borderRadius: 999, border: "1px solid var(--border)", background: bg, color, fontSize: 10, fontWeight: 800 }}>
+      {children}
+    </span>
+  );
 }
 
 
