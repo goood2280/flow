@@ -44,6 +44,7 @@ from app_v2.modules.semantic_learning import (
     update_proposal_status as _learn_update_proposal_status,
 )
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
+from core import audit
 from core import knowledge_vault as kv
 from core import llm_adapter
 from core import semiconductor_knowledge as semi
@@ -3548,6 +3549,7 @@ def workflows_execute(req: WorkflowExecuteReq, request: Request) -> dict[str, An
     execution = wf_templates.execute_steps(template, slots=dict(req.slots or {}), dry_run=bool(req.dry_run))
     frame = resolve_semantic_frame(req.prompt or template.get("title") or "", max_terms=32)
     plans, meta = build_action_plans(goal=req.prompt or template.get("title") or "", semantic=frame.model_dump(), username=username)
+    _record_workflow_execution(request, template, execution, dry_run=bool(req.dry_run))
     return {
         "ok": True,
         "matched": template,
@@ -3556,3 +3558,31 @@ def workflows_execute(req: WorkflowExecuteReq, request: Request) -> dict[str, An
         "runtime_plan": compact_plan_rows(plans),
         "guardrail": meta.get("guardrail") or guardrail_summary_from_plans(plans),
     }
+
+
+def _record_workflow_execution(
+    request: Request,
+    template: dict[str, Any],
+    execution: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> None:
+    key = str(template.get("key") or execution.get("workflow") or "").strip()
+    if not key:
+        return
+    steps = execution.get("steps") if isinstance(execution.get("steps"), list) else []
+    statuses = Counter(str(step.get("status") or "unknown") for step in steps if isinstance(step, dict))
+    payload = {
+        "workflow": key,
+        "title": str(template.get("title") or ""),
+        "dry_run": bool(dry_run),
+        "steps": len(steps),
+        "confirm_required": bool(execution.get("confirm_required")),
+        "statuses": dict(statuses),
+    }
+    audit.record(
+        request,
+        action=f"ai_hub_run:workflow:{key}",
+        detail=json.dumps(payload, ensure_ascii=False, default=str),
+        tab="ai_hub",
+    )

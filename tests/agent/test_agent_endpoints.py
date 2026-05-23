@@ -303,6 +303,7 @@ def test_workflow_shared_templates_require_admin(tmp_path, monkeypatch):
 
 def test_workflow_test_returns_runtime_plan_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.wf_templates, "_DIR", tmp_path / "workflows")
+    monkeypatch.setattr(agent.audit, "ACTIVITY_LOG", tmp_path / "logs" / "activity.jsonl")
     agent.workflows_save(
         agent.WorkflowSaveReq(
             key="knob_read",
@@ -324,6 +325,20 @@ def test_workflow_test_returns_runtime_plan_contract(tmp_path, monkeypatch):
     assert out["runtime_plan"][0]["unit_ai"] == "splittable"
     assert out["runtime_plan"][0]["policy"] == "read_only"
     assert out["guardrail"]["status"] == "allowed"
+
+    executed = agent.workflows_execute(
+        agent.WorkflowExecuteReq(key="knob_read", slots={"product": "PRODA", "root_lot_ids": ["A1000"]}, dry_run=True),
+        req(username="alice"),
+    )
+
+    assert executed["ok"] is True
+    log_lines = agent.audit.ACTIVITY_LOG.read_text(encoding="utf-8").splitlines()
+    event = json.loads(log_lines[-1])
+    assert event["username"] == "alice"
+    assert event["action"] == "ai_hub_run:workflow:knob_read"
+    detail = json.loads(event["detail"])
+    assert detail["dry_run"] is True
+    assert detail["statuses"] == {"dry_run": 1}
 
 
 def test_unit_ai_runtime_endpoints_validate_unknown_key():

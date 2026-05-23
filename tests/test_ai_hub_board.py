@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +17,26 @@ def test_ai_hub_board_combines_operations_queues(tmp_path, monkeypatch):
     from core import ai_hub_board, flowi_workflow_templates, skills_repo, tool_registry
     from routers import ai_hub
 
+    activity_log = tmp_path / "logs" / "activity.jsonl"
+    activity_log.parent.mkdir(parents=True, exist_ok=True)
+    activity_log.write_text(
+        json.dumps({
+            "timestamp": "2099-01-01T00:00:00+00:00",
+            "username": "alice",
+            "action": "ai_hub_run:workflow:lot_step_review",
+            "tab": "ai_hub",
+            "detail": json.dumps({
+                "workflow": "lot_step_review",
+                "title": "Lot step 확인",
+                "dry_run": True,
+                "steps": 1,
+                "confirm_required": False,
+                "statuses": {"dry_run": 1},
+            }, ensure_ascii=False),
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ai_hub_board.audit, "ACTIVITY_LOG", activity_log)
     monkeypatch.setattr(tool_registry, "STATE_FILE", tmp_path / "tool_registry_state.json")
     monkeypatch.setattr(skills_repo, "SKILLS_DIR", tmp_path / "skills")
     monkeypatch.setattr(skills_repo, "CANDIDATES_DIR", tmp_path / "skills" / "_candidates")
@@ -54,12 +75,15 @@ def test_ai_hub_board_combines_operations_queues(tmp_path, monkeypatch):
     assert out["counts"]["tools_disabled"] >= 1
     assert out["counts"]["skill_candidates"] == 1
     assert out["counts"]["workflows"] == 1
+    assert out["counts"]["workflow_runs_recent"] == 1
     assert out["counts"]["semantic_proposals_pending"] == 1
     lanes = {lane["id"]: lane for lane in out["lanes"]}
-    assert set(lanes) == {"semantic_proposals", "skill_candidates", "workflow_templates", "disabled_tools"}
+    assert set(lanes) == {"semantic_proposals", "skill_candidates", "workflow_templates", "workflow_runs", "disabled_tools"}
     assert lanes["semantic_proposals"]["items"][0]["title"] == "루트랏"
     assert lanes["skill_candidates"]["items"][0]["id"] == "sk_parallel_review"
     assert lanes["workflow_templates"]["items"][0]["id"] == "lot_step_review"
+    assert lanes["workflow_runs"]["items"][0]["title"] == "Lot step 확인"
+    assert lanes["workflow_runs"]["items"][0]["status"] == "dry-run"
     assert any(item["id"] == "filebrowser" for item in lanes["disabled_tools"]["items"])
     assert {a["id"] for a in lanes["semantic_proposals"]["items"][0]["actions"]} == {"approve", "reject"}
     assert {a["id"] for a in lanes["skill_candidates"]["items"][0]["actions"]} == {"approve", "reject"}

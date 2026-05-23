@@ -72,7 +72,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 ## 운영 준비도
 
-`core/ai_hub_readiness.py` 는 운영자가 다음 개선 대상을 놓치지 않도록 기존 보드와 워크플로우 지도를 합쳐 점수와 backlog를 만든다. 새 저장소를 만들지 않고 `tool_registry_state`, semantic proposal queue, skill candidates, workflow templates, workflow-map warnings만 읽는다.
+`core/ai_hub_readiness.py` 는 운영자가 다음 개선 대상을 놓치지 않도록 기존 보드와 워크플로우 지도를 합쳐 점수와 backlog를 만든다. 새 저장소를 만들지 않고 `tool_registry_state`, semantic proposal queue, skill candidates, workflow templates, workflow-map warnings만 읽는다. `core/ai_hub_board.py` 는 workflow dry-run/execute 감사 로그(`ai_hub_run:workflow:<key>`)도 읽어서 최근 검증 이력을 운영 보드에 표시한다.
 
 - 점수 축: 도구 활성도, Wiki/schema grounding, semantic/skill 승인 큐, workflow/skill 자산
 - backlog: 비활성 도구, 지식 근거가 빈 도구, semantic 승인 대기, skill 후보, workflow/skill 부재, 비어 있거나 step 정의가 불완전한 workflow template

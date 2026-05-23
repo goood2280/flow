@@ -10,10 +10,12 @@ existing stores instead of creating another queue:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from app_v2.modules.semantic_learning import inbox as semantic_inbox
+from core import audit
 from core import flowi_workflow_templates as workflow_templates
 from core import skills_repo, tool_registry
 
@@ -28,10 +30,15 @@ def build_board(*, username: str = "", days: int = 30, limit: int = 8) -> dict[s
     skills = skills_repo.list_skills()
     workflows = workflow_templates.list_templates(username, include_shared=True)
     semantic_proposals = semantic_inbox.list_proposals(status="pending", limit=200)
+    workflow_runs = _workflow_run_items(days=days, limit=limit)
 
     shared_workflows = [row for row in workflows if row.get("shared")]
     personal_workflows = [row for row in workflows if not row.get("shared")]
     enabled_tools = [row for row in tools if row.get("enabled")]
+    workflow_run_failures = [
+        row for row in workflow_runs
+        if row.get("tone") in {"bad", "warn"}
+    ]
 
     counts = {
         "tools_total": len(tools),
@@ -43,6 +50,8 @@ def build_board(*, username: str = "", days: int = 30, limit: int = 8) -> dict[s
         "shared_workflows": len(shared_workflows),
         "personal_workflows": len(personal_workflows),
         "semantic_proposals_pending": len(semantic_proposals),
+        "workflow_runs_recent": len(workflow_runs),
+        "workflow_run_warnings": len(workflow_run_failures),
     }
 
     lanes = [
@@ -69,6 +78,14 @@ def build_board(*, username: str = "", days: int = 30, limit: int = 8) -> dict[s
             "tone": "info" if workflows else "neutral",
             "target": "/api/agent/workflows",
             "items": [_workflow_item(row) for row in _recent(workflows, limit)],
+        },
+        {
+            "id": "workflow_runs",
+            "title": "검증 이력",
+            "count": counts["workflow_runs_recent"],
+            "tone": "warn" if workflow_run_failures else ("info" if workflow_runs else "neutral"),
+            "target": "/api/agent/workflows/execute",
+            "items": workflow_runs,
         },
         {
             "id": "disabled_tools",
@@ -110,6 +127,12 @@ def build_board(*, username: str = "", days: int = 30, limit: int = 8) -> dict[s
                 "label": "워크플로우",
                 "value": counts["workflows"],
                 "tone": "info" if workflows else "neutral",
+            },
+            {
+                "key": "workflow_runs",
+                "label": "검증 이력",
+                "value": counts["workflow_runs_recent"],
+                "tone": "warn" if workflow_run_failures else ("info" if workflow_runs else "neutral"),
             },
         ],
         "lanes": lanes,
@@ -198,6 +221,73 @@ def _workflow_item(row: dict[str, Any]) -> dict[str, Any]:
         "detail": ", ".join(prompt_contains[:4]),
         "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
     }
+
+
+def _workflow_run_items(*, days: int, limit: int) -> list[dict[str, Any]]:
+    log = audit.ACTIVITY_LOG
+    if not log.exists():
+        return []
+    cutoff = datetime.now(timezone.utc).timestamp() - max(1, days) * 86400
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in reversed(lines):
+        if len(rows) >= limit:
+            break
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        action = str(rec.get("action") or "")
+        if not action.startswith("ai_hub_run:workflow:"):
+            continue
+        ts = _parse_ts(str(rec.get("timestamp") or ""))
+        if ts and ts.timestamp() < cutoff:
+            continue
+        rows.append(_workflow_run_item(rec))
+    return rows
+
+
+def _workflow_run_item(rec: dict[str, Any]) -> dict[str, Any]:
+    action = str(rec.get("action") or "")
+    key = action.split("ai_hub_run:workflow:", 1)[-1] if "ai_hub_run:workflow:" in action else action
+    detail = _json_detail(rec.get("detail"))
+    statuses = detail.get("statuses") if isinstance(detail.get("statuses"), dict) else {}
+    status_text = ", ".join(f"{k}:{v}" for k, v in statuses.items()) or str(rec.get("detail") or "")
+    warn_count = sum(int(statuses.get(k) or 0) for k in ("error", "blocked", "missing_slots", "confirm_required", "no_handler"))
+    dry_run = bool(detail.get("dry_run"))
+    steps = int(detail.get("steps") or 0)
+    return {
+        "id": f"{rec.get('timestamp') or ''}:{key}",
+        "title": str(detail.get("title") or key),
+        "status": "dry-run" if dry_run else "executed",
+        "meta": f"{steps} steps",
+        "detail": status_text,
+        "updated_at": str(rec.get("timestamp") or ""),
+        "tone": "warn" if warn_count else "info",
+    }
+
+
+def _json_detail(value: Any) -> dict[str, Any]:
+    try:
+        out = json.loads(str(value or "{}"))
+    except Exception:
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def _parse_ts(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 def _tool_item(row: dict[str, Any]) -> dict[str, Any]:
