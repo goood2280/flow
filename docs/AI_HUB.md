@@ -74,6 +74,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 - 점수 축: 도구 활성도, Wiki/schema grounding, semantic/skill 승인 큐, workflow/skill 자산
 - backlog: 비활성 도구, 지식 근거가 빈 도구, semantic 승인 대기, skill 후보, workflow/skill 부재
+- 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부를 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 
 ## SQL 작업대 — 멀티 셀 조인

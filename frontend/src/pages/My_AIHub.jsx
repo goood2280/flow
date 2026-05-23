@@ -97,7 +97,7 @@ export default function My_AIHub() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
-      <ReadinessPanel days={days} />
+      <ReadinessPanel days={days} onChanged={loadCatalog} />
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
@@ -204,10 +204,11 @@ function withEnabledState(item, enabled) {
 }
 
 
-function ReadinessPanel({ days }) {
+function ReadinessPanel({ days, onChanged }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState("");
   const [err, setErr] = useState("");
 
   async function loadReadiness() {
@@ -220,6 +221,23 @@ function ReadinessPanel({ days }) {
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runBacklogAction(row, action) {
+    if (!data?.is_admin || !action?.endpoint || action.method !== "POST") return;
+    if (action.confirm && !confirm(`${action.label} 처리할까요? ${row.target || row.title}`)) return;
+    const key = `${row.id}:${action.id}`;
+    setActionBusy(key);
+    setErr("");
+    try {
+      await postJson(action.endpoint, action.body || {});
+      await loadReadiness();
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setActionBusy("");
     }
   }
 
@@ -262,7 +280,7 @@ function ReadinessPanel({ days }) {
                   </div>
                 ))}
               </div>
-              <ReadinessBacklog rows={backlog} />
+              <ReadinessBacklog rows={backlog} canManage={!!data.is_admin} actionBusy={actionBusy} onAction={runBacklogAction} />
             </div>
           ) : (
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>준비도 데이터를 불러오면 운영 상태와 개선 백로그를 볼 수 있습니다.</div>
@@ -297,7 +315,7 @@ function ReadinessGauge({ score, level, counts }) {
 }
 
 
-function ReadinessBacklog({ rows }) {
+function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
   const visible = (rows || []).slice(0, 8);
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
@@ -319,6 +337,24 @@ function ReadinessBacklog({ rows }) {
               </div>
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
               <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action}</div>
+              {canManage && (row.actions || []).length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
+                  {(row.actions || []).map((action) => {
+                    const busy = actionBusy === `${row.id}:${action.id}`;
+                    return (
+                      <button
+                        key={action.id}
+                        type="button"
+                        onClick={() => onAction(row, action)}
+                        disabled={busy}
+                        style={boardActionStyle(action.tone)}
+                      >
+                        {busy ? "처리 중" : action.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ))}
         </div>

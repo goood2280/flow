@@ -93,10 +93,12 @@ def readiness(
     days: int = Query(default=30, ge=1, le=365),
 ):
     me = current_user(request)
-    return ai_hub_readiness.build_readiness(
+    out = ai_hub_readiness.build_readiness(
         username=str((me or {}).get("username") or ""),
         days=days,
     )
+    out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
 
 
 @router.get("/workflow-map")

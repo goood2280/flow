@@ -69,9 +69,14 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     assert "skill_candidate:sk1" in backlog_ids
     assert "workflow_assets:none" in backlog_ids
     assert "skills:none" in backlog_ids
+    by_id = {item["id"]: item for item in out["backlog"]}
+    assert by_id["disabled_tool:filebrowser"]["actions"][0]["endpoint"] == "/api/ai-hub/tools/filebrowser/toggle"
+    assert {action["id"] for action in by_id["semantic_proposal:p1"]["actions"]} == {"approve", "reject"}
+    assert {action["id"] for action in by_id["skill_candidate:sk1"]["actions"]} == {"approve", "reject"}
 
     api_out = ai_hub.readiness(_req(), days=30)
     assert api_out["counts"]["tools_total"] == 4
+    assert api_out["is_admin"] is True
 
 
 class _State:

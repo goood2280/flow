@@ -90,6 +90,7 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "detail": str(item.get("detail") or "도구가 비활성 상태입니다."),
             "action": "AI Hub 도구 카드 또는 운영 보드에서 활성화 여부를 결정",
             "route": "/api/ai-hub/tools",
+            "actions": _disabled_tool_actions(item),
         })
     missing_items: list[str] = []
     for warning in workflow.get("warnings") or []:
@@ -115,6 +116,7 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "detail": str(item.get("detail") or ""),
             "action": "운영 보드 또는 Agent 시멘틱 탭에서 승인/거부",
             "route": "/api/agent/semantic/proposals",
+            "actions": _semantic_actions(item),
         })
     for item in (lanes.get("skill_candidates", {}).get("items") or [])[:8]:
         out.append({
@@ -125,6 +127,7 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "detail": str(item.get("meta") or ""),
             "action": "반복성이 맞으면 정식 스킬로 승인",
             "route": "/api/skills/candidates",
+            "actions": _skill_actions(item),
         })
     if counts["workflows"] == 0:
         out.append({
@@ -148,6 +151,103 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
         })
     severity_order = {"high": 0, "medium": 1, "low": 2}
     return sorted(out, key=lambda row: (severity_order.get(str(row.get("severity")), 9), str(row.get("title") or ""), str(row.get("target") or "")))[:40]
+
+
+def _disabled_tool_actions(item: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = _copy_actions(item)
+    if actions:
+        return actions
+    name = str(item.get("id") or "").strip()
+    if not name:
+        return []
+    return [{
+        "id": "enable",
+        "label": "활성화",
+        "tone": "ok",
+        "method": "POST",
+        "endpoint": f"/api/ai-hub/tools/{name}/toggle",
+        "body": {"enabled": True},
+    }]
+
+
+def _semantic_actions(item: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = _copy_actions(item)
+    if actions:
+        return actions
+    proposal_id = str(item.get("id") or "").strip()
+    if not proposal_id:
+        return []
+    return [
+        {
+            "id": "approve",
+            "label": "승인",
+            "tone": "ok",
+            "method": "POST",
+            "endpoint": "/api/agent/semantic/proposals/decide",
+            "body": {"id": proposal_id, "status": "approved"},
+        },
+        {
+            "id": "reject",
+            "label": "거부",
+            "tone": "bad",
+            "method": "POST",
+            "endpoint": "/api/agent/semantic/proposals/decide",
+            "body": {"id": proposal_id, "status": "rejected"},
+            "confirm": True,
+        },
+    ]
+
+
+def _skill_actions(item: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = _copy_actions(item)
+    if actions:
+        return actions
+    key = str(item.get("id") or "").strip()
+    if not key:
+        return []
+    return [
+        {
+            "id": "approve",
+            "label": "승인",
+            "tone": "ok",
+            "method": "POST",
+            "endpoint": f"/api/skills/candidates/{key}/approve",
+            "body": {"title": str(item.get("title") or key)},
+        },
+        {
+            "id": "reject",
+            "label": "거부",
+            "tone": "bad",
+            "method": "POST",
+            "endpoint": f"/api/skills/candidates/{key}/reject",
+            "body": {},
+            "confirm": True,
+        },
+    ]
+
+
+def _copy_actions(item: dict[str, Any]) -> list[dict[str, Any]]:
+    actions = item.get("actions")
+    if not isinstance(actions, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        endpoint = str(action.get("endpoint") or "")
+        method = str(action.get("method") or "")
+        if not endpoint or method.upper() != "POST":
+            continue
+        out.append({
+            "id": str(action.get("id") or ""),
+            "label": str(action.get("label") or action.get("id") or ""),
+            "tone": str(action.get("tone") or "neutral"),
+            "method": "POST",
+            "endpoint": endpoint,
+            "body": action.get("body") if isinstance(action.get("body"), dict) else {},
+            "confirm": bool(action.get("confirm")),
+        })
+    return out
 
 
 def _pct(numer: int, denom: int) -> int:
