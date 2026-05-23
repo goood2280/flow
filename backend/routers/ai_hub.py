@@ -9,6 +9,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/tools/{name}           단일 도구 상세
   GET    /api/ai-hub/tools/{name}/history   최근 호출 이력
   GET    /api/ai-hub/tags                   태그 목록 (필터용)
+  GET    /api/ai-hub/ops-snapshot           운영 스냅샷 관리 홈
   GET    /api/ai-hub/timeline               AI Hub 운영 이벤트 타임라인
   GET    /api/ai-hub/wiki-health            Agent Wiki/Knowledge Vault 운영 상태
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
@@ -36,6 +37,7 @@ from pydantic import BaseModel
 from core import ai_hub_board
 from core import ai_hub_deep_eval
 from core import ai_hub_ops_export
+from core import ai_hub_ops_snapshot
 from core import ai_hub_readiness
 from core import ai_hub_timeline
 from core import ai_hub_wiki_health
@@ -104,6 +106,22 @@ def operations_board(
     board = ai_hub_board.build_board(username=username, days=days, limit=limit)
     board["is_admin"] = (me or {}).get("role") == "admin"
     return board
+
+
+@router.get("/ops-snapshot")
+def ops_snapshot(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=8, ge=1, le=30),
+):
+    me = current_user(request)
+    out = ai_hub_ops_snapshot.build_snapshot(
+        username=str((me or {}).get("username") or ""),
+        days=days,
+        limit=limit,
+    )
+    out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
 
 
 @router.get("/readiness")

@@ -87,6 +87,12 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - 기존 Knowledge Vault/Agent Wiki store만 읽어 page/source count, graph count, Wiki lint count, recent pages/sources/log를 반환한다.
 - Agent Wiki page/source 저장, lint 실행 권한, ingest commit 권한은 기존 `/api/agent/wiki/*` 계약을 그대로 따른다.
 
+`GET /api/ai-hub/ops-snapshot?days=30&limit=8`
+
+- AI Hub 첫 화면의 `운영 스냅샷` 패널이 읽는 일일 운영 요약이다.
+- 기존 readiness, deep-eval report, Agent Wiki health, 운영 timeline을 집계해 summary card, 상위 개선 항목, 최근 이벤트, Obsidian/n8n export 링크를 반환한다.
+- 새 runtime state를 만들지 않고 각 원천 API의 읽기 전용 builder만 호출한다.
+
 `POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
 
 - Used by `질문 설계` to show matched workflow and dry-run step results for the current prompt.

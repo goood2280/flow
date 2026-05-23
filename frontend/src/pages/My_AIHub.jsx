@@ -96,6 +96,7 @@ export default function My_AIHub() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
+      <OpsSnapshotPanel days={days} />
       <OrchestratorPanel />
       <ReadinessPanel days={days} onChanged={loadCatalog} />
       <DeepEvalPanel />
@@ -204,6 +205,179 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function OpsSnapshotPanel({ days }) {
+  const [open, setOpen] = useState(true);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState("");
+  const [err, setErr] = useState("");
+
+  async function loadSnapshot() {
+    setLoading(true);
+    setErr("");
+    try {
+      const out = await sf(`/api/ai-hub/ops-snapshot?days=${days}&limit=6`);
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function exportOps(link) {
+    const key = link?.key || link?.format || "";
+    setExporting(key);
+    setErr("");
+    try {
+      await dl(link.href, link.filename);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setExporting("");
+    }
+  }
+
+  useEffect(() => { if (open) loadSnapshot(); }, [open, days]);
+
+  const cards = data?.summary_cards || [];
+  const links = data?.export_links || [];
+  const statusTone = data?.status === "ok" ? "ok" : data?.status === "bad" ? "bad" : "warn";
+  const statusText = data?.status === "ok" ? "정상" : data?.status === "bad" ? "문제" : "점검";
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flexWrap: "wrap" }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)", whiteSpace: "nowrap" }}>운영 스냅샷</div>
+        <BoardPill tone={data ? statusTone : "neutral"}>{data ? statusText : "대기"}</BoardPill>
+        {data && <BoardPill tone="neutral">{relTime(data.generated_at)}</BoardPill>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, minWidth: 0 }}>
+          {cards.slice(0, 4).map((card) => <BoardPill key={card.key} tone={card.tone}>{card.label} {card.value}</BoardPill>)}
+        </div>
+        <div style={{ flex: 1 }} />
+        {open && links.map((link) => (
+          <button key={link.key} onClick={() => exportOps(link)} disabled={!!exporting || !link.href} style={btnGhost}>
+            {exporting === link.key ? "내보내는 중" : link.label}
+          </button>
+        ))}
+        {open && <button onClick={loadSnapshot} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : data ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
+              <OpsSnapshotSummary data={data} />
+              <OpsSnapshotActions rows={data.top_actions || []} />
+              <OpsSnapshotEvents rows={data.recent_events || []} />
+            </div>
+          ) : (
+            <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)" }}>
+              스냅샷 없음
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function OpsSnapshotSummary({ data }) {
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 900, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {data.headline}
+        </div>
+        <BoardPill tone={data.status === "ok" ? "ok" : data.status === "bad" ? "bad" : "warn"}>{data.status}</BoardPill>
+      </div>
+      <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(2, minmax(120px, 1fr))", gap: 6 }}>
+        {(data.summary_cards || []).map((card) => (
+          <div key={card.key} style={{ borderTop: "1px dashed var(--border)", paddingTop: 6, minWidth: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.label}</span>
+              <BoardPill tone={card.tone}>{card.value}</BoardPill>
+            </div>
+            <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {card.detail}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function OpsSnapshotActions({ rows }) {
+  const visible = rows.slice(0, 6);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>상위 개선</div>
+        <BoardPill tone={rows.length ? "warn" : "ok"}>{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>대기 항목 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.id || row.title} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title}</div>
+                <BoardPill tone={row.tone}>{row.severity || "low"}</BoardPill>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action || row.detail}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function OpsSnapshotEvents({ rows }) {
+  const visible = rows.slice(0, 6);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>최근 이벤트</div>
+        <BoardPill tone="neutral">{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>최근 이벤트 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.id || `${row.timestamp}:${row.action}`} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.action}</div>
+                <BoardPill tone={row.tone || "neutral"}>{row.category || "event"}</BoardPill>
+              </div>
+              <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                <Tag>{row.username || "unknown"}</Tag>
+                <Tag>{relTime(row.timestamp)}</Tag>
+                {row.meta && <Tag>{row.meta}</Tag>}
+              </div>
+              {row.detail && (
+                <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 
