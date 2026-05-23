@@ -15,7 +15,7 @@ const KIND_COLORS = {
   function: "var(--info)",
 };
 
-const WORKFLOW_EVIDENCE_NODE_TYPES = new Set(["wiki", "relation", "column", "arg", "feature"]);
+const WORKFLOW_EVIDENCE_NODE_TYPES = new Set(["wiki", "graph", "relation", "column", "arg", "feature"]);
 
 export default function My_AIHub() {
   const [days, setDays] = useState(30);
@@ -234,6 +234,13 @@ export default function My_AIHub() {
     focusWorkflowMapNodeId(`workflow:${row.key}`, row.title || row.key);
   }
 
+  function focusKnowledgeRefNode(refType, value) {
+    const type = String(refType || "").trim();
+    const raw = String(value || "").trim();
+    if (!type || !raw) return;
+    focusWorkflowMapNodeId(`${type}:${raw}`, raw);
+  }
+
   function focusRunbookNextAction(row, action) {
     if (!row?.key || !action?.key) return;
     const key = String(action.key || "");
@@ -402,7 +409,7 @@ export default function My_AIHub() {
             카드를 선택하면 입력 스키마, 데이터 소스, 호출 이력을 볼 수 있습니다.
           </div>
         ) : (
-          <Detail item={selected} history={history} days={days} />
+          <Detail item={selected} history={history} days={days} onRefFocus={focusKnowledgeRefNode} />
         )}
       </aside>
       </div>
@@ -2181,7 +2188,7 @@ function workflowNodeTypeOptions(nodes) {
     if (!type || type === "stage") continue;
     counts.set(type, (counts.get(type) || 0) + 1);
   }
-  const preferred = ["workflow", "workflow_step", "tool", "wiki", "relation", "column", "arg", "feature", "deep_eval"];
+  const preferred = ["workflow", "workflow_step", "tool", "wiki", "graph", "relation", "column", "arg", "feature", "deep_eval"];
   return [...counts.entries()]
     .map(([type, count]) => ({ type, count }))
     .sort((a, b) => {
@@ -2198,6 +2205,7 @@ function workflowNodeTypeLabel(type) {
     workflow_step: "step",
     tool: "tool",
     wiki: "wiki",
+    graph: "graph",
     relation: "relation",
     column: "column",
     arg: "arg",
@@ -3154,7 +3162,7 @@ function Card({ item, selected, onClick, isAdmin, onToggle }) {
 }
 
 
-function Detail({ item, history, days }) {
+function Detail({ item, history, days, onRefFocus }) {
   return (
     <div style={{ fontSize: 12, color: "var(--text-primary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
@@ -3178,7 +3186,7 @@ function Detail({ item, history, days }) {
       <Stat label="마지막 실행" value={relTime(item.last_run) || "-"} />
 
       <ManagementFlow flow={item.management_flow} />
-      <KnowledgeRefs refs={item.knowledge_refs} />
+      <KnowledgeRefs refs={item.knowledge_refs} onRefFocus={onRefFocus} />
 
       {item.kind === "function" && (
         <Section title="Input Schema">
@@ -3290,14 +3298,14 @@ function ManagementFlow({ flow }) {
 }
 
 
-function KnowledgeRefs({ refs }) {
+function KnowledgeRefs({ refs, onRefFocus }) {
   if (!refs) return null;
   const rows = [
-    { label: "Wiki docs", values: refs.wiki_doc_ids || [] },
-    { label: "Graph nodes", values: refs.graph_node_ids || [] },
-    { label: "Relations", values: refs.relation_ids || [] },
-    { label: "Column keys", values: refs.column_catalog_keys || [] },
-    { label: "Required args", values: refs.required_args || [] },
+    { type: "wiki", label: "Wiki docs", values: refs.wiki_doc_ids || [] },
+    { type: "graph", label: "Graph nodes", values: refs.graph_node_ids || [] },
+    { type: "relation", label: "Relations", values: refs.relation_ids || [] },
+    { type: "column", label: "Column keys", values: refs.column_catalog_keys || [] },
+    { type: "arg", label: "Required args", values: refs.required_args || [] },
   ].filter((row) => row.values.length > 0);
   const hasFeature = !!refs.feature_md;
   if (!rows.length && !hasFeature && !refs.data_source_count && !refs.few_shot_count) return null;
@@ -3305,7 +3313,11 @@ function KnowledgeRefs({ refs }) {
     <Section title="Wiki / Graph Refs">
       {hasFeature && (
         <div style={{ fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: "var(--text-secondary)", wordBreak: "break-all", marginBottom: 6 }}>
-          feature: {refs.feature_md}
+          feature: {onRefFocus ? (
+            <button type="button" onClick={() => onRefFocus("feature", refs.feature_md)} style={knowledgeRefButton} title="워크플로우 지도에서 feature 근거 보기">
+              {refs.feature_md}
+            </button>
+          ) : refs.feature_md}
         </div>
       )}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: rows.length ? 6 : 0 }}>
@@ -3317,7 +3329,17 @@ function KnowledgeRefs({ refs }) {
           <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 3 }}>{row.label}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
             {row.values.slice(0, 12).map((value) => (
-              <Tag key={`${row.label}:${value}`}>{String(value)}</Tag>
+              onRefFocus ? (
+                <button
+                  key={`${row.label}:${value}`}
+                  type="button"
+                  onClick={() => onRefFocus(row.type, value)}
+                  style={knowledgeRefButton}
+                  title={`워크플로우 지도에서 ${row.type} 근거 보기`}
+                >
+                  {String(value)}
+                </button>
+              ) : <Tag key={`${row.label}:${value}`}>{String(value)}</Tag>
             ))}
             {row.values.length > 12 && <Tag>+{row.values.length - 12}</Tag>}
           </div>
@@ -3487,6 +3509,7 @@ const runbookTagButton = {
   maxWidth: "100%",
   overflow: "hidden",
   textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const runbookBadButton = {
@@ -3498,6 +3521,21 @@ const runbookBadButton = {
   fontSize: 10,
   fontWeight: 800,
   cursor: "pointer",
+};
+
+const knowledgeRefButton = {
+  display: "inline-block",
+  padding: "1px 6px",
+  border: "1px solid var(--border)",
+  borderRadius: 3,
+  fontSize: 10,
+  color: "var(--accent)",
+  background: "var(--bg-primary)",
+  cursor: "pointer",
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const runbookNextActionLink = {

@@ -93,9 +93,10 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - 기존 readiness, workflow runbook, workflow map, deep-eval report, Agent Wiki health, 운영 timeline을 집계해 summary card, 상위 개선 항목, Runbook 조치 큐, workflow map 경고, 최근 이벤트, Obsidian/n8n export 링크를 반환한다.
 - 화면에서는 summary card를 해당 운영 패널 열기로 연결하고, 상위 개선 항목은 `운영 준비도` 백로그 focus로, Runbook 조치 큐는 `Workflow Runbook` issue filter로, workflow map 경고는 `워크플로우 지도` 패널로, 최근 이벤트는 `운영 타임라인` category filter로 연결한다.
 - workflow map 경고는 `action`과 `route`를 포함해 Wiki/source 연결, workflow step 수정, deep-eval 재검증 같은 다음 조치를 화면의 스냅샷/지도 경고 큐에 함께 표시하고, route에 맞는 관리 패널 focus로 이어진다.
-- 워크플로우 지도는 node 검색과 type filter로 id/label/detail/type/tag 또는 workflow/step/tool/wiki/schema/deep-eval 영역을 찾아 결과를 바로 선택하고 stage column을 matching 노드로 좁혀 보여준다.
+- 워크플로우 지도는 node 검색과 type filter로 id/label/detail/type/tag 또는 workflow/step/tool/wiki/graph/schema/deep-eval 영역을 찾아 결과를 바로 선택하고 stage column을 matching 노드로 좁혀 보여준다.
 - 워크플로우 지도 노드 detail의 입력/출력 엣지는 연결된 workflow step, tool, Wiki/schema 노드로 바로 이동한다.
 - 워크플로우 지도에서 tool 노드를 선택하면 `도구 상세` 버튼으로 AI Hub 도구 카탈로그 카드와 최근 호출 이력을 바로 확인한다.
+- AI Hub 도구 카탈로그 상세의 Wiki/Graph refs를 선택하면 같은 워크플로우 지도 evidence 노드로 이동해 Obsidian식 관계를 이어서 탐색한다.
 - 워크플로우 지도에서 wiki/schema evidence 노드를 선택하면 `Wiki 상태` 버튼으로 Agent Wiki 운영 패널을 열어 graph/lint/source 상태를 이어서 확인할 수 있다.
 - 워크플로우 지도에서 workflow 노드를 선택하면 `Runbook` 버튼으로 같은 workflow row를 `workflow_key` filter와 상세 펼침 상태로 바로 열 수 있다.
 - 운영 export는 같은 workflow map 경고를 Obsidian `operations/workflow-map-warnings.md` note와 n8n `ops:workflow_warnings` sticky note에 포함한다.
