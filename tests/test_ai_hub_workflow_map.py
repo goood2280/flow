@@ -330,6 +330,13 @@ def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_pa
     assert warnings["workflow_incomplete_steps"]["items"] == ["incomplete_step#1"]
     assert warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]
 
+    obsidian = ai_hub_workflow_map.export_workflow_map(export_format="obsidian", username="operator", days=30, limit=10)
+    exported_warnings = {row["key"]: row for row in obsidian["warnings"]}
+    assert exported_warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]
+    index_note = next(row for row in obsidian["files"] if row["path"] == "Flow AI Hub Workflow Map.md")
+    assert "## Warnings" in index_note["body"]
+    assert "workflow_missing_tools" in index_note["body"]
+
 
 def test_ai_hub_workflow_map_warns_failed_deep_eval(monkeypatch, tmp_path):
     from core import ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry

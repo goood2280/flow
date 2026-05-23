@@ -44,12 +44,14 @@ def build_obsidian_export(
         reference_limit=reference_limit,
         focus_tag=focus_tag,
     )
+    workflow_warnings = _workflow_warnings(workflow_export)
     files = [
         {"path": "Flow AI Hub Operations.md", "body": _index_note(readiness, deep_eval, wiki_health, runbook, timeline, workflow_export)},
         {"path": "operations/readiness.md", "body": _readiness_note(readiness)},
         {"path": "operations/deep-eval.md", "body": _deep_eval_note(deep_eval)},
         {"path": "operations/wiki-health.md", "body": _wiki_health_note(wiki_health)},
         {"path": "operations/workflow-runbook.md", "body": _workflow_runbook_note(runbook)},
+        {"path": "operations/workflow-map-warnings.md", "body": _workflow_warnings_note(workflow_export)},
         {"path": "operations/timeline.md", "body": _timeline_note(timeline)},
     ]
     files.extend([row for row in workflow_export.get("files") or [] if isinstance(row, dict)])
@@ -69,6 +71,7 @@ def build_obsidian_export(
             "wiki_lint_issues": int(((wiki_health.get("counts") or {}) if isinstance(wiki_health.get("counts"), dict) else {}).get("lint_issues") or 0),
             "runbook_workflows": int(((runbook.get("counts") or {}) if isinstance(runbook.get("counts"), dict) else {}).get("workflows") or 0),
             "runbook_next_actions": int(((runbook.get("counts") or {}) if isinstance(runbook.get("counts"), dict) else {}).get("next_actions") or 0),
+            "workflow_map_warnings": len(workflow_warnings),
             "timeline_items": len(timeline.get("items") or []),
             "workflow_files": len(workflow_export.get("files") or []),
         },
@@ -107,6 +110,7 @@ def build_n8n_export(
         reference_limit=160,
         focus_tag=focus_tag,
     )
+    workflow_warnings = _workflow_warnings(workflow)
 
     nodes: list[dict[str, Any]] = []
     nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, wiki_health, runbook, timeline, workflow), 0, 0))
@@ -116,6 +120,7 @@ def build_n8n_export(
     nodes.append(_n8n_note("ops:wiki_health", "Agent Wiki Health", _n8n_wiki_health_content(wiki_health), 1360, 0))
     nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1700, 0))
     nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 2040, 0))
+    nodes.append(_n8n_note("ops:workflow_warnings", "Workflow Map Warnings", _n8n_workflow_warnings_content(workflow), 2380, 0))
     for idx, row in enumerate((readiness.get("backlog") if isinstance(readiness.get("backlog"), list) else [])[:10]):
         if not isinstance(row, dict):
             continue
@@ -135,6 +140,7 @@ def build_n8n_export(
         "ops:deep_eval": {"main": [[{"node": "ops:wiki_health", "type": "main", "index": 0}]]},
         "ops:wiki_health": {"main": [[{"node": "ops:timeline", "type": "main", "index": 0}]]},
         "ops:timeline": {"main": [[{"node": "ops:workflow_map", "type": "main", "index": 0}]]},
+        "ops:workflow_map": {"main": [[{"node": "ops:workflow_warnings", "type": "main", "index": 0}]]},
     }
     backlog_count = len([node for node in nodes if str(node.get("id") or "").startswith("ops:backlog:")])
     if backlog_count:
@@ -166,6 +172,7 @@ def build_n8n_export(
                 "runbook_next_actions": (runbook.get("counts") or {}).get("next_actions") if isinstance(runbook.get("counts"), dict) else 0,
                 "timeline_items": len(timeline.get("items") or []),
                 "workflow_nodes": len(workflow.get("nodes") or []),
+                "workflow_warnings": len(workflow_warnings),
             },
         },
     }
@@ -203,6 +210,7 @@ def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], wik
         f"- runbook actions: {runbook_counts.get('next_actions') or 0}",
         f"- timeline: {len(timeline.get('items') or [])} items",
         f"- workflow graph: {len(workflow.get('nodes') or [])} nodes",
+        f"- workflow warnings: {len(_workflow_warnings(workflow))}",
         "",
     ]
     queue = _runbook_queue(runbook)
@@ -294,14 +302,34 @@ def _n8n_timeline_content(timeline: dict[str, Any]) -> str:
 
 def _n8n_workflow_content(workflow: dict[str, Any]) -> str:
     counts = workflow.get("counts") if isinstance(workflow.get("counts"), dict) else {}
-    return "\n".join([
+    warnings = _workflow_warnings(workflow)
+    lines = [
         "## Workflow Map",
         f"tools: {counts.get('tools_visible') or 0}/{counts.get('tools_total') or 0}",
         f"workflows: {counts.get('workflow_templates_visible') or 0}",
         f"nodes: {counts.get('nodes') or 0}",
         f"edges: {counts.get('edges') or 0}",
-        f"warnings: {len(workflow.get('warnings') or [])}",
-    ])
+        f"warnings: {len(warnings)}",
+        "",
+    ]
+    for row in warnings[:5]:
+        lines.append(f"- {row.get('key')}: {row.get('message') or ''}")
+    if not warnings:
+        lines.append("- no workflow map warnings")
+    return "\n".join(lines)
+
+
+def _n8n_workflow_warnings_content(workflow: dict[str, Any]) -> str:
+    warnings = _workflow_warnings(workflow)
+    lines = ["## Workflow Map Warnings", f"count: {len(warnings)}", ""]
+    if not warnings:
+        lines.append("- none")
+    for row in warnings[:8]:
+        item_text = ", ".join(str(item) for item in row.get("items", [])[:4]) or "-"
+        lines.append(f"- {row.get('tone')}: {row.get('key')} items={row.get('item_count') or 0} route={row.get('route') or '-'}")
+        lines.append(f"  {row.get('message') or ''}")
+        lines.append(f"  examples: {item_text}")
+    return "\n".join(lines)
 
 
 def _n8n_backlog_content(row: dict[str, Any]) -> str:
@@ -321,6 +349,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
     wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
     runbook_counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
     workflow_files = workflow_export.get("files") if isinstance(workflow_export.get("files"), list) else []
+    workflow_warnings = _workflow_warnings(workflow_export)
     lines = [
         "---",
         'title: "Flow AI Hub Operations"',
@@ -337,6 +366,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         f"- wiki_health: `{wiki_health.get('status') or 'missing'}` docs `{wiki_counts.get('docs') or 0}` lint `{wiki_counts.get('lint_issues') or 0}`",
         f"- workflow_runbook: ready `{runbook_counts.get('ready') or 0}/{runbook_counts.get('workflows') or 0}` blocked `{runbook_counts.get('blocked') or 0}`",
         f"- runbook_next_actions: `{runbook_counts.get('next_actions') or 0}`",
+        f"- workflow_map_warnings: `{len(workflow_warnings)}`",
         f"- timeline_items: `{len(timeline.get('items') or [])}`",
         f"- workflow_notes: `{len(workflow_files)}`",
         "",
@@ -357,6 +387,19 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
                 f"{_cell(action.get('route'))} | {examples or '-'} |"
             )
         lines.append("")
+    if workflow_warnings:
+        lines.extend([
+            "## Workflow Map Warnings",
+            "",
+            "| key | tone | items | message |",
+            "|---|---|---:|---|",
+        ])
+        for row in workflow_warnings[:8]:
+            lines.append(
+                f"| {_cell(row.get('key'))} | {_cell(row.get('tone'))} | "
+                f"{_cell(row.get('item_count'))} | {_cell(row.get('message'))} |"
+            )
+        lines.append("")
     lines.extend([
         "## Notes",
         "",
@@ -364,6 +407,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         "- [[operations/deep-eval|Agent Deep Eval]]",
         "- [[operations/wiki-health|Agent Wiki Health]]",
         "- [[operations/workflow-runbook|Workflow Runbook]]",
+        "- [[operations/workflow-map-warnings|Workflow Map Warnings]]",
         "- [[operations/timeline|Operations Timeline]]",
         "- [[Flow AI Hub Workflow Map|Workflow Map]]",
         "",
@@ -579,6 +623,53 @@ def _next_action_text(row: dict[str, Any]) -> str:
 def _runbook_queue(runbook: dict[str, Any]) -> list[dict[str, Any]]:
     queue = runbook.get("next_action_queue")
     return queue if isinstance(queue, list) else []
+
+
+def _workflow_warnings(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = workflow.get("warnings") if isinstance(workflow.get("warnings"), list) else []
+    rows: list[dict[str, Any]] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        items = row.get("items") if isinstance(row.get("items"), list) else []
+        key = str(row.get("key") or "")
+        rows.append({
+            "key": key,
+            "tone": str(row.get("tone") or "neutral"),
+            "message": str(row.get("message") or "")[:260],
+            "item_count": len(items),
+            "items": [str(item) for item in items[:12]],
+            "route": str(row.get("route") or "/api/ai-hub/workflow-map"),
+        })
+    return rows
+
+
+def _workflow_warnings_note(workflow: dict[str, Any]) -> str:
+    warnings = _workflow_warnings(workflow)
+    lines = [
+        "---",
+        'title: "Workflow Map Warnings"',
+        'kind: "ai_hub_workflow_map_warnings"',
+        "---",
+        "",
+        "# Workflow Map Warnings",
+        "",
+        f"- count: `{len(warnings)}`",
+        f"- route: `/api/ai-hub/workflow-map`",
+        "",
+        "| key | tone | items | examples | message |",
+        "|---|---|---:|---|---|",
+    ]
+    if not warnings:
+        lines.append("| none | - | 0 | - | - |")
+    for row in warnings[:40]:
+        examples = ", ".join(_cell(item) for item in row.get("items", [])[:6]) or "-"
+        lines.append(
+            f"| {_cell(row.get('key'))} | {_cell(row.get('tone'))} | {_cell(row.get('item_count'))} | "
+            f"{examples} | {_cell(row.get('message'))} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _timeline_note(timeline: dict[str, Any]) -> str:

@@ -78,6 +78,12 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_map, "export_workflow_map", lambda **kwargs: {
         "format": "obsidian",
+        "warnings": [{
+            "key": "workflow_missing_tools",
+            "tone": "warn",
+            "message": "미등록 도구가 workflow step에 남아 있습니다.",
+            "items": ["ghost_unit"],
+        }],
         "files": [{"path": "Flow AI Hub Workflow Map.md", "body": "# Flow AI Hub Workflow Map\n"}],
     })
 
@@ -86,13 +92,15 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     assert out["format"] == "obsidian_ops"
     assert out["counts"]["readiness_backlog"] == 1
     assert out["counts"]["runbook_next_actions"] == 1
+    assert out["counts"]["workflow_map_warnings"] == 1
     paths = [row["path"] for row in out["files"]]
-    assert paths[:6] == [
+    assert paths[:7] == [
         "Flow AI Hub Operations.md",
         "operations/readiness.md",
         "operations/deep-eval.md",
         "operations/wiki-health.md",
         "operations/workflow-runbook.md",
+        "operations/workflow-map-warnings.md",
         "operations/timeline.md",
     ]
     assert "Flow AI Hub Workflow Map.md" in paths
@@ -100,15 +108,19 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     assert "[[operations/readiness|Readiness]]" in index
     assert "[[operations/wiki-health|Agent Wiki Health]]" in index
     assert "[[operations/workflow-runbook|Workflow Runbook]]" in index
+    assert "[[operations/workflow-map-warnings|Workflow Map Warnings]]" in index
     assert "[[Flow AI Hub Workflow Map|Workflow Map]]" in index
     assert "runbook_next_actions: `1`" in index
+    assert "workflow_map_warnings: `1`" in index
     assert "Runbook Action Queue" in index
+    assert "Workflow Map Warnings" in index
 
     archive = ai_hub_ops_export.export_obsidian_zip(out)
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         assert "operations/readiness.md" in zf.namelist()
         assert "operations/wiki-health.md" in zf.namelist()
         assert "operations/workflow-runbook.md" in zf.namelist()
+        assert "operations/workflow-map-warnings.md" in zf.namelist()
         assert "Wiki 보강" in zf.read("operations/readiness.md").decode("utf-8")
         assert "semantic/step_id simple question" in zf.read("operations/deep-eval.md").decode("utf-8")
         assert "Agent terms" in zf.read("operations/wiki-health.md").decode("utf-8")
@@ -116,6 +128,9 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         assert "KNOB 기반 lot_wf 영향 확인" in runbook_note
         assert "Wiki/schema 근거 연결" in runbook_note
         assert "Next Action Queue" in runbook_note
+        warning_note = zf.read("operations/workflow-map-warnings.md").decode("utf-8")
+        assert "workflow_missing_tools" in warning_note
+        assert "ghost_unit" in warning_note
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -163,7 +178,12 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_map, "build_workflow_map", lambda **kwargs: {
         "counts": {"tools_visible": 3, "tools_total": 4, "workflow_templates_visible": 1, "nodes": 10, "edges": 9},
-        "warnings": [{"key": "workflow_unverified"}],
+        "warnings": [{
+            "key": "workflow_unverified",
+            "tone": "warn",
+            "message": "최근 dry-run 검증이 없습니다.",
+            "items": ["ops_lot_step_review"],
+        }],
         "nodes": [{"id": "tool:filebrowser"}],
     })
 
@@ -173,23 +193,29 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     workflow = out["workflow"]
     assert workflow["name"] == "Flow AI Hub operations"
     node_ids = {node["id"] for node in workflow["nodes"]}
-    assert {"ops:index", "ops:readiness", "ops:runbook", "ops:deep_eval", "ops:wiki_health", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
+    assert {"ops:index", "ops:readiness", "ops:runbook", "ops:deep_eval", "ops:wiki_health", "ops:timeline", "ops:workflow_map", "ops:workflow_warnings", "ops:backlog:1"} <= node_ids
     assert workflow["connections"]["ops:index"]["main"][0][0]["node"] == "ops:readiness"
     assert workflow["connections"]["ops:readiness"]["main"][0][0]["node"] == "ops:runbook"
     assert workflow["connections"]["ops:runbook"]["main"][0][0]["node"] == "ops:deep_eval"
     assert workflow["connections"]["ops:deep_eval"]["main"][0][0]["node"] == "ops:wiki_health"
+    assert workflow["connections"]["ops:workflow_map"]["main"][0][0]["node"] == "ops:workflow_warnings"
     assert any(row["node"] == "ops:backlog:1" for row in workflow["connections"]["ops:readiness"]["main"][0])
     assert workflow["staticData"]["readiness_score"] == 74
     assert workflow["staticData"]["deep_eval_status"] == "fail"
     assert workflow["staticData"]["wiki_health_status"] == "warn"
     assert workflow["staticData"]["runbook_workflows"] == 1
     assert workflow["staticData"]["runbook_next_actions"] == 1
+    assert workflow["staticData"]["workflow_warnings"] == 1
     index_node = next(node for node in workflow["nodes"] if node["id"] == "ops:index")
     assert "runbook actions: 1" in index_node["parameters"]["content"]
+    assert "workflow warnings: 1" in index_node["parameters"]["content"]
     assert "Runbook action queue:" in index_node["parameters"]["content"]
     runbook_node = next(node for node in workflow["nodes"] if node["id"] == "ops:runbook")
     assert "next_action_queue:" in runbook_node["parameters"]["content"]
     assert "next=Dry-run 재검증" in runbook_node["parameters"]["content"]
+    warnings_node = next(node for node in workflow["nodes"] if node["id"] == "ops:workflow_warnings")
+    assert "workflow_unverified" in warnings_node["parameters"]["content"]
+    assert "ops_lot_step_review" in warnings_node["parameters"]["content"]
 
 
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):

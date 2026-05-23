@@ -409,6 +409,8 @@ def _export_n8n(graph: dict[str, Any]) -> dict[str, Any]:
 def _export_obsidian(graph: dict[str, Any]) -> dict[str, Any]:
     graph_nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
     graph_edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    warnings = graph.get("warnings") if isinstance(graph.get("warnings"), list) else []
+    counts = graph.get("counts") if isinstance(graph.get("counts"), dict) else {}
     nodes_by_id = {str(node.get("id") or ""): node for node in graph_nodes}
     slug_by_id = {node_id: _slug(node_id) for node_id in nodes_by_id}
     files: list[dict[str, str]] = []
@@ -420,9 +422,21 @@ def _export_obsidian(graph: dict[str, Any]) -> dict[str, Any]:
         f"- focus_tag: `{graph.get('focus_tag') or ''}`",
         f"- nodes: `{len(graph_nodes)}`",
         f"- edges: `{len(graph_edges)}`",
+        f"- warnings: `{len(warnings)}`",
         "",
-        "## Stages",
     ]
+    if warnings:
+        index_lines.extend(["", "## Warnings", "", "| key | tone | items | message |", "|---|---|---:|---|"])
+        for row in warnings:
+            if not isinstance(row, dict):
+                continue
+            items = row.get("items") if isinstance(row.get("items"), list) else []
+            index_lines.append(
+                f"| {_md_cell(row.get('key'))} | {_md_cell(row.get('tone'))} | "
+                f"{len(items)} | {_md_cell(row.get('message'))} |"
+            )
+        index_lines.append("")
+    index_lines.append("## Stages")
     for stage in STAGES:
         index_lines.append(f"- [[{slug_by_id.get('stage:' + stage['id'], _slug('stage:' + stage['id']))}|{stage['title']}]]")
     index_lines.extend(["", "## Workflows"])
@@ -448,6 +462,8 @@ def _export_obsidian(graph: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "format": "obsidian",
         "filename": "flow-ai-hub-workflow-map.obsidian.json",
+        "counts": counts,
+        "warnings": warnings,
         "files": files,
         "graph": {
             "nodes": graph_nodes,
@@ -628,6 +644,10 @@ def _tag_slug(value: str) -> str:
 
 def _yaml_escape(value: str) -> str:
     return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _md_cell(value: Any) -> str:
+    return str(value if value is not None else "").replace("|", "\\|").replace("\n", " ").strip()
 
 
 def _tool_tone(tool: dict[str, Any]) -> str:

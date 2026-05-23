@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 export에 workflow map warning 큐 반영
 - (Codex) AI Hub 운영 스냅샷에 workflow map warning 리스트 추가
 - (Codex) AI Hub 운영 스냅샷에 workflow map summary card 추가
 - (Codex) AI Hub 운영 스냅샷 최근 이벤트에서 timeline category focus 이동
