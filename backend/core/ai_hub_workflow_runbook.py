@@ -19,18 +19,20 @@ def build_runbook(
     focus_tag: str = "",
     status: str = "",
     issue: str = "",
+    workflow_key: str = "",
 ) -> dict[str, Any]:
     days = max(1, min(365, int(days or 30)))
     limit = max(1, min(120, int(limit or 40)))
     focus_tag = str(focus_tag or "").strip()
     status = str(status or "").strip()
     issue = str(issue or "").strip()
+    workflow_key = str(workflow_key or "").strip()
     graph = ai_hub_workflow_map.build_workflow_map(
         username=str(username or ""),
         days=days,
         limit=max(40, limit),
         reference_limit=160,
-        focus_tag=focus_tag,
+        focus_tag="" if workflow_key else focus_tag,
     )
 
     nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
@@ -42,7 +44,7 @@ def build_runbook(
         for node in nodes
         if isinstance(node, dict) and node.get("type") == "workflow"
     ]
-    rows = _filter_rows(all_rows, status=status, issue=issue)[:limit]
+    rows = _filter_rows(all_rows, status=status, issue=issue, workflow_key=workflow_key)[:limit]
     next_action_queue = _next_action_queue(rows)
     counts = {
         "workflows": len(rows),
@@ -65,6 +67,7 @@ def build_runbook(
         "focus_tag": focus_tag,
         "status": status,
         "issue": issue,
+        "workflow_key": workflow_key,
         "counts": counts,
         "status_options": _status_options(all_rows),
         "issue_options": _issue_options(all_rows),
@@ -81,9 +84,11 @@ def build_runbook(
     }
 
 
-def _filter_rows(rows: list[dict[str, Any]], *, status: str, issue: str) -> list[dict[str, Any]]:
+def _filter_rows(rows: list[dict[str, Any]], *, status: str, issue: str, workflow_key: str = "") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
+        if workflow_key and str(row.get("key") or "") != workflow_key:
+            continue
         if status and str(row.get("status") or "") != status:
             continue
         if issue and not any(isinstance(item, dict) and item.get("key") == issue for item in row.get("issues") or []):

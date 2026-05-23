@@ -32,7 +32,7 @@ GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백
 GET  /api/ai-hub/deep-eval-report           Agent semantic/wiki/sql deep-eval 최신 리포트
 POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성 (admin)
 GET  /api/ai-hub/wiki-health                Agent Wiki/Knowledge Vault 문서·소스·graph·lint 운영 상태
-GET  /api/ai-hub/workflow-runbook           Agent workflow별 준비도/runbook 표: step, tool, 검증, Wiki/schema 근거, status/issue filter
+GET  /api/ai-hub/workflow-runbook           Agent workflow별 준비도/runbook 표: step, tool, 검증, Wiki/schema 근거, status/issue/workflow_key filter
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
@@ -73,7 +73,7 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 - `deep_eval:latest`: 최신 Agent deep-eval 리포트. semantic/wiki/sql 검증 통과 수와 실패 assertion 상태를 Improve 단계의 evidence로 연결하고, 노드 detail에서 admin 재검증 action을 실행할 수 있다.
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
-AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
+AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다. workflow 노드 detail의 `Runbook` 버튼은 같은 workflow row만 Runbook에서 펼쳐 운영 issue와 다음 조치를 이어서 볼 수 있게 한다.
 
 지도는 저장성 export 없이 즉석 산출물로도 꺼낼 수 있다.
 
@@ -90,7 +90,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - `ready`: step, 도구, Wiki/schema 근거, 최근 검증이 모두 확인된 workflow
 - `attention`: 실행은 가능하지만 최근 검증이나 evidence가 부족한 workflow
 - `blocked`: step 정의 누락, 미등록 unit_ai, 비활성 도구처럼 운영 전에 고쳐야 하는 workflow
-- `status`와 `issue` query로 `blocked`, `not_checked`, `missing_tools`, `no_evidence` 같은 운영 대상만 좁혀 볼 수 있다.
+- `status`, `issue`, `workflow_key` query로 `blocked`, `not_checked`, `missing_tools`, `no_evidence` 같은 운영 대상이나 지도에서 선택한 특정 workflow만 좁혀 볼 수 있다.
 - 화면의 row `상세`는 workflow step, bind/fixed slot, evidence node, missing/disabled tool, next action route를 펼쳐 보여주고, row `지도`는 `workflow:<key>` 노드를 워크플로우 지도에서 바로 focus한다.
 - 각 row는 issue key에 맞춘 `next_actions[]`를 내려준다. 예: `missing_tools`는 ToolRegistry/workflow step 수정, `not_checked`는 Dry-run 재검증, `no_evidence`는 Wiki/schema 근거 연결로 안내한다.
 - 응답의 `next_action_queue[]`는 현재 Runbook 필터 결과에서 같은 조치를 요구하는 workflow를 묶은 운영 큐다. AI Hub 패널에서는 큐 항목을 눌러 해당 issue 필터로 좁혀 볼 수 있다.

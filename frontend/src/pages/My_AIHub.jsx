@@ -105,6 +105,16 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusRunbookWorkflow(node) {
+    const key = String(node?.workflow_key || (node?.id || "").replace(/^workflow:/, "") || "").trim();
+    if (!key) return;
+    setRunbookFocus((prev) => ({
+      workflowKey: key,
+      title: node?.label || key,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   function focusReadinessBacklog(row) {
     if (!row?.id) return;
     setReadinessFocus((prev) => ({
@@ -207,7 +217,12 @@ export default function My_AIHub() {
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} onWorkflowMapFocus={focusWorkflowMapNode} />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
-      <WorkflowMapPanel days={days} focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null} onWarningSelect={focusWorkflowMapWarning} />
+      <WorkflowMapPanel
+        days={days}
+        focusIntent={opsPanelFocus?.target === "workflow_map" ? opsPanelFocus : null}
+        onWarningSelect={focusWorkflowMapWarning}
+        onRunbookFocus={focusRunbookWorkflow}
+      />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -1276,6 +1291,7 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
   const [focusTag, setFocusTag] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [issueFilter, setIssueFilter] = useState("");
+  const [workflowKeyFilter, setWorkflowKeyFilter] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [bootstrapBusy, setBootstrapBusy] = useState(false);
@@ -1293,6 +1309,7 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
       if (focusTag) qs.set("focus_tag", focusTag);
       if (statusFilter) qs.set("status", statusFilter);
       if (issueFilter) qs.set("issue", issueFilter);
+      if (workflowKeyFilter) qs.set("workflow_key", workflowKeyFilter);
       const out = await sf(`/api/ai-hub/workflow-runbook?${qs.toString()}`);
       setData(out);
     } catch (e) {
@@ -1337,11 +1354,20 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
   useEffect(() => {
     if (!focusIntent?.nonce) return;
     setOpen(true);
-    setIssueFilter(focusIntent.issue || "");
+    if (focusIntent.workflowKey) {
+      setFocusTag("");
+      setStatusFilter("");
+      setIssueFilter("");
+      setWorkflowKeyFilter(focusIntent.workflowKey || "");
+      setExpandedKey(focusIntent.workflowKey || "");
+    } else {
+      setWorkflowKeyFilter("");
+      setIssueFilter(focusIntent.issue || "");
+    }
     setFocusNonce(focusIntent.nonce || 0);
   }, [focusIntent?.nonce]);
 
-  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag, statusFilter, issueFilter, focusNonce]);
+  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag, statusFilter, issueFilter, workflowKeyFilter, focusNonce]);
 
   const counts = data?.counts || {};
   const rows = data?.items || [];
@@ -1349,7 +1375,7 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
   const issueOptions = data?.issue_options || [];
   const nextActionQueue = data?.next_action_queue || [];
   const runbookActions = data?.is_admin ? (data?.actions || []) : [];
-  const focusLabel = focusIntent?.nonce ? (focusIntent.title || focusIntent.issue || "Workflow Runbook") : "";
+  const focusLabel = focusIntent?.nonce ? (focusIntent.title || focusIntent.workflowKey || focusIntent.issue || "Workflow Runbook") : "";
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1372,7 +1398,10 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
           <>
             <select
               value={focusTag}
-              onChange={(e) => setFocusTag(e.target.value)}
+              onChange={(e) => {
+                setWorkflowKeyFilter("");
+                setFocusTag(e.target.value);
+              }}
               style={{ ...selectStyle, width: 170, marginBottom: 0, padding: "4px 8px" }}
             >
               <option value="">전체 태그</option>
@@ -1382,7 +1411,10 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
             </select>
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => {
+                setWorkflowKeyFilter("");
+                setStatusFilter(e.target.value);
+              }}
               style={{ ...selectStyle, width: 132, marginBottom: 0, padding: "4px 8px" }}
             >
               <option value="">전체 상태</option>
@@ -1392,7 +1424,10 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
             </select>
             <select
               value={issueFilter}
-              onChange={(e) => setIssueFilter(e.target.value)}
+              onChange={(e) => {
+                setWorkflowKeyFilter("");
+                setIssueFilter(e.target.value);
+              }}
               style={{ ...selectStyle, width: 180, marginBottom: 0, padding: "4px 8px" }}
             >
               <option value="">전체 issue</option>
@@ -1400,6 +1435,18 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus }) {
                 <option key={row.key} value={row.key}>{row.label} ({row.count})</option>
               ))}
             </select>
+            {workflowKeyFilter && (
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkflowKeyFilter("");
+                  setExpandedKey("");
+                }}
+                style={btnGhost}
+              >
+                workflow 전체
+              </button>
+            )}
             {runbookActions.map((action) => (
               <button key={action.id} onClick={() => runBootstrap(action)} disabled={bootstrapBusy} style={boardActionStyle(action.tone)}>
                 {bootstrapBusy ? "생성 중" : action.label}
@@ -1634,7 +1681,7 @@ function WorkflowRunbookDetail({ row }) {
 }
 
 
-function WorkflowMapPanel({ days, focusIntent, onWarningSelect }) {
+function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [map, setMap] = useState(null);
@@ -1781,6 +1828,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect }) {
                   edges={edges}
                   nodes={nodes}
                   onAction={runNodeAction}
+                  onRunbookFocus={onRunbookFocus}
                   actionBusy={nodeActionBusy}
                   actionResult={nodeActionResult}
                 />
@@ -1954,7 +2002,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
 }
 
 
-function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionResult }) {
+function WorkflowNodeDetail({ node, edges, nodes, onAction, onRunbookFocus, actionBusy, actionResult }) {
   if (!node) {
     return (
       <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
@@ -1988,6 +2036,13 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
             {node.metrics?.last_status && <Tag>{node.metrics.last_status}</Tag>}
             {node.owner && <Tag>{node.owner}</Tag>}
           </div>
+          {onRunbookFocus && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+              <button type="button" onClick={() => onRunbookFocus(node)} style={btnGhost}>
+                Runbook
+              </button>
+            </div>
+          )}
           {(node.actions || []).length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
               {(node.actions || []).map((action) => {

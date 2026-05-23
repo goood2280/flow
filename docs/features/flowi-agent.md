@@ -93,17 +93,18 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - 기존 readiness, workflow runbook, workflow map, deep-eval report, Agent Wiki health, 운영 timeline을 집계해 summary card, 상위 개선 항목, Runbook 조치 큐, workflow map 경고, 최근 이벤트, Obsidian/n8n export 링크를 반환한다.
 - 화면에서는 summary card를 해당 운영 패널 열기로 연결하고, 상위 개선 항목은 `운영 준비도` 백로그 focus로, Runbook 조치 큐는 `Workflow Runbook` issue filter로, workflow map 경고는 `워크플로우 지도` 패널로, 최근 이벤트는 `운영 타임라인` category filter로 연결한다.
 - workflow map 경고는 `action`과 `route`를 포함해 Wiki/source 연결, workflow step 수정, deep-eval 재검증 같은 다음 조치를 화면의 스냅샷/지도 경고 큐에 함께 표시하고, route에 맞는 관리 패널 focus로 이어진다.
+- 워크플로우 지도에서 workflow 노드를 선택하면 `Runbook` 버튼으로 같은 workflow row를 `workflow_key` filter와 상세 펼침 상태로 바로 열 수 있다.
 - 운영 export는 같은 workflow map 경고를 Obsidian `operations/workflow-map-warnings.md` note와 n8n `ops:workflow_warnings` sticky note에 포함한다.
 - 새 runtime state를 만들지 않고 각 원천 API의 읽기 전용 builder만 호출한다.
 
-`GET /api/ai-hub/workflow-runbook?days=30&limit=40&focus_tag=&status=&issue=`
+`GET /api/ai-hub/workflow-runbook?days=30&limit=40&focus_tag=&status=&issue=&workflow_key=`
 
 - AI Hub의 `Workflow Runbook` 패널이 읽는 workflow별 관리 표다.
 - 기존 workflow map에서 workflow/template node, step, tool, evidence edge, 최근 dry-run/execute 이력을 정규화한다.
 - row는 `ready`, `attention`, `blocked` 상태, issue 목록, issue별 `next_actions[]`를 포함한다. `Dry-run` action은 기존 `/api/agent/workflows/execute`를 호출한다.
 - 화면의 row `상세`는 step, bind/fixed slot, evidence node, missing/disabled tool, next action route를 펼쳐 보여주고, row `지도`는 같은 workflow의 `workflow:<key>` 노드를 워크플로우 지도에서 바로 focus한다.
 - `next_action_queue[]`는 현재 필터 결과에서 같은 조치를 요구하는 workflow를 묶어 AI Hub 화면과 Obsidian/n8n export에 운영 큐로 노출한다.
-- `status`와 `issue` filter로 운영자가 blocked workflow나 `missing_tools`, `not_checked`, `no_evidence` 같은 개선 대상만 좁혀 볼 수 있다.
+- `status`, `issue`, `workflow_key` filter로 운영자가 blocked workflow, `missing_tools`/`not_checked`/`no_evidence` 개선 대상, 또는 지도에서 선택한 특정 workflow만 좁혀 볼 수 있다.
 - workflow template이 0건이면 admin용 `시작 템플릿 생성` action을 내려 기존 `/api/ai-hub/readiness/bootstrap-workflows`로 starter workflow를 만들 수 있게 한다.
 
 `POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
