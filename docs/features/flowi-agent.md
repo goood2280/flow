@@ -91,6 +91,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 
 - AI Hub 첫 화면의 `운영 스냅샷` 패널이 읽는 일일 운영 요약이다.
 - 기존 readiness, workflow runbook, deep-eval report, Agent Wiki health, 운영 timeline을 집계해 summary card, 상위 개선 항목, Runbook 조치 큐, 최근 이벤트, Obsidian/n8n export 링크를 반환한다.
+- 화면에서는 상위 개선 항목을 `운영 준비도` 백로그 focus로, Runbook 조치 큐를 `Workflow Runbook` issue filter로 연결한다.
 - 새 runtime state를 만들지 않고 각 원천 API의 읽기 전용 builder만 호출한다.
 
 `GET /api/ai-hub/workflow-runbook?days=30&limit=40&focus_tag=&status=&issue=`

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 스냅샷 상위 개선에서 readiness 백로그 focus 이동
 - (Codex) AI Hub 운영 스냅샷 Runbook 큐에서 Runbook issue 필터로 이동
 - (Codex) AI Hub 운영 export index에 Runbook 조치 큐 요약 추가
 - (Codex) AI Hub 운영 스냅샷에 Runbook 조치 큐 연결

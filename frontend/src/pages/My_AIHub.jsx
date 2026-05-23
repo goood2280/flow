@@ -30,6 +30,7 @@ export default function My_AIHub() {
   const [selected, setSelected] = useState(null);
   const [history, setHistory] = useState([]);
   const [runbookFocus, setRunbookFocus] = useState(null);
+  const [readinessFocus, setReadinessFocus] = useState(null);
 
   async function loadCatalog() {
     setLoading(true);
@@ -103,12 +104,25 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusReadinessBacklog(row) {
+    if (!row?.id) return;
+    setReadinessFocus((prev) => ({
+      id: row.id,
+      title: row.title || row.target || row.id,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
-      <OpsSnapshotPanel days={days} onRunbookIssue={focusRunbookIssue} />
+      <OpsSnapshotPanel
+        days={days}
+        onReadinessBacklog={focusReadinessBacklog}
+        onRunbookIssue={focusRunbookIssue}
+      />
       <OrchestratorPanel />
-      <ReadinessPanel days={days} onChanged={loadCatalog} />
+      <ReadinessPanel days={days} focusIntent={readinessFocus} onChanged={loadCatalog} />
       <DeepEvalPanel />
       <WikiHealthPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
@@ -219,7 +233,7 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OpsSnapshotPanel({ days, onRunbookIssue }) {
+function OpsSnapshotPanel({ days, onReadinessBacklog, onRunbookIssue }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -286,7 +300,7 @@ function OpsSnapshotPanel({ days, onRunbookIssue }) {
           ) : data ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
               <OpsSnapshotSummary data={data} />
-              <OpsSnapshotActions rows={data.top_actions || []} />
+              <OpsSnapshotActions rows={data.top_actions || []} onSelect={onReadinessBacklog} />
               <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} onSelect={onRunbookIssue} />
               <OpsSnapshotEvents rows={data.recent_events || []} />
             </div>
@@ -329,8 +343,30 @@ function OpsSnapshotSummary({ data }) {
 }
 
 
-function OpsSnapshotActions({ rows }) {
+function OpsSnapshotActions({ rows, onSelect }) {
   const visible = rows.slice(0, 6);
+  const rowStyle = {
+    border: "0",
+    borderTop: "1px dashed var(--border)",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    padding: "5px 0 0",
+    textAlign: "left",
+    width: "100%",
+  };
+  function rowContent(row) {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+          <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title}</div>
+          <BoardPill tone={row.tone}>{row.severity || "low"}</BoardPill>
+        </div>
+        <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
+        <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action || row.detail}</div>
+      </>
+    );
+  }
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
@@ -342,14 +378,21 @@ function OpsSnapshotActions({ rows }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
           {visible.map((row) => (
-            <div key={row.id || row.title} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title}</div>
-                <BoardPill tone={row.tone}>{row.severity || "low"}</BoardPill>
+            onSelect && row.id ? (
+              <button
+                key={row.id || row.title}
+                type="button"
+                onClick={() => onSelect(row)}
+                style={{ ...rowStyle, cursor: "pointer" }}
+                title="운영 준비도에서 이 개선 항목 보기"
+              >
+                {rowContent(row)}
+              </button>
+            ) : (
+              <div key={row.id || row.title} style={rowStyle}>
+                {rowContent(row)}
               </div>
-              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
-              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action || row.detail}</div>
-            </div>
+            )
           ))}
         </div>
       )}
@@ -808,12 +851,13 @@ function WikiHealthLog({ rows, lint }) {
 }
 
 
-function ReadinessPanel({ days, onChanged }) {
+function ReadinessPanel({ days, focusIntent, onChanged }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
+  const [activeBacklogId, setActiveBacklogId] = useState("");
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadReadiness() {
@@ -846,10 +890,18 @@ function ReadinessPanel({ days, onChanged }) {
     }
   }
 
-  useEffect(() => { if (open) loadReadiness(); }, [open, days]);
+  useEffect(() => {
+    if (!focusIntent?.id) return;
+    setOpen(true);
+    setActiveBacklogId(focusIntent.id);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadReadiness(); }, [open, days, focusNonce]);
 
   const score = Number(data?.score || 0);
   const backlog = data?.backlog || [];
+  const focusLabel = activeBacklogId && activeBacklogId === focusIntent?.id ? (focusIntent.title || activeBacklogId) : "";
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -861,6 +913,7 @@ function ReadinessPanel({ days, onChanged }) {
           <>
             <BoardPill tone={score >= 85 ? "ok" : score >= 65 ? "warn" : "bad"}>{score}점 · {data.level}</BoardPill>
             <BoardPill tone={backlog.length ? "warn" : "ok"}>개선 {backlog.length}</BoardPill>
+            {focusLabel && <BoardPill tone="info">focus {focusLabel}</BoardPill>}
           </>
         )}
         <div style={{ flex: 1 }} />
@@ -885,7 +938,13 @@ function ReadinessPanel({ days, onChanged }) {
                   </div>
                 ))}
               </div>
-              <ReadinessBacklog rows={backlog} canManage={!!data.is_admin} actionBusy={actionBusy} onAction={runBacklogAction} />
+              <ReadinessBacklog
+                rows={backlog}
+                activeId={activeBacklogId}
+                canManage={!!data.is_admin}
+                actionBusy={actionBusy}
+                onAction={runBacklogAction}
+              />
             </div>
           ) : (
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>준비도 데이터를 불러오면 운영 상태와 개선 백로그를 볼 수 있습니다.</div>
@@ -920,7 +979,7 @@ function ReadinessGauge({ score, level, counts }) {
 }
 
 
-function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
+function ReadinessBacklog({ rows, activeId, canManage, actionBusy, onAction }) {
   const visible = (rows || []).slice(0, 8);
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
@@ -932,36 +991,47 @@ function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
         <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>즉시 처리할 개선 항목이 없습니다.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
-          {visible.map((row) => (
-            <div key={row.id} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {row.title}
+          {visible.map((row) => {
+            const active = activeId === row.id;
+            return (
+              <div
+                key={row.id}
+                style={{
+                  borderTop: "1px dashed var(--border)",
+                  borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
+                  background: active ? "var(--accent-glow)" : "transparent",
+                  padding: "5px 0 0 5px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                  <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {row.title}
+                  </div>
+                  <BoardPill tone={row.severity === "high" ? "bad" : row.severity === "medium" ? "warn" : "neutral"}>{row.severity}</BoardPill>
                 </div>
-                <BoardPill tone={row.severity === "high" ? "bad" : row.severity === "medium" ? "warn" : "neutral"}>{row.severity}</BoardPill>
+                <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
+                <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action}</div>
+                {canManage && (row.actions || []).length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
+                    {(row.actions || []).map((action) => {
+                      const busy = actionBusy === `${row.id}:${action.id}`;
+                      return (
+                        <button
+                          key={action.id}
+                          type="button"
+                          onClick={() => onAction(row, action)}
+                          disabled={busy}
+                          style={boardActionStyle(action.tone)}
+                        >
+                          {busy ? "처리 중" : action.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
-              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action}</div>
-              {canManage && (row.actions || []).length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
-                  {(row.actions || []).map((action) => {
-                    const busy = actionBusy === `${row.id}:${action.id}`;
-                    return (
-                      <button
-                        key={action.id}
-                        type="button"
-                        onClick={() => onAction(row, action)}
-                        disabled={busy}
-                        style={boardActionStyle(action.tone)}
-                      >
-                        {busy ? "처리 중" : action.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
