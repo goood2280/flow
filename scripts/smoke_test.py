@@ -246,6 +246,12 @@ status, body = _req("GET", "/api/ai-hub/tags", token=TOKEN)
 tags_len = len((body or {}).get("tags") or []) if isinstance(body, dict) else 0
 check("GET /api/ai-hub/tags", status, 200, f"tags={tags_len}")
 
+status, body = _req("GET", "/api/ai-hub/readiness?days=30", token=TOKEN)
+score = (body or {}).get("score", -1) if isinstance(body, dict) else -1
+backlog_len = len((body or {}).get("backlog") or []) if isinstance(body, dict) else 0
+check("GET /api/ai-hub/readiness (운영 준비도)", status, 200,
+      f"score={score} backlog={backlog_len}")
+
 status, body = _req("GET", "/api/ai-hub/workflow-map?limit=20&reference_limit=80", token=TOKEN)
 nodes_len = len((body or {}).get("nodes") or []) if isinstance(body, dict) else 0
 edges_len = len((body or {}).get("edges") or []) if isinstance(body, dict) else 0

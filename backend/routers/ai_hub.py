@@ -11,6 +11,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/tags                   태그 목록 (필터용)
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
+  GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
   POST   /api/ai-hub/tools/{name}/toggle    enabled on/off (admin)
 
 상태 저장: data_root/tool_registry_state.json (admin_settings.json 사용 X)
@@ -23,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from core import ai_hub_board
+from core import ai_hub_readiness
 from core import ai_hub_workflow_map
 from core import audit
 from core import tool_registry
@@ -83,6 +85,18 @@ def operations_board(
     board = ai_hub_board.build_board(username=username, days=days, limit=limit)
     board["is_admin"] = (me or {}).get("role") == "admin"
     return board
+
+
+@router.get("/readiness")
+def readiness(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+):
+    me = current_user(request)
+    return ai_hub_readiness.build_readiness(
+        username=str((me or {}).get("username") or ""),
+        days=days,
+    )
 
 
 @router.get("/workflow-map")

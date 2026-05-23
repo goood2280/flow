@@ -97,6 +97,7 @@ export default function My_AIHub() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
+      <ReadinessPanel days={days} />
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
@@ -200,6 +201,130 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function ReadinessPanel({ days }) {
+  const [open, setOpen] = useState(true);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadReadiness() {
+    setLoading(true);
+    setErr("");
+    try {
+      const out = await sf(`/api/ai-hub/readiness?days=${days}`);
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadReadiness(); }, [open, days]);
+
+  const score = Number(data?.score || 0);
+  const backlog = data?.backlog || [];
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>운영 준비도</div>
+        {data && (
+          <>
+            <BoardPill tone={score >= 85 ? "ok" : score >= 65 ? "warn" : "bad"}>{score}점 · {data.level}</BoardPill>
+            <BoardPill tone={backlog.length ? "warn" : "ok"}>개선 {backlog.length}</BoardPill>
+          </>
+        )}
+        <div style={{ flex: 1 }} />
+        {open && <button onClick={loadReadiness} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : data ? (
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 220px) minmax(0, 1fr) minmax(260px, 1.2fr)", gap: 10 }}>
+              <ReadinessGauge score={score} level={data.level} counts={data.counts || {}} />
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(120px, 1fr))", gap: 6 }}>
+                {(data.checks || []).map((check) => (
+                  <div key={check.key} style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>{check.label}</div>
+                      <BoardPill tone={check.tone}>{check.score}</BoardPill>
+                    </div>
+                    <div style={{ marginTop: 5, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35 }}>{check.detail}</div>
+                  </div>
+                ))}
+              </div>
+              <ReadinessBacklog rows={backlog} />
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>준비도 데이터를 불러오면 운영 상태와 개선 백로그를 볼 수 있습니다.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ReadinessGauge({ score, level, counts }) {
+  const tone = score >= 85 ? "var(--ok)" : score >= 65 ? "var(--warn)" : "var(--danger)";
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 10 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ fontSize: 30, lineHeight: 1, fontWeight: 900, color: tone }}>{score}</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 800 }}>readiness</div>
+      </div>
+      <div style={{ marginTop: 4, height: 6, background: "var(--bg-primary)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--border)" }}>
+        <div style={{ width: `${Math.max(0, Math.min(100, score))}%`, height: "100%", background: tone }} />
+      </div>
+      <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-primary)", fontWeight: 800 }}>{level}</div>
+      <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <Tag>{counts.tools_enabled || 0}/{counts.tools_total || 0} tools</Tag>
+        <Tag>{counts.tools_without_refs || 0} no refs</Tag>
+        <Tag>{counts.semantic_proposals_pending || 0} semantic</Tag>
+        <Tag>{counts.skill_candidates || 0} skill q</Tag>
+      </div>
+    </div>
+  );
+}
+
+
+function ReadinessBacklog({ rows }) {
+  const visible = (rows || []).slice(0, 8);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>개선 백로그</div>
+        <BoardPill tone={rows.length ? "warn" : "ok"}>{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>즉시 처리할 개선 항목이 없습니다.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.id} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {row.title}
+                </div>
+                <BoardPill tone={row.severity === "high" ? "bad" : row.severity === "medium" ? "warn" : "neutral"}>{row.severity}</BoardPill>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.target}</div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.action}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 
