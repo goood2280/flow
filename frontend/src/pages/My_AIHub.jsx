@@ -29,6 +29,7 @@ export default function My_AIHub() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [history, setHistory] = useState([]);
+  const [runbookFocus, setRunbookFocus] = useState(null);
 
   async function loadCatalog() {
     setLoading(true);
@@ -93,16 +94,25 @@ export default function My_AIHub() {
     loadHistory(it.name);
   }
 
+  function focusRunbookIssue(row) {
+    if (!row?.key) return;
+    setRunbookFocus((prev) => ({
+      issue: row.key,
+      title: row.title || row.key,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
-      <OpsSnapshotPanel days={days} />
+      <OpsSnapshotPanel days={days} onRunbookIssue={focusRunbookIssue} />
       <OrchestratorPanel />
       <ReadinessPanel days={days} onChanged={loadCatalog} />
       <DeepEvalPanel />
       <WikiHealthPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
-      <WorkflowRunbookPanel days={days} />
+      <WorkflowRunbookPanel days={days} focusIntent={runbookFocus} />
       <TimelinePanel days={days} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
@@ -209,7 +219,7 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OpsSnapshotPanel({ days }) {
+function OpsSnapshotPanel({ days, onRunbookIssue }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -277,7 +287,7 @@ function OpsSnapshotPanel({ days }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
               <OpsSnapshotSummary data={data} />
               <OpsSnapshotActions rows={data.top_actions || []} />
-              <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} />
+              <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} onSelect={onRunbookIssue} />
               <OpsSnapshotEvents rows={data.recent_events || []} />
             </div>
           ) : (
@@ -348,8 +358,33 @@ function OpsSnapshotActions({ rows }) {
 }
 
 
-function OpsSnapshotRunbookQueue({ rows }) {
+function OpsSnapshotRunbookQueue({ rows, onSelect }) {
   const visible = rows.slice(0, 6);
+  const rowStyle = {
+    border: "0",
+    borderTop: "1px dashed var(--border)",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    padding: "5px 0 0",
+    textAlign: "left",
+    width: "100%",
+  };
+  function rowContent(row) {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+          <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
+          <BoardPill tone={row.tone}>{row.count || 0}</BoardPill>
+        </div>
+        <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail || row.route}</div>
+        <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {(row.workflows || []).slice(0, 3).map((item) => <Tag key={item.key}>{item.title || item.key}</Tag>)}
+          {(row.count || 0) > (row.workflows || []).slice(0, 3).length && <Tag>+{(row.count || 0) - (row.workflows || []).slice(0, 3).length}</Tag>}
+        </div>
+      </>
+    );
+  }
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
@@ -361,17 +396,21 @@ function OpsSnapshotRunbookQueue({ rows }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
           {visible.map((row) => (
-            <div key={row.key || row.title} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
-                <BoardPill tone={row.tone}>{row.count || 0}</BoardPill>
+            onSelect && row.key ? (
+              <button
+                key={row.key || row.title}
+                type="button"
+                onClick={() => onSelect(row)}
+                style={{ ...rowStyle, cursor: "pointer" }}
+                title="Workflow Runbook에서 이 issue로 보기"
+              >
+                {rowContent(row)}
+              </button>
+            ) : (
+              <div key={row.key || row.title} style={rowStyle}>
+                {rowContent(row)}
               </div>
-              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail || row.route}</div>
-              <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {(row.workflows || []).slice(0, 3).map((item) => <Tag key={item.key}>{item.title || item.key}</Tag>)}
-                {(row.count || 0) > (row.workflows || []).slice(0, 3).length && <Tag>+{(row.count || 0) - (row.workflows || []).slice(0, 3).length}</Tag>}
-              </div>
-            </div>
+            )
           ))}
         </div>
       )}
@@ -930,7 +969,7 @@ function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
 }
 
 
-function WorkflowRunbookPanel({ days }) {
+function WorkflowRunbookPanel({ days, focusIntent }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -940,6 +979,7 @@ function WorkflowRunbookPanel({ days }) {
   const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
   const [actionResult, setActionResult] = useState(null);
+  const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
   async function loadRunbook() {
@@ -991,7 +1031,14 @@ function WorkflowRunbookPanel({ days }) {
     }
   }
 
-  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag, statusFilter, issueFilter]);
+  useEffect(() => {
+    if (!focusIntent?.issue) return;
+    setOpen(true);
+    setIssueFilter(focusIntent.issue);
+    setFocusNonce(focusIntent.nonce || 0);
+  }, [focusIntent?.nonce]);
+
+  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag, statusFilter, issueFilter, focusNonce]);
 
   const counts = data?.counts || {};
   const rows = data?.items || [];
@@ -999,6 +1046,7 @@ function WorkflowRunbookPanel({ days }) {
   const issueOptions = data?.issue_options || [];
   const nextActionQueue = data?.next_action_queue || [];
   const runbookActions = data?.is_admin ? (data?.actions || []) : [];
+  const focusLabel = focusIntent?.issue && issueFilter === focusIntent.issue ? (focusIntent.title || focusIntent.issue) : "";
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1006,6 +1054,7 @@ function WorkflowRunbookPanel({ days }) {
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Workflow Runbook</div>
+        {focusLabel && <BoardPill tone="info">focus {focusLabel}</BoardPill>}
         {data && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
             <BoardPill tone="neutral">표시 {counts.workflows || 0}/{counts.workflows_total ?? counts.workflow_templates_total ?? 0}</BoardPill>
