@@ -138,6 +138,16 @@ export default function My_AIHub() {
     }));
   }
 
+  function focusWorkflowMapWarning(row) {
+    const title = row?.title || row?.key || "워크플로우 지도";
+    setOpsPanelFocus((prev) => ({
+      target: "workflow_map",
+      warning: row?.key || "",
+      title: `지도 경고: ${title}`,
+      nonce: (prev?.nonce || 0) + 1,
+    }));
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
@@ -146,6 +156,7 @@ export default function My_AIHub() {
         onSummaryCard={focusOpsSummaryCard}
         onReadinessBacklog={focusReadinessBacklog}
         onRunbookIssue={focusRunbookIssue}
+        onWorkflowMapWarning={focusWorkflowMapWarning}
         onTimelineEvent={focusTimelineEvent}
       />
       <OrchestratorPanel />
@@ -260,7 +271,7 @@ function withEnabledState(item, enabled) {
 }
 
 
-function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIssue, onTimelineEvent }) {
+function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIssue, onWorkflowMapWarning, onTimelineEvent }) {
   const [open, setOpen] = useState(true);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -329,6 +340,7 @@ function OpsSnapshotPanel({ days, onSummaryCard, onReadinessBacklog, onRunbookIs
               <OpsSnapshotSummary data={data} onSelect={onSummaryCard} />
               <OpsSnapshotActions rows={data.top_actions || []} onSelect={onReadinessBacklog} />
               <OpsSnapshotRunbookQueue rows={data.runbook_action_queue || []} onSelect={onRunbookIssue} />
+              <OpsSnapshotWorkflowMapWarnings rows={data.workflow_map_warnings || []} onSelect={onWorkflowMapWarning} />
               <OpsSnapshotEvents rows={data.recent_events || []} onSelect={onTimelineEvent} />
             </div>
           ) : (
@@ -503,6 +515,67 @@ function OpsSnapshotRunbookQueue({ rows, onSelect }) {
                 onClick={() => onSelect(row)}
                 style={{ ...rowStyle, cursor: "pointer" }}
                 title="Workflow Runbook에서 이 issue로 보기"
+              >
+                {rowContent(row)}
+              </button>
+            ) : (
+              <div key={row.key || row.title} style={rowStyle}>
+                {rowContent(row)}
+              </div>
+            )
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function OpsSnapshotWorkflowMapWarnings({ rows, onSelect }) {
+  const visible = rows.slice(0, 6);
+  const rowStyle = {
+    border: "0",
+    borderTop: "1px dashed var(--border)",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    padding: "5px 0 0",
+    textAlign: "left",
+    width: "100%",
+  };
+  function rowContent(row) {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+          <div style={{ minWidth: 0, fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
+          <BoardPill tone={row.tone || "neutral"}>{row.item_count || 0}</BoardPill>
+        </div>
+        <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.message || row.route}</div>
+        <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {(row.items || []).slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
+          {(row.item_count || 0) > (row.items || []).slice(0, 4).length && <Tag>+{(row.item_count || 0) - (row.items || []).slice(0, 4).length}</Tag>}
+        </div>
+      </>
+    );
+  }
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>지도 경고</div>
+        <BoardPill tone={rows.length ? "warn" : "ok"}>{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>지도 경고 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            onSelect && row.key ? (
+              <button
+                key={row.key || row.title}
+                type="button"
+                onClick={() => onSelect(row)}
+                style={{ ...rowStyle, cursor: "pointer" }}
+                title="워크플로우 지도에서 경고 확인"
               >
                 {rowContent(row)}
               </button>

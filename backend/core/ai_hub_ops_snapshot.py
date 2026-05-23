@@ -47,6 +47,7 @@ def build_snapshot(*, username: str = "", days: int = 30, limit: int = 8) -> dic
         "summary_cards": cards,
         "top_actions": _top_actions(readiness.get("backlog"), limit=limit),
         "runbook_action_queue": _runbook_action_queue(runbook, limit=limit),
+        "workflow_map_warnings": _workflow_map_warnings(workflow_map, limit=limit),
         "recent_events": _recent_events(timeline.get("items"), limit=limit),
         "export_links": _export_links(days),
         "counts": {
@@ -223,6 +224,28 @@ def _runbook_action_queue(runbook: dict[str, Any], *, limit: int) -> list[dict[s
                 for item in workflows[:4]
                 if isinstance(item, dict)
             ],
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _workflow_map_warnings(workflow_map: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    warnings = workflow_map.get("warnings") if isinstance(workflow_map.get("warnings"), list) else []
+    for row in warnings:
+        if not isinstance(row, dict):
+            continue
+        items = row.get("items") if isinstance(row.get("items"), list) else []
+        key = str(row.get("key") or "")
+        rows.append({
+            "key": key,
+            "tone": str(row.get("tone") or "neutral"),
+            "title": str(row.get("title") or key or "workflow map warning"),
+            "message": str(row.get("message") or "")[:220],
+            "item_count": len(items),
+            "items": [str(item) for item in items[:8]],
+            "route": "/api/ai-hub/workflow-map",
         })
         if len(rows) >= limit:
             break

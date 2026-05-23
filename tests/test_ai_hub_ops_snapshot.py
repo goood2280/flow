@@ -53,7 +53,7 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
             "tools_visible": 8,
             "tools_total": 12,
         },
-        "warnings": [{"key": "missing_evidence", "tone": "warn", "message": "refs"}],
+        "warnings": [{"key": "missing_evidence", "tone": "warn", "message": "refs", "items": ["lot_wf", "knob"]}],
     })
     monkeypatch.setattr(ai_hub_ops_snapshot.ai_hub_timeline, "build_timeline", lambda days=30, limit=12, category="": {
         "items": [
@@ -84,6 +84,11 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
     assert out["runbook_action_queue"][0]["key"] == "missing_tools"
     assert out["runbook_action_queue"][0]["count"] == 2
     assert out["runbook_action_queue"][0]["workflows"][0]["key"] == "blocked_lot"
+    assert len(out["workflow_map_warnings"]) == 1
+    assert out["workflow_map_warnings"][0]["key"] == "missing_evidence"
+    assert out["workflow_map_warnings"][0]["item_count"] == 2
+    assert out["workflow_map_warnings"][0]["items"] == ["lot_wf", "knob"]
+    assert out["workflow_map_warnings"][0]["route"] == "/api/ai-hub/workflow-map"
     assert out["top_actions"][0]["tone"] == "bad"
     assert out["recent_events"][0]["category"] == "wiki"
     cards = {row["key"]: row for row in out["summary_cards"]}
