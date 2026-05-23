@@ -34,7 +34,7 @@ GET  /api/ai-hub/wiki-health                Agent Wiki/Knowledge Vault 문서·�
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
-GET  /api/ai-hub/ops-export/download        format=obsidian|n8n → readiness/deep-eval/timeline/workflow-map 운영 export 다운로드
+GET  /api/ai-hub/ops-export/download        format=obsidian|n8n → readiness/deep-eval/wiki-health/timeline/workflow-map 운영 export 다운로드
 POST /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
@@ -84,8 +84,8 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 `core/ai_hub_readiness.py` 는 운영자가 다음 개선 대상을 놓치지 않도록 기존 보드, 워크플로우 지도, Agent deep-eval 최신 리포트를 합쳐 점수와 backlog를 만든다. 새 저장소를 만들지 않고 `tool_registry_state`, semantic proposal queue, skill candidates, workflow templates, workflow-map warnings, `data_root/reports/flowi_agent_deep_eval_latest.json`만 읽는다. `core/ai_hub_board.py` 는 workflow dry-run/execute 감사 로그(`ai_hub_run:workflow:<key>`)도 읽어서 최근 검증 이력을 운영 보드에 표시한다.
 
-- 점수 축: 도구 활성도, Wiki/schema grounding, semantic/skill 승인 큐, workflow/skill 자산, workflow dry-run/execute 검증 coverage, Agent deep-eval 통과/최신성
-- backlog: 비활성 도구, 지식 근거가 빈 도구, semantic 승인 대기, skill 후보, workflow/skill 부재, 비어 있거나 step 정의가 불완전한 workflow template, 최근 검증이 없거나 warning이 있는 workflow, deep-eval 리포트 누락/손상/실패/오래됨
+- 점수 축: 도구 활성도, Wiki/schema grounding, Agent Wiki health, semantic/skill 승인 큐, workflow/skill 자산, workflow dry-run/execute 검증 coverage, Agent deep-eval 통과/최신성
+- backlog: 비활성 도구, 지식 근거가 빈 도구, Agent Wiki 누락/graph/lint 이슈, semantic 승인 대기, skill 후보, workflow/skill 부재, 비어 있거나 step 정의가 불완전한 workflow template, 최근 검증이 없거나 warning이 있는 workflow, deep-eval 리포트 누락/손상/실패/오래됨
 - 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부, workflow Dry-run 재검증, deep-eval 리포트 재생성을 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.

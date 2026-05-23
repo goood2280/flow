@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from core import ai_hub_board, ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates
+from core import ai_hub_board, ai_hub_deep_eval, ai_hub_wiki_health, ai_hub_workflow_map, flowi_workflow_templates as wf_templates
 
 
 STARTER_WORKFLOWS: list[dict[str, Any]] = [
@@ -67,8 +67,10 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         reference_limit=400,
     )
     deep_eval = ai_hub_deep_eval.load_latest_report()
+    wiki_health = ai_hub_wiki_health.build_wiki_health(limit=12)
     board_counts = board.get("counts") if isinstance(board.get("counts"), dict) else {}
     map_counts = workflow.get("counts") if isinstance(workflow.get("counts"), dict) else {}
+    wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
 
     tools_total = int(board_counts.get("tools_total") or map_counts.get("tools_total") or 0)
     tools_enabled = int(board_counts.get("tools_enabled") or 0)
@@ -94,16 +96,18 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         workflow_validation["total"],
     )
     deep_eval_score = _deep_eval_score(deep_eval, days=days)
+    wiki_health_score = _wiki_health_score(wiki_health)
     score = round(
-        (catalog_score * 0.20)
-        + (grounding_score * 0.26)
-        + (learning_score * 0.16)
-        + (asset_score * 0.14)
-        + (validation_score * 0.12)
+        (catalog_score * 0.18)
+        + (grounding_score * 0.20)
+        + (wiki_health_score * 0.14)
+        + (learning_score * 0.14)
+        + (asset_score * 0.12)
+        + (validation_score * 0.10)
         + (deep_eval_score * 0.12)
     )
 
-    backlog = _build_backlog(board=board, workflow=workflow, deep_eval=deep_eval, days=days, counts={
+    backlog = _build_backlog(board=board, workflow=workflow, deep_eval=deep_eval, wiki_health=wiki_health, days=days, counts={
         "tools_total": tools_total,
         "tools_disabled": tools_disabled,
         "tools_without_refs": tools_without_refs,
@@ -119,6 +123,7 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
     checks = [
         _check("tool_catalog", "도구 카탈로그", catalog_score, f"{tools_enabled}/{tools_total} enabled"),
         _check("knowledge_grounding", "Wiki/schema grounding", grounding_score, f"{tools_without_refs} tools missing evidence"),
+        _check("agent_wiki_health", "Agent Wiki 상태", wiki_health_score, _wiki_health_detail(wiki_health)),
         _check("learning_queue", "학습/승인 큐", learning_score, f"semantic {semantic_pending}, skill {skill_candidates}"),
         _check("workflow_assets", "워크플로우/스킬 자산", asset_score, f"workflow {workflows}, skill {skills}"),
         _check(
@@ -154,6 +159,11 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
             "workflow_validation_checked": workflow_validation["checked"],
             "workflow_validation_unverified": workflow_validation["unverified"],
             "workflow_validation_warnings": workflow_validation["warnings"],
+            "wiki_docs": int(wiki_counts.get("docs") or 0),
+            "wiki_sources": int(wiki_counts.get("sources") or 0),
+            "wiki_lint_issues": int(wiki_counts.get("lint_issues") or 0),
+            "wiki_graph_nodes": int(wiki_counts.get("graph_nodes") or 0),
+            "wiki_graph_edges": int(wiki_counts.get("graph_edges") or 0),
             "deep_eval_total": int(deep_eval_summary.get("total") or 0),
             "deep_eval_passed": int(deep_eval_summary.get("passed") or 0),
             "deep_eval_failed": int(deep_eval_summary.get("failed") or 0),
@@ -164,14 +174,16 @@ def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
         "sources": {
             "board": "/api/ai-hub/board",
             "workflow_map": "/api/ai-hub/workflow-map",
+            "wiki_health": "/api/ai-hub/wiki-health",
             "deep_eval_report": "/api/ai-hub/deep-eval-report",
         },
     }
 
 
-def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], deep_eval: dict[str, Any], days: int, counts: dict[str, int]) -> list[dict[str, Any]]:
+def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], days: int, counts: dict[str, int]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     out.extend(_deep_eval_backlog(deep_eval, days=days))
+    out.extend(_wiki_health_backlog(wiki_health))
     lanes = {str(lane.get("id") or ""): lane for lane in (board.get("lanes") or []) if isinstance(lane, dict)}
     for item in (lanes.get("disabled_tools", {}).get("items") or [])[:8]:
         out.append({
@@ -359,6 +371,84 @@ def _deep_eval_backlog(report: dict[str, Any], *, days: int) -> list[dict[str, A
             "actions": [_deep_eval_run_action()],
         })
     return out
+
+
+def _wiki_health_score(health: dict[str, Any]) -> int:
+    counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+    doc_count = int(counts.get("docs") or 0)
+    source_count = int(counts.get("sources") or 0)
+    issue_count = int(counts.get("lint_issues") or 0)
+    if health.get("status") == "missing" or (doc_count <= 0 and source_count <= 0):
+        return 0
+    if health.get("status") == "warn":
+        return max(35, min(75, 75 - issue_count * 8))
+    if doc_count <= 0 or source_count <= 0:
+        return 65
+    return 100
+
+
+def _wiki_health_detail(health: dict[str, Any]) -> str:
+    counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+    return (
+        f"{health.get('status') or 'missing'}, "
+        f"docs {int(counts.get('docs') or 0)}, sources {int(counts.get('sources') or 0)}, "
+        f"lint {int(counts.get('lint_issues') or 0)}, "
+        f"graph {int(counts.get('graph_nodes') or 0)}/{int(counts.get('graph_edges') or 0)}"
+    )
+
+
+def _wiki_health_backlog(health: dict[str, Any]) -> list[dict[str, Any]]:
+    counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+    doc_count = int(counts.get("docs") or 0)
+    source_count = int(counts.get("sources") or 0)
+    graph_nodes = int(counts.get("graph_nodes") or 0)
+    graph_edges = int(counts.get("graph_edges") or 0)
+    if health.get("status") == "missing" or (doc_count <= 0 and source_count <= 0):
+        return [{
+            "id": "agent_wiki:missing",
+            "severity": "high",
+            "title": "Agent Wiki 지식 없음",
+            "target": "knowledge_vault",
+            "detail": "LLM Wiki/Obsidian 근거로 쓸 Agent Wiki page/source가 없습니다.",
+            "action": "Agent 탭에서 source를 등록하고 maintained Wiki page로 commit",
+            "route": "/api/agent/wiki/pages",
+        }]
+
+    out: list[dict[str, Any]] = []
+    if doc_count > 0 and graph_nodes <= 0 and graph_edges <= 0:
+        out.append({
+            "id": "agent_wiki:graph_missing",
+            "severity": "medium",
+            "title": "Agent Wiki graph 없음",
+            "target": "knowledge_graph",
+            "detail": "Wiki 문서는 있지만 Knowledge graph cache가 비어 있습니다.",
+            "action": "Agent Wiki lint/graph 상태를 확인하고 graph rebuild 경로를 점검",
+            "route": "/api/ai-hub/wiki-health",
+        })
+
+    lint = health.get("lint") if isinstance(health.get("lint"), dict) else {}
+    lint_specs = [
+        ("broken_links", "high", "Agent Wiki 깨진 링크", "Wiki page의 [[link]] target을 찾을 수 없습니다."),
+        ("missing_sources", "high", "Agent Wiki source 누락", "Wiki page frontmatter의 source_id가 raw source에 없습니다."),
+        ("contradiction_candidates", "medium", "Agent Wiki 충돌 후보", "같은 title 계열 문서가 다른 summary를 갖고 있습니다."),
+        ("stale_summaries", "medium", "Agent Wiki summary 갱신 필요", "source가 wiki page보다 최신입니다."),
+    ]
+    for key, severity, title, detail in lint_specs:
+        rows = lint.get(key) if isinstance(lint.get(key), list) else []
+        for idx, row in enumerate(rows[:6], start=1):
+            if not isinstance(row, dict):
+                continue
+            doc_id = str(row.get("doc_id") or row.get("title") or row.get("target") or f"{key}:{idx}")
+            out.append({
+                "id": f"agent_wiki:{key}:{doc_id}",
+                "severity": severity,
+                "title": title,
+                "target": doc_id,
+                "detail": str(row.get("reason") or row.get("target") or row.get("source_id") or detail),
+                "action": "Agent Wiki 상태 패널에서 대상 문서/source를 확인하고 Wiki page를 수정",
+                "route": "/api/ai-hub/wiki-health",
+            })
+    return out[:20]
 
 
 def _deep_eval_run_action() -> dict[str, Any]:

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub readiness에 Agent Wiki health 반영
 - (Codex) AI Hub Agent Wiki health 운영 패널 추가
 - (Codex) AI Hub 운영 n8n JSON export 추가
 - (Codex) AI Hub 운영 Obsidian vault ZIP 추가

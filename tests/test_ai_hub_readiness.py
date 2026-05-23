@@ -12,7 +12,7 @@ for p in (_BACKEND, _FLOW_ROOT):
 
 
 def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
-    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_wiki_health, ai_hub_workflow_map
     from routers import ai_hub
 
     def fake_board(username="", days=30, limit=12):
@@ -55,6 +55,7 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
     monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
     monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
+    monkeypatch.setattr(ai_hub_wiki_health, "build_wiki_health", _passing_wiki_health)
 
     out = ai_hub_readiness.build_readiness(username="alice", days=30)
 
@@ -64,6 +65,7 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     assert {check["key"] for check in out["checks"]} == {
         "tool_catalog",
         "knowledge_grounding",
+        "agent_wiki_health",
         "learning_queue",
         "workflow_assets",
         "workflow_validation",
@@ -88,12 +90,13 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     api_out = ai_hub.readiness(_req(), days=30)
     assert api_out["counts"]["tools_total"] == 4
     assert api_out["counts"]["workflow_validation_total"] == 0
+    assert api_out["counts"]["wiki_lint_issues"] == 0
     assert api_out["counts"]["deep_eval_failed"] == 0
     assert api_out["is_admin"] is True
 
 
 def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
-    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_wiki_health, ai_hub_workflow_map
 
     def fake_board(username="", days=30, limit=12):
         return {
@@ -142,6 +145,7 @@ def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
     monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
     monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
     monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
+    monkeypatch.setattr(ai_hub_wiki_health, "build_wiki_health", _passing_wiki_health)
 
     out = ai_hub_readiness.build_readiness(username="alice", days=30)
 
@@ -163,7 +167,7 @@ def test_ai_hub_readiness_tracks_workflow_validation_backlog(monkeypatch):
 
 
 def test_ai_hub_readiness_tracks_deep_eval_backlog(monkeypatch):
-    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_workflow_map
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_wiki_health, ai_hub_workflow_map
 
     def fake_board(username="", days=30, limit=12):
         return {
@@ -209,6 +213,7 @@ def test_ai_hub_readiness_tracks_deep_eval_backlog(monkeypatch):
     monkeypatch.setattr(ai_hub_board, "build_board", fake_board)
     monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", fake_map)
     monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", failing_deep_eval)
+    monkeypatch.setattr(ai_hub_wiki_health, "build_wiki_health", _passing_wiki_health)
 
     out = ai_hub_readiness.build_readiness(username="alice", days=30)
 
@@ -226,6 +231,62 @@ def test_ai_hub_readiness_tracks_deep_eval_backlog(monkeypatch):
         "min_cases": 80,
     }
     assert "sql/raw join/rows" in by_id["agent_deep_eval:failed"]["detail"]
+
+
+def test_ai_hub_readiness_tracks_wiki_health_backlog(monkeypatch):
+    from core import ai_hub_board, ai_hub_deep_eval, ai_hub_readiness, ai_hub_wiki_health, ai_hub_workflow_map
+
+    monkeypatch.setattr(ai_hub_board, "build_board", lambda username="", days=30, limit=12: {
+        "ok": True,
+        "counts": {
+            "tools_total": 2,
+            "tools_enabled": 2,
+            "tools_disabled": 0,
+            "semantic_proposals_pending": 0,
+            "skill_candidates": 0,
+            "skills": 1,
+            "workflows": 1,
+        },
+        "lanes": [],
+    })
+    monkeypatch.setattr(ai_hub_workflow_map, "build_workflow_map", lambda username="", days=30, limit=120, reference_limit=400, focus_tag="": {
+        "ok": True,
+        "counts": {"tools_total": 2, "tools_visible": 2, "tools_without_refs_visible": 0},
+        "nodes": [
+            {
+                "id": "workflow:checked",
+                "type": "workflow",
+                "workflow_key": "checked",
+                "metrics": {"run_count": 1, "warning_count": 0},
+            },
+        ],
+        "warnings": [],
+    })
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
+    monkeypatch.setattr(ai_hub_wiki_health, "build_wiki_health", lambda limit=12: {
+        "ok": True,
+        "status": "warn",
+        "counts": {"docs": 2, "sources": 1, "lint_issues": 2, "graph_nodes": 0, "graph_edges": 0},
+        "lint": {
+            "broken_links": [{"doc_id": "agent_terms", "target": "missing_page"}],
+            "missing_sources": [{"doc_id": "agent_terms", "source_id": "src_missing"}],
+            "stale_summaries": [],
+            "contradiction_candidates": [],
+        },
+    })
+
+    out = ai_hub_readiness.build_readiness(username="alice", days=30)
+
+    wiki_check = next(check for check in out["checks"] if check["key"] == "agent_wiki_health")
+    assert wiki_check["score"] == 59
+    assert out["counts"]["wiki_docs"] == 2
+    assert out["counts"]["wiki_lint_issues"] == 2
+    backlog_ids = {item["id"] for item in out["backlog"]}
+    assert "agent_wiki:graph_missing" in backlog_ids
+    assert "agent_wiki:broken_links:agent_terms" in backlog_ids
+    assert "agent_wiki:missing_sources:agent_terms" in backlog_ids
+    by_id = {item["id"]: item for item in out["backlog"]}
+    assert by_id["agent_wiki:broken_links:agent_terms"]["route"] == "/api/ai-hub/wiki-health"
 
 
 def test_ai_hub_readiness_bootstrap_workflows_is_idempotent(tmp_path, monkeypatch):
@@ -272,4 +333,22 @@ def _passing_deep_eval():
         "generated_at": "2026-05-24T01:30:00+00:00",
         "groups": {"semantic": {"passed": 108, "failed": 0, "total": 108}},
         "failed_results": [],
+    }
+
+
+def _passing_wiki_health(limit=12):
+    return {
+        "ok": True,
+        "status": "pass",
+        "counts": {
+            "docs": 8,
+            "agent_wiki_pages": 3,
+            "schema_docs": 2,
+            "sources": 5,
+            "wiki_log": 6,
+            "lint_issues": 0,
+            "graph_nodes": 20,
+            "graph_edges": 30,
+        },
+        "lint": {"counts": {"broken_links": 0, "missing_sources": 0, "stale_summaries": 0, "contradiction_candidates": 0}},
     }
