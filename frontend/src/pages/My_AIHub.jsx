@@ -1827,6 +1827,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
                   node={selected}
                   edges={edges}
                   nodes={nodes}
+                  onNodeSelect={setSelectedId}
                   onAction={runNodeAction}
                   onRunbookFocus={onRunbookFocus}
                   actionBusy={nodeActionBusy}
@@ -2002,7 +2003,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
 }
 
 
-function WorkflowNodeDetail({ node, edges, nodes, onAction, onRunbookFocus, actionBusy, actionResult }) {
+function WorkflowNodeDetail({ node, edges, nodes, onNodeSelect, onAction, onRunbookFocus, actionBusy, actionResult }) {
   if (!node) {
     return (
       <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
@@ -2108,8 +2109,8 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, onRunbookFocus, acti
           {(node.tags || []).slice(0, 10).map((tag) => <Tag key={tag}>{tag}</Tag>)}
         </div>
       )}
-      <WorkflowEdgeList title="입력" edges={incoming} other={(edge) => byId.get(edge.from)} />
-      <WorkflowEdgeList title="출력" edges={outgoing} other={(edge) => byId.get(edge.to)} />
+      <WorkflowEdgeList title="입력" edges={incoming} other={(edge) => byId.get(edge.from)} onNodeSelect={onNodeSelect} />
+      <WorkflowEdgeList title="출력" edges={outgoing} other={(edge) => byId.get(edge.to)} onNodeSelect={onNodeSelect} />
     </div>
   );
 }
@@ -2149,7 +2150,7 @@ function WorkflowActionResult({ payload }) {
 }
 
 
-function WorkflowEdgeList({ title, edges, other }) {
+function WorkflowEdgeList({ title, edges, other, onNodeSelect }) {
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase", marginBottom: 3 }}>{title}</div>
@@ -2159,11 +2160,31 @@ function WorkflowEdgeList({ title, edges, other }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {edges.slice(0, 12).map((edge, i) => {
             const node = other(edge) || {};
+            const nodeId = node.id || "";
             return (
-              <div key={`${edge.from}:${edge.to}:${i}`} style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 5, alignItems: "center" }}>
+              <button
+                key={`${edge.from}:${edge.to}:${i}`}
+                type="button"
+                onClick={() => nodeId && onNodeSelect?.(nodeId)}
+                disabled={!nodeId}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "54px 1fr",
+                  gap: 5,
+                  alignItems: "center",
+                  border: "1px solid transparent",
+                  background: "transparent",
+                  color: "inherit",
+                  cursor: nodeId ? "pointer" : "default",
+                  padding: 0,
+                  textAlign: "left",
+                  opacity: nodeId ? 1 : 0.7,
+                }}
+                title={nodeId ? `${node.label || nodeId} 노드로 이동` : ""}
+              >
                 <Tag>{edge.label || edge.kind}</Tag>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{node.label || edge.from || edge.to}</span>
-              </div>
+              </button>
             );
           })}
           {edges.length > 12 && <div style={{ fontSize: 10, color: "var(--muted)" }}>+{edges.length - 12} more</div>}
