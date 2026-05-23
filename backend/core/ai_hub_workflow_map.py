@@ -1,7 +1,8 @@
 """AI Hub workflow map.
 
-Builds a read-only n8n/Obsidian-style graph from the existing tool catalog.
-The graph is intentionally derived data: no extra runtime store, no writes.
+Builds a read-only n8n/Obsidian-style graph from the existing tool catalog
+and saved workflow templates. The graph is intentionally derived data: no
+extra runtime store, no writes.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from core import flowi_workflow_templates as wf_templates
 from core import tool_registry
 
 
@@ -43,6 +45,7 @@ STAGES: list[dict[str, str]] = [
 
 def build_workflow_map(
     *,
+    username: str = "",
     days: int = 30,
     limit: int = 40,
     reference_limit: int = 160,
@@ -56,9 +59,15 @@ def build_workflow_map(
     days = max(1, min(365, int(days or 30)))
     limit = max(1, min(120, int(limit or 40)))
     reference_limit = max(20, min(400, int(reference_limit or 160)))
+    username = str(username or "")
     focus_tag = str(focus_tag or "").strip()
 
     all_tools = tool_registry.list_tools(include_stats=True, days=days)
+    tool_by_name = {
+        str(row.get("name") or ""): dict(row)
+        for row in all_tools
+        if str(row.get("name") or "").strip()
+    }
     visible_tools = [
         dict(row) for row in all_tools
         if not focus_tag or focus_tag in (row.get("tags") or [])
@@ -71,14 +80,19 @@ def build_workflow_map(
     seen_nodes: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
     ref_count = 0
-    tools_without_refs: list[str] = []
+    tool_node_ids: set[str] = set()
+    tool_refs_loaded: set[str] = set()
+    tools_without_refs: set[str] = set()
+    workflow_missing_tools: set[str] = set()
+    workflow_step_edges = 0
 
-    def add_node(node: dict[str, Any]) -> None:
+    def add_node(node: dict[str, Any]) -> bool:
         node_id = str(node.get("id") or "")
         if not node_id or node_id in seen_nodes:
-            return
+            return False
         seen_nodes.add(node_id)
         nodes.append(node)
+        return True
 
     def add_edge(source: str, target: str, label: str = "", kind: str = "flow") -> None:
         if not source or not target:
@@ -88,6 +102,50 @@ def build_workflow_map(
             return
         seen_edges.add(key)
         edges.append({"from": source, "to": target, "label": label, "kind": kind})
+
+    def add_tool_node(tool: dict[str, Any], *, include_refs: bool = True) -> str:
+        nonlocal ref_count
+        name = str(tool.get("name") or "")
+        if not name:
+            return ""
+        tool_id = f"tool:{name}"
+        tags = [str(tag) for tag in (tool.get("tags") or []) if str(tag).strip()]
+        refs = tool.get("knowledge_refs") if isinstance(tool.get("knowledge_refs"), dict) else {}
+        ref_rows = _reference_rows(refs)
+        if not ref_rows:
+            tools_without_refs.add(name)
+
+        if tool_id not in tool_node_ids:
+            add_node({
+                "id": tool_id,
+                "type": "tool",
+                "stage": "execute",
+                "label": str(tool.get("title") or name),
+                "detail": str(tool.get("description") or name),
+                "tool_name": name,
+                "kind": str(tool.get("kind") or ""),
+                "enabled": bool(tool.get("enabled")),
+                "tone": _tool_tone(tool),
+                "tags": tags,
+                "metrics": {
+                    "count": int(tool.get("count_30d") or 0),
+                    "users": int(tool.get("user_count_30d") or 0),
+                    "last_run": str(tool.get("last_run") or ""),
+                },
+            })
+            tool_node_ids.add(tool_id)
+            add_edge("stage:policy", tool_id, "enabled" if tool.get("enabled") else "disabled", "policy")
+            add_edge(tool_id, "stage:improve", "feedback", "improve")
+
+        if include_refs and tool_id not in tool_refs_loaded:
+            for ref in ref_rows:
+                if ref_count >= reference_limit:
+                    break
+                if add_node(ref):
+                    ref_count += 1
+                add_edge(tool_id, ref["id"], ref["edge_label"], "evidence")
+            tool_refs_loaded.add(tool_id)
+        return tool_id
 
     for stage in STAGES:
         add_node({
@@ -104,49 +162,65 @@ def build_workflow_map(
     add_edge("stage:evidence", "stage:improve", "learn", "stage")
 
     for tool in visible_tools:
-        name = str(tool.get("name") or "")
-        if not name:
+        add_tool_node(tool)
+
+    workflow_all_rows = _workflow_rows(username=username, focus_tag="", tool_by_name=tool_by_name)
+    workflow_rows = [
+        row for row in workflow_all_rows
+        if _workflow_matches_focus(row, focus_tag, tool_by_name)
+    ]
+    workflow_limit = min(80, max(20, limit))
+    visible_workflows = workflow_rows[:workflow_limit]
+    for workflow in visible_workflows:
+        key = str(workflow.get("key") or "").strip()
+        if not key:
             continue
-        tool_id = f"tool:{name}"
-        tags = [str(tag) for tag in (tool.get("tags") or []) if str(tag).strip()]
-        refs = tool.get("knowledge_refs") if isinstance(tool.get("knowledge_refs"), dict) else {}
-        ref_rows = _reference_rows(refs)
-        if not ref_rows:
-            tools_without_refs.append(name)
-
+        steps = _workflow_step_summaries(workflow)
+        workflow_id = f"workflow:{key}"
         add_node({
-            "id": tool_id,
-            "type": "tool",
-            "stage": "execute",
-            "label": str(tool.get("title") or name),
-            "detail": str(tool.get("description") or name),
-            "tool_name": name,
-            "kind": str(tool.get("kind") or ""),
-            "enabled": bool(tool.get("enabled")),
-            "tone": _tool_tone(tool),
-            "tags": tags,
-            "metrics": {
-                "count": int(tool.get("count_30d") or 0),
-                "users": int(tool.get("user_count_30d") or 0),
-                "last_run": str(tool.get("last_run") or ""),
-            },
+            "id": workflow_id,
+            "type": "workflow",
+            "stage": "trigger",
+            "label": str(workflow.get("title") or key),
+            "detail": _workflow_detail(workflow, steps),
+            "workflow_key": key,
+            "owner": str(workflow.get("owner") or ""),
+            "shared": bool(workflow.get("shared")),
+            "tone": "ok" if steps else "warn",
+            "tags": _workflow_tags(workflow, steps),
+            "metrics": {"steps": len(steps)},
+            "steps": steps,
         })
-        add_edge("stage:policy", tool_id, "enabled" if tool.get("enabled") else "disabled", "policy")
-        add_edge(tool_id, "stage:improve", "feedback", "improve")
-
-        for ref in ref_rows:
-            if ref_count >= reference_limit:
-                break
-            ref_id = ref["id"]
-            add_node(ref)
-            add_edge(tool_id, ref_id, ref["edge_label"], "evidence")
-            ref_count += 1
+        add_edge("stage:trigger", workflow_id, "template", "workflow")
+        add_edge(workflow_id, "stage:policy", "guardrail", "workflow")
+        if not steps:
+            add_edge(workflow_id, "stage:improve", "fill steps", "workflow")
+            continue
+        for step in steps:
+            unit_ai = str(step.get("unit_ai") or "").strip()
+            if not unit_ai:
+                continue
+            tool = tool_by_name.get(unit_ai) or _missing_tool_row(unit_ai)
+            tool_id = add_tool_node(tool)
+            if tool.get("_missing"):
+                workflow_missing_tools.add(unit_ai)
+            if tool_id:
+                label = str(step.get("action") or f"step {step.get('index', 0) + 1}")[:56]
+                add_edge(workflow_id, tool_id, label, "workflow_step")
+                workflow_step_edges += 1
 
     counts = {
         "tools_total": len(all_tools),
-        "tools_visible": len(visible_tools),
-        "tools_disabled_visible": sum(1 for row in visible_tools if not row.get("enabled")),
+        "tools_visible": len(tool_node_ids),
+        "tools_selected_visible": len(visible_tools),
+        "tools_disabled_visible": sum(1 for node in nodes if node.get("type") == "tool" and not node.get("enabled")),
         "tools_without_refs_visible": len(tools_without_refs),
+        "workflow_templates_total": len(workflow_all_rows),
+        "workflow_templates_visible": len(visible_workflows),
+        "workflow_templates_shared": sum(1 for row in visible_workflows if row.get("shared")),
+        "workflow_templates_personal": sum(1 for row in visible_workflows if not row.get("shared")),
+        "workflow_step_edges": workflow_step_edges,
+        "workflow_missing_tools": len(workflow_missing_tools),
         "nodes": len(nodes),
         "edges": len(edges),
         "reference_nodes": ref_count,
@@ -172,19 +246,21 @@ def build_workflow_map(
         ],
         "nodes": nodes,
         "edges": edges,
-        "warnings": _warnings(counts, tools_without_refs),
+        "warnings": _warnings(counts, sorted(tools_without_refs), sorted(workflow_missing_tools)),
     }
 
 
 def export_workflow_map(
     *,
     export_format: str = "n8n",
+    username: str = "",
     days: int = 30,
     limit: int = 40,
     reference_limit: int = 160,
     focus_tag: str = "",
 ) -> dict[str, Any]:
     graph = build_workflow_map(
+        username=username,
         days=days,
         limit=limit,
         reference_limit=reference_limit,
@@ -284,6 +360,10 @@ def _export_obsidian(graph: dict[str, Any]) -> dict[str, Any]:
     ]
     for stage in STAGES:
         index_lines.append(f"- [[{slug_by_id.get('stage:' + stage['id'], _slug('stage:' + stage['id']))}|{stage['title']}]]")
+    index_lines.extend(["", "## Workflows"])
+    for node in graph_nodes:
+        if node.get("type") == "workflow":
+            index_lines.append(f"- [[{slug_by_id.get(str(node.get('id') or ''), '')}|{node.get('label') or node.get('id')}]]")
     index_lines.extend(["", "## Tools"])
     for node in graph_nodes:
         if node.get("type") == "tool":
@@ -326,6 +406,13 @@ def _n8n_node_content(node: dict[str, Any]) -> str:
     ]
     if "enabled" in node:
         lines.append(f"- enabled: `{bool(node.get('enabled'))}`")
+    if node.get("type") == "workflow":
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        lines.append(f"- shared: `{bool(node.get('shared'))}`")
+        owner = str(node.get("owner") or "")
+        if owner:
+            lines.append(f"- owner: `{owner}`")
+        lines.append(f"- steps: `{metrics.get('steps') or 0}`")
     kind = str(node.get("kind") or "")
     if kind:
         lines.append(f"- kind: `{kind}`")
@@ -371,6 +458,26 @@ def _obsidian_node_body(
             f"- users: `{metrics.get('users') or 0}`",
             "",
         ])
+    if node.get("type") == "workflow":
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        lines.extend([
+            "## Workflow",
+            "",
+            f"- workflow_key: `{node.get('workflow_key') or ''}`",
+            f"- owner: `{node.get('owner') or ''}`",
+            f"- shared: `{bool(node.get('shared'))}`",
+            f"- steps: `{metrics.get('steps') or 0}`",
+            "",
+        ])
+        steps = node.get("steps") if isinstance(node.get("steps"), list) else []
+        if steps:
+            lines.extend(["## Steps", ""])
+            for step in steps:
+                index = int(step.get("index") or 0) + 1
+                unit_ai = str(step.get("unit_ai") or "")
+                action = str(step.get("action") or "")
+                lines.append(f"- `{index}` `{unit_ai}`.`{action}`")
+            lines.append("")
     tags = [str(tag) for tag in (node.get("tags") or []) if str(tag).strip()]
     if tags:
         lines.extend(["## Tags", "", *[f"- #{_tag_slug(tag)}" for tag in tags], ""])
@@ -422,11 +529,142 @@ def _yaml_escape(value: str) -> str:
 
 
 def _tool_tone(tool: dict[str, Any]) -> str:
+    if tool.get("_missing"):
+        return "warn"
     if not tool.get("enabled"):
         return "bad"
     if int(tool.get("count_30d") or 0) > 0:
         return "ok"
     return "neutral"
+
+
+def _workflow_rows(
+    *,
+    username: str,
+    focus_tag: str,
+    tool_by_name: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [
+        row for row in wf_templates.list_templates(username, include_shared=True)
+        if isinstance(row, dict) and _workflow_matches_focus(row, focus_tag, tool_by_name)
+    ]
+    rows.sort(key=_workflow_sort_key)
+    return rows
+
+
+def _workflow_sort_key(row: dict[str, Any]) -> tuple[int, str, str]:
+    shared_rank = 0 if row.get("shared") else 1
+    updated = str(row.get("updated_at") or row.get("created_at") or "")
+    return (shared_rank, updated, str(row.get("title") or row.get("key") or ""))
+
+
+def _workflow_matches_focus(
+    row: dict[str, Any],
+    focus_tag: str,
+    tool_by_name: dict[str, dict[str, Any]],
+) -> bool:
+    if not focus_tag:
+        return True
+    focus = str(focus_tag or "").strip().lower()
+    if not focus:
+        return True
+    haystack = [
+        str(row.get("key") or ""),
+        str(row.get("title") or ""),
+        str(row.get("owner") or ""),
+    ]
+    trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+    haystack.extend(str(v) for v in _listify(trigger.get("intent_in")))
+    haystack.extend(str(v) for v in _listify(trigger.get("prompt_contains")))
+    haystack.extend(str(v) for v in _listify(trigger.get("slots_required")))
+    if any(focus in value.lower() for value in haystack):
+        return True
+    for unit_ai in _workflow_tool_names(row):
+        tool = tool_by_name.get(unit_ai) or {}
+        if focus in [str(tag).lower() for tag in (tool.get("tags") or [])]:
+            return True
+    return False
+
+
+def _workflow_tool_names(row: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    steps = row.get("steps") if isinstance(row.get("steps"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        unit_ai = str(step.get("unit_ai") or "").strip()
+        if unit_ai and unit_ai not in out:
+            out.append(unit_ai)
+    return out
+
+
+def _workflow_step_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    steps = row.get("steps") if isinstance(row.get("steps"), list) else []
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        unit_ai = str(step.get("unit_ai") or "").strip()
+        action = str(step.get("action") or "").strip()
+        if not unit_ai and not action:
+            continue
+        out.append({
+            "index": index,
+            "unit_ai": unit_ai,
+            "action": action,
+            "bind_slots": [str(v) for v in _listify(step.get("bind_slots"))],
+            "fixed_slots": dict(step.get("fixed_slots") or {}) if isinstance(step.get("fixed_slots"), dict) else {},
+        })
+    return out
+
+
+def _workflow_tags(row: dict[str, Any], steps: list[dict[str, Any]]) -> list[str]:
+    tags = ["workflow", "shared" if row.get("shared") else "personal"]
+    trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+    tags.extend(str(v) for v in _listify(trigger.get("intent_in")))
+    tags.extend(str(step.get("unit_ai") or "") for step in steps if str(step.get("unit_ai") or "").strip())
+    seen: set[str] = set()
+    out: list[str] = []
+    for tag in tags:
+        value = str(tag or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _workflow_detail(row: dict[str, Any], steps: list[dict[str, Any]]) -> str:
+    trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+    intents = ",".join(str(v) for v in _listify(trigger.get("intent_in")))
+    contains = ",".join(str(v) for v in _listify(trigger.get("prompt_contains")))
+    slots = ",".join(str(v) for v in _listify(trigger.get("slots_required")))
+    parts = [
+        f"trigger intent={intents}",
+        f"contains={contains}",
+        f"slots={slots}",
+    ]
+    step_lines = [
+        f"{int(step.get('index') or 0) + 1}. {step.get('unit_ai') or ''}.{step.get('action') or ''}"
+        for step in steps[:8]
+    ]
+    if len(steps) > 8:
+        step_lines.append(f"+{len(steps) - 8} more")
+    return "\n".join(parts + ["steps:"] + step_lines).strip()
+
+
+def _missing_tool_row(name: str) -> dict[str, Any]:
+    return {
+        "kind": "unit_ai",
+        "name": str(name or "").strip(),
+        "title": str(name or "").strip(),
+        "description": "워크플로우 템플릿 step에 있지만 ToolRegistry에 등록되지 않은 unit_ai입니다.",
+        "enabled": False,
+        "tags": ["workflow", "missing_tool"],
+        "count_30d": 0,
+        "user_count_30d": 0,
+        "knowledge_refs": {},
+        "_missing": True,
+    }
 
 
 def _reference_rows(refs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -470,7 +708,11 @@ def _listify(value: Any) -> list[Any]:
     return [value]
 
 
-def _warnings(counts: dict[str, Any], tools_without_refs: list[str]) -> list[dict[str, Any]]:
+def _warnings(
+    counts: dict[str, Any],
+    tools_without_refs: list[str],
+    workflow_missing_tools: list[str],
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if counts["tools_disabled_visible"]:
         out.append({
@@ -484,5 +726,12 @@ def _warnings(counts: dict[str, Any], tools_without_refs: list[str]) -> list[dic
             "tone": "warn",
             "message": f"Wiki/schema 근거가 비어 있는 도구 {len(tools_without_refs)}개가 있습니다.",
             "items": tools_without_refs[:12],
+        })
+    if workflow_missing_tools:
+        out.append({
+            "key": "workflow_missing_tools",
+            "tone": "warn",
+            "message": f"workflow step이 참조하지만 등록되지 않은 도구 {len(workflow_missing_tools)}개가 있습니다.",
+            "items": workflow_missing_tools[:12],
         })
     return out

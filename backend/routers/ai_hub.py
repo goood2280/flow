@@ -117,12 +117,15 @@ def readiness_bootstrap_workflows(request: Request):
 
 @router.get("/workflow-map")
 def workflow_map(
+    request: Request,
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=40, ge=1, le=120),
     reference_limit: int = Query(default=160, ge=20, le=400),
     focus_tag: str = Query(default=""),
 ):
+    me = current_user(request)
     return ai_hub_workflow_map.build_workflow_map(
+        username=str((me or {}).get("username") or ""),
         days=days,
         limit=limit,
         reference_limit=reference_limit,
@@ -132,15 +135,18 @@ def workflow_map(
 
 @router.get("/workflow-map/export")
 def workflow_map_export(
+    request: Request,
     format: str = Query(default="n8n", pattern="^(n8n|obsidian|markdown|md|json)$"),
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=40, ge=1, le=120),
     reference_limit: int = Query(default=160, ge=20, le=400),
     focus_tag: str = Query(default=""),
 ):
+    me = current_user(request)
     try:
         return ai_hub_workflow_map.export_workflow_map(
             export_format=format,
+            username=str((me or {}).get("username") or ""),
             days=days,
             limit=limit,
             reference_limit=reference_limit,

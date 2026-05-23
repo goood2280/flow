@@ -60,7 +60,12 @@ STARTER_WORKFLOWS: list[dict[str, Any]] = [
 def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
     days = max(1, min(365, int(days or 30)))
     board = ai_hub_board.build_board(username=username, days=days, limit=12)
-    workflow = ai_hub_workflow_map.build_workflow_map(days=days, limit=120, reference_limit=400)
+    workflow = ai_hub_workflow_map.build_workflow_map(
+        username=username,
+        days=days,
+        limit=120,
+        reference_limit=400,
+    )
     board_counts = board.get("counts") if isinstance(board.get("counts"), dict) else {}
     map_counts = workflow.get("counts") if isinstance(workflow.get("counts"), dict) else {}
 

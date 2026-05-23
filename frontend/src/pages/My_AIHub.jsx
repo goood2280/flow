@@ -429,7 +429,7 @@ function WorkflowMapPanel({ days }) {
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>워크플로우 지도</div>
         <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-          Prompt → Policy → Unit/Function → Wiki/Schema → Improve
+          Prompt/Workflow → Policy → Unit/Function → Wiki/Schema → Improve
         </div>
         <div style={{ flex: 1 }} />
         {open && (
@@ -510,6 +510,7 @@ function WorkflowMapSummary({ map }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
       <BoardPill tone="info">도구 {counts.tools_visible}/{counts.tools_total}</BoardPill>
+      <BoardPill tone="info">워크플로우 {counts.workflow_templates_visible || 0}</BoardPill>
       <BoardPill tone={counts.tools_disabled_visible ? "bad" : "ok"}>비활성 {counts.tools_disabled_visible || 0}</BoardPill>
       <BoardPill tone={counts.tools_without_refs_visible ? "warn" : "ok"}>근거 없음 {counts.tools_without_refs_visible || 0}</BoardPill>
       <BoardPill tone="neutral">노드 {counts.nodes || 0}</BoardPill>
@@ -548,7 +549,7 @@ function WorkflowStageColumn({ stage, nodes, selectedId, onSelect }) {
 
 
 function WorkflowNodeButton({ node, selected, onSelect }) {
-  const toneColor = node.tone === "bad" ? "var(--danger)" : node.tone === "ok" ? "var(--ok)" : node.tone === "info" ? "var(--info)" : "var(--text-secondary)";
+  const toneColor = node.tone === "bad" ? "var(--danger)" : node.tone === "ok" ? "var(--ok)" : node.tone === "warn" ? "var(--warn)" : node.tone === "info" ? "var(--info)" : "var(--text-secondary)";
   return (
     <button
       type="button"
@@ -574,6 +575,11 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
       {node.type === "tool" && (
         <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {node.kind} · {(node.metrics?.count || 0)} calls
+        </div>
+      )}
+      {node.type === "workflow" && (
+        <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {(node.shared ? "shared" : "personal")} · {(node.metrics?.steps || 0)} steps
         </div>
       )}
     </button>
@@ -604,6 +610,27 @@ function WorkflowNodeDetail({ node, edges, nodes }) {
           <Tag>{node.metrics?.count || 0} calls</Tag>
           <Tag>{node.metrics?.users || 0} users</Tag>
         </div>
+      )}
+      {node.type === "workflow" && (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+            <Tag>{node.shared ? "shared" : "personal"}</Tag>
+            <Tag>{node.metrics?.steps || 0} steps</Tag>
+            {node.owner && <Tag>{node.owner}</Tag>}
+          </div>
+          {(node.steps || []).length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 8 }}>
+              {(node.steps || []).slice(0, 8).map((step) => (
+                <div key={`${node.id}:${step.index}`} style={{ display: "grid", gridTemplateColumns: "22px 1fr", gap: 5, alignItems: "center", color: "var(--text-secondary)" }}>
+                  <Tag>{(step.index || 0) + 1}</Tag>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "JetBrains Mono, monospace" }}>
+                    {step.unit_ai}.{step.action || "step"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
       {(node.tags || []).length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>

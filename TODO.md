@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 워크플로우 템플릿 지도 노드 연결
 - (Codex) AI Hub 운영 시작 workflow bootstrap 액션 추가
 - (Codex) AI Hub 준비도 백로그 즉시 처리 액션 연결
 - (Codex) AI Hub 운영 준비도/개선 백로그 추가

@@ -34,7 +34,8 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
             ],
         }
 
-    def fake_map(days=30, limit=120, reference_limit=400, focus_tag=""):
+    def fake_map(username="", days=30, limit=120, reference_limit=400, focus_tag=""):
+        assert username == "alice"
         return {
             "ok": True,
             "counts": {

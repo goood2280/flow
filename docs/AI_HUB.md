@@ -56,13 +56,14 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 
 ## 워크플로우 지도
 
-`core/ai_hub_workflow_map.py` 는 기존 도구 카탈로그만 읽어서 관리 지도를 만든다. 새 저장소를 만들지 않고 `tool_registry.list_tools()`의 `management_flow`, `knowledge_refs`, 호출 통계를 합쳐 다음 노드를 노출한다.
+`core/ai_hub_workflow_map.py` 는 기존 도구 카탈로그와 저장된 workflow template을 읽어서 관리 지도를 만든다. 새 저장소를 만들지 않고 `tool_registry.list_tools()`의 `management_flow`, `knowledge_refs`, 호출 통계와 `flowi_workflow_templates`의 own/shared template을 합쳐 다음 노드를 노출한다.
 
 - `stage:*`: Prompt / Policy / Unit-Function / Wiki-Schema / Improve 단계
+- `workflow:<key>`: 저장된 Agent workflow template. trigger 조건과 step 목록을 보여주고 각 step의 `unit_ai`를 도구 노드에 연결한다.
 - `tool:<name>`: Unit AI 또는 function-call 도구, enabled 상태와 최근 호출수
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
-AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 실행 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
+AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
 
 지도는 저장성 export 없이 즉석 산출물로도 꺼낼 수 있다.
 
