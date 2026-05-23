@@ -13,7 +13,7 @@ for p in (_BACKEND, _FLOW_ROOT):
 
 
 def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
-    from core import ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
+    from core import ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
 
     def fake_list_tools(include_stats=True, days=30):
         assert include_stats is True
@@ -52,6 +52,7 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
         ]
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
     monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
 
@@ -62,11 +63,15 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
     assert out["counts"]["tools_disabled_visible"] == 1
     nodes = {node["id"]: node for node in out["nodes"]}
     assert nodes["stage:trigger"]["type"] == "stage"
+    assert nodes["deep_eval:latest"]["type"] == "deep_eval"
+    assert nodes["deep_eval:latest"]["metrics"]["status"] == "pass"
     assert nodes["tool:filebrowser"]["stage"] == "execute"
     assert nodes["wiki:filebrowser_schema_manual"]["stage"] == "evidence"
     assert nodes["relation:FAB.current_progress"]["type"] == "relation"
     edges = {(edge["from"], edge["to"], edge["label"]) for edge in out["edges"]}
     assert ("stage:policy", "tool:filebrowser", "enabled") in edges
+    assert ("stage:evidence", "deep_eval:latest", "verify") in edges
+    assert ("deep_eval:latest", "stage:improve", "backlog") in edges
     assert ("stage:policy", "tool:find_lots_by_knob_value", "disabled") in edges
     assert ("tool:filebrowser", "wiki:filebrowser_schema_manual", "wiki") in edges
 
@@ -80,18 +85,21 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
     workflow = n8n["workflow"]
     assert workflow["name"] == "Flow AI Hub workflow map"
     assert any(node["id"] == "tool:filebrowser" for node in workflow["nodes"])
+    assert any(node["id"] == "deep_eval:latest" for node in workflow["nodes"])
     assert workflow["connections"]["stage:policy"]["main"][0][0]["node"] == "stage:execute"
 
     obsidian = ai_hub_workflow_map.export_workflow_map(export_format="obsidian", days=30, limit=10, reference_limit=80, focus_tag="")
     assert obsidian["format"] == "obsidian"
     assert any(row["path"] == "Flow AI Hub Workflow Map.md" for row in obsidian["files"])
+    deep_eval_note = next(row for row in obsidian["files"] if row["path"] == "nodes/deep-eval-latest.md")
+    assert "## Agent Deep Eval" in deep_eval_note["body"]
     filebrowser_note = next(row for row in obsidian["files"] if row["path"] == "nodes/tool-filebrowser.md")
     assert "# FileBrowser" in filebrowser_note["body"]
     assert "[[wiki-filebrowser-schema-manual|filebrowser_schema_manual]]" in filebrowser_note["body"]
 
 
 def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch, tmp_path):
-    from core import ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
+    from core import ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
 
     def fake_list_tools(include_stats=True, days=30):
         assert include_stats is True
@@ -138,6 +146,7 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
         ]
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
     activity_log = tmp_path / "activity.jsonl"
     activity_log.write_text(
@@ -262,7 +271,7 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
 
 
 def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_path):
-    from core import ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
+    from core import ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
 
     def fake_list_tools(include_stats=True, days=30):
         assert include_stats is True
@@ -279,6 +288,7 @@ def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_pa
         }]
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", _passing_deep_eval)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
     monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
 
@@ -309,3 +319,48 @@ def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_pa
     assert warnings["workflow_empty_templates"]["items"] == ["empty_workflow"]
     assert warnings["workflow_incomplete_steps"]["items"] == ["incomplete_step#1"]
     assert warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]
+
+
+def test_ai_hub_workflow_map_warns_failed_deep_eval(monkeypatch, tmp_path):
+    from core import ai_hub_deep_eval, ai_hub_workflow_map, flowi_workflow_templates as wf_templates, tool_registry
+
+    monkeypatch.setattr(tool_registry, "list_tools", lambda include_stats=True, days=30: [])
+    monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
+    monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
+    monkeypatch.setattr(ai_hub_deep_eval, "load_latest_report", lambda: {
+        "ok": True,
+        "exists": True,
+        "status": "fail",
+        "path": "reports/flowi_agent_deep_eval_latest.json",
+        "summary": {"passed": 130, "failed": 2, "total": 132},
+        "groups": {"sql": {"passed": 16, "failed": 1, "total": 17}},
+        "failed_results": [{"name": "sql/raw join/rows", "detail": "bad rows"}],
+    })
+
+    out = ai_hub_workflow_map.build_workflow_map(days=30, limit=10)
+
+    nodes = {node["id"]: node for node in out["nodes"]}
+    assert nodes["deep_eval:latest"]["tone"] == "bad"
+    assert nodes["deep_eval:latest"]["metrics"]["failed"] == 2
+    assert out["counts"]["deep_eval_failed"] == 2
+    warnings = {row["key"]: row for row in out["warnings"]}
+    assert warnings["deep_eval_failed"]["items"] == ["sql/raw join/rows"]
+
+
+def _passing_deep_eval():
+    return {
+        "ok": True,
+        "exists": True,
+        "status": "pass",
+        "path": "reports/flowi_agent_deep_eval_latest.json",
+        "generated_at": "2026-05-24T01:30:00+00:00",
+        "summary": {"passed": 131, "failed": 0, "total": 131},
+        "groups": {
+            "semantic": {"passed": 108, "failed": 0, "total": 108},
+            "knowledge": {"passed": 5, "failed": 0, "total": 5},
+            "sql": {"passed": 17, "failed": 0, "total": 17},
+        },
+        "doc_id": "agent_deep_eval_semiconductor_terms",
+        "failed_results": [],
+        "age_seconds": 60,
+    }

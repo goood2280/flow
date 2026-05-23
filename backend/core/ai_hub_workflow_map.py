@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from core import ai_hub_deep_eval
 from core import audit
 from core import flowi_workflow_templates as wf_templates
 from core import tool_registry
@@ -165,6 +166,12 @@ def build_workflow_map(
     add_edge("stage:execute", "stage:evidence", "ground", "stage")
     add_edge("stage:evidence", "stage:improve", "learn", "stage")
 
+    deep_eval = ai_hub_deep_eval.load_latest_report()
+    deep_eval_node = _deep_eval_node(deep_eval)
+    add_node(deep_eval_node)
+    add_edge("stage:evidence", deep_eval_node["id"], "verify", "deep_eval")
+    add_edge(deep_eval_node["id"], "stage:improve", "backlog", "improve")
+
     for tool in visible_tools:
         add_tool_node(tool)
 
@@ -253,6 +260,9 @@ def build_workflow_map(
         "workflow_missing_tools": len(workflow_missing_tools),
         "workflow_empty_templates": len(workflow_empty_templates),
         "workflow_incomplete_steps": len(workflow_incomplete_steps),
+        "deep_eval_exists": 1 if deep_eval.get("exists") else 0,
+        "deep_eval_total": int((deep_eval.get("summary") or {}).get("total") or 0) if isinstance(deep_eval.get("summary"), dict) else 0,
+        "deep_eval_failed": int((deep_eval.get("summary") or {}).get("failed") or 0) if isinstance(deep_eval.get("summary"), dict) else 0,
         "nodes": len(nodes),
         "edges": len(edges),
         "reference_nodes": ref_count,
@@ -284,6 +294,7 @@ def build_workflow_map(
             sorted(workflow_missing_tools),
             sorted(workflow_empty_templates),
             sorted(workflow_incomplete_steps),
+            deep_eval,
         ),
     }
 
@@ -532,6 +543,19 @@ def _obsidian_node_body(
             f"- step_index: `{node.get('step_index') or ''}`",
             f"- unit_ai: `{node.get('unit_ai') or ''}`",
             f"- action: `{node.get('action') or ''}`",
+            "",
+        ])
+    if node.get("type") == "deep_eval":
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        lines.extend([
+            "## Agent Deep Eval",
+            "",
+            f"- status: `{metrics.get('status') or ''}`",
+            f"- passed: `{metrics.get('passed') or 0}`",
+            f"- failed: `{metrics.get('failed') or 0}`",
+            f"- total: `{metrics.get('total') or 0}`",
+            f"- generated_at: `{metrics.get('generated_at') or ''}`",
+            f"- path: `{metrics.get('path') or ''}`",
             "",
         ])
     tags = [str(tag) for tag in (node.get("tags") or []) if str(tag).strip()]
@@ -844,6 +868,53 @@ def _missing_tool_row(name: str) -> dict[str, Any]:
     }
 
 
+def _deep_eval_node(report: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    groups = report.get("groups") if isinstance(report.get("groups"), dict) else {}
+    failed = int(summary.get("failed") or 0)
+    total = int(summary.get("total") or 0)
+    passed = int(summary.get("passed") or 0)
+    status = str(report.get("status") or "missing")
+    group_text = ", ".join(
+        f"{name} {int((row or {}).get('passed') or 0)}/{int((row or {}).get('total') or 0)}"
+        for name, row in groups.items()
+        if isinstance(row, dict)
+    )
+    detail = "\n".join([
+        f"status={status}",
+        f"summary={passed}/{total} passed, {failed} failed",
+        f"groups={group_text}",
+        f"doc_id={report.get('doc_id') or ''}",
+        f"path={report.get('path') or ''}",
+    ]).strip()
+    return {
+        "id": "deep_eval:latest",
+        "type": "deep_eval",
+        "stage": "improve",
+        "label": "Agent deep eval",
+        "detail": detail,
+        "tone": _deep_eval_tone(report),
+        "tags": ["deep_eval", "semantic", "wiki", "sql", "validation"],
+        "metrics": {
+            "status": status,
+            "passed": passed,
+            "failed": failed,
+            "total": total,
+            "generated_at": str(report.get("generated_at") or report.get("updated_at") or ""),
+            "path": str(report.get("path") or ""),
+            "age_seconds": int(report.get("age_seconds") or 0),
+        },
+    }
+
+
+def _deep_eval_tone(report: dict[str, Any]) -> str:
+    if not report.get("exists"):
+        return "warn"
+    if report.get("status") == "pass":
+        return "ok"
+    return "bad"
+
+
 def _json_detail(value: Any) -> dict[str, Any]:
     try:
         out = json.loads(str(value or "{}"))
@@ -911,6 +982,7 @@ def _warnings(
     workflow_missing_tools: list[str],
     workflow_empty_templates: list[str],
     workflow_incomplete_steps: list[str],
+    deep_eval: dict[str, Any],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if counts["tools_disabled_visible"]:
@@ -946,5 +1018,26 @@ def _warnings(
             "tone": "warn",
             "message": f"unit_ai/action이 불완전한 workflow step {len(workflow_incomplete_steps)}개가 있습니다.",
             "items": workflow_incomplete_steps[:12],
+        })
+    if not deep_eval.get("exists"):
+        out.append({
+            "key": "deep_eval_missing",
+            "tone": "warn",
+            "message": "Agent deep-eval 최신 리포트가 없습니다.",
+            "items": [str(deep_eval.get("path") or "reports/flowi_agent_deep_eval_latest.json")],
+        })
+    elif deep_eval.get("status") != "pass":
+        failed = 0
+        if isinstance(deep_eval.get("summary"), dict):
+            failed = int((deep_eval.get("summary") or {}).get("failed") or 0)
+        out.append({
+            "key": "deep_eval_failed",
+            "tone": "bad",
+            "message": f"Agent deep-eval 상태가 {deep_eval.get('status')} 입니다. failed={failed}",
+            "items": [
+                str(row.get("name") or "")
+                for row in (deep_eval.get("failed_results") or [])[:8]
+                if isinstance(row, dict)
+            ],
         })
     return out

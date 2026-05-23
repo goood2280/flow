@@ -686,6 +686,7 @@ function WorkflowMapSummary({ map }) {
       <BoardPill tone="info">워크플로우 {counts.workflow_templates_visible || 0}</BoardPill>
       <BoardPill tone={counts.tools_disabled_visible ? "bad" : "ok"}>비활성 {counts.tools_disabled_visible || 0}</BoardPill>
       <BoardPill tone={counts.tools_without_refs_visible ? "warn" : "ok"}>근거 없음 {counts.tools_without_refs_visible || 0}</BoardPill>
+      <BoardPill tone={counts.deep_eval_failed ? "bad" : counts.deep_eval_total ? "ok" : "warn"}>DeepEval {counts.deep_eval_total || 0} · fail {counts.deep_eval_failed || 0}</BoardPill>
       <BoardPill tone="neutral">노드 {counts.nodes || 0}</BoardPill>
       <BoardPill tone="neutral">엣지 {counts.edges || 0}</BoardPill>
       {map.focus_tag && <BoardPill tone="info">focus {map.focus_tag}</BoardPill>}
@@ -753,6 +754,11 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
       {node.type === "workflow" && (
         <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {(node.shared ? "shared" : "personal")} · {(node.metrics?.steps || 0)} steps{node.metrics?.last_status ? ` · ${node.metrics.last_status}` : ""}
+        </div>
+      )}
+      {node.type === "deep_eval" && (
+        <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {node.metrics?.status || "missing"} · {(node.metrics?.passed || 0)}/{(node.metrics?.total || 0)} passed
         </div>
       )}
     </button>
@@ -825,6 +831,14 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
             </div>
           )}
         </>
+      )}
+      {node.type === "deep_eval" && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          <Tag>{node.metrics?.status || "missing"}</Tag>
+          <Tag>{node.metrics?.passed || 0}/{node.metrics?.total || 0} passed</Tag>
+          <Tag>{node.metrics?.failed || 0} failed</Tag>
+          {node.metrics?.path && <Tag>{node.metrics.path}</Tag>}
+        </div>
       )}
       {(node.tags || []).length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>

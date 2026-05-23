@@ -63,6 +63,7 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 - `workflow:<key>`: 저장된 Agent workflow template. trigger 조건, step 목록, 최근 dry-run/execute count/status를 보여주고 각 step의 `unit_ai`를 도구 노드에 연결한다. 노드 detail에서는 `/api/agent/workflows/execute` dry-run action으로 실제 실행 전 guardrail/step 상태를 확인할 수 있다.
 - `workflow_step:<key>:<n>`: workflow template의 개별 실행 step. `unit_ai`, `action`, bind/fixed slot을 독립 노드로 보여주고 실제 도구 노드로 이어진다.
 - `tool:<name>`: Unit AI 또는 function-call 도구, enabled 상태와 최근 호출수
+- `deep_eval:latest`: 최신 Agent deep-eval 리포트. semantic/wiki/sql 검증 통과 수와 실패 assertion 상태를 Improve 단계의 evidence로 연결한다.
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
 AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
