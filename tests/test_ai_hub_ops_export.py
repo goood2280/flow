@@ -33,6 +33,15 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         "failed_results": [],
         "result_samples": [{"name": "semantic/step_id simple question", "group": "semantic", "ok": True}],
     })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_wiki_health, "build_wiki_health", lambda limit=40: {
+        "status": "pass",
+        "generated_at": "2099-01-01T00:00:00+00:00",
+        "counts": {"docs": 4, "agent_wiki_pages": 2, "schema_docs": 1, "sources": 3, "graph_nodes": 8, "graph_edges": 7, "lint_issues": 0},
+        "lint": {"counts": {"broken_links": 0, "missing_sources": 0, "orphan_pages": 1, "stale_summaries": 0, "contradiction_candidates": 0}},
+        "recent_pages": [{"doc_id": "agent_terms", "kind": "agent_wiki", "title": "Agent terms", "updated_at": "2099-01-01T00:00:00+00:00"}],
+        "recent_sources": [{"source_id": "src_1", "source_type": "markdown", "title": "Source", "actor": "alice"}],
+        "recent_log": [{"action": "ingest_commit", "doc_id": "agent_terms", "message": "Committed Agent terms"}],
+    })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
         "days": days,
         "items": [{
@@ -53,22 +62,26 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     assert out["format"] == "obsidian_ops"
     assert out["counts"]["readiness_backlog"] == 1
     paths = [row["path"] for row in out["files"]]
-    assert paths[:4] == [
+    assert paths[:5] == [
         "Flow AI Hub Operations.md",
         "operations/readiness.md",
         "operations/deep-eval.md",
+        "operations/wiki-health.md",
         "operations/timeline.md",
     ]
     assert "Flow AI Hub Workflow Map.md" in paths
     index = out["files"][0]["body"]
     assert "[[operations/readiness|Readiness]]" in index
+    assert "[[operations/wiki-health|Agent Wiki Health]]" in index
     assert "[[Flow AI Hub Workflow Map|Workflow Map]]" in index
 
     archive = ai_hub_ops_export.export_obsidian_zip(out)
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         assert "operations/readiness.md" in zf.namelist()
+        assert "operations/wiki-health.md" in zf.namelist()
         assert "Wiki 보강" in zf.read("operations/readiness.md").decode("utf-8")
         assert "semantic/step_id simple question" in zf.read("operations/deep-eval.md").decode("utf-8")
+        assert "Agent terms" in zf.read("operations/wiki-health.md").decode("utf-8")
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -84,6 +97,10 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
         "status": "fail",
         "path": "reports/flowi_agent_deep_eval_latest.json",
         "summary": {"passed": 130, "failed": 1, "total": 131},
+    })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_wiki_health, "build_wiki_health", lambda limit=12: {
+        "status": "warn",
+        "counts": {"docs": 4, "agent_wiki_pages": 2, "sources": 3, "graph_nodes": 8, "graph_edges": 7, "lint_issues": 1},
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
         "days": days,
@@ -101,12 +118,14 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     workflow = out["workflow"]
     assert workflow["name"] == "Flow AI Hub operations"
     node_ids = {node["id"] for node in workflow["nodes"]}
-    assert {"ops:index", "ops:readiness", "ops:deep_eval", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
+    assert {"ops:index", "ops:readiness", "ops:deep_eval", "ops:wiki_health", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
     assert workflow["connections"]["ops:index"]["main"][0][0]["node"] == "ops:readiness"
     assert workflow["connections"]["ops:readiness"]["main"][0][0]["node"] == "ops:deep_eval"
+    assert workflow["connections"]["ops:deep_eval"]["main"][0][0]["node"] == "ops:wiki_health"
     assert any(row["node"] == "ops:backlog:1" for row in workflow["connections"]["ops:readiness"]["main"][0])
     assert workflow["staticData"]["readiness_score"] == 74
     assert workflow["staticData"]["deep_eval_status"] == "fail"
+    assert workflow["staticData"]["wiki_health_status"] == "warn"
 
 
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):

@@ -10,6 +10,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/tools/{name}/history   최근 호출 이력
   GET    /api/ai-hub/tags                   태그 목록 (필터용)
   GET    /api/ai-hub/timeline               AI Hub 운영 이벤트 타임라인
+  GET    /api/ai-hub/wiki-health            Agent Wiki/Knowledge Vault 운영 상태
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/workflow-map/export/download  지도 export 다운로드 (Obsidian ZIP / JSON)
@@ -37,6 +38,7 @@ from core import ai_hub_deep_eval
 from core import ai_hub_ops_export
 from core import ai_hub_readiness
 from core import ai_hub_timeline
+from core import ai_hub_wiki_health
 from core import ai_hub_workflow_map
 from core import audit
 from core import tool_registry
@@ -156,6 +158,17 @@ def timeline(
 ):
     me = current_user(request)
     out = ai_hub_timeline.build_timeline(days=days, limit=limit, category=category)
+    out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
+
+
+@router.get("/wiki-health")
+def wiki_health(
+    request: Request,
+    limit: int = Query(default=12, ge=1, le=50),
+):
+    me = current_user(request)
+    out = ai_hub_wiki_health.build_wiki_health(limit=limit)
     out["is_admin"] = (me or {}).get("role") == "admin"
     return out
 

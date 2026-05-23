@@ -30,6 +30,7 @@ GET  /api/ai-hub/timeline                   운영 이벤트 타임라인: workf
 GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백로그
 GET  /api/ai-hub/deep-eval-report           Agent semantic/wiki/sql deep-eval 최신 리포트
 POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성 (admin)
+GET  /api/ai-hub/wiki-health                Agent Wiki/Knowledge Vault 문서·소스·graph·lint 운영 상태
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
@@ -76,8 +77,8 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 - `format=n8n`: n8n sticky-note workflow JSON. Flow 내부 실행을 외부 자동화로 우회하지 않고, 운영 리뷰/설계용 노드와 connection만 내보낸다.
 - `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다. 화면의 `Obsidian ZIP` 버튼은 같은 note 묶음을 zip으로 내려받는다.
-- `ops-export/download?format=obsidian`: readiness, deep-eval, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다.
-- `ops-export/download?format=n8n`: readiness, deep-eval, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export다.
+- `ops-export/download?format=obsidian`: readiness, deep-eval, wiki-health, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다.
+- `ops-export/download?format=n8n`: readiness, deep-eval, wiki-health, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export다.
 
 ## 운영 준비도
 
@@ -89,6 +90,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 - AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수, 실패 assertion, 통과/실패 케이스 샘플을 보여준다. admin은 같은 패널의 `검증 실행` 또는 readiness backlog action으로 최신 리포트를 재생성할 수 있다.
+- AI Hub 화면의 `Agent Wiki 상태` 패널은 기존 Knowledge Vault에서 Agent Wiki page/source, graph node/edge count, Wiki lint 이슈, 최근 변경 로그를 읽어 LLM Wiki/Obsidian 근거 품질을 운영 표면으로 보여준다.
 - AI Hub 화면의 `운영 타임라인` 패널은 기존 `activity.jsonl`에서 AI Hub/Agent 관리 이벤트만 읽어 workflow dry-run/execute, semantic proposal/lexicon 변경, deep-eval, tool toggle, skill 승인/거부 이력을 시간순으로 보여준다.
 
 ## SQL 작업대 — 멀티 셀 조인

@@ -12,6 +12,7 @@ from typing import Any
 from core import ai_hub_deep_eval
 from core import ai_hub_readiness
 from core import ai_hub_timeline
+from core import ai_hub_wiki_health
 from core import ai_hub_workflow_map
 
 
@@ -31,6 +32,7 @@ def build_obsidian_export(
 
     readiness = ai_hub_readiness.build_readiness(username=username, days=days)
     deep_eval = ai_hub_deep_eval.load_latest_report()
+    wiki_health = ai_hub_wiki_health.build_wiki_health(limit=limit)
     timeline = ai_hub_timeline.build_timeline(days=days, limit=min(80, max(30, limit)))
     workflow_export = ai_hub_workflow_map.export_workflow_map(
         export_format="obsidian",
@@ -41,9 +43,10 @@ def build_obsidian_export(
         focus_tag=focus_tag,
     )
     files = [
-        {"path": "Flow AI Hub Operations.md", "body": _index_note(readiness, deep_eval, timeline, workflow_export)},
+        {"path": "Flow AI Hub Operations.md", "body": _index_note(readiness, deep_eval, wiki_health, timeline, workflow_export)},
         {"path": "operations/readiness.md", "body": _readiness_note(readiness)},
         {"path": "operations/deep-eval.md", "body": _deep_eval_note(deep_eval)},
+        {"path": "operations/wiki-health.md", "body": _wiki_health_note(wiki_health)},
         {"path": "operations/timeline.md", "body": _timeline_note(timeline)},
     ]
     files.extend([row for row in workflow_export.get("files") or [] if isinstance(row, dict)])
@@ -60,12 +63,14 @@ def build_obsidian_export(
             "files": len(files),
             "readiness_backlog": len(readiness.get("backlog") or []),
             "deep_eval_failed": int(((deep_eval.get("summary") or {}) if isinstance(deep_eval.get("summary"), dict) else {}).get("failed") or 0),
+            "wiki_lint_issues": int(((wiki_health.get("counts") or {}) if isinstance(wiki_health.get("counts"), dict) else {}).get("lint_issues") or 0),
             "timeline_items": len(timeline.get("items") or []),
             "workflow_files": len(workflow_export.get("files") or []),
         },
         "sources": {
             "readiness": "/api/ai-hub/readiness",
             "deep_eval": "/api/ai-hub/deep-eval-report",
+            "wiki_health": "/api/ai-hub/wiki-health",
             "timeline": "/api/ai-hub/timeline",
             "workflow_map": "/api/ai-hub/workflow-map",
         },
@@ -86,6 +91,7 @@ def build_n8n_export(
     focus_tag = str(focus_tag or "").strip()
     readiness = ai_hub_readiness.build_readiness(username=username, days=days)
     deep_eval = ai_hub_deep_eval.load_latest_report()
+    wiki_health = ai_hub_wiki_health.build_wiki_health(limit=limit)
     timeline = ai_hub_timeline.build_timeline(days=days, limit=min(40, max(20, limit)))
     workflow = ai_hub_workflow_map.build_workflow_map(
         username=username,
@@ -96,11 +102,12 @@ def build_n8n_export(
     )
 
     nodes: list[dict[str, Any]] = []
-    nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, timeline, workflow), 0, 0))
+    nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, wiki_health, timeline, workflow), 0, 0))
     nodes.append(_n8n_note("ops:readiness", "Readiness", _n8n_readiness_content(readiness), 340, 0))
     nodes.append(_n8n_note("ops:deep_eval", "Agent Deep Eval", _n8n_deep_eval_content(deep_eval), 680, 0))
-    nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1020, 0))
-    nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 1360, 0))
+    nodes.append(_n8n_note("ops:wiki_health", "Agent Wiki Health", _n8n_wiki_health_content(wiki_health), 1020, 0))
+    nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1360, 0))
+    nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 1700, 0))
     for idx, row in enumerate((readiness.get("backlog") if isinstance(readiness.get("backlog"), list) else [])[:10]):
         if not isinstance(row, dict):
             continue
@@ -116,7 +123,8 @@ def build_n8n_export(
     connections: dict[str, dict[str, list[list[dict[str, Any]]]]] = {
         "ops:index": {"main": [[{"node": "ops:readiness", "type": "main", "index": 0}]]},
         "ops:readiness": {"main": [[{"node": "ops:deep_eval", "type": "main", "index": 0}]]},
-        "ops:deep_eval": {"main": [[{"node": "ops:timeline", "type": "main", "index": 0}]]},
+        "ops:deep_eval": {"main": [[{"node": "ops:wiki_health", "type": "main", "index": 0}]]},
+        "ops:wiki_health": {"main": [[{"node": "ops:timeline", "type": "main", "index": 0}]]},
         "ops:timeline": {"main": [[{"node": "ops:workflow_map", "type": "main", "index": 0}]]},
     }
     backlog_count = len([node for node in nodes if str(node.get("id") or "").startswith("ops:backlog:")])
@@ -142,6 +150,8 @@ def build_n8n_export(
                 "flow_kind": "ai_hub_operations_review",
                 "readiness_score": readiness.get("score"),
                 "deep_eval_status": deep_eval.get("status"),
+                "wiki_health_status": wiki_health.get("status"),
+                "wiki_lint_issues": (wiki_health.get("counts") or {}).get("lint_issues") if isinstance(wiki_health.get("counts"), dict) else 0,
                 "timeline_items": len(timeline.get("items") or []),
                 "workflow_nodes": len(workflow.get("nodes") or []),
             },
@@ -168,12 +178,14 @@ def _n8n_note(node_id: str, name: str, content: str, x: int, y: int, *, width: i
     }
 
 
-def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: dict[str, Any], workflow: dict[str, Any]) -> str:
+def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], timeline: dict[str, Any], workflow: dict[str, Any]) -> str:
     summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
+    wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
     return "\n".join([
         "## Flow AI Hub Operations",
         f"- readiness: {readiness.get('score') or 0} / {readiness.get('level') or ''}",
         f"- deep-eval: {deep_eval.get('status') or 'missing'} {summary.get('passed') or 0}/{summary.get('total') or 0}",
+        f"- wiki-health: {wiki_health.get('status') or 'missing'} docs={wiki_counts.get('docs') or 0} lint={wiki_counts.get('lint_issues') or 0}",
         f"- timeline: {len(timeline.get('items') or [])} items",
         f"- workflow graph: {len(workflow.get('nodes') or [])} nodes",
         "",
@@ -204,6 +216,19 @@ def _n8n_deep_eval_content(report: dict[str, Any]) -> str:
         f"failed: {summary.get('failed') or 0}",
         f"total: {summary.get('total') or 0}",
         f"path: {report.get('path') or ''}",
+    ])
+
+
+def _n8n_wiki_health_content(health: dict[str, Any]) -> str:
+    counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+    return "\n".join([
+        "## Agent Wiki Health",
+        f"status: {health.get('status') or 'missing'}",
+        f"docs: {counts.get('docs') or 0}",
+        f"agent_wiki: {counts.get('agent_wiki_pages') or 0}",
+        f"sources: {counts.get('sources') or 0}",
+        f"graph: {counts.get('graph_nodes') or 0}/{counts.get('graph_edges') or 0}",
+        f"lint issues: {counts.get('lint_issues') or 0}",
     ])
 
 
@@ -241,8 +266,9 @@ def _n8n_backlog_content(row: dict[str, Any]) -> str:
     ])
 
 
-def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: dict[str, Any], workflow_export: dict[str, Any]) -> str:
+def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_health: dict[str, Any], timeline: dict[str, Any], workflow_export: dict[str, Any]) -> str:
     summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
+    wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
     workflow_files = workflow_export.get("files") if isinstance(workflow_export.get("files"), list) else []
     return "\n".join([
         "---",
@@ -257,6 +283,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: 
         "",
         f"- readiness: `{readiness.get('score') or 0}` / `{readiness.get('level') or ''}`",
         f"- deep_eval: `{deep_eval.get('status') or 'missing'}` `{summary.get('passed') or 0}/{summary.get('total') or 0}`",
+        f"- wiki_health: `{wiki_health.get('status') or 'missing'}` docs `{wiki_counts.get('docs') or 0}` lint `{wiki_counts.get('lint_issues') or 0}`",
         f"- timeline_items: `{len(timeline.get('items') or [])}`",
         f"- workflow_notes: `{len(workflow_files)}`",
         "",
@@ -264,6 +291,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: 
         "",
         "- [[operations/readiness|Readiness]]",
         "- [[operations/deep-eval|Agent Deep Eval]]",
+        "- [[operations/wiki-health|Agent Wiki Health]]",
         "- [[operations/timeline|Operations Timeline]]",
         "- [[Flow AI Hub Workflow Map|Workflow Map]]",
         "",
@@ -346,6 +374,53 @@ def _deep_eval_note(report: dict[str, Any]) -> str:
             lines.append(f"- `{mark}` `{_cell(row.get('group'))}` {_cell(row.get('name'))}")
     if not samples:
         lines.append("- none")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _wiki_health_note(health: dict[str, Any]) -> str:
+    counts = health.get("counts") if isinstance(health.get("counts"), dict) else {}
+    lint = health.get("lint") if isinstance(health.get("lint"), dict) else {}
+    lint_counts = lint.get("counts") if isinstance(lint.get("counts"), dict) else {}
+    lines = [
+        "---",
+        'title: "Agent Wiki Health"',
+        'kind: "ai_hub_wiki_health"',
+        "---",
+        "",
+        "# Agent Wiki Health",
+        "",
+        f"- status: `{health.get('status') or 'missing'}`",
+        f"- docs: `{counts.get('docs') or 0}`",
+        f"- agent_wiki_pages: `{counts.get('agent_wiki_pages') or 0}`",
+        f"- schema_docs: `{counts.get('schema_docs') or 0}`",
+        f"- sources: `{counts.get('sources') or 0}`",
+        f"- graph: `{counts.get('graph_nodes') or 0}/{counts.get('graph_edges') or 0}`",
+        f"- lint_issues: `{counts.get('lint_issues') or 0}`",
+        f"- generated_at: `{health.get('generated_at') or ''}`",
+        "",
+        "## Lint Counts",
+        "",
+        "| key | count |",
+        "|---|---:|",
+    ]
+    for key in ("broken_links", "missing_sources", "orphan_pages", "stale_summaries", "contradiction_candidates"):
+        lines.append(f"| {_cell(key)} | {_cell(lint_counts.get(key) or counts.get('lint_' + key) or 0)} |")
+    lines.extend(["", "## Recent Pages", "", "| doc_id | kind | title | updated_at |", "|---|---|---|---|"])
+    for row in (health.get("recent_pages") if isinstance(health.get("recent_pages"), list) else [])[:30]:
+        if isinstance(row, dict):
+            lines.append(f"| {_cell(row.get('doc_id'))} | {_cell(row.get('kind'))} | {_cell(row.get('title'))} | {_cell(row.get('updated_at'))} |")
+    lines.extend(["", "## Recent Sources", "", "| source_id | type | title | actor |", "|---|---|---|---|"])
+    for row in (health.get("recent_sources") if isinstance(health.get("recent_sources"), list) else [])[:30]:
+        if isinstance(row, dict):
+            lines.append(f"| {_cell(row.get('source_id'))} | {_cell(row.get('source_type'))} | {_cell(row.get('title'))} | {_cell(row.get('actor'))} |")
+    lines.extend(["", "## Recent Wiki Log", ""])
+    log_rows = health.get("recent_log") if isinstance(health.get("recent_log"), list) else []
+    if not log_rows:
+        lines.append("- none")
+    for row in log_rows[:30]:
+        if isinstance(row, dict):
+            lines.append(f"- `{_cell(row.get('action'))}` `{_cell(row.get('doc_id'))}` {_cell(row.get('message') or row.get('title'))}")
     lines.append("")
     return "\n".join(lines)
 

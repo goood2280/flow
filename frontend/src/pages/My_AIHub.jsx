@@ -99,6 +99,7 @@ export default function My_AIHub() {
       <OrchestratorPanel />
       <ReadinessPanel days={days} onChanged={loadCatalog} />
       <DeepEvalPanel />
+      <WikiHealthPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <TimelinePanel days={days} />
       <WorkflowMapPanel days={days} />
@@ -401,6 +402,158 @@ function DeepEvalCases({ rows, total }) {
             </div>
           ))}
           {rows.length > visible.length && <div style={{ fontSize: 10, color: "var(--muted)" }}>+{rows.length - visible.length} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WikiHealthPanel() {
+  const [open, setOpen] = useState(true);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadHealth() {
+    setLoading(true);
+    setErr("");
+    try {
+      const out = await sf("/api/ai-hub/wiki-health?limit=12");
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadHealth(); }, [open]);
+
+  const counts = data?.counts || {};
+  const statusTone = !data ? "neutral" : data.status === "pass" ? "ok" : data.status === "missing" ? "warn" : "bad";
+  const statusText = data?.status === "pass" ? "정상" : data?.status === "warn" ? "점검 필요" : data?.status === "missing" ? "지식 없음" : "대기";
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Agent Wiki 상태</div>
+        <BoardPill tone={statusTone}>{statusText}</BoardPill>
+        {data && (
+          <>
+            <BoardPill tone="info">문서 {counts.docs || 0}</BoardPill>
+            <BoardPill tone="info">소스 {counts.sources || 0}</BoardPill>
+            <BoardPill tone={Number(counts.lint_issues || 0) ? "warn" : "ok"}>lint {counts.lint_issues || 0}</BoardPill>
+            <BoardPill tone="neutral">graph {counts.graph_nodes || 0}/{counts.graph_edges || 0}</BoardPill>
+          </>
+        )}
+        <div style={{ flex: 1 }} />
+        {open && <button onClick={loadHealth} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : data ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+              <WikiHealthSummary data={data} />
+              <WikiHealthPages rows={data.recent_pages || []} />
+              <WikiHealthLog rows={data.recent_log || []} lint={data.lint || {}} />
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>Agent Wiki 상태를 불러오면 LLM Wiki/Obsidian 근거 품질을 볼 수 있습니다.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WikiHealthSummary({ data }) {
+  const counts = data.counts || {};
+  const tone = data.status === "pass" ? "var(--ok)" : data.status === "missing" ? "var(--warn)" : "var(--danger)";
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ fontSize: 28, lineHeight: 1, fontWeight: 900, color: tone }}>{counts.agent_wiki_pages || 0}</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 800 }}>agent wiki</div>
+      </div>
+      <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <Tag>{counts.docs || 0} docs</Tag>
+        <Tag>{counts.schema_docs || 0} schema docs</Tag>
+        <Tag>{counts.sources || 0} sources</Tag>
+        <Tag>{counts.wiki_log || 0} logs</Tag>
+      </div>
+      <div style={{ marginTop: 7, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
+        {data.summary}
+      </div>
+      <div style={{ marginTop: 4, fontSize: 10, color: "var(--muted)" }}>{relTime(data.generated_at)}</div>
+    </div>
+  );
+}
+
+
+function WikiHealthPages({ rows }) {
+  const visible = rows.slice(0, 8);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>최근 Wiki 페이지</div>
+        <BoardPill tone="neutral">{rows.length}</BoardPill>
+      </div>
+      {visible.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>등록된 페이지 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 170, overflowY: "auto" }}>
+          {visible.map((row) => (
+            <div key={row.doc_id} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "74px 1fr", gap: 6, alignItems: "center" }}>
+                <Tag>{row.kind || "wiki"}</Tag>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>{row.title || row.doc_id}</span>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.doc_id}</div>
+              {row.summary && <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.summary}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WikiHealthLog({ rows, lint }) {
+  const counts = lint.counts || {};
+  const lintIssueCount = Number(counts.broken_links || 0) + Number(counts.missing_sources || 0) + Number(counts.stale_summaries || 0) + Number(counts.contradiction_candidates || 0);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>Wiki lint / 변경 로그</div>
+        <BoardPill tone={lintIssueCount ? "warn" : "ok"}>{lintIssueCount}</BoardPill>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+        <Tag>broken {counts.broken_links || 0}</Tag>
+        <Tag>missing {counts.missing_sources || 0}</Tag>
+        <Tag>stale {counts.stale_summaries || 0}</Tag>
+        <Tag>orphan {counts.orphan_pages || 0}</Tag>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>최근 변경 로그 없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 140, overflowY: "auto" }}>
+          {rows.slice(0, 8).map((row) => (
+            <div key={row.log_id || `${row.created_at}:${row.action}:${row.doc_id}`} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                <Tag>{row.action || "wiki"}</Tag>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>{row.title || row.doc_id || row.message}</span>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--muted)" }}>{row.actor || "-"} · {relTime(row.created_at)}</div>
+            </div>
+          ))}
         </div>
       )}
     </div>

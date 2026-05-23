@@ -81,6 +81,12 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - Reads existing stores only: Knowledge Vault, semantic proposal queue, semantic changes, `flowi_activity.jsonl`, and knowledge inventory.
 - `kind` can focus broad sections such as `semantic_proposal`, `wiki_page`, `wiki_source`, `prompt_history`, `knowledge_event`, or a knowledge inventory kind.
 
+`GET /api/ai-hub/wiki-health?limit=12`
+
+- AI Hub의 `Agent Wiki 상태` 패널이 읽는 운영 요약이다.
+- 기존 Knowledge Vault/Agent Wiki store만 읽어 page/source count, graph count, Wiki lint count, recent pages/sources/log를 반환한다.
+- Agent Wiki page/source 저장, lint 실행 권한, ingest commit 권한은 기존 `/api/agent/wiki/*` 계약을 그대로 따른다.
+
 `POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
 
 - Used by `질문 설계` to show matched workflow and dry-run step results for the current prompt.
