@@ -234,6 +234,55 @@ export default function My_AIHub() {
     focusWorkflowMapNodeId(`workflow:${row.key}`, row.title || row.key);
   }
 
+  function focusRunbookNextAction(row, action) {
+    if (!row?.key || !action?.key) return;
+    const key = String(action.key || "");
+    const route = String(action.route || "");
+    const title = action.title || row.title || row.key;
+    if (key === "disabled_tools") {
+      const name = (row.disabled_tools || row.tool_names || [])[0];
+      if (name) {
+        focusToolCatalogNode(name);
+        return;
+      }
+    }
+    if (key === "missing_tools") {
+      const name = (row.missing_tools || [])[0];
+      if (name) {
+        focusWorkflowMapNodeId(`tool:${name}`, `미등록 도구: ${name}`);
+        return;
+      }
+    }
+    if (route.includes("/tools")) {
+      const name = (row.tool_names || [])[0];
+      if (name) {
+        focusToolCatalogNode(name);
+        return;
+      }
+    }
+    if (route.includes("/wiki-health")) {
+      setOpsPanelFocus((prev) => ({
+        target: "wiki",
+        title: `Runbook 조치: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (route.includes("/deep-eval")) {
+      setOpsPanelFocus((prev) => ({
+        target: "deep_eval",
+        title: `Runbook 조치: ${title}`,
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      return;
+    }
+    if (key === "not_checked" || key === "run_warnings" || route.includes("/workflows/execute")) {
+      focusRunbookWorkflow({ workflow_key: row.key, label: row.title || row.key });
+      return;
+    }
+    focusWorkflowMapNode(row);
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-primary)" }}>
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
@@ -256,6 +305,7 @@ export default function My_AIHub() {
         onWorkflowMapFocus={focusWorkflowMapNode}
         onWorkflowMapNodeFocus={focusWorkflowMapNodeId}
         onToolFocus={focusToolCatalogNode}
+        onNextActionFocus={focusRunbookNextAction}
       />
       <TimelinePanel days={days} focusIntent={opsPanelFocus?.target === "timeline" ? opsPanelFocus : null} />
       <WorkflowMapPanel
@@ -1329,7 +1379,7 @@ function ReadinessBacklog({ rows, activeId, canManage, actionBusy, onAction }) {
 }
 
 
-function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus, onWorkflowMapNodeFocus, onToolFocus }) {
+function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus, onWorkflowMapNodeFocus, onToolFocus, onNextActionFocus }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1392,6 +1442,11 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus, onWorkflo
     } finally {
       setBootstrapBusy(false);
     }
+  }
+
+  function focusNextAction(row, action) {
+    if (row?.key) setExpandedKey(row.key);
+    onNextActionFocus?.(row, action);
   }
 
   useEffect(() => {
@@ -1537,6 +1592,7 @@ function WorkflowRunbookPanel({ days, focusIntent, onWorkflowMapFocus, onWorkflo
                       onMapFocus={() => onWorkflowMapFocus?.(row)}
                       onMapNodeFocus={onWorkflowMapNodeFocus}
                       onToolFocus={onToolFocus}
+                      onNextActionFocus={focusNextAction}
                       onToggle={() => setExpandedKey((key) => key === row.key ? "" : row.key)}
                     />
                   ))}
@@ -1592,7 +1648,7 @@ function WorkflowNextActionQueue({ rows, activeIssue, onFilter }) {
 }
 
 
-function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onMapFocus, onMapNodeFocus, onToolFocus, onToggle }) {
+function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onMapFocus, onMapNodeFocus, onToolFocus, onNextActionFocus, onToggle }) {
   const issues = row.issues || [];
   const nextActions = row.next_actions || [];
   const nextAction = nextActions[0] || null;
@@ -1625,9 +1681,15 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
             ))}
           </div>
           {nextAction && (
-            <div style={{ marginTop: 4, color: "var(--muted)", fontSize: 10, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              다음: {nextAction.title}{nextAction.detail ? ` · ${nextAction.detail}` : ""}{nextActions.length > 1 ? ` 외 ${nextActions.length - 1}` : ""}
-            </div>
+            onNextActionFocus ? (
+              <button type="button" onClick={() => onNextActionFocus(row, nextAction)} style={runbookNextActionLink} title={nextAction.route || "다음 조치 위치 열기"}>
+                다음: {nextAction.title}{nextAction.detail ? ` · ${nextAction.detail}` : ""}{nextActions.length > 1 ? ` 외 ${nextActions.length - 1}` : ""}
+              </button>
+            ) : (
+              <div style={{ marginTop: 4, color: "var(--muted)", fontSize: 10, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                다음: {nextAction.title}{nextAction.detail ? ` · ${nextAction.detail}` : ""}{nextActions.length > 1 ? ` 외 ${nextActions.length - 1}` : ""}
+              </div>
+            )
           )}
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -1649,7 +1711,14 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
           })}
         </div>
       </div>
-      {expanded && <WorkflowRunbookDetail row={row} onMapNodeFocus={onMapNodeFocus} onToolFocus={onToolFocus} />}
+      {expanded && (
+        <WorkflowRunbookDetail
+          row={row}
+          onMapNodeFocus={onMapNodeFocus}
+          onToolFocus={onToolFocus}
+          onNextActionFocus={onNextActionFocus}
+        />
+      )}
       {actionResult?.key === row.key && (
         <div style={{ padding: "0 8px 8px 118px" }}>
           <WorkflowActionResult payload={actionResult.payload} />
@@ -1660,7 +1729,7 @@ function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction,
 }
 
 
-function WorkflowRunbookDetail({ row, onMapNodeFocus, onToolFocus }) {
+function WorkflowRunbookDetail({ row, onMapNodeFocus, onToolFocus, onNextActionFocus }) {
   const steps = row.steps || [];
   const evidence = row.evidence_node_ids || [];
   const nextActions = row.next_actions || [];
@@ -1748,9 +1817,21 @@ function WorkflowRunbookDetail({ row, onMapNodeFocus, onToolFocus }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {nextActions.slice(0, 4).map((action) => (
-                <div key={action.key} style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35 }}>
-                  <b style={{ color: "var(--text-primary)" }}>{action.title}</b>{action.detail ? ` · ${action.detail}` : ""}{action.route ? ` · ${action.route}` : ""}
-                </div>
+                onNextActionFocus ? (
+                  <button
+                    key={action.key}
+                    type="button"
+                    onClick={() => onNextActionFocus(row, action)}
+                    style={runbookActionButton}
+                    title={action.route || "다음 조치 위치 열기"}
+                  >
+                    <b style={{ color: "var(--text-primary)" }}>{action.title}</b>{action.detail ? ` · ${action.detail}` : ""}
+                  </button>
+                ) : (
+                  <div key={action.key} style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35 }}>
+                    <b style={{ color: "var(--text-primary)" }}>{action.title}</b>{action.detail ? ` · ${action.detail}` : ""}{action.route ? ` · ${action.route}` : ""}
+                  </div>
+                )
               ))}
             </div>
           )}
@@ -3417,4 +3498,33 @@ const runbookBadButton = {
   fontSize: 10,
   fontWeight: 800,
   cursor: "pointer",
+};
+
+const runbookNextActionLink = {
+  display: "block",
+  width: "100%",
+  marginTop: 4,
+  border: "0",
+  background: "transparent",
+  color: "var(--accent)",
+  cursor: "pointer",
+  fontSize: 10,
+  lineHeight: 1.3,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  textAlign: "left",
+  padding: 0,
+};
+
+const runbookActionButton = {
+  border: "1px solid var(--border)",
+  background: "var(--bg-primary)",
+  color: "var(--text-secondary)",
+  borderRadius: 4,
+  padding: "4px 6px",
+  cursor: "pointer",
+  fontSize: 10,
+  lineHeight: 1.35,
+  textAlign: "left",
 };
