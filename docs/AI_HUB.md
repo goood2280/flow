@@ -26,6 +26,7 @@ GET  /api/ai-hub/tools/{name}               단일 도구 상세
 GET  /api/ai-hub/tools/{name}/history       최근 호출 이력
 GET  /api/ai-hub/tags                       태그 목록 (필터용)
 GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구 + 승인/거부/활성화 action metadata
+GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
 POST /api/sql-workspace/run                 cells 실행 → result + 셀 trace
@@ -49,6 +50,16 @@ POST /api/skills/mine                       즉시 마이닝 (admin)
 LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리스틱만으로 동작.
 `unit_ai` 는 기존 `flowi_units/dispatcher.try_dispatch(only=[name])` 위임 — 회귀 0.
 `function-call` 단위는 trace stub 만 (실행은 기존 `/api/llm/flowi/chat` 경로 사용).
+
+## 워크플로우 지도
+
+`core/ai_hub_workflow_map.py` 는 기존 도구 카탈로그만 읽어서 관리 지도를 만든다. 새 저장소를 만들지 않고 `tool_registry.list_tools()`의 `management_flow`, `knowledge_refs`, 호출 통계를 합쳐 다음 노드를 노출한다.
+
+- `stage:*`: Prompt / Policy / Unit-Function / Wiki-Schema / Improve 단계
+- `tool:<name>`: Unit AI 또는 function-call 도구, enabled 상태와 최근 호출수
+- `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
+
+AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 노드 detail을 제공한다. 운영자는 n8n처럼 실행 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다.
 
 ## SQL 작업대 — 멀티 셀 조인
 
@@ -90,6 +101,7 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 cd flow
 python -m pytest tests/test_tool_registry.py tests/test_sql_workspace.py \
                   tests/test_home_orchestrator.py tests/test_skill_miner.py -v
+python3 -m pytest tests/test_ai_hub_workflow_map.py tests/test_ai_hub_board.py -q
 python3 scripts/flowi_agent_deep_eval.py
 ```
 

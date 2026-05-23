@@ -98,6 +98,7 @@ export default function My_AIHub() {
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
+      <WorkflowMapPanel days={days} />
       <SkillsPanel />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -199,6 +200,244 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function WorkflowMapPanel({ days }) {
+  const [open, setOpen] = useState(false);
+  const [focusTag, setFocusTag] = useState("");
+  const [map, setMap] = useState(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadMap() {
+    setLoading(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({
+        days: String(days),
+        limit: "40",
+        reference_limit: "160",
+      });
+      if (focusTag) qs.set("focus_tag", focusTag);
+      const out = await sf(`/api/ai-hub/workflow-map?${qs.toString()}`);
+      setMap(out);
+      if (selectedId && !(out.nodes || []).some((node) => node.id === selectedId)) {
+        setSelectedId("");
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadMap(); }, [open, days, focusTag]);
+
+  const nodes = map?.nodes || [];
+  const edges = map?.edges || [];
+  const selected = nodes.find((node) => node.id === selectedId) || null;
+  const topTags = map?.top_tags || [];
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>워크플로우 지도</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+          Prompt → Policy → Unit/Function → Wiki/Schema → Improve
+        </div>
+        <div style={{ flex: 1 }} />
+        {open && (
+          <>
+            <select
+              value={focusTag}
+              onChange={(e) => setFocusTag(e.target.value)}
+              style={{ ...selectStyle, width: 170, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 태그</option>
+              {topTags.map((row) => (
+                <option key={row.tag} value={row.tag}>{row.tag} ({row.count})</option>
+              ))}
+            </select>
+            <button onClick={loadMap} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
+          </>
+        )}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!map && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : map ? (
+            <>
+              <WorkflowMapSummary map={map} />
+              {(map.warnings || []).length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "6px 0" }}>
+                  {(map.warnings || []).map((w) => <BoardPill key={w.key} tone={w.tone}>{w.message}</BoardPill>)}
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 8, alignItems: "stretch" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(130px, 1fr))", gap: 6, overflowX: "auto" }}>
+                  {(map.stages || []).map((stage) => (
+                    <WorkflowStageColumn
+                      key={stage.id}
+                      stage={stage}
+                      nodes={nodes.filter((node) => node.stage === stage.id)}
+                      selectedId={selectedId}
+                      onSelect={setSelectedId}
+                    />
+                  ))}
+                </div>
+                <WorkflowNodeDetail node={selected} edges={edges} nodes={nodes} />
+              </div>
+            </>
+          ) : (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>지도를 열면 현재 도구/지식 관계를 불러옵니다.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WorkflowMapSummary({ map }) {
+  const counts = map.counts || {};
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 6 }}>
+      <BoardPill tone="info">도구 {counts.tools_visible}/{counts.tools_total}</BoardPill>
+      <BoardPill tone={counts.tools_disabled_visible ? "bad" : "ok"}>비활성 {counts.tools_disabled_visible || 0}</BoardPill>
+      <BoardPill tone={counts.tools_without_refs_visible ? "warn" : "ok"}>근거 없음 {counts.tools_without_refs_visible || 0}</BoardPill>
+      <BoardPill tone="neutral">노드 {counts.nodes || 0}</BoardPill>
+      <BoardPill tone="neutral">엣지 {counts.edges || 0}</BoardPill>
+      {map.focus_tag && <BoardPill tone="info">focus {map.focus_tag}</BoardPill>}
+    </div>
+  );
+}
+
+
+function WorkflowStageColumn({ stage, nodes, selectedId, onSelect }) {
+  const stageNode = nodes.find((node) => node.type === "stage");
+  const childNodes = nodes.filter((node) => node.type !== "stage");
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, minWidth: 130, padding: 7 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", marginBottom: 2 }}>
+        {stage.title}
+      </div>
+      <div style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.35, minHeight: 28, marginBottom: 6 }}>
+        {stage.detail}
+      </div>
+      {stageNode && (
+        <WorkflowNodeButton node={stageNode} selected={selectedId === stageNode.id} onSelect={onSelect} />
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 270, overflowY: "auto", marginTop: 5 }}>
+        {childNodes.map((node) => (
+          <WorkflowNodeButton key={node.id} node={node} selected={selectedId === node.id} onSelect={onSelect} />
+        ))}
+        {childNodes.length === 0 && (
+          <div style={{ fontSize: 10, color: "var(--muted)", padding: "6px 0" }}>연결 항목 없음</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function WorkflowNodeButton({ node, selected, onSelect }) {
+  const toneColor = node.tone === "bad" ? "var(--danger)" : node.tone === "ok" ? "var(--ok)" : node.tone === "info" ? "var(--info)" : "var(--text-secondary)";
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(node.id)}
+      style={{
+        width: "100%",
+        textAlign: "left",
+        border: "1px solid " + (selected ? "var(--accent)" : "var(--border)"),
+        background: selected ? "var(--accent-glow)" : "var(--bg-primary)",
+        color: "var(--text-primary)",
+        borderRadius: 4,
+        padding: "5px 6px",
+        cursor: "pointer",
+        opacity: node.enabled === false ? 0.62 : 1,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 5, alignItems: "center" }}>
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 750 }}>
+          {node.label}
+        </span>
+        <span style={{ color: toneColor, fontSize: 9, fontWeight: 800, textTransform: "uppercase" }}>{node.type}</span>
+      </div>
+      {node.type === "tool" && (
+        <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {node.kind} · {(node.metrics?.count || 0)} calls
+        </div>
+      )}
+    </button>
+  );
+}
+
+
+function WorkflowNodeDetail({ node, edges, nodes }) {
+  if (!node) {
+    return (
+      <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        노드를 선택하면 연결된 입력/출력 엣지와 관리 근거를 확인할 수 있습니다.
+      </div>
+    );
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const incoming = edges.filter((edge) => edge.to === node.id);
+  const outgoing = edges.filter((edge) => edge.from === node.id);
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-primary)", minWidth: 0 }}>
+      <div style={{ fontSize: 12, fontWeight: 850, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label}</div>
+      <div style={{ color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all", marginBottom: 6 }}>{node.id}</div>
+      <div style={{ color: "var(--text-secondary)", lineHeight: 1.45, marginBottom: 8 }}>{node.detail}</div>
+      {node.type === "tool" && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          <Tag>{node.kind}</Tag>
+          <Tag>{node.enabled ? "enabled" : "disabled"}</Tag>
+          <Tag>{node.metrics?.count || 0} calls</Tag>
+          <Tag>{node.metrics?.users || 0} users</Tag>
+        </div>
+      )}
+      {(node.tags || []).length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          {(node.tags || []).slice(0, 10).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+        </div>
+      )}
+      <WorkflowEdgeList title="입력" edges={incoming} other={(edge) => byId.get(edge.from)} />
+      <WorkflowEdgeList title="출력" edges={outgoing} other={(edge) => byId.get(edge.to)} />
+    </div>
+  );
+}
+
+
+function WorkflowEdgeList({ title, edges, other }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase", marginBottom: 3 }}>{title}</div>
+      {edges.length === 0 ? (
+        <div style={{ fontSize: 10, color: "var(--muted)" }}>없음</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {edges.slice(0, 12).map((edge, i) => {
+            const node = other(edge) || {};
+            return (
+              <div key={`${edge.from}:${edge.to}:${i}`} style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 5, alignItems: "center" }}>
+                <Tag>{edge.label || edge.kind}</Tag>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{node.label || edge.from || edge.to}</span>
+              </div>
+            );
+          })}
+          {edges.length > 12 && <div style={{ fontSize: 10, color: "var(--muted)" }}>+{edges.length - 12} more</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 

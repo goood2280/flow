@@ -246,6 +246,12 @@ status, body = _req("GET", "/api/ai-hub/tags", token=TOKEN)
 tags_len = len((body or {}).get("tags") or []) if isinstance(body, dict) else 0
 check("GET /api/ai-hub/tags", status, 200, f"tags={tags_len}")
 
+status, body = _req("GET", "/api/ai-hub/workflow-map?limit=20&reference_limit=80", token=TOKEN)
+nodes_len = len((body or {}).get("nodes") or []) if isinstance(body, dict) else 0
+edges_len = len((body or {}).get("edges") or []) if isinstance(body, dict) else 0
+check("GET /api/ai-hub/workflow-map (n8n/Obsidian 운영 지도)", status, 200,
+      f"nodes={nodes_len} edges={edges_len}")
+
 status, body = _req("POST", "/api/sql-workspace/run", {
     "cells": [
         {"name": "lot_meta", "sql": "SELECT * FROM (VALUES ('A1','R1'),('A2','R2')) AS t(lot_id, root_lot_id)"},
