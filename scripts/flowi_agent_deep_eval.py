@@ -14,6 +14,7 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ if str(ROOT / "backend") not in sys.path:
 
 from app_v2.modules.agent_runtime.semantic import resolve_semantic_frame  # noqa: E402
 from app_v2.shared.contracts import KnowledgeDoc  # noqa: E402
+from core import ai_hub_deep_eval  # noqa: E402
 from core import knowledge_vault as kv  # noqa: E402
 from core.sql_workspace import run_workspace  # noqa: E402
 
@@ -586,6 +588,7 @@ def _group_summary(results: list[CaseResult]) -> dict[str, dict[str, int]]:
 
 def _report_payload(runner: EvalRunner, *, cleanup_knowledge: bool, min_cases: int) -> dict[str, Any]:
     return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": runner.summary(),
         "groups": _group_summary(runner.results),
         "doc_id": DOC_ID,
@@ -604,7 +607,8 @@ def _report_payload(runner: EvalRunner, *, cleanup_knowledge: bool, min_cases: i
 
 
 def _write_json_report(path: str | Path, payload: dict[str, Any]) -> Path:
-    target = Path(path).expanduser()
+    raw = str(path or "").strip()
+    target = ai_hub_deep_eval.default_report_path() if raw in {"latest", "default"} else Path(raw).expanduser()
     if not target.is_absolute():
         target = ROOT / target
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -617,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cleanup-knowledge", action="store_true", help="delete the eval Wiki doc after verification")
     parser.add_argument("--show-pass", action="store_true", help="print all passing cases")
     parser.add_argument("--json", action="store_true", help="print machine-readable summary after the text report")
-    parser.add_argument("--report-json", default="", help="write detailed case results to this JSON path")
+    parser.add_argument("--report-json", nargs="?", const="latest", default="", help="write detailed case results to this JSON path; omit value to update the AI Hub latest report")
     parser.add_argument("--min-cases", type=int, default=80, help="minimum assertion count expected")
     args = parser.parse_args(argv)
 

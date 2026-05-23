@@ -12,6 +12,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
+  GET    /api/ai-hub/deep-eval-report       Agent deep-eval 최신 리포트
   POST   /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
   POST   /api/ai-hub/tools/{name}/toggle    enabled on/off (admin)
 
@@ -25,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from core import ai_hub_board
+from core import ai_hub_deep_eval
 from core import ai_hub_readiness
 from core import ai_hub_workflow_map
 from core import audit
@@ -98,6 +100,14 @@ def readiness(
         username=str((me or {}).get("username") or ""),
         days=days,
     )
+    out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
+
+
+@router.get("/deep-eval-report")
+def deep_eval_report(request: Request):
+    me = current_user(request)
+    out = ai_hub_deep_eval.load_latest_report()
     out["is_admin"] = (me or {}).get("role") == "admin"
     return out
 

@@ -98,6 +98,7 @@ export default function My_AIHub() {
       {/* 오케스트레이터 + 운영 보드 + 스킬 패널 */}
       <OrchestratorPanel />
       <ReadinessPanel days={days} onChanged={loadCatalog} />
+      <DeepEvalPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
@@ -201,6 +202,153 @@ function withEnabledState(item, enabled) {
     node.id === "guardrail" ? { ...node, state: enabled ? "enabled" : "disabled" } : node
   ));
   return { ...item, enabled, management_flow: { ...flow, nodes } };
+}
+
+
+function DeepEvalPanel() {
+  const [open, setOpen] = useState(true);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadReport() {
+    setLoading(true);
+    setErr("");
+    try {
+      const out = await sf("/api/ai-hub/deep-eval-report");
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadReport(); }, [open]);
+
+  const summary = data?.summary || {};
+  const statusTone = !data ? "neutral" : data.status === "pass" ? "ok" : data.status === "missing" ? "warn" : "bad";
+  const statusText = data?.status === "pass" ? "통과" : data?.status === "missing" ? "리포트 없음" : data?.status === "invalid" ? "손상" : data?.status === "fail" ? "실패" : "대기";
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Agent 검증 리포트</div>
+        <BoardPill tone={statusTone}>{statusText}</BoardPill>
+        {data?.exists && (
+          <>
+            <BoardPill tone={Number(summary.failed || 0) ? "bad" : "ok"}>{summary.passed || 0}/{summary.total || 0}</BoardPill>
+            <BoardPill tone="neutral">{relTime(data.generated_at || data.updated_at)}</BoardPill>
+          </>
+        )}
+        <div style={{ flex: 1 }} />
+        {open && <button onClick={loadReport} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : data?.exists ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+              <DeepEvalSummary report={data} />
+              <DeepEvalGroups groups={data.groups || {}} catalog={data.catalog || {}} />
+              <DeepEvalFailures rows={data.failed_results || []} status={data.status} />
+            </div>
+          ) : data ? (
+            <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>최근 리포트 없음</div>
+              <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
+                {data.path}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>검증 리포트를 불러오면 최근 Agent semantic/wiki/sql 상태를 볼 수 있습니다.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function DeepEvalSummary({ report }) {
+  const summary = report.summary || {};
+  const failed = Number(summary.failed || 0);
+  const tone = failed ? "var(--danger)" : "var(--ok)";
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 10 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ fontSize: 28, lineHeight: 1, fontWeight: 900, color: tone }}>{summary.passed || 0}</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 800 }}>passed / {summary.total || 0}</div>
+      </div>
+      <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <Tag>{failed} failed</Tag>
+        <Tag>{report.result_count || 0} assertions</Tag>
+        <Tag>{report.cleanup_knowledge ? "wiki cleanup" : "wiki kept"}</Tag>
+      </div>
+      <div style={{ marginTop: 7, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
+        {report.doc_id || "-"}
+      </div>
+      <div style={{ marginTop: 4, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
+        {report.path}
+      </div>
+    </div>
+  );
+}
+
+
+function DeepEvalGroups({ groups, catalog }) {
+  const entries = Object.entries(groups || {});
+  const sourceViews = Array.isArray(catalog.source_views) ? catalog.source_views : [];
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", marginBottom: 5 }}>검증 영역</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(90px, 1fr))", gap: 5 }}>
+        {entries.map(([name, row]) => (
+          <div key={name} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 5, alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>{name}</span>
+              <BoardPill tone={Number(row.failed || 0) ? "bad" : "ok"}>{row.passed}/{row.total}</BoardPill>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 7, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <Tag>{catalog.semantic_prompt_cases || 0} semantic prompts</Tag>
+        <Tag>{catalog.sql_answer_cases || 0} sql answers</Tag>
+        {sourceViews.slice(0, 6).map((name) => <Tag key={name}>{name}</Tag>)}
+      </div>
+    </div>
+  );
+}
+
+
+function DeepEvalFailures({ rows, status }) {
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 5 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>실패 assertion</div>
+        <BoardPill tone={rows.length ? "bad" : "ok"}>{rows.length}</BoardPill>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>
+          {status === "pass" ? "실패 항목 없음" : "실패 detail 없음"}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 130, overflowY: "auto" }}>
+          {rows.slice(0, 6).map((row) => (
+            <div key={row.name} style={{ borderTop: "1px dashed var(--border)", paddingTop: 5 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.name}</div>
+              <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.detail}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 

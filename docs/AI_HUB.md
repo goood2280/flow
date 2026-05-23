@@ -27,6 +27,7 @@ GET  /api/ai-hub/tools/{name}/history       최근 호출 이력
 GET  /api/ai-hub/tags                       태그 목록 (필터용)
 GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구 + 승인/거부/활성화 action metadata
 GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백로그
+GET  /api/ai-hub/deep-eval-report           Agent semantic/wiki/sql deep-eval 최신 리포트
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 POST /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
@@ -80,6 +81,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부, workflow Dry-run 재검증을 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
+- AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수와 실패 assertion을 보여준다.
 
 ## SQL 작업대 — 멀티 셀 조인
 
@@ -123,11 +125,11 @@ cd flow
 python -m pytest tests/test_tool_registry.py tests/test_sql_workspace.py \
                   tests/test_home_orchestrator.py tests/test_skill_miner.py -v
 python3 -m pytest tests/test_ai_hub_readiness.py tests/test_ai_hub_workflow_map.py tests/test_ai_hub_board.py -q
-python3 scripts/flowi_agent_deep_eval.py --report-json /tmp/flowi-agent-deep-eval-report.json
+python3 scripts/flowi_agent_deep_eval.py --report-json
 python3 -m py_compile backend/core/ai_hub_readiness.py backend/core/ai_hub_workflow_map.py backend/routers/ai_hub.py
 ```
 
-`flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다. `--report-json` 결과는 semantic/knowledge/sql/meta 그룹별 통과 수와 전체 assertion detail을 담는다.
+`flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다. `--report-json` 을 경로 없이 실행하면 AI Hub가 읽는 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 갱신하고, 결과에는 semantic/knowledge/sql/meta 그룹별 통과 수와 전체 assertion detail이 담긴다.
 
 엔드 투 엔드 시나리오 (Plan 의 Verification 절 참조):
 1. AI 허브 → 도구 27개 표시 + on-off + 30일 호출수
