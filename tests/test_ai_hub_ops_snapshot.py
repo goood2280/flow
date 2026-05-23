@@ -88,6 +88,7 @@ def test_ai_hub_ops_snapshot_builds_daily_operator_view(monkeypatch):
     assert out["workflow_map_warnings"][0]["key"] == "missing_evidence"
     assert out["workflow_map_warnings"][0]["item_count"] == 2
     assert out["workflow_map_warnings"][0]["items"] == ["lot_wf", "knob"]
+    assert "knowledge_refs" in out["workflow_map_warnings"][0]["action"]
     assert out["workflow_map_warnings"][0]["route"] == "/api/ai-hub/workflow-map"
     assert out["top_actions"][0]["tone"] == "bad"
     assert out["recent_events"][0]["category"] == "wiki"

@@ -1042,6 +1042,8 @@ def _warnings(
             "key": "disabled_tools",
             "tone": "bad",
             "message": f"비활성 도구 {counts['tools_disabled_visible']}개가 지도에 포함되어 있습니다.",
+            "action": "AI Hub 도구 카탈로그에서 비활성 도구의 필요 여부를 확인하고 필요한 도구를 활성화하세요.",
+            "route": "/api/ai-hub/tools",
         })
     if tools_without_refs:
         out.append({
@@ -1049,6 +1051,8 @@ def _warnings(
             "tone": "warn",
             "message": f"Wiki/schema 근거가 비어 있는 도구 {len(tools_without_refs)}개가 있습니다.",
             "items": tools_without_refs[:12],
+            "action": "Agent Wiki source 또는 schema ref를 보강하고 도구 knowledge_refs에 연결하세요.",
+            "route": "/api/ai-hub/wiki-health",
         })
     if workflow_missing_tools:
         out.append({
@@ -1056,6 +1060,8 @@ def _warnings(
             "tone": "warn",
             "message": f"workflow step이 참조하지만 등록되지 않은 도구 {len(workflow_missing_tools)}개가 있습니다.",
             "items": workflow_missing_tools[:12],
+            "action": "workflow step의 unit_ai 값을 등록된 도구명으로 수정하거나 필요한 도구를 등록하세요.",
+            "route": "/api/ai-hub/workflow-runbook",
         })
     if workflow_empty_templates:
         out.append({
@@ -1063,6 +1069,8 @@ def _warnings(
             "tone": "warn",
             "message": f"step이 비어 있는 workflow template {len(workflow_empty_templates)}개가 있습니다.",
             "items": workflow_empty_templates[:12],
+            "action": "workflow template에 실행 step을 추가하거나 starter workflow를 재생성하세요.",
+            "route": "/api/ai-hub/workflow-runbook",
         })
     if workflow_incomplete_steps:
         out.append({
@@ -1070,6 +1078,8 @@ def _warnings(
             "tone": "warn",
             "message": f"unit_ai/action이 불완전한 workflow step {len(workflow_incomplete_steps)}개가 있습니다.",
             "items": workflow_incomplete_steps[:12],
+            "action": "비어 있는 unit_ai/action을 채운 뒤 Runbook에서 dry-run으로 재검증하세요.",
+            "route": "/api/ai-hub/workflow-runbook",
         })
     if not deep_eval.get("exists"):
         out.append({
@@ -1077,6 +1087,8 @@ def _warnings(
             "tone": "warn",
             "message": "Agent deep-eval 최신 리포트가 없습니다.",
             "items": [str(deep_eval.get("path") or "reports/flowi_agent_deep_eval_latest.json")],
+            "action": "Agent 검증 리포트를 생성해 semantic/knowledge/sql 회귀 상태를 확인하세요.",
+            "route": "/api/ai-hub/deep-eval-report",
         })
     elif deep_eval.get("status") != "pass":
         failed = 0
@@ -1091,5 +1103,7 @@ def _warnings(
                 for row in (deep_eval.get("failed_results") or [])[:8]
                 if isinstance(row, dict)
             ],
+            "action": "실패 케이스의 지식, SQL, semantic 근거를 보강하고 deep-eval을 재실행하세요.",
+            "route": "/api/ai-hub/deep-eval-report",
         })
     return out

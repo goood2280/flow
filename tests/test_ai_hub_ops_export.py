@@ -131,6 +131,7 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         warning_note = zf.read("operations/workflow-map-warnings.md").decode("utf-8")
         assert "workflow_missing_tools" in warning_note
         assert "ghost_unit" in warning_note
+        assert "등록된 도구명" in warning_note
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -216,6 +217,7 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     warnings_node = next(node for node in workflow["nodes"] if node["id"] == "ops:workflow_warnings")
     assert "workflow_unverified" in warnings_node["parameters"]["content"]
     assert "ops_lot_step_review" in warnings_node["parameters"]["content"]
+    assert "워크플로우 지도에서 경고 대상" in warnings_node["parameters"]["content"]
 
 
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):

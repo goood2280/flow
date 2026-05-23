@@ -92,6 +92,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - AI Hub 첫 화면의 `운영 스냅샷` 패널이 읽는 일일 운영 요약이다.
 - 기존 readiness, workflow runbook, workflow map, deep-eval report, Agent Wiki health, 운영 timeline을 집계해 summary card, 상위 개선 항목, Runbook 조치 큐, workflow map 경고, 최근 이벤트, Obsidian/n8n export 링크를 반환한다.
 - 화면에서는 summary card를 해당 운영 패널 열기로 연결하고, 상위 개선 항목은 `운영 준비도` 백로그 focus로, Runbook 조치 큐는 `Workflow Runbook` issue filter로, workflow map 경고는 `워크플로우 지도` 패널로, 최근 이벤트는 `운영 타임라인` category filter로 연결한다.
+- workflow map 경고는 `action`을 포함해 Wiki/source 연결, workflow step 수정, deep-eval 재검증 같은 다음 조치를 화면의 스냅샷/지도 경고 큐에 함께 표시한다.
 - 운영 export는 같은 workflow map 경고를 Obsidian `operations/workflow-map-warnings.md` note와 n8n `ops:workflow_warnings` sticky note에 포함한다.
 - 새 runtime state를 만들지 않고 각 원천 API의 읽기 전용 builder만 호출한다.
 

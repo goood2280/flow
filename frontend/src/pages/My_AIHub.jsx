@@ -551,6 +551,11 @@ function OpsSnapshotWorkflowMapWarnings({ rows, onSelect }) {
           <BoardPill tone={row.tone || "neutral"}>{row.item_count || 0}</BoardPill>
         </div>
         <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.message || row.route}</div>
+        {row.action && (
+          <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-primary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            조치 {row.action}
+          </div>
+        )}
         <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
           {(row.items || []).slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
           {(row.item_count || 0) > (row.items || []).slice(0, 4).length && <Tag>+{(row.item_count || 0) - (row.items || []).slice(0, 4).length}</Tag>}
@@ -1626,11 +1631,7 @@ function WorkflowMapPanel({ days, focusIntent }) {
           ) : map ? (
             <>
               <WorkflowMapSummary map={map} />
-              {(map.warnings || []).length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "6px 0" }}>
-                  {(map.warnings || []).map((w) => <BoardPill key={w.key} tone={w.tone}>{w.message}</BoardPill>)}
-                </div>
-              )}
+              <WorkflowMapWarnings rows={map.warnings || []} focusedKey={focusIntent?.warning || ""} />
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 8, alignItems: "stretch" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(130px, 1fr))", gap: 6, overflowX: "auto" }}>
                   {(map.stages || []).map((stage) => (
@@ -1688,6 +1689,53 @@ function WorkflowMapSummary({ map }) {
       <BoardPill tone="neutral">노드 {counts.nodes || 0}</BoardPill>
       <BoardPill tone="neutral">엣지 {counts.edges || 0}</BoardPill>
       {map.focus_tag && <BoardPill tone="info">focus {map.focus_tag}</BoardPill>}
+    </div>
+  );
+}
+
+
+function WorkflowMapWarnings({ rows, focusedKey }) {
+  const visible = rows.slice(0, 8);
+  if (!visible.length) return null;
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>경고 큐</div>
+        <BoardPill tone="warn">{rows.length}</BoardPill>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 6 }}>
+        {visible.map((row) => {
+          const focused = focusedKey && focusedKey === row.key;
+          const items = row.items || [];
+          return (
+            <div
+              key={row.key || row.message}
+              style={{
+                border: focused ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: focused ? "var(--bg-secondary)" : "transparent",
+                borderRadius: 4,
+                padding: 7,
+                minWidth: 0,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.key || "warning"}</div>
+                <BoardPill tone={row.tone || "neutral"}>{items.length}</BoardPill>
+              </div>
+              <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{row.message}</div>
+              {row.action && (
+                <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-primary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                  조치 {row.action}
+                </div>
+              )}
+              <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {items.slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
+                {items.length > 4 && <Tag>+{items.length - 4}</Tag>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

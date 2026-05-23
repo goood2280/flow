@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub workflow map warning 조치 문구/상세 표시
 - (Codex) AI Hub 운영 export에 workflow map warning 큐 반영
 - (Codex) AI Hub 운영 스냅샷에 workflow map warning 리스트 추가
 - (Codex) AI Hub 운영 스냅샷에 workflow map summary card 추가

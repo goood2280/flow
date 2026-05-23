@@ -327,6 +327,7 @@ def _n8n_workflow_warnings_content(workflow: dict[str, Any]) -> str:
     for row in warnings[:8]:
         item_text = ", ".join(str(item) for item in row.get("items", [])[:4]) or "-"
         lines.append(f"- {row.get('tone')}: {row.get('key')} items={row.get('item_count') or 0} route={row.get('route') or '-'}")
+        lines.append(f"  action: {row.get('action') or ''}")
         lines.append(f"  {row.get('message') or ''}")
         lines.append(f"  examples: {item_text}")
     return "\n".join(lines)
@@ -391,13 +392,13 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         lines.extend([
             "## Workflow Map Warnings",
             "",
-            "| key | tone | items | message |",
-            "|---|---|---:|---|",
+            "| key | tone | items | action | message |",
+            "|---|---|---:|---|---|",
         ])
         for row in workflow_warnings[:8]:
             lines.append(
                 f"| {_cell(row.get('key'))} | {_cell(row.get('tone'))} | "
-                f"{_cell(row.get('item_count'))} | {_cell(row.get('message'))} |"
+                f"{_cell(row.get('item_count'))} | {_cell(row.get('action'))} | {_cell(row.get('message'))} |"
             )
         lines.append("")
     lines.extend([
@@ -637,11 +638,24 @@ def _workflow_warnings(workflow: dict[str, Any]) -> list[dict[str, Any]]:
             "key": key,
             "tone": str(row.get("tone") or "neutral"),
             "message": str(row.get("message") or "")[:260],
+            "action": str(row.get("action") or _workflow_warning_action(key))[:260],
             "item_count": len(items),
             "items": [str(item) for item in items[:12]],
             "route": str(row.get("route") or "/api/ai-hub/workflow-map"),
         })
     return rows
+
+
+def _workflow_warning_action(key: str) -> str:
+    return {
+        "disabled_tools": "AI Hub 도구 카탈로그에서 비활성 도구의 필요 여부를 확인하고 필요한 도구를 활성화하세요.",
+        "missing_evidence": "Agent Wiki source 또는 schema ref를 보강하고 도구 knowledge_refs에 연결하세요.",
+        "workflow_missing_tools": "workflow step의 unit_ai 값을 등록된 도구명으로 수정하거나 필요한 도구를 등록하세요.",
+        "workflow_empty_templates": "workflow template에 실행 step을 추가하거나 starter workflow를 재생성하세요.",
+        "workflow_incomplete_steps": "비어 있는 unit_ai/action을 채운 뒤 Runbook에서 dry-run으로 재검증하세요.",
+        "deep_eval_missing": "Agent 검증 리포트를 생성해 semantic/knowledge/sql 회귀 상태를 확인하세요.",
+        "deep_eval_failed": "실패 케이스의 지식, SQL, semantic 근거를 보강하고 deep-eval을 재실행하세요.",
+    }.get(str(key or ""), "워크플로우 지도에서 경고 대상과 연결 근거를 확인하세요.")
 
 
 def _workflow_warnings_note(workflow: dict[str, Any]) -> str:
@@ -657,16 +671,16 @@ def _workflow_warnings_note(workflow: dict[str, Any]) -> str:
         f"- count: `{len(warnings)}`",
         f"- route: `/api/ai-hub/workflow-map`",
         "",
-        "| key | tone | items | examples | message |",
-        "|---|---|---:|---|---|",
+        "| key | tone | items | examples | action | message |",
+        "|---|---|---:|---|---|---|",
     ]
     if not warnings:
-        lines.append("| none | - | 0 | - | - |")
+        lines.append("| none | - | 0 | - | - | - |")
     for row in warnings[:40]:
         examples = ", ".join(_cell(item) for item in row.get("items", [])[:6]) or "-"
         lines.append(
             f"| {_cell(row.get('key'))} | {_cell(row.get('tone'))} | {_cell(row.get('item_count'))} | "
-            f"{examples} | {_cell(row.get('message'))} |"
+            f"{examples} | {_cell(row.get('action'))} | {_cell(row.get('message'))} |"
         )
     lines.append("")
     return "\n".join(lines)

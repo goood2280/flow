@@ -243,13 +243,26 @@ def _workflow_map_warnings(workflow_map: dict[str, Any], *, limit: int) -> list[
             "tone": str(row.get("tone") or "neutral"),
             "title": str(row.get("title") or key or "workflow map warning"),
             "message": str(row.get("message") or "")[:220],
+            "action": str(row.get("action") or _workflow_warning_action(key))[:220],
             "item_count": len(items),
             "items": [str(item) for item in items[:8]],
-            "route": "/api/ai-hub/workflow-map",
+            "route": str(row.get("route") or "/api/ai-hub/workflow-map"),
         })
         if len(rows) >= limit:
             break
     return rows
+
+
+def _workflow_warning_action(key: str) -> str:
+    return {
+        "disabled_tools": "AI Hub 도구 카탈로그에서 비활성 도구의 필요 여부를 확인하고 필요한 도구를 활성화하세요.",
+        "missing_evidence": "Agent Wiki source 또는 schema ref를 보강하고 도구 knowledge_refs에 연결하세요.",
+        "workflow_missing_tools": "workflow step의 unit_ai 값을 등록된 도구명으로 수정하거나 필요한 도구를 등록하세요.",
+        "workflow_empty_templates": "workflow template에 실행 step을 추가하거나 starter workflow를 재생성하세요.",
+        "workflow_incomplete_steps": "비어 있는 unit_ai/action을 채운 뒤 Runbook에서 dry-run으로 재검증하세요.",
+        "deep_eval_missing": "Agent 검증 리포트를 생성해 semantic/knowledge/sql 회귀 상태를 확인하세요.",
+        "deep_eval_failed": "실패 케이스의 지식, SQL, semantic 근거를 보강하고 deep-eval을 재실행하세요.",
+    }.get(str(key or ""), "워크플로우 지도에서 경고 대상과 연결 근거를 확인하세요.")
 
 
 def _workflow_map_count(workflow_map: dict[str, Any], key: str) -> int:

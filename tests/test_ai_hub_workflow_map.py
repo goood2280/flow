@@ -329,10 +329,13 @@ def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_pa
     assert warnings["workflow_empty_templates"]["items"] == ["empty_workflow"]
     assert warnings["workflow_incomplete_steps"]["items"] == ["incomplete_step#1"]
     assert warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]
+    assert "등록된 도구명" in warnings["workflow_missing_tools"]["action"]
+    assert warnings["workflow_missing_tools"]["route"] == "/api/ai-hub/workflow-runbook"
 
     obsidian = ai_hub_workflow_map.export_workflow_map(export_format="obsidian", username="operator", days=30, limit=10)
     exported_warnings = {row["key"]: row for row in obsidian["warnings"]}
     assert exported_warnings["workflow_missing_tools"]["items"] == ["ghost_unit"]
+    assert "등록된 도구명" in exported_warnings["workflow_missing_tools"]["action"]
     index_note = next(row for row in obsidian["files"] if row["path"] == "Flow AI Hub Workflow Map.md")
     assert "## Warnings" in index_note["body"]
     assert "workflow_missing_tools" in index_note["body"]
