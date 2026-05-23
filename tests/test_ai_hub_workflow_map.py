@@ -210,10 +210,15 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
     assert nodes["workflow:ops_knob_lotwf_review"]["metrics"]["last_status"] == "dry_run:2"
     assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["endpoint"] == "/api/agent/workflows/execute"
     assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["body"]["dry_run"] is True
+    assert nodes["workflow_step:ops_knob_lotwf_review:1"]["type"] == "workflow_step"
+    assert nodes["workflow_step:ops_knob_lotwf_review:1"]["unit_ai"] == "splittable"
+    assert nodes["workflow_step:ops_knob_lotwf_review:1"]["action"] == "knob_impact"
     assert nodes["workflow:personal_lot_step"]["shared"] is False
     assert "workflow:other_private" not in nodes
     edges = {(edge["from"], edge["to"], edge["label"], edge["kind"]) for edge in out["edges"]}
     assert ("stage:trigger", "workflow:ops_knob_lotwf_review", "template", "workflow") in edges
+    assert ("workflow:ops_knob_lotwf_review", "workflow_step:ops_knob_lotwf_review:1", "step 1", "workflow_step") in edges
+    assert ("workflow_step:ops_knob_lotwf_review:1", "tool:splittable", "knob_impact", "uses_tool") in edges
     assert ("workflow:ops_knob_lotwf_review", "tool:splittable", "knob_impact", "workflow_step") in edges
     assert ("workflow:ops_knob_lotwf_review", "tool:filebrowser", "query", "workflow_step") in edges
     assert ("workflow:personal_lot_step", "tool:tracker", "lookup", "workflow_step") in edges
@@ -238,6 +243,7 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
         reference_limit=80,
     )
     assert any(node["id"] == "workflow:ops_knob_lotwf_review" for node in n8n["workflow"]["nodes"])
+    assert any(node["id"] == "workflow_step:ops_knob_lotwf_review:1" for node in n8n["workflow"]["nodes"])
 
     obsidian = ai_hub_workflow_map.export_workflow_map(
         export_format="obsidian",
@@ -246,7 +252,11 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
         limit=10,
         reference_limit=80,
     )
-    assert any(row["path"] == "nodes/workflow-ops-knob-lotwf-review.md" for row in obsidian["files"])
+    workflow_note = next(row for row in obsidian["files"] if row["path"] == "nodes/workflow-ops-knob-lotwf-review.md")
+    assert "`1` `splittable`.`knob_impact`" in workflow_note["body"]
+    assert "`2` `filebrowser`.`query`" in workflow_note["body"]
+    step_note = next(row for row in obsidian["files"] if row["path"] == "nodes/workflow-step-ops-knob-lotwf-review-1.md")
+    assert "## Workflow Step" in step_note["body"]
     index_note = next(row for row in obsidian["files"] if row["path"] == "Flow AI Hub Workflow Map.md")
     assert "## Workflows" in index_note["body"]
 

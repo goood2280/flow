@@ -60,6 +60,7 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 
 - `stage:*`: Prompt / Policy / Unit-Function / Wiki-Schema / Improve 단계
 - `workflow:<key>`: 저장된 Agent workflow template. trigger 조건, step 목록, 최근 dry-run/execute count/status를 보여주고 각 step의 `unit_ai`를 도구 노드에 연결한다. 노드 detail에서는 `/api/agent/workflows/execute` dry-run action으로 실제 실행 전 guardrail/step 상태를 확인할 수 있다.
+- `workflow_step:<key>:<n>`: workflow template의 개별 실행 step. `unit_ai`, `action`, bind/fixed slot을 독립 노드로 보여주고 실제 도구 노드로 이어진다.
 - `tool:<name>`: Unit AI 또는 function-call 도구, enabled 상태와 최근 호출수
 - `wiki:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 

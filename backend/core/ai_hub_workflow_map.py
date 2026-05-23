@@ -213,16 +213,27 @@ def build_workflow_map(
         for step in steps:
             unit_ai = str(step.get("unit_ai") or "").strip()
             action = str(step.get("action") or "").strip()
+            step_index = int(step.get("index") or 0) + 1
+            step_id = f"workflow_step:{key}:{step_index}"
+            step_has_issue = False
             if not unit_ai or not action:
-                workflow_incomplete_steps.add(f"{key}#{int(step.get('index') or 0) + 1}")
+                workflow_incomplete_steps.add(f"{key}#{step_index}")
+                step_has_issue = True
+            tool = tool_by_name.get(unit_ai) if unit_ai else None
+            if unit_ai and not tool:
+                step_has_issue = True
+            add_node(_workflow_step_node(workflow, step, step_id, step_has_issue=step_has_issue))
+            add_edge(workflow_id, step_id, f"step {step_index}", "workflow_step")
             if not unit_ai:
+                add_edge(step_id, "stage:improve", "fill unit_ai", "workflow_step")
                 continue
-            tool = tool_by_name.get(unit_ai) or _missing_tool_row(unit_ai)
+            tool = tool or _missing_tool_row(unit_ai)
             tool_id = add_tool_node(tool)
             if tool.get("_missing"):
                 workflow_missing_tools.add(unit_ai)
             if tool_id:
                 label = str(step.get("action") or f"step {step.get('index', 0) + 1}")[:56]
+                add_edge(step_id, tool_id, label, "uses_tool")
                 add_edge(workflow_id, tool_id, label, "workflow_step")
                 workflow_step_edges += 1
 
@@ -513,6 +524,16 @@ def _obsidian_node_body(
                 action = str(step.get("action") or "")
                 lines.append(f"- `{index}` `{unit_ai}`.`{action}`")
             lines.append("")
+    if node.get("type") == "workflow_step":
+        lines.extend([
+            "## Workflow Step",
+            "",
+            f"- workflow_key: `{node.get('workflow_key') or ''}`",
+            f"- step_index: `{node.get('step_index') or ''}`",
+            f"- unit_ai: `{node.get('unit_ai') or ''}`",
+            f"- action: `{node.get('action') or ''}`",
+            "",
+        ])
     tags = [str(tag) for tag in (node.get("tags") or []) if str(tag).strip()]
     if tags:
         lines.extend(["## Tags", "", *[f"- #{_tag_slug(tag)}" for tag in tags], ""])
@@ -651,6 +672,57 @@ def _workflow_step_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
             "fixed_slots": dict(step.get("fixed_slots") or {}) if isinstance(step.get("fixed_slots"), dict) else {},
         })
     return out
+
+
+def _workflow_step_node(
+    workflow: dict[str, Any],
+    step: dict[str, Any],
+    step_id: str,
+    *,
+    step_has_issue: bool,
+) -> dict[str, Any]:
+    key = str(workflow.get("key") or "")
+    step_index = int(step.get("index") or 0) + 1
+    unit_ai = str(step.get("unit_ai") or "")
+    action = str(step.get("action") or "")
+    bind_slots = [str(v) for v in _listify(step.get("bind_slots"))]
+    fixed_slots = step.get("fixed_slots") if isinstance(step.get("fixed_slots"), dict) else {}
+    return {
+        "id": step_id,
+        "type": "workflow_step",
+        "stage": "execute",
+        "label": f"{step_index}. {unit_ai or 'unit_ai?'}.{action or 'action?'}",
+        "detail": _workflow_step_detail(key, step_index, unit_ai, action, bind_slots, fixed_slots),
+        "workflow_key": key,
+        "step_index": step_index,
+        "unit_ai": unit_ai,
+        "action": action,
+        "tone": "warn" if step_has_issue else "neutral",
+        "tags": [tag for tag in ("workflow_step", key, unit_ai, action) if tag],
+        "metrics": {
+            "bind_slots": len(bind_slots),
+            "fixed_slots": len(fixed_slots),
+        },
+    }
+
+
+def _workflow_step_detail(
+    key: str,
+    step_index: int,
+    unit_ai: str,
+    action: str,
+    bind_slots: list[str],
+    fixed_slots: dict[str, Any],
+) -> str:
+    fixed_keys = [str(k) for k in fixed_slots.keys() if str(k).strip()]
+    return "\n".join([
+        f"workflow={key}",
+        f"step={step_index}",
+        f"unit_ai={unit_ai}",
+        f"action={action}",
+        "bind_slots=" + ",".join(bind_slots),
+        "fixed_slots=" + ",".join(fixed_keys),
+    ]).strip()
 
 
 def _workflow_run_summaries(*, days: int) -> dict[str, dict[str, Any]]:
