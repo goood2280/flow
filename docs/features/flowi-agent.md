@@ -155,4 +155,4 @@ python3 scripts/flowi_agent_deep_eval.py
 cd frontend && npm run build
 ```
 
-`scripts/flowi_agent_deep_eval.py`는 서버 없이 직접 실행한다. `step_id -> function_step`, `KNOB/PPID -> lot_wf`, `lot_wf`, `raw DB SQL join` 같은 한국어/영어 표현을 semantic resolver로 확인하고, `agent_deep_eval_semiconductor_terms` Agent Wiki 문서를 upsert/search한 뒤, in-memory SQL Workspace의 `fab_db + step_map_db + split_db + et_db + tracker_db + inform_db` 조인 정답을 검증한다.
+`scripts/flowi_agent_deep_eval.py`는 서버 없이 직접 실행한다. `step_id -> function_step`, `KNOB/PPID -> lot_wf`, `lot_wf`, `raw DB SQL join` 같은 한국어/영어 표현을 semantic resolver로 확인하고, `agent_deep_eval_semiconductor_terms` Agent Wiki 문서를 upsert/search한 뒤, in-memory SQL Workspace의 `fab_db + step_map_db + split_db + et_db + tracker_db + inform_db` 조인 정답을 검증한다. 운영 점검 결과를 보존해야 하면 `--report-json /tmp/flowi-agent-deep-eval-report.json` 을 붙여 semantic/knowledge/sql/meta 그룹별 통과 수와 전체 assertion 목록을 JSON으로 남긴다.

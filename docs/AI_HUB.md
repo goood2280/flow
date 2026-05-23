@@ -123,11 +123,11 @@ cd flow
 python -m pytest tests/test_tool_registry.py tests/test_sql_workspace.py \
                   tests/test_home_orchestrator.py tests/test_skill_miner.py -v
 python3 -m pytest tests/test_ai_hub_readiness.py tests/test_ai_hub_workflow_map.py tests/test_ai_hub_board.py -q
-python3 scripts/flowi_agent_deep_eval.py
+python3 scripts/flowi_agent_deep_eval.py --report-json /tmp/flowi-agent-deep-eval-report.json
 python3 -m py_compile backend/core/ai_hub_readiness.py backend/core/ai_hub_workflow_map.py backend/routers/ai_hub.py
 ```
 
-`flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다.
+`flowi_agent_deep_eval.py`는 Agent 단어 인식, Agent Wiki upsert/search, SQL Workspace multi-view join 정답을 함께 검증한다. `--report-json` 결과는 semantic/knowledge/sql/meta 그룹별 통과 수와 전체 assertion detail을 담는다.
 
 엔드 투 엔드 시나리오 (Plan 의 Verification 절 참조):
 1. AI 허브 → 도구 27개 표시 + on-off + 30일 호출수

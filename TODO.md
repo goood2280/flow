@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Flow-i Agent deep eval JSON report 산출물 추가
 - (Codex) AI Hub workflow 실행 이력 skill mining 정규화
 - (Codex) AI Hub 워크플로우 step 지도 노드 추가
 - (Codex) AI Hub readiness 워크플로우 Dry-run 액션 연결

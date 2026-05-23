@@ -571,11 +571,53 @@ def run_sql_cases(runner: EvalRunner) -> None:
         runner.check("sql/safety/drop_rejected", "허용되지 않는 키워드" in str(exc), str(exc))
 
 
+def _group_summary(results: list[CaseResult]) -> dict[str, dict[str, int]]:
+    groups: dict[str, dict[str, int]] = {}
+    for result in results:
+        group = result.name.split("/", 1)[0] if "/" in result.name else "misc"
+        bucket = groups.setdefault(group, {"passed": 0, "failed": 0, "total": 0})
+        bucket["total"] += 1
+        if result.ok:
+            bucket["passed"] += 1
+        else:
+            bucket["failed"] += 1
+    return groups
+
+
+def _report_payload(runner: EvalRunner, *, cleanup_knowledge: bool, min_cases: int) -> dict[str, Any]:
+    return {
+        "summary": runner.summary(),
+        "groups": _group_summary(runner.results),
+        "doc_id": DOC_ID,
+        "cleanup_knowledge": cleanup_knowledge,
+        "min_cases": min_cases,
+        "catalog": {
+            "semantic_prompt_cases": len(SEMANTIC_CASES),
+            "sql_answer_cases": len(SQL_CASES),
+            "source_views": [str(cell.get("name")) for cell in BASE_CELLS if cell.get("name")],
+        },
+        "results": [
+            {"name": result.name, "ok": result.ok, "detail": result.detail}
+            for result in runner.results
+        ],
+    }
+
+
+def _write_json_report(path: str | Path, payload: dict[str, Any]) -> Path:
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = ROOT / target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run Flow-i Agent deep eval cases.")
     parser.add_argument("--cleanup-knowledge", action="store_true", help="delete the eval Wiki doc after verification")
     parser.add_argument("--show-pass", action="store_true", help="print all passing cases")
     parser.add_argument("--json", action="store_true", help="print machine-readable summary after the text report")
+    parser.add_argument("--report-json", default="", help="write detailed case results to this JSON path")
     parser.add_argument("--min-cases", type=int, default=80, help="minimum assertion count expected")
     args = parser.parse_args(argv)
 
@@ -591,8 +633,27 @@ def main(argv: list[str] | None = None) -> int:
 
     runner.print_report(show_pass=bool(args.show_pass))
     summary = runner.summary()
+    payload = _report_payload(
+        runner,
+        cleanup_knowledge=bool(args.cleanup_knowledge),
+        min_cases=int(args.min_cases),
+    )
+    if args.report_json:
+        report_path = _write_json_report(args.report_json, payload)
+        print(f"report_json: {report_path}")
     if args.json:
-        print(json.dumps({"summary": summary, "doc_id": DOC_ID, "cleanup_knowledge": bool(args.cleanup_knowledge)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "summary": summary,
+                    "groups": payload["groups"],
+                    "catalog": payload["catalog"],
+                    "doc_id": DOC_ID,
+                    "cleanup_knowledge": bool(args.cleanup_knowledge),
+                },
+                ensure_ascii=False,
+            )
+        )
     return 0 if summary["failed"] == 0 else 1
 
 
