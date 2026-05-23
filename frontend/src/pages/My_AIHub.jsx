@@ -904,6 +904,7 @@ function WorkflowRunbookPanel({ days }) {
   const [issueFilter, setIssueFilter] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
   const [actionResult, setActionResult] = useState(null);
   const [err, setErr] = useState("");
@@ -977,6 +978,7 @@ function WorkflowRunbookPanel({ days }) {
             <BoardPill tone="ok">ready {counts.ready || 0}</BoardPill>
             <BoardPill tone="warn">attention {counts.attention || 0}</BoardPill>
             <BoardPill tone="bad">blocked {counts.blocked || 0}</BoardPill>
+            <BoardPill tone="neutral">조치 {counts.next_actions || 0}</BoardPill>
           </div>
         )}
         <div style={{ flex: 1 }} />
@@ -1063,6 +1065,8 @@ function WorkflowRunbookPanel({ days }) {
 
 function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
   const issues = row.issues || [];
+  const nextActions = row.next_actions || [];
+  const nextAction = nextActions[0] || null;
   return (
     <div style={{ borderBottom: "1px dashed var(--border)" }}>
       <div style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "7px 8px", alignItems: "center", fontSize: 11 }}>
@@ -1085,10 +1089,17 @@ function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
           <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.last_status || "미검증"}</div>
           <div style={{ color: "var(--muted)", fontSize: 10 }}>{row.run_count || 0} checks</div>
         </div>
-        <div style={{ minWidth: 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {issues.length === 0 ? <BoardPill tone="ok">ready</BoardPill> : issues.slice(0, 4).map((issue) => (
-            <BoardPill key={issue.key} tone={issue.tone}>{issue.label}</BoardPill>
-          ))}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {issues.length === 0 ? <BoardPill tone="ok">ready</BoardPill> : issues.slice(0, 4).map((issue) => (
+              <BoardPill key={issue.key} tone={issue.tone}>{issue.label}</BoardPill>
+            ))}
+          </div>
+          {nextAction && (
+            <div style={{ marginTop: 4, color: "var(--muted)", fontSize: 10, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              다음: {nextAction.title}{nextAction.detail ? ` · ${nextAction.detail}` : ""}{nextActions.length > 1 ? ` 외 ${nextActions.length - 1}` : ""}
+            </div>
+          )}
         </div>
         <div>
           {(row.actions || []).slice(0, 1).map((action) => {

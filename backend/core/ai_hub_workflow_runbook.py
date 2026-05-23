@@ -53,6 +53,7 @@ def build_runbook(
         "unchecked": sum(1 for row in rows if int(row.get("run_count") or 0) <= 0),
         "shared": sum(1 for row in rows if row.get("shared")),
         "personal": sum(1 for row in rows if not row.get("shared")),
+        "next_actions": sum(len(row.get("next_actions") or []) for row in rows),
         "workflow_templates_total": _int(graph_counts.get("workflow_templates_total")) or len(rows),
     }
     return {
@@ -143,6 +144,7 @@ def _runbook_row(node: dict[str, Any], *, by_id: dict[str, dict[str, Any]], edge
         run_count=run_count,
         warning_count=warning_count,
     )
+    next_actions = _next_actions(issues)
     status, tone = _status(issues)
     return {
         "key": key,
@@ -164,6 +166,7 @@ def _runbook_row(node: dict[str, Any], *, by_id: dict[str, dict[str, Any]], edge
         "last_run": str(metrics.get("last_run") or ""),
         "last_status": str(metrics.get("last_status") or ""),
         "issues": issues,
+        "next_actions": next_actions,
         "actions": _actions(key),
     }
 
@@ -218,6 +221,67 @@ def _issues(
         out.append({"key": "not_checked", "label": "최근 검증 없음", "tone": "warn"})
     if steps and not evidence_node_ids:
         out.append({"key": "no_evidence", "label": "Wiki/schema 근거 없음", "tone": "warn"})
+    return out
+
+
+_NEXT_ACTIONS = {
+    "missing_tools": {
+        "title": "미등록 도구 연결",
+        "detail": "ToolRegistry 등록 또는 workflow step unit_ai 값을 수정",
+        "route": "/api/ai-hub/workflow-map",
+        "tone": "bad",
+    },
+    "disabled_tools": {
+        "title": "비활성 도구 확인",
+        "detail": "AI Hub 도구 카드에서 enabled 상태와 사용 여부 판단",
+        "route": "/api/ai-hub/tools",
+        "tone": "bad",
+    },
+    "incomplete_steps": {
+        "title": "step 정의 보강",
+        "detail": "unit_ai/action/bind_slots를 workflow template에 입력",
+        "route": "/api/agent/workflows",
+        "tone": "bad",
+    },
+    "no_steps": {
+        "title": "workflow step 추가",
+        "detail": "반복 업무를 unit_ai/action step으로 작성",
+        "route": "/api/agent/workflows",
+        "tone": "bad",
+    },
+    "run_warnings": {
+        "title": "검증 warning 재확인",
+        "detail": "Dry-run 결과의 missing/blocked/no_handler를 확인",
+        "route": "/api/agent/workflows/execute",
+        "tone": "warn",
+    },
+    "not_checked": {
+        "title": "Dry-run 재검증",
+        "detail": "Runbook row의 Dry-run을 실행해 최근 검증 상태 갱신",
+        "route": "/api/agent/workflows/execute",
+        "tone": "warn",
+    },
+    "no_evidence": {
+        "title": "Wiki/schema 근거 연결",
+        "detail": "도구 knowledge_refs 또는 Agent Wiki/source를 보강",
+        "route": "/api/ai-hub/workflow-map",
+        "tone": "warn",
+    },
+}
+
+
+def _next_actions(issues: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for issue in issues:
+        key = str(issue.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        action = _NEXT_ACTIONS.get(key)
+        if not action:
+            continue
+        out.append({"key": key, **action})
+        seen.add(key)
     return out
 
 

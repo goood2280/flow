@@ -67,6 +67,7 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert out["counts"]["workflow_templates_total"] == 2
     assert out["counts"]["ready"] == 1
     assert out["counts"]["blocked"] == 1
+    assert out["counts"]["next_actions"] == 3
     assert out["actions"] == []
     assert {row["key"] for row in out["issue_options"]} >= {"missing_tools", "not_checked", "no_evidence"}
     rows = {row["key"]: row for row in out["items"]}
@@ -77,11 +78,15 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert rows["blocked_lot"]["status"] == "blocked"
     assert rows["blocked_lot"]["missing_tools"] == ["ghost"]
     assert {issue["key"] for issue in rows["blocked_lot"]["issues"]} >= {"missing_tools", "not_checked", "no_evidence"}
+    assert [action["key"] for action in rows["blocked_lot"]["next_actions"]] == ["missing_tools", "not_checked", "no_evidence"]
+    assert rows["blocked_lot"]["next_actions"][0]["title"] == "미등록 도구 연결"
+    assert rows["blocked_lot"]["next_actions"][0]["route"] == "/api/ai-hub/workflow-map"
 
     blocked = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10, status="blocked")
     assert [row["key"] for row in blocked["items"]] == ["blocked_lot"]
     assert blocked["counts"]["workflows"] == 1
     assert blocked["counts"]["workflows_total"] == 2
+    assert blocked["counts"]["next_actions"] == 3
 
     missing_tools = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10, issue="missing_tools")
     assert [row["key"] for row in missing_tools["items"]] == ["blocked_lot"]

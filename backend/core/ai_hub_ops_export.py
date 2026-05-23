@@ -257,7 +257,9 @@ def _n8n_runbook_content(runbook: dict[str, Any]) -> str:
     for row in (runbook.get("items") if isinstance(runbook.get("items"), list) else [])[:8]:
         if not isinstance(row, dict):
             continue
-        lines.append(f"- {row.get('status')}: {row.get('title') or row.get('key')} steps={row.get('step_count') or 0} last={row.get('last_status') or '-'}")
+        next_action = _next_action_text(row)
+        suffix = f" next={next_action}" if next_action else ""
+        lines.append(f"- {row.get('status')}: {row.get('title') or row.get('key')} steps={row.get('step_count') or 0} last={row.get('last_status') or '-'}{suffix}")
     if len(lines) == 6:
         lines.append("- no workflow templates")
     return "\n".join(lines)
@@ -475,21 +477,22 @@ def _workflow_runbook_note(runbook: dict[str, Any]) -> str:
         f"- blocked: `{counts.get('blocked') or 0}`",
         f"- checked: `{counts.get('checked') or 0}`",
         "",
-        "| status | workflow | scope | steps | tools | last check | issues |",
-        "|---|---|---|---:|---|---|---|",
+        "| status | workflow | scope | steps | tools | last check | issues | next action |",
+        "|---|---|---|---:|---|---|---|---|",
     ]
     rows = runbook.get("items") if isinstance(runbook.get("items"), list) else []
     if not rows:
-        lines.append("| none | - | - | 0 | - | - | - |")
+        lines.append("| none | - | - | 0 | - | - | - | - |")
     for row in rows[:80]:
         if not isinstance(row, dict):
             continue
         issue_text = ", ".join(_cell(issue.get("label")) for issue in (row.get("issues") or []) if isinstance(issue, dict)) or "ready"
+        next_action = _next_action_text(row) or "-"
         scope = "shared" if row.get("shared") else "personal"
         tools = ", ".join(_cell(tool) for tool in (row.get("tool_names") or [])[:8])
         lines.append(
             f"| {_cell(row.get('status'))} | {_cell(row.get('title') or row.get('key'))} | {scope} | "
-            f"{_cell(row.get('step_count'))} | {tools} | {_cell(row.get('last_status') or row.get('last_run'))} | {issue_text} |"
+            f"{_cell(row.get('step_count'))} | {tools} | {_cell(row.get('last_status') or row.get('last_run'))} | {issue_text} | {_cell(next_action)} |"
         )
     lines.extend(["", "## Steps", ""])
     for row in rows[:40]:
@@ -504,6 +507,18 @@ def _workflow_runbook_note(runbook: dict[str, Any]) -> str:
                 lines.append(f"- `{_cell(step.get('index'))}` `{_cell(step.get('unit_ai'))}`.`{_cell(step.get('action'))}`")
         lines.append("")
     return "\n".join(lines)
+
+
+def _next_action_text(row: dict[str, Any]) -> str:
+    actions = row.get("next_actions") if isinstance(row.get("next_actions"), list) else []
+    first = next((item for item in actions if isinstance(item, dict)), None)
+    if not first:
+        return ""
+    title = str(first.get("title") or "").strip()
+    detail = str(first.get("detail") or "").strip()
+    if title and detail:
+        return f"{title}: {detail}"
+    return title or detail
 
 
 def _timeline_note(timeline: dict[str, Any]) -> str:

@@ -84,15 +84,16 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 ## Workflow Runbook
 
-`core/ai_hub_workflow_runbook.py` 는 workflow map을 표 형태로 정규화한다. 운영자는 `Workflow Runbook` 패널에서 각 Agent workflow template의 scope(shared/personal), step 수, 연결 도구, Wiki/schema evidence count, 최근 dry-run/execute 상태, issue를 한 줄로 비교한다.
+`core/ai_hub_workflow_runbook.py` 는 workflow map을 표 형태로 정규화한다. 운영자는 `Workflow Runbook` 패널에서 각 Agent workflow template의 scope(shared/personal), step 수, 연결 도구, Wiki/schema evidence count, 최근 dry-run/execute 상태, issue와 다음 조치를 한 줄로 비교한다.
 
 - `ready`: step, 도구, Wiki/schema 근거, 최근 검증이 모두 확인된 workflow
 - `attention`: 실행은 가능하지만 최근 검증이나 evidence가 부족한 workflow
 - `blocked`: step 정의 누락, 미등록 unit_ai, 비활성 도구처럼 운영 전에 고쳐야 하는 workflow
 - `status`와 `issue` query로 `blocked`, `not_checked`, `missing_tools`, `no_evidence` 같은 운영 대상만 좁혀 볼 수 있다.
+- 각 row는 issue key에 맞춘 `next_actions[]`를 내려준다. 예: `missing_tools`는 ToolRegistry/workflow step 수정, `not_checked`는 Dry-run 재검증, `no_evidence`는 Wiki/schema 근거 연결로 안내한다.
 - 각 row의 `Dry-run` action은 기존 `/api/agent/workflows/execute`를 `dry_run=true`로 호출하고, 실제 권한/guardrail은 Agent workflow endpoint가 다시 검증한다.
 - 등록된 workflow template이 없으면 admin에게 `시작 템플릿 생성` action을 노출해 기존 `/api/ai-hub/readiness/bootstrap-workflows`로 공유 starter workflow 3개를 바로 만들 수 있게 한다.
-- 운영 Obsidian ZIP은 `operations/workflow-runbook.md`를 포함하고, 운영 n8n JSON은 `ops:runbook` sticky note를 readiness와 deep-eval 사이에 둔다.
+- 운영 Obsidian ZIP은 `operations/workflow-runbook.md`에 issue와 next action 열을 포함하고, 운영 n8n JSON은 `ops:runbook` sticky note를 readiness와 deep-eval 사이에 둔다.
 
 ## 운영 준비도
 

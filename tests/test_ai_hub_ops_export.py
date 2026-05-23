@@ -53,6 +53,7 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
             "tool_names": ["splittable", "filebrowser"],
             "last_status": "dry_run:2",
             "issues": [],
+            "next_actions": [{"title": "Wiki/schema 근거 연결", "detail": "도구 knowledge_refs 보강"}],
             "steps": [{"index": 1, "unit_ai": "splittable", "action": "knob_impact"}],
         }],
     })
@@ -99,7 +100,9 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         assert "Wiki 보강" in zf.read("operations/readiness.md").decode("utf-8")
         assert "semantic/step_id simple question" in zf.read("operations/deep-eval.md").decode("utf-8")
         assert "Agent terms" in zf.read("operations/wiki-health.md").decode("utf-8")
-        assert "KNOB 기반 lot_wf 영향 확인" in zf.read("operations/workflow-runbook.md").decode("utf-8")
+        runbook_note = zf.read("operations/workflow-runbook.md").decode("utf-8")
+        assert "KNOB 기반 lot_wf 영향 확인" in runbook_note
+        assert "Wiki/schema 근거 연결" in runbook_note
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -122,7 +125,15 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
         "counts": {"workflows": 1, "ready": 0, "attention": 1, "blocked": 0},
-        "items": [{"key": "ops_lot_step_review", "title": "LOT step", "status": "attention", "step_count": 2, "last_status": "", "issues": [{"label": "최근 검증 없음"}]}],
+        "items": [{
+            "key": "ops_lot_step_review",
+            "title": "LOT step",
+            "status": "attention",
+            "step_count": 2,
+            "last_status": "",
+            "issues": [{"label": "최근 검증 없음"}],
+            "next_actions": [{"title": "Dry-run 재검증", "detail": "Runbook row의 Dry-run을 실행"}],
+        }],
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
         "days": days,
@@ -150,6 +161,8 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     assert workflow["staticData"]["deep_eval_status"] == "fail"
     assert workflow["staticData"]["wiki_health_status"] == "warn"
     assert workflow["staticData"]["runbook_workflows"] == 1
+    runbook_node = next(node for node in workflow["nodes"] if node["id"] == "ops:runbook")
+    assert "next=Dry-run 재검증" in runbook_node["parameters"]["content"]
 
 
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):
