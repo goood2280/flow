@@ -273,6 +273,7 @@ def agent_semantic_alias_groups_upsert(req: LexiconUpsertReq, request: Request) 
         raise HTTPException(400, "key is required")
     by = str(me.get("username") or "")
     _lex_upsert_alias_group(key, list(req.values or []), by=by, seed=dict(_SEMANTIC_ALIAS_SEED))
+    audit.record(request, action=f"semantic:alias_group:upsert:{key}", detail=f"values={len(req.values or [])}", tab="ai_hub")
     disk = _lex_load_alias_groups()
     return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_ALIAS_SEED), disk=disk)}
 
@@ -284,6 +285,7 @@ def agent_semantic_alias_groups_delete(req: LexiconDeleteReq, request: Request) 
     if not key:
         raise HTTPException(400, "key is required")
     removed = _lex_delete_alias_group(key, by=str(me.get("username") or ""))
+    audit.record(request, action=f"semantic:alias_group:delete:{key}", detail=f"removed={bool(removed)}", tab="ai_hub")
     disk = _lex_load_alias_groups()
     return {"ok": True, "removed": bool(removed), **_lexicon_view(seed=dict(_SEMANTIC_ALIAS_SEED), disk=disk)}
 
@@ -303,6 +305,7 @@ def agent_semantic_intent_hints_upsert(req: LexiconUpsertReq, request: Request) 
         raise HTTPException(400, "key is required")
     by = str(me.get("username") or "")
     _lex_upsert_intent_hint(key, list(req.values or []), by=by, seed=dict(_SEMANTIC_INTENT_SEED))
+    audit.record(request, action=f"semantic:intent_hint:upsert:{key}", detail=f"values={len(req.values or [])}", tab="ai_hub")
     disk = _lex_load_intent_hints()
     return {"ok": True, **_lexicon_view(seed=dict(_SEMANTIC_INTENT_SEED), disk=disk)}
 
@@ -314,6 +317,7 @@ def agent_semantic_intent_hints_delete(req: LexiconDeleteReq, request: Request) 
     if not key:
         raise HTTPException(400, "key is required")
     removed = _lex_delete_intent_hint(key, by=str(me.get("username") or ""))
+    audit.record(request, action=f"semantic:intent_hint:delete:{key}", detail=f"removed={bool(removed)}", tab="ai_hub")
     disk = _lex_load_intent_hints()
     return {"ok": True, "removed": bool(removed), **_lexicon_view(seed=dict(_SEMANTIC_INTENT_SEED), disk=disk)}
 
@@ -374,6 +378,12 @@ def agent_semantic_proposals_decide(req: ProposalDecideReq, request: Request) ->
                 current = list(current) + [term]
             _lex_upsert_alias_group(target, current, by=by, seed=dict(_SEMANTIC_ALIAS_SEED))
             applied = {"upserted": True, "canonical": target}
+    audit.record(
+        request,
+        action=f"semantic:proposal:{status}:{proposal_id}",
+        detail=f"term={updated.get('term') or ''};canonical={applied.get('canonical') or ''};upserted={bool(applied.get('upserted'))}",
+        tab="ai_hub",
+    )
     return {"ok": True, "proposal": updated, "applied": applied}
 
 
@@ -385,6 +395,7 @@ def agent_semantic_proposals_run_batch(request: Request) -> dict[str, Any]:
         PATHS.data_root / "flowi_activity.jsonl"
     )
     enqueued = _learn_submit_activity_log_batch(activity_path)
+    audit.record(request, action="semantic:proposals:run_batch", detail=f"enqueued={int(enqueued)}", tab="ai_hub")
     return {"ok": True, "enqueued": int(enqueued), "by": str(me.get("username") or "")}
 
 

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 이벤트 타임라인 추가
 - (Codex) AI Hub Agent deep-eval 케이스 인벤토리 표시
 - (Codex) AI Hub workflow map Obsidian ZIP export 추가
 - (Codex) AI Hub workflow map deep eval 노드 재검증 액션 연결

@@ -26,6 +26,7 @@ GET  /api/ai-hub/tools/{name}               단일 도구 상세
 GET  /api/ai-hub/tools/{name}/history       최근 호출 이력
 GET  /api/ai-hub/tags                       태그 목록 (필터용)
 GET  /api/ai-hub/board                      운영 보드: semantic 제안 + skill 후보 + workflow + 비활성 도구 + 승인/거부/활성화 action metadata
+GET  /api/ai-hub/timeline                   운영 이벤트 타임라인: workflow 검증, semantic/wiki 변경, deep-eval, tool/skill 관리 이력
 GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백로그
 GET  /api/ai-hub/deep-eval-report           Agent semantic/wiki/sql deep-eval 최신 리포트
 POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성 (admin)
@@ -85,6 +86,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 - AI Hub 화면의 `Agent 검증 리포트` 패널은 `data_root/reports/flowi_agent_deep_eval_latest.json` 을 읽어서 semantic/knowledge/sql/meta 그룹별 deep-eval 통과 수, 실패 assertion, 통과/실패 케이스 샘플을 보여준다. admin은 같은 패널의 `검증 실행` 또는 readiness backlog action으로 최신 리포트를 재생성할 수 있다.
+- AI Hub 화면의 `운영 타임라인` 패널은 기존 `activity.jsonl`에서 AI Hub/Agent 관리 이벤트만 읽어 workflow dry-run/execute, semantic proposal/lexicon 변경, deep-eval, tool toggle, skill 승인/거부 이력을 시간순으로 보여준다.
 
 ## SQL 작업대 — 멀티 셀 조인
 

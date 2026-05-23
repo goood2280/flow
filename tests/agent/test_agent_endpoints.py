@@ -17,6 +17,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import agent  # noqa: E402
+from app_v2.modules.semantic_lexicon import store as semantic_store  # noqa: E402
 from app_v2.modules.semantic_learning import inbox as semantic_inbox  # noqa: E402
 
 
@@ -263,6 +264,36 @@ def test_agent_knowledge_overview_combines_runtime_sources(tmp_path, monkeypatch
         "prompt_history",
     }
     assert root.exists()
+
+
+def test_semantic_proposal_decision_writes_ai_hub_audit(tmp_path, monkeypatch):
+    monkeypatch.setattr(semantic_inbox, "INBOX_DIR", tmp_path / "semantic" / "proposals")
+    monkeypatch.setattr(semantic_store, "LEXICON_DIR", tmp_path / "semantic" / "lexicon")
+    monkeypatch.setattr(semantic_store, "ALIAS_FILE", tmp_path / "semantic" / "lexicon" / "alias_groups.json")
+    monkeypatch.setattr(semantic_store, "INTENT_FILE", tmp_path / "semantic" / "lexicon" / "intent_hints.json")
+    monkeypatch.setattr(semantic_store, "CHANGES_FILE", tmp_path / "semantic" / "lexicon" / "changes.jsonl")
+    monkeypatch.setattr(agent.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
+    proposal = semantic_inbox.enqueue_proposal({
+        "term": "루트랏",
+        "category": "mapping",
+        "canonical_match": "root_lot_id",
+        "confidence": 0.9,
+        "rationale": "test",
+        "origin": {"kind": "test", "ref": "semantic-audit"},
+    })
+
+    out = agent.agent_semantic_proposals_decide(
+        agent.ProposalDecideReq(id=proposal["id"], status="approved"),
+        req(role="admin", username="root"),
+    )
+
+    assert out["ok"] is True
+    assert out["applied"]["upserted"] is True
+    event = json.loads(agent.audit.ACTIVITY_LOG.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["username"] == "root"
+    assert event["tab"] == "ai_hub"
+    assert event["action"] == f"semantic:proposal:approved:{proposal['id']}"
+    assert "canonical=root_lot_id" in event["detail"]
 
 
 def test_workflow_shared_templates_require_admin(tmp_path, monkeypatch):

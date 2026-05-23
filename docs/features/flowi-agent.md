@@ -145,6 +145,7 @@ Flow는 사내 GPT OSS 120B를 기본 LLM 백본으로 쓴다. dev/외부 환경
 - Missing product/lot/column evidence is returned in `final.missing` / `final.warnings`.
 - Existing FileBrowser AI SQL endpoints stay owned by FileBrowser.
 - General users create personal drafts/proposals/sources; maintained shared knowledge is applied through existing approval or wiki commit APIs.
+- Semantic proposal decisions and lexicon edits are written to `activity.jsonl` as `semantic:*` AI Hub events so the management timeline can show who changed the Agent vocabulary.
 
 ## Verify
 

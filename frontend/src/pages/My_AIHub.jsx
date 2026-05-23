@@ -100,6 +100,7 @@ export default function My_AIHub() {
       <ReadinessPanel days={days} onChanged={loadCatalog} />
       <DeepEvalPanel />
       <OperationsBoard days={days} onChanged={loadCatalog} />
+      <TimelinePanel days={days} />
       <WorkflowMapPanel days={days} />
       <SkillsPanel />
 
@@ -1140,6 +1141,106 @@ function boardActionStyle(tone) {
     padding: "2px 7px",
     cursor: "pointer",
   };
+}
+
+
+function TimelinePanel({ days }) {
+  const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function loadTimeline() {
+    setLoading(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({ days: String(days), limit: "30" });
+      if (category) qs.set("category", category);
+      const out = await sf(`/api/ai-hub/timeline?${qs.toString()}`);
+      setData(out);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { if (open) loadTimeline(); }, [open, days, category]);
+
+  const items = data?.items || [];
+  const counts = data?.counts || {};
+  const categories = ["workflow", "semantic", "validation", "tool", "skill"];
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
+          {open ? "▾" : "▸"}
+        </button>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>운영 타임라인</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {Object.entries(counts).slice(0, 5).map(([key, count]) => <BoardPill key={key} tone="neutral">{key} {count}</BoardPill>)}
+        </div>
+        <div style={{ flex: 1 }} />
+        {open && (
+          <>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              style={{ ...selectStyle, width: 150, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 이벤트</option>
+              {categories.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <button onClick={loadTimeline} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
+          </>
+        )}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{err}</div>}
+          {!data && loading ? (
+            <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
+          ) : items.length === 0 ? (
+            <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-secondary)" }}>
+              최근 운영 이벤트 없음
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+              {items.map((item) => <TimelineItem key={item.id} item={item} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function TimelineItem({ item }) {
+  return (
+    <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+        <div style={{ minWidth: 0, fontSize: 12, fontWeight: 800, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {item.title || item.action}
+        </div>
+        <BoardPill tone={item.tone || "neutral"}>{item.category}</BoardPill>
+      </div>
+      <div style={{ marginTop: 3, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <Tag>{item.username || "unknown"}</Tag>
+        <Tag>{relTime(item.timestamp)}</Tag>
+        {item.meta && <Tag>{item.meta}</Tag>}
+      </div>
+      {item.detail && (
+        <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {item.detail}
+        </div>
+      )}
+      <div style={{ marginTop: 4, fontSize: 10, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {item.action}
+      </div>
+    </div>
+  );
 }
 
 
