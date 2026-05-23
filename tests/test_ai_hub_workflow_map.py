@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
+    monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
 
     out = ai_hub_workflow_map.build_workflow_map(days=30, limit=10)
 
@@ -137,6 +139,25 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
+    activity_log = tmp_path / "activity.jsonl"
+    activity_log.write_text(
+        json.dumps({
+            "timestamp": "2099-01-01T00:00:00+00:00",
+            "username": "operator",
+            "action": "ai_hub_run:workflow:ops_knob_lotwf_review",
+            "tab": "ai_hub",
+            "detail": json.dumps({
+                "workflow": "ops_knob_lotwf_review",
+                "title": "KNOB 기반 lot_wf 영향 확인",
+                "dry_run": True,
+                "steps": 2,
+                "confirm_required": False,
+                "statuses": {"dry_run": 2},
+            }, ensure_ascii=False),
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", activity_log)
 
     wf_templates.save_template({
         "key": "ops_knob_lotwf_review",
@@ -185,6 +206,8 @@ def test_ai_hub_workflow_map_links_workflow_templates_to_step_tools(monkeypatch,
     nodes = {node["id"]: node for node in out["nodes"]}
     assert nodes["workflow:ops_knob_lotwf_review"]["type"] == "workflow"
     assert nodes["workflow:ops_knob_lotwf_review"]["metrics"]["steps"] == 2
+    assert nodes["workflow:ops_knob_lotwf_review"]["metrics"]["run_count"] == 1
+    assert nodes["workflow:ops_knob_lotwf_review"]["metrics"]["last_status"] == "dry_run:2"
     assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["endpoint"] == "/api/agent/workflows/execute"
     assert nodes["workflow:ops_knob_lotwf_review"]["actions"][0]["body"]["dry_run"] is True
     assert nodes["workflow:personal_lot_step"]["shared"] is False
@@ -247,6 +270,7 @@ def test_ai_hub_workflow_map_warns_broken_workflow_templates(monkeypatch, tmp_pa
 
     monkeypatch.setattr(tool_registry, "list_tools", fake_list_tools)
     monkeypatch.setattr(wf_templates, "_DIR", tmp_path)
+    monkeypatch.setattr(ai_hub_workflow_map.audit, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
 
     wf_templates.save_template({
         "key": "empty_workflow",

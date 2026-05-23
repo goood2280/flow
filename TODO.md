@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 워크플로우 지도 최근 검증 상태 연결
 - (Codex) AI Hub 워크플로우 실행 이력 운영 보드 연결
 - (Codex) AI Hub 워크플로우 품질 경고/backlog 연결
 - (Codex) AI Hub 워크플로우 노드 dry-run 관리 연결

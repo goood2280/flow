@@ -6,10 +6,12 @@ extra runtime store, no writes.
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from core import audit
 from core import flowi_workflow_templates as wf_templates
 from core import tool_registry
 
@@ -171,6 +173,7 @@ def build_workflow_map(
         row for row in workflow_all_rows
         if _workflow_matches_focus(row, focus_tag, tool_by_name)
     ]
+    workflow_runs_by_key = _workflow_run_summaries(days=days)
     workflow_limit = min(80, max(20, limit))
     visible_workflows = workflow_rows[:workflow_limit]
     for workflow in visible_workflows:
@@ -178,6 +181,7 @@ def build_workflow_map(
         if not key:
             continue
         steps = _workflow_step_summaries(workflow)
+        run_summary = workflow_runs_by_key.get(key) or {}
         workflow_id = f"workflow:{key}"
         add_node({
             "id": workflow_id,
@@ -188,9 +192,15 @@ def build_workflow_map(
             "workflow_key": key,
             "owner": str(workflow.get("owner") or ""),
             "shared": bool(workflow.get("shared")),
-            "tone": "ok" if steps else "warn",
+            "tone": _workflow_tone(steps, run_summary),
             "tags": _workflow_tags(workflow, steps),
-            "metrics": {"steps": len(steps)},
+            "metrics": {
+                "steps": len(steps),
+                "run_count": int(run_summary.get("run_count") or 0),
+                "warning_count": int(run_summary.get("warning_count") or 0),
+                "last_run": str(run_summary.get("last_run") or ""),
+                "last_status": str(run_summary.get("last_status") or ""),
+            },
             "steps": steps,
             "actions": _workflow_actions(key),
         })
@@ -227,6 +237,8 @@ def build_workflow_map(
         "workflow_templates_shared": sum(1 for row in visible_workflows if row.get("shared")),
         "workflow_templates_personal": sum(1 for row in visible_workflows if not row.get("shared")),
         "workflow_step_edges": workflow_step_edges,
+        "workflow_runs_recent": sum(int(row.get("run_count") or 0) for row in workflow_runs_by_key.values()),
+        "workflow_run_warnings": sum(int(row.get("warning_count") or 0) for row in workflow_runs_by_key.values()),
         "workflow_missing_tools": len(workflow_missing_tools),
         "workflow_empty_templates": len(workflow_empty_templates),
         "workflow_incomplete_steps": len(workflow_incomplete_steps),
@@ -428,6 +440,10 @@ def _n8n_node_content(node: dict[str, Any]) -> str:
         if owner:
             lines.append(f"- owner: `{owner}`")
         lines.append(f"- steps: `{metrics.get('steps') or 0}`")
+        if metrics.get("last_run"):
+            lines.append(f"- last_run: `{metrics.get('last_run')}`")
+        if metrics.get("last_status"):
+            lines.append(f"- last_status: `{metrics.get('last_status')}`")
     kind = str(node.get("kind") or "")
     if kind:
         lines.append(f"- kind: `{kind}`")
@@ -482,6 +498,10 @@ def _obsidian_node_body(
             f"- owner: `{node.get('owner') or ''}`",
             f"- shared: `{bool(node.get('shared'))}`",
             f"- steps: `{metrics.get('steps') or 0}`",
+            f"- run_count: `{metrics.get('run_count') or 0}`",
+            f"- warning_count: `{metrics.get('warning_count') or 0}`",
+            f"- last_run: `{metrics.get('last_run') or ''}`",
+            f"- last_status: `{metrics.get('last_status') or ''}`",
             "",
         ])
         steps = node.get("steps") if isinstance(node.get("steps"), list) else []
@@ -633,6 +653,62 @@ def _workflow_step_summaries(row: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _workflow_run_summaries(*, days: int) -> dict[str, dict[str, Any]]:
+    log = audit.ACTIVITY_LOG
+    if not log.exists():
+        return {}
+    cutoff = datetime.now(timezone.utc).timestamp() - max(1, days) * 86400
+    summaries: dict[str, dict[str, Any]] = {}
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        action = str(rec.get("action") or "")
+        if not action.startswith("ai_hub_run:workflow:"):
+            continue
+        ts = _parse_ts(str(rec.get("timestamp") or ""))
+        if ts and ts.timestamp() < cutoff:
+            continue
+        key = action.split("ai_hub_run:workflow:", 1)[-1].strip()
+        if not key:
+            continue
+        detail = _json_detail(rec.get("detail"))
+        statuses = detail.get("statuses") if isinstance(detail.get("statuses"), dict) else {}
+        warning_count = sum(int(statuses.get(name) or 0) for name in ("error", "blocked", "missing_slots", "confirm_required", "no_handler"))
+        row = summaries.setdefault(key, {
+            "run_count": 0,
+            "warning_count": 0,
+            "last_run": "",
+            "last_status": "",
+        })
+        row["run_count"] = int(row.get("run_count") or 0) + 1
+        row["warning_count"] = int(row.get("warning_count") or 0) + warning_count
+        timestamp = str(rec.get("timestamp") or "")
+        if timestamp >= str(row.get("last_run") or ""):
+            row["last_run"] = timestamp
+            row["last_status"] = _status_label(statuses, bool(detail.get("dry_run")))
+    return summaries
+
+
+def _status_label(statuses: dict[str, Any], dry_run: bool) -> str:
+    if statuses:
+        return ",".join(f"{key}:{value}" for key, value in statuses.items())
+    return "dry_run" if dry_run else "executed"
+
+
+def _workflow_tone(steps: list[dict[str, Any]], run_summary: dict[str, Any]) -> str:
+    if not steps:
+        return "warn"
+    if int(run_summary.get("warning_count") or 0) > 0:
+        return "warn"
+    return "ok"
+
+
 def _workflow_tags(row: dict[str, Any], steps: list[dict[str, Any]]) -> list[str]:
     tags = ["workflow", "shared" if row.get("shared") else "personal"]
     trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
@@ -694,6 +770,26 @@ def _missing_tool_row(name: str) -> dict[str, Any]:
         "knowledge_refs": {},
         "_missing": True,
     }
+
+
+def _json_detail(value: Any) -> dict[str, Any]:
+    try:
+        out = json.loads(str(value or "{}"))
+    except Exception:
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def _parse_ts(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 def _reference_rows(refs: dict[str, Any]) -> list[dict[str, Any]]:

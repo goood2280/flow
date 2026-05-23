@@ -604,7 +604,7 @@ function WorkflowNodeButton({ node, selected, onSelect }) {
       )}
       {node.type === "workflow" && (
         <div style={{ marginTop: 2, fontSize: 9, color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {(node.shared ? "shared" : "personal")} · {(node.metrics?.steps || 0)} steps
+          {(node.shared ? "shared" : "personal")} · {(node.metrics?.steps || 0)} steps{node.metrics?.last_status ? ` · ${node.metrics.last_status}` : ""}
         </div>
       )}
     </button>
@@ -641,6 +641,8 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
             <Tag>{node.shared ? "shared" : "personal"}</Tag>
             <Tag>{node.metrics?.steps || 0} steps</Tag>
+            <Tag>{node.metrics?.run_count || 0} checks</Tag>
+            {node.metrics?.last_status && <Tag>{node.metrics.last_status}</Tag>}
             {node.owner && <Tag>{node.owner}</Tag>}
           </div>
           {(node.actions || []).length > 0 && (
