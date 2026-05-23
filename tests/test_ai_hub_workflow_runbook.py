@@ -68,6 +68,7 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert out["counts"]["ready"] == 1
     assert out["counts"]["blocked"] == 1
     assert out["actions"] == []
+    assert {row["key"] for row in out["issue_options"]} >= {"missing_tools", "not_checked", "no_evidence"}
     rows = {row["key"]: row for row in out["items"]}
     assert rows["ready_knob"]["status"] == "ready"
     assert rows["ready_knob"]["trigger_summary"]["intent"] == "knob_analysis"
@@ -76,6 +77,14 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert rows["blocked_lot"]["status"] == "blocked"
     assert rows["blocked_lot"]["missing_tools"] == ["ghost"]
     assert {issue["key"] for issue in rows["blocked_lot"]["issues"]} >= {"missing_tools", "not_checked", "no_evidence"}
+
+    blocked = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10, status="blocked")
+    assert [row["key"] for row in blocked["items"]] == ["blocked_lot"]
+    assert blocked["counts"]["workflows"] == 1
+    assert blocked["counts"]["workflows_total"] == 2
+
+    missing_tools = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10, issue="missing_tools")
+    assert [row["key"] for row in missing_tools["items"]] == ["blocked_lot"]
 
 
 def test_ai_hub_workflow_runbook_exposes_bootstrap_action_when_empty(monkeypatch):
@@ -101,16 +110,18 @@ def test_ai_hub_workflow_runbook_exposes_bootstrap_action_when_empty(monkeypatch
 def test_ai_hub_workflow_runbook_endpoint_passes_user(monkeypatch):
     from routers import ai_hub
 
-    def fake_build_runbook(username="", days=30, limit=40, focus_tag=""):
+    def fake_build_runbook(username="", days=30, limit=40, focus_tag="", status="", issue=""):
         assert username == "alice"
         assert days == 7
         assert limit == 5
         assert focus_tag == "knob"
+        assert status == "blocked"
+        assert issue == "missing_tools"
         return {"ok": True, "items": [], "counts": {"workflows": 0}}
 
     monkeypatch.setattr(ai_hub.ai_hub_workflow_runbook, "build_runbook", fake_build_runbook)
 
-    out = ai_hub.workflow_runbook(_req(), days=7, limit=5, focus_tag="knob")
+    out = ai_hub.workflow_runbook(_req(), days=7, limit=5, focus_tag="knob", status="blocked", issue="missing_tools")
 
     assert out["ok"] is True
     assert out["is_admin"] is True

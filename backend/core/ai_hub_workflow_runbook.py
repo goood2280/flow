@@ -17,10 +17,14 @@ def build_runbook(
     days: int = 30,
     limit: int = 40,
     focus_tag: str = "",
+    status: str = "",
+    issue: str = "",
 ) -> dict[str, Any]:
     days = max(1, min(365, int(days or 30)))
     limit = max(1, min(120, int(limit or 40)))
     focus_tag = str(focus_tag or "").strip()
+    status = str(status or "").strip()
+    issue = str(issue or "").strip()
     graph = ai_hub_workflow_map.build_workflow_map(
         username=str(username or ""),
         days=days,
@@ -33,13 +37,15 @@ def build_runbook(
     edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
     graph_counts = graph.get("counts") if isinstance(graph.get("counts"), dict) else {}
     by_id = {str(node.get("id") or ""): node for node in nodes if isinstance(node, dict)}
-    rows = [
+    all_rows = [
         _runbook_row(node, by_id=by_id, edges=edges)
         for node in nodes
         if isinstance(node, dict) and node.get("type") == "workflow"
-    ][:limit]
+    ]
+    rows = _filter_rows(all_rows, status=status, issue=issue)[:limit]
     counts = {
         "workflows": len(rows),
+        "workflows_total": len(all_rows),
         "ready": sum(1 for row in rows if row.get("status") == "ready"),
         "attention": sum(1 for row in rows if row.get("status") == "attention"),
         "blocked": sum(1 for row in rows if row.get("status") == "blocked"),
@@ -55,7 +61,11 @@ def build_runbook(
         "days": days,
         "limit": limit,
         "focus_tag": focus_tag,
+        "status": status,
+        "issue": issue,
         "counts": counts,
+        "status_options": _status_options(all_rows),
+        "issue_options": _issue_options(all_rows),
         "top_tags": graph.get("top_tags") if isinstance(graph.get("top_tags"), list) else [],
         "warnings": graph.get("warnings") if isinstance(graph.get("warnings"), list) else [],
         "actions": _runbook_actions(counts),
@@ -66,6 +76,43 @@ def build_runbook(
             "workflow_templates": "/api/agent/workflows",
         },
     }
+
+
+def _filter_rows(rows: list[dict[str, Any]], *, status: str, issue: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if status and str(row.get("status") or "") != status:
+            continue
+        if issue and not any(isinstance(item, dict) and item.get("key") == issue for item in row.get("issues") or []):
+            continue
+        out.append(row)
+    return out
+
+
+def _status_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labels = {
+        "ready": "ready",
+        "attention": "attention",
+        "blocked": "blocked",
+    }
+    return [
+        {"key": key, "label": label, "count": sum(1 for row in rows if row.get("status") == key)}
+        for key, label in labels.items()
+    ]
+
+
+def _issue_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        for issue in row.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            key = str(issue.get("key") or "").strip()
+            if not key:
+                continue
+            bucket = counts.setdefault(key, {"key": key, "label": str(issue.get("label") or key), "count": 0})
+            bucket["count"] = int(bucket.get("count") or 0) + 1
+    return sorted(counts.values(), key=lambda row: (-int(row.get("count") or 0), str(row.get("key") or "")))
 
 
 def _runbook_row(node: dict[str, Any], *, by_id: dict[str, dict[str, Any]], edges: list[Any]) -> dict[str, Any]:

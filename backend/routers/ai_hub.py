@@ -230,6 +230,8 @@ def workflow_runbook(
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=40, ge=1, le=120),
     focus_tag: str = Query(default=""),
+    status: str = Query(default=""),
+    issue: str = Query(default=""),
 ):
     me = current_user(request)
     out = ai_hub_workflow_runbook.build_runbook(
@@ -237,6 +239,8 @@ def workflow_runbook(
         days=days,
         limit=limit,
         focus_tag=focus_tag,
+        status=status,
+        issue=issue,
     )
     out["is_admin"] = (me or {}).get("role") == "admin"
     return out

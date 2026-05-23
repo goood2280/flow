@@ -900,6 +900,8 @@ function ReadinessBacklog({ rows, canManage, actionBusy, onAction }) {
 function WorkflowRunbookPanel({ days }) {
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [issueFilter, setIssueFilter] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
@@ -912,6 +914,8 @@ function WorkflowRunbookPanel({ days }) {
     try {
       const qs = new URLSearchParams({ days: String(days), limit: "40" });
       if (focusTag) qs.set("focus_tag", focusTag);
+      if (statusFilter) qs.set("status", statusFilter);
+      if (issueFilter) qs.set("issue", issueFilter);
       const out = await sf(`/api/ai-hub/workflow-runbook?${qs.toString()}`);
       setData(out);
     } catch (e) {
@@ -953,22 +957,23 @@ function WorkflowRunbookPanel({ days }) {
     }
   }
 
-  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag]);
+  useEffect(() => { if (open) loadRunbook(); }, [open, days, focusTag, statusFilter, issueFilter]);
 
   const counts = data?.counts || {};
   const rows = data?.items || [];
   const topTags = data?.top_tags || [];
+  const issueOptions = data?.issue_options || [];
   const runbookActions = data?.is_admin ? (data?.actions || []) : [];
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <button onClick={() => setOpen((v) => !v)} style={{ ...btnGhost, padding: "3px 8px" }}>
           {open ? "▾" : "▸"}
         </button>
         <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>Workflow Runbook</div>
         {data && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            <BoardPill tone="neutral">전체 {counts.workflows || 0}</BoardPill>
+            <BoardPill tone="neutral">표시 {counts.workflows || 0}/{counts.workflows_total ?? counts.workflow_templates_total ?? 0}</BoardPill>
             <BoardPill tone="ok">ready {counts.ready || 0}</BoardPill>
             <BoardPill tone="warn">attention {counts.attention || 0}</BoardPill>
             <BoardPill tone="bad">blocked {counts.blocked || 0}</BoardPill>
@@ -985,6 +990,26 @@ function WorkflowRunbookPanel({ days }) {
               <option value="">전체 태그</option>
               {topTags.map((row) => (
                 <option key={row.tag} value={row.tag}>{row.tag} ({row.count})</option>
+              ))}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              style={{ ...selectStyle, width: 132, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 상태</option>
+              <option value="ready">ready</option>
+              <option value="attention">attention</option>
+              <option value="blocked">blocked</option>
+            </select>
+            <select
+              value={issueFilter}
+              onChange={(e) => setIssueFilter(e.target.value)}
+              style={{ ...selectStyle, width: 180, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 issue</option>
+              {issueOptions.map((row) => (
+                <option key={row.key} value={row.key}>{row.label} ({row.count})</option>
               ))}
             </select>
             {runbookActions.map((action) => (
