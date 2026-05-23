@@ -6,7 +6,8 @@
 
 - 기본 브랜치는 `main`.
 - 원격은 `origin`이고 URL은 `https://github.com/goood2280/flow.git`.
-- 로컬 작업트리 변경을 사용자가 "지금 로컬한 것"으로 요청하면 코드, 문서, runtime/cache 파일까지 포함해 커밋한다.
+- GitHub에는 앱 코드와 문서만 올린다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 로컬/사내 데이터 루트이며 push 대상이 아니다.
+- 로컬 작업트리 변경을 사용자가 "지금 로컬한 것"으로 요청해도 runtime/cache 파일은 Git 추적 대상에서 제외한다.
 - GitHub `main`에 푸시하는 커밋은 항상 `_build_setup.py`로 재생성한 최신 `setup.py`를 포함한다.
 - runtime/user data를 임의로 되돌리지 않는다. `git diff --check`가 runtime 기록 파일의 trailing whitespace 때문에 실패하더라도, 요청이 로컬 상태 보존이면 파일 내용을 임의 정리하지 않는다.
 - WSL Git에 GitHub credential이 없을 수 있다. 이 경우 Windows Git credential을 쓰는 `git.exe push origin main`이 동작한다.
@@ -47,7 +48,7 @@ git ls-files --others --exclude-standard
 git diff --check
 ```
 
-`git diff --check` 실패가 소스 코드 공백 오류인지, runtime 기록 파일의 기존 형식 문제인지 구분한다. 사용자가 로컬 상태 그대로 푸시를 요청한 경우 runtime 파일을 임의 정리하지 않는다.
+`git diff --check` 실패가 소스 코드 공백 오류인지 확인한다. runtime 기록 파일은 Git에서 제외되어야 하며, 필요하면 `git status --ignored data`로 ignored 상태만 확인한다.
 
 5. 전체 변경을 스테이징하고 커밋한다.
 

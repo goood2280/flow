@@ -48,39 +48,13 @@ flow_domain.txt
 flow_도메인지식_방향성_정리.txt
 *도메인*.txt
 
-# Runtime data that should not live in Git.
-# Keep data/Fab and flow-data seed/config files trackable; exclude volatile state.
-data/**/__pycache__/
-data/**/*.py[cod]
-data/flow-data/_backups/
-data/flow-data/agent_backups/
-data/flow-data/knowledge/raw/
-data/flow-data/logs/
-data/flow-data/sessions/
-data/flow-data/calendar/
-data/flow-data/dbmap/archive/
-data/flow-data/et_probe_alert_state.json
-data/flow-data/et_reports/
-data/flow-data/groups/*_audit.jsonl
-data/flow-data/informs/informs.json
-data/flow-data/informs/product_contacts.json
-data/flow-data/meetings/
-data/flow-data/messages/
-data/flow-data/notifications/
-data/flow-data/shares.json
-data/flow-data/splittable/*.json
-!data/flow-data/splittable/source_config.json
-data/flow-data/tracker/images/
-data/flow-data/tracker/issues.json
-data/flow-data/tracker/scheduler_status.json
-data/flow-data/tracker/schema_migrations.jsonl
-data/flow-data/users.json
-data/flow-data/valve_watch.json
-data/flow-data/**/*.backup_*.json
-# User-local config that may contain LLM tokens / secrets — keep on disk, never push to GitHub
-data/flow-data/admin_settings.json
-data/flow-data/qa_report.json
-data/Fab/_backups/
+# Local/runtime data roots. GitHub carries app code only.
+/data/
+/flow-data/
+/Fab/
+/DB/
+/Base/
+/wafer_maps/
 archive/
 
 # Editor / OS

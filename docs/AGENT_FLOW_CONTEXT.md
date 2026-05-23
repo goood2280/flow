@@ -58,8 +58,9 @@
 
 ## Data Rules
 
-- Runtime/user data under `data/flow-data/`, operational DB roots, sessions, uploads, cache, logs는 code/setup 변경으로 덮어쓰면 안 된다.
-- `data/Fab/`은 local DB seed다. 운영에서는 `FLOW_DB_ROOT` 또는 공유 기본 DB를 쓴다.
+- GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 Git 추적 대상이 아닌 로컬/사내 운영 데이터 루트다.
+- Runtime/user data under `data/flow-data/`, operational DB roots, sessions, uploads, cache, logs는 code/setup 변경으로 덮어쓰거나 Git에 추가하면 안 된다.
+- `data/Fab/`은 env가 없을 때 쓰는 local DB fallback이다. 운영에서는 `FLOW_DB_ROOT` 또는 공유 기본 DB를 쓴다.
 - 특정 로컬 drive path를 backend/frontend/docs/setup에 hardcode하지 않는다.
 - real production raw data, credentials, session token, private export는 Git에 넣지 않는다.
 

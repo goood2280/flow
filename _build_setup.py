@@ -68,7 +68,7 @@ INCLUDE_FILES = [
 EXCLUDE_PARTS = {
     '__pycache__', 'node_modules', 'dist', '.git', 'reports',
     # 사용자 데이터 디렉토리 — 빌드 시 번들에서 제외 (런타임엔 _write 가드도 있음)
-    'flow-data', 'Base', 'DB', 'wafer_maps',
+    'data', 'flow-data', 'Fab', 'Base', 'DB', 'wafer_maps',
 }
 
 
@@ -152,7 +152,7 @@ def installer_version_meta(version: dict) -> dict:
             "tag": "rollup",
             "changes": [
                 "SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.",
-                "사용자 데이터는 setup.py 번들에 포함하지 않고 기존 data/Base, data/DB, data/flow-data 및 설정/로그/캐시 파일을 보존.",
+                "사용자 데이터와 DB/runtime root는 setup.py 번들에 포함하지 않고 외부 FLOW_DATA_ROOT/FLOW_DB_ROOT 또는 로컬 ignored root에 보존.",
                 "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인.",
             ],
         }],
@@ -192,13 +192,14 @@ Run the server afterwards:
 Login: hol / hol12345!  (override with FLOW_ADMIN_PW)
 
 This file embeds {len(files)} source files as gzip+base64 blobs. Data
-(data/Base, data/DB, data/flow-data — users.csv, groups, informs,
-admin_settings, tracker, splittable, meetings, calendar, messages,
-dbmap, S3 sync config, …) is NEVER bundled and NEVER overwritten —
-re-running setup.py on an existing install preserves ALL user data.
+(data/, flow-data/, Fab/, DB/, Base/, wafer_maps/ and external
+FLOW_DATA_ROOT/FLOW_DB_ROOT — users.csv, groups, informs, admin_settings,
+tracker, splittable, meetings, calendar, messages, dbmap, S3 sync config, …)
+is NEVER bundled and NEVER overwritten — re-running setup.py on an existing
+install preserves ALL user data.
 
 데이터 보존 정책 (요약):
-  - data/ 트리 전체 (data/Base, data/DB, data/flow-data)
+  - data/ 트리 전체 (data/Fab, data/Base, data/DB, data/flow-data)
   - flow-data/ 세그먼트가 포함된 모든 경로
   - FLOW_DATA_ROOT 환경변수 아래의 모든 경로
   - FLOW_DB_ROOT / FLOW_WAFER_MAP_ROOT

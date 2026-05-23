@@ -27,6 +27,8 @@ uvicorn app:app --host 0.0.0.0 --port 8081
 
 ## 루트 정책
 
+GitHub checkout에는 앱 코드와 문서만 내려온다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 Git 추적 대상이 아니며 사내에서는 코드 디렉터리 밖의 공유 root를 환경변수로 연결한다.
+
 사내 표준 경로:
 
 ```text
@@ -48,7 +50,7 @@ export FLOW_ADMIN_PW='<초기 admin 비밀번호>'
 
 ## data_root 보존 원칙
 
-`FLOW_DATA_ROOT` 아래는 사용자가 만든 운영 데이터다. 시스템 업데이트, setup.py 재실행, 프론트엔드 빌드가 이 디렉터리를 삭제하거나 덮어쓰면 안 된다.
+`FLOW_DATA_ROOT` 아래는 사용자가 만든 운영 데이터다. 시스템 업데이트, setup.py 재실행, 프론트엔드 빌드가 이 디렉터리를 삭제하거나 덮어쓰면 안 되고 GitHub에 push해도 안 된다.
 
 대표 보존 대상:
 
@@ -69,7 +71,7 @@ cd /config/work/flow-fast-api
 python3 scripts/preflight_internal.py --write-probe --backup-now
 ```
 
-2. 코드를 교체한다. `FLOW_DATA_ROOT`는 코드 디렉터리 밖 `/config/work/sharedworkspace/flow-data`로 둔다.
+2. 코드를 교체한다. GitHub에서 받은 checkout에는 운영 데이터가 포함되지 않는다. `FLOW_DATA_ROOT`는 코드 디렉터리 밖 `/config/work/sharedworkspace/flow-data`로 둔다.
 
 3. setup.py를 쓸 경우에도 data_root는 보호 대상이다.
 
@@ -122,7 +124,7 @@ preflight는 다음을 확인한다.
 - active project가 `flow`인지
 - `db_root == base_root`인지
 - 파일탐색기에서 보이는 DB 루트가 resolver의 `db_root`와 같은지
-- `data/DB`, `data/Base` 같은 병렬 로컬 DB 루트가 남아 있지 않은지
+- `data/DB`, `data/Base` 같은 병렬 로컬 DB 루트가 사내 운영 root로 쓰이고 있지 않은지
 - `1.RAWDATA_DB_FAB_LONG`, `1.RAWDATA_DB_INLINE_LONG` 같은 구 side root가 남아 있지 않은지
 - `data_root`가 존재하고 기존 상태 파일을 읽을 수 있는지
 - backup 목록 조회와 restore 함수가 가능한지
@@ -139,4 +141,10 @@ python3 scripts/preflight_internal.py --write-probe --backup-now
 
 ```bash
 python scripts/smoke_test.py
+```
+
+새 checkout이나 GitHub 기록 정리 후에는 빈 root smoke로 데이터 없는 상태도 기동되는지 확인한다.
+
+```bash
+python3 scripts/empty_root_smoke.py
 ```

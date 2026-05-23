@@ -29,12 +29,12 @@ flow/
 ├── app.py                 # uvicorn shim -> backend/app.py
 ├── backend/               # FastAPI app, routers, core helpers, app_v2 modules
 ├── frontend/              # React/Vite shell and page tabs
-├── data/Fab/              # local DB seed
-├── data/flow-data/        # local runtime/user state
 ├── scripts/               # smoke, preflight, migration, fixture helpers
 ├── tests/                 # pytest contract/unit coverage
 └── docs/                  # active operation/development docs
 ```
+
+GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 로컬/사내 운영 데이터 루트이며 checkout 뒤 필요할 때 생성되거나 `FLOW_DB_ROOT` / `FLOW_DATA_ROOT`로 외부 경로를 연결한다.
 
 현재 우선 흐름은 Agent 탭이 FileBrowser AI SQL은 그대로 두고, `goal -> semantic_layer -> task_planner -> unit_agents -> conclusion` runtime trace를 FastAPI SSE로 보여주는 것이다.
 
@@ -158,10 +158,10 @@ git.exe push origin main
 | `FLOW_DB_ROOT` | 운영 DB root override |
 | `FLOW_DATA_ROOT` | 운영 data root override |
 | `FLOW_WAFER_MAP_ROOT` | wafer map root override |
-| `data/Fab/` | 로컬 개발용 DB root seed |
-| `data/flow-data/` | 로컬 runtime/user state |
+| `data/Fab/` | env가 없을 때 쓰는 로컬 DB root fallback. Git 추적 대상 아님 |
+| `data/flow-data/` | env가 없을 때 쓰는 로컬 runtime/user state fallback. Git 추적 대상 아님 |
 
-공유 서버에서는 `/config/work/sharedworkspace/DB`와 `/config/work/sharedworkspace/flow-data`를 자동 감지한다. 코드 업데이트, `setup.py`, frontend build는 runtime/user data를 덮어쓰면 안 된다.
+공유 서버에서는 `/config/work/sharedworkspace/DB`와 `/config/work/sharedworkspace/flow-data`를 자동 감지한다. 코드 업데이트, `setup.py`, frontend build는 runtime/user data를 Git에 넣거나 덮어쓰면 안 된다. 데이터가 없는 fresh checkout도 빈 로컬 root 또는 명시된 외부 root로 기동해야 한다.
 
 ## License
 
