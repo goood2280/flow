@@ -1685,6 +1685,7 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
   const [open, setOpen] = useState(false);
   const [focusTag, setFocusTag] = useState("");
   const [nodeSearch, setNodeSearch] = useState("");
+  const [nodeTypeFilter, setNodeTypeFilter] = useState("");
   const [map, setMap] = useState(null);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1770,15 +1771,20 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
   const selected = nodes.find((node) => node.id === selectedId) || null;
   const topTags = map?.top_tags || [];
   const nodeSearchText = nodeSearch.trim().toLowerCase();
+  const nodeTypeOptions = useMemo(() => workflowNodeTypeOptions(nodes), [nodes]);
   const nodeSearchMatches = useMemo(() => {
-    if (!nodeSearchText) return [];
-    return nodes.filter((node) => node.type !== "stage" && workflowNodeSearchText(node).includes(nodeSearchText));
-  }, [nodes, nodeSearchText]);
+    return nodes.filter((node) => {
+      if (node.type === "stage") return false;
+      if (nodeTypeFilter && node.type !== nodeTypeFilter) return false;
+      if (nodeSearchText && !workflowNodeSearchText(node).includes(nodeSearchText)) return false;
+      return nodeSearchText || nodeTypeFilter;
+    });
+  }, [nodes, nodeSearchText, nodeTypeFilter]);
   const visibleNodes = useMemo(() => {
-    if (!nodeSearchText) return nodes;
+    if (!nodeSearchText && !nodeTypeFilter) return nodes;
     const matched = new Set(nodeSearchMatches.map((node) => node.id));
     return nodes.filter((node) => node.type === "stage" || matched.has(node.id));
-  }, [nodes, nodeSearchText, nodeSearchMatches]);
+  }, [nodes, nodeSearchText, nodeTypeFilter, nodeSearchMatches]);
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1810,9 +1816,26 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
               placeholder="노드 검색"
               style={{ ...inputStyle, width: 190, marginBottom: 0, padding: "4px 8px" }}
             />
-            {nodeSearch && (
-              <button type="button" onClick={() => setNodeSearch("")} style={btnGhost}>
-                검색 지우기
+            <select
+              value={nodeTypeFilter}
+              onChange={(e) => setNodeTypeFilter(e.target.value)}
+              style={{ ...selectStyle, width: 142, marginBottom: 0, padding: "4px 8px" }}
+            >
+              <option value="">전체 유형</option>
+              {nodeTypeOptions.map((row) => (
+                <option key={row.type} value={row.type}>{workflowNodeTypeLabel(row.type)} ({row.count})</option>
+              ))}
+            </select>
+            {(nodeSearch || nodeTypeFilter) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setNodeSearch("");
+                  setNodeTypeFilter("");
+                }}
+                style={btnGhost}
+              >
+                필터 지우기
               </button>
             )}
             <button onClick={loadMap} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
@@ -1835,10 +1858,14 @@ function WorkflowMapPanel({ days, focusIntent, onWarningSelect, onRunbookFocus }
               <WorkflowMapSummary map={map} />
               <WorkflowMapSearchResults
                 query={nodeSearchText}
+                typeFilter={nodeTypeFilter}
                 rows={nodeSearchMatches}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                onClear={() => setNodeSearch("")}
+                onClear={() => {
+                  setNodeSearch("");
+                  setNodeTypeFilter("");
+                }}
               />
               <WorkflowMapWarnings rows={map.warnings || []} focusedKey={focusIntent?.warning || ""} onSelect={onWarningSelect} />
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 8, alignItems: "stretch" }}>
@@ -1905,16 +1932,18 @@ function WorkflowMapSummary({ map }) {
 }
 
 
-function WorkflowMapSearchResults({ query, rows, selectedId, onSelect, onClear }) {
-  if (!query) return null;
+function WorkflowMapSearchResults({ query, typeFilter, rows, selectedId, onSelect, onClear }) {
+  if (!query && !typeFilter) return null;
   const visible = rows.slice(0, 10);
+  const label = query || "전체 검색어";
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>노드 검색</div>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-primary)" }}>노드 필터</div>
           <BoardPill tone={rows.length ? "info" : "warn"}>{rows.length}</BoardPill>
-          <div style={{ fontSize: 10, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{query}</div>
+          {typeFilter && <Tag>{workflowNodeTypeLabel(typeFilter)}</Tag>}
+          <div style={{ fontSize: 10, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
         </div>
         <button type="button" onClick={onClear} style={{ ...btnGhost, padding: "3px 7px" }}>전체 보기</button>
       </div>
@@ -1969,6 +1998,40 @@ function workflowNodeSearchText(node) {
     node?.kind,
     tags,
   ].filter(Boolean).join(" ").toLowerCase();
+}
+
+
+function workflowNodeTypeOptions(nodes) {
+  const counts = new Map();
+  for (const node of nodes || []) {
+    const type = String(node?.type || "");
+    if (!type || type === "stage") continue;
+    counts.set(type, (counts.get(type) || 0) + 1);
+  }
+  const preferred = ["workflow", "workflow_step", "tool", "wiki", "relation", "column", "arg", "feature", "deep_eval"];
+  return [...counts.entries()]
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => {
+      const ai = preferred.includes(a.type) ? preferred.indexOf(a.type) : preferred.length;
+      const bi = preferred.includes(b.type) ? preferred.indexOf(b.type) : preferred.length;
+      return ai - bi || a.type.localeCompare(b.type);
+    });
+}
+
+
+function workflowNodeTypeLabel(type) {
+  const labels = {
+    workflow: "workflow",
+    workflow_step: "step",
+    tool: "tool",
+    wiki: "wiki",
+    relation: "relation",
+    column: "column",
+    arg: "arg",
+    feature: "feature",
+    deep_eval: "deep eval",
+  };
+  return labels[type] || type;
 }
 
 
