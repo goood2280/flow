@@ -33,7 +33,7 @@ POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
 GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
-GET  /api/ai-hub/ops-export/download        readiness/deep-eval/timeline/workflow-map 운영 vault ZIP 다운로드
+GET  /api/ai-hub/ops-export/download        format=obsidian|n8n → readiness/deep-eval/timeline/workflow-map 운영 export 다운로드
 POST /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
@@ -76,7 +76,8 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 
 - `format=n8n`: n8n sticky-note workflow JSON. Flow 내부 실행을 외부 자동화로 우회하지 않고, 운영 리뷰/설계용 노드와 connection만 내보낸다.
 - `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다. 화면의 `Obsidian ZIP` 버튼은 같은 note 묶음을 zip으로 내려받는다.
-- `ops-export/download`: readiness, deep-eval, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다.
+- `ops-export/download?format=obsidian`: readiness, deep-eval, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다.
+- `ops-export/download?format=n8n`: readiness, deep-eval, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export다.
 
 ## 운영 준비도
 

@@ -73,8 +73,172 @@ def build_obsidian_export(
     }
 
 
+def build_n8n_export(
+    *,
+    username: str = "",
+    days: int = 30,
+    limit: int = 40,
+    focus_tag: str = "",
+) -> dict[str, Any]:
+    days = max(1, min(365, int(days or 30)))
+    limit = max(1, min(120, int(limit or 40)))
+    username = str(username or "")
+    focus_tag = str(focus_tag or "").strip()
+    readiness = ai_hub_readiness.build_readiness(username=username, days=days)
+    deep_eval = ai_hub_deep_eval.load_latest_report()
+    timeline = ai_hub_timeline.build_timeline(days=days, limit=min(40, max(20, limit)))
+    workflow = ai_hub_workflow_map.build_workflow_map(
+        username=username,
+        days=days,
+        limit=limit,
+        reference_limit=160,
+        focus_tag=focus_tag,
+    )
+
+    nodes: list[dict[str, Any]] = []
+    nodes.append(_n8n_note("ops:index", "Flow AI Hub Operations", _n8n_index_content(readiness, deep_eval, timeline, workflow), 0, 0))
+    nodes.append(_n8n_note("ops:readiness", "Readiness", _n8n_readiness_content(readiness), 340, 0))
+    nodes.append(_n8n_note("ops:deep_eval", "Agent Deep Eval", _n8n_deep_eval_content(deep_eval), 680, 0))
+    nodes.append(_n8n_note("ops:timeline", "Timeline", _n8n_timeline_content(timeline), 1020, 0))
+    nodes.append(_n8n_note("ops:workflow_map", "Workflow Map", _n8n_workflow_content(workflow), 1360, 0))
+    for idx, row in enumerate((readiness.get("backlog") if isinstance(readiness.get("backlog"), list) else [])[:10]):
+        if not isinstance(row, dict):
+            continue
+        nodes.append(_n8n_note(
+            f"ops:backlog:{idx + 1}",
+            f"Backlog {idx + 1}",
+            _n8n_backlog_content(row),
+            340 + (idx % 5) * 260,
+            220 + (idx // 5) * 180,
+            width=230,
+        ))
+
+    connections: dict[str, dict[str, list[list[dict[str, Any]]]]] = {
+        "ops:index": {"main": [[{"node": "ops:readiness", "type": "main", "index": 0}]]},
+        "ops:readiness": {"main": [[{"node": "ops:deep_eval", "type": "main", "index": 0}]]},
+        "ops:deep_eval": {"main": [[{"node": "ops:timeline", "type": "main", "index": 0}]]},
+        "ops:timeline": {"main": [[{"node": "ops:workflow_map", "type": "main", "index": 0}]]},
+    }
+    backlog_count = len([node for node in nodes if str(node.get("id") or "").startswith("ops:backlog:")])
+    if backlog_count:
+        connections.setdefault("ops:readiness", {"main": [[]]})
+        for idx in range(backlog_count):
+            connections["ops:readiness"]["main"][0].append({"node": f"ops:backlog:{idx + 1}", "type": "main", "index": 0})
+
+    return {
+        "ok": True,
+        "format": "n8n_ops",
+        "filename": "flow-ai-hub-operations.n8n.json",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "days": days,
+        "limit": limit,
+        "focus_tag": focus_tag,
+        "workflow": {
+            "name": "Flow AI Hub operations",
+            "nodes": nodes,
+            "connections": connections,
+            "settings": {"executionOrder": "v1"},
+            "staticData": {
+                "flow_kind": "ai_hub_operations_review",
+                "readiness_score": readiness.get("score"),
+                "deep_eval_status": deep_eval.get("status"),
+                "timeline_items": len(timeline.get("items") or []),
+                "workflow_nodes": len(workflow.get("nodes") or []),
+            },
+        },
+    }
+
+
 def export_obsidian_zip(export_payload: dict[str, Any]) -> bytes:
     return ai_hub_workflow_map.export_obsidian_zip(export_payload)
+
+
+def _n8n_note(node_id: str, name: str, content: str, x: int, y: int, *, width: int = 300) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "name": name,
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [x, y],
+        "parameters": {
+            "content": content,
+            "height": 150,
+            "width": width,
+        },
+    }
+
+
+def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: dict[str, Any], workflow: dict[str, Any]) -> str:
+    summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
+    return "\n".join([
+        "## Flow AI Hub Operations",
+        f"- readiness: {readiness.get('score') or 0} / {readiness.get('level') or ''}",
+        f"- deep-eval: {deep_eval.get('status') or 'missing'} {summary.get('passed') or 0}/{summary.get('total') or 0}",
+        f"- timeline: {len(timeline.get('items') or [])} items",
+        f"- workflow graph: {len(workflow.get('nodes') or [])} nodes",
+        "",
+        "Review-only export. Flow guardrails and approvals stay inside Flow.",
+    ])
+
+
+def _n8n_readiness_content(readiness: dict[str, Any]) -> str:
+    lines = [
+        "## Readiness",
+        f"score: {readiness.get('score') or 0}",
+        f"level: {readiness.get('level') or ''}",
+        f"backlog: {len(readiness.get('backlog') or [])}",
+        "",
+    ]
+    for row in (readiness.get("checks") if isinstance(readiness.get("checks"), list) else [])[:6]:
+        if isinstance(row, dict):
+            lines.append(f"- {row.get('label')}: {row.get('score')} ({row.get('detail')})")
+    return "\n".join(lines)
+
+
+def _n8n_deep_eval_content(report: dict[str, Any]) -> str:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    return "\n".join([
+        "## Agent Deep Eval",
+        f"status: {report.get('status') or 'missing'}",
+        f"passed: {summary.get('passed') or 0}",
+        f"failed: {summary.get('failed') or 0}",
+        f"total: {summary.get('total') or 0}",
+        f"path: {report.get('path') or ''}",
+    ])
+
+
+def _n8n_timeline_content(timeline: dict[str, Any]) -> str:
+    lines = ["## Timeline", f"days: {timeline.get('days') or 0}", ""]
+    for row in (timeline.get("items") if isinstance(timeline.get("items"), list) else [])[:8]:
+        if isinstance(row, dict):
+            lines.append(f"- {row.get('category')}: {row.get('title') or row.get('action')} ({row.get('username')})")
+    if len(lines) == 3:
+        lines.append("- no recent AI Hub events")
+    return "\n".join(lines)
+
+
+def _n8n_workflow_content(workflow: dict[str, Any]) -> str:
+    counts = workflow.get("counts") if isinstance(workflow.get("counts"), dict) else {}
+    return "\n".join([
+        "## Workflow Map",
+        f"tools: {counts.get('tools_visible') or 0}/{counts.get('tools_total') or 0}",
+        f"workflows: {counts.get('workflow_templates_visible') or 0}",
+        f"nodes: {counts.get('nodes') or 0}",
+        f"edges: {counts.get('edges') or 0}",
+        f"warnings: {len(workflow.get('warnings') or [])}",
+    ])
+
+
+def _n8n_backlog_content(row: dict[str, Any]) -> str:
+    return "\n".join([
+        f"## {row.get('title') or 'Backlog'}",
+        f"severity: {row.get('severity') or ''}",
+        f"target: {row.get('target') or ''}",
+        "",
+        str(row.get("detail") or ""),
+        "",
+        f"action: {row.get('action') or ''}",
+    ])
 
 
 def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], timeline: dict[str, Any], workflow_export: dict[str, Any]) -> str:

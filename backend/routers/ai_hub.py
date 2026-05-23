@@ -13,7 +13,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/workflow-map/export/download  지도 export 다운로드 (Obsidian ZIP / JSON)
-  GET    /api/ai-hub/ops-export/download    운영 스냅샷 Obsidian vault ZIP
+  GET    /api/ai-hub/ops-export/download    운영 스냅샷 Obsidian vault ZIP / n8n JSON
   GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
   GET    /api/ai-hub/deep-eval-report       Agent deep-eval 최신 리포트
   POST   /api/ai-hub/deep-eval-report/run   Agent deep-eval 최신 리포트 재생성 (admin)
@@ -258,12 +258,28 @@ def workflow_map_export_download(
 @router.get("/ops-export/download")
 def ops_export_download(
     request: Request,
+    format: str = Query(default="obsidian", pattern="^(obsidian|n8n|json)$"),
     days: int = Query(default=30, ge=1, le=365),
     limit: int = Query(default=40, ge=1, le=120),
     reference_limit: int = Query(default=160, ge=20, le=400),
     focus_tag: str = Query(default=""),
 ):
     me = current_user(request)
+    fmt = str(format or "obsidian").lower()
+    if fmt in {"n8n", "json"}:
+        payload = ai_hub_ops_export.build_n8n_export(
+            username=str((me or {}).get("username") or ""),
+            days=days,
+            limit=limit,
+            focus_tag=focus_tag,
+        )
+        data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        filename = str(payload.get("filename") or "flow-ai-hub-operations.n8n.json")
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
     payload = ai_hub_ops_export.build_obsidian_export(
         username=str((me or {}).get("username") or ""),
         days=days,

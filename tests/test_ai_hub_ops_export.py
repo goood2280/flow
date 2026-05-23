@@ -71,6 +71,44 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         assert "semantic/step_id simple question" in zf.read("operations/deep-eval.md").decode("utf-8")
 
 
+def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
+    from core import ai_hub_ops_export
+
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_readiness, "build_readiness", lambda username="", days=30: {
+        "score": 74,
+        "level": "attention",
+        "checks": [{"label": "워크플로우", "score": 50, "detail": "needs validation"}],
+        "backlog": [{"severity": "high", "title": "검증 필요", "target": "ops_lot_step_review", "detail": "no recent run", "action": "dry-run"}],
+    })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_deep_eval, "load_latest_report", lambda: {
+        "status": "fail",
+        "path": "reports/flowi_agent_deep_eval_latest.json",
+        "summary": {"passed": 130, "failed": 1, "total": 131},
+    })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_timeline, "build_timeline", lambda days=30, limit=30, category="": {
+        "days": days,
+        "items": [{"category": "validation", "title": "Agent deep-eval 재검증", "username": "alice"}],
+    })
+    monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_map, "build_workflow_map", lambda **kwargs: {
+        "counts": {"tools_visible": 3, "tools_total": 4, "workflow_templates_visible": 1, "nodes": 10, "edges": 9},
+        "warnings": [{"key": "workflow_unverified"}],
+        "nodes": [{"id": "tool:filebrowser"}],
+    })
+
+    out = ai_hub_ops_export.build_n8n_export(username="alice", days=7, limit=12, focus_tag="knob")
+
+    assert out["format"] == "n8n_ops"
+    workflow = out["workflow"]
+    assert workflow["name"] == "Flow AI Hub operations"
+    node_ids = {node["id"] for node in workflow["nodes"]}
+    assert {"ops:index", "ops:readiness", "ops:deep_eval", "ops:timeline", "ops:workflow_map", "ops:backlog:1"} <= node_ids
+    assert workflow["connections"]["ops:index"]["main"][0][0]["node"] == "ops:readiness"
+    assert workflow["connections"]["ops:readiness"]["main"][0][0]["node"] == "ops:deep_eval"
+    assert any(row["node"] == "ops:backlog:1" for row in workflow["connections"]["ops:readiness"]["main"][0])
+    assert workflow["staticData"]["readiness_score"] == 74
+    assert workflow["staticData"]["deep_eval_status"] == "fail"
+
+
 def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):
     from routers import ai_hub
 
@@ -100,6 +138,40 @@ def test_ai_hub_ops_export_download_endpoint_streams_zip(monkeypatch):
     archive = asyncio.run(_streaming_response_body(response))
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         assert zf.read("Flow AI Hub Operations.md").decode("utf-8") == "# Ops"
+
+
+def test_ai_hub_ops_export_download_endpoint_streams_n8n_json(monkeypatch):
+    import json
+
+    from routers import ai_hub
+
+    def fake_build_n8n_export(username="", days=30, limit=40, focus_tag=""):
+        assert username == "alice"
+        assert days == 7
+        assert limit == 9
+        assert focus_tag == "knob"
+        return {
+            "format": "n8n_ops",
+            "filename": "flow-ai-hub-operations.n8n.json",
+            "workflow": {"name": "Flow AI Hub operations", "nodes": [], "connections": {}},
+        }
+
+    monkeypatch.setattr(ai_hub.ai_hub_ops_export, "build_n8n_export", fake_build_n8n_export)
+
+    response = ai_hub.ops_export_download(
+        _req(),
+        format="n8n",
+        days=7,
+        limit=9,
+        reference_limit=30,
+        focus_tag="knob",
+    )
+
+    assert response.media_type == "application/json"
+    assert "flow-ai-hub-operations.n8n.json" in response.headers["content-disposition"]
+    payload = json.loads(asyncio.run(_streaming_response_body(response)).decode("utf-8"))
+    assert payload["format"] == "n8n_ops"
+    assert payload["workflow"]["name"] == "Flow AI Hub operations"
 
 
 async def _streaming_response_body(response):
