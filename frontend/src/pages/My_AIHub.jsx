@@ -1271,6 +1271,7 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
   const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
   const [actionResult, setActionResult] = useState(null);
+  const [expandedKey, setExpandedKey] = useState("");
   const [focusNonce, setFocusNonce] = useState(0);
   const [err, setErr] = useState("");
 
@@ -1413,7 +1414,7 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
                 />
               )}
               <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, overflowX: "auto" }}>
-                <div style={{ minWidth: 920, display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                <div style={{ minWidth: 960, display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 120px", gap: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase" }}>
                   <div>상태</div>
                   <div>Workflow</div>
                   <div>Step</div>
@@ -1422,16 +1423,18 @@ function WorkflowRunbookPanel({ days, focusIntent }) {
                   <div>Issues</div>
                   <div>Action</div>
                 </div>
-                <div style={{ minWidth: 920, maxHeight: 280, overflowY: "auto" }}>
+                <div style={{ minWidth: 960, maxHeight: 320, overflowY: "auto" }}>
                   {rows.length === 0 ? (
                     <div style={{ padding: 12, fontSize: 11, color: "var(--text-secondary)" }}>등록된 workflow template 없음</div>
                   ) : rows.map((row) => (
                     <WorkflowRunbookRow
                       key={row.key}
                       row={row}
+                      expanded={expandedKey === row.key}
                       actionBusy={actionBusy}
                       actionResult={actionResult}
                       onAction={runAction}
+                      onToggle={() => setExpandedKey((key) => key === row.key ? "" : row.key)}
                     />
                   ))}
                 </div>
@@ -1486,13 +1489,13 @@ function WorkflowNextActionQueue({ rows, activeIssue, onFilter }) {
 }
 
 
-function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
+function WorkflowRunbookRow({ row, expanded, actionBusy, actionResult, onAction, onToggle }) {
   const issues = row.issues || [];
   const nextActions = row.next_actions || [];
   const nextAction = nextActions[0] || null;
   return (
     <div style={{ borderBottom: "1px dashed var(--border)" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "7px 8px", alignItems: "center", fontSize: 11 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 120px", gap: 0, padding: "7px 8px", alignItems: "center", fontSize: 11 }}>
         <div><BoardPill tone={row.tone}>{row.status}</BoardPill></div>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontWeight: 850, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
@@ -1524,7 +1527,10 @@ function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
             </div>
           )}
         </div>
-        <div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <button type="button" onClick={onToggle} style={btnGhost}>
+            {expanded ? "닫기" : "상세"}
+          </button>
           {(row.actions || []).slice(0, 1).map((action) => {
             const busy = actionBusy === `${row.key}:${action.id}`;
             return (
@@ -1535,9 +1541,76 @@ function WorkflowRunbookRow({ row, actionBusy, actionResult, onAction }) {
           })}
         </div>
       </div>
+      {expanded && <WorkflowRunbookDetail row={row} />}
       {actionResult?.key === row.key && (
         <div style={{ padding: "0 8px 8px 118px" }}>
           <WorkflowActionResult payload={actionResult.payload} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function WorkflowRunbookDetail({ row }) {
+  const steps = row.steps || [];
+  const evidence = row.evidence_node_ids || [];
+  const nextActions = row.next_actions || [];
+  const missingTools = row.missing_tools || [];
+  const disabledTools = row.disabled_tools || [];
+  return (
+    <div style={{ borderTop: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 10px 10px 118px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1.2fr) minmax(220px, 0.8fr)", gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", marginBottom: 5, textTransform: "uppercase" }}>Steps</div>
+          {steps.length === 0 ? (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>step 없음</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {steps.map((step) => (
+                <div key={`${row.key}:${step.index}`} style={{ display: "grid", gridTemplateColumns: "38px minmax(160px, 1fr) minmax(130px, 0.8fr)", gap: 6, alignItems: "center", fontSize: 11 }}>
+                  <Tag>{step.index}</Tag>
+                  <div style={{ minWidth: 0, color: "var(--text-primary)", fontFamily: "JetBrains Mono, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {step.unit_ai || "-"}{step.action ? `.${step.action}` : ""}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, minWidth: 0 }}>
+                    {(step.bind_slots || []).slice(0, 3).map((slot) => <Tag key={slot}>{slot}</Tag>)}
+                    {Object.keys(step.fixed_slots || {}).slice(0, 2).map((key) => <Tag key={key}>{key}</Tag>)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", marginBottom: 5, textTransform: "uppercase" }}>Evidence / Actions</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+            {evidence.slice(0, 6).map((id) => <Tag key={id}>{id}</Tag>)}
+            {evidence.length > 6 && <Tag>+{evidence.length - 6}</Tag>}
+            {!evidence.length && <Tag>근거 없음</Tag>}
+          </div>
+          {(missingTools.length > 0 || disabledTools.length > 0) && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+              {missingTools.map((name) => <BoardPill key={`missing:${name}`} tone="bad">missing {name}</BoardPill>)}
+              {disabledTools.map((name) => <BoardPill key={`disabled:${name}`} tone="bad">disabled {name}</BoardPill>)}
+            </div>
+          )}
+          {nextActions.length === 0 ? (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>추가 조치 없음</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {nextActions.slice(0, 4).map((action) => (
+                <div key={action.key} style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35 }}>
+                  <b style={{ color: "var(--text-primary)" }}>{action.title}</b>{action.detail ? ` · ${action.detail}` : ""}{action.route ? ` · ${action.route}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {row.trigger_summary && (
+        <div style={{ marginTop: 7, fontSize: 10, color: "var(--muted)", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          trigger {row.trigger_summary}
         </div>
       )}
     </div>

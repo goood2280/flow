@@ -101,6 +101,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - AI Hub의 `Workflow Runbook` 패널이 읽는 workflow별 관리 표다.
 - 기존 workflow map에서 workflow/template node, step, tool, evidence edge, 최근 dry-run/execute 이력을 정규화한다.
 - row는 `ready`, `attention`, `blocked` 상태, issue 목록, issue별 `next_actions[]`를 포함한다. `Dry-run` action은 기존 `/api/agent/workflows/execute`를 호출한다.
+- 화면의 row `상세`는 step, bind/fixed slot, evidence node, missing/disabled tool, next action route를 펼쳐 보여준다.
 - `next_action_queue[]`는 현재 필터 결과에서 같은 조치를 요구하는 workflow를 묶어 AI Hub 화면과 Obsidian/n8n export에 운영 큐로 노출한다.
 - `status`와 `issue` filter로 운영자가 blocked workflow나 `missing_tools`, `not_checked`, `no_evidence` 같은 개선 대상만 좁혀 볼 수 있다.
 - workflow template이 0건이면 admin용 `시작 템플릿 생성` action을 내려 기존 `/api/ai-hub/readiness/bootstrap-workflows`로 starter workflow를 만들 수 있게 한다.
