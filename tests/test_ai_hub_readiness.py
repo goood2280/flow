@@ -73,10 +73,32 @@ def test_ai_hub_readiness_builds_score_and_backlog(monkeypatch):
     assert by_id["disabled_tool:filebrowser"]["actions"][0]["endpoint"] == "/api/ai-hub/tools/filebrowser/toggle"
     assert {action["id"] for action in by_id["semantic_proposal:p1"]["actions"]} == {"approve", "reject"}
     assert {action["id"] for action in by_id["skill_candidate:sk1"]["actions"]} == {"approve", "reject"}
+    assert by_id["workflow_assets:none"]["actions"][0]["endpoint"] == "/api/ai-hub/readiness/bootstrap-workflows"
 
     api_out = ai_hub.readiness(_req(), days=30)
     assert api_out["counts"]["tools_total"] == 4
     assert api_out["is_admin"] is True
+
+
+def test_ai_hub_readiness_bootstrap_workflows_is_idempotent(tmp_path, monkeypatch):
+    from core import ai_hub_readiness, flowi_workflow_templates
+    from routers import ai_hub
+
+    monkeypatch.setattr(flowi_workflow_templates, "_DIR", tmp_path / "workflows")
+
+    first = ai_hub_readiness.bootstrap_starter_workflows(by="alice")
+    assert first["created_count"] == len(ai_hub_readiness.STARTER_WORKFLOWS)
+    assert first["preserved_count"] == 0
+    keys = {row["key"] for row in flowi_workflow_templates.list_templates("", include_shared=True)}
+    assert {"ops_lot_step_review", "ops_knob_lotwf_review", "ops_inform_draft_review"} <= keys
+
+    second = ai_hub_readiness.bootstrap_starter_workflows(by="alice")
+    assert second["created_count"] == 0
+    assert second["preserved_count"] == len(ai_hub_readiness.STARTER_WORKFLOWS)
+
+    api_out = ai_hub.readiness_bootstrap_workflows(_req())
+    assert api_out["created_count"] == 0
+    assert api_out["preserved_count"] == len(ai_hub_readiness.STARTER_WORKFLOWS)
 
 
 class _State:

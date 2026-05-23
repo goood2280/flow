@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 시작 workflow bootstrap 액션 추가
 - (Codex) AI Hub 준비도 백로그 즉시 처리 액션 연결
 - (Codex) AI Hub 운영 준비도/개선 백로그 추가
 - (Codex) AI Hub 워크플로우 지도 n8n/Obsidian export 추가

@@ -12,6 +12,7 @@ core/tool_registry.py 의 read 함수만 호출한다.
   GET    /api/ai-hub/workflow-map           n8n/Obsidian식 운영 지도
   GET    /api/ai-hub/workflow-map/export    지도 export (n8n JSON / Obsidian Markdown)
   GET    /api/ai-hub/readiness              운영 준비도 + 개선 백로그
+  POST   /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
   POST   /api/ai-hub/tools/{name}/toggle    enabled on/off (admin)
 
 상태 저장: data_root/tool_registry_state.json (admin_settings.json 사용 X)
@@ -98,6 +99,19 @@ def readiness(
         days=days,
     )
     out["is_admin"] = (me or {}).get("role") == "admin"
+    return out
+
+
+@router.post("/readiness/bootstrap-workflows")
+def readiness_bootstrap_workflows(request: Request):
+    me = _require_admin(request)
+    out = ai_hub_readiness.bootstrap_starter_workflows(by=me.get("username") or "admin")
+    audit.record(
+        request,
+        action="ai_hub_readiness_bootstrap_workflows",
+        detail=f"created={out.get('created_count')} preserved={out.get('preserved_count')}",
+        tab="ai_hub",
+    )
     return out
 
 

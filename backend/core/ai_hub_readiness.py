@@ -8,7 +8,53 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from core import ai_hub_board, ai_hub_workflow_map
+from core import ai_hub_board, ai_hub_workflow_map, flowi_workflow_templates as wf_templates
+
+
+STARTER_WORKFLOWS: list[dict[str, Any]] = [
+    {
+        "key": "ops_lot_step_review",
+        "title": "운영 LOT 현재 step 확인",
+        "trigger": {
+            "intent_in": ["filebrowser_ai_sql", "semantic_inspection", "general_orchestration"],
+            "prompt_contains": ["lot", "step"],
+            "slots_required": ["product", "root_lot_ids"],
+        },
+        "steps": [
+            {"unit_ai": "filebrowser", "action": "current_step", "bind_slots": ["product", "root_lot_ids"]},
+            {"unit_ai": "tracker", "action": "lookup", "bind_slots": ["product", "root_lot_ids"]},
+        ],
+        "shared": True,
+    },
+    {
+        "key": "ops_knob_lotwf_review",
+        "title": "KNOB 기반 lot_wf 영향 확인",
+        "trigger": {
+            "intent_in": ["knob_analysis", "filebrowser_ai_sql"],
+            "prompt_contains": ["knob"],
+            "slots_required": ["product", "knobs"],
+        },
+        "steps": [
+            {"unit_ai": "splittable", "action": "knob_impact", "bind_slots": ["product", "knobs"]},
+            {"unit_ai": "filebrowser", "action": "query", "bind_slots": ["product", "knobs"]},
+        ],
+        "shared": True,
+    },
+    {
+        "key": "ops_inform_draft_review",
+        "title": "Inform 초안 전 검토",
+        "trigger": {
+            "intent_in": ["inform_draft"],
+            "prompt_contains": ["인폼"],
+            "slots_required": ["product", "root_lot_ids", "module"],
+        },
+        "steps": [
+            {"unit_ai": "filebrowser", "action": "current_step", "bind_slots": ["product", "root_lot_ids"]},
+            {"unit_ai": "inform", "action": "create_draft", "bind_slots": ["product", "root_lot_ids", "module"]},
+        ],
+        "shared": True,
+    },
+]
 
 
 def build_readiness(*, username: str = "", days: int = 30) -> dict[str, Any]:
@@ -138,6 +184,15 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
             "detail": "반복 prompt를 운영 템플릿으로 고정한 항목이 없습니다.",
             "action": "Agent 질문 설계 탭에서 자주 쓰는 흐름을 shared workflow로 저장",
             "route": "/api/agent/workflows",
+            "actions": [{
+                "id": "bootstrap_starters",
+                "label": "시작 템플릿 생성",
+                "tone": "ok",
+                "method": "POST",
+                "endpoint": "/api/ai-hub/readiness/bootstrap-workflows",
+                "body": {},
+                "confirm": True,
+            }],
         })
     if counts["skills"] == 0:
         out.append({
@@ -151,6 +206,34 @@ def _build_backlog(*, board: dict[str, Any], workflow: dict[str, Any], counts: d
         })
     severity_order = {"high": 0, "medium": 1, "low": 2}
     return sorted(out, key=lambda row: (severity_order.get(str(row.get("severity")), 9), str(row.get("title") or ""), str(row.get("target") or "")))[:40]
+
+
+def bootstrap_starter_workflows(*, by: str = "system") -> dict[str, Any]:
+    created: list[dict[str, Any]] = []
+    preserved: list[dict[str, Any]] = []
+    for template in STARTER_WORKFLOWS:
+        key = str(template.get("key") or "")
+        existing = wf_templates.get_template(key)
+        if existing:
+            preserved.append({
+                "key": key,
+                "title": str(existing.get("title") or template.get("title") or key),
+                "shared": bool(existing.get("shared")),
+            })
+            continue
+        saved = wf_templates.save_template(template, by=by, is_admin=True)
+        created.append({
+            "key": str(saved.get("key") or key),
+            "title": str(saved.get("title") or template.get("title") or key),
+            "shared": bool(saved.get("shared")),
+        })
+    return {
+        "ok": True,
+        "created": created,
+        "preserved": preserved,
+        "created_count": len(created),
+        "preserved_count": len(preserved),
+    }
 
 
 def _disabled_tool_actions(item: dict[str, Any]) -> list[dict[str, Any]]:

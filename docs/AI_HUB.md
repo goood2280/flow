@@ -29,6 +29,7 @@ GET  /api/ai-hub/board                      운영 보드: semantic 제안 + ski
 GET  /api/ai-hub/readiness                  운영 준비도 점수 + 개선 백로그
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
 GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
+POST /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
 POST /api/sql-workspace/run                 cells 실행 → result + 셀 trace
@@ -75,6 +76,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter와 �
 - 점수 축: 도구 활성도, Wiki/schema grounding, semantic/skill 승인 큐, workflow/skill 자산
 - backlog: 비활성 도구, 지식 근거가 빈 도구, semantic 승인 대기, skill 후보, workflow/skill 부재
 - 처리 액션: admin은 readiness backlog에서 비활성 도구 활성화, semantic 제안 승인/거부, skill 후보 승인/거부를 바로 실행할 수 있다. 실제 권한은 각 기존 endpoint가 다시 검증한다.
+- workflow 자산이 비어 있으면 admin은 `시작 템플릿 생성`으로 공유 starter workflow 3개 (`LOT 현재 step`, `KNOB lot_wf 영향`, `Inform 초안 전 검토`)를 idempotent하게 생성할 수 있다.
 - AI Hub 화면의 `운영 준비도` 패널은 score, check별 점수, 상위 개선 항목을 한눈에 보여준다.
 
 ## SQL 작업대 — 멀티 셀 조인
