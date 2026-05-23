@@ -964,6 +964,7 @@ function WorkflowRunbookPanel({ days }) {
   const rows = data?.items || [];
   const topTags = data?.top_tags || [];
   const issueOptions = data?.issue_options || [];
+  const nextActionQueue = data?.next_action_queue || [];
   const runbookActions = data?.is_admin ? (data?.actions || []) : [];
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
@@ -1029,35 +1030,83 @@ function WorkflowRunbookPanel({ days }) {
           {!data && loading ? (
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>로딩 중...</div>
           ) : data ? (
-            <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, overflowX: "auto" }}>
-              <div style={{ minWidth: 920, display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase" }}>
-                <div>상태</div>
-                <div>Workflow</div>
-                <div>Step</div>
-                <div>Tools</div>
-                <div>검증</div>
-                <div>Issues</div>
-                <div>Action</div>
+            <>
+              {nextActionQueue.length > 0 && (
+                <WorkflowNextActionQueue
+                  rows={nextActionQueue}
+                  activeIssue={issueFilter}
+                  onFilter={(key) => setIssueFilter(key)}
+                />
+              )}
+              <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, overflowX: "auto" }}>
+                <div style={{ minWidth: 920, display: "grid", gridTemplateColumns: "110px minmax(180px, 1.4fr) 84px 1fr 120px 1.2fr 84px", gap: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                  <div>상태</div>
+                  <div>Workflow</div>
+                  <div>Step</div>
+                  <div>Tools</div>
+                  <div>검증</div>
+                  <div>Issues</div>
+                  <div>Action</div>
+                </div>
+                <div style={{ minWidth: 920, maxHeight: 280, overflowY: "auto" }}>
+                  {rows.length === 0 ? (
+                    <div style={{ padding: 12, fontSize: 11, color: "var(--text-secondary)" }}>등록된 workflow template 없음</div>
+                  ) : rows.map((row) => (
+                    <WorkflowRunbookRow
+                      key={row.key}
+                      row={row}
+                      actionBusy={actionBusy}
+                      actionResult={actionResult}
+                      onAction={runAction}
+                    />
+                  ))}
+                </div>
               </div>
-              <div style={{ minWidth: 920, maxHeight: 280, overflowY: "auto" }}>
-                {rows.length === 0 ? (
-                  <div style={{ padding: 12, fontSize: 11, color: "var(--text-secondary)" }}>등록된 workflow template 없음</div>
-                ) : rows.map((row) => (
-                  <WorkflowRunbookRow
-                    key={row.key}
-                    row={row}
-                    actionBusy={actionBusy}
-                    actionResult={actionResult}
-                    onAction={runAction}
-                  />
-                ))}
-              </div>
-            </div>
+            </>
           ) : (
             <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>Runbook을 열면 workflow별 준비 상태를 불러옵니다.</div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+
+function WorkflowNextActionQueue({ rows, activeIssue, onFilter }) {
+  return (
+    <div style={{ marginBottom: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 }}>
+      {rows.slice(0, 6).map((row) => {
+        const workflows = row.workflows || [];
+        const active = activeIssue === row.key;
+        return (
+          <button
+            key={row.key}
+            type="button"
+            onClick={() => onFilter(active ? "" : row.key)}
+            style={{
+              textAlign: "left",
+              border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+              background: active ? "var(--accent-glow)" : "var(--bg-card)",
+              borderRadius: 4,
+              padding: "7px 8px",
+              cursor: "pointer",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <BoardPill tone={row.tone}>{row.count || 0}</BoardPill>
+              <div style={{ fontSize: 11, fontWeight: 850, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.title || row.key}</div>
+            </div>
+            <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {row.detail || row.route || "-"}
+            </div>
+            <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {workflows.slice(0, 3).map((item) => <Tag key={item.key}>{item.title || item.key}</Tag>)}
+              {(row.count || 0) > workflows.slice(0, 3).length && <Tag>+{(row.count || 0) - workflows.slice(0, 3).length}</Tag>}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

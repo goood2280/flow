@@ -43,6 +43,7 @@ def build_runbook(
         if isinstance(node, dict) and node.get("type") == "workflow"
     ]
     rows = _filter_rows(all_rows, status=status, issue=issue)[:limit]
+    next_action_queue = _next_action_queue(rows)
     counts = {
         "workflows": len(rows),
         "workflows_total": len(all_rows),
@@ -67,6 +68,7 @@ def build_runbook(
         "counts": counts,
         "status_options": _status_options(all_rows),
         "issue_options": _issue_options(all_rows),
+        "next_action_queue": next_action_queue,
         "top_tags": graph.get("top_tags") if isinstance(graph.get("top_tags"), list) else [],
         "warnings": graph.get("warnings") if isinstance(graph.get("warnings"), list) else [],
         "actions": _runbook_actions(counts),
@@ -285,6 +287,52 @@ def _next_actions(issues: list[dict[str, str]]) -> list[dict[str, str]]:
     return out
 
 
+def _next_action_queue(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        workflow = {
+            "key": str(row.get("key") or ""),
+            "title": str(row.get("title") or row.get("key") or ""),
+            "status": str(row.get("status") or ""),
+            "tone": str(row.get("tone") or ""),
+        }
+        for action in row.get("next_actions") or []:
+            if not isinstance(action, dict):
+                continue
+            key = str(action.get("key") or "").strip()
+            if not key:
+                continue
+            bucket = buckets.setdefault(key, {
+                "key": key,
+                "title": str(action.get("title") or key),
+                "detail": str(action.get("detail") or ""),
+                "route": str(action.get("route") or ""),
+                "tone": str(action.get("tone") or "neutral"),
+                "count": 0,
+                "workflow_keys": [],
+                "workflows": [],
+                "status_counts": {},
+            })
+            bucket["count"] = int(bucket.get("count") or 0) + 1
+            status_counts = bucket["status_counts"] if isinstance(bucket.get("status_counts"), dict) else {}
+            status = workflow["status"]
+            status_counts[status] = int(status_counts.get(status) or 0) + 1
+            bucket["status_counts"] = status_counts
+            if workflow["key"] not in bucket["workflow_keys"]:
+                bucket["workflow_keys"].append(workflow["key"])
+            if len(bucket["workflows"]) < 8:
+                bucket["workflows"].append(workflow)
+    return sorted(
+        buckets.values(),
+        key=lambda row: (
+            _tone_rank(str(row.get("tone") or "")),
+            _action_rank(str(row.get("key") or "")),
+            -int(row.get("count") or 0),
+            str(row.get("key") or ""),
+        ),
+    )
+
+
 def _status(issues: list[dict[str, str]]) -> tuple[str, str]:
     tones = {str(issue.get("tone") or "") for issue in issues}
     if "bad" in tones:
@@ -292,6 +340,18 @@ def _status(issues: list[dict[str, str]]) -> tuple[str, str]:
     if "warn" in tones:
         return "attention", "warn"
     return "ready", "ok"
+
+
+def _tone_rank(tone: str) -> int:
+    return {"bad": 0, "warn": 1, "ok": 2, "neutral": 3}.get(str(tone or ""), 4)
+
+
+def _action_rank(key: str) -> int:
+    keys = list(_NEXT_ACTIONS)
+    try:
+        return keys.index(str(key or ""))
+    except ValueError:
+        return len(keys)
 
 
 def _trigger_summary(detail: str) -> dict[str, str]:

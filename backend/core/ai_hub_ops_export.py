@@ -246,21 +246,28 @@ def _n8n_wiki_health_content(health: dict[str, Any]) -> str:
 
 def _n8n_runbook_content(runbook: dict[str, Any]) -> str:
     counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
+    queue = _runbook_queue(runbook)
     lines = [
         "## Workflow Runbook",
         f"workflows: {counts.get('workflows') or 0}",
         f"ready: {counts.get('ready') or 0}",
         f"attention: {counts.get('attention') or 0}",
         f"blocked: {counts.get('blocked') or 0}",
+        f"next_actions: {counts.get('next_actions') or 0}",
         "",
     ]
+    if queue:
+        lines.append("next_action_queue:")
+        for action in queue[:6]:
+            lines.append(f"- {action.get('title') or action.get('key')}: {action.get('count') or 0} workflows route={action.get('route') or '-'}")
+        lines.append("")
     for row in (runbook.get("items") if isinstance(runbook.get("items"), list) else [])[:8]:
         if not isinstance(row, dict):
             continue
         next_action = _next_action_text(row)
         suffix = f" next={next_action}" if next_action else ""
         lines.append(f"- {row.get('status')}: {row.get('title') or row.get('key')} steps={row.get('step_count') or 0} last={row.get('last_status') or '-'}{suffix}")
-    if len(lines) == 6:
+    if not (runbook.get("items") if isinstance(runbook.get("items"), list) else []):
         lines.append("- no workflow templates")
     return "\n".join(lines)
 
@@ -476,10 +483,28 @@ def _workflow_runbook_note(runbook: dict[str, Any]) -> str:
         f"- attention: `{counts.get('attention') or 0}`",
         f"- blocked: `{counts.get('blocked') or 0}`",
         f"- checked: `{counts.get('checked') or 0}`",
+        f"- next_actions: `{counts.get('next_actions') or 0}`",
+        "",
+        "## Next Action Queue",
+        "",
+        "| action | tone | workflows | route | examples |",
+        "|---|---|---:|---|---|",
+    ]
+    queue = _runbook_queue(runbook)
+    if not queue:
+        lines.append("| none | - | 0 | - | - |")
+    for action in queue[:20]:
+        workflows = action.get("workflows") if isinstance(action.get("workflows"), list) else []
+        examples = ", ".join(_cell(row.get("title") or row.get("key")) for row in workflows[:4] if isinstance(row, dict))
+        lines.append(
+            f"| {_cell(action.get('title') or action.get('key'))} | {_cell(action.get('tone'))} | "
+            f"{_cell(action.get('count'))} | {_cell(action.get('route'))} | {examples or '-'} |"
+        )
+    lines.extend([
         "",
         "| status | workflow | scope | steps | tools | last check | issues | next action |",
         "|---|---|---|---:|---|---|---|---|",
-    ]
+    ])
     rows = runbook.get("items") if isinstance(runbook.get("items"), list) else []
     if not rows:
         lines.append("| none | - | - | 0 | - | - | - | - |")
@@ -519,6 +544,11 @@ def _next_action_text(row: dict[str, Any]) -> str:
     if title and detail:
         return f"{title}: {detail}"
     return title or detail
+
+
+def _runbook_queue(runbook: dict[str, Any]) -> list[dict[str, Any]]:
+    queue = runbook.get("next_action_queue")
+    return queue if isinstance(queue, list) else []
 
 
 def _timeline_note(timeline: dict[str, Any]) -> str:

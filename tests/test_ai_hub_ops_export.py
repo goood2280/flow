@@ -44,6 +44,15 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
         "counts": {"workflows": 1, "ready": 1, "attention": 0, "blocked": 0, "checked": 1},
+        "next_action_queue": [{
+            "key": "no_evidence",
+            "title": "Wiki/schema 근거 연결",
+            "detail": "도구 knowledge_refs 보강",
+            "route": "/api/ai-hub/workflow-map",
+            "tone": "warn",
+            "count": 1,
+            "workflows": [{"key": "ops_knob_lotwf_review", "title": "KNOB 기반 lot_wf 영향 확인"}],
+        }],
         "items": [{
             "key": "ops_knob_lotwf_review",
             "title": "KNOB 기반 lot_wf 영향 확인",
@@ -103,6 +112,7 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         runbook_note = zf.read("operations/workflow-runbook.md").decode("utf-8")
         assert "KNOB 기반 lot_wf 영향 확인" in runbook_note
         assert "Wiki/schema 근거 연결" in runbook_note
+        assert "Next Action Queue" in runbook_note
 
 
 def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
@@ -124,7 +134,16 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
         "counts": {"docs": 4, "agent_wiki_pages": 2, "sources": 3, "graph_nodes": 8, "graph_edges": 7, "lint_issues": 1},
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
-        "counts": {"workflows": 1, "ready": 0, "attention": 1, "blocked": 0},
+        "counts": {"workflows": 1, "ready": 0, "attention": 1, "blocked": 0, "next_actions": 1},
+        "next_action_queue": [{
+            "key": "not_checked",
+            "title": "Dry-run 재검증",
+            "detail": "Runbook row의 Dry-run을 실행",
+            "route": "/api/agent/workflows/execute",
+            "tone": "warn",
+            "count": 1,
+            "workflows": [{"key": "ops_lot_step_review", "title": "LOT step"}],
+        }],
         "items": [{
             "key": "ops_lot_step_review",
             "title": "LOT step",
@@ -162,6 +181,7 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     assert workflow["staticData"]["wiki_health_status"] == "warn"
     assert workflow["staticData"]["runbook_workflows"] == 1
     runbook_node = next(node for node in workflow["nodes"] if node["id"] == "ops:runbook")
+    assert "next_action_queue:" in runbook_node["parameters"]["content"]
     assert "next=Dry-run 재검증" in runbook_node["parameters"]["content"]
 
 

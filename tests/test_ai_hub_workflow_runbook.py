@@ -70,6 +70,10 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert out["counts"]["next_actions"] == 3
     assert out["actions"] == []
     assert {row["key"] for row in out["issue_options"]} >= {"missing_tools", "not_checked", "no_evidence"}
+    assert [row["key"] for row in out["next_action_queue"]] == ["missing_tools", "not_checked", "no_evidence"]
+    assert out["next_action_queue"][0]["count"] == 1
+    assert out["next_action_queue"][0]["workflows"][0]["key"] == "blocked_lot"
+    assert out["next_action_queue"][0]["status_counts"] == {"blocked": 1}
     rows = {row["key"]: row for row in out["items"]}
     assert rows["ready_knob"]["status"] == "ready"
     assert rows["ready_knob"]["trigger_summary"]["intent"] == "knob_analysis"
@@ -87,9 +91,11 @@ def test_ai_hub_workflow_runbook_builds_operator_rows(monkeypatch):
     assert blocked["counts"]["workflows"] == 1
     assert blocked["counts"]["workflows_total"] == 2
     assert blocked["counts"]["next_actions"] == 3
+    assert [row["key"] for row in blocked["next_action_queue"]] == ["missing_tools", "not_checked", "no_evidence"]
 
     missing_tools = ai_hub_workflow_runbook.build_runbook(username="alice", days=7, limit=10, issue="missing_tools")
     assert [row["key"] for row in missing_tools["items"]] == ["blocked_lot"]
+    assert [row["key"] for row in missing_tools["next_action_queue"]] == ["missing_tools", "not_checked", "no_evidence"]
 
 
 def test_ai_hub_workflow_runbook_exposes_bootstrap_action_when_empty(monkeypatch):
