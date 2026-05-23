@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core import audit
+from core import knowledge_vault as kv
 
 
 def build_timeline(*, days: int = 30, limit: int = 30, category: str = "") -> dict[str, Any]:
@@ -32,8 +33,21 @@ def build_timeline(*, days: int = 30, limit: int = 30, category: str = "") -> di
         if category and item.get("category") != category:
             continue
         items.append(item)
-        if len(items) >= limit:
-            break
+
+    for row in _read_wiki_logs(limit=max(300, limit * 5)):
+        scanned += 1
+        ts = _parse_ts(str(row.get("created_at") or ""))
+        if ts and ts.timestamp() < cutoff:
+            continue
+        item = _wiki_timeline_item(row)
+        if not item:
+            continue
+        if category and item.get("category") != category:
+            continue
+        items.append(item)
+
+    items.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
+    items = items[:limit]
 
     counts = Counter(str(row.get("category") or "") for row in items)
     return {
@@ -67,6 +81,13 @@ def _read_recent_activity(*, max_lines: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_wiki_logs(*, limit: int) -> list[dict[str, Any]]:
+    try:
+        return [row for row in kv.list_wiki_log(limit=limit) if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
 def _timeline_item(rec: dict[str, Any]) -> dict[str, Any] | None:
     action = str(rec.get("action") or "")
     tab = str(rec.get("tab") or "")
@@ -92,6 +113,31 @@ def _timeline_item(rec: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _wiki_timeline_item(row: dict[str, Any]) -> dict[str, Any] | None:
+    action = str(row.get("action") or "")
+    timestamp = str(row.get("created_at") or "")
+    if not action or not timestamp:
+        return None
+    doc_id = str(row.get("doc_id") or "")
+    title = str(row.get("title") or doc_id or action)
+    source_ids = row.get("source_ids") if isinstance(row.get("source_ids"), list) else []
+    return {
+        "id": f"{timestamp}:wiki:{row.get('log_id') or action}:{doc_id}",
+        "timestamp": timestamp,
+        "username": str(row.get("actor") or ""),
+        "action": f"wiki:{action}",
+        "tab": "agent_wiki",
+        "category": "wiki",
+        "title": title,
+        "meta": action,
+        "detail": str(row.get("message") or _wiki_detail(action, doc_id, source_ids))[:220],
+        "tone": _wiki_tone(action),
+        "workflow_key": "",
+        "doc_id": doc_id,
+        "source_ids": [str(x) for x in source_ids[:8]],
+    }
+
+
 def _category(action: str, tab: str) -> str:
     if action.startswith("ai_hub_run:workflow:") or action == "ai_hub_readiness_bootstrap_workflows":
         return "workflow"
@@ -103,6 +149,8 @@ def _category(action: str, tab: str) -> str:
         return "skill"
     if action.startswith("semantic:"):
         return "semantic"
+    if action.startswith("wiki:") or tab == "agent_wiki":
+        return "wiki"
     if tab == "ai_hub" and action:
         return "ai_hub"
     return ""
@@ -156,6 +204,8 @@ def _tone(category: str, action: str, detail: dict[str, Any], detail_text: str) 
         return "warn" if bad else "info"
     if category == "semantic":
         return "ok" if ":approved:" in action or ":upsert:" in action else ("bad" if ":rejected:" in action else "info")
+    if category == "wiki":
+        return _wiki_tone(action.split("wiki:", 1)[-1])
     if category == "skill":
         return "ok" if ":approve:" in action else ("bad" if ":reject:" in action else "info")
     return "neutral"
@@ -206,3 +256,25 @@ def _extract_counts(text: str) -> str:
         if "=" in part and any(ch.isdigit() for ch in part)
     ]
     return " ".join(parts[:4])
+
+
+def _wiki_detail(action: str, doc_id: str, source_ids: list[Any]) -> str:
+    if doc_id and source_ids:
+        return f"doc={doc_id} sources={len(source_ids)}"
+    if doc_id:
+        return f"doc={doc_id}"
+    if source_ids:
+        return f"sources={len(source_ids)}"
+    return action
+
+
+def _wiki_tone(action: str) -> str:
+    if action in {"ingest_commit", "page_save", "source_register"}:
+        return "ok"
+    if action in {"page_delete"}:
+        return "warn"
+    if action in {"lint_error", "broken_link"}:
+        return "bad"
+    if "delete" in action:
+        return "warn"
+    return "info"

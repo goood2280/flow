@@ -62,20 +62,38 @@ def test_ai_hub_timeline_groups_management_events(tmp_path, monkeypatch):
     ]
     activity_log.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
     monkeypatch.setattr(ai_hub_timeline.audit, "ACTIVITY_LOG", activity_log)
+    monkeypatch.setattr(ai_hub_timeline.kv, "list_wiki_log", lambda limit=300: [
+        {
+            "created_at": "2099-01-01T00:02:30+00:00",
+            "action": "ingest_commit",
+            "actor": "alice",
+            "doc_id": "agent_terms",
+            "source_ids": ["src_1"],
+            "title": "Agent terms",
+            "message": "Committed Agent Wiki page agent_terms",
+            "log_id": "log_1",
+        },
+    ])
 
     out = ai_hub_timeline.build_timeline(days=365, limit=10)
 
     assert out["ok"] is True
-    assert out["counts"] == {"tool": 1, "validation": 1, "semantic": 1, "workflow": 1}
-    assert [row["category"] for row in out["items"]] == ["tool", "validation", "semantic", "workflow"]
+    assert out["counts"] == {"tool": 1, "wiki": 1, "validation": 1, "semantic": 1, "workflow": 1}
+    assert [row["category"] for row in out["items"]] == ["tool", "wiki", "validation", "semantic", "workflow"]
     assert out["items"][0]["title"] == "filebrowser"
-    assert out["items"][1]["tone"] == "ok"
-    assert out["items"][2]["title"] == "p1"
-    assert out["items"][3]["workflow_key"] == "lot_step_review"
+    assert out["items"][1]["title"] == "Agent terms"
+    assert out["items"][1]["action"] == "wiki:ingest_commit"
+    assert out["items"][2]["tone"] == "ok"
+    assert out["items"][3]["title"] == "p1"
+    assert out["items"][4]["workflow_key"] == "lot_step_review"
 
     semantic = ai_hub_timeline.build_timeline(days=365, limit=10, category="semantic")
     assert len(semantic["items"]) == 1
     assert semantic["items"][0]["action"] == "semantic:proposal:approved:p1"
+
+    wiki = ai_hub_timeline.build_timeline(days=365, limit=10, category="wiki")
+    assert len(wiki["items"]) == 1
+    assert wiki["items"][0]["doc_id"] == "agent_terms"
 
     api_out = ai_hub.timeline(_req(), days=365, limit=10, category="validation")
     assert api_out["is_admin"] is True

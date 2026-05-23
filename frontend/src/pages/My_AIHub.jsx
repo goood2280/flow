@@ -1343,7 +1343,7 @@ function TimelinePanel({ days }) {
 
   const items = data?.items || [];
   const counts = data?.counts || {};
-  const categories = ["workflow", "semantic", "validation", "tool", "skill"];
+  const categories = ["workflow", "wiki", "semantic", "validation", "tool", "skill"];
   return (
     <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", padding: "8px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
