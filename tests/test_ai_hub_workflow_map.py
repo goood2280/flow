@@ -65,6 +65,8 @@ def test_ai_hub_workflow_map_links_tools_to_knowledge(monkeypatch, tmp_path):
     assert nodes["stage:trigger"]["type"] == "stage"
     assert nodes["deep_eval:latest"]["type"] == "deep_eval"
     assert nodes["deep_eval:latest"]["metrics"]["status"] == "pass"
+    assert nodes["deep_eval:latest"]["actions"][0]["endpoint"] == "/api/ai-hub/deep-eval-report/run"
+    assert nodes["deep_eval:latest"]["actions"][0]["body"] == {"cleanup_knowledge": False, "min_cases": 80}
     assert nodes["tool:filebrowser"]["stage"] == "execute"
     assert nodes["wiki:filebrowser_schema_manual"]["stage"] == "evidence"
     assert nodes["relation:FAB.current_progress"]["type"] == "relation"

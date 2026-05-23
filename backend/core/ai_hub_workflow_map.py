@@ -904,6 +904,16 @@ def _deep_eval_node(report: dict[str, Any]) -> dict[str, Any]:
             "path": str(report.get("path") or ""),
             "age_seconds": int(report.get("age_seconds") or 0),
         },
+        "actions": [{
+            "id": "run_deep_eval",
+            "label": "재검증",
+            "method": "POST",
+            "endpoint": "/api/ai-hub/deep-eval-report/run",
+            "body": {
+                "cleanup_knowledge": False,
+                "min_cases": 80,
+            },
+        }],
     }
 
 

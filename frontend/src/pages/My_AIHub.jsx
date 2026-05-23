@@ -795,6 +795,7 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const incoming = edges.filter((edge) => edge.to === node.id);
   const outgoing = edges.filter((edge) => edge.from === node.id);
+  const nodeActions = node.type === "workflow" ? [] : (node.actions || []);
   return (
     <div style={{ border: "1px solid var(--border)", background: "var(--bg-card)", borderRadius: 4, padding: 8, fontSize: 11, color: "var(--text-primary)", minWidth: 0 }}>
       <div style={{ fontSize: 12, fontWeight: 850, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label}</div>
@@ -858,6 +859,25 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
           {node.metrics?.path && <Tag>{node.metrics.path}</Tag>}
         </div>
       )}
+      {nodeActions.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          {nodeActions.map((action) => {
+            const busy = actionBusy === `${node.id}:${action.id}`;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => onAction && onAction(node, action)}
+                disabled={busy}
+                style={btnGhost}
+              >
+                {busy ? "실행 중" : action.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {actionResult?.nodeId === node.id && node.type !== "workflow" && <WorkflowActionResult payload={actionResult.payload} />}
       {(node.tags || []).length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
           {(node.tags || []).slice(0, 10).map((tag) => <Tag key={tag}>{tag}</Tag>)}
@@ -871,6 +891,19 @@ function WorkflowNodeDetail({ node, edges, nodes, onAction, actionBusy, actionRe
 
 
 function WorkflowActionResult({ payload }) {
+  if (payload?.report?.summary || payload?.summary) {
+    const report = payload.report || payload;
+    const summary = report.summary || {};
+    return (
+      <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", borderRadius: 4, padding: 6, marginBottom: 8 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          <Tag>{report.status || payload.status || "updated"}</Tag>
+          <Tag>{summary.passed || 0}/{summary.total || 0} passed</Tag>
+          <Tag>{summary.failed || 0} failed</Tag>
+        </div>
+      </div>
+    );
+  }
   const execution = payload?.execution || {};
   const steps = Array.isArray(execution.steps) ? execution.steps : [];
   const statuses = [...new Set(steps.map((step) => step.status).filter(Boolean))];
