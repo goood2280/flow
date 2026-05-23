@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) AI Hub 운영 export index에 Runbook 조치 큐 요약 추가
 - (Codex) AI Hub 운영 스냅샷에 Runbook 조치 큐 연결
 - (Codex) Workflow Runbook 다음 조치 큐 집계 추가
 - (Codex) Workflow Runbook issue별 다음 조치 힌트 추가

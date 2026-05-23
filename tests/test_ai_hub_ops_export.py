@@ -43,7 +43,7 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
         "recent_log": [{"action": "ingest_commit", "doc_id": "agent_terms", "message": "Committed Agent terms"}],
     })
     monkeypatch.setattr(ai_hub_ops_export.ai_hub_workflow_runbook, "build_runbook", lambda username="", days=30, limit=40, focus_tag="": {
-        "counts": {"workflows": 1, "ready": 1, "attention": 0, "blocked": 0, "checked": 1},
+        "counts": {"workflows": 1, "ready": 1, "attention": 0, "blocked": 0, "checked": 1, "next_actions": 1},
         "next_action_queue": [{
             "key": "no_evidence",
             "title": "Wiki/schema 근거 연결",
@@ -85,6 +85,7 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
 
     assert out["format"] == "obsidian_ops"
     assert out["counts"]["readiness_backlog"] == 1
+    assert out["counts"]["runbook_next_actions"] == 1
     paths = [row["path"] for row in out["files"]]
     assert paths[:6] == [
         "Flow AI Hub Operations.md",
@@ -100,6 +101,8 @@ def test_ai_hub_ops_export_builds_obsidian_vault(monkeypatch):
     assert "[[operations/wiki-health|Agent Wiki Health]]" in index
     assert "[[operations/workflow-runbook|Workflow Runbook]]" in index
     assert "[[Flow AI Hub Workflow Map|Workflow Map]]" in index
+    assert "runbook_next_actions: `1`" in index
+    assert "Runbook Action Queue" in index
 
     archive = ai_hub_ops_export.export_obsidian_zip(out)
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
@@ -180,6 +183,10 @@ def test_ai_hub_ops_export_builds_n8n_operations_workflow(monkeypatch):
     assert workflow["staticData"]["deep_eval_status"] == "fail"
     assert workflow["staticData"]["wiki_health_status"] == "warn"
     assert workflow["staticData"]["runbook_workflows"] == 1
+    assert workflow["staticData"]["runbook_next_actions"] == 1
+    index_node = next(node for node in workflow["nodes"] if node["id"] == "ops:index")
+    assert "runbook actions: 1" in index_node["parameters"]["content"]
+    assert "Runbook action queue:" in index_node["parameters"]["content"]
     runbook_node = next(node for node in workflow["nodes"] if node["id"] == "ops:runbook")
     assert "next_action_queue:" in runbook_node["parameters"]["content"]
     assert "next=Dry-run 재검증" in runbook_node["parameters"]["content"]

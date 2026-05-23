@@ -68,6 +68,7 @@ def build_obsidian_export(
             "deep_eval_failed": int(((deep_eval.get("summary") or {}) if isinstance(deep_eval.get("summary"), dict) else {}).get("failed") or 0),
             "wiki_lint_issues": int(((wiki_health.get("counts") or {}) if isinstance(wiki_health.get("counts"), dict) else {}).get("lint_issues") or 0),
             "runbook_workflows": int(((runbook.get("counts") or {}) if isinstance(runbook.get("counts"), dict) else {}).get("workflows") or 0),
+            "runbook_next_actions": int(((runbook.get("counts") or {}) if isinstance(runbook.get("counts"), dict) else {}).get("next_actions") or 0),
             "timeline_items": len(timeline.get("items") or []),
             "workflow_files": len(workflow_export.get("files") or []),
         },
@@ -162,6 +163,7 @@ def build_n8n_export(
                 "wiki_lint_issues": (wiki_health.get("counts") or {}).get("lint_issues") if isinstance(wiki_health.get("counts"), dict) else 0,
                 "runbook_workflows": (runbook.get("counts") or {}).get("workflows") if isinstance(runbook.get("counts"), dict) else 0,
                 "runbook_ready": (runbook.get("counts") or {}).get("ready") if isinstance(runbook.get("counts"), dict) else 0,
+                "runbook_next_actions": (runbook.get("counts") or {}).get("next_actions") if isinstance(runbook.get("counts"), dict) else 0,
                 "timeline_items": len(timeline.get("items") or []),
                 "workflow_nodes": len(workflow.get("nodes") or []),
             },
@@ -192,17 +194,25 @@ def _n8n_index_content(readiness: dict[str, Any], deep_eval: dict[str, Any], wik
     summary = deep_eval.get("summary") if isinstance(deep_eval.get("summary"), dict) else {}
     wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
     runbook_counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
-    return "\n".join([
+    lines = [
         "## Flow AI Hub Operations",
         f"- readiness: {readiness.get('score') or 0} / {readiness.get('level') or ''}",
         f"- deep-eval: {deep_eval.get('status') or 'missing'} {summary.get('passed') or 0}/{summary.get('total') or 0}",
         f"- wiki-health: {wiki_health.get('status') or 'missing'} docs={wiki_counts.get('docs') or 0} lint={wiki_counts.get('lint_issues') or 0}",
         f"- workflow-runbook: {runbook_counts.get('ready') or 0}/{runbook_counts.get('workflows') or 0} ready",
+        f"- runbook actions: {runbook_counts.get('next_actions') or 0}",
         f"- timeline: {len(timeline.get('items') or [])} items",
         f"- workflow graph: {len(workflow.get('nodes') or [])} nodes",
         "",
-        "Review-only export. Flow guardrails and approvals stay inside Flow.",
-    ])
+    ]
+    queue = _runbook_queue(runbook)
+    if queue:
+        lines.append("Runbook action queue:")
+        for action in queue[:4]:
+            lines.append(f"- {action.get('title') or action.get('key')}: {action.get('count') or 0}")
+        lines.append("")
+    lines.append("Review-only export. Flow guardrails and approvals stay inside Flow.")
+    return "\n".join(lines)
 
 
 def _n8n_readiness_content(readiness: dict[str, Any]) -> str:
@@ -311,7 +321,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
     wiki_counts = wiki_health.get("counts") if isinstance(wiki_health.get("counts"), dict) else {}
     runbook_counts = runbook.get("counts") if isinstance(runbook.get("counts"), dict) else {}
     workflow_files = workflow_export.get("files") if isinstance(workflow_export.get("files"), list) else []
-    return "\n".join([
+    lines = [
         "---",
         'title: "Flow AI Hub Operations"',
         'kind: "ai_hub_ops_export"',
@@ -326,9 +336,28 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         f"- deep_eval: `{deep_eval.get('status') or 'missing'}` `{summary.get('passed') or 0}/{summary.get('total') or 0}`",
         f"- wiki_health: `{wiki_health.get('status') or 'missing'}` docs `{wiki_counts.get('docs') or 0}` lint `{wiki_counts.get('lint_issues') or 0}`",
         f"- workflow_runbook: ready `{runbook_counts.get('ready') or 0}/{runbook_counts.get('workflows') or 0}` blocked `{runbook_counts.get('blocked') or 0}`",
+        f"- runbook_next_actions: `{runbook_counts.get('next_actions') or 0}`",
         f"- timeline_items: `{len(timeline.get('items') or [])}`",
         f"- workflow_notes: `{len(workflow_files)}`",
         "",
+    ]
+    queue = _runbook_queue(runbook)
+    if queue:
+        lines.extend([
+            "## Runbook Action Queue",
+            "",
+            "| action | workflows | route | examples |",
+            "|---|---:|---|---|",
+        ])
+        for action in queue[:8]:
+            workflows = action.get("workflows") if isinstance(action.get("workflows"), list) else []
+            examples = ", ".join(_cell(row.get("title") or row.get("key")) for row in workflows[:3] if isinstance(row, dict))
+            lines.append(
+                f"| {_cell(action.get('title') or action.get('key'))} | {_cell(action.get('count'))} | "
+                f"{_cell(action.get('route'))} | {examples or '-'} |"
+            )
+        lines.append("")
+    lines.extend([
         "## Notes",
         "",
         "- [[operations/readiness|Readiness]]",
@@ -339,6 +368,7 @@ def _index_note(readiness: dict[str, Any], deep_eval: dict[str, Any], wiki_healt
         "- [[Flow AI Hub Workflow Map|Workflow Map]]",
         "",
     ])
+    return "\n".join(lines)
 
 
 def _readiness_note(readiness: dict[str, Any]) -> str:
