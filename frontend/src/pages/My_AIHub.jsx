@@ -1149,6 +1149,7 @@ function TimelinePanel({ days }) {
   const [category, setCategory] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [err, setErr] = useState("");
 
   async function loadTimeline() {
@@ -1163,6 +1164,23 @@ function TimelinePanel({ days }) {
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function exportOpsVault() {
+    setExporting(true);
+    setErr("");
+    try {
+      const qs = new URLSearchParams({
+        days: String(days),
+        limit: "40",
+        reference_limit: "160",
+      });
+      await dl(`/api/ai-hub/ops-export/download?${qs.toString()}`, "flow-ai-hub-operations.obsidian.zip");
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -1192,6 +1210,7 @@ function TimelinePanel({ days }) {
               <option value="">전체 이벤트</option>
               {categories.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
+            <button onClick={exportOpsVault} disabled={exporting} style={btnGhost}>{exporting ? "내보내는 중" : "운영 ZIP"}</button>
             <button onClick={loadTimeline} disabled={loading} style={btnGhost}>{loading ? "갱신 중..." : "새로고침"}</button>
           </>
         )}
