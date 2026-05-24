@@ -5,10 +5,10 @@ import QuestionDesignTab from "./QuestionDesignTab";
 import WikiTab from "./WikiTab";
 
 const SECTIONS = [
-  { key: "question", label: "질문 설계", hint: "prompt를 workflow 초안으로 정리" },
-  { key: "unit", label: "기능 AI / 시멘틱", hint: "Unit AI, alias, workflow template" },
-  { key: "wiki", label: "Wiki 그래프", hint: "Obsidian식 graph와 page/source" },
-  { key: "overview", label: "누적 지식", hint: "proposal, trace, event overview" },
+  { key: "question", label: "질문 설계", hint: "질문을 workflow 초안과 dry-run으로 정리" },
+  { key: "unit", label: "용어/기능 AI", hint: "Unit AI, alias, intent, workflow template" },
+  { key: "wiki", label: "Wiki", hint: "graph, page, source, lint 상태" },
+  { key: "overview", label: "변경 이력", hint: "proposal, prompt trace, knowledge event" },
 ];
 
 export default function AgentManageTab({ user, canManageWiki }) {
@@ -19,9 +19,9 @@ export default function AgentManageTab({ user, canManageWiki }) {
     <div style={layoutStyle}>
       <aside style={navStyle}>
         <div style={{ padding: "12px 12px 8px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)" }}>설계·지식 관리</div>
+          <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)" }}>설계/지식</div>
           <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-            겹치는 관리 화면을 한 흐름으로 묶었습니다.
+            질문 품질을 올리는 설계, 용어, Wiki, 변경 이력을 묶었습니다.
           </div>
         </div>
         <div style={sectionListStyle}>

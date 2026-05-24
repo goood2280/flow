@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Agent 탭 3탭 운영 보드 단순화
 - (Codex) 전역 기타 메뉴 AI Hub/SQL 작업대 중복 진입점 제거와 Agent Studio 내부 workflow/Wiki 보기 전환
 - (Codex) Agent Studio 내부 스크롤/구분선 polish
 - (Codex) Agent 탭 내부 운영 허브/질문 이력/개선 가이드 통합
