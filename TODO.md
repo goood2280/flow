@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Agent Studio 내부 스크롤/구분선 polish
 - (Codex) Agent 탭 내부 운영 허브/질문 이력/개선 가이드 통합
 - (Codex) AI Hub 운영 타임라인 이벤트 관리 focus 연결
 - (Codex) AI Hub 운영 보드 항목 관리 focus 연결

@@ -86,7 +86,7 @@ export default function AgentStudioTab({ user }) {
   }, [selectedNode, wikiGraph.nodes]);
 
   return (
-    <div style={{ minHeight: "calc(100vh - 190px)", display: "grid", gridTemplateRows: "auto minmax(560px, 1fr)", gap: 10 }}>
+    <div style={{ height: "100%", minHeight: 0, display: "grid", gridTemplateRows: err ? "auto auto minmax(0, 1fr)" : "auto minmax(0, 1fr)", gap: 0, overflow: "hidden" }}>
       <section style={toolbarStyle}>
         <div style={{ minWidth: 220 }}>
           <div style={{ fontSize: 16, fontWeight: 900, color: "var(--text-primary)" }}>Agent Studio</div>
@@ -115,7 +115,7 @@ export default function AgentStudioTab({ user }) {
           {loading ? (
             <Loading text="질문 로딩..." size="sm" />
           ) : filteredQuestions.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, overflow: "auto", minHeight: 0 }}>
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 0, overflow: "auto" }}>
               {filteredQuestions.map((row) => (
                 <QuestionButton key={row.id} row={row} selected={selectedQuestionId === row.id} onClick={() => setSelectedQuestionId(row.id)} />
               ))}
@@ -126,7 +126,7 @@ export default function AgentStudioTab({ user }) {
         </aside>
 
         <main style={canvasPaneStyle}>
-          <div style={{ display: "flex", alignItems: "end", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ flexShrink: 0, display: "flex", alignItems: "end", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             <PaneTitle title="워크플로우 캔버스" meta={`${mapNodes.length} nodes · ${mapEdges.length} edges`} />
             <div style={{ flex: 1 }} />
             <input value={nodeQuery} onChange={(e) => setNodeQuery(e.target.value)} placeholder="노드 검색" style={inputStyle({ width: 220 })} />
@@ -163,10 +163,12 @@ function QuestionButton({ row, selected, onClick }) {
   return (
     <button type="button" onClick={onClick} style={{
       textAlign: "left",
-      border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+      border: "0",
+      borderBottom: "1px solid var(--border)",
+      borderLeft: selected ? "3px solid var(--accent)" : "3px solid transparent",
       background: selected ? "var(--accent-glow)" : "var(--bg-primary)",
       color: "var(--text-primary)",
-      borderRadius: 5,
+      borderRadius: 0,
       padding: 8,
       cursor: "pointer",
       minWidth: 0,
@@ -184,14 +186,14 @@ function QuestionButton({ row, selected, onClick }) {
 function WorkflowCanvas({ stages, nodes, selectedId, onSelect }) {
   const visibleStages = stages.length ? stages : fallbackStages(nodes);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, visibleStages.length)}, minmax(170px, 1fr))`, gap: 8, overflowX: "auto", minHeight: 480 }}>
+    <div style={{ height: "100%", minHeight: 0, display: "grid", gridTemplateColumns: `repeat(${Math.max(1, visibleStages.length)}, minmax(170px, 1fr))`, gap: 0, overflowX: "auto" }}>
       {visibleStages.map((stage) => {
         const stageNodes = nodes.filter((node) => node.stage === stage.id && node.type !== "stage");
         return (
-          <div key={stage.id} style={{ border: "1px solid var(--border)", background: "var(--bg-secondary)", borderRadius: 6, padding: 8, minWidth: 170 }}>
-            <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-primary)", marginBottom: 3 }}>{stage.title || stage.label || stage.id}</div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, minHeight: 30, marginBottom: 8 }}>{stage.detail || stage.id}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 430, overflowY: "auto" }}>
+          <div key={stage.id} style={{ borderRight: "1px solid var(--border)", background: "var(--bg-primary)", padding: 8, minWidth: 170, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ flexShrink: 0, fontSize: 12, fontWeight: 900, color: "var(--text-primary)", marginBottom: 3 }}>{stage.title || stage.label || stage.id}</div>
+            <div style={{ flexShrink: 0, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.35, minHeight: 30, marginBottom: 8 }}>{stage.detail || stage.id}</div>
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 0, overflowY: "auto" }}>
               {stageNodes.map((node) => <WorkflowNode key={node.id} node={node} selected={selectedId === node.id} onSelect={onSelect} />)}
               {!stageNodes.length && <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: "8px 0" }}>연결 노드 없음</div>}
             </div>
@@ -206,10 +208,12 @@ function WorkflowNode({ node, selected, onSelect }) {
   return (
     <button type="button" onClick={() => onSelect(node.id)} style={{
       textAlign: "left",
-      border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+      border: "0",
+      borderBottom: "1px solid var(--border)",
+      borderLeft: selected ? "3px solid var(--accent)" : "3px solid transparent",
       background: selected ? "var(--accent-glow)" : "var(--bg-primary)",
       color: "var(--text-primary)",
-      borderRadius: 5,
+      borderRadius: 0,
       padding: 7,
       cursor: "pointer",
       opacity: node.enabled === false ? 0.62 : 1,
@@ -229,7 +233,7 @@ function DetailPanel({ question, node, edges, nodes, wikiNode, wikiHealth, wikiG
   const incoming = node ? edges.filter((edge) => edge.to === node.id) : [];
   const outgoing = node ? edges.filter((edge) => edge.from === node.id) : [];
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10, overflow: "auto" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 0, overflow: "auto" }}>
       {question && (
         <section style={detailSectionStyle}>
           <SectionTitle title="선택 질문" />
@@ -415,8 +419,10 @@ const toolbarStyle = {
 const studioGridStyle = {
   display: "grid",
   gridTemplateColumns: "280px minmax(460px, 1fr) 320px",
-  gap: 10,
+  gap: 0,
+  height: "100%",
   minHeight: 0,
+  overflow: "hidden",
 };
 
 const paneStyle = {
@@ -428,6 +434,7 @@ const paneStyle = {
   minHeight: 0,
   display: "flex",
   flexDirection: "column",
+  overflow: "hidden",
 };
 
 const canvasPaneStyle = {
@@ -438,6 +445,8 @@ const canvasPaneStyle = {
   minWidth: 0,
   minHeight: 0,
   overflow: "hidden",
+  display: "flex",
+  flexDirection: "column",
 };
 
 const detailSectionStyle = {
