@@ -24,7 +24,7 @@ export default function AgentManageTab({ user, canManageWiki }) {
             겹치는 관리 화면을 한 흐름으로 묶었습니다.
           </div>
         </div>
-        <div style={{ padding: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={sectionListStyle}>
           {SECTIONS.map((item) => (
             <button
               key={item.key}
@@ -32,14 +32,19 @@ export default function AgentManageTab({ user, canManageWiki }) {
               onClick={() => setSection(item.key)}
               data-active={section === item.key ? "true" : undefined}
               style={{
+                width: "100%",
+                display: "block",
                 textAlign: "left",
                 border: "0",
                 borderLeft: section === item.key ? "3px solid var(--accent)" : "3px solid transparent",
+                borderBottom: "1px solid var(--border)",
                 borderRadius: 0,
-                background: section === item.key ? "var(--accent-glow)" : "transparent",
+                background: section === item.key ? "var(--bg-primary)" : "transparent",
                 color: section === item.key ? "var(--accent)" : "var(--text-primary)",
-                padding: "9px 10px",
+                padding: "10px 12px",
                 cursor: "pointer",
+                font: "inherit",
+                appearance: "none",
               }}
             >
               <div style={{ fontSize: 13, fontWeight: 850 }}>{item.label}</div>
@@ -78,6 +83,12 @@ const navStyle = {
   borderRight: "1px solid var(--border)",
   background: "var(--bg-secondary)",
   overflow: "auto",
+};
+
+const sectionListStyle = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
 };
 
 const contentStyle = {

@@ -1,8 +1,8 @@
 # Flow Agent Runtime
 
-Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 설계, 시멘틱/위키 운영, 누적 지식 현황, runtime trace, 운영 가이드를 다룬다. 현재 visible Agent 표면은 다섯 가지 상단 흐름으로 묶는다.
+Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 설계, 시멘틱/위키 운영, 누적 지식 현황, runtime trace, 운영 가이드를 다룬다. 전역 기타 메뉴에는 legacy `AI 허브`/`SQL 작업대`를 별도 탭으로 노출하지 않고, 현재 visible Agent 표면은 다섯 가지 상단 흐름으로 묶는다.
 
-- `스튜디오`: Dify/n8n식으로 질문 큐, workflow canvas, Wiki 근거, 개선 루프를 한 화면에서 표시
+- `스튜디오`: Dify/n8n식으로 질문 큐, 전체 workflow canvas, 에이전트 동작 단계, Wiki 관계, 개선 루프를 웹 안에서 바로 표시
 - `설계·지식`: 질문 설계, 기능 AI/시멘틱, Wiki 그래프, 누적 지식을 좌측 섹션으로 묶어 관리
 - `실행 추적`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
 - `운영 가이드`: 질문 이력 -> workflow/Wiki 보강 -> Runbook/deep-eval 검증 -> 운영 반영 절차

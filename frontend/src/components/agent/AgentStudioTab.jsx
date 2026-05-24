@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { dl, qs, sf } from "../../lib/api";
+import { qs, sf } from "../../lib/api";
 import { Banner, Button, EmptyState, Field, Pill } from "../UXKit";
 import Loading from "../Loading";
+
+const STUDIO_VIEWS = [
+  { key: "workflow", label: "전체 워크플로우" },
+  { key: "agent", label: "에이전트 동작" },
+  { key: "wiki", label: "Wiki 관계" },
+];
 
 export default function AgentStudioTab({ user }) {
   const isAdmin = user?.role === "admin";
@@ -12,10 +18,10 @@ export default function AgentStudioTab({ user }) {
   const [workflowMap, setWorkflowMap] = useState(null);
   const [wikiHealth, setWikiHealth] = useState(null);
   const [wikiGraph, setWikiGraph] = useState({ nodes: [], links: [] });
+  const [view, setView] = useState("workflow");
   const [selectedQuestionId, setSelectedQuestionId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState("");
   const [err, setErr] = useState("");
 
   async function reload() {
@@ -44,24 +50,6 @@ export default function AgentStudioTab({ user }) {
   }
 
   useEffect(() => { reload(); }, [days, isAdmin]);
-
-  async function exportWorkflow(format) {
-    setExporting(format);
-    setErr("");
-    try {
-      const params = { format: format === "obsidian_zip" ? "obsidian" : "n8n", days, limit: 40, reference_limit: 160 };
-      if (format === "obsidian_zip") {
-        await dl("/api/ai-hub/workflow-map/export/download" + qs(params), "flow-ai-hub-workflow-map.obsidian.zip");
-        return;
-      }
-      const out = await sf("/api/ai-hub/workflow-map/export" + qs(params));
-      downloadJson(out.filename || "flow-ai-hub-workflow-map.n8n.json", out);
-    } catch (e) {
-      setErr(e?.message || "export 실패");
-    } finally {
-      setExporting("");
-    }
-  }
 
   const filteredQuestions = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -101,8 +89,6 @@ export default function AgentStudioTab({ user }) {
             </select>
           </Field>
           <Button onClick={reload} disabled={loading}>{loading ? "갱신 중" : "새로고침"}</Button>
-          <Button onClick={() => exportWorkflow("n8n")} disabled={!!exporting}>{exporting === "n8n" ? "준비 중" : "n8n JSON"}</Button>
-          <Button onClick={() => exportWorkflow("obsidian_zip")} disabled={!!exporting}>{exporting === "obsidian_zip" ? "준비 중" : "Obsidian ZIP"}</Button>
         </div>
       </section>
 
@@ -127,14 +113,19 @@ export default function AgentStudioTab({ user }) {
 
         <main style={canvasPaneStyle}>
           <div style={{ flexShrink: 0, display: "flex", alignItems: "end", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-            <PaneTitle title="워크플로우 캔버스" meta={`${mapNodes.length} nodes · ${mapEdges.length} edges`} />
+            <PaneTitle title={viewTitle(view)} meta={`${mapNodes.length} nodes · ${mapEdges.length} edges`} />
+            <ViewSwitch value={view} onChange={setView} />
             <div style={{ flex: 1 }} />
-            <input value={nodeQuery} onChange={(e) => setNodeQuery(e.target.value)} placeholder="노드 검색" style={inputStyle({ width: 220 })} />
+            <input value={nodeQuery} onChange={(e) => setNodeQuery(e.target.value)} placeholder="노드/Wiki 검색" style={inputStyle({ width: 220 })} />
           </div>
           {loading ? (
             <Loading text="워크플로우 로딩..." size="md" />
-          ) : workflowMap ? (
+          ) : workflowMap && view === "workflow" ? (
             <WorkflowCanvas stages={stages} nodes={visibleNodes} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+          ) : workflowMap && view === "agent" ? (
+            <AgentOperationPanel workflowMap={workflowMap} question={selectedQuestion} nodeNeedle={nodeNeedle} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+          ) : workflowMap && view === "wiki" ? (
+            <WikiRelationPanel workflowMap={workflowMap} wikiGraph={wikiGraph} nodeNeedle={nodeNeedle} selectedNode={selectedNode} onSelect={setSelectedNodeId} />
           ) : (
             <EmptyState title="워크플로우 지도 없음" hint="AI Hub workflow-map API 상태를 확인하세요." />
           )}
@@ -225,6 +216,171 @@ function WorkflowNode({ node, selected, onSelect }) {
       </div>
       <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{node.detail || node.id}</div>
     </button>
+  );
+}
+
+function ViewSwitch({ value, onChange }) {
+  return (
+    <div style={viewSwitchStyle}>
+      {STUDIO_VIEWS.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          onClick={() => onChange(item.key)}
+          style={viewSwitchButtonStyle(value === item.key)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AgentOperationPanel({ workflowMap, question, nodeNeedle, selectedId, onSelect }) {
+  const nodes = workflowMap?.nodes || [];
+  const stages = workflowMap?.stages || [];
+  const counts = workflowMap?.counts || {};
+  const warnings = Array.isArray(workflowMap?.warnings) ? workflowMap.warnings : [];
+  const filtered = (items) => {
+    if (!nodeNeedle) return items;
+    return items.filter((node) => workflowNodeSearchText(node).includes(nodeNeedle));
+  };
+  const workflowNodes = filtered(nodes.filter((node) => node.type === "workflow"));
+  const toolNodes = filtered(nodes.filter((node) => node.type === "tool"));
+
+  return (
+    <div style={operationPanelStyle}>
+      <div style={metricStripStyle}>
+        <MiniStat label="workflow" value={counts.workflow_templates_visible || workflowNodes.length} />
+        <MiniStat label="tools" value={counts.tools_visible || toolNodes.length} />
+        <MiniStat label="recent runs" value={counts.workflow_runs_recent || 0} />
+        <MiniStat label="warnings" value={(warnings || []).length + Number(counts.workflow_run_warnings || 0)} />
+      </div>
+
+      {question && (
+        <section style={operationSectionStyle}>
+          <SectionTitle title="질문 라우팅" meta={question.status || "history"} />
+          <DetailLine label="question" value={question.prompt || "-"} strong />
+          <DetailLine label="semantic/action" value={[question.feature, question.intent, question.action].filter(Boolean).join(" / ") || "-"} />
+          <DetailLine label="result" value={question.answer_excerpt || questionImproveText(question)} />
+        </section>
+      )}
+
+      <div style={operationFlowStyle}>
+        {stages.map((stage) => {
+          const stageNodes = filtered(nodes.filter((node) => node.stage === stage.id && node.type !== "stage"));
+          return (
+            <section key={stage.id} style={operationStageStyle}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "var(--text-primary)" }}>{stage.title || stage.id}</div>
+              <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.35 }}>{stage.detail || stage.id}</div>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 0 }}>
+                {stageNodes.slice(0, 10).map((node) => (
+                  <StageNodeButton key={node.id} node={node} selected={selectedId === node.id} onSelect={onSelect} />
+                ))}
+                {stageNodes.length > 10 && <div style={moreRowStyle}>+{stageNodes.length - 10} more</div>}
+                {!stageNodes.length && <div style={emptyRowStyle}>노드 없음</div>}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+
+      {!!warnings.length && (
+        <section style={operationSectionStyle}>
+          <SectionTitle title="운영 경고" meta={`${warnings.length}`} />
+          {warnings.slice(0, 6).map((warning, idx) => (
+            <div key={`${warning.key || warning.message || idx}`} style={warningRowStyle}>
+              <span style={{ fontWeight: 850, color: "var(--warn)" }}>{warning.title || warning.key || "warning"}</span>
+              <span>{warning.message || warning.action || "-"}</span>
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function StageNodeButton({ node, selected, onSelect }) {
+  const metrics = node.metrics && typeof node.metrics === "object" ? node.metrics : {};
+  const metricText = [
+    metrics.steps ? `${metrics.steps} steps` : "",
+    metrics.count ? `${metrics.count} runs` : "",
+    metrics.warning_count ? `${metrics.warning_count} warn` : "",
+  ].filter(Boolean).join(" · ");
+  return (
+    <button type="button" onClick={() => onSelect(node.id)} style={operationNodeButtonStyle(selected)}>
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label || node.id}</span>
+      <span style={{ color: toneColor(node.tone), fontWeight: 900 }}>{nodeTypeLabel(node.type)}</span>
+      {metricText && <span style={{ gridColumn: "1 / -1", color: "var(--text-secondary)", fontSize: 10 }}>{metricText}</span>}
+    </button>
+  );
+}
+
+function WikiRelationPanel({ workflowMap, wikiGraph, nodeNeedle, selectedNode, onSelect }) {
+  const workflowNodes = workflowMap?.nodes || [];
+  const evidenceNodes = workflowNodes
+    .filter((node) => node.stage === "evidence" && node.type !== "stage")
+    .filter((node) => !nodeNeedle || workflowNodeSearchText(node).includes(nodeNeedle));
+  const graphNodes = (wikiGraph?.nodes || []).filter((node) => {
+    if (!nodeNeedle) return true;
+    return [node.id, node.label, node.kind, node.doc_id].filter(Boolean).join(" ").toLowerCase().includes(nodeNeedle);
+  });
+  const graphLinks = (wikiGraph?.links || []).filter((edge) => {
+    if (!nodeNeedle) return true;
+    return [edge.source, edge.target, edge.label, edge.kind].filter(Boolean).join(" ").toLowerCase().includes(nodeNeedle);
+  });
+  const degree = new Map();
+  for (const edge of wikiGraph?.links || []) {
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+  }
+  const selectedKey = selectedNode ? String(selectedNode.id || "").replace(/^(wiki|graph|relation|column|feature):/, "") : "";
+
+  return (
+    <div style={wikiPanelStyle}>
+      <section style={wikiColumnStyle}>
+        <SectionTitle title="워크플로우 근거" meta={`${evidenceNodes.length}`} />
+        <div style={relationListStyle}>
+          {evidenceNodes.slice(0, 80).map((node) => (
+            <button key={node.id} type="button" onClick={() => onSelect(node.id)} style={relationRowButtonStyle(selectedNode?.id === node.id)}>
+              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label || node.id}</span>
+              <span style={{ color: "var(--text-secondary)", fontSize: 10 }}>{nodeTypeLabel(node.type)}</span>
+            </button>
+          ))}
+          {!evidenceNodes.length && <div style={emptyRowStyle}>근거 노드 없음</div>}
+        </div>
+      </section>
+
+      <section style={wikiColumnStyle}>
+        <SectionTitle title="Wiki 노드" meta={`${graphNodes.length}`} />
+        <div style={relationListStyle}>
+          {graphNodes.slice(0, 100).map((node) => {
+            const active = selectedKey && [node.id, node.doc_id, node.label].filter(Boolean).includes(selectedKey);
+            return (
+              <div key={node.id} style={relationRowStyle(active)}>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.label || node.id}</span>
+                <span style={{ color: "var(--text-secondary)", fontSize: 10 }}>{node.kind || "node"} · {degree.get(node.id) || 0}</span>
+              </div>
+            );
+          })}
+          {!graphNodes.length && <div style={emptyRowStyle}>Wiki 노드 없음</div>}
+        </div>
+      </section>
+
+      <section style={wikiColumnStyle}>
+        <SectionTitle title="관계 링크" meta={`${graphLinks.length}`} />
+        <div style={relationListStyle}>
+          {graphLinks.slice(0, 120).map((edge) => (
+            <div key={edge.id || `${edge.source}:${edge.target}`} style={relationEdgeStyle}>
+              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{edge.source}</span>
+              <span style={{ color: "var(--accent)", fontWeight: 900 }}>{edge.label || "link"}</span>
+              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{edge.target}</span>
+            </div>
+          ))}
+          {!graphLinks.length && <div style={emptyRowStyle}>관계 링크 없음</div>}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -381,6 +537,19 @@ function questionImproveText(question) {
   return "반복 질문이면 workflow template 또는 Wiki 근거로 승격";
 }
 
+function viewTitle(view) {
+  return STUDIO_VIEWS.find((item) => item.key === view)?.label || "전체 워크플로우";
+}
+
+function nodeTypeLabel(type) {
+  const value = String(type || "");
+  if (value === "workflow") return "workflow";
+  if (value === "workflow_step") return "step";
+  if (value === "tool") return "agent";
+  if (["wiki", "relation", "column", "graph", "feature", "arg"].includes(value)) return "wiki";
+  return value || "node";
+}
+
 function toneColor(tone) {
   if (tone === "bad") return "var(--danger)";
   if (tone === "ok") return "var(--ok)";
@@ -391,18 +560,6 @@ function toneColor(tone) {
 
 function shortTime(value) {
   return String(value || "").replace("T", " ").slice(0, 16) || "-";
-}
-
-function downloadJson(filename, payload) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 const toolbarStyle = {
@@ -470,6 +627,172 @@ const edgeButtonStyle = {
   padding: "4px 6px",
   cursor: "pointer",
   fontSize: 11,
+};
+
+const viewSwitchStyle = {
+  display: "inline-flex",
+  border: "1px solid var(--border)",
+  borderRadius: 4,
+  overflow: "hidden",
+  background: "var(--bg-secondary)",
+};
+
+const viewSwitchButtonStyle = (active) => ({
+  border: "0",
+  borderRight: "1px solid var(--border)",
+  background: active ? "var(--accent)" : "transparent",
+  color: active ? "#fff" : "var(--text-primary)",
+  padding: "6px 9px",
+  fontSize: 12,
+  fontWeight: 850,
+  cursor: "pointer",
+});
+
+const operationPanelStyle = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 0,
+  borderTop: "1px solid var(--border)",
+};
+
+const metricStripStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 6,
+  padding: "8px 0",
+  borderBottom: "1px solid var(--border)",
+};
+
+const operationSectionStyle = {
+  borderBottom: "1px solid var(--border)",
+  padding: "10px 0",
+};
+
+const operationFlowStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(5, minmax(150px, 1fr))",
+  gap: 0,
+  minHeight: 260,
+  overflowX: "auto",
+  borderBottom: "1px solid var(--border)",
+};
+
+const operationStageStyle = {
+  borderRight: "1px solid var(--border)",
+  padding: 8,
+  minWidth: 150,
+};
+
+const operationNodeButtonStyle = (selected) => ({
+  width: "100%",
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: 6,
+  alignItems: "center",
+  textAlign: "left",
+  border: "0",
+  borderBottom: "1px solid var(--border)",
+  borderLeft: selected ? "3px solid var(--accent)" : "3px solid transparent",
+  background: selected ? "var(--accent-glow)" : "transparent",
+  color: "var(--text-primary)",
+  padding: "7px 6px",
+  cursor: "pointer",
+  fontSize: 11,
+});
+
+const warningRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "150px minmax(0, 1fr)",
+  gap: 8,
+  padding: "6px 0",
+  borderTop: "1px solid var(--border)",
+  fontSize: 12,
+  color: "var(--text-primary)",
+};
+
+const wikiPanelStyle = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "hidden",
+  display: "grid",
+  gridTemplateColumns: "minmax(190px, 0.9fr) minmax(210px, 1fr) minmax(240px, 1.1fr)",
+  borderTop: "1px solid var(--border)",
+};
+
+const wikiColumnStyle = {
+  minHeight: 0,
+  minWidth: 0,
+  overflow: "hidden",
+  borderRight: "1px solid var(--border)",
+  padding: 8,
+  display: "flex",
+  flexDirection: "column",
+};
+
+const relationListStyle = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 0,
+};
+
+const relationRowButtonStyle = (selected) => ({
+  width: "100%",
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: 6,
+  alignItems: "center",
+  textAlign: "left",
+  border: "0",
+  borderBottom: "1px solid var(--border)",
+  borderLeft: selected ? "3px solid var(--accent)" : "3px solid transparent",
+  background: selected ? "var(--accent-glow)" : "transparent",
+  color: "var(--text-primary)",
+  padding: "7px 6px",
+  cursor: "pointer",
+  fontSize: 11,
+});
+
+const relationRowStyle = (active) => ({
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: 6,
+  alignItems: "center",
+  borderBottom: "1px solid var(--border)",
+  borderLeft: active ? "3px solid var(--accent)" : "3px solid transparent",
+  background: active ? "var(--accent-glow)" : "transparent",
+  padding: "7px 6px",
+  fontSize: 11,
+  color: "var(--text-primary)",
+});
+
+const relationEdgeStyle = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+  gap: 6,
+  alignItems: "center",
+  borderBottom: "1px solid var(--border)",
+  padding: "7px 6px",
+  fontSize: 11,
+  color: "var(--text-primary)",
+};
+
+const moreRowStyle = {
+  padding: "7px 6px",
+  borderBottom: "1px solid var(--border)",
+  fontSize: 11,
+  color: "var(--text-secondary)",
+};
+
+const emptyRowStyle = {
+  padding: "8px 0",
+  fontSize: 11,
+  color: "var(--text-secondary)",
 };
 
 const inputStyle = (extra = {}) => ({

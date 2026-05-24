@@ -5,6 +5,7 @@ import { logActivity, postJson, sf } from "../lib/api";
 import { isAdmin, isPageAdmin } from "../lib/permissions";
 
 const TAB_KEYS = new Set(TABS.map((item) => item.key));
+const REMOVED_TAB_KEYS = new Set(["aihub", "sqlworkspace"]);
 
 function tabFromPath(pathname = window.location.pathname) {
   const key = String(pathname || "").split("/").filter(Boolean)[0] || "";
@@ -167,6 +168,7 @@ export function useFlowShell() {
 
   const canAccess = useCallback(
     (tabKey) => {
+      if (REMOVED_TAB_KEYS.has(tabKey)) return false;
       if (tabKey === "home") return true;
       if (userTabs === "__all__") return true;
       const tabConfig = TABS.find((item) => item.key === tabKey);
@@ -238,7 +240,7 @@ export function useFlowShell() {
     const urlTab = tabFromPath();
     sf("/api/session/load?username=" + user.username)
       .then((data) => {
-        if (data.last_tab && !urlTab) setTab(data.last_tab);
+        if (data.last_tab && !urlTab && !REMOVED_TAB_KEYS.has(data.last_tab)) setTab(data.last_tab);
       })
       .catch(() => {});
     if (user.tabs) {

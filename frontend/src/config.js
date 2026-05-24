@@ -5,11 +5,9 @@ export const FEATURE_VERSIONS = {};
 export const TABS = [
   {key:"home",label:"홈",icon:"🏠",group:"main"},
   {key:"filebrowser",label:"파일탐색기",icon:"📂",group:"data",defaultTab:true},
-  {key:"sqlworkspace",label:"SQL 작업대",icon:"🧪",group:"data",defaultTab:true},
   {key:"dashboard",label:"대시보드",icon:"📊",group:"data",defaultTab:true},
   {key:"splittable",label:"스플릿 테이블",icon:"🗂️",group:"data",defaultTab:true},
   {key:"diagnosis",label:"에이전트",icon:"🤖",group:"tool",defaultTab:true},
-  {key:"aihub",label:"AI 허브",icon:"🧩",group:"tool",defaultTab:true},
   {key:"tracker",label:"이슈 추적",icon:"📋",group:"tool"},
   {key:"inform",label:"인폼 로그",icon:"📢",group:"tool"},
   {key:"meeting",label:"회의관리",icon:"🗓",group:"tool"},

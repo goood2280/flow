@@ -13,8 +13,6 @@ export const PAGE_MAP = {
   calendar: lazy(() => import("../pages/My_Calendar")),
   meeting: lazy(() => import("../pages/My_Meeting")),
   tablemap: lazy(() => import("../pages/My_TableMap")),
-  aihub: lazy(() => import("../pages/My_AIHub")),
-  sqlworkspace: lazy(() => import("../pages/My_SqlWorkspace")),
   devguide: lazy(() => import("../pages/My_DevGuide")),
   admin: lazy(() => import("../pages/My_Admin")),
 };

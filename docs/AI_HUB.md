@@ -3,7 +3,7 @@
 flow 본진에 흩어져 있던 두 단계 추상화를 한 화면에서 보고·관리하기 위한 layer.
 기존 dispatch/라우팅은 손대지 않고 **읽기 전용 카탈로그**만 얹는다.
 
-사용자-facing 진입점은 Agent 탭 안의 `스튜디오`, `설계·지식`, `운영 가이드`다. `스튜디오`는 질문 큐, n8n식 workflow canvas, Obsidian식 Wiki 근거, 개선 루프를 한 화면에 압축해서 보여주고, 상세 운영 API는 이 화면들이 공유하는 `/api/ai-hub/*` 라우터로 유지한다.
+사용자-facing 진입점은 Agent 탭 안의 `스튜디오`, `설계·지식`, `운영 가이드`다. 전역 navigation의 legacy `AI 허브`/`SQL 작업대` 탭은 노출하지 않는다. `스튜디오`는 질문 큐, 전체 workflow canvas, 에이전트 동작 단계, Obsidian식 Wiki 관계, 개선 루프를 웹 안에서 바로 보여주고, 상세 운영 API는 이 화면들이 공유하는 `/api/ai-hub/*` 라우터로 유지한다.
 
 ## 두 단계 추상화
 
@@ -36,9 +36,9 @@ POST /api/ai-hub/deep-eval-report/run       최신 deep-eval 리포트 재생성
 GET  /api/ai-hub/wiki-health                Agent Wiki/Knowledge Vault 문서·소스·graph·lint 운영 상태
 GET  /api/ai-hub/workflow-runbook           Agent workflow별 준비도/runbook 표: step, tool, 검증, Wiki/schema 근거, status/issue/workflow_key filter
 GET  /api/ai-hub/workflow-map               n8n/Obsidian식 Prompt→Policy→Tool→Wiki/Schema→Improve 운영 지도
-GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 운영 지도 export JSON
-GET  /api/ai-hub/workflow-map/export/download  format=obsidian → Obsidian Markdown ZIP 다운로드
-GET  /api/ai-hub/ops-export/download        format=obsidian|n8n → readiness/deep-eval/wiki-health/timeline/workflow-map 운영 export 다운로드
+GET  /api/ai-hub/workflow-map/export        format=n8n|obsidian → 외부 인수인계용 운영 지도 export JSON
+GET  /api/ai-hub/workflow-map/export/download  format=obsidian → 외부 인수인계용 Obsidian Markdown ZIP 다운로드
+GET  /api/ai-hub/ops-export/download        format=obsidian|n8n → 외부 인수인계용 운영 export 다운로드
 POST /api/ai-hub/readiness/bootstrap-workflows  시작 shared workflow 템플릿 생성 (admin)
 POST /api/ai-hub/tools/{name}/toggle        enabled on/off (admin)
 POST /api/home-agent/orchestrate            { prompt } → trace + reply
@@ -75,12 +75,12 @@ LLM function-calling 미지원 모델(GPT-OSS-120B 등) 환경에서도 휴리�
 - `deep_eval:latest`: 최신 Agent deep-eval 리포트. semantic/wiki/sql 검증 통과 수와 실패 assertion 상태를 Improve 단계의 evidence로 연결하고, 노드 detail에서 admin 재검증 action을 실행할 수 있다.
 - `wiki:*`, `graph:*`, `relation:*`, `column:*`, `arg:*`, `feature:*`: Agent Wiki, graph node, schema relation, column catalog, function 입력 스키마, 기능 문서 근거
 
-AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node 검색/type filter, node detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 확인한다. node 검색은 id/label/detail/type/tag를 대상으로 결과를 바로 선택하고, type filter는 workflow/step/tool/wiki/graph/schema/deep-eval 영역만 stage column에 남긴다. 노드 detail의 입력/출력 엣지는 연결 노드로 바로 이동한다. workflow 노드 detail의 `Runbook` 버튼은 같은 workflow row만 Runbook에서 펼치고, tool 노드 detail의 `도구 상세` 버튼은 AI Hub 도구 카탈로그 카드와 최근 호출 이력을 바로 연다. 도구 카탈로그 상세의 Wiki/Graph refs는 같은 워크플로우 지도 evidence 노드로 focus한다. wiki/schema evidence 노드 detail의 `Wiki 상태` 버튼은 Agent Wiki 운영 패널로 이동해 graph/lint/source 상태를 이어서 보게 한다.
+Agent Studio의 `전체 워크플로우`/`에이전트 동작`/`Wiki 관계` 패널은 태그별 focus filter, node 검색/type filter, node detail을 제공한다. 운영자는 n8n처럼 반복 prompt template → policy gate → unit/function step 흐름을 보고, Obsidian처럼 도구가 어떤 지식/스키마에 연결되는지 웹 안에서 확인한다. node 검색은 id/label/detail/type/tag를 대상으로 결과를 바로 선택하고, type filter는 workflow/step/tool/wiki/graph/schema/deep-eval 영역만 stage column에 남긴다. 노드 detail의 입력/출력 엣지는 연결 노드로 바로 이동한다. workflow 노드 detail의 `Runbook` 버튼은 같은 workflow row만 Runbook에서 펼치고, tool 노드 detail의 `도구 상세` 버튼은 도구 카탈로그 카드와 최근 호출 이력을 바로 연다. 도구 카탈로그 상세의 Wiki/Graph refs는 같은 워크플로우 지도 evidence 노드로 focus한다. wiki/schema evidence 노드 detail의 `Wiki 상태` 버튼은 Agent Wiki 운영 패널로 이동해 graph/lint/source 상태를 이어서 보게 한다.
 
 지도는 저장성 export 없이 즉석 산출물로도 꺼낼 수 있다.
 
 - `format=n8n`: n8n sticky-note workflow JSON. Flow 내부 실행을 외부 자동화로 우회하지 않고, 운영 리뷰/설계용 노드와 connection만 내보낸다.
-- `format=obsidian`: Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다. 화면의 `Obsidian ZIP` 버튼은 같은 note 묶음을 zip으로 내려받는다.
+- `format=obsidian`: 외부 Obsidian vault에 넣을 수 있는 Markdown note 묶음 JSON. index note와 `nodes/*.md` note가 wiki-link로 서로 연결된다.
 - `ops-export/download?format=obsidian`: readiness, deep-eval, wiki-health, timeline, workflow map note를 `Flow AI Hub Operations.md` 중심의 Obsidian vault ZIP으로 내려받는다. index note는 Runbook 조치 큐와 workflow map 경고 요약을 포함하고, `operations/workflow-map-warnings.md`에 경고별 대상과 근거 보강 대상을 남긴다.
 - `ops-export/download?format=n8n`: readiness, deep-eval, wiki-health, timeline, workflow map, 상위 backlog를 n8n sticky-note workflow JSON으로 내려받는다. 실행 자동화가 아니라 운영 리뷰/인수인계용 export이며 `ops:index`, `ops:runbook`, `ops:workflow_warnings`에 Runbook 조치 큐와 workflow map 경고가 표시된다.
 - Workflow map 경고는 `message`, `items`, `action`, `route`를 함께 갖는다. AI Hub 화면의 스냅샷/지도 경고 큐와 운영 export는 같은 action 문구를 표시해 운영자가 Wiki 근거 보강, workflow step 수정, deep-eval 재검증 같은 다음 조치를 바로 확인한다. 화면에서 경고를 누르면 `route`에 따라 Agent Wiki 상태, Agent 검증 리포트, Workflow Runbook issue filter, 또는 워크플로우 지도 패널이 열린다.
@@ -98,7 +98,7 @@ AI Hub 화면의 `워크플로우 지도` 패널은 태그별 focus filter, node
 - 응답의 `next_action_queue[]`는 현재 Runbook 필터 결과에서 같은 조치를 요구하는 workflow를 묶은 운영 큐다. AI Hub 패널에서는 큐 항목을 눌러 해당 issue 필터로 좁혀 볼 수 있다.
 - 각 row의 `Dry-run` action은 기존 `/api/agent/workflows/execute`를 `dry_run=true`로 호출하고, 실제 권한/guardrail은 Agent workflow endpoint가 다시 검증한다.
 - 등록된 workflow template이 없으면 admin에게 `시작 템플릿 생성` action을 노출해 기존 `/api/ai-hub/readiness/bootstrap-workflows`로 공유 starter workflow 3개를 바로 만들 수 있게 한다.
-- 운영 Obsidian ZIP은 `operations/workflow-runbook.md`에 issue, next action 열, Next Action Queue 표를 포함하고 `operations/workflow-map-warnings.md`에 지도 경고 큐를 둔다. 운영 n8n JSON은 `ops:runbook` sticky note를 readiness와 deep-eval 사이에 두고, `ops:workflow_warnings`로 지도 경고를 별도 추적한다.
+- 외부 운영 export의 Obsidian ZIP은 `operations/workflow-runbook.md`에 issue, next action 열, Next Action Queue 표를 포함하고 `operations/workflow-map-warnings.md`에 지도 경고 큐를 둔다. n8n JSON은 `ops:runbook` sticky note를 readiness와 deep-eval 사이에 두고, `ops:workflow_warnings`로 지도 경고를 별도 추적한다.
 
 ## 운영 준비도
 
