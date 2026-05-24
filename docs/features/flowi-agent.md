@@ -1,11 +1,11 @@
 # Flow Agent Runtime
 
-Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 설계, 시멘틱/위키 운영, 누적 지식 현황, runtime trace를 다룬다. 현재 visible Agent 표면은 다섯 가지다.
+Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 설계, 시멘틱/위키 운영, 누적 지식 현황, runtime trace, 운영 가이드를 다룬다. 현재 visible Agent 표면은 다섯 가지 상단 흐름으로 묶는다.
 
-- `질문 설계`: 사용자 질문을 semantic resolve, workflow match, dry-run step으로 분해하고 개인 workflow 초안으로 저장
-- `기능 AI/시멘틱`: 단위 기능 AI, semantic alias/intent, workflow template, Agent Wiki, proposal queue 운영
-- `누적 지식`: Wiki page/source, semantic proposal/change, prompt trace, knowledge event, knowledge inventory 조회
-- `런타임 추적`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
+- `스튜디오`: Dify/n8n식으로 질문 큐, workflow canvas, Wiki 근거, 개선 루프를 한 화면에서 표시
+- `설계·지식`: 질문 설계, 기능 AI/시멘틱, Wiki 그래프, 누적 지식을 좌측 섹션으로 묶어 관리
+- `실행 추적`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
+- `운영 가이드`: 질문 이력 -> workflow/Wiki 보강 -> Runbook/deep-eval 검증 -> 운영 반영 절차
 - `LLM 연결`: 기존 LLM runtime 연결 상태와 admin 설정
 
 권한 모델은 초안+승인 방식이다. 일반 유저는 개인 workflow template을 저장하고, shared workflow/semantic alias/intent/maintained wiki 반영은 admin 또는 diagnosis/agent/knowledge page manager만 수행한다.
@@ -41,8 +41,12 @@ Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에�
 | EventSource auth fallback | `backend/app_v2/runtime/security.py` |
 | Agent page | `frontend/src/pages/My_Diagnosis.jsx` |
 | Question design UI | `frontend/src/components/agent/QuestionDesignTab.jsx` |
+| Design/knowledge merged UI | `frontend/src/components/agent/AgentManageTab.jsx` |
 | Unit AI / semantic UI | `frontend/src/components/agent/AgentV2.jsx`, `SemanticLayerTab.jsx`, `WorkflowsTab.jsx` |
 | Knowledge overview UI | `frontend/src/components/agent/KnowledgeOverviewTab.jsx` |
+| Wiki graph UI | `frontend/src/components/agent/WikiTab.jsx` |
+| Agent studio UI | `frontend/src/components/agent/AgentStudioTab.jsx` |
+| Improvement guide UI | `frontend/src/components/agent/AgentGuideTab.jsx` |
 | Runtime UI | `frontend/src/components/agent/AgentRuntime.jsx` |
 | LLM config UI | `frontend/src/components/agent/LlmTab.jsx`, `LlmCfgPanel.jsx` |
 
@@ -80,6 +84,13 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - Returns `counts`, `recent_items`, `pending_semantic_proposals`, `recent_wiki_pages`, `recent_wiki_sources`, `recent_prompt_history`, `recent_knowledge_events`, and `recent_semantic_changes`.
 - Reads existing stores only: Knowledge Vault, semantic proposal queue, semantic changes, `flowi_activity.jsonl`, and knowledge inventory.
 - `kind` can focus broad sections such as `semantic_proposal`, `wiki_page`, `wiki_source`, `prompt_history`, `knowledge_event`, or a knowledge inventory kind.
+
+`GET /api/agent/prompt-history?limit=100&scope=mine|all&user=`
+
+- Agent Studio의 질문 큐가 읽는 질문 처리 이력이다.
+- 일반 유저는 항상 본인 질문만 본다.
+- admin은 `scope=all`로 user/admin 전체 질문 큐를 볼 수 있고, `user=<username>`으로 특정 사용자만 볼 수 있다.
+- row는 `user`, `actor_role`, `actor_type`, `prompt`, `feature`, `intent`, `action`, `status`, `missing`, `answer_excerpt`, `elapsed_ms`, `source_ai`, `client_run_id`를 포함한다.
 
 `GET /api/ai-hub/wiki-health?limit=12`
 

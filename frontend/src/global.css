@@ -681,7 +681,10 @@ table.tbl tbody tr:hover {
 
 .flow-agent-shell {
   padding: 12px;
-  display: grid;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   gap: 0;
 }
 
@@ -693,14 +696,19 @@ table.tbl tbody tr:hover {
 }
 
 .flow-agent-surface {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--border);
   background: var(--bg-card);
 }
 
 .flow-agent-surface > div {
+  height: 100%;
   min-width: 0;
+  min-height: 0;
 }
 
 .flow-agent-surface .flow-panel {

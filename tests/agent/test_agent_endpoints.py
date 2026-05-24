@@ -182,6 +182,48 @@ def test_prompt_history_reads_flow_data_activity(tmp_path, monkeypatch):
     assert out["rows"][0]["prompt"].startswith("A1001")
     assert out["rows"][0]["feature"] == "splittable"
     assert out["rows"][0]["source_ai"] == "agent_page"
+    assert out["rows"][0]["actor_type"] == "user"
+
+
+def test_prompt_history_admin_scope_all_lists_user_and_admin_questions(tmp_path, monkeypatch):
+    activity = tmp_path / "flowi_activity.jsonl"
+    rows = [
+        {
+            "timestamp": "2026-05-01T00:01:00+00:00",
+            "username": "alice",
+            "event": "chat",
+            "fields": {
+                "prompt": "LOT 이슈 원인 찾아줘",
+                "selected_function": "tracker.issue.lookup",
+                "result_status": "success",
+            },
+        },
+        {
+            "timestamp": "2026-05-01T00:02:00+00:00",
+            "username": "root",
+            "event": "chat",
+            "fields": {
+                "prompt": "Wiki source 누락된 workflow를 찾아줘",
+                "selected_function": "agent.workflow_map.inspect",
+                "result_status": "blocked",
+            },
+        },
+    ]
+    activity.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(agent.flowi_llm, "FLOWI_ACTIVITY_FILE", activity)
+    monkeypatch.setattr(agent, "_prompt_history_user_roles", lambda: {"alice": "user", "root": "admin"})
+
+    out = agent.prompt_history(req(role="admin", username="root"), limit=20, user="", scope="all")
+
+    assert out["ok"] is True
+    assert out["user"] == "all"
+    assert out["scope"] == "all"
+    assert [row["user"] for row in out["rows"]] == ["root", "alice"]
+    assert [row["actor_type"] for row in out["rows"]] == ["admin", "user"]
+
+    limited = agent.prompt_history(req(role="user", username="alice"), limit=20, user="", scope="all")
+    assert limited["scope"] == "mine"
+    assert [row["user"] for row in limited["rows"]] == ["alice"]
 
 
 def test_agent_knowledge_overview_combines_runtime_sources(tmp_path, monkeypatch):

@@ -2133,20 +2133,37 @@ def recent_rag(
     return {"ok": True, "limit": limit, "user": target_user, "traces": traces}
 
 
+def _prompt_history_user_roles() -> dict[str, str]:
+    try:
+        from routers.auth import read_users
+
+        return {
+            str(row.get("username") or ""): str(row.get("role") or "user")
+            for row in read_users()
+            if str(row.get("username") or "").strip()
+        }
+    except Exception:
+        return {}
+
+
 @router.get("/prompt-history")
 def prompt_history(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
     user: str = Query("", max_length=120),
+    scope: str = Query("mine", max_length=20),
 ):
     me = current_user(request)
     username = me.get("username") or "user"
     requested_user = str(user or "").strip()
-    target_user = requested_user if (me.get("role") == "admin" and requested_user) else username
+    admin_scope = me.get("role") == "admin" and str(scope or "").strip().lower() in {"all", "team", "users"}
+    target_user = requested_user if (me.get("role") == "admin" and requested_user) else ("" if admin_scope else username)
+    role_by_user = _prompt_history_user_roles()
     rows = _activity_rows(max(300, limit * 8))
     history: list[dict[str, Any]] = []
     for rec in sorted(rows, key=lambda r: str(r.get("timestamp") or ""), reverse=True):
-        if rec.get("username") != target_user:
+        rec_user = str(rec.get("username") or "")
+        if target_user and rec_user != target_user:
             continue
         fields = rec.get("fields") if isinstance(rec.get("fields"), dict) else {}
         prompt = str(fields.get("prompt") or fields.get("prompt_excerpt") or "").strip()
@@ -2158,11 +2175,18 @@ def prompt_history(
         missing = fields.get("missing") or fields.get("missing_fields") or []
         if not isinstance(missing, list):
             missing = [missing] if missing else []
+        actor_role = str(fields.get("user_role") or fields.get("role") or rec.get("role") or role_by_user.get(rec_user) or "").strip()
+        if not actor_role and rec_user == username:
+            actor_role = str(me.get("role") or "")
+        if not actor_role:
+            actor_role = "user"
         history.append({
             "id": f"{rec.get('timestamp') or ''}:{len(history)}",
             "timestamp": rec.get("timestamp") or "",
             "ts": rec.get("timestamp") or "",
-            "user": rec.get("username") or "",
+            "user": rec_user,
+            "actor_role": actor_role,
+            "actor_type": "admin" if actor_role == "admin" else "user",
             "event": rec.get("event") or "",
             "prompt": prompt,
             "feature": fields.get("feature") or "",
@@ -2178,7 +2202,7 @@ def prompt_history(
         })
         if len(history) >= limit:
             break
-    return {"ok": True, "limit": limit, "user": target_user, "rows": history}
+    return {"ok": True, "limit": limit, "user": target_user or "all", "scope": "all" if admin_scope and not requested_user else "mine", "rows": history}
 
 
 _OVERVIEW_KIND_ALIASES = {

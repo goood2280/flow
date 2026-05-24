@@ -43,9 +43,9 @@ export default function AgentV2({ user, canManageWiki }) {
 
   return (
     <div className="flow-connected-page flow-agent-v2" style={{
-      display: "flex", height: "calc(100vh - 160px)", minHeight: 520,
+      display: "flex", height: "100%", minHeight: 0,
       background: "var(--bg-primary)", color: "var(--text-primary)",
-      border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden",
+      border: "0", borderRadius: 0, overflow: "hidden",
     }}>
       <Sidebar
         catalog={catalog}
