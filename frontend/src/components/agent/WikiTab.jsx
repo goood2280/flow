@@ -321,9 +321,28 @@ function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onF
   );
 }
 
+const vaultSideSectionStyle = {
+  minWidth: 0,
+  border: "1px solid var(--border)",
+  borderRadius: 5,
+  background: "var(--bg-secondary)",
+  padding: 8,
+};
+
+const vaultSideHeadStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  gap: 8,
+  marginBottom: 8,
+  color: "var(--text-secondary)",
+  fontSize: 12,
+};
+
 export default function WikiTab({ user, canManage }) {
-  const [subtab, setSubtab] = useState("graph");
+  const [subtab, setSubtab] = useState("vault");
   const [graph, setGraph] = useState({ nodes: [], links: [] });
+  const [showFullGraph, setShowFullGraph] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
   const [graphFocusId, setGraphFocusId] = useState("");
@@ -356,7 +375,8 @@ export default function WikiTab({ user, canManage }) {
 
   const load = () => {
     setBusy(true);
-    sf("/api/knowledge/wiki/graph")
+    const view = canManage && showFullGraph ? "full" : "curated";
+    sf("/api/knowledge/wiki/graph" + qs({ view }))
       .then((d) => {
         const next = normalizeGraph(d);
         const fallbackSelected = next.nodes.find((n) => n.kind === "wiki_doc") || next.nodes[0] || null;
@@ -369,7 +389,7 @@ export default function WikiTab({ user, canManage }) {
       .finally(() => setBusy(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [showFullGraph]);
 
   const loadWiki = () => {
     setBusy(true);
@@ -412,6 +432,19 @@ export default function WikiTab({ user, canManage }) {
       });
     return () => { alive = false; };
   }, [selected]);
+
+  useEffect(() => {
+    const docId = selectedPage?.doc_id || "";
+    if (!docId || typeof selectedPage.body === "string") return undefined;
+    let alive = true;
+    sf("/api/agent/wiki/page" + qs({ doc_id: docId }))
+      .then((d) => {
+        if (alive) setSelectedPage(d.page || selectedPage);
+      })
+      .catch(() => {})
+      .finally(() => {});
+    return () => { alive = false; };
+  }, [selectedPage?.doc_id]);
 
   const openPage = (row) => {
     const docId = row?.doc_id || row?.id;
@@ -629,6 +662,56 @@ export default function WikiTab({ user, canManage }) {
     return graph.nodes.find((n) => n.id === "concept:default_agent_wiki_seed" || n.kind === "default_seed") || null;
   }, [graph.nodes]);
 
+  const graphNodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+
+  const visiblePages = useMemo(() => {
+    const q = wikiSearch.trim().toLowerCase();
+    const rows = q
+      ? pages.filter((row) => `${row.doc_id} ${row.title} ${row.summary} ${row.kind} ${(row.tags || []).join(" ")}`.toLowerCase().includes(q))
+      : pages;
+    return rows.slice(0, 220);
+  }, [pages, wikiSearch]);
+
+  const vaultStats = useMemo(() => {
+    const byKind = {};
+    for (const row of pages) byKind[row.kind || "manual"] = (byKind[row.kind || "manual"] || 0) + 1;
+    return byKind;
+  }, [pages]);
+
+  const selectedSourceIds = useMemo(() => {
+    if (!selectedPage) return [];
+    const fm = selectedPage.frontmatter && typeof selectedPage.frontmatter === "object" ? selectedPage.frontmatter : {};
+    const ids = selectedPage.source_ids || fm.source_ids || selectedPage.source_event_ids || [];
+    return Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+  }, [selectedPage]);
+
+  const backlinkRows = useMemo(() => {
+    const docId = selectedPage?.doc_id || "";
+    if (!docId) return [];
+    const ids = new Set([docId, `doc:${docId}`]);
+    const rows = [];
+    const seen = new Set();
+    for (const link of graph.links) {
+      const src = nodeId(link.source);
+      const tgt = nodeId(link.target);
+      if (!ids.has(src) && !ids.has(tgt)) continue;
+      const otherId = ids.has(src) ? tgt : src;
+      const key = `${src}:${tgt}:${link.label || ""}`;
+      if (!otherId || seen.has(key)) continue;
+      seen.add(key);
+      const other = graphNodeById.get(otherId) || { id: otherId, label: otherId, kind: "node" };
+      rows.push({
+        id: key,
+        direction: ids.has(src) ? "out" : "in",
+        relation: link.label || link.relation || "link",
+        node_id: otherId,
+        label: other.label || otherId,
+        kind: other.kind || "node",
+      });
+    }
+    return rows.slice(0, 30);
+  }, [graph.links, graphNodeById, selectedPage?.doc_id]);
+
   const selectGraphNode = (node) => {
     if (!node?.id) return;
     setSelected(node);
@@ -664,14 +747,107 @@ export default function WikiTab({ user, canManage }) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <TabStrip items={[{ k: "graph", l: "Graph" }, { k: "advanced", l: "고급" }]} active={subtab} onChange={setSubtab} />
+      <TabStrip items={[{ k: "vault", l: "Vault" }, { k: "graph", l: "Graph" }, { k: "advanced", l: "고급" }]} active={subtab} onChange={setSubtab} />
       {msg && <Banner tone={msg.includes("오류") ? "bad" : "ok"}>{msg}</Banner>}
+      {subtab === "vault" && (
+        <Panel
+          title="Wiki Vault"
+          subtitle="문서 목록, 본문, backlinks, 출처를 한 화면에서 확인합니다."
+          right={<div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}><Pill tone="accent">pages {pages.length}</Pill>{Object.entries(vaultStats).slice(0, 4).map(([kind, count]) => <Pill key={kind} tone="neutral">{kind} {count}</Pill>)}<Button onClick={loadWiki} disabled={busy}>{busy ? "로딩 중" : "새로고침"}</Button><Button onClick={() => setSubtab("advanced")}>새 지식</Button></div>}
+        >
+          <div className="agent-wiki-vault-grid">
+            <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+              <Field label="search">
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input value={wikiSearch} onChange={(e) => setWikiSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && loadWiki()} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="title, tag, kind" />
+                  <Button onClick={loadWiki} disabled={busy}>검색</Button>
+                </div>
+              </Field>
+              <DataTable
+                rows={visiblePages}
+                empty="저장된 지식이 없습니다."
+                onRowClick={openPage}
+                maxHeight={640}
+                columns={[
+                  { key: "title", label: "문서", render: (r) => <div style={{ display: "grid", gap: 3 }}><KoreanClamp lines={1} title={r.title}>{r.title || r.doc_id}</KoreanClamp><span style={{ color: "var(--text-secondary)", fontSize: 11 }}>{r.doc_id}</span></div> },
+                  { key: "kind", label: "분류", width: 92, render: (r) => <Pill tone={r.doc_id === selectedPage?.doc_id ? "accent" : "neutral"}>{r.kind || "-"}</Pill> },
+                ]}
+              />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              {selectedPage ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="korean-wrap" style={{ fontSize: 22, fontWeight: 900, lineHeight: 1.28 }}>{selectedPage.title || selectedPage.doc_id}</div>
+                      <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 12, wordBreak: "break-all" }}>{selectedPage.doc_id}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <Pill tone="accent">{selectedPage.kind || "wiki"}</Pill>
+                      {(selectedPage.tags || []).slice(0, 6).map((tag) => <Pill key={tag} tone="neutral">{tag}</Pill>)}
+                    </div>
+                  </div>
+                  {selectedPage.summary && <div className="korean-wrap" style={{ color: "var(--text-secondary)", lineHeight: 1.55 }}>{selectedPage.summary}</div>}
+                  <pre className="korean-wrap" style={{ margin: 0, minHeight: 420, maxHeight: 640, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.68, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 14 }}>{selectedPage.body || ""}</pre>
+                </div>
+              ) : (
+                <EmptyState title="선택된 지식 없음" hint="왼쪽 Vault 목록에서 문서를 선택하세요." />
+              )}
+            </div>
+            <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+              <div style={vaultSideSectionStyle}>
+                <div style={vaultSideHeadStyle}><strong>Backlinks</strong><span>{backlinkRows.length} links</span></div>
+                <DataTable
+                  rows={backlinkRows}
+                  empty="연결된 문서가 없습니다."
+                  maxHeight={260}
+                  onRowClick={(row) => {
+                    const node = graphNodeById.get(row.node_id);
+                    if (node) selectGraphNode(node);
+                    const docId = wikiDocIdFromNode({ id: row.node_id, kind: row.kind });
+                    if (docId) openPage({ doc_id: docId });
+                  }}
+                  columns={[
+                    { key: "label", label: "node", render: (r) => <KoreanClamp lines={1}>{r.label}</KoreanClamp> },
+                    { key: "relation", label: "rel", width: 86, render: (r) => <Pill tone={r.direction === "in" ? "info" : "accent"}>{r.relation}</Pill> },
+                  ]}
+                />
+              </div>
+              <div style={vaultSideSectionStyle}>
+                <div style={vaultSideHeadStyle}><strong>Sources</strong><span>{selectedSourceIds.length} refs</span></div>
+                {selectedSourceIds.length ? (
+                  <div style={{ display: "grid", gap: 5 }}>
+                    {selectedSourceIds.slice(0, 12).map((id) => <code key={id} style={{ fontSize: 11, color: "var(--text-secondary)", wordBreak: "break-all" }}>{id}</code>)}
+                  </div>
+                ) : <EmptyState title="출처 없음" hint="source 등록 후 Wiki로 승격하면 여기에 남습니다." />}
+              </div>
+              <div style={vaultSideSectionStyle}>
+                <div style={vaultSideHeadStyle}><strong>Metadata</strong><span>{selectedPage?.updated_at ? selectedPage.updated_at.replace("T", " ").slice(0, 16) : ""}</span></div>
+                {selectedPage ? (
+                  <DataTable
+                    rows={[
+                      { key: "kind", value: selectedPage.kind || "" },
+                      { key: "tags", value: listText(selectedPage.tags, 8) },
+                      { key: "path", value: selectedPage.path || "" },
+                      { key: "actor", value: selectedPage.actor || "" },
+                    ]}
+                    columns={[
+                      { key: "key", label: "key", width: 76 },
+                      { key: "value", label: "value", render: (r) => <KoreanClamp lines={1}>{r.value}</KoreanClamp> },
+                    ]}
+                  />
+                ) : <EmptyState title="메타 없음" hint="문서를 선택하세요." />}
+              </div>
+            </div>
+          </div>
+        </Panel>
+      )}
       {subtab === "graph" && (
         <div style={{ display: "grid", gap: 12 }}>
           <Panel
             title="Wiki Graph"
-            subtitle="문서, source event, product/lot/wafer/entity 관계를 graph로 확인합니다."
-            right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}><Pill tone="accent">{graph.nodes.length} nodes</Pill><Pill tone="info">{graph.links.length} links</Pill>{defaultSeedRows.length > 0 && <Pill tone="warn">seed {defaultSeedRows.length}</Pill>}{defaultSeedRows.length > 0 && <Button onClick={focusDefaultSeed}>Seed 보기</Button>}<Button onClick={load} disabled={busy}>{busy ? "로딩 중" : "새로고침"}</Button>{canManage && <Button variant="primary" onClick={() => setModalOpen(true)}>+</Button>}</div>}
+            subtitle={showFullGraph ? "전체 raw graph edge를 확인합니다." : "승인된 Wiki/schema 연결만 확인합니다."}
+            right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}><Pill tone={showFullGraph ? "warn" : "accent"}>{showFullGraph ? "full" : "curated"}</Pill><Pill tone="accent">{graph.nodes.length} nodes</Pill><Pill tone="info">{graph.links.length} links</Pill>{defaultSeedRows.length > 0 && <Pill tone="warn">seed {defaultSeedRows.length}</Pill>}{defaultSeedRows.length > 0 && <Button onClick={focusDefaultSeed}>Seed 보기</Button>}{canManage && <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}><input type="checkbox" checked={showFullGraph} onChange={(e) => setShowFullGraph(e.target.checked)} />전체 edge 보기</label>}<Button onClick={load} disabled={busy}>{busy ? "로딩 중" : "새로고침"}</Button><Button variant="primary" onClick={() => setModalOpen(true)} disabled={!canManage} title={!canManage ? "관리 권한이 필요합니다." : ""}>+</Button></div>}
           >
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.36fr)", gap: 12, alignItems: "start" }}>
               <div style={{ display: "grid", gap: 10 }}>
@@ -692,7 +868,7 @@ export default function WikiTab({ user, canManage }) {
                 <Panel
                   title="선택 지식 상세"
                   subtitle={selected?.id || "선택된 node 없음"}
-                  right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>{detailBusy && <Pill tone="warn">loading</Pill>}{canManage && selectedDetail?.doc_id && <Button onClick={() => openEdit(selectedDetail)} disabled={busy}>수정</Button>}</div>}
+                  right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>{detailBusy && <Pill tone="warn">loading</Pill>}{selectedDetail?.doc_id && <Button onClick={() => openEdit(selectedDetail)} disabled={!canManage || busy} title={!canManage ? "관리 권한이 필요합니다." : ""}>수정</Button>}</div>}
                 >
                   {selected ? (
                     selectedDetail ? (
@@ -768,10 +944,35 @@ export default function WikiTab({ user, canManage }) {
                   <textarea value={wikiForm.content} onChange={(e) => setWikiForm({ ...wikiForm, content: e.target.value })} rows={10} className="korean-wrap" style={{ ...formControlStyle, width: "100%", boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} placeholder="한국어 지식 내용을 입력하세요." />
                 </Field>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  {canManage && <Button onClick={registerSource} disabled={busy || !wikiForm.content.trim()}>Source 등록</Button>}
+                  <Button onClick={registerSource} disabled={!canManage || busy || !wikiForm.content.trim()} title={!canManage ? "관리 권한이 필요합니다." : ""}>Source 등록</Button>
                   <Button onClick={previewWiki} disabled={busy || !wikiForm.content.trim()}>미리보기</Button>
-                  {canManage && <Button variant="primary" onClick={commitWiki} disabled={busy || !preview}>Wiki 저장</Button>}
-                  {canManage && <Button onClick={runLint} disabled={busy}>Lint</Button>}
+                  <Button variant="primary" onClick={commitWiki} disabled={!canManage || busy || !preview} title={!canManage ? "관리 권한이 필요합니다." : ""}>Wiki 저장</Button>
+                  <Button onClick={runLint} disabled={!canManage || busy} title={!canManage ? "관리 권한이 필요합니다." : ""}>Lint</Button>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 12, padding: "4px 8px", border: "1px solid #cbd5e1", borderRadius: 4, background: "#f8fafc" }}>
+                    Markdown 파일
+                    <input
+                      type="file"
+                      accept=".md,.markdown,.txt,text/markdown,text/plain"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files && e.target.files[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const text = String(reader.result || "");
+                          setWikiForm((cur) => ({
+                            ...cur,
+                            content: text,
+                            title: cur.title || file.name.replace(/\.[^.]+$/, ""),
+                          }));
+                          setMsg(`파일 로드: ${file.name} (${text.length}자)`);
+                        };
+                        reader.onerror = () => setMsg("파일 읽기 실패");
+                        reader.readAsText(file, "utf-8");
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
               <div style={{ display: "grid", gap: 10 }}>
@@ -855,7 +1056,7 @@ export default function WikiTab({ user, canManage }) {
                 </Field>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <Button onClick={previewSingleFile} disabled={busy || !singleFileForm.file.trim()}>미리보기</Button>
-                  {canManage && <Button variant="primary" onClick={registerSingleFile} disabled={busy || !singleFileForm.file.trim()}>승인 등록</Button>}
+                  <Button variant="primary" onClick={registerSingleFile} disabled={!canManage || busy || !singleFileForm.file.trim()} title={!canManage ? "관리 권한이 필요합니다." : ""}>승인 등록</Button>
                 </div>
               </div>
               <div style={{ display: "grid", gap: 8 }}>
@@ -903,7 +1104,7 @@ export default function WikiTab({ user, canManage }) {
             <Panel
               title="선택 지식 상세"
               subtitle={selectedPage?.doc_id || "표에서 지식을 선택하세요."}
-              right={canManage && selectedPage?.doc_id ? <div style={{ display: "flex", gap: 8 }}><Button onClick={() => openEdit(selectedPage)} disabled={busy}>수정</Button><Button variant="danger" onClick={deletePage} disabled={busy}>삭제</Button></div> : null}
+              right={selectedPage?.doc_id ? <div style={{ display: "flex", gap: 8 }}><Button onClick={() => openEdit(selectedPage)} disabled={!canManage || busy} title={!canManage ? "관리 권한이 필요합니다." : ""}>수정</Button><Button variant="danger" onClick={deletePage} disabled={!canManage || busy} title={!canManage ? "관리 권한이 필요합니다." : ""}>삭제</Button></div> : null}
             >
               {selectedPage ? (
                 <div style={{ display: "grid", gap: 10 }}>

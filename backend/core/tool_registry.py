@@ -362,6 +362,12 @@ def list_function_tools() -> list[dict[str, Any]]:
     for name in name_order:
         spec = _flowi_function_schema(name) or {}
         few_shots = [s for s in (FLOWI_FUNCTION_FEW_SHOTS or []) if s.get("function") == name]
+        # few_shot 의 user prompt 만 뽑아 examples 로 노출 (LLM/UI 공통).
+        examples = [
+            {"prompt": str(s.get("user") or s.get("prompt") or "")}
+            for s in few_shots
+            if (s.get("user") or s.get("prompt"))
+        ]
         row = {
             "kind": "function",
             "name": name,
@@ -369,6 +375,8 @@ def list_function_tools() -> list[dict[str, Any]]:
             "description": str(spec.get("description") or "").strip(),
             "required_args": list(spec.get("required") or []),
             "input_schema": spec,
+            "output_schema": {},  # function-call 응답은 _attach_flowi_trace 에서 정규화.
+            "examples": examples,
             "tags": _infer_tags_for_function(name),
             "few_shot": few_shots,
             "enabled": get_enabled(name),
@@ -434,11 +442,18 @@ def list_unit_ai_tools() -> list[dict[str, Any]]:
                 "description": getattr(handler, "description", "") or "",
             } if handler else None
             feature_md = unit.feature_md_path()
+            # MCP-style schema 노출. unit 자체 description이 비어 있으면
+            # registry 의 사람 친화적 fallback 을 같은 description 으로 사용.
+            unit_description = unit.description() if hasattr(unit, "description") else ""
+            description_text = unit_description or descs.get(key) or ""
+            input_schema = unit.input_schema() if hasattr(unit, "input_schema") else {}
+            output_schema = unit.output_schema() if hasattr(unit, "output_schema") else {}
+            examples = unit.examples() if hasattr(unit, "examples") else []
             row = {
                 "kind": "unit_ai",
                 "name": key,
                 "title": title,
-                "description": descs.get(key) or "",
+                "description": description_text,
                 "llm_profile": unit.llm_profile() or "",
                 "data_sources": data_sources,
                 "semantic_bindings": semantic,
@@ -446,6 +461,9 @@ def list_unit_ai_tools() -> list[dict[str, Any]]:
                 "feature_md": str(feature_md) if feature_md else "",
                 "tags": _infer_tags_for_unit_ai(key, title),
                 "enabled": get_enabled(key),
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+                "examples": examples,
             }
             out.append(_attach_management_fields(row))
         except Exception as e:

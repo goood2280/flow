@@ -1,27 +1,32 @@
 import { useState } from "react";
+import AgentGuideTab from "./AgentGuideTab";
 import AgentV2 from "./AgentV2";
 import KnowledgeOverviewTab from "./KnowledgeOverviewTab";
+import KnowledgeReviewQueueTab from "./KnowledgeReviewQueueTab";
 import QuestionDesignTab from "./QuestionDesignTab";
 import WikiTab from "./WikiTab";
 
 const SECTIONS = [
-  { key: "question", label: "질문 설계", hint: "질문을 workflow 초안과 dry-run으로 정리" },
+  { key: "guide", label: "운영 가이드", hint: "질문 -> 지도 -> 근거 -> 검증 운영 루프" },
+  { key: "question", label: "질문/워크플로우", hint: "질문을 workflow 초안과 dry-run으로 정리" },
   { key: "unit", label: "용어/기능 AI", hint: "Unit AI, alias, intent, workflow template" },
-  { key: "wiki", label: "Wiki", hint: "graph, page, source, lint 상태" },
+  { key: "wiki", label: "Wiki 근거", hint: "graph, page, source, lint 상태" },
+  { key: "review", label: "검토 큐", hint: "회의/이슈/lot 자동 draft 검토 -> publish" },
   { key: "overview", label: "변경 이력", hint: "proposal, prompt trace, knowledge event" },
 ];
 
 export default function AgentManageTab({ user, canManageWiki }) {
-  const [section, setSection] = useState("question");
+  const [section, setSection] = useState("guide");
   const active = SECTIONS.find((item) => item.key === section) || SECTIONS[0];
+  const readOnly = !canManageWiki;
 
   return (
-    <div style={layoutStyle}>
+    <div className="agent-manage-shell" style={layoutStyle}>
       <aside style={navStyle}>
         <div style={{ padding: "12px 12px 8px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)" }}>설계/지식</div>
+          <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)" }}>Agent 관리</div>
           <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-            질문 품질을 올리는 설계, 용어, Wiki, 변경 이력을 묶었습니다.
+            운영 가이드에서 루프를 확인한 뒤 질문, 용어, Wiki 근거, 검토 큐를 관리합니다.
           </div>
         </div>
         <div style={sectionListStyle}>
@@ -58,10 +63,17 @@ export default function AgentManageTab({ user, canManageWiki }) {
           <span style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>{active.label}</span>
           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{active.hint}</span>
         </div>
+        {readOnly && (
+          <div style={readOnlyStyle}>
+            읽기 전용입니다. 공유 workflow, semantic alias, 유지 Wiki 반영은 admin 또는 diagnosis/agent/knowledge 페이지 관리자만 승인할 수 있습니다.
+          </div>
+        )}
         <div style={bodyStyle}>
+          {section === "guide" && <AgentGuideTab />}
           {section === "question" && <QuestionDesignTab user={user} canShare={canManageWiki} />}
           {section === "unit" && <AgentV2 user={user} canManageWiki={canManageWiki} />}
           {section === "wiki" && <WikiTab user={user} canManage={canManageWiki} />}
+          {section === "review" && <KnowledgeReviewQueueTab user={user} canManage={canManageWiki} />}
           {section === "overview" && <KnowledgeOverviewTab user={user} />}
         </div>
       </main>
@@ -70,10 +82,8 @@ export default function AgentManageTab({ user, canManageWiki }) {
 }
 
 const layoutStyle = {
-  height: "100%",
-  minHeight: 0,
+  minHeight: "100%",
   display: "grid",
-  gridTemplateColumns: "220px minmax(0, 1fr)",
   border: "1px solid var(--border)",
   background: "var(--bg-primary)",
 };
@@ -113,4 +123,13 @@ const bodyStyle = {
   flex: 1,
   minHeight: 0,
   overflow: "auto",
+};
+
+const readOnlyStyle = {
+  padding: "8px 14px",
+  borderBottom: "1px solid var(--border)",
+  background: "var(--warn-glow, var(--bg-secondary))",
+  color: "var(--text-secondary)",
+  fontSize: 12,
+  lineHeight: 1.45,
 };

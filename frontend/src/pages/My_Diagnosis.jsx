@@ -7,13 +7,13 @@ import { canManagePage } from "../lib/permissions";
 
 const AGENT_TABS = [
   { k: "board", l: "운영 보드" },
-  { k: "manage", l: "설계·지식" },
+  { k: "manage", l: "Agent 관리" },
   { k: "settings", l: "설정" },
 ];
 
 const AGENT_TAB_HINT = {
   board: "질문 선택/입력 -> 처리 흐름 확인 -> 개선할 지식/워크플로우 제안 흐름으로 운영합니다.",
-  manage: "질문 설계, 용어/기능 AI, Wiki, 변경 이력을 승인 흐름과 함께 관리합니다.",
+  manage: "운영 가이드에서 개선 루프를 먼저 보고, 질문/워크플로우, 용어/기능 AI, Wiki 근거, 검토 큐, 변경 이력을 관리합니다.",
   settings: "Flow-i가 호출하는 사내 LLM endpoint의 상태와 설정을 확인합니다. admin은 endpoint/모델/timeout을 바로 수정할 수 있습니다.",
 };
 
@@ -49,7 +49,7 @@ export default function My_Diagnosis({ user }) {
   return (
     <div className="flow-connected-page flow-agent-page" style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       <PageShell style={{ height: "calc(100vh - 52px)", minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        <PageHeader title="에이전트" subtitle="운영 보드에서 질문 처리 품질을 보고, 설계·지식과 설정으로 개선 경로를 좁힙니다." />
+        <PageHeader title="에이전트" subtitle="운영 보드에서 질문 처리 품질을 보고, Agent 관리와 설정으로 개선 경로를 좁힙니다." />
         <div className="flow-agent-shell">
           <div className="flow-agent-tabs">
             <TabStrip items={AGENT_TABS} active={tab} onChange={setTab} />

@@ -137,6 +137,8 @@ class AgentWikiIngestReq(BaseModel):
     body: str = ""
     content: str = ""
     tags: list[str] = Field(default_factory=list)
+    related_doc_ids: list[str] = Field(default_factory=list)
+    relations: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentWikiPageSaveReq(BaseModel):

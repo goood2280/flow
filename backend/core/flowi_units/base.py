@@ -8,8 +8,9 @@ can render as a 4-layer view:
     LLM (prompt/profile) -> prompt_template_path(), llm_profile()
     Results (handler)  -> handler_entry(), handle()
 
-M1 (this PR) registers metadata only. M2 PRs add `handle()` wiring via
-delegation to existing handlers in backend/routers/*.
+`tool_schema()` exposes an OpenAI function-calling compatible JSON Schema so
+the home orchestrator (and any external MCP-style caller) can pick and call
+unit AIs by name without a custom adapter per unit.
 """
 from __future__ import annotations
 
@@ -18,6 +19,46 @@ from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from core.paths import PATHS
+
+# Common input shape for unit AIs that take a free-form prompt plus product
+# scope + row cap. Individual units can override INPUT_SCHEMA to add fields.
+DEFAULT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": "사용자 자연어 요청. 단위 AI가 자체 파싱한다.",
+        },
+        "product": {
+            "type": "string",
+            "description": "제품 코드 (예: PRODA, PRODB). 비어 있으면 단위 AI 기본값.",
+            "default": "",
+        },
+        "max_rows": {
+            "type": "integer",
+            "description": "응답에 포함할 최대 row 수.",
+            "default": 12,
+            "minimum": 1,
+            "maximum": 1000,
+        },
+    },
+    "required": ["prompt"],
+}
+
+# Common output shape returned by handle(). Specific units may add extra keys
+# (rows, chart, table) but always keep `handled` + `feature`.
+DEFAULT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "handled": {"type": "boolean", "description": "단위 AI가 prompt를 처리했는지 여부."},
+        "feature": {"type": "string", "description": "처리한 unit AI key."},
+        "text": {"type": "string", "description": "자연어 응답 본문 (있을 때)."},
+        "answer": {"type": "string", "description": "요약된 한줄 답변 (있을 때)."},
+        "rows": {"type": "array", "description": "표 형태 결과 (있을 때)."},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["handled"],
+}
 
 
 @dataclass(frozen=True)
@@ -92,12 +133,17 @@ class UnitAI(Protocol):
 
     def key(self) -> str: ...
     def title(self) -> str: ...
+    def description(self) -> str: ...
     def feature_md_path(self) -> Path: ...
     def prompt_template_path(self) -> Optional[Path]: ...
     def data_sources(self) -> list[DataSourceRef]: ...
     def semantic_bindings(self) -> SemanticBindings: ...
     def llm_profile(self) -> str: ...
     def handler_entry(self) -> CodeRef: ...
+    def input_schema(self) -> dict[str, Any]: ...
+    def output_schema(self) -> dict[str, Any]: ...
+    def examples(self) -> list[dict[str, Any]]: ...
+    def tool_schema(self) -> dict[str, Any]: ...
     def handle(
         self,
         prompt: str,
@@ -116,24 +162,31 @@ class UnitAI(Protocol):
 class BaseUnitAI:
     """Default declarative-metadata base.
 
-    Subclasses override class attributes and (in M2) the `handle` method.
-    M1's `handle` always returns None so the dispatcher falls through to
-    the existing `_run_flowi_chat` if/elif chain.
+    Subclasses override class attributes and the `handle` method.
+    A subclass that does not implement `handle` falls through to the legacy
+    `_run_flowi_chat` if/elif chain via the dispatcher.
     """
 
     KEY: str = ""
     TITLE: str = ""
+    DESCRIPTION: str = ""
     PROMPT_TEMPLATE_PATH: Optional[Path] = None
     LLM_PROFILE: str = ""
     DATA_SOURCES: tuple[DataSourceRef, ...] = ()
     SEMANTIC_BINDINGS: SemanticBindings = SemanticBindings()
     HANDLER_ENTRY: CodeRef = CodeRef(module="", function="")
+    INPUT_SCHEMA: dict[str, Any] = DEFAULT_INPUT_SCHEMA
+    OUTPUT_SCHEMA: dict[str, Any] = DEFAULT_OUTPUT_SCHEMA
+    EXAMPLES: tuple[dict[str, Any], ...] = ()
 
     def key(self) -> str:
         return self.KEY
 
     def title(self) -> str:
         return self.TITLE or self.KEY
+
+    def description(self) -> str:
+        return self.DESCRIPTION
 
     def feature_md_path(self) -> Path:
         return PATHS.data_root / "flowi_agent_features" / f"{self.KEY}.md"
@@ -152,6 +205,31 @@ class BaseUnitAI:
 
     def handler_entry(self) -> CodeRef:
         return self.HANDLER_ENTRY
+
+    def input_schema(self) -> dict[str, Any]:
+        return self.INPUT_SCHEMA or DEFAULT_INPUT_SCHEMA
+
+    def output_schema(self) -> dict[str, Any]:
+        return self.OUTPUT_SCHEMA or DEFAULT_OUTPUT_SCHEMA
+
+    def examples(self) -> list[dict[str, Any]]:
+        return list(self.EXAMPLES)
+
+    def tool_schema(self) -> dict[str, Any]:
+        """OpenAI function-calling 호환 도구 정의.
+
+        반환 dict 형식은 `{type: "function", function: {name, description,
+        parameters, ...}}` 의 inner `function` payload 와 동일. LLM adapter는
+        `{"type": "function", "function": tool_schema()}` 으로 감싸서 사용한다.
+        """
+        return {
+            "name": self.key(),
+            "title": self.title(),
+            "description": self.description() or self.title(),
+            "parameters": self.input_schema(),
+            "output_schema": self.output_schema(),
+            "examples": self.examples(),
+        }
 
     def handle(
         self,

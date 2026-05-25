@@ -23,6 +23,14 @@ from core.flowi_units.base import (
 class SplitTableUnitAI(BaseUnitAI):
     KEY = "splittable"
     TITLE = "SplitTable AI"
+    DESCRIPTION = (
+        "ML_TABLE 기반 KNOB / MASK / split 정보 조회. "
+        "'A1000 LOT의 KNOB_GATE 값', 'X1234 wafer split' 같은 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "A1000A.3 KNOB_GATE_CD 값", "product": "PRODA"},
+        {"prompt": "split 검증 LOT KNOB 비교"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="ml_table",
@@ -81,6 +89,14 @@ class SplitTableUnitAI(BaseUnitAI):
 class TableMapUnitAI(BaseUnitAI):
     KEY = "tablemap"
     TITLE = "TableMap AI"
+    DESCRIPTION = (
+        "DB 테이블 관계 그래프 / join path 안내. "
+        "'tablemap 보여줘', 'ET와 ML_TABLE 어떻게 join해' 같은 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "tablemap 보여줘"},
+        {"prompt": "ET PRODA와 ML_TABLE_PRODA join 경로"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="duckdb",
@@ -129,6 +145,14 @@ class TableMapUnitAI(BaseUnitAI):
 class EttimeUnitAI(BaseUnitAI):
     KEY = "ettime"
     TITLE = "ET Time AI"
+    DESCRIPTION = (
+        "ET 단계 tkout_time / elapsed / median 집계. "
+        "'PRODA ET 평균 시간', 'A1000 ET 추이' 같은 시간 metric 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "PRODA root_lot 별 ET 평균", "product": "PRODA"},
+        {"prompt": "A1000A.3 ET elapsed"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="parquet",
@@ -147,14 +171,40 @@ class EttimeUnitAI(BaseUnitAI):
     )
     HANDLER_ENTRY = CodeRef(
         module="backend.routers.llm",
-        function="(legacy _handle_flowi_query_core fallback)",
-        description="ET 단계 metric/trend — UI 및 dashboard에서 주로 호출",
+        function="_handle_et_query",
+        lineno=14544,
+        description="ET 단계 metric/trend (tkout_time/elapsed/median) 라우팅",
     )
+
+    def handle(
+        self,
+        prompt: str,
+        slots: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        from routers.llm import _handle_et_query
+
+        product = str(slots.get("product") or "")
+        try:
+            max_rows = int(slots.get("max_rows") or 12)
+        except (TypeError, ValueError):
+            max_rows = 12
+
+        result = _handle_et_query(prompt, product, max_rows)
+        return result if result.get("handled") else None
 
 
 class DiagnosisUnitAI(BaseUnitAI):
     KEY = "diagnosis"
     TITLE = "Diagnosis AI (RAG / RCA)"
+    DESCRIPTION = (
+        "Wiki/Knowledge Vault 기반 RAG 분석 + RCA. lot 이상, split 영향, MTS 변경, "
+        "anchor item, DIBL/VTH/ION 같은 분석 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "A1000A.3 lot 이상 원인", "product": "PRODA"},
+        {"prompt": "MTS_001 변경 영향"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",
@@ -218,6 +268,14 @@ class DiagnosisUnitAI(BaseUnitAI):
 class CalendarUnitAI(BaseUnitAI):
     KEY = "calendar"
     TITLE = "Calendar AI"
+    DESCRIPTION = (
+        "일정/캘린더 이벤트 조회. 회의 일정은 meeting AI가 함께 처리. "
+        "'이번주 일정', '변경점 일정' 같은 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "이번주 일정"},
+        {"prompt": "PRODA 변경점 일정"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",
@@ -235,14 +293,47 @@ class CalendarUnitAI(BaseUnitAI):
     SEMANTIC_BINDINGS = SemanticBindings()
     HANDLER_ENTRY = CodeRef(
         module="backend.routers.llm",
-        function="(meeting AI에서 회의 관련 일정 처리 / 직접 호출은 /api/calendar/events)",
-        description="일정 조회 — meeting AI가 회의 일정을 함께 처리, 일반 일정은 UI",
+        function="_unit_feature_guidance",
+        lineno=2592,
+        description="일정/캘린더 가이드 — prompt에 '일정/캘린더/calendar' 포함 시 라우팅",
     )
+
+    def handle(
+        self,
+        prompt: str,
+        slots: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        from routers.llm import _unit_feature_guidance
+
+        text = str(prompt or "")
+        low = text.lower()
+        if not any(t in low or t in text for t in ("일정", "캘린더", "calendar", "변경점")):
+            return None
+
+        product = str(slots.get("product") or "")
+        try:
+            max_rows = int(slots.get("max_rows") or 12)
+        except (TypeError, ValueError):
+            max_rows = 12
+        allowed_keys = ctx.get("allowed_keys")
+        scoped = {"calendar"} if (allowed_keys is None or "calendar" in allowed_keys) else set()
+
+        result = _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=scoped)
+        return result if result.get("handled") else None
 
 
 class WaferLayoutUnitAI(BaseUnitAI):
     KEY = "waferlayout"
     TITLE = "Wafer Layout AI"
+    DESCRIPTION = (
+        "Wafer/TEG/shot/die layout 시각화 + TEG radius/position 조회. "
+        "'wafer map', 'TEG radius', 'TEG 위치' 같은 layout 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "PRODA wafer map", "product": "PRODA"},
+        {"prompt": "TEG_001 radius"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="json",

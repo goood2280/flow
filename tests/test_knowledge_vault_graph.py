@@ -58,6 +58,196 @@ def test_graph_links_docs_to_terms(tmp_path, monkeypatch):
     assert ("concept:root_lot_id", "doc:" + doc_id, "described_by") in edges
 
 
+def test_runtime_wiki_cleanup_selector_preserves_schema_docs_and_chart_rules(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="knowledge_vault_overview",
+        kind="ontology",
+        title="Knowledge Vault Overview",
+        body="internal skeleton",
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="agent_deep_eval_semiconductor_terms",
+        kind="agent_wiki",
+        title="Deep Eval Terms",
+        body="test-only eval doc",
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="flowi_live_aaa_0ec01543_anchor_registry",
+        kind="agent_wiki",
+        title="Anchor Registry",
+        body="temporary anchor registry",
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="proda_operating_overview",
+        kind="product",
+        title="PRODA demo overview",
+        body="demo product page",
+        frontmatter={"schema_type": kv.DEMO_OPERATIONAL_KNOWLEDGE_SCHEMA},
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="ml_table_proda.step_id",
+        kind="schema_doc",
+        title="ML_TABLE_PRODA step_id",
+        body="schema doc is execution evidence",
+        frontmatter={
+            "schema_type": kv.DEMO_OPERATIONAL_KNOWLEDGE_SCHEMA,
+            "relation_id": "ML_TABLE_PRODA",
+            "column_refs": ["ML_TABLE_PRODA.step_id"],
+        },
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="dashboard_chart_generation_rules",
+        kind="agent_wiki",
+        title="Dashboard Chart Generation Rules",
+        body="approved chart rule",
+        frontmatter={"schema_type": "agent_llm_wiki_page_v1"},
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="default_agent_wiki_seed_framework",
+        kind="agent_wiki",
+        title="Default Agent Wiki Seed Framework",
+        body="legacy seed",
+    ))
+
+    plan = kv.plan_runtime_wiki_cleanup()
+    candidate_ids = {row["doc_id"] for row in plan["candidates"]}
+
+    assert {
+        "knowledge_vault_overview",
+        "agent_deep_eval_semiconductor_terms",
+        "flowi_live_aaa_0ec01543_anchor_registry",
+        "proda_operating_overview",
+        "default_agent_wiki_seed_framework",
+    }.issubset(candidate_ids)
+    assert "ml_table_proda.step_id" not in candidate_ids
+    assert "dashboard_chart_generation_rules" not in candidate_ids
+
+    result = kv.cleanup_runtime_wiki(apply=True, actor="test_cleanup")
+    assert result["ok"] is True
+    assert result["deleted_count"] == len(candidate_ids)
+    assert Path(result["backup"]["backup_dir"]).is_dir()
+    assert kv.get_doc("proda_operating_overview") is None
+    assert kv.get_doc("ml_table_proda.step_id")
+    assert kv.get_doc("dashboard_chart_generation_rules")
+
+
+def test_runtime_wiki_clear_deletes_every_wiki_doc_after_backup(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="operator_note",
+        kind="agent_wiki",
+        title="Operator Note",
+        body="old note",
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="ml_table_proda.step_id",
+        kind="schema_doc",
+        title="ML_TABLE_PRODA step_id",
+        body="schema doc",
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="knowledge_vault_overview",
+        kind="ontology",
+        title="Knowledge Vault Overview",
+        body="internal skeleton",
+    ))
+
+    plan = kv.plan_runtime_wiki_clear()
+    assert {row["doc_id"] for row in plan["candidates"]} == {
+        "operator_note",
+        "ml_table_proda.step_id",
+        "knowledge_vault_overview",
+    }
+
+    result = kv.clear_runtime_wiki(apply=True, actor="test_clear")
+    assert result["ok"] is True
+    assert result["deleted_count"] == 3
+    assert Path(result["backup"]["backup_dir"]).is_dir()
+    assert kv.list_docs(limit=1000) == []
+    assert not list(kv.WIKI_DIR.rglob("*.md"))
+
+
+def test_wiki_graph_curated_view_hides_automatic_edges_and_keeps_approved_edges(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="schema_rel_step_id",
+        kind="schema_doc",
+        title="REL step_id",
+        body="step_id describes process step.",
+        frontmatter={"relation_id": "REL", "column_refs": ["REL.step_id"]},
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="operator_rule",
+        kind="agent_wiki",
+        title="Operator Rule",
+        body="Use schema relation for routing.",
+        entity={"product": "PRODA", "root_lot_id": "A1001", "wafer_id": "W07"},
+        frontmatter={
+            "related_doc_ids": ["schema_rel_step_id"],
+            "relations": {"schema_rel_step_id": "uses_schema"},
+        },
+    ))
+    kv.merge_schema_column_catalog([{
+        "relation_id": "REL",
+        "column": "step_id",
+        "canonical_alias": "step_id",
+        "raw_names": ["STEP_ID"],
+        "dtype": "string",
+    }], wiki_doc_id="schema_rel_step_id", actor="test")
+    kv.append_event({
+        "source_type": "manual",
+        "source_id": "event-source",
+        "title": "PRODA event",
+        "summary": "runtime event",
+        "entity": {"product": "PRODA", "root_lot_id": "A1001", "wafer_id": "W07"},
+    })
+
+    full = kv.rebuild_graph()
+    curated = kv.wiki_graph_view(full)
+    full_node_kinds = {row["kind"] for row in full["nodes"]}
+    curated_node_kinds = {row["kind"] for row in curated["nodes"]}
+    curated_edges = {(row["source"], row["target"], row["relation"], row.get("evidence") or "") for row in curated["edges"]}
+
+    assert {"event", "product", "lot", "wafer"}.intersection(full_node_kinds)
+    assert {"event", "product", "lot", "wafer"}.isdisjoint(curated_node_kinds)
+    assert curated_node_kinds.issubset({"wiki_doc", "schema_column"})
+    assert all((row.get("evidence") or "") in kv.CURATED_WIKI_GRAPH_EVIDENCE for row in curated["edges"])
+    assert ("doc:operator_rule", "doc:schema_rel_step_id", "uses_schema", "frontmatter:related_doc_ids") in curated_edges
+    assert ("doc:schema_rel_step_id", "concept:step_id", "describes", "schema_relations:column_catalog") in curated_edges
+    assert kv.wiki_graph_view(full, view="full")["counts"] == full["counts"]
+
+
+def test_agent_wiki_ingest_uses_only_explicit_related_docs(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="existing_related_doc",
+        kind="agent_wiki",
+        title="Existing Related Doc",
+        summary="same keyword",
+        body="same keyword body",
+        tags=["same"],
+    ))
+
+    preview = kv.preview_agent_wiki_ingest({
+        "title": "New same keyword note",
+        "content": "same keyword operational note",
+        "tags": ["same"],
+    })
+    assert preview["related_doc_ids"] == []
+    assert "## Related Pages" not in preview["body"]
+
+    explicit = kv.preview_agent_wiki_ingest({
+        "title": "Explicit relation note",
+        "content": "approved relation note",
+        "related_doc_ids": ["existing_related_doc"],
+        "relations": {"existing_related_doc": "supports"},
+    })
+    assert explicit["related_doc_ids"] == ["existing_related_doc"]
+    assert explicit["relations"] == {"existing_related_doc": "supports"}
+    assert "## Related Pages" in explicit["body"]
+
+
 def test_default_agent_wiki_seed_installs_only_missing_docs(tmp_path, monkeypatch):
     _isolate_knowledge(tmp_path, monkeypatch)
     seed_dir = tmp_path / "seed"

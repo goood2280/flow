@@ -24,7 +24,15 @@ _BACKEND_CORE_DIR = Path(__file__).resolve().parent.parent
 class FileBrowserUnitAI(BaseUnitAI):
     KEY = "filebrowser"
     TITLE = "파일 탐색기 AI (SQL / 스키마 / 캐시)"
+    DESCRIPTION = (
+        "Parquet/CSV/FAB DB 파일의 현재 LOT/Wafer/Step 상태 조회와 schema 검색. "
+        "'현재 fab_lot', '현재 step', 'schema' 같은 read-only 질의에 적합."
+    )
     PROMPT_TEMPLATE_PATH = _BACKEND_CORE_DIR / "filebrowser_agent_prompts.default.json"
+    EXAMPLES = (
+        {"prompt": "PRODA A1000 #21 현재 fab_lot", "product": "PRODA", "max_rows": 12},
+        {"prompt": "ML_TABLE_PRODA의 KNOB 컬럼 어떤 게 있어?", "product": "PRODA"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="parquet",

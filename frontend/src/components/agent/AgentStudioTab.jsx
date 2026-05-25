@@ -36,6 +36,9 @@ export default function AgentStudioTab({ user }) {
   const [runState, setRunState] = useState({ goal: "", semantic: null, plan: [], results: [], final: null, events: [] });
   const [runBusy, setRunBusy] = useState(false);
   const [runErr, setRunErr] = useState("");
+  const [homeAgent, setHomeAgent] = useState({ goal: "", plan: [], trace: [], reply: "", busy: false, err: "" });
+  const [nodeRunStatus, setNodeRunStatus] = useState({});  // { "tool:filebrowser": "running"|"ok"|"error" }
+  const [inspector, setInspector] = useState({ input: {}, busy: false, result: null, err: "" });
 
   async function reload() {
     setLoading(true);
@@ -128,6 +131,75 @@ export default function AgentStudioTab({ user }) {
     setRunErr("");
   };
 
+  function runHomeAgent() {
+    const trimmed = goal.trim();
+    if (!trimmed) return;
+    setHomeAgent({ goal: trimmed, plan: [], trace: [], reply: "", busy: true, err: "" });
+    setNodeRunStatus({});
+    const token = (typeof localStorage !== "undefined" && localStorage.getItem("flow_session_token")) || "";
+    const url = `/api/home-agent/orchestrate/stream?prompt=${encodeURIComponent(trimmed)}&top_k=4${token ? `&t=${encodeURIComponent(token)}` : ""}`;
+    let es;
+    try {
+      es = new EventSource(url, { withCredentials: true });
+    } catch (e) {
+      setHomeAgent((cur) => ({ ...cur, busy: false, err: "EventSource unsupported" }));
+      return;
+    }
+    const closeAll = () => { try { es.close(); } catch {} };
+    es.addEventListener("plan", (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        setHomeAgent((cur) => ({ ...cur, plan: obj.steps || [] }));
+        const next = {};
+        for (const s of obj.steps || []) next[`tool:${s.tool}`] = "queued";
+        setNodeRunStatus(next);
+      } catch {}
+    });
+    es.addEventListener("step_start", (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        setNodeRunStatus((cur) => ({ ...cur, [`tool:${obj.tool}`]: "running" }));
+      } catch {}
+    });
+    es.addEventListener("step_end", (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        setNodeRunStatus((cur) => ({ ...cur, [`tool:${obj.tool}`]: obj.ok ? "ok" : "error" }));
+      } catch {}
+    });
+    es.addEventListener("reply", (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        setHomeAgent((cur) => ({ ...cur, trace: obj.trace || [], reply: obj.reply || "", busy: false }));
+      } catch {}
+      closeAll();
+    });
+    es.onerror = () => {
+      setHomeAgent((cur) => ({ ...cur, busy: false, err: cur.busy ? "스트림 연결 종료" : cur.err }));
+      closeAll();
+    };
+  }
+
+  async function runSingleTool(toolName, inputDict) {
+    if (!toolName) return;
+    setInspector((cur) => ({ ...cur, busy: true, err: "", result: null }));
+    setNodeRunStatus((cur) => ({ ...cur, [`tool:${toolName}`]: "running" }));
+    try {
+      const out = await postJson("/api/home-agent/run-tool", { tool: toolName, input: inputDict || {} });
+      setInspector({ input: inputDict || {}, busy: false, err: "", result: out });
+      setNodeRunStatus((cur) => ({ ...cur, [`tool:${toolName}`]: out.ok ? "ok" : "error" }));
+    } catch (e) {
+      setInspector((cur) => ({ ...cur, busy: false, err: e?.message || "도구 실행 실패", result: null }));
+      setNodeRunStatus((cur) => ({ ...cur, [`tool:${toolName}`]: "error" }));
+    }
+  }
+
+  // 선택 노드가 바뀌면 inspector 폼을 노드의 example/input_schema로 초기화.
+  useEffect(() => {
+    if (!selectedNodeId || !selectedNodeId.startsWith("tool:")) return;
+    setInspector({ input: { prompt: goal.trim() || DEFAULT_GOAL }, busy: false, result: null, err: "" });
+  }, [selectedNodeId]);
+
   return (
     <div className="agent-board-shell">
       <section className="agent-board-toolbar">
@@ -145,6 +217,7 @@ export default function AgentStudioTab({ user }) {
           />
           <div className="agent-board-run-actions">
             <Button variant="primary" onClick={runGoal} disabled={runBusy || !goal.trim()}>{runBusy ? "실행 중" : "처리 실행"}</Button>
+            <Button onClick={runHomeAgent} disabled={homeAgent.busy || !goal.trim()} title="홈 에이전트가 도구를 자동 선택해 멀티스텝 실행 (SSE)">{homeAgent.busy ? "Home 실행 중" : "Home Agent"}</Button>
             <Button onClick={() => selectedQuestion?.prompt && setGoal(selectedQuestion.prompt)} disabled={!selectedQuestion?.prompt}>선택 질문</Button>
           </div>
         </div>
@@ -162,6 +235,7 @@ export default function AgentStudioTab({ user }) {
 
       {err && <Banner tone="warn" style={{ borderRadius: 0 }}>{err}</Banner>}
       {runErr && <Banner tone="warn" style={{ borderRadius: 0 }}>{runErr}</Banner>}
+      {homeAgent.err && <Banner tone="warn" style={{ borderRadius: 0 }}>Home Agent: {homeAgent.err}</Banner>}
 
       <div className="agent-board-grid">
         <aside className="agent-board-pane agent-board-queue">
@@ -199,8 +273,19 @@ export default function AgentStudioTab({ user }) {
           ) : (
             <>
               <ProcessFlowPanel question={selectedQuestion} run={activeRun} prompt={activePrompt} />
+              <ConnectedWorkflowPanel
+                workflowMap={workflowMap}
+                stages={stages}
+                nodes={visibleNodes}
+                edges={mapEdges}
+                selectedId={selectedNodeId}
+                selectedNode={selectedNode}
+                nodeNeedle={nodeNeedle}
+                runStatus={nodeRunStatus}
+                onSelect={setSelectedNodeId}
+              />
               <details className="agent-board-details">
-                <summary>기술 상세</summary>
+                <summary>기술 상세 및 원본</summary>
                 <div className="agent-board-detail-toolbar">
                   <PaneTitle title={view === "map" ? "워크플로우 지도" : "Wiki 관계"} meta={`${mapNodes.length} nodes · ${mapEdges.length} edges`} />
                   <ViewSwitch value={view} onChange={setView} />
@@ -208,11 +293,26 @@ export default function AgentStudioTab({ user }) {
                 </div>
                 <div className="agent-board-tech-surface">
                   {workflowMap && view === "map" ? (
-                    <WorkflowCanvas stages={stages} nodes={visibleNodes} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+                    <WorkflowCanvas stages={stages} nodes={visibleNodes} selectedId={selectedNodeId} onSelect={setSelectedNodeId} runStatus={nodeRunStatus} />
                   ) : workflowMap && view === "wiki" ? (
                     <WikiRelationPanel workflowMap={workflowMap} wikiGraph={wikiGraph} nodeNeedle={nodeNeedle} selectedNode={selectedNode} onSelect={setSelectedNodeId} />
                   ) : (
                     <EmptyState title="기술 상세 없음" hint="workflow-map 또는 wiki graph API 상태를 확인하세요." />
+                  )}
+                  {selectedNodeId && selectedNodeId.startsWith("tool:") && (
+                    <NodeInspectorPanel
+                      nodeId={selectedNodeId}
+                      workflowMap={workflowMap}
+                      input={inspector.input}
+                      busy={inspector.busy}
+                      err={inspector.err}
+                      result={inspector.result}
+                      onChangeInput={(next) => setInspector((cur) => ({ ...cur, input: next }))}
+                      onRun={() => runSingleTool(selectedNodeId.slice(5), inspector.input)}
+                    />
+                  )}
+                  {(homeAgent.trace.length > 0 || homeAgent.reply) && (
+                    <HomeAgentTracePanel plan={homeAgent.plan} trace={homeAgent.trace} reply={homeAgent.reply} prompt={goal.trim()} />
                   )}
                 </div>
                 <RuntimeRawDetails run={activeRun} question={selectedQuestion} node={selectedNode} edges={mapEdges} nodes={mapNodes} wikiHealth={wikiHealth} wikiGraph={wikiGraph} onNodeSelect={setSelectedNodeId} />
@@ -325,7 +425,195 @@ function ImprovementPanel({ question, run, workflowMap, wikiHealth }) {
   );
 }
 
-function WorkflowCanvas({ stages, nodes, selectedId, onSelect }) {
+function ConnectedWorkflowPanel({ workflowMap, stages, nodes, edges, selectedId, selectedNode, nodeNeedle, runStatus, onSelect }) {
+  const visibleStages = stages.length ? stages : fallbackStages(nodes);
+  const layout = useMemo(() => buildConnectedLayout(visibleStages, nodes), [visibleStages, nodes]);
+  const counts = workflowMap?.counts || {};
+  const visibleIds = useMemo(() => new Set(layout.items.map((item) => item.node.id)), [layout]);
+  const visibleEdges = useMemo(() => {
+    return (edges || []).filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
+  }, [edges, visibleIds]);
+
+  return (
+    <section className="agent-connected-panel">
+      <div className="agent-connected-head">
+        <PaneTitle title="연결 지도" meta={`${visibleEdges.length}/${edges.length || 0} edges`} />
+        <div className="agent-connected-summary">
+          <Pill tone="info">도구 {counts.tools_visible || 0}/{counts.tools_total || 0}</Pill>
+          <Pill tone={(counts.workflow_missing_tools || counts.workflow_empty_templates) ? "warn" : "neutral"}>workflow {counts.workflow_templates_visible || 0}</Pill>
+          <Pill tone={counts.tools_without_refs_visible ? "warn" : "ok"}>근거 없음 {counts.tools_without_refs_visible || 0}</Pill>
+          {nodeNeedle && <Pill tone="accent">검색 {layout.items.length}</Pill>}
+        </div>
+      </div>
+      {!workflowMap ? (
+        <EmptyState title="연결 지도 없음" hint="workflow-map API 상태를 확인하세요." />
+      ) : (
+        <div className="agent-connected-grid">
+          <ConnectedWorkflowMap
+            layout={layout}
+            edges={visibleEdges}
+            selectedId={selectedId}
+            runStatus={runStatus}
+            onSelect={onSelect}
+          />
+          <ConnectedNodeDetail
+            node={selectedNode}
+            edges={edges}
+            nodes={workflowMap?.nodes || []}
+            onSelect={onSelect}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ConnectedWorkflowMap({ layout, edges, selectedId, runStatus, onSelect }) {
+  const activeEdges = new Set(
+    (edges || [])
+      .filter((edge) => edge.from === selectedId || edge.to === selectedId)
+      .map((edge) => `${edge.from}->${edge.to}:${edge.kind || ""}:${edge.label || ""}`)
+  );
+  return (
+    <div className="agent-connected-scroll">
+      <div
+        className="agent-connected-canvas"
+        style={{ minWidth: layout.minWidth, height: layout.height }}
+      >
+        <svg className="agent-connected-svg" viewBox={`0 0 1000 ${layout.height}`} preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <marker id="agent-connected-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+              <path d="M0,0 L8,3.5 L0,7 Z" />
+            </marker>
+          </defs>
+          {layout.stageBands.map((band) => (
+            <g key={band.id} className="agent-connected-band">
+              <rect x={band.x} y="0" width={band.width} height={layout.height} />
+              <text x={band.x + 12} y="22">{band.title}</text>
+            </g>
+          ))}
+          {(edges || []).map((edge, idx) => {
+            const from = layout.positions.get(edge.from);
+            const to = layout.positions.get(edge.to);
+            if (!from || !to) return null;
+            const key = `${edge.from}->${edge.to}:${edge.kind || ""}:${edge.label || ""}`;
+            const active = activeEdges.has(key);
+            return (
+              <g key={`${key}:${idx}`} className={`agent-connected-edge${active ? " is-active" : ""}`}>
+                <path d={edgePath(from, to)} markerEnd="url(#agent-connected-arrow)" />
+                {active && <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5}>{edge.label || edge.kind || "link"}</text>}
+              </g>
+            );
+          })}
+        </svg>
+        <div className="agent-connected-node-layer">
+          {layout.items.map(({ node, x, y }) => (
+            <ConnectedWorkflowNode
+              key={node.id}
+              node={node}
+              selected={selectedId === node.id}
+              status={(runStatus || {})[node.id]}
+              x={x}
+              y={y}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectedWorkflowNode({ node, selected, status, x, y, onSelect }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(node.id)}
+      className={`agent-connected-node${selected ? " is-selected" : ""}${node.enabled === false ? " is-disabled" : ""}`}
+      style={{ left: `${x / 10}%`, top: y - 34 }}
+    >
+      <div className="agent-connected-node-head">
+        <span>{node.label || node.id}</span>
+        <strong style={{ color: toneColor(node.tone) }}>{nodeTypeLabel(node.type)}</strong>
+      </div>
+      <div className="agent-connected-node-detail">{node.detail || node.id}</div>
+      <div className="agent-connected-node-foot">
+        {status && <Pill tone={status === "ok" ? "ok" : status === "error" ? "bad" : status === "running" ? "info" : "neutral"}>{NODE_STATUS_LABEL[status] || status}</Pill>}
+        {node.type === "tool" && <span>{node.metrics?.count || 0} calls</span>}
+        {node.type === "workflow" && <span>{node.metrics?.steps || 0} steps</span>}
+        {node.type === "deep_eval" && <span>{node.metrics?.status || "eval"}</span>}
+      </div>
+    </button>
+  );
+}
+
+function ConnectedNodeDetail({ node, edges, nodes, onSelect }) {
+  const byId = useMemo(() => new Map((nodes || []).map((item) => [item.id, item])), [nodes]);
+  if (!node) {
+    return (
+      <aside className="agent-connected-detail">
+        <SectionTitle title="선택 노드" />
+        <div className="agent-empty-row">지도에서 노드를 선택하면 입력/출력 엣지, Wiki/schema 근거, 개선 액션을 바로 확인합니다.</div>
+      </aside>
+    );
+  }
+  const incoming = (edges || []).filter((edge) => edge.to === node.id);
+  const outgoing = (edges || []).filter((edge) => edge.from === node.id);
+  const evidence = nodeEvidenceRows(node, incoming, outgoing, byId);
+  const metrics = nodeMetricRows(node);
+  return (
+    <aside className="agent-connected-detail">
+      <SectionTitle title="선택 노드" meta={nodeTypeLabel(node.type)} />
+      <div className="agent-connected-detail-title">{node.label || node.id}</div>
+      <div className="agent-connected-detail-id">{node.id}</div>
+      <div className="agent-connected-detail-body">{node.detail || "상세 설명 없음"}</div>
+      {!!metrics.length && (
+        <div className="agent-connected-metrics">
+          {metrics.map((row) => <MiniStat key={row.label} label={row.label} value={row.value} />)}
+        </div>
+      )}
+      {!!(node.tags || []).length && (
+        <div className="agent-connected-tags">
+          {(node.tags || []).slice(0, 10).map((tag) => <Pill key={tag} tone="neutral">{tag}</Pill>)}
+        </div>
+      )}
+      <ConnectedEdgeList title="입력" edges={incoming} other={(edge) => byId.get(edge.from)} onSelect={onSelect} />
+      <ConnectedEdgeList title="출력" edges={outgoing} other={(edge) => byId.get(edge.to)} onSelect={onSelect} />
+      <div className="agent-connected-evidence">
+        <SectionTitle title="Wiki/schema 근거" meta={`${evidence.length}`} />
+        {evidence.length ? evidence.slice(0, 8).map((row) => (
+          <button key={`${row.id}:${row.label}`} type="button" onClick={() => row.nodeId && onSelect(row.nodeId)} disabled={!row.nodeId}>
+            <span>{row.label}</span>
+            <em>{row.type}</em>
+          </button>
+        )) : <div className="agent-empty-row">연결된 근거가 없습니다.</div>}
+      </div>
+      <div className="agent-connected-action">
+        <SectionTitle title="개선 액션" />
+        <div>{nodeNextAction(node, evidence)}</div>
+      </div>
+    </aside>
+  );
+}
+
+function ConnectedEdgeList({ title, edges, other, onSelect }) {
+  return (
+    <div className="agent-connected-edge-list">
+      <div>{title}</div>
+      {edges.length ? edges.slice(0, 8).map((edge, idx) => {
+        const node = other(edge);
+        return (
+          <button key={`${edge.from}:${edge.to}:${idx}`} type="button" onClick={() => node && onSelect(node.id)} disabled={!node}>
+            <span>{node?.label || node?.id || edge.from || edge.to}</span>
+            <em>{edge.label || edge.kind || "link"}</em>
+          </button>
+        );
+      }) : <p>없음</p>}
+    </div>
+  );
+}
+
+function WorkflowCanvas({ stages, nodes, selectedId, onSelect, runStatus }) {
   const visibleStages = stages.length ? stages : fallbackStages(nodes);
   return (
     <div className="agent-tech-map">
@@ -336,7 +624,15 @@ function WorkflowCanvas({ stages, nodes, selectedId, onSelect }) {
             <div className="agent-tech-stage-title">{stage.title || stage.label || stage.id}</div>
             <div className="agent-tech-stage-detail">{stage.detail || stage.id}</div>
             <div className="agent-tech-node-list">
-              {stageNodes.map((node) => <WorkflowNode key={node.id} node={node} selected={selectedId === node.id} onSelect={onSelect} />)}
+              {stageNodes.map((node) => (
+                <WorkflowNode
+                  key={node.id}
+                  node={node}
+                  selected={selectedId === node.id}
+                  onSelect={onSelect}
+                  status={(runStatus || {})[node.id]}
+                />
+              ))}
               {!stageNodes.length && <div className="agent-empty-row">연결 노드 없음</div>}
             </div>
           </div>
@@ -346,16 +642,153 @@ function WorkflowCanvas({ stages, nodes, selectedId, onSelect }) {
   );
 }
 
-function WorkflowNode({ node, selected, onSelect }) {
+const NODE_STATUS_STYLE = {
+  queued: { borderColor: "#94a3b8", background: "#f1f5f9" },
+  running: { borderColor: "#3b82f6", background: "#dbeafe", boxShadow: "0 0 0 2px #3b82f660" },
+  ok: { borderColor: "#16a34a", background: "#dcfce7" },
+  error: { borderColor: "#dc2626", background: "#fee2e2" },
+};
+const NODE_STATUS_LABEL = { queued: "대기", running: "실행 중", ok: "성공", error: "실패" };
+
+function WorkflowNode({ node, selected, onSelect, status }) {
+  const statusStyle = (status && NODE_STATUS_STYLE[status]) || {};
   return (
-    <button type="button" onClick={() => onSelect(node.id)} className={`agent-tech-node${selected ? " is-selected" : ""}`}>
+    <button
+      type="button"
+      onClick={() => onSelect(node.id)}
+      className={`agent-tech-node${selected ? " is-selected" : ""}`}
+      style={statusStyle}
+    >
       <div className="agent-tech-node-head">
         <span>{node.label || node.id}</span>
         <strong style={{ color: toneColor(node.tone) }}>{nodeTypeLabel(node.type)}</strong>
       </div>
       <div className="agent-tech-node-detail">{node.detail || node.id}</div>
+      {status && <div style={{ marginTop: 4, fontSize: 11, color: "#475569" }}>{NODE_STATUS_LABEL[status] || status}</div>}
     </button>
   );
+}
+
+function NodeInspectorPanel({ nodeId, workflowMap, input, busy, err, result, onChangeInput, onRun }) {
+  const toolName = nodeId.startsWith("tool:") ? nodeId.slice(5) : "";
+  const node = (workflowMap?.nodes || []).find((n) => n.id === nodeId);
+  const schema = node?.input_schema || node?.tool?.input_schema || null;
+  const properties = (schema && schema.properties) || { prompt: { type: "string" }, product: { type: "string" }, max_rows: { type: "integer", default: 12 } };
+  return (
+    <section className="agent-board-detail" style={{ border: "1px solid #e2e8f0", borderRadius: 6, padding: 12, marginTop: 12, background: "#fafafa" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <strong>도구 단독 실행 — {node?.label || toolName}</strong>
+        <Button variant="primary" onClick={onRun} disabled={busy || !toolName}>{busy ? "실행 중" : "단독 실행"}</Button>
+      </div>
+      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>{node?.detail || node?.description || "입력값을 채우고 '단독 실행' 을 누르면 이 도구만 호출합니다."}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {Object.entries(properties).map(([key, def]) => (
+          <SchemaField key={key} name={key} def={def} value={input?.[key] ?? ""} onChange={(v) => onChangeInput({ ...(input || {}), [key]: v })} />
+        ))}
+      </div>
+      {err && <Banner tone="warn" style={{ marginTop: 8 }}>{err}</Banner>}
+      {result && (
+        <div style={{ marginTop: 10, padding: 8, borderRadius: 4, background: result.ok ? "#dcfce7" : "#fee2e2" }}>
+          <div style={{ fontSize: 12 }}><strong>{result.ok ? "성공" : "실패"}</strong> · {result.ms || 0}ms</div>
+          <div style={{ fontSize: 12, marginTop: 4, whiteSpace: "pre-wrap" }}>{result.result_preview}</div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SchemaField({ name, def, value, onChange }) {
+  const type = def?.type || "string";
+  const inputType = type === "integer" || type === "number" ? "number" : "text";
+  const placeholder = def?.description ? String(def.description).slice(0, 80) : name;
+  return (
+    <Field label={name}>
+      {type === "boolean" ? (
+        <input type="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
+      ) : (
+        <input
+          type={inputType}
+          value={value ?? ""}
+          onChange={(e) => onChange(inputType === "number" ? Number(e.target.value || 0) : e.target.value)}
+          placeholder={placeholder}
+          style={inputStyle({ width: "100%" })}
+        />
+      )}
+    </Field>
+  );
+}
+
+function HomeAgentTracePanel({ plan, trace, reply, prompt }) {
+  const [feedbackMsg, setFeedbackMsg] = useState("");
+  const [aliasTool, setAliasTool] = useState("");
+  async function sendFeedback(rating, opts = {}) {
+    try {
+      await postJson("/api/home-agent/feedback", {
+        prompt,
+        rating,
+        suggested_tool: opts.tool || "",
+        note: opts.note || "",
+        trace_summary: trace.map((tr) => ({ tool: tr.tool, ok: tr.ok, ms: tr.ms })),
+      });
+      setFeedbackMsg(`피드백 저장됨 (${rating}${opts.tool ? ` · ${opts.tool}` : ""})`);
+    } catch (e) {
+      setFeedbackMsg("피드백 저장 실패: " + (e?.message || e));
+    }
+  }
+  async function registerAlias() {
+    if (!aliasTool.trim() || !prompt) return;
+    try {
+      await postJson("/api/home-agent/alias", { pattern: prompt, tool: aliasTool.trim(), note: "user-registered from trace panel" });
+      setFeedbackMsg(`alias 등록: '${prompt.slice(0, 30)}' → ${aliasTool.trim()}`);
+      setAliasTool("");
+    } catch (e) {
+      setFeedbackMsg("alias 등록 실패: " + (e?.message || e));
+    }
+  }
+  return (
+    <section className="agent-board-detail" style={{ border: "1px solid #c7d2fe", borderRadius: 6, padding: 12, marginTop: 12, background: "#eef2ff" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>Home Agent trace ({trace.length} step{trace.length === 1 ? "" : "s"})</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" onClick={() => sendFeedback("up")} style={feedbackBtnStyle("#16a34a")}>👍 좋아요</button>
+          <button type="button" onClick={() => sendFeedback("down")} style={feedbackBtnStyle("#dc2626")}>👎 아쉬워요</button>
+        </div>
+      </div>
+      {plan.length > 0 && (
+        <div style={{ fontSize: 12, color: "#475569", marginBottom: 8 }}>
+          plan: {plan.map((s) => s.tool).join(" → ")}
+        </div>
+      )}
+      {trace.map((row, i) => (
+        <div key={i} style={{ padding: 6, marginBottom: 4, background: row.ok ? "#ffffff" : "#fff7ed", borderLeft: `3px solid ${row.ok ? "#16a34a" : "#dc2626"}`, borderRadius: 3 }}>
+          <div style={{ fontSize: 12 }}><strong>{row.title || row.tool}</strong> · {row.kind} · {row.ms}ms · {row.ok ? "ok" : "fail"}</div>
+          <div style={{ fontSize: 12, marginTop: 2, color: "#475569" }}>{row.result_preview}</div>
+          {row.reason && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>이유: {row.reason}</div>}
+        </div>
+      ))}
+      {reply && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600 }}>{reply}</div>}
+      <div style={{ marginTop: 10, padding: 8, background: "#ffffff", borderRadius: 4, border: "1px dashed #c7d2fe" }}>
+        <div style={{ fontSize: 12, marginBottom: 4 }}><strong>이 prompt 패턴은 항상 이 도구로</strong> (다음 호출부터 적용)</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <input value={aliasTool} onChange={(e) => setAliasTool(e.target.value)} placeholder="tool name (예: ettime)" style={inputStyle({ flex: 1, minWidth: 120 })} />
+          <Button onClick={registerAlias} disabled={!aliasTool.trim()}>alias 등록</Button>
+        </div>
+      </div>
+      {feedbackMsg && <div style={{ marginTop: 6, fontSize: 12, color: "#475569" }}>{feedbackMsg}</div>}
+    </section>
+  );
+}
+
+function feedbackBtnStyle(color) {
+  return {
+    padding: "4px 10px",
+    border: `1px solid ${color}`,
+    background: "#fff",
+    color,
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 12,
+  };
 }
 
 function ViewSwitch({ value, onChange }) {
@@ -692,6 +1125,118 @@ function normalizeWikiGraph(data) {
 function fallbackStages(nodes) {
   const stages = [...new Set((nodes || []).map((node) => node.stage).filter(Boolean))];
   return stages.map((id) => ({ id, title: id, detail: "" }));
+}
+
+function buildConnectedLayout(stages, nodes) {
+  const visibleStages = (stages || []).length ? stages : fallbackStages(nodes);
+  const stageIndex = new Map(visibleStages.map((stage, idx) => [stage.id, idx]));
+  const columns = Math.max(1, visibleStages.length);
+  const grouped = new Map(visibleStages.map((stage) => [stage.id, []]));
+  for (const node of nodes || []) {
+    const stage = node.stage || visibleStages[0]?.id || "stage";
+    if (!grouped.has(stage)) grouped.set(stage, []);
+    grouped.get(stage).push(node);
+  }
+  for (const [stage, rows] of grouped.entries()) {
+    grouped.set(stage, rows.slice().sort(workflowNodeSort));
+  }
+  const maxRows = Math.max(1, ...Array.from(grouped.values()).map((rows) => rows.length));
+  const height = Math.max(430, maxRows * 92 + 118);
+  const minWidth = Math.max(760, columns * 230);
+  const items = [];
+  const positions = new Map();
+  const stageBands = visibleStages.map((stage, idx) => {
+    const width = 1000 / columns;
+    return {
+      id: stage.id,
+      title: stage.title || stage.label || stage.id,
+      x: idx * width,
+      width,
+    };
+  });
+  for (const stage of visibleStages) {
+    const idx = stageIndex.get(stage.id) ?? 0;
+    const x = ((idx + 0.5) / columns) * 1000;
+    const rows = grouped.get(stage.id) || [];
+    rows.forEach((node, rowIdx) => {
+      const y = 82 + rowIdx * 92;
+      const item = { node, x, y };
+      items.push(item);
+      positions.set(node.id, { x, y });
+    });
+  }
+  return { items, positions, stageBands, height, minWidth };
+}
+
+function workflowNodeSort(a, b) {
+  const order = { stage: 0, workflow: 1, workflow_step: 2, tool: 3, deep_eval: 4, wiki: 5, relation: 6, column: 7, graph: 8, feature: 9, arg: 10 };
+  const ai = order[a.type] ?? 20;
+  const bi = order[b.type] ?? 20;
+  if (ai !== bi) return ai - bi;
+  return String(a.label || a.id || "").localeCompare(String(b.label || b.id || ""));
+}
+
+function edgePath(from, to) {
+  const dx = Math.max(60, Math.abs(to.x - from.x) * 0.45);
+  const c1 = from.x <= to.x ? from.x + dx : from.x - dx;
+  const c2 = from.x <= to.x ? to.x - dx : to.x + dx;
+  return `M ${from.x} ${from.y} C ${c1} ${from.y}, ${c2} ${to.y}, ${to.x} ${to.y}`;
+}
+
+const WORKFLOW_EVIDENCE_NODE_TYPES = new Set(["wiki", "relation", "column", "graph", "feature", "arg"]);
+
+function nodeEvidenceRows(node, incoming, outgoing, byId) {
+  const rows = [];
+  const add = (id, label, type, nodeId = "") => {
+    const cleanLabel = String(label || id || "").trim();
+    if (!cleanLabel) return;
+    const key = `${type}:${cleanLabel}`;
+    if (rows.some((row) => row.key === key)) return;
+    rows.push({ key, id, label: cleanLabel, type, nodeId });
+  };
+  if (WORKFLOW_EVIDENCE_NODE_TYPES.has(node.type)) {
+    add(node.id, node.label || node.id, nodeTypeLabel(node.type), node.id);
+  }
+  for (const edge of [...incoming, ...outgoing]) {
+    const otherId = edge.from === node.id ? edge.to : edge.from;
+    const other = byId.get(otherId);
+    if (other && WORKFLOW_EVIDENCE_NODE_TYPES.has(other.type)) {
+      add(other.id, other.label || other.id, nodeTypeLabel(other.type), other.id);
+    }
+  }
+  const refs = node.knowledge_refs && typeof node.knowledge_refs === "object" ? node.knowledge_refs : {};
+  for (const [type, values] of Object.entries(refs)) {
+    const list = Array.isArray(values) ? values : values ? [values] : [];
+    for (const value of list.slice(0, 6)) add(String(value), String(value), type);
+  }
+  return rows;
+}
+
+function nodeMetricRows(node) {
+  const metrics = node?.metrics && typeof node.metrics === "object" ? node.metrics : {};
+  const candidates = [
+    ["calls", metrics.count],
+    ["users", metrics.users],
+    ["steps", metrics.steps],
+    ["runs", metrics.run_count],
+    ["warnings", metrics.warning_count],
+    ["failed", metrics.failed],
+  ];
+  return candidates
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 4)
+    .map(([label, value]) => ({ label, value }));
+}
+
+function nodeNextAction(node, evidence) {
+  if (!node) return "노드를 선택해 개선 지점을 확인합니다.";
+  if (node.type === "tool" && node.enabled === false) return "도구 카탈로그에서 enabled 상태와 guardrail을 확인하고, workflow step이 이 도구에 의존하는지 점검합니다.";
+  if (node.type === "tool" && !evidence.length) return "Wiki source/page 또는 schema relation 근거를 연결해 운영자가 실행 이유를 추적할 수 있게 합니다.";
+  if (node.type === "workflow") return "Runbook에서 dry-run으로 step 순서와 missing tool을 검증한 뒤 shared template 승격 여부를 결정합니다.";
+  if (node.type === "workflow_step") return "step의 unit_ai/action 바인딩과 required slot을 질문/워크플로우 섹션에서 확인합니다.";
+  if (node.type === "deep_eval") return "실패 case가 있으면 deep-eval 리포트를 재생성하고, 회귀한 workflow나 Wiki 근거를 우선 보강합니다.";
+  if (WORKFLOW_EVIDENCE_NODE_TYPES.has(node.type)) return "Wiki 근거 섹션에서 source/page/lint 상태를 확인하고 끊긴 graph 관계를 보강합니다.";
+  return "입력/출력 엣지를 따라 끊긴 stage를 찾고, 필요한 Wiki/source 또는 workflow template 보강으로 연결합니다.";
 }
 
 function workflowNodeSearchText(node) {

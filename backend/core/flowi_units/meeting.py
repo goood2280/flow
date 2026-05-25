@@ -20,6 +20,14 @@ from core.flowi_units.base import (
 class MeetingUnitAI(BaseUnitAI):
     KEY = "meeting"
     TITLE = "회의 관리 AI"
+    DESCRIPTION = (
+        "회의 차수/참석자/회의록/액션아이템/결정사항 recall. "
+        "'지난주 회의 결정', '아젠다 어땠어' 같은 회의 검색 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "지난주 회의 결정사항", "max_rows": 8},
+        {"prompt": "PROD A 관련 회의 아젠다 보여줘"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",

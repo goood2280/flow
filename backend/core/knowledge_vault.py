@@ -15,6 +15,7 @@ import datetime as _dt
 import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,28 @@ SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
 DEFAULT_AGENT_WIKI_SEED_DIR = Path(__file__).resolve().parent / "default_agent_wiki_seed"
 DEFAULT_AGENT_WIKI_SEED_SCHEMA = "default_agent_wiki_seed_v1"
 GRAPH_SCHEMA_VERSION = 2
+DEMO_OPERATIONAL_KNOWLEDGE_SCHEMA = "demo_operational_knowledge_v1"
+
+WIKI_CLEANUP_FIXED_DOC_IDS = {
+    "knowledge_vault_overview",
+    "agent_deep_eval_semiconductor_terms",
+    "flowi_live_aaa_0ec01543_anchor_registry",
+}
+WIKI_CLEANUP_PRESERVE_DOC_IDS = {
+    "dashboard_chart_generation_rules",
+}
+WIKI_CLEANUP_LEGACY_SEED_DOC_IDS = {
+    "default_agent_wiki_seed_framework",
+    "gaa_beol_bspdn_power_delivery_basics",
+    "gaa_device_evolution_and_purpose",
+    "gaa_device_geometry_and_multi_vt_design",
+    "gaa_nanosheet_process_flow_and_failure_modes",
+    "semiconductor_eight_major_processes_for_gaa",
+}
+CURATED_WIKI_GRAPH_EVIDENCE = {
+    "frontmatter:related_doc_ids",
+    "schema_relations:column_catalog",
+}
 
 _ALLOWED_ONTOLOGY_KINDS = {
     "identity", "process", "module", "material", "metric", "split",
@@ -1855,6 +1878,202 @@ def delete_doc(doc_id: str, actor: str = "system") -> dict[str, Any]:
     return {"ok": False, "deleted": False, "doc_id": target, "error": "knowledge doc not found"}
 
 
+def _wiki_cleanup_reason(row: dict[str, Any]) -> str:
+    doc_id = str(row.get("doc_id") or "").strip()
+    kind = str(row.get("kind") or "").strip()
+    schema_type = str(row.get("schema_type") or "").strip()
+    if not doc_id or doc_id in WIKI_CLEANUP_PRESERVE_DOC_IDS:
+        return ""
+    if doc_id in WIKI_CLEANUP_FIXED_DOC_IDS:
+        return "fixed_internal_doc"
+    if schema_type == DEFAULT_AGENT_WIKI_SEED_SCHEMA:
+        return "default_agent_wiki_seed"
+    if doc_id in WIKI_CLEANUP_LEGACY_SEED_DOC_IDS or doc_id.startswith("default_agent_wiki_seed"):
+        return "legacy_default_seed_doc"
+    if schema_type == DEMO_OPERATIONAL_KNOWLEDGE_SCHEMA and kind != "schema_doc":
+        return "demo_operational_non_schema_doc"
+    return ""
+
+
+def plan_runtime_wiki_cleanup() -> dict[str, Any]:
+    """Return runtime wiki docs that should be removed from the operational Wiki."""
+    docs = list_docs(limit=1000)
+    candidates: list[dict[str, Any]] = []
+    preserved: list[dict[str, Any]] = []
+    for row in docs:
+        reason = _wiki_cleanup_reason(row)
+        item = {
+            "doc_id": row.get("doc_id") or "",
+            "kind": row.get("kind") or "",
+            "title": row.get("title") or "",
+            "path": row.get("path") or "",
+            "schema_type": row.get("schema_type") or "",
+        }
+        if reason:
+            candidates.append({**item, "reason": reason})
+            continue
+        if (
+            row.get("kind") == "schema_doc"
+            or row.get("doc_id") in WIKI_CLEANUP_PRESERVE_DOC_IDS
+            or row.get("schema_type") not in ("", None)
+        ):
+            preserved.append(item)
+    return {
+        "ok": True,
+        "root": str(KNOWLEDGE_ROOT),
+        "wiki_dir": str(WIKI_DIR),
+        "candidates": candidates,
+        "preserved": preserved,
+        "counts": {
+            "docs": len(docs),
+            "candidates": len(candidates),
+            "preserved": len(preserved),
+        },
+    }
+
+
+def plan_runtime_wiki_clear() -> dict[str, Any]:
+    """Return every runtime Wiki markdown page that will be removed."""
+    docs = list_docs(limit=1000)
+    candidates = [
+        {
+            "doc_id": row.get("doc_id") or "",
+            "kind": row.get("kind") or "",
+            "title": row.get("title") or "",
+            "path": row.get("path") or "",
+            "schema_type": row.get("schema_type") or "",
+            "reason": "clear_all_runtime_wiki",
+        }
+        for row in docs
+    ]
+    return {
+        "ok": True,
+        "root": str(KNOWLEDGE_ROOT),
+        "wiki_dir": str(WIKI_DIR),
+        "candidates": candidates,
+        "preserved": [],
+        "counts": {
+            "docs": len(docs),
+            "candidates": len(candidates),
+            "preserved": 0,
+        },
+    }
+
+
+def backup_runtime_wiki_cleanup(timestamp: str = "") -> dict[str, Any]:
+    """Copy derived Wiki stores before deleting runtime Wiki cleanup candidates."""
+    stamp = safe_id(timestamp, fallback="") or _dt.datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    backup_dir = KNOWLEDGE_ROOT.parent / "backups" / f"wiki_cleanup_{stamp}"
+    copied: list[dict[str, str]] = []
+    for name, source in (
+        ("wiki", WIKI_DIR),
+        ("index", INDEX_DIR),
+        ("graph", GRAPH_DIR),
+        ("ontology", ONTOLOGY_DIR),
+    ):
+        if not source.exists():
+            continue
+        target = backup_dir / "knowledge" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+        copied.append({"name": name, "source": str(source), "target": str(target)})
+    return {
+        "ok": True,
+        "backup_dir": str(backup_dir),
+        "copied": copied,
+    }
+
+
+def _prune_empty_wiki_dirs() -> None:
+    if not WIKI_DIR.exists():
+        return
+    for path in sorted((p for p in WIKI_DIR.rglob("*") if p.is_dir()), reverse=True):
+        if path == WIKI_DIR:
+            continue
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
+def clear_runtime_wiki(*, apply: bool = False, actor: str = "wiki_clear") -> dict[str, Any]:
+    """Dry-run or delete every runtime Wiki page with a backup-first guard."""
+    plan = plan_runtime_wiki_clear()
+    candidates = list(plan.get("candidates") or [])
+    if not apply:
+        return {**plan, "dry_run": True}
+    backup = backup_runtime_wiki_cleanup()
+    deleted: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for item in candidates:
+        result = delete_doc(str(item.get("doc_id") or ""), actor=actor)
+        if result.get("deleted"):
+            deleted.append({**item, "result": result})
+        else:
+            errors.append({**item, "error": result.get("error") or "delete failed"})
+    _prune_empty_wiki_dirs()
+    index_docs = _refresh_wiki_index()
+    graph = rebuild_graph()
+    append_wiki_log({
+        "action": "wiki_clear_all",
+        "actor": actor or "wiki_clear",
+        "doc_id": "",
+        "title": "Runtime Wiki clear",
+        "message": f"Cleared {len(deleted)} runtime Wiki pages",
+        "meta": {
+            "planned_count": len(candidates),
+            "deleted_count": len(deleted),
+            "error_count": len(errors),
+            "backup_dir": backup.get("backup_dir") or "",
+        },
+    })
+    return {
+        "ok": not errors,
+        "dry_run": False,
+        "backup": backup,
+        "planned_count": len(candidates),
+        "deleted_count": len(deleted),
+        "error_count": len(errors),
+        "deleted": deleted,
+        "errors": errors,
+        "index_count": len(index_docs),
+        "graph_counts": graph.get("counts") or {},
+        "preserved": [],
+    }
+
+
+def cleanup_runtime_wiki(*, apply: bool = False, actor: str = "wiki_cleanup") -> dict[str, Any]:
+    """Dry-run or apply the runtime Wiki cleanup with backup-first deletion."""
+    plan = plan_runtime_wiki_cleanup()
+    candidates = list(plan.get("candidates") or [])
+    if not apply:
+        return {**plan, "dry_run": True}
+    backup = backup_runtime_wiki_cleanup()
+    deleted: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for item in candidates:
+        result = delete_doc(str(item.get("doc_id") or ""), actor=actor)
+        if result.get("deleted"):
+            deleted.append({**item, "result": result})
+        else:
+            errors.append({**item, "error": result.get("error") or "delete failed"})
+    index_docs = _refresh_wiki_index()
+    graph = rebuild_graph()
+    return {
+        "ok": not errors,
+        "dry_run": False,
+        "backup": backup,
+        "planned_count": len(candidates),
+        "deleted_count": len(deleted),
+        "error_count": len(errors),
+        "deleted": deleted,
+        "errors": errors,
+        "index_count": len(index_docs),
+        "graph_counts": graph.get("counts") or {},
+        "preserved": plan.get("preserved") or [],
+    }
+
+
 def _snippet(text: str, q: str, n: int = 180) -> str:
     clean = re.sub(r"\s+", " ", text or "").strip()
     if not clean:
@@ -1981,23 +2200,26 @@ def _agent_wiki_doc_id(title: str, source_ids: list[str], content: str) -> str:
     return safe_id(f"agent_wiki_{title}_{_hash_text(basis, 8)}", fallback=f"agent_wiki_{_hash_text(basis or title)}")
 
 
-def _agent_wiki_related(title: str, tags: list[str], exclude_doc_id: str = "", limit: int = 8) -> list[dict[str, Any]]:
-    tokens = {t.lower() for t in tags if t}
-    tokens.update(x.lower() for x in re.findall(r"[A-Za-z0-9_가-힣]{3,}", title or "")[:8])
+def _explicit_agent_wiki_related(req: dict[str, Any], exclude_doc_id: str = "", limit: int = 24) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    raw_related = req.get("related_doc_ids") if isinstance(req.get("related_doc_ids"), list) else []
+    raw_relations = req.get("relations") if isinstance(req.get("relations"), dict) else {}
     rows: list[dict[str, Any]] = []
-    for row in list_docs(kind="agent_wiki", limit=1000):
-        if exclude_doc_id and row.get("doc_id") == exclude_doc_id:
+    relations: dict[str, str] = {}
+    seen: set[str] = set()
+    for ref in raw_related:
+        ref_id = safe_id(ref, fallback="")
+        if not ref_id or ref_id == exclude_doc_id or ref_id in seen:
             continue
-        hay = " ".join([
-            str(row.get("title") or ""),
-            str(row.get("summary") or ""),
-            " ".join(map(str, row.get("tags") or [])),
-        ]).lower()
-        score = sum(1 for token in tokens if token and token in hay)
-        if score:
-            rows.append({**row, "score": score})
-    rows.sort(key=lambda r: (r.get("score") or 0, str(r.get("updated_at") or "")), reverse=True)
-    return rows[:limit]
+        row = get_doc(ref_id)
+        if not row:
+            continue
+        seen.add(ref_id)
+        rows.append(row)
+        relation = str(raw_relations.get(ref_id) or "relates_to").strip().lower()[:60] or "relates_to"
+        relations[ref_id] = relation
+        if len(rows) >= limit:
+            break
+    return rows, relations
 
 
 def preview_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
@@ -2033,8 +2255,11 @@ def preview_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
     ]
     if direct_content and not sources:
         source_lines.append("- direct preview content")
-    related = _agent_wiki_related(title, tags, exclude_doc_id=doc_id)
-    related_lines = [f"- [[{row.get('doc_id')}]] {row.get('title') or row.get('doc_id')}" for row in related]
+    related, relations = _explicit_agent_wiki_related(req, exclude_doc_id=doc_id)
+    related_lines = [
+        f"- [[{row.get('doc_id')}]] {row.get('title') or row.get('doc_id')}"
+        for row in related
+    ]
     body_parts = [
         "## Summary",
         "",
@@ -2060,7 +2285,9 @@ def preview_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
         "source_ids": source_ids,
         "source_count": len(source_ids),
         "content_chars": len(content),
+        "related_doc_ids": [str(row.get("doc_id") or "") for row in related if row.get("doc_id")],
         "related_pages": related,
+        "relations": relations,
     }
 
 
@@ -2083,6 +2310,17 @@ def commit_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
         preview["summary"] = str(req.get("summary") or "").strip()
     if str(req.get("body") or "").strip():
         preview["body"] = str(req.get("body") or "").strip() + "\n"
+    frontmatter: dict[str, Any] = {
+        "schema_type": "agent_llm_wiki_page_v1",
+        "source_ids": source_ids,
+        "content_chars": preview.get("content_chars") or 0,
+    }
+    related_doc_ids = [str(x) for x in (preview.get("related_doc_ids") or []) if str(x or "").strip()]
+    if related_doc_ids:
+        frontmatter["related_doc_ids"] = related_doc_ids
+        relations = preview.get("relations") if isinstance(preview.get("relations"), dict) else {}
+        if relations:
+            frontmatter["relations"] = {str(k): str(v) for k, v in relations.items() if str(k or "").strip()}
     doc = KnowledgeDoc(
         doc_id=preview["doc_id"],
         kind="agent_wiki",
@@ -2092,11 +2330,7 @@ def commit_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
         actor=str(req.get("actor") or ""),
         tags=preview["tags"],
         source_event_ids=[],
-        frontmatter={
-            "schema_type": "agent_llm_wiki_page_v1",
-            "source_ids": source_ids,
-            "content_chars": preview.get("content_chars") or 0,
-        },
+        frontmatter=frontmatter,
     )
     saved = upsert_doc(doc)
     log = append_wiki_log({
@@ -2446,6 +2680,77 @@ def _attach_entity(nodes: dict[str, dict[str, Any]], edges: dict[str, dict[str, 
         if lot_id:
             _edge(edges, lot_id, wafer_id, "has_wafer")
         _edge(edges, source_id, wafer_id, relation)
+
+
+def wiki_graph_view(graph: dict[str, Any], view: str = "curated") -> dict[str, Any]:
+    """Return the requested graph view without changing the raw graph cache."""
+    if str(view or "").strip().lower() == "full":
+        return graph
+    raw_nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    raw_edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    nodes_by_id = {
+        str(node.get("id") or ""): node
+        for node in raw_nodes
+        if isinstance(node, dict) and str(node.get("id") or "")
+    }
+    node_ids = {
+        node_id
+        for node_id, node in nodes_by_id.items()
+        if str(node.get("kind") or "") == "wiki_doc"
+    }
+    schema_node_ids: set[str] = set()
+    edges: list[dict[str, Any]] = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            continue
+        evidence = str(edge.get("evidence") or "")
+        if evidence not in CURATED_WIKI_GRAPH_EVIDENCE:
+            continue
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        source_kind = str((nodes_by_id.get(source) or {}).get("kind") or "")
+        target_kind = str((nodes_by_id.get(target) or {}).get("kind") or "")
+        if evidence == "frontmatter:related_doc_ids":
+            if source_kind != "wiki_doc" or target_kind != "wiki_doc":
+                continue
+        elif evidence == "schema_relations:column_catalog":
+            source_is_schema = source.startswith("concept:")
+            target_is_schema = target.startswith("concept:")
+            if not ((source_kind == "wiki_doc" and target_is_schema) or (target_kind == "wiki_doc" and source_is_schema)):
+                continue
+            if source_is_schema:
+                schema_node_ids.add(source)
+            if target_is_schema:
+                schema_node_ids.add(target)
+        node_ids.add(source)
+        node_ids.add(target)
+        edges.append(dict(edge))
+    nodes: list[dict[str, Any]] = []
+    for node_id, node in nodes_by_id.items():
+        if node_id not in node_ids:
+            continue
+        kind = str(node.get("kind") or "")
+        if kind == "wiki_doc":
+            nodes.append(dict(node))
+            continue
+        if node_id in schema_node_ids:
+            next_node = dict(node)
+            if kind != "schema_column":
+                next_node["raw_kind"] = kind
+                next_node["kind"] = "schema_column"
+            nodes.append(next_node)
+    counts = dict(graph.get("counts") or {})
+    counts["nodes"] = len(nodes)
+    counts["edges"] = len(edges)
+    return {
+        **graph,
+        "view": "curated",
+        "nodes": nodes,
+        "edges": edges,
+        "counts": counts,
+        "full_counts": graph.get("counts") or {},
+        "ontology": {"nodes": [], "edges": [], "source": "curated"},
+    }
 
 
 def get_graph(rebuild_if_missing: bool = True, rebuild_if_stale: bool = False) -> dict[str, Any]:

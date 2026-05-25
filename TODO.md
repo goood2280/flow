@@ -6,6 +6,8 @@
 
 ## Done
 
+- (Codex) Wiki 내부지식 정리와 graph curated view 적용
+- (Codex) Agent 관리 탭/운영 보드 연결 지도 UX 재배치
 - (Codex) Agent 탭 3탭 운영 보드 단순화
 - (Codex) 전역 기타 메뉴 AI Hub/SQL 작업대 중복 진입점 제거와 Agent Studio 내부 workflow/Wiki 보기 전환
 - (Codex) Agent Studio 내부 스크롤/구분선 polish

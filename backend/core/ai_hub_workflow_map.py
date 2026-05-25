@@ -139,6 +139,10 @@ def build_workflow_map(
                     "users": int(tool.get("user_count_30d") or 0),
                     "last_run": str(tool.get("last_run") or ""),
                 },
+                # Phase 4: NodeInspectorPanel 이 동적 폼을 만들 수 있도록 schema/examples 노출.
+                "input_schema": tool.get("input_schema") or {},
+                "output_schema": tool.get("output_schema") or {},
+                "examples": tool.get("examples") or [],
             })
             tool_node_ids.add(tool_id)
             add_edge("stage:policy", tool_id, "enabled" if tool.get("enabled") else "disabled", "policy")

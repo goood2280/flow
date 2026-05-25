@@ -3438,6 +3438,22 @@ def create_inform(req: InformCreate, request: Request):
     items.append(entry)
     _save(items)
     _audit_record(request, audit["type"], entry, audit["payload"], audit["summary"], at=audit["at"])
+    # Phase 5: Inform 생성 시 generic event 기록 → wiki_draft_queue grouping.
+    try:
+        from core.wiki_event_hooks import emit_inform_event
+        emit_inform_event(
+            inform_id=str(entry.get("id") or ""),
+            parent_id=entry.get("parent_id"),
+            title=str(entry.get("title") or entry.get("subject") or ""),
+            text=str(entry.get("text") or entry.get("body") or ""),
+            module=str(entry.get("module") or ""),
+            actor=me.get("username") or "",
+            product=str(entry.get("product") or ""),
+            root_lot_id=str(entry.get("root_lot_id") or entry.get("lot_id") or ""),
+            wafer_id=str(entry.get("wafer_id") or ""),
+        )
+    except Exception:
+        pass
     return {"ok": True, "inform": entry}
 
 
@@ -3715,6 +3731,23 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
     _audit_record(request, "status_change", target,
                   {"prev": prev_status, "status": st, "note": note},
                   f"상태변경 · {prev_status or '-'} → {st}", at=hist[-1]["at"])
+    # Phase 5: Inform 상태 변경 시 generic event 기록.
+    try:
+        from core.wiki_event_hooks import emit_inform_event
+        emit_inform_event(
+            inform_id=str(target.get("id") or ""),
+            parent_id=target.get("parent_id"),
+            title=str(target.get("title") or target.get("subject") or ""),
+            text=note or f"{prev_status} → {st}",
+            module=str(target.get("module") or ""),
+            actor=me.get("username") or "",
+            product=str(target.get("product") or ""),
+            root_lot_id=str(target.get("root_lot_id") or target.get("lot_id") or ""),
+            wafer_id=str(target.get("wafer_id") or ""),
+            status=st,
+        )
+    except Exception:
+        pass
     return {"ok": True, "inform": target}
 
 

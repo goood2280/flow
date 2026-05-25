@@ -20,6 +20,14 @@ from core.flowi_units.base import (
 class TrackerUnitAI(BaseUnitAI):
     KEY = "tracker"
     TITLE = "Tracker AI (이슈 LOT 조회)"
+    DESCRIPTION = (
+        "Tracker에 등록된 이슈 LOT의 purpose/category/owner/status 조회. "
+        "'이 LOT 왜 추적 중', 'split 검증 LOT 어떤 게 있어' 같은 질의에 적합."
+    )
+    EXAMPLES = (
+        {"prompt": "A1000A.3 이 LOT 왜 추적 중", "product": "PRODA"},
+        {"prompt": "최근 retest LOT 목록", "max_rows": 20},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",

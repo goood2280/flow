@@ -1127,6 +1127,22 @@ def update_issue(req: IssueUpdate, request: Request):
         source_id=req.issue_id,
         lots=next_lots,
     )
+    # Phase 5: 상태 변경 시 generic event 기록.
+    if status_changed:
+        try:
+            from core.wiki_event_hooks import emit_issue_status_event
+            first_lot = (next_lots or iss.get("lots") or [{}])[0] if isinstance(next_lots or iss.get("lots"), list) else {}
+            emit_issue_status_event(
+                issue_id=str(req.issue_id or ""),
+                title=str(iss.get("title") or ""),
+                new_status=str(req.status or ""),
+                actor=req.username or "",
+                product=str(iss.get("product") or ""),
+                root_lot_id=str((first_lot or {}).get("lot_id") or ""),
+                wafer_id=str((first_lot or {}).get("wafer_id") or ""),
+            )
+        except Exception:
+            pass
     # v8.8.33: 이슈 작성자에게 상태 변경 알림.
     if status_changed:
         try:
@@ -1207,6 +1223,20 @@ def add_comment(req: CommentReq, request: Request):
         source_id=f"{req.issue_id}:comment",
         lots=[{"lot_id": req.lot_id, "wafer_id": req.wafer_id}] if (req.lot_id or req.wafer_id) else None,
     )
+    # Phase 5: 모든 코멘트에 generic event 기록 → wiki_draft_queue 가 grouping 근거로 사용.
+    try:
+        from core.wiki_event_hooks import emit_issue_comment_event
+        emit_issue_comment_event(
+            issue_id=str(req.issue_id or ""),
+            title=str(iss.get("title") or ""),
+            text=req.text or "",
+            actor=req.username or "",
+            product=str(iss.get("product") or ""),
+            root_lot_id=str(req.lot_id or ""),
+            wafer_id=str(req.wafer_id or ""),
+        )
+    except Exception:
+        pass
     # P4-wire-up: best-effort term proposals into the semantic learning queue.
     try:
         from app_v2.modules.semantic_learning import submit_tracker_comment

@@ -20,6 +20,14 @@ from core.flowi_units.base import (
 class InformUnitAI(BaseUnitAI):
     KEY = "inform"
     TITLE = "Inform Log AI"
+    DESCRIPTION = (
+        "인폼 로그 조회/요약/draft 생성. 모듈/제품/LOT 기준으로 인폼을 검색하거나 "
+        "새 인폼 본문 초안을 만든다."
+    )
+    EXAMPLES = (
+        {"prompt": "GATE 모듈 최근 인폼", "max_rows": 10},
+        {"prompt": "PRODA A1000A.3 LOT 인폼 요약"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",

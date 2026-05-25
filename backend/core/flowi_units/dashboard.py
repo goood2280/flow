@@ -22,6 +22,14 @@ from core.flowi_units.base import (
 class DashboardUnitAI(BaseUnitAI):
     KEY = "dashboard"
     TITLE = "Dashboard AI"
+    DESCRIPTION = (
+        "기존 chart session의 후속 요청 처리 (KNOB coloring, fit line, value exclude, "
+        "raw CSV 다운로드). 새 차트 생성은 function-call build_dashboard_metric_chart로."
+    )
+    EXAMPLES = (
+        {"prompt": "이 차트에 KNOB_GATE_CD 색칠해줘"},
+        {"prompt": "원본 CSV 다운로드"},
+    )
     DATA_SOURCES = (
         DataSourceRef(
             kind="runtime_data",

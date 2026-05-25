@@ -2781,6 +2781,19 @@ def save_minutes(req: MinutesSave, request: Request):
         ]),
         source_id=f"{m['id']}:{s['id']}:minutes",
     )
+    # Phase 5: 회의록 저장 시 generic event 1줄 추가 → wiki_draft_queue grouping.
+    try:
+        from core.wiki_event_hooks import emit_meeting_minutes_event
+        emit_meeting_minutes_event(
+            meeting_id=str(m.get("id") or ""),
+            session_id=str(s.get("id") or ""),
+            title=str(m.get("title") or ""),
+            decisions=decisions,
+            action_items=merged,
+            actor=me.get("username") or "",
+        )
+    except Exception:
+        pass
 
     # v8.8.6: 동시편집 broadcast — 다른 subscribers 에게 변경 알림.
     # v8.8.15: payload 에 rev 포함 → FE 가 자기 local rev 과 비교해 dirty 없으면 auto-refresh, 있으면 banner.

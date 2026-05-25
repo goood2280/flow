@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc, KnowledgeEvent
 from core import knowledge_impact
 from core import knowledge_vault as kv
+from core import wiki_draft_queue
 from core.auth import current_user, is_page_manager
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(current_user)])
@@ -134,6 +135,72 @@ def wiki_ai_upsert(req: WikiAiDraftReq, request: Request):
     return kv.ai_upsert_doc(body=req.body, doc_id=req.doc_id, tags=req.tags, actor=me.get("username") or "system")
 
 
+# ── Phase 6: Wiki Draft Queue ────────────────────────────────────────────────
+class DraftEditReq(BaseModel):
+    title: str | None = None
+    body: str | None = None
+
+
+class DraftRejectReq(BaseModel):
+    reason: str = ""
+
+
+class DraftEnqueueReq(BaseModel):
+    window_days: int = 7
+    threshold: int = 2
+
+
+@router.get("/draft-queue")
+def draft_queue_list(status: str = Query("pending"), limit: int = Query(50, ge=1, le=500)):
+    return {
+        "drafts": wiki_draft_queue.list_drafts(status=status, limit=limit),
+        "stats": wiki_draft_queue.stats(),
+    }
+
+
+@router.post("/draft-queue/enqueue", dependencies=[Depends(_require_knowledge_admin)])
+def draft_queue_enqueue(req: DraftEnqueueReq, request: Request):
+    me = current_user(request)
+    out = wiki_draft_queue.enqueue_from_events(
+        window_days=max(1, min(int(req.window_days or 7), 90)),
+        threshold=max(1, min(int(req.threshold or 2), 20)),
+        actor=me.get("username") or "system",
+    )
+    return {"ok": True, **out}
+
+
+@router.post("/draft-queue/{draft_id}/approve", dependencies=[Depends(_require_knowledge_admin)])
+def draft_queue_approve(draft_id: str, request: Request):
+    me = current_user(request)
+    row = wiki_draft_queue.approve_draft(draft_id, actor=me.get("username") or "")
+    if not row:
+        raise HTTPException(404, "draft not found")
+    return {"ok": True, "draft": row}
+
+
+@router.post("/draft-queue/{draft_id}/reject", dependencies=[Depends(_require_knowledge_admin)])
+def draft_queue_reject(draft_id: str, req: DraftRejectReq, request: Request):
+    me = current_user(request)
+    row = wiki_draft_queue.reject_draft(draft_id, actor=me.get("username") or "", reason=req.reason)
+    if not row:
+        raise HTTPException(404, "draft not found")
+    return {"ok": True, "draft": row}
+
+
+@router.post("/draft-queue/{draft_id}/edit", dependencies=[Depends(_require_knowledge_admin)])
+def draft_queue_edit(draft_id: str, req: DraftEditReq, request: Request):
+    me = current_user(request)
+    row = wiki_draft_queue.edit_draft(
+        draft_id,
+        title=req.title,
+        body=req.body,
+        actor=me.get("username") or "",
+    )
+    if not row:
+        raise HTTPException(404, "draft not found")
+    return {"ok": True, "draft": row}
+
+
 @router.get("/search")
 def search(q: str = Query(..., min_length=1), scope: str = "all", limit: int = Query(30, ge=1, le=100)):
     if scope not in {"all", "wiki", "event"}:
@@ -171,9 +238,9 @@ def graph():
 
 
 @router.get("/wiki/graph")
-def wiki_graph():
-    kv.ensure_default_agent_wiki_seed(actor="knowledge_graph", refresh_index_when_preserved=False)
-    return kv.get_graph(rebuild_if_missing=True, rebuild_if_stale=True)
+def wiki_graph(view: str = Query("curated")):
+    graph = kv.get_graph(rebuild_if_missing=True, rebuild_if_stale=True)
+    return kv.wiki_graph_view(graph, view=view)
 
 
 @router.post("/graph/rebuild", dependencies=[Depends(_require_knowledge_admin)])

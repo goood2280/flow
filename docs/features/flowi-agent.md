@@ -3,10 +3,10 @@
 Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 품질을 운영한다. 전역 기타 메뉴에는 legacy `AI 허브`/`SQL 작업대`를 별도 탭으로 노출하지 않고, 현재 visible Agent 표면은 세 가지 상단 흐름으로 묶는다.
 
 - `운영 보드`: 질문 선택/입력 -> 처리 흐름 확인 -> 개선할 지식/워크플로우 제안 흐름으로 운영한다.
-- `설계·지식`: 질문 설계, 용어/기능 AI, Wiki, 변경 이력을 좌측 섹션으로 묶어 관리한다.
+- `Agent 관리`: 운영 가이드, 질문/워크플로우, 용어/기능 AI, Wiki 근거, 검토 큐, 변경 이력을 좌측 섹션으로 묶어 관리한다.
 - `설정`: 기존 LLM runtime 연결 상태와 admin 설정을 확인한다.
 
-기본 운영 보드는 공개 가능한 `질문 -> 단어 해석 -> 계획 -> 도구 실행 -> 결과`만 먼저 보여준다. `semantic`, SSE/LangSmith 관련 상태, workflow-map, Wiki graph, raw trace는 `기술 상세` 접힘 영역에서만 확인한다.
+기본 운영 보드는 공개 가능한 `질문 -> 단어 해석 -> 계획 -> 도구 실행 -> 결과`를 상단에 유지하고, 기존 `/api/ai-hub/workflow-map`의 nodes/edges로 만든 연결 지도를 바로 보여준다. 선택 노드 상세는 입력/출력 edge, Wiki/schema 근거, 다음 개선 액션을 함께 노출한다. `semantic`, SSE/LangSmith 관련 상태, raw `plan/results/events`, 보조 Wiki 관계 표는 `기술 상세 및 원본` 접힘 영역에서 확인한다.
 
 권한 모델은 초안+승인 방식이다. 일반 유저는 개인 workflow template을 저장하고, shared workflow/semantic alias/intent/maintained wiki 반영은 admin 또는 diagnosis/agent/knowledge page manager만 수행한다.
 
@@ -96,6 +96,14 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - AI Hub의 `Agent Wiki 상태` 패널이 읽는 운영 요약이다.
 - 기존 Knowledge Vault/Agent Wiki store만 읽어 page/source count, graph count, Wiki lint count, recent pages/sources/log를 반환한다.
 - Agent Wiki page/source 저장, lint 실행 권한, ingest commit 권한은 기존 `/api/agent/wiki/*` 계약을 그대로 따른다.
+
+`GET /api/knowledge/wiki/graph?view=curated|full`
+
+- Agent Wiki graph가 읽는 Knowledge Vault graph다.
+- 기본 `curated` view는 Wiki 문서와 승인된 schema/doc 근거 edge만 반환한다.
+- `full` view는 ontology, event, product/lot/wafer 자동 edge까지 포함한 raw graph를 관리자 디버깅용으로 유지한다.
+- Agent 관리 > Wiki 근거의 기본 `Vault` 화면은 Obsidian식으로 문서 목록, markdown 본문, backlinks, source refs, metadata를 같은 화면에서 보여준다.
+- `scripts/cleanup_runtime_wiki.py --apply`는 실행 전 `data/flow-data/backups/wiki_cleanup_*`에 백업한 뒤 runtime Wiki markdown 전체를 비운다. `--mode selected`는 legacy/demo/internal 문서만 정리하는 보수 모드다.
 
 `GET /api/ai-hub/ops-snapshot?days=30&limit=8`
 
