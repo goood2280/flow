@@ -32,6 +32,13 @@ class _Request:
         self.state = _State({"username": username, "role": role})
 
 
+@pytest.fixture(autouse=True)
+def _clear_s3_local_info_cache():
+    s3_ingest._LOCAL_INFO_CACHE.clear()
+    yield
+    s3_ingest._LOCAL_INFO_CACHE.clear()
+
+
 def _route_dependency(path: str, method: str):
     method = method.upper()
     for route in s3_ingest.router.routes:
@@ -145,6 +152,108 @@ def test_item_due_state_uses_last_end_and_interval():
     assert manual["next_due"] is None
 
 
+def test_status_by_target_fast_skips_local_scan_and_aggregates_parent(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    cfg.write_text(json.dumps({
+        "items": [
+            {
+                "id": "db1",
+                "kind": "db",
+                "target": "FAB/PRODA",
+                "s3_url": "s3://bucket/FAB/PRODA",
+                "command": "sync",
+                "direction": "download",
+                "interval_min": 60,
+                "enabled": True,
+            },
+            {
+                "id": "db2",
+                "kind": "db",
+                "target": "FAB/PRODB",
+                "s3_url": "s3://bucket/FAB/PRODB",
+                "command": "sync",
+                "direction": "download",
+                "interval_min": 60,
+                "enabled": True,
+            },
+        ]
+    }), encoding="utf-8")
+    status.write_text(json.dumps({
+        "db1": {"last_status": "ok", "last_end": now},
+        "db2": {"last_status": "ok", "last_end": now},
+    }), encoding="utf-8")
+    calls = []
+
+    def fail_local_scan(target):
+        calls.append(target)
+        raise AssertionError("local scan should be skipped")
+
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "_latest_local_item_info", fail_local_scan)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {})
+    monkeypatch.setattr(s3_ingest, "_QUEUED", [])
+
+    out = s3_ingest.status_by_target(include_local=False)
+
+    assert out["local_freshness_included"] is False
+    assert calls == []
+    assert "latest_item_at" not in out["by_target"]["FAB/PRODA"]
+    assert out["by_target"]["FAB"]["aggregate"] is True
+    assert out["by_target"]["FAB"]["freshness_state"] == "ok"
+    assert out["by_target"]["FAB"]["latest_item_at"] is None
+
+
+def test_status_by_target_full_caches_local_freshness(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    cfg.write_text(json.dumps({
+        "items": [{
+            "id": "db1",
+            "kind": "db",
+            "target": "DB1",
+            "s3_url": "s3://bucket/DB1",
+            "command": "sync",
+            "direction": "download",
+            "interval_min": 60,
+            "enabled": True,
+        }]
+    }), encoding="utf-8")
+    status.write_text(json.dumps({
+        "db1": {
+            "last_status": "ok",
+            "last_end": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+    }), encoding="utf-8")
+    calls = []
+
+    def fake_local_scan(target):
+        calls.append(target)
+        return {
+            "latest_item_at": "2026-05-08T11:55:00",
+            "latest_item_relpath": "part.csv",
+            "latest_item_age_hours": 0.1,
+            "latest_item_stale_6h": False,
+            "latest_item_scan_error": None,
+        }
+
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(s3_ingest, "_latest_local_item_info", fake_local_scan)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {})
+    monkeypatch.setattr(s3_ingest, "_QUEUED", [])
+
+    first = s3_ingest.status_by_target(include_local=True)
+    second = s3_ingest.status_by_target(include_local=True)
+
+    assert first["local_freshness_included"] is True
+    assert second["by_target"]["DB1"]["latest_item_relpath"] == "part.csv"
+    assert calls == ["DB1"]
+
+
 def test_recent_download_sync_is_not_stale_item(tmp_path, monkeypatch):
     target_dir = tmp_path / "DB1"
     target_dir.mkdir()
@@ -178,7 +287,7 @@ def test_recent_download_sync_is_not_stale_item(tmp_path, monkeypatch):
     monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
     monkeypatch.setattr(s3_ingest, "_RUNNING", {})
 
-    item = s3_ingest.status_by_target()["by_target"]["DB1"]
+    item = s3_ingest.status_by_target(include_local=True)["by_target"]["DB1"]
 
     assert item["latest_item_stale_6h"] is True
     assert item["freshness_state"] == "ok"

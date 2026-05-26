@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 import Loading from "../components/Loading";
-import S3StatusLight from "../components/S3StatusLight";
 import Modal from "../components/Modal";
 import { PageGearButton } from "../components/PageGear";
 import { toast } from "../components/Toast";
@@ -18,6 +17,41 @@ const FB_DISABLED = "#94a3b8";
 const FB_GRID_LINE = "1px solid var(--border)";
 const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
+const S3_STATUS_FAST_URL="/api/s3ingest/status-by-target?include_local=0";
+const S3_STATUS_FULL_URL="/api/s3ingest/status-by-target?include_local=1";
+const S3_STATUS_SESSION_KEY="flow.filebrowser.s3Status.fast";
+const S3_STATUS_SESSION_MAX_AGE_MS=10*60*1000;
+const S3_LOCAL_STATUS_KEYS=["latest_item_at","latest_item_relpath","latest_item_age_hours","latest_item_stale_6h","latest_item_scan_error"];
+const readStoredS3Status=()=>{
+  if(typeof window==="undefined"||!window.sessionStorage)return{};
+  try{
+    const raw=window.sessionStorage.getItem(S3_STATUS_SESSION_KEY);
+    if(!raw)return{};
+    const parsed=JSON.parse(raw);
+    if(!parsed||typeof parsed!=="object")return{};
+    if(parsed.ts&&Date.now()-Number(parsed.ts)>S3_STATUS_SESSION_MAX_AGE_MS)return{};
+    const byTarget=parsed.by_target||parsed.byTarget||{};
+    return byTarget&&typeof byTarget==="object"?byTarget:{};
+  }catch{return{};}
+};
+const storeFastS3Status=(byTarget)=>{
+  if(typeof window==="undefined"||!window.sessionStorage)return;
+  try{window.sessionStorage.setItem(S3_STATUS_SESSION_KEY,JSON.stringify({ts:Date.now(),by_target:byTarget||{}}));}
+  catch{}
+};
+const mergeS3StatusByTarget=(prev={},incoming={},localIncluded=false)=>{
+  const next={};
+  Object.entries(incoming||{}).forEach(([target,info])=>{
+    const merged={...(info||{})};
+    if(!localIncluded&&prev?.[target]){
+      S3_LOCAL_STATUS_KEYS.forEach(key=>{
+        if(!(key in merged)&&prev[target][key]!==undefined)merged[key]=prev[target][key];
+      });
+    }
+    next[target]=merged;
+  });
+  return next;
+};
 const canEditBaseMeta=(meta)=>{
   if(!meta) return false;
   if(meta.editable===true) return true;
@@ -399,12 +433,39 @@ export default function My_FileBrowser({user,onNavigate}){
   const[schemaSnapshotMsg,setSchemaSnapshotMsg]=useState("");
   const[schemaSnapshots,setSchemaSnapshots]=useState([]);
   // S3 sync status map (public endpoint) — powers sidebar traffic-light dots
-  const[s3Status,setS3Status]=useState({});
+  const[s3Status,setS3Status]=useState(()=>readStoredS3Status());
+  const[s3StatusReady,setS3StatusReady]=useState(false);
+  const[s3StatusLoadError,setS3StatusLoadError]=useState(false);
   useEffect(()=>{
-    const load=()=>sf("/api/s3ingest/status-by-target").then(d=>{if(d&&d.by_target)setS3Status(d.by_target);}).catch(()=>{});
-    load();
-    const t=setInterval(load,30000);
-    return()=>clearInterval(t);
+    let alive=true;
+    let idleId=null;
+    let idleTimeout=null;
+    const applyStatus=(d,storeFast=false)=>{
+      if(!alive||!d||!d.by_target)return;
+      const localIncluded=d.local_freshness_included!==false;
+      setS3Status(prev=>mergeS3StatusByTarget(prev,d.by_target,localIncluded));
+      setS3StatusReady(true);
+      setS3StatusLoadError(false);
+      if(storeFast)storeFastS3Status(d.by_target);
+    };
+    const loadFast=()=>sf(S3_STATUS_FAST_URL).then(d=>applyStatus(d,true)).catch(()=>{if(alive)setS3StatusLoadError(true);});
+    const loadFull=()=>sf(S3_STATUS_FULL_URL).then(d=>applyStatus(d,false)).catch(()=>{});
+    const scheduleFull=()=>{
+      if(!alive)return;
+      const run=()=>{idleId=null;idleTimeout=null;loadFull();};
+      if(typeof window!=="undefined"&&typeof window.requestIdleCallback==="function")idleId=window.requestIdleCallback(run,{timeout:2500});
+      else idleTimeout=setTimeout(run,1200);
+    };
+    loadFast().then(scheduleFull,scheduleFull);
+    const fastTimer=setInterval(loadFast,30000);
+    const fullTimer=setInterval(loadFull,5*60*1000);
+    return()=>{
+      alive=false;
+      clearInterval(fastTimer);
+      clearInterval(fullTimer);
+      if(idleTimeout!=null)clearTimeout(idleTimeout);
+      if(idleId!=null&&typeof window!=="undefined"&&typeof window.cancelIdleCallback==="function")window.cancelIdleCallback(idleId);
+    };
   },[]);
   // v8.8.2: path 기반 lookup — 정확 매칭 없으면 상위 경로(예: "1.RAWDATA_DB") 에서 상속.
   // "제품명" 을 키로 넘기면 sidebar 제품 리스트 렌더. "DB/PROD" 도 지원.
@@ -439,12 +500,14 @@ export default function My_FileBrowser({user,onNavigate}){
     const directionArrow=direction==="upload"?"↑":(direction==="mixed"?"↕":"↓");
     const st=info?.last_status||"never";
     const syncFresh=st==="ok"&&isFinite(ageH)&&ageH<=6;
-    const latestItemStale=freshnessState==="stale_item"||(latestItemStaleRaw&&!syncFresh&&freshnessState!=="ok");
+    const latestItemStale=freshnessState==="stale_item"||(latestItemStaleRaw&&!syncFresh);
+    if(!info&&!s3StatusReady)return{color:FB_DISABLED,tip:"S3 상태 확인 중...",directionLabel:"확인중",directionArrow:"·",freshLabel:"-",latestItemStale:false};
+    if(!info&&s3StatusLoadError)return{color:FB_DISABLED,tip:"S3 상태 확인 실패 — 다음 polling에서 다시 확인합니다",directionLabel:"확인실패",directionArrow:"·",freshLabel:"-",latestItemStale:false};
     if(!info)return{color:FB_BAD.fg,tip:"S3 동기화 미설정 — FileBrowser 우하단 ⚙️에서 상태와 실행 권한을 확인하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
+    if(info.is_queued)return{color:FB_AMBER,tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 대기 중\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStale?"6h+":latestItemStr,latestItemStale};
     if(info.is_running)return{color:FB_INFO.fg,tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 실행 중…\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStr,latestItemStale:false};
     let color,line;
     if(st==="error"){color=FB_BAD.fg;line="실패 (exit="+(info.last_exit_code??"?")+")";}
-    else if(st==="ok"&&latestItemStale){color=FB_BAD.fg;line="최신 항목 지연 ("+(latestItemAge!=null?latestItemAge.toFixed(1)+"시간":"6시간+")+")";}
     else if(st==="ok"&&isFinite(ageH)&&ageH<=6){color=FB_OK.fg;line="정상 (최근 "+ageH.toFixed(1)+"시간)";}
     else if(st==="ok"){color=chartPalette.series[5];line="오래됨 ("+(isFinite(ageH)?Math.floor(ageH)+"시간 경과":"기록 없음")+")";}
     else{color=FB_BAD.fg;line="실행 기록 없음";}

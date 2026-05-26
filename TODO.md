@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) FileBrowser S3 신호등 fast status와 local freshness 지연 보강
 - (Codex) Wiki 내부지식 정리와 graph curated view 적용
 - (Codex) Agent 관리 탭/운영 보드 연결 지도 UX 재배치
 - (Codex) Agent 탭 3탭 운영 보드 단순화

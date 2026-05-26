@@ -35,6 +35,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## S3 Sync Permissions
 
 - 일반 사용자는 파일/제품 목록의 S3 신호등과 freshness 상태만 본다.
+- 파일/제품 목록의 신호등은 `GET /api/s3ingest/status-by-target?include_local=0` fast 응답으로 먼저 표시한다. 응답의 `local_freshness_included=false`는 로컬 파일 최신시각 재귀 scan을 생략했다는 뜻이며, 화면은 이후 idle/5분 주기로 `include_local=1`을 호출해 freshness 텍스트만 보강한다.
 - FileBrowser page manager는 `GET /api/s3ingest/items`, `GET /api/s3ingest/history`, `POST /api/s3ingest/run`으로 이미 등록된 S3 동기화 항목을 조회하고 수동 실행할 수 있다.
 - S3 항목 생성/수정/삭제, 스케줄 저장, AWS credential/profile 조회·저장·삭제는 global Admin 전용이다. 위임받은 FileBrowser manager에게는 `항목`/`이력` 탭만 보이고 `+ 추가`, `수정`, `삭제`, `AWS 설정`은 표시하지 않는다.
 

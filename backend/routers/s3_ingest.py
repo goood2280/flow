@@ -71,6 +71,9 @@ _QUEUE_COND = threading.Condition(_RUNNING_LOCK)
 _QUEUE_WORKER_STARTED = False
 _SCHED_STARTED = False
 _SCHED_LOCK = threading.Lock()
+_LOCAL_INFO_CACHE_TTL_SEC = 60.0
+_LOCAL_INFO_CACHE: Dict[tuple[str, str], Dict[str, Any]] = {}
+_LOCAL_INFO_CACHE_LOCK = threading.Lock()
 
 
 # ═════════════════════ helpers ═════════════════════
@@ -233,6 +236,23 @@ def _latest_local_item_info(target: str) -> Dict[str, Any]:
     except Exception as e:
         info["latest_item_scan_error"] = str(e)[:180]
         return info
+
+
+def _cached_latest_local_item_info(target: str) -> Dict[str, Any]:
+    try:
+        root_key = str(_db_root().resolve())
+    except Exception:
+        root_key = str(_db_root())
+    key = (root_key, str(target or ""))
+    now = time.time()
+    with _LOCAL_INFO_CACHE_LOCK:
+        entry = _LOCAL_INFO_CACHE.get(key) or {}
+        if now - float(entry.get("ts") or 0) < _LOCAL_INFO_CACHE_TTL_SEC:
+            return dict(entry.get("info") or {})
+    info = _latest_local_item_info(target)
+    with _LOCAL_INFO_CACHE_LOCK:
+        _LOCAL_INFO_CACHE[key] = {"ts": now, "info": dict(info)}
+    return dict(info)
 
 
 def _parse_iso_ts(value: str | None) -> float:
@@ -961,7 +981,7 @@ def push_item(req: PushReq, _perm=Depends(require_page_manager("filebrowser"))):
 
 
 @router.get("/status-by-target")
-def status_by_target():
+def status_by_target(include_local: bool = True):
     """PUBLIC minimal status map — keyed by target name.
     Does NOT require admin; only exposes sync freshness for UI indicators.
     Does not leak s3_url, extra_args, endpoint_url, or full output.
@@ -992,7 +1012,8 @@ def status_by_target():
             "is_queued": bool(is_queued),
         }
         info.update(due)
-        info.update(_latest_local_item_info(tgt))
+        if include_local:
+            info.update(_cached_latest_local_item_info(tgt))
         last_end = info["last_end"] or info["last_start"]
         last_ts = _parse_iso_ts(last_end)
         sync_recent_6h = bool(last_ts and (now - last_ts) <= 6 * 3600)
@@ -1023,7 +1044,7 @@ def status_by_target():
         else:
             by_target[tgt] = info
     _aggregate_child_statuses(by_target)
-    return {"by_target": by_target}
+    return {"by_target": by_target, "local_freshness_included": bool(include_local)}
 
 
 # ═════════════════════ AWS configure API (admin only) ═════════════════════
