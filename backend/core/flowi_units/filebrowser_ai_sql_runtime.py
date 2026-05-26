@@ -37,6 +37,142 @@ GRAPH_EDGES: tuple[dict[str, str], ...] = (
     {"source": "merge", "target": "preview_apply"},
 )
 
+FILTER_DRAFT_SYSTEM_PROMPT = (
+    "You create only a Flow FileBrowser read-only WHERE/filter expression. "
+    "Return JSON with sql, resolved_columns, resolved_values, and notes. "
+    "Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, DDL, DML, comments, semicolons, markdown, or reasoning."
+)
+
+COLUMN_DRAFT_SYSTEM_PROMPT = (
+    "You choose display columns for Flow FileBrowser preview. "
+    "Return JSON with selected_columns only. Use only provided columns. "
+    "Return an empty list when the user did not ask for a projection."
+)
+
+STATE_DESIGN: dict[str, dict[str, Any]] = {
+    "run_id": {
+        "description": "Runtime execution id for this Agent unit run.",
+        "producer": "runtime",
+        "public": True,
+    },
+    "request": {
+        "description": "Sanitized user prompt and FileBrowser target selector.",
+        "producer": "runtime",
+        "public": True,
+    },
+    "columns": {
+        "description": "Resolved source schema columns.",
+        "producer": "context_sample",
+        "public": True,
+    },
+    "dtypes": {
+        "description": "Resolved source schema data types.",
+        "producer": "context_sample",
+        "public": True,
+    },
+    "sample_rows": {
+        "description": "Reserved sample row state; runtime prompt keeps this empty for privacy and payload size.",
+        "producer": "context_sample",
+        "public": True,
+    },
+    "sample_profile": {
+        "description": "Compact schema/sample statistics used by LLM nodes instead of raw row dumps.",
+        "producer": "context_sample",
+        "public": True,
+    },
+    "semantic_frame": {
+        "description": "Prompt interpretation, resolved columns, value terms, aliases, and step mapping hints.",
+        "producer": "semantic_layer",
+        "public": True,
+    },
+    "filter": {
+        "description": "Validated WHERE/filter draft plus public LLM status and fallback warnings.",
+        "producer": "filter_draft",
+        "public": True,
+    },
+    "columns_result": {
+        "description": "Selected display columns plus public LLM status and fallback warnings.",
+        "producer": "column_draft",
+        "public": True,
+    },
+    "merged": {
+        "description": "FileBrowser-compatible display SQL, WHERE SQL, selected columns, and sort intent.",
+        "producer": "merge",
+        "public": True,
+    },
+    "preview": {
+        "description": "Read-only preview summary; runtime trace omits preview row payloads.",
+        "producer": "preview_apply",
+        "public": True,
+    },
+    "node_errors": {
+        "description": "Public node failure messages keyed by node id.",
+        "producer": "runtime",
+        "public": True,
+    },
+    "trace": {
+        "description": "Append-only public node trace rows for Agent UI inspection.",
+        "producer": "runtime",
+        "public": True,
+    },
+    "runtime_warnings": {
+        "description": "Runner-level public warnings such as LangGraph fallback state.",
+        "producer": "runtime",
+        "public": True,
+    },
+}
+
+NODE_METADATA: dict[str, dict[str, Any]] = {
+    "context_sample": {
+        "persona": "FileBrowser context loader that resolves the selected source schema without exposing raw row dumps.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.scope", "request.root", "request.product", "request.file", "request.columns", "request.dtypes"],
+        "writes": ["columns", "dtypes", "sample_rows", "sample_profile"],
+        "shared_state": ["columns", "dtypes", "sample_profile"],
+        "answer_attach_rule": "Attach only compact schema/profile metadata to public trace; never attach raw sample rows.",
+    },
+    "semantic_layer": {
+        "persona": "Deterministic semantic mapper that normalizes prompt terms against the resolved FileBrowser schema.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.natural_language", "request.product", "columns"],
+        "writes": ["semantic_frame"],
+        "shared_state": ["semantic_frame"],
+        "answer_attach_rule": "Attach resolved columns, unknown terms, value terms, aliases, and public step mapping hints.",
+    },
+    "filter_draft": {
+        "persona": "Filter SQL drafting agent for read-only FileBrowser WHERE clauses.",
+        "prompt": {"system": FILTER_DRAFT_SYSTEM_PROMPT, "mode": "llm_json"},
+        "reads": ["request.natural_language", "columns", "dtypes", "sample_profile", "semantic_frame"],
+        "writes": ["filter"],
+        "shared_state": ["filter.sql", "filter.warnings", "filter.llm", "filter.fallback"],
+        "answer_attach_rule": "Attach validated WHERE SQL, public warnings, and LLM availability/usage status only.",
+    },
+    "column_draft": {
+        "persona": "Display column selection agent for FileBrowser preview projection.",
+        "prompt": {"system": COLUMN_DRAFT_SYSTEM_PROMPT, "mode": "llm_json"},
+        "reads": ["request.natural_language", "request.preferred_selected_columns", "columns", "dtypes", "sample_profile", "semantic_frame"],
+        "writes": ["columns_result"],
+        "shared_state": ["columns_result.selected_columns", "columns_result.warnings", "columns_result.llm", "columns_result.fallback"],
+        "answer_attach_rule": "Attach selected column names and public warnings only.",
+    },
+    "merge": {
+        "persona": "Contract merger that builds the FileBrowser-compatible SQL contract from filter and column drafts.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.natural_language", "columns", "filter", "columns_result"],
+        "writes": ["merged"],
+        "shared_state": ["merged.sql", "merged.display_sql", "merged.where_sql", "merged.selected_columns", "merged.sort"],
+        "answer_attach_rule": "Attach display SQL, WHERE SQL, selected columns, sort intent, and validation warnings.",
+    },
+    "preview_apply": {
+        "persona": "Read-only preview verifier that reuses FileBrowser preview behavior without mutating source data.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.scope", "request.root", "request.product", "request.file", "merged"],
+        "writes": ["preview"],
+        "shared_state": ["preview.columns", "preview.rows_returned", "preview.total_rows", "preview.applied_sql"],
+        "answer_attach_rule": "Attach preview metadata and counts; runtime trace keeps preview rows empty until explicit Apply in the UI.",
+    },
+}
+
 
 class _RuntimeState(TypedDict, total=False):
     run_id: str
@@ -62,11 +198,17 @@ def filebrowser_ai_sql_graph(statuses: dict[str, str] | None = None) -> dict[str
         "nodes": [
             {
                 **node,
+                **deepcopy(NODE_METADATA.get(node["id"], {})),
+                "state_io": {
+                    "reads": list(NODE_METADATA.get(node["id"], {}).get("reads") or []),
+                    "writes": list(NODE_METADATA.get(node["id"], {}).get("writes") or []),
+                },
                 "status": statuses.get(node["id"], "pending"),
             }
             for node in GRAPH_NODES
         ],
         "edges": [dict(edge) for edge in GRAPH_EDGES],
+        "state_design": deepcopy(STATE_DESIGN),
     }
 
 
@@ -380,11 +522,7 @@ def _filter_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     step_mapping_context = fb._ai_sql_step_mapping_context(prompt, columns, context.get("product") or "")
     plan, llm_info, llm_warnings = _llm_json(
         node_id="filter_draft",
-        system=(
-            "You create only a Flow FileBrowser read-only WHERE/filter expression. "
-            "Return JSON with sql, resolved_columns, resolved_values, and notes. "
-            "Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, DDL, DML, comments, semicolons, markdown, or reasoning."
-        ),
+        system=FILTER_DRAFT_SYSTEM_PROMPT,
         payload={
             "natural_language": prompt,
             "columns": columns[:200],
@@ -473,11 +611,7 @@ def _column_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     preferred = _string_list(req.get("preferred_selected_columns"))
     plan, llm_info, llm_warnings = _llm_json(
         node_id="column_draft",
-        system=(
-            "You choose display columns for Flow FileBrowser preview. "
-            "Return JSON with selected_columns only. Use only provided columns. "
-            "Return an empty list when the user did not ask for a projection."
-        ),
+        system=COLUMN_DRAFT_SYSTEM_PROMPT,
         payload={
             "natural_language": prompt,
             "columns": columns[:300],

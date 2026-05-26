@@ -14,7 +14,11 @@ if str(ROOT / "backend") not in sys.path:
 
 from core import auth as auth_core  # noqa: E402
 from core import llm_adapter, utils  # noqa: E402
-from core.flowi_units.filebrowser_ai_sql_runtime import filebrowser_ai_sql_graph  # noqa: E402
+from core.flowi_units.filebrowser_ai_sql_runtime import (  # noqa: E402
+    COLUMN_DRAFT_SYSTEM_PROMPT,
+    FILTER_DRAFT_SYSTEM_PROMPT,
+    filebrowser_ai_sql_graph,
+)
 from routers import agent, filebrowser  # noqa: E402
 
 
@@ -95,7 +99,8 @@ def _patch_llm(monkeypatch, calls: list[dict], *, bad_filter: bool = False):
 def test_filebrowser_ai_sql_graph_shape_and_catalog(monkeypatch):
     monkeypatch.setattr(agent, "current_user", lambda _request: {"username": "tester", "role": "user"})
 
-    graph = filebrowser_ai_sql_graph()["nodes"]
+    graph_payload = filebrowser_ai_sql_graph()
+    graph = graph_payload["nodes"]
     assert [node["id"] for node in graph] == [
         "context_sample",
         "semantic_layer",
@@ -104,6 +109,18 @@ def test_filebrowser_ai_sql_graph_shape_and_catalog(monkeypatch):
         "merge",
         "preview_apply",
     ]
+    assert "state_design" in graph_payload
+    assert graph_payload["state_design"]["request"]["producer"] == "runtime"
+    assert graph_payload["state_design"]["filter"]["producer"] == "filter_draft"
+    assert graph_payload["state_design"]["columns_result"]["producer"] == "column_draft"
+    for node in graph:
+        assert node["persona"]
+        assert isinstance(node["state_io"]["reads"], list)
+        assert isinstance(node["state_io"]["writes"], list)
+        assert node["answer_attach_rule"]
+    prompts = {node["id"]: node["prompt"]["system"] for node in graph}
+    assert prompts["filter_draft"] == FILTER_DRAFT_SYSTEM_PROMPT
+    assert prompts["column_draft"] == COLUMN_DRAFT_SYSTEM_PROMPT
     catalog = agent.unit_ai_catalog(_Request())
     assert catalog["ok"] is True
     assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql"]
@@ -131,8 +148,13 @@ def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch,
     assert trace_ids[4:] == ["merge", "preview_apply"]
     assert len(calls) == 2
     systems = [call["system"] for call in calls]
+    assert FILTER_DRAFT_SYSTEM_PROMPT in systems
+    assert COLUMN_DRAFT_SYSTEM_PROMPT in systems
     assert any("read-only WHERE" in s for s in systems)
     assert any("display columns" in s for s in systems)
+    graph_prompts = {node["id"]: node["prompt"]["system"] for node in out["graph"]["nodes"]}
+    assert graph_prompts["filter_draft"] == FILTER_DRAFT_SYSTEM_PROMPT
+    assert graph_prompts["column_draft"] == COLUMN_DRAFT_SYSTEM_PROMPT
     assert all(call["payload"]["sample_rows"] == [] for call in calls)
     assert all(call["payload"]["sample_profile"]["sampling_policy"]["row_dump_in_prompt"] is False for call in calls)
     assert out["filter"]["sql"] == "root_lot_id = 'A1000'"

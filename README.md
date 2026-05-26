@@ -41,6 +41,7 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 현재 운영 상태:
 
 - Flow-i Home은 자연어 요청을 기능별 unit action으로 라우팅하고, Agent 탭은 LangGraph/LangSmith-ready runtime 설계와 시멘틱 해석을 보여준다.
+- Agent 단위기능 AI 탭은 FileBrowser AI SQL graph의 노드별 persona, system/cache prompt, State I/O, 공유 state 설계를 실행 전에도 보여주고, 실행 후 trace 결과와 같은 패널에서 비교한다.
 - FileBrowser는 대형 파일을 sample-first로 열고, AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.

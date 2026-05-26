@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) 단위기능 AI 노드 persona/state 설계 실행 전 가시화
 - (Codex) Agent 단위기능 AI 질문 이력 좌측 정렬과 작성자/시각 표시
 - (Codex) 단위기능 AI 질문 이력/LangGraph Node IO 배치와 AI SQL sample_profile 계약 정리
 - (Codex) Home Flow-i runtime graph를 Agent 탭에서 관찰 가능하게 연결

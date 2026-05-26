@@ -627,6 +627,25 @@ table.tbl tbody tr:hover {
   align-items: start;
 }
 
+.flow-agent-unit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.flow-agent-unit-grid > .flow-panel,
+.flow-agent-node-grid > * {
+  min-width: 0;
+}
+
+.flow-agent-node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
 .flow-toolbar {
   min-height: 34px;
   padding: 8px 16px;

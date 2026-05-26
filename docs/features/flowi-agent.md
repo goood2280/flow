@@ -41,6 +41,8 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 
 Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL 질문 이력을 두고, 각 이력에는 작성자와 실행 시각을 함께 표시한다. 하단은 `State` / `LangGraph + Node IO` / `Test prompt` 3칸으로 나눈다. 이력을 클릭하면 answer, SQL, warning, trace/action log 요약을 먼저 보여주고, `재현` 버튼을 눌렀을 때만 prompt와 대상 DB/product 또는 단일 파일을 채운다. `debug request`에서 실제 `/runtime/run` payload를 확인할 수 있다.
 
+단위기능 AI 탭은 실행 전에도 runtime graph endpoint의 `state_design`과 노드별 `persona`/`state_io`/공유 state/cache prompt 설계를 보여준다. 실행 후에는 같은 Node IO 패널에서 정적 설계와 실제 trace input/output, warning, duration을 함께 비교한다.
+
 `preview_apply` 노드는 read-only preview를 검증하지만 runtime trace와 질문 이력에는 preview row 전체를 싣지 않는다. Agent 화면의 preview table은 SQL `적용`을 사용자가 누른 뒤 FileBrowser preview endpoint를 다시 호출한 결과에서만 표시한다.
 
 ## Home Flow-i Runtime Tab

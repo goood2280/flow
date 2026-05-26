@@ -327,15 +327,6 @@ function FileBrowserAiSqlUnitPanel() {
   const [manualPreviewVisible, setManualPreviewVisible] = useState(false);
 
   useEffect(() => {
-    const trace = result?.trace || [];
-    if (!trace.length) {
-      setSelectedNodeId(null);
-      return;
-    }
-    setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
-  }, [result]);
-
-  useEffect(() => {
     setAppliedSql(result?.preview?.applied_sql || result?.merged?.display_sql || result?.merged?.sql || "");
   }, [result?.run_id]);
 
@@ -406,6 +397,19 @@ function FileBrowserAiSqlUnitPanel() {
   ), [baseFiles]);
   const unit = (catalog?.units || []).find((item) => item.key === "filebrowser_ai_sql");
   const activeGraph = result?.graph || graph || FALLBACK_GRAPH;
+  const graphNodes = activeGraph?.nodes || [];
+  const firstGraphNodeId = graphNodes[0]?.id || null;
+  const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
+
+  useEffect(() => {
+    const traceRows = result?.trace || [];
+    if (traceRows.length) setSelectedNodeId(traceRows[traceRows.length - 1]?.node_id || null);
+  }, [result?.run_id]);
+
+  useEffect(() => {
+    if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
+  }, [selectedNodeId, firstGraphNodeId]);
+
   const canRun = prompt.trim() && (
     targetMode === "db_product" ? (root && product) : file.trim()
   );
@@ -515,20 +519,38 @@ function FileBrowserAiSqlUnitPanel() {
   };
 
   const trace = result?.trace || [];
-  const selectedIdx = selectedNodeId
-    ? trace.findIndex((row) => row.node_id === selectedNodeId)
+  const selectedIdx = currentSelectedNodeId
+    ? trace.findIndex((row) => row.node_id === currentSelectedNodeId)
     : -1;
-  const selectedNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedTraceNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedGraphNode = graphNodes.find((node) => node.id === currentSelectedNodeId) || graphNodes[0] || null;
+  const selectedNode = selectedTraceNode
+    ? {
+      ...selectedGraphNode,
+      ...selectedTraceNode,
+      id: selectedGraphNode?.id || selectedTraceNode.node_id,
+      node_id: selectedTraceNode.node_id || selectedGraphNode?.id,
+      persona: selectedGraphNode?.persona || selectedTraceNode.persona || "",
+      prompt: selectedGraphNode?.prompt || selectedTraceNode.prompt || {},
+      state_io: selectedGraphNode?.state_io || selectedTraceNode.state_io || {},
+      reads: selectedGraphNode?.reads || selectedTraceNode.reads || [],
+      writes: selectedGraphNode?.writes || selectedTraceNode.writes || [],
+      shared_state: selectedGraphNode?.shared_state || selectedTraceNode.shared_state || [],
+      answer_attach_rule: selectedGraphNode?.answer_attach_rule || selectedTraceNode.answer_attach_rule || "",
+    }
+    : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
   const accumulatedState = useMemo(
     () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined),
     [result, lastRequest, selectedIdx]
   );
+  const stateDesign = activeGraph?.state_design || {};
+  const stateValue = trace.length ? accumulatedState : stateDesign;
 
-  const stateSubtitle = selectedNode
-    ? `up to ${selectedNode.label || selectedNode.node_id}`
-    : (trace.length ? "final state" : "empty");
+  const stateSubtitle = selectedTraceNode
+    ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}`
+    : (trace.length ? "final state" : "state_design");
   const graphSubtitle = trace.length
-    ? `${trace.length}/${(activeGraph?.nodes || []).length} nodes · click to inspect`
+    ? `${trace.length}/${graphNodes.length} nodes · click to inspect`
     : "context_sample → semantic_layer → filter_draft → column_draft → merge → preview_apply";
 
   const uiMode = targetMode === "db_product" ? "db" : "file";
@@ -571,7 +593,13 @@ function FileBrowserAiSqlUnitPanel() {
       ? `${item?.root || "-"} / ${item?.product || "-"}`
       : (item?.file || "-");
   };
-  const selectedNodeOutput = compactRowsPayload(selectedNode?.output);
+  const selectedNodeOutput = compactRowsPayload(selectedTraceNode?.output);
+  const selectedPromptSystem = selectedNode?.prompt?.system || selectedTraceNode?.output?.llm?.system || "";
+  const selectedPromptMode = selectedNode?.prompt?.mode || (selectedTraceNode?.output?.llm ? "llm_json" : "deterministic");
+  const selectedStateIo = selectedNode?.state_io || {
+    reads: selectedNode?.reads || [],
+    writes: selectedNode?.writes || [],
+  };
   const segBtnStyle = (active) => ({
     flex: 1,
     padding: "10px 12px",
@@ -697,50 +725,78 @@ function FileBrowserAiSqlUnitPanel() {
         </div>
       </Panel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr) 360px", gap: 10, alignItems: "start" }}>
+      <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
-          {trace.length ? (
-            <JsonBlock value={accumulatedState} maxHeight={620} />
-          ) : (
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", padding: 8 }}>
-              아직 실행 결과 없음. 우측에서 prompt를 입력하고 [실행] 후 state가 누적됩니다.
-            </div>
-          )}
+          <div style={{ display: "grid", gap: 8 }}>
+            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+            {trace.length && Object.keys(stateDesign).length ? (
+              <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
+                  state_design
+                </summary>
+                <JsonBlock value={stateDesign} maxHeight={220} />
+              </details>
+            ) : null}
+          </div>
         </Panel>
 
         <Panel title="LangGraph" subtitle={graphSubtitle}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) minmax(260px, 360px)", gap: 10, alignItems: "start" }}>
-            <RuntimeGraph graph={activeGraph} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+          <div className="flow-agent-node-grid">
+            <RuntimeGraph graph={activeGraph} selectedId={currentSelectedNodeId} onSelect={setSelectedNodeId} />
             <div style={{ display: "grid", gap: 8 }}>
               {selectedNode ? (
                 <>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <strong style={{ fontSize: 13 }}>{selectedNode.label || selectedNode.node_id}</strong>
-                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status}</Pill>
-                    <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedNode.duration_ms || 0} ms</span>
+                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
+                    {selectedTraceNode ? (
+                      <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span>
+                    ) : null}
                   </div>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
-                  {(selectedNode.warnings || []).length ? (
-                    <Banner tone="warn">{(selectedNode.warnings || []).join(" / ")}</Banner>
+                  {(selectedTraceNode?.warnings || []).length ? (
+                    <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
-                  {selectedNode.output?.llm?.system ? (
-                    <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                      <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
-                        system prompt · llm={selectedNode.output.llm?.used ? "used" : (selectedNode.output.llm?.available ? "available" : "off")}
-                      </summary>
-                      <pre style={{ margin: 0, padding: 8, fontSize: 12, lineHeight: 1.45, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 180, overflow: "auto" }}>
-                        {selectedNode.output.llm.system}
-                      </pre>
-                    </details>
-                  ) : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>input_summary</div>
-                  <JsonBlock value={selectedNode.input_summary} maxHeight={130} />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>output</div>
-                  <JsonBlock value={selectedNodeOutput} maxHeight={230} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                  <JsonBlock
+                    value={{
+                      persona: selectedNode.persona || "",
+                      prompt: {
+                        mode: selectedPromptMode,
+                        system: selectedPromptSystem,
+                      },
+                      answer_attach_rule: selectedNode.answer_attach_rule || "",
+                    }}
+                    maxHeight={selectedPromptSystem ? 220 : 140}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                  <JsonBlock
+                    value={{
+                      reads: selectedStateIo.reads || selectedNode.reads || [],
+                      writes: selectedStateIo.writes || selectedNode.writes || [],
+                    }}
+                    maxHeight={150}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
+                  <JsonBlock
+                    value={selectedTraceNode ? {
+                      status: selectedTraceNode.status,
+                      input_summary: selectedTraceNode.input_summary || {},
+                      output: selectedNodeOutput || {},
+                      duration_ms: selectedTraceNode.duration_ms || 0,
+                    } : {
+                      status: selectedNode.status || "pending",
+                      input_summary: {},
+                      output: {},
+                    }}
+                    maxHeight={230}
+                  />
                 </>
               ) : (
                 <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                  실행 후 그래프 노드를 클릭하면 해당 시점의 input / output 스냅샷을 볼 수 있습니다.
+                  노드 정보 없음
                 </div>
               )}
             </div>

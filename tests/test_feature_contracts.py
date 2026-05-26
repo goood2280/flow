@@ -78,11 +78,21 @@ def test_home_flowi_empty_chat_greeting_copy():
 
 def test_agent_page_exposes_unit_ai_and_llm_settings():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
+    css = (ROOT / "frontend" / "src" / "global.css").read_text(encoding="utf-8")
     assert "에이전트" in ui
     assert "단위기능 AI" in ui
     assert "FileBrowser AI SQL" in ui
     assert "LLM 설정" in ui
     assert "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run" in ui
+    assert "state_design" in ui
+    assert "Persona" in ui
+    assert "State I/O" in ui
+    assert "공유 state" in ui
+    assert "실행 결과" in ui
+    assert "flow-agent-unit-grid" in ui
+    assert "flow-agent-node-grid" in ui
+    assert ".flow-agent-unit-grid" in css
+    assert "repeat(auto-fit" in css
     assert "LlmTab" in ui
     assert "/api/agent/runtime" not in ui
 
