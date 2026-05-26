@@ -1097,6 +1097,56 @@ export default function My_FileBrowser({user,onNavigate}){
     const body=a.function==="count"&&!a.column?"rows":a.column;
     return `${a.function}(${body})${a.group_by.length?` by ${a.group_by.join(", ")}`:""}`;
   };
+  const currentColumns=()=>{
+    const cols=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
+    (remoteCols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!cols.includes(text))cols.push(text);});
+    return cols;
+  };
+  const splitDisplaySql=(value,columns=currentColumns())=>{
+    const text=String(value||"").trim();
+    const orderMatch=text.match(/^(.*?)\s+ORDER\s+BY\s+(`?[A-Za-z_][A-Za-z0-9_]*`?|"[A-Za-z_][A-Za-z0-9_]*")\s+(ASC|DESC)(?:\s+NULLS\s+(FIRST|LAST))?\s*$/i);
+    const body=orderMatch?String(orderMatch[1]||"").trim():text;
+    const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
+    let sortSpec=null;
+    if(orderMatch){
+      const sortCol=String(orderMatch[2]||"").trim().replace(/^`|`$/g,"").replace(/^"|"$/g,"");
+      const hit=lookup.get(sortCol.toLowerCase());
+      if(hit)sortSpec={column:hit,direction:String(orderMatch[3]||"asc").toLowerCase(),nulls:String(orderMatch[4]||"last").toLowerCase()};
+    }
+    if(!/^select\b/i.test(body))return{whereSql:body,selectedColumns:[],sortSpec};
+    const match=body.match(/^\s*SELECT\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]*))?\s*$/i);
+    if(!match)return{whereSql:body,selectedColumns:[],sortSpec};
+    const rawCols=String(match[1]||"").trim();
+    const whereSql=String(match[2]||"").trim();
+    if(!rawCols||rawCols==="*")return{whereSql,selectedColumns:[],sortSpec};
+    const selected=[];
+    for(const part of rawCols.split(",")){
+      const token=part.trim().replace(/^`|`$/g,"").replace(/^"|"$/g,"");
+      if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(token))return{whereSql:body,selectedColumns:[],sortSpec};
+      const hit=lookup.get(token.toLowerCase());
+      if(!hit)return{whereSql:body,selectedColumns:[],sortSpec};
+      if(!selected.includes(hit))selected.push(hit);
+    }
+    return{whereSql,selectedColumns:selected,sortSpec};
+  };
+  const buildDisplaySql=(cols,whereSql,sortOverride=null)=>{
+    const selected=[];
+    (cols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!selected.includes(text))selected.push(text);});
+    const where=String(whereSql||"").trim();
+    let base="";
+    if(selected.length&&where)base=`SELECT ${selected.join(", ")} WHERE ${where}`;
+    else if(selected.length)base=`SELECT ${selected.join(", ")}`;
+    else base=where;
+    const s=cleanSortSpec(sortOverride);
+    if(s)base=`${base} ORDER BY ${s.column} ${s.direction.toUpperCase()}${s.nulls==="first"?" NULLS FIRST":""}`.trim();
+    return base;
+  };
+  const setSqlFromInput=(value)=>{
+    const parsed=splitDisplaySql(value);
+    setSql(value);
+    setSelectedCols(parsed.selectedColumns);
+    setSortSpec(null);
+  };
 
   const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
@@ -1182,7 +1232,7 @@ export default function My_FileBrowser({user,onNavigate}){
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/view",params);
-    sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+    sf(url).then(d=>{setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
   const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
@@ -1194,15 +1244,17 @@ export default function My_FileBrowser({user,onNavigate}){
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/root-parquet-view",params);
-    sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+    sf(url).then(d=>{setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
   const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined,aggregateOverride=undefined)=>{
     const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
-    const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:selectedCols;
+    const parsedSql=splitDisplaySql(activeSql);
+    const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:parsedSql.selectedColumns;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
+    setSelectedCols(activeSelectedCols);
     if(mode==="base"&&isBaseEditing){
       setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
       return;
@@ -1217,7 +1269,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
         select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)});
-      sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      sf(url).then(d=>{setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
   };
@@ -1245,15 +1297,14 @@ export default function My_FileBrowser({user,onNavigate}){
       const d=await sf(API+"/sql/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       setAiSqlResult(d);
       if(d.ok&&(typeof d.sql==="string")){
-        const nextSql=d.sql||"";
+        const nextSql=d.display_sql||d.sql||"";
         const nextSelectedCols=Array.isArray(d.selected_columns)?d.selected_columns.map(c=>String(c||"")).filter(Boolean):[];
-        const nextSort=cleanSortSpec(d.sort);
         const nextAggregate=cleanAggregateSpec(d.aggregate);
         setSql(nextSql);
         setSelectedCols(nextSelectedCols);
-        setSortSpec(nextSort);
+        setSortSpec(null);
         setAggregateSpec(nextAggregate);
-        applySql(nextSql,nextSelectedCols,nextSort,nextAggregate);
+        applySql(nextSql,nextSelectedCols,null,nextAggregate);
         toast.ok("AI SQL 초안으로 조회했습니다.");
       }else{
         toast.warn((d.warnings||[])[0]||"AI SQL 초안 생성 실패");
@@ -1278,7 +1329,7 @@ export default function My_FileBrowser({user,onNavigate}){
         rating:ratingKey,
         reason:reasonOverride!==undefined?reasonOverride:aiSqlFeedbackReason,
         natural_language:aiSqlPrompt,
-        sql:payloadOverride.sql!==undefined?payloadOverride.sql:(aiSqlResult.sql||sql||""),
+        sql:payloadOverride.sql!==undefined?payloadOverride.sql:(aiSqlResult.display_sql||aiSqlResult.sql||sql||""),
         sort:payloadOverride.sort!==undefined?(cleanSortSpec(payloadOverride.sort)||{}):(cleanSortSpec(aiSqlResult.sort)||sortSpec||{}),
         aggregate:payloadOverride.aggregate!==undefined?(cleanAggregateSpec(payloadOverride.aggregate)||{}):(cleanAggregateSpec(aiSqlResult.aggregate)||aggregateSpec||{}),
         selected_columns:Array.isArray(payloadOverride.selected_columns)?payloadOverride.selected_columns:(Array.isArray(aiSqlResult.selected_columns)?aiSqlResult.selected_columns:selectedCols),
@@ -1476,37 +1527,23 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   const toggleCol=(col)=>{
-    setSelectedCols(prev=>{
-      const next=prev.includes(col)?prev.filter(c=>c!==col):[...prev,col];
-      return next;
-    });
+    const parsed=splitDisplaySql(sql);
+    const next=parsed.selectedColumns.includes(col)
+      ? parsed.selectedColumns.filter(c=>c!==col)
+      : [...parsed.selectedColumns,col];
+    const nextSql=buildDisplaySql(next,parsed.whereSql,parsed.sortSpec);
+    setSql(nextSql);
+    setSelectedCols(next);
+    applySql(nextSql,next);
   };
-
-  const reloadWithCols=(cols)=>{
-    // v8.4.4: Base 모드도 select_cols 적용되도록 분기 추가
-    if(mode==="base"&&isBaseEditing){
-      setError("편집 모드에서는 컬럼 선택이 비활성됩니다.");
-      return;
-    }
-    if(mode==="rootpq"&&selRootPq){loadRootPqView(selRootPq,sql,cols,{full:true,page:0});}
-    else if(mode==="base"&&selBaseFile){
-      if(baseRaw)return; // json/md 는 컬럼 선택 불가 — baseRaw 상태로 판단
-      setLoading(true);setError("");setTab("data");
-      setPage(0);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
-        select_cols:cols.length?cols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
-      sf(url).then(d=>{setSelectedCols(cols.length?selectedColsFromResponse(d,cols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
-    }
-    else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols,{full:true,page:0});}
-  };
-  const applySelectedCols=()=>reloadWithCols(selectedCols);
-  const clearSelectedCols=()=>{setSelectedCols([]);reloadWithCols([]);};
 
   const insertColToSql=(col)=>{
-    setSql(prev=>{
-      if(!prev.trim())return col+" == ''";
-      return prev+" & ("+col+" == '')";
-    });
+    const parsed=splitDisplaySql(sql);
+    const clause=col+" == ''";
+    const nextWhere=parsed.whereSql?parsed.whereSql+" & ("+clause+")":clause;
+    const nextSql=buildDisplaySql(parsed.selectedColumns,nextWhere,parsed.sortSpec);
+    setSql(nextSql);
+    setSelectedCols(parsed.selectedColumns);
     setTab("data");
   };
 
@@ -1569,9 +1606,6 @@ export default function My_FileBrowser({user,onNavigate}){
     ?"전체 표시"
     :(activeQueryMode?"검색 결과":`예시 ${activePreviewLimit}행`);
 
-  const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:14,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
-  const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
-  const chipInactive={...chipS,background:"var(--bg-hover)",color:"var(--text-secondary)"};
   const sidebarText={flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"};
   const sidebarMeta={fontSize:11,color:FB_MUTED,flexShrink:0,maxWidth:82,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"};
   const sidebarRowBase={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden"};
@@ -1735,7 +1769,7 @@ export default function My_FileBrowser({user,onNavigate}){
         {/* SQL Bar */}
         <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",gap:8,alignItems:"center"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>SQL:</span>
-          <input value={sql} onChange={e=>setSql(e.target.value)} placeholder="예: PRODUCT LIKE '%ABC%' 또는 col == 'value'"
+          <input value={sql} onChange={e=>setSqlFromInput(e.target.value)} placeholder="예: SELECT lot_id, wafer_id WHERE product LIKE '%ABC%' ORDER BY tkout_time DESC"
             disabled={mode==="base"&&isBaseEditing}
             style={{flex:1,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
             onKeyDown={e=>e.key==="Enter"&&applySql()}/>
@@ -1746,37 +1780,26 @@ export default function My_FileBrowser({user,onNavigate}){
           {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
         </div>
-        {sortSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>SORT:</span>
-          <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{sortLabel(sortSpec)}</span>
-          <button onClick={()=>{setSortSpec(null);applySql(sql,selectedCols,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
-        </div>}
         {aggregateSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>AGG:</span>
           <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{aggregateLabel(aggregateSpec)}</span>
           <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
         </div>}
-
-        {/* Selected columns chips */}
-        {!isBaseEditing&&selectedCols.length>0&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-          <span style={{fontSize:14,color:"var(--text-secondary)",fontWeight:600,flexShrink:0}}>SELECT:</span>
-          {selectedCols.map(c=><span key={c} style={chipActive} onClick={()=>toggleCol(c)}>{c} ×</span>)}
-          <button onClick={applySelectedCols} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>적용</button>
-          <button onClick={clearSelectedCols} style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>초기화</button>
-        </div>}
-
         {/* SQL Guide */}
         <div style={{padding:"0 16px"}}>
           <div onClick={()=>setShowGuide(!showGuide)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"4px 0"}}>
             {showGuide?"▼":"▶"} SQL 가이드</div>
           {showGuide&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"8px 12px",marginBottom:8,border:"1px solid var(--border)",fontSize:14,fontFamily:"monospace",lineHeight:1.8,color:"var(--text-secondary)"}}>
-            <div>col_name == 'value' <span style={{color:"var(--accent)"}}>— 같음</span></div>
-            <div>col_name LIKE '%pattern%' <span style={{color:"var(--accent)"}}>— 포함 (SQL LIKE)</span></div>
-            <div>col_name NOT LIKE '%XX%' <span style={{color:"var(--accent)"}}>— 포함하지 않음</span></div>
-            <div>(col_a &gt; 1) & (col_b == 'X') <span style={{color:"var(--accent)"}}>— AND</span></div>
-            <div>col_name.is_in(['A','B','C']) <span style={{color:"var(--accent)"}}>— IN 리스트</span></div>
-            <div>col_name.is_not_null() <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
-            <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 열 클릭 → SQL 삽입 / 체크 → 열 선택 보기</div>
+            <div>SELECT lot_id, wafer_id WHERE root_lot_id = 'A1000' <span style={{color:"var(--accent)"}}>— 표시 열 + 조건</span></div>
+            <div>SELECT lot_id, wafer_id WHERE item_id = 'IOFF' ORDER BY value DESC <span style={{color:"var(--accent)"}}>— 표시 열 + 조건 + 정렬</span></div>
+            <div>root_lot_id = 'A1000' <span style={{color:"var(--accent)"}}>— 조건만</span></div>
+            <div>lot_id LIKE '%A1000%' <span style={{color:"var(--accent)"}}>— 포함</span></div>
+            <div>step_id NOT LIKE '%TEST%' <span style={{color:"var(--accent)"}}>— 포함하지 않음</span></div>
+            <div>wafer_id = 3 AND item_id = 'IOFF' <span style={{color:"var(--accent)"}}>— AND</span></div>
+            <div>item_id IN ('IOFF', 'ION') <span style={{color:"var(--accent)"}}>— IN 리스트</span></div>
+            <div>value BETWEEN 0.1 AND 0.9 <span style={{color:"var(--accent)"}}>— 범위</span></div>
+            <div>tkout_time IS NOT NULL <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
+            <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, + WHERE → 조건 템플릿 삽입</div>
           </div>}
         </div>
 
@@ -2037,7 +2060,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   {selectedCols.length>0&&<span style={{fontSize:14,color:"var(--accent)",fontWeight:600}}>{selectedCols.length}개 선택됨</span>}
                 </div>
               <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,padding:"4px 0",lineHeight:1.6}}>
-                클릭 → SQL 필터에 추가 | ☑ 체크 → 해당 열만 선택해서 보기
+                컬럼명 클릭 → SELECT 토글 후 바로 조회 | + WHERE → 조건 템플릿 삽입
                 {data.all_columns_truncated&&<span style={{color:"var(--accent)"}}> | schema {data.schema_columns_returned}/{data.total_cols}열 표시{remoteColsLoading?" · 검색 중":""}</span>}
               </div>
               <div style={{maxHeight:"calc(100vh - 340px)",overflow:"auto"}}>
@@ -2045,27 +2068,17 @@ export default function My_FileBrowser({user,onNavigate}){
                   const isSelected=selectedCols.includes(c);
                   return(
                   <div key={i} style={{display:"flex",alignItems:"center",padding:"5px 12px",borderBottom:"1px solid var(--border)",fontSize:14,gap:8}}>
-                    {/* Checkbox for column selection */}
+                    {/* Checkbox mirrors the SELECT clause for keyboard-friendly toggling. */}
                     <input type="checkbox" checked={isSelected} onChange={()=>toggleCol(c)}
                       style={{width:14,height:14,accentColor:"var(--accent)",cursor:"pointer",flexShrink:0}}/>
-                    {/* Column name - click to insert into SQL */}
-                    <span onClick={()=>insertColToSql(c)} style={{flex:1,cursor:"pointer",fontWeight:isSelected?600:500,color:isSelected?"var(--accent)":"var(--text-primary)"}} title={"클릭하면 SQL 필터에 추가됩니다"}>
+                    {/* Column name toggles SELECT projection. */}
+                    <span onClick={()=>toggleCol(c)} style={{flex:1,cursor:"pointer",fontWeight:isSelected?600:500,color:isSelected?"var(--accent)":"var(--text-primary)"}} title={"클릭하면 SELECT 절에 추가/제거됩니다"}>
                       {c}
                     </span>
                     {data.dtypes&&<span style={{fontSize:14,padding:"1px 6px",borderRadius:3,background:"var(--bg-tertiary)",color:"var(--accent)",flexShrink:0}}>{data.dtypes[c]}</span>}
-                    <span onClick={()=>insertColToSql(c)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"2px 6px",borderRadius:3,background:"var(--accent-glow)",flexShrink:0}} title="SQL 필터에 추가">+ SQL</span>
+                    <span onClick={()=>insertColToSql(c)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"2px 6px",borderRadius:3,background:"var(--accent-glow)",flexShrink:0}} title="WHERE 조건 템플릿 추가">+ WHERE</span>
                   </div>);})}
               </div>
-              {selectedCols.length>0&&<div style={{marginTop:12,padding:"10px 12px",background:"var(--bg-card)",borderRadius:8,border:"1px solid var(--border)"}}>
-                <div style={{fontSize:14,fontWeight:600,color:"var(--accent)",marginBottom:6}}>선택된 컬럼 ({selectedCols.length})</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>
-                  {selectedCols.map(c=><span key={c} style={chipActive} onClick={()=>toggleCol(c)}>{c} ×</span>)}
-                </div>
-                <div style={{display:"flex",gap:6}}>
-                  <button onClick={applySelectedCols} style={{padding:"6px 16px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>선택 적용</button>
-                  <button onClick={clearSelectedCols} style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>모두 해제</button>
-                </div>
-              </div>}
             </div>}
           </>}
         </div>
@@ -2077,7 +2090,7 @@ export default function My_FileBrowser({user,onNavigate}){
               placeholder="예: PRODA 제품에서 wafer 21이고 step이 ETCH인 행"
               style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"8px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"inherit",lineHeight:1.45,outline:"none"}}/>
             <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"space-between",flexWrap:"wrap"}}>
-              <span style={{fontSize:12,color:"var(--text-secondary)"}}>작성하면 SQL과 선택 컬럼을 반영하고 바로 조회합니다.</span>
+              <span style={{fontSize:12,color:"var(--text-secondary)"}}>작성하면 SELECT 포함 SQL을 반영하고 바로 조회합니다.</span>
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>setAiSqlOpen(false)} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>닫기</button>
                 <button onClick={draftAiSql} disabled={aiSqlBusy} style={{padding:"7px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:aiSqlBusy?"wait":"pointer",opacity:aiSqlBusy?0.6:1}}>{aiSqlBusy?"작성 중":"작성"}</button>
@@ -2086,19 +2099,20 @@ export default function My_FileBrowser({user,onNavigate}){
             {aiSqlResult&&<div style={{display:"grid",gap:5,padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",fontSize:12,fontFamily:"monospace",color:aiSqlResult.ok===false?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>
               <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false · draft={aiSqlResult.draft_id||"-"}</span>
               {aiSqlResult.feedback_context_used?<span>feedback: like {aiSqlResult.feedback_context?.positive||0} · dislike {aiSqlResult.feedback_context?.negative||0}</span>:null}
-              {cleanSortSpec(aiSqlResult.sort)?<span>sort: {sortLabel(aiSqlResult.sort)}</span>:null}
               {cleanAggregateSpec(aiSqlResult.aggregate)?<span>aggregate: {aggregateLabel(aiSqlResult.aggregate)}</span>:null}
-              {aiSqlResult.selected_columns?.length?<span>selected: {aiSqlResult.selected_columns.join(", ")}</span>:null}
+              {aiSqlResult.display_sql?<span style={{color:"var(--accent)"}}>display_sql: {aiSqlResult.display_sql}</span>:null}
+              {aiSqlResult.where_sql?<span>where_sql: {aiSqlResult.where_sql}</span>:null}
+              {aiSqlResult.selected_columns?.length?<span>selected_columns: {aiSqlResult.selected_columns.join(", ")}</span>:null}
               {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
               {aiSqlResult.resolved_columns?.length?<span>resolved: {aiSqlResult.resolved_columns.join(", ")}</span>:null}
               {aiSqlResult.unknown_column_terms?.length?<span style={{color:FB_BAD.fg}}>unknown: {aiSqlResult.unknown_column_terms.join(", ")}</span>:null}
               {aiSqlResult.resolved_values?.length?<span>values: {aiSqlResult.resolved_values.join(", ")}</span>:null}
               {aiSqlResult.value_terms?.length?<span>value terms: {aiSqlResult.value_terms.join(", ")}</span>:null}
-              {aiSqlResult.sql&&<span style={{color:"var(--accent)"}}>{aiSqlResult.sql}</span>}
+              {aiSqlResult.sql&&<span>sql: {aiSqlResult.sql}</span>}
               {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
               {Array.isArray(aiSqlResult.alternatives)&&aiSqlResult.alternatives.length>0&&<div style={{display:"grid",gap:4,marginTop:4}}>
-                {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const nextAggregate=cleanAggregateSpec(alt.aggregate);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];setSql(alt.sql||"");setSelectedCols(altCols);setSortSpec(nextSort);setAggregateSpec(nextAggregate);applySql(alt.sql||"",altCols,nextSort,nextAggregate);submitAiSqlFeedback("up","alternative "+alt.key,{sql:alt.sql||"",sort:nextSort||{},aggregate:nextAggregate||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
-                  {alt.key}안 {alt.label}: {(alt.sql||"(no filter)")}{cleanSortSpec(alt.sort)?` · ${sortLabel(alt.sort)}`:""}{cleanAggregateSpec(alt.aggregate)?` · ${aggregateLabel(alt.aggregate)}`:""}
+                {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const nextAggregate=cleanAggregateSpec(alt.aggregate);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];const altSql=alt.display_sql||buildDisplaySql(altCols,alt.where_sql||alt.sql||"",nextSort);setSql(altSql);setSelectedCols(altCols);setSortSpec(null);setAggregateSpec(nextAggregate);applySql(altSql,altCols,null,nextAggregate);submitAiSqlFeedback("up","alternative "+alt.key,{sql:altSql,sort:nextSort||{},aggregate:nextAggregate||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                  {alt.key}안 {alt.label}: {(alt.display_sql||alt.sql||"(no filter)")}{cleanAggregateSpec(alt.aggregate)?` · ${aggregateLabel(alt.aggregate)}`:""}
                 </button>)}
               </div>}
               <div style={{display:"flex",alignItems:"center",gap:6,marginTop:5,fontFamily:"inherit",flexWrap:"wrap"}}>

@@ -14,7 +14,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - 일반 사용자의 업무 화면 상태 변경
 - raw DB 파일 임의 수정
 - 사용자 대신 issue/inform 업무를 생성하는 기능
-- **캐시 운영 패널** — Admin은 SplitTable 매칭 캐시나 Tracker Analysis ET 캐시를 소유하지 않는다. FileBrowser가 LOT 진행 최신 캐시의 상태/수동 갱신 진입점을 제공한다.
+- **캐시 운영 패널** — Admin은 SplitTable 매칭 캐시나 Tracker Analysis 캐시를 소유하지 않는다. FileBrowser가 LOT 진행 최신 캐시의 상태/수동 갱신 진입점을 제공한다.
 
 ## Code Entrypoints
 
@@ -33,8 +33,8 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - 운영 설정은 사용자 기능과 섞지 않는다.
 - 변경 전후 진단과 rollback 후보를 보여준다.
 - root/path 변경은 `docs/SOFT_LANDING_INTERNAL.md`와 preflight 기준을 따른다.
-- Page manager 위임 키는 canonical page id만 저장한다: `filebrowser`, `dashboard`, `splittable`, `tracker`, `inform`, `meeting`, `calendar`, `tablemap`, `ettime`, `waferlayout`, `groups`, `messages`, `devguide`, `diagnosis`.
-- Legacy alias는 읽을 때만 흡수한다: `informs -> inform`, `meetings -> meeting`, `wafer_map -> waferlayout`, `dbmap -> tablemap`.
+- Page manager 위임 키는 canonical page id만 저장한다: `filebrowser`, `dashboard`, `splittable`, `tracker`, `inform`, `meeting`, `calendar`, `tablemap`, `groups`, `messages`, `devguide`, `diagnosis`.
+- Legacy alias는 읽을 때만 흡수한다: `informs -> inform`, `meetings -> meeting`, `dbmap -> tablemap`.
 - Shared 설정, catalog, rulebook, cache, credential, wiki/schema write는 global admin 또는 해당 page manager 이상만 허용한다.
 - 비밀번호 reset/bulk-create API 응답과 audit log에는 임시/기본 비밀번호를 남기지 않는다.
 
@@ -47,7 +47,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 | SplitTable | `splittable` | source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh |
 | Inform | `inform` | config/modules, product catalog, product contacts |
 | Calendar | `calendar` | shared categories/settings |
-| Tracker | `tracker` | shared categories, scheduler, DB sources, ET lot cache |
+| Tracker | `tracker` | shared categories, scheduler, DB sources, lot progress cache |
 | TableMap | `tablemap` | DB map/table/product config writes |
 | Agent/Knowledge | `diagnosis` | wiki/schema shared writes and ontology rebuild/save |
 

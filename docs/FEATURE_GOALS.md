@@ -46,11 +46,11 @@
 추가 기준:
 - 이슈는 상태, priority, category, group visibility가 명확해야 한다.
 - category 지정은 필수이며 비어 있으면 저장/메일 전에 안내한다.
-- lot/wafer watch는 FAB/ET source 의미가 분리되어야 한다.
+- lot/wafer watch는 source 의미가 분리되어야 한다.
 - tracker 변경은 알림과 audit 후보가 된다.
 - 메일 설정은 lot/wafer 행이 아니라 이슈 단위로 관리한다.
-- Analysis는 ET DB에 연결되며 측정 상세는 `step_id` 아래 `step_seq(XXpt)` 단위로 보여준다.
-- 신규 ET 측정 알림은 step/seq 조건과 stable delay 설정을 분리해서 관리한다.
+- Analysis는 활성 데이터 소스와 연결되며 측정 상세는 source별 기준에 맞춰 보여준다.
+- 신규 측정 알림은 조건과 stable delay 설정을 분리해서 관리한다.
 
 ## Inform
 
@@ -81,28 +81,6 @@
 - calendar 자체 입력과 외부 push 항목의 출처를 구분한다.
 - 상태 변경은 원본 엔터티와 동기화되어야 한다.
 - 월 grid에서 TODAY와 동시편집 version lock 상태가 잘려 보이면 안 된다.
-
-## ET Report / ETTime
-
-목표: ET 측정 패키지, step_seq, reformatter index, 측정 시점을 lot 단위로 추적한다.
-
-추가 기준:
-- `request_id` 또는 measurement package 개념을 우선한다.
-- 단순 step_id만으로 ET를 해석하지 않는다.
-- 제품/lot 검색에서 출발하고 lot 선택 후 scoreboard와 측정 시간을 보여준다.
-- 측정량은 `seq1(60pt), seq2(20pt)`처럼 0pt를 제외한 실제 측정 step_seq별 point로 표시한다.
-- 제품 reformatter에 설정된 index는 index당 한 페이지로 Statistical Table, Box Table, WF Map, Trend, Radius Plot, Cumulative Plot을 제공한다.
-
-## WF Layout
-
-목표: wafer/shot/chip 좌표 기반으로 공간 패턴을 확인한다.
-
-추가 기준:
-- layout registry와 측정 데이터는 분리한다.
-- 좌표 변환은 명시적 mapping을 따른다.
-- WF 상단은 wafer/shot/chip 범위를 우선하고 TEG 전체 overlay는 표시하지 않는다.
-- TEG는 Shot Sample 안에서 선택/검색된 항목만 확인한다.
-- Chip View는 각 chip이 속한 shot을 표로 보여주고 CSV로 내려받을 수 있어야 한다.
 
 ## TableMap
 

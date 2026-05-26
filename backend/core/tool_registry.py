@@ -107,8 +107,6 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
         tags.append("splittable")
     if "calendar" in t or "일정" in t:
         tags.append("calendar")
-    if "ettime" in t or "et" in t:
-        tags.append("ettime")
     if "tablemap" in t:
         tags.append("tablemap")
     tags.append("unit_ai")
@@ -397,8 +395,6 @@ def _unit_ai_descriptions() -> dict[str, str]:
         "tablemap": "테이블 관계 그래프·join path 안내.",
         "diagnosis": "DIBL/VTH/SS/ION 등 반도체 분석·RCA 후보.",
         "calendar": "일정/캘린더/변경점 일정 조회.",
-        "ettime": "ET median/elapsed 측정 집계.",
-        "waferlayout": "Wafer/TEG/shot/die layout 시각화.",
     }
 
 

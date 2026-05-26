@@ -19,10 +19,8 @@ DEFAULT_HEAVY_PREFIXES = (
     "/api/dashboard",
     "/api/splittable",
     "/api/tracker",
-    "/api/ettime",
     "/api/llm/flowi",
     "/api/dbmap",
-    "/api/waferlayout",
 )
 
 DEFAULT_LIGHT_PATHS = (

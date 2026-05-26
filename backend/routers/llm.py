@@ -69,9 +69,7 @@ FLOWI_AGENT_GUIDE_FALLBACK = """# Flowi Agent Entrypoints
 - meeting: 회의, 미팅, 아젠다, 반복 회의
 - calendar: 일정, 캘린더, 변경점, schedule
 - splittable: SplitTable, plan, actual, KNOB, MASK, CUSTOM set
-- ettime: ET median, elapsed, step/item/wf별 측정
 - diagnosis: DIBL, VTH, SS, ION, IOFF, RCA, 원인 후보
-- waferlayout: TEG, shot, die, wafer layout, edge
 - tablemap: table map, relation, join path, 컬럼 관계
 - filebrowser: parquet, csv, 파일, schema, 컬럼, row 조회
 """
@@ -377,18 +375,6 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "prompt": "이번 변경 건을 캘린더에 넣기 위한 제목, 기간, 상태를 추천해줘.",
     },
     {
-        "key": "ettime",
-        "title": "ET 레포트",
-        "description": "fab_lot_id, step, item 기준 elapsed time과 wafer별 통계를 확인합니다.",
-        "prompt": "ET 레포트에서 root_lot/step/item 조건으로 먼저 봐야 할 값을 알려줘.",
-    },
-    {
-        "key": "waferlayout",
-        "title": "WF Layout",
-        "description": "제품별 wafer shot/chip/TEG 배치와 edge shot 후보를 검토합니다.",
-        "prompt": "WF Layout에서 내 제품의 layout 검토 포인트를 체크리스트로 만들어줘.",
-    },
-    {
         "key": "tablemap",
         "title": "테이블 맵",
         "description": "DB 테이블과 컬럼 관계를 그래프로 보고 연결 맥락을 확인합니다.",
@@ -423,8 +409,6 @@ FLOWI_REGISTERED_UNIT_ACTIONS = {
     "inform.thread.list",
     "tracker.lot.purpose",
     "diagnosis.rca.read",
-    "ettime.query",
-    "waferlayout.query",
     "tablemap.query",
     "flowi.feature.guidance",
     "flowi.general",
@@ -438,8 +422,6 @@ FLOWI_FEATURE_ALIASES = {
     "inform": ["inform", "인폼", "공유", "메일", "공지", "보고"],
     "meeting": ["meeting", "회의", "아젠다", "회의록", "action item", "액션아이템"],
     "calendar": ["calendar", "캘린더", "일정", "변경점", "change", "schedule"],
-    "ettime": ["et report", "ettime", "et 레포트", "et 리포트", "median", "wf별", "wafer별", "측정", "eta"],
-    "waferlayout": ["wafer layout", "wf layout", "layout", "레이아웃", "shot", "die", "teg"],
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
     "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
@@ -459,10 +441,11 @@ FLOWI_CORE_FEATURE_TERMS = {
     ),
 }
 FLOWI_DEFAULT_TABS = {
-    "filebrowser", "dashboard", "splittable", "ettime", "waferlayout",
+    "filebrowser", "dashboard", "splittable",
     "tracker", "inform", "meeting", "calendar", "diagnosis",
 }
-FLOWI_NEW_DEFAULT_TABS = {"tracker", "inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
+FLOWI_NEW_DEFAULT_TABS = {"tracker", "inform", "meeting", "calendar", "diagnosis"}
+FLOWI_ARCHIVED_TABS = {"ettime", "waferlayout"}
 FLOWI_ADMIN_ONLY_FEATURES = {"tablemap", "admin"}
 FLOWI_RESTRICTED_FEATURES = {"devguide": "devguide_allowed"}
 FLOWI_UNIT_ACTIONS = {
@@ -540,18 +523,6 @@ FLOWI_UNIT_ACTIONS = {
         "action": "open_calendar",
         "needs": ["event title", "date/range", "status/category"],
         "outputs": ["change event", "linked action state"],
-    },
-    "ettime": {
-        "intent": "et_wafer_median",
-        "action": "query_et",
-        "needs": ["product", "root_lot_id or lot_id", "step_id", "item_id"],
-        "outputs": ["wafer별 median/mean/count table"],
-    },
-    "waferlayout": {
-        "intent": "waferlayout_guidance",
-        "action": "open_waferlayout",
-        "needs": ["product", "layout name or shot/chip context"],
-        "outputs": ["wafer map", "edge shot/layout checks"],
     },
     "tablemap": {
         "intent": "tablemap_guidance",
@@ -936,6 +907,7 @@ def _tabs_for_user(username: str, role: str) -> set[str] | str:
     else:
         tabs = {t.strip() for t in raw.split(",") if t.strip()}
         tabs.update(FLOWI_NEW_DEFAULT_TABS)
+    tabs.difference_update(FLOWI_ARCHIVED_TABS)
     return tabs
 
 
@@ -1344,8 +1316,6 @@ def _matched_feature_entrypoints(
             score += 7 + (2 if has_create else 0)
         if key == "splittable" and any(t in prompt_u for t in ("KNOB", "MASK", "PLAN", "ACTUAL", "CUSTOM", "SPLITTABLE", "ML_TABLE")):
             score += 6
-        if key == "ettime" and (re.search(r"\bET\b", prompt_u) or any(t in prompt_l or t in text for t in ("elapsed", "median", "wf별", "wafer별", "측정시간"))):
-            score += 5
         if key == "filebrowser" and any(t in prompt_l or t in text for t in ("parquet", "csv", "파일", "컬럼", "schema", "스키마")):
             score += 5
         for alias in FLOWI_FEATURE_ALIASES.get(item["key"], []):
@@ -2611,16 +2581,6 @@ def _unit_feature_guidance(
     action = FLOWI_UNIT_ACTIONS.get(primary["key"], {})
     slots = _slot_summary(prompt, product)
     missing = []
-    if primary["key"] == "ettime":
-        if not slots.get("product"):
-            missing.append("product")
-        if not slots.get("lots"):
-            missing.append("root_lot_id/lot_id")
-    if primary["key"] == "ettime":
-        if not slots.get("steps"):
-            missing.append("step_id")
-        if not slots.get("terms"):
-            missing.append("item_id")
     rows = [
         {"field": "feature", "value": primary["title"]},
         {"field": "action", "value": action.get("action", primary["key"])},
@@ -8487,10 +8447,6 @@ def _flowi_driver_contract_action(action: str = "", intent: str = "", feature: s
         return "meeting.ask.llm"
     if name == "run_semiconductor_diagnosis":
         return "diagnosis.rca.read"
-    if feature == "ettime":
-        return "ettime.query"
-    if feature == "waferlayout":
-        return "waferlayout.query"
     if feature == "tablemap":
         return "tablemap.query"
     if feature in {"filebrowser", "splittable", "inform"} and intent:
@@ -13241,160 +13197,20 @@ def _et_product_or_candidate(prompt: str, product: str, lots: list[str], intent:
 def _handle_et_report_freshness(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_et_report_freshness_prompt(prompt):
         return {"handled": False}
-    lots = _lot_tokens(prompt)
-    product_hint, candidate_tool = _et_product_or_candidate(prompt, product, lots, "et_report_freshness_lookup")
-    if candidate_tool:
-        return candidate_tool
-    files = _files_matching_prompt_terms(_et_files(product_hint), prompt, lots, product_hint)
-    if not files:
-        return {
-            "handled": True,
-            "intent": "et_report_freshness_lookup",
-            "answer": "ET Report 원천 parquet을 찾지 못했습니다. product 또는 DB root를 확인해주세요.",
-            "table": {"kind": "et_report_freshness", "title": "ET Report freshness", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "ET not found"}], "total": 0},
-        }
-    rows: list[dict[str, Any]] = []
-    aliases = _product_aliases(product_hint)
-    for fp in files[:120]:
-        rec = {
-            "source": _path_tail(fp),
-            "file_mtime": "",
-            "latest_data_time": "",
-            "row_count": 0,
-            "status": "ok",
-        }
-        try:
-            rec["file_mtime"] = _fmt_flowi_datetime(datetime.fromtimestamp(fp.stat().st_mtime))
-        except Exception:
-            pass
-        try:
-            lf = _scan_parquet([fp])
-            cols = _schema_names(lf)
-            product_col = _ci_col(cols, "product", "PRODUCT")
-            time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "updated_at", "UPDATED_AT", "measure_time", "MEASURE_TIME")
-            filters = []
-            if aliases and product_col:
-                filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
-            if lots:
-                lot_expr = _flowi_lot_root_expr(cols, lots)
-                if lot_expr is not None:
-                    filters.append(lot_expr)
-            for expr in filters:
-                lf = lf.filter(expr)
-            aggs = [pl.len().alias("row_count")]
-            if time_col:
-                aggs.append(pl.col(time_col).cast(_STR, strict=False).max().alias("latest_data_time"))
-            else:
-                aggs.append(pl.lit("").alias("latest_data_time"))
-            got = lf.select(aggs).collect().to_dicts()[0]
-            rec["row_count"] = int(got.get("row_count") or 0)
-            rec["latest_data_time"] = _text(got.get("latest_data_time"))
-            if not time_col:
-                rec["status"] = "time_column_not_found"
-        except Exception as e:
-            rec["status"] = f"scan_failed: {e}"
-        rows.append(rec)
-    rows.sort(key=lambda r: (r.get("latest_data_time") or "", r.get("file_mtime") or ""), reverse=True)
-    latest_file = rows[0] if rows else {}
-    data_latest = next((r for r in rows if r.get("latest_data_time")), latest_file)
-    answer = (
-        f"ET Report 최근 업데이트를 확인했습니다. 파일 기준 최신은 {latest_file.get('file_mtime') or '-'} "
-        f"({latest_file.get('source') or '-'}), 데이터 time 기준 최신은 {data_latest.get('latest_data_time') or '-'}입니다."
-    )
-    cols_out = ["source", "file_mtime", "latest_data_time", "row_count", "status"]
     return {
         "handled": True,
         "intent": "et_report_freshness_lookup",
-        "action": "query_et_report_freshness",
-        "answer": answer,
-        "table": {"kind": "et_report_freshness", "title": "ET Report freshness", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(80, max_rows * 6))]], "total": len(rows)},
-        "filters": {"product": product_hint, "lots": lots},
+        "answer": "ET Report 기능은 archive/agent_reset_2026_05_26 으로 이동되어 새로 설계할 예정입니다.",
     }
 
 
 def _handle_et_report_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_et_report_lookup_prompt(prompt):
         return {"handled": False}
-    lots = _lot_tokens(prompt)
-    product_hint, candidate_tool = _et_product_or_candidate(prompt, product, lots, "et_report_lookup")
-    if candidate_tool:
-        return candidate_tool
-    files = _files_matching_prompt_terms(_et_files(product_hint), prompt, lots, product_hint)
-    if not files:
-        return {"handled": True, "intent": "et_report_lookup", "answer": "ET Report 원천 parquet을 찾지 못했습니다."}
-    lf = _scan_parquet(files)
-    cols = _schema_names(lf)
-    product_col = _ci_col(cols, "product", "PRODUCT")
-    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
-    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
-    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
-    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
-    step_col = _ci_col(cols, "step_id", "STEP_ID")
-    item_col = _ci_col(cols, "item_id", "ITEM_ID")
-    value_col = _ci_col(cols, "value", "VALUE")
-    time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "measure_time", "MEASURE_TIME", "updated_at", "UPDATED_AT")
-    aliases = _product_aliases(product_hint)
-    filters = []
-    if aliases and product_col:
-        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
-    if lots:
-        lot_expr = _flowi_lot_root_expr(cols, lots)
-        if lot_expr is not None:
-            filters.append(lot_expr)
-    wafers = _wafer_tokens(prompt)
-    wf_expr = _wafer_match_expr(wafer_col, wafers)
-    if wf_expr is not None:
-        filters.append(wf_expr)
-    terms = _flowi_report_terms(prompt, lots, product_hint)
-    if terms and item_col:
-        matches = _match_values(_unique_strings(lf, item_col, limit=500), terms)
-        if matches:
-            filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(matches))
-    for expr in filters:
-        lf = lf.filter(expr)
-    exprs = [
-        pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(_core_product_name(product_hint)).alias("product"),
-        pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else (
-            pl.col(lot_col).cast(_STR, strict=False).str.slice(0, 5).alias("root_lot_id") if lot_col else (pl.col(fab_col).cast(_STR, strict=False).str.slice(0, 5).alias("root_lot_id") if fab_col else pl.lit("").alias("root_lot_id"))
-        ),
-        pl.col(step_col).cast(_STR, strict=False).alias("step_id") if step_col else pl.lit("").alias("step_id"),
-        pl.col(item_col).cast(_STR, strict=False).alias("item_id") if item_col else pl.lit("").alias("item_id"),
-        pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
-        pl.col(time_col).cast(_STR, strict=False).alias("latest_time") if time_col else pl.lit("").alias("latest_time"),
-    ]
-    if value_col:
-        exprs.append(pl.col(value_col).cast(pl.Float64, strict=False).alias("value"))
-    try:
-        scoped = lf.select(exprs)
-        group_cols = ["product", "root_lot_id", "step_id", "item_id", "wafer_id"]
-        aggs = [pl.len().alias("count"), pl.col("latest_time").max().alias("latest_time")]
-        if value_col:
-            aggs.extend([pl.col("value").median().alias("median"), pl.col("value").mean().alias("mean")])
-        out = scoped.group_by(group_cols).agg(aggs)
-        if "latest_time" in out.collect_schema().names():
-            out = out.sort("latest_time", descending=True)
-        df = out.limit(max(1, min(200, max_rows * 10))).collect()
-    except Exception as e:
-        return {"handled": True, "intent": "et_report_lookup", "answer": f"ET Report 조회 실패: {e}"}
-    rows = df.to_dicts()
-    for row in rows:
-        row["function_step"] = _function_step_label(row.get("product") or product_hint, row.get("step_id"))
-        row["median"] = _round4(row.get("median"))
-        row["mean"] = _round4(row.get("mean"))
-        row["count"] = int(row.get("count") or 0)
-    cols_out = ["product", "root_lot_id", "step_id", "function_step", "item_id", "wafer_id", "median", "mean", "count", "latest_time"]
-    answer = f"ET Report를 {len(rows)}개 그룹으로 조회했습니다."
-    if lots:
-        answer += f" lot/root 필터: {', '.join(lots)}."
-    if not rows:
-        answer = "조건에 맞는 ET Report row를 찾지 못했습니다."
     return {
         "handled": True,
         "intent": "et_report_lookup",
-        "action": "query_et_report",
-        "answer": answer,
-        "table": {"kind": "et_report_lookup", "title": "ET Report", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
-        "filters": {"product": product_hint, "lots": lots, "wafers": wafers, "terms": terms},
+        "answer": "ET Report 기능은 archive/agent_reset_2026_05_26 으로 이동되어 새로 설계할 예정입니다.",
     }
 
 
@@ -13829,11 +13645,7 @@ def _teg_query_terms(prompt: str, product: str = "") -> list[str]:
 
 
 def _load_flowi_wafer_layout(product: str) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
-    from routers import waferlayout as waferlayout_router
-    layout = waferlayout_router._load_product_wafer_layout(product)
-    cfg = waferlayout_router._build_cfg(layout)
-    tegs = waferlayout_router._normalize_tegs(layout.get("teg_definitions") or layout.get("tegs") or [])
-    return layout, cfg, tegs
+    raise RuntimeError("WF Layout is archived for rebuild.")
 
 
 def _matching_tegs(tegs: list[dict[str, Any]], terms: list[str]) -> list[dict[str, Any]]:
@@ -13856,60 +13668,12 @@ def _is_teg_radius_prompt(prompt: str) -> bool:
 def _handle_teg_radius_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_teg_radius_prompt(prompt):
         return {"handled": False}
-    product_hint = _product_hint(prompt, product)
-    if not product_hint:
-        return {"handled": True, "intent": "teg_radius_lookup", "answer": "TEG 위치를 계산하려면 product가 필요합니다. 예: `PRODA AAA TEG radius 가장 먼 shot 보여줘`"}
-    try:
-        from routers import waferlayout as waferlayout_router
-        _layout, cfg, tegs = _load_flowi_wafer_layout(product_hint)
-        shots = waferlayout_router._collect_shots(cfg)
-    except Exception as e:
-        return {"handled": True, "intent": "teg_radius_lookup", "answer": f"Wafer layout 로드 실패: {e}"}
-    terms = _teg_query_terms(prompt, product_hint)
-    selected_tegs = _matching_tegs(tegs, terms)
-    if not selected_tegs:
-        return {"handled": True, "intent": "teg_radius_lookup", "answer": f"{product_hint} wafer layout에서 TEG 정의를 찾지 못했습니다."}
-    rows: list[dict[str, Any]] = []
-    for shot in shots:
-        for teg in selected_tegs:
-            x = float(shot.get("centerX") or 0) + float(teg.get("dx_mm") or 0)
-            y = float(shot.get("centerY") or 0) + float(teg.get("dy_mm") or 0)
-            try:
-                inside = waferlayout_router._in_wafer(x, y, cfg)
-            except Exception:
-                inside = True
-            if not inside:
-                continue
-            radius = math.hypot(x - float(cfg.get("wfCenterX") or 0), y - float(cfg.get("wfCenterY") or 0))
-            rows.append({
-                "product": product_hint,
-                "teg_id": teg.get("id") or "",
-                "teg_label": teg.get("label") or "",
-                "shot_x": shot.get("gridShotX"),
-                "shot_y": shot.get("gridShotY"),
-                "raw_shot_x": shot.get("shotX"),
-                "raw_shot_y": shot.get("shotY"),
-                "teg_x_mm": round(x, 4),
-                "teg_y_mm": round(y, 4),
-                "radius_mm": round(radius, 4),
-                "full_shot_inside": bool(shot.get("completely_inside")),
-            })
-    rows.sort(key=lambda r: float(r.get("radius_mm") or 0), reverse=True)
-    shown = rows[:max(1, min(80, max_rows * 6))]
-    cols_out = ["product", "teg_id", "teg_label", "shot_x", "shot_y", "raw_shot_x", "raw_shot_y", "teg_x_mm", "teg_y_mm", "radius_mm", "full_shot_inside"]
-    top = shown[0] if shown else {}
-    answer = (
-        f"{product_hint} {top.get('teg_label') or 'TEG'} 기준 풀맵 내 가장 먼 위치는 "
-        f"Shot({top.get('shot_x')},{top.get('shot_y')}) / radius {top.get('radius_mm')}mm 입니다."
-    ) if shown else f"{product_hint}에서 wafer 안에 들어오는 TEG shot을 찾지 못했습니다."
     return {
         "handled": True,
         "intent": "teg_radius_lookup",
-        "action": "query_teg_farthest_radius",
-        "answer": answer,
-        "table": {"kind": "teg_radius_lookup", "title": "TEG farthest radius", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in shown], "total": len(rows)},
-        "filters": {"product": product_hint, "teg_terms": terms, "teg_count": len(selected_tegs), "shot_count": len(shots)},
-        "feature": "waferlayout",
+        "action": "archived",
+        "answer": "WF Layout 기능은 archive/agent_reset_2026_05_26 으로 이동되어 새로 설계할 예정입니다.",
+        "feature": "archived",
     }
 
 
@@ -13922,39 +13686,12 @@ def _is_teg_position_prompt(prompt: str) -> bool:
 def _handle_teg_position_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_teg_position_prompt(prompt):
         return {"handled": False}
-    product_hint = _product_hint(prompt, product)
-    if not product_hint:
-        return {"handled": True, "intent": "teg_shot_position_lookup", "answer": "TEG Shot 내 위치를 보려면 product가 필요합니다. 예: `PRODA AAA TEG Shot내 위치 보여줘`"}
-    try:
-        layout, cfg, tegs = _load_flowi_wafer_layout(product_hint)
-    except Exception as e:
-        return {"handled": True, "intent": "teg_shot_position_lookup", "answer": f"Wafer layout 로드 실패: {e}"}
-    terms = _teg_query_terms(prompt, product_hint)
-    selected_tegs = _matching_tegs(tegs, terms)
-    rows = []
-    for teg in selected_tegs:
-        rows.append({
-            "product": product_hint,
-            "teg_id": teg.get("id") or "",
-            "teg_label": teg.get("label") or "",
-            "shot_local_x_mm": round(float(teg.get("dx_mm") or 0), 4),
-            "shot_local_y_mm": round(float(teg.get("dy_mm") or 0), 4),
-            "teg_size_x_mm": round(float(cfg.get("tegSizeX") or layout.get("teg_size_w_mm") or 0), 4),
-            "teg_size_y_mm": round(float(cfg.get("tegSizeY") or layout.get("teg_size_h_mm") or 0), 4),
-            "shot_size_x_mm": round(float(cfg.get("shotSizeX") or 0), 4),
-            "shot_size_y_mm": round(float(cfg.get("shotSizeY") or 0), 4),
-            "origin": "shot_center + dx/dy",
-        })
-    cols_out = ["product", "teg_id", "teg_label", "shot_local_x_mm", "shot_local_y_mm", "teg_size_x_mm", "teg_size_y_mm", "shot_size_x_mm", "shot_size_y_mm", "origin"]
-    answer = f"{product_hint} Shot 내 TEG 위치 {len(rows)}개를 정리했습니다." if rows else f"{product_hint} wafer layout에서 TEG 정의를 찾지 못했습니다."
     return {
         "handled": True,
         "intent": "teg_shot_position_lookup",
-        "action": "query_teg_shot_position",
-        "answer": answer,
-        "table": {"kind": "teg_shot_position", "title": "TEG position inside shot", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(80, max_rows * 6))]], "total": len(rows)},
-        "filters": {"product": product_hint, "teg_terms": terms},
-        "feature": "waferlayout",
+        "action": "archived",
+        "answer": "WF Layout 기능은 archive/agent_reset_2026_05_26 으로 이동되어 새로 설계할 예정입니다.",
+        "feature": "archived",
     }
 
 
@@ -16366,7 +16103,7 @@ def _flowi_filebrowser_sql_prompt(prompt: str) -> bool:
     )
 
 
-def _handle_filebrowser_sql_llm_draft(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+def _handle_filebrowser_sql_llm_draft(prompt: str, product: str, max_rows: int, username: str = "") -> dict[str, Any]:
     if not _flowi_filebrowser_sql_prompt(prompt):
         return {"handled": False}
     source_terms = _source_terms(prompt)
@@ -16465,6 +16202,49 @@ def _handle_filebrowser_sql_llm_draft(prompt: str, product: str, max_rows: int) 
         if draft.get("ok", True)
         else f"{source_type}/{product_hint or '-'} 기준 SQL 초안을 완성하지 못해 fallback 상태로 표시합니다."
     )
+    sql_draft_payload = {
+        "sql": sql,
+        "selected_columns": selected_columns,
+        "warnings": warnings,
+        "fallback": bool(draft.get("fallback")) or not bool(draft.get("llm", {}).get("used")),
+        "llm": draft.get("llm") or {},
+        "resolved_columns": draft.get("resolved_columns") or [],
+        "resolved_values": draft.get("resolved_values") or [],
+        "sample_profile": draft.get("sample_profile") or {},
+    }
+    try:
+        from routers import filebrowser as filebrowser_router
+        filebrowser_router._record_filebrowser_ai_sql_history(
+            username or "",
+            source="home_flowi_sql_draft",
+            request_payload={
+                "natural_language": prompt,
+                "scope": "db_product",
+                "root": source_type,
+                "product": product_hint,
+                "file": "",
+            },
+            result_payload={
+                "ok": bool(draft.get("ok", True)),
+                "answer": answer,
+                "sql": sql,
+                "where_sql": draft.get("where_sql") or sql,
+                "display_sql": draft.get("display_sql") or sql,
+                "sort": draft.get("sort") or {},
+                "aggregate": draft.get("aggregate") or {},
+                "selected_columns": selected_columns,
+                "warnings": warnings,
+                "preview": {
+                    "columns": selected_columns,
+                    "rows": rows,
+                    "total_rows": len(rows),
+                    "preview_capped": False,
+                },
+                "tool": {"sql_draft": sql_draft_payload},
+            },
+        )
+    except Exception:
+        logger.debug("home Flow-i SQL draft history append failed", exc_info=True)
     return {
         "handled": True,
         "intent": "filebrowser_sql_llm_draft",
@@ -16472,16 +16252,7 @@ def _handle_filebrowser_sql_llm_draft(prompt: str, product: str, max_rows: int) 
         "feature": "filebrowser",
         "answer": answer,
         "arguments": args,
-        "sql_draft": {
-            "sql": sql,
-            "selected_columns": selected_columns,
-            "warnings": warnings,
-            "fallback": bool(draft.get("fallback")) or not bool(draft.get("llm", {}).get("used")),
-            "llm": draft.get("llm") or {},
-            "resolved_columns": draft.get("resolved_columns") or [],
-            "resolved_values": draft.get("resolved_values") or [],
-            "sample_profile": draft.get("sample_profile") or {},
-        },
+        "sql_draft": sql_draft_payload,
         "table": {
             "kind": "filebrowser_sql_preview",
             "title": "FileBrowser SQL preview",
@@ -17725,12 +17496,12 @@ def _handle_flowi_query_core(
 ) -> dict:
     # NOTE (M6 dead-path note): As of M2 PRs #2~#7 + M6 the Unit AI dispatcher
     # (try_dispatch) in _run_flowi_chat catches filebrowser / meeting / inform /
-    # tracker / dashboard / splittable / waferlayout / tablemap / diagnosis
+    # tracker / dashboard / splittable / tablemap / diagnosis
     # prompts BEFORE this function is called. The corresponding if/elif blocks
     # below are kept intact (dead path) as a temporary safety net during the
     # migration. A future PR will remove the migrated branches once each unit
-    # AI's handle() has been verified against production traces. ettime and
-    # calendar still rely on this function (no LLM-specific handler for them).
+    # AI's handle() has been verified against production traces. calendar
+    # still relies on this function (no LLM-specific handler for it).
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
     if allowed_keys is None or "dashboard" in allowed_keys:
@@ -17772,7 +17543,7 @@ def _handle_flowi_query_core(
         knob_table_out = _handle_knob_query(prompt, product, max_rows)
         if knob_table_out.get("handled"):
             return knob_table_out
-    if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
+    if allowed_keys is None or {"filebrowser", "dashboard", "splittable"} & set(allowed_keys):
         fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
         if fab_lot_out.get("handled"):
             return fab_lot_out
@@ -17796,10 +17567,6 @@ def _handle_flowi_query_core(
         mismatch_out = _handle_splittable_plan_mismatch_query(prompt, product, max_rows)
         if mismatch_out.get("handled"):
             return mismatch_out
-        for handler in (_handle_teg_radius_lookup, _handle_teg_position_lookup, _handle_wafer_map_chart, _handle_wafer_map_similarity):
-            wafer_out = handler(prompt, product, max_rows)
-            if wafer_out.get("handled"):
-                return wafer_out
         for handler in (_handle_split_fab_lot_basis, _handle_fab_corun_lots, _handle_knob_clean_interference, _handle_lot_anomaly_summary):
             ops_out = handler(prompt, product, max_rows)
             if ops_out.get("handled"):
@@ -17878,13 +17645,8 @@ def _handle_flowi_query_core(
         fastest_out = _handle_fastest_knob_query(prompt, product, max_rows)
         if fastest_out.get("handled"):
             return fastest_out
-    if allowed_keys is None or "ettime" in allowed_keys or "dashboard" in allowed_keys or "filebrowser" in allowed_keys:
-        for handler in (_handle_et_report_freshness, _handle_et_report_lookup, _handle_measurement_duration_lookup):
-            out = handler(prompt, product, max_rows)
-            if out.get("handled"):
-                return out
     if allowed_keys is None or "filebrowser" in allowed_keys:
-        sql_draft_out = _handle_filebrowser_sql_llm_draft(prompt, product, max_rows)
+        sql_draft_out = _handle_filebrowser_sql_llm_draft(prompt, product, max_rows, username=username)
         if sql_draft_out.get("handled"):
             return sql_draft_out
         preview_out = _handle_filebrowser_data_preview(prompt, product, max_rows)
@@ -17898,12 +17660,10 @@ def _handle_flowi_query_core(
         if table_out.get("handled"):
             return table_out
     pre_matches = _matched_feature_entrypoints(prompt, limit=3, allowed_keys=allowed_keys)
-    if pre_matches and pre_matches[0].get("key") not in {"ettime", "splittable"}:
+    if pre_matches and pre_matches[0].get("key") not in {"splittable"}:
         return _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
-    for handler in (_handle_et_query, _handle_knob_query):
-        if handler is _handle_et_query and allowed_keys is not None and "ettime" not in allowed_keys:
-            continue
-        if handler is _handle_knob_query and allowed_keys is not None and "splittable" not in allowed_keys:
+    for handler in (_handle_knob_query,):
+        if allowed_keys is not None and "splittable" not in allowed_keys:
             continue
         out = handler(prompt, product, max_rows)
         if out.get("handled"):
@@ -17915,8 +17675,8 @@ def _handle_flowi_query_core(
         "handled": False,
         "intent": "general",
         "answer": (
-            "Flowi local tools는 현재 ET wafer별 median 조회와 lot KNOB 요약을 우선 지원합니다.\n"
-            "예: `ET ETA100010 VTH median wf별`, `A1000 knob 어떻게돼`"
+            "Flowi local tools는 현재 파일 탐색, 대시보드, SplitTable, Inform, Meeting, Tracker 흐름을 우선 지원합니다.\n"
+            "예: `A1000 knob 어떻게돼`, `lot_id가 A1000인 행 보여줘`"
         ),
     }
 
@@ -19657,6 +19417,19 @@ def _attach_flowi_trace(
         agent_context=agent_context,
     )
     result["action_log"] = _flowi_action_log(result, result["trace"])
+    try:
+        from core import home_orchestrator as _home_runtime
+        runtime = _home_runtime.record_flowi_runtime_run(
+            prompt=prompt,
+            result=result,
+            user={"username": result.get("user") or ""},
+            source="llm_flowi_chat",
+        )
+        result["run_id"] = runtime.get("run_id") or ""
+        result["graph"] = runtime.get("graph") or {}
+        result["runtime_status"] = runtime.get("status") or ""
+    except Exception as exc:
+        logger.warning("home flowi runtime snapshot failed: %s", exc)
     clarification_loop = result["trace"].get("clarification_loop") if isinstance(result.get("trace"), dict) else {}
     if isinstance(clarification_loop, dict) and clarification_loop.get("needs_input"):
         result["needs_input"] = True
@@ -19743,6 +19516,12 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
         "active": bool(result.get("active", True)),
         "answer": result.get("answer") or "",
     }
+    if result.get("run_id"):
+        out["run_id"] = result.get("run_id")
+    if isinstance(result.get("graph"), dict):
+        out["graph"] = deepcopy(result.get("graph") or {})
+    if result.get("runtime_status"):
+        out["runtime_status"] = result.get("runtime_status")
     if result.get("error"):
         out["error"] = result.get("error")
     if result.get("blocked"):
@@ -20407,8 +20186,6 @@ def _run_flowi_chat(
         unit_only.append("dashboard")
     if "splittable" in allowed_keys:
         unit_only.append("splittable")
-    if "waferlayout" in allowed_keys:
-        unit_only.append("waferlayout")
     if "tablemap" in allowed_keys:
         unit_only.append("tablemap")
     if "diagnosis" in allowed_keys:
@@ -20580,10 +20357,8 @@ def status(request: Request):
     is_admin = (me.get("role") or "user") == "admin"
     allowed_keys = _allowed_flowi_feature_keys(me)
     local_tools = ["unit_feature_router"] if allowed_keys else []
-    if "ettime" in allowed_keys:
-        local_tools.insert(0, "et_wafer_median")
     if "splittable" in allowed_keys:
-        local_tools.insert(1 if local_tools and local_tools[0] == "et_wafer_median" else 0, "lot_knobs")
+        local_tools.insert(0, "lot_knobs")
     if "dashboard" in allowed_keys:
         local_tools.append("dashboard_scatter_plan")
     cfg = llm_adapter.get_config(redact=True)

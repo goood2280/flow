@@ -4,7 +4,7 @@ const navGroups = [
   {
     label: "Data",
     active: false,
-    items: ["데이터 브라우저", "스플릿 테이블", "대시보드", "ET 레포트"],
+    items: ["데이터 브라우저", "스플릿 테이블", "대시보드"],
   },
   {
     label: "Work",

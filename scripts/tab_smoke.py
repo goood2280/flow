@@ -96,8 +96,7 @@ COMMON_GETS = [
     ("diagnosis manifest", "/api/semiconductor/knowledge"),
     ("diagnosis rag view", "/api/semiconductor/knowledge/rag-view?q=CA&limit=40"),
     ("item dictionary", "/api/items/search?q=CA&limit=20"),
-    ("et products", "/api/ettime/products"),
-    ("wafer grid", "/api/waferlayout/grid?product=PRODUCT_A0"),
+    ("agent reset status", "/api/agent/status"),
     ("tracker issues", "/api/tracker/issues?limit=5"),
     ("inform config", "/api/informs/config"),
     ("inform recent", "/api/informs/recent?limit=5"),
@@ -145,24 +144,9 @@ def run_flowi_guards(admin_token: str, user_token: str):
 def run_flowi_agent_cases(admin_token: str):
     cases = [
         (
-            "agent:cross-db scatter",
-            "PRODA Inline CD와 ET LKG Corr scatter 그리고 1차식 fitting line 그려줘",
-            ["dashboard_scatter", "build_metric_scatter", "flowi_chart_plan"],
-        ),
-        (
             "agent:box chart",
             "PRODA CD_GATE box plot 그려줘",
             ["dashboard_box", "dashboard_box_chart"],
-        ),
-        (
-            "agent:wf map",
-            "PRODA ET VTH WF map 그려줘",
-            ["dashboard_wafer_map", "dashboard_wafer_map_chart"],
-        ),
-        (
-            "agent:knob coloring",
-            "PRODA Inline CD와 ET LKG Corr scatter KNOB_SPLIT B 제외하고 컬러링",
-            ["color_by", "excluded_values", "KNOB_SPLIT", "dashboard_scatter"],
         ),
         (
             "agent:tablemap relation",

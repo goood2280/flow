@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from core import home_orchestrator
 from core.auth import current_user
 from core.flowi_units import all_unit_ais, get_unit_ai
 from core.flowi_units.filebrowser_ai_sql_runtime import (
@@ -97,7 +98,47 @@ def filebrowser_ai_sql_runtime_run(req: FileBrowserAiSqlRuntimeRunReq, request: 
     if unit is None:
         raise HTTPException(status_code=404, detail="filebrowser_ai_sql unit is not registered")
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-    return run_filebrowser_ai_sql_runtime(payload, username=(me or {}).get("username") or "")
+    result = run_filebrowser_ai_sql_runtime(payload, username=(me or {}).get("username") or "")
+    try:
+        filebrowser_router._record_filebrowser_ai_sql_history(
+            (me or {}).get("username") or "",
+            source="agent_test_prompt",
+            request_payload=payload,
+            result_payload=result,
+        )
+    except Exception:
+        pass
+    return result
+
+
+@router.get("/home-flowi/runtime/graph")
+def home_flowi_runtime_graph(request: Request) -> dict[str, Any]:
+    current_user(request)
+    return {
+        "ok": True,
+        "graph": home_orchestrator.build_home_runtime_graph(),
+    }
+
+
+@router.get("/home-flowi/runtime/runs")
+def home_flowi_runtime_runs(request: Request, limit: int = 20) -> dict[str, Any]:
+    current_user(request)
+    return {
+        "ok": True,
+        "runs": home_orchestrator.list_home_runtime_runs(limit=limit),
+    }
+
+
+@router.get("/home-flowi/runtime/runs/{run_id}")
+def home_flowi_runtime_run(run_id: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    run = home_orchestrator.load_home_runtime_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="home Flow-i runtime run not found")
+    return {
+        "ok": True,
+        "run": run,
+    }
 
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

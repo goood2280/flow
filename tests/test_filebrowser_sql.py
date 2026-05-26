@@ -917,6 +917,8 @@ def test_filebrowser_sql_llm_draft_sanitizes_selected_columns(monkeypatch):
 
     assert out["ok"] is True
     assert out["sql"] == "wafer_id = 21"
+    assert out["where_sql"] == "wafer_id = 21"
+    assert out["display_sql"] == "SELECT lot_id, wafer_id WHERE wafer_id = 21"
     assert out["selected_columns"] == ["lot_id", "wafer_id"]
     assert "ghost_col" in "\n".join(out["warnings"])
 
@@ -1035,6 +1037,9 @@ def test_filebrowser_sql_llm_draft_profiles_wide_table_columns_selectively(monke
     assert out["sample_profile"]["columns_profiled"] == 80
     assert profile_names[:2] == ["c119", "c118"]
     assert calls[0]["sample_rows"] == []
+    assert len(calls[0]["columns"]) == 80
+    assert len(calls[0]["schema"]) == 80
+    assert calls[0]["sample_profile"]["sampling_policy"]["row_dump_in_prompt"] is False
 
 
 def test_filebrowser_sql_llm_draft_selection_only_prompt(monkeypatch):
@@ -1051,7 +1056,87 @@ def test_filebrowser_sql_llm_draft_selection_only_prompt(monkeypatch):
 
     assert out["ok"] is True
     assert out["sql"] == ""
+    assert out["where_sql"] == ""
+    assert out["display_sql"] == "SELECT lot_id, wafer_id"
     assert out["selected_columns"] == ["lot_id", "wafer_id"]
+
+
+def test_filebrowser_sql_llm_draft_selection_and_order_by_prompt(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="product, feature_name, function_step, rule_order만 rule_order 순서",
+            columns=["product", "feature_name", "function_step", "rule_order", "operator"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == ""
+    assert out["where_sql"] == ""
+    assert out["selected_columns"] == ["product", "feature_name", "function_step", "rule_order"]
+    assert out["sort"] == {"column": "rule_order", "direction": "asc", "nulls": "last"}
+    assert out["display_sql"] == "SELECT product, feature_name, function_step, rule_order ORDER BY rule_order ASC"
+
+
+def test_filebrowser_sql_draft_records_target_history(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="product만 rule_order 순서",
+            columns=["product", "rule_order"],
+            scope="hive",
+            root="FAB",
+            product="PRODA",
+        ),
+        _Request("viewer", "user"),
+    )
+    for source in ("agent_test_prompt", "home_flowi_unit_ai", "home_flowi_sql_draft"):
+        filebrowser._record_filebrowser_ai_sql_history(
+            "viewer",
+            source=source,
+            request_payload={
+                "natural_language": f"{source} product만",
+                "scope": "db_product",
+                "root": "FAB",
+                "product": "PRODA",
+            },
+            result_payload={
+                "ok": True,
+                "answer": "history answer",
+                "merged": {
+                    "display_sql": "SELECT product",
+                    "where_sql": "",
+                    "selected_columns": ["product"],
+                },
+                "preview": {
+                    "columns": ["product"],
+                    "rows": [{"product": "PRODA"}],
+                    "total_rows": 1,
+                    "preview_capped": False,
+                },
+                "trace": [{"node_id": "merge", "status": "success", "duration_ms": 3}],
+            },
+        )
+    history = filebrowser.filebrowser_sql_history(_Request("viewer", "user"))
+    by_source = {row["source"]: row for row in history["history"]}
+
+    assert {"filebrowser", "agent_test_prompt", "home_flowi_unit_ai", "home_flowi_sql_draft"}.issubset(by_source)
+    assert by_source["filebrowser"]["natural_language"] == "product만 rule_order 순서"
+    assert by_source["filebrowser"]["scope"] == "db_product"
+    assert by_source["filebrowser"]["root"] == "FAB"
+    assert by_source["filebrowser"]["product"] == "PRODA"
+    assert by_source["filebrowser"]["display_sql"] == "SELECT product ORDER BY rule_order ASC"
+    assert by_source["agent_test_prompt"]["answer"] == "history answer"
+    assert by_source["home_flowi_unit_ai"]["preview_summary"]["rows_returned"] == 1
+    assert "rows" not in by_source["home_flowi_unit_ai"]["preview_summary"]
+    assert by_source["home_flowi_sql_draft"]["trace_summary"][0]["node_id"] == "merge"
 
 
 def test_filebrowser_sql_llm_draft_does_not_select_columns_without_explicit_request(monkeypatch):
@@ -1311,6 +1396,7 @@ def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_desc_sort(monkeyp
     assert out["ok"] is True
     assert out["sql"] == "item_id = 'IOFF'"
     assert out["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
+    assert out["display_sql"] == "item_id = 'IOFF' ORDER BY value DESC"
     assert out["selected_columns"] == []
 
 
@@ -1435,6 +1521,55 @@ def test_filebrowser_sql_feedback_persists_and_next_draft_uses_context(monkeypat
     assert out["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
 
 
+def test_filebrowser_sql_feedback_normalizes_select_display_sql(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+
+    saved = filebrowser.filebrowser_sql_feedback(
+        filebrowser.FileBrowserSqlFeedbackReq(
+            draft_id="draft-2",
+            rating="up",
+            natural_language="A1000 lot_id wafer_id만",
+            sql="SELECT lot_id, wafer_id WHERE root_lot_id = A1000",
+            selected_columns=["value"],
+            columns=["root_lot_id", "lot_id", "wafer_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    records = json.loads((dummy_paths.data_root / filebrowser.FILEBROWSER_AI_SQL_FEEDBACK_FILE).read_text("utf-8").strip())
+    assert saved["where_sql"] == "root_lot_id = 'A1000'"
+    assert saved["selected_columns"] == ["lot_id", "wafer_id", "value"]
+    assert saved["display_sql"] == "SELECT lot_id, wafer_id, value WHERE root_lot_id = 'A1000'"
+    assert records["sql"] == "root_lot_id = 'A1000'"
+    assert records["display_sql"] == saved["display_sql"]
+
+
+def test_filebrowser_sql_feedback_order_by_overrides_sort_payload(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+
+    saved = filebrowser.filebrowser_sql_feedback(
+        filebrowser.FileBrowserSqlFeedbackReq(
+            draft_id="draft-3",
+            rating="up",
+            natural_language="feature desc",
+            sql="SELECT product, feature_name WHERE product = 'A' ORDER BY feature_name DESC",
+            sort={"column": "product", "direction": "asc", "nulls": "last"},
+            columns=["product", "feature_name", "rule_order"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert saved["where_sql"] == "product = 'A'"
+    assert saved["selected_columns"] == ["product", "feature_name"]
+    assert saved["display_sql"] == "SELECT product, feature_name WHERE product = 'A' ORDER BY feature_name DESC"
+    records = json.loads((dummy_paths.data_root / filebrowser.FILEBROWSER_AI_SQL_FEEDBACK_FILE).read_text("utf-8").strip())
+    assert records["sort"] == {"column": "feature_name", "direction": "desc", "nulls": "last"}
+
+
 def test_filebrowser_run_view_applies_explicit_sort():
     result = filebrowser._run_view(
         pl.DataFrame({"item_id": ["IOFF", "IOFF"], "value": [0.1, 0.2]}),
@@ -1446,6 +1581,47 @@ def test_filebrowser_run_view_applies_explicit_sort():
 
     assert [row["value"] for row in result["data"]] == [0.2, 0.1]
     assert result["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
+
+
+def test_filebrowser_run_view_parses_order_by_from_display_sql():
+    result = filebrowser._run_view(
+        pl.DataFrame({
+            "product": ["A", "A", "B"],
+            "feature_name": ["b", "a", "c"],
+            "rule_order": [2, 1, 3],
+        }),
+        sql="SELECT product, feature_name WHERE product = 'A' ORDER BY feature_name DESC",
+        select_cols="",
+        rows=20,
+    )
+
+    assert result["columns"] == ["product", "feature_name"]
+    assert [row["feature_name"] for row in result["data"]] == ["b", "a"]
+    assert result["where_sql"] == "product = 'A'"
+    assert result["sort"] == {"column": "feature_name", "direction": "desc", "nulls": "last"}
+
+
+def test_filebrowser_download_lazy_csv_parses_order_by_from_display_sql():
+    df, _csv_bytes = filebrowser._download_lazy_csv(
+        pl.DataFrame({"lot_id": ["B", "A"], "rank": [2, 1]}).lazy(),
+        sql="SELECT lot_id ORDER BY rank ASC",
+        select_cols="",
+        max_rows=20,
+        max_bytes=100000,
+    )
+
+    assert df["lot_id"].to_list() == ["A", "B"]
+    assert df.columns == ["lot_id"]
+
+
+@pytest.mark.parametrize("bad_sql", [
+    "SELECT product WHERE product = 'A' ORDER BY missing_col ASC",
+    "SELECT product ORDER BY lower(product) ASC",
+    "SELECT product ORDER BY product ASC; DROP TABLE source",
+])
+def test_filebrowser_order_by_rejects_unsupported_sql(bad_sql):
+    with pytest.raises(ValueError):
+        filebrowser._parse_ai_sql_display_sql(bad_sql, ["product", "feature_name"])
 
 
 def test_filebrowser_cache_refresh_requires_admin(monkeypatch):
@@ -1659,6 +1835,26 @@ def test_filebrowser_manual_sql_accepts_root_lot_id_alias_and_bare_value():
     assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
 
 
+def test_filebrowser_dataframe_view_accepts_select_prefix_projection():
+    df = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+        "hidden": ["x", "y"],
+    })
+
+    result = filebrowser._run_view(
+        df,
+        sql="SELECT wafer_id, value WHERE root_lot_id = A1000",
+        select_cols="",
+        rows=20,
+    )
+
+    assert result["selected_cols"] == "wafer_id,value"
+    assert result["columns"] == ["wafer_id", "value"]
+    assert result["data"] == [{"wafer_id": "1", "value": 10}]
+
+
 def test_filebrowser_lazy_view_accepts_root_lot_id_alias_and_bare_value():
     lf = pl.DataFrame({
         "root_lot_id": ["A1000", "B1000"],
@@ -1679,6 +1875,29 @@ def test_filebrowser_lazy_view_accepts_root_lot_id_alias_and_bare_value():
     assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
 
 
+def test_filebrowser_lazy_view_accepts_select_prefix_projection():
+    lf = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+        "hidden": ["x", "y"],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="SELECT wafer_id, value WHERE root_lot_id = A1000",
+        select_cols="",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["selected_cols"] == "wafer_id,value"
+    assert result["columns"] == ["wafer_id", "value"]
+    assert result["data"] == [{"wafer_id": "1", "value": 10}]
+
+
 def test_filebrowser_lazy_csv_download_accepts_root_lot_id_alias_and_bare_value():
     lf = pl.DataFrame({
         "root_lot_id": ["A1000", "B1000"],
@@ -1695,6 +1914,25 @@ def test_filebrowser_lazy_csv_download_accepts_root_lot_id_alias_and_bare_value(
 
     assert df.to_dicts() == [{"root_lot_id": "A1000", "value": 10}]
     assert b"A1000" in csv_bytes
+
+
+def test_filebrowser_lazy_csv_download_accepts_select_prefix_projection():
+    lf = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+        "hidden": ["x", "y"],
+    }).lazy()
+
+    df, csv_bytes = filebrowser._download_lazy_csv(
+        lf,
+        "SELECT wafer_id, value WHERE root_lot_id = A1000",
+        "",
+        20,
+    )
+
+    assert df.to_dicts() == [{"wafer_id": "1", "value": 10}]
+    assert b"hidden" not in csv_bytes
 
 
 def test_filebrowser_duckdb_view_accepts_root_lot_id_alias_and_bare_value(tmp_path):
@@ -1715,6 +1953,29 @@ def test_filebrowser_duckdb_view_accepts_root_lot_id_alias_and_bare_value(tmp_pa
     )
 
     assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
+
+
+def test_filebrowser_duckdb_view_accepts_select_prefix_projection(tmp_path):
+    if not duckdb_engine.is_available():
+        pytest.skip("duckdb is not installed")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+        "hidden": ["x", "y"],
+    }).write_parquet(fp)
+
+    result = filebrowser._run_view_duckdb(
+        [fp],
+        "SELECT wafer_id, value WHERE root_lot_id = A1000",
+        "",
+        20,
+    )
+
+    assert result["selected_cols"] == "wafer_id,value"
+    assert result["columns"] == ["wafer_id", "value"]
+    assert result["data"] == [{"wafer_id": "1", "value": 10}]
 
 
 def test_filebrowser_wafer_sql_normalizer_handles_in_and_prefixed_literals():
@@ -2916,6 +3177,27 @@ def test_download_duckdb_csv_handles_partition_dtype_mismatch(tmp_path):
     ]
     assert b"mixed" in csv_bytes
     assert b"two" in csv_bytes
+
+
+def test_download_duckdb_csv_accepts_select_prefix_projection(tmp_path):
+    pytest.importorskip("duckdb")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+        "hidden": ["x", "y"],
+    }).write_parquet(fp)
+
+    df, csv_bytes = filebrowser._download_duckdb_csv(
+        [fp],
+        "SELECT wafer_id, value WHERE root_lot_id = A1000",
+        "",
+        20,
+    )
+
+    assert df.to_dicts() == [{"wafer_id": "1", "value": 10}]
+    assert b"hidden" not in csv_bytes
 
 
 def test_download_csv_falls_back_to_duckdb_for_dtype_mismatch(monkeypatch, tmp_path):

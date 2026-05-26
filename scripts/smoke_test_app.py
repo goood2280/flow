@@ -12,7 +12,6 @@ if str(BACKEND) not in sys.path:
 
 from app import app
 from routers.dashboard import fab_progress, trend_alerts
-from routers.ettime import et_report, _product_aliases
 from routers.splittable import _build_inline_meta, _build_knob_meta, _build_vm_meta, _load_operational_history
 
 
@@ -24,7 +23,6 @@ def main() -> int:
 
     schema_paths = {route.path for route in app.routes}
     required_paths = {
-        "/api/ettime/report",
         "/api/dashboard/fab-progress",
         "/api/dashboard/trend-alerts",
         "/api/splittable/operational-history",
@@ -56,27 +54,6 @@ def main() -> int:
         role="admin",
     )
     report["checks"].append({"name": "operational_history", "ok": isinstance(hist, list), "items": len(hist)})
-
-    et_res = {"summary": {"packages": 0, "metric_name": "Rc"}}
-    for cand in [product_code, *_product_aliases(product_code)]:
-        cur = et_report(
-            product=cand,
-            root_lot_id="",
-            fab_lot_id="",
-            wafer_id="",
-            step_id="",
-            metric="Rc",
-            limit=80,
-        )
-        if (cur.get("summary") or {}).get("packages", 0) > 0:
-            et_res = cur
-            break
-    report["checks"].append({
-        "name": "et_report",
-        "ok": (et_res.get("summary") or {}).get("packages", 0) >= 1,
-        "packages": (et_res.get("summary") or {}).get("packages", 0),
-        "metric": (et_res.get("summary") or {}).get("metric_name", ""),
-    })
 
     class _State:
         user = {"username": "hol", "role": "admin"}

@@ -125,23 +125,36 @@ def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch,
     )
 
     assert out["ok"] is True
-    assert [row["node_id"] for row in out["trace"]] == [
-        "context_sample",
-        "semantic_layer",
-        "filter_draft",
-        "column_draft",
-        "merge",
-        "preview_apply",
-    ]
+    trace_ids = [row["node_id"] for row in out["trace"]]
+    assert trace_ids[:2] == ["context_sample", "semantic_layer"]
+    assert set(trace_ids[2:4]) == {"filter_draft", "column_draft"}
+    assert trace_ids[4:] == ["merge", "preview_apply"]
     assert len(calls) == 2
-    assert "read-only WHERE" in calls[0]["system"]
-    assert "display columns" in calls[1]["system"]
-    assert len(calls[0]["payload"]["sample_rows"]) == 10
-    assert len(calls[1]["payload"]["sample_rows"]) == 10
+    systems = [call["system"] for call in calls]
+    assert any("read-only WHERE" in s for s in systems)
+    assert any("display columns" in s for s in systems)
+    assert all(call["payload"]["sample_rows"] == [] for call in calls)
+    assert all(call["payload"]["sample_profile"]["sampling_policy"]["row_dump_in_prompt"] is False for call in calls)
     assert out["filter"]["sql"] == "root_lot_id = 'A1000'"
     assert out["columns"]["selected_columns"] == ["root_lot_id", "wafer_id", "value"]
     assert out["preview"]["columns"] == ["root_lot_id", "wafer_id", "value"]
-    assert out["preview"]["rows"]
+    assert out["preview"]["rows"] == []
+    assert out["preview"]["rows_returned"] > 0
+    assert out["preview"]["applied_sql"] == (
+        "SELECT root_lot_id, wafer_id, value WHERE root_lot_id = 'A1000'"
+    )
+    assert out["preview"]["applied_where_sql"] == "root_lot_id = 'A1000'"
+    assert out["preview"]["applied_select_cols"] == ["root_lot_id", "wafer_id", "value"]
+    history_rows = [
+        json.loads(line)
+        for line in filebrowser._filebrowser_ai_sql_history_path().read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert history_rows[-1]["source"] == "agent_test_prompt"
+    assert history_rows[-1]["display_sql"] == out["merged"]["display_sql"]
+    assert history_rows[-1]["preview_summary"]["rows_returned"] > 0
+    assert "rows" not in history_rows[-1]["preview_summary"]
+    assert history_rows[-1]["trace_summary"][0]["node_id"] == "context_sample"
 
 
 def test_filebrowser_ai_sql_runtime_warns_on_invalid_sql_and_unknown_columns(monkeypatch, tmp_path):
@@ -186,4 +199,68 @@ def test_filebrowser_ai_sql_runtime_preview_is_read_only(monkeypatch, tmp_path):
 
     assert out["ok"] is True
     assert source.read_bytes() == before
-    assert out["preview"]["rows"]
+    assert out["preview"]["rows"] == []
+    assert out["preview"]["rows_returned"] > 0
+
+
+def test_parse_ai_sql_select_prefix_handles_common_forms():
+    cols = ["root_lot_id", "wafer_id", "IOFF", "value"]
+    parser = filebrowser._parse_ai_sql_select_prefix
+    assert parser("SELECT IOFF, wafer_id WHERE root_lot_id = 'A1000'", cols) == (
+        "root_lot_id = 'A1000'",
+        ["IOFF", "wafer_id"],
+    )
+    assert parser("SELECT ioff, wafer_id", cols) == ("", ["IOFF", "wafer_id"])
+    assert parser("SELECT * WHERE root_lot_id = 'A1000'", cols) == ("root_lot_id = 'A1000'", [])
+    assert parser("root_lot_id = 'A1000'", cols) == ("root_lot_id = 'A1000'", [])
+    assert parser("SELECT count(*) WHERE x", cols) == ("SELECT count(*) WHERE x", [])
+    assert parser("SELECT IOFF, missing WHERE x", cols) == ("SELECT IOFF, missing WHERE x", [])
+    assert parser("", cols) == ("", [])
+
+
+def test_filebrowser_ai_sql_runtime_merge_emits_select_form(monkeypatch, tmp_path):
+    _install_filebrowser_fixture(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    _patch_llm(monkeypatch, calls)
+
+    out = agent.filebrowser_ai_sql_runtime_run(
+        agent.FileBrowserAiSqlRuntimeRunReq(
+            natural_language="A1000 value만 보여줘",
+            scope="db_product",
+            root="FAB",
+            product="PRODA",
+        ),
+        _Request(),
+    )
+
+    assert out["ok"] is True
+    assert out["merged"]["where_sql"] == "root_lot_id = 'A1000'"
+    assert out["merged"]["selected_columns"] == ["root_lot_id", "wafer_id", "value"]
+    assert out["merged"]["sql"] == (
+        "SELECT root_lot_id, wafer_id, value WHERE root_lot_id = 'A1000'"
+    )
+    assert out["merged"]["display_sql"] == out["merged"]["sql"]
+    assert out["preview"]["display_sql"] == out["merged"]["sql"]
+    assert out["preview"]["columns"] == ["root_lot_id", "wafer_id", "value"]
+
+
+def test_filebrowser_ai_sql_runtime_display_sql_includes_sort_intent(monkeypatch, tmp_path):
+    _install_filebrowser_fixture(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    _patch_llm(monkeypatch, calls)
+
+    out = agent.filebrowser_ai_sql_runtime_run(
+        agent.FileBrowserAiSqlRuntimeRunReq(
+            natural_language="A1000 value 큰순서",
+            scope="db_product",
+            root="FAB",
+            product="PRODA",
+        ),
+        _Request(),
+    )
+
+    assert out["ok"] is True
+    assert out["merged"]["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
+    assert out["merged"]["display_sql"].endswith("ORDER BY value DESC")
+    assert out["preview"]["rows"] == []
+    assert out["preview"]["rows_returned"] > 0

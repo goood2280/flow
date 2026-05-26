@@ -26,18 +26,41 @@ orchestrate_stream(prompt, user) → generator: SSE event chunk dict 시퀀스.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
+import uuid
+from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from core import tool_registry
+from core.paths import PATHS
 
 logger = logging.getLogger("flow.home_orchestrator")
 
 _MAX_STEPS = 10
 _LLM_ENV_FLAG = "FLOW_LLM_TOOL_CALL"
+HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
+_RUN_ID_PREFIX = "home_flowi"
+_MAX_SNAPSHOT_RUNS = 120
+_MAX_PREVIEW_ROWS = 10
+_MAX_PREVIEW_COLS = 20
+
+
+_RUNTIME_FIXED_NODES: tuple[dict[str, str], ...] = (
+    {"id": "prompt_input", "label": "프롬프트 입력", "phase": "input"},
+    {"id": "semantic_layer", "label": "용어해석", "phase": "semantic"},
+    {"id": "orchestrator", "label": "오케스트레이터", "phase": "plan"},
+    {"id": "result_renderer", "label": "결과 정리", "phase": "render"},
+)
+
+_RUNTIME_BASE_EDGES: tuple[dict[str, str], ...] = (
+    {"source": "prompt_input", "target": "semantic_layer"},
+    {"source": "semantic_layer", "target": "orchestrator"},
+)
 
 
 # 한국어/영어 키워드 → 태그 가중치. 매칭되면 해당 태그 보유 도구가 점수 획득.
@@ -53,7 +76,6 @@ KEYWORD_WEIGHTS: list[tuple[re.Pattern[str], dict[str, float]]] = [
     (re.compile(r"(파일|file|parquet|csv|디렉토리)", re.I), {"filebrowser": 2.0}),
     (re.compile(r"(스키마|schema|컬럼|column)", re.I), {"filebrowser": 1.5, "search": 1.0}),
     (re.compile(r"(step|단계)", re.I), {"step": 1.5}),
-    (re.compile(r"(et|elapsed)", re.I), {"ettime": 2.0}),
     (re.compile(r"(diagnosis|진단|rca|dibl|vth|ion|ioff)", re.I), {"diagnosis": 2.5}),
     (re.compile(r"(일정|캘린더|calendar|변경점)", re.I), {"calendar": 2.5}),
     (re.compile(r"(layout|tablemap|관계|join)", re.I), {"tablemap": 1.5}),
@@ -89,6 +111,593 @@ def _score_tool(tool: dict[str, Any], signals: dict[str, float], prompt_lower: s
         elif token in title:
             score += 0.5
     return score
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_run_id(prefix: str = _RUN_ID_PREFIX) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{prefix}_{stamp}_{uuid.uuid4().hex[:8]}"
+
+
+def _safe_run_id(run_id: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(run_id or "")).strip("._-")
+    if not clean:
+        raise ValueError("run_id is required")
+    return clean[:160]
+
+
+def _short_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[: max(1, limit)]
+
+
+def _safe_value(value: Any, limit: int = 240) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _short_text(value, limit)
+    return _short_text(value, limit)
+
+
+def _safe_rows(rows: Any, *, max_rows: int = _MAX_PREVIEW_ROWS, max_cols: int = _MAX_PREVIEW_COLS) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        clean: dict[str, Any] = {}
+        for idx, (key, value) in enumerate(row.items()):
+            if idx >= max_cols:
+                break
+            clean[_short_text(key, 120)] = _safe_value(value, 180)
+        out.append(clean)
+    return out
+
+
+def _safe_string_list(value: Any, limit: int = 20) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = _short_text(item, 120)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _safe_public_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tool, dict):
+        return {}
+    allowed = {
+        "type",
+        "answer",
+        "inline_summary",
+        "action",
+        "feature",
+        "intent",
+        "table",
+        "rows",
+        "split_view",
+        "chart",
+        "chart_result",
+        "blocks",
+        "sql_draft",
+        "selected_columns",
+        "sample_rows",
+        "row_count",
+        "warnings",
+        "sources",
+        "blocked",
+        "reject_reason",
+        "requires_confirmation",
+        "missing",
+        "arguments_choices",
+        "missing_freetext",
+        "pending_prompt",
+        "last_partial_prompt",
+    }
+    out: dict[str, Any] = {}
+    for key in allowed:
+        if key not in tool:
+            continue
+        value = deepcopy(tool.get(key))
+        if key == "rows":
+            value = _safe_rows(value)
+        elif key == "sample_rows":
+            value = _safe_rows(value, max_rows=5)
+        elif key == "table" and isinstance(value, dict):
+            value["rows"] = _safe_rows(value.get("rows"))
+        elif key == "split_view" and isinstance(value, dict):
+            rows = value.get("rows")
+            if isinstance(rows, list):
+                value["rows"] = rows[:12]
+        elif key == "blocks" and isinstance(value, list):
+            value = _safe_blocks(value)
+        out[key] = value
+    return out
+
+
+def _safe_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for block in blocks[:8]:
+        if not isinstance(block, dict):
+            continue
+        clean = {
+            key: deepcopy(block.get(key))
+            for key in ("id", "kind", "title", "highlight")
+            if key in block
+        }
+        payload = block.get("payload") if isinstance(block.get("payload"), dict) else {}
+        if payload:
+            clean_payload: dict[str, Any] = {}
+            for key, value in payload.items():
+                if key == "rows":
+                    clean_payload[key] = _safe_rows(value)
+                elif key == "columns":
+                    clean_payload[key] = _safe_string_list(value, _MAX_PREVIEW_COLS)
+                elif isinstance(value, list):
+                    clean_payload[key] = value[:20]
+                elif isinstance(value, dict):
+                    clean_payload[key] = {str(k): _safe_value(v) for k, v in list(value.items())[:20]}
+                else:
+                    clean_payload[key] = _safe_value(value)
+            clean["payload"] = clean_payload
+        out.append(clean)
+    return out
+
+
+def _unit_ai_tools() -> list[dict[str, Any]]:
+    tools = [
+        tool
+        for tool in tool_registry.list_tools(include_stats=False)
+        if tool.get("kind") == "unit_ai"
+    ]
+    return sorted(tools, key=lambda item: str(item.get("name") or ""))
+
+
+def _runtime_unit_names() -> set[str]:
+    return {str(tool.get("name") or "") for tool in _unit_ai_tools() if tool.get("name")}
+
+
+def _normalize_unit_name(name: str, tool: dict[str, Any] | None = None) -> str:
+    name = str(name or "").strip()
+    unit_names = _runtime_unit_names()
+    if name in unit_names:
+        return name
+    if name == "filebrowser" and "filebrowser_ai_sql" in unit_names:
+        return "filebrowser_ai_sql"
+    if tool and isinstance(tool.get("sql_draft"), dict) and "filebrowser_ai_sql" in unit_names:
+        return "filebrowser_ai_sql"
+    return ""
+
+
+def build_home_runtime_graph(
+    *,
+    selected_units: list[str] | None = None,
+    statuses: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the public Home Flow-i runtime graph shown in Agent.
+
+    The graph is deliberately public-state only: node status, short labels, and
+    MCP candidate availability. It does not expose model reasoning text.
+    """
+    statuses = statuses or {}
+    selected = [name for name in (selected_units or []) if name]
+    selected_set = set(selected)
+    nodes: list[dict[str, Any]] = []
+    for node in _RUNTIME_FIXED_NODES:
+        default_status = "pending"
+        nodes.append({**node, "status": statuses.get(node["id"], default_status)})
+    unit_nodes: list[dict[str, Any]] = []
+    for tool in _unit_ai_tools():
+        name = str(tool.get("name") or "")
+        node_id = f"unit_ai:{name}"
+        default = "available" if tool.get("enabled") else "skipped"
+        if name in selected_set:
+            default = "planned"
+        unit_nodes.append({
+            "id": node_id,
+            "label": tool.get("title") or name,
+            "phase": "unit_ai_mcp",
+            "kind": "unit_ai",
+            "tool": name,
+            "status": statuses.get(node_id, default),
+        })
+    nodes.extend(unit_nodes)
+    edges = [dict(edge) for edge in _RUNTIME_BASE_EDGES]
+    for node in unit_nodes:
+        edges.append({"source": "orchestrator", "target": node["id"]})
+    for name in selected:
+        node_id = f"unit_ai:{name}"
+        if any(node.get("id") == node_id for node in unit_nodes):
+            edges.append({"source": node_id, "target": "result_renderer"})
+    if not selected:
+        edges.append({"source": "orchestrator", "target": "result_renderer"})
+    return {"nodes": nodes, "edges": edges}
+
+
+def _status_from_trace_row(row: dict[str, Any]) -> str:
+    if row.get("blocked"):
+        return "blocked"
+    explicit = str(row.get("status") or "").strip()
+    if explicit:
+        return explicit
+    if row.get("ok"):
+        warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+        return "warning" if warnings else "success"
+    return "failed"
+
+
+def _result_warnings(result: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    for source in (
+        tool.get("warnings") if isinstance(tool.get("warnings"), list) else [],
+        (tool.get("sql_draft") or {}).get("warnings") if isinstance(tool.get("sql_draft"), dict) else [],
+    ):
+        for item in source or []:
+            text = _short_text(item, 240)
+            if text and text not in warnings:
+                warnings.append(text)
+    trace = result.get("trace")
+    if isinstance(trace, dict):
+        validation = trace.get("validation") if isinstance(trace.get("validation"), dict) else {}
+        for item in validation.get("warnings") or []:
+            text = _short_text(item, 240)
+            if text and text not in warnings:
+                warnings.append(text)
+    return warnings[:12]
+
+
+def _selected_units_from_result(result: dict[str, Any]) -> list[str]:
+    selected: list[str] = []
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    trace = result.get("trace")
+    if isinstance(trace, list):
+        for row in trace:
+            if not isinstance(row, dict) or row.get("kind") != "unit_ai":
+                continue
+            name = _normalize_unit_name(str(row.get("tool") or ""), tool)
+            if name and name not in selected:
+                selected.append(name)
+    elif isinstance(trace, dict):
+        rows = trace.get("unit_ai_selection") if isinstance(trace.get("unit_ai_selection"), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "")
+            if status in {"delegated", "running", "success", "warning", "failed", "blocked", "approval_required"}:
+                name = _normalize_unit_name(str(row.get("key") or row.get("unit_ai") or ""), tool)
+                if name and name not in selected:
+                    selected.append(name)
+        guard = trace.get("guardrail") if isinstance(trace.get("guardrail"), dict) else {}
+        name = _normalize_unit_name(str(guard.get("selected_feature") or ""), tool)
+        if name and name not in selected:
+            selected.append(name)
+    feature = _normalize_unit_name(str(tool.get("feature") or ""), tool)
+    if feature and feature not in selected:
+        selected.append(feature)
+    return selected
+
+
+def _runtime_statuses(result: dict[str, Any], selected_units: list[str]) -> dict[str, str]:
+    trace = result.get("trace")
+    warnings = _result_warnings(result)
+    blocked = bool(result.get("blocked") or result.get("needs_input"))
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    if tool.get("blocked"):
+        blocked = True
+    if isinstance(trace, dict):
+        guard = trace.get("guardrail") if isinstance(trace.get("guardrail"), dict) else {}
+        if guard.get("status") == "blocked":
+            blocked = True
+        clarification = trace.get("clarification_loop") if isinstance(trace.get("clarification_loop"), dict) else {}
+        if clarification.get("needs_input"):
+            blocked = True
+    if blocked:
+        result_status = "blocked"
+    elif result.get("ok", True) is False:
+        result_status = "failed"
+    else:
+        result_status = "warning" if warnings else "success"
+    statuses = {
+        "prompt_input": "success",
+        "semantic_layer": "success",
+        "orchestrator": "blocked" if blocked else "success",
+        "result_renderer": result_status,
+    }
+    if isinstance(trace, list):
+        for row in trace:
+            if not isinstance(row, dict) or row.get("kind") != "unit_ai":
+                continue
+            name = _normalize_unit_name(str(row.get("tool") or ""), tool)
+            if name:
+                statuses[f"unit_ai:{name}"] = _status_from_trace_row(row)
+    for name in selected_units:
+        node_id = f"unit_ai:{name}"
+        statuses.setdefault(node_id, result_status)
+    return statuses
+
+
+def _preview_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    if table:
+        return {
+            "kind": table.get("kind") or "table",
+            "title": table.get("title") or "",
+            "columns": _safe_string_list(table.get("columns"), _MAX_PREVIEW_COLS),
+            "rows": _safe_rows(table.get("rows")),
+            "total": table.get("total", len(table.get("rows") or [])),
+        }
+    rows = tool.get("rows") if isinstance(tool.get("rows"), list) else []
+    if rows:
+        return {"kind": "rows", "rows": _safe_rows(rows), "total": len(rows)}
+    sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
+    if sql_draft:
+        return {
+            "kind": "sql_draft",
+            "sql": _short_text(sql_draft.get("sql"), 1000),
+            "selected_columns": _safe_string_list(sql_draft.get("selected_columns"), _MAX_PREVIEW_COLS),
+            "warnings": _safe_string_list(sql_draft.get("warnings"), 8),
+        }
+    return {}
+
+
+def _node_details_for_result(
+    *,
+    prompt: str,
+    result: dict[str, Any],
+    selected_units: list[str],
+    statuses: dict[str, str],
+    source: str,
+) -> dict[str, Any]:
+    trace = result.get("trace")
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    action_log = result.get("action_log") if isinstance(result.get("action_log"), dict) else {}
+    warnings = _result_warnings(result)
+    semantic = {}
+    interpretation = {}
+    plan: list[Any] = []
+    unit_selection: list[Any] = []
+    if isinstance(trace, dict):
+        semantic = trace.get("semantic") if isinstance(trace.get("semantic"), dict) else {}
+        interpretation = trace.get("interpretation") if isinstance(trace.get("interpretation"), dict) else {}
+        plan = trace.get("plan") if isinstance(trace.get("plan"), list) else []
+        unit_selection = trace.get("unit_ai_selection") if isinstance(trace.get("unit_ai_selection"), list) else []
+    details: dict[str, Any] = {
+        "prompt_input": {
+            "node_id": "prompt_input",
+            "status": statuses.get("prompt_input", "pending"),
+            "input_summary": {"prompt": _short_text(prompt, 500), "source": source},
+            "output_summary": {"chars": len(prompt or "")},
+            "warnings": [],
+        },
+        "semantic_layer": {
+            "node_id": "semantic_layer",
+            "status": statuses.get("semantic_layer", "pending"),
+            "input_summary": {"prompt": _short_text(prompt, 240)},
+            "output_summary": {
+                "semantic": semantic,
+                "interpretation": interpretation,
+                "signals": (result.get("meta") or {}).get("signals") if isinstance(result.get("meta"), dict) else {},
+            },
+            "warnings": _safe_string_list(semantic.get("warnings") if isinstance(semantic, dict) else [], 8),
+        },
+        "orchestrator": {
+            "node_id": "orchestrator",
+            "status": statuses.get("orchestrator", "pending"),
+            "input_summary": {"candidate_unit_ai": selected_units},
+            "output_summary": {
+                "planner": (result.get("meta") or {}).get("planner") if isinstance(result.get("meta"), dict) else "",
+                "plan": plan[:20],
+                "unit_ai_selection": unit_selection[:20],
+                "tool": {
+                    "feature": tool.get("feature") or "",
+                    "action": tool.get("action") or "",
+                    "intent": tool.get("intent") or "",
+                    "blocked": bool(tool.get("blocked")),
+                },
+            },
+            "warnings": [],
+        },
+        "result_renderer": {
+            "node_id": "result_renderer",
+            "status": statuses.get("result_renderer", "pending"),
+            "input_summary": {"selected_unit_ai": selected_units},
+            "output_summary": {
+                "answer": _short_text(result.get("answer") or result.get("reply"), 1200),
+                "ok": bool(result.get("ok", True)),
+                "needs_input": bool(result.get("needs_input")),
+                "action_log_summary": action_log.get("summary", [])[:6] if isinstance(action_log.get("summary"), list) else [],
+            },
+            "warnings": warnings,
+            "preview": _preview_from_result(result),
+        },
+    }
+    trace_rows = trace if isinstance(trace, list) else []
+    for name in selected_units:
+        node_id = f"unit_ai:{name}"
+        row = next((item for item in trace_rows if isinstance(item, dict) and _normalize_unit_name(str(item.get("tool") or ""), tool) == name), {})
+        details[node_id] = {
+            "node_id": node_id,
+            "status": statuses.get(node_id, "planned"),
+            "input_summary": row.get("input") if isinstance(row.get("input"), dict) else {"prompt": _short_text(prompt, 240)},
+            "output_summary": {
+                "tool": row.get("tool") or name,
+                "title": row.get("title") or name,
+                "result_preview": row.get("result_preview") or _short_text(result.get("answer") or result.get("reply"), 500),
+                "feature": tool.get("feature") or "",
+                "action": tool.get("action") or "",
+            },
+            "warnings": _safe_string_list(row.get("warnings"), 8) or warnings,
+            "preview": _preview_from_result(result),
+        }
+    return details
+
+
+def _synth_action_log(result: dict[str, Any], graph: dict[str, Any]) -> dict[str, Any]:
+    existing = result.get("action_log") if isinstance(result.get("action_log"), dict) else {}
+    if existing:
+        return deepcopy(existing)
+    statuses = {node.get("id"): node.get("status") for node in graph.get("nodes") or [] if isinstance(node, dict)}
+    selected = [node for node in graph.get("nodes") or [] if str(node.get("id") or "").startswith("unit_ai:") and node.get("status") not in {"available", "skipped"}]
+    summary = [
+        "질문을 공개 가능한 runtime 단계로 정리했습니다.",
+        f"오케스트레이터 상태: {statuses.get('orchestrator', 'pending')}.",
+    ]
+    if selected:
+        summary.append("선택된 단위AI MCP: " + ", ".join(str(node.get("tool") or node.get("id")) for node in selected[:4]))
+    if result.get("reply") or result.get("answer"):
+        summary.append("최종 결과를 Home 응답으로 정리했습니다.")
+    return {
+        "summary": summary[:6],
+        "timeline": [
+            {"stage": node.get("id"), "title": node.get("label"), "status": node.get("status"), "detail": node.get("phase")}
+            for node in (graph.get("nodes") or [])
+            if isinstance(node, dict) and not str(node.get("id") or "").startswith("unit_ai:available")
+        ][:12],
+        "final_answer": result.get("answer") or result.get("reply") or "",
+        "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다.",
+    }
+
+
+def build_home_runtime_snapshot(
+    *,
+    prompt: str,
+    result: dict[str, Any],
+    user: dict[str, Any] | None = None,
+    source: str = "home_agent",
+    run_id: str | None = None,
+    save: bool = True,
+) -> dict[str, Any]:
+    prompt = str(prompt or "").strip()
+    result = result if isinstance(result, dict) else {}
+    run_id = _safe_run_id(run_id or str(result.get("run_id") or "") or _new_run_id())
+    selected_units = _selected_units_from_result(result)
+    statuses = _runtime_statuses(result, selected_units)
+    graph = build_home_runtime_graph(selected_units=selected_units, statuses=statuses)
+    snapshot = {
+        "ok": bool(result.get("ok", True)),
+        "run_id": run_id,
+        "created_at": _now_iso(),
+        "source": source,
+        "username": _short_text((user or {}).get("username") or result.get("user") or "", 80),
+        "prompt": _short_text(prompt, 2000),
+        "status": statuses.get("result_renderer", "pending"),
+        "reply": result.get("reply") or result.get("answer") or "",
+        "graph": graph,
+        "trace": deepcopy(result.get("trace") or []),
+        "action_log": {},
+        "tool": _safe_public_tool(result.get("tool") if isinstance(result.get("tool"), dict) else {}),
+        "node_details": {},
+        "warnings": _result_warnings(result),
+    }
+    snapshot["action_log"] = _synth_action_log(result, graph)
+    snapshot["node_details"] = _node_details_for_result(
+        prompt=prompt,
+        result=result,
+        selected_units=selected_units,
+        statuses=statuses,
+        source=source,
+    )
+    if save:
+        save_home_runtime_snapshot(snapshot)
+    return snapshot
+
+
+def _snapshot_path(run_id: str) -> Any:
+    clean = _safe_run_id(run_id)
+    return HOME_AGENT_RUNS_DIR / f"{clean}.json"
+
+
+def save_home_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    run_id = _safe_run_id(str(snapshot.get("run_id") or ""))
+    path = _snapshot_path(run_id)
+    HOME_AGENT_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp.replace(path)
+    _prune_home_runtime_snapshots()
+    return snapshot
+
+
+def _prune_home_runtime_snapshots(limit: int = _MAX_SNAPSHOT_RUNS) -> None:
+    try:
+        files = sorted(HOME_AGENT_RUNS_DIR.glob("*.json"), key=lambda fp: fp.stat().st_mtime, reverse=True)
+        for fp in files[max(1, limit):]:
+            try:
+                fp.unlink()
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("home runtime snapshot prune failed", exc_info=True)
+
+
+def load_home_runtime_run(run_id: str) -> dict[str, Any] | None:
+    path = _snapshot_path(run_id)
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        logger.warning("home runtime snapshot load failed: %s", run_id, exc_info=True)
+        return None
+
+
+def list_home_runtime_runs(limit: int = 20) -> list[dict[str, Any]]:
+    limit = max(1, min(100, int(limit or 20)))
+    try:
+        files = sorted(HOME_AGENT_RUNS_DIR.glob("*.json"), key=lambda fp: fp.stat().st_mtime, reverse=True)
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for fp in files[:limit]:
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        rows.append({
+            "run_id": data.get("run_id") or fp.stem,
+            "created_at": data.get("created_at") or "",
+            "source": data.get("source") or "",
+            "username": data.get("username") or "",
+            "prompt": _short_text(data.get("prompt"), 240),
+            "status": data.get("status") or "",
+            "reply": _short_text(data.get("reply"), 240),
+        })
+    return rows
+
+
+def record_flowi_runtime_run(
+    *,
+    prompt: str,
+    result: dict[str, Any],
+    user: dict[str, Any] | None = None,
+    source: str = "llm_flowi_chat",
+) -> dict[str, Any]:
+    snapshot = build_home_runtime_snapshot(
+        prompt=prompt,
+        result=result,
+        user=user,
+        source=source,
+        save=True,
+    )
+    return {
+        "run_id": snapshot["run_id"],
+        "graph": snapshot["graph"],
+        "status": snapshot["status"],
+    }
 
 
 def _pick_tools(prompt: str, top_k: int = 2) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -240,6 +849,52 @@ def _execute_step(tool: dict[str, Any], step_input: dict[str, Any]) -> dict[str,
     out: dict[str, Any] = {"ok": False, "kind": kind, "name": name, "input": step_input}
     try:
         if kind == "unit_ai":
+            if name == "filebrowser_ai_sql":
+                missing = _missing_filebrowser_source_slots(step_input)
+                if missing:
+                    out.update({
+                        "ok": False,
+                        "blocked": True,
+                        "status": "blocked",
+                        "warnings": ["FileBrowser source slot is required before running AI SQL."],
+                        "result_preview": "FileBrowser AI SQL 실행에는 DB root/product 또는 단일 file 대상이 필요합니다.",
+                        "result": {
+                            "handled": False,
+                            "needs_input": True,
+                            "missing": missing,
+                            "question": "분석할 FileBrowser 대상(DB root/product 또는 단일 file)을 먼저 선택해 주세요.",
+                        },
+                    })
+                    return _finish_exec_out(out, t0)
+                from core.flowi_units.filebrowser_ai_sql_runtime import run_filebrowser_ai_sql_runtime
+                payload = {
+                    "natural_language": str(step_input.get("natural_language") or step_input.get("prompt") or ""),
+                    "scope": str(step_input.get("scope") or ("db_product" if step_input.get("root") and step_input.get("product") else "base")),
+                    "root": str(step_input.get("root") or ""),
+                    "product": str(step_input.get("product") or ""),
+                    "file": str(step_input.get("file") or ""),
+                    "columns": step_input.get("columns") if isinstance(step_input.get("columns"), list) else [],
+                    "dtypes": step_input.get("dtypes") if isinstance(step_input.get("dtypes"), dict) else {},
+                    "sample_rows": step_input.get("sample_rows") if isinstance(step_input.get("sample_rows"), list) else [],
+                    "preferred_selected_columns": step_input.get("preferred_selected_columns") if isinstance(step_input.get("preferred_selected_columns"), list) else [],
+                }
+                res = run_filebrowser_ai_sql_runtime(payload, username=str((step_input.get("username") or "")))
+                try:
+                    from routers import filebrowser as filebrowser_router
+                    filebrowser_router._record_filebrowser_ai_sql_history(
+                        str(step_input.get("username") or ""),
+                        source="home_flowi_unit_ai",
+                        request_payload=payload,
+                        result_payload=res,
+                    )
+                except Exception:
+                    logger.debug("home Flow-i filebrowser AI SQL history append failed", exc_info=True)
+                out["ok"] = bool(res.get("ok"))
+                out["status"] = _status_from_filebrowser_runtime(res)
+                out["warnings"] = _warnings_from_filebrowser_runtime(res)
+                out["result"] = _trim_filebrowser_runtime_result(res)
+                out["result_preview"] = _summarize_filebrowser_runtime_result(res)
+                return _finish_exec_out(out, t0)
             from core.flowi_units.dispatcher import try_dispatch
             prompt = str(step_input.get("prompt") or "").strip()
             product = str(step_input.get("product") or "")
@@ -266,8 +921,84 @@ def _execute_step(tool: dict[str, Any], step_input: dict[str, Any]) -> dict[str,
         out["ok"] = False
         out["result_preview"] = f"{type(e).__name__}: {e}"
         logger.exception("step exec failed: %s", name)
-    out["ms"] = int((time.perf_counter() - t0) * 1000)
+    return _finish_exec_out(out, t0)
+
+
+def _finish_exec_out(out: dict[str, Any], started: float) -> dict[str, Any]:
+    out["ms"] = int((time.perf_counter() - started) * 1000)
     return out
+
+
+def _missing_filebrowser_source_slots(step_input: dict[str, Any]) -> list[str]:
+    has_db_target = bool(str(step_input.get("root") or "").strip() and str(step_input.get("product") or "").strip())
+    has_file_target = bool(str(step_input.get("file") or "").strip())
+    has_inline_context = bool(step_input.get("columns") and isinstance(step_input.get("columns"), list))
+    missing: list[str] = []
+    if not (has_db_target or has_file_target or has_inline_context):
+        missing.extend(["root/product", "file"])
+    return missing
+
+
+def _warnings_from_filebrowser_runtime(result: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    for source in (
+        result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        (result.get("filter") or {}).get("warnings") if isinstance(result.get("filter"), dict) else [],
+        (result.get("columns") or {}).get("warnings") if isinstance(result.get("columns"), dict) else [],
+        (result.get("preview") or {}).get("warnings") if isinstance(result.get("preview"), dict) else [],
+    ):
+        for item in source or []:
+            text = _short_text(item, 240)
+            if text and text not in warnings:
+                warnings.append(text)
+    return warnings[:12]
+
+
+def _status_from_filebrowser_runtime(result: dict[str, Any]) -> str:
+    if not result.get("ok"):
+        return "failed"
+    return "warning" if _warnings_from_filebrowser_runtime(result) else "success"
+
+
+def _trim_filebrowser_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    out = {
+        "ok": bool(result.get("ok")),
+        "run_id": result.get("run_id") or "",
+        "unit_ai": result.get("unit_ai") or "filebrowser_ai_sql",
+        "graph": deepcopy(result.get("graph") or {}),
+        "trace": deepcopy(result.get("trace") or []),
+        "semantic_frame": deepcopy(result.get("semantic_frame") or {}),
+        "filter": deepcopy(result.get("filter") or {}),
+        "columns": deepcopy(result.get("columns") or {}),
+        "merged": deepcopy(result.get("merged") or {}),
+        "preview": deepcopy(result.get("preview") or {}),
+    }
+    preview = out.get("preview") if isinstance(out.get("preview"), dict) else {}
+    if preview:
+        preview["rows"] = _safe_rows(preview.get("rows"))
+        preview["columns"] = _safe_string_list(preview.get("columns"), _MAX_PREVIEW_COLS)
+    return out
+
+
+def _summarize_filebrowser_runtime_result(result: dict[str, Any]) -> str:
+    merged = result.get("merged") if isinstance(result.get("merged"), dict) else {}
+    preview = result.get("preview") if isinstance(result.get("preview"), dict) else {}
+    sql = merged.get("display_sql") or merged.get("sql") or preview.get("display_sql") or ""
+    try:
+        row_count = int(preview.get("rows_returned") if preview.get("rows_returned") is not None else len(preview.get("rows") or []))
+    except Exception:
+        row_count = len(preview.get("rows") or [])
+    total = preview.get("total_rows")
+    bits = []
+    if sql:
+        bits.append(_short_text(sql, 220))
+    bits.append(f"preview {row_count} rows" + (f" / total {total}" if total is not None else ""))
+    warnings = _warnings_from_filebrowser_runtime(result)
+    if warnings:
+        bits.append(f"warnings {len(warnings)}")
+    return " · ".join(bits)
 
 
 def _plan_from_heuristic(prompt: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -293,9 +1024,12 @@ def _make_trace_row(step: dict[str, Any], exec_out: dict[str, Any]) -> dict[str,
         "kind": tool["kind"],
         "title": tool["title"],
         "ok": bool(exec_out.get("ok")),
+        "status": exec_out.get("status") or ("success" if exec_out.get("ok") else ("blocked" if exec_out.get("blocked") else "failed")),
+        "blocked": bool(exec_out.get("blocked")),
         "ms": exec_out.get("ms", 0),
         "input": step.get("input") or {},
         "result_preview": exec_out.get("result_preview", ""),
+        "warnings": list(exec_out.get("warnings") or []),
         "reason": step.get("reason", ""),
         "source": step.get("source", ""),
     }
@@ -310,7 +1044,52 @@ def _synthesize_reply(trace: list[dict[str, Any]]) -> str:
     if succ:
         head = succ[0]
         return f"[{head['title']}] {head['result_preview']}"
+    blocked = [tr for tr in trace if tr.get("blocked")]
+    if blocked:
+        head = blocked[0]
+        return f"[{head['title']}] {head['result_preview']}"
     return "도구를 선택했지만 prompt 가 자세하지 않아 결과를 만들지 못했습니다. 트레이스를 참고해 인자를 보완해 주세요."
+
+
+def _tool_summary_from_trace(trace: list[dict[str, Any]]) -> dict[str, Any]:
+    if not trace:
+        return {}
+    first = trace[0]
+    return {
+        "feature": first.get("tool") or "",
+        "action": first.get("kind") or "",
+        "intent": first.get("tool") or "",
+        "blocked": bool(first.get("blocked")),
+        "missing": ((first.get("result") or {}).get("missing") if isinstance(first.get("result"), dict) else []) or [],
+        "warnings": first.get("warnings") or [],
+        "inline_summary": first.get("result_preview") or "",
+    }
+
+
+def _attach_runtime_result(
+    out: dict[str, Any],
+    *,
+    prompt: str,
+    user: dict[str, Any] | None,
+    source: str = "home_agent",
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    trace = out.get("trace") if isinstance(out.get("trace"), list) else []
+    if "tool" not in out:
+        out["tool"] = _tool_summary_from_trace(trace)
+    snapshot = build_home_runtime_snapshot(
+        prompt=prompt,
+        result=out,
+        user=user,
+        source=source,
+        run_id=run_id,
+        save=True,
+    )
+    out["run_id"] = snapshot["run_id"]
+    out["graph"] = snapshot["graph"]
+    out["action_log"] = snapshot["action_log"]
+    out["runtime_status"] = snapshot["status"]
+    return out
 
 
 def _plan_from_alias(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
@@ -360,13 +1139,13 @@ def orchestrate(prompt: str, user: dict[str, Any] | None = None, top_k: int = 2)
         meta["planner"] = "heuristic"
 
     if not plan:
-        return {
+        return _attach_runtime_result({
             "ok": False,
             "prompt": prompt,
             "trace": [],
             "meta": meta,
             "reply": "키워드 매칭으로 적합한 도구를 찾지 못했습니다. AI 허브에서 도구를 활성화하거나 더 구체적인 단어를 사용해 주세요.",
-        }
+        }, prompt=prompt, user=user)
 
     trace: list[dict[str, Any]] = []
     accumulated: dict[str, Any] = {}
@@ -385,14 +1164,14 @@ def orchestrate(prompt: str, user: dict[str, Any] | None = None, top_k: int = 2)
                 if isinstance(v, str) and v and key not in accumulated:
                     accumulated[key] = v
 
-    return {
+    return _attach_runtime_result({
         "ok": True,
         "prompt": prompt,
         "trace": trace,
         "meta": meta,
         "reply": _synthesize_reply(trace),
         "picked_count": len(trace),
-    }
+    }, prompt=prompt, user=user)
 
 
 def orchestrate_stream(
@@ -410,9 +1189,24 @@ def orchestrate_stream(
         yield {"type": "reply", "ok": False, "error": "빈 prompt", "trace": []}
         return
 
+    run_id = _new_run_id()
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "catalog",
+        "status": "단위AI 기능 탐색중",
+        "graph": build_home_runtime_graph(statuses={"prompt_input": "running"}),
+    }
     tools = tool_registry.list_tools(include_stats=False)
     plan: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = {"planner": "heuristic"}
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "semantic_layer",
+        "status": "용어해석중",
+        "graph": build_home_runtime_graph(statuses={"prompt_input": "success", "semantic_layer": "running"}),
+    }
     plan = _plan_from_alias(prompt, tools)
     if plan:
         meta = {"planner": "alias", "step_count": len(plan)}
@@ -424,10 +1218,31 @@ def orchestrate_stream(
         plan, hmeta = _plan_from_heuristic(prompt, top_k=top_k)
         meta.update(hmeta)
         meta["planner"] = "heuristic"
+    selected_units = [
+        name
+        for name in (
+            _normalize_unit_name(str((step.get("tool") or {}).get("name") or ""))
+            for step in (plan or [])
+            if (step.get("tool") or {}).get("kind") == "unit_ai"
+        )
+        if name
+    ]
+    plan_statuses = {"prompt_input": "success", "semantic_layer": "success", "orchestrator": "running"}
+    for name in selected_units:
+        plan_statuses[f"unit_ai:{name}"] = "planned"
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "orchestrator",
+        "status": "실행 계획 정리중",
+        "graph": build_home_runtime_graph(selected_units=selected_units, statuses=plan_statuses),
+    }
 
     yield {
         "type": "plan",
+        "run_id": run_id,
         "meta": meta,
+        "graph": build_home_runtime_graph(selected_units=selected_units, statuses=plan_statuses),
         "steps": [
             {
                 "tool": s["tool"]["name"],
@@ -441,12 +1256,14 @@ def orchestrate_stream(
     }
 
     if not plan:
-        yield {
+        final = _attach_runtime_result({
             "type": "reply",
             "ok": False,
             "trace": [],
             "reply": "키워드 매칭으로 적합한 도구를 찾지 못했습니다.",
-        }
+            "meta": meta,
+        }, prompt=prompt, user=user, run_id=run_id)
+        yield final
         return
 
     trace: list[dict[str, Any]] = []
@@ -456,8 +1273,16 @@ def orchestrate_stream(
         if "prompt" not in merged_input:
             merged_input["prompt"] = prompt
         step["input"] = merged_input
+        running_unit = _normalize_unit_name(str(step["tool"].get("name") or "")) if step["tool"].get("kind") == "unit_ai" else ""
+        running_statuses = dict(plan_statuses)
+        running_statuses["orchestrator"] = "success"
+        if running_unit:
+            running_statuses[f"unit_ai:{running_unit}"] = "running"
         yield {
             "type": "step_start",
+            "run_id": run_id,
+            "status": "단위AI 실행중" if step["tool"].get("kind") == "unit_ai" else "실행 계획 정리중",
+            "graph": build_home_runtime_graph(selected_units=selected_units, statuses=running_statuses),
             "index": idx,
             "tool": step["tool"]["name"],
             "kind": step["tool"]["kind"],
@@ -466,11 +1291,16 @@ def orchestrate_stream(
         exec_out = _execute_step(step["tool"], merged_input)
         row = _make_trace_row(step, exec_out)
         trace.append(row)
+        step_statuses = _runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units)
         yield {
             "type": "step_end",
+            "run_id": run_id,
+            "status": "단위AI 실행중" if step["tool"].get("kind") == "unit_ai" else "실행 계획 정리중",
+            "graph": build_home_runtime_graph(selected_units=selected_units, statuses=step_statuses),
             "index": idx,
             "tool": step["tool"]["name"],
             "ok": row["ok"],
+            "node_status": row.get("status"),
             "ms": row["ms"],
             "result_preview": row["result_preview"],
         }
@@ -482,9 +1312,21 @@ def orchestrate_stream(
                     accumulated[key] = v
 
     yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "result_renderer",
+        "status": "결과 정리중",
+        "graph": build_home_runtime_graph(
+            selected_units=selected_units,
+            statuses=_runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units),
+        ),
+    }
+    final = _attach_runtime_result({
         "type": "reply",
         "ok": True,
         "trace": trace,
         "reply": _synthesize_reply(trace),
         "picked_count": len(trace),
-    }
+        "meta": meta,
+    }, prompt=prompt, user=user, run_id=run_id)
+    yield final

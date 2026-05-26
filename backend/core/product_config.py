@@ -7,8 +7,8 @@ All products are stored in one master YAML file:
 
     product_config/products.yaml
 
-The TableMap UI edits a selected product block, while Wafer Layout reads and
-writes the same block through this module so layout changes stay in YAML.
+The TableMap UI edits a selected product block. Legacy wafer geometry fields
+remain readable for archived tooling and dashboard compatibility.
 """
 from __future__ import annotations
 import json
@@ -42,7 +42,7 @@ SCHEMA = {
     "target_spec": "dict[str, [lsl, usl, target]] — per-item spec limits",
     "measured_shots": "list[[x,y]] — ET/INLINE covered shot grid (for edge detection)",
     "probe_card_watch": "dict — ET step_id/step_seq probe-card health watch rules",
-    "wafer_layout": "dict — wafer/shot/chip/TEG geometry preset used by Wafer Layout tab",
+    "wafer_layout": "dict — legacy wafer/shot/chip/TEG geometry preset",
 }
 
 TEMPLATE = {

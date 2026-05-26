@@ -47,8 +47,8 @@ def ensure_qa_users() -> dict:
     if not isinstance(users, list):
         users = []
     qa_accounts = {
-        "qa_admin": {"password": "QaAdmin123!", "role": "admin", "tabs": "filebrowser,dashboard,splittable,ettime,waferlayout,tracker,inform,meeting,calendar,tablemap,ml,devguide"},
-        "qa_user": {"password": "QaUser123!", "role": "user", "tabs": "filebrowser,dashboard,splittable,ettime,waferlayout,tracker,inform,meeting,calendar"},
+        "qa_admin": {"password": "QaAdmin123!", "role": "admin", "tabs": "filebrowser,dashboard,splittable,tracker,inform,meeting,calendar,tablemap,ml,devguide,diagnosis"},
+        "qa_user": {"password": "QaUser123!", "role": "user", "tabs": "filebrowser,dashboard,splittable,tracker,inform,meeting,calendar,diagnosis"},
     }
     changed = False
     by_name = {str(u.get("username") or ""): u for u in users if isinstance(u, dict)}
@@ -153,8 +153,8 @@ def run_persona(name: str, username: str, password: str, role: str) -> dict:
     status, body, latency = req("GET", "/api/splittable/products", token=token)
     products = (body or {}).get("products", []) if isinstance(body, dict) else []
     check(rows, f"{name}: /api/splittable/products", status, 200, f"products={len(products)}", latency)
-    status, body, latency = req("GET", "/api/waferlayout/grid?product=PRODUCT_A0", token=token)
-    check(rows, f"{name}: /api/waferlayout/grid", status, 200, f"has_chip_w={bool((body or {}).get('wafer_layout', {}).get('chip_w_mm'))}", latency)
+    status, body, latency = req("GET", "/api/agent/status", token=token)
+    check(rows, f"{name}: /api/agent/status", status, 200, f"state={(body or {}).get('state') if isinstance(body, dict) else ''}", latency)
     status, body, latency = req("GET", "/api/admin/users", token=token)
     check(rows, f"{name}: /api/admin/users", status, 200 if role == "admin" else [401, 403], "", latency)
     status, body, latency = req("GET", "/api/admin/qa/report", token=token)
@@ -169,7 +169,6 @@ def run_persona(name: str, username: str, password: str, role: str) -> dict:
 def run_edge_cases(admin_token: str, user_token: str) -> list[dict]:
     rows: list[dict] = []
     scenarios = [
-        ("missing product", "GET", "/api/waferlayout/grid?product=", None, admin_token, [400]),
         ("empty splittable product", "GET", "/api/splittable/view?product=", None, admin_token, [400, 404]),
         ("tracker pagination high", "GET", "/api/tracker/issues?limit=5&offset=99999", None, admin_token, [200]),
         ("unauthorized admin users", "GET", "/api/admin/users", None, user_token, [401, 403]),
@@ -177,7 +176,6 @@ def run_edge_cases(admin_token: str, user_token: str) -> list[dict]:
         ("bad json login-like", "POST", "/api/auth/login", "not-json", "", [400]),
         ("special chars notify", "POST", "/api/admin/send-message", {"to_user": "qa_user", "message": "한글 <> ' \" ; -- QA"}, admin_token, [200, 404]),
         ("long inquiry", "POST", "/api/admin/send-inquiry", {"username": "qa_user", "message": "x" * 10000}, user_token, [200, 400]),
-        ("edge shots empty ids", "GET", "/api/waferlayout/edge-shots?product=PRODUCT_A0&teg_ids=", None, admin_token, [200]),
         ("calendar wide range", "GET", "/api/calendar/events?start=1900-01-01&end=2100-12-31", None, admin_token, [200]),
     ]
     for name, method, path, body, token, expect in scenarios:
@@ -234,7 +232,7 @@ def build_ux_scores() -> dict:
     files = {
         "home": ROOT / "frontend" / "src" / "pages" / "My_Home.jsx",
         "admin": ROOT / "frontend" / "src" / "pages" / "My_Admin.jsx",
-        "waferlayout": ROOT / "frontend" / "src" / "pages" / "My_WaferLayout.jsx",
+        "diagnosis": ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx",
         "tracker": ROOT / "frontend" / "src" / "pages" / "My_Tracker.jsx",
     }
     pages = []

@@ -6,6 +6,10 @@
 
 ## Done
 
+- (Codex) 단위기능 AI 질문 이력/LangGraph Node IO 배치와 AI SQL sample_profile 계약 정리
+- (Codex) Home Flow-i runtime graph를 Agent 탭에서 관찰 가능하게 연결
+- (Codex) FileBrowser AI SQL ORDER BY SQL문 통합과 Agent 질문 이력 디버그 UI
+- (Codex) FileBrowser AI SQL SELECT projection 통합
 - (Codex) Agent 탭 FileBrowser AI SQL LangGraph 실행 흐름 구현
 - (Codex) FileBrowser S3 신호등 fast status와 local freshness 지연 보강
 - (Codex) Wiki 내부지식 정리와 graph curated view 적용

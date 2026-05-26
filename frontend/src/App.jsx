@@ -125,7 +125,7 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
 
 const NAV_GROUPS = [
   { id: "home", label: "홈", keys: ["home"], direct: true },
-  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "ettime", "waferlayout"] },
+  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable"] },
   { id: "work", label: "업무", keys: ["inform", "meeting", "calendar", "tracker"] },
   { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
   { id: "admin", label: "관리", keys: ["admin", "devguide"] },

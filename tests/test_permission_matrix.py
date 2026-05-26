@@ -52,11 +52,6 @@ ADMIN_ONLY_WRITE_ENDPOINTS = [
     ("POST", "/api/s3ingest/aws-config/save", "require_admin"),
     ("POST", "/api/catalog/matching/save", "page_manager:splittable"),
     ("POST", "/api/catalog/s3/config/save", "page_manager:filebrowser"),
-    ("POST", "/api/agent/admin-tools/matching/suggest", "require_admin"),
-    ("POST", "/api/agent/admin-tools/matching/apply", "require_admin"),
-    ("POST", "/api/agent/admin-tools/rulebook/suggest", "require_admin"),
-    ("POST", "/api/agent/admin-tools/rulebook/apply", "require_admin"),
-    ("POST", "/api/agent/admin-tools/knowledge/ingest", "require_admin"),
 ]
 
 
@@ -104,7 +99,7 @@ def test_global_admin_passes_page_admin_dependency(monkeypatch):
 def test_page_admin_aliases_canonicalize(monkeypatch, tmp_path):
     settings = tmp_path / "admin_settings.json"
     settings.write_text(
-        '{"page_admins":{"informs":["alice"],"meetings":["bob"],"wafer_map":["carol"],"dbmap":["dana"]}}',
+        '{"page_admins":{"informs":["alice"],"meetings":["bob"],"dbmap":["dana"]}}',
         encoding="utf-8",
     )
     monkeypatch.setattr(auth_core.PATHS, "data_root", tmp_path)
@@ -114,7 +109,6 @@ def test_page_admin_aliases_canonicalize(monkeypatch, tmp_path):
         "inform": ["alice"],
         "meeting": ["bob"],
         "tablemap": ["dana"],
-        "waferlayout": ["carol"],
     }
 
 
@@ -123,8 +117,6 @@ def test_shared_write_routes_are_not_session_middleware_only():
     sensitive_prefixes = (
         "/api/s3ingest/",
         "/api/catalog/",
-        "/api/agent/wiki/",
-        "/api/agent/schema",
         "/api/knowledge/",
     )
     sensitive_exact = {

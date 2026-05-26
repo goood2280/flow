@@ -1,7 +1,6 @@
 const PAGE_ID_ALIASES = {
   informs: "inform",
   meetings: "meeting",
-  wafer_map: "waferlayout",
   dbmap: "tablemap",
 };
 

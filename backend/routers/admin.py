@@ -56,7 +56,6 @@ def _scrub_user(u: dict) -> dict:
     out["effective_permissions"] = effective_permissions(u)
     return out
 DL_LOG = PATHS.download_log
-ET_DL_LOG = PATHS.data_root / "logs" / "ettime_downloads.jsonl"
 ACTIVITY_LOG = PATHS.activity_log
 SETTINGS_FILE = PATHS.data_root / "settings.json"
 # v8.3.0: data_roots runtime overrides live in a separate file that core/roots.py
@@ -432,8 +431,8 @@ class BulkUsersReq(BaseModel):
 
 
 BULK_DEFAULT_USER_TABS = [
-    "filebrowser", "dashboard", "splittable", "diagnosis", "ettime",
-    "waferlayout", "inform", "meeting", "calendar",
+    "filebrowser", "dashboard", "splittable", "diagnosis",
+    "inform", "meeting", "calendar",
 ]
 BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "devguide"])
 
@@ -480,7 +479,7 @@ def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin
             u["status"] = "approved"
             if not u.get("tabs"):
                 # v8.8.3: 신규 승인 시 inform/meeting/calendar 기본 포함.
-                u["tabs"] = "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar"
+                u["tabs"] = "filebrowser,dashboard,splittable,diagnosis,inform,meeting,calendar"
             write_users(users)
             send_notify(req.username, "Account Approved",
                         "Your account has been approved.", "info")
@@ -706,9 +705,10 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
 def get_user_tabs(request: Request, username: str = Query(...)):
     """v8.4.6: 본인 또는 admin 만.
     v8.8.3: inform/meeting/calendar 하위호환 — 기존 유저의 tabs 에 누락됐으면 자동 추가.
-    v9.0.x: ET 레포트/WF Layout 은 데이터 기본 화면이므로 기존 유저에게도 기본 노출."""
+    v9.0.x: archived tabs are filtered out of existing saved preferences."""
     # v8.8.3: 새로 추가된 탭 — 기존 유저는 기본 허용.
-    _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
+    _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "diagnosis"}
+    _ARCHIVED_TABS = {"ettime", "waferlayout"}
     verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
@@ -717,9 +717,9 @@ def get_user_tabs(request: Request, username: str = Query(...)):
             raw = u.get("tabs", "")
             if not raw:
                 tabs_list = ["filebrowser", "dashboard", "splittable",
-                             "diagnosis", "ettime", "waferlayout", "inform", "meeting", "calendar"]
+                             "diagnosis", "inform", "meeting", "calendar"]
             else:
-                tabs_list = [t.strip() for t in raw.split(",") if t.strip()]
+                tabs_list = [t.strip() for t in raw.split(",") if t.strip() and t.strip() not in _ARCHIVED_TABS]
                 # 기존 유저가 저장된 tabs 에 신규 탭을 갖고 있지 않으면 자동 추가 (하위호환).
                 for nt in _NEW_DEFAULT_TABS:
                     if nt not in tabs_list:
@@ -886,11 +886,6 @@ def get_log_users(_admin=Depends(require_admin)):
 @router.get("/download-history")
 def download_history(limit: int = Query(200), _admin=Depends(require_admin)):
     return {"logs": jsonl_read(DL_LOG, limit)}
-
-
-@router.get("/ettime/download-log")
-def ettime_download_log(limit: int = Query(500), _admin=Depends(require_admin)):
-    return {"logs": jsonl_read(ET_DL_LOG, limit)}
 
 
 # ── Global Settings (v8.1.5) ──

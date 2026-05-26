@@ -7,11 +7,12 @@ trace that the Agent tab can render.
 from __future__ import annotations
 
 import json
+import operator
 import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, TypedDict
 
 from fastapi import HTTPException
 
@@ -30,10 +31,29 @@ GRAPH_NODES: tuple[dict[str, str], ...] = (
 GRAPH_EDGES: tuple[dict[str, str], ...] = (
     {"source": "context_sample", "target": "semantic_layer"},
     {"source": "semantic_layer", "target": "filter_draft"},
-    {"source": "filter_draft", "target": "column_draft"},
+    {"source": "semantic_layer", "target": "column_draft"},
+    {"source": "filter_draft", "target": "merge"},
     {"source": "column_draft", "target": "merge"},
     {"source": "merge", "target": "preview_apply"},
 )
+
+
+class _RuntimeState(TypedDict, total=False):
+    run_id: str
+    request: dict[str, Any]
+    username: str
+    columns: list[str]
+    dtypes: dict[str, str]
+    sample_rows: list[dict[str, Any]]
+    sample_profile: dict[str, Any]
+    semantic_frame: dict[str, Any]
+    filter: dict[str, Any]
+    columns_result: dict[str, Any]
+    merged: dict[str, Any]
+    preview: dict[str, Any]
+    node_errors: dict[str, str]
+    trace: Annotated[list[dict[str, Any]], operator.add]
+    runtime_warnings: Annotated[list[str], operator.add]
 
 
 def filebrowser_ai_sql_graph(statuses: dict[str, str] | None = None) -> dict[str, Any]:
@@ -82,6 +102,33 @@ def _string_list(value: Any, limit: int = 100) -> list[str]:
     return out
 
 
+def _preview_summary(preview: dict[str, Any]) -> dict[str, Any]:
+    rows = preview.get("rows") if isinstance(preview.get("rows"), list) else []
+    columns = preview.get("columns") if isinstance(preview.get("columns"), list) else []
+    total_rows = preview.get("total_rows")
+    try:
+        total_rows = int(total_rows) if total_rows is not None else len(rows)
+    except Exception:
+        total_rows = len(rows)
+    return {
+        "columns": [str(col or "").strip() for col in columns if str(col or "").strip()][:100],
+        "rows": [],
+        "rows_returned": len(rows),
+        "total_rows": total_rows,
+        "row_count": total_rows,
+        "preview_capped": bool(preview.get("preview_capped")),
+        "warnings": list(preview.get("warnings") or []),
+        "selected_cols": preview.get("selected_cols"),
+        "total_cols": int(preview.get("total_cols") or 0),
+        "row_count_unknown": bool(preview.get("row_count_unknown")),
+        "applied_sql": preview.get("applied_sql") or "",
+        "display_sql": preview.get("display_sql") or "",
+        "applied_where_sql": preview.get("applied_where_sql") or "",
+        "applied_select_cols": _string_list(preview.get("applied_select_cols"), limit=300),
+        "sort": preview.get("sort") if isinstance(preview.get("sort"), dict) else {},
+    }
+
+
 def _target_summary(req: dict[str, Any]) -> dict[str, str]:
     return {
         "scope": _safe_text(req.get("scope") or "db_product", 80),
@@ -96,7 +143,6 @@ def _trace_output(node_id: str, state: dict[str, Any], result: dict[str, Any]) -
         return {
             "source": (state.get("sample_profile") or {}).get("source") or "",
             "columns_count": len(state.get("columns") or []),
-            "sample_rows": state.get("sample_rows") or [],
             "sample_profile": {
                 key: (state.get("sample_profile") or {}).get(key)
                 for key in ("rows_sampled", "columns_scanned", "columns_profiled", "sampling_policy")
@@ -111,12 +157,11 @@ def _trace_output(node_id: str, state: dict[str, Any], result: dict[str, Any]) -
     if node_id == "merge":
         return state.get("merged") or {}
     if node_id == "preview_apply":
-        return state.get("preview") or {}
+        return _preview_summary(state.get("preview") or {})
     return result
 
 
-def _append_trace(
-    state: dict[str, Any],
+def _trace_row(
     *,
     node_id: str,
     status: str,
@@ -124,9 +169,9 @@ def _append_trace(
     output: Any,
     warnings: list[str],
     started: float,
-) -> None:
+) -> dict[str, Any]:
     label = next((node["label"] for node in GRAPH_NODES if node["id"] == node_id), node_id)
-    state.setdefault("trace", []).append({
+    return {
         "node_id": node_id,
         "label": label,
         "status": status,
@@ -134,7 +179,7 @@ def _append_trace(
         "output": output,
         "warnings": warnings,
         "duration_ms": int((time.perf_counter() - started) * 1000),
-    })
+    }
 
 
 def _node_status(warnings: list[str], failed: bool = False) -> str:
@@ -149,28 +194,37 @@ def _execute_node(
     body: Callable[[dict[str, Any], list[str]], dict[str, Any] | None],
     input_summary: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
+    """Run a node and return the diff to merge into state.
+
+    The diff contains only the keys this node produced plus a single-row trace
+    list, so two parallel branches can run concurrently and their state
+    updates can be merged by LangGraph's reducer (operator.add for trace).
+    """
     started = time.perf_counter()
     warnings: list[str] = []
     failed = False
     result: dict[str, Any] = {}
+    diff: dict[str, Any] = {}
     try:
         result = body(state, warnings) or {}
-        state.update(result)
+        diff.update(result)
     except Exception as exc:
         failed = True
         warnings.append(f"{type(exc).__name__}: {exc}")
-        state.setdefault("node_errors", {})[node_id] = warnings[-1]
+        diff["node_errors"] = {**(state.get("node_errors") or {}), node_id: warnings[-1]}
     status = _node_status(warnings, failed)
-    _append_trace(
-        state,
-        node_id=node_id,
-        status=status,
-        input_summary=input_summary(state),
-        output=_trace_output(node_id, state, result),
-        warnings=warnings,
-        started=started,
-    )
-    return state
+    merged_view = {**state, **diff}
+    diff["trace"] = [
+        _trace_row(
+            node_id=node_id,
+            status=status,
+            input_summary=input_summary(merged_view),
+            output=_trace_output(node_id, merged_view, result),
+            warnings=warnings,
+            started=started,
+        )
+    ]
+    return diff
 
 
 def _context_input(state: dict[str, Any]) -> dict[str, Any]:
@@ -181,7 +235,7 @@ def _prompt_input(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "natural_language": _safe_text((state.get("request") or {}).get("natural_language"), 240),
         "columns_count": len(state.get("columns") or []),
-        "sample_rows": len(state.get("sample_rows") or []),
+        "sample_profile_rows": (state.get("sample_profile") or {}).get("rows_sampled") or 0,
     }
 
 
@@ -210,24 +264,18 @@ def _context_sample(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
         preferred_selected_columns=preferred,
     )
     warnings.extend(str(item) for item in (context_warnings or []))
-    sample_rows = fb._safe_sample_rows(sample_rows or [], max_rows=10, max_cols=80, max_value_len=120)
-    sample_profile = fb._build_ai_sql_sample_profile(
-        columns,
-        dtypes,
-        sample_rows,
-        source=(sample_profile or {}).get("source") or "request",
-        source_sampled=bool((sample_profile or {}).get("source_sampled")),
-        warnings=warnings,
-        prompt=prompt,
-        preferred_selected_columns=preferred,
-        max_rows=10,
-    )
+    if warnings:
+        profile_warnings = list((sample_profile or {}).get("warnings") or [])
+        for item in warnings:
+            if item not in profile_warnings:
+                profile_warnings.append(item)
+        sample_profile = {**(sample_profile or {}), "warnings": profile_warnings}
     if not columns:
         warnings.append("No schema columns were resolved for this target.")
     return {
         "columns": list(columns or []),
         "dtypes": dict(dtypes or {}),
-        "sample_rows": sample_rows,
+        "sample_rows": [],
         "sample_profile": sample_profile,
     }
 
@@ -287,7 +335,13 @@ def _llm_json(
     schema: dict[str, Any],
     timeout: int = 20,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    llm_info: dict[str, Any] = {"available": False, "used": False, "error": "", "node_id": node_id}
+    llm_info: dict[str, Any] = {
+        "available": False,
+        "used": False,
+        "error": "",
+        "node_id": node_id,
+        "system": _safe_text(system, 4000),
+    }
     warnings: list[str] = []
     plan: dict[str, Any] = {}
     try:
@@ -335,7 +389,7 @@ def _filter_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
             "natural_language": prompt,
             "columns": columns[:200],
             "dtypes": state.get("dtypes") or {},
-            "sample_rows": state.get("sample_rows") or [],
+            "sample_rows": [],
             "sample_profile": state.get("sample_profile") or {},
             "semantic_frame": state.get("semantic_frame") or {},
             "step_mapping_context": fb._public_ai_sql_step_mapping_context(step_mapping_context),
@@ -377,6 +431,27 @@ def _filter_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
             sql = ""
             warnings.append(f"deterministic fallback failed: {fallback_exc}")
     resolved_values = [str(v) for v in (plan.get("resolved_values") or []) if str(v or "").strip()][:50]
+    if fallback:
+        wafer_numbers = fb._prompt_hash_wafer_numbers(prompt)
+        suffix_re = fb._hash_wafer_misread_suffix_re(wafer_numbers)
+        if suffix_re:
+            kept: list[str] = []
+            dropped: list[str] = []
+            for value in resolved_values:
+                if suffix_re.search(value):
+                    dropped.append(value)
+                else:
+                    kept.append(value)
+            if dropped:
+                warnings.append(
+                    "hash-wafer misread: dropped LLM resolved_values "
+                    + ", ".join(dropped[:5])
+                )
+                resolved_values = kept
+                for number in wafer_numbers[:5]:
+                    token = str(number)
+                    if token not in resolved_values:
+                        resolved_values.append(token)
     return {
         "filter": {
             "sql": sql,
@@ -407,7 +482,7 @@ def _column_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
             "natural_language": prompt,
             "columns": columns[:300],
             "dtypes": state.get("dtypes") or {},
-            "sample_rows": state.get("sample_rows") or [],
+            "sample_rows": [],
             "sample_profile": state.get("sample_profile") or {},
             "semantic_frame": state.get("semantic_frame") or {},
             "preferred_selected_columns": preferred,
@@ -444,27 +519,50 @@ def _column_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     }
 
 
+def _build_display_sql(selected_columns: list[str], where_sql: str, sort_spec: dict | None = None) -> str:
+    try:
+        return _fb()._build_ai_sql_display_sql(selected_columns, where_sql, sort_spec or {})
+    except Exception:
+        pass
+    cols_part = ", ".join(selected_columns) if selected_columns else ""
+    if cols_part and where_sql:
+        base = f"SELECT {cols_part} WHERE {where_sql}"
+    elif cols_part:
+        base = f"SELECT {cols_part}"
+    else:
+        base = where_sql or ""
+    if sort_spec and sort_spec.get("column"):
+        base = f"{base} ORDER BY {sort_spec.get('column')} {str(sort_spec.get('direction') or 'asc').upper()}"
+    return base.strip()
+
+
 def _merge(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     fb = _fb()
     columns = list(state.get("columns") or [])
     filter_result = state.get("filter") or {}
     column_result = state.get("columns_result") or {}
-    sql = _safe_text(filter_result.get("sql"), 1000)
+    where_sql = _safe_text(filter_result.get("sql"), 1000)
     try:
-        sql, validate_warnings = fb._validate_ai_sql_filter(sql, columns)
+        where_sql, validate_warnings = fb._validate_ai_sql_filter(where_sql, columns)
         warnings.extend(validate_warnings)
     except Exception as exc:
         warnings.append(f"merged SQL rejected: {exc}")
-        sql = ""
+        where_sql = ""
     selected_columns = fb._filter_ai_sql_selected_columns(
         column_result.get("selected_columns") or [],
         columns,
         warnings,
         "merge_selected_columns",
     )
+    prompt = _safe_text((state.get("request") or {}).get("natural_language"), 2000)
+    sort_spec = fb._fallback_ai_sql_sort(prompt, columns)
+    display_sql = _build_display_sql(selected_columns, where_sql, sort_spec)
     return {
         "merged": {
-            "sql": sql,
+            "sql": display_sql,
+            "display_sql": display_sql,
+            "where_sql": where_sql,
+            "sort": sort_spec,
             "selected_columns": selected_columns,
             "warnings": list(warnings),
         }
@@ -525,6 +623,7 @@ def _preview_apply(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
         preview_cols=100,
         source_size=source_size,
         settings=settings,
+        sort_spec=merged.get("sort") if isinstance(merged.get("sort"), dict) else {},
     )
     resp = fb._finalize_preview_response(resp, settings)
     preview_warnings = list(warnings)
@@ -532,18 +631,22 @@ def _preview_apply(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
         preview_warnings.append("Preview columns were capped.")
     if resp.get("preview_capped"):
         preview_warnings.append("Preview rows were capped.")
-    return {
-        "preview": {
-            "columns": resp.get("columns") or [],
-            "rows": resp.get("data") or [],
-            "total_rows": int(resp.get("total_rows") or 0),
-            "preview_capped": bool(resp.get("preview_capped")),
-            "warnings": preview_warnings,
-            "selected_cols": resp.get("selected_cols"),
-            "total_cols": int(resp.get("total_cols") or 0),
-            "row_count_unknown": bool(resp.get("row_count_unknown")),
-        }
-    }
+    preview = _preview_summary({
+        "columns": resp.get("columns") or [],
+        "rows": resp.get("data") or [],
+        "total_rows": int(resp.get("total_rows") or 0),
+        "preview_capped": bool(resp.get("preview_capped")),
+        "warnings": preview_warnings,
+        "selected_cols": resp.get("selected_cols"),
+        "total_cols": int(resp.get("total_cols") or 0),
+        "row_count_unknown": bool(resp.get("row_count_unknown")),
+        "applied_sql": sql,
+        "display_sql": sql,
+        "applied_where_sql": _safe_text(merged.get("where_sql"), 1000),
+        "applied_select_cols": list(selected_columns),
+        "sort": merged.get("sort") if isinstance(merged.get("sort"), dict) else {},
+    })
+    return {"preview": preview}
 
 
 _NODE_RUNNERS: tuple[tuple[str, Callable[[dict[str, Any], list[str]], dict[str, Any] | None], Callable[[dict[str, Any]], dict[str, Any]]], ...] = (
@@ -556,6 +659,16 @@ _NODE_RUNNERS: tuple[tuple[str, Callable[[dict[str, Any], list[str]], dict[str, 
 )
 
 
+def _merge_diff_into_state(state: dict[str, Any], diff: dict[str, Any]) -> dict[str, Any]:
+    for key, value in diff.items():
+        if key in ("trace", "runtime_warnings"):
+            existing = state.get(key) or []
+            state[key] = list(existing) + list(value or [])
+        else:
+            state[key] = value
+    return state
+
+
 def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
     try:
         from langgraph.graph import END, StateGraph
@@ -564,8 +677,9 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
 
     try:
         run_state = deepcopy(state)
-        graph = StateGraph(dict)
-        for node_id, body, input_summary in _NODE_RUNNERS:
+        graph = StateGraph(_RuntimeState)
+        node_specs = {node_id: (body, input_summary) for node_id, body, input_summary in _NODE_RUNNERS}
+        for node_id, (body, input_summary) in node_specs.items():
             graph.add_node(
                 node_id,
                 lambda current, _node_id=node_id, _body=body, _input=input_summary: _execute_node(
@@ -578,7 +692,8 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
         graph.set_entry_point("context_sample")
         graph.add_edge("context_sample", "semantic_layer")
         graph.add_edge("semantic_layer", "filter_draft")
-        graph.add_edge("filter_draft", "column_draft")
+        graph.add_edge("semantic_layer", "column_draft")
+        graph.add_edge("filter_draft", "merge")
         graph.add_edge("column_draft", "merge")
         graph.add_edge("merge", "preview_apply")
         graph.add_edge("preview_apply", END)
@@ -594,7 +709,8 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
 def _run_sequential(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("runtime_warnings", []).append("LangGraph is not installed; sequential fallback runner used.")
     for node_id, body, input_summary in _NODE_RUNNERS:
-        state = _execute_node(state, node_id, body, input_summary)
+        diff = _execute_node(state, node_id, body, input_summary)
+        _merge_diff_into_state(state, diff)
     return state
 
 
@@ -639,6 +755,6 @@ def run_filebrowser_ai_sql_runtime(payload: dict[str, Any], *, username: str = "
         "semantic_frame": final_state.get("semantic_frame") or {},
         "filter": final_state.get("filter") or {"sql": "", "warnings": [], "llm": {}},
         "columns": final_state.get("columns_result") or {"selected_columns": [], "warnings": [], "llm": {}},
-        "merged": final_state.get("merged") or {"sql": "", "selected_columns": []},
+        "merged": final_state.get("merged") or {"sql": "", "display_sql": "", "where_sql": "", "selected_columns": []},
         "preview": preview or {"columns": [], "rows": [], "total_rows": 0, "preview_capped": False, "warnings": []},
     }

@@ -55,7 +55,7 @@ from core.auth import current_user
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
-    jsonl_append, jsonl_read, csv_response, safe_filename,
+    jsonl_append, jsonl_read, jsonl_trim, csv_response, safe_filename,
     DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
     data_files_limited, source_data_files, load_json, save_json,
 )
@@ -111,6 +111,7 @@ _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
 FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
 FILEBROWSER_AGENT_PROMPTS_FILE = "filebrowser_agent_prompts.json"
 FILEBROWSER_AI_SQL_FEEDBACK_FILE = "filebrowser_ai_sql_feedback.jsonl"
+FILEBROWSER_AI_SQL_HISTORY_FILE = "filebrowser_ai_sql_history.jsonl"
 FILEBROWSER_AGENT_PROMPTS_DEFAULT_FILE = _BACKEND_ROOT / "core" / "filebrowser_agent_prompts.default.json"
 DEFAULT_CSV_FULL_READ_MAX_BYTES = 10 * 1024 * 1024
 MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
@@ -5861,6 +5862,170 @@ def _normalize_view_sql_filter(sql: str, columns: list[str] | tuple[str, ...] | 
     text = _normalize_where_expression(sql, columns)
     return _normalize_wafer_sql_filter(text, columns)
 
+
+_AI_SQL_SELECT_PREFIX_RE = re.compile(
+    r"^\s*SELECT\s+(?P<cols>[^;]+?)(?:\s+WHERE\s+(?P<rest>.+?))?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_AI_SQL_ORDER_BY_SPLIT_RE = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
+_AI_SQL_ORDER_BY_RE = re.compile(
+    r"^\s*(?P<col>`?[A-Za-z_][A-Za-z0-9_]*`?|\"[A-Za-z_][A-Za-z0-9_]*\")"
+    r"\s+(?P<direction>ASC|DESC)"
+    r"(?:\s+NULLS\s+(?P<nulls>FIRST|LAST))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_ai_sql_order_by(sql: str) -> tuple[str, str]:
+    text = str(sql or "").strip()
+    if not text:
+        return "", ""
+    masked = _mask_sql_literals(text)
+    matches = list(_AI_SQL_ORDER_BY_SPLIT_RE.finditer(masked))
+    if not matches:
+        return text, ""
+    if len(matches) > 1:
+        raise ValueError("SQL must contain a single ORDER BY clause")
+    match = matches[0]
+    return text[:match.start()].strip(), text[match.end():].strip()
+
+
+def _parse_ai_sql_order_by(order_sql: str, columns: list[str] | tuple[str, ...] | None = None) -> dict:
+    text = str(order_sql or "").strip()
+    if not text:
+        return {}
+    if re.search(r";|--|/\*|\*/", text):
+        raise ValueError("ORDER BY must be a single read-only sort clause")
+    if re.search(r"\b(SELECT|FROM|WHERE|JOIN|GROUP\s+BY|HAVING|LIMIT|OFFSET|WITH)\b", text, flags=re.I):
+        raise ValueError("ORDER BY must contain only one column, direction, and optional NULLS order")
+    match = _AI_SQL_ORDER_BY_RE.match(text)
+    if not match:
+        raise ValueError("ORDER BY must use: column ASC|DESC [NULLS FIRST|LAST]")
+    column = match.group("col").strip().strip("`").strip('"')
+    lookup = _column_lookup(list(columns or []))
+    hit = lookup.get(column.casefold()) if lookup else column
+    if columns and not hit:
+        raise ValueError(f"ORDER BY referenced unknown column: {column}")
+    return {
+        "column": hit,
+        "direction": match.group("direction").casefold(),
+        "nulls": (match.group("nulls") or "last").casefold(),
+    }
+
+
+def _parse_ai_sql_select_prefix(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> tuple[str, list[str]]:
+    """Detect and strip a SELECT prefix from a Flow AI SQL string.
+
+    Accepts forms like:
+      - "SELECT a, b WHERE x = 1"     -> ("x = 1", ["a", "b"])
+      - "SELECT a, b"                  -> ("",      ["a", "b"])
+      - "SELECT * WHERE x = 1"         -> ("x = 1", [])
+      - "x = 1"                        -> ("x = 1", [])
+
+    Returns the original (sql, []) when no SELECT prefix is present, when the
+    projection contains complex expressions (functions, *, aliases), or when a
+    referenced column is unknown.
+    """
+    text = str(sql or "").strip()
+    if not text:
+        return "", []
+    if not re.match(r"^\s*SELECT\b", text, flags=re.I):
+        return text, []
+    if re.search(r"\bFROM\b", _mask_sql_literals(text), flags=re.I):
+        return text, []
+    match = _AI_SQL_SELECT_PREFIX_RE.match(text)
+    if not match:
+        return text, []
+    raw_cols = (match.group("cols") or "").strip()
+    rest = (match.group("rest") or "").strip()
+    if not raw_cols or raw_cols == "*":
+        return rest, []
+    out_cols: list[str] = []
+    for part in raw_cols.split(","):
+        token = part.strip().strip("`").strip('"')
+        if not token:
+            continue
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            return text, []
+        out_cols.append(token)
+    all_columns = list(columns or [])
+    if all_columns:
+        lookup = {str(c).casefold(): str(c) for c in all_columns}
+        resolved: list[str] = []
+        for col in out_cols:
+            hit = lookup.get(col.casefold())
+            if hit is None:
+                return text, []
+            if hit not in resolved:
+                resolved.append(hit)
+        out_cols = resolved
+    return rest, out_cols
+
+
+def _parse_ai_sql_display_sql(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> tuple[str, list[str], dict]:
+    """Split Flow's display SQL into WHERE SQL, selected columns, and ORDER BY."""
+    text = str(sql or "").strip()
+    if not text:
+        return "", [], {}
+    body, order_sql = _split_ai_sql_order_by(text)
+    sort_spec = _parse_ai_sql_order_by(order_sql, columns) if order_sql else {}
+    where_sql, selected = _parse_ai_sql_select_prefix(body, columns)
+    return where_sql, selected, sort_spec
+
+
+def _merge_display_sql_into_args(
+    sql: str,
+    select_cols: str,
+    sort_spec: dict | None,
+    columns: list[str] | tuple[str, ...] | None,
+) -> tuple[str, str, dict]:
+    where_sql, parsed_cols, parsed_sort = _parse_ai_sql_display_sql(sql, columns)
+    existing = [token.strip() for token in (select_cols or "").split(",") if token.strip()]
+    merged: list[str] = []
+    for col in parsed_cols:
+        if col not in merged:
+            merged.append(col)
+    for col in existing:
+        if col not in merged:
+            merged.append(col)
+    return where_sql, ",".join(merged), (parsed_sort or sort_spec or {})
+
+
+def _merge_select_prefix_into_args(sql: str, select_cols: str, columns: list[str] | tuple[str, ...] | None) -> tuple[str, str]:
+    """Extract a `SELECT cols WHERE rest` prefix from sql and fold cols into select_cols.
+
+    Idempotent: if sql has no SELECT prefix, both inputs are returned unchanged.
+    SELECT-derived columns are placed first (user-stated projection wins); any
+    existing select_cols entries are appended de-duplicated. This lets callers
+    pass either form transparently.
+    """
+    parsed_sql, parsed_cols, _parsed_sort = _merge_display_sql_into_args(sql, select_cols, {}, columns)
+    if not parsed_cols and parsed_sql == str(sql or "").strip():
+        return sql, select_cols
+    return parsed_sql, parsed_cols
+
+
+def _build_ai_sql_display_sql(
+    selected_columns: list[str] | tuple[str, ...] | None,
+    where_sql: str,
+    sort_spec: dict | None = None,
+) -> str:
+    selected = [str(c or "").strip() for c in (selected_columns or []) if str(c or "").strip()]
+    where = str(where_sql or "").strip()
+    sort = _normalize_ai_sql_sort(sort_spec or {}, selected + ([str((sort_spec or {}).get("column") or "")] if sort_spec else []), [], "sort") if sort_spec else {}
+    if selected and where:
+        base = f"SELECT {', '.join(selected)} WHERE {where}"
+    elif selected:
+        base = f"SELECT {', '.join(selected)}"
+    else:
+        base = where
+    if not sort:
+        return base
+    order = f"ORDER BY {sort['column']} {str(sort.get('direction') or 'asc').upper()}"
+    if str(sort.get("nulls") or "last").casefold() == "first":
+        order += " NULLS FIRST"
+    return f"{base} {order}".strip()
+
 _AI_SQL_AGG_FUNCTION_ALIASES = {
     "avg": ("avg", "average", "mean", "평균"),
     "sum": ("sum", "total", "합계", "합"),
@@ -6096,15 +6261,27 @@ def _hash_wafer_clause(prompt: str, columns: list[str]) -> str:
     return f"{wafer_col} IN ({', '.join(str(n) for n in numbers[:25])})"
 
 
+def _hash_wafer_misread_suffix_re(numbers: list[int]) -> re.Pattern[str] | None:
+    if not numbers:
+        return None
+    alts = "|".join(rf"[A-Za-z]?\.{n}%?$" for n in numbers[:10])
+    return re.compile("(?:" + alts + ")")
+
+
 def _llm_misread_hash_wafer(prompt: str, sql: str, columns: list[str]) -> bool:
     numbers = _prompt_hash_wafer_numbers(prompt)
     wafer_col = _wafer_column(columns)
     if not numbers or not wafer_col:
         return False
     mask = _mask_sql_literals(sql)
-    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(wafer_col) + r"(?![A-Za-z0-9_])", mask, flags=re.I):
-        return False
-    return True
+    if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(wafer_col) + r"(?![A-Za-z0-9_])", mask, flags=re.I):
+        return True
+    suffix_re = _hash_wafer_misread_suffix_re(numbers)
+    if suffix_re:
+        for literal_match in re.finditer(r"'([^']+)'", sql):
+            if suffix_re.search(literal_match.group(1)):
+                return True
+    return False
 
 
 def _fallback_lot_clause(prompt: str, columns: list[str]) -> str:
@@ -6901,7 +7078,7 @@ def _fallback_ai_sql_sort(prompt: str, columns: list[str]) -> dict:
     if not any(token in low or token in text for token in (
         "큰순서", "큰 순서", "높은순", "높은 순", "내림차순", "desc", "descending",
         "작은순서", "작은 순서", "낮은순", "낮은 순", "오름차순", "asc", "ascending",
-        "최신순", "오래된순", "정렬", "sort", "order",
+        "최신순", "오래된순", "정렬", "순서", "sort", "order",
     )):
         return {}
     hits = _fallback_column_hits(text, columns)
@@ -6923,6 +7100,193 @@ def _fallback_ai_sql_sort(prompt: str, columns: list[str]) -> dict:
 
 def _filebrowser_ai_sql_feedback_path() -> Path:
     return PATHS.data_root / FILEBROWSER_AI_SQL_FEEDBACK_FILE
+
+
+def _filebrowser_ai_sql_history_path() -> Path:
+    return PATHS.data_root / FILEBROWSER_AI_SQL_HISTORY_FILE
+
+
+def _normalize_ai_sql_history_scope(scope: str) -> str:
+    text = str(scope or "").strip().casefold()
+    if text in {"hive", "db", "db_product", "product"}:
+        return "db_product"
+    if text in {"rootpq", "root_parquet", "parquet"}:
+        return "rootpq"
+    if text in {"base", "file", "single_file"}:
+        return "base"
+    return text or "db_product"
+
+
+def _ai_sql_history_result_contract(result_payload: dict) -> dict:
+    result = result_payload if isinstance(result_payload, dict) else {}
+    merged = result.get("merged") if isinstance(result.get("merged"), dict) else {}
+    preview = result.get("preview") if isinstance(result.get("preview"), dict) else {}
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
+    where_sql = (
+        result.get("where_sql")
+        or merged.get("where_sql")
+        or preview.get("applied_where_sql")
+        or sql_draft.get("where_sql")
+        or sql_draft.get("sql")
+        or result.get("sql")
+        or ""
+    )
+    display_sql = (
+        result.get("display_sql")
+        or merged.get("display_sql")
+        or merged.get("sql")
+        or preview.get("display_sql")
+        or preview.get("applied_sql")
+        or sql_draft.get("display_sql")
+        or sql_draft.get("sql")
+        or result.get("sql")
+        or ""
+    )
+    selected = (
+        result.get("selected_columns")
+        or merged.get("selected_columns")
+        or preview.get("applied_select_cols")
+        or sql_draft.get("selected_columns")
+        or []
+    )
+    sort = (
+        result.get("sort")
+        or merged.get("sort")
+        or preview.get("sort")
+        or sql_draft.get("sort")
+        or {}
+    )
+    aggregate = result.get("aggregate") or merged.get("aggregate") or sql_draft.get("aggregate") or {}
+    warnings: list[str] = []
+    for source in (
+        result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        merged.get("warnings") if isinstance(merged.get("warnings"), list) else [],
+        preview.get("warnings") if isinstance(preview.get("warnings"), list) else [],
+        sql_draft.get("warnings") if isinstance(sql_draft.get("warnings"), list) else [],
+    ):
+        for item in source or []:
+            text = _cache_safe_text(item, 300)
+            if text and text not in warnings:
+                warnings.append(text)
+    return {
+        "answer": _cache_safe_text(result.get("answer") or result.get("reply") or result.get("notes") or "", 2000),
+        "sql": _cache_safe_text(where_sql, 2000),
+        "where_sql": _cache_safe_text(where_sql, 2000),
+        "display_sql": _cache_safe_text(display_sql, 2000),
+        "selected_columns": [str(c or "").strip() for c in (selected or []) if str(c or "").strip()][:100],
+        "sort": sort if isinstance(sort, dict) else {},
+        "aggregate": aggregate if isinstance(aggregate, dict) else {},
+        "warnings": warnings[:10],
+        "preview": preview,
+        "trace": result.get("trace") if isinstance(result.get("trace"), list) else [],
+        "action_log": result.get("action_log") if isinstance(result.get("action_log"), dict) else {},
+    }
+
+
+def _ai_sql_preview_history_summary(preview: dict) -> dict:
+    if not isinstance(preview, dict):
+        return {}
+    rows = preview.get("rows") if isinstance(preview.get("rows"), list) else []
+    columns = preview.get("columns") if isinstance(preview.get("columns"), list) else []
+    total_rows = preview.get("total_rows")
+    if total_rows is None:
+        total_rows = preview.get("total")
+    if total_rows is None:
+        total_rows = preview.get("row_count")
+    try:
+        total_rows = int(total_rows) if total_rows is not None else None
+    except Exception:
+        total_rows = None
+    try:
+        rows_returned = int(preview.get("rows_returned") if preview.get("rows_returned") is not None else len(rows))
+    except Exception:
+        rows_returned = len(rows)
+    return {
+        "columns": [str(c or "").strip() for c in columns if str(c or "").strip()][:100],
+        "rows_returned": rows_returned,
+        "row_count": total_rows if total_rows is not None else rows_returned,
+        "preview_capped": bool(preview.get("preview_capped")),
+        "row_count_unknown": bool(preview.get("row_count_unknown")),
+        "total_cols": preview.get("total_cols") if isinstance(preview.get("total_cols"), int) else None,
+    }
+
+
+def _ai_sql_trace_history_summary(trace: list) -> list[dict]:
+    out: list[dict] = []
+    for row in trace[:8] if isinstance(trace, list) else []:
+        if not isinstance(row, dict):
+            continue
+        warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+        out.append({
+            "node_id": _cache_safe_text(row.get("node_id"), 80),
+            "status": _cache_safe_text(row.get("status"), 40),
+            "duration_ms": row.get("duration_ms") if isinstance(row.get("duration_ms"), int) else 0,
+            "warnings": [_cache_safe_text(item, 180) for item in warnings[:3] if str(item or "").strip()],
+        })
+    return out
+
+
+def _ai_sql_action_log_history_summary(action_log: dict) -> list[str]:
+    if not isinstance(action_log, dict):
+        return []
+    summary = action_log.get("summary")
+    if not isinstance(summary, list):
+        return []
+    return [_cache_safe_text(item, 240) for item in summary[:6] if str(item or "").strip()]
+
+
+def _record_filebrowser_ai_sql_history(
+    username: str,
+    *,
+    source: str,
+    request_payload: dict,
+    result_payload: dict,
+) -> None:
+    prompt = _cache_safe_text((request_payload or {}).get("natural_language"), 2000)
+    if not prompt:
+        return
+    scope = _normalize_ai_sql_history_scope((request_payload or {}).get("scope") or "")
+    root = _cache_safe_text((request_payload or {}).get("root"), 160)
+    product = _cache_safe_text((request_payload or {}).get("product"), 160)
+    file = _cache_safe_text((request_payload or {}).get("file"), 240)
+    if not file and not (root and product):
+        return
+    contract = _ai_sql_history_result_contract(result_payload or {})
+    entry = {
+        "event": "history",
+        "history_id": f"fb_sql_hist_{uuid.uuid4().hex[:10]}",
+        "source": _cache_safe_text(source, 80),
+        "username": _cache_safe_text(username, 80),
+        "natural_language": prompt,
+        "scope": scope,
+        "root": root,
+        "product": product,
+        "file": file,
+        "target": {
+            "scope": scope,
+            "root": root,
+            "product": product,
+            "file": file,
+        },
+        "ok": bool((result_payload or {}).get("ok")),
+        "answer": contract["answer"],
+        "sql": contract["sql"],
+        "where_sql": contract["where_sql"],
+        "display_sql": contract["display_sql"],
+        "sort": contract["sort"],
+        "aggregate": contract["aggregate"],
+        "selected_columns": contract["selected_columns"],
+        "warnings": contract["warnings"],
+        "trace_summary": _ai_sql_trace_history_summary(contract["trace"]),
+        "action_log_summary": _ai_sql_action_log_history_summary(contract["action_log"]),
+        "preview_summary": _ai_sql_preview_history_summary(contract["preview"]),
+    }
+    jsonl_append(_filebrowser_ai_sql_history_path(), entry)
+    try:
+        jsonl_trim(_filebrowser_ai_sql_history_path(), 500)
+    except Exception:
+        pass
 
 
 def _new_ai_sql_draft_id() -> str:
@@ -6970,6 +7334,8 @@ def _ai_sql_feedback_entry(record: dict) -> dict:
         "draft_id": _cache_safe_text(record.get("draft_id"), 80),
         "natural_language": _cache_safe_text(record.get("natural_language"), 200),
         "sql": _cache_safe_text(record.get("sql"), 500),
+        "where_sql": _cache_safe_text(record.get("where_sql") or record.get("sql"), 500),
+        "display_sql": _cache_safe_text(record.get("display_sql") or record.get("sql"), 500),
         "sort": record.get("sort") if isinstance(record.get("sort"), dict) else {},
         "aggregate": record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {},
         "selected_columns": [str(c) for c in (record.get("selected_columns") or []) if str(c or "").strip()][:20],
@@ -7056,6 +7422,12 @@ def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> l
             "key": "A",
             "label": "현재 초안",
             "sql": payload.get("sql") or "",
+            "where_sql": payload.get("where_sql") or payload.get("sql") or "",
+            "display_sql": payload.get("display_sql") or _build_ai_sql_display_sql(
+                payload.get("selected_columns") or [],
+                payload.get("where_sql") or payload.get("sql") or "",
+                payload.get("sort") or {},
+            ),
             "sort": payload.get("sort") or {},
             "aggregate": payload.get("aggregate") or {},
             "selected_columns": payload.get("selected_columns") or [],
@@ -7064,6 +7436,12 @@ def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> l
             "key": "B",
             "label": "최근 좋아요 사례",
             "sql": positive.get("sql") or "",
+            "where_sql": positive.get("where_sql") or positive.get("sql") or "",
+            "display_sql": positive.get("display_sql") or _build_ai_sql_display_sql(
+                positive.get("selected_columns") or [],
+                positive.get("where_sql") or positive.get("sql") or "",
+                positive.get("sort") or {},
+            ),
             "sort": positive.get("sort") or {},
             "aggregate": positive.get("aggregate") or {},
             "selected_columns": positive.get("selected_columns") or [],
@@ -7542,7 +7920,6 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "product": _cache_safe_text(product, 160),
         "file": _cache_safe_text(file, 240),
     }
-    column_context = _ai_sql_context_columns(columns, dtypes, sample_rows)
     profile = sample_profile or _build_ai_sql_sample_profile(
         columns,
         dtypes,
@@ -7551,6 +7928,24 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         prompt=prompt,
         preferred_selected_columns=preferred_selected_columns,
     )
+    profile_columns = [
+        item for item in (profile.get("columns") if isinstance(profile, dict) else []) or []
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    columns_for_prompt = [str(item.get("name") or "").strip() for item in profile_columns][:AI_SQL_MAX_PROFILE_COLUMNS]
+    if not columns_for_prompt:
+        columns_for_prompt = columns[:AI_SQL_MAX_PROFILE_COLUMNS]
+    column_context = [
+        {
+            "name": str(item.get("name") or "").strip(),
+            "dtype": _cache_safe_text(item.get("dtype"), 80),
+            "sample_values": [
+                _cache_safe_text(value, 80)
+                for value in (item.get("sample_values") or [])[:AI_SQL_PROFILE_VALUE_LIMIT]
+            ],
+        }
+        for item in profile_columns[:AI_SQL_MAX_PROFILE_COLUMNS]
+    ] or _ai_sql_context_columns(columns_for_prompt, dtypes, [])
     warnings: list[str] = list(context_warnings or [])
     resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
     if unknown_column_terms:
@@ -7564,6 +7959,16 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         payload.setdefault("draft_id", draft_id)
         payload.setdefault("sort", {})
         payload.setdefault("aggregate", {})
+        where_sql = _cache_safe_text(payload.get("where_sql") if payload.get("where_sql") is not None else payload.get("sql"), 2000)
+        selected = [
+            str(c or "").strip()
+            for c in (payload.get("selected_columns") or [])
+            if str(c or "").strip()
+        ]
+        payload["sql"] = where_sql
+        payload["where_sql"] = where_sql
+        payload["selected_columns"] = selected
+        payload["display_sql"] = _build_ai_sql_display_sql(selected, where_sql, payload.get("sort") or {})
         payload["feedback_context_used"] = bool(feedback_context.get("used"))
         payload["feedback_context"] = _ai_sql_feedback_summary(feedback_context)
         payload["step_mapping"] = _public_ai_sql_step_mapping_context(step_mapping_context)
@@ -7590,7 +7995,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
             ask = json.dumps({
                 "natural_language": prompt,
                 "current_sql": current_sql,
-                "columns": columns[:200],
+                "columns": columns_for_prompt,
                 "schema": column_context,
                 "sample_rows": [],
                 "sample_profile": profile,
@@ -7651,14 +8056,28 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         prompt,
         warnings,
     )
-    sort_spec = _normalize_ai_sql_sort(_plan_ai_sql_sort(plan), columns, warnings, "sort")
+    parsed_sql = raw_sql
+    parsed_selected_columns: list[str] = []
+    parsed_sort_spec: dict = {}
+    try:
+        parsed_sql, parsed_selected_columns, parsed_sort_spec = _parse_ai_sql_display_sql(raw_sql, columns)
+    except Exception as exc:
+        warnings.append(f"display_sql parse warning: {exc}")
+    if parsed_selected_columns:
+        selected_columns = _filter_ai_sql_selected_columns(
+            [*parsed_selected_columns, *selected_columns],
+            columns,
+            warnings,
+            "display_sql_selected_columns",
+        )
+    sort_spec = parsed_sort_spec or _normalize_ai_sql_sort(_plan_ai_sql_sort(plan), columns, warnings, "sort")
     if not sort_spec:
         sort_spec = _fallback_ai_sql_sort(prompt, columns)
     aggregate_spec = _normalize_ai_sql_aggregate(_plan_ai_sql_aggregate(plan), columns, warnings, "aggregate")
     if not aggregate_spec:
         aggregate_spec = _fallback_ai_sql_aggregate(prompt, columns)
     try:
-        raw_sql = _merge_ai_sql_step_mapping_filter(raw_sql, step_mapping_context, warnings)
+        raw_sql = _merge_ai_sql_step_mapping_filter(parsed_sql, step_mapping_context, warnings)
         if _llm_misread_hash_wafer(prompt, raw_sql, columns):
             raise ValueError("Prompt #N token must be interpreted as wafer_id, not lot_id text")
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
@@ -7765,6 +8184,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     df, wafer_filtered = _filter_valid_wafers_df(df)
     total = df.height
     page_size = int(page_size or rows or 200)
@@ -7811,6 +8231,12 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "where_sql": normalized_sql,
+        "display_sql": _build_ai_sql_display_sql(
+            [c.strip() for c in select_cols.split(",") if c.strip()],
+            normalized_sql,
+            _sort_response_payload(active_sort, latest_order_col),
+        ),
         "aggregate": active_aggregate,
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
@@ -7826,6 +8252,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
                      sort_spec: dict | None = None):
     """Apply the same preview contract through DuckDB for large read-only sources."""
     all_columns, schema = duckdb_engine.inspect_files(files)
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     normalized_sql = _validate_where_expression(sql, all_columns)
     _guard_source_operation(
         all_columns=all_columns,
@@ -7870,6 +8297,12 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "where_sql": normalized_sql,
+        "display_sql": _build_ai_sql_display_sql(
+            [c.strip() for c in select_cols.split(",") if c.strip()],
+            normalized_sql,
+            _sort_response_payload(active_sort, latest_order_col),
+        ),
         "aggregate": {},
         "latest_preview": bool(latest_preview),
         "engine": "duckdb",
@@ -7901,6 +8334,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     preview_cols = _preview_cols_limit(preview_cols or _settings_preview_max_columns(settings))
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
@@ -7932,6 +8366,12 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "truncated_cols": len(all_columns) > preview_cols,
             "latest_order_col": latest_order_col or None,
             "sort": _sort_response_payload(active_sort, latest_order_col),
+            "where_sql": "",
+            "display_sql": _build_ai_sql_display_sql(
+                [c.strip() for c in select_cols.split(",") if c.strip()],
+                "",
+                _sort_response_payload(active_sort, latest_order_col),
+            ),
             "aggregate": {},
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
@@ -7989,6 +8429,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "truncated_cols": False,
             "latest_order_col": None,
             "sort": _sort_response_payload(active_sort, None),
+            "where_sql": normalized_sql,
+            "display_sql": _build_ai_sql_display_sql([], normalized_sql, _sort_response_payload(active_sort, None)),
             "aggregate": active_aggregate,
             "latest_preview": bool(latest_preview),
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
@@ -8072,6 +8514,12 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "where_sql": normalized_sql,
+        "display_sql": _build_ai_sql_display_sql(
+            [c.strip() for c in select_cols.split(",") if c.strip()],
+            normalized_sql,
+            _sort_response_payload(active_sort, latest_order_col),
+        ),
         "aggregate": active_aggregate,
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
@@ -8086,6 +8534,7 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     warnings: list[str] = []
     active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
     if warnings:
@@ -8139,6 +8588,12 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
         "truncated_cols": truncated_cols,
         "latest_order_col": None if active_aggregate else latest_order_col or None,
         "sort": _sort_response_payload(active_sort, None if active_aggregate else latest_order_col),
+        "where_sql": normalized_sql,
+        "display_sql": _build_ai_sql_display_sql(
+            [] if active_aggregate else [c.strip() for c in select_cols.split(",") if c.strip()],
+            normalized_sql,
+            _sort_response_payload(active_sort, None if active_aggregate else latest_order_col),
+        ),
         "aggregate": active_aggregate,
         "latest_preview": False,
         "single_file_full_read": True,
@@ -8324,9 +8779,11 @@ def _download_lazy_csv(
     source_size: int | None = None,
     settings: dict | None = None,
     aggregate_spec: dict | None = None,
+    sort_spec: dict | None = None,
 ) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     normalized_sql = _validate_where_expression(sql, all_columns)
     warnings: list[str] = []
     active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
@@ -8352,6 +8809,19 @@ def _download_lazy_csv(
     if active_aggregate:
         lf = _apply_aggregate_lazy(lf, active_aggregate)
         selected = []
+    sort_columns = all_columns + ([active_aggregate.get("alias")] if active_aggregate else [])
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, sort_columns)
+    if active_aggregate:
+        output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
+        active_sort = _aggregate_sort_alias(active_sort, active_aggregate, output_columns)
+        if active_sort and active_sort.get("column") not in output_columns:
+            _fb_error(400, "unknown_sort_column", f"sort: unknown sort column removed: {active_sort.get('column')}")
+    if active_sort:
+        lf = lf.sort(
+            _sort_expr(active_sort, latest_order_col),
+            descending=_sort_descending(active_sort),
+            nulls_last=_sort_nulls_last(active_sort),
+        )
     if selected:
         lf = lf.select(selected)
     try:
@@ -8386,10 +8856,12 @@ def _download_duckdb_csv(
     max_bytes: int | None = None,
     *,
     settings: dict | None = None,
+    sort_spec: dict | None = None,
 ) -> tuple[pl.DataFrame, bytes]:
     if not files:
         raise ValueError("no source files for DuckDB download")
     all_columns, _schema = duckdb_engine.inspect_files(files)
+    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     normalized_sql = _validate_where_expression(sql, all_columns)
     _guard_source_operation(
         all_columns=all_columns,
@@ -8401,6 +8873,7 @@ def _download_duckdb_csv(
     )
     requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
     selected = [c for c in requested if c in set(all_columns)]
+    active_sort, _latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns)
     where = _combine_where(
         _normalize_view_sql_filter(normalized_sql, all_columns),
         _duckdb_valid_wafer_where(all_columns),
@@ -8410,6 +8883,8 @@ def _download_duckdb_csv(
         where=where,
         select_cols=selected,
         limit=max_rows + 1,
+        order_by=active_sort.get("column") or "",
+        descending=_sort_descending(active_sort),
     )
     if df.height > max_rows:
         raise HTTPException(
@@ -9052,6 +9527,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 logger.warning(f"Reformatter skipped: {e}")
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
+        sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, {}, list(df.columns))
         normalized_sql = _validate_where_expression(sql, list(df.columns))
         guard_select_cols = select_cols
         if aggregate_spec:
@@ -9075,6 +9551,14 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 _fb_error(400, "invalid_aggregate", warnings[0])
             df = _apply_aggregate_df(df, active_aggregate)
             select_cols = ""
+        sort_columns = list(df.columns)
+        active_sort, _latest_order_col = _resolve_view_sort_spec(sort_spec, sort_columns)
+        if active_sort and active_sort.get("column") in df.columns:
+            df = df.sort(
+                _sort_expr(active_sort, None),
+                descending=_sort_descending(active_sort),
+                nulls_last=_sort_nulls_last(active_sort),
+            )
         if select_cols.strip():
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
@@ -9361,7 +9845,7 @@ def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
         prompt=req.natural_language,
         preferred_selected_columns=req.preferred_selected_columns or [],
     )
-    return _draft_filebrowser_ai_sql(
+    result = _draft_filebrowser_ai_sql(
         natural_language=req.natural_language,
         columns=columns,
         dtypes=dtypes,
@@ -9376,6 +9860,43 @@ def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
         context_warnings=context_warnings,
         username=me.get("username") or "",
     )
+    try:
+        _record_filebrowser_ai_sql_history(
+            me.get("username") or "",
+            source="filebrowser",
+            request_payload=req.model_dump() if hasattr(req, "model_dump") else req.dict(),
+            result_payload=result,
+        )
+    except Exception as exc:
+        logger.warning("filebrowser ai sql history append failed: %s", exc)
+    return result
+
+
+@router.get("/sql/history")
+def filebrowser_sql_history(request: Request, limit: int = Query(50, ge=1, le=200)):
+    me = _require_filebrowser_user(request)
+    username = str((me or {}).get("username") or "")
+    role = str((me or {}).get("role") or "")
+    try:
+        limit = max(1, min(200, int(limit)))
+    except Exception:
+        limit = 50
+
+    def _visible(entry: dict) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("event") != "history":
+            return False
+        if role == "admin":
+            return True
+        return str(entry.get("username") or "") == username
+
+    entries = jsonl_read(_filebrowser_ai_sql_history_path(), limit=limit, filter_fn=_visible)
+    return {
+        "ok": True,
+        "history": list(reversed(entries)),
+        "limit": limit,
+    }
 
 
 @router.post("/sql/feedback")
@@ -9391,12 +9912,29 @@ def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
         warnings,
         "feedback_aggregate",
     ) if columns else (req.aggregate or {})
+    raw_sql = _cache_safe_text(req.sql, 2000)
+    selected_input = ",".join(str(c or "").strip() for c in (req.selected_columns or []) if str(c or "").strip())
+    where_sql, selected_cols_text, sort_spec = _merge_display_sql_into_args(
+        raw_sql,
+        selected_input,
+        sort_spec if isinstance(sort_spec, dict) else {},
+        columns if columns else None,
+    )
+    selected_values = [c.strip() for c in str(selected_cols_text or "").split(",") if c.strip()]
     selected_columns = _filter_ai_sql_selected_columns(
-        req.selected_columns or [],
+        selected_values,
         columns,
         warnings,
         "feedback_selected_columns",
-    ) if columns else [str(c) for c in (req.selected_columns or []) if str(c or "").strip()]
+    ) if columns else selected_values
+    if columns and str(where_sql or "").strip():
+        try:
+            where_sql, validate_warnings = _validate_ai_sql_filter(where_sql, columns)
+            warnings.extend(validate_warnings)
+        except Exception as exc:
+            warnings.append(f"feedback_sql rejected: {exc}")
+            where_sql = ""
+    display_sql = _build_ai_sql_display_sql(selected_columns, where_sql, sort_spec if isinstance(sort_spec, dict) else {})
     entry = {
         "event": "feedback",
         "feedback_id": f"fb_sql_fb_{uuid.uuid4().hex[:10]}",
@@ -9405,7 +9943,9 @@ def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
         "rating": rating,
         "reason": _cache_safe_text(req.reason, 500),
         "natural_language": _cache_safe_text(req.natural_language, 2000),
-        "sql": _cache_safe_text(req.sql, 2000),
+        "sql": _cache_safe_text(where_sql, 2000),
+        "where_sql": _cache_safe_text(where_sql, 2000),
+        "display_sql": _cache_safe_text(display_sql, 2000),
         "sort": sort_spec if isinstance(sort_spec, dict) else {},
         "aggregate": aggregate_spec if isinstance(aggregate_spec, dict) else {},
         "selected_columns": selected_columns[:100],
@@ -9424,6 +9964,10 @@ def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
         "saved": True,
         "feedback_id": entry["feedback_id"],
         "path": str(_filebrowser_ai_sql_feedback_path()),
+        "sql": entry["sql"],
+        "where_sql": entry["where_sql"],
+        "display_sql": entry["display_sql"],
+        "selected_columns": entry["selected_columns"],
         "warnings": warnings,
     }
 
@@ -9963,10 +10507,13 @@ def delete_base_file(req: BaseDeleteReq, request: Request):
 @router.get("/sql-guide")
 def sql_guide():
     return {"examples": [
-        {"desc": "Equal", "sql": "col_name == 'value'"},
-        {"desc": "LIKE", "sql": "col_name LIKE '%pattern%'"},
-        {"desc": "NOT LIKE", "sql": "col_name NOT LIKE '%X%'"},
-        {"desc": "IN", "sql": "col_name.is_in(['A','B'])"},
-        {"desc": "AND", "sql": "(col_a > 1) & (col_b == 'X')"},
-        {"desc": "BETWEEN", "sql": "(col >= 0.1) & (col <= 0.9)"},
+        {"desc": "표시 열 + 조건", "sql": "SELECT lot_id, wafer_id WHERE root_lot_id = 'A1000'"},
+        {"desc": "표시 열 + 조건 + 정렬", "sql": "SELECT lot_id, wafer_id WHERE item_id = 'IOFF' ORDER BY value DESC"},
+        {"desc": "Equal", "sql": "root_lot_id = 'A1000'"},
+        {"desc": "LIKE", "sql": "lot_id LIKE '%A1000%'"},
+        {"desc": "NOT LIKE", "sql": "step_id NOT LIKE '%TEST%'"},
+        {"desc": "IN", "sql": "item_id IN ('IOFF', 'ION')"},
+        {"desc": "AND", "sql": "wafer_id = 3 AND item_id = 'IOFF'"},
+        {"desc": "BETWEEN", "sql": "value BETWEEN 0.1 AND 0.9"},
+        {"desc": "IS NOT NULL", "sql": "tkout_time IS NOT NULL"},
     ]}

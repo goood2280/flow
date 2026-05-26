@@ -159,24 +159,8 @@ def _scan_dashboard_fab_long(product: str):
 
 
 def _dashboard_wafer_layout(product: str) -> dict:
-    """Return WF Layout geometry for dashboard wafer-map rendering."""
-    prod = str(product or "").strip()
-    if not prod:
-        return {}
-    try:
-        from routers.waferlayout import _build_cfg, _collect_shots, _load_product_wafer_layout
-        wafer_layout = _load_product_wafer_layout(prod)
-        cfg = _build_cfg(wafer_layout)
-        shots = _collect_shots(cfg)
-        return {
-            "product": prod,
-            "cfg": cfg,
-            "shots": shots,
-            "shot_count": len(shots),
-        }
-    except Exception as e:
-        logger.warning("dashboard wafer layout load failed (%s): %s", prod, e)
-        return {}
+    """WF Layout was archived in archive/agent_reset_2026_05_26."""
+    return {}
 
 
 def _ml_table_file_for_product(product: str) -> str:
@@ -1275,7 +1259,7 @@ class ChartConfig(BaseModel):
     agg_col: str = ""
     agg_method: str = ""  # mean/sum/count/min/max
     color_col: str = ""
-    layout_product: str = ""  # wafer_map 배경 WF Layout product override
+    layout_product: str = ""
     x_label: str = ""
     y_label: str = ""
     bin_count: Optional[int] = None
@@ -1934,8 +1918,7 @@ def _compute_chart(cfg: dict) -> dict:
                 pass
 
         # Wafer Map: x_col=shot_x, y_expr=shot_y, color_col/agg_col=value.
-        # v9.0.2: product WF Layout geometry is included so FE can draw the wafer/shot
-        # background exactly as configured in WF Layout, then color only measured shots.
+        # WF Layout geometry is archived; dashboard colors measured shots only.
         if ct == "wafer_map" and x_col and y_expr:
             try:
                 val_col = cc or _resolve_name(names, cfg.get("agg_col", "") or "") or _resolve_name(names, "value") or ""

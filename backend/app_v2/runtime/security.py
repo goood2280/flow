@@ -20,14 +20,11 @@ QUERY_TOKEN_PREFIXES = (
     "/api/admin/dismiss",
     "/api/admin/dismiss-batch",
     "/api/admin/notify-rules",
-    "/api/agent/runtime/stream",
 )
 
 
 def _allow_query_token(path: str) -> bool:
-    if any(path.startswith(prefix) for prefix in QUERY_TOKEN_PREFIXES):
-        return True
-    return path.startswith("/api/agent/unit-ai/") and path.endswith("/runtime/stream")
+    return any(path.startswith(prefix) for prefix in QUERY_TOKEN_PREFIXES)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

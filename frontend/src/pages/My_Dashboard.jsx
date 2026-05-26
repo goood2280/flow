@@ -1235,7 +1235,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
     </div>);
   }
 
-  /* ── Wafer Map: WF Layout background + measured-shot coloring ── */
+  /* ── Wafer Map: measured-shot coloring ── */
   if (type === "wafer_map") {
     const layout = cfg._wafer_layout || {};
     const layoutShots = Array.isArray(layout.shots) ? layout.shots : [];
@@ -1329,7 +1329,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
       </div>);
     }
 
-    if (!points.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>WF Layout 또는 측정 shot 데이터 없음</div>;
+    if (!points.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>측정 shot 데이터 없음</div>;
     const xs = points.map(p => p.x), ysv = points.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minYv = Math.min(...ysv), maxYv = Math.max(...ysv);
     const cols = maxX - minX + 1, rows = maxYv - minYv + 1;

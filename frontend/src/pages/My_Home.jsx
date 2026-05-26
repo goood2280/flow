@@ -45,13 +45,11 @@ const FEATURE_GUIDES={
   filebrowser:{icon:"📂",title:"파일 브라우저",steps:["좌측 사이드바에서 DB 선택","하위 Product/파일 선택 시 데이터 자동 로드","SQL 입력창에 필터 입력 (예: PRODUCT_TYPE == 'A', LOT_ID LIKE '%ABC%')","컬럼 선택 → CSV 다운로드 버튼"]},
   dashboard:{icon:"📊",title:"대시보드",steps:["데이터 소스 선택 (DB / Root Parquet / Product)","차트 타입: scatter / line / bar / pie / binning","X/Y 컬럼 선택 + 필터 SQL 입력","Days 옵션으로 기간 제한, binning 은 bin_count/bin_width 조정"]},
   splittable:{icon:"🗂️",title:"스플릿 테이블",steps:["Product 선택 → Root Lot + Wafer IDs 입력 → 검색","Plan 입력 모드: 편집 클릭 후 셀 클릭하여 계획값 입력","셀 색: 회색(없음) / 주황(plan만) / 파스텔(actual) / 초록(match) / 빨강(mismatch)","이력 탭에서 변경 이력 확인"]},
-  diagnosis:{icon:"🤖",title:"에이전트",steps:["Flow-i가 RCA·차트·데이터 확인을 수행할 때 쓰는 참조 지식 확인","RAG 반영 문서 / 표 지식 / 온톨로지 / Source Profile 연결 구조 검토","Admin은 품질 피드백, golden workflow, LLM 설정을 같은 화면에서 관리"]},
+  diagnosis:{icon:"🤖",title:"에이전트 설정",steps:["LLM endpoint 상태 확인","Admin LLM profile과 token 설정","연결 테스트 실행"]},
   tracker:{icon:"📋",title:"트래커",steps:["이슈 게시판 — 제목 + 본문 + 이미지 업로드","Lot/Wafer 범위 지정 (Excel 붙여넣기 지원)","댓글 + 중첩 답글 + 이미지","Gantt 뷰로 전체 진행 현황 확인"]},
   inform:{icon:"📢",title:"인폼 로그",steps:["제품/lot 선택 후 인폼 등록","SplitTable 스냅샷 자동 첨부 확인","댓글 스레드와 담당자 흐름 추적","필요 시 메일 미리보기 후 발송"]},
   meeting:{icon:"🗓",title:"회의관리",steps:["회의 선택 또는 신규 회의 생성","아젠다/회의록/결정사항 입력","액션아이템과 달력 연동 확인","필요 시 메일로 회의록 공유"]},
   calendar:{icon:"📅",title:"변경점 관리",steps:["월별 변경 일정 확인","카테고리별 이벤트 필터","회의 액션/결정사항 연동 확인","상태(pending/in_progress/done) 관리"]},
-  ettime:{icon:"⏱️",title:"ET 레포트",steps:["lot/root_lot_id 기준 조회","fab_lot_id + step별 ET 패키지 확인","상세 breakdown 표 확인","CSV/PDF 리포트 다운로드"]},
-  waferlayout:{icon:"🧭",title:"WF Layout",steps:["제품별 wafer layout 불러오기","shot/chip/TEG 배치 확인","edge shot 후보 검토","layout 저장 및 재검증"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
 function shortFlowiVerifyError(value){
@@ -351,6 +349,10 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>
+    {result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
+      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>
+      {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
+    </div>}
     <FlowiMarkdown text={result.answer||emptyHint}/>
     <FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
@@ -600,14 +602,15 @@ function FlowiSplitView({view}){
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
 
 const FLOWI_LIVE_STEPS=[
-  ["semantic_layer","질문 해석","의도, slot, Wiki/schema 후보를 정리합니다."],
-  ["task_planner","실행 계획","권한과 read-only 정책 안에서 실행할 단위 기능을 고릅니다."],
-  ["unit_agents","단위 기능 실행","SplitTable, Dashboard, FileBrowser, Inform, Meeting handler를 호출합니다."],
-  ["conclusion","결과 검증","결과, 경고, 최종 답변을 분리해 구성합니다."],
+  ["catalog","단위AI 기능 탐색중","실행 가능한 단위기능 후보를 확인합니다."],
+  ["semantic_layer","용어해석중","질문에서 source, lot, wafer, item 후보를 정리합니다."],
+  ["orchestrator","실행 계획 정리중","권한과 입력값 기준으로 실행 경로를 고릅니다."],
+  ["unit_ai","단위AI 실행중","선택된 단위기능 MCP를 호출합니다."],
+  ["result_renderer","결과 정리중","결과, 경고, preview를 화면 응답으로 묶습니다."],
 ];
 
 function flowiTraceStatusColor(status){
-  return status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
+  return status==="done"||status==="success"?"#22c55e":status==="blocked"||status==="error"||status==="failed"?"#ef4444":status==="skipped"||status==="available"?"#737373":"#f97316";
 }
 
 function FlowiLiveTrace({step=0}){
@@ -615,7 +618,7 @@ function FlowiLiveTrace({step=0}){
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 10px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:8}}>
       <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
-      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>사고과정</span>
+      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>작업 상태</span>
       <span style={{fontSize:14,color:"#f97316",fontWeight:800}}>{active[0]}</span>
       <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{active[2]}</span>
     </div>
@@ -642,7 +645,7 @@ function FlowiActionLogPanel({actionLog,trace}){
   const disclaimer=actionLog?.disclaimer||trace?.note||"내부 추론 원문이 아니라 검증 가능한 실행 요약입니다.";
   return <div style={{marginTop:10,border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:lines.length?7:0}}>
-      <span style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>사고과정</span>
+      <span style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>작업 로그</span>
       <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap"}}>public action log</span>
     </div>
     {lines.length>0&&<div style={{display:"grid",gap:4}}>
@@ -1414,13 +1417,11 @@ export default function My_Home({onNavigate,user}){
     {key:"filebrowser",icon:"📂",title:"파일 탐색기",desc:"Parquet 탐색, SQL 필터, CSV 다운로드"},
     {key:"dashboard",  icon:"📊",title:"대시보드",desc:"동적 차트, 산점도, 추세"},
     {key:"splittable", icon:"🗂️",title:"스플릿 테이블",desc:"Plan vs actual, 공유 추적"},
-    {key:"diagnosis",  icon:"🤖",title:"에이전트",desc:"Flow-i 동작, RCA 지식, 품질/LLM 관리"},
+    {key:"diagnosis",  icon:"🤖",title:"에이전트 설정",desc:"LLM 연결 상태와 관리자 설정"},
     {key:"tracker",    icon:"📋",title:"이슈 추적",desc:"이슈 게시판, Lot/Wafer 추적"},
     {key:"inform",     icon:"📢",title:"인폼 로그",desc:"모듈 인폼 + 스레드 + 이미지"},
     {key:"meeting",    icon:"🗓",title:"회의관리",desc:"차수·반복·아젠다·회의록"},
     {key:"calendar",   icon:"📅",title:"변경점 관리",desc:"달력·카테고리·회의 연동"},
-    {key:"ettime",     icon:"⏱️",title:"ET 레포트",desc:"fab_lot_id + step 기준 elapsed 분석"},
-    {key:"waferlayout",icon:"🧭",title:"WF Layout",desc:"제품별 wafer/shot/chip layout 검토"},
     {key:"admin",      icon:"⚙️",title:"관리자",desc:"사용자, 권한, 모니터",adminOnly:true},
     {key:"devguide",   icon:"📖",title:"개발자 가이드",desc:"아키텍처, API 레퍼런스"},
   ];

@@ -132,18 +132,6 @@ logger.info(f"  db_root   = {PATHS.db_root}")
 start_background_services(logger)
 
 
-def _ensure_default_agent_wiki_seed(logger) -> None:
-    try:
-        from core import knowledge_vault as kv
-
-        result = kv.ensure_default_agent_wiki_seed(actor="system_startup")
-        installed = int(result.get("installed") or 0)
-        if installed:
-            logger.info("Default Agent Wiki seed installed: %s docs", installed)
-    except Exception as exc:
-        logger.warning("Default Agent Wiki seed install failed: %s", exc)
-
-
 def _allowed_methods_for_path(path: str, method: str) -> set[str]:
     """Return methods for a registered API path when the current method missed.
 
@@ -378,4 +366,3 @@ if DIST.exists():
         return _no_store_file_response(DIST / "index.html")
 
 ensure_seed_admin(logger)
-_ensure_default_agent_wiki_seed(logger)

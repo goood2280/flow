@@ -234,43 +234,17 @@ check("GET /api/dashboard/charts", status, 200)
 status, _ = _req("GET", "/api/dbmap/tables", token=TOKEN)
 check("GET /api/dbmap/tables", status, 200)
 
-# ── 9.1. AI 허브 (v9.1.0 신규) ─────────────────────────────────
-section("9.1 AI 허브 + SQL 작업대 + 스킬 + 홈 에이전트")
-status, body = _req("GET", "/api/ai-hub/tools", token=TOKEN)
-items = (body or {}).get("items", []) if isinstance(body, dict) else []
-counts = (body or {}).get("counts", {}) if isinstance(body, dict) else {}
-check("GET /api/ai-hub/tools (Unit AI + Function 카탈로그)", status, 200,
-      f"items={len(items)} unit_ai={counts.get('unit_ai')} function={counts.get('function')}")
-
-status, body = _req("GET", "/api/ai-hub/tags", token=TOKEN)
-tags_len = len((body or {}).get("tags") or []) if isinstance(body, dict) else 0
-check("GET /api/ai-hub/tags", status, 200, f"tags={tags_len}")
-
-status, body = _req("GET", "/api/ai-hub/readiness?days=30", token=TOKEN)
-score = (body or {}).get("score", -1) if isinstance(body, dict) else -1
-backlog_len = len((body or {}).get("backlog") or []) if isinstance(body, dict) else 0
-check("GET /api/ai-hub/readiness (운영 준비도)", status, 200,
-      f"score={score} backlog={backlog_len}")
-
-status, body = _req("GET", "/api/ai-hub/workflow-map?limit=20&reference_limit=80", token=TOKEN)
-nodes_len = len((body or {}).get("nodes") or []) if isinstance(body, dict) else 0
-edges_len = len((body or {}).get("edges") or []) if isinstance(body, dict) else 0
-check("GET /api/ai-hub/workflow-map (n8n/Obsidian 운영 지도)", status, 200,
-      f"nodes={nodes_len} edges={edges_len}")
-
-status, body = _req("GET", "/api/ai-hub/workflow-map/export?format=n8n&limit=20&reference_limit=80", token=TOKEN)
-n8n_nodes = len(((body or {}).get("workflow") or {}).get("nodes") or []) if isinstance(body, dict) else 0
-check("GET /api/ai-hub/workflow-map/export (n8n)", status, 200, f"nodes={n8n_nodes}")
-
-status, body = _req("GET", "/api/ai-hub/workflow-map/export?format=obsidian&limit=20&reference_limit=80", token=TOKEN)
-obsidian_files = len((body or {}).get("files") or []) if isinstance(body, dict) else 0
-check("GET /api/ai-hub/workflow-map/export (Obsidian)", status, 200, f"files={obsidian_files}")
+# ── 9.1. Agent 설정 + SQL 작업대 ───────────────────────────────
+section("9.1 Agent 설정 + SQL 작업대 + 스킬 + 홈 에이전트")
+status, body = _req("GET", "/api/agent/status", token=TOKEN)
+agent_state = (body or {}).get("state", "") if isinstance(body, dict) else ""
+check("GET /api/agent/status (archive reset marker)", status, 200, f"state={agent_state}")
 
 status, body = _req("POST", "/api/sql-workspace/run", {
     "cells": [
         {"name": "lot_meta", "sql": "SELECT * FROM (VALUES ('A1','R1'),('A2','R2')) AS t(lot_id, root_lot_id)"},
-        {"name": "et_results", "sql": "SELECT * FROM (VALUES ('A1',10.0),('A1',20.0),('A2',30.0)) AS t(lot_id, value)"},
-        {"name": None, "sql": "SELECT m.root_lot_id, AVG(e.value) AS v FROM lot_meta m JOIN et_results e USING(lot_id) GROUP BY 1 ORDER BY 1"}
+        {"name": "measurement_results", "sql": "SELECT * FROM (VALUES ('A1',10.0),('A1',20.0),('A2',30.0)) AS t(lot_id, value)"},
+        {"name": None, "sql": "SELECT m.root_lot_id, AVG(e.value) AS v FROM lot_meta m JOIN measurement_results e USING(lot_id) GROUP BY 1 ORDER BY 1"}
     ]
 }, token=TOKEN)
 rc = (body or {}).get("result", {}).get("rowcount", -1) if isinstance(body, dict) else -1

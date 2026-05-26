@@ -23,7 +23,6 @@ except Exception:
     pass
 
 ML_SRC = {"source_type": "base_file", "root": "", "product": "", "file": "ML_TABLE_PRODA.parquet"}
-ET_SRC = {"source_type": "", "root": "1.RAWDATA_DB_ET", "product": "PRODUCT_A0", "file": ""}
 
 
 def mk(title, *, chart_type, x_col="", y_expr="", color_col="", agg_col="", agg_method="",
@@ -100,11 +99,6 @@ CHARTS = [
        x_col="root_lot_id", y_expr="wafer_id",
        agg_col="VM_PREDICTED_VTH_N", agg_method="mean",
        group="종합", width=2, height=1, sort_x=True),
-    mk("Wafer Map · ET value by WF Layout", chart_type="wafer_map",
-       x_col="shot_x", y_expr="shot_y", color_col="value", agg_col="value", agg_method="mean",
-       filter_expr="item_id == 'PC_ALIGN'", source=ET_SRC,
-       selection_key="root_lot_id", group="Wafer Map", width=2, height=2,
-       extra={"layout_product": "PRODUCT_A0"}),
     mk("상세 테이블 — root_lot / wafer / KNOB / INLINE / VM",
        chart_type="table", x_col="root_lot_id",
        group="종합", width=4, height=1,
