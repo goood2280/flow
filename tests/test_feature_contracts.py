@@ -76,20 +76,15 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "READYING" not in ui
 
 
-def test_agent_page_focuses_on_flowi_execution_trace():
+def test_agent_page_exposes_unit_ai_and_llm_settings():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
-    component = (ROOT / "frontend" / "src" / "components" / "agent" / "AgentRuntime.jsx").read_text(encoding="utf-8")
-    assert "단위 에이전트 오케스트레이션" in ui + component
-    assert "시멘틱 레이어" in ui + component
-    assert "실시간 상태 업데이트" in ui + component
-    assert "최종 결론" in ui + component
-    assert "FastAPI SSE" in ui + component
-    assert "LangGraph astream" in ui + component
-    assert "LangSmith tracing" in ui + component
-    assert "/api/agent/runtime/stream" in ui + component
-    assert "/api/agent/runtime/semantic/resolve" in ui
-    assert "/api/agent/runtime/run" in ui
-    assert "Flowi agent workflow, persona, RAG" not in ui
+    assert "에이전트" in ui
+    assert "단위기능 AI" in ui
+    assert "FileBrowser AI SQL" in ui
+    assert "LLM 설정" in ui
+    assert "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run" in ui
+    assert "LlmTab" in ui
+    assert "/api/agent/runtime" not in ui
 
 
 def test_common_loading_component_shows_progress_cues():

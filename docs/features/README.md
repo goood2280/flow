@@ -13,10 +13,10 @@
 | Dashboard | [dashboard.md](dashboard.md) | `frontend/src/pages/My_Dashboard.jsx`, `backend/routers/dashboard.py` |
 | Tracker | [tracker.md](tracker.md) | `frontend/src/pages/My_Tracker.jsx`, `backend/routers/tracker.py` |
 | Meeting, Calendar | [meeting-calendar.md](meeting-calendar.md) | `frontend/src/pages/My_Meeting.jsx`, `frontend/src/pages/My_Calendar.jsx` |
-| Diagnosis, Knowledge, RAG | [diagnosis-knowledge.md](diagnosis-knowledge.md) | `frontend/src/pages/My_Diagnosis.jsx`, `backend/routers/knowledge.py` |
-| ET, Wafer Layout, TableMap | [et-wafer-tablemap.md](et-wafer-tablemap.md) | `frontend/src/pages/My_ETTime.jsx`, `frontend/src/pages/My_WaferLayout.jsx`, `frontend/src/pages/My_TableMap.jsx` |
+| Diagnosis, Knowledge, RAG | [diagnosis-knowledge.md](diagnosis-knowledge.md) | `backend/routers/knowledge.py` |
+| TableMap | [diagnosis-knowledge.md](diagnosis-knowledge.md) | `frontend/src/pages/My_TableMap.jsx` |
 | Admin, Groups, Monitor | [admin.md](admin.md) | `frontend/src/pages/My_Admin.jsx`, `backend/routers/admin.py` |
-| Flow-i Agent | [flowi-agent.md](flowi-agent.md) | `backend/routers/llm.py`, `backend/routers/agent.py` |
+| Agent | [flowi-agent.md](flowi-agent.md) | `frontend/src/pages/My_Diagnosis.jsx`, `frontend/src/components/agent/LlmTab.jsx`, `backend/routers/agent.py` |
 
 ## Update Rule
 

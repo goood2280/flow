@@ -11,6 +11,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - 빠른 화면 표시: DB/Parquet/cache preview와 SQL/컬럼 선택 결과는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
 - CSV 다운로드: 화면 100행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
 - 연결된 LLM을 통한 자연어 SQL 초안 작성. AI SQL은 read-only SQL filter, 별도 sort, 별도 aggregate, 명시 요청된 선택 컬럼을 초안으로 만들고 화면에서 즉시 preview 조회까지 실행한다.
+- Agent 탭의 `filebrowser_ai_sql` unit은 FileBrowser AI SQL을 가져간 새 소유자가 아니라, `context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> preview_apply` 실행 흐름을 보여주는 wrapper다. SQL validation, source sampling, selected column 검증, preview 적용은 계속 FileBrowser helper와 read-only 계약을 재사용한다.
 - S3 동기화 상태와 로컬 cache 파일 접근성 확인
 - **LOT 진행 최신 캐시** (`data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`) — FileBrowser, SplitTable, Inform, Tracker, Flow-i current-step 질의가 공유하는 현재 lot/wafer 진행 기준.
 
@@ -27,6 +28,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 |---|---|
 | Frontend page | `frontend/src/pages/My_FileBrowser.jsx` |
 | Backend router | `backend/routers/filebrowser.py` |
+| Agent unit wrapper | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py`, `backend/routers/agent.py` |
 | ML_TABLE lookup cache | `backend/core/ml_table_lookup.py` |
 | Lot progress cache builder | `backend/core/lot_progress_cache.py` |
 | API helper | `frontend/src/lib/api.js` |
