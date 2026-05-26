@@ -1788,7 +1788,7 @@ export default function My_FileBrowser({user,onNavigate}){
         {/* SQL Guide */}
         <div style={{padding:"0 16px"}}>
           <div onClick={()=>setShowGuide(!showGuide)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"4px 0"}}>
-            {showGuide?"▼":"▶"} SQL 가이드</div>
+            {showGuide?"▼":"▶"} SQL 가이드(예시)</div>
           {showGuide&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"8px 12px",marginBottom:8,border:"1px solid var(--border)",fontSize:14,fontFamily:"monospace",lineHeight:1.8,color:"var(--text-secondary)"}}>
             <div>SELECT lot_id, wafer_id WHERE root_lot_id = 'A1000' <span style={{color:"var(--accent)"}}>— 표시 열 + 조건</span></div>
             <div>SELECT lot_id, wafer_id WHERE item_id = 'IOFF' ORDER BY value DESC <span style={{color:"var(--accent)"}}>— 표시 열 + 조건 + 정렬</span></div>

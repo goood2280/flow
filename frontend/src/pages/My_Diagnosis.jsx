@@ -31,6 +31,29 @@ function statusColor(status) {
   return { bg: "var(--bg-tertiary)", fg: "var(--text-secondary)", line: "var(--border)" };
 }
 
+function formatHistoryTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "시간 없음";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function historyActorLabel(item) {
+  return String(item?.username || item?.created_by || item?.user || "작성자 미상");
+}
+
+function historyTimestampLabel(item) {
+  return formatHistoryTimestamp(item?.timestamp || item?.created_at || item?.updated_at || "");
+}
+
 function JsonBlock({ value, maxHeight = 160 }) {
   return (
     <pre style={{
@@ -287,7 +310,7 @@ function FileBrowserAiSqlUnitPanel() {
   const [root, setRoot] = useState("");
   const [product, setProduct] = useState("");
   const [file, setFile] = useState("");
-  const [prompt, setPrompt] = useState("A1000 #3 IOFF만 보고싶어");
+  const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -596,6 +619,9 @@ function FileBrowserAiSqlUnitPanel() {
                     gap: 3,
                     width: "100%",
                     textAlign: "left",
+                    justifyContent: "stretch",
+                    justifyItems: "stretch",
+                    alignItems: "start",
                     padding: "8px 9px",
                     border: 0,
                     borderBottom: "1px solid var(--border)",
@@ -604,14 +630,17 @@ function FileBrowserAiSqlUnitPanel() {
                     cursor: "pointer",
                   }}
                 >
-                  <span style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.natural_language || "(empty)"}
                   </span>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyActorLabel(item)} · {historyTimestampLabel(item)}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.source || "history"} · {historyTargetLabel(item)}
                   </span>
                   {item.display_sql ? (
-                    <span style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {item.display_sql}
                     </span>
                   ) : null}
@@ -628,6 +657,9 @@ function FileBrowserAiSqlUnitPanel() {
               <>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <Pill tone={selectedHistory.ok ? "ok" : "neutral"}>{selectedHistory.source || "history"}</Pill>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {historyActorLabel(selectedHistory)} · {historyTimestampLabel(selectedHistory)}
+                  </span>
                   <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{historyTargetLabel(selectedHistory)}</span>
                   <Button
                     variant="primary"
@@ -635,11 +667,11 @@ function FileBrowserAiSqlUnitPanel() {
                     style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px", height: 28 }}
                   >재현</Button>
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {selectedHistory.natural_language || "(empty)"}
                 </div>
                 {selectedHistory.answer ? (
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                  <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                     {selectedHistory.answer}
                   </div>
                 ) : null}
@@ -721,7 +753,12 @@ function FileBrowserAiSqlUnitPanel() {
           right={<Pill tone={result?.ok ? "ok" : "neutral"}>{result?.run_id || (loading ? "loading" : "ready")}</Pill>}
         >
           <div style={{ display: "grid", gap: 10 }}>
-            <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} />
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={3}
+              placeholder="질문을 입력하거나 이력에서 재현을 누르세요."
+            />
             <div style={{ display: "grid", gap: 8 }}>
               <div style={{ display: "flex", gap: 0, border: "1px solid var(--border)", borderRadius: 4, overflow: "hidden" }}>
                 <button type="button" style={segBtnStyle(uiMode === "db")} onClick={() => setUiMode("db")}>DB</button>

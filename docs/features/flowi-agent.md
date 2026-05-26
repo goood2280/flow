@@ -39,7 +39,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 
 `merge` 결과는 FileBrowser와 같은 표시 SQL인 `display_sql`/`sql`과 내부 실행용 `where_sql`, `selected_columns`, 호환 `sort`를 함께 노출한다. 정렬 의도는 `display_sql`의 `ORDER BY`에 들어간다. 화면의 결과 SQL 박스는 편집 가능하며 `적용`은 LLM을 다시 호출하지 않고 FileBrowser의 read-only preview endpoint를 재사용해 같은 대상에 SQL만 다시 적용한다.
 
-Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL 질문 이력을 두고, 하단을 `State` / `LangGraph + Node IO` / `Test prompt` 3칸으로 나눈다. 이력을 클릭하면 answer, SQL, warning, trace/action log 요약을 먼저 보여주고, `재현` 버튼을 눌렀을 때만 prompt와 대상 DB/product 또는 단일 파일을 채운다. `debug request`에서 실제 `/runtime/run` payload를 확인할 수 있다.
+Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL 질문 이력을 두고, 각 이력에는 작성자와 실행 시각을 함께 표시한다. 하단은 `State` / `LangGraph + Node IO` / `Test prompt` 3칸으로 나눈다. 이력을 클릭하면 answer, SQL, warning, trace/action log 요약을 먼저 보여주고, `재현` 버튼을 눌렀을 때만 prompt와 대상 DB/product 또는 단일 파일을 채운다. `debug request`에서 실제 `/runtime/run` payload를 확인할 수 있다.
 
 `preview_apply` 노드는 read-only preview를 검증하지만 runtime trace와 질문 이력에는 preview row 전체를 싣지 않는다. Agent 화면의 preview table은 SQL `적용`을 사용자가 누른 뒤 FileBrowser preview endpoint를 다시 호출한 결과에서만 표시한다.
 

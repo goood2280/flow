@@ -1129,6 +1129,8 @@ def test_filebrowser_sql_draft_records_target_history(monkeypatch, tmp_path):
 
     assert {"filebrowser", "agent_test_prompt", "home_flowi_unit_ai", "home_flowi_sql_draft"}.issubset(by_source)
     assert by_source["filebrowser"]["natural_language"] == "product만 rule_order 순서"
+    assert by_source["filebrowser"]["username"] == "viewer"
+    assert by_source["filebrowser"]["timestamp"]
     assert by_source["filebrowser"]["scope"] == "db_product"
     assert by_source["filebrowser"]["root"] == "FAB"
     assert by_source["filebrowser"]["product"] == "PRODA"

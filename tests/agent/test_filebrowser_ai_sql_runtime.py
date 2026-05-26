@@ -151,6 +151,8 @@ def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch,
         if line.strip()
     ]
     assert history_rows[-1]["source"] == "agent_test_prompt"
+    assert history_rows[-1]["username"] == "tester"
+    assert history_rows[-1]["timestamp"]
     assert history_rows[-1]["display_sql"] == out["merged"]["display_sql"]
     assert history_rows[-1]["preview_summary"]["rows_returned"] > 0
     assert "rows" not in history_rows[-1]["preview_summary"]

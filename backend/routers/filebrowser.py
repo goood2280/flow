@@ -7258,6 +7258,7 @@ def _record_filebrowser_ai_sql_history(
         "history_id": f"fb_sql_hist_{uuid.uuid4().hex[:10]}",
         "source": _cache_safe_text(source, 80),
         "username": _cache_safe_text(username, 80),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "natural_language": prompt,
         "scope": scope,
         "root": root,
