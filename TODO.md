@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) SplitTable 적용공정 product 쉼표 매칭 보강
 - (Codex) FileBrowser 단일 CSV 열 변경 시 extra_col 제거와 EDM init 처리
 - (Codex) SplitTable VM/INLINE product-step matching 계약 보정
 - (Codex) SplitTable KNOB 클릭 분류정보와 적용공정 매칭 없음 표시 정리

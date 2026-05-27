@@ -81,6 +81,25 @@ def test_lookup_step_meta_reads_func_step_from_vehicle_matching(monkeypatch, tmp
     assert meta["func_step"] == "VEHICLE_FUNC"
 
 
+def test_lookup_step_meta_matches_comma_separated_vehicle_products(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    db.mkdir()
+    (db / "Vehicle_matching.csv").write_text(
+        "PRODUCT,STEP_ID,FUNC_STEP\n"
+        "\"PRODB,PRODA\",VEH_STEP_02,COMMA_FUNC\n",
+        encoding="utf-8",
+    )
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    lot_step._STEP_META_CACHE.clear()
+
+    meta = lot_step.lookup_step_meta(product="PRODA", step_id="VEH_STEP_02")
+
+    assert meta["function_step"] == "COMMA_FUNC"
+    assert meta["func_step"] == "COMMA_FUNC"
+
+
 def test_snapshot_row_fields_exposes_current_function_step():
     fields = snapshot_row_fields({
         "fab": {

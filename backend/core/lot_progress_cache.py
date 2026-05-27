@@ -369,6 +369,13 @@ def _norm_key(value) -> str:
     return _safe_text(value).upper()
 
 
+def _product_cell_keys(value) -> list[str]:
+    text = _norm_key(value)
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[,，、]", text) if part.strip()]
+
+
 def _norm_wafer(value) -> str:
     text = _safe_text(value).upper()
     if not text:
@@ -695,12 +702,12 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
             with path.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    product = _norm_key(_row_ci(row, "product", "process_id", "prod"))
+                    products = _product_cell_keys(_row_ci(row, "product", "process_id", "prod"))
                     step_id = _norm_key(_row_ci(row, "step_id", "raw_step_id", "step"))
                     function_step = _safe_text(_row_ci(row, *FUNCTION_STEP_SOURCE_COLUMNS))
                     if not step_id or not function_step:
                         continue
-                    if product:
+                    for product in products:
                         by_product[(product, step_id)] = function_step
                     by_step.setdefault(step_id, function_step)
         except Exception as exc:

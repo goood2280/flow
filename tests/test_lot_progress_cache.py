@@ -33,6 +33,26 @@ def test_lot_progress_metadata_documents_filebrowser_cache_rules():
     assert "step_desc" in meta["function_step_source_columns"]
 
 
+def test_load_step_matching_indexes_comma_separated_product_cells(monkeypatch, tmp_path):
+    base = tmp_path / "base"
+    data = tmp_path / "data"
+    base.mkdir()
+    data.mkdir()
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "\"PRODB,PRODA\",STEP_SHARED,PC\n",
+        encoding="utf-8",
+    )
+    paths = type("Paths", (), {"db_root": tmp_path, "base_root": base, "data_root": data})()
+    monkeypatch.setattr(cache, "PATHS", paths)
+
+    by_product, by_step = cache.load_step_matching()
+
+    assert by_product[("PRODA", "STEP_SHARED")] == "PC"
+    assert by_product[("PRODB", "STEP_SHARED")] == "PC"
+    assert by_step["STEP_SHARED"] == "PC"
+
+
 def test_tracker_lot_status_cache_keeps_requested_fields(monkeypatch, tmp_path):
     fp = tmp_path / "lot_status_cache.json"
     monkeypatch.setattr(cache, "lot_status_cache_file", lambda: fp)

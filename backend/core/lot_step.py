@@ -645,6 +645,23 @@ def _product_aliases(product: str = "") -> set[str]:
     return out
 
 
+def _product_cell_tokens(product: object) -> list[str]:
+    raw = str(product or "").strip().upper()
+    if not raw:
+        return []
+    return [part.strip() for part in re.split(r"[,，、]", raw) if part.strip()]
+
+
+def _product_match_keys(product: str = "") -> set[str]:
+    keys = set(_product_aliases(product))
+    for key in list(keys):
+        if key.startswith("ML_TABLE_"):
+            keys.add(key[len("ML_TABLE_"):].strip())
+        else:
+            keys.add(f"ML_TABLE_{key}")
+    return {key for key in keys if key}
+
+
 def _data_product_values(product: str = "") -> set[str]:
     raw = str(product or "").strip().upper()
     if raw.startswith("ML_TABLE_"):
@@ -1559,13 +1576,13 @@ def lookup_step_meta(product: str = "", step_id: str = "") -> dict:
     sid = str(step_id or "").strip()
     if not sid:
         return {}
-    aliases = _product_aliases(product)
+    aliases = _product_match_keys(product)
     fallback = None
     for row in _read_step_meta_rows():
         if str(row.get("step_id") or "").strip() != sid:
             continue
-        row_product = str(row.get("product") or "").strip().upper()
-        if aliases and row_product and row_product not in aliases:
+        row_products = _product_cell_tokens(row.get("product"))
+        if aliases and row_products and not any(row_product in aliases for row_product in row_products):
             if fallback is None:
                 fallback = row
             continue
