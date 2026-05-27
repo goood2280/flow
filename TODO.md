@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) FileBrowser 단일파일 편집 우클릭 아래 붙여넣기 보정
 - (Codex) FileBrowser 단일파일 편집 복사 후 아래 행 추가 붙여넣기 보정
 - (Codex) FileBrowser 단일파일 편집 행 복사와 우클릭 아래 행 추가
 - (Codex) FileBrowser 날짜/시간 SQL 필터 lazy/download 경로 보정
