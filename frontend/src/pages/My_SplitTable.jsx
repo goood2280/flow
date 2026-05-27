@@ -37,6 +37,19 @@ const stripMlPrefix=(s)=>{
   const v=String(s||"").trim();
   return v.startsWith("ML_TABLE_")?v.slice("ML_TABLE_".length):v;
 };
+const stepIdsForGroup=(group)=>Array.isArray(group?.step_ids)?group.step_ids.filter(Boolean):[];
+const isCompositeKnobRule=(groups)=>Array.isArray(groups)&&groups.length>1;
+const knobRuleBadgeStyle=(highlight=false)=>({
+  padding:"0 5px",
+  borderRadius:2,
+  fontFamily:"monospace",
+  fontWeight:800,
+  fontSize:14,
+  lineHeight:"18px",
+  ...(highlight
+    ? {background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.95)",color:"rgba(220,38,38,0.95)"}
+    : {background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.35)",color:"rgba(59,130,246,0.95)"})
+});
 
 function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=false,onValueChange,onCommit,onClose}){
   if(!activeCell)return null;
@@ -1480,7 +1493,7 @@ export default function My_SplitTable({user}){
                         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
                           {(meta.groups || []).map((g, gi) => (
                             <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
-                              <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order}</span>
+                              <span style={knobRuleBadgeStyle(isCompositeKnobRule(meta.groups))}>{g.rule_order}</span>
                               <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.step_desc||g.func_step}</span>
                               {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
                                 <span key={mod} style={{padding:"0 4px",background:"rgba(16,185,129,0.14)",color:"rgba(16,185,129,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{mod}</span>
@@ -1816,20 +1829,22 @@ export default function My_SplitTable({user}){
                 </div>
                 {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화.
                     KNOB/INLINE/VM는 '항목명 클릭' 방식으로 전환되어 인라인 정보 노출을 억제한다. */}
-                {showParamMeta && Array.isArray(rowKnob?.groups) && rowKnob.groups.length > 0 && (
+                {showParamMeta && rowMatchKind==="knob_ppid" && (()=>{const groups=Array.isArray(rowKnob?.groups)?rowKnob.groups:[];const matched=groups.filter(g=>stepIdsForGroup(g).length);const composite=isCompositeKnobRule(groups);return matched.length?(
                   <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
-                    {rowKnob.groups.map((g, gi) => (
+                    {matched.map((g, gi) => (
                       <div key={gi} style={{marginTop:gi>0?4:0,padding:"4px 6px",borderRadius:4,background:"rgba(251,191,36,0.06)",border:"1px solid rgba(251,191,36,0.18)"}}>
                         <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
-                          {(Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:[]).map((sid, si) => (
+                          {composite && <span style={knobRuleBadgeStyle(true)}>{g.rule_order ?? `R${gi+1}`}</span>}
+                          {stepIdsForGroup(g).map((sid, si) => (
                             <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.step_desc || g.func_step || "-"})</span>
                           ))}
-                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="Vehicle_matching.csv 또는 fallback step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>적용공정 없음 ({g.step_desc || g.func_step || "-"})</span>}
                         </div>
                       </div>
                     ))}
                   </div>
-                )}
+                ):(
+                  <div style={{fontSize:14,fontWeight:600,lineHeight:1.5,marginTop:4,fontFamily:"monospace",color:"var(--text-secondary)"}}>매칭정보 없음</div>
+                );})()}
                 {/* v8.8.15/v8.8.33: VM_ prefix row 의 step_id/step_desc sub-label — 항상 렌더, step_id 없으면 "미등록" pill. */}
                 {showParamMeta && !showMatchInfo && (row._param||"").startsWith("VM_") && (()=>{const vm=vmLookup(row._param)||{};const hasMeta=vm.step_id||vm.step_desc;return(
                   <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
@@ -2445,7 +2460,7 @@ export default function My_SplitTable({user}){
       <Modal open onClose={closeRuleMatchView} width={860} zIndex={3001}>
         <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
-            <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchTitle} 매칭 규칙</div>
+            <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchKind==="knob_ppid"?"KNOB 분류 규칙":`${rbMatchTitle} 매칭 규칙`}</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rbMatchParam}</span>
             {canManage && <button onClick={()=>{setRbMatchKind(null);openRowEditor(rbMatchKind);}}
               style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>편집</button>}
@@ -2454,32 +2469,24 @@ export default function My_SplitTable({user}){
           </div>
           {rbMatchData ? (
             <div style={{overflow:"auto"}}>
-              {rbMatchKind === "knob_ppid" && (
+              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const composite=isCompositeKnobRule(groups);return(
                 <div style={{display:"grid",gap:8}}>
-                  {(Array.isArray(rbMatchData.groups) ? rbMatchData.groups : []).length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 규칙이 없습니다.</div>}
-                  {(Array.isArray(rbMatchData.groups) ? rbMatchData.groups : []).map((g, gi) => (
-                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:"1px solid rgba(251,191,36,0.35)",background:"var(--bg-card)"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
-                        <span style={{padding:"0 4px",background:"rgba(59,130,246,0.12)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order ?? "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>step_desc</span>
-                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:800,fontFamily:"monospace"}}>{g.step_desc || g.func_step || "-"}</span>
-                        {Array.isArray(g.modules) && g.modules.map(mod => <span key={mod} style={{padding:"0 5px",borderRadius:999,border:"1px solid rgba(16,185,129,0.35)",background:"rgba(16,185,129,0.1)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:14}}>{mod}</span>)}
-                      </div>
-                      <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {groups.length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>분류 규칙이 없습니다.</div>}
+                  {groups.map((g, gi) => (
+                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"10px 12px",borderRadius:6,border:"1px solid rgba(251,191,36,0.35)",background:"var(--bg-card)"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={knobRuleBadgeStyle(composite)}>{g.rule_order ?? "-"}</span>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>condition</span>
-                        <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>{g.operator || "-"}</span>
+                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.operator || "-"}</span>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>cell value</span>
-                        <span style={{fontFamily:"monospace"}}>{g.value || g.category || "-"}</span>
-                        {g.category && g.category!==g.value && <><span style={{color:"var(--text-secondary)",fontSize:14}}>category</span><span style={{fontFamily:"monospace"}}>{g.category}</span></>}
-                        <span style={{flexBasis:"100%",height:0}}/>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
-                        {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{sid} ({g.step_desc || g.func_step || "-"})</span>)}
-                        {!(Array.isArray(g.step_ids) && g.step_ids.length) && <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>적용공정 없음</span>}
+                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.value || "-"}</span>
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>category</span>
+                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontFamily:"monospace",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
                       </div>
                     </div>
                   ))}
                 </div>
-              )}
+              );})()}
               {rbMatchKind === "inline_matching" && (()=>{const im=rbMatchData;const groups=Array.isArray(im.groups)?im.groups:[];return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
