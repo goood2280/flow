@@ -16,6 +16,9 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `GET /api/agent/unit-ai/{unit_key}/runtime/graph`
   - `POST /api/agent/unit-ai/{unit_key}/runtime/run`
   - `GET /api/agent/unit-ai/{unit_key}/runtime/history`
+  - `GET /api/agent/unit-ai/change_management/runtime/graph`
+  - `POST /api/agent/unit-ai/change_management/runtime/run`
+  - `GET /api/agent/unit-ai/change_management/runtime/history`
   - `GET /api/agent/semantic/lexicon`
   - `PUT/DELETE /api/agent/semantic/alias-groups/{canonical}`
   - `PUT/DELETE /api/agent/semantic/intent-hints/{intent}`
@@ -24,6 +27,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `POST /api/agent/semantic/draft`
 - `filebrowser_ai_sql` unit의 공개 실행 trace와 LangGraph-ready DAG 가시화
 - `inform_registration` unit의 short-memory slot 수집, draft review, confirm-only Inform 저장 흐름
+- `change_management` unit의 회의/변경점 저장 데이터 기반 plain text recall 답변
 - `data/flow-data/semantic` JSON lexicon, intent hint, proposal queue 관리
 - Home Flow-i 실행의 공개 runtime graph snapshot 관찰
 
@@ -68,6 +72,16 @@ slot 병합 우선순위는 기존 short-memory slot, semantic hint, 원문에�
 
 Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는다. Home Agent는 `/api/home-agent/orchestrate`, `/api/home-agent/orchestrate/stream`, `/api/home-agent/run-tool`에서 `inform_registration` unit을 직접 runtime으로 실행한다. `/run-tool`은 `input` dict에 `prompt`, `session_id`, `action`, `slot_overrides`를 담아 호출하며, `confirm` 저장은 Home Agent request/user context를 그대로 전달해 기존 Inform 권한과 audit 흐름을 탄다.
 
+## Change Management Unit
+
+`change_management`는 Agent 단위기능 AI의 세 번째 unit이다. 화면 구조는 FileBrowser AI SQL, Inform 등록 도우미와 같이 상단 `질문 이력`, 하단 `State` / `LangGraph` / `Test prompt`를 쓴다.
+
+실행 graph는 `context_scope -> meeting_reference -> evidence_pack -> answer_compose`다. `context_scope`는 현재 사용자가 볼 수 있는 Meeting과 Calendar event만 읽고, `meeting_reference`는 prompt의 회의명을 기존 meeting ask resolver로 해석한다. 후보가 여러 개이거나 특정 회의가 없으면 하나를 추측하지 않고 후보와 함께 확인 필요 상태를 반환한다.
+
+`evidence_pack`은 visible meeting의 agenda, minutes, decision, action item과 변경점 관리 calendar event summary를 만든다. `answer_compose`는 `routers.meetings`의 안전한 meeting ask LLM/fallback 경로를 재사용하되, 결과는 `**`, `###`, backtick 같은 markdown 장식을 제거한 plain text로 정리한다. LLM이 없거나 실패하면 저장 데이터 기반 fallback을 쓰고, 근거가 없으면 없다고 답한다.
+
+이 unit은 Meeting/Calendar 데이터를 쓰지 않는다. 실행 이력만 `FLOW_DATA_ROOT/agent_unit_ai_sessions/change_management/history.jsonl`에 append한다.
+
 ## Home Flow-i Runtime Tab
 
 Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.
@@ -91,6 +105,7 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 | Unit registry | `backend/core/flowi_units/registry.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |
+| Change management runtime | `backend/core/flowi_units/change_management_runtime.py` |
 | Semantic lexicon store | `backend/app_v2/modules/semantic_lexicon/` |
 | Semantic proposal queue | `backend/app_v2/modules/semantic_learning/` |
 | FileBrowser owner | `backend/routers/filebrowser.py` |
@@ -100,6 +115,7 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 
 - `python3 -m pytest tests/agent/test_filebrowser_ai_sql_runtime.py`
 - `python3 -m pytest tests/agent/test_inform_registration_runtime.py`
+- `python3 -m pytest tests/agent/test_change_management_runtime.py`
 - `python3 -m pytest tests/agent/test_semantic_agent_api.py tests/test_semantic_lexicon.py tests/test_semantic_learning_extractor.py`
 - `python3 -m pytest tests/test_home_orchestrator.py`
 - `python3 -m pytest tests/test_filebrowser_sql.py`

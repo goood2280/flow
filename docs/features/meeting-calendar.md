@@ -12,6 +12,7 @@ Meeting은 회의, agenda, minutes, decision, action item을 남기고 Calendar�
 - meeting ask API (`/api/meetings/ask`) — visible meeting의 agenda/minutes/decision/action item read-only 질의
 - calendar 월 grid, pending/in_progress/done 상태
 - meeting action과 tracker/calendar 상태 동기화
+- Agent `change_management` unit — visible meeting/calendar 저장 데이터만 근거로 plain text 변경점 답변 생성
 
 ## Does Not Own
 
@@ -41,6 +42,7 @@ Meeting은 회의, agenda, minutes, decision, action item을 남기고 Calendar�
 - meeting ask API는 `_meeting_visible` 권한을 재사용하고 회의 데이터를 쓰지 않는다. LLM 미설정/실패 시 저장 데이터 기반 fallback 답변을 반환한다.
 - Flow-i unit action은 `meeting.ask.llm`로 노출하며 Home에서는 회의/차수/아젠다/회의록/결정사항/액션아이템 요약과 sources를 인라인 표시한다.
 - Meeting 화면 안에는 별도 `Flow-i 회의 질문` 입력창을 두지 않는다. 회의/변경점 질의는 변경점관리(Calendar)의 `Flow-i 변경점 질문` 또는 Home Flow-i에서 `meeting.ask.llm`을 재사용한다.
+- Agent 단위기능 AI 탭에서는 같은 read-only 질의 흐름을 `change_management` runtime으로 관찰한다. 이 runtime은 회의 후보가 애매하면 추측하지 않고 확인 필요와 후보를 반환하며, `**`/`###` 같은 markdown 장식을 제거한 plain text 답변만 표시한다.
 - agenda/minutes/decision/action item의 KnowledgeEvent append는 best-effort다. 회의 저장, calendar sync, mail send 성공 여부를 바꾸지 않는다.
 - calendar 항목은 자체 입력인지 외부 push인지 출처를 유지한다.
 - Calendar shared categories/settings 변경은 `calendar` page manager 이상만 수행한다. 개인 event 작성/수정/상태 변경은 기존 current user/visibility 규칙을 유지한다.

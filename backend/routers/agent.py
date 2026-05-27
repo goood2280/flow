@@ -20,6 +20,12 @@ from app_v2.modules.semantic_lexicon import store as semantic_lexicon_store
 from core import home_orchestrator
 from core.auth import current_user, is_page_manager
 from core.flowi_units import all_unit_ais, get_unit_ai
+from core.flowi_units.change_management_runtime import (
+    UNIT_AI_KEY as CHANGE_MANAGEMENT_UNIT_KEY,
+    change_management_graph,
+    list_change_management_history,
+    run_change_management_runtime,
+)
 from core.flowi_units.filebrowser_ai_sql_runtime import (
     UNIT_AI_KEY as FILEBROWSER_AI_SQL_UNIT_KEY,
     filebrowser_ai_sql_graph,
@@ -45,6 +51,11 @@ _ACTIVE_UNIT_ENDPOINTS = {
         "graph": "/api/agent/unit-ai/inform_registration/runtime/graph",
         "run": "/api/agent/unit-ai/inform_registration/runtime/run",
         "history": "/api/agent/unit-ai/inform_registration/runtime/history",
+    },
+    CHANGE_MANAGEMENT_UNIT_KEY: {
+        "graph": "/api/agent/unit-ai/change_management/runtime/graph",
+        "run": "/api/agent/unit-ai/change_management/runtime/run",
+        "history": "/api/agent/unit-ai/change_management/runtime/history",
     },
 }
 
@@ -412,6 +423,46 @@ def inform_registration_runtime_history(request: Request, limit: int = 50) -> di
     }
 
 
+@router.get("/unit-ai/change_management/runtime/graph")
+def change_management_runtime_graph(request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(CHANGE_MANAGEMENT_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="change_management unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": CHANGE_MANAGEMENT_UNIT_KEY,
+        "graph": change_management_graph(),
+    }
+
+
+@router.post("/unit-ai/change_management/runtime/run")
+def change_management_runtime_run(req: UnitAiRuntimeRunReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(CHANGE_MANAGEMENT_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="change_management unit is not registered")
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    return run_change_management_runtime(
+        payload,
+        username=(me or {}).get("username") or "",
+        request=request,
+    )
+
+
+@router.get("/unit-ai/change_management/runtime/history")
+def change_management_runtime_history(request: Request, limit: int = 50) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(CHANGE_MANAGEMENT_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="change_management unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": CHANGE_MANAGEMENT_UNIT_KEY,
+        "history": list_change_management_history(limit=limit, username=(me or {}).get("username") or ""),
+    }
+
+
 @router.get("/semantic/lexicon")
 def semantic_lexicon(request: Request, limit: int = 100) -> dict[str, Any]:
     current_user(request)
@@ -569,6 +620,8 @@ def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
         graph = filebrowser_ai_sql_graph()
     elif unit_key == INFORM_REGISTRATION_UNIT_KEY:
         graph = inform_registration_graph()
+    elif unit_key == CHANGE_MANAGEMENT_UNIT_KEY:
+        graph = change_management_graph()
     else:
         raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
     return {
@@ -608,6 +661,13 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
             username=(me or {}).get("username") or "",
             request=request,
         )
+    if unit_key == CHANGE_MANAGEMENT_UNIT_KEY:
+        me = current_user(request)
+        return run_change_management_runtime(
+            payload,
+            username=(me or {}).get("username") or "",
+            request=request,
+        )
     raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
 
 
@@ -617,13 +677,20 @@ def unit_ai_runtime_history(unit_key: str, request: Request, limit: int = 50) ->
     unit = get_unit_ai(unit_key)
     if unit is None:
         raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    if unit_key == INFORM_REGISTRATION_UNIT_KEY:
+        return {
+            "ok": True,
+            "unit_ai": unit_key,
+            "history": list_inform_registration_history(limit=limit, username=(me or {}).get("username") or ""),
+        }
+    if unit_key == CHANGE_MANAGEMENT_UNIT_KEY:
+        return {
+            "ok": True,
+            "unit_ai": unit_key,
+            "history": list_change_management_history(limit=limit, username=(me or {}).get("username") or ""),
+        }
     if unit_key != INFORM_REGISTRATION_UNIT_KEY:
         raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
-    return {
-        "ok": True,
-        "unit_ai": unit_key,
-        "history": list_inform_registration_history(limit=limit, username=(me or {}).get("username") or ""),
-    }
 
 
 @router.get("/home-flowi/runtime/graph")

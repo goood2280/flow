@@ -124,7 +124,7 @@ def test_filebrowser_ai_sql_graph_shape_and_catalog(monkeypatch):
     assert prompts["column_draft"] == COLUMN_DRAFT_SYSTEM_PROMPT
     catalog = agent.unit_ai_catalog(_Request())
     assert catalog["ok"] is True
-    assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration"]
+    assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration", "change_management"]
 
 
 def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch, tmp_path):

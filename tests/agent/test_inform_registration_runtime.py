@@ -103,12 +103,13 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         assert node["answer_attach_rule"]
 
     catalog = agent.unit_ai_catalog(_Request())
-    assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration"]
+    assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration", "change_management"]
 
     status = agent.agent_reset_status()
     assert status["ok"] is True
     assert status["unit_ai_endpoint"] == "/api/agent/unit-ai/catalog"
     assert status["active_unit_endpoints"]["inform_registration"]["graph"] == "/api/agent/unit-ai/inform_registration/runtime/graph"
+    assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
     assert "backend_version" in status
     assert "backend_commit" in status
 
@@ -127,6 +128,7 @@ def test_agent_runtime_routes_are_before_archived_catchall():
     catchall_idx = next(idx for idx, row in enumerate(routes) if row == ("/api/agent/{path:path}", "archived_agent_endpoint"))
     for path in (
         "/api/agent/unit-ai/inform_registration/runtime/graph",
+        "/api/agent/unit-ai/change_management/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/run",
         "/api/agent/home-flowi/runtime/graph",
@@ -144,6 +146,8 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
     expected = {
         "/api/agent/unit-ai/inform_registration/runtime/graph": "inform_registration_runtime_graph",
         "/api/agent/unit-ai/inform_registration/runtime/history": "inform_registration_runtime_history",
+        "/api/agent/unit-ai/change_management/runtime/graph": "change_management_runtime_graph",
+        "/api/agent/unit-ai/change_management/runtime/history": "change_management_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
         "/api/agent/semantic/lexicon": "semantic_lexicon",
     }

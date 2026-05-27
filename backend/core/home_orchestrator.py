@@ -893,6 +893,26 @@ def _execute_step(
                 out["public_result"] = out["result"]
                 out["result_preview"] = _summarize_inform_registration_runtime_result(res)
                 return _finish_exec_out(out, t0)
+            if name == "change_management":
+                from core.flowi_units.change_management_runtime import run_change_management_runtime
+
+                payload = {
+                    "prompt": step_input.get("prompt") or step_input.get("natural_language") or "",
+                    "meeting_id": step_input.get("meeting_id") or "",
+                    "session_id": step_input.get("session_id") or "",
+                }
+                res = run_change_management_runtime(
+                    payload,
+                    username=str((user or {}).get("username") or step_input.get("username") or ""),
+                    request=request,
+                )
+                out["ok"] = bool(res.get("ok"))
+                out["status"] = str(res.get("status") or ("success" if res.get("ok") else "failed"))
+                out["warnings"] = _warnings_from_change_management_runtime(res)
+                out["result"] = _trim_change_management_runtime_result(res)
+                out["public_result"] = out["result"]
+                out["result_preview"] = _summarize_change_management_runtime_result(res)
+                return _finish_exec_out(out, t0)
             from core.flowi_units.dispatcher import try_dispatch
             prompt = str(step_input.get("prompt") or "").strip()
             product = str(step_input.get("product") or "")
@@ -1035,6 +1055,49 @@ def _summarize_inform_registration_runtime_result(result: dict[str, Any]) -> str
     if answer:
         bits.append(answer)
     warnings = _warnings_from_inform_registration_runtime(result)
+    if warnings:
+        bits.append(f"warnings {len(warnings)}")
+    return " · ".join(bits)
+
+
+def _warnings_from_change_management_runtime(result: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    for item in (result.get("warnings") if isinstance(result.get("warnings"), list) else []):
+        text = _short_text(item, 240)
+        if text and text not in warnings:
+            warnings.append(text)
+    return warnings[:12]
+
+
+def _trim_change_management_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    return {
+        "status": result.get("status") or "",
+        "answer": _short_text(result.get("answer"), 1200),
+        "needs_clarification": bool(result.get("needs_clarification")),
+        "meeting_reference": deepcopy(result.get("meeting_reference") or {}),
+        "meeting": deepcopy(result.get("meeting") or {}),
+        "meetings": deepcopy((result.get("meetings") or [])[:20]) if isinstance(result.get("meetings"), list) else [],
+        "sources": deepcopy((result.get("sources") or [])[:50]) if isinstance(result.get("sources"), list) else [],
+        "calendar_events": deepcopy((result.get("calendar_events") or [])[:50]) if isinstance(result.get("calendar_events"), list) else [],
+        "warnings": _warnings_from_change_management_runtime(result),
+    }
+
+
+def _summarize_change_management_runtime_result(result: dict[str, Any]) -> str:
+    status = _short_text(result.get("status"), 80) or "unknown"
+    answer = _short_text(result.get("answer"), 260)
+    meetings = result.get("meetings") if isinstance(result.get("meetings"), list) else []
+    events = result.get("calendar_events") if isinstance(result.get("calendar_events"), list) else []
+    bits = [f"status {status}"]
+    if meetings:
+        bits.append(f"회의 {len(meetings)}건")
+    if events:
+        bits.append(f"변경점 이벤트 {len(events)}건")
+    if answer:
+        bits.append(answer)
+    warnings = _warnings_from_change_management_runtime(result)
     if warnings:
         bits.append(f"warnings {len(warnings)}")
     return " · ".join(bits)

@@ -105,7 +105,7 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
         tags.append("diagnosis")
     if "splittable" in t:
         tags.append("splittable")
-    if "calendar" in t or "일정" in t:
+    if "calendar" in t or "일정" in t or "변경점" in t:
         tags.append("calendar")
     if "tablemap" in t:
         tags.append("tablemap")

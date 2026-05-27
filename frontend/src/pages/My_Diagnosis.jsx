@@ -9,6 +9,9 @@ const FILEBROWSER_AI_SQL_HISTORY_ENDPOINT = "/api/filebrowser/sql/history?limit=
 const INFORM_REGISTRATION_GRAPH_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/graph";
 const INFORM_REGISTRATION_RUN_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/run";
 const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/history?limit=50";
+const CHANGE_MANAGEMENT_GRAPH_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/graph";
+const CHANGE_MANAGEMENT_RUN_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/run";
+const CHANGE_MANAGEMENT_HISTORY_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/history?limit=50";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
 const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 
@@ -274,6 +277,13 @@ const INFORM_STATE_KEY_BY_NODE = {
   register: "created_inform",
 };
 
+const CHANGE_STATE_KEY_BY_NODE = {
+  context_scope: "context_scope",
+  meeting_reference: "meeting_reference",
+  evidence_pack: "evidence",
+  answer_compose: "answer_pack",
+};
+
 const FALLBACK_GRAPH = {
   nodes: [
     { id: "context_sample", label: "용어해석 준비", phase: "context", status: "pending" },
@@ -313,6 +323,20 @@ const INFORM_FALLBACK_GRAPH = {
   ],
 };
 
+const CHANGE_FALLBACK_GRAPH = {
+  nodes: [
+    { id: "context_scope", label: "Visible scope", phase: "context", status: "pending" },
+    { id: "meeting_reference", label: "회의 참조 해석", phase: "semantic", status: "pending" },
+    { id: "evidence_pack", label: "회의/변경점 근거 수집", phase: "read", status: "pending" },
+    { id: "answer_compose", label: "Plain text 답변", phase: "render", status: "pending" },
+  ],
+  edges: [
+    { source: "context_scope", target: "meeting_reference" },
+    { source: "meeting_reference", target: "evidence_pack" },
+    { source: "evidence_pack", target: "answer_compose" },
+  ],
+};
+
 const HOME_FLOWI_FALLBACK_GRAPH = {
   nodes: [
     { id: "prompt_input", label: "프롬프트 입력", phase: "input", status: "pending" },
@@ -320,11 +344,15 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
     { id: "orchestrator", label: "오케스트레이터", phase: "plan", status: "pending" },
     { id: "result_renderer", label: "결과 정리", phase: "render", status: "pending" },
     { id: "unit_ai:filebrowser_ai_sql", label: "FileBrowser AI SQL", phase: "unit_ai_mcp", status: "available" },
+    { id: "unit_ai:inform_registration", label: "Inform 등록 도우미", phase: "unit_ai_mcp", status: "available" },
+    { id: "unit_ai:change_management", label: "변경점 관리 Flow-i", phase: "unit_ai_mcp", status: "available" },
   ],
   edges: [
     { source: "prompt_input", target: "semantic_layer" },
     { source: "semantic_layer", target: "orchestrator" },
     { source: "orchestrator", target: "unit_ai:filebrowser_ai_sql" },
+    { source: "orchestrator", target: "unit_ai:inform_registration" },
+    { source: "orchestrator", target: "unit_ai:change_management" },
     { source: "orchestrator", target: "result_renderer" },
   ],
 };
@@ -1377,6 +1405,394 @@ function InformRegistrationUnitPanel() {
   );
 }
 
+function ChangeManagementUnitPanel() {
+  const [graph, setGraph] = useState(null);
+  const [prompt, setPrompt] = useState("");
+  const [meetingId, setMeetingId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [graphErr, setGraphErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [lastRequest, setLastRequest] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+
+  const loadHistory = () => {
+    setHistoryLoading(true);
+    return sf(CHANGE_MANAGEMENT_HISTORY_ENDPOINT)
+      .then((payload) => {
+        const nextHistory = payload?.history || [];
+        setHistory(nextHistory);
+        if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+      })
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sf(CHANGE_MANAGEMENT_GRAPH_ENDPOINT).catch((e) => ({
+        error: formatAgentEndpointError(e, CHANGE_MANAGEMENT_GRAPH_ENDPOINT),
+      })),
+      sf(CHANGE_MANAGEMENT_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
+    ]).then(([graphPayload, historyPayload]) => {
+      if (graphPayload?.error) {
+        setGraphErr(graphPayload.error);
+        setGraph(null);
+      } else {
+        setGraphErr("");
+        setGraph(graphPayload?.graph || null);
+      }
+      const nextHistory = historyPayload?.history || [];
+      setHistory(nextHistory);
+      if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const activeGraph = result?.graph || graph || CHANGE_FALLBACK_GRAPH;
+  const graphNodes = activeGraph?.nodes || [];
+  const firstGraphNodeId = graphNodes[0]?.id || null;
+  const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
+  const trace = result?.trace || [];
+
+  useEffect(() => {
+    if (trace.length) setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
+  }, [result?.run_id]);
+
+  useEffect(() => {
+    if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
+  }, [selectedNodeId, firstGraphNodeId]);
+
+  const selectedIdx = currentSelectedNodeId
+    ? trace.findIndex((row) => row.node_id === currentSelectedNodeId)
+    : -1;
+  const selectedTraceNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedGraphNode = graphNodes.find((node) => node.id === currentSelectedNodeId) || graphNodes[0] || null;
+  const selectedNode = selectedTraceNode
+    ? {
+      ...selectedGraphNode,
+      ...selectedTraceNode,
+      id: selectedGraphNode?.id || selectedTraceNode.node_id,
+      node_id: selectedTraceNode.node_id || selectedGraphNode?.id,
+      persona: selectedGraphNode?.persona || selectedTraceNode.persona || "",
+      prompt: selectedGraphNode?.prompt || selectedTraceNode.prompt || {},
+      state_io: selectedGraphNode?.state_io || selectedTraceNode.state_io || {},
+      reads: selectedGraphNode?.reads || selectedTraceNode.reads || [],
+      writes: selectedGraphNode?.writes || selectedTraceNode.writes || [],
+      shared_state: selectedGraphNode?.shared_state || selectedTraceNode.shared_state || [],
+      answer_attach_rule: selectedGraphNode?.answer_attach_rule || selectedTraceNode.answer_attach_rule || "",
+    }
+    : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
+  const accumulatedState = useMemo(
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, CHANGE_STATE_KEY_BY_NODE),
+    [result, lastRequest, selectedIdx]
+  );
+  const stateDesign = activeGraph?.state_design || {};
+  const stateValue = trace.length ? accumulatedState : stateDesign;
+  const stateSubtitle = selectedTraceNode
+    ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}`
+    : (trace.length ? "final state" : "");
+  const graphSubtitle = trace.length
+    ? `${trace.length}/${graphNodes.length} nodes · click to inspect`
+    : "";
+  const selectedNodeOutput = compactRowsPayload(selectedTraceNode?.output);
+  const selectedPromptSystem = selectedNode?.prompt?.system || "";
+  const selectedPromptMode = selectedNode?.prompt?.mode || "deterministic";
+  const selectedStateIo = selectedNode?.state_io || {
+    reads: selectedNode?.reads || [],
+    writes: selectedNode?.writes || [],
+  };
+
+  const selectedHistory = useMemo(() => (
+    history.find((item) => item.history_id === selectedHistoryId) || history[0] || null
+  ), [history, selectedHistoryId]);
+  const historyPrompt = (item) => item?.prompt || item?.natural_language || "";
+  const debugRequest = {
+    prompt: prompt.trim(),
+    meeting_id: meetingId.trim(),
+    session_id: sessionId.trim(),
+  };
+  const canRun = !!prompt.trim();
+
+  const run = () => {
+    if (!canRun) return;
+    const body = {
+      prompt: prompt.trim(),
+      meeting_id: meetingId.trim(),
+      session_id: sessionId.trim(),
+    };
+    setBusy(true);
+    setErr("");
+    setResult(null);
+    setLastRequest(body);
+    postJson(CHANGE_MANAGEMENT_RUN_ENDPOINT, body)
+      .then((payload) => {
+        setResult(payload);
+        loadHistory();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const replayHistory = (item) => {
+    setPrompt(historyPrompt(item));
+    setMeetingId(item?.meeting_reference?.focus_meeting_id || item?.meeting?.id || "");
+    setSessionId("");
+    setSelectedHistoryId(item?.history_id || "");
+    setErr("");
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      {graphErr && (
+        <Banner tone="warn" onClose={() => setGraphErr("")}>
+          변경점관리 graph fetch 진단 — 기본 노드 구조로 표시: {graphErr}
+        </Banner>
+      )}
+      <Panel
+        title="질문 이력"
+        subtitle={historyLoading ? "loading" : `${history.length} items`}
+        right={<Button variant="ghost" onClick={loadHistory} disabled={historyLoading} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.05fr) minmax(320px, 0.95fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ maxHeight: 230, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            {history.length ? history.map((item) => {
+              const active = (item.history_id || "") === (selectedHistory?.history_id || "");
+              return (
+                <button
+                  type="button"
+                  key={item.history_id || `${item.timestamp}:${historyPrompt(item)}`}
+                  onClick={() => setSelectedHistoryId(item.history_id || "")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    width: "100%",
+                    textAlign: "left",
+                    justifyContent: "stretch",
+                    justifyItems: "stretch",
+                    alignItems: "start",
+                    padding: "8px 9px",
+                    border: 0,
+                    borderBottom: "1px solid var(--border)",
+                    background: active ? "var(--bg-tertiary)" : "transparent",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyPrompt(item) || "(empty)"}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyActorLabel(item)} · {historyTimestampLabel(item)}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.status || "status"} · {item.meeting_reference?.focus_meeting_title || item.meeting?.title || "범위 자동"}
+                  </span>
+                </button>
+              );
+            }) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                저장된 변경점관리 질문 이력이 없습니다.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {selectedHistory ? (
+              <>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill tone={toneForStatus(selectedHistory.status)}>{selectedHistory.status || "history"}</Pill>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {historyActorLabel(selectedHistory)} · {historyTimestampLabel(selectedHistory)}
+                  </span>
+                  <Button
+                    variant="primary"
+                    onClick={() => replayHistory(selectedHistory)}
+                    style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px", height: 28 }}
+                  >재현</Button>
+                </div>
+                <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {historyPrompt(selectedHistory) || "(empty)"}
+                </div>
+                {selectedHistory.answer ? (
+                  <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
+                    {selectedHistory.answer}
+                  </div>
+                ) : null}
+                <JsonBlock
+                  value={{
+                    meeting_reference: selectedHistory.meeting_reference || {},
+                    sources: selectedHistory.sources || [],
+                    calendar_events: selectedHistory.calendar_events || [],
+                    llm: selectedHistory.llm || {},
+                    warnings: selectedHistory.warnings || [],
+                  }}
+                  maxHeight={190}
+                />
+              </>
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                이력을 선택하면 답변과 근거 요약을 확인할 수 있습니다.
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="flow-agent-unit-grid">
+        <Panel title="State" subtitle={stateSubtitle}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+            {trace.length && Object.keys(stateDesign).length ? (
+              <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
+                  state_design
+                </summary>
+                <JsonBlock value={stateDesign} maxHeight={220} />
+              </details>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel title="LangGraph" subtitle={graphSubtitle}>
+          <div className="flow-agent-node-grid">
+            <RuntimeGraph graph={activeGraph} selectedId={currentSelectedNodeId} onSelect={setSelectedNodeId} />
+            <div style={{ display: "grid", gap: 8 }}>
+              {selectedNode ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{selectedNode.label || selectedNode.node_id}</strong>
+                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
+                    {selectedTraceNode ? (
+                      <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span>
+                    ) : null}
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  {(selectedTraceNode?.warnings || []).length ? (
+                    <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
+                  ) : null}
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                  <JsonBlock
+                    value={{
+                      persona: selectedNode.persona || "",
+                      prompt: {
+                        mode: selectedPromptMode,
+                        system: selectedPromptSystem,
+                      },
+                      answer_attach_rule: selectedNode.answer_attach_rule || "",
+                    }}
+                    maxHeight={selectedPromptSystem ? 220 : 140}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                  <JsonBlock
+                    value={{
+                      reads: selectedStateIo.reads || selectedNode.reads || [],
+                      writes: selectedStateIo.writes || selectedNode.writes || [],
+                    }}
+                    maxHeight={150}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
+                  <JsonBlock
+                    value={selectedTraceNode ? {
+                      status: selectedTraceNode.status,
+                      input_summary: selectedTraceNode.input_summary || {},
+                      output: selectedNodeOutput || {},
+                      duration_ms: selectedTraceNode.duration_ms || 0,
+                    } : {
+                      status: selectedNode.status || "pending",
+                      input_summary: {},
+                      output: {},
+                    }}
+                    maxHeight={230}
+                  />
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                  노드 정보 없음
+                </div>
+              )}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Test prompt"
+          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : "")}
+          right={<Pill tone={toneForStatus(result?.status)}>{result?.status || (loading ? "loading" : "ready")}</Pill>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              placeholder="예: Device Change Sync 회의 액션아이템과 결정사항 정리해줘"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 }}>
+              <Field label="meeting_id">
+                <input
+                  value={meetingId}
+                  onChange={(e) => setMeetingId(e.target.value)}
+                  placeholder="선택"
+                  style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
+                />
+              </Field>
+              <Field label="session_id">
+                <input
+                  value={sessionId}
+                  onChange={(e) => setSessionId(e.target.value)}
+                  placeholder="선택"
+                  style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
+                />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+              <JsonBlock value={debugRequest} maxHeight={120} />
+            </div>
+            <Button variant="primary" onClick={run} disabled={!canRun || busy}>
+              {busy ? "실행 중" : "실행"}
+            </Button>
+            {result ? (
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <strong style={{ fontSize: 12 }}>결과</strong>
+                  <Pill tone={result.needs_clarification ? "warn" : toneForStatus(result.status)}>
+                    {result.needs_clarification ? "확인 필요" : (result.status || "done")}
+                  </Pill>
+                  {result.meeting_reference?.focus_meeting_title ? <Pill tone="neutral">{result.meeting_reference.focus_meeting_title}</Pill> : null}
+                </div>
+                {result.answer ? (
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                    {result.answer}
+                  </div>
+                ) : null}
+                <JsonBlock
+                  value={{
+                    meeting_reference: result.meeting_reference || {},
+                    sources: result.sources || [],
+                    calendar_events: result.calendar_events || [],
+                    llm: result.llm || {},
+                    warnings: result.warnings || [],
+                  }}
+                  maxHeight={260}
+                />
+              </div>
+            ) : null}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 function SemanticLayerPanel() {
   const [payload, setPayload] = useState(null);
   const [aliasJson, setAliasJson] = useState("{}");
@@ -1641,9 +2057,12 @@ function UnitAiPanel() {
         items={[
           { k: "filebrowser_ai_sql", l: "FileBrowser AI SQL" },
           { k: "inform_registration", l: "Inform 등록 도우미" },
+          { k: "change_management", l: "변경점 관리 Flow-i" },
         ]}
       />
-      {activeUnit === "filebrowser_ai_sql" ? <FileBrowserAiSqlUnitPanel /> : <InformRegistrationUnitPanel />}
+      {activeUnit === "filebrowser_ai_sql"
+        ? <FileBrowserAiSqlUnitPanel />
+        : (activeUnit === "inform_registration" ? <InformRegistrationUnitPanel /> : <ChangeManagementUnitPanel />)}
     </div>
   );
 }
