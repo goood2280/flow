@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Loading from "../components/Loading";
 import Modal from "../components/Modal";
 import { PageGearButton } from "../components/PageGear";
@@ -441,6 +441,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[includeHeader,setIncludeHeader]=useState(true);
   const[selectedEditCell,setSelectedEditCell]=useState({r:0,c:0});
   const[baseEditContextMenu,setBaseEditContextMenu]=useState(null);
+  const baseEditCopiedRowsRef=useRef(null);
   const[baseVersions,setBaseVersions]=useState([]);
   const[baseVersionCap,setBaseVersionCap]=useState(30);
   const[baseVersioned,setBaseVersioned]=useState(false);
@@ -1434,6 +1435,7 @@ export default function My_FileBrowser({user,onNavigate}){
     setIncludeHeader(true);
     setSelectedEditCell({r:0,c:0});
     setBaseEditContextMenu(null);
+    baseEditCopiedRowsRef.current=null;
     setIsBaseEditing(true);
     setTab("data");
   };
@@ -1443,25 +1445,14 @@ export default function My_FileBrowser({user,onNavigate}){
     setIsBaseEditing(false);
     setSelectedEditCell({r:0,c:0});
     setBaseEditContextMenu(null);
+    baseEditCopiedRowsRef.current=null;
   };
 
   const restoreBaseEdit=()=>{
     setEditRows(editOriginRows.map(r=>r.slice()));
     setSelectedEditCell({r:0,c:0});
     setBaseEditContextMenu(null);
-  };
-
-  const addBaseEditRow=()=>{
-    if(!canEditCurrentBase||!isBaseEditing)return;
-    if(!editCols.length){
-      setError("열 정보가 없어 새 행을 추가할 수 없습니다.");
-      return;
-    }
-    setEditRows(prev=>{
-      const next=[...prev,Array(editCols.length).fill("")];
-      setSelectedEditCell({r:next.length-1,c:0});
-      return next;
-    });
+    baseEditCopiedRowsRef.current=null;
   };
 
   const insertBaseEditRowBelow=(targetR=selectedEditCell.r)=>{
@@ -1501,6 +1492,7 @@ export default function My_FileBrowser({user,onNavigate}){
     if(!isBaseEditing||!editRows.length)return;
     const idx=Math.max(0,Math.min(targetR,editRows.length-1));
     const row=normalizeGridRows([editRows[idx]||[]],editCols.length,"")[0]||[];
+    baseEditCopiedRowsRef.current=[row];
     try{
       await writeClipboardText(row.join("\t"));
       setSelectedEditCell(cur=>({r:idx,c:Math.max(0,Math.min(cur.c||0,Math.max(editCols.length-1,0)))}));
@@ -1534,7 +1526,7 @@ export default function My_FileBrowser({user,onNavigate}){
     });
   };
 
-  const pasteBaseRows=(rowsRaw)=>{
+  const pasteBaseRows=useCallback((rowsRaw)=>{
     if(!canEditCurrentBase||!isBaseEditing)return;
     let rows=rowsRaw||[];
     if(isHeaderMatch(rows,editCols)){
@@ -1556,16 +1548,42 @@ export default function My_FileBrowser({user,onNavigate}){
       });
       return next;
     });
-  };
+  },[canEditCurrentBase,editCols,isBaseEditing,pasteMode,selectedEditCell]);
+
+  const readBasePasteRows=useCallback((e)=>{
+    const text=e.clipboardData?.getData("text/plain")||"";
+    if(text.trim()){
+      const [rows]=detectDelimiterFromGridText(text);
+      return rows;
+    }
+    return baseEditCopiedRowsRef.current||[];
+  },[]);
 
   const onBasePaste=(e)=>{
     if(!isBaseEditing)return;
     e.preventDefault();
-    const text=e.clipboardData?.getData("text/plain")||"";
-    if(!text.trim())return;
-    const [rows]=detectDelimiterFromGridText(text);
+    e.stopPropagation();
+    const rows=readBasePasteRows(e);
+    if(!rows.length)return;
     pasteBaseRows(rows);
   };
+
+  useEffect(()=>{
+    if(!isBaseEditing)return;
+    const onWindowPaste=(e)=>{
+      if(!canEditCurrentBase)return;
+      const target=e.target;
+      if(target?.closest?.("[data-base-edit-grid='1']"))return;
+      const tag=String(target?.tagName||"").toLowerCase();
+      if(tag==="input"||tag==="textarea"||tag==="select"||target?.isContentEditable)return;
+      const rows=readBasePasteRows(e);
+      if(!rows.length)return;
+      e.preventDefault();
+      pasteBaseRows(rows);
+    };
+    window.addEventListener("paste",onWindowPaste);
+    return()=>window.removeEventListener("paste",onWindowPaste);
+  },[canEditCurrentBase,isBaseEditing,readBasePasteRows,pasteBaseRows]);
 
   const saveBaseEdit=async()=>{
     if(!canEditCurrentBase||!isBaseEditing){setError("현재 편집 상태가 아닙니다.");return;}
@@ -2083,7 +2101,7 @@ export default function My_FileBrowser({user,onNavigate}){
                 <div style={{margin:"0 0 8px",fontSize:12,color:"var(--text-secondary)"}}>
                   셀 기준 붙여넣기: 입력 중인 셀을 시작점으로 반영되며, 첫 행 헤더가 기존 헤더와 일치하면 자동으로 제외됩니다.
                 </div>
-                <div style={baseEditWrap} onPaste={onBasePaste}>
+                <div style={baseEditWrap} onPaste={onBasePaste} data-base-edit-grid="1">
                   <table style={baseEditTable}>
                     <thead><tr>
                       <th style={baseEditCornerCell}>#</th>
@@ -2149,16 +2167,6 @@ export default function My_FileBrowser({user,onNavigate}){
                     행 삭제
                   </button>
                 </div>}
-                <div style={{display:"flex",justifyContent:"flex-start",marginTop:10,gap:8}}>
-                  <button onClick={addBaseEditRow} disabled={!editCols.length}
-                    style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--bg-card)",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:!editCols.length?"default":"pointer",opacity:!editCols.length?0.45:1}}>
-                    맨 아래 행 추가
-                  </button>
-                  <button onClick={()=>deleteBaseEditRow()} disabled={!editRows.length}
-                    style={{padding:"6px 12px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:FB_BAD.bg,color:FB_BAD.fg,fontSize:14,fontWeight:700,cursor:!editRows.length?"default":"pointer",opacity:!editRows.length?0.45:1}}>
-                    선택 행 삭제
-                  </button>
-                </div>
               </>}
               {tab==="data"&&!isBaseEditingMode&&<div style={baseReadWrap}>
                 <table style={baseEditTable}>
