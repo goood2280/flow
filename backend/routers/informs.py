@@ -4647,68 +4647,10 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
     highlight_knobs = _module_highlight_knobs(module)
-    split_step_refs_cache: Optional[dict[str, list[tuple[str, str]]]] = None
-
-    def _split_param_step_refs() -> dict[str, list[tuple[str, str]]]:
-        nonlocal split_step_refs_cache
-        if split_step_refs_cache is not None:
-            return split_step_refs_cache
-        split_step_refs_cache = {}
-        if not product:
-            return split_step_refs_cache
-        try:
-            from routers.splittable import _build_knob_meta
-
-            knob_meta = _build_knob_meta(product) or {}
-        except Exception:
-            return split_step_refs_cache
-        for row in rows_st or []:
-            param = str(row.get("_param") or "").strip()
-            if not param or param in split_step_refs_cache:
-                continue
-            meta = knob_meta.get(param) or {}
-            refs: list[tuple[str, str]] = []
-            seen_refs: set[tuple[str, str]] = set()
-            for group in meta.get("groups") or []:
-                step_desc = str(group.get("step_desc") or group.get("func_step") or "").strip()
-                for raw_sid in group.get("step_ids") or []:
-                    sid = str(raw_sid or "").strip()
-                    if not sid:
-                        continue
-                    key = (sid, step_desc)
-                    if key in seen_refs:
-                        continue
-                    seen_refs.add(key)
-                    refs.append(key)
-            if refs:
-                split_step_refs_cache[param] = refs
-        return split_step_refs_cache
-
-    def _split_param_html(display: Any, param: Any) -> str:
-        text = esc(str(display or param or ""))
-        refs = _split_param_step_refs().get(str(param or "").strip()) or []
-        if not refs:
-            return text
-        ref_html = "".join(
-            "<div style='margin-top:3px;font-size:11px;line-height:1.25;color:#374151;font-weight:600;'>"
-            f"[ {esc(sid)}{f' ({esc(desc)})' if desc else ''} ]"
-            "</div>"
-            for sid, desc in refs
-        )
-        return text + ref_html
 
     def _lineage_summary_html() -> str:
         if not rows_st or not product:
             return ""
-        def _step_note(step_ids: list[str]) -> str:
-            ids = [str(x).strip() for x in (step_ids or []) if str(x).strip()]
-            if len(ids) <= 1:
-                return ""
-            manual_like = [sid for sid in ids if re.search(r"[A-Z]{2}\d{6}[A-Z]{2}$", sid)]
-            parts = ["복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요."]
-            if manual_like:
-                parts.append("수동/예외 step 후보가 포함됐을 수 있습니다.")
-            return " ".join(parts)
         try:
             from routers.splittable import _build_knob_meta, _build_inline_meta, _build_vm_meta
             knob_meta = _build_knob_meta(product) or {}
@@ -4782,13 +4724,11 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
               "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
         body = []
         for row in out:
-            note = _step_note(row["step_ids"])
             body.append(
                 "<tr>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['parameter'])}</td>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['function_step'] or '—')}</td>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#374151;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
-                + (f"<div style='margin-top:4px;font-size:{_MAIL_MIN_FONT};line-height:1.35;color:#6b7280;font-family:{_MAIL_FONT_FAMILY};font-weight:600;'>{esc(note)}</div>" if note else "")
                 + "</td>"
                 "</tr>"
             )
@@ -4800,7 +4740,6 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"<th style='{th}'>parameter</th><th style='{th}'>function_step</th><th style='{th}'>step_id</th>"
             "</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table>"
-            f"<div style='margin-top:6px;font-size:{_MAIL_MIN_FONT};color:#6b7280;'>function_step 에 여러 step_id 가 연결되면 메일 수신/적용 엔지니어가 현재 제품의 유효 step_id 를 확인한 뒤 적용해야 합니다.</div>"
             "</div>"
         )
 
@@ -4890,7 +4829,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             split_color = _split_check_color_style(split_label)
             for i, value in enumerate(prefix_vals):
                 style = first_col_style if i == 0 else data_col_style
-                body_html = _split_param_html(value, r.get("_param")) if i == 0 else esc(str(value or ""))
+                body_html = esc(str(value or ""))
                 row_cells.append(f"<td style='{td_prefix}{style}{split_color if i == 2 else ''}'>{body_html}</td>")
             for i in range(len(headers)):
                 cell = cells.get(i) or cells.get(str(i)) or {}

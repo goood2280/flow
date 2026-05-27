@@ -526,7 +526,7 @@ def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns
     pos_wafer = html.index("#1", pos_split)
     assert pos_item < pos_value < pos_split < pos_wafer
     assert "KNOB_GATE" in html
-    assert "[ STEP_GATE_A (GATE) ]" in html
+    assert "[ STEP_GATE_A (GATE) ]" not in html
     assert "S0" in html
     assert "S1" in html
     assert "✓" in html

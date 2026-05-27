@@ -75,15 +75,6 @@ function splitTableHeaderGroups(st) {
   return groups;
 }
 
-function stepWarning(stepIds) {
-  const ids = (Array.isArray(stepIds) ? stepIds : []).map(x => String(x || "").trim()).filter(Boolean);
-  if (ids.length <= 1) return "";
-  const hasManualLike = ids.some(sid => /[A-Z]{2}\d{6}[A-Z]{2}$/.test(sid));
-  return hasManualLike
-    ? "복수 step_id 및 manual/예외 step 후보가 있어 적용 엔지니어 확인이 필요합니다."
-    : "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요.";
-}
-
 function stepIdsForGroup(group) {
   if (Array.isArray(group?.step_ids)) return group.step_ids.map(v => String(v || "").trim()).filter(Boolean);
   const sid = String(group?.step_id || "").trim();
@@ -188,27 +179,6 @@ function buildLineageSummary(rows, knobMeta, vmMeta, inlineMeta) {
         });
       }
     }
-  });
-  return out;
-}
-
-function splitParamRefs(lineageSummary) {
-  const out = {};
-  const seen = {};
-  lineageSummary.forEach(row => {
-    const param = String(row.parameter || "").trim();
-    if (!param) return;
-    (row.step_ids || []).forEach(sid => {
-      const stepId = String(sid || "").trim();
-      if (!stepId) return;
-      const desc = String(row.step_desc || row.function_step || "").trim();
-      const key = `${stepId}|${desc}`;
-      if (!seen[param]) seen[param] = new Set();
-      if (seen[param].has(key)) return;
-      seen[param].add(key);
-      if (!out[param]) out[param] = [];
-      out[param].push({ step_id: stepId, step_desc: desc });
-    });
   });
   return out;
 }
@@ -335,7 +305,6 @@ export default function SplitTableSnapshotView({
     () => buildLineageSummary(st.rows, knobMeta, vmMeta, inlineMeta),
     [st.rows, knobMeta, vmMeta, inlineMeta],
   );
-  const stepRefsByParam = useMemo(() => splitParamRefs(lineageSummary), [lineageSummary]);
   const rowSpans = useMemo(() => {
     if (!splitCheckMode) return st.rows.map(() => 1);
     return st.rows.map((row, idx) => {
@@ -368,27 +337,6 @@ export default function SplitTableSnapshotView({
     }
     return out;
   }, [st.rows]);
-
-  const renderSplitParamCell = (value, param) => {
-    const refs = stepRefsByParam[String(param || "").trim()] || [];
-    const warn = stepWarning(refs.map(ref => ref.step_id));
-    if (!refs.length && !warn) return value;
-    return (
-      <>
-        {value}
-        {refs.map(ref => (
-          <div key={`${ref.step_id}-${ref.step_desc}`} style={{ marginTop: 3, fontSize: 11, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 700 }}>
-            [ {ref.step_id}{ref.step_desc ? ` (${ref.step_desc})` : ""} ]
-          </div>
-        ))}
-        {warn && (
-          <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.25, color: "rgba(220,38,38,0.95)", fontWeight: 700 }}>
-            {warn}
-          </div>
-        )}
-      </>
-    );
-  };
 
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", maxWidth: "100%" };
   const scrollerStyle = { maxHeight, overflow: "auto", border: "1px solid #555", borderRadius: 0, background: "var(--bg-card)" };
@@ -483,7 +431,7 @@ export default function SplitTableSnapshotView({
                     const rowSpanProps = splitCheckMode && pi === 0 && span > 1 ? { rowSpan: span } : {};
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps} style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi === 0 ? { verticalAlign: "top" } : {}) }}>
-                        {splitCheckMode && pi === 0 ? renderSplitParamCell(value, r._param) : value}
+                        {value}
                       </td>
                     );
                   })}
@@ -543,19 +491,11 @@ export default function SplitTableSnapshotView({
                     <td style={{ ...cellStyle, textAlign: "left", color: "var(--text-secondary)" }}>{x.function_step || "-"}</td>
                     <td style={{ ...cellStyle, textAlign: "left", color: INFO.fg, fontWeight: 700 }}>
                       {(x.step_ids || []).length ? x.step_ids.join(", ") : "-"}
-                      {stepWarning(x.step_ids) && (
-                        <div style={{ marginTop: 4, fontSize: 14, lineHeight: 1.35, color: "rgba(220,38,38,0.95)", fontFamily: "system-ui, sans-serif", fontWeight: 600 }}>
-                          {stepWarning(x.step_ids)}
-                        </div>
-                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-          <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
-            function_step 에 여러 step_id 가 연결되면 현재 제품에서 실제 적용할 step_id 를 담당 엔지니어가 확인한 뒤 진행해야 합니다.
           </div>
         </div>
       )}

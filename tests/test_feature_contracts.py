@@ -88,6 +88,7 @@ def test_splittable_view_has_split_check_display_toggle():
     assert 'export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"]' in snapshot_view
     assert "rowSpan: span" in snapshot_view
     assert "Split 체크로 표시할 값이 없습니다" in snapshot_view
+    assert "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요." not in snapshot_view
 
 
 def test_home_flowi_empty_chat_greeting_copy():

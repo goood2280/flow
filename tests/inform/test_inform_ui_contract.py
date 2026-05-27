@@ -115,21 +115,23 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
     assert "Wafer별 적용 plan 요약" not in src
 
 
-def test_split_check_snapshot_renderer_merges_param_cell_and_shows_step_refs():
+def test_split_check_snapshot_renderer_merges_param_cell_without_step_refs():
     view = SPLIT_SNAPSHOT_VIEW.read_text(encoding="utf-8")
 
     for token in [
         'export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"]',
         "export function buildSplitCheckStView",
         "rowSpan: span",
-        "renderSplitParamCell(value, r._param)",
-        "[ {ref.step_id}{ref.step_desc ? ` (${ref.step_desc})` : \"\"} ]",
-        "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요.",
         "sf(`/api/splittable/knob-meta${metaQs}`)",
         "sf(`/api/splittable/vm-meta${metaQs}`)",
         "sf(`/api/splittable/inline-meta${metaQs}`)",
     ]:
         assert token in view
+
+    assert "renderSplitParamCell" not in view
+    assert "splitParamRefs" not in view
+    assert "[ {ref.step_id}" not in view
+    assert "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요." not in view
 
 
 def test_inform_wizard_splittable_preview_states_are_visible():
