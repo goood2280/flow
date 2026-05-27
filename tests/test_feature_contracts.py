@@ -79,6 +79,9 @@ def test_splittable_view_has_split_check_display_toggle():
     snapshot_view = (ROOT / "frontend" / "src" / "components" / "SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
     assert "showSplitCheckView" in ui
     assert "Split 체크 표시" in ui
+    assert "isInlineVmSplitParam" in ui
+    assert "splitCheckDisabled" in ui
+    assert "disabled={splitCheckDisabled}" in ui
     assert 'import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS }' in ui
     assert "const splitCheckStView=buildSplitCheckStView" in ui
     assert "prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS" in ui
@@ -89,6 +92,12 @@ def test_splittable_view_has_split_check_display_toggle():
     assert "rowSpan: span" in snapshot_view
     assert "Split 체크로 표시할 값이 없습니다" in snapshot_view
     assert "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요." not in snapshot_view
+
+
+def test_meeting_page_does_not_embed_flowi_prompt_box():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Meeting.jsx").read_text(encoding="utf-8")
+    assert "FlowiPromptBox" not in ui
+    assert "Flow-i 회의 질문" not in ui
 
 
 def test_home_flowi_empty_chat_greeting_copy():

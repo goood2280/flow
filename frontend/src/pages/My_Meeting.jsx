@@ -11,7 +11,6 @@ import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
 import { Card, Pill, TableWrap, Tbl } from "../components/UXKit";
-import FlowiPromptBox from "../components/FlowiPromptBox";
 import { authSrc, sf, postJson, userLabel } from "../lib/api";
 
 const API = "/api/meetings";
@@ -961,13 +960,6 @@ export default function My_Meeting({ user }) {
 
       {/* Right: detail */}
       <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: "12px 20px 0", maxWidth: 980 }}>
-          <FlowiPromptBox
-            defaultScope={{ kind: "meeting", meeting_id: selectedId || "", session_id: selectedSid || "" }}
-            placeholder="Flow-i 회의 질문"
-            maxRows={8}
-          />
-        </div>
         {viewMode === "gantt" && (
           <ActionItemsGantt meetings={filtered} onPickMeeting={(id) => { setSelectedId(id); setViewMode("list"); }} />
         )}

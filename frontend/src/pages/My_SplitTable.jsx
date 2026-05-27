@@ -34,6 +34,10 @@ const COLOR_PREFIXES=["KNOB","MASK"];
 const CANDIDATE_PREVIEW_LIMIT=50;
 const CANDIDATE_SEARCH_LIMIT=120;
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
+const isInlineVmSplitParam=(value)=>{
+  const v=String(value||"").trim().toUpperCase();
+  return v==="INLINE"||v==="VM"||v.startsWith("INLINE_")||v.startsWith("VM_");
+};
 const stripMlPrefix=(s)=>{
   const v=String(s||"").trim();
   return v.startsWith("ML_TABLE_")?v.slice("ML_TABLE_".length):v;
@@ -660,6 +664,20 @@ export default function My_SplitTable({user}){
   useEffect(()=>{clearCellSelection();},[data]);
 
   const prefixParam=isCustomMode?"":selPrefixes.join(",");
+  const splitCheckDisabled=(!isCustomMode&&selPrefixes.some(isInlineVmSplitParam))
+    ||(isCustomMode&&customCols.some(isInlineVmSplitParam))
+    ||(Array.isArray(data?.rows)&&data.rows.some(row=>isInlineVmSplitParam(row?._param)||isInlineVmSplitParam(row?._display)));
+  const splitCheckViewActive=showSplitCheckView&&!splitCheckDisabled;
+  const splitCheckToggleTitle=splitCheckDisabled
+    ?"INLINE/VM 항목은 wafer별 Split 체크 표시 대상이 아닙니다"
+    :"각 항목 값을 S0/S1 체크 행으로 펼쳐 wafer별 적용 위치를 봅니다";
+  const toggleSplitCheckView=(checked)=>{
+    if(splitCheckDisabled){setShowSplitCheckView(false);return;}
+    setShowSplitCheckView(checked);
+  };
+  useEffect(()=>{
+    if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
+  },[splitCheckDisabled,showSplitCheckView]);
   // diff 모드는 클라이언트에서 즉시 필터 → 항상 "all" 로 fetch
   // v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다.
   // FAB 공정 진행 중 fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 검증으로 검색을 막지 않는다.
@@ -1238,8 +1256,8 @@ export default function My_SplitTable({user}){
                   <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                   하단 적용 요약
                 </label>
-                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
-                  <input type="checkbox" checked={showSplitCheckView} onChange={e=>setShowSplitCheckView(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                <label title={splitCheckToggleTitle} style={{display:"flex",alignItems:"center",gap:8,cursor:splitCheckDisabled?"not-allowed":"pointer",color:splitCheckDisabled?"var(--text-muted)":"var(--text-primary)",opacity:splitCheckDisabled?0.55:1}}>
+                  <input type="checkbox" checked={splitCheckViewActive} disabled={splitCheckDisabled} onChange={e=>toggleSplitCheckView(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                   Split 체크 표시
                 </label>
                 <div>표시 자리수, 데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
@@ -1721,8 +1739,8 @@ export default function My_SplitTable({user}){
             <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)}/>
             하단 적용 요약
           </label>
-          <label title="각 항목 값을 S0/S1 체크 행으로 펼쳐 wafer별 적용 위치를 봅니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:showSplitCheckView?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
-            <input type="checkbox" checked={showSplitCheckView} onChange={e=>setShowSplitCheckView(e.target.checked)}/>
+          <label title={splitCheckToggleTitle} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:splitCheckDisabled?"var(--text-muted)":(splitCheckViewActive?"var(--accent)":"var(--text-secondary)"),cursor:splitCheckDisabled?"not-allowed":"pointer",padding:"2px 6px",opacity:splitCheckDisabled?0.55:1}}>
+            <input type="checkbox" checked={splitCheckViewActive} disabled={splitCheckDisabled} onChange={e=>toggleSplitCheckView(e.target.checked)}/>
             Split 체크 표시
           </label>
           <span style={{width:1,height:16,background:"var(--border)"}}/>
@@ -1894,7 +1912,7 @@ export default function My_SplitTable({user}){
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }
           .splittable-grid td, .splittable-grid th, .splittable-grid td *, .splittable-grid th * { color: ${GRID_TEXT} !important; }`}</style>
-        {showSplitCheckView ? (
+        {splitCheckViewActive ? (
         <SplitTableSnapshotView
           stView={splitCheckStView}
           product={selProd}
