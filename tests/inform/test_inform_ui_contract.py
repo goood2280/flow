@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MY_INFORM = ROOT / "frontend" / "src" / "pages" / "My_Inform.jsx"
+SPLIT_SNAPSHOT_VIEW = ROOT / "frontend" / "src" / "components" / "SplitTableSnapshotView.jsx"
 
 
 def test_inform_wizard_five_step_backend_contract_order():
@@ -81,6 +82,15 @@ def test_mail_preview_byte_formatter_is_available_to_panel():
 
 def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
     src = MY_INFORM.read_text(encoding="utf-8")
+    view = SPLIT_SNAPSHOT_VIEW.read_text(encoding="utf-8")
+
+    for token in [
+        'import SplitTableSnapshotView from "../components/SplitTableSnapshotView"',
+        "return <SplitTableSnapshotView embed={embed} product={product} footer={renderAttachedSets()} />;",
+        "display_mode: form.split_check_display ? \"split_check\" : \"matrix\"",
+        "Split 체크 표시",
+    ]:
+        assert token in src
 
     for token in [
         "const firstColWidth = 288",
@@ -91,20 +101,35 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
         "const hasRootRow = hasLotContext",
         "const hasLotRow = hasLotContext || headerGroups.length > 0",
         'String(r._display || r._param || "").replace(/^[A-Z]+_/, "")',
-        "const splitCheckMode = String(st.display_mode || embed.display_mode || embed.st_scope?.display_mode || \"\") === \"split_check\"",
+        "const splitCheckMode = String(st.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || \"\") === \"split_check\"",
         "const rawPrefixColumns = Array.isArray(st.prefix_columns)",
-        "display_mode: form.split_check_display ? \"split_check\" : \"matrix\"",
-        "Split 체크 표시",
         "const isPlanOnly = !splitCheckMode && hasPlan && !hasActual",
         "const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
         "const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual)",
         '" (plan 적용)"',
     ]:
-        assert token in src
+        assert token in view
 
     assert 'root_lot_id</span> {rootLotId || "-"}' not in src
     assert 'lot_id</span> {lotIdLabel || "-"}' not in src
     assert "Wafer별 적용 plan 요약" not in src
+
+
+def test_split_check_snapshot_renderer_merges_param_cell_and_shows_step_refs():
+    view = SPLIT_SNAPSHOT_VIEW.read_text(encoding="utf-8")
+
+    for token in [
+        'export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"]',
+        "export function buildSplitCheckStView",
+        "rowSpan: span",
+        "renderSplitParamCell(value, r._param)",
+        "[ {ref.step_id}{ref.step_desc ? ` (${ref.step_desc})` : \"\"} ]",
+        "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요.",
+        "sf(`/api/splittable/knob-meta${metaQs}`)",
+        "sf(`/api/splittable/vm-meta${metaQs}`)",
+        "sf(`/api/splittable/inline-meta${metaQs}`)",
+    ]:
+        assert token in view
 
 
 def test_inform_wizard_splittable_preview_states_are_visible():

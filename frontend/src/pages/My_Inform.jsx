@@ -4,12 +4,13 @@
  * 삭제 정책: 작성자 본인만 (관리자도 불가) — 서버에서도 동일하게 강제됨.
  */
 import React, { useEffect, useMemo, useState, useRef } from "react";
-import { sf, authSrc, postJson, qs, userLabel, userMatches } from "../lib/api";
+import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
 import { Button, Card, Chip, Pill, TableWrap, Tbl, statusPalette, chartPalette } from "../components/UXKit";
 import FlowiPromptBox from "../components/FlowiPromptBox";
+import SplitTableSnapshotView from "../components/SplitTableSnapshotView";
 
 const API = "/api/informs";
 export const WIZARD_STEPS = ["lot", "module", "splittable", "mail_preview", "review"];
@@ -646,164 +647,9 @@ function stCellBg(val, uniq, pname) {
   if (idx != null) { const c = ST_CELL_COLORS[idx % ST_CELL_COLORS.length]; return { background: c.bg, color: c.fg }; }
   return {};
 }
-function splitCheckColorStyle(label) {
-  const m = String(label || "").trim().match(/^S(\d+)$/i);
-  if (!m) return {};
-  const c = ST_CELL_COLORS[Number(m[1]) % ST_CELL_COLORS.length];
-  return { background: c.bg, color: c.fg, fontWeight: 900 };
-}
-function stPlanStyle(cell) {
-  if (!cell) return {};
-  const hasPlan = hasStValue(cell.plan);
-  const hasActual = hasStValue(cell.actual);
-  if (hasPlan && hasActual) {
-    if (String(cell.plan) === String(cell.actual)) return { borderLeft: `3px solid ${OK.fg}`, fontWeight: 700 };
-    return { borderLeft: `3px solid ${BAD.fg}`, boxShadow: `inset 0 0 0 1px ${BAD.fg}66` };
-  }
-  if (hasPlan) return { borderLeft: `3px solid ${WARN.fg}`, fontStyle: "italic", fontWeight: 700 };
-  return {};
-}
-
-function splitTableHeaderGroups(st) {
-  const headers = st?.headers || [];
-  const rawGroups = Array.isArray(st?.header_groups) ? st.header_groups : [];
-  const normalized = rawGroups
-    .map(g => ({ label: String(g?.label || "").trim(), span: Math.max(1, Number(g?.span || 0)) }))
-    .filter(g => g.label && g.span > 0);
-  const rawSpan = normalized.reduce((acc, g) => acc + g.span, 0);
-  if (normalized.length && rawSpan === headers.length) return normalized;
-
-  const fabs = Array.isArray(st?.wafer_fab_list) ? st.wafer_fab_list.map(v => String(v || "").trim()) : [];
-  if (fabs.length !== headers.length || !fabs.some(Boolean)) return [];
-  const groups = [];
-  fabs.forEach(label => {
-    const text = label || "—";
-    const last = groups[groups.length - 1];
-    if (last && last.label === text) last.span += 1;
-    else groups.push({ label: text, span: 1 });
-  });
-  return groups;
-}
 
 function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
   if (!embed) return null;
-  const stepWarning = (stepIds) => {
-    const ids = (Array.isArray(stepIds) ? stepIds : []).map((x) => String(x || "").trim()).filter(Boolean);
-    if (ids.length <= 1) return "";
-    const hasManualLike = ids.some((sid) => /[A-Z]{2}\d{6}[A-Z]{2}$/.test(sid));
-    return hasManualLike
-      ? "복수 step_id 및 manual/예외 step 후보가 있어 적용 엔지니어 확인이 필요합니다."
-      : "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요.";
-  };
-  const inferProduct = () => {
-    const p = String(product || "").trim();
-    if (p) return p;
-    const src = String(embed?.source || "");
-    const m = src.match(/SplitTable\/([^ @·]+)/);
-    return m ? String(m[1] || "").trim() : "";
-  };
-  const effectiveProduct = inferProduct();
-  const [knobMeta, setKnobMeta] = useState({});
-  const [vmMeta, setVmMeta] = useState({});
-  const [inlineMeta, setInlineMeta] = useState({});
-  useEffect(() => {
-    if (!effectiveProduct) {
-      setKnobMeta({}); setVmMeta({}); setInlineMeta({});
-      return;
-    }
-    const metaQs = qs({ product: effectiveProduct });
-    sf(`/api/splittable/knob-meta${metaQs}`).then(d => setKnobMeta(d.features || {})).catch(() => setKnobMeta({}));
-    sf(`/api/splittable/vm-meta${metaQs}`).then(d => setVmMeta(d.items || {})).catch(() => setVmMeta({}));
-    sf(`/api/splittable/inline-meta${metaQs}`).then(d => setInlineMeta(d.items || {})).catch(() => setInlineMeta({}));
-  }, [effectiveProduct]);
-  const vmLookup = (param) => { if (!param) return null; const tail = String(param).replace(/^VM_/, ""); return vmMeta[param] || vmMeta[tail] || null; };
-  const inlineLookup = (param) => { if (!param) return null; const tail = String(param).replace(/^INLINE_/, ""); return inlineMeta[param] || inlineMeta[tail] || null; };
-  const lineageSummary = (() => {
-    const st = embed?.st_view;
-    const rows = st?.rows || [];
-    const out = [];
-    rows.forEach((r) => {
-      const param = String(r._param || "");
-      if (!param) return;
-      if (knobMeta[param]?.groups?.length) {
-        knobMeta[param].groups.forEach((g, gi) => out.push({
-          key: `${param}-k-${gi}`,
-          parameter: param,
-          function_step: g.func_step || "",
-          step_desc: g.step_desc || g.func_step || "",
-          step_ids: Array.isArray(g.step_ids) ? g.step_ids : [],
-          module: Array.isArray(g.modules) ? g.modules.join(", ") : "",
-        }));
-        return;
-      }
-      const vm = vmLookup(param) || {};
-      if (String(param).startsWith("VM_") && (vm.step_id || vm.function_step || (vm.groups || []).length)) {
-        if (Array.isArray(vm.groups) && vm.groups.length) {
-          vm.groups.forEach((g, gi) => out.push({
-            key: `${param}-v-${gi}`,
-            parameter: param,
-            function_step: g.function_step || vm.function_step || "",
-            step_desc: g.step_desc || g.function_step || vm.step_desc || vm.function_step || "",
-            step_ids: g.step_id ? [g.step_id] : (vm.step_id ? [vm.step_id] : []),
-            module: "",
-          }));
-        } else {
-          out.push({ key: `${param}-v`, parameter: param, function_step: vm.function_step || "", step_desc: vm.step_desc || vm.function_step || "", step_ids: vm.step_id ? [vm.step_id] : [], module: "" });
-        }
-        return;
-      }
-      const im = inlineLookup(param) || {};
-      if (String(param).startsWith("INLINE_") && (im.step_id || im.function_step || (im.groups || []).length)) {
-        if (Array.isArray(im.groups) && im.groups.length) {
-          im.groups.forEach((g, gi) => out.push({
-            key: `${param}-i-${gi}`,
-            parameter: param,
-            function_step: g.function_step || im.function_step || "",
-            step_desc: g.step_desc || g.function_step || im.function_step || "",
-            step_ids: g.step_id ? [g.step_id] : (Array.isArray(im.step_ids) ? im.step_ids : (im.step_id ? [im.step_id] : [])),
-            module: "",
-          }));
-        } else {
-          out.push({ key: `${param}-i`, parameter: param, function_step: im.function_step || "", step_desc: im.function_step || "", step_ids: Array.isArray(im.step_ids) ? im.step_ids : (im.step_id ? [im.step_id] : []), module: "" });
-        }
-      }
-    });
-    return out;
-  })();
-  const stepRefsByParam = (() => {
-    const out = {};
-    const seen = {};
-    lineageSummary.forEach(row => {
-      const param = String(row.parameter || "").trim();
-      if (!param) return;
-      (row.step_ids || []).forEach(sid => {
-        const stepId = String(sid || "").trim();
-        if (!stepId) return;
-        const desc = String(row.step_desc || row.function_step || "").trim();
-        const key = `${stepId}|${desc}`;
-        if (!seen[param]) seen[param] = new Set();
-        if (seen[param].has(key)) return;
-        seen[param].add(key);
-        if (!out[param]) out[param] = [];
-        out[param].push({ step_id: stepId, step_desc: desc });
-      });
-    });
-    return out;
-  })();
-  const renderSplitParamCell = (value, param) => {
-    const refs = stepRefsByParam[String(param || "").trim()] || [];
-    if (!refs.length) return value;
-    return (
-      <>
-        {value}
-        {refs.map(ref => (
-          <div key={`${ref.step_id}-${ref.step_desc}`} style={{ marginTop: 3, fontSize: 11, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 700 }}>
-            [ {ref.step_id}{ref.step_desc ? ` (${ref.step_desc})` : ""} ]
-          </div>
-        ))}
-      </>
-    );
-  };
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", maxWidth: "100%" };
   const scrollerStyle = { maxHeight: 620, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" };
   const tableStyle = { borderCollapse: "collapse", fontSize: 11, fontFamily: "monospace", width: "100%", minWidth: "100%", tableLayout: "fixed" };
@@ -860,205 +706,9 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
       })}
     </div>
   );
-  // v8.8.11: st_view(SplitTable /view 응답) 가 있으면 컬러링 + plan pin 동일 렌더.
-  const st = embed.st_view;
-  if (st && st.headers && st.rows) {
-    const headers = st.headers || [];
-    const rawPrefixColumns = Array.isArray(st.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
-    const splitCheckMode = String(st.display_mode || embed.display_mode || embed.st_scope?.display_mode || "") === "split_check" && rawPrefixColumns.length >= 3;
-    const firstColWidth = 288;
-    const dataColWidth = 115;
-    const prefixColumns = splitCheckMode ? rawPrefixColumns : [];
-    const prefixColWidths = splitCheckMode ? [240, 140, 80].slice(0, prefixColumns.length) : [firstColWidth];
-    while (prefixColWidths.length < (splitCheckMode ? prefixColumns.length : 1)) prefixColWidths.push(100);
-    const prefixTotalWidth = prefixColWidths.reduce((sum, value) => sum + value, 0);
-    const stickyLeft = (idx) => prefixColWidths.slice(0, idx).reduce((sum, value) => sum + value, 0);
-    const stScrollerStyle = { ...scrollerStyle, overflow: "auto", border: "1px solid #555", borderRadius: 0 };
-    const stTableWidth = prefixTotalWidth + Math.max(headers.length, 1) * dataColWidth;
-    const stTableStyle = {
-      borderCollapse: "collapse",
-      fontSize: 14,
-      background: "var(--bg-card)",
-      tableLayout: "fixed",
-      width: stTableWidth,
-      minWidth: stTableWidth,
-      fontFamily: "inherit",
-    };
-    const headerGroups = splitTableHeaderGroups(st);
-    const rootLotId = String(st.root_lot_id || "").trim();
-    const lotIdValues = [...new Set(headerGroups.map(g => String(g?.label || "").trim()).filter(Boolean))];
-    const lotIdLabel = lotIdValues.join(", ");
-    const hasLotContext = !!(rootLotId || lotIdLabel);
-    const rowLabels = st.row_labels || {};
-    const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
-    const lotRowLabel = rowLabels.lot_id || "lot_id";
-    const paramRowLabel = rowLabels.parameter || "항목";
-    const visiblePrefixColumns = splitCheckMode ? prefixColumns : [paramRowLabel];
-    const hasRootRow = hasLotContext;
-    const hasLotRow = hasLotContext || headerGroups.length > 0;
-    const rootHeaderHeight = hasRootRow ? 32 : 0;
-    const lotHeaderHeight = hasLotRow ? 24 : 0;
-    const waferTop = rootHeaderHeight + lotHeaderHeight;
-    const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
-    const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
-    const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: "var(--accent)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-    const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
-    const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: "var(--text-primary)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-    const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: "var(--accent)", border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
-    const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: "var(--text-secondary)", border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
-    const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: "var(--text-primary)", border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
-    const stCellStyle = { background: "var(--bg-card)", color: "var(--text-primary)", padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
-    const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: "var(--text-secondary)" });
-    const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === 0 ? 700 : 600 });
-    // uniqueMap 계산: param 별 값 → 인덱스.
-    const uniq = {};
-    for (const r of st.rows) {
-      const pn = String(r._param || "").toUpperCase();
-      if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) continue;
-      const seen = {};
-      Object.values(r._cells || {}).forEach(c => {
-        [c?.actual, c?.plan].forEach(v => {
-          if (!hasStValue(v)) return;
-          const s = String(v);
-          if (!(s in seen)) seen[s] = Object.keys(seen).length;
-        });
-      });
-      uniq[pn] = seen;
-    }
-    return (
-      <div style={shellStyle}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
-          🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
-        </div>
-        {embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
-        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>
-          <span style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--bg-tertiary)", fontFamily: "monospace" }}>
-            {headers.length} wafer 표시{headers.length ? " · 가로 스크롤" : ""}
-          </span>
-        </div>
-        <div style={stScrollerStyle}>
-          <table style={stTableStyle}>
-            <colgroup>
-              {prefixColWidths.map((width, i) => <col key={`prefix-${i}`} style={{ width }} />)}
-              {headers.map((_, i) => <col key={i} style={{ width: dataColWidth }} />)}
-            </colgroup>
-            <thead>
-              {hasRootRow && (
-                <tr>
-                  <th colSpan={visiblePrefixColumns.length} style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
-                  <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
-                </tr>
-              )}
-              {hasLotRow && (
-                <tr>
-                  <th colSpan={visiblePrefixColumns.length} style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
-                  {headerGroups.length > 0
-                    ? headerGroups.map((g, i) => (
-                      <th key={i} colSpan={g.span} style={lotHeadStyle} title={g.label}>{g.label}</th>
-                    ))
-                    : <th colSpan={headers.length || 1} style={lotHeadStyle} title={lotIdLabel}>{lotIdLabel || "-"}</th>}
-                </tr>
-              )}
-              <tr>
-                {visiblePrefixColumns.map((label, i) => (
-                  <th key={`${label}-${i}`} style={prefixHeadStyle(i)}>{label}</th>
-                ))}
-                {headers.map((h, i) => (
-                  <th key={i} style={waferHeadStyle}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {st.rows.map((r, ri) => {
-                const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
-                const prefixValues = visiblePrefixColumns.map((_, idx) => {
-                  if (splitCheckMode) {
-                    if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
-                    if (idx === 0) return String(r._display || r._param || "");
-                    if (idx === 1) return String(r._split_value || "");
-                    if (idx === 2) return String(r._split_label || "");
-                    return "";
-                  }
-                  return String(r._display || r._param || "").replace(/^[A-Z]+_/, "");
-                });
-                return (
-                <tr key={ri}>
-                  {prefixValues.map((value, pi) => {
-                    const splitStyle = splitCheckMode && pi === 2 ? splitCheckColorStyle(value) : {};
-                    return (
-                      <td key={`prefix-${pi}`} style={{ ...prefixCellStyle(pi), ...splitStyle }}>
-                        {splitCheckMode && pi === 0 ? renderSplitParamCell(value, r._param) : value}
-                      </td>
-                    );
-                  })}
-                  {headers.map((_, ci) => {
-                    const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
-                    const display = hasStValue(cell.actual) ? String(cell.actual) : "";
-                    const bg = splitCheckMode ? (display ? splitCheckColorStyle(prefixValues[2] || r._split_label) : {}) : stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
-                    const plan = splitCheckMode ? {} : stPlanStyle(cell);
-                    const hasPlan = hasStValue(cell.plan);
-                    const hasActual = hasStValue(cell.actual);
-                    const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
-                    const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
-                    const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual);
-                    return (
-                      <td key={ci} style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}) }}>
-                        {splitCheckMode
-                          ? display
-                          : isMismatch
-                          ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "var(--danger)" }}>{" (≠" + cell.plan + ")"}</span></span>
-                          : isAppliedPlan
-                            ? <span style={{ color: OK.fg, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: OK.fg }}>{" (plan 적용)"}</span></span>
-                            : isPlanOnly
-                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
-                              : display}
-                      </td>
-                    );
-                  })}
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {!splitCheckMode && lineageSummary.length > 0 && (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>🧭 Parameter별 적용 step 요약</div>
-            <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
-              <table style={{ ...tableStyle, width: "100%" }}>
-                <thead>
-                  <tr>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 220 }}>parameter</th>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 180 }}>function_step</th>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 240 }}>step_id</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lineageSummary.map((x) => (
-                    <tr key={x.key}>
-                      <td style={{ ...cellStyle, textAlign: "left" }}>{x.parameter}</td>
-                      <td style={{ ...cellStyle, textAlign: "left", color: "var(--text-secondary)" }}>{x.function_step || "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "left", color: INFO.fg, fontWeight: 700 }}>
-                        {(x.step_ids || []).length ? x.step_ids.join(", ") : "—"}
-                        {stepWarning(x.step_ids) && (
-                          <div style={{ marginTop: 4, fontSize: 14, lineHeight: 1.35, color: "rgba(220,38,38,0.95)", fontFamily: "system-ui, sans-serif", fontWeight: 600 }}>
-                            {stepWarning(x.step_ids)}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
-              function_step 에 여러 step_id 가 연결되면 현재 제품에서 실제 적용할 step_id 를 담당 엔지니어가 확인한 뒤 진행해야 합니다.
-            </div>
-          </div>
-        )}
-        {renderAttachedSets()}
-      </div>
-    );
+  // v8.8.11: st_view(SplitTable /view 응답) 는 공통 SplitTableSnapshotView 로 렌더한다.
+  if (embed.st_view && embed.st_view.headers && embed.st_view.rows) {
+    return <SplitTableSnapshotView embed={embed} product={product} footer={renderAttachedSets()} />;
   }
   // legacy 2D rows 모드 — columns=[parameter, #1, #2, ...] + rows=[[param, v1, ...], ...].
   // v8.8.13: legacy 도 SplitTable 팔레트로 컬러링. columns[0] 이 parameter/param 류면 st_view 로 변환 후 같은 렌더.
@@ -4178,7 +3828,7 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col />
-            <col style={{ width: 124 }} />
+            <col style={{ width: 144 }} />
             <col style={{ width: 78 }} />
             <col style={{ width: 110 }} />
             <col style={{ width: 100 }} />

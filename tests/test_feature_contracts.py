@@ -76,11 +76,18 @@ def test_splittable_knob_rule_modal_checks_current_row_values():
 
 def test_splittable_view_has_split_check_display_toggle():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+    snapshot_view = (ROOT / "frontend" / "src" / "components" / "SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
     assert "showSplitCheckView" in ui
     assert "Split 체크 표시" in ui
-    assert '["항목","값","Split"]' in ui
-    assert "splitCheckRows" in ui
-    assert "Split 체크로 표시할 값이 없습니다" in ui
+    assert 'import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS }' in ui
+    assert "const splitCheckStView=buildSplitCheckStView" in ui
+    assert "prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS" in ui
+    assert 'display_mode:"split_check"' in ui
+    assert "<SplitTableSnapshotView" in ui
+    assert "splitCheckRows" not in ui
+    assert 'export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"]' in snapshot_view
+    assert "rowSpan: span" in snapshot_view
+    assert "Split 체크로 표시할 값이 없습니다" in snapshot_view
 
 
 def test_home_flowi_empty_chat_greeting_copy():

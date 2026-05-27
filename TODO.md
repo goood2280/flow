@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) Split 체크 표시 렌더 통합
 - (Codex) 신규 Inform SplitTable 첨부 미리보기와 세트 필터 보정
 - (Codex) SplitTable KNOB 분류규칙 product 제거와 rule_order AND 묶음 표시
 - (Codex) SplitTable KNOB 룰북/적용공정 표시 정리

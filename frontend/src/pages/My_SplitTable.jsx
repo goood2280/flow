@@ -6,6 +6,7 @@ import { toast } from "../components/Toast";
 import { authSrc, sf, dl } from "../lib/api";
 import { useUserRole } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
+import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS } from "../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
@@ -1854,14 +1855,17 @@ export default function My_SplitTable({user}){
         const lotHeaderHeight = hasLotRow ? 24 : 0;
         const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
-        const splitPrefixWidths=[240,140,80];
-        const splitPrefixTotal=splitPrefixWidths.reduce((sum,v)=>sum+v,0);
-        const splitStickyLeft=(idx)=>splitPrefixWidths.slice(0,idx).reduce((sum,v)=>sum+v,0);
-        const splitCheckRows=displayRows.flatMap(row=>{
-          const cells=row?._cells||{};
-          const perHeader=(data.headers||[]).map((_,ci)=>{
-            const cell=cells[String(ci)];
-            if(!cell)return {raw:"",display:""};
+        const splitCheckStView=buildSplitCheckStView({
+          ...data,
+          rows:displayRows,
+          root_lot_id:lotHeaderRoot,
+          lot_id_label:lotHeaderLot,
+          prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
+          display_mode:"split_check",
+          row_labels:{...(data.row_labels||{}),parameter:"항목"},
+        },{
+          valueForCell:(cell,row)=>{
+            if(!cell)return "";
             const pendingPlan=pendingValueFor(cell);
             const pendingTag=pendingTagValueFor(cell);
             const pendingMgmt=pendingManagementValueFor(cell);
@@ -1869,25 +1873,10 @@ export default function My_SplitTable({user}){
               :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
               :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
             const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
-            return hasValue(raw)?{raw:String(raw),display:String(formatCell(raw,row._param) ?? raw)}:{raw:"",display:""};
-          });
-          const order=[];const seen=new Set();
-          perHeader.forEach(item=>{if(!item.raw||seen.has(item.raw))return;seen.add(item.raw);order.push(item);});
-          return order.map((item,idx)=>({
-            key:`${row._param || row._display || "row"}-${idx}-${item.raw}`,
-            param:row._param,
-            display:String(row._display||row._param||"").replace(/^[A-Za-z]+_/,""),
-            value:item.display,
-            raw:item.raw,
-            label:`S${idx}`,
-            colorIdx:idx,
-            checks:perHeader.map(v=>v.raw&&v.raw===item.raw),
-          }));
+            return hasValue(raw)?raw:"";
+          },
+          displayForValue:(raw,row)=>String(formatCell(raw,row._param) ?? raw),
         });
-        const splitColorStyle=(idx)=>{
-          const c=CELL_COLORS[idx%CELL_COLORS.length];
-          return {background:c.bg,color:c.fg,fontWeight:900};
-        };
         return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:14,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
@@ -1905,39 +1894,13 @@ export default function My_SplitTable({user}){
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }`}</style>
         {showSplitCheckView ? (
-        <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:splitPrefixTotal+(data.headers?.length||1)*92}}>
-          <colgroup>
-            {splitPrefixWidths.map((width,i)=><col key={`split-prefix-${i}`} style={{width}}/>)}
-            {data.headers?.map((_,i)=><col key={i} style={{width:92}}/>)}
-          </colgroup>
-          <thead>
-            {hasRootRow&&<tr style={{height:rootHeaderHeight}}>
-              <th colSpan={3} title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:6,textAlign:"left",fontFamily:"monospace",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word",width:splitPrefixTotal}}>{rootRowLabel}</th>
-              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace"}}>{lotHeaderRoot || lotHeaderLot}</th>
-            </tr>}
-            {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
-              <th colSpan={3} style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:6,textAlign:"left",fontFamily:"monospace",fontSize:14,color:GRID_TEXT,fontWeight:800,width:splitPrefixTotal}} title={lotContextTitle}>{lotRowLabel}</th>
-              {data.header_groups?.length>0
-                ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
-                : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
-            </tr>}
-            <tr>
-              {["항목","값","Split"].map((label,i)=><th key={label} style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:splitStickyLeft(i),zIndex:7-i,width:splitPrefixWidths[i],minWidth:splitPrefixWidths[i]}}>{label}</th>)}
-              {data.headers?.map((h,i)=><th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:86}}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {splitCheckRows.map(row=>(
-              <tr key={row.key}>
-                <td style={{padding:"6px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:4,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,width:splitPrefixWidths[0],minWidth:splitPrefixWidths[0]}} title={row.param}>{row.display}</td>
-                <td style={{padding:"6px 10px",fontWeight:700,fontSize:14,borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",left:splitStickyLeft(1),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,width:splitPrefixWidths[1],minWidth:splitPrefixWidths[1],...splitColorStyle(row.colorIdx)}}>{row.value}</td>
-                <td style={{padding:"6px 10px",fontWeight:900,fontSize:14,borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",left:splitStickyLeft(2),zIndex:2,textAlign:"center",width:splitPrefixWidths[2],minWidth:splitPrefixWidths[2],...splitColorStyle(row.colorIdx)}}>{row.label}</td>
-                {row.checks.map((checked,ci)=><td key={ci} style={{padding:"5px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,fontWeight:checked?900:500,color:checked?splitColorStyle(row.colorIdx).color:"var(--text-secondary)",background:checked?splitColorStyle(row.colorIdx).background:"var(--bg-card)"}}>{checked?"✓":""}</td>)}
-              </tr>
-            ))}
-            {splitCheckRows.length===0&&<tr><td colSpan={(data.headers?.length||0)+3} style={{padding:24,textAlign:"center",color:"var(--text-secondary)",borderBottom:GRID_LINE}}>Split 체크로 표시할 값이 없습니다</td></tr>}
-          </tbody>
-        </table>
+        <SplitTableSnapshotView
+          stView={splitCheckStView}
+          product={selProd}
+          showTitle={false}
+          emptyMessage="Split 체크로 표시할 값이 없습니다"
+          maxHeight="none"
+        />
         ) : (
         <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(data.headers?.length||1)*115}}>
           <colgroup>
