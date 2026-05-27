@@ -217,10 +217,13 @@ def test_inform_recent_list_columns_status_and_row_times_are_contract():
     src = MY_INFORM.read_text(encoding="utf-8")
 
     assert "minWidth: 1060" in src
-    assert """<col style={{ width: 156 }} />
+    assert """<col style={{ width: 132 }} />
+            <col style={{ width: 82 }} />
+            <col style={{ width: 96 }} />
+            <col />
             <col style={{ width: 188 }} />
-            <col style={{ width: 104 }} />
-            <col style={{ width: 136 }} />""" in src
+            <col style={{ width: 112 }} />
+            <col style={{ width: 140 }} />""" in src
     assert '<th style={headStyle}>카운트</th>' not in src
     assert "maxWidth: compact ? 114" not in src
     assert 'maxWidth: "100%"' in src
