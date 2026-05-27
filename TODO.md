@@ -8,6 +8,9 @@
 
 ## Done
 
+- (Codex) Inform 매트릭스 설정 모듈만 표시/순서 보정
+- (Codex) Inform 매트릭스 셀 숫자 가시성 보정
+- (Codex) Inform 로그 탭 audit module 표시 보강
 - (Codex) Inform 메일 Flow link route를 go/flow_process로 변경
 - (Codex) 인폼로그 Flow-i 질문 제거와 Home Agent inform_registration 연결
 - (Codex) Inform 등록 도우미 Agent graph archived fallback 보정

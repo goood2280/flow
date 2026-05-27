@@ -2929,6 +2929,7 @@ export default function My_Inform({ user }) {
     postJson("/api/informs/config", { modules: finalList })
       .then(d => {
         setConstants(c => ({ ...c, modules: d.config?.modules || finalList }));
+        loadLotMatrix();
         setModDraft(null); setModNewName("");
       })
       .catch(e => toast.error("모듈 순서 저장 실패: " + (e.message || e)));
@@ -3512,6 +3513,7 @@ function AuditLogList({ rows, loading, onOpen }) {
       {rows.map((row, i) => {
         const meta = typeMeta[row.type] || { label: row.type || "이벤트", icon: "·", color: NEUTRAL.fg };
         const lot = [stripMlPrefix(row.product || ""), row.root_lot_id || row.lot_id || row.fab_lot_id_at_save || ""].filter(Boolean).join(" · ") || "-";
+        const module = String(row.module || "").trim() || "기타";
         return (
           <button key={row.id || i} type="button" onClick={() => onOpen(row)}
             style={{ width: "100%", minHeight: 52, padding: "7px 16px", border: "none", borderBottom: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", display: "grid", gridTemplateColumns: "148px 112px minmax(180px, 1fr) 116px 112px minmax(0, 1.4fr)", gap: 8, alignItems: "center", cursor: "pointer", textAlign: "left", fontSize: 14 }}>
@@ -3520,7 +3522,7 @@ function AuditLogList({ rows, loading, onOpen }) {
               <span>{meta.icon}</span>{meta.label}
             </span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{lot}</span>
-            <ModulePill module={row.module || "기타"} />
+            <ModulePill module={module} />
             <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.actor || "-"}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.summary || "-"}</span>
           </button>
@@ -3535,6 +3537,7 @@ const LOT_MATRIX_STATES = {
   mail_completed: { label: "메일완료", mark: "◯", bg: "#fed7aa", fg: "#c2410c" },
   registered: { label: "등록", mark: "◎", bg: "#dbeafe", fg: "#1d4ed8" },
 };
+const LOT_MATRIX_COUNT_COLOR = "#111827";
 
 function colorWithAlpha(color, alpha) {
   const raw = String(color || "").trim();
@@ -3752,7 +3755,7 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
                                 borderRadius: 6,
                                 border: "1px solid " + (count ? colorWithAlpha(mc, 0.42) : "var(--border)"),
                                 background: count ? colorWithAlpha(mc, matrixCountAlpha(count)) : "var(--bg-primary)",
-                                color: count ? mc : "var(--text-muted)",
+                                color: count ? LOT_MATRIX_COUNT_COLOR : "var(--text-muted)",
                                 fontSize: 14,
                                 lineHeight: "24px",
                                 fontWeight: 900,

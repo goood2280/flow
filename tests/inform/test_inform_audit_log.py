@@ -72,6 +72,175 @@ def test_audit_log_filters_and_desc_order(tmp_path, monkeypatch):
     assert all(row["inform_id"] == "inf_a" for row in out["audit"])
 
 
+def test_audit_log_fills_blank_module_from_target_and_filters(tmp_path, monkeypatch):
+    _install_files(tmp_path, monkeypatch)
+    item = {
+        "id": "inf_a",
+        "product": "PRODA",
+        "root_lot_id": "R1000",
+        "lot_id": "R1000",
+        "module": "GATE",
+        "author": "alice",
+        "created_at": "2099-01-10T09:00:00",
+    }
+    informs._save([item])
+    informs._save_inform_audit([
+        {
+            "id": "aud_1",
+            "type": "create",
+            "inform_id": "inf_a",
+            "target_id": "inf_a",
+            "module": "   ",
+            "summary": "legacy blank module",
+            "payload": {},
+            "at": "2099-01-10T10:00:00",
+        }
+    ])
+
+    included = informs.audit_log(
+        _request(),
+        products=[],
+        products_bracket=[],
+        modules=[" GATE "],
+        modules_bracket=[],
+        lot_search="",
+        days=3650,
+        types=[],
+        types_bracket=[],
+        start="",
+        end="",
+    )
+    excluded = informs.audit_log(
+        _request(),
+        products=[],
+        products_bracket=[],
+        modules=["STI"],
+        modules_bracket=[],
+        lot_search="",
+        days=3650,
+        types=[],
+        types_bracket=[],
+        start="",
+        end="",
+    )
+
+    assert included["count"] == 1
+    assert included["audit"][0]["module"] == "GATE"
+    assert excluded["count"] == 0
+
+
+def test_audit_log_fills_blank_module_from_single_product_lot_candidate(tmp_path, monkeypatch):
+    _install_files(tmp_path, monkeypatch)
+    informs._save([
+        {
+            "id": "inf_gate",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "GATE",
+            "author": "alice",
+            "created_at": "2099-01-10T09:00:00",
+        }
+    ])
+    informs._save_inform_audit([
+        {
+            "id": "aud_1",
+            "type": "mail",
+            "inform_id": "",
+            "target_id": "",
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "",
+            "summary": "legacy lot event",
+            "payload": {},
+            "at": "2099-01-10T10:00:00",
+        }
+    ])
+
+    out = informs.audit_log(
+        _request(),
+        products=[],
+        products_bracket=[],
+        modules=["GATE"],
+        modules_bracket=[],
+        lot_search="",
+        days=3650,
+        types=[],
+        types_bracket=[],
+        start="",
+        end="",
+    )
+
+    assert out["count"] == 1
+    assert out["audit"][0]["module"] == "GATE"
+
+
+def test_audit_log_uses_other_when_blank_module_candidates_are_ambiguous(tmp_path, monkeypatch):
+    _install_files(tmp_path, monkeypatch)
+    informs._save([
+        {
+            "id": "inf_blank",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "",
+            "author": "alice",
+            "created_at": "2099-01-10T09:00:00",
+        },
+        {
+            "id": "inf_gate",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "GATE",
+            "author": "alice",
+            "created_at": "2099-01-10T09:10:00",
+        },
+        {
+            "id": "inf_sti",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "STI",
+            "author": "alice",
+            "created_at": "2099-01-10T09:20:00",
+        },
+    ])
+    informs._save_inform_audit([
+        {
+            "id": "aud_1",
+            "type": "create",
+            "inform_id": "inf_blank",
+            "target_id": "inf_blank",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000",
+            "module": "",
+            "summary": "ambiguous module",
+            "payload": {},
+            "at": "2099-01-10T10:00:00",
+        }
+    ])
+
+    out = informs.audit_log(
+        _request(),
+        products=[],
+        products_bracket=[],
+        modules=[],
+        modules_bracket=[],
+        lot_search="",
+        days=3650,
+        types=[],
+        types_bracket=[],
+        start="",
+        end="",
+    )
+
+    assert out["count"] == 1
+    assert out["audit"][0]["module"] == "기타"
+
+
 def test_mutations_append_audit_rows(tmp_path, monkeypatch):
     _install_files(tmp_path, monkeypatch, username="alice", role="admin")
 

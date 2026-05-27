@@ -76,6 +76,18 @@ def _install_matrix_fixtures(monkeypatch):
             "created_at": "2099-01-12T09:00:00",
         },
         {
+            "id": "hidden_module",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
+            "module": "EXTRA",
+            "reason": "PEMS",
+            "author": "zoe",
+            "flow_status": "received",
+            "created_at": "2099-01-12T11:00:00",
+        },
+        {
             "id": "old_excluded",
             "product": "PRODA",
             "root_lot_id": "R9999",
@@ -89,8 +101,8 @@ def _install_matrix_fixtures(monkeypatch):
         },
     ]
     monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
-    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": []})
-    monkeypatch.setattr(informs, "_get_inform_user_mods", lambda: {"viewer": ["GATE", "STI", "PC"]})
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["GATE", "STI", "PC"]})
+    monkeypatch.setattr(informs, "_get_inform_user_mods", lambda: {"viewer": ["EXTRA", "GATE"]})
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
 
 
@@ -111,6 +123,60 @@ def test_lot_matrix_shape_state_priority_and_progress(monkeypatch):
     assert r1000["modules"]["STI"]["state"] == "registered"
     assert r1000["modules"]["PC"]["state"] == "mail_completed"
     assert r1000["last_update"] == "2099-01-11T11:00:00"
+    assert "EXTRA" not in r1000["modules"]
+    assert "EXTRA" not in out["products"][0]["module_totals"]
+
+
+def test_lot_matrix_uses_configured_module_order_only(monkeypatch):
+    items = [
+        {
+            "id": "gate",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
+            "module": "GATE",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-10T09:00:00",
+        },
+        {
+            "id": "sti",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
+            "module": "STI",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-10T09:05:00",
+        },
+        {
+            "id": "extra",
+            "product": "PRODA",
+            "root_lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
+            "module": "EXTRA",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-10T09:10:00",
+        },
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["STI", "GATE"]})
+    monkeypatch.setattr(informs, "_get_inform_user_mods", lambda: {"viewer": ["EXTRA"]})
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+
+    out = informs.lot_matrix(object(), product="PRODA", days=3650, search="")
+
+    assert out["module_order"] == ["STI", "GATE"]
+    row = out["products"][0]["lots"][0]
+    assert set(row["modules"]) == {"STI", "GATE"}
+    assert row["progress"] == {"done": 0, "total": 2}
 
 
 def test_lot_matrix_product_days_and_search_filters(monkeypatch):

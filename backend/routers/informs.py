@@ -706,32 +706,19 @@ _LOT_MATRIX_STATE_RANK = {
 
 
 def _lot_matrix_module_order() -> list[str]:
-    admin_order: list[str] = []
     seen: set[str] = set()
+    ordered: list[str] = []
 
-    def add(target: list[str], raw) -> None:
+    def add(raw) -> None:
         mod = str(raw or "").strip()
         if not mod or mod in seen:
             return
         seen.add(mod)
-        target.append(mod)
-
-    for modules in (_get_inform_user_mods() or {}).values():
-        if not isinstance(modules, list):
-            continue
-        for mod in modules:
-            add(admin_order, mod)
+        ordered.append(mod)
 
     cfg_modules = _load_config().get("modules") or []
-    if admin_order:
-        ordered = list(admin_order)
-        for mod in cfg_modules:
-            add(ordered, mod)
-        return ordered
-
-    ordered: list[str] = []
     for mod in (cfg_modules or DEFAULT_MODULES):
-        add(ordered, mod)
+        add(mod)
     return ordered or list(DEFAULT_MODULES)
 
 
@@ -2223,7 +2210,7 @@ def lot_matrix(
         return dt >= cutoff
 
     module_order = _lot_matrix_module_order()
-    module_seen = set(module_order)
+    module_set = set(module_order)
     products_by_key: dict[str, dict] = {}
 
     for entry in _without_deleted(_load_upgraded()):
@@ -2254,9 +2241,8 @@ def lot_matrix(
                 continue
 
         mod = str(entry.get("module") or "").strip() or "기타"
-        if mod not in module_seen:
-            module_seen.add(mod)
-            module_order.append(mod)
+        if mod not in module_set:
+            continue
 
         product_label = prod or "미지정"
         product_key = product_label.casefold()
@@ -2308,6 +2294,76 @@ def lot_matrix(
     return {"products": products_out, "module_order": module_order}
 
 
+def _audit_log_clean_module(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _audit_log_lot_keys(*entries: dict) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw) -> None:
+        for part in _split_saved_ids(raw):
+            key = part.casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(part)
+
+    def scan(entry: dict) -> None:
+        if not isinstance(entry, dict):
+            return
+        for key in ("root_lot_id", "lot_id", "fab_lot_id_at_save", "fab_lot_id"):
+            add(entry.get(key))
+        payload = entry.get("payload")
+        if isinstance(payload, dict):
+            scan(payload)
+
+    for entry in entries:
+        scan(entry)
+    return out
+
+
+def _audit_log_module_candidates(items: list[dict]) -> dict[tuple[str, str], set[str]]:
+    lookup: dict[tuple[str, str], set[str]] = {}
+    for entry in items or []:
+        if not isinstance(entry, dict):
+            continue
+        module = _audit_log_clean_module(entry.get("module"))
+        product = _canonical_product(entry.get("product") or "").casefold()
+        if not module or not product:
+            continue
+        lot_keys = _audit_log_lot_keys(entry)
+        seen_lots = {key.casefold() for key in lot_keys}
+        for lot in _inform_fab_lots(entry):
+            lot_key = lot.casefold()
+            if lot_key not in seen_lots:
+                seen_lots.add(lot_key)
+                lot_keys.append(lot)
+        for lot in lot_keys:
+            lookup.setdefault((product, lot.casefold()), set()).add(module)
+    return lookup
+
+
+def _audit_log_resolved_module(row: dict, target: Optional[dict],
+                               module_candidates: dict[tuple[str, str], set[str]]) -> str:
+    target = target or {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    for value in (row.get("module"), target.get("module"), payload.get("module")):
+        module = _audit_log_clean_module(value)
+        if module:
+            return module
+
+    product = _canonical_product(row.get("product") or target.get("product") or payload.get("product") or "").casefold()
+    if product:
+        candidates: set[str] = set()
+        for lot in _audit_log_lot_keys(row, target):
+            candidates.update(module_candidates.get((product, lot.casefold()), set()))
+        if len(candidates) == 1:
+            return sorted(candidates)[0]
+    return "기타"
+
+
 _AUDIT_TYPE_ALIASES = {
     "상태변경": "status_change",
     "상태": "status_change",
@@ -2343,18 +2399,23 @@ def audit_log(
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
-    targets = {
-        str(x.get("id") or ""): x
+    visible_items = [
+        x
         for x in items
         if x.get("id") and _visible_to(x, me["username"], me.get("role", "user"), my_mods)
+    ]
+    targets = {
+        str(x.get("id") or ""): x
+        for x in visible_items
     }
+    module_candidates = _audit_log_module_candidates(visible_items)
 
     product_filter = {
         _canonical_product(str(p or "")).casefold()
         for p in [*products, *products_bracket]
         if str(p or "").strip()
     }
-    module_filter = {str(m or "").strip() for m in [*modules, *modules_bracket] if str(m or "").strip()}
+    module_filter = {_audit_log_clean_module(m) for m in [*modules, *modules_bracket] if _audit_log_clean_module(m)}
     type_filter = {
         _AUDIT_TYPE_ALIASES.get(str(t or "").strip(), str(t or "").strip())
         for t in [*types, *types_bracket]
@@ -2391,15 +2452,16 @@ def audit_log(
             continue
         enriched = {**row, "_idx": idx}
         if target:
-            for key in ("product", "root_lot_id", "lot_id", "fab_lot_id_at_save", "module"):
+            for key in ("product", "root_lot_id", "lot_id", "fab_lot_id_at_save"):
                 enriched[key] = enriched.get(key) or target.get(key) or ""
             enriched["deleted"] = _is_deleted(target)
+        enriched["module"] = _audit_log_resolved_module(row, target, module_candidates)
         typ = _AUDIT_TYPE_ALIASES.get(str(enriched.get("type") or "").strip(), str(enriched.get("type") or "").strip())
         enriched["type"] = typ
         prod = _canonical_product(enriched.get("product") or "").casefold()
         if product_filter and prod not in product_filter:
             continue
-        if module_filter and str(enriched.get("module") or "").strip() not in module_filter:
+        if module_filter and enriched["module"] not in module_filter:
             continue
         if type_filter and typ not in type_filter:
             continue
