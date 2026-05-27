@@ -178,3 +178,110 @@ def test_pick_tools_internal_excludes_disabled(monkeypatch, tmp_path):
 
     # 복구
     tool_registry.set_enabled("filebrowser", True, by="pytest")
+
+
+def test_flowi_unit_dispatcher_accepts_home_context_kwargs():
+    from core.flowi_units.dispatcher import try_dispatch
+
+    result = try_dispatch(
+        "일반 Home Flow-i 질문",
+        product="PROD_A",
+        max_rows=8,
+        only=["filebrowser"],
+        allowed_keys={"filebrowser"},
+        agent_context={"source": "pytest"},
+        me={"username": "alice", "role": "user"},
+        future_flag=True,
+    )
+
+    assert result is None
+
+
+def test_flowi_unit_dispatcher_returns_registered_handle_result(monkeypatch):
+    from core.flowi_units import dispatcher, registry
+
+    expected = {"handled": True, "answer": "unit handled"}
+    captured: dict[str, object] = {}
+
+    class FakeUnitAI:
+        def handle(self, prompt, slots, ctx):
+            captured["prompt"] = prompt
+            captured["slots"] = slots
+            captured["ctx"] = ctx
+            return expected
+
+    monkeypatch.setattr(registry, "UNIT_AIS", {"fake_unit": FakeUnitAI()})
+
+    result = dispatcher.try_dispatch(
+        "fake prompt",
+        product="PROD_A",
+        max_rows=5,
+        only=["fake_unit"],
+        allowed_keys={"fake_unit"},
+        agent_context={"client_run_id": "pytest"},
+        me={"username": "alice"},
+        future_flag=True,
+    )
+
+    assert result is expected
+    assert captured["prompt"] == "fake prompt"
+    assert captured["slots"]["product"] == "PROD_A"
+    assert captured["slots"]["max_rows"] == 5
+    assert captured["slots"]["future_flag"] is True
+    assert captured["ctx"]["allowed_keys"] == ["fake_unit"]
+    assert captured["ctx"]["agent_context"] == {"client_run_id": "pytest"}
+    assert captured["ctx"]["me"] == {"username": "alice"}
+
+
+def test_run_flowi_chat_falls_back_after_unhandled_unit_dispatch(monkeypatch):
+    from core import home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"filebrowser"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {
+            "run_id": "pytest-run",
+            "graph": {"nodes": [], "edges": []},
+            "status": "success",
+        },
+    )
+
+    called: dict[str, object] = {}
+
+    def fake_legacy_handler(
+        prompt,
+        product,
+        max_rows=12,
+        allowed_keys=None,
+        username="flowi",
+        role="user",
+        agent_context=None,
+    ):
+        called["allowed_keys"] = set(allowed_keys or [])
+        called["agent_context"] = agent_context
+        return {
+            "handled": True,
+            "intent": "pytest_legacy",
+            "action": "pytest.legacy",
+            "feature": "filebrowser",
+            "answer": "legacy fallback",
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_flowi_query", fake_legacy_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="일반 상태 확인",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "user"},
+        agent_context={"source": "pytest"},
+    )
+
+    assert result["answer"] == "legacy fallback"
+    assert result["run_id"] == "pytest-run"
+    assert called["allowed_keys"] == {"filebrowser"}
+    assert called["agent_context"] == {"source": "pytest"}
