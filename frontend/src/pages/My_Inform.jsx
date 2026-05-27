@@ -3587,7 +3587,7 @@ function AuditLogList({ rows, loading, onOpen }) {
               <span>{meta.icon}</span>{meta.label}
             </span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{lot}</span>
-            <ModulePill module={module} />
+            <ModulePill module={module} solid />
             <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.actor || "-"}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.summary || "-"}</span>
           </button>

@@ -257,7 +257,7 @@ def test_inform_audit_log_pill_and_lot_matrix_visibility_contracts():
     src = MY_INFORM.read_text(encoding="utf-8")
 
     assert 'const module = String(row.module || "").trim() || "기타";' in src
-    assert "<ModulePill module={module} />" in src
+    assert "<ModulePill module={module} solid />" in src
     assert 'const LOT_MATRIX_COUNT_COLOR = "#111827";' in src
     assert 'color: count ? LOT_MATRIX_COUNT_COLOR : "var(--text-muted)"' in src
     assert "loadLotMatrix();" in src
