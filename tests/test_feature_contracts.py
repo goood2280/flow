@@ -126,6 +126,8 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Test prompt" in ui
     assert "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run" in ui
     assert "/api/agent/unit-ai/inform_registration/runtime/run" in ui
+    assert "active Agent unit route" in ui
+    assert "Inform graph fetch 진단" in ui
     assert "state_design" in ui
     assert "Persona" in ui
     assert "State I/O" in ui

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import datetime
+import json
+import os
+from pathlib import Path
+import subprocess
 from typing import Any
 from urllib.parse import unquote
 
@@ -22,6 +27,69 @@ from core.flowi_units.inform_registration_runtime import (
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+_APP_ROOT = Path(__file__).resolve().parents[2]
+
+_ACTIVE_UNIT_ENDPOINTS = {
+    FILEBROWSER_AI_SQL_UNIT_KEY: {
+        "graph": "/api/agent/unit-ai/filebrowser_ai_sql/runtime/graph",
+        "run": "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run",
+    },
+    INFORM_REGISTRATION_UNIT_KEY: {
+        "graph": "/api/agent/unit-ai/inform_registration/runtime/graph",
+        "run": "/api/agent/unit-ai/inform_registration/runtime/run",
+        "history": "/api/agent/unit-ai/inform_registration/runtime/history",
+    },
+}
+
+
+def _clean_commit(value: str) -> str:
+    commit = str(value or "").strip()
+    if len(commit) >= 7 and all(ch in "0123456789abcdef" for ch in commit.lower()):
+        return commit
+    return ""
+
+
+def _backend_commit(root: Path) -> str:
+    for key in ("FLOW_BUILD_COMMIT", "GIT_COMMIT", "COMMIT_SHA"):
+        commit = _clean_commit(os.environ.get(key, ""))
+        if commit:
+            return commit
+    try:
+        raw = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return ""
+    return _clean_commit(raw)
+
+
+def _version_metadata(root: Path) -> dict[str, str]:
+    version_file = root / "VERSION.json"
+    modified_at = ""
+    try:
+        modified_at = datetime.datetime.fromtimestamp(version_file.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        pass
+
+    meta: dict[str, Any] = {}
+    try:
+        loaded = json.loads(version_file.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            meta = loaded
+    except Exception:
+        meta = {}
+
+    release_version = str(meta.get("version") or "").strip()
+    return {
+        "backend_version": modified_at or release_version or "unknown",
+        "backend_release_version": release_version,
+        "backend_version_source": "mtime" if modified_at else ("VERSION.json" if release_version else "unknown"),
+        "backend_codename": str(meta.get("codename") or "").strip(),
+    }
 
 
 class FileBrowserAiSqlRuntimeRunReq(BaseModel):
@@ -74,11 +142,20 @@ def _unit_catalog_item(unit) -> dict[str, Any]:
 
 @router.get("/status")
 def agent_reset_status() -> dict[str, Any]:
+    version_meta = _version_metadata(_APP_ROOT)
     return {
         "ok": True,
         "status": "archived_for_rebuild",
         "settings_endpoint": "/api/llm/status",
         "unit_ai_endpoint": "/api/agent/unit-ai/catalog",
+        "active_unit_endpoints": _ACTIVE_UNIT_ENDPOINTS,
+        "home_flowi_runtime_endpoints": {
+            "graph": "/api/agent/home-flowi/runtime/graph",
+            "runs": "/api/agent/home-flowi/runtime/runs",
+        },
+        **version_meta,
+        "backend_commit": _backend_commit(_APP_ROOT),
+        "backend_agent_router": str(Path(__file__).resolve()),
     }
 
 

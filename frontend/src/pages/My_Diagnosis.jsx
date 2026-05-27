@@ -10,6 +10,15 @@ const INFORM_REGISTRATION_GRAPH_ENDPOINT = "/api/agent/unit-ai/inform_registrati
 const INFORM_REGISTRATION_RUN_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/run";
 const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/history?limit=50";
 
+function formatAgentEndpointError(error, endpoint, method = "GET") {
+  const statusText = error?.status ? `HTTP ${error.status}` : "request failed";
+  const detail = error?.body?.detail || error?.message || String(error || "");
+  if (error?.status === 410 && String(detail).includes("Agent implementation is archived")) {
+    return `${method} ${endpoint} -> HTTP 410. 실행 중인 backend가 active Agent unit route를 로딩하지 않았습니다. 서버 재시작 또는 배포 갱신 후 프론트 번들을 새로 로드하세요. detail: ${detail}`;
+  }
+  return `${method} ${endpoint} -> ${statusText}${detail ? `: ${detail}` : ""}`;
+}
+
 function queryUrl(path, params) {
   const query = Object.entries(params || {})
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
@@ -975,7 +984,9 @@ function InformRegistrationUnitPanel() {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      sf(INFORM_REGISTRATION_GRAPH_ENDPOINT).catch((e) => ({ error: e.message || String(e) })),
+      sf(INFORM_REGISTRATION_GRAPH_ENDPOINT).catch((e) => ({
+        error: formatAgentEndpointError(e, INFORM_REGISTRATION_GRAPH_ENDPOINT),
+      })),
       sf(INFORM_REGISTRATION_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
     ]).then(([graphPayload, historyPayload]) => {
       if (graphPayload?.error) {
@@ -1098,7 +1109,7 @@ function InformRegistrationUnitPanel() {
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       {graphErr && (
         <Banner tone="warn" onClose={() => setGraphErr("")}>
-          graph fetch 실패 — 기본 노드 구조로 표시: {graphErr}
+          Inform graph fetch 진단 — 기본 노드 구조로 표시: {graphErr}
         </Banner>
       )}
       <Panel

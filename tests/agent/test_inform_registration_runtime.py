@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from starlette.routing import Match
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -15,6 +17,25 @@ if str(ROOT / "backend") not in sys.path:
 
 from core.flowi_units import inform_registration_runtime as runtime  # noqa: E402
 from routers import agent, informs  # noqa: E402
+
+
+def _first_matching_endpoint(routes, path: str, method: str = "GET") -> str:
+    scope = {
+        "type": "http",
+        "path": path,
+        "method": method,
+        "root_path": "",
+        "headers": [],
+        "query_string": b"",
+    }
+    for route in routes:
+        try:
+            match, _child_scope = route.matches(scope)
+        except Exception:
+            continue
+        if match is Match.FULL:
+            return getattr(getattr(route, "endpoint", None), "__name__", "")
+    return ""
 
 
 class _State:
@@ -82,6 +103,13 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     catalog = agent.unit_ai_catalog(_Request())
     assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration"]
 
+    status = agent.agent_reset_status()
+    assert status["ok"] is True
+    assert status["unit_ai_endpoint"] == "/api/agent/unit-ai/catalog"
+    assert status["active_unit_endpoints"]["inform_registration"]["graph"] == "/api/agent/unit-ai/inform_registration/runtime/graph"
+    assert "backend_version" in status
+    assert "backend_commit" in status
+
     graph = agent.unit_ai_runtime_graph("inform_registration", _Request())
     assert graph["ok"] is True
     assert graph["unit_ai"] == "inform_registration"
@@ -103,6 +131,18 @@ def test_agent_runtime_routes_are_before_archived_catchall():
     ):
         idx = next(i for i, row in enumerate(routes) if row[0] == path)
         assert idx < catchall_idx
+
+
+def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall():
+    flow_app = importlib.import_module("app").app
+
+    expected = {
+        "/api/agent/unit-ai/inform_registration/runtime/graph": "inform_registration_runtime_graph",
+        "/api/agent/unit-ai/inform_registration/runtime/history": "inform_registration_runtime_history",
+        "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
+    }
+    for path, endpoint in expected.items():
+        assert _first_matching_endpoint(flow_app.routes, path) == endpoint
 
 
 def test_archived_catchall_does_not_archive_active_inform_graph(monkeypatch):
