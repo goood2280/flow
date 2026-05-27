@@ -169,6 +169,7 @@ export default function My_SplitTable({user}){
   const[viewMode,setViewMode]=useState("all");
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
+  const[showSplitCheckView,setShowSplitCheckView]=useState(false);
   const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
@@ -1236,6 +1237,10 @@ export default function My_SplitTable({user}){
                   <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                   하단 적용 요약
                 </label>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
+                  <input type="checkbox" checked={showSplitCheckView} onChange={e=>setShowSplitCheckView(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                  Split 체크 표시
+                </label>
                 <div>표시 자리수, 데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
               </div>
             </div>
@@ -1715,6 +1720,10 @@ export default function My_SplitTable({user}){
             <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)}/>
             하단 적용 요약
           </label>
+          <label title="각 항목 값을 S0/S1 체크 행으로 펼쳐 wafer별 적용 위치를 봅니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:showSplitCheckView?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
+            <input type="checkbox" checked={showSplitCheckView} onChange={e=>setShowSplitCheckView(e.target.checked)}/>
+            Split 체크 표시
+          </label>
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
             <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
@@ -1845,6 +1854,40 @@ export default function My_SplitTable({user}){
         const lotHeaderHeight = hasLotRow ? 24 : 0;
         const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
+        const splitPrefixWidths=[240,140,80];
+        const splitPrefixTotal=splitPrefixWidths.reduce((sum,v)=>sum+v,0);
+        const splitStickyLeft=(idx)=>splitPrefixWidths.slice(0,idx).reduce((sum,v)=>sum+v,0);
+        const splitCheckRows=displayRows.flatMap(row=>{
+          const cells=row?._cells||{};
+          const perHeader=(data.headers||[]).map((_,ci)=>{
+            const cell=cells[String(ci)];
+            if(!cell)return {raw:"",display:""};
+            const pendingPlan=pendingValueFor(cell);
+            const pendingTag=pendingTagValueFor(cell);
+            const pendingMgmt=pendingManagementValueFor(cell);
+            const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
+              :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
+              :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+            const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
+            return hasValue(raw)?{raw:String(raw),display:String(formatCell(raw,row._param) ?? raw)}:{raw:"",display:""};
+          });
+          const order=[];const seen=new Set();
+          perHeader.forEach(item=>{if(!item.raw||seen.has(item.raw))return;seen.add(item.raw);order.push(item);});
+          return order.map((item,idx)=>({
+            key:`${row._param || row._display || "row"}-${idx}-${item.raw}`,
+            param:row._param,
+            display:String(row._display||row._param||"").replace(/^[A-Za-z]+_/,""),
+            value:item.display,
+            raw:item.raw,
+            label:`S${idx}`,
+            colorIdx:idx,
+            checks:perHeader.map(v=>v.raw&&v.raw===item.raw),
+          }));
+        });
+        const splitColorStyle=(idx)=>{
+          const c=CELL_COLORS[idx%CELL_COLORS.length];
+          return {background:c.bg,color:c.fg,fontWeight:900};
+        };
         return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:14,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
@@ -1861,6 +1904,41 @@ export default function My_SplitTable({user}){
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }`}</style>
+        {showSplitCheckView ? (
+        <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:splitPrefixTotal+(data.headers?.length||1)*92}}>
+          <colgroup>
+            {splitPrefixWidths.map((width,i)=><col key={`split-prefix-${i}`} style={{width}}/>)}
+            {data.headers?.map((_,i)=><col key={i} style={{width:92}}/>)}
+          </colgroup>
+          <thead>
+            {hasRootRow&&<tr style={{height:rootHeaderHeight}}>
+              <th colSpan={3} title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:6,textAlign:"left",fontFamily:"monospace",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word",width:splitPrefixTotal}}>{rootRowLabel}</th>
+              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace"}}>{lotHeaderRoot || lotHeaderLot}</th>
+            </tr>}
+            {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
+              <th colSpan={3} style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:6,textAlign:"left",fontFamily:"monospace",fontSize:14,color:GRID_TEXT,fontWeight:800,width:splitPrefixTotal}} title={lotContextTitle}>{lotRowLabel}</th>
+              {data.header_groups?.length>0
+                ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
+                : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
+            </tr>}
+            <tr>
+              {["항목","값","Split"].map((label,i)=><th key={label} style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:splitStickyLeft(i),zIndex:7-i,width:splitPrefixWidths[i],minWidth:splitPrefixWidths[i]}}>{label}</th>)}
+              {data.headers?.map((h,i)=><th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:86}}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {splitCheckRows.map(row=>(
+              <tr key={row.key}>
+                <td style={{padding:"6px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:4,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,width:splitPrefixWidths[0],minWidth:splitPrefixWidths[0]}} title={row.param}>{row.display}</td>
+                <td style={{padding:"6px 10px",fontWeight:700,fontSize:14,borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",left:splitStickyLeft(1),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,width:splitPrefixWidths[1],minWidth:splitPrefixWidths[1],...splitColorStyle(row.colorIdx)}}>{row.value}</td>
+                <td style={{padding:"6px 10px",fontWeight:900,fontSize:14,borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",left:splitStickyLeft(2),zIndex:2,textAlign:"center",width:splitPrefixWidths[2],minWidth:splitPrefixWidths[2],...splitColorStyle(row.colorIdx)}}>{row.label}</td>
+                {row.checks.map((checked,ci)=><td key={ci} style={{padding:"5px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,fontWeight:checked?900:500,color:checked?splitColorStyle(row.colorIdx).color:"var(--text-secondary)",background:checked?splitColorStyle(row.colorIdx).background:"var(--bg-card)"}}>{checked?"✓":""}</td>)}
+              </tr>
+            ))}
+            {splitCheckRows.length===0&&<tr><td colSpan={(data.headers?.length||0)+3} style={{padding:24,textAlign:"center",color:"var(--text-secondary)",borderBottom:GRID_LINE}}>Split 체크로 표시할 값이 없습니다</td></tr>}
+          </tbody>
+        </table>
+        ) : (
         <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(data.headers?.length||1)*115}}>
           <colgroup>
             <col style={{width:288}}/>
@@ -2051,6 +2129,7 @@ export default function My_SplitTable({user}){
             </tr>
           </tbody>
         </table>
+        )}
         {showLineageSummary && lineageSummary.length>0&&<div style={{margin:"12px 10px 18px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-card)",overflow:"hidden"}}>
           <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → step_desc → step_id 요약</div>
           <div style={{maxHeight:320,overflow:"auto"}}>

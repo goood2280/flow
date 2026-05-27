@@ -182,12 +182,34 @@ function hasEmbedSnapshot(embed) {
 
 function embedSnapshotRowCount(embed) {
   if (!embed) return 0;
-  const attached = Array.isArray(embed.attached_sets) ? embed.attached_sets : [];
-  if (attached.length) return attached.reduce((sum, s) => sum + Number(s.wafer_count || (s.rows || []).length || 0), 0);
   const stRows = Array.isArray(embed.st_view?.rows) ? embed.st_view.rows : [];
   if (stRows.length) return stRows.length;
   const rows = Array.isArray(embed.rows) ? embed.rows : [];
-  return rows.length;
+  if (rows.length) return rows.length;
+  const attached = Array.isArray(embed.attached_sets) ? embed.attached_sets : [];
+  return attached.reduce((sum, s) => sum + Number(s.wafer_count || (s.rows || []).length || 0), 0);
+}
+
+function embedSnapshotWaferCount(embed) {
+  if (!embed) return 0;
+  const stHeaders = Array.isArray(embed.st_view?.headers) ? embed.st_view.headers : [];
+  if (stHeaders.length) return stHeaders.length;
+  const columns = Array.isArray(embed.columns) ? embed.columns : [];
+  if (columns.length > 1 && /^(parameter|param|항목)$/i.test(String(columns[0] || "").trim())) return columns.length - 1;
+  return 0;
+}
+
+function embedSnapshotSummary(embed) {
+  if (!embed) return "첨부 0개";
+  const setCount = Array.isArray(embed.attached_sets) ? embed.attached_sets.length : 0;
+  const rows = embedSnapshotRowCount(embed);
+  const wafers = embedSnapshotWaferCount(embed);
+  const unit = setCount ? `${setCount}개 세트` : "1개 snapshot";
+  return `${unit} / ${rows} rows${wafers ? ` / ${wafers} wafers` : ""}`;
+}
+
+function hasLotSnapshotData(embed) {
+  return embedSnapshotRowCount(embed) > 0 || embedSnapshotWaferCount(embed) > 0;
 }
 
 const STATUS_META = {
@@ -2424,6 +2446,7 @@ export default function My_Inform({ user }) {
     if (!form.product.trim()) { setMsg("product 를 선택해 주세요."); return Promise.reject(new Error("product required")); }
     if (!lot) { setMsg("lot 을 선택해 주세요."); return Promise.reject(new Error("lot required")); }
     if (!form.module) { setMsg("module 을 선택해 주세요."); return Promise.reject(new Error("module required")); }
+    if (embedFetching) { setMsg("SplitTable 스냅샷 생성이 끝난 뒤 등록해 주세요."); return Promise.reject(new Error("snapshot pending")); }
     if (!form.text.trim() && createImages.length === 0 && !(isReInform && form.attach_embed && hasEmbedSnapshot(form.embed))) {
       setMsg("note 를 입력해 주세요."); return Promise.reject(new Error("text required"));
     }
@@ -2466,13 +2489,18 @@ export default function My_Inform({ user }) {
           : null;
       }
       const mlProd = form.product.trim().startsWith("ML_TABLE_") ? form.product.trim() : `ML_TABLE_${form.product.trim()}`;
-      const d = await postJson("/api/informs/splittable-snapshot", {
-        product: mlProd,
-        lot_id: targetLot,
-        custom_cols: customCols,
-        is_fab_lot: (form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions),
-        display_mode: form.split_check_display ? "split_check" : "matrix",
-      });
+      let d;
+      try {
+        d = await postJson("/api/informs/splittable-snapshot", {
+          product: mlProd,
+          lot_id: targetLot,
+          custom_cols: customCols,
+          is_fab_lot: (form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions),
+          display_mode: form.split_check_display ? "split_check" : "matrix",
+        });
+      } catch (e) {
+        throw new Error("SplitTable 스냅샷 생성 실패: " + (e.message || e));
+      }
       const embed = d?.embed || emptyEmbedTable();
       return {
         ...embed,
@@ -2715,9 +2743,14 @@ export default function My_Inform({ user }) {
             ...f, attach_embed: true,
             embed,
           }));
+          setMsg(hasLotSnapshotData(embed) ? "" : "SplitTable 스냅샷 데이터 없음: 선택 LOT/컬럼에 표시할 값이 없습니다.");
           setEmbedFetching(false);
         })
-        .catch(() => { setEmbedFetching(false); });
+        .catch(e => {
+          setForm(f => f.attach_embed ? { ...f, attach_embed: false, embed: emptyEmbedTable() } : f);
+          setMsg("SplitTable 스냅샷 생성 실패: " + (e.message || e));
+          setEmbedFetching(false);
+        });
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
@@ -4607,6 +4640,7 @@ function InformWizard({
   const [setsLoading, setSetsLoading] = useState(false);
   const [setSearch, setSetSearch] = useState("");
   const [previewSet, setPreviewSet] = useState(null);
+  const [setSnapshotState, setSetSnapshotState] = useState({ status: "idle", message: "" });
   const [newSetName, setNewSetName] = useState("");
   const [newSetCols, setNewSetCols] = useState([]);
   const [newSetSaving, setNewSetSaving] = useState(false);
@@ -4627,10 +4661,12 @@ function InformWizard({
       .then(d => {
         const rows = Array.isArray(d.sets) ? d.sets : [];
         setSetRows(rows);
+        setMsg("");
         return rows;
       })
-      .catch(() => {
+      .catch(e => {
         setSetRows([]);
+        setMsg("커스텀 세트 목록 로딩 실패: " + (e.message || e));
         return [];
       })
       .finally(() => setSetsLoading(false));
@@ -4660,8 +4696,12 @@ function InformWizard({
     });
   const selectedSetRows = [...selectedSetRowsFromCatalog, ...selectedSetRowsFromParent];
   useEffect(() => {
-    if (attachMode !== "sets") return;
+    if (attachMode !== "sets") {
+      setSetSnapshotState({ status: "idle", message: "" });
+      return;
+    }
     if (!selectedSetRows.length) {
+      setSetSnapshotState({ status: "idle", message: "" });
       setForm(f => f.attach_embed ? { ...f, attach_embed: false, embed: emptyEmbedTable() } : f);
       return;
     }
@@ -4687,11 +4727,16 @@ function InformWizard({
     const prod = String(form.product || "").trim();
     const lot = String(form.lot_id || "").trim();
     if (!prod || !lot || snapshotCols.length === 0) {
+      setSetSnapshotState({
+        status: snapshotCols.length === 0 ? "no_data" : "idle",
+        message: snapshotCols.length === 0 ? "선택한 세트에 LOT snapshot으로 조회할 컬럼이 없습니다." : "",
+      });
       setForm(f => ({ ...f, attach_embed: true, embed: baseEmbed }));
       return;
     }
     let alive = true;
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
+    setSetSnapshotState({ status: "loading", message: "SplitTable LOT snapshot 생성 중..." });
     postJson("/api/informs/splittable-snapshot", {
       product: mlProd,
       lot_id: lot,
@@ -4702,6 +4747,14 @@ function InformWizard({
       .then(d => {
         if (!alive) return;
         const embed = d?.embed || {};
+        const hasData = hasLotSnapshotData(embed);
+        setSetSnapshotState({
+          status: hasData ? "success" : "no_data",
+          message: hasData
+            ? `${embedSnapshotRowCount(embed)} rows${embedSnapshotWaferCount(embed) ? ` / ${embedSnapshotWaferCount(embed)} wafers` : ""} snapshot 생성됨`
+            : "데이터 없음: 선택 LOT/컬럼에 표시할 값이 없습니다.",
+        });
+        if (hasData) setMsg("");
         setForm(f => ({
           ...f,
           attach_embed: true,
@@ -4713,8 +4766,11 @@ function InformWizard({
           },
         }));
       })
-      .catch(() => {
+      .catch(e => {
         if (!alive) return;
+        const message = "SplitTable 스냅샷 생성 실패: " + (e.message || e);
+        setSetSnapshotState({ status: "error", message });
+        setMsg(message);
         setForm(f => ({ ...f, attach_embed: true, embed: baseEmbed }));
       });
     return () => { alive = false; };
@@ -4733,7 +4789,25 @@ function InformWizard({
   };
   const next = () => {
     if (!validate()) return;
-    if (step === 2 && attachMode === "knob" && embedCustomCols.length > 0) setSnapshotTick(x => x + 1);
+    if (step === 2 && embedFetching) {
+      setMsg("SplitTable 스냅샷 생성이 끝난 뒤 다음 단계로 이동해 주세요.");
+      return;
+    }
+    if (step === 2 && attachMode === "sets" && selectedSetRows.length > 0) {
+      if (setSnapshotState.status === "loading") {
+        setMsg("SplitTable LOT snapshot 생성이 끝난 뒤 다음 단계로 이동해 주세요.");
+        return;
+      }
+      if (setSnapshotState.status === "error") {
+        setMsg(setSnapshotState.message || "SplitTable 스냅샷 생성 실패");
+        return;
+      }
+    }
+    if (step === 2 && attachMode === "knob" && embedCustomCols.length > 0 && !(form.attach_embed && hasEmbedSnapshot(form.embed))) {
+      setSnapshotTick(x => x + 1);
+      setMsg("미리보기 생성 중입니다. 완료 후 다음 단계로 이동해 주세요.");
+      return;
+    }
     setStep(isReInform && step === 2 ? 4 : Math.min(4, step + 1));
   };
   const prev = () => { setMsg(""); setStep(isReInform && step === 4 ? 2 : Math.max(0, step - 1)); };
@@ -4858,6 +4932,34 @@ function InformWizard({
     .map(k => productContacts?.[k])
     .find(v => Array.isArray(v)) || [];
   const mailSizeKb = Math.max(0.1, Math.round((new Blob([mailPreviewText]).size / 1024) * 10) / 10);
+  const snapshotStatusText = (() => {
+    if (attachMode === "knob") {
+      if (embedFetching) return "미리보기 생성 중...";
+      if (form.attach_embed && hasLotSnapshotData(form.embed)) return `${embedSnapshotRowCount(form.embed)} rows${embedSnapshotWaferCount(form.embed) ? ` / ${embedSnapshotWaferCount(form.embed)} wafers` : ""} 미리보기 생성됨`;
+      if (embedCustomCols.length > 0) return "선택 컬럼 있음 · 미리보기 생성 필요";
+      return "선택 컬럼 없음";
+    }
+    if (attachMode === "sets") {
+      if (setSnapshotState.status === "loading") return setSnapshotState.message;
+      if (setSnapshotState.message) return setSnapshotState.message;
+      if (selectedSetRows.length > 0 && form.attach_embed && hasLotSnapshotData(form.embed)) return embedSnapshotSummary(form.embed);
+      if (selectedSetRows.length > 0) return "세트 목록 미리보기만 있음 · LOT snapshot 대기";
+      return "선택 세트 없음";
+    }
+    return "";
+  })();
+  const snapshotStatusTone = (() => {
+    if (attachMode === "knob") {
+      if (embedFetching) return INFO;
+      if (form.attach_embed && hasLotSnapshotData(form.embed)) return OK;
+      if (embedCustomCols.length > 0) return WARN;
+      return INFO;
+    }
+    if (setSnapshotState.status === "success") return OK;
+    if (setSnapshotState.status === "error") return BAD;
+    if (setSnapshotState.status === "no_data") return WARN;
+    return INFO;
+  })();
   useEffect(() => {
     if (!setMailMeta) return;
     const extras = String(extraMailEmails || "")
@@ -5010,7 +5112,11 @@ function InformWizard({
                   {label}
                 </button>
               ))}
-              {embedFetching && <span style={{ alignSelf: "center", color: "var(--accent)" }}>SplitTable 스냅샷 로딩...</span>}
+              {snapshotStatusText && (
+                <span style={{ alignSelf: "center", padding: "3px 8px", borderRadius: 999, border: `1px solid ${snapshotStatusTone.fg}`, color: snapshotStatusTone.fg, background: snapshotStatusTone.bg, fontWeight: 800 }}>
+                  {snapshotStatusText}
+                </span>
+              )}
             </div>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 8, justifySelf: "start", padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer" }}>
               <input type="checkbox" checked={!!form.split_check_display} onChange={e => setForm(f => ({ ...f, split_check_display: e.target.checked }))} />
@@ -5062,11 +5168,11 @@ function InformWizard({
                     })}
                   {!setsLoading && setRows.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>저장된 세트가 없습니다</div>}
                 </div>
-                <div style={{ color: "var(--text-secondary)" }}>선택 {selectedSetRows.length}개 · 미선택 세트는 인폼에 첨부되지 않습니다</div>
+                <div style={{ color: "var(--text-secondary)" }}>선택 {selectedSetRows.length}개 · 세트 목록 미리보기와 실제 LOT snapshot 미리보기는 아래에서 구분됩니다</div>
                 {previewSet && (
                   <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-primary)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <b>{previewSet.name}</b>
+                      <b>원본 세트 목록 · {previewSet.name}</b>
                       <span style={{ color: "var(--text-secondary)" }}>{previewSet.source} · {(previewSet.columns || []).length} cols · {(previewSet.rows || []).length} rows</span>
                       <button type="button" onClick={() => setPreviewSet(null)} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 18 }}>×</button>
                     </div>
@@ -5163,11 +5269,16 @@ function InformWizard({
               </div>
             )}
             <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
-              disabled={attachMode !== "knob" || embedCustomCols.length === 0}
-              style={{ justifySelf: "start", padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: attachMode !== "knob" || embedCustomCols.length === 0 ? "not-allowed" : "pointer", opacity: attachMode !== "knob" || embedCustomCols.length === 0 ? 0.5 : 1, fontSize: 14 }}>
-              Search
+              disabled={attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching}
+              style={{ justifySelf: "start", padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching ? "not-allowed" : "pointer", opacity: attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching ? 0.5 : 1, fontSize: 14 }}>
+              {embedFetching ? "미리보기 생성 중..." : "미리보기 생성"}
             </button>
-            {form.attach_embed && hasEmbedSnapshot(form.embed) && <EmbedTableView embed={form.embed} product={form.product} />}
+            {attachMode === "sets" && form.attach_embed && selectedSetRows.length > 0 && (
+              <div style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontWeight: 800 }}>
+                실제 LOT snapshot 미리보기 · {hasLotSnapshotData(form.embed) ? embedSnapshotSummary(form.embed) : "데이터 없음"}
+              </div>
+            )}
+            {form.attach_embed && hasLotSnapshotData(form.embed) && <EmbedTableView embed={form.embed} product={form.product} />}
           </div>
         )}
         {step === 3 && (
@@ -5276,7 +5387,7 @@ function InformWizard({
               ["fab_lot_id", (form.fab_lot_ids || []).join(", ") || "-"],
               ["등록 방식", isReInform ? "재인폼 단건 등록" : ((form.fab_lot_ids || []).length > 1 ? `${(form.fab_lot_ids || []).length}개 LOT_ID 분할 등록` : "단일 등록")],
               ["module", form.module || "-"],
-              ["SplitTable", form.attach_embed ? `${(form.embed?.attached_sets || []).length || 1}개 / ${embedSnapshotRowCount(form.embed)} rows` : "첨부 0개"],
+              ["SplitTable", form.attach_embed ? embedSnapshotSummary(form.embed) : "첨부 0개"],
               ...(!isReInform ? [["메일 수신자", `${selectedMailEmails.length}명`]] : []),
             ].map(([k, v]) => (
               <div key={k} style={{ display: "grid", gridTemplateColumns: "140px minmax(0,1fr)", gap: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>

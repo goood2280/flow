@@ -74,6 +74,15 @@ def test_splittable_knob_rule_modal_checks_current_row_values():
     assert "openRuleMatchView(rowMatchKind,rowParam,row)" in ui
 
 
+def test_splittable_view_has_split_check_display_toggle():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+    assert "showSplitCheckView" in ui
+    assert "Split 체크 표시" in ui
+    assert '["항목","값","Split"]' in ui
+    assert "splitCheckRows" in ui
+    assert "Split 체크로 표시할 값이 없습니다" in ui
+
+
 def test_home_flowi_empty_chat_greeting_copy():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
     assert "오늘 어떤 도움을 드릴까요?" in ui

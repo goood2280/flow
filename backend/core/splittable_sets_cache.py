@@ -10,6 +10,8 @@ PLAN_DIR = PATHS.data_root / "splittable"
 PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 TTL_SECONDS = 300.0
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_INVALID_CUSTOM_TOKENS = {"undefined", "null"}
+_MANAGEMENT_ROW_PREFIX = "MGMT"
 
 
 def _product_key(product: str) -> str:
@@ -28,6 +30,56 @@ def _canonical_product(product: str) -> str:
 
 def _stamp(row: dict) -> str:
     return str(row.get("updated") or row.get("updated_at") or row.get("created") or row.get("created_at") or "")
+
+
+def _clean_custom_token(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    token = value.strip()
+    if not token or token.casefold() in _INVALID_CUSTOM_TOKENS:
+        return ""
+    return token
+
+
+def _clean_custom_column_name(value: Any) -> str:
+    column = _clean_custom_token(value)
+    if not column:
+        return ""
+    if column.upper().startswith(f"{_MANAGEMENT_ROW_PREFIX}_"):
+        return ""
+    return column
+
+
+def _clean_custom_columns(columns: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in columns if isinstance(columns, list) else []:
+        column = _clean_custom_column_name(raw)
+        if not column or column in seen:
+            continue
+        seen.add(column)
+        out.append(column)
+    return out
+
+
+def _custom_file_stem_invalid(path: Path) -> bool:
+    stem = path.stem
+    raw = stem[len("custom_"):] if stem.startswith("custom_") else stem
+    return not _clean_custom_token(raw)
+
+
+def _sanitize_custom_set(record: Any, path: Path) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    if _custom_file_stem_invalid(path):
+        return None
+    name = _clean_custom_token(record.get("name"))
+    if not name:
+        return None
+    columns = _clean_custom_columns(record.get("columns") or [])
+    if not columns:
+        return None
+    return {**record, "name": name, "columns": columns}
 
 
 def _paste_sets_for(product: str) -> list[dict[str, Any]]:
@@ -62,11 +114,11 @@ def _paste_sets_for(product: str) -> list[dict[str, Any]]:
 def _custom_sets() -> list[dict[str, Any]]:
     out = []
     for fp in sorted(PLAN_DIR.glob("custom_*.json")):
-        row = load_json(fp, None)
-        if not isinstance(row, dict):
+        row = _sanitize_custom_set(load_json(fp, None), fp)
+        if not row:
             continue
-        name = str(row.get("name") or fp.stem.replace("custom_", "") or "custom")
-        columns = [str(c) for c in (row.get("columns") or [])]
+        name = str(row.get("name") or "")
+        columns = list(row.get("columns") or [])
         out.append({
             "id": f"custom:{safe_id(name)}",
             "name": name,

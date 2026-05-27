@@ -107,6 +107,26 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
     assert "Wafer별 적용 plan 요약" not in src
 
 
+def test_inform_wizard_splittable_preview_states_are_visible():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    for token in [
+        "setSetSnapshotState",
+        "SplitTable LOT snapshot 생성 중...",
+        "SplitTable 스냅샷 생성 실패:",
+        "데이터 없음: 선택 LOT/컬럼에 표시할 값이 없습니다.",
+        "세트 목록 미리보기와 실제 LOT snapshot 미리보기는 아래에서 구분됩니다",
+        "원본 세트 목록",
+        "실제 LOT snapshot 미리보기",
+        "미리보기 생성",
+        "embedSnapshotSummary(form.embed)",
+        "hasLotSnapshotData(form.embed)",
+    ]:
+        assert token in src
+
+    assert ".catch(() => { setEmbedFetching(false); })" not in src
+
+
 def test_inform_detail_tabs_are_body_and_mail_history_with_comment_button():
     src = MY_INFORM.read_text(encoding="utf-8")
 
