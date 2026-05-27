@@ -19,7 +19,7 @@ const WHITE = "var(--bg-secondary)";
 const GRID_BORDER = "rgba(85,85,85,0.95)";
 const GRID_LINE = `1px solid ${GRID_BORDER}`;
 const GRID_LINE_STRONG = `2px solid ${GRID_BORDER}`;
-const GRID_TEXT = "rgba(17,24,39,0.95)";
+const GRID_TEXT = "#000000";
 // Excel-like pastel colors (bg + dark text)
 const CELL_COLORS=[
   {bg:"rgba(198,239,206,0.95)",fg:"rgba(0,97,0,0.95)"},  // green
@@ -1892,7 +1892,8 @@ export default function My_SplitTable({user}){
         </div>}
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
-        <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }`}</style>
+        <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }
+          .splittable-grid td, .splittable-grid th, .splittable-grid td *, .splittable-grid th * { color: ${GRID_TEXT} !important; }`}</style>
         {showSplitCheckView ? (
         <SplitTableSnapshotView
           stView={splitCheckStView}

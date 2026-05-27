@@ -19,6 +19,7 @@ const ST_CELL_COLORS = [
   { bg: "rgba(244,204,204,0.95)", fg: "rgba(117,25,76,0.95)" },
 ];
 const ST_COLOR_PREFIXES = ["KNOB", "MASK"];
+const ST_GRID_TEXT = "#000000";
 
 function hasStValue(v) {
   return v != null && v !== "" && v !== "None" && v !== "null";
@@ -32,14 +33,14 @@ function splitTableCellBg(val, uniq, pname) {
   const idx = uniq[pn]?.[s];
   if (idx == null) return {};
   const c = ST_CELL_COLORS[idx % ST_CELL_COLORS.length];
-  return { background: c.bg, color: c.fg };
+  return { background: c.bg, color: ST_GRID_TEXT };
 }
 
 function splitCheckColorStyle(label) {
   const m = String(label || "").trim().match(/^S(\d+)$/i);
   if (!m) return {};
   const c = ST_CELL_COLORS[Number(m[1]) % ST_CELL_COLORS.length];
-  return { background: c.bg, color: c.fg, fontWeight: 900 };
+  return { background: c.bg, color: ST_GRID_TEXT, fontWeight: 900 };
 }
 
 function stPlanStyle(cell) {
@@ -353,15 +354,15 @@ export default function SplitTableSnapshotView({
     minWidth: stTableWidth,
     fontFamily: "inherit",
   };
-  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
-  const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: "var(--accent)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
-  const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: "var(--text-primary)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: "var(--accent)", border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
-  const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: "var(--text-secondary)", border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
-  const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: "var(--text-primary)", border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
-  const stCellStyle = { background: "var(--bg-card)", color: "var(--text-primary)", padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
-  const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: "var(--text-secondary)" });
+  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+  const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
+  const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
+  const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
+  const stCellStyle = { background: "var(--bg-card)", color: ST_GRID_TEXT, padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
+  const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: ST_GRID_TEXT });
   const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === 0 ? 700 : 600 });
 
   return (
@@ -450,9 +451,9 @@ export default function SplitTableSnapshotView({
                         {splitCheckMode
                           ? display
                           : isMismatch
-                            ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "var(--danger)" }}>{" (≠" + cell.plan + ")"}</span></span>
+                            ? <span style={{ color: ST_GRID_TEXT, fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: ST_GRID_TEXT }}>{" (≠" + cell.plan + ")"}</span></span>
                             : isAppliedPlan
-                              ? <span style={{ color: OK.fg, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: OK.fg }}>{" (plan 적용)"}</span></span>
+                              ? <span style={{ color: ST_GRID_TEXT, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: ST_GRID_TEXT }}>{" (plan 적용)"}</span></span>
                               : isPlanOnly
                                 ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
                                 : display}

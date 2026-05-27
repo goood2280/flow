@@ -148,7 +148,7 @@ function toTabList(userTabs) {
 export function useFlowShell() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState(() => tabFromPath() || "home");
-  const [dark, setDark] = useState(true);
+  const [dark, setDark] = useState(false);
   const [notifs, setNotifs] = useState([]);
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
@@ -187,7 +187,7 @@ export function useFlowShell() {
   useIdleLogout(handleLogout);
 
   useEffect(() => {
-    setDark(localStorage.getItem("hol_dark") !== "false");
+    setDark(localStorage.getItem("hol_dark") === "true");
     let cancelled = false;
     const onExpire = () => {
       setUser(null);
