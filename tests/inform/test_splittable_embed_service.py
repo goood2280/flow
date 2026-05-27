@@ -547,8 +547,9 @@ def test_inform_mail_body_links_go_flow_in_new_tab():
         "created_at": "2026-04-29T10:00:00",
     }, "", "")
 
-    assert "href='http://go/flow'" in html
+    assert "href='http://go/flow_process'" in html
     assert "target='_blank'" in html
-    assert "<b>go/flow</b>" not in html
+    assert "go/flow_process" in html
+    assert "<b>go/flow_process</b>" not in html
     assert "인폼 공유" not in html
     assert "Sent by flow" not in html

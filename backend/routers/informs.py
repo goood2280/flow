@@ -4357,7 +4357,7 @@ _ST_CELL_COLORS = [
     {"bg": "#B4DED4", "fg": "#0B5345"},
     {"bg": "#F4CCCC", "fg": "#75194C"},
 ]
-_GO_FLOW_URL = "http://go/flow"
+_GO_FLOW_URL = "http://go/flow_process"
 _MAIL_FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif'
 _MAIL_MIN_FONT = "12px"
 _MAIL_BORDER = "#d1d5db"
@@ -5115,7 +5115,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
         f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
         f"<a href='{esc(_GO_FLOW_URL)}' target='_blank' rel='noopener noreferrer' "
-        f"style='color:#374151;text-decoration:underline;font-weight:700;'>go/flow</a> 에서 진행해 주세요.</div>"
+        f"style='color:#374151;text-decoration:underline;font-weight:700;'>go/flow_process</a> 에서 진행해 주세요.</div>"
         "</div>"
     )
 

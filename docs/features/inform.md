@@ -50,7 +50,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - SplitTable snapshot은 사용자가 선택한 KNOB/CUSTOM/세트 컬럼만 포함한다. 저장된 plan 값은 선택된 컬럼 row 안에 overlay할 수 있지만, 선택하지 않은 plan-only 컬럼 row를 자동으로 추가하지 않는다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
 - Inform 페이지 권한이 있는 사용자는 별도 유저별 모듈 조회 권한 없이 모든 module의 Inform을 조회한다.
-- 메일에는 제목, 대상, 본문, Flow link만 남긴다.
+- 메일에는 제목, 대상, 본문, Flow link만 남긴다. Flow link는 내부 접근 루트 `http://go/flow_process`로 고정한다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
 - 상세 화면은 원문 `수정` 버튼을 노출하지 않는다. 열람 가능한 사용자는 `재인폼 {count}` 버튼으로 `재인폼 작성` wizard를 열어 기존 인폼의 `parent_id` 아래에 `[RE]` 재인폼을 새로 만든다.
 - 재인폼은 목록 표에서 원 인폼 바로 아래에 들여쓰기와 `↳ [RE]` 표시로 항상 펼쳐 보인다. 목록 필터와 카운트는 루트 인폼 기준으로 유지한다.
