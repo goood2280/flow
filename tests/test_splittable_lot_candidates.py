@@ -717,13 +717,13 @@ def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypat
     assert "STEP_PC_B" not in groups[0]["step_ids"]
 
 
-def test_knob_meta_keeps_csv_rule_rows_sorts_r_order_and_exposes_product(tmp_path, monkeypatch):
+def test_knob_meta_keeps_csv_rule_rows_sorts_r_order_without_product(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(
-        "product,feature_name,rule_order,step_desc,operator,value,category\n"
-        "PRODB,5.0 PC,RO,PC,=,PPID_RO,OFF\n"
-        "PRODB,5.0 PC,R2,PC,=,PPID_B,ON\n"
-        "PRODB,5.0 PC,R1,GATE,=,PPID_A,ON\n",
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,RO,PC,=,PPID_RO,OFF\n"
+        "5.0 PC,R2,PC,=,PPID_B,ON\n"
+        "5.0 PC,R1,GATE,=,PPID_A,ON\n",
         encoding="utf-8",
     )
     (tmp_path / "Vehicle_matching.csv").write_text(
@@ -739,7 +739,7 @@ def test_knob_meta_keeps_csv_rule_rows_sorts_r_order_and_exposes_product(tmp_pat
     groups = meta["5.0 PC"]["groups"]
     assert [g["rule_order"] for g in groups] == ["R1", "R2", "RO"]
     assert [g["step_desc"] for g in groups] == ["GATE", "PC", "PC"]
-    assert [g["product"] for g in groups] == ["PRODB", "PRODB", "PRODB"]
+    assert all("product" not in g for g in groups)
     assert groups[1]["step_ids"] == ["STEP_PC_A"]
     assert "STEP_PC_B" not in groups[1]["step_ids"]
 
@@ -862,6 +862,33 @@ def test_vehicle_rulebook_filters_comma_separated_product_cells(tmp_path, monkey
     assert rows == [{"product": "PRODB, PRODA", "step_id": "STEP_PC_A", "step_desc": "PC"}]
 
 
+def test_rulebook_file_name_mapping_changes_step_matching_source(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    splittable._save_rulebook_schema({"step_matching": {"file_name": "Custom_vehicle.csv"}})
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_DEFAULT,PC\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Custom_vehicle.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_CUSTOM,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+    rulebook = splittable.get_rulebook(kind="step_matching", product="ML_TABLE_PRODA")
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_CUSTOM"]
+    assert rulebook["file"] == "Custom_vehicle.csv"
+    assert rulebook["rows"] == [{"product": "PRODA", "step_id": "STEP_CUSTOM", "step_desc": "PC"}]
+
+
 def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(
@@ -879,7 +906,7 @@ def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, mo
 
     assert "7.0 PC" in meta
     assert meta["7.0 PC"]["groups"][0]["step_ids"] == ["STEP_PRODA"]
-    assert meta["7.0 PC"]["groups"][0]["product"] == "PRODB"
+    assert "product" not in meta["7.0 PC"]["groups"][0]
 
 
 def test_knob_meta_falls_back_to_step_matching_when_vehicle_matching_is_missing(tmp_path, monkeypatch):

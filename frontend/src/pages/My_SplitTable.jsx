@@ -38,7 +38,6 @@ const stripMlPrefix=(s)=>{
   return v.startsWith("ML_TABLE_")?v.slice("ML_TABLE_".length):v;
 };
 const stepIdsForGroup=(group)=>Array.isArray(group?.step_ids)?group.step_ids.filter(Boolean):[];
-const isCompositeKnobRule=(groups)=>Array.isArray(groups)&&groups.length>1;
 const normalizeOperatorKey=(value)=>String(value??"").trim().toLowerCase().replace(/[\s-]+/g,"_");
 const isNotNullOperator=(value)=>normalizeOperatorKey(value)==="not_null";
 const knobStepGroups=(groups,{excludeNotNull=false}={})=>{
@@ -75,6 +74,18 @@ const matchedWaferSummary=(matches)=>{
     return a.localeCompare(b);
   });
   return wafers.length?`해당 WF #${wafers.join(",")}`:"";
+};
+const knobRuleSets=(groups)=>{
+  const sets=[];const byOrder=new Map();
+  (Array.isArray(groups)?groups:[]).forEach((g,idx)=>{
+    const order=String(g?.rule_order||`R${idx+1}`).trim()||`R${idx+1}`;
+    if(!byOrder.has(order)){
+      const item={rule_order:order,conditions:[]};
+      byOrder.set(order,item);sets.push(item);
+    }
+    byOrder.get(order).conditions.push(g);
+  });
+  return sets;
 };
 const knobRuleBadgeStyle=(highlight=false)=>({
   padding:"0 5px",
@@ -514,17 +525,40 @@ export default function My_SplitTable({user}){
   const[rbSchema,setRbSchema]=useState({schema:{},defaults:{}});
   const[rbEditKind,setRbEditKind]=useState(null);   // "knob_ppid"|"step_matching"|"inline_matching"|"vm_matching"|null
   const[rbDraftMap,setRbDraftMap]=useState({});
+  const[rbFileDrafts,setRbFileDrafts]=useState({});
   const reloadRbSchema=()=>sf(API+"/rulebook/schema").then(d=>setRbSchema({schema:d.schema||{},defaults:d.defaults||{}})).catch(()=>{});
   // v8.8.13-fix: 이전에는 `useEffect(reloadRbSchema,[])` 였는데 reloadRbSchema 가 Promise 를 반환하는 함수라
   // React 가 그 Promise 를 cleanup 로 저장 → unmount 시 Promise() 호출 → "n is not a function" 흰 화면 튕김.
   // 화살표로 감싸 void 반환으로 변경.
   useEffect(()=>{reloadRbSchema();},[]);
+  useEffect(()=>{
+    const next={};
+    Object.keys(rbSchema.defaults||{}).forEach(kind=>{
+      const current={...(rbSchema.defaults?.[kind]||{}),...(rbSchema.schema?.[kind]||{})};
+      next[kind]=current.file_name||"";
+    });
+    setRbFileDrafts(next);
+  },[rbSchema]);
+  const rulebookMap=(kind)=>({...(rbSchema.defaults?.[kind]||{}),...(rbSchema.schema?.[kind]||{})});
+  const rulebookFileName=(kind,fallback="")=>String(rulebookMap(kind).file_name||fallback||"").trim();
+  const saveRulebookMapping=(kind,mapping)=>{
+    if(!kind)return Promise.reject(new Error("kind is required"));
+    return sf(API+"/rulebook/schema/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({kind,mapping,username:user?.username||""})})
+      .then(()=>{reloadRbSchema();loadView&&loadView();});
+  };
   const openSchemaEditor=(kind)=>{setRbEditKind(kind);setRbDraftMap({...(rbSchema.schema?.[kind]||rbSchema.defaults?.[kind]||{})});};
   const saveSchemaEdit=()=>{if(!rbEditKind)return;
-    sf(API+"/rulebook/schema/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({kind:rbEditKind,mapping:rbDraftMap,username:user?.username||""})})
+    saveRulebookMapping(rbEditKind,rbDraftMap)
       .then(()=>{setRbEditKind(null);reloadRbSchema();loadView&&loadView();})
       .catch(e=>toast.error("저장 실패: "+e.message));
+  };
+  const saveRulebookFileName=(kind)=>{
+    const filename=String(rbFileDrafts[kind]||"").trim();
+    if(!filename){toast.warn("파일명을 입력하세요.");return;}
+    saveRulebookMapping(kind,{...rulebookMap(kind),file_name:filename})
+      .then(()=>toast.ok("파일명 매칭 저장됨"))
+      .catch(e=>toast.error("파일명 저장 실패: "+(e?.message||e)));
   };
   // v9.0.5: KNOB/INLINE/VM Index 클릭 시 매칭 규칙 미리보기 모달.
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
@@ -1478,23 +1512,13 @@ export default function My_SplitTable({user}){
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["step_desc","step_desc_col"],["item_id","item_id_col"]]},
             };
-            const SectionHeader = ({title, files, count, editKinds}) => (
+            const SectionHeader = ({title, files, count}) => (
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
                 <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>{title}</span>
                 <span style={{fontSize:14,color:"var(--text-secondary)"}}>({count} 항목)</span>
                 <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                   → {files.join(" + ")}
                 </span>
-                {canManage && (editKinds||[]).map(k => (
-                  <span key={k} style={{display:"inline-flex",gap:2}}>
-                    <button onClick={()=>openRowEditor(k)}
-                      title={`${k} 의 ${selProd||"제품"} 행 추가/수정/삭제`}
-                      style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>편집 {k}</button>
-                    <button onClick={()=>openSchemaEditor(k)}
-                      title={`${k} 의 역할→실제 컬럼명 매핑 조정 (soft-landing)`}
-                      style={{padding:"1px 6px",borderRadius:3,border:"1px dashed var(--text-secondary)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>🔧 컬럼</button>
-                  </span>
-                ))}
               </div>
             );
             const RulebookSourceSummary=({kinds})=>(
@@ -1504,11 +1528,25 @@ export default function My_SplitTable({user}){
                   if(!spec) return null;
                   const defaults=rbSchema.defaults?.[kind]||{};
                   const current={...defaults,...(rbSchema.schema?.[kind]||{})};
+                  const fileName=String(current.file_name||spec.file||"").trim();
                   return(
                     <div key={kind} style={{padding:"7px 8px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:5}}>
-                        <span style={{fontSize:14,fontWeight:700,color:spec.color,fontFamily:"monospace"}}>{spec.file}</span>
+                        <span style={{fontSize:14,fontWeight:700,color:spec.color,fontFamily:"monospace"}}>{fileName}</span>
                         <span style={{fontSize:14,color:"var(--text-secondary)"}}>기준 CSV</span>
+                        {canManage&&<span style={{display:"inline-flex",alignItems:"center",gap:4,marginLeft:"auto"}}>
+                          <span style={{fontSize:14,color:"var(--text-secondary)"}}>파일명</span>
+                          <input value={rbFileDrafts[kind] ?? fileName}
+                            onChange={e=>setRbFileDrafts(m=>({...m,[kind]:e.target.value}))}
+                            onKeyDown={e=>{if(e.key==="Enter")saveRulebookFileName(kind);}}
+                            style={{width:190,padding:"3px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
+                          <button onClick={()=>saveRulebookFileName(kind)}
+                            title={`${kind} 파일명 매칭 저장`}
+                            style={{padding:"3px 7px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>저장</button>
+                          <button onClick={()=>openSchemaEditor(kind)}
+                            title={`${kind} 의 역할→실제 컬럼명 매핑 조정`}
+                            style={{padding:"3px 7px",borderRadius:3,border:"1px dashed var(--text-secondary)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>컬럼</button>
+                        </span>}
                       </div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                         {spec.roles.map(([label,key])=>{
@@ -1552,83 +1590,25 @@ export default function My_SplitTable({user}){
                 {/* ── KNOB 섹션 ───────────────────────────── */}
                 <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(251,191,36,0.3)"}}>
                   <SectionHeader title="🔧 KNOB_*" count={knobEntries.length}
-                    files={["ppid_knob.csv", "Vehicle_matching.csv"]}
-                    editKinds={["knob_ppid","step_matching"]} />
+                    files={[rulebookFileName("knob_ppid","ppid_knob.csv"), rulebookFileName("step_matching","Vehicle_matching.csv")]} />
                   <RulebookSourceSummary kinds={["knob_ppid","step_matching"]}/>
-                  {knobEntries.length===0 && (
-                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 KNOB 룰 없음.</div>
-                  )}
-                  <div style={{maxHeight:160,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
-                    {knobEntries.map(([fname, meta]) => (
-                      <div key={fname} style={{padding:"4px 6px",borderRadius:3,background:"var(--bg-secondary)"}}>
-                        <div style={{fontFamily:"monospace",fontSize:14,color:"rgba(251,191,36,0.95)",fontWeight:700}}>{fname}</div>
-                        <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
-                          {(meta.groups || []).map((g, gi) => (
-                            <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
-                              <span style={knobRuleBadgeStyle(isCompositeKnobRule(meta.groups))}>{g.rule_order}</span>
-                              <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.step_desc||g.func_step}</span>
-                              {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
-                                <span key={mod} style={{padding:"0 4px",background:"rgba(16,185,129,0.14)",color:"rgba(16,185,129,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{mod}</span>
-                              ))}
-                              {g.category && g.category!==g.value && <span style={{padding:"0 4px",background:"rgba(251,191,36,0.12)",color:"rgba(251,191,36,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.category}</span>}
-                              {g.value && <span style={{padding:"0 4px",background:"rgba(34,197,94,0.12)",color:"rgba(34,197,94,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.value}</span>}
-                              {g.operator && <span style={{padding:"0 4px",background:"rgba(96,165,250,0.12)",color:"rgba(96,165,250,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.operator}</span>}
-                              <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:14,color:"var(--text-secondary)"}}>
-                                → [{(g.step_ids || []).join(", ") || "—"}]
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>룰북 row 미리보기는 이 설정 화면에 표시하지 않습니다. 실제 분류 규칙은 SplitTable 항목명을 클릭해 확인합니다.</div>
                 </div>
 
                 {/* ── INLINE 섹션 ─────────────────────────── */}
                 <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(16,185,129,0.3)"}}>
                   <SectionHeader title="🔬 INLINE_*" count={inlineEntries.length}
-                    files={["inline_matching.csv"]}
-                    editKinds={["inline_matching"]} />
+                    files={[rulebookFileName("inline_matching","inline_matching.csv")]} />
                   <RulebookSourceSummary kinds={["inline_matching"]}/>
-                  {inlineEntries.length===0 && (
-                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 INLINE 룰 없음.</div>
-                  )}
-                  <div style={{maxHeight:120,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
-                    {inlineEntries.map(([fname, meta]) => (
-                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:14,alignItems:"center"}}>
-                        <span style={{color:"rgba(16,185,129,0.95)",fontWeight:700}}>{fname}</span>
-                        {meta.item_desc && <span style={{color:"var(--text-secondary)"}}>{meta.item_desc}</span>}
-                        <span style={{flex:1}}/>
-                        {(meta.step_ids||[]).slice(0,3).map(sid=>(
-                          <span key={sid} style={{padding:"0 4px",background:"rgba(96,165,250,0.15)",color:"#60a5fa",borderRadius:2,fontWeight:700}}>{sid}</span>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>INLINE row 미리보기는 표시하지 않고, 파일명 매칭과 컬럼 매칭만 관리합니다.</div>
                 </div>
 
                 {/* ── VM 섹션 ─────────────────────────────── */}
                 <div style={{marginBottom:6,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(139,92,246,0.3)"}}>
                   <SectionHeader title="🤖 VM_*" count={vmEntries.length}
-                    files={["vm_matching.csv", "Vehicle_matching.csv"]}
-                    editKinds={["vm_matching","step_matching"]} />
+                    files={[rulebookFileName("vm_matching","vm_matching.csv"), rulebookFileName("step_matching","Vehicle_matching.csv")]} />
                   <RulebookSourceSummary kinds={["vm_matching","step_matching"]}/>
-                  {vmEntries.length===0 && (
-                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 VM 룰 없음.</div>
-                  )}
-                  <div style={{maxHeight:140,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
-                    {vmEntries.map(([fname, meta]) => (
-                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:14}}>
-                        <span style={{color:"rgba(139,92,246,0.95)",fontWeight:700}}>{fname}</span>
-                        {meta.step_desc && <span style={{color:"var(--text-secondary)"}}>{meta.step_desc}</span>}
-                        {meta.item_id && <span style={{color:"var(--text-secondary)"}}>{meta.item_id}</span>}
-                        <span style={{flex:1}}/>
-                        {(meta.step_ids||[]).slice(0,3).map(sid=>(
-                          <span key={sid} style={{padding:"0 4px",background:"rgba(96,165,250,0.15)",color:"#60a5fa",borderRadius:2,fontWeight:700}}>{sid}</span>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>VM row 미리보기는 표시하지 않고, 파일명 매칭과 컬럼 매칭만 관리합니다.</div>
                 </div>
 
                 <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
@@ -2435,7 +2415,7 @@ export default function My_SplitTable({user}){
             입력 안 한 값은 기본값으로 저장.
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {Object.entries(rbSchema.defaults?.[rbEditKind] || {}).map(([role, dfl]) => (
+            {Object.entries(rbSchema.defaults?.[rbEditKind] || {}).filter(([role])=>role!=="file_name").map(([role, dfl]) => (
               <label key={role} style={{display:"flex",alignItems:"center",gap:8,fontSize:14}}>
                 <span style={{width:140,color:"var(--text-secondary)",fontFamily:"monospace"}}>{role}</span>
                 <input value={rbDraftMap[role] ?? dfl}
@@ -2448,7 +2428,8 @@ export default function My_SplitTable({user}){
           <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:14}}>
             <button onClick={()=>{
               // 기본값으로 리셋
-              setRbDraftMap({...(rbSchema.defaults?.[rbEditKind]||{})});
+              const defaults=Object.fromEntries(Object.entries(rbSchema.defaults?.[rbEditKind]||{}).filter(([role])=>role!=="file_name"));
+              setRbDraftMap(m=>({...m,...defaults}));
             }} style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>기본값 복원</button>
             <button onClick={()=>setRbEditKind(null)}
               style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>취소</button>
@@ -2541,27 +2522,29 @@ export default function My_SplitTable({user}){
           </div>
           {rbMatchData ? (
             <div style={{overflow:"auto"}}>
-              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const composite=isCompositeKnobRule(groups);const steps=knobStepGroups(groups,{excludeNotNull:excludeNotNullStepMeta});return(
+              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const sets=knobRuleSets(groups);const composite=sets.length>1;const steps=knobStepGroups(groups,{excludeNotNull:excludeNotNullStepMeta});return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-secondary)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",lineHeight:1.4}}>
                     적용공정: {steps.length?knobStepSummaryText(steps):(groups.length?"표시 대상 없음":"매칭정보 없음")}
                   </div>
                   {groups.length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>분류 규칙이 없습니다.</div>}
-                  {groups.map((g, gi) => {const ruleMatches=matchKnobRuleToRowValues(g,rbMatchRow,pendingValueFor);const checked=ruleMatches.length>0;return(
-                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"10px 12px",borderRadius:6,border:checked?"1px solid rgba(34,197,94,0.75)":"1px solid rgba(251,191,36,0.35)",background:checked?"rgba(34,197,94,0.06)":"var(--bg-card)"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                        <span title={checked?"현재 row의 actual/saved plan/pending plan 중 category와 일치":"현재 row 값과 일치 없음"} style={{width:20,height:20,lineHeight:"18px",textAlign:"center",borderRadius:4,border:checked?"1px solid rgba(34,197,94,0.8)":"1px solid var(--border)",background:checked?"rgba(34,197,94,0.16)":"transparent",color:checked?"rgba(22,163,74,0.95)":"var(--text-secondary)",fontWeight:900,fontSize:14,flexShrink:0}}>{checked?"✓":""}</span>
-                        <span style={knobRuleBadgeStyle(composite)}>{g.rule_order ?? "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>condition</span>
-                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.operator || "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>cell value</span>
-                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.value || "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>category</span>
-                        <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontFamily:"monospace",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
-                        {g.product && <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(148,163,184,0.12)",border:"1px solid rgba(148,163,184,0.35)",fontFamily:"monospace",fontWeight:700,color:"var(--text-secondary)"}}>product {g.product}</span>}
+                  {sets.map((set, si) => {const conditionMatches=set.conditions.map(g=>matchKnobRuleToRowValues(g,rbMatchRow,pendingValueFor));const checked=conditionMatches.length>0&&conditionMatches.every(ms=>ms.length>0);const allMatches=conditionMatches.flat();return(
+                    <div key={`${rbMatchParam}-${set.rule_order}-${si}`} style={{padding:"10px 12px",borderRadius:6,border:checked?"1px solid rgba(34,197,94,0.75)":"1px solid rgba(251,191,36,0.35)",background:checked?"rgba(34,197,94,0.06)":"var(--bg-card)"}}>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                        <span title={checked?"현재 row 값이 이 rule_order 조건 묶음과 일치":"현재 row 값과 일치 없음"} style={{width:20,height:20,lineHeight:"18px",textAlign:"center",borderRadius:4,border:checked?"1px solid rgba(34,197,94,0.8)":"1px solid var(--border)",background:checked?"rgba(34,197,94,0.16)":"transparent",color:checked?"rgba(22,163,74,0.95)":"var(--text-secondary)",fontWeight:900,fontSize:14,flexShrink:0}}>{checked?"✓":""}</span>
+                        <span style={knobRuleBadgeStyle(composite)}>{set.rule_order}</span>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center",fontFamily:"monospace",fontSize:14}}>
+                          {set.conditions.map((g,gi)=><span key={`${set.rule_order}-${gi}`} style={{display:"inline-flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                            {gi>0&&<span style={{color:"var(--text-secondary)",fontWeight:900}}>&amp;</span>}
+                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(148,163,184,0.10)",border:"1px solid rgba(148,163,184,0.25)",color:"var(--text-secondary)"}}>{g.step_desc||g.func_step||"-"}</span>
+                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.35)",fontWeight:700}}>{g.operator || "-"}</span>
+                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.35)",fontWeight:700}}>{g.value || "-"}</span>
+                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
+                          </span>)}
+                        </div>
                       </div>
-                      {ruleMatches.length>0&&<div style={{marginTop:8,marginLeft:28,fontSize:13,fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>
-                        {matchedWaferSummary(ruleMatches)}
+                      {allMatches.length>0&&<div style={{marginTop:8,marginLeft:54,fontSize:13,fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>
+                        {matchedWaferSummary(allMatches)}
                       </div>}
                     </div>
                   );})}

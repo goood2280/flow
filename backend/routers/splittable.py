@@ -2666,9 +2666,7 @@ def _row_step_desc(row: dict, schema: dict) -> str:
 
 
 def _knob_step_matching_path(base: Path | None = None) -> Path:
-    root = base or _base_root()
-    vehicle = root / "Vehicle_matching.csv"
-    return vehicle if vehicle.is_file() else root / "step_matching.csv"
+    return _rulebook_path_for_base("step_matching", base)
 
 
 def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
@@ -2943,8 +2941,8 @@ def _build_knob_meta(product: str = "") -> dict:
     # feature_name → CSV rule row groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
     for r in knob_rules:
-        # ppid_knob.csv is product-common.  If a legacy product column exists,
-        # keep reading the row but leave product scoping to the matching file.
+        # ppid_knob.csv is product-common. Legacy product columns are ignored;
+        # product scoping belongs only to Vehicle_matching.csv.
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
         step_desc = _row_step_desc(r, km)
         step_desc_key = _step_desc_match_key(step_desc)
@@ -2968,7 +2966,6 @@ def _build_knob_meta(product: str = "") -> dict:
             "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
-            "product": _first_row_value(r, km.get("product_col", "product"), "product"),
             "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("step_id") or "").strip()],
             "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("module") or "").strip()],
         })
@@ -3357,6 +3354,7 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
 RULEBOOK_SCHEMA_FILE = PLAN_DIR / "rulebook_schema.json"
 _DEFAULT_RULEBOOK_SCHEMA = {
     "knob_ppid": {
+        "file_name":      "ppid_knob.csv",
         "feature_col":    "feature_name",
         "step_desc_col":  "step_desc",
         "func_step_col":  "function_step",
@@ -3365,9 +3363,9 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "value_col":      "value",
         "operator_col":   "operator",
         "category_col":   "category",
-        "product_col":    "product",
     },
     "step_matching": {
+        "file_name":     "Vehicle_matching.csv",
         "step_id_col":   "step_id",
         "step_desc_col": "step_desc",
         "func_step_col": "function_step",
@@ -3375,6 +3373,7 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "module_col":    "module",
     },
     "inline_matching": {
+        "file_name":     "inline_matching.csv",
         "step_id_col":   "step_id",
         "process_id_col": "process_id",
         "item_id_col":   "item_id",
@@ -3382,6 +3381,7 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "product_col":   "product",
     },
     "vm_matching": {
+        "file_name":     "vm_matching.csv",
         "step_desc_col": "step_desc",
         "item_id_col":   "item_id",
     },
@@ -3410,6 +3410,15 @@ def _sch(kind: str) -> dict:
     return _load_rulebook_schema().get(kind, _DEFAULT_RULEBOOK_SCHEMA.get(kind, {}))
 
 
+def _clean_rulebook_filename(value: object, default: str) -> str:
+    name = Path(str(value or "").strip()).name
+    if not name:
+        return default
+    if not name.lower().endswith(".csv"):
+        name = f"{name}.csv"
+    return name
+
+
 @router.get("/rulebook/schema")
 def get_rulebook_schema():
     """현재 역할→컬럼명 매핑 + 기본값 같이 반환. FE 에서 diff 표시 가능."""
@@ -3436,7 +3445,10 @@ def save_rulebook_schema(
     new_map = {}
     for role, _dfl in defm.items():
         v = (req.mapping or {}).get(role, _dfl)
-        v = str(v or "").strip() or _dfl
+        if role == "file_name":
+            v = _clean_rulebook_filename(v, _dfl)
+        else:
+            v = str(v or "").strip() or _dfl
         new_map[role] = v
     cur[req.kind] = new_map
     _save_rulebook_schema(cur)
@@ -3494,16 +3506,21 @@ def _normalize_rulebook_rows(kind: str, rows: list[dict]) -> list[dict]:
     return out
 
 
-def _rulebook_path(kind: str) -> Path:
+def _rulebook_path_for_base(kind: str, base: Path | None = None) -> Path:
     meta = _RULEBOOK_FILES.get(kind)
     if not meta:
         raise HTTPException(400, f"unknown rulebook: {kind}")
-    root = _base_root()
-    primary = root / meta["filename"]
-    if primary.exists() or not meta.get("legacy_filename"):
+    root = base or _base_root()
+    configured = _clean_rulebook_filename(_sch(kind).get("file_name"), meta["filename"])
+    primary = root / configured
+    if configured != meta["filename"] or primary.exists() or not meta.get("legacy_filename"):
         return primary
     legacy = root / str(meta.get("legacy_filename") or "")
     return legacy if legacy.exists() else primary
+
+
+def _rulebook_path(kind: str) -> Path:
+    return _rulebook_path_for_base(kind)
 
 
 def _rulebook_row_matches_product(kind: str, row: dict, product: str, *, allow_common: bool = True) -> bool:
@@ -3533,7 +3550,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
             allow_common = not any(p_col in r or "product" in r for r in rows)
         rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product, allow_common=allow_common)]
     return {
-        "kind": kind, "file": meta["filename"],
+        "kind": kind, "file": _rulebook_path(kind).name,
         "columns": meta["cols"], "rows": rows, "count": len(rows),
     }
 
@@ -3628,16 +3645,16 @@ def knob_meta(product: str = Query("")):
           "KNOB_GATE_PPID": {
             "groups": [
               {"step_desc":"GATE_PATTERN","step_ids":["AA200030","AA200040","AA200050"],
-               "value":"PP_GATE_01","operator":"+","rule_order":"R1","category":"gate","product":""},
+               "value":"PP_GATE_01","operator":"+","rule_order":"R1","category":"gate"},
               {"step_desc":"PC_ETCH","step_ids":["AA200100","AA200110"],
-               "value":"PP_PC_01","operator":"","rule_order":"R2","category":"gate","product":""}
+               "value":"PP_PC_01","operator":"","rule_order":"R2","category":"gate"}
             ],
             "label": "GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)"
           },
           ...
         }
       }
-    ppid_knob.csv는 product 컬럼이 있어도 공용 룰로 읽고, product별 step_id 확장만 Vehicle_matching.csv에서 적용한다.
+    ppid_knob.csv는 product 없는 공용 룰북으로 읽고, product별 step_id 확장만 Vehicle_matching.csv에서 적용한다.
     """
     return {"features": _build_knob_meta(product)}
 
