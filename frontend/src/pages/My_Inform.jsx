@@ -574,7 +574,7 @@ function StatusBadge({ status, compact = false }) {
   const m = STATUS_META[normalized] || { label: status || "-", tone: "neutral", color: "var(--text-secondary)", dot: "·" };
   const label = m.label;
   return (
-    <Pill tone={m.tone} title={m.label} style={{ minWidth: 0, width: compact ? "100%" : undefined, maxWidth: compact ? 114 : "100%", boxSizing: "border-box", lineHeight: 1.2 }}>
+    <Pill tone={m.tone} title={m.label} style={{ minWidth: 0, width: compact ? "100%" : undefined, maxWidth: "100%", boxSizing: "border-box", lineHeight: 1.2 }}>
       <span style={{ flex: "0 0 auto" }}>{m.dot}</span>
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
     </Pill>
@@ -3807,7 +3807,7 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
 function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen }) {
   const tableStyle = {
     width: "100%",
-    minWidth: 1160,
+    minWidth: 1060,
     tableLayout: "fixed",
     borderCollapse: "separate",
     borderSpacing: 0,
@@ -3848,10 +3848,9 @@ function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen })
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col />
-            <col style={{ width: 144 }} />
+            <col style={{ width: 176 }} />
             <col style={{ width: 78 }} />
             <col style={{ width: 110 }} />
-            <col style={{ width: 100 }} />
             <col style={{ width: 90 }} />
           </colgroup>
           <thead>
@@ -3864,7 +3863,6 @@ function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen })
               <th style={{ ...headStyle, padding: "6px 4px" }}>상태</th>
               <th style={headStyle}>작성자</th>
               <th style={headStyle}>시간</th>
-              <th style={headStyle}>카운트</th>
               <th style={{ ...headStyle, right: 0, zIndex: 7, textAlign: "center" }}>모듈</th>
             </tr>
           </thead>
@@ -3893,17 +3891,13 @@ function InformListRow({ root, node, depth = 0, selected, onOpen }) {
   const row = node || root;
   const isChild = depth > 0 || !!row.parent_id;
   const status = normalizeFlowStatus(row.flow_status, row);
-  const mailCount = (row.mail_history || []).length;
-  const replyCount = Number(row.reply_count || row.comment_count || 0);
-  const attachedSets = Array.isArray(row.embed_table?.attached_sets) ? row.embed_table.attached_sets.length : (Array.isArray(row.attachments) ? row.attachments.length : 0);
-  const embedCount = row.embed_table && attachedSets === 0 ? 1 : 0;
-  const attachCount = (row.images || []).length + embedCount + attachedSets;
   const module = row.module || root.module || "기타";
   const mc = moduleColor(module);
   const titleText = isChild
     ? (reInformTextForDisplay(row).replace(/^\[RE\]\s*/, "") || informTitle(row))
     : informTitle(row);
-  const timeValue = isChild ? row.created_at : (row.thread_updated_at || row.created_at);
+  const timeValue = row.created_at || "";
+  const timeLabel = isChild ? "재인폼" : "등록";
   const cellStyle = {
     padding: "6px 8px",
     borderBottom: "1px solid var(--border)",
@@ -3944,9 +3938,11 @@ function InformListRow({ root, node, depth = 0, selected, onOpen }) {
         <StatusBadge status={isChild ? "reinform" : status} compact />
       </td>
       <td title={row.author || ""} style={{ ...cellStyle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.author || "-"}</td>
-      <td title={(timeValue || "").replace("T", " ").slice(0, 16)} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap" }}>{relativeTime(timeValue)}</td>
-      <td style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap", color: "var(--text-secondary)", fontWeight: 800 }}>
-        💬{replyCount || 0} · ✉{mailCount || 0} · 📎{attachCount || 0}
+      <td title={`${timeLabel} ${(timeValue || "").replace("T", " ").slice(0, 16)}`} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: "100%", minWidth: 0 }}>
+          <span style={{ flex: "0 0 auto", color: "var(--text-secondary)", fontFamily: "inherit", fontSize: 11, fontWeight: 900 }}>{timeLabel}</span>
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{relativeTime(timeValue)}</span>
+        </span>
       </td>
       <td style={{ ...cellStyle, position: "sticky", right: 0, zIndex: 2, textAlign: "center", boxShadow: "-1px 0 0 var(--border)" }}>
         <span title={module} style={{ display: "inline-flex", justifyContent: "center", alignItems: "center", width: 76, maxWidth: 76, padding: "3px 7px", borderRadius: 999, background: mc, color: "#fff", fontSize: 13, fontWeight: 900, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

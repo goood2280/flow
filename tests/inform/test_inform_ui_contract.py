@@ -213,6 +213,24 @@ def test_inform_recent_list_renders_reinform_children_as_tree_rows():
     assert "↳ [RE]" in src
 
 
+def test_inform_recent_list_columns_status_and_row_times_are_contract():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert "minWidth: 1060" in src
+    assert '<col style={{ width: 176 }} />' in src
+    assert '<th style={headStyle}>카운트</th>' not in src
+    assert "maxWidth: compact ? 114" not in src
+    assert 'maxWidth: "100%"' in src
+    assert "const timeValue = row.created_at || \"\";" in src
+    assert 'const timeLabel = isChild ? "재인폼" : "등록";' in src
+    assert "row.thread_updated_at || row.created_at" not in src
+    assert "const mailCount = (row.mail_history || []).length;" not in src
+    assert "const replyCount = Number(row.reply_count || row.comment_count || 0);" not in src
+    assert "💬{replyCount || 0} · ✉{mailCount || 0} · 📎{attachCount || 0}" not in src
+    assert "kids.map(child => renderRows(child, root, depth + 1))" in src
+    assert "↳ [RE]" in src
+
+
 def test_inform_pagegear_reason_subject_templates_are_saved_and_used():
     src = MY_INFORM.read_text(encoding="utf-8")
 
