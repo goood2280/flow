@@ -715,6 +715,46 @@ def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypat
     assert "STEP_PC_B" not in groups[0]["step_ids"]
 
 
+def test_knob_meta_vehicle_matching_uses_only_current_product_rows(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_PC_A,PC\n"
+        "PRODA0,STEP_PC_A0,PC\n"
+        "PRODA1,STEP_PC_A1,PC\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
+
+
+def test_knob_meta_vehicle_matching_product_header_accepts_utf8_bom(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "\ufeffproduct,step_id,step_desc\n"
+        "PRODA,STEP_PC_A,PC\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
+
+
 def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_dedupes_groups(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(

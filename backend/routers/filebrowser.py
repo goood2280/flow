@@ -1000,6 +1000,59 @@ def _normalize_rows(rows: list[list[str]], width: int, fill: str = "") -> tuple[
     return norm, width
 
 
+def _csv_header_names(raw_header: list[str], width: int) -> list[str]:
+    names: list[str] = []
+    seen: dict[str, int] = {}
+    for idx in range(width):
+        raw = raw_header[idx] if idx < len(raw_header) else ""
+        name = str(raw or "").lstrip("\ufeff").strip() or f"extra_col_{idx + 1}"
+        if idx >= len(raw_header):
+            name = f"extra_col_{idx + 1}"
+        base = name
+        count = seen.get(base.casefold(), 0)
+        if count:
+            name = f"{base}_{count + 1}"
+        seen[base.casefold()] = count + 1
+        names.append(name)
+    return names
+
+
+def _read_csv_lenient_rows(fp: Path) -> tuple[list[str], list[list[str]], str, bool] | None:
+    try:
+        if fp.suffix.lower() != ".csv" or fp.stat().st_size > BASE_FILE_EDIT_MAX_BYTES:
+            return None
+        text = fp.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception:
+        return None
+    rows, used_delim = _parse_tab_or_csv(text, "auto")
+    if not rows:
+        return [], [], used_delim, False
+    raw_header = ["" if v is None else str(v) for v in (rows[0] or [])]
+    data_rows = rows[1:]
+    width = max([len(raw_header), *[len(r or []) for r in data_rows], 1])
+    columns = _csv_header_names(raw_header, width)
+    normalized, _ = _normalize_rows(data_rows, width, "")
+    return columns, normalized, used_delim, width > len(raw_header)
+
+
+def _csv_lenient_lazy_frame(fp: Path) -> tuple[pl.LazyFrame, list[str], dict[str, str], int, dict] | None:
+    parsed = _read_csv_lenient_rows(fp)
+    if parsed is None:
+        return None
+    columns, rows, used_delim, added_columns = parsed
+    data = {col: [row[idx] if idx < len(row) else "" for row in rows] for idx, col in enumerate(columns)}
+    df = pl.DataFrame(data if data else {col: pl.Series([], dtype=pl.Utf8) for col in columns})
+    if columns:
+        df = df.select([pl.col(col).cast(pl.Utf8, strict=False).alias(col) for col in columns])
+    schema = {col: "String" for col in columns}
+    meta = {
+        "csv_schema_reinitialized": True,
+        "csv_ragged_rows_normalized": bool(added_columns),
+        "csv_delimiter": used_delim,
+    }
+    return df.lazy(), columns, schema, len(rows), meta
+
+
 def _resolve_base_file_for_edit(file: str) -> Path:
     name = (file or "").strip()
     if not name:
@@ -3069,6 +3122,9 @@ def _scan_one_file_raw(fp: Path):
 def _read_table_for_diff_frame(path: Path, limit: int = 20000) -> pl.DataFrame | None:
     lf = _scan_one_file_raw(path)
     if lf is None:
+        fallback = _csv_lenient_lazy_frame(path)
+        lf = fallback[0] if fallback else None
+    if lf is None:
         return None
     try:
         df = lf.collect()
@@ -3079,6 +3135,15 @@ def _read_table_for_diff_frame(path: Path, limit: int = 20000) -> pl.DataFrame |
             return pl.DataFrame()
         return df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("").alias(c) for c in cols])
     except Exception:
+        fallback = _csv_lenient_lazy_frame(path)
+        if fallback:
+            try:
+                df = fallback[0].collect()
+                if df.height > limit:
+                    df = df.head(limit)
+                return df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("").alias(c) for c in df.columns])
+            except Exception:
+                return None
         return None
 
 
@@ -3093,6 +3158,9 @@ def _file_shape(path: Path) -> tuple[int | None, int | None]:
             rows = int(lf.select(pl.len()).collect().item())
             return rows, len(cols)
     except Exception:
+        fallback = _csv_lenient_lazy_frame(path)
+        if fallback:
+            return fallback[3], len(fallback[1])
         pass
     return None, None
 
@@ -3119,6 +3187,11 @@ def _file_profile(path: Path) -> dict:
                 profile["column_count"] = len(cols)
                 profile["rows"] = int(lf.select(pl.len()).collect().item())
     except Exception:
+        fallback = _csv_lenient_lazy_frame(path)
+        if fallback:
+            profile["columns"] = fallback[1]
+            profile["column_count"] = len(fallback[1])
+            profile["rows"] = fallback[3]
         pass
     return profile
 
@@ -5018,10 +5091,27 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     }, settings)
             lf = scan_one_file(fp)
             if lf is None:
-                raise HTTPException(400, f"Cannot read: {file}")
-            full_schema_obj = lf.collect_schema()
-            all_cols_full = list(full_schema_obj.names())
-            schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+                fallback = _csv_lenient_lazy_frame(fp)
+                if fallback:
+                    lf, all_cols_full, schema_full, fallback_rows, csv_reinit_meta = fallback
+                else:
+                    raise HTTPException(400, f"Cannot read: {file}")
+            else:
+                csv_reinit_meta = {}
+                fallback_rows = None
+                try:
+                    full_schema_obj = lf.collect_schema()
+                    all_cols_full = list(full_schema_obj.names())
+                    schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+                except Exception as schema_exc:
+                    fallback = _csv_lenient_lazy_frame(fp)
+                    if not fallback:
+                        raise HTTPException(400, f"Cannot read schema: {schema_exc}")
+                    lf, all_cols_full, schema_full, fallback_rows, csv_reinit_meta = fallback
+                if ext == ".csv" and not meta_only and not csv_reinit_meta:
+                    fallback = _csv_lenient_lazy_frame(fp)
+                    if fallback and fallback[4].get("csv_ragged_rows_normalized"):
+                        lf, all_cols_full, schema_full, fallback_rows, csv_reinit_meta = fallback
             # v8.8.16: meta_only 빠른 경로 — 스키마만 돌려주고 collect 없음.
             if meta_only:
                 cached_meta_only = None
@@ -5036,15 +5126,16 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                     "columns": all_cols_full[:cols], "dtypes": schema_full,
                     "data": [], "showing": 0, "showing_cols": [],
-                    "total_rows": int((cached_meta_only or {}).get("row_count") or 0),
+                    "total_rows": int((cached_meta_only or {}).get("row_count") or fallback_rows or 0),
                     "meta_only": True,
                     "page": page, "page_size": page_size, "has_more": False,
                     "meta_cached": bool(cached_meta_only),
-                    "row_count_unknown": not bool(cached_meta_only),
+                    "row_count_unknown": not bool(cached_meta_only) and fallback_rows is None,
                     "source_path": str(fp),
                     "source_size": fp.stat().st_size,
                     "source_modified": fp.stat().st_mtime,
                     "csv_rule_summary": _csv_rule_summary(_csv_rule_for_file(file)) if ext == ".csv" else None,
+                    **csv_reinit_meta,
                 }, settings)
             cached_meta = None
             if ext == ".parquet":
@@ -5086,8 +5177,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["source_modified"] = fp.stat().st_mtime
                 resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
                 resp["csv_rule_summary"] = csv_rule_summary
+                resp.update(csv_reinit_meta)
                 return _finalize_preview_response(resp, settings)
-            if not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            if not csv_reinit_meta and not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
                 try:
                     resp = _run_view_duckdb(
                         [fp], sql, select_cols, rows,
@@ -5103,6 +5195,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     resp["source_modified"] = fp.stat().st_mtime
                     resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
                     resp["csv_rule_summary"] = csv_rule_summary
+                    resp.update(csv_reinit_meta)
                     return _finalize_preview_response(resp, settings)
                 except Exception as e:
                     if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
@@ -5127,6 +5220,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             resp["source_modified"] = fp.stat().st_mtime
             resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
             resp["csv_rule_summary"] = csv_rule_summary
+            resp.update(csv_reinit_meta)
             return _finalize_preview_response(resp, settings)
 
         if _fbcache.is_enabled(settings):
@@ -10162,7 +10256,8 @@ def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
             lf = scan_one_file(fp)
             header = list(lf.collect_schema().names()) if lf is not None else []
         except Exception:
-            header = []
+            fallback = _csv_lenient_lazy_frame(fp)
+            header = list(fallback[1]) if fallback else []
         data_rows = rows
     if not header:
         header = [f"col_{i + 1}" for i in range(max((len(r) for r in data_rows), default=1))]
@@ -10214,7 +10309,8 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
         if lf is not None:
             schema_rows = list(lf.collect_schema().names())
     except Exception:
-        schema_rows = []
+        fallback = _csv_lenient_lazy_frame(fp)
+        schema_rows = list(fallback[1]) if fallback else []
 
     if not header and schema_rows:
         header = list(schema_rows)

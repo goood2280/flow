@@ -406,6 +406,37 @@ def _product_value_matches(product: str, row_product: object, *, allow_common: b
     return row_value.casefold() in _product_alias_keys(product)
 
 
+def _step_matching_product_alias_keys(product: str) -> set[str]:
+    raw = str(product or "").strip()
+    if not raw:
+        return set()
+    core = raw[len("ML_TABLE_"):].strip() if raw.upper().startswith("ML_TABLE_") else raw
+    aliases = {raw, core}
+    up = core.upper()
+    if up == "PRODA0":
+        aliases.add("PRODUCT_A0")
+    elif up == "PRODA1":
+        aliases.add("PRODUCT_A1")
+    elif up == "PRODUCT_A0":
+        aliases.add("PRODA0")
+    elif up == "PRODUCT_A1":
+        aliases.add("PRODA1")
+    elif up == "PRODB":
+        aliases.add("PRODUCT_B")
+    elif up == "PRODUCT_B":
+        aliases.add("PRODB")
+    return {str(alias or "").strip().casefold() for alias in aliases if str(alias or "").strip()}
+
+
+def _step_matching_product_matches(product: str, row_product: object, *, allow_common: bool = True) -> bool:
+    if not str(product or "").strip():
+        return True
+    row_value = str(row_product or "").strip()
+    if not row_value:
+        return allow_common
+    return row_value.casefold() in _step_matching_product_alias_keys(product)
+
+
 def _step_desc_match_key(value: object) -> str:
     return _re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
@@ -2624,8 +2655,16 @@ def _load_csv_rows(fp: Path) -> list[dict]:
         cached = _CSV_ROWS_CACHE.get(key)
         if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
             return [dict(row) for row in cached[2]]
-        with open(fp, "r", encoding="utf-8") as f:
-            rows = list(csv_mod.DictReader(f))
+        with open(fp, "r", encoding="utf-8-sig") as f:
+            reader = csv_mod.DictReader(f)
+            rows = []
+            for row in reader:
+                clean = {}
+                for key, value in (row or {}).items():
+                    if key is None:
+                        continue
+                    clean[str(key).lstrip("\ufeff").strip()] = value
+                rows.append(clean)
         _CSV_ROWS_CACHE[key] = (st.st_mtime, st.st_size, [dict(row) for row in rows])
         return rows
     except Exception:
@@ -2734,10 +2773,14 @@ def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
 def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     matching = _load_knob_step_matching_rows()
     sm = _sch("step_matching")
-    exact_product = _canonical_product_name(product).upper()
     exact_has_numeric = False
+    p_col = sm.get("product_col", "product")
+    has_product_col = any(p_col in r or "product" in r for r in matching)
     for r in matching:
-        if str(r.get(sm.get("product_col", "product")) or "").strip().upper() != exact_product:
+        row_prod = r.get(p_col)
+        if row_prod is None and p_col != "product":
+            row_prod = r.get("product")
+        if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
             continue
         if _stage_major(_row_step_desc(r, sm)) is not None:
             exact_has_numeric = True
@@ -2745,13 +2788,14 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
     seen: dict[int, set[tuple[str, str]]] = {}
     for r in matching:
-        p_col = sm.get("product_col", "product")
-        row_prod = str(r.get(p_col) or "").strip()
-        row_prod_u = row_prod.upper()
+        row_prod = r.get(p_col)
+        if row_prod is None and p_col != "product":
+            row_prod = r.get("product")
+        row_prod = str(row_prod or "").strip()
         if exact_has_numeric:
-            if row_prod_u != exact_product:
+            if not _step_matching_product_matches(product, row_prod, allow_common=False):
                 continue
-        elif not _product_value_matches(product, row_prod):
+        elif not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
             continue
         fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -2957,11 +3001,13 @@ def _build_knob_meta(product: str = "") -> dict:
 
     # step_desc → [{step_id,module}, ...] (ordered, dedup)
     step_map: dict[str, list[dict]] = {}
+    p_col = sm.get("product_col", "product")
+    has_step_product_col = any(p_col in r or "product" in r for r in matching)
     for r in matching:
-        # product 컬럼이 있으면 필터, 없으면 공용 매핑으로 취급
-        p_col = sm.get("product_col", "product")
         row_prod = r.get(p_col)
-        if not _product_value_matches(product, row_prod):
+        if row_prod is None and p_col != "product":
+            row_prod = r.get("product")
+        if not _step_matching_product_matches(product, row_prod, allow_common=not has_step_product_col):
             continue
         fs = _row_step_desc(r, sm)
         fs_key = _step_desc_match_key(fs)
@@ -3518,6 +3564,8 @@ def _rulebook_row_matches_product(kind: str, row: dict, product: str, *, allow_c
     row_product = (row or {}).get(p_col)
     if row_product is None and p_col != "product":
         row_product = (row or {}).get("product")
+    if kind == "step_matching":
+        return _step_matching_product_matches(product, row_product, allow_common=allow_common)
     return _product_value_matches(product, row_product, allow_common=allow_common)
 
 
@@ -3532,7 +3580,11 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
         raise HTTPException(400, f"unknown rulebook: {kind}")
     rows = _normalize_rulebook_rows(kind, _load_csv_rows(_rulebook_path(kind)))
     if product and kind != "knob_ppid":
-        rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product)]
+        allow_common = True
+        if kind == "step_matching":
+            p_col = _sch(kind).get("product_col", "product")
+            allow_common = not any(p_col in r or "product" in r for r in rows)
+        rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product, allow_common=allow_common)]
     return {
         "kind": kind, "file": meta["filename"],
         "columns": meta["cols"], "rows": rows, "count": len(rows),

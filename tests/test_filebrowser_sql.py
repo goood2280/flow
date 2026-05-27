@@ -2979,6 +2979,51 @@ def test_base_file_view_reads_small_csv_fully_and_threshold_falls_back(monkeypat
     assert paged["preview_row_limit"] == 100
 
 
+def test_base_file_view_reinitializes_ragged_csv_added_columns(monkeypatch, tmp_path):
+    fp = tmp_path / "ragged_lookup.csv"
+    fp.write_text("id,value\n1,alpha\n2,beta,added\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+
+    preview = filebrowser.base_file_view(
+        file=fp.name,
+        sql="",
+        rows=200,
+        cols=10,
+        select_cols="",
+        engine="auto",
+        meta_only=False,
+        page=0,
+        page_size=200,
+    )
+
+    assert preview["csv_schema_reinitialized"] is True
+    assert preview["csv_ragged_rows_normalized"] is True
+    assert preview["all_columns"] == ["id", "value", "extra_col_3"]
+    assert preview["data"][1]["extra_col_3"] == "added"
+
+    saved = filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file=fp.name,
+            csv_text="id,value,extra_col_3\n1,alpha,\n2,beta,added\n",
+            delimiter="comma",
+            include_header=True,
+            note="schema reinit",
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert saved["cols"] == 3
+    assert pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False).collect_schema().names() == [
+        "id",
+        "value",
+        "extra_col_3",
+    ]
+
+
 def test_base_file_view_ml_table_defaults_to_100_then_filtered_preview(monkeypatch, tmp_path):
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
