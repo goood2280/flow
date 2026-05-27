@@ -126,6 +126,27 @@ const buildSaveText=(cols,rows,delimiter,includeHeader)=>{
   const source = includeHeader ? [cols, ...rows] : rows;
   return source.map(r=>r.map(v=>csvEscape(v,delim)).join(delim)).join("\n");
 };
+const writeClipboardText=async(text)=>{
+  if(typeof navigator!=="undefined"&&navigator.clipboard?.writeText){
+    try{
+      await navigator.clipboard.writeText(text);
+      return;
+    }catch(_){}
+  }
+  if(typeof document==="undefined")return Promise.reject(new Error("clipboard unavailable"));
+  const ta=document.createElement("textarea");
+  ta.value=text;
+  ta.setAttribute("readonly","");
+  ta.style.position="fixed";
+  ta.style.left="-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  try{
+    document.execCommand("copy");
+  }finally{
+    ta.remove();
+  }
+};
 const defaultDelimiterForFile=(file)=>{
   const name=String(file||"").toLowerCase();
   if(name.endsWith(".csv"))return"comma";
@@ -419,6 +440,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[saveDelimiter,setSaveDelimiter]=useState("tab");
   const[includeHeader,setIncludeHeader]=useState(true);
   const[selectedEditCell,setSelectedEditCell]=useState({r:0,c:0});
+  const[baseEditContextMenu,setBaseEditContextMenu]=useState(null);
   const[baseVersions,setBaseVersions]=useState([]);
   const[baseVersionCap,setBaseVersionCap]=useState(30);
   const[baseVersioned,setBaseVersioned]=useState(false);
@@ -943,6 +965,22 @@ export default function My_FileBrowser({user,onNavigate}){
   // 1s ticker for ETA countdown (only while modal open)
   useEffect(()=>{if(!s3Open)return;const t=setInterval(()=>setS3Now(Date.now()),1000);return()=>clearInterval(t);},[s3Open]);
 
+  useEffect(()=>{
+    if(!baseEditContextMenu)return;
+    const close=()=>setBaseEditContextMenu(null);
+    const onKey=(e)=>{if(e.key==="Escape")close();};
+    window.addEventListener("click",close);
+    window.addEventListener("resize",close);
+    window.addEventListener("scroll",close,true);
+    window.addEventListener("keydown",onKey);
+    return()=>{
+      window.removeEventListener("click",close);
+      window.removeEventListener("resize",close);
+      window.removeEventListener("scroll",close,true);
+      window.removeEventListener("keydown",onKey);
+    };
+  },[baseEditContextMenu]);
+
   const s3Save=async(form)=>{
     if(!canManageS3Ingest){toast.warn("S3 동기화 설정 변경은 Admin 전용입니다.");return;}
     if(!form.target||!form.s3_url){toast.warn("target 과 s3_url 은 필수입니다");return;}
@@ -1395,6 +1433,7 @@ export default function My_FileBrowser({user,onNavigate}){
     setSaveDelimiter(defaultDelimiterForFile(selBaseFile));
     setIncludeHeader(true);
     setSelectedEditCell({r:0,c:0});
+    setBaseEditContextMenu(null);
     setIsBaseEditing(true);
     setTab("data");
   };
@@ -1403,11 +1442,13 @@ export default function My_FileBrowser({user,onNavigate}){
     setEditRows(editOriginRows.map(r=>r.slice()));
     setIsBaseEditing(false);
     setSelectedEditCell({r:0,c:0});
+    setBaseEditContextMenu(null);
   };
 
   const restoreBaseEdit=()=>{
     setEditRows(editOriginRows.map(r=>r.slice()));
     setSelectedEditCell({r:0,c:0});
+    setBaseEditContextMenu(null);
   };
 
   const addBaseEditRow=()=>{
@@ -1423,6 +1464,26 @@ export default function My_FileBrowser({user,onNavigate}){
     });
   };
 
+  const insertBaseEditRowBelow=(targetR=selectedEditCell.r)=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    if(!editCols.length){
+      setError("열 정보가 없어 새 행을 추가할 수 없습니다.");
+      return;
+    }
+    setEditRows(prev=>{
+      const idx=prev.length?Math.max(0,Math.min(targetR,prev.length-1)):-1;
+      const insertAt=idx+1;
+      const next=[
+        ...prev.slice(0,insertAt),
+        Array(editCols.length).fill(""),
+        ...prev.slice(insertAt),
+      ];
+      setSelectedEditCell({r:insertAt,c:0});
+      return next;
+    });
+    setBaseEditContextMenu(null);
+  };
+
   const deleteBaseEditRow=(targetR=selectedEditCell.r)=>{
     if(!canEditCurrentBase||!isBaseEditing)return;
     setEditRows(prev=>{
@@ -1433,6 +1494,34 @@ export default function My_FileBrowser({user,onNavigate}){
       setSelectedEditCell(cur=>({r:nextR,c:Math.max(0,Math.min(cur.c||0,editCols.length-1))}));
       return next;
     });
+    setBaseEditContextMenu(null);
+  };
+
+  const copyBaseEditRow=async(targetR=selectedEditCell.r)=>{
+    if(!isBaseEditing||!editRows.length)return;
+    const idx=Math.max(0,Math.min(targetR,editRows.length-1));
+    const row=normalizeGridRows([editRows[idx]||[]],editCols.length,"")[0]||[];
+    try{
+      await writeClipboardText(row.join("\t"));
+      setSelectedEditCell(cur=>({r:idx,c:Math.max(0,Math.min(cur.c||0,Math.max(editCols.length-1,0)))}));
+      toast.ok(`${idx+1}행 복사됨`,1400);
+    }catch(e){
+      toast.error(e?.message||"행 복사 실패");
+    }finally{
+      setBaseEditContextMenu(null);
+    }
+  };
+
+  const openBaseEditRowMenu=(e,targetR)=>{
+    if(!isBaseEditing)return;
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth=176;
+    const menuHeight=132;
+    const maxX=Math.max(8,(window.innerWidth||0)-menuWidth-8);
+    const maxY=Math.max(8,(window.innerHeight||0)-menuHeight-8);
+    setSelectedEditCell(cur=>({r:targetR,c:Math.max(0,Math.min(cur.c||0,Math.max(editCols.length-1,0)))}));
+    setBaseEditContextMenu({r:targetR,x:Math.min(e.clientX,maxX),y:Math.min(e.clientY,maxY)});
   };
 
   const patchBaseCell=(r,c,val)=>{
@@ -1525,6 +1614,7 @@ export default function My_FileBrowser({user,onNavigate}){
     try{
       const reloadState={full:true,page:0};
       setIsBaseEditing(false);
+      setBaseEditContextMenu(null);
       if(savedResult?.s3_sync?.status)setBaseVersionMsg(`저장 완료 · s3 ${savedResult.s3_sync.status}`);
       loadBaseVersions(selBaseFile);
       loadBaseFileView(selBaseFile,reloadState);
@@ -1621,7 +1711,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseEditTable={width:"100%",borderCollapse:"separate",borderSpacing:0,fontSize:13,fontFamily:"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",background:"var(--bg-primary)"};
   const baseEditHeaderCell={padding:"6px 10px",height:34,fontWeight:700,fontSize:13,color:"var(--text-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",
     background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:84};
-  const baseEditCornerCell={...baseEditHeaderCell,textAlign:"center",width:76,left:0,zIndex:7};
+  const baseEditCornerCell={...baseEditHeaderCell,textAlign:"center",width:116,minWidth:116,left:0,zIndex:7};
   const baseEditHeaderInput={...baseEditHeaderCell, fontWeight:700,textAlign:"left",minWidth:160,paddingRight:24};
   const baseEditRowCell={padding:0,borderBottom:"1px solid var(--border)",borderRight:"1px solid var(--border)",background:"var(--bg-primary)",height:34};
   const baseEditIndexBody={...baseEditRowCell,position:"sticky",left:0,zIndex:5,textAlign:"center",color:"var(--text-secondary)",fontSize:12,letterSpacing:0.2};
@@ -1631,6 +1721,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseReadIndexCell={...baseEditIndexBody,padding:"0 10px",height:34,width:54,textAlign:"center",fontSize:13};
   const baseEditRowHighlight={background:"rgba(59,130,246,0.12)"};
   const baseEditColHighlight={background:"rgba(59,130,246,0.09)"};
+  const baseEditRowActionButton={height:22,borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:11,fontWeight:800,cursor:"pointer",lineHeight:1};
 
   return(
     <div className="flow-connected-page" style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
@@ -2005,13 +2096,18 @@ export default function My_FileBrowser({user,onNavigate}){
                       })}
                     </tr></thead>
                     <tbody>{editRows.length?editRows.map((row,ri)=>(
-                      <tr key={ri}>
-                        <td style={{...baseEditIndexBody, background:ri===selectedEditCell.r?baseEditRowHighlight.background||"rgba(59,130,246,0.12)":"var(--bg-tertiary)",padding:"0 6px"}}>
+                      <tr key={ri} onContextMenu={(e)=>openBaseEditRowMenu(e,ri)}>
+                        <td style={{...baseEditIndexBody, background:ri===selectedEditCell.r?baseEditRowHighlight.background||"rgba(59,130,246,0.12)":"var(--bg-tertiary)",padding:"0 6px",width:116,minWidth:116}}>
                           <span style={{display:"inline-flex",alignItems:"center",justifyContent:"space-between",gap:6,width:"100%"}}>
                             <span>{ri+1}</span>
+                            <button type="button" onClick={(e)=>{e.stopPropagation();copyBaseEditRow(ri);}}
+                              title={`${ri+1}행 복사`}
+                              style={{...baseEditRowActionButton,width:36}}>
+                              복사
+                            </button>
                             <button type="button" onClick={(e)=>{e.stopPropagation();deleteBaseEditRow(ri);}}
                               title={`${ri+1}행 삭제`}
-                              style={{width:22,height:22,borderRadius:4,border:`1px solid ${FB_BAD.fg}55`,background:FB_BAD.bg,color:FB_BAD.fg,fontSize:12,fontWeight:800,cursor:"pointer",lineHeight:1}}>
+                              style={{...baseEditRowActionButton,width:22,border:`1px solid ${FB_BAD.fg}55`,background:FB_BAD.bg,color:FB_BAD.fg,fontSize:12}}>
                               ×
                             </button>
                           </span>
@@ -2036,10 +2132,27 @@ export default function My_FileBrowser({user,onNavigate}){
                       </td></tr>}</tbody>
                   </table>
                 </div>
+                {baseEditContextMenu&&<div
+                  onClick={(e)=>e.stopPropagation()}
+                  onContextMenu={(e)=>e.preventDefault()}
+                  style={{position:"fixed",left:baseEditContextMenu.x,top:baseEditContextMenu.y,zIndex:10000,minWidth:176,padding:6,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",boxShadow:"0 12px 28px rgba(15,23,42,0.18)",display:"flex",flexDirection:"column",gap:4}}>
+                  <button type="button" onClick={()=>insertBaseEditRowBelow(baseEditContextMenu.r)}
+                    style={{padding:"7px 10px",borderRadius:5,border:"none",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,textAlign:"left",cursor:"pointer"}}>
+                    아래에 행 추가
+                  </button>
+                  <button type="button" onClick={()=>copyBaseEditRow(baseEditContextMenu.r)}
+                    style={{padding:"7px 10px",borderRadius:5,border:"none",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,textAlign:"left",cursor:"pointer"}}>
+                    행 복사
+                  </button>
+                  <button type="button" onClick={()=>deleteBaseEditRow(baseEditContextMenu.r)}
+                    style={{padding:"7px 10px",borderRadius:5,border:"none",background:"transparent",color:FB_BAD.fg,fontSize:13,fontWeight:700,textAlign:"left",cursor:"pointer"}}>
+                    행 삭제
+                  </button>
+                </div>}
                 <div style={{display:"flex",justifyContent:"flex-start",marginTop:10,gap:8}}>
                   <button onClick={addBaseEditRow} disabled={!editCols.length}
                     style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--bg-card)",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:!editCols.length?"default":"pointer",opacity:!editCols.length?0.45:1}}>
-                    행 추가
+                    맨 아래 행 추가
                   </button>
                   <button onClick={()=>deleteBaseEditRow()} disabled={!editRows.length}
                     style={{padding:"6px 12px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:FB_BAD.bg,color:FB_BAD.fg,fontSize:14,fontWeight:700,cursor:!editRows.length?"default":"pointer",opacity:!editRows.length?0.45:1}}>

@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) FileBrowser 단일파일 편집 행 복사와 우클릭 아래 행 추가
 - (Codex) FileBrowser 날짜/시간 SQL 필터 lazy/download 경로 보정
 - (Codex) SplitTable ML_TABLE 제품 목록과 Vehicle_matching step_desc/product 매칭 보정
 - (Codex) FileBrowser DB root 선표시와 제품 목록 로딩 분리
