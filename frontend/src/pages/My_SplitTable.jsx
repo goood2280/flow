@@ -421,26 +421,27 @@ export default function My_SplitTable({user}){
     (rows||[]).forEach((row)=>{
       const param=String(row?._param||"");
       if(!param) return;
+      const paramUpper=param.toUpperCase();
       const km=knobLookup(param);
       if(Array.isArray(km?.groups)&&km.groups.length){
         km.groups.forEach((g,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,step_desc:g.step_desc||g.func_step||"",function_step:g.step_desc||g.func_step||"",step_ids:Array.isArray(g.step_ids)?g.step_ids:[]}));
         return;
       }
       const vm=vmLookup(param)||{};
-      if(param.startsWith("VM_")&&(vm.step_id||vm.function_step||Array.isArray(vm.groups))){
+      if(paramUpper.startsWith("VM_")&&(vm.step_id||vm.step_desc||vm.item_id||Array.isArray(vm.groups))){
         if(Array.isArray(vm.groups)&&vm.groups.length){
-          vm.groups.forEach((g,gi)=>out.push({key:`${param}-v-${gi}`,parameter:param,function_step:g.function_step||vm.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])))}));
+          vm.groups.forEach((g,gi)=>out.push({key:`${param}-v-${gi}`,parameter:param,step_desc:g.step_desc||vm.step_desc||"",item_id:g.item_id||vm.item_id||"",function_step:g.function_step||vm.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])))}));
         }else{
-          out.push({key:`${param}-v`,parameter:param,function_step:vm.function_step||"",step_ids:Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])});
+          out.push({key:`${param}-v`,parameter:param,step_desc:vm.step_desc||"",item_id:vm.item_id||"",function_step:vm.function_step||"",step_ids:Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])});
         }
         return;
       }
       const im=inlineLookup(param)||{};
-      if(param.startsWith("INLINE_")&&(im.step_id||im.function_step||Array.isArray(im.groups))){
+      if(paramUpper.startsWith("INLINE_")&&(im.step_id||im.item_id||im.function_step||Array.isArray(im.groups))){
         if(Array.isArray(im.groups)&&im.groups.length){
-          im.groups.forEach((g,gi)=>out.push({key:`${param}-i-${gi}`,parameter:param,function_step:g.function_step||im.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])))}));
+          im.groups.forEach((g,gi)=>out.push({key:`${param}-i-${gi}`,parameter:param,item_id:g.item_id||im.item_id||"",function_step:g.function_step||im.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])))}));
         }else{
-          out.push({key:`${param}-i`,parameter:param,function_step:im.function_step||"",step_ids:Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])});
+          out.push({key:`${param}-i`,parameter:param,item_id:im.item_id||"",function_step:im.function_step||"",step_ids:Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])});
         }
       }
     });
@@ -466,13 +467,13 @@ export default function My_SplitTable({user}){
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
   const[rbMatchParam,setRbMatchParam]=useState("");
   // v8.8.15: Rulebook 행 CRUD modal — admin 이 knob_ppid/step_matching/inline_matching/vm_matching 의
-  //   행을 직접 추가/수정/삭제. KNOB 룰은 공용, matching 파일은 product-scoped 로 저장한다.
+  //   행을 직접 추가/수정/삭제. KNOB/VM item 정의는 공용, step/inline matching 은 product-scoped 로 저장한다.
   const[rbRowKind,setRbRowKind]=useState(null);
   const[rbRowCols,setRbRowCols]=useState([]);
   const[rbRowReq,setRbRowReq]=useState([]);
   const[rbRowRows,setRbRowRows]=useState([]);
   const[rbRowSaving,setRbRowSaving]=useState(false);
-  const isCommonRulebook=(kind)=>kind==="knob_ppid";
+  const isCommonRulebook=(kind)=>kind==="knob_ppid"||kind==="vm_matching";
   const normalizeRbRow=(kind,row)=>{
     const r={...(row||{})};
     if((kind==="knob_ppid"||kind==="step_matching")&&!String(r.step_desc||"").trim()) r.step_desc=r.function_step||r.func_step||"";
@@ -486,9 +487,9 @@ export default function My_SplitTable({user}){
       .then(d=>{
         setRbRowCols(d.columns||[]);
         // required 는 FE 스키마 (product는 자동 스코프)
-        const reqMap={knob_ppid:["feature_name","step_desc"],step_matching:["product","step_id","step_desc"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
+        const reqMap={knob_ppid:["feature_name","step_desc"],step_matching:["product","step_id","step_desc"],inline_matching:["product","step_id","item_id"],vm_matching:["step_desc","item_id"]};
         setRbRowReq(reqMap[kind]||[]);
-        // KNOB 룰은 제품 공용, 적용 공정 매칭은 제품 행만 편집한다.
+        // KNOB/VM item 정의는 공용, step/INLINE 매칭은 제품 행만 편집한다.
         const prodRows=(d.rows||[]).map(r=>normalizeRbRow(kind,r));
         setRbRowRows(prodRows);
       })
@@ -507,7 +508,9 @@ export default function My_SplitTable({user}){
       .then(()=>{setRbRowKind(null);setRbRowRows([]);
         // 관련 메타 재로드
         if(rbRowKind==="knob_ppid"||rbRowKind==="step_matching"){sf(API+"/knob-meta?product="+encodeURIComponent(selProd)).then(d=>setKnobMeta(d.features||{})).catch(()=>{});}
+        if(rbRowKind==="inline_matching"){sf(API+"/inline-meta?product="+encodeURIComponent(selProd)).then(d=>setInlineMetaSt(d.items||{})).catch(()=>{});}
         if(rbRowKind==="vm_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
+        if(rbRowKind==="step_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
         loadView&&loadView();
       })
       .catch(e=>toast.error("저장 실패: "+e.message))
@@ -1397,14 +1400,14 @@ export default function My_SplitTable({user}){
           {/* v8.8.9: Column/step rulebook — prefix 별 섹션 분리.
                 KNOB: ppid_knob.csv 공용 룰 + Vehicle_matching.csv 제품별 step_desc→step_id 확장
                 INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
-                VM: vm_matching.csv (feature_name/step_desc/step_id) — VM_<feature_name> 이 해당 step 에서 예측
+                VM: vm_matching.csv (step_desc/item_id) + Vehicle_matching.csv — VM_<step_desc>_<item_id> 이 해당 제품 step 에서 예측
              */}
           {selProd && (() => {
             const rulebookSpecs={
               knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","value_col"],["category","category_col"]]},
               step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["step_desc","step_desc_col"]]},
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"]]},
-              vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["step_id","step_id_col"],["product","product_col"]]},
+              vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["step_desc","step_desc_col"],["item_id","item_id_col"]]},
             };
             const SectionHeader = ({title, files, count, editKinds}) => (
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
@@ -1473,7 +1476,7 @@ export default function My_SplitTable({user}){
                 <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 의 step_desc를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
-                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_*</span>, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_*</span> 은 측정/예측 항목을 각 matching 파일로 step_id 에 연결합니다.</div>
+                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_&lt;item_id&gt;</span> 는 <span style={{fontFamily:"monospace"}}>inline_matching.csv</span> 의 같은 product 행만, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_&lt;step_desc&gt;_&lt;item_id&gt;</span> 는 <span style={{fontFamily:"monospace"}}>vm_matching.csv</span> 의 step_desc/item_id를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
                   <div>열 이름이 다르거나 다른 Base 데이터와 연결해야 하면 각 섹션의 <b>편집</b> / <b>🔧 컬럼</b>에서 역할과 실제 CSV 헤더를 바꾸면 됩니다.</div>
                 </div>
 
@@ -1538,9 +1541,9 @@ export default function My_SplitTable({user}){
                 {/* ── VM 섹션 ─────────────────────────────── */}
                 <div style={{marginBottom:6,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(139,92,246,0.3)"}}>
                   <SectionHeader title="🤖 VM_*" count={vmEntries.length}
-                    files={["vm_matching.csv"]}
-                    editKinds={["vm_matching"]} />
-                  <RulebookSourceSummary kinds={["vm_matching"]}/>
+                    files={["vm_matching.csv", "Vehicle_matching.csv"]}
+                    editKinds={["vm_matching","step_matching"]} />
+                  <RulebookSourceSummary kinds={["vm_matching","step_matching"]}/>
                   {vmEntries.length===0 && (
                     <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 VM 룰 없음.</div>
                   )}
@@ -1549,8 +1552,11 @@ export default function My_SplitTable({user}){
                       <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:14}}>
                         <span style={{color:"rgba(139,92,246,0.95)",fontWeight:700}}>{fname}</span>
                         {meta.step_desc && <span style={{color:"var(--text-secondary)"}}>{meta.step_desc}</span>}
+                        {meta.item_id && <span style={{color:"var(--text-secondary)"}}>{meta.item_id}</span>}
                         <span style={{flex:1}}/>
-                        {meta.step_id && <span style={{padding:"0 4px",background:"rgba(96,165,250,0.15)",color:"#60a5fa",borderRadius:2,fontWeight:700}}>{meta.step_id}</span>}
+                        {(meta.step_ids||[]).slice(0,3).map(sid=>(
+                          <span key={sid} style={{padding:"0 4px",background:"rgba(96,165,250,0.15)",color:"#60a5fa",borderRadius:2,fontWeight:700}}>{sid}</span>
+                        ))}
                       </div>
                     ))}
                   </div>
@@ -1807,9 +1813,10 @@ export default function My_SplitTable({user}){
             const rowKnob=knobLookup(rowParam);
             const rowInline=inlineLookup(rowParam);
             const rowVm=vmLookup(rowParam);
-            const rowMatchKind=rowParam.startsWith("KNOB_")||rowParam.startsWith("KNOB")?"knob_ppid"
-              :rowParam.startsWith("INLINE_")||rowParam.startsWith("INLINE")?"inline_matching"
-              :rowParam.startsWith("VM_")||rowParam.startsWith("VM")?"vm_matching":null;
+            const rowParamUpper=rowParam.toUpperCase();
+            const rowMatchKind=rowParamUpper.startsWith("KNOB_")||rowParamUpper==="KNOB"?"knob_ppid"
+              :rowParamUpper.startsWith("INLINE_")||rowParamUpper==="INLINE"?"inline_matching"
+              :rowParamUpper.startsWith("VM_")||rowParamUpper==="VM"?"vm_matching":null;
             const showMatchInfo = !!rowMatchKind;
             const matchTitle = rowMatchKind==="knob_ppid"?"KNOB 매칭 규칙"
               :rowMatchKind==="inline_matching"?"INLINE 매칭 규칙"
@@ -1822,7 +1829,7 @@ export default function My_SplitTable({user}){
                     KNOB/INLINE/VM 항목은 클릭 시 매칭 규칙 모달이 열리고, 설정값은 그때만 표출한다. */}
                   <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam);}}
                     title={rowMatchKind ? `이 항목의 ${matchTitle} 보기` : ""}
-                    style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>{(row._display||rowParam||"").replace(/^[A-Z]+_/,"")}</span>
+                    style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>{(row._display||rowParam||"").replace(/^[A-Za-z]+_/,"")}</span>
                   {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>💬 {pLotN}</span>}
                   {rowIsTag&&canManage&&<button onClick={(e)=>{e.stopPropagation();deleteCustomTagColumn(rowParam);}} title="TAG 열 삭제"
                     style={{marginLeft:"auto",padding:"0 6px",height:20,borderRadius:3,border:"1px solid rgba(239,68,68,0.65)",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,fontWeight:800,cursor:"pointer",lineHeight:"18px"}}>×</button>}
@@ -1856,12 +1863,12 @@ export default function My_SplitTable({user}){
                     {Array.isArray(vm.groups) && vm.groups.length>0 ? vm.groups.map((g,gi)=>(
                       <div key={gi} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:gi>0?2:4}}>
                         {g.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700}}>{g.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="Vehicle_matching.csv 에 현재 product+step_desc step_id 없음" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )) : (
                       <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:4}}>
                         {vm.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700}}>{vm.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(vm.step_ids)&&vm.step_ids.length?vm.step_ids:(vm.step_id?[vm.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(vm.step_ids)&&vm.step_ids.length?vm.step_ids:(vm.step_id?[vm.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="Vehicle_matching.csv 에 현재 product+step_desc step_id 없음" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )}
                   </div>);})()}
@@ -1974,6 +1981,7 @@ export default function My_SplitTable({user}){
                 <tr>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:220,color:GRID_TEXT}}>항목</th>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:180}}>step_desc</th>
+                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:160}}>item_id</th>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:260}}>step_id</th>
                 </tr>
               </thead>
@@ -1982,6 +1990,7 @@ export default function My_SplitTable({user}){
                   <tr key={x.key}>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:GRID_TEXT}}>{x.parameter}</td>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.step_desc||x.function_step||"—"}</td>
+                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.item_id||"—"}</td>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"rgba(147,197,253,0.95)",fontWeight:700}}>{(x.step_ids||[]).length?x.step_ids.join(", "):"—"}</td>
                   </tr>
                 ))}
@@ -2490,7 +2499,7 @@ export default function My_SplitTable({user}){
               {rbMatchKind === "inline_matching" && (()=>{const im=rbMatchData;const groups=Array.isArray(im.groups)?im.groups:[];return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
-                    {String(im.item_desc || "").trim() ? `item_desc: ${im.item_desc}` : "item_desc 없음"}
+                    item_id: {String(im.item_id || rbMatchParam || "").replace(/^INLINE_/i,"") || "-"}{String(im.item_desc || "").trim() ? ` · item_desc: ${im.item_desc}` : ""}
                   </div>
                   {groups.length===0 ? (
                     <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 규칙이 없습니다.</div>
@@ -2512,7 +2521,7 @@ export default function My_SplitTable({user}){
               {rbMatchKind === "vm_matching" && (()=>{const vm=rbMatchData;const groups=Array.isArray(vm.groups)?vm.groups:[];return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
-                    {String(vm.step_desc || "").trim() ? `step_desc: ${vm.step_desc}` : "step_desc 없음"}
+                    {String(vm.step_desc || "").trim() ? `step_desc: ${vm.step_desc}` : "step_desc 없음"}{String(vm.item_id || "").trim() ? ` · item_id: ${vm.item_id}` : ""}
                   </div>
                   {groups.length===0 ? (
                     <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 규칙이 없습니다.</div>

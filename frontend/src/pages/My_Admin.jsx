@@ -2708,8 +2708,9 @@ function BaseCsvPanel(){
 
       <div style={{marginTop:14,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
         • 컬럼 뒤 <b style={{color:"var(--accent)"}}>*</b> 는 unique key. 중복 시 저장 거부.<br/>
-        • step_matching: (step_id, func_step) — step_id 유니크.<br/>
+        • step_matching/Vehicle_matching: product + step_desc 로 해당 제품의 step_id 를 찾습니다.<br/>
         • knob_ppid: (feature_name, function_step, rule_order, ppid, operator, category, use) — 앞 3개 복합 unique. use ∈ Y/N/0/1.<br/>
+        • inline_matching: (product, step_id, item_id), vm_matching: (step_desc, item_id) — VM step_id 는 Vehicle_matching 에서 가져옵니다.<br/>
         • 저장 시 UTF-8 BOM 포함 CSV 로 덮어씁니다 (Excel 호환). SplitTable KNOB 메타는 자동 재조회.
       </div>
     </div>

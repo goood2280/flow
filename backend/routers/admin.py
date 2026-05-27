@@ -1520,13 +1520,13 @@ BASE_CSV_SCHEMAS = {
     },
     # v8.7.5: INLINE prefix 항목 매칭 — SplitTable 에서 item_desc 로 표시.
     "inline_matching": {
-        "columns": ["process_id", "item_id", "item_desc", "step_id"],
-        "unique_key": ["item_id", "process_id"],
+        "columns": ["product", "step_id", "item_id", "item_desc"],
+        "unique_key": ["product", "step_id", "item_id"],
     },
-    # v8.7.5: VM_ prefix 항목 매칭 — SplitTable 에서 step_id 서브텍스트로 표시.
+    # v8.7.5: VM_ prefix 항목 매칭 — step_id 는 Vehicle_matching.csv 에서 product+step_desc 로 확장.
     "vm_matching": {
-        "columns": ["step_desc", "step_id"],
-        "unique_key": ["step_desc", "step_id"],
+        "columns": ["step_desc", "item_id"],
+        "unique_key": ["step_desc", "item_id"],
     },
 }
 

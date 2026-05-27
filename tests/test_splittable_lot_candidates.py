@@ -832,6 +832,58 @@ def test_knob_meta_falls_back_to_step_matching_when_vehicle_matching_is_missing(
     assert meta["9.0 PC"]["groups"][0]["step_ids"] == ["STEP_FALLBACK"]
 
 
+def test_inline_meta_keeps_only_current_product_step_and_item(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc\n"
+        "PRODA,STEP_INLINE_A,CD,critical dimension\n"
+        "PRODB,STEP_INLINE_B,CD,other product\n"
+        ",STEP_COMMON,CD,common row\n"
+        "PRODA,,NO_STEP,no step\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+
+    assert meta["CD"]["item_id"] == "CD"
+    assert meta["CD"]["step_ids"] == ["STEP_INLINE_A"]
+    assert [g["item_id"] for g in meta["CD"]["groups"]] == ["CD"]
+    assert "NO_STEP" not in meta
+
+
+def test_vm_meta_uses_step_desc_item_id_and_vehicle_product_step(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "vm_matching.csv").write_text(
+        "step_desc,item_id\n"
+        "PC,VM_IOFF\n"
+        "GATE,VM_VTH\n"
+        "MISSING,VM_SKIP\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_PC_A,PC\n"
+        "PRODB,STEP_PC_B,PC\n"
+        "PRODA,STEP_GATE_A,GATE\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_vm_meta("ML_TABLE_PRODA")
+
+    assert meta["PC_VM_IOFF"]["item_id"] == "VM_IOFF"
+    assert meta["PC_VM_IOFF"]["step_desc"] == "PC"
+    assert meta["PC_VM_IOFF"]["step_ids"] == ["STEP_PC_A"]
+    assert "STEP_PC_B" not in meta["PC_VM_IOFF"]["step_ids"]
+    assert "MISSING_VM_SKIP" not in meta
+
+
+def test_split_param_display_keeps_inline_and_vm_source_names():
+    assert splittable._build_col_rename_map(
+        ["INLINE_CD", "VM_PC_VM_IOFF"],
+        "ML_TABLE_PRODA",
+    ) == {}
+
+
 def test_view_accepts_fab_lot_pasted_into_root_field():
     result = splittable.view_split(
         product="ML_TABLE_PRODA",

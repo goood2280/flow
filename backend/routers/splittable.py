@@ -321,10 +321,9 @@ def _natural_param_key(name: str):
 #   ppid_knob.csv + Vehicle_matching.csv detail panel 에서만 보여준다.
 #   규칙:
 #     KNOB_<feature>   → 표시명 유지
-#     INLINE_<item_id> + inline_meta 매칭 시 → INLINE_{step_id}_<item_id>     (step_id 가 숫자일 때 자연 정렬 유리)
-#     VM_<feature>     + vm_meta   매칭 시 → VM_{step_id}_<feature>
-#     매칭 실패/메타 없음 → 원본 그대로.
-#   display 이름만 바꾸고 원본 col 이름(`_param`) 은 그대로 보존 → plan/notes/
+#     INLINE_<item_id>               → 표시명 유지
+#     VM_<step_desc>_<item_id>       → 표시명 유지
+#   display 이름과 원본 col 이름(`_param`) 을 그대로 보존 → plan/notes/
 #   knob_meta lookup 이 깨지지 않음.
 def _safe_step_segment(s: str) -> str:
     """step_desc/function_step 값에서 공백/특수문자 제거 → 컬럼명 조각으로 안전하게."""
@@ -485,112 +484,9 @@ def _lot_override_for(cfg: dict, product: str) -> dict:
     return {}
 
 
-def _first_meta_step(meta: dict) -> str:
-    """Return a representative step token for display renaming."""
-    if not isinstance(meta, dict):
-        return ""
-    for key in ("step_id",):
-        value = str(meta.get(key) or "").strip()
-        if value:
-            return value
-    for key in ("step_ids", "function_steps"):
-        values = meta.get(key) or []
-        if isinstance(values, list):
-            for value in values:
-                value = str(value or "").strip()
-                if value:
-                    return value
-    for key in ("function_step",):
-        value = str(meta.get(key) or "").strip()
-        if value:
-            return value
-    for group in meta.get("groups") or []:
-        if not isinstance(group, dict):
-            continue
-        for key in ("step_id",):
-            value = str(group.get(key) or "").strip()
-            if value:
-                return value
-        values = group.get("step_ids") or []
-        if isinstance(values, list):
-            for value in values:
-                value = str(value or "").strip()
-                if value:
-                    return value
-        for key in ("function_step", "func_step"):
-            value = str(group.get(key) or "").strip()
-            if value:
-                return value
-    return ""
-
-
 def _build_col_rename_map(selected_cols: list, product: str) -> dict:
     """raw column name → display name. 매칭 없으면 원본 반환(맵에 키 없음)."""
-    out: dict[str, str] = {}
-    def _meta_get(meta_map: dict, full_name: str, tail_name: str):
-        if not meta_map:
-            return None
-        if full_name in meta_map:
-            return meta_map.get(full_name)
-        if tail_name in meta_map:
-            return meta_map.get(tail_name)
-        full_l = str(full_name or "").lower()
-        tail_l = str(tail_name or "").lower()
-        for k, v in meta_map.items():
-            key = str(k or "").lower()
-            if key == full_l or key == tail_l:
-                return v
-        return None
-    needed_prefixes = {
-        str(col or "").partition("_")[0].upper()
-        for col in selected_cols
-        if col and "_" in str(col)
-    }
-    try:
-        knob_meta = _build_knob_meta(product) if "KNOB" in needed_prefixes else {}
-    except Exception:
-        knob_meta = {}
-    try:
-        inline_meta = _build_inline_meta(product) if "INLINE" in needed_prefixes else {}
-    except Exception:
-        inline_meta = {}
-    try:
-        vm_meta = _build_vm_meta(product) if "VM" in needed_prefixes else {}
-    except Exception:
-        vm_meta = {}
-
-    for col in selected_cols:
-        if not col or "_" not in col:
-            continue
-        pfx, _, tail = col.partition("_")
-        pfx_u = pfx.upper()
-        # knob_meta / inline_meta / vm_meta 는 feature_name / item_id / feature_name 키로 저장되는데,
-        # 사내 CSV 는 "KNOB_FOO" 같은 prefix 포함 형태와 "FOO" 같은 prefix 없는 형태가 혼재할 수 있음.
-        # 두 가지 모두 시도 (full col → tail 순).
-        if pfx_u == "KNOB":
-            continue
-        elif pfx_u == "INLINE":
-            meta = _meta_get(inline_meta, col, tail)
-            if not meta:
-                continue
-            if meta.get("inferred"):
-                continue
-            sid = _safe_step_segment(_first_meta_step(meta))
-            if not sid:
-                continue
-            out[col] = f"INLINE_{sid}_{tail}"
-        elif pfx_u == "VM":
-            meta = _meta_get(vm_meta, col, tail)
-            if not meta:
-                continue
-            if meta.get("inferred"):
-                continue
-            sid = _safe_step_segment(_first_meta_step(meta))
-            if not sid:
-                continue
-            out[col] = f"VM_{sid}_{tail}"
-        # 그 외 prefix (FAB / MASK / ET / QTIME …) 는 rename 대상 아님.
-    return out
+    return {}
 
 
 def _color_for_value(val, uniq_map, palette):
@@ -2770,6 +2666,41 @@ def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
     return _load_csv_rows(_knob_step_matching_path(base))
 
 
+def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[str, list[dict]]:
+    matching = _load_knob_step_matching_rows(base)
+    sm = _sch("step_matching")
+    step_map: dict[str, list[dict]] = {}
+    p_col = sm.get("product_col", "product")
+    has_product_col = any(p_col in r or "product" in r for r in matching)
+    for r in matching:
+        row_prod = r.get(p_col)
+        if row_prod is None and p_col != "product":
+            row_prod = r.get("product")
+        if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
+            continue
+        step_desc = _row_step_desc(r, sm)
+        step_desc_key = _step_desc_match_key(step_desc)
+        step_id = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
+        if not step_desc_key or not step_id:
+            continue
+        module = (
+            r.get(sm.get("module_col", "module"))
+            or r.get("area")
+            or r.get("module")
+            or classify_process_area(step_desc)
+            or ""
+        )
+        item = {
+            "step_desc": step_desc,
+            "step_id": step_id,
+            "module": str(module or "").strip(),
+        }
+        bucket = step_map.setdefault(step_desc_key, [])
+        if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
+            bucket.append(item)
+    return step_map
+
+
 def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     matching = _load_knob_step_matching_rows()
     sm = _sch("step_matching")
@@ -2992,39 +2923,13 @@ def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
 
 def _build_knob_meta(product: str = "") -> dict:
     base = _base_root()
-    matching = _load_knob_step_matching_rows(base)
     ppid_knob_fp = base / "ppid_knob.csv"
     knob_rules = _load_csv_rows(ppid_knob_fp if ppid_knob_fp.is_file() else base / "knob_ppid.csv")
     # v8.8.10: 역할→컬럼명 매핑 soft-landing. 사내 CSV 의 컬럼 이름이 달라도 schema 만 바꾸면 됨.
-    sm = _sch("step_matching")
     km = _sch("knob_ppid")
 
     # step_desc → [{step_id,module}, ...] (ordered, dedup)
-    step_map: dict[str, list[dict]] = {}
-    p_col = sm.get("product_col", "product")
-    has_step_product_col = any(p_col in r or "product" in r for r in matching)
-    for r in matching:
-        row_prod = r.get(p_col)
-        if row_prod is None and p_col != "product":
-            row_prod = r.get("product")
-        if not _step_matching_product_matches(product, row_prod, allow_common=not has_step_product_col):
-            continue
-        fs = _row_step_desc(r, sm)
-        fs_key = _step_desc_match_key(fs)
-        sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
-        if not fs_key or not sid:
-            continue
-        module = (
-            r.get(sm.get("module_col", "module"))
-            or r.get("area")
-            or r.get("module")
-            or classify_process_area(fs)
-            or ""
-        )
-        module = str(module or "").strip()
-        lst = step_map.setdefault(fs_key, [])
-        if not any(str(item.get("step_id") or "").strip().casefold() == sid.casefold() for item in lst):
-            lst.append({"step_id": sid, "module": module})
+    step_map = _product_step_map_by_desc(product, base)
 
     # feature_name → groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
@@ -3106,21 +3011,25 @@ def _build_knob_meta(product: str = "") -> dict:
 
 # v8.7.5/v8.8.10: INLINE / VM_ prefix 매칭 메타 — schema 매핑 기반.
 def _build_inline_meta(product: str = "") -> dict:
-    """inline_matching.csv (schema: item_id/process_id, optional step_id, product)."""
+    """inline_matching.csv (schema: product, step_id, item_id, optional desc)."""
     base = _base_root()
     rows = _load_csv_rows(base / "inline_matching.csv")
     im = _sch("inline_matching")
     grouped: dict[str, list[dict]] = {}
+    p_col = im.get("product_col", "product")
+    has_product_col = any(p_col in r or "product" in r for r in rows)
     for r in rows:
-        p_col = im.get("product_col", "product")
-        if not _product_value_matches(product, r.get(p_col)):
+        row_prod = r.get(p_col)
+        if row_prod is None and p_col != "product":
+            row_prod = r.get("product")
+        if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
             continue
         iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
         sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
         process_id = (r.get(im.get("process_id_col", "process_id")) or "").strip()
         desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
         func_step = (r.get("function_step") or "").strip()
-        if not iid:
+        if not iid or not sid:
             continue
         grouped.setdefault(iid, []).append({
             "step_id": sid,
@@ -3156,58 +3065,73 @@ def _build_inline_meta(product: str = "") -> dict:
             "label": item_desc,
             "sub": "/".join(step_ids) if step_ids else iid,
         }
-    for key, meta in _inferred_stage_meta(product, "INLINE").items():
-        out.setdefault(key, meta)
     return out
 
 
 def _build_vm_meta(product: str = "") -> dict:
-    """v8.8.7/v8.8.10: vm_matching.csv 컬럼 매핑 schema 기반."""
+    """vm_matching.csv has step_desc + item_id; step_id comes from Vehicle_matching.csv."""
     base = _base_root()
     rows = _load_csv_rows(base / "vm_matching.csv")
     vm = _sch("vm_matching")
+    step_map = _product_step_map_by_desc(product, base)
     grouped: dict[str, list[dict]] = {}
     for r in rows:
-        p_col = vm.get("product_col", "product")
-        if not _product_value_matches(product, r.get(p_col)):
+        step_desc = _row_step_desc(r, vm)
+        item_id = _first_row_value(
+            r,
+            vm.get("item_id_col", "item_id"),
+            "item_id",
+            vm.get("feature_col", "feature_name"),
+            "feature_name",
+        )
+        if not step_desc or not item_id:
             continue
-        fname = (r.get(vm.get("feature_col", "feature_name")) or r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
-        sd = (r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
-        sid = (r.get(vm.get("step_id_col", "step_id")) or "").strip()
-        func_step = (r.get("function_step") or "").strip()
-        if not fname:
+        steps = step_map.get(_step_desc_match_key(step_desc), [])
+        if not steps:
             continue
-        grouped.setdefault(fname, []).append({
-            "feature_name": fname,
-            "step_desc": sd,
-            "step_id": sid,
-            "function_step": func_step,
+        name = f"{step_desc}_{item_id}"
+        step_ids = _dedup_list([str(x.get("step_id") or "").strip() for x in steps])
+        modules = _dedup_list([str(x.get("module") or "").strip() for x in steps])
+        grouped.setdefault(name, []).append({
+            "feature_name": name,
+            "item_id": item_id,
+            "step_desc": step_desc,
+            "step_id": step_ids[0] if len(step_ids) == 1 else "",
+            "step_ids": step_ids,
+            "function_step": step_desc,
+            "function_steps": [step_desc],
+            "modules": modules,
+            "module": modules[0] if len(modules) == 1 else "",
         })
     out: dict[str, dict] = {}
     for fname, items in grouped.items():
         dedup = []
         seen = set()
         for item in items:
-            key = (item.get("function_step", ""), item.get("step_id", ""), item.get("step_desc", ""))
+            key = (item.get("step_desc", ""), item.get("item_id", ""), tuple(item.get("step_ids") or []))
             if key in seen:
                 continue
             seen.add(key)
             dedup.append(item)
-        step_ids = [x["step_id"] for x in dedup if x.get("step_id")]
+        step_ids = _dedup_list([sid for x in dedup for sid in (x.get("step_ids") or [])])
         step_desc = next((x.get("step_desc") for x in dedup if x.get("step_desc")), "") or fname
-        function_steps = [x["function_step"] for x in dedup if x.get("function_step")]
+        item_id = next((x.get("item_id") for x in dedup if x.get("item_id")), "")
+        function_steps = _dedup_list([x["function_step"] for x in dedup if x.get("function_step")])
+        modules = _dedup_list([mod for x in dedup for mod in (x.get("modules") or [])])
         out[fname] = {
+            "feature_name": fname,
+            "item_id": item_id,
             "step_desc": step_desc,
             "step_id": step_ids[0] if len(step_ids) == 1 else "",
             "step_ids": step_ids,
             "function_step": function_steps[0] if len(function_steps) == 1 else "",
             "function_steps": function_steps,
+            "modules": modules,
+            "module": modules[0] if len(modules) == 1 else "",
             "groups": dedup,
-            "label": step_desc or fname,
-            "sub": "/".join(step_ids) if step_ids else fname,
+            "label": fname,
+            "sub": "/".join(step_ids),
         }
-    for key, meta in _inferred_stage_meta(product, "VM").items():
-        out.setdefault(key, meta)
     return out
 
 
@@ -3347,21 +3271,39 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
     csv_name = "inline_matching.csv" if kind == "inline" else "vm_matching.csv"
     csv_fp = base / csv_name
     rulebook_meta = _RULEBOOK_FILES["inline_matching" if kind == "inline" else "vm_matching"]
-    id_col = "item_id" if kind == "inline" else "feature_name"
     existing = _load_csv_rows(csv_fp)
+    sid_to_step_desc = {}
+    if kind == "vm":
+        for steps in _product_step_map_by_desc(product, base).values():
+            for step in steps:
+                sid = str(step.get("step_id") or "").strip()
+                desc = str(step.get("step_desc") or "").strip()
+                if sid and desc:
+                    sid_to_step_desc.setdefault(sid.casefold(), desc)
     added = []
     for iid, sid in winners.items():
         iid = str(iid or "").strip()
         sid = str(sid or "").strip()
         if not iid:
             continue
-        if (product, iid) in {(str(r.get("product") or "").strip(), str(r.get(id_col) or "").strip()) for r in existing}:
-            continue
         if kind == "inline":
+            if (product, iid) in {(str(r.get("product") or "").strip(), str(r.get("item_id") or "").strip()) for r in existing}:
+                continue
             existing.append({"product": product, "item_id": iid, "step_id": sid, "item_desc": ""})
+            added.append((iid, sid))
         else:
-            existing.append({"product": product, "feature_name": iid, "step_id": sid, "step_desc": ""})
-        added.append((iid, sid))
+            step_desc = sid_to_step_desc.get(sid.casefold(), "")
+            if not step_desc:
+                continue
+            existing_key = (step_desc.casefold(), iid.casefold())
+            if existing_key in {
+                (str(r.get("step_desc") or r.get("function_step") or "").strip().casefold(),
+                 str(r.get("item_id") or r.get("feature_name") or "").strip().casefold())
+                for r in existing
+            }:
+                continue
+            existing.append({"step_desc": step_desc, "item_id": iid})
+            added.append((iid, step_desc))
     if not added:
         return {"ok": True, "added": 0, "total": len(winners), "note": "모두 기존에 등록됨"}
     try:
@@ -3435,10 +3377,8 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "product_col":   "product",
     },
     "vm_matching": {
-        "feature_col":   "feature_name",
         "step_desc_col": "step_desc",
-        "step_id_col":   "step_id",
-        "product_col":   "product",
+        "item_id_col":   "item_id",
     },
 }
 
@@ -3518,17 +3458,17 @@ _RULEBOOK_FILES = {
         "required": ["product", "step_id", "step_desc"],
     },
     # v8.8.9: INLINE / VM 매칭도 동일 CRUD 로 관리.
-    #   inline_matching.csv: (process_id, item_id, item_desc) — INLINE_<item_id> 측정 메타.
+    #   inline_matching.csv: (product, step_id, item_id, item_desc) — INLINE_<item_id> 측정 메타.
     "inline_matching": {
         "filename": "inline_matching.csv",
-        "cols": ["process_id", "item_id", "item_desc", "product", "step_id"],
-        "required": ["item_id", "product"],
+        "cols": ["product", "step_id", "item_id", "item_desc"],
+        "required": ["product", "step_id", "item_id"],
     },
-    #   vm_matching.csv: (feature_name, step_desc, step_id) — VM_<feature_name> 이 해당 step 에서 예측됨.
+    #   vm_matching.csv: (step_desc, item_id) — VM_<step_desc>_<item_id>, step_id 는 Vehicle_matching.csv 에서 확장.
     "vm_matching": {
         "filename": "vm_matching.csv",
-        "cols": ["feature_name", "step_desc", "step_id", "product"],
-        "required": ["feature_name", "step_id", "product"],
+        "cols": ["step_desc", "item_id"],
+        "required": ["step_desc", "item_id"],
     },
 }
 
@@ -3539,10 +3479,12 @@ def _normalize_rulebook_rows(kind: str, rows: list[dict]) -> list[dict]:
         if not isinstance(row, dict):
             continue
         r = dict(row)
-        if kind in {"knob_ppid", "step_matching"} and not str(r.get("step_desc") or "").strip():
+        if kind in {"knob_ppid", "step_matching", "vm_matching"} and not str(r.get("step_desc") or "").strip():
             r["step_desc"] = _row_step_desc(r, _sch(kind))
         if kind == "knob_ppid" and not str(r.get("value") or "").strip():
             r["value"] = _first_row_value(r, _sch(kind).get("value_col", "value"), "ppid", "category")
+        if kind == "vm_matching" and not str(r.get("item_id") or "").strip():
+            r["item_id"] = _first_row_value(r, _sch(kind).get("item_id_col", "item_id"), "feature_name")
         out.append(r)
     return out
 
@@ -3564,7 +3506,7 @@ def _rulebook_row_matches_product(kind: str, row: dict, product: str, *, allow_c
     row_product = (row or {}).get(p_col)
     if row_product is None and p_col != "product":
         row_product = (row or {}).get("product")
-    if kind == "step_matching":
+    if kind in {"step_matching", "inline_matching"}:
         return _step_matching_product_matches(product, row_product, allow_common=allow_common)
     return _product_value_matches(product, row_product, allow_common=allow_common)
 
@@ -3573,15 +3515,15 @@ def _rulebook_row_matches_product(kind: str, row: dict, product: str, *, allow_c
 def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
     """v8.8.7: rulebook CSV 를 JSON 으로 반환.
 
-    KNOB rule rows are product-common. Matching rows remain product-scoped.
+    KNOB and VM item rows are product-common. Step/INLINE matching rows remain product-scoped.
     """
     meta = _RULEBOOK_FILES.get(kind)
     if not meta:
         raise HTTPException(400, f"unknown rulebook: {kind}")
     rows = _normalize_rulebook_rows(kind, _load_csv_rows(_rulebook_path(kind)))
-    if product and kind != "knob_ppid":
+    if product and kind not in {"knob_ppid", "vm_matching"}:
         allow_common = True
-        if kind == "step_matching":
+        if kind in {"step_matching", "inline_matching"}:
             p_col = _sch(kind).get("product_col", "product")
             allow_common = not any(p_col in r or "product" in r for r in rows)
         rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product, allow_common=allow_common)]
@@ -3592,7 +3534,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
 
 
 class RulebookSaveReq(BaseModel):
-    kind: str               # "knob_ppid" | "step_matching"
+    kind: str               # "knob_ppid" | "step_matching" | "inline_matching" | "vm_matching"
     rows: List[dict]        # 전체 대체 (혹은 product 스코프 대체)
     product: str = ""       # 주어지면 해당 제품 rows 만 대체, 빈값이면 파일 전체 대체
     username: str = ""
@@ -3620,7 +3562,7 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
         raise HTTPException(400, f"validation failed: {e}")
 
     product_scope = str(req.product or "").strip()
-    if req.kind == "knob_ppid":
+    if req.kind in {"knob_ppid", "vm_matching"}:
         product_scope = ""
 
     # merge with existing if product-scoped.

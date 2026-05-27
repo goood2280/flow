@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) SplitTable VM/INLINE product-step matching 계약 보정
 - (Codex) SplitTable KNOB 클릭 분류정보와 적용공정 매칭 없음 표시 정리
 - (Codex) SplitTable 적용공정 product 매칭과 FileBrowser 단일파일 EDM 재초기화 보정
 - (Codex) FileBrowser 단일파일 편집 우클릭 아래 붙여넣기 보정

@@ -239,7 +239,7 @@ CORE_BASE_FILES = {
     },
     "inline_matching.csv": {
         "role": "INLINE function item",
-        "description": "INLINE item명/step_id 를 function_step 으로 연결",
+        "description": "SplitTable INLINE item_id 를 product별 step_id 에 연결",
         "order": 31,
     },
     "knob_ppid.csv": {
@@ -258,8 +258,8 @@ CORE_BASE_FILES = {
         "order": 50,
     },
     "vm_matching.csv": {
-        "role": "VM -> step_id",
-        "description": "VM feature/step_desc 를 step_id/function_step 으로 연결",
+        "role": "VM item by step_desc",
+        "description": "VM step_desc/item_id 를 정의하고 step_id 는 Vehicle_matching.csv 에서 product별 확장",
         "order": 60,
     },
     "step_matching.csv": {

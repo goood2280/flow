@@ -48,6 +48,8 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `step_desc -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
 - `ppid_knob.csv`는 `feature_name`, `rule_order`, `step_desc`, `operator`, `value`, `category` 컬럼을 기본 계약으로 하며, `feature_name`은 KNOB 이름이고 같은 KNOB에 등록된 `step_desc` 종류가 적용 공정 후보로 표시된다.
 - `Vehicle_matching.csv`는 `product`, `step_id`, `step_desc` 컬럼을 기본 계약으로 하며, 현재 선택 product에 직접 매칭되는 row만 대소문자 구분 없이 `step_desc`별 step 후보로 노출한다. `ML_TABLE_` 접두와 `PRODUCT_A0`/`PRODA0` 같은 동일 제품 표기는 허용하지만, `PRODA` 선택이 `PRODA0`/`PRODA1`을 함께 끌어오지는 않는다. 같은 KNOB의 중복 `step_desc` rule은 한 그룹으로 합쳐 보여준다.
+- `vm_matching.csv`는 `step_desc`, `item_id`만 기본 계약으로 둔다. SplitTable row 이름은 `VM_<step_desc>_<item_id>`이고, step 후보는 `vm_matching.csv`에 저장하지 않고 현재 product와 같은 `Vehicle_matching.csv` row에서 `step_desc`로 찾아 노출한다.
+- `inline_matching.csv`는 `product`, `step_id`, `item_id`를 기본 계약으로 둔다. SplitTable row 이름은 `INLINE_<item_id>`이며, 현재 product와 직접 매칭되는 row의 `step_id`/`item_id`만 노출한다.
 - 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있고, 룰북 행/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` 섹션에서 관리한다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
