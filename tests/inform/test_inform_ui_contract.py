@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MY_INFORM = ROOT / "frontend" / "src" / "pages" / "My_Inform.jsx"
+MY_ADMIN = ROOT / "frontend" / "src" / "pages" / "My_Admin.jsx"
 SPLIT_SNAPSHOT_VIEW = ROOT / "frontend" / "src" / "components" / "SplitTableSnapshotView.jsx"
 
 
@@ -68,6 +69,14 @@ def test_inform_page_does_not_embed_flowi_prompt_box():
 
     assert "FlowiPromptBox" not in src
     assert "Flow-i 인폼 질문" not in src
+
+
+def test_admin_page_does_not_own_inform_settings():
+    src = MY_ADMIN.read_text(encoding="utf-8")
+
+    assert "inform_cfg" not in src
+    assert "InformConfigPanel" not in src
+    assert "제품 카탈로그" not in src
 
 
 def test_inform_wizard_mail_note_is_plain_top_block():
@@ -258,7 +267,13 @@ def test_inform_pagegear_reason_subject_templates_are_saved_and_used():
     src = MY_INFORM.read_text(encoding="utf-8")
 
     assert "ReasonTemplatesPanel" in src
-    assert 'postJson(API + "/config", { reason_templates: draft || {} })' in src
+    assert 'import { canManagePage } from "../lib/permissions";' in src
+    assert 'const canManageInform = canManagePage(user, "inform");' in src
+    assert '<PageGear title="인폼 설정" canEdit={canManageInform}' in src
+    assert "ReasonOptionsPanel" in src
+    assert 'postJson("/api/informs/config", { modules: finalList })' in src
+    assert 'postJson("/api/informs/config", { reasons: finalList })' in src
+    assert 'postJson("/api/informs/config", { reason_templates: draft || {} })' in src
     assert "defaultInformMailSubject(form, lotLabel, constants.reason_templates || {})" in src
     assert "defaultInformMailSubject(form, mailLotLabel, reasonTemplates || {})" in src
     assert "{product}" in src

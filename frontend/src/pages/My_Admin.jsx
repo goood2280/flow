@@ -318,7 +318,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -766,7 +766,6 @@ export default function My_Admin({user}){
 
       {/* Groups (admin only) — v8.5.0 */}
       {tab==="groups"&&<GroupsPanel allUsers={users} isAdmin={isAdmin} currentUser={user}/>}
-      {tab==="inform_cfg"&&isAdmin&&<InformConfigPanel/>}
 
       {/* Categories (admin only) */}
       {tab==="categories"&&isAdmin&&<CategoryPanel/>}
@@ -2530,77 +2529,6 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
     </div>
   );
 }
-
-// ── Inform Config Panel (v8.8.1) — 모듈/사유/제품/DB경로 Admin 관리 ──
-function InformConfigPanel(){
-  const [cfg,setCfg]=useState({modules:[],reasons:[],products:[],raw_db_root:""});
-  const [newMod,setNewMod]=useState("");
-  const [newReason,setNewReason]=useState("");
-  const [newProduct,setNewProduct]=useState("");
-  const [rawRootDraft,setRawRootDraft]=useState("");
-  const [msg,setMsg]=useState("");
-  const load=()=>sf("/api/informs/config").then(d=>{
-    setCfg(d);setRawRootDraft(d.raw_db_root||"");
-  }).catch(e=>setMsg(e.message));
-  // fix: arrow+Promise crash 회피.
-  useEffect(()=>{load();},[]);
-  const saveAll=(next)=>sf("/api/informs/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(next)})
-    .then(r=>{setCfg(r.config||next);setMsg("저장되었습니다.");}).catch(e=>setMsg(e.message));
-  const addMod=()=>{const v=newMod.trim();if(!v)return;
-    if((cfg.modules||[]).includes(v)){setMsg("이미 존재합니다.");return;}
-    saveAll({modules:[...(cfg.modules||[]),v]});setNewMod("");};
-  const rmMod=(m)=>{if(!confirm(`모듈 '${m}' 삭제?`))return;
-    saveAll({modules:(cfg.modules||[]).filter(x=>x!==m)});};
-  const addReason=()=>{const v=newReason.trim();if(!v)return;
-    if((cfg.reasons||[]).includes(v)){setMsg("이미 존재합니다.");return;}
-    saveAll({reasons:[...(cfg.reasons||[]),v]});setNewReason("");};
-  const rmReason=(r)=>{if(!confirm(`사유 '${r}' 삭제?`))return;
-    saveAll({reasons:(cfg.reasons||[]).filter(x=>x!==r)});};
-  const addProduct=()=>{const v=newProduct.trim();if(!v)return;
-    if((cfg.products||[]).includes(v)){setMsg("이미 존재합니다.");return;}
-    saveAll({products:[...(cfg.products||[]),v]});setNewProduct("");};
-  const rmProduct=(p)=>{if(!confirm(`제품 '${p}' 삭제? (기존 인폼 레코드는 유지)`))return;
-    saveAll({products:(cfg.products||[]).filter(x=>x!==p)});};
-  const saveRawRoot=()=>saveAll({raw_db_root:rawRootDraft});
-
-  // v8.7.5: Section 을 inline 컴포넌트로 두면 매 렌더마다 새 reference 라 input focus 가 날아감.
-  // 여기서는 간단하게 JSX 로 inline 하게 두 블록을 렌더한다.
-  const renderSection=(title,items,onRemove,addValue,onAddChange,onAdd,placeholder)=>(
-    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
-      <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>{title} ({(items||[]).length})</div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-        {(items||[]).map(m=>(
-          <span key={m} style={{padding:"4px 12px",borderRadius:999,background:"var(--accent)22",color:"var(--accent)",fontSize:14,fontWeight:600,display:"inline-flex",alignItems:"center",gap:6}}>
-            {m}
-            <button onClick={()=>onRemove(m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14,padding:0}}>×</button>
-          </span>
-        ))}
-        {(items||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>없음</span>}
-      </div>
-      <div style={{display:"flex",gap:6}}>
-        <input value={addValue||""} onChange={e=>onAddChange(e.target.value)} placeholder={placeholder}
-          onKeyDown={e=>{if(e.key==="Enter")onAdd();}}
-          style={{flex:1,padding:"6px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
-        <button onClick={onAdd} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>+추가</button>
-      </div>
-    </div>
-  );
-  return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1000}}>
-    {renderSection("모듈 옵션",cfg.modules||[],rmMod,newMod,setNewMod,addMod,"예: NEW_MOD")}
-    {renderSection("사유 옵션",cfg.reasons||[],rmReason,newReason,setNewReason,addReason,"예: 신뢰성 이슈")}
-    {renderSection("제품 카탈로그",cfg.products||[],rmProduct,newProduct,setNewProduct,addProduct,"예: PROD_A")}
-    {/* v9.0.0: RAWDATA_DB 루트 경로 섹션 제거 — SplitTable source_config 의 제품별 fab_source override 로 통합.
-        인폼 Lot 드롭다운이 SplitTable override 경로를 공유 — 관리 지점 단일화. */}
-    {msg&&<div style={{gridColumn:"span 2",fontSize:14,color:"var(--accent)"}}>{msg}</div>}
-    <div style={{gridColumn:"span 2",padding:12,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
-      • 여기서 편집한 옵션은 인폼 작성/답글 드롭다운, 그룹 담당 모듈 선택, 대시보드 모듈 필터에 반영됩니다.<br/>
-      • 기존 인폼에 이미 저장된 값은 목록에서 빠져도 그대로 보존됩니다 (표시만 자유문자열).<br/>
-      • 기본값(GATE/STI/PC/MOL/…, 재측정/장비 이상/…)은 비워지면 자동 복구됩니다.<br/>
-      • <b>v9.0.0</b>: RAWDATA_DB 루트 경로는 <b>SplitTable</b> 의 source_config (제품별 fab_source override) 에서 관리합니다 — 인폼 Lot 드롭다운은 그 경로를 그대로 공유합니다.<br/>
-      • <b>데이터 루트</b> 전반 설정은 우측 사이드바의 <b>데이터 루트</b> 탭을 사용하세요.
-    </div>
-  </div>);
-};
 
 // ── Base CSV Editor Panel (v8.5.2) ──
 const BASE_CSVS = [

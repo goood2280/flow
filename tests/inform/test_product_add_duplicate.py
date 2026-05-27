@@ -42,6 +42,25 @@ def test_product_add_collection_post_compat(tmp_path, monkeypatch):
     assert resp["products"] == ["PRODA"]
 
 
+def test_config_product_writes_are_ignored_in_favor_of_cache(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"modules": ["GATE"], "reasons": ["PEMS"], "products": ["LEGACY"]}), encoding="utf-8")
+
+    monkeypatch.setattr(informs, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(informs, "_lot_progress_cache_products", lambda: ["PRODA"])
+
+    resp = informs.save_config_endpoint(
+        informs.ConfigReq(modules=["GATE", "MOL"], reasons=["PEMS", "장비 이상"], products=["MANUAL_ONLY"]),
+        True,
+    )
+    saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+
+    assert resp["config"]["products"] == ["PRODA"]
+    assert saved["products"] == []
+    assert saved["modules"] == ["GATE", "MOL"]
+    assert saved["reasons"] == ["PEMS", "장비 이상"]
+
+
 def test_inform_config_product_candidates_include_latest_lot_cache(tmp_path, monkeypatch):
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({"products": ["LEGACY_ONLY"]}), encoding="utf-8")

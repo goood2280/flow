@@ -12,6 +12,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 다중 fab lot 등록용 `POST /api/informs/bulk-create` 순서 보존 저장
 - module-wise mail compose/send
 - 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
+- Inform Log PageGear의 module, reason, reason template, product contact 설정
 - Agent/Home Agent `inform_registration` unit의 최종 저장 계약. Agent는 slot 수집과 review를 담당하고, confirm 시 기존 `InformCreate`/`create_inform()` 경로만 호출한다.
 - Dashboard inform widget용 요약 데이터
 
@@ -39,13 +40,13 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 
 - product가 불명확하면 생성 전에 후보를 확인한다.
 - Inform 화면 안에는 `Flow-i 인폼 질문` 입력창을 두지 않는다. 자연어 기반 Inform 등록은 Home Agent `/api/home-agent/orchestrate` 또는 `/api/home-agent/run-tool`의 `inform_registration` 단위 AI에서 실행한다.
-- 신규 등록용 `/config.products`, `/products`, sidebar product 후보는 LOT progress cache의 unique `product` 값에서 자동 생성한다. 별도 Inform product catalog를 관리하지 않는다.
+- 신규 등록용 `/config.products`, `/products`, sidebar product 후보는 LOT progress cache의 unique `product` 값과 FAB product folder 기반 cache에서 자동 생성한다. 별도 수동 Inform product catalog UI는 두지 않는다.
 - Inform product와 SplitTable product는 `ML_TABLE_` prefix와 대소문자가 달라도 같은 product로 본다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
 - Agent `inform_registration` unit은 confirm 전에는 Inform 저장 파일을 쓰지 않는다. short memory session은 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/`에 1시간 TTL로만 남긴다.
 - 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
 - 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
-- Config/modules, product contacts 변경은 `inform` page manager 이상만 수행한다.
+- Config modules/reasons/reason_templates와 product contacts 변경은 Inform Log PageGear에서 `inform` page manager 이상만 수행한다.
 - SplitTable snapshot endpoint는 같은 product/lot/custom_cols 요청이 겹치면 짧은 in-memory cache로 중복 계산을 피하되, 저장되는 embed payload shape는 유지한다.
 - SplitTable snapshot은 사용자가 선택한 KNOB/CUSTOM/세트 컬럼만 포함한다. 저장된 plan 값은 선택된 컬럼 row 안에 overlay할 수 있지만, 선택하지 않은 plan-only 컬럼 row를 자동으로 추가하지 않는다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.

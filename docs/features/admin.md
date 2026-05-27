@@ -14,6 +14,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - 일반 사용자의 업무 화면 상태 변경
 - raw DB 파일 임의 수정
 - 사용자 대신 issue/inform 업무를 생성하는 기능
+- Inform 전용 설정 화면. Inform module/reason/template/contact 설정은 Inform Log PageGear가 소유한다.
 - **캐시 운영 패널** — Admin은 SplitTable 매칭 캐시나 Tracker Analysis 캐시를 소유하지 않는다. FileBrowser가 LOT 진행 최신 캐시의 상태/수동 갱신 진입점을 제공한다.
 
 ## Code Entrypoints
@@ -45,7 +46,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 | FileBrowser | `filebrowser` | S3 ingest/AWS config, FileBrowser settings, base-file edit/rollback/delete, cache settings/refresh/cleanup |
 | Dashboard | `dashboard` | chart defaults, saved chart CRUD, snapshot refresh |
 | SplitTable | `splittable` | source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh |
-| Inform | `inform` | config/modules, product catalog, product contacts |
+| Inform | `inform` | Inform Log PageGear의 module/reason/template/contact 설정 위임 |
 | Calendar | `calendar` | shared categories/settings |
 | Tracker | `tracker` | shared categories, scheduler, DB sources, lot progress cache |
 | TableMap | `tablemap` | DB map/table/product config writes |

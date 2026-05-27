@@ -5,6 +5,7 @@
  */
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
+import { canManagePage } from "../lib/permissions";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
@@ -1734,7 +1735,7 @@ export default function My_Inform({ user }) {
       : { recipients: [], knobMap: {} };
   }, [wizardMailMeta]);
 
-  const isAdmin = user?.role === "admin";
+  const canManageInform = canManagePage(user, "inform");
   const loadLotMatrix = () => {
     const q = new URLSearchParams();
     if ((sharedFilters.lot || "").trim()) q.set("search", sharedFilters.lot.trim());
@@ -2923,6 +2924,7 @@ export default function My_Inform({ user }) {
     setModNewName("");
   };
   const saveModuleOrder = () => {
+    if (!canManageInform) return;
     if (!Array.isArray(modDraft)) return;
     // v8.8.27: 저장 직전에도 입력칸 값을 흡수 → "새 모듈 저장 안됨" 버그 방지.
     const finalList = commitPendingMod(modDraft, modNewName);
@@ -2935,12 +2937,23 @@ export default function My_Inform({ user }) {
       .catch(e => toast.error("모듈 순서 저장 실패: " + (e.message || e)));
   };
   const saveReasonTemplates = (draft) => {
-    postJson(API + "/config", { reason_templates: draft || {} })
+    if (!canManageInform) return;
+    postJson("/api/informs/config", { reason_templates: draft || {} })
       .then(d => {
         setConstants(c => ({ ...c, reason_templates: d.config?.reason_templates || {} }));
         toast.ok("메일 제목 템플릿 저장됨");
       })
       .catch(e => toast.error("메일 템플릿 저장 실패: " + (e.message || e)));
+  };
+  const saveReasonOptions = (reasons) => {
+    if (!canManageInform) return;
+    const finalList = uniqueClean(reasons);
+    postJson("/api/informs/config", { reasons: finalList })
+      .then(d => {
+        setConstants(c => ({ ...c, reasons: d.config?.reasons || finalList }));
+        toast.ok("사유 옵션 저장됨");
+      })
+      .catch(e => toast.error("사유 옵션 저장 실패: " + (e.message || e)));
   };
   const moveMod = (i, delta) => {
     if (!Array.isArray(modDraft)) return;
@@ -2960,16 +2973,16 @@ export default function My_Inform({ user }) {
       flexDirection: "column",
       minWidth: 0,
     }}>
-      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
+      <PageGear title="인폼 설정" canEdit={canManageInform} position="bottom-right">
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-          제품 후보는 LOT progress cache 기준으로 자동 표시합니다. 여기서는 모듈 순서와 메일 템플릿만 관리합니다.
+          제품 후보는 LOT progress cache 기준으로 자동 표시합니다. 여기서는 모듈 순서, 사유 옵션, 메일 템플릿만 관리합니다.
         </div>
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
             모듈 표시 순서를 관리합니다.
           </div>
           {!modDraft && (
-            <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!isAdmin}
+            <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!canManageInform}
               style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 700 }}>
               모듈 순서 편집 ({(constants.modules || []).length})
             </button>
@@ -3000,7 +3013,12 @@ export default function My_Inform({ user }) {
             </div>
           )}
         </div>
-        {isAdmin && (
+        <ReasonOptionsPanel
+          reasons={constants.reasons || []}
+          canEdit={canManageInform}
+          onSave={saveReasonOptions}
+        />
+        {canManageInform && (
           <ReasonTemplatesPanel
             reasons={constants.reasons || []}
             templates={constants.reason_templates || {}}
@@ -3302,10 +3320,57 @@ function TimelineLog({ thread, onOpen }) {
   );
 }
 
-/* v8.8.13: admin 전용 — 유저별 인폼 모듈 조회 권한 편집 패널.
-   PageGear 인폼 설정 하단에 표시. 체크가 하나도 없으면 "아무 모듈도 조회 못함",
-   체크 해제 전 기본 상태(설정 없음)는 groups 기반으로 fallback. */
-/* v8.8.17: ReasonTemplatesPanel — admin 이 사유별로 메일 제목 + 본문 템플릿을 편집.
+/* PageGear 설정 패널 — inform page manager 이상이 모듈/사유/템플릿을 관리한다. */
+function ReasonOptionsPanel({ reasons, canEdit, onSave }) {
+  const [draft, setDraft] = React.useState(() => uniqueClean(reasons));
+  const [newReason, setNewReason] = React.useState("");
+  React.useEffect(() => { setDraft(uniqueClean(reasons)); }, [reasons]);
+  const addReason = () => {
+    const v = newReason.trim();
+    if (!v) return;
+    setDraft(d => uniqueClean([...(d || []), v]));
+    setNewReason("");
+  };
+  const removeReason = (reason) => {
+    setDraft(d => (d || []).filter(v => v !== reason));
+  };
+  const saveReasons = () => {
+    const finalList = uniqueClean([...(draft || []), newReason]);
+    setDraft(finalList);
+    setNewReason("");
+    onSave(finalList);
+  };
+  return (
+    <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
+        사유 옵션을 관리합니다.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {(draft || []).map(reason => (
+          <span key={reason} style={{ padding: "4px 10px", borderRadius: 999, background: "var(--accent-glow)", color: "var(--accent)", fontSize: 14, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            {reason}
+            <button type="button" disabled={!canEdit} onClick={() => removeReason(reason)}
+              style={{ border: "none", background: "transparent", color: BAD.fg, cursor: canEdit ? "pointer" : "not-allowed", fontSize: 14, padding: 0 }}>×</button>
+          </span>
+        ))}
+        {(draft || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>없음</span>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <input value={newReason} onChange={e => setNewReason(e.target.value)}
+          disabled={!canEdit}
+          placeholder="새 사유"
+          style={inputStyle({ flex: 1, minWidth: 120 })}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addReason(); } }} />
+        <button type="button" disabled={!canEdit} onClick={addReason}
+          style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: canEdit ? "pointer" : "not-allowed" }}>+</button>
+        <button type="button" disabled={!canEdit} onClick={saveReasons}
+          style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: canEdit ? "pointer" : "not-allowed" }}>저장</button>
+      </div>
+    </div>
+  );
+}
+
+/* v8.8.17: ReasonTemplatesPanel — inform page manager 가 사유별로 메일 제목 + 본문 템플릿을 편집.
    PageGear 안에서 사유 목록을 순회하며 제목/본문 2필드를 보여준다.
    저장은 단건이 아니라 템플릿 맵 전체를 일괄 PATCH 로 POST /api/informs/config. */
 function ReasonTemplatesPanel({ reasons, templates, onSave }) {
