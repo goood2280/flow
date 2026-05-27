@@ -5822,6 +5822,16 @@ _AI_SQL_CAST_BODY_RE = re.compile(
     re.I,
 )
 _AI_SQL_ARITHMETIC_RE = re.compile(r"(?:\+|\*|/(?![/*]))")
+_AI_SQL_CAST_GUIDE = {
+    "syntax": "CAST(column AS DOUBLE|FLOAT|BIGINT|INTEGER|INT|DATE|TIMESTAMP|DATETIME|TIME)",
+    "try_cast": "TRY_CAST(column AS same_types)",
+    "execution": "CAST and TRY_CAST are normalized to TRY_CAST; conversion failures are excluded by comparisons.",
+    "scope": "WHERE/filter expression only. Do not use CAST in ORDER BY, SELECT, arithmetic, nested functions, joins, or DDL/DML.",
+    "examples": [
+        "CAST(value AS DOUBLE) >= 10",
+        "CAST(tkout_time AS TIMESTAMP) >= '2024-04-21'",
+    ],
+}
 
 
 def _strip_sql_literals(expr: str) -> str:
@@ -8647,6 +8657,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "schema": column_context,
                 "sample_rows": [],
                 "sample_profile": profile,
+                "supported_where_casts": _AI_SQL_CAST_GUIDE,
                 "step_mapping_context": _public_ai_sql_step_mapping_context(step_mapping_context),
                 "feedback_context": {
                     "liked_examples": feedback_context.get("positive") or [],
@@ -8658,7 +8669,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 ),
                 "context": context,
                 "response_schema": {
-                    "sql": "column = 'value' AND other_col > 0",
+                    "sql": "column = 'value' AND CAST(value AS DOUBLE) >= 10",
                     "sort": {"column": "value", "direction": "desc", "nulls": "last"},
                     "aggregate": {"function": "avg", "column": "value", "group_by": ["item_id"]},
                     "selected_columns": ["column", "other_col"],

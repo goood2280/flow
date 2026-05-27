@@ -843,6 +843,45 @@ def test_filebrowser_sql_llm_draft_writes_filter_only(monkeypatch):
     assert out["resolved_columns"] == ["wafer_id"]
 
 
+def test_filebrowser_sql_llm_draft_accepts_cast_filter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_complete_json(ask, *, system="", timeout=0, max_retries=0, schema=None):
+        payload = json.loads(ask)
+        calls.append({"system": system, "payload": payload})
+        return {
+            "ok": True,
+            "obj": {
+                "sql": "CAST(value AS DOUBLE) >= 10",
+                "selected_columns": ["lot_id", "value"],
+                "resolved_columns": ["value"],
+                "resolved_values": ["10"],
+            },
+            "text": json.dumps({"sql": "CAST(value AS DOUBLE) >= 10"}),
+        }
+
+    monkeypatch.setattr(llm_adapter, "complete_json", fake_complete_json)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="lot_id, value만 보여주고 문자열 value를 숫자로 봐서 10 이상만",
+            columns=["lot_id", "value"],
+            dtypes={"lot_id": "String", "value": "String"},
+            sample_rows=[{"lot_id": "A1000", "value": "10"}],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == "TRY_CAST(value AS DOUBLE) >= 10"
+    assert out["display_sql"] == "SELECT lot_id, value WHERE TRY_CAST(value AS DOUBLE) >= 10"
+    assert out["selected_columns"] == ["lot_id", "value"]
+    assert "CAST(column AS DOUBLE" in calls[0]["system"]
+    assert calls[0]["payload"]["supported_where_casts"]["examples"][0] == "CAST(value AS DOUBLE) >= 10"
+
+
 def test_filebrowser_sql_llm_draft_reports_prompt_column_resolution(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
     monkeypatch.setattr(llm_adapter, "is_available", lambda: False)

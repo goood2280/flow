@@ -66,6 +66,7 @@ def _install_filebrowser_fixture(monkeypatch, tmp_path: Path) -> Path:
             "wafer_id": idx + 1,
             "item_id": "IOFF" if idx % 2 == 0 else "VTH",
             "value": round(idx * 0.1, 3),
+            "value_text": "bad" if idx == 9 else str(idx),
             "step_id": "S1",
         })
     fp = product_dir / "part.parquet"
@@ -179,6 +180,48 @@ def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch,
     assert history_rows[-1]["preview_summary"]["rows_returned"] > 0
     assert "rows" not in history_rows[-1]["preview_summary"]
     assert history_rows[-1]["trace_summary"][0]["node_id"] == "context_sample"
+
+
+def test_filebrowser_ai_sql_runtime_applies_cast_filter(monkeypatch, tmp_path):
+    _install_filebrowser_fixture(monkeypatch, tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_complete_json(ask, *, system="", timeout=0, max_retries=0, schema=None):
+        payload = json.loads(ask)
+        calls.append({"system": system, "payload": payload})
+        if "display columns" in system:
+            return {"ok": True, "obj": {"selected_columns": ["root_lot_id", "value_text"]}}
+        return {
+            "ok": True,
+            "obj": {
+                "sql": "CAST(value_text AS DOUBLE) >= 10",
+                "resolved_columns": ["value_text"],
+                "resolved_values": ["10"],
+            },
+        }
+
+    monkeypatch.setattr(llm_adapter, "complete_json", fake_complete_json)
+
+    out = agent.filebrowser_ai_sql_runtime_run(
+        agent.FileBrowserAiSqlRuntimeRunReq(
+            natural_language="문자열 value_text를 숫자로 봐서 10 이상만",
+            scope="db_product",
+            root="FAB",
+            product="PRODA",
+        ),
+        _Request(),
+    )
+
+    assert out["ok"] is True
+    assert out["filter"]["sql"] == "TRY_CAST(value_text AS DOUBLE) >= 10"
+    assert out["merged"]["where_sql"] == "TRY_CAST(value_text AS DOUBLE) >= 10"
+    assert out["preview"]["applied_where_sql"] == "TRY_CAST(value_text AS DOUBLE) >= 10"
+    assert out["preview"]["columns"] == ["root_lot_id", "value_text"]
+    assert out["preview"]["rows_returned"] > 0
+    filter_call = next(call for call in calls if "read-only WHERE" in call["system"])
+    assert "CAST(column AS DOUBLE" in filter_call["system"]
+    assert filter_call["payload"]["supported_where_casts"]["examples"][0] == "CAST(value AS DOUBLE) >= 10"
 
 
 def test_filebrowser_ai_sql_runtime_warns_on_invalid_sql_and_unknown_columns(monkeypatch, tmp_path):

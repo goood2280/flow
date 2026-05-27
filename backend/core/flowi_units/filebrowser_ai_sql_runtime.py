@@ -40,7 +40,9 @@ GRAPH_EDGES: tuple[dict[str, str], ...] = (
 FILTER_DRAFT_SYSTEM_PROMPT = (
     "You create only a Flow FileBrowser read-only WHERE/filter expression. "
     "Return JSON with sql, resolved_columns, resolved_values, and notes. "
-    "Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, DDL, DML, comments, semicolons, markdown, or reasoning."
+    "Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, DDL, DML, comments, semicolons, markdown, or reasoning. "
+    "In WHERE only, use CAST(column AS DOUBLE|FLOAT|BIGINT|INTEGER|INT|DATE|TIMESTAMP|DATETIME|TIME) "
+    "when a numeric or temporal column is stored as text."
 )
 
 COLUMN_DRAFT_SYSTEM_PROMPT = (
@@ -529,11 +531,12 @@ def _filter_draft(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
             "dtypes": state.get("dtypes") or {},
             "sample_rows": [],
             "sample_profile": state.get("sample_profile") or {},
+            "supported_where_casts": getattr(fb, "_AI_SQL_CAST_GUIDE", {}),
             "semantic_frame": state.get("semantic_frame") or {},
             "step_mapping_context": fb._public_ai_sql_step_mapping_context(step_mapping_context),
             "context": context,
             "response_schema": {
-                "sql": "column = 'value' AND other_col > 0",
+                "sql": "column = 'value' AND CAST(value AS DOUBLE) >= 10",
                 "resolved_columns": ["column"],
                 "resolved_values": ["value"],
                 "notes": "short public note",
