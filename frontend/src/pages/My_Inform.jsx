@@ -3847,10 +3847,10 @@ function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen })
             <col style={{ width: 190 }} />
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
-            <col />
-            <col style={{ width: 176 }} />
-            <col style={{ width: 78 }} />
-            <col style={{ width: 110 }} />
+            <col style={{ width: 156 }} />
+            <col style={{ width: 188 }} />
+            <col style={{ width: 104 }} />
+            <col style={{ width: 136 }} />
             <col style={{ width: 90 }} />
           </colgroup>
           <thead>
