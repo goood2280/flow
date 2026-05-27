@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -263,6 +264,44 @@ def home_flowi_runtime_run(run_id: str, request: Request) -> dict[str, Any]:
     }
 
 
+def _query_limit(request: Request, default: int) -> int:
+    raw = request.query_params.get("limit")
+    try:
+        limit = int(raw or default)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(200, limit))
+
+
+def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | None:
+    """Serve active Agent GET endpoints even if the archived catch-all is hit."""
+    if request.method != "GET":
+        return None
+    normalized = path.strip("/")
+    if normalized == "unit-ai/catalog":
+        return unit_ai_catalog(request)
+    if normalized == "home-flowi/runtime/graph":
+        return home_flowi_runtime_graph(request)
+    if normalized == "home-flowi/runtime/runs":
+        return home_flowi_runtime_runs(request, limit=_query_limit(request, 20))
+    if normalized.startswith("home-flowi/runtime/runs/"):
+        run_id = unquote(normalized.removeprefix("home-flowi/runtime/runs/"))
+        if run_id:
+            return home_flowi_runtime_run(run_id, request)
+
+    parts = normalized.split("/")
+    if len(parts) == 4 and parts[0] == "unit-ai" and parts[2] == "runtime":
+        unit_key = unquote(parts[1])
+        if parts[3] == "graph":
+            return unit_ai_runtime_graph(unit_key, request)
+        if parts[3] == "history":
+            return unit_ai_runtime_history(unit_key, request, limit=_query_limit(request, 50))
+    return None
+
+
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-def archived_agent_endpoint(path: str) -> None:
+def archived_agent_endpoint(path: str, request: Request) -> dict[str, Any] | None:
+    active_payload = _active_agent_get_fallback(path, request)
+    if active_payload is not None:
+        return active_payload
     raise HTTPException(status_code=410, detail="Agent implementation is archived for rebuild.")

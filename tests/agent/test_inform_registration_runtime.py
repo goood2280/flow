@@ -4,6 +4,9 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -21,6 +24,8 @@ class _State:
 
 class _Request:
     headers = {}
+    method = "GET"
+    query_params = {}
 
     def __init__(self, username: str = "tester", role: str = "admin"):
         self.state = _State({"username": username, "role": role})
@@ -98,6 +103,19 @@ def test_agent_runtime_routes_are_before_archived_catchall():
     ):
         idx = next(i for i, row in enumerate(routes) if row[0] == path)
         assert idx < catchall_idx
+
+
+def test_archived_catchall_does_not_archive_active_inform_graph(monkeypatch):
+    monkeypatch.setattr(agent, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+
+    graph = agent.archived_agent_endpoint("unit-ai/inform_registration/runtime/graph", _Request())
+    assert graph["ok"] is True
+    assert graph["unit_ai"] == "inform_registration"
+    assert graph["graph"]["nodes"][0]["id"] == "context_seed"
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent.archived_agent_endpoint("runtime", _Request())
+    assert excinfo.value.status_code == 410
 
 
 def test_inform_registration_missing_slots_followup_and_history(monkeypatch, tmp_path):
