@@ -2874,6 +2874,78 @@ def test_base_file_versions_report_current_semver_for_content_and_schema_changes
     assert latest_versions["current_profile"]["current_version"] == "v2.1"
 
 
+def test_base_file_versions_use_post_save_profile_to_avoid_duplicate_major(monkeypatch, tmp_path):
+    fp = tmp_path / "ppid_knob.csv"
+    fp.write_text("product,feature_name\nPRODA,1 AA\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    seeded = filebrowser._snapshot_base_file_version(
+        fp,
+        "ppid_knob.csv",
+        actor="admin",
+        action="system_import",
+        note="seed v1 history",
+    )
+    assert seeded["display_version"] == "v1.0"
+
+    fp.write_text("product,feature_name,function_step\nPRODA,1 AA,PC_LITHO\n", encoding="utf-8")
+    external_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="ppid_knob.csv")
+    assert external_versions["current_profile"]["current_version"] == "v2.0"
+
+    saved_schema = filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="ppid_knob.csv",
+            csv_text="product,feature_name,function_step,category\nPRODA,1 AA,PC_LITHO,knob\n",
+            delimiter="comma",
+            include_header=True,
+            note="add category",
+        ),
+        _Request("admin", "admin"),
+    )
+    schema_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="ppid_knob.csv")
+    assert saved_schema["version"]["display_version"] == "v2.0"
+    assert schema_versions["versions"][0]["version"] == "v2.0"
+    assert schema_versions["current_profile"]["current_version"] == "v2.0"
+
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="ppid_knob.csv",
+            csv_text="product,feature_name,function_step,category\nPRODA,1 BB,PC_LITHO,knob\n",
+            delimiter="comma",
+            include_header=True,
+            note="same schema content",
+        ),
+        _Request("admin", "admin"),
+    )
+    content_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="ppid_knob.csv")
+    assert content_versions["versions"][0]["version"] == "v2.1"
+    assert content_versions["current_profile"]["current_version"] == "v2.1"
+
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="ppid_knob.csv",
+            csv_text="product,feature_name,function_step,category,operator\nPRODA,1 BB,PC_LITHO,knob,eq\n",
+            delimiter="comma",
+            include_header=True,
+            note="add operator",
+        ),
+        _Request("admin", "admin"),
+    )
+    next_schema_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="ppid_knob.csv")
+    assert next_schema_versions["versions"][0]["version"] == "v3.0"
+    assert next_schema_versions["current_profile"]["current_version"] == "v3.0"
+
+
 def test_version_diff_preserves_duplicate_inferred_key_additions(tmp_path):
     previous = tmp_path / "v1.csv"
     current = tmp_path / "current.csv"

@@ -64,6 +64,16 @@ def test_splittable_lot_note_uses_lot_id_without_extra_prefix():
     assert "+ LOT 노트 ({drawerRoot})" in ui
 
 
+def test_splittable_knob_rule_modal_checks_current_row_values():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+    assert "matchKnobRuleToRowValues" in ui
+    assert "normalizeKnobRuleValue(group?.category)" in ui
+    assert "[\"actual\",cell?.actual]" in ui
+    assert "[\"plan\",cell?.plan]" in ui
+    assert "[\"pending\",pending]" in ui
+    assert "openRuleMatchView(rowMatchKind,rowParam,row)" in ui
+
+
 def test_home_flowi_empty_chat_greeting_copy():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
     assert "오늘 어떤 도움을 드릴까요?" in ui

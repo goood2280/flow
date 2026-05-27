@@ -6,6 +6,8 @@
 
 ## Done
 
+- (Codex) SplitTable KNOB 분류 규칙 모달 row 값 체크 표시 보정
+- (Codex) FileBrowser 현재 버전 중복 major 증가 보정
 - (Codex) FileBrowser 단일 CSV 열 추가와 현재 EDM Version 표시
 - (Codex) SplitTable 적용공정 product 쉼표 매칭 보강
 - (Codex) FileBrowser 단일 CSV 열 변경 시 extra_col 제거와 EDM init 처리

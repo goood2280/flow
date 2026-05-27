@@ -50,6 +50,32 @@ const knobRuleBadgeStyle=(highlight=false)=>({
     ? {background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.95)",color:"rgba(220,38,38,0.95)"}
     : {background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.35)",color:"rgba(59,130,246,0.95)"})
 });
+const hasRuleMatchValue=(v)=>v!=null&&v!==""&&v!=="None"&&v!=="null";
+const normalizeKnobRuleValue=(value)=>String(value??"").trim().toLowerCase();
+const waferFromCellKey=(key)=>{
+  const parts=String(key||"").split("|");
+  return parts.length>=2?String(parts[1]||"").trim():"";
+};
+const knobRuleSourceLabel=(source)=>source==="actual"?"actual":source==="plan"?"saved plan":source==="pending"?"pending plan":source;
+const matchKnobRuleToRowValues=(group,row,pendingValueFor)=>{
+  const target=normalizeKnobRuleValue(group?.category);
+  if(!target||!row||!row._cells)return[];
+  const out=[];const seen=new Set();
+  Object.entries(row._cells||{}).forEach(([ci,cell])=>{
+    const wafer=waferFromCellKey(cell?.key)||String(Number(ci)+1);
+    const candidates=[["actual",cell?.actual],["plan",cell?.plan]];
+    const pending=pendingValueFor?pendingValueFor(cell):undefined;
+    if(pending!==undefined)candidates.push(["pending",pending]);
+    candidates.forEach(([source,value])=>{
+      if(!hasRuleMatchValue(value)||normalizeKnobRuleValue(value)!==target)return;
+      const key=`${wafer}|${source}|${String(value)}`;
+      if(seen.has(key))return;
+      seen.add(key);
+      out.push({wafer,source,value:String(value)});
+    });
+  });
+  return out;
+};
 
 function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=false,onValueChange,onCommit,onClose}){
   if(!activeCell)return null;
@@ -466,6 +492,7 @@ export default function My_SplitTable({user}){
   // v9.0.5: KNOB/INLINE/VM Index 클릭 시 매칭 규칙 미리보기 모달.
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
   const[rbMatchParam,setRbMatchParam]=useState("");
+  const[rbMatchRow,setRbMatchRow]=useState(null);
   // v8.8.15: Rulebook 행 CRUD modal — admin 이 knob_ppid/step_matching/inline_matching/vm_matching 의
   //   행을 직접 추가/수정/삭제. KNOB/VM item 정의는 공용, step/inline matching 은 product-scoped 로 저장한다.
   const[rbRowKind,setRbRowKind]=useState(null);
@@ -516,11 +543,12 @@ export default function My_SplitTable({user}){
       .catch(e=>toast.error("저장 실패: "+e.message))
       .finally(()=>setRbRowSaving(false));
   };
-  const openRuleMatchView=(kind,param)=>{
+  const openRuleMatchView=(kind,param,row=null)=>{
     setRbMatchKind(kind);
     setRbMatchParam(String(param || "").trim());
+    setRbMatchRow(kind==="knob_ppid"&&row?row:null);
   };
-  const closeRuleMatchView=()=>{setRbMatchKind(null);setRbMatchParam("");};
+  const closeRuleMatchView=()=>{setRbMatchKind(null);setRbMatchParam("");setRbMatchRow(null);};
   const parseCsvTokens=(value)=>String(value||"").split(",").map(s=>s.trim()).filter(Boolean);
   const rbMatchData = (() => {
     const p = String(rbMatchParam || "").trim();
@@ -1827,7 +1855,7 @@ export default function My_SplitTable({user}){
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+step_desc 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
                     KNOB/INLINE/VM 항목은 클릭 시 매칭 규칙 모달이 열리고, 설정값은 그때만 표출한다. */}
-                  <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam);}}
+                  <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam,row);}}
                     title={rowMatchKind ? `이 항목의 ${matchTitle} 보기` : ""}
                     style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>{(row._display||rowParam||"").replace(/^[A-Za-z]+_/,"")}</span>
                   {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>💬 {pLotN}</span>}
@@ -2471,7 +2499,7 @@ export default function My_SplitTable({user}){
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchKind==="knob_ppid"?"KNOB 분류 규칙":`${rbMatchTitle} 매칭 규칙`}</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rbMatchParam}</span>
-            {canManage && <button onClick={()=>{setRbMatchKind(null);openRowEditor(rbMatchKind);}}
+            {canManage && <button onClick={()=>{setRbMatchKind(null);setRbMatchRow(null);openRowEditor(rbMatchKind);}}
               style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>편집</button>}
             <span style={{flex:1}}/>
             <span onClick={closeRuleMatchView} style={{cursor:"pointer",fontSize:16}}>✕</span>
@@ -2481,9 +2509,10 @@ export default function My_SplitTable({user}){
               {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const composite=isCompositeKnobRule(groups);return(
                 <div style={{display:"grid",gap:8}}>
                   {groups.length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>분류 규칙이 없습니다.</div>}
-                  {groups.map((g, gi) => (
-                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"10px 12px",borderRadius:6,border:"1px solid rgba(251,191,36,0.35)",background:"var(--bg-card)"}}>
+                  {groups.map((g, gi) => {const ruleMatches=matchKnobRuleToRowValues(g,rbMatchRow,pendingValueFor);const checked=ruleMatches.length>0;return(
+                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"10px 12px",borderRadius:6,border:checked?"1px solid rgba(34,197,94,0.75)":"1px solid rgba(251,191,36,0.35)",background:checked?"rgba(34,197,94,0.06)":"var(--bg-card)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span title={checked?"현재 row의 actual/saved plan/pending plan 중 category와 일치":"현재 row 값과 일치 없음"} style={{width:20,height:20,lineHeight:"18px",textAlign:"center",borderRadius:4,border:checked?"1px solid rgba(34,197,94,0.8)":"1px solid var(--border)",background:checked?"rgba(34,197,94,0.16)":"transparent",color:checked?"rgba(22,163,74,0.95)":"var(--text-secondary)",fontWeight:900,fontSize:14,flexShrink:0}}>{checked?"✓":""}</span>
                         <span style={knobRuleBadgeStyle(composite)}>{g.rule_order ?? "-"}</span>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>condition</span>
                         <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.operator || "-"}</span>
@@ -2491,9 +2520,13 @@ export default function My_SplitTable({user}){
                         <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.35)",fontFamily:"monospace",fontWeight:700}}>{g.value || "-"}</span>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>category</span>
                         <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontFamily:"monospace",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
+                        {g.product && <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(148,163,184,0.12)",border:"1px solid rgba(148,163,184,0.35)",fontFamily:"monospace",fontWeight:700,color:"var(--text-secondary)"}}>product {g.product}</span>}
                       </div>
+                      {ruleMatches.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:8,marginLeft:28,fontSize:14,color:"var(--text-secondary)"}}>
+                        {ruleMatches.map((m,mi)=><span key={`${m.wafer}-${m.source}-${mi}`} style={{padding:"1px 6px",borderRadius:999,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.28)",fontFamily:"monospace",color:"rgba(22,163,74,0.95)"}}>W{m.wafer} · {knobRuleSourceLabel(m.source)}: {m.value}</span>)}
+                      </div>}
                     </div>
-                  ))}
+                  );})}
                 </div>
               );})()}
               {rbMatchKind === "inline_matching" && (()=>{const im=rbMatchData;const groups=Array.isArray(im.groups)?im.groups:[];return(

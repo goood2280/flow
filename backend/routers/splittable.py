@@ -356,7 +356,7 @@ def _rule_order_sort_key(label: object) -> tuple[int, int, str]:
         return (0, int(m.group(1)), text)
     if text.isdigit():
         return (0, int(text), text)
-    return (0, 999999, text)
+    return (2, 0, text)
 
 
 def _product_aliases(product: str) -> set[str]:
@@ -2547,7 +2547,7 @@ def get_prefixes():
 #                        value = SplitTable cell value such as PPID_01_2
 #   Vehicle_matching.csv: product, step_id, step_desc (preferred)
 #   step_matching.csv:    product, step_id, function_step (legacy fallback)
-# For each KNOB feature_name, we group the product-common ppid_knob rules in
+# For each KNOB feature_name, we keep product-common ppid_knob CSV rule rows in
 # rule_order, expand each step_desc through the current product's matching
 # step_ids, and produce both a structured `groups` payload and a label:
 #   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
@@ -2940,9 +2940,8 @@ def _build_knob_meta(product: str = "") -> dict:
     # step_desc → [{step_id,module}, ...] (ordered, dedup)
     step_map = _product_step_map_by_desc(product, base)
 
-    # feature_name → groups (sorted by rule_order)
+    # feature_name → CSV rule row groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
-    feat_step_desc_seen: dict[str, set[str]] = {}
     for r in knob_rules:
         # ppid_knob.csv is product-common.  If a legacy product column exists,
         # keep reading the row but leave product scoping to the matching file.
@@ -2959,10 +2958,6 @@ def _build_knob_meta(product: str = "") -> dict:
         )
         if not fname or not step_desc_key:
             continue
-        seen_steps = feat_step_desc_seen.setdefault(fname, set())
-        if step_desc_key in seen_steps:
-            continue
-        seen_steps.add(step_desc_key)
         order_label = _rule_order_label(r.get(km.get("rule_order_col", "rule_order")), len(feats.get(fname, [])) + 1)
         feats.setdefault(fname, []).append({
             "func_step": step_desc,
@@ -2973,6 +2968,7 @@ def _build_knob_meta(product: str = "") -> dict:
             "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
+            "product": _first_row_value(r, km.get("product_col", "product"), "product"),
             "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("step_id") or "").strip()],
             "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("module") or "").strip()],
         })
@@ -3632,16 +3628,16 @@ def knob_meta(product: str = Query("")):
           "KNOB_GATE_PPID": {
             "groups": [
               {"step_desc":"GATE_PATTERN","step_ids":["AA200030","AA200040","AA200050"],
-               "value":"PP_GATE_01","operator":"+","rule_order":1,"category":"gate"},
+               "value":"PP_GATE_01","operator":"+","rule_order":"R1","category":"gate","product":""},
               {"step_desc":"PC_ETCH","step_ids":["AA200100","AA200110"],
-               "value":"PP_PC_01","operator":"","rule_order":2,"category":"gate"}
+               "value":"PP_PC_01","operator":"","rule_order":"R2","category":"gate","product":""}
             ],
             "label": "GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)"
           },
           ...
         }
       }
-    product 필터는 선택 — Base CSV 에 product 컬럼이 있으면 적용, 없으면 공용 룰로 취급.
+    ppid_knob.csv는 product 컬럼이 있어도 공용 룰로 읽고, product별 step_id 확장만 Vehicle_matching.csv에서 적용한다.
     """
     return {"features": _build_knob_meta(product)}
 

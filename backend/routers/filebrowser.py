@@ -3071,6 +3071,57 @@ def _next_file_version(vdir: Path) -> int:
         return 1
 
 
+def _int_or_none(value) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _profile_column_count(profile: dict | None) -> int | None:
+    if not isinstance(profile, dict):
+        return None
+    value = profile.get("column_count")
+    if value is None:
+        value = profile.get("columns")
+        if isinstance(value, list):
+            return len(value)
+    return _int_or_none(value)
+
+
+def _meta_version_shape(meta: dict | None) -> tuple[int | None, int | None]:
+    if not isinstance(meta, dict):
+        return None, None
+    post_save_profile = meta.get("post_save_profile")
+    if isinstance(post_save_profile, dict):
+        rows = _int_or_none(post_save_profile.get("rows"))
+        columns = _profile_column_count(post_save_profile)
+        if rows is not None or columns is not None:
+            return rows, columns
+    return _int_or_none(meta.get("rows")), _int_or_none(meta.get("columns"))
+
+
+def _shape_changed(
+    rows: int | None,
+    columns: int | None,
+    prev_rows: int | None,
+    prev_columns: int | None,
+) -> bool:
+    return (
+        (rows is not None and prev_rows is not None and rows != prev_rows)
+        or (columns is not None and prev_columns is not None and columns != prev_columns)
+    )
+
+
+def _bump_semver(display_version: str, *, rows: int | None = None, columns: int | None = None, prev_rows: int | None = None, prev_columns: int | None = None) -> str:
+    m = re.match(r"^v(\d+)\.(\d+)$", str(display_version or ""))
+    major = int(m.group(1)) if m else 1
+    minor = int(m.group(2)) if m else 0
+    if _shape_changed(rows, columns, prev_rows, prev_columns):
+        return f"v{major + 1}.0"
+    return f"v{major}.{minor + 1}"
+
+
 def _next_semver(vdir: Path, *, rows: int | None = None, columns: int | None = None) -> str:
     metas = []
     try:
@@ -3088,14 +3139,11 @@ def _next_semver(vdir: Path, *, rows: int | None = None, columns: int | None = N
     if not metas:
         return "v1.0"
     major, minor, latest = sorted(metas, key=lambda x: (x[0], x[1]))[-1]
-    prev_rows = latest.get("rows")
-    prev_cols = latest.get("columns")
-    if (rows is not None and prev_rows is not None and rows != prev_rows) or (columns is not None and prev_cols is not None and columns != prev_cols):
-        return f"v{major + 1}.0"
-    return f"v{major}.{minor + 1}"
+    prev_rows, prev_cols = _meta_version_shape(latest)
+    return _bump_semver(f"v{major}.{minor}", rows=rows, columns=columns, prev_rows=prev_rows, prev_columns=prev_cols)
 
 
-def _latest_base_version_meta(file: str) -> tuple[dict, Path] | None:
+def _latest_base_version_meta(file: str, *, exclude_version: str = "") -> tuple[dict, Path] | None:
     vdir = _version_dir(file)
     if not vdir.is_dir():
         return None
@@ -3106,6 +3154,8 @@ def _latest_base_version_meta(file: str) -> tuple[dict, Path] | None:
         except Exception:
             continue
         storage_version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
+        if exclude_version and storage_version == exclude_version:
+            continue
         candidates.append((_version_number(storage_version), meta_fp.stat().st_mtime, meta, meta_fp))
     if not candidates:
         return None
@@ -3132,7 +3182,14 @@ def _current_base_file_version_info(file: str, target: Path, profile: dict | Non
     latest_display = str(latest_meta.get("display_version") or latest_meta.get("version") or "")
     latest_storage = str(latest_meta.get("version") or "")
     checksum = str(profile.get("checksum") or "")
-    if checksum and checksum == str(latest_meta.get("checksum") or ""):
+    post_save_profile = latest_meta.get("post_save_profile")
+    post_save_checksum = str(post_save_profile.get("checksum") or "") if isinstance(post_save_profile, dict) else ""
+    if checksum and post_save_checksum and checksum == post_save_checksum:
+        info["current_version"] = latest_display or latest_storage or current_version
+        info["current_version_state"] = "latest_post_save"
+        if latest_storage:
+            info["current_storage_version"] = latest_storage
+    elif checksum and checksum == str(latest_meta.get("checksum") or ""):
         info["current_version"] = latest_display or latest_storage or current_version
         info["current_version_state"] = "latest_snapshot"
         if latest_storage:
@@ -3715,11 +3772,25 @@ def _attach_post_save_change_summary(file: str, version_meta: dict | None, after
     try:
         change_summary = _snapshot_change_summary(after_path, content_fp, file=file)
         diff_table = _diff_table_between(after_path, content_fp, file=file)
+        post_save_profile = _file_profile(after_path)
+        post_rows = post_save_profile.get("rows")
+        post_columns = _profile_column_count(post_save_profile)
+        storage_version = str(version_meta.get("version") or "")
+        previous = _latest_base_version_meta(file, exclude_version=storage_version)
+        if previous is not None:
+            previous_meta, _ = previous
+            prev_rows, prev_columns = _meta_version_shape(previous_meta)
+            base_display = str(previous_meta.get("display_version") or previous_meta.get("version") or "v1.0")
+        else:
+            prev_rows, prev_columns = version_meta.get("rows"), version_meta.get("columns")
+            base_display = "v1.0"
+        display_version = _bump_semver(base_display, rows=post_rows, columns=post_columns, prev_rows=prev_rows, prev_columns=prev_columns)
         version_meta = {
             **version_meta,
+            "display_version": display_version,
             "change_summary": change_summary,
             "save_diff_table": diff_table,
-            "post_save_profile": _file_profile(after_path),
+            "post_save_profile": post_save_profile,
         }
         meta_fp = vdir / f"{version_meta.get('version')}.meta.json"
         if meta_fp.is_file():

@@ -715,6 +715,33 @@ def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypat
     assert "STEP_PC_B" not in groups[0]["step_ids"]
 
 
+def test_knob_meta_keeps_csv_rule_rows_sorts_r_order_and_exposes_product(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "product,feature_name,rule_order,step_desc,operator,value,category\n"
+        "PRODB,5.0 PC,RO,PC,=,PPID_RO,OFF\n"
+        "PRODB,5.0 PC,R2,PC,=,PPID_B,ON\n"
+        "PRODB,5.0 PC,R1,GATE,=,PPID_A,ON\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_PC_A,PC\n"
+        "PRODA,STEP_GATE_A,GATE\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    groups = meta["5.0 PC"]["groups"]
+    assert [g["rule_order"] for g in groups] == ["R1", "R2", "RO"]
+    assert [g["step_desc"] for g in groups] == ["GATE", "PC", "PC"]
+    assert [g["product"] for g in groups] == ["PRODB", "PRODB", "PRODB"]
+    assert groups[1]["step_ids"] == ["STEP_PC_A"]
+    assert "STEP_PC_B" not in groups[1]["step_ids"]
+
+
 def test_knob_meta_vehicle_matching_uses_only_current_product_rows(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(
@@ -779,7 +806,7 @@ def test_knob_meta_vehicle_matching_product_header_accepts_utf8_bom(tmp_path, mo
     assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
 
 
-def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_dedupes_groups(tmp_path, monkeypatch):
+def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_keeps_rule_rows(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(
         "feature_name,rule_order,step_desc,operator,value,category\n"
@@ -798,10 +825,10 @@ def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_dedupes_grou
     meta = splittable._build_knob_meta("ML_TABLE_PRODA")
 
     groups = meta["5.0 PC"]["groups"]
-    assert len(groups) == 1
-    assert groups[0]["step_desc"] == "pc"
-    assert groups[0]["step_ids"] == ["STEP_PC_A"]
-    assert "STEP_PC_B" not in groups[0]["step_ids"]
+    assert [g["rule_order"] for g in groups] == ["R1", "R2"]
+    assert [g["step_desc"] for g in groups] == ["pc", "PC"]
+    assert all(g["step_ids"] == ["STEP_PC_A"] for g in groups)
+    assert all("STEP_PC_B" not in g["step_ids"] for g in groups)
 
 
 def test_vehicle_rulebook_filters_product_alias_case_insensitively(tmp_path, monkeypatch):
@@ -850,6 +877,7 @@ def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, mo
 
     assert "7.0 PC" in meta
     assert meta["7.0 PC"]["groups"][0]["step_ids"] == ["STEP_PRODA"]
+    assert meta["7.0 PC"]["groups"][0]["product"] == "PRODB"
 
 
 def test_knob_meta_falls_back_to_step_matching_when_vehicle_matching_is_missing(tmp_path, monkeypatch):

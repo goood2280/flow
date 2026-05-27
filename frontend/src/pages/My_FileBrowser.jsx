@@ -2223,6 +2223,9 @@ export default function My_FileBrowser({user,onNavigate}){
                   style={{fontSize:14,fontWeight:700,fontFamily:"monospace",padding:"3px 10px",borderRadius:4,background:bg,color:fg,letterSpacing:0.5}}>{label}</span>;
               })()}
               <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
+              {mode==="base"&&baseCurrentVersion&&<span title={`현재 EDM version: ${baseCurrentVersion}`} style={{fontSize:12,fontWeight:800,color:"var(--accent)",background:"var(--accent-glow)",border:"1px solid var(--accent)",borderRadius:4,padding:"3px 7px",fontFamily:"monospace",flexShrink:0}}>
+                현재 {baseCurrentVersion}
+              </span>}
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
                     ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}</>
