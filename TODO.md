@@ -2,12 +2,14 @@
 
 ## Now
 
+- (Codex) 변경점 관리 Flow-i Agent 단위기능 AI 연결
 - (Codex) 인폼 로그 목록 상태/작성자/시간 열 가시성 보정
 
 ## Next
 
 ## Done
 
+- (Codex) Agent Semantic layer 관리 API/UI와 Inform 등록 도우미 graph 연결
 - (Codex) Inform 매트릭스 설정 모듈만 표시/순서 보정
 - (Codex) Inform 매트릭스 셀 숫자 가시성 보정
 - (Codex) Inform 로그 탭 audit module 표시 보강

@@ -14,6 +14,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
 - Inform Log PageGear의 module, reason, reason template, product contact 설정
 - Agent/Home Agent `inform_registration` unit의 최종 저장 계약. Agent는 slot 수집과 review를 담당하고, confirm 시 기존 `InformCreate`/`create_inform()` 경로만 호출한다.
+- Agent/Home Agent `inform_registration` unit의 semantic alias hint를 통한 slot 수집 보조. Semantic hint는 원문 명시값과 explicit override보다 낮은 우선순위다.
 - Dashboard inform widget용 요약 데이터
 
 ## Does Not Own
@@ -44,6 +45,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - Inform product와 SplitTable product는 `ML_TABLE_` prefix와 대소문자가 달라도 같은 product로 본다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
 - Agent `inform_registration` unit은 confirm 전에는 Inform 저장 파일을 쓰지 않는다. short memory session은 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/`에 1시간 TTL로만 남긴다.
+- Agent `inform_registration` graph는 `context_seed -> semantic_layer -> slot_extract -> validate_missing -> snapshot_preview -> review -> register` 순서이며, `semantic_layer`는 `data/flow-data/semantic` lexicon의 alias hit, slot hint, unknown term을 공개 trace에 남긴다.
 - 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
 - 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
 - Config modules/reasons/reason_templates와 product contacts 변경은 Inform Log PageGear에서 `inform` page manager 이상만 수행한다.

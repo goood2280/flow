@@ -86,12 +86,14 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     graph_payload = runtime.inform_registration_graph()
     assert [node["id"] for node in graph_payload["nodes"]] == [
         "context_seed",
+        "semantic_layer",
         "slot_extract",
         "validate_missing",
         "snapshot_preview",
         "review",
         "register",
     ]
+    assert graph_payload["state_design"]["semantic_frame"]["producer"] == "semantic_layer"
     assert graph_payload["state_design"]["slots"]["producer"] == "slot_extract"
     assert graph_payload["state_design"]["draft"]["producer"] == "review"
     for node in graph_payload["nodes"]:
@@ -114,6 +116,7 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     assert graph["ok"] is True
     assert graph["unit_ai"] == "inform_registration"
     assert graph["graph"]["nodes"][0]["id"] == "context_seed"
+    assert graph["graph"]["nodes"][1]["id"] == "semantic_layer"
 
 
 def test_agent_runtime_routes_are_before_archived_catchall():
@@ -128,6 +131,8 @@ def test_agent_runtime_routes_are_before_archived_catchall():
         "/api/agent/unit-ai/{unit_key}/runtime/run",
         "/api/agent/home-flowi/runtime/graph",
         "/api/agent/home-flowi/runtime/runs",
+        "/api/agent/semantic/lexicon",
+        "/api/agent/semantic/proposals",
     ):
         idx = next(i for i, row in enumerate(routes) if row[0] == path)
         assert idx < catchall_idx
@@ -140,6 +145,7 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
         "/api/agent/unit-ai/inform_registration/runtime/graph": "inform_registration_runtime_graph",
         "/api/agent/unit-ai/inform_registration/runtime/history": "inform_registration_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
+        "/api/agent/semantic/lexicon": "semantic_lexicon",
     }
     for path, endpoint in expected.items():
         assert _first_matching_endpoint(flow_app.routes, path) == endpoint
@@ -190,6 +196,22 @@ def test_inform_registration_missing_slots_followup_and_history(monkeypatch, tmp
     assert history[0]["session_id"] == first["session_id"]
     assert history[0]["status"] == "review"
     assert history[1]["status"] == "collecting"
+
+
+def test_inform_registration_semantic_layer_precedes_slot_extract_and_overrides_win(monkeypatch, tmp_path):
+    _install_inform_fixture(monkeypatch, tmp_path)
+
+    out = _run({
+        "prompt": "product PRODA lot R1000 module GATE note IOFF drift to alice@example.test",
+        "slot_overrides": {"product": "PRODB"},
+    })
+
+    trace_ids = [row["node_id"] for row in out["trace"]]
+    assert trace_ids[:3] == ["context_seed", "semantic_layer", "slot_extract"]
+    assert out["semantic_frame"]["alias_hits"]
+    assert out["trace"][1]["output"]["slot_hints"]["product"] == "PRODA"
+    assert out["slots"]["product"] == "PRODB"
+    assert out["slots"]["lot_id"] == "R1000"
 
 
 def test_inform_registration_confirm_writes_inform_and_mail_draft(monkeypatch, tmp_path):

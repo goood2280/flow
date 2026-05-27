@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import dagre from "dagre";
 import { PageHeader, PageShell, Panel, Banner, Button, Field, Pill, Select, TabStrip, Textarea } from "../components/UXKit";
 import LlmTab from "../components/agent/LlmTab";
-import { postJson, sf } from "../lib/api";
+import { postJson, putJson, sf } from "../lib/api";
 
 const AGENT_UNIT_RUN_ENDPOINT = "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run";
 const FILEBROWSER_AI_SQL_HISTORY_ENDPOINT = "/api/filebrowser/sql/history?limit=50";
 const INFORM_REGISTRATION_GRAPH_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/graph";
 const INFORM_REGISTRATION_RUN_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/run";
 const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/history?limit=50";
+const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
+const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 
 function formatAgentEndpointError(error, endpoint, method = "GET") {
   const statusText = error?.status ? `HTTP ${error.status}` : "request failed";
@@ -264,6 +266,7 @@ const STATE_KEY_BY_NODE = {
 
 const INFORM_STATE_KEY_BY_NODE = {
   context_seed: "session",
+  semantic_layer: "semantic_frame",
   slot_extract: "slots",
   validate_missing: "missing",
   snapshot_preview: "snapshot",
@@ -293,6 +296,7 @@ const FALLBACK_GRAPH = {
 const INFORM_FALLBACK_GRAPH = {
   nodes: [
     { id: "context_seed", label: "Session seed", phase: "context", status: "pending" },
+    { id: "semantic_layer", label: "용어해석", phase: "semantic", status: "pending" },
     { id: "slot_extract", label: "Slot extract", phase: "semantic", status: "pending" },
     { id: "validate_missing", label: "필수값 확인", phase: "validate", status: "pending" },
     { id: "snapshot_preview", label: "Snapshot preview", phase: "preview", status: "pending" },
@@ -300,7 +304,8 @@ const INFORM_FALLBACK_GRAPH = {
     { id: "register", label: "Inform 저장", phase: "write", status: "pending" },
   ],
   edges: [
-    { source: "context_seed", target: "slot_extract" },
+    { source: "context_seed", target: "semantic_layer" },
+    { source: "semantic_layer", target: "slot_extract" },
     { source: "slot_extract", target: "validate_missing" },
     { source: "validate_missing", target: "snapshot_preview" },
     { source: "snapshot_preview", target: "review" },
@@ -337,6 +342,25 @@ function buildAccumulatedState(result, request, upToIdx, stateKeyByNode = STATE_
     if (key) state[key] = row.output;
   }
   return state;
+}
+
+function parseJsonObject(text, label) {
+  let parsed = {};
+  try {
+    parsed = JSON.parse(text || "{}");
+  } catch (e) {
+    throw new Error(`${label} JSON 파싱 실패: ${e.message || String(e)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} JSON은 object여야 합니다.`);
+  }
+  return parsed;
+}
+
+function listFromValue(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+  return [];
 }
 
 function FileBrowserAiSqlUnitPanel() {
@@ -1353,6 +1377,260 @@ function InformRegistrationUnitPanel() {
   );
 }
 
+function SemanticLayerPanel() {
+  const [payload, setPayload] = useState(null);
+  const [aliasJson, setAliasJson] = useState("{}");
+  const [intentJson, setIntentJson] = useState("{}");
+  const [draftText, setDraftText] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [proposalCanonicals, setProposalCanonicals] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const syncPayload = (next) => {
+    setPayload(next || null);
+    setAliasJson(JSON.stringify(next?.alias_groups?.disk || {}, null, 2));
+    setIntentJson(JSON.stringify(next?.intent_hints?.disk || {}, null, 2));
+  };
+
+  const load = () => {
+    setLoading(true);
+    setErr("");
+    return Promise.all([
+      sf(SEMANTIC_LEXICON_ENDPOINT),
+      sf(SEMANTIC_PROPOSALS_ENDPOINT).catch(() => ({ proposals: [] })),
+    ]).then(([lexiconPayload, proposalsPayload]) => {
+      syncPayload({
+        ...lexiconPayload,
+        proposals: proposalsPayload?.proposals || lexiconPayload?.proposals || [],
+      });
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const saveAliasJson = () => {
+    let next = {};
+    try {
+      next = parseJsonObject(aliasJson, "alias_groups");
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    const current = payload?.alias_groups?.disk || {};
+    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    Promise.all([
+      ...deletions.map((key) => sf(`/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`, { method: "DELETE" })),
+      ...Object.entries(next).map(([key, value]) => putJson(
+        `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
+        { aliases: listFromValue(value) }
+      )),
+    ]).then(() => {
+      setMsg("alias_groups 저장 완료");
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const saveIntentJson = () => {
+    let next = {};
+    try {
+      next = parseJsonObject(intentJson, "intent_hints");
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    const current = payload?.intent_hints?.disk || {};
+    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    Promise.all([
+      ...deletions.map((key) => sf(`/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`, { method: "DELETE" })),
+      ...Object.entries(next).map(([key, value]) => putJson(
+        `/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`,
+        { required_canonicals: listFromValue(value) }
+      )),
+    ]).then(() => {
+      setMsg("intent_hints 저장 완료");
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const makeDraft = () => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    postJson("/api/agent/semantic/draft", { text: draftText })
+      .then((out) => setDraft(out?.draft || null))
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const applyDraft = () => {
+    const aliasGroups = draft?.alias_groups || {};
+    const intentHints = draft?.intent_hints || {};
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    Promise.all([
+      ...Object.entries(aliasGroups).map(([key, value]) => putJson(
+        `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
+        { aliases: listFromValue(value) }
+      )),
+      ...Object.entries(intentHints).map(([key, value]) => putJson(
+        `/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`,
+        { required_canonicals: listFromValue(value) }
+      )),
+    ]).then(() => {
+      setMsg("semantic draft 저장 완료");
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const decideProposal = (proposal, decision) => {
+    const id = proposal?.id || "";
+    if (!id) return;
+    const canonical = proposalCanonicals[id] ?? proposal?.canonical_match ?? (proposal?.category === "new_canonical" ? proposal?.term : "");
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    postJson(`/api/agent/semantic/proposals/${encodeURIComponent(id)}/decision`, {
+      decision,
+      canonical,
+    }).then(() => {
+      setMsg(`proposal ${decision === "approve" ? "승인" : "거절"} 완료`);
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const proposals = payload?.proposals || [];
+  const changes = payload?.changes || [];
+  const canApplyDraft = draft && (Object.keys(draft.alias_groups || {}).length || Object.keys(draft.intent_hints || {}).length);
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
+      {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(0, 1.05fr)", gap: 10, alignItems: "start" }}>
+        <Panel
+          title="Lexicon"
+          subtitle={loading ? "loading" : "disk overrides"}
+          right={<Button variant="ghost" onClick={load} disabled={loading || busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <Field label="alias_groups">
+              <Textarea value={aliasJson} onChange={(e) => setAliasJson(e.target.value)} rows={12} />
+            </Field>
+            <Button variant="primary" onClick={saveAliasJson} disabled={busy}>alias 저장</Button>
+            <Field label="intent_hints">
+              <Textarea value={intentJson} onChange={(e) => setIntentJson(e.target.value)} rows={8} />
+            </Field>
+            <Button variant="primary" onClick={saveIntentJson} disabled={busy}>intent 저장</Button>
+          </div>
+        </Panel>
+
+        <Panel title="Effective view" subtitle="merged">
+          <div style={{ display: "grid", gap: 8 }}>
+            <JsonBlock
+              value={{
+                alias_groups: payload?.alias_groups?.effective || {},
+                intent_hints: payload?.intent_hints?.effective || {},
+              }}
+              maxHeight={360}
+            />
+            <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ fontSize: 12 }}>Draft</strong>
+                {draft?.source ? <Pill tone="neutral">{draft.source}</Pill> : null}
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                <Textarea
+                  value={draftText}
+                  onChange={(e) => setDraftText(e.target.value)}
+                  rows={4}
+                  placeholder='{"alias_groups":{"ioff":["IOFF","누설전류"]}}'
+                />
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button variant="primary" onClick={makeDraft} disabled={!draftText.trim() || busy}>초안 생성</Button>
+                  <Button variant="primary" onClick={applyDraft} disabled={!canApplyDraft || busy}>초안 저장</Button>
+                </div>
+                <JsonBlock value={draft || {}} maxHeight={220} />
+              </div>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 10, alignItems: "start" }}>
+        <Panel title="Proposals" subtitle={`${proposals.length} pending`}>
+          <div style={{ display: "grid", gap: 6, maxHeight: 420, overflow: "auto" }}>
+            {proposals.length ? proposals.map((proposal) => {
+              const id = proposal.id || `${proposal.term}:${proposal.created_at}`;
+              const canonical = proposalCanonicals[id] ?? proposal.canonical_match ?? (proposal.category === "new_canonical" ? proposal.term : "");
+              return (
+                <div key={id} style={{ display: "grid", gap: 6, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{proposal.term || "(empty)"}</strong>
+                    <Pill tone={proposal.category === "conflict" ? "warn" : "neutral"}>{proposal.category || "proposal"}</Pill>
+                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{proposal.confidence ?? ""}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                    {proposal.rationale || ""} {proposal.origin?.kind ? `· ${proposal.origin.kind}` : ""}
+                  </div>
+                  <input
+                    value={canonical || ""}
+                    onChange={(e) => setProposalCanonicals((prev) => ({ ...prev, [id]: e.target.value }))}
+                    placeholder="canonical"
+                    style={{ width: "100%", padding: "7px 9px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
+                  />
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <Button variant="ghost" onClick={() => decideProposal(proposal, "reject")} disabled={busy} style={{ fontSize: 12, padding: "4px 10px", height: 28 }}>거절</Button>
+                    <Button variant="primary" onClick={() => decideProposal(proposal, "approve")} disabled={busy} style={{ fontSize: 12, padding: "4px 10px", height: 28 }}>승인</Button>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                pending proposal 없음
+              </div>
+            )}
+          </div>
+        </Panel>
+
+        <Panel title="Changes" subtitle={`${changes.length} rows`}>
+          <div style={{ display: "grid", gap: 6, maxHeight: 420, overflow: "auto" }}>
+            {changes.length ? changes.map((change, idx) => (
+              <div key={`${change.scope}:${change.key}:${idx}`} style={{ display: "grid", gap: 4, padding: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill tone="neutral">{change.scope || "change"}</Pill>
+                  <strong style={{ fontSize: 12 }}>{change.key || ""}</strong>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>{change.by || ""}</div>
+                <JsonBlock value={{ before: change.before || [], after: change.after || [] }} maxHeight={120} />
+              </div>
+            )) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                change 없음
+              </div>
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 function UnitAiPanel() {
   const [activeUnit, setActiveUnit] = useState("filebrowser_ai_sql");
   return (
@@ -1547,6 +1825,7 @@ export default function My_Diagnosis({ user }) {
               onChange={setActiveTab}
               items={[
                 { k: "home-flowi", l: "Flow-i" },
+                { k: "semantic", l: "Semantic layer" },
                 { k: "unit-ai", l: "단위기능 AI" },
                 { k: "llm", l: "LLM 설정" },
               ]}
@@ -1555,7 +1834,7 @@ export default function My_Diagnosis({ user }) {
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>
             {activeTab === "home-flowi"
               ? <HomeFlowiRuntimePanel />
-              : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />)}
+              : (activeTab === "semantic" ? <SemanticLayerPanel /> : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />))}
           </div>
         </div>
       </PageShell>

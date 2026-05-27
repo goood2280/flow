@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from app_v2.modules.semantic_learning import extractor as semantic_extractor
+from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
 from core.paths import PATHS
 from core.utils import load_json, save_json
 
@@ -20,6 +22,7 @@ SESSION_TTL_SECONDS = 3600
 
 GRAPH_NODES: tuple[dict[str, str], ...] = (
     {"id": "context_seed", "label": "Session seed", "phase": "context"},
+    {"id": "semantic_layer", "label": "용어해석", "phase": "semantic"},
     {"id": "slot_extract", "label": "Slot extract", "phase": "semantic"},
     {"id": "validate_missing", "label": "필수값 확인", "phase": "validate"},
     {"id": "snapshot_preview", "label": "Snapshot preview", "phase": "preview"},
@@ -28,7 +31,8 @@ GRAPH_NODES: tuple[dict[str, str], ...] = (
 )
 
 GRAPH_EDGES: tuple[dict[str, str], ...] = (
-    {"source": "context_seed", "target": "slot_extract"},
+    {"source": "context_seed", "target": "semantic_layer"},
+    {"source": "semantic_layer", "target": "slot_extract"},
     {"source": "slot_extract", "target": "validate_missing"},
     {"source": "validate_missing", "target": "snapshot_preview"},
     {"source": "snapshot_preview", "target": "review"},
@@ -49,6 +53,11 @@ STATE_DESIGN: dict[str, dict[str, Any]] = {
     "request": {
         "description": "Sanitized prompt, action, and explicit slot overrides.",
         "producer": "runtime",
+        "public": True,
+    },
+    "semantic_frame": {
+        "description": "Runtime vocabulary resolution, alias hits, slot hints, unknown terms, and warnings.",
+        "producer": "semantic_layer",
         "public": True,
     },
     "slots": {
@@ -92,10 +101,18 @@ NODE_METADATA: dict[str, dict[str, Any]] = {
         "shared_state": ["session.session_id", "session.updated_at", "slots"],
         "answer_attach_rule": "Expose session metadata and accumulated slots only; do not write Inform data.",
     },
+    "semantic_layer": {
+        "persona": "Resolves Inform registration vocabulary against the shared semantic lexicon before slot extraction.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.prompt", "slots", "data/flow-data/semantic/alias_groups.json", "data/flow-data/semantic/intent_hints.json"],
+        "writes": ["semantic_frame"],
+        "shared_state": ["semantic_frame.alias_hits", "semantic_frame.slot_hints", "semantic_frame.unknown_terms"],
+        "answer_attach_rule": "Attach alias hits, slot hints, unknown terms, and public warnings only.",
+    },
     "slot_extract": {
         "persona": "Deterministic slot extractor for product, single lot, module, note, mail target, and optional snapshot request.",
         "prompt": {"system": "", "mode": "deterministic"},
-        "reads": ["request.prompt", "request.slot_overrides", "slots"],
+        "reads": ["request.prompt", "request.slot_overrides", "semantic_frame.slot_hints", "slots"],
         "writes": ["slots"],
         "shared_state": ["slots.product", "slots.lot_id", "slots.module", "slots.note", "slots.mail_draft"],
         "answer_attach_rule": "Attach sanitized slot values and extraction warnings only.",
@@ -145,6 +162,26 @@ _QUESTIONS = {
     "note": "Inform에 저장할 note 내용을 알려주세요.",
     "mail_target": "메일 대상(to, to_users, groups, extra_emails 중 하나)을 알려주세요.",
     "snapshot_custom_cols": "첨부할 KNOB/CUSTOM/set snapshot 컬럼이나 세트를 알려주세요.",
+}
+
+_INFORM_SEMANTIC_ALIAS_SEED: dict[str, list[str]] = {
+    "product": ["product", "prod", "제품", "제품명"],
+    "lot_id": ["lot", "lot_id", "LOT", "로트"],
+    "module": ["module", "mod", "모듈", "담당모듈"],
+    "note": ["note", "text", "내용", "노트", "메시지"],
+    "mail_target": ["mail", "email", "to", "담당자", "수신자", "메일"],
+    "snapshot_custom_cols": ["snapshot", "knob", "custom", "split table", "splittable", "스냅샷", "노브", "세트"],
+}
+
+_SLOT_HINT_KEYS = {"product", "lot_id", "module", "note"}
+_SEMANTIC_VALUE_STOPWORDS = {
+    "알려줘",
+    "알려주세요",
+    "등록",
+    "생성",
+    "추가",
+    "확인",
+    "요청",
 }
 
 
@@ -322,6 +359,131 @@ def _first_regex(patterns: list[str], text: str, max_len: int = 160) -> str:
         if match:
             return _clean_text(match.group(1), max_len).strip(" ,;")
     return ""
+
+
+def _norm_semantic_token(value: Any) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").casefold())
+
+
+def _inform_alias_groups() -> dict[str, list[str]]:
+    try:
+        return semantic_lexicon_service.effective_alias_groups(_INFORM_SEMANTIC_ALIAS_SEED)
+    except Exception:
+        return deepcopy(_INFORM_SEMANTIC_ALIAS_SEED)
+
+
+def _inform_intent_hints() -> dict[str, list[str]]:
+    try:
+        return semantic_lexicon_service.effective_intent_hints({})
+    except Exception:
+        return {}
+
+
+def _semantic_alias_hits(prompt: str, alias_groups: dict[str, list[str]]) -> tuple[list[dict[str, str]], set[str]]:
+    prompt_norm = _norm_semantic_token(prompt)
+    hits: list[dict[str, str]] = []
+    matched_norms: set[str] = set()
+    if not prompt_norm:
+        return hits, matched_norms
+    for canonical, aliases in (alias_groups or {}).items():
+        canonical_text = str(canonical or "").strip()
+        if not canonical_text:
+            continue
+        for alias in [canonical_text, *list(aliases or [])]:
+            alias_text = str(alias or "").strip()
+            alias_norm = _norm_semantic_token(alias_text)
+            if len(alias_norm) < 2:
+                continue
+            if alias_norm and alias_norm in prompt_norm:
+                hits.append({"canonical": canonical_text, "alias": alias_text})
+                matched_norms.add(alias_norm)
+                break
+    return hits, matched_norms
+
+
+def _semantic_value_after_alias(prompt: str, aliases: list[str], max_len: int = 160) -> str:
+    for alias in aliases:
+        alias_text = str(alias or "").strip()
+        if len(_norm_semantic_token(alias_text)) < 2:
+            continue
+        pattern = rf"{re.escape(alias_text)}\s*[:=]?\s*([A-Za-z0-9가-힣_.@/\-]+)"
+        value = _first_regex([pattern], prompt, max_len=max_len)
+        if value and _norm_semantic_token(value) not in _SEMANTIC_VALUE_STOPWORDS:
+            return value
+    return ""
+
+
+def _semantic_slot_hints(prompt: str, alias_hits: list[dict[str, str]], alias_groups: dict[str, list[str]]) -> dict[str, Any]:
+    hit_canonicals = {str(hit.get("canonical") or "") for hit in alias_hits}
+    hints: dict[str, Any] = {}
+    for key in sorted(_SLOT_HINT_KEYS & hit_canonicals):
+        aliases = [key, *list(alias_groups.get(key) or [])]
+        value = _semantic_value_after_alias(prompt, aliases, max_len=5000 if key == "note" else 160)
+        if value:
+            hints[key] = value
+    if "snapshot_custom_cols" in hit_canonicals or _snapshot_requested(prompt, hints):
+        hints["wants_snapshot"] = True
+        cols = _string_list(_SNAPSHOT_COL_RE.findall(prompt), limit=80)
+        if cols:
+            hints["snapshot_custom_cols"] = cols
+    return hints
+
+
+def _semantic_unknown_terms(
+    prompt: str,
+    alias_groups: dict[str, list[str]],
+    matched_norms: set[str],
+    ignored_values: list[Any] | None = None,
+) -> list[str]:
+    known_norms: set[str] = set(matched_norms)
+    for canonical, aliases in (alias_groups or {}).items():
+        for value in [canonical, *list(aliases or [])]:
+            norm = _norm_semantic_token(value)
+            if norm:
+                known_norms.add(norm)
+    for value in ignored_values or []:
+        norm = _norm_semantic_token(value)
+        if norm:
+            known_norms.add(norm)
+    out: list[str] = []
+    for term in semantic_extractor.extract_terms(prompt):
+        norm = _norm_semantic_token(term)
+        if not norm or norm in known_norms:
+            continue
+        if any(norm in known or known in norm for known in known_norms if len(known) >= 3):
+            continue
+        out.append(term)
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _semantic_layer(prompt: str, current_slots: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    alias_groups = _inform_alias_groups()
+    intent_hints = _inform_intent_hints()
+    alias_hits, matched_norms = _semantic_alias_hits(prompt, alias_groups)
+    slot_hints = _semantic_slot_hints(prompt, alias_hits, alias_groups)
+    ignored_values = [value for value in slot_hints.values() if isinstance(value, str)]
+    ignored_values.extend(_string_list(slot_hints.get("snapshot_custom_cols"), limit=80))
+    unknown_terms = _semantic_unknown_terms(prompt, alias_groups, matched_norms, ignored_values)
+    hit_canonicals = {str(hit.get("canonical") or "") for hit in alias_hits}
+    intent_matches = {
+        intent: required
+        for intent, required in (intent_hints or {}).items()
+        if required and all(str(item) in hit_canonicals for item in required)
+    }
+    warnings: list[str] = []
+    if unknown_terms:
+        warnings.append("Unmapped semantic terms: " + ", ".join(unknown_terms[:8]))
+    semantic_frame = {
+        "alias_hits": alias_hits,
+        "slot_hints": deepcopy(slot_hints),
+        "unknown_terms": unknown_terms,
+        "intent_matches": intent_matches,
+        "current_slot_keys": sorted((current_slots or {}).keys()),
+        "warnings": warnings,
+    }
+    return semantic_frame, slot_hints, warnings
 
 
 def _extract_slots_from_prompt(prompt: str) -> dict[str, Any]:
@@ -589,6 +751,7 @@ def _history_entry(
     answer: str,
     question: str,
     missing: list[str],
+    semantic_frame: dict[str, Any],
     slots: dict[str, Any],
     draft: dict[str, Any],
     requires_confirmation: bool,
@@ -607,6 +770,7 @@ def _history_entry(
         "answer": answer,
         "question": question,
         "missing": list(missing),
+        "semantic_frame": deepcopy(semantic_frame or {}),
         "slots": deepcopy(slots),
         "draft": {
             "inform": deepcopy((draft or {}).get("inform") or {}),
@@ -641,6 +805,7 @@ def run_inform_registration_runtime(
     }
     trace: list[dict[str, Any]] = []
     warnings: list[str] = []
+    semantic_frame: dict[str, Any] = {}
 
     started = time.perf_counter()
     context_warnings = ["new short-memory session created"] if new_session else []
@@ -668,7 +833,7 @@ def run_inform_registration_runtime(
         created_inform: dict[str, Any] = {}
         requires_confirmation = False
         statuses = {row["node_id"]: row["status"] for row in trace}
-        for node_id in ("slot_extract", "validate_missing", "snapshot_preview", "review", "register"):
+        for node_id in ("semantic_layer", "slot_extract", "validate_missing", "snapshot_preview", "review", "register"):
             statuses[node_id] = "skipped"
         history = _history_entry(
             run_id=run_id,
@@ -679,6 +844,7 @@ def run_inform_registration_runtime(
             answer=answer,
             question="",
             missing=missing,
+            semantic_frame=semantic_frame,
             slots=slots,
             draft=draft,
             requires_confirmation=requires_confirmation,
@@ -697,6 +863,7 @@ def run_inform_registration_runtime(
             "answer": answer,
             "question": "",
             "missing": missing,
+            "semantic_frame": semantic_frame,
             "slots": slots,
             "draft": draft,
             "requires_confirmation": requires_confirmation,
@@ -707,13 +874,30 @@ def run_inform_registration_runtime(
         }
 
     started = time.perf_counter()
+    semantic_frame, semantic_slot_hints, semantic_warnings = _semantic_layer(prompt, slots)
+    trace.append(_trace_row(
+        "semantic_layer",
+        _status_from_warnings(semantic_warnings),
+        semantic_frame,
+        semantic_warnings,
+        started,
+        {"prompt_chars": len(prompt), "existing_slot_keys": sorted(slots.keys())},
+    ))
+    warnings.extend(semantic_warnings)
+
+    started = time.perf_counter()
     extracted = _extract_slots_from_prompt(prompt)
     overrides = _normalize_overrides(body.get("slot_overrides"))
-    slots = _merge_slots(slots, extracted, overrides)
+    slots = _merge_slots(slots, semantic_slot_hints, extracted, overrides)
     trace.append(_trace_row(
         "slot_extract",
         "success",
-        {"extracted": extracted, "overrides": overrides, "slots": deepcopy(slots)},
+        {
+            "semantic_slot_hints": semantic_slot_hints,
+            "extracted": extracted,
+            "overrides": overrides,
+            "slots": deepcopy(slots),
+        },
         [],
         started,
         {"prompt_chars": len(prompt), "override_keys": sorted(list((body.get("slot_overrides") or {}).keys())) if isinstance(body.get("slot_overrides"), dict) else []},
@@ -829,6 +1013,7 @@ def run_inform_registration_runtime(
         answer=answer,
         question=question,
         missing=missing,
+        semantic_frame=semantic_frame,
         slots=slots,
         draft=draft,
         requires_confirmation=requires_confirmation,
@@ -849,6 +1034,7 @@ def run_inform_registration_runtime(
         "answer": answer,
         "question": question,
         "missing": missing,
+        "semantic_frame": semantic_frame,
         "slots": slots,
         "draft": draft,
         "requires_confirmation": requires_confirmation,

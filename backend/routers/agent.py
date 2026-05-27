@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 from urllib.parse import unquote
@@ -11,8 +12,13 @@ from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app_v2.modules.semantic_learning import extractor as semantic_extractor
+from app_v2.modules.semantic_learning import inbox as semantic_inbox
+from app_v2.modules.semantic_learning import proposer as semantic_proposer
+from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
+from app_v2.modules.semantic_lexicon import store as semantic_lexicon_store
 from core import home_orchestrator
-from core.auth import current_user
+from core.auth import current_user, is_page_manager
 from core.flowi_units import all_unit_ais, get_unit_ai
 from core.flowi_units.filebrowser_ai_sql_runtime import (
     UNIT_AI_KEY as FILEBROWSER_AI_SQL_UNIT_KEY,
@@ -111,6 +117,168 @@ class UnitAiRuntimeRunReq(BaseModel):
     session_id: str = ""
     action: str = "continue"
     slot_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class SemanticAliasGroupReq(BaseModel):
+    aliases: list[str] = Field(default_factory=list)
+
+
+class SemanticIntentHintReq(BaseModel):
+    required_canonicals: list[str] = Field(default_factory=list)
+
+
+class SemanticProposalDecisionReq(BaseModel):
+    decision: str = "reject"
+    canonical: str = ""
+
+
+class SemanticDraftReq(BaseModel):
+    text: str = ""
+
+
+def _string_list(value: Any, limit: int = 80) -> list[str]:
+    if value is None:
+        return []
+    raw = value if isinstance(value, (list, tuple, set)) else [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _semantic_seed_alias_groups() -> dict[str, list[str]]:
+    try:
+        from app_v2.modules.agent_runtime.semantic import _ALIAS_GROUPS  # type: ignore
+
+        return {str(key): _string_list(value) for key, value in dict(_ALIAS_GROUPS).items()}
+    except Exception:
+        return {}
+
+
+def _semantic_seed_intent_hints() -> dict[str, list[str]]:
+    return {}
+
+
+def _semantic_effective_alias_groups() -> dict[str, list[str]]:
+    return semantic_lexicon_service.effective_alias_groups(_semantic_seed_alias_groups())
+
+
+def _semantic_effective_intent_hints() -> dict[str, list[str]]:
+    return semantic_lexicon_service.effective_intent_hints(_semantic_seed_intent_hints())
+
+
+def _require_semantic_writer(request: Request) -> dict[str, Any]:
+    user = current_user(request)
+    if user.get("role") == "admin":
+        return user
+    if any(is_page_manager(user, page_id) for page_id in ("agent", "diagnosis", "knowledge")):
+        return user
+    raise HTTPException(status_code=403, detail="Admin or Agent/Diagnosis/Knowledge page manager only")
+
+
+def _find_semantic_proposal(proposal_id: str) -> dict[str, Any] | None:
+    wanted = str(proposal_id or "").strip()
+    if not wanted:
+        return None
+    for row in semantic_inbox.list_proposals(status=None, limit=10000):
+        if str(row.get("id") or "") == wanted:
+            return row
+    return None
+
+
+def _append_alias_term(canonical: str, term: str, *, by: str) -> dict[str, list[str]]:
+    canonical = str(canonical or "").strip()
+    term = str(term or "").strip()
+    if not canonical or not term:
+        raise HTTPException(status_code=400, detail="canonical and term are required")
+    effective = _semantic_effective_alias_groups()
+    aliases = _string_list([*(effective.get(canonical) or []), term])
+    return semantic_lexicon_service.upsert_alias_group(
+        canonical,
+        aliases,
+        by=by,
+        seed=_semantic_seed_alias_groups(),
+    )
+
+
+def _canonical_from_term(term: str) -> str:
+    text = str(term or "").strip()
+    if not text:
+        return ""
+    compact = "_".join(part for part in text.lower().replace("-", "_").split() if part)
+    return compact[:80] or text[:80]
+
+
+def _parse_semantic_json_draft(text: str) -> dict[str, dict[str, list[str]]]:
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {"alias_groups": {}, "intent_hints": {}}
+    if not isinstance(parsed, dict):
+        return {"alias_groups": {}, "intent_hints": {}}
+    raw_alias = parsed.get("alias_groups", parsed.get("groups", {}))
+    raw_intents = parsed.get("intent_hints", parsed.get("intents", {}))
+    alias_groups = {
+        str(key).strip(): _string_list(value)
+        for key, value in (raw_alias.items() if isinstance(raw_alias, dict) else [])
+        if str(key).strip()
+    }
+    intent_hints = {
+        str(key).strip(): _string_list(value)
+        for key, value in (raw_intents.items() if isinstance(raw_intents, dict) else [])
+        if str(key).strip()
+    }
+    return {"alias_groups": alias_groups, "intent_hints": intent_hints}
+
+
+def _semantic_draft_from_text(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    parsed = _parse_semantic_json_draft(raw)
+    if parsed["alias_groups"] or parsed["intent_hints"]:
+        return {
+            "alias_groups": parsed["alias_groups"],
+            "intent_hints": parsed["intent_hints"],
+            "terms": [],
+            "classifications": [],
+            "source": "json",
+        }
+
+    effective_aliases = _semantic_effective_alias_groups()
+    terms = semantic_extractor.extract_terms(raw)
+    alias_groups: dict[str, list[str]] = {}
+    classifications: list[dict[str, Any]] = []
+    for term in terms:
+        classified = semantic_proposer.classify_proposal(term, alias_groups=effective_aliases)
+        classifications.append(classified)
+        category = str(classified.get("category") or "")
+        if category == "mapping":
+            canonical = str(classified.get("canonical_match") or "").strip()
+            if canonical:
+                alias_groups[canonical] = _string_list([*(effective_aliases.get(canonical) or []), term])
+        elif category == "new_canonical":
+            canonical = _canonical_from_term(term)
+            if canonical:
+                alias_groups[canonical] = _string_list([term])
+    intent_hints: dict[str, list[str]] = {}
+    for match in re.finditer(r"(?:intent|의도)\s*[:=]\s*([A-Za-z0-9가-힣_-]+)\s*(?:->|:|=)\s*([^;\n]+)", raw, re.IGNORECASE):
+        intent = str(match.group(1) or "").strip()
+        values = _string_list(re.split(r"[,/\s]+", str(match.group(2) or "")))
+        if intent and values:
+            intent_hints[intent] = values
+    return {
+        "alias_groups": alias_groups,
+        "intent_hints": intent_hints,
+        "terms": terms,
+        "classifications": classifications,
+        "source": "text",
+    }
 
 
 def _unit_catalog_item(unit) -> dict[str, Any]:
@@ -241,6 +409,153 @@ def inform_registration_runtime_history(request: Request, limit: int = 50) -> di
         "ok": True,
         "unit_ai": INFORM_REGISTRATION_UNIT_KEY,
         "history": list_inform_registration_history(limit=limit, username=(me or {}).get("username") or ""),
+    }
+
+
+@router.get("/semantic/lexicon")
+def semantic_lexicon(request: Request, limit: int = 100) -> dict[str, Any]:
+    current_user(request)
+    return {
+        "ok": True,
+        "alias_groups": {
+            "effective": _semantic_effective_alias_groups(),
+            "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+        "intent_hints": {
+            "effective": _semantic_effective_intent_hints(),
+            "disk": semantic_lexicon_store.load_intent_hints(),
+        },
+        "changes": semantic_lexicon_store.list_changes(limit=max(1, min(int(limit or 100), 500))),
+        "proposals": semantic_inbox.list_proposals(status="pending", limit=100),
+    }
+
+
+@router.put("/semantic/alias-groups/{canonical}")
+def semantic_alias_group_upsert(canonical: str, req: SemanticAliasGroupReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    try:
+        semantic_lexicon_service.upsert_alias_group(
+            canonical,
+            req.aliases,
+            by=str(user.get("username") or ""),
+            seed=_semantic_seed_alias_groups(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "alias_groups": {
+            "effective": _semantic_effective_alias_groups(),
+            "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+    }
+
+
+@router.delete("/semantic/alias-groups/{canonical}")
+def semantic_alias_group_delete(canonical: str, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    deleted = semantic_lexicon_service.delete_alias_group(canonical, by=str(user.get("username") or ""))
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "alias_groups": {
+            "effective": _semantic_effective_alias_groups(),
+            "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+    }
+
+
+@router.put("/semantic/intent-hints/{intent}")
+def semantic_intent_hint_upsert(intent: str, req: SemanticIntentHintReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    try:
+        semantic_lexicon_service.upsert_intent_hint(
+            intent,
+            req.required_canonicals,
+            by=str(user.get("username") or ""),
+            seed=_semantic_seed_intent_hints(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "intent_hints": {
+            "effective": _semantic_effective_intent_hints(),
+            "disk": semantic_lexicon_store.load_intent_hints(),
+        },
+    }
+
+
+@router.delete("/semantic/intent-hints/{intent}")
+def semantic_intent_hint_delete(intent: str, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    deleted = semantic_lexicon_service.delete_intent_hint(intent, by=str(user.get("username") or ""))
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "intent_hints": {
+            "effective": _semantic_effective_intent_hints(),
+            "disk": semantic_lexicon_store.load_intent_hints(),
+        },
+    }
+
+
+@router.get("/semantic/proposals")
+def semantic_proposals(request: Request, status: str = "pending", limit: int = 200) -> dict[str, Any]:
+    current_user(request)
+    status_filter = (status or "").strip().lower() or None
+    if status_filter == "all":
+        status_filter = None
+    return {
+        "ok": True,
+        "proposals": semantic_inbox.list_proposals(
+            status=status_filter,
+            limit=max(1, min(int(limit or 200), 1000)),
+        ),
+    }
+
+
+@router.post("/semantic/proposals/{proposal_id}/decision")
+def semantic_proposal_decision(proposal_id: str, req: SemanticProposalDecisionReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    decision = str(req.decision or "").strip().lower()
+    if decision not in {"approve", "approved", "reject", "rejected"}:
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+    proposal = _find_semantic_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="semantic proposal not found")
+    by = str(user.get("username") or "")
+    if decision in {"approve", "approved"} and proposal.get("status") == "pending":
+        category = str(proposal.get("category") or "")
+        canonical = str(req.canonical or proposal.get("canonical_match") or "").strip()
+        if category == "new_canonical" and not canonical:
+            canonical = _canonical_from_term(str(proposal.get("term") or ""))
+        if category in {"mapping", "new_canonical", "conflict"}:
+            _append_alias_term(canonical, str(proposal.get("term") or ""), by=by)
+        else:
+            raise HTTPException(status_code=400, detail=f"proposal category cannot be approved: {category}")
+        status_value = "approved"
+    else:
+        status_value = "rejected"
+    decided = semantic_inbox.update_proposal_status(proposal_id, status=status_value, by=by)
+    if not decided:
+        raise HTTPException(status_code=404, detail="semantic proposal not found")
+    return {
+        "ok": True,
+        "proposal": decided,
+        "alias_groups": {
+            "effective": _semantic_effective_alias_groups(),
+            "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+    }
+
+
+@router.post("/semantic/draft")
+def semantic_draft(req: SemanticDraftReq, request: Request) -> dict[str, Any]:
+    current_user(request)
+    return {
+        "ok": True,
+        "draft": _semantic_draft_from_text(req.text),
     }
 
 

@@ -5,7 +5,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 ## Owns
 
 - `frontend/src/pages/My_Diagnosis.jsx`의 Agent 화면 shell
-- `Flow-i`, `단위기능 AI`, `LLM 설정` 탭 구성
+- `Flow-i`, `Semantic layer`, `단위기능 AI`, `LLM 설정` 탭 구성
 - Agent scoped endpoint:
   - `GET /api/agent/home-flowi/runtime/graph`
   - `GET /api/agent/home-flowi/runtime/runs`
@@ -16,8 +16,15 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `GET /api/agent/unit-ai/{unit_key}/runtime/graph`
   - `POST /api/agent/unit-ai/{unit_key}/runtime/run`
   - `GET /api/agent/unit-ai/{unit_key}/runtime/history`
+  - `GET /api/agent/semantic/lexicon`
+  - `PUT/DELETE /api/agent/semantic/alias-groups/{canonical}`
+  - `PUT/DELETE /api/agent/semantic/intent-hints/{intent}`
+  - `GET /api/agent/semantic/proposals`
+  - `POST /api/agent/semantic/proposals/{id}/decision`
+  - `POST /api/agent/semantic/draft`
 - `filebrowser_ai_sql` unit의 공개 실행 trace와 LangGraph-ready DAG 가시화
 - `inform_registration` unit의 short-memory slot 수집, draft review, confirm-only Inform 저장 흐름
+- `data/flow-data/semantic` JSON lexicon, intent hint, proposal queue 관리
 - Home Flow-i 실행의 공개 runtime graph snapshot 관찰
 
 ## Does Not Own
@@ -53,7 +60,9 @@ Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL �
 
 `inform_registration`은 Agent 단위기능 AI의 두 번째 unit이다. 화면 구조는 FileBrowser AI SQL과 같이 상단 `질문 이력`, 하단 `State` / `LangGraph` / `Test prompt`를 쓴다.
 
-실행 graph는 `context_seed -> slot_extract -> validate_missing -> snapshot_preview -> review -> register`다. `product`, 단일 `lot_id`, `module`, `note`, 메일 target 중 하나가 필수 slot이다. 사용자가 set/KNOB/CUSTOM/SplitTable snapshot을 요청한 경우에만 `snapshot_custom_cols` 또는 `attached_sets`를 추가 필수값으로 본다.
+실행 graph는 `context_seed -> semantic_layer -> slot_extract -> validate_missing -> snapshot_preview -> review -> register`다. `semantic_layer`는 공유 lexicon의 alias hit, slot hint, unknown term, warning을 공개 trace에 남긴다. `product`, 단일 `lot_id`, `module`, `note`, 메일 target이 필수 slot이다. 사용자가 set/KNOB/CUSTOM/SplitTable snapshot을 요청한 경우에만 `snapshot_custom_cols` 또는 `attached_sets`를 추가 필수값으로 본다.
+
+slot 병합 우선순위는 기존 short-memory slot, semantic hint, 원문에서 명확히 추출된 값, explicit `slot_overrides` 순서다. 즉 `slot_overrides`와 원문 명시값은 semantic hint보다 우선한다.
 
 `continue` action은 slot을 누적하고 누락값을 질문한다. `confirm` action은 누락값이 없을 때만 `routers.informs.InformCreate`와 `create_inform()`을 호출한다. confirm 전에는 `FLOW_DATA_ROOT/informs/informs.json`을 쓰지 않고, 1시간 TTL의 short memory session JSON만 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/` 아래에 저장한다. 메일은 발송하지 않고 `mail_draft`만 Inform에 보존한다.
 
@@ -64,6 +73,12 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.
 
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
+
+## Semantic Layer Tab
+
+`Semantic layer` 탭은 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 사용자는 JSON 편집으로 alias group과 intent hint를 저장할 수 있고, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
+
+자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent JSON 초안만 생성한다. 실제 저장은 사용자가 `초안 저장` 또는 JSON 저장 버튼을 눌렀을 때만 `/api/agent/semantic/alias-groups/*`와 `/api/agent/semantic/intent-hints/*` write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
 
 ## Code Entrypoints
 
@@ -76,6 +91,8 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 | Unit registry | `backend/core/flowi_units/registry.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |
+| Semantic lexicon store | `backend/app_v2/modules/semantic_lexicon/` |
+| Semantic proposal queue | `backend/app_v2/modules/semantic_learning/` |
 | FileBrowser owner | `backend/routers/filebrowser.py` |
 | Inform owner | `backend/routers/informs.py` |
 
@@ -83,6 +100,7 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 
 - `python3 -m pytest tests/agent/test_filebrowser_ai_sql_runtime.py`
 - `python3 -m pytest tests/agent/test_inform_registration_runtime.py`
+- `python3 -m pytest tests/agent/test_semantic_agent_api.py tests/test_semantic_lexicon.py tests/test_semantic_learning_extractor.py`
 - `python3 -m pytest tests/test_home_orchestrator.py`
 - `python3 -m pytest tests/test_filebrowser_sql.py`
 - `python3 -m pytest tests/test_feature_contracts.py`
