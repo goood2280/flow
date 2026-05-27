@@ -301,7 +301,6 @@ function buildAccumulatedState(result, request, upToIdx) {
 }
 
 function FileBrowserAiSqlUnitPanel() {
-  const [catalog, setCatalog] = useState(null);
   const [graph, setGraph] = useState(null);
   const [roots, setRoots] = useState([]);
   const [products, setProducts] = useState([]);
@@ -355,7 +354,6 @@ function FileBrowserAiSqlUnitPanel() {
       const routesOk = statusPayload?.ok === true;
       setAgentRoutesPresent(routesOk);
       if (catalogPayload?.error) setErr(catalogPayload.error);
-      setCatalog(catalogPayload);
       if (graphPayload?.error) {
         setGraphErr(graphPayload.error);
         setGraph(null);
@@ -395,7 +393,6 @@ function FileBrowserAiSqlUnitPanel() {
       .filter((item) => ["parquet", "csv"].includes(String(item.ext || "").toLowerCase()))
       .map((item) => ({ value: item.path || item.name, label: item.path || item.name, ext: item.ext, source: item.source || "" }))
   ), [baseFiles]);
-  const unit = (catalog?.units || []).find((item) => item.key === "filebrowser_ai_sql");
   const activeGraph = result?.graph || graph || FALLBACK_GRAPH;
   const graphNodes = activeGraph?.nodes || [];
   const firstGraphNodeId = graphNodes[0]?.id || null;
@@ -548,10 +545,10 @@ function FileBrowserAiSqlUnitPanel() {
 
   const stateSubtitle = selectedTraceNode
     ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}`
-    : (trace.length ? "final state" : "state_design");
+    : (trace.length ? "final state" : "");
   const graphSubtitle = trace.length
     ? `${trace.length}/${graphNodes.length} nodes · click to inspect`
-    : "context_sample → semantic_layer → filter_draft → column_draft → merge → preview_apply";
+    : "";
 
   const uiMode = targetMode === "db_product" ? "db" : "file";
   const fileExt = (() => {
@@ -805,7 +802,7 @@ function FileBrowserAiSqlUnitPanel() {
 
         <Panel
           title="Test prompt"
-          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : (unit?.llm_profile || "filter_draft / column_draft"))}
+          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : "")}
           right={<Pill tone={result?.ok ? "ok" : "neutral"}>{result?.run_id || (loading ? "loading" : "ready")}</Pill>}
         >
           <div style={{ display: "grid", gap: 10 }}>
