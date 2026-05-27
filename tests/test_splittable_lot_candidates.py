@@ -808,6 +808,48 @@ def test_knob_meta_vehicle_matching_product_header_accepts_utf8_bom(tmp_path, mo
     assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
 
 
+def test_knob_meta_vehicle_matching_extracts_product_from_ml_table_label(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "ML_TABLE_PRODA,STEP_PC_A,PC\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA.parquet Base")
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
+    assert "STEP_PC_B" not in meta["5.0 PC"]["groups"][0]["step_ids"]
+
+
+def test_knob_meta_vehicle_matching_preserves_space_inside_ml_table_product(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "3.0 VTN,STEP_PC_VTN,PC\n"
+        "3.0 OTHER,STEP_PC_OTHER,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_3.0 VTN")
+    rows = splittable.get_rulebook(kind="step_matching", product="ML_TABLE_3.0 VTN")["rows"]
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_VTN"]
+    assert "STEP_PC_OTHER" not in meta["5.0 PC"]["groups"][0]["step_ids"]
+    assert rows == [{"product": "3.0 VTN", "step_id": "STEP_PC_VTN", "step_desc": "PC"}]
+
+
 def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_keeps_rule_rows(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(

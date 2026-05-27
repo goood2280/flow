@@ -359,17 +359,29 @@ def _rule_order_sort_key(label: object) -> tuple[int, int, str]:
     return (2, 0, text)
 
 
+def _split_product_core(product: object) -> str:
+    text = str(product or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    text = Path(text).name
+    m = _re.search(r"ML_TABLE_", text, flags=_re.I)
+    if m:
+        text = text[m.end():]
+    ext = _re.search(r"\.(?:parquet|csv)(?=$|[\s,，、()[\]{}])", text, flags=_re.I)
+    if ext:
+        text = text[:ext.start()]
+    return text.strip(" \t\r\n,，、()[]{}")
+
+
 def _product_aliases(product: str) -> set[str]:
     """Soft-landing product matcher for registry/rulebook joins."""
     raw = str(product or "").strip()
     if not raw:
         return set()
     out = {raw.upper()}
-    core = raw
-    if raw.upper().startswith("ML_TABLE_"):
-        core = raw[len("ML_TABLE_"):].strip()
-        if core:
-            out.add(core.upper())
+    core = _split_product_core(raw)
+    if core:
+        out.add(core.upper())
     up = core.upper()
     if up.startswith("PRODUCT_A"):
         if up.endswith("0"):
@@ -410,8 +422,10 @@ def _step_matching_product_alias_keys(product: str) -> set[str]:
     raw = str(product or "").strip()
     if not raw:
         return set()
-    core = raw[len("ML_TABLE_"):].strip() if raw.upper().startswith("ML_TABLE_") else raw
+    core = _split_product_core(raw)
     aliases = {raw, core}
+    if core:
+        aliases.add(f"ML_TABLE_{core}")
     up = core.upper()
     if up == "PRODA0":
         aliases.add("PRODUCT_A0")
@@ -442,7 +456,11 @@ def _step_matching_product_matches(product: str, row_product: object, *, allow_c
     if not row_values:
         return allow_common
     product_keys = _step_matching_product_alias_keys(product)
-    return any(row_value.casefold() in product_keys for row_value in row_values)
+    for row_value in row_values:
+        row_keys = _step_matching_product_alias_keys(row_value)
+        if row_keys and any(key in product_keys for key in row_keys):
+            return True
+    return False
 
 
 def _step_desc_match_key(value: object) -> str:
@@ -2578,9 +2596,7 @@ def _load_csv_rows(fp: Path) -> list[dict]:
 
 def _canonical_product_name(product: str) -> str:
     raw = str(product or "").strip()
-    if raw.upper().startswith("ML_TABLE_"):
-        return raw[len("ML_TABLE_"):].strip()
-    return raw
+    return _split_product_core(raw) or raw
 
 
 def _mltable_schema_columns(product: str, prefix: str = "") -> list[str]:
