@@ -9,7 +9,6 @@ import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
 import { Button, Card, Chip, Pill, TableWrap, Tbl, statusPalette, chartPalette } from "../components/UXKit";
-import FlowiPromptBox from "../components/FlowiPromptBox";
 import SplitTableSnapshotView from "../components/SplitTableSnapshotView";
 
 const API = "/api/informs";
@@ -3041,14 +3040,6 @@ export default function My_Inform({ user }) {
         products={commonProductOptions}
         modules={constants.modules || []}
       />
-
-      <div style={{ flex: "0 0 auto", padding: "8px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
-        <FlowiPromptBox
-          defaultScope={{ kind: "inform", tab: activeTab, view: informView }}
-          placeholder="Flow-i 인폼 질문"
-          maxRows={8}
-        />
-      </div>
 
       <main style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
         {activeTab === "inform" && (

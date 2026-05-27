@@ -115,6 +115,129 @@ def test_home_orchestrator_marks_missing_filebrowser_source_blocked(monkeypatch,
     assert "대상" in out["reply"] or "source" in out["reply"]
 
 
+def test_home_orchestrator_runs_inform_registration_runtime_with_public_result(monkeypatch):
+    from core import home_orchestrator
+    from core.flowi_units import inform_registration_runtime as runtime
+
+    class DummyRequest:
+        pass
+
+    request = DummyRequest()
+    captured = {}
+
+    def fake_run(payload, *, username="", request=None):
+        captured["payload"] = payload
+        captured["username"] = username
+        captured["request"] = request
+        return {
+            "ok": True,
+            "session_id": "inform_reg_pytest",
+            "status": "review",
+            "missing": [],
+            "requires_confirmation": True,
+            "draft": {"inform": {"lot_id": "R1000"}},
+            "created_inform": {},
+            "warnings": ["confirm required"],
+            "slots": {"hidden": "not public"},
+            "trace": [{"node_id": "slot_extract"}],
+            "answer": "Inform draft가 준비되었습니다.",
+        }
+
+    monkeypatch.setattr(runtime, "run_inform_registration_runtime", fake_run)
+    tool = {"name": "inform_registration", "kind": "unit_ai", "title": "Inform 등록 도우미"}
+    step_input = {
+        "prompt": "인폼 등록 준비",
+        "session_id": "inform_reg_pytest",
+        "action": "confirm",
+        "slot_overrides": {"product": "PRODA"},
+        "ignored": "not forwarded",
+    }
+
+    exec_out = home_orchestrator._execute_step(
+        tool,
+        step_input,
+        request=request,
+        user={"username": "alice"},
+    )
+    assert captured == {
+        "payload": {
+            "prompt": "인폼 등록 준비",
+            "session_id": "inform_reg_pytest",
+            "action": "confirm",
+            "slot_overrides": {"product": "PRODA"},
+        },
+        "username": "alice",
+        "request": request,
+    }
+    assert exec_out["ok"] is True
+    assert exec_out["status"] == "review"
+
+    row = home_orchestrator._make_trace_row(
+        {"tool": tool, "input": step_input, "reason": "pytest", "source": "pytest"},
+        exec_out,
+    )
+    assert set(row["result"]) == {
+        "session_id",
+        "status",
+        "missing",
+        "requires_confirmation",
+        "draft",
+        "created_inform",
+        "warnings",
+    }
+    assert "slots" not in row["result"]
+    assert "trace" not in row["result"]
+
+
+def test_home_agent_orchestrate_and_run_tool_pass_request_context(monkeypatch):
+    from routers import home_agent
+
+    class DummyRequest:
+        pass
+
+    request = DummyRequest()
+    me = {"username": "alice", "role": "admin"}
+    captured = {}
+    tool = {"name": "inform_registration", "kind": "unit_ai", "title": "Inform 등록 도우미", "enabled": True}
+
+    monkeypatch.setattr(home_agent, "current_user", lambda _request: me)
+    monkeypatch.setattr(home_agent.audit, "record", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(home_agent.tool_registry, "get_tool", lambda name: tool if name == "inform_registration" else None)
+
+    def fake_orchestrate(prompt, user=None, top_k=2, *, request=None):
+        captured["orchestrate"] = {"prompt": prompt, "user": user, "top_k": top_k, "request": request}
+        return {"ok": True, "trace": [], "meta": {}, "picked_count": 0}
+
+    def fake_execute_step(tool_arg, step_input, *, request=None, user=None):
+        captured["run_tool"] = {"tool": tool_arg, "input": step_input, "request": request, "user": user}
+        return {"ok": True, "ms": 1, "result_preview": "ok", "result": {"status": "review"}}
+
+    monkeypatch.setattr(home_agent.home_orchestrator, "orchestrate", fake_orchestrate)
+    monkeypatch.setattr(home_agent.home_orchestrator, "_execute_step", fake_execute_step)
+
+    home_agent.orchestrate(request, home_agent.OrchestrateRequest(prompt="인폼 등록", top_k=3))
+    assert captured["orchestrate"] == {
+        "prompt": "인폼 등록",
+        "user": me,
+        "top_k": 3,
+        "request": request,
+    }
+
+    out = home_agent.run_tool(
+        request,
+        home_agent.RunToolRequest(tool="inform_registration", input={"prompt": "인폼 등록"}),
+    )
+    assert out["ok"] is True
+    assert captured["run_tool"] == {
+        "tool": tool,
+        "input": {"prompt": "인폼 등록"},
+        "request": request,
+        "user": me,
+    }
+    home_agent_src = (_FLOW_ROOT / "backend" / "routers" / "home_agent.py").read_text(encoding="utf-8")
+    assert "orchestrate_stream(prompt, user=me, top_k=top_k, request=request)" in home_agent_src
+
+
 def test_home_runtime_snapshot_save_list_load_shape(monkeypatch, tmp_path):
     from core import home_orchestrator
 

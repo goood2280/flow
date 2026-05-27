@@ -12,7 +12,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 다중 fab lot 등록용 `POST /api/informs/bulk-create` 순서 보존 저장
 - module-wise mail compose/send
 - 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
-- Agent `inform_registration` unit의 최종 저장 계약. Agent는 slot 수집과 review를 담당하고, confirm 시 기존 `InformCreate`/`create_inform()` 경로만 호출한다.
+- Agent/Home Agent `inform_registration` unit의 최종 저장 계약. Agent는 slot 수집과 review를 담당하고, confirm 시 기존 `InformCreate`/`create_inform()` 경로만 호출한다.
 - Dashboard inform widget용 요약 데이터
 
 ## Does Not Own
@@ -21,6 +21,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 원본 파일 수정
 - 회의록/캘린더 액션의 주 저장소 역할
 - 내부 source/scope/id를 메일 본문에 노출하는 것
+- Inform 화면 내부 Flow-i prompt 입력창
 
 ## Code Entrypoints
 
@@ -37,6 +38,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 ## Guardrails
 
 - product가 불명확하면 생성 전에 후보를 확인한다.
+- Inform 화면 안에는 `Flow-i 인폼 질문` 입력창을 두지 않는다. 자연어 기반 Inform 등록은 Home Agent `/api/home-agent/orchestrate` 또는 `/api/home-agent/run-tool`의 `inform_registration` 단위 AI에서 실행한다.
 - 신규 등록용 `/config.products`, `/products`, sidebar product 후보는 LOT progress cache의 unique `product` 값에서 자동 생성한다. 별도 Inform product catalog를 관리하지 않는다.
 - Inform product와 SplitTable product는 `ML_TABLE_` prefix와 대소문자가 달라도 같은 product로 본다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.

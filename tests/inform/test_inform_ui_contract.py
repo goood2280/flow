@@ -63,6 +63,13 @@ def test_inform_wizard_five_step_backend_contract_order():
     assert positions == sorted(positions)
 
 
+def test_inform_page_does_not_embed_flowi_prompt_box():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert "FlowiPromptBox" not in src
+    assert "Flow-i 인폼 질문" not in src
+
+
 def test_inform_wizard_mail_note_is_plain_top_block():
     src = MY_INFORM.read_text(encoding="utf-8")
 

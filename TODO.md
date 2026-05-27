@@ -2,10 +2,13 @@
 
 ## Now
 
+- (Codex) 인폼 로그 목록 상태/작성자/시간 열 가시성 보정
+
 ## Next
 
 ## Done
 
+- (Codex) 인폼로그 Flow-i 질문 제거와 Home Agent inform_registration 연결
 - (Codex) Inform 등록 도우미 Agent graph archived fallback 보정
 - (Codex) 인폼로그 수정 진입 제거와 재인폼 트리 표시
 - (Codex) Split 체크 표시 렌더 통합

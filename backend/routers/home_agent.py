@@ -63,6 +63,7 @@ def orchestrate(request: Request, body: OrchestrateRequest):
         body.prompt,
         user=me,
         top_k=max(1, min(10, int(body.top_k or 2))),
+        request=request,
     )
     audit.record(
         request,
@@ -95,7 +96,7 @@ def orchestrate_stream(
         last_picked = 0
         last_planner = ""
         try:
-            for chunk in home_orchestrator.orchestrate_stream(prompt, user=me, top_k=top_k):
+            for chunk in home_orchestrator.orchestrate_stream(prompt, user=me, top_k=top_k, request=request):
                 etype = str(chunk.get("type") or "message")
                 if etype == "reply":
                     last_picked = int(chunk.get("picked_count") or len(chunk.get("trace") or []))
@@ -229,7 +230,7 @@ def run_tool(request: Request, body: RunToolRequest):
     step_input = body.input or {}
     if "prompt" not in step_input:
         step_input["prompt"] = step_input.get("query") or ""
-    exec_out = home_orchestrator._execute_step(tool, step_input)
+    exec_out = home_orchestrator._execute_step(tool, step_input, request=request, user=me)
     audit.record(
         request,
         action=f"home_agent:run-tool:{name}",

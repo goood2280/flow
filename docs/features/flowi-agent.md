@@ -57,6 +57,8 @@ Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL �
 
 `continue` action은 slot을 누적하고 누락값을 질문한다. `confirm` action은 누락값이 없을 때만 `routers.informs.InformCreate`와 `create_inform()`을 호출한다. confirm 전에는 `FLOW_DATA_ROOT/informs/informs.json`을 쓰지 않고, 1시간 TTL의 short memory session JSON만 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/` 아래에 저장한다. 메일은 발송하지 않고 `mail_draft`만 Inform에 보존한다.
 
+Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는다. Home Agent는 `/api/home-agent/orchestrate`, `/api/home-agent/orchestrate/stream`, `/api/home-agent/run-tool`에서 `inform_registration` unit을 직접 runtime으로 실행한다. `/run-tool`은 `input` dict에 `prompt`, `session_id`, `action`, `slot_overrides`를 담아 호출하며, `confirm` 저장은 Home Agent request/user context를 그대로 전달해 기존 Inform 권한과 audit 흐름을 탄다.
+
 ## Home Flow-i Runtime Tab
 
 Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.

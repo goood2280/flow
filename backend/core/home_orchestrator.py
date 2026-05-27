@@ -10,7 +10,7 @@
      해 도구 후보 가중치 산정 → 상위 top_k 선택.
 
 실행:
-  - flowi_units 의 unit_ai 는 try_dispatch 위임 (slots 으로 LLM 결정 인자 전달).
+  - filebrowser_ai_sql, inform_registration 은 전용 unit runtime 으로 실행.
   - function-call 단위는 trace stub (실제 실행은 기존 flowi/chat 경로).
 
 트레이스 포맷:
@@ -714,36 +714,7 @@ def _pick_tools(prompt: str, top_k: int = 2) -> tuple[list[dict[str, Any]], dict
 
 # 실제 실행 가능한 도구 매핑 — 회귀 위험 최소화 위해 좁게 시작.
 def _execute_tool(tool: dict[str, Any], prompt: str) -> dict[str, Any]:
-    name = tool.get("name") or ""
-    kind = tool.get("kind") or ""
-    t0 = time.perf_counter()
-    out: dict[str, Any] = {"ok": False, "kind": kind, "name": name}
-    try:
-        # Unit AI: try_dispatch 위임 (only 매칭 단일 키)
-        if kind == "unit_ai":
-            from core.flowi_units.dispatcher import try_dispatch
-            res = try_dispatch(prompt or "", only=[name])
-            if res and res.get("handled"):
-                out["ok"] = True
-                out["result_preview"] = _summarize_result(res)
-                out["raw_keys"] = sorted(res.keys())
-            else:
-                out["ok"] = False
-                out["result_preview"] = "unit_ai 가 prompt 를 처리하지 않음 (handled=False)"
-        elif kind == "function":
-            # Function-call 직접 실행은 _run_flowi_chat 의 거대 디스패치 영역.
-            # 회귀 위험을 피해 trace 만 남기고 stub 응답.
-            out["ok"] = False
-            out["result_preview"] = "function-call 은 /api/llm/flowi/chat 경로에서 호출됩니다 (현재는 trace stub)."
-        else:
-            out["ok"] = False
-            out["result_preview"] = f"unknown kind: {kind}"
-    except Exception as e:
-        out["ok"] = False
-        out["result_preview"] = f"{type(e).__name__}: {e}"
-        logger.exception("tool exec failed: %s", name)
-    out["ms"] = int((time.perf_counter() - t0) * 1000)
-    return out
+    return _execute_step(tool, {"prompt": prompt or ""})
 
 
 def _summarize_result(res: dict[str, Any]) -> str:
@@ -838,10 +809,16 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
     return plan or None
 
 
-def _execute_step(tool: dict[str, Any], step_input: dict[str, Any]) -> dict[str, Any]:
+def _execute_step(
+    tool: dict[str, Any],
+    step_input: dict[str, Any],
+    *,
+    request: Any | None = None,
+    user: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """단일 step 실행. step_input 은 input_schema 기준 dict.
 
-    unit_ai 는 try_dispatch 위임. function-call 은 stub.
+    일부 unit_ai 는 전용 runtime 으로 실행하고, function-call 은 stub 으로 남긴다.
     """
     name = tool.get("name") or ""
     kind = tool.get("kind") or ""
@@ -894,6 +871,27 @@ def _execute_step(tool: dict[str, Any], step_input: dict[str, Any]) -> dict[str,
                 out["warnings"] = _warnings_from_filebrowser_runtime(res)
                 out["result"] = _trim_filebrowser_runtime_result(res)
                 out["result_preview"] = _summarize_filebrowser_runtime_result(res)
+                return _finish_exec_out(out, t0)
+            if name == "inform_registration":
+                from core.flowi_units.inform_registration_runtime import run_inform_registration_runtime
+
+                payload = {
+                    "prompt": step_input.get("prompt") or step_input.get("natural_language") or "",
+                    "session_id": step_input.get("session_id") or "",
+                    "action": step_input.get("action") or "continue",
+                    "slot_overrides": step_input.get("slot_overrides") if isinstance(step_input.get("slot_overrides"), dict) else {},
+                }
+                res = run_inform_registration_runtime(
+                    payload,
+                    username=str((user or {}).get("username") or step_input.get("username") or ""),
+                    request=request,
+                )
+                out["ok"] = bool(res.get("ok"))
+                out["status"] = str(res.get("status") or ("success" if res.get("ok") else "failed"))
+                out["warnings"] = _warnings_from_inform_registration_runtime(res)
+                out["result"] = _trim_inform_registration_runtime_result(res)
+                out["public_result"] = out["result"]
+                out["result_preview"] = _summarize_inform_registration_runtime_result(res)
                 return _finish_exec_out(out, t0)
             from core.flowi_units.dispatcher import try_dispatch
             prompt = str(step_input.get("prompt") or "").strip()
@@ -1001,6 +999,47 @@ def _summarize_filebrowser_runtime_result(result: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def _warnings_from_inform_registration_runtime(result: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    for item in (result.get("warnings") if isinstance(result.get("warnings"), list) else []):
+        text = _short_text(item, 240)
+        if text and text not in warnings:
+            warnings.append(text)
+    return warnings[:12]
+
+
+def _trim_inform_registration_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    return {
+        "session_id": result.get("session_id") or "",
+        "status": result.get("status") or "",
+        "missing": _safe_string_list(result.get("missing"), 20),
+        "requires_confirmation": bool(result.get("requires_confirmation")),
+        "draft": deepcopy(result.get("draft") or {}),
+        "created_inform": deepcopy(result.get("created_inform") or {}),
+        "warnings": _warnings_from_inform_registration_runtime(result),
+    }
+
+
+def _summarize_inform_registration_runtime_result(result: dict[str, Any]) -> str:
+    status = _short_text(result.get("status"), 80) or "unknown"
+    answer = _short_text(result.get("answer") or result.get("question"), 220)
+    missing = _safe_string_list(result.get("missing"), 8)
+    created = result.get("created_inform") if isinstance(result.get("created_inform"), dict) else {}
+    bits = [f"status {status}"]
+    if created.get("id"):
+        bits.append(f"inform {created.get('id')}")
+    if missing:
+        bits.append("missing " + ", ".join(missing[:5]))
+    if answer:
+        bits.append(answer)
+    warnings = _warnings_from_inform_registration_runtime(result)
+    if warnings:
+        bits.append(f"warnings {len(warnings)}")
+    return " · ".join(bits)
+
+
 def _plan_from_heuristic(prompt: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """휴리스틱 keyword 매칭 → step list. orchestrate fallback 용."""
     picks, meta = _pick_tools(prompt, top_k=top_k)
@@ -1036,6 +1075,8 @@ def _make_trace_row(step: dict[str, Any], exec_out: dict[str, Any]) -> dict[str,
     if score is not None:
         row["score"] = round(score, 2)
         row["confidence"] = round(min(1.0, score / 5.0), 2)
+    if "public_result" in exec_out:
+        row["result"] = deepcopy(exec_out.get("public_result") or {})
     return row
 
 
@@ -1113,7 +1154,13 @@ def _plan_from_alias(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str,
     }]
 
 
-def orchestrate(prompt: str, user: dict[str, Any] | None = None, top_k: int = 2) -> dict[str, Any]:
+def orchestrate(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+    top_k: int = 2,
+    *,
+    request: Any | None = None,
+) -> dict[str, Any]:
     """홈 에이전트 메인 엔트리포인트.
 
     prompt → alias 매칭 → LLM planner (선택) → 휴리스틱 → step 실행 → trace + 응답.
@@ -1154,7 +1201,7 @@ def orchestrate(prompt: str, user: dict[str, Any] | None = None, top_k: int = 2)
         if "prompt" not in merged_input:
             merged_input["prompt"] = prompt
         step["input"] = merged_input
-        exec_out = _execute_step(step["tool"], merged_input)
+        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user)
         trace.append(_make_trace_row(step, exec_out))
         # 다음 step input 에 사용할 수 있도록 product 같은 단순 값 누적.
         if exec_out.get("ok") and isinstance(exec_out.get("result"), dict):
@@ -1178,6 +1225,8 @@ def orchestrate_stream(
     prompt: str,
     user: dict[str, Any] | None = None,
     top_k: int = 2,
+    *,
+    request: Any | None = None,
 ) -> Iterator[dict[str, Any]]:
     """SSE 용 generator. orchestrate 와 동일하지만 step 별로 event 를 yield 한다.
 
@@ -1288,7 +1337,7 @@ def orchestrate_stream(
             "kind": step["tool"]["kind"],
             "input": merged_input,
         }
-        exec_out = _execute_step(step["tool"], merged_input)
+        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user)
         row = _make_trace_row(step, exec_out)
         trace.append(row)
         step_statuses = _runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units)
