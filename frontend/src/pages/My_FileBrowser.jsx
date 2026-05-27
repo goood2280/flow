@@ -2089,6 +2089,8 @@ export default function My_FileBrowser({user,onNavigate}){
             <div>wafer_id = 3 AND item_id = 'IOFF' <span style={{color:"var(--accent)"}}>— AND</span></div>
             <div>item_id IN ('IOFF', 'ION') <span style={{color:"var(--accent)"}}>— IN 리스트</span></div>
             <div>value BETWEEN 0.1 AND 0.9 <span style={{color:"var(--accent)"}}>— 범위</span></div>
+            <div>CAST(value AS DOUBLE) &gt;= 10 <span style={{color:"var(--accent)"}}>— 문자열 숫자 비교</span></div>
+            <div>CAST(tkout_time AS TIMESTAMP) &gt;= '2024-04-21' <span style={{color:"var(--accent)"}}>— 문자열 시간 비교</span></div>
             <div>tkout_time IS NOT NULL <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
             <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, + WHERE → 조건 템플릿 삽입</div>
           </div>}

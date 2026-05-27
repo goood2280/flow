@@ -5776,7 +5776,7 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
 
 
 def _lazy_filter_expr(sql: str, columns: list[str], dtypes: dict | None = None):
-    s = _normalize_view_sql_filter(sql, columns, dtypes)
+    s = _normalize_polars_view_sql_filter(sql, columns, dtypes)
     if not s:
         return None
     try:
@@ -5803,7 +5803,25 @@ _AI_SQL_IGNORE_TOKENS = {
     "null", "true", "false", "where", "is_in", "is_null", "is_not_null",
     "str", "contains", "starts_with", "ends_with", "cast", "try_cast", "as",
     "bigint", "int64", "integer", "int", "double", "float",
+    "date", "timestamp", "datetime", "time",
 }
+_AI_SQL_CAST_TYPES = {
+    "DOUBLE": "DOUBLE",
+    "FLOAT": "FLOAT",
+    "BIGINT": "BIGINT",
+    "INTEGER": "INTEGER",
+    "INT": "INT",
+    "DATE": "DATE",
+    "TIMESTAMP": "TIMESTAMP",
+    "DATETIME": "DATETIME",
+    "TIME": "TIME",
+}
+_AI_SQL_CAST_CALL_RE = re.compile(r"\b(?P<fn>TRY_CAST|CAST)\s*\(", re.I)
+_AI_SQL_CAST_BODY_RE = re.compile(
+    r"^\s*(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s+AS\s+(?P<type>[A-Za-z0-9_]+)\s*$",
+    re.I,
+)
+_AI_SQL_ARITHMETIC_RE = re.compile(r"(?:\+|\*|/(?![/*]))")
 
 
 def _strip_sql_literals(expr: str) -> str:
@@ -6020,6 +6038,68 @@ def _normalize_temporal_sql_filter(
     for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
         out = out[:start] + replacement + out[end:]
     return out.strip()
+
+
+_AI_SQL_TIME_CAST_COMPARE_RE = re.compile(
+    r"(?P<lhs>TRY_CAST\(\s*[A-Za-z_][A-Za-z0-9_]*\s+AS\s+TIME\s*\))"
+    r"\s*(?P<op>>=|<=|<>|!=|==|=|>|<)\s*"
+    r"(?P<rhs>TIME\s+'(?:''|[^'])*'|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")",
+    re.I,
+)
+_AI_SQL_TIME_LITERAL_RE = re.compile(r"\bTIME\s+'(?P<value>(?:''|[^'])*)'", re.I)
+_AI_SQL_TIME_CAST_SIMPLE_RE = re.compile(
+    r"TRY_CAST\(\s*(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s+AS\s+TIME\s*\)",
+    re.I,
+)
+
+
+def _time_sql_from_cast_literal(raw: str) -> str | None:
+    text = str(raw or "").strip()
+    time_match = _AI_SQL_TIME_LITERAL_RE.fullmatch(text)
+    if time_match:
+        literal = "'" + time_match.group("value") + "'"
+    else:
+        literal = text
+    parsed = _parse_temporal_literal(literal)
+    if not parsed:
+        return None
+    literal_kind, literal_sql = parsed
+    if literal_kind == "date":
+        return None
+    if literal_kind == "datetime":
+        return literal_sql.split(" ", 1)[1] if " " in literal_sql else literal_sql[-8:]
+    return literal_sql
+
+
+def _normalize_time_cast_literals(sql: str) -> str:
+    text = str(sql or "").strip()
+    if not text or "TRY_CAST" not in text.upper() or "TIME" not in text.upper():
+        return text
+
+    def repl(match: re.Match) -> str:
+        time_sql = _time_sql_from_cast_literal(match.group("rhs"))
+        if not time_sql:
+            return match.group(0)
+        return f"{match.group('lhs')} {match.group('op')} TIME '{time_sql}'"
+
+    return _AI_SQL_TIME_CAST_COMPARE_RE.sub(repl, text)
+
+
+def _polars_time_cast_filter(sql: str) -> str:
+    text = str(sql or "").strip()
+    if not text or not _AI_SQL_TIME_CAST_SIMPLE_RE.search(text):
+        return text
+
+    def cast_repl(match: re.Match) -> str:
+        col = match.group("col")
+        return f"TRY_CAST(CONCAT('1970-01-01T', {col}) AS TIMESTAMP)"
+
+    text = _AI_SQL_TIME_CAST_SIMPLE_RE.sub(cast_repl, text)
+
+    def literal_repl(match: re.Match) -> str:
+        return f"TIMESTAMP '1970-01-01T{match.group('value')}'"
+
+    return _AI_SQL_TIME_LITERAL_RE.sub(literal_repl, text)
 
 
 def _extract_llm_sql_text(raw_text: str, plan: dict) -> str:
@@ -6338,6 +6418,59 @@ def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
     return "".join(parts)
 
 
+def _validate_no_sql_arithmetic(expr: str) -> None:
+    masked = _mask_sql_literals(expr)
+    if _AI_SQL_ARITHMETIC_RE.search(masked):
+        raise ValueError("SQL arithmetic expressions are not supported.")
+
+
+def _matching_paren_index(masked_sql: str, open_index: int) -> int:
+    depth = 0
+    for idx in range(open_index, len(masked_sql)):
+        ch = masked_sql[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx
+    raise ValueError("CAST must be a complete CAST(column AS TYPE) expression.")
+
+
+def _normalize_sql_casts(expr: str, columns: list[str]) -> str:
+    text = str(expr or "")
+    if not text or not _AI_SQL_CAST_CALL_RE.search(_mask_sql_literals(text)):
+        return text
+    lookup = _column_lookup(columns)
+    masked = _mask_sql_literals(text)
+    replacements: list[tuple[int, int, str]] = []
+    occupied: list[tuple[int, int]] = []
+    for match in _AI_SQL_CAST_CALL_RE.finditer(masked):
+        start = match.start()
+        open_index = match.end() - 1
+        end = _matching_paren_index(masked, open_index)
+        span = (start, end + 1)
+        if _overlaps(span, occupied):
+            continue
+        body = text[open_index + 1:end].strip()
+        body_match = _AI_SQL_CAST_BODY_RE.match(body)
+        if not body_match:
+            raise ValueError("CAST must target one column: CAST(column AS TYPE).")
+        raw_col = body_match.group("col")
+        column = lookup.get(raw_col.casefold()) if lookup else raw_col
+        if columns and not column:
+            raise ValueError(f"SQL referenced unknown column(s): {raw_col}")
+        cast_type = _AI_SQL_CAST_TYPES.get(body_match.group("type").upper())
+        if not cast_type:
+            raise ValueError(f"Unsupported CAST type: {body_match.group('type')}")
+        replacements.append((span[0], span[1], f"TRY_CAST({column} AS {cast_type})"))
+        occupied.append(span)
+    out = text
+    for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out
+
+
 def _normalize_where_expression(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
     text = str(sql or "").strip()
     if not text:
@@ -6348,6 +6481,8 @@ def _normalize_where_expression(sql: str, columns: list[str] | tuple[str, ...] |
     all_columns = list(columns or [])
     text = _canonicalize_sql_column_aliases(text, all_columns)
     text = _quote_bare_sql_values(text, all_columns)
+    _validate_no_sql_arithmetic(text)
+    text = _normalize_sql_casts(text, all_columns)
     missing = _sql_missing_columns(text, all_columns)
     if missing:
         raise ValueError("SQL referenced unknown column(s): " + ", ".join(missing[:8]))
@@ -6361,7 +6496,16 @@ def _normalize_view_sql_filter(
 ) -> str:
     text = _normalize_where_expression(sql, columns)
     text = _normalize_wafer_sql_filter(text, columns)
-    return _normalize_temporal_sql_filter(text, columns, dtypes)
+    text = _normalize_temporal_sql_filter(text, columns, dtypes)
+    return _normalize_time_cast_literals(text)
+
+
+def _normalize_polars_view_sql_filter(
+    sql: str,
+    columns: list[str] | tuple[str, ...] | None = None,
+    dtypes: dict | None = None,
+) -> str:
+    return _polars_time_cast_filter(_normalize_view_sql_filter(sql, columns, dtypes))
 
 
 _AI_SQL_SELECT_PREFIX_RE = re.compile(
@@ -8492,7 +8636,9 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "If step_mapping_context.used is true, use its target_sql for the step condition; "
                 "do not filter a function_step name directly when target_column is step_id. "
                 "Prefer SQL syntax: =, !=, >, >=, <, <=, LIKE, NOT LIKE, IN (...), "
-                "IS NULL, IS NOT NULL, AND, OR."
+                "IS NULL, IS NOT NULL, AND, OR. In WHERE only, you may use "
+                "CAST(column AS DOUBLE|FLOAT|BIGINT|INTEGER|INT|DATE|TIMESTAMP|DATETIME|TIME) "
+                "for string-stored numeric or temporal columns."
             ))
             ask = json.dumps({
                 "natural_language": prompt,
@@ -8700,7 +8846,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     sel, truncated_cols = _selected_columns(all_columns, "" if active_aggregate else select_cols, preview_cols)
     normalized_sql = _validate_where_expression(sql, all_columns)
     if sql and sql.strip():
-        df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns, schema))
+        df = apply_sql_like(df, _normalize_polars_view_sql_filter(normalized_sql, all_columns, schema))
         total = df.height
     if active_aggregate:
         df = _apply_aggregate_df(df, active_aggregate)
@@ -8964,7 +9110,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = collect_streaming(lf)
             except Exception:
                 df = lf.collect()
-            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns, schema))
+            df = apply_sql_like(df, _normalize_polars_view_sql_filter(normalized_sql, all_columns, schema))
             total = df.height
             if active_sort and active_sort.get("column") in df.columns:
                 df = df.sort(
@@ -10048,7 +10194,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             operation="download",
         )
         if sql.strip():
-            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, list(df.columns), df_schema))
+            df = apply_sql_like(df, _normalize_polars_view_sql_filter(normalized_sql, list(df.columns), df_schema))
         if aggregate_spec:
             warnings: list[str] = []
             active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), warnings, "aggregate")
@@ -11041,5 +11187,7 @@ def sql_guide():
         {"desc": "IN", "sql": "item_id IN ('IOFF', 'ION')"},
         {"desc": "AND", "sql": "wafer_id = 3 AND item_id = 'IOFF'"},
         {"desc": "BETWEEN", "sql": "value BETWEEN 0.1 AND 0.9"},
+        {"desc": "CAST 숫자 비교", "sql": "CAST(value AS DOUBLE) >= 10"},
+        {"desc": "CAST 시간 비교", "sql": "CAST(tkout_time AS TIMESTAMP) >= '2024-04-21'"},
         {"desc": "IS NOT NULL", "sql": "tkout_time IS NOT NULL"},
     ]}

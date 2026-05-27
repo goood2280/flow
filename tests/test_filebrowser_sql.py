@@ -1619,6 +1619,7 @@ def test_filebrowser_download_lazy_csv_parses_order_by_from_display_sql():
 @pytest.mark.parametrize("bad_sql", [
     "SELECT product WHERE product = 'A' ORDER BY missing_col ASC",
     "SELECT product ORDER BY lower(product) ASC",
+    "SELECT product ORDER BY CAST(feature_name AS DOUBLE) ASC",
     "SELECT product ORDER BY product ASC; DROP TABLE source",
 ])
 def test_filebrowser_order_by_rejects_unsupported_sql(bad_sql):
@@ -2146,6 +2147,84 @@ def test_dataframe_view_filters_temporal_dtype_with_iso_literal():
     assert [row["lot_id"] for row in result["data"]] == ["new"]
 
 
+def test_filebrowser_dataframe_view_filters_string_numeric_cast():
+    df = pl.DataFrame({
+        "lot_id": ["low", "hit", "bad"],
+        "value": ["9.5", "10", "not-a-number"],
+    })
+
+    result = filebrowser._run_view(
+        df,
+        sql="CAST(value AS DOUBLE) >= 10",
+        select_cols="lot_id,value",
+        rows=20,
+    )
+
+    assert result["where_sql"] == "TRY_CAST(value AS DOUBLE) >= 10"
+    assert result["data"] == [{"lot_id": "hit", "value": "10"}]
+
+
+def test_filebrowser_lazy_view_filters_string_numeric_cast():
+    lf = pl.DataFrame({
+        "lot_id": ["low", "hit", "bad"],
+        "value": ["9", "10", "bad"],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="TRY_CAST(value AS BIGINT) >= 10",
+        select_cols="lot_id,value",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["where_sql"] == "TRY_CAST(value AS BIGINT) >= 10"
+    assert result["data"] == [{"lot_id": "hit", "value": "10"}]
+
+
+def test_filebrowser_lazy_view_filters_date_timestamp_time_casts():
+    lf = pl.DataFrame({
+        "lot_id": ["old", "new", "bad"],
+        "date_text": ["2024-04-20", "2024-04-22", "not-a-date"],
+        "ts_text": ["2024-04-20T12:00:00", "2024-04-22T12:00:00", "not-a-time"],
+        "time_text": ["08:30:00", "09:30:00", "bad"],
+    }).lazy()
+
+    date_result = filebrowser._run_view_lazy(
+        lf,
+        sql="CAST(date_text AS DATE) >= '2024-04-21'",
+        select_cols="lot_id,date_text",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+    ts_result = filebrowser._run_view_lazy(
+        lf,
+        sql="CAST(ts_text AS TIMESTAMP) >= '2024-04-21'",
+        select_cols="lot_id,ts_text",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+    time_result = filebrowser._run_view_lazy(
+        lf,
+        sql="CAST(time_text AS TIME) >= '09:00:00'",
+        select_cols="lot_id,time_text",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert date_result["data"] == [{"lot_id": "new", "date_text": "2024-04-22"}]
+    assert ts_result["data"] == [{"lot_id": "new", "ts_text": "2024-04-22T12:00:00"}]
+    assert time_result["data"] == [{"lot_id": "new", "time_text": "09:30:00"}]
+
+
 def test_lazy_view_casts_time_named_string_filter_as_datetime():
     lf = pl.DataFrame({
         "lot_id": ["old", "bad", "new"],
@@ -2212,6 +2291,50 @@ def test_download_duckdb_csv_filters_temporal_dtype_with_iso_literal(tmp_path):
 
     assert df["lot_id"].to_list() == ["new"]
     assert b"new" in csv_bytes
+
+
+def test_filebrowser_duckdb_preview_and_download_filter_string_numeric_cast(tmp_path):
+    if not duckdb_engine.is_available():
+        pytest.skip("duckdb is not installed")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "lot_id": ["low", "hit", "bad"],
+        "value": ["9", "10", "bad"],
+    }).write_parquet(fp)
+
+    preview = filebrowser._run_view_duckdb(
+        [fp],
+        "CAST(value AS DOUBLE) >= 10",
+        "lot_id,value",
+        20,
+    )
+    df, csv_bytes = filebrowser._download_duckdb_csv(
+        [fp],
+        "CAST(value AS DOUBLE) >= 10",
+        "lot_id,value",
+        20,
+        max_bytes=100000,
+    )
+
+    assert preview["where_sql"] == "TRY_CAST(value AS DOUBLE) >= 10"
+    assert preview["data"] == [{"lot_id": "hit", "value": "10"}]
+    assert df.to_dicts() == [{"lot_id": "hit", "value": "10"}]
+    assert b"hit" in csv_bytes
+    assert b"bad" not in csv_bytes
+
+
+@pytest.mark.parametrize("sql", [
+    "CAST(missing_col AS DOUBLE) >= 10",
+    "CAST(value AS DECIMAL) >= 10",
+    "CAST(value + 1 AS DOUBLE) >= 10",
+])
+def test_filebrowser_cast_rejects_unknown_column_type_and_arithmetic(sql):
+    df = pl.DataFrame({"value": ["10"]})
+
+    with pytest.raises(HTTPException) as exc:
+        filebrowser._run_view(df, sql=sql, select_cols="value", rows=20)
+
+    assert exc.value.status_code == 400
 
 
 def test_base_file_meta_only_uses_cached_parquet_metadata(monkeypatch, tmp_path):
