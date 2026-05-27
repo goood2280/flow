@@ -3163,6 +3163,46 @@ def _latest_base_version_meta(file: str, *, exclude_version: str = "") -> tuple[
     return meta, meta_fp
 
 
+def _post_save_profile_matching_current(meta: dict | None, current_profile: dict | None) -> dict | None:
+    if not isinstance(meta, dict) or not isinstance(current_profile, dict):
+        return None
+    post_save_profile = meta.get("post_save_profile")
+    if not isinstance(post_save_profile, dict):
+        return None
+    current_checksum = str(current_profile.get("checksum") or "")
+    post_save_checksum = str(post_save_profile.get("checksum") or "")
+    if current_checksum and post_save_checksum and current_checksum == post_save_checksum:
+        return post_save_profile
+    return None
+
+
+def _latest_post_save_profile_matching_current(file: str, target: Path, meta: dict | None) -> tuple[dict | None, dict | None]:
+    latest = _latest_base_version_meta(file)
+    if latest is None or not isinstance(meta, dict):
+        return None, None
+    latest_meta, _ = latest
+    latest_storage = str(latest_meta.get("version") or "")
+    storage_version = str(meta.get("version") or "")
+    if not latest_storage or storage_version != latest_storage:
+        return None, None
+    current_profile = _file_profile(target)
+    post_save_profile = _post_save_profile_matching_current(meta, current_profile)
+    if post_save_profile is None:
+        return None, current_profile
+    return post_save_profile, current_profile
+
+
+def _version_meta_with_profile(meta: dict, profile: dict, *, state: str = "") -> dict:
+    out = {**meta}
+    out["size"] = profile.get("size")
+    out["rows"] = profile.get("rows")
+    out["columns"] = _profile_column_count(profile)
+    out["checksum"] = profile.get("checksum") or ""
+    if state:
+        out["content_file_state"] = state
+    return out
+
+
 def _current_base_file_version_info(file: str, target: Path, profile: dict | None = None) -> dict:
     if not _base_file_versioned(file, target):
         return {}
@@ -3726,6 +3766,7 @@ def _snapshot_base_file_version(
     actor: str = "",
     action: str = "edit",
     note: str = "",
+    diff_previous: Path | None = None,
 ) -> dict | None:
     if not target.exists() or not _base_file_versioned(file, target):
         return None
@@ -3738,8 +3779,14 @@ def _snapshot_base_file_version(
     content_fp = vdir / content_name
     shutil.copy2(target, content_fp)
     rows, cols = _file_shape(target)
-    display_version = _next_semver(vdir, rows=rows, columns=cols)
-    change_summary = _snapshot_change_summary(target, previous_content, file=file)
+    previous_for_diff = diff_previous if diff_previous is not None and diff_previous.exists() else previous_content
+    if previous_content is None and previous_for_diff is not None and previous_for_diff.exists():
+        prev_rows, prev_cols = _file_shape(previous_for_diff)
+        display_version = _bump_semver("v1.0", rows=rows, columns=cols, prev_rows=prev_rows, prev_columns=prev_cols)
+    else:
+        display_version = _next_semver(vdir, rows=rows, columns=cols)
+    change_summary = _snapshot_change_summary(target, previous_for_diff, file=file)
+    save_diff_table = _diff_table_between(target, previous_for_diff, file=file)
     meta = {
         "version": version,
         "display_version": display_version,
@@ -3756,48 +3803,11 @@ def _snapshot_base_file_version(
         "content_file": content_name,
         "note": note or "",
         "change_summary": change_summary,
+        "save_diff_table": save_diff_table,
     }
     (vdir / f"{version}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     _cap_file_versions(vdir)
     return meta
-
-
-def _attach_post_save_change_summary(file: str, version_meta: dict | None, after_path: Path) -> dict | None:
-    if not isinstance(version_meta, dict):
-        return version_meta
-    vdir = _version_dir(file)
-    content_fp = vdir / str(version_meta.get("content_file") or "")
-    if not content_fp.exists():
-        return version_meta
-    try:
-        change_summary = _snapshot_change_summary(after_path, content_fp, file=file)
-        diff_table = _diff_table_between(after_path, content_fp, file=file)
-        post_save_profile = _file_profile(after_path)
-        post_rows = post_save_profile.get("rows")
-        post_columns = _profile_column_count(post_save_profile)
-        storage_version = str(version_meta.get("version") or "")
-        previous = _latest_base_version_meta(file, exclude_version=storage_version)
-        if previous is not None:
-            previous_meta, _ = previous
-            prev_rows, prev_columns = _meta_version_shape(previous_meta)
-            base_display = str(previous_meta.get("display_version") or previous_meta.get("version") or "v1.0")
-        else:
-            prev_rows, prev_columns = version_meta.get("rows"), version_meta.get("columns")
-            base_display = "v1.0"
-        display_version = _bump_semver(base_display, rows=post_rows, columns=post_columns, prev_rows=prev_rows, prev_columns=prev_columns)
-        version_meta = {
-            **version_meta,
-            "display_version": display_version,
-            "change_summary": change_summary,
-            "save_diff_table": diff_table,
-            "post_save_profile": post_save_profile,
-        }
-        meta_fp = vdir / f"{version_meta.get('version')}.meta.json"
-        if meta_fp.is_file():
-            _write_text_atomic(meta_fp, json.dumps(version_meta, ensure_ascii=False, indent=2))
-    except Exception as exc:
-        logger.warning("base-file post-save diff skipped file=%s: %s", after_path, exc)
-    return version_meta
 
 
 def _list_base_file_versions(file: str) -> list[dict]:
@@ -3805,12 +3815,27 @@ def _list_base_file_versions(file: str) -> list[dict]:
     if not vdir.is_dir():
         return []
     rows = []
+    current_profile = {}
+    latest_storage = ""
+    try:
+        target = _resolve_base_file_for_version(file)
+        current_profile = _file_profile(target)
+        latest = _latest_base_version_meta(file)
+        if latest is not None:
+            latest_meta, _ = latest
+            latest_storage = str(latest_meta.get("version") or "")
+    except Exception:
+        current_profile = {}
+        latest_storage = ""
     for meta_fp in sorted(vdir.glob("v*.meta.json"), key=lambda p: (p.stat().st_mtime, p.name), reverse=True):
         try:
             meta = json.loads(meta_fp.read_text(encoding="utf-8"))
         except Exception:
             continue
         storage_version = meta.get("version") or meta_fp.name.split(".", 1)[0]
+        profile_override = None
+        if latest_storage and str(storage_version) == latest_storage:
+            profile_override = _post_save_profile_matching_current(meta, current_profile)
         change_summary = meta.get("change_summary") or {}
         if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows", "added_columns", "removed_columns", "columns_delta")):
             content_fp = vdir / str(meta.get("content_file") or "")
@@ -3857,10 +3882,10 @@ def _list_base_file_versions(file: str) -> list[dict]:
             "actor": meta.get("actor") or "",
             "action": meta.get("action") or "edit",
             "created_at": meta.get("created_at") or "",
-            "size": meta.get("size"),
-            "rows": meta.get("rows"),
-            "columns": meta.get("columns"),
-            "checksum": meta.get("checksum") or "",
+            "size": profile_override.get("size") if profile_override else meta.get("size"),
+            "rows": profile_override.get("rows") if profile_override else meta.get("rows"),
+            "columns": _profile_column_count(profile_override) if profile_override else meta.get("columns"),
+            "checksum": (profile_override.get("checksum") if profile_override else meta.get("checksum")) or "",
             "note": meta.get("note") or "",
             "change_summary": change_summary,
         }).dict())
@@ -3946,6 +3971,9 @@ def _resolve_base_version_content(file: str, version: str, target: Path) -> tupl
     content_fp = vdir / str(meta.get("content_file") or "")
     if not content_fp.exists():
         raise HTTPException(404, "Version content missing")
+    post_save_profile, current_profile = _latest_post_save_profile_matching_current(file, target, meta)
+    if post_save_profile is not None and current_profile is not None:
+        return target, _version_meta_with_profile(meta, current_profile, state="current_post_save_compat")
     return content_fp, meta
 
 
@@ -10539,16 +10567,6 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
         backup = _ensure_base_file_backup(fp)
     except Exception:
         backup = None
-    try:
-        version_meta = _snapshot_base_file_version(
-            fp,
-            req.file,
-            actor=me.get("username") or "",
-            action="edit",
-            note=req.note or "FileBrowser single-file edit",
-        )
-    except Exception as e:
-        logger.warning("base-file/save version snapshot skipped file=%s: %s", fp, e)
 
     try:
         if ext == ".csv":
@@ -10565,7 +10583,17 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
     except Exception as e:
         raise HTTPException(400, f"Save failed: {e}")
 
-    version_meta = _attach_post_save_change_summary(req.file, version_meta, fp)
+    try:
+        version_meta = _snapshot_base_file_version(
+            fp,
+            req.file,
+            actor=me.get("username") or "",
+            action="edit",
+            note=req.note or "FileBrowser single-file edit",
+            diff_previous=Path(backup) if backup else None,
+        )
+    except Exception as e:
+        logger.warning("base-file/save version snapshot skipped file=%s: %s", fp, e)
 
     try:
         cache_result = None
@@ -10631,20 +10659,25 @@ def save_base_text_file(req: BaseTextFileSaveReq, request: Request):
             pass
         except Exception as e:
             raise HTTPException(400, f"Invalid YAML: {e}")
-    version_meta = _snapshot_base_file_version(
-        target,
-        req.file,
-        actor=req.username or me.get("username") or "",
-        action="edit",
-        note=req.note or "FileBrowser raw text edit",
-    )
+    backup = _ensure_base_file_backup(target)
+    version_meta = None
     try:
         _write_text_atomic(target, req.text or "")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(400, f"Text save failed: {e}")
-    version_meta = _attach_post_save_change_summary(req.file, version_meta, target)
+    try:
+        version_meta = _snapshot_base_file_version(
+            target,
+            req.file,
+            actor=req.username or me.get("username") or "",
+            action="edit",
+            note=req.note or "FileBrowser raw text edit",
+            diff_previous=Path(backup) if backup else None,
+        )
+    except Exception as e:
+        logger.warning("base-file/text-save version snapshot skipped file=%s: %s", target, e)
     sync_result = _filebrowser_s3_sync_for_saved_path(target)
     jsonl_append(PATHS.activity_log, {
         "username": req.username or me.get("username") or "",
@@ -10657,6 +10690,7 @@ def save_base_text_file(req: BaseTextFileSaveReq, request: Request):
         "file": req.file,
         "source_path": str(target),
         "source_modified": target.stat().st_mtime,
+        "backup": backup,
         "version": version_meta,
         "size": target.stat().st_size,
         "s3_sync": sync_result,

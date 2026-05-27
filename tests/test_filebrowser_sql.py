@@ -2728,6 +2728,17 @@ def test_default_reformatter_folder_versions_json_and_csv(monkeypatch, tmp_path)
     assert csv_versions["versioned"] is True
 
 
+def _assert_latest_base_version_matches_current(versions: dict) -> dict:
+    latest = versions["versions"][0]
+    current = versions["current_profile"]
+    assert latest["version"] == current["current_version"]
+    assert latest["rows"] == current["rows"]
+    assert latest["columns"] == current["columns"]
+    assert latest["size"] == current["size"]
+    assert latest["checksum"] == current["checksum"]
+    return latest
+
+
 def test_reformatter_csv_save_applies_file_rule_and_versions_under_flow_data(monkeypatch, tmp_path):
     reformatter_dir = tmp_path / "reformatter"
     reformatter_dir.mkdir()
@@ -2808,6 +2819,10 @@ def test_base_file_save_reports_added_rows_in_version_diff(monkeypatch, tmp_path
     assert saved["version"]["change_summary"]["added_rows"] == 1
     assert versions["versions"][0]["change_summary"]["label"] == "추가 1행"
     assert preview["diff_table"]["counts"]["added"] == 1
+    latest = _assert_latest_base_version_matches_current(versions)
+    assert latest["rows"] == 2
+    assert preview["diff"]["checksum_equal"] is True
+    assert preview["version_profile"]["checksum"] == versions["current_profile"]["checksum"]
 
 
 def test_base_file_versions_report_current_semver_for_content_and_schema_changes(monkeypatch, tmp_path):
@@ -2859,6 +2874,14 @@ def test_base_file_versions_report_current_semver_for_content_and_schema_changes
     assert schema_summary["label"] == "열 +1"
     assert schema_summary["added_columns"] == ["owner"]
     assert schema_versions["current_profile"]["current_version"] == "v2.0"
+    latest_schema = _assert_latest_base_version_matches_current(schema_versions)
+    schema_preview = filebrowser.base_file_version_content(
+        _Request("admin", "admin"),
+        file="lookup.csv",
+        version=latest_schema["version"],
+    )
+    assert schema_preview["diff"]["checksum_equal"] is True
+    assert schema_preview["version_profile"]["checksum"] == schema_versions["current_profile"]["checksum"]
 
     filebrowser._save_base_file(
         filebrowser.BaseFileSaveReq(
@@ -2944,6 +2967,144 @@ def test_base_file_versions_use_post_save_profile_to_avoid_duplicate_major(monke
     next_schema_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="ppid_knob.csv")
     assert next_schema_versions["versions"][0]["version"] == "v3.0"
     assert next_schema_versions["current_profile"]["current_version"] == "v3.0"
+
+
+def test_base_file_text_save_records_current_file_as_latest_version(monkeypatch, tmp_path):
+    reformatter_dir = tmp_path / "reformatter"
+    reformatter_dir.mkdir()
+    fp = reformatter_dir / "notes.txt"
+    fp.write_text("before\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    saved = filebrowser.save_base_text_file(
+        filebrowser.BaseTextFileSaveReq(file="reformatter/notes.txt", text="after\n", note="text update"),
+        _Request("admin", "admin"),
+    )
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="reformatter/notes.txt")
+    latest = _assert_latest_base_version_matches_current(versions)
+    preview = filebrowser.base_file_version_content(
+        _Request("admin", "admin"),
+        file="reformatter/notes.txt",
+        version=latest["version"],
+    )
+
+    assert saved["version"]["checksum"] == versions["current_profile"]["checksum"]
+    assert saved["backup"]
+    assert preview["diff"]["checksum_equal"] is True
+    assert preview["text"] == "after\n"
+
+
+def test_base_file_rollback_records_current_file_as_latest_version(monkeypatch, tmp_path):
+    fp = tmp_path / "lookup.csv"
+    fp.write_text("id,value\n1,original\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="lookup.csv",
+            csv_text="id,value\n1,first\n",
+            delimiter="comma",
+            include_header=True,
+            note="first saved version",
+        ),
+        _Request("admin", "admin"),
+    )
+    first_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    rollback_target = first_versions["versions"][0]["version"]
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="lookup.csv",
+            csv_text="id,value\n1,second\n",
+            delimiter="comma",
+            include_header=True,
+            note="second saved version",
+        ),
+        _Request("admin", "admin"),
+    )
+
+    rolled_back = filebrowser.rollback_base_file(
+        filebrowser.BaseFileRollbackReq(file="lookup.csv", version=rollback_target, note="restore first"),
+        _Request("admin", "admin"),
+    )
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    latest = _assert_latest_base_version_matches_current(versions)
+    preview = filebrowser.base_file_version_content(
+        _Request("admin", "admin"),
+        file="lookup.csv",
+        version=latest["version"],
+    )
+
+    assert rolled_back["version"]["checksum"] == versions["current_profile"]["checksum"]
+    assert fp.read_text(encoding="utf-8") == "id,value\n1,first\n"
+    assert preview["diff"]["checksum_equal"] is True
+
+
+def test_legacy_post_save_profile_latest_version_matches_current_file(monkeypatch, tmp_path):
+    fp = tmp_path / "lookup.csv"
+    fp.write_text("id,value\n1,before\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    old_meta = filebrowser._snapshot_base_file_version(
+        fp,
+        "lookup.csv",
+        actor="admin",
+        action="edit",
+        note="legacy pre-save snapshot",
+    )
+    fp.write_text("id,value\n1,after\n2,new\n", encoding="utf-8")
+    post_save_profile = filebrowser._file_profile(fp)
+    version_dir = tmp_path / "file_versions" / "lookup.csv"
+    meta_fp = version_dir / f"{old_meta['version']}.meta.json"
+    legacy_meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    legacy_meta.update({
+        "display_version": "v1.1",
+        "change_summary": filebrowser._snapshot_change_summary(fp, version_dir / legacy_meta["content_file"], file="lookup.csv"),
+        "save_diff_table": filebrowser._diff_table_between(fp, version_dir / legacy_meta["content_file"], file="lookup.csv"),
+        "post_save_profile": post_save_profile,
+    })
+    meta_fp.write_text(json.dumps(legacy_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    latest = _assert_latest_base_version_matches_current(versions)
+    preview = filebrowser.base_file_version_content(
+        _Request("admin", "admin"),
+        file="lookup.csv",
+        version=latest["version"],
+    )
+
+    assert versions["current_profile"]["current_version"] == "v1.1"
+    assert latest["rows"] == 2
+    assert preview["diff"]["checksum_equal"] is True
+    assert preview["text"] == "id,value\n1,after\n2,new\n"
 
 
 def test_version_diff_preserves_duplicate_inferred_key_additions(tmp_path):
