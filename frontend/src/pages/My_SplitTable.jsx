@@ -246,8 +246,14 @@ export default function My_SplitTable({user}){
     Object.keys(next).forEach((k)=>{ if(next[k]) next[k]={...next[k], fab_source:normFabSource(next[k].fab_source)}; });
     return next;
   };
+  const normalizeEnabledProducts=(enabledList, productList=products)=>{
+    if(!Array.isArray(enabledList)||!enabledList.length)return null;
+    const next=new Set(enabledList);
+    (productList||[]).filter(p=>p.source_type==="base_file").forEach(p=>{if(p.name)next.add(p.name);});
+    return next;
+  };
   const loadSourceConfig=()=>sf(API+"/source-config").then(d=>{
-    if(d.enabled?.length)setEnabledSources(new Set(d.enabled));
+    setEnabledSources(normalizeEnabledProducts(d.enabled));
     if(d.lot_overrides)setLotOverrides(normalizeOverrideConfig(d.lot_overrides));
     return d;
   }).catch(()=>({}));
@@ -287,7 +293,7 @@ export default function My_SplitTable({user}){
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
         const prods=prodRes.products||[];setProducts(prods);
-        const enabled=srcRes.enabled?.length?new Set(srcRes.enabled):null;
+        const enabled=normalizeEnabledProducts(srcRes.enabled, prods);
         setEnabledSources(enabled);
         if(srcRes.lot_overrides) setLotOverrides(normalizeOverrideConfig(srcRes.lot_overrides));
         // Set initial product to first visible source
@@ -470,7 +476,7 @@ export default function My_SplitTable({user}){
         const reqMap={knob_ppid:["feature_name","step_desc"],step_matching:["product","step_id","step_desc"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
         setRbRowReq(reqMap[kind]||[]);
         // KNOB 룰은 제품 공용, 적용 공정 매칭은 제품 행만 편집한다.
-        const prodRows=(isCommonRulebook(kind)?(d.rows||[]):(d.rows||[]).filter(r=>(r.product||"")===selProd)).map(r=>normalizeRbRow(kind,r));
+        const prodRows=(d.rows||[]).map(r=>normalizeRbRow(kind,r));
         setRbRowRows(prodRows);
       })
       .catch(e=>{toast.error("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});

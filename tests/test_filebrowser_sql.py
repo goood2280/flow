@@ -4,6 +4,7 @@ import json
 import sys
 import csv
 import asyncio
+import datetime
 from pathlib import Path
 
 import polars as pl
@@ -364,6 +365,9 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     from core import lot_progress_cache
 
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(lot_progress_cache, "_CACHE_STATE", None)
+    monkeypatch.setattr(lot_progress_cache, "_CACHE_INDEX", None)
+    monkeypatch.setattr(lot_progress_cache, "_CACHE_INDEX_KEY", None)
     json_fp = tmp_path / "lot_wf_current.json"
     parquet_fp = tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet"
     json_fp.write_text(json.dumps({
@@ -2102,6 +2106,116 @@ def test_column_select_runs_full_scan_without_recent_preview(monkeypatch):
     assert calls[-1]["latest_only"] is False
     assert result["latest_preview"] is False
     assert result["columns"] == ["lot_id"]
+
+
+def test_lazy_view_filters_temporal_dtype_with_iso_literal():
+    lf = pl.DataFrame({
+        "lot_id": ["old", "new"],
+        "measure_time": [
+            datetime.datetime(2024, 4, 20, 12, 0, 0),
+            datetime.datetime(2024, 4, 23, 12, 0, 0),
+        ],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="measure_time >= '2024-04-21'",
+        select_cols="lot_id,measure_time",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert [row["lot_id"] for row in result["data"]] == ["new"]
+    assert result["where_sql"] == "measure_time >= '2024-04-21'"
+
+
+def test_dataframe_view_filters_temporal_dtype_with_iso_literal():
+    df = pl.DataFrame({
+        "lot_id": ["old", "new"],
+        "measure_time": [
+            datetime.datetime(2024, 4, 20, 12, 0, 0),
+            datetime.datetime(2024, 4, 23, 12, 0, 0),
+        ],
+    })
+
+    result = filebrowser._run_view(
+        df,
+        sql="measure_time >= '2024-04-21'",
+        select_cols="lot_id,measure_time",
+        rows=20,
+    )
+
+    assert [row["lot_id"] for row in result["data"]] == ["new"]
+
+
+def test_lazy_view_casts_time_named_string_filter_as_datetime():
+    lf = pl.DataFrame({
+        "lot_id": ["old", "bad", "new"],
+        "event_time": [
+            "2024-04-20T12:00:00",
+            "not-a-time",
+            "2024-04-23T12:00:00",
+        ],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="event_time >= '2024-04-21'",
+        select_cols="lot_id,event_time",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["data"] == [{"lot_id": "new", "event_time": "2024-04-23T12:00:00"}]
+
+
+def test_download_lazy_csv_filters_temporal_dtype_with_iso_literal():
+    lf = pl.DataFrame({
+        "lot_id": ["old", "new"],
+        "measure_time": [
+            datetime.datetime(2024, 4, 20, 12, 0, 0),
+            datetime.datetime(2024, 4, 23, 12, 0, 0),
+        ],
+    }).lazy()
+
+    df, csv_bytes = filebrowser._download_lazy_csv(
+        lf,
+        "measure_time >= '2024-04-21'",
+        "lot_id,measure_time",
+        20,
+        max_bytes=100000,
+    )
+
+    assert df["lot_id"].to_list() == ["new"]
+    assert b"new" in csv_bytes
+
+
+def test_download_duckdb_csv_filters_temporal_dtype_with_iso_literal(tmp_path):
+    if not duckdb_engine.is_available():
+        pytest.skip("duckdb is not installed")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "lot_id": ["old", "new"],
+        "measure_time": [
+            datetime.datetime(2024, 4, 20, 12, 0, 0),
+            datetime.datetime(2024, 4, 23, 12, 0, 0),
+        ],
+    }).write_parquet(fp)
+
+    df, csv_bytes = filebrowser._download_duckdb_csv(
+        [fp],
+        "measure_time >= '2024-04-21'",
+        "lot_id,measure_time",
+        20,
+        max_bytes=100000,
+    )
+
+    assert df["lot_id"].to_list() == ["new"]
+    assert b"new" in csv_bytes
 
 
 def test_base_file_meta_only_uses_cached_parquet_metadata(monkeypatch, tmp_path):

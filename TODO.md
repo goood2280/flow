@@ -6,6 +6,8 @@
 
 ## Done
 
+- (Codex) FileBrowser 날짜/시간 SQL 필터 lazy/download 경로 보정
+- (Codex) SplitTable ML_TABLE 제품 목록과 Vehicle_matching step_desc/product 매칭 보정
 - (Codex) FileBrowser DB root 선표시와 제품 목록 로딩 분리
 - (Codex) SplitTable KNOB 적용공정 step_desc 룰북 설정
 - (Codex) 단위기능 AI 노드 persona/state 설계 실행 전 가시화

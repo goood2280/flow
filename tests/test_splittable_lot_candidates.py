@@ -640,6 +640,25 @@ def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     assert "A0001" not in result["lot_ids"]
 
 
+def test_products_include_mltable_files_from_base_and_db_roots(tmp_path, monkeypatch):
+    base_root = tmp_path / "base"
+    db_root = tmp_path / "db"
+    base_root.mkdir()
+    db_root.mkdir()
+    pl.DataFrame({"root_lot_id": ["R1000"], "wafer_id": [1], "KNOB_A": ["ON"]}).write_parquet(
+        base_root / "ML_TABLE_BASE.parquet"
+    )
+    pl.DataFrame({"root_lot_id": ["R2000"], "wafer_id": [1], "KNOB_B": ["OFF"]}).write_parquet(
+        db_root / "ML_TABLE_DB.parquet"
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: base_root)
+    monkeypatch.setattr(splittable, "_db_base", lambda: db_root)
+
+    products = splittable.list_products()["products"]
+
+    assert [p["name"] for p in products] == ["ML_TABLE_BASE", "ML_TABLE_DB"]
+
+
 def _setup_knob_meta_fixture(tmp_path, monkeypatch):
     plan_dir = tmp_path / "flow-data" / "splittable"
     plan_dir.mkdir(parents=True)
@@ -694,6 +713,45 @@ def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypat
     assert groups[0]["value"] == "PPID_A"
     assert groups[0]["category"] == "ETCH"
     assert "STEP_PC_B" not in groups[0]["step_ids"]
+
+
+def test_knob_meta_matches_vehicle_step_desc_case_insensitively_and_dedupes_groups(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,pc,=,PPID_A,ETCH\n"
+        "5.0 PC,R2,PC,=,PPID_B,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,STEP_PC_A,PC,ETCH\n"
+        "ML_TABLE_PRODA,STEP_PC_A,pc,ETCH\n"
+        "PRODB,STEP_PC_B,PC,ETCH\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    groups = meta["5.0 PC"]["groups"]
+    assert len(groups) == 1
+    assert groups[0]["step_desc"] == "pc"
+    assert groups[0]["step_ids"] == ["STEP_PC_A"]
+    assert "STEP_PC_B" not in groups[0]["step_ids"]
+
+
+def test_vehicle_rulebook_filters_product_alias_case_insensitively(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "proda,STEP_PC_A,PC\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    rows = splittable.get_rulebook(kind="step_matching", product="ML_TABLE_PRODA")["rows"]
+
+    assert rows == [{"product": "proda", "step_id": "STEP_PC_A", "step_desc": "PC"}]
 
 
 def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, monkeypatch):

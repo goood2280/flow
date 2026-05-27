@@ -392,6 +392,24 @@ def _product_aliases(product: str) -> set[str]:
     return out
 
 
+def _product_alias_keys(product: str) -> set[str]:
+    return {str(alias or "").strip().casefold() for alias in _product_aliases(product) if str(alias or "").strip()}
+
+
+def _product_value_matches(product: str, row_product: object, *, allow_common: bool = True) -> bool:
+    """Case-insensitive product/alias match for rulebook rows."""
+    if not str(product or "").strip():
+        return True
+    row_value = str(row_product or "").strip()
+    if not row_value:
+        return allow_common
+    return row_value.casefold() in _product_alias_keys(product)
+
+
+def _step_desc_match_key(value: object) -> str:
+    return _re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
 _PRODUCT_FILE_EXTS = (".parquet", ".csv")
 
 
@@ -1676,26 +1694,40 @@ def _related_tracker_issues(product: str, root_lot_id: str,
 
 
 # ── Products / schema ──
-# v8.8.3: SplitTable 의 "제품" = 오직 Base 의 ML_TABLE_* 파일로 한정.
+# v8.8.3: SplitTable 의 "제품" = 오직 ML_TABLE_* 파일로 한정.
 #   - 기존에는 DB hive 테이블(FAB/INLINE/ET/EDS)과 레거시 루트 파일도 노출되어
 #     실제 검색 가능한 테이블셋이 혼탁했다.
-#   - 신규 요청: "검색되는 테이블셋 = ML_TABLE_~~" prefix 로 시작하는 Base 파일만.
+#   - 신규 요청: "검색되는 테이블셋 = ML_TABLE_~~" prefix 로 시작하는 단일 파일만.
 #   - DB 하위 제품 폴더는 /fab-roots / /ml-table-match 가 따로 노출 → 오버라이드용 소스.
 @router.get("/products")
 def list_products():
-    """v8.8.3: Base 의 ML_TABLE_* parquet 만 노출. 다른 소스는 fab_source 자동 매칭 전용.
+    """Base/DB root 직하의 ML_TABLE_* 단일 파일만 노출. 다른 소스는 fab_source 자동 매칭 전용.
     Source 가시성(enabled) 토글은 여전히 이 리스트 기준."""
     products = []
-    try:
-        base = _base_root()
-        if base.exists():
-            for f in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+    roots: list[tuple[str, str, Path]] = []
+    for label, resolver in (("Base", _base_root), ("DB", _db_base)):
+        try:
+            root = resolver()
+        except Exception:
+            continue
+        try:
+            root_key = str(root.resolve())
+        except Exception:
+            root_key = str(root)
+        if not root or any(existing_key == root_key for _, existing_key, _ in roots):
+            continue
+        roots.append((label, root_key, root))
+    for label, _root_key, root in roots:
+        try:
+            if not root.exists():
+                continue
+            for f in sorted(root.iterdir(), key=lambda p: p.name.lower()):
                 if not _is_mltable_product_file(f):
                     continue
                 products.append({"name": _canonical_mltable_product_name(f.stem), "file": f.name, "size": f.stat().st_size,
-                                 "root": "Base", "type": f.suffix.lower().lstrip("."), "source_type": "base_file"})
-    except Exception:
-        pass
+                                 "root": label, "type": f.suffix.lower().lstrip("."), "source_type": "base_file"})
+        except Exception:
+            pass
     # dedup 은 불필요하지만 안정성을 위해 이름 기준 중복 제거.
     seen = set()
     dedup = []
@@ -2702,7 +2734,6 @@ def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
 def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     matching = _load_knob_step_matching_rows()
     sm = _sch("step_matching")
-    prod_aliases = _product_aliases(product)
     exact_product = _canonical_product_name(product).upper()
     exact_has_numeric = False
     for r in matching:
@@ -2720,7 +2751,7 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
         if exact_has_numeric:
             if row_prod_u != exact_product:
                 continue
-        elif prod_aliases and row_prod and row_prod_u not in prod_aliases:
+        elif not _product_value_matches(product, row_prod):
             continue
         fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -2923,19 +2954,19 @@ def _build_knob_meta(product: str = "") -> dict:
     # v8.8.10: 역할→컬럼명 매핑 soft-landing. 사내 CSV 의 컬럼 이름이 달라도 schema 만 바꾸면 됨.
     sm = _sch("step_matching")
     km = _sch("knob_ppid")
-    prod_aliases = _product_aliases(product)
 
     # step_desc → [{step_id,module}, ...] (ordered, dedup)
     step_map: dict[str, list[dict]] = {}
     for r in matching:
         # product 컬럼이 있으면 필터, 없으면 공용 매핑으로 취급
         p_col = sm.get("product_col", "product")
-        row_prod = str(r.get(p_col) or "").strip()
-        if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
+        row_prod = r.get(p_col)
+        if not _product_value_matches(product, row_prod):
             continue
         fs = _row_step_desc(r, sm)
+        fs_key = _step_desc_match_key(fs)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
-        if not fs or not sid:
+        if not fs_key or not sid:
             continue
         module = (
             r.get(sm.get("module_col", "module"))
@@ -2945,17 +2976,19 @@ def _build_knob_meta(product: str = "") -> dict:
             or ""
         )
         module = str(module or "").strip()
-        lst = step_map.setdefault(fs, [])
-        if not any(str(item.get("step_id") or "").strip() == sid for item in lst):
+        lst = step_map.setdefault(fs_key, [])
+        if not any(str(item.get("step_id") or "").strip().casefold() == sid.casefold() for item in lst):
             lst.append({"step_id": sid, "module": module})
 
     # feature_name → groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
+    feat_step_desc_seen: dict[str, set[str]] = {}
     for r in knob_rules:
         # ppid_knob.csv is product-common.  If a legacy product column exists,
         # keep reading the row but leave product scoping to the matching file.
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
         step_desc = _row_step_desc(r, km)
+        step_desc_key = _step_desc_match_key(step_desc)
         value = _first_row_value(
             r,
             km.get("value_col", "value"),
@@ -2964,8 +2997,12 @@ def _build_knob_meta(product: str = "") -> dict:
             "ppid",
             "category",
         )
-        if not fname or not step_desc:
+        if not fname or not step_desc_key:
             continue
+        seen_steps = feat_step_desc_seen.setdefault(fname, set())
+        if step_desc_key in seen_steps:
+            continue
+        seen_steps.add(step_desc_key)
         order_label = _rule_order_label(r.get(km.get("rule_order_col", "rule_order")), len(feats.get(fname, [])) + 1)
         feats.setdefault(fname, []).append({
             "func_step": step_desc,
@@ -2976,8 +3013,8 @@ def _build_knob_meta(product: str = "") -> dict:
             "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
-            "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc, []) if str(x.get("step_id") or "").strip()],
-            "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc, []) if str(x.get("module") or "").strip()],
+            "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("step_id") or "").strip()],
+            "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("module") or "").strip()],
         })
 
     # Sort each feature's groups by rule_order + build a human label
@@ -3027,12 +3064,10 @@ def _build_inline_meta(product: str = "") -> dict:
     base = _base_root()
     rows = _load_csv_rows(base / "inline_matching.csv")
     im = _sch("inline_matching")
-    prod_aliases = _product_aliases(product)
     grouped: dict[str, list[dict]] = {}
     for r in rows:
         p_col = im.get("product_col", "product")
-        row_prod = str(r.get(p_col) or "").strip()
-        if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
+        if not _product_value_matches(product, r.get(p_col)):
             continue
         iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
         sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
@@ -3085,12 +3120,10 @@ def _build_vm_meta(product: str = "") -> dict:
     base = _base_root()
     rows = _load_csv_rows(base / "vm_matching.csv")
     vm = _sch("vm_matching")
-    prod_aliases = _product_aliases(product)
     grouped: dict[str, list[dict]] = {}
     for r in rows:
         p_col = vm.get("product_col", "product")
-        row_prod = str(r.get(p_col) or "").strip()
-        if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
+        if not _product_value_matches(product, r.get(p_col)):
             continue
         fname = (r.get(vm.get("feature_col", "feature_name")) or r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
         sd = (r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
@@ -3480,6 +3513,14 @@ def _rulebook_path(kind: str) -> Path:
     return legacy if legacy.exists() else primary
 
 
+def _rulebook_row_matches_product(kind: str, row: dict, product: str, *, allow_common: bool = True) -> bool:
+    p_col = _sch(kind).get("product_col", "product")
+    row_product = (row or {}).get(p_col)
+    if row_product is None and p_col != "product":
+        row_product = (row or {}).get("product")
+    return _product_value_matches(product, row_product, allow_common=allow_common)
+
+
 @router.get("/rulebook")
 def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
     """v8.8.7: rulebook CSV 를 JSON 으로 반환.
@@ -3491,7 +3532,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
         raise HTTPException(400, f"unknown rulebook: {kind}")
     rows = _normalize_rulebook_rows(kind, _load_csv_rows(_rulebook_path(kind)))
     if product and kind != "knob_ppid":
-        rows = [r for r in rows if not r.get("product") or r.get("product") == product]
+        rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product)]
     return {
         "kind": kind, "file": meta["filename"],
         "columns": meta["cols"], "rows": rows, "count": len(rows),
@@ -3533,7 +3574,7 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
     # merge with existing if product-scoped.
     if product_scope:
         existing = _normalize_rulebook_rows(req.kind, _load_csv_rows(fp))
-        kept = [r for r in existing if r.get("product") != product_scope]
+        kept = [r for r in existing if not _rulebook_row_matches_product(req.kind, r, product_scope, allow_common=False)]
         # product 컬럼 없는 공용 행은 유지, 요청 product 의 행만 교체.
         for c in cleaned:
             c["product"] = product_scope

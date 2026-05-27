@@ -5420,8 +5420,8 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
     return all_columns[:limit], len(all_columns) > limit
 
 
-def _lazy_filter_expr(sql: str, columns: list[str]):
-    s = _normalize_view_sql_filter(sql, columns)
+def _lazy_filter_expr(sql: str, columns: list[str], dtypes: dict | None = None):
+    s = _normalize_view_sql_filter(sql, columns, dtypes)
     if not s:
         return None
     try:
@@ -5526,6 +5526,145 @@ def _validate_ai_sql_date_literals(sql: str, columns: list[str]) -> None:
                 "AI SQL date/time filters must use complete quoted ISO literals "
                 "such as '2024-04-20' or '2024-04-20T13:30:00'"
             )
+
+
+def _temporal_dtype_kind(dtype) -> str:
+    text = str(dtype or "").casefold()
+    if not text:
+        return ""
+    if "datetime" in text or "timestamp" in text:
+        return "datetime"
+    if re.search(r"\bdate\b", text):
+        return "date"
+    if re.search(r"\btime\b", text):
+        return "time"
+    return ""
+
+
+def _format_temporal_time_sql(hour: int, minute: int, second: str) -> str:
+    if "." in second:
+        sec, frac = second.split(".", 1)
+        return f"{hour:02d}:{minute:02d}:{int(sec):02d}.{frac}"
+    return f"{hour:02d}:{minute:02d}:{int(second):02d}"
+
+
+def _parse_temporal_literal(raw: str) -> tuple[str, str] | None:
+    value, _quoted = _unquote_ai_sql_literal(raw)
+    text = str(value or "").strip().replace("T", " ")
+    text = re.sub(r"\s+", " ", text).rstrip("Z")
+    date_match = re.fullmatch(
+        r"(?P<y>\d{4})-(?P<m>\d{1,2})-(?P<d>\d{1,2})"
+        r"(?: (?P<h>\d{1,2}):(?P<mi>\d{1,2})(?::(?P<s>\d{1,2}(?:\.\d{1,6})?))?)?",
+        text,
+    )
+    if date_match:
+        year = int(date_match.group("y"))
+        month = int(date_match.group("m"))
+        day = int(date_match.group("d"))
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        date_sql = f"{year:04d}-{month:02d}-{day:02d}"
+        hour = date_match.group("h")
+        minute = date_match.group("mi")
+        second = date_match.group("s") or "00"
+        if hour is None or minute is None:
+            return "date", date_sql
+        h_int = int(hour)
+        mi_int = int(minute)
+        sec_head = second.split(".", 1)[0]
+        if not (0 <= h_int <= 23 and 0 <= mi_int <= 59 and 0 <= int(sec_head) <= 59):
+            return None
+        time_sql = _format_temporal_time_sql(h_int, mi_int, second)
+        return "datetime", f"{date_sql} {time_sql}"
+    time_match = re.fullmatch(r"(?P<h>\d{1,2}):(?P<mi>\d{1,2})(?::(?P<s>\d{1,2}(?:\.\d{1,6})?))?", text)
+    if not time_match:
+        return None
+    h_int = int(time_match.group("h"))
+    mi_int = int(time_match.group("mi"))
+    second = time_match.group("s") or "00"
+    sec_head = second.split(".", 1)[0]
+    if not (0 <= h_int <= 23 and 0 <= mi_int <= 59 and 0 <= int(sec_head) <= 59):
+        return None
+    time_sql = _format_temporal_time_sql(h_int, mi_int, second)
+    return "time", time_sql
+
+
+def _temporal_runtime_compare(col: str, op: str, raw_literal: str, dtype_kind: str) -> str | None:
+    parsed = _parse_temporal_literal(raw_literal)
+    if not parsed:
+        return None
+    literal_kind, literal_sql = parsed
+    column_sql = duckdb_engine.quote_ident(col)
+    op_sql = "=" if op == "==" else op
+    if dtype_kind == "time" or (not dtype_kind and literal_kind == "time"):
+        if literal_kind == "date":
+            return None
+        time_sql = literal_sql[-8:] if literal_kind == "datetime" else literal_sql
+        lhs = column_sql if dtype_kind == "time" else f"TRY_CAST({column_sql} AS TIME)"
+        return f"{lhs} {op_sql} TIME '{time_sql}'"
+    if dtype_kind == "date" and literal_kind == "date":
+        return f"{column_sql} {op_sql} DATE '{literal_sql}'"
+    timestamp_sql = f"{literal_sql} 00:00:00" if literal_kind == "date" else literal_sql
+    lhs = column_sql if dtype_kind == "datetime" else f"TRY_CAST({column_sql} AS TIMESTAMP)"
+    return f"{lhs} {op_sql} TIMESTAMP '{timestamp_sql}'"
+
+
+def _sql_literal_spans(sql: str) -> list[tuple[int, int]]:
+    text = str(sql or "")
+    spans: list[tuple[int, int]] = []
+    idx = 0
+    while idx < len(text):
+        if text[idx] not in {"'", '"'}:
+            idx += 1
+            continue
+        quote = text[idx]
+        start = idx
+        idx += 1
+        while idx < len(text):
+            if text[idx] == quote:
+                if idx + 1 < len(text) and text[idx + 1] == quote:
+                    idx += 2
+                    continue
+                idx += 1
+                break
+            idx += 1
+        spans.append((start, idx))
+    return spans
+
+
+def _inside_any_span(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _normalize_temporal_sql_filter(
+    sql: str,
+    columns: list[str] | tuple[str, ...] | None = None,
+    dtypes: dict | None = None,
+) -> str:
+    text = str(sql or "").strip()
+    if not text:
+        return text
+    all_columns = list(columns or [])
+    lookup = _column_lookup(all_columns)
+    dtype_lookup = {str(k).casefold(): v for k, v in (dtypes or {}).items()}
+    literal_spans = _sql_literal_spans(text)
+    replacements: list[tuple[int, int, str]] = []
+    for match in _AI_SQL_COMPARE_RE.finditer(text):
+        if _inside_any_span(match.start(), literal_spans):
+            continue
+        col = lookup.get(match.group("col").casefold(), match.group("col"))
+        dtype_kind = _temporal_dtype_kind(dtype_lookup.get(col.casefold()))
+        if not dtype_kind and not _looks_date_like_column(col):
+            continue
+        replacement = _temporal_runtime_compare(col, match.group("op"), match.group("rhs"), dtype_kind)
+        if replacement:
+            replacements.append((match.start(), match.end(), replacement))
+    if not replacements:
+        return text
+    out = text
+    for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out.strip()
 
 
 def _extract_llm_sql_text(raw_text: str, plan: dict) -> str:
@@ -5860,9 +5999,14 @@ def _normalize_where_expression(sql: str, columns: list[str] | tuple[str, ...] |
     return text.strip()
 
 
-def _normalize_view_sql_filter(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
+def _normalize_view_sql_filter(
+    sql: str,
+    columns: list[str] | tuple[str, ...] | None = None,
+    dtypes: dict | None = None,
+) -> str:
     text = _normalize_where_expression(sql, columns)
-    return _normalize_wafer_sql_filter(text, columns)
+    text = _normalize_wafer_sql_filter(text, columns)
+    return _normalize_temporal_sql_filter(text, columns, dtypes)
 
 
 _AI_SQL_SELECT_PREFIX_RE = re.compile(
@@ -8201,7 +8345,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     sel, truncated_cols = _selected_columns(all_columns, "" if active_aggregate else select_cols, preview_cols)
     normalized_sql = _validate_where_expression(sql, all_columns)
     if sql and sql.strip():
-        df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns))
+        df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns, schema))
         total = df.height
     if active_aggregate:
         df = _apply_aggregate_df(df, active_aggregate)
@@ -8270,7 +8414,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
     wafer_where = _duckdb_valid_wafer_where(all_columns)
-    user_where = _normalize_view_sql_filter(normalized_sql, all_columns)
+    user_where = _normalize_view_sql_filter(normalized_sql, all_columns, schema)
     show_plus, _all_cols, _schema = duckdb_engine.query_files(
         files,
         where=_combine_where(user_where, wafer_where),
@@ -8398,7 +8542,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     if active_aggregate:
         work_lf = lf
         if sql and sql.strip():
-            work_lf = work_lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
+            work_lf = work_lf.filter(_lazy_filter_expr(normalized_sql, all_columns, schema))
         work_lf = _apply_aggregate_lazy(work_lf, active_aggregate)
         output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
         active_sort = _aggregate_sort_alias(active_sort, active_aggregate, output_columns)
@@ -8444,7 +8588,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         # avoided on production-size parquet because they double-scan or OOM.
         try:
             from core.parquet_perf import collect_streaming
-            filtered = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
+            filtered = lf.filter(_lazy_filter_expr(normalized_sql, all_columns, schema))
             if active_sort:
                 filtered = filtered.sort(
                     _sort_expr(active_sort, latest_order_col),
@@ -8465,7 +8609,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = collect_streaming(lf)
             except Exception:
                 df = lf.collect()
-            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns))
+            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns, schema))
             total = df.height
             if active_sort and active_sort.get("column") in df.columns:
                 df = df.sort(
@@ -8552,7 +8696,7 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
 
     normalized_sql = _validate_where_expression(sql, all_columns)
     if sql and sql.strip():
-        lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
+        lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns, schema))
     if active_aggregate:
         lf = _apply_aggregate_lazy(lf, active_aggregate)
         output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
@@ -8786,6 +8930,7 @@ def _download_lazy_csv(
 ) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
+    schema = {n: str(schema_obj[n]) for n in all_columns}
     sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     normalized_sql = _validate_where_expression(sql, all_columns)
     warnings: list[str] = []
@@ -8806,7 +8951,7 @@ def _download_lazy_csv(
     selected = [c for c in requested if c in set(all_columns)]
     if sql and sql.strip():
         try:
-            lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
+            lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns, schema))
         except Exception as e:
             raise HTTPException(400, f"CSV download SQL error: {e}")
     if active_aggregate:
@@ -8848,6 +8993,7 @@ def _is_dtype_mismatch_error(exc: Exception) -> bool:
         "dtype mismatch",
         "schema mismatch",
         "schemaerror",
+        "cannot compare 'date/datetime/time' to a string value",
     ))
 
 
@@ -8863,7 +9009,7 @@ def _download_duckdb_csv(
 ) -> tuple[pl.DataFrame, bytes]:
     if not files:
         raise ValueError("no source files for DuckDB download")
-    all_columns, _schema = duckdb_engine.inspect_files(files)
+    all_columns, schema = duckdb_engine.inspect_files(files)
     sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
     normalized_sql = _validate_where_expression(sql, all_columns)
     _guard_source_operation(
@@ -8878,7 +9024,7 @@ def _download_duckdb_csv(
     selected = [c for c in requested if c in set(all_columns)]
     active_sort, _latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns)
     where = _combine_where(
-        _normalize_view_sql_filter(normalized_sql, all_columns),
+        _normalize_view_sql_filter(normalized_sql, all_columns, schema),
         _duckdb_valid_wafer_where(all_columns),
     )
     df, _columns, _schema = duckdb_engine.query_files(
@@ -9530,6 +9676,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 logger.warning(f"Reformatter skipped: {e}")
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
+        df_schema = {n: str(d) for n, d in df.schema.items()}
         sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, {}, list(df.columns))
         normalized_sql = _validate_where_expression(sql, list(df.columns))
         guard_select_cols = select_cols
@@ -9546,7 +9693,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             operation="download",
         )
         if sql.strip():
-            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, list(df.columns)))
+            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, list(df.columns), df_schema))
         if aggregate_spec:
             warnings: list[str] = []
             active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), warnings, "aggregate")
