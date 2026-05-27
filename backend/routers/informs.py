@@ -4439,6 +4439,14 @@ def _st_cell_bg(val: str, uniq_map: dict, pname: str) -> str:
     return f"background:{c['bg']};color:{c['fg']};"
 
 
+def _split_check_color_style(split_label: Any) -> str:
+    match = re.fullmatch(r"S(\d+)", str(split_label or "").strip(), flags=re.I)
+    if not match:
+        return ""
+    color = _ST_CELL_COLORS[int(match.group(1)) % len(_ST_CELL_COLORS)]
+    return f"background:{color['bg']};color:{color['fg']};font-weight:700;"
+
+
 def _st_has_value(val: Any) -> bool:
     return val is not None and val != "" and str(val) not in ("None", "null")
 
@@ -4639,6 +4647,55 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
     highlight_knobs = _module_highlight_knobs(module)
+    split_step_refs_cache: Optional[dict[str, list[tuple[str, str]]]] = None
+
+    def _split_param_step_refs() -> dict[str, list[tuple[str, str]]]:
+        nonlocal split_step_refs_cache
+        if split_step_refs_cache is not None:
+            return split_step_refs_cache
+        split_step_refs_cache = {}
+        if not product:
+            return split_step_refs_cache
+        try:
+            from routers.splittable import _build_knob_meta
+
+            knob_meta = _build_knob_meta(product) or {}
+        except Exception:
+            return split_step_refs_cache
+        for row in rows_st or []:
+            param = str(row.get("_param") or "").strip()
+            if not param or param in split_step_refs_cache:
+                continue
+            meta = knob_meta.get(param) or {}
+            refs: list[tuple[str, str]] = []
+            seen_refs: set[tuple[str, str]] = set()
+            for group in meta.get("groups") or []:
+                step_desc = str(group.get("step_desc") or group.get("func_step") or "").strip()
+                for raw_sid in group.get("step_ids") or []:
+                    sid = str(raw_sid or "").strip()
+                    if not sid:
+                        continue
+                    key = (sid, step_desc)
+                    if key in seen_refs:
+                        continue
+                    seen_refs.add(key)
+                    refs.append(key)
+            if refs:
+                split_step_refs_cache[param] = refs
+        return split_step_refs_cache
+
+    def _split_param_html(display: Any, param: Any) -> str:
+        text = esc(str(display or param or ""))
+        refs = _split_param_step_refs().get(str(param or "").strip()) or []
+        if not refs:
+            return text
+        ref_html = "".join(
+            "<div style='margin-top:3px;font-size:11px;line-height:1.25;color:#374151;font-weight:600;'>"
+            f"[ {esc(sid)}{f' ({esc(desc)})' if desc else ''} ]"
+            "</div>"
+            for sid, desc in refs
+        )
+        return text + ref_html
 
     def _lineage_summary_html() -> str:
         if not rows_st or not product:
@@ -4829,13 +4886,16 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                     prefix_vals.append("")
             cells = r.get("_cells") or {}
             row_cells = []
+            split_label = str(r.get("_split_label") or (prefix_vals[2] if len(prefix_vals) > 2 else "") or "")
+            split_color = _split_check_color_style(split_label)
             for i, value in enumerate(prefix_vals):
                 style = first_col_style if i == 0 else data_col_style
-                row_cells.append(f"<td style='{td_prefix}{style}'>{esc(str(value or ''))}</td>")
+                body_html = _split_param_html(value, r.get("_param")) if i == 0 else esc(str(value or ""))
+                row_cells.append(f"<td style='{td_prefix}{style}{split_color if i == 2 else ''}'>{body_html}</td>")
             for i in range(len(headers)):
                 cell = cells.get(i) or cells.get(str(i)) or {}
                 mark = str((cell or {}).get("actual") or "")
-                row_cells.append(f"<td style='{td_check}{data_col_style}'>{esc(mark)}</td>")
+                row_cells.append(f"<td style='{td_check}{data_col_style}{split_color if mark else ''}'>{esc(mark)}</td>")
             body_parts.append("<tr>" + "".join(row_cells) + "</tr>")
 
         thead_parts = [
@@ -4871,7 +4931,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"<tbody>{''.join(body_parts)}</tbody>"
             "</table></div>"
         )
-        return f"{hdr}{table_html}{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
+        return f"{hdr}{table_html}{trunc_html}{_attached_sets_html()}"
 
     if rows_st and headers:
         truncated = len(rows_st) > max_rows

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 export default function Modal({
   open = true, onClose, title, children,
   width = 420, zIndex = 9999, closeOnBackdrop = true,
+  maxHeight = "90vh",
 }) {
   useEffect(() => {
     if (!open) return;
@@ -26,7 +27,7 @@ export default function Modal({
         onClick={(e) => e.stopPropagation()}
         style={{
           background: "var(--bg-secondary)", borderRadius: 12, padding: 20,
-          width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "auto",
+          width: "100%", maxWidth: width, maxHeight, overflow: "auto",
           border: "1px solid var(--border)",
           boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
         }}

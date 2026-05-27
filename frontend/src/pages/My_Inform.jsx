@@ -624,6 +624,12 @@ function stCellBg(val, uniq, pname) {
   if (idx != null) { const c = ST_CELL_COLORS[idx % ST_CELL_COLORS.length]; return { background: c.bg, color: c.fg }; }
   return {};
 }
+function splitCheckColorStyle(label) {
+  const m = String(label || "").trim().match(/^S(\d+)$/i);
+  if (!m) return {};
+  const c = ST_CELL_COLORS[Number(m[1]) % ST_CELL_COLORS.length];
+  return { background: c.bg, color: c.fg, fontWeight: 900 };
+}
 function stPlanStyle(cell) {
   if (!cell) return {};
   const hasPlan = hasStValue(cell.plan);
@@ -702,6 +708,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
           key: `${param}-k-${gi}`,
           parameter: param,
           function_step: g.func_step || "",
+          step_desc: g.step_desc || g.func_step || "",
           step_ids: Array.isArray(g.step_ids) ? g.step_ids : [],
           module: Array.isArray(g.modules) ? g.modules.join(", ") : "",
         }));
@@ -714,11 +721,12 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
             key: `${param}-v-${gi}`,
             parameter: param,
             function_step: g.function_step || vm.function_step || "",
+            step_desc: g.step_desc || g.function_step || vm.step_desc || vm.function_step || "",
             step_ids: g.step_id ? [g.step_id] : (vm.step_id ? [vm.step_id] : []),
             module: "",
           }));
         } else {
-          out.push({ key: `${param}-v`, parameter: param, function_step: vm.function_step || "", step_ids: vm.step_id ? [vm.step_id] : [], module: "" });
+          out.push({ key: `${param}-v`, parameter: param, function_step: vm.function_step || "", step_desc: vm.step_desc || vm.function_step || "", step_ids: vm.step_id ? [vm.step_id] : [], module: "" });
         }
         return;
       }
@@ -729,16 +737,51 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
             key: `${param}-i-${gi}`,
             parameter: param,
             function_step: g.function_step || im.function_step || "",
+            step_desc: g.step_desc || g.function_step || im.function_step || "",
             step_ids: g.step_id ? [g.step_id] : (Array.isArray(im.step_ids) ? im.step_ids : (im.step_id ? [im.step_id] : [])),
             module: "",
           }));
         } else {
-          out.push({ key: `${param}-i`, parameter: param, function_step: im.function_step || "", step_ids: Array.isArray(im.step_ids) ? im.step_ids : (im.step_id ? [im.step_id] : []), module: "" });
+          out.push({ key: `${param}-i`, parameter: param, function_step: im.function_step || "", step_desc: im.function_step || "", step_ids: Array.isArray(im.step_ids) ? im.step_ids : (im.step_id ? [im.step_id] : []), module: "" });
         }
       }
     });
     return out;
   })();
+  const stepRefsByParam = (() => {
+    const out = {};
+    const seen = {};
+    lineageSummary.forEach(row => {
+      const param = String(row.parameter || "").trim();
+      if (!param) return;
+      (row.step_ids || []).forEach(sid => {
+        const stepId = String(sid || "").trim();
+        if (!stepId) return;
+        const desc = String(row.step_desc || row.function_step || "").trim();
+        const key = `${stepId}|${desc}`;
+        if (!seen[param]) seen[param] = new Set();
+        if (seen[param].has(key)) return;
+        seen[param].add(key);
+        if (!out[param]) out[param] = [];
+        out[param].push({ step_id: stepId, step_desc: desc });
+      });
+    });
+    return out;
+  })();
+  const renderSplitParamCell = (value, param) => {
+    const refs = stepRefsByParam[String(param || "").trim()] || [];
+    if (!refs.length) return value;
+    return (
+      <>
+        {value}
+        {refs.map(ref => (
+          <div key={`${ref.step_id}-${ref.step_desc}`} style={{ marginTop: 3, fontSize: 11, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 700 }}>
+            [ {ref.step_id}{ref.step_desc ? ` (${ref.step_desc})` : ""} ]
+          </div>
+        ))}
+      </>
+    );
+  };
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", maxWidth: "100%" };
   const scrollerStyle = { maxHeight: 620, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" };
   const tableStyle = { borderCollapse: "collapse", fontSize: 11, fontFamily: "monospace", width: "100%", minWidth: "100%", tableLayout: "fixed" };
@@ -918,19 +961,24 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
                 });
                 return (
                 <tr key={ri}>
-                  {prefixValues.map((value, pi) => (
-                    <td key={`prefix-${pi}`} style={prefixCellStyle(pi)}>{value}</td>
-                  ))}
+                  {prefixValues.map((value, pi) => {
+                    const splitStyle = splitCheckMode && pi === 2 ? splitCheckColorStyle(value) : {};
+                    return (
+                      <td key={`prefix-${pi}`} style={{ ...prefixCellStyle(pi), ...splitStyle }}>
+                        {splitCheckMode && pi === 0 ? renderSplitParamCell(value, r._param) : value}
+                      </td>
+                    );
+                  })}
                   {headers.map((_, ci) => {
                     const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
-                    const bg = splitCheckMode ? {} : stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
+                    const display = hasStValue(cell.actual) ? String(cell.actual) : "";
+                    const bg = splitCheckMode ? (display ? splitCheckColorStyle(prefixValues[2] || r._split_label) : {}) : stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
                     const plan = splitCheckMode ? {} : stPlanStyle(cell);
                     const hasPlan = hasStValue(cell.plan);
                     const hasActual = hasStValue(cell.actual);
                     const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
                     const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
                     const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual);
-                    const display = hasActual ? String(cell.actual) : "";
                     return (
                       <td key={ci} style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}) }}>
                         {splitCheckMode
@@ -951,7 +999,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
             </tbody>
           </table>
         </div>
-        {lineageSummary.length > 0 && (
+        {!splitCheckMode && lineageSummary.length > 0 && (
           <div style={{ marginTop: 10 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>🧭 Parameter별 적용 step 요약</div>
             <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
@@ -4837,7 +4885,7 @@ function InformWizard({
     mailPreviewText,
   ]);
   return (
-    <Modal open onClose={onClose} width={980} zIndex={3200}>
+    <Modal open onClose={onClose} width={1180} maxHeight="96vh" zIndex={3200}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <div style={{ fontSize: 16, fontWeight: 900 }}>{isReInform ? "재인폼 작성" : "신규 인폼 등록"}</div>
           {isReInform && parentInform?.id && (
@@ -4889,7 +4937,7 @@ function InformWizard({
                   </button>
                 </div>
                 <input value={fabSearch} onChange={e => setFabSearch(e.target.value)} placeholder="LOT_ID 검색 (입력 즉시 필터)" style={inputStyle({ fontFamily: "monospace" })} disabled={!form.product || isReInform} />
-                <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
+                <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {!form.product && <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)" }}>product 선택 후 후보 표시</div>}
                   {form.product && visibleFabOptions.length === 0 && <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)" }}>LOT_ID 후보 없음</div>}
                   {visibleFabOptions.map(o => {
@@ -4930,7 +4978,7 @@ function InformWizard({
             </label>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ fontWeight: 800 }}>note</span>
-              <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} rows={8} style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+              <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} rows={11} style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
             </label>
           </div>
         )}
@@ -4990,7 +5038,7 @@ function InformWizard({
                     선택 해제
                   </button>
                 </div>
-                <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+                <div style={{ maxHeight: 340, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
                   {(setRows || [])
                     .filter(s => !setSearch || String(s.name || "").toLowerCase().includes(setSearch.toLowerCase()))
                     .map(s => {
@@ -5022,7 +5070,7 @@ function InformWizard({
                       <span style={{ color: "var(--text-secondary)" }}>{previewSet.source} · {(previewSet.columns || []).length} cols · {(previewSet.rows || []).length} rows</span>
                       <button type="button" onClick={() => setPreviewSet(null)} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 18 }}>×</button>
                     </div>
-                    <div style={{ maxHeight: 160, overflow: "auto" }}>
+                    <div style={{ maxHeight: 220, overflow: "auto" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", fontSize: 11, fontFamily: "monospace" }}>
                         <thead><tr>{(previewSet.columns || []).slice(0, 12).map(c => <th key={c} style={{ border: "1px solid var(--border)", padding: "2px 3px", background: "var(--bg-secondary)", textAlign: "left", wordBreak: "break-all" }}>{c}</th>)}</tr></thead>
                         <tbody>{(previewSet.rows || []).slice(0, 8).map((row, ri) => <tr key={ri}>{row.slice(0, 12).map((v, ci) => <td key={ci} style={{ border: "1px solid var(--border)", padding: "2px 3px", wordBreak: "break-all" }}>{v}</td>)}</tr>)}</tbody>
@@ -5033,7 +5081,7 @@ function InformWizard({
               </div>
             )}
             {attachMode === "knob" && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 420, overflow: "hidden" }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 560, overflow: "auto" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <b>KNOB / CUSTOM 컬럼 직접 첨부</b>
                   <span style={{ color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</span>
@@ -5063,7 +5111,7 @@ function InformWizard({
                     ))}
                   </div>
                 )}
-                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
+                <div style={{ maxHeight: 340, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {filteredCols.map(c => {
                     const on = embedCustomCols.includes(c);
                     return (
@@ -5077,7 +5125,7 @@ function InformWizard({
               </div>
             )}
             {attachMode === "new" && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 420, overflow: "hidden" }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 560, overflow: "auto" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <b>새 커스텀 세트 만들기</b>
                   <span style={{ color: "var(--text-secondary)" }}>만든 뒤 자동 선택</span>
@@ -5094,7 +5142,7 @@ function InformWizard({
                     ))}
                   </div>
                 )}
-                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
+                <div style={{ maxHeight: 340, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {filteredNewCols.map(c => {
                     const on = newSetCols.includes(c);
                     return (

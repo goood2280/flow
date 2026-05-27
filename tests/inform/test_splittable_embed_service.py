@@ -488,7 +488,16 @@ def test_splittable_snapshot_split_check_mode_builds_value_check_rows():
         assert {c.get("actual", "") for c in row["_cells"].values()} <= {"", "✓"}
 
 
-def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns():
+def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns(monkeypatch):
+    from routers import splittable as splittable_router
+
+    monkeypatch.setattr(splittable_router, "_build_knob_meta", lambda _product: {
+        "KNOB_GATE": {
+            "groups": [
+                {"step_desc": "GATE", "func_step": "GATE", "step_ids": ["STEP_GATE_A"]},
+            ],
+        },
+    })
     embed = informs._build_splittable_snapshot_embed(informs.SplitTableSnapshotReq(
         product="PRODA",
         lot_id="A1000",
@@ -517,9 +526,14 @@ def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns
     pos_wafer = html.index("#1", pos_split)
     assert pos_item < pos_value < pos_split < pos_wafer
     assert "KNOB_GATE" in html
+    assert "[ STEP_GATE_A (GATE) ]" in html
     assert "S0" in html
     assert "S1" in html
     assert "✓" in html
+    assert "background:#C6EFCE;color:#006100;font-weight:700;'>S0" in html
+    assert "background:#FFEB9C;color:#9C5700;font-weight:700;'>S1" in html
+    assert html.count("background:#C6EFCE;color:#006100;font-weight:700;") == 3
+    assert html.count("background:#FFEB9C;color:#9C5700;font-weight:700;") == 2
     assert "Split table" in html
     assert "Parameter별 적용 step 요약" not in html
 
