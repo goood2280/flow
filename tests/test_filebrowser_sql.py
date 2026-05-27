@@ -2969,6 +2969,22 @@ def test_roots_hide_default_and_configured_db_dirs(monkeypatch, tmp_path):
     assert names == ["VISIBLE_DB"]
 
 
+def test_roots_fast_mode_uses_estimated_counts(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+    target = tmp_path / "VISIBLE_DB" / "product=A"
+    target.mkdir(parents=True)
+    pl.DataFrame({"value": [1]}).write_parquet(target / "part1.parquet")
+    pl.DataFrame({"value": [2]}).write_parquet(target / "part2.parquet")
+
+    rows = filebrowser.list_roots(all=False, fast=True)["roots"]
+
+    assert rows[0]["name"] == "VISIBLE_DB"
+    assert rows[0]["parquet_count"] == 1
+    assert rows[0]["parquet_count_estimated"] is True
+
+
 def test_csv_rule_validation_reports_supported_failures():
     rule = filebrowser._normalize_csv_rule({
         "required_columns": ["id", "name", "status", "qty", "code", "start", "end"],

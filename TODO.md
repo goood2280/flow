@@ -6,6 +6,8 @@
 
 ## Done
 
+- (Codex) FileBrowser DB root 선표시와 제품 목록 로딩 분리
+- (Codex) SplitTable KNOB 적용공정 step_desc 룰북 설정
 - (Codex) 단위기능 AI 노드 persona/state 설계 실행 전 가시화
 - (Codex) Agent 단위기능 AI 질문 이력 좌측 정렬과 작성자/시각 표시
 - (Codex) 단위기능 AI 질문 이력/LangGraph Node IO 배치와 AI SQL sample_profile 계약 정리

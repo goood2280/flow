@@ -45,8 +45,10 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `TAG_*` 꼬리표 행은 맨 아래에 고정하지 않고 이름 앞 숫자의 natural sort 위치에 표시한다.
 - `TAG_*` 꼬리표 열 삭제는 admin 또는 `splittable` page manager만 가능하다. 삭제 시 product별 TAG 정의와 `custom_tags.json`에 저장된 해당 열의 모든 값을 함께 제거한다.
 - 기존 `MGMT_*` 관리 행 저장값은 `data/flow-data/splittable/management_rows.json`에 남아도 원본 파일을 수정하지 않는다. 신규 UI에서는 CUSTOM 선택 풀과 저장 set에서 `MGMT_*`를 제외한다.
-- KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `function_step -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
-- `Vehicle_matching.csv`는 `product`, `function_step`, `step_id` 컬럼을 기본 계약으로 하며, 현재 선택 product alias에 맞는 row만 step 후보로 노출한다.
+- KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `step_desc -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
+- `ppid_knob.csv`는 `feature_name`, `rule_order`, `step_desc`, `operator`, `value`, `category` 컬럼을 기본 계약으로 하며, `feature_name`은 KNOB 이름이고 같은 KNOB에 등록된 `step_desc` 종류가 적용 공정 후보로 표시된다.
+- `Vehicle_matching.csv`는 `product`, `step_id`, `step_desc` 컬럼을 기본 계약으로 하며, 현재 선택 product alias에 맞는 row만 `step_desc`별 step 후보로 노출한다.
+- 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있고, 룰북 행/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` 섹션에서 관리한다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.

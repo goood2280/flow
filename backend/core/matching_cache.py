@@ -43,6 +43,7 @@ SUPPORTED_MATCHING_FILES = {
     "inline_subitem_pos.csv",
     "yld_shot_agg.csv",
     "vm_matching.csv",
+    "vehicle_matching.csv",
     # Optional legacy aliases requested in recent operator workflows.
     "fab.csv",
     "inline.csv",

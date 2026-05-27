@@ -327,7 +327,7 @@ def _natural_param_key(name: str):
 #   display 이름만 바꾸고 원본 col 이름(`_param`) 은 그대로 보존 → plan/notes/
 #   knob_meta lookup 이 깨지지 않음.
 def _safe_step_segment(s: str) -> str:
-    """func_step 값에서 공백/특수문자 제거 → 컬럼명 조각으로 안전하게."""
+    """step_desc/function_step 값에서 공백/특수문자 제거 → 컬럼명 조각으로 안전하게."""
     if not s:
         return ""
     return _re.sub(r"[^A-Za-z0-9]+", "_", str(s)).strip("_")
@@ -2575,12 +2575,12 @@ def get_prefixes():
 
 # ── KNOB metadata (v8.4.7) ───────────────────────────────────────────
 # Reverse-lookup helper used by SplitTable UI:
-#   ppid_knob.csv:      feature_name, function_step, rule_order, operator, category
-#                        category = SplitTable cell value such as PPID_01_2
-#   Vehicle_matching.csv: product, step_id, function_step (preferred)
+#   ppid_knob.csv:      feature_name, rule_order, step_desc, operator, value, category
+#                        value = SplitTable cell value such as PPID_01_2
+#   Vehicle_matching.csv: product, step_id, step_desc (preferred)
 #   step_matching.csv:    product, step_id, function_step (legacy fallback)
 # For each KNOB feature_name, we group the product-common ppid_knob rules in
-# rule_order, expand each function_step through the current product's matching
+# rule_order, expand each step_desc through the current product's matching
 # step_ids, and produce both a structured `groups` payload and a label:
 #   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
 def _load_csv_rows(fp: Path) -> list[dict]:
@@ -2668,6 +2668,27 @@ def _dedup_list(values: list[str]) -> list[str]:
     return out
 
 
+def _first_row_value(row: dict, *cols: str) -> str:
+    for col in cols:
+        if not col:
+            continue
+        value = str((row or {}).get(col) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _row_step_desc(row: dict, schema: dict) -> str:
+    return _first_row_value(
+        row,
+        schema.get("step_desc_col", "step_desc"),
+        schema.get("func_step_col", "function_step"),
+        "step_desc",
+        "function_step",
+        "func_step",
+    )
+
+
 def _knob_step_matching_path(base: Path | None = None) -> Path:
     root = base or _base_root()
     vehicle = root / "Vehicle_matching.csv"
@@ -2687,7 +2708,7 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     for r in matching:
         if str(r.get(sm.get("product_col", "product")) or "").strip().upper() != exact_product:
             continue
-        if _stage_major(r.get(sm.get("func_step_col", "func_step")) or "") is not None:
+        if _stage_major(_row_step_desc(r, sm)) is not None:
             exact_has_numeric = True
             break
     out: dict[int, list[dict]] = {}
@@ -2701,7 +2722,7 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
                 continue
         elif prod_aliases and row_prod and row_prod_u not in prod_aliases:
             continue
-        fs = (r.get(sm.get("func_step_col", "func_step")) or "").strip()
+        fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
         major = _stage_major(fs)
         if major is None or not fs:
@@ -2904,7 +2925,7 @@ def _build_knob_meta(product: str = "") -> dict:
     km = _sch("knob_ppid")
     prod_aliases = _product_aliases(product)
 
-    # func_step → [{step_id,module}, ...] (ordered, dedup)
+    # step_desc → [{step_id,module}, ...] (ordered, dedup)
     step_map: dict[str, list[dict]] = {}
     for r in matching:
         # product 컬럼이 있으면 필터, 없으면 공용 매핑으로 취급
@@ -2912,7 +2933,7 @@ def _build_knob_meta(product: str = "") -> dict:
         row_prod = str(r.get(p_col) or "").strip()
         if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
             continue
-        fs = (r.get(sm.get("func_step_col", "func_step")) or "").strip()
+        fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
         if not fs or not sid:
             continue
@@ -2934,19 +2955,29 @@ def _build_knob_meta(product: str = "") -> dict:
         # ppid_knob.csv is product-common.  If a legacy product column exists,
         # keep reading the row but leave product scoping to the matching file.
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
-        fstep = (r.get(km.get("func_step_col", "function_step")) or "").strip()
-        if not fname or not fstep:
+        step_desc = _row_step_desc(r, km)
+        value = _first_row_value(
+            r,
+            km.get("value_col", "value"),
+            km.get("ppid_col", "ppid"),
+            "value",
+            "ppid",
+            "category",
+        )
+        if not fname or not step_desc:
             continue
         order_label = _rule_order_label(r.get(km.get("rule_order_col", "rule_order")), len(feats.get(fname, [])) + 1)
         feats.setdefault(fname, []).append({
-            "func_step": fstep,
+            "func_step": step_desc,
+            "step_desc": step_desc,
             "rule_order": order_label,
             "rule_order_sort": _rule_order_sort_key(order_label),
-            "ppid": (r.get(km.get("ppid_col", "ppid")) or "").strip(),
+            "ppid": value,
+            "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
-            "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(fstep, []) if str(x.get("step_id") or "").strip()],
-            "modules": [str(x.get("module") or "").strip() for x in step_map.get(fstep, []) if str(x.get("module") or "").strip()],
+            "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc, []) if str(x.get("step_id") or "").strip()],
+            "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc, []) if str(x.get("module") or "").strip()],
         })
 
     # Sort each feature's groups by rule_order + build a human label
@@ -2967,11 +2998,11 @@ def _build_knob_meta(product: str = "") -> dict:
             g["module"] = mods[0] if len(mods) == 1 else ""
             g["modules"] = mods
             if len(sids) == 0:
-                seg = g["func_step"]
+                seg = g["step_desc"]
             elif len(sids) == 1:
-                seg = f"{g['func_step']} ({sids[0]})"
+                seg = f"{g['step_desc']} ({sids[0]})"
             else:
-                seg = f"{g['func_step']} ({'/'.join(sids)})"
+                seg = f"{g['step_desc']} ({'/'.join(sids)})"
             parts.append(seg)
             if i < len(groups) - 1:
                 parts.append(" + ")
@@ -3301,15 +3332,18 @@ RULEBOOK_SCHEMA_FILE = PLAN_DIR / "rulebook_schema.json"
 _DEFAULT_RULEBOOK_SCHEMA = {
     "knob_ppid": {
         "feature_col":    "feature_name",
+        "step_desc_col":  "step_desc",
         "func_step_col":  "function_step",
         "rule_order_col": "rule_order",
         "ppid_col":       "ppid",
+        "value_col":      "value",
         "operator_col":   "operator",
         "category_col":   "category",
         "product_col":    "product",
     },
     "step_matching": {
         "step_id_col":   "step_id",
+        "step_desc_col": "step_desc",
         "func_step_col": "function_step",
         "product_col":   "product",
         "module_col":    "module",
@@ -3395,14 +3429,14 @@ _RULEBOOK_FILES = {
     "knob_ppid": {
         "filename": "ppid_knob.csv",
         "legacy_filename": "knob_ppid.csv",
-        "cols": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
-        "required": ["feature_name", "function_step", "operator", "category"],
+        "cols": ["feature_name", "rule_order", "step_desc", "operator", "value", "category"],
+        "required": ["feature_name", "step_desc"],
     },
     "step_matching": {
         "filename": "Vehicle_matching.csv",
         "legacy_filename": "step_matching.csv",
-        "cols": ["product", "step_id", "function_step", "module"],
-        "required": ["product", "step_id", "function_step"],
+        "cols": ["product", "step_id", "step_desc"],
+        "required": ["product", "step_id", "step_desc"],
     },
     # v8.8.9: INLINE / VM 매칭도 동일 CRUD 로 관리.
     #   inline_matching.csv: (process_id, item_id, item_desc) — INLINE_<item_id> 측정 메타.
@@ -3418,6 +3452,20 @@ _RULEBOOK_FILES = {
         "required": ["feature_name", "step_id", "product"],
     },
 }
+
+
+def _normalize_rulebook_rows(kind: str, rows: list[dict]) -> list[dict]:
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        r = dict(row)
+        if kind in {"knob_ppid", "step_matching"} and not str(r.get("step_desc") or "").strip():
+            r["step_desc"] = _row_step_desc(r, _sch(kind))
+        if kind == "knob_ppid" and not str(r.get("value") or "").strip():
+            r["value"] = _first_row_value(r, _sch(kind).get("value_col", "value"), "ppid", "category")
+        out.append(r)
+    return out
 
 
 def _rulebook_path(kind: str) -> Path:
@@ -3441,7 +3489,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
     meta = _RULEBOOK_FILES.get(kind)
     if not meta:
         raise HTTPException(400, f"unknown rulebook: {kind}")
-    rows = _load_csv_rows(_rulebook_path(kind))
+    rows = _normalize_rulebook_rows(kind, _load_csv_rows(_rulebook_path(kind)))
     if product and kind != "knob_ppid":
         rows = [r for r in rows if not r.get("product") or r.get("product") == product]
     return {
@@ -3470,7 +3518,7 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
     req_cols = meta.get("required", [])
     try:
         cleaned, dedupe_rows = _matching_cache.dedupe_rows(
-            req.rows,
+            _normalize_rulebook_rows(req.kind, req.rows),
             key_cols=cols,
             required_cols=req_cols,
             strict_required=True,
@@ -3484,7 +3532,7 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
 
     # merge with existing if product-scoped.
     if product_scope:
-        existing = _load_csv_rows(fp)
+        existing = _normalize_rulebook_rows(req.kind, _load_csv_rows(fp))
         kept = [r for r in existing if r.get("product") != product_scope]
         # product 컬럼 없는 공용 행은 유지, 요청 product 의 행만 교체.
         for c in cleaned:
@@ -3532,17 +3580,17 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
 
 @router.get("/knob-meta")
 def knob_meta(product: str = Query("")):
-    """v8.4.7: KNOB feature_name → func_step(step_id) 역산 맵.
+    """v8.4.7: KNOB feature_name → step_desc(step_id) 역산 맵.
 
     응답 스키마:
       {
         "features": {
           "KNOB_GATE_PPID": {
             "groups": [
-              {"func_step":"GATE_PATTERN","step_ids":["AA200030","AA200040","AA200050"],
-               "ppid":"PP_GATE_01","operator":"+","rule_order":1,"category":"gate"},
-              {"func_step":"PC_ETCH","step_ids":["AA200100","AA200110"],
-               "ppid":"PP_PC_01","operator":"","rule_order":2,"category":"gate"}
+              {"step_desc":"GATE_PATTERN","step_ids":["AA200030","AA200040","AA200050"],
+               "value":"PP_GATE_01","operator":"+","rule_order":1,"category":"gate"},
+              {"step_desc":"PC_ETCH","step_ids":["AA200100","AA200110"],
+               "value":"PP_PC_01","operator":"","rule_order":2,"category":"gate"}
             ],
             "label": "GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)"
           },
@@ -7711,7 +7759,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                                    "is_custom_tag": is_tag_col, "can_tag": is_tag_col,
                                    "is_management_row": is_management_row,
                                    "can_management_edit": is_management_row}
-            # v8.8.14: _display — rule_order + func_step 을 포함한 렌더용 이름.
+            # v8.8.14: _display — rule_order + step_desc를 포함한 렌더용 이름.
             #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
             rows.append({"_param": col_name, "_display": col_rename.get(col_name, col_name), "_cells": _cells})
 
@@ -8044,7 +8092,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
             for virt in _virtual_columns_for_prefix(product, raw_pref):
                 if virt not in selected:
                     selected.append(virt)
-    # v8.8.14: display rename (rule_order + func_step) + natural sort on display name.
+    # v8.8.14: display rename (rule_order + step_desc) + natural sort on display name.
     col_rename = _build_col_rename_map(selected, product)
     col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
     col_rename.update({col: label for col, label in management_labels.items()})
@@ -8167,7 +8215,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
     # v8.4.4: natural sort — prefix 뒤 숫자 (정수+소수) 기준. 숫자 없으면 알파벳 순.
-    # v8.8.14: display rename (rule_order + func_step) 적용 + 그 이름 기준 정렬.
+    # v8.8.14: display rename (rule_order + step_desc) 적용 + 그 이름 기준 정렬.
     col_rename = _build_col_rename_map(selected, product)
     col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
     col_rename.update({col: label for col, label in management_labels.items()})

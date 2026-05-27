@@ -394,7 +394,7 @@ function LazyAwsPanel({ user, compact = false }) {
 
 export default function My_FileBrowser({user,onNavigate}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
-  const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);
+  const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);const[productsLoading,setProductsLoading]=useState(false);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
   const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[mode,setMode]=useState("hive");
   const[selRootPq,setSelRootPq]=useState("");
@@ -798,7 +798,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
       selectFileRule(fbSelectedFile,settings);
       setFbSettingsMsg(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료");
-      sf(API+"/roots?_ts="+Date.now()).then(r=>setRoots(r.roots||[])).catch(()=>{});
+      sf(API+"/roots?fast=1&_ts="+Date.now()).then(r=>setRoots(r.roots||[])).catch(()=>{});
       sf(API+"/base-files?_ts="+Date.now()).then(r=>setBaseFiles(r.files||[])).catch(()=>{});
     }catch(e){
       setFbSettingsMsg(e.message||(isFileSection?"파일 설정 저장 실패":"폴더 설정 저장 실패"));
@@ -1010,16 +1010,16 @@ export default function My_FileBrowser({user,onNavigate}){
       const sc = await sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true,icon:"🗄️"}]}));
       const scopesPayload = sc.scopes || [];
       setScopes(scopesPayload);
-      let rp = await sf(API+"/roots");
-      const rp2 = await sf(API+"/root-parquets");
+      let rootsAllMode = false;
+      let rp = await sf(API+"/roots?fast=1");
       if (!rp.roots?.length) {
         const baseScope = scopesPayload.find((s) => s?.key === "Base") || {};
         if (baseScope?.exists) {
-          rp = await sf(API+"/roots?all=1").catch(() => rp);
+          rp = await sf(API+"/roots?all=1&fast=1").catch(() => rp);
+          rootsAllMode = true;
         }
       }
       setRoots(rp.roots||[]);
-      setRootPqs(rp2.files||[]);
       if(rp.roots?.length)setSelRoot(rp.roots[0].name);
       const rootScope = scopesPayload.find((s) => s?.key === "DB") || {};
       const baseScope = scopesPayload.find((s) => s?.key === "Base") || {};
@@ -1028,6 +1028,8 @@ export default function My_FileBrowser({user,onNavigate}){
         : (baseScope?.exists ? "Base" : (scopesPayload[0]?.key || "DB"));
       setScope(nextScope);
       setSideLoading(false);
+      sf(API+"/root-parquets").then(d=>setRootPqs(d.files||[])).catch(()=>{});
+      sf(API+"/roots"+(rootsAllMode?"?all=1":"")).then(d=>{if(d.roots?.length)setRoots(d.roots||[]);}).catch(()=>{});
     } catch (_) {
       setSideLoading(false);
     }
@@ -1174,11 +1176,13 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   useEffect(()=>{
-    if(!selRoot){setProducts([]);return;}
-    setSideLoading(true);
+    if(!selRoot){setProducts([]);setProductsLoading(false);return;}
+    let alive=true;
+    setProducts([]);
+    setProductsLoading(true);
     sf(API+"/products?root="+encodeURIComponent(selRoot)).then(d=>{
+      if(!alive)return;
       setProducts(d.products||[]);
-      setSideLoading(false);
       // v8.8.32: 교차 선택 — 이미 제품이 선택된 상태에서 다른 DB 루트를 클릭하면
       //   그 DB 에 같은 제품이 있을 경우 자동으로 view 를 갱신. UX: DB 를 바꿔도
       //   제품 클릭을 다시 안 해도 됨.
@@ -1190,7 +1194,8 @@ export default function My_FileBrowser({user,onNavigate}){
           loadHiveView(selRoot,selProd,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});
         }
       }
-    }).catch(()=>setSideLoading(false));
+    }).catch(()=>{if(alive)setProducts([]);}).finally(()=>{if(alive)setProductsLoading(false);});
+    return()=>{alive=false;};
   },[selRoot]);
 
   const buildUrl=(base,params)=>{
@@ -1649,7 +1654,7 @@ export default function My_FileBrowser({user,onNavigate}){
             </span>);
           })}
         </div>}
-        {sideLoading?<div style={{padding:20}}><Loading text="로딩 중..." size="sm"/></div>:scope==="Base"?<>
+        {sideLoading?<div style={{padding:20}}><Loading text="DB root 확인 중" size="sm"/></div>:scope==="Base"?<>
           {/* Root-level DB files — legacy scope key remains "Base" for compatibility. */}
           <div style={{flex:1,overflow:"auto",padding:"6px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>{baseDir||"운영 파일"} ({baseFileCount})</div>
@@ -1725,13 +1730,14 @@ export default function My_FileBrowser({user,onNavigate}){
                   <span style={sidebarText}>{r.canonical||r.name}</span>
                   <span style={sidebarMetaLine}>
                     {lightFreshText(r.name)}
-                    <span style={{...sidebarMeta,maxWidth:60}}>파일 {r.parquet_count}</span>
+                    <span style={{...sidebarMeta,maxWidth:60}}>파일 {r.parquet_count_estimated?"...":r.parquet_count}</span>
                   </span>
                 </span>
               </div>);
             })}
           </div>
-          {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
+          {productsLoading&&<div style={{borderTop:"1px solid var(--border)",padding:"10px 12px"}}><Loading text="제품 목록 확인 중" size="sm"/></div>}
+          {!productsLoading&&products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
               <div key={p.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,

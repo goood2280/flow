@@ -670,6 +670,32 @@ def test_knob_meta_accepts_ppid_knob_without_product_column_and_scopes_vehicle_s
     assert "STEP_PRODB" not in meta["5.0 PC"]["groups"][0]["step_ids"]
 
 
+def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n"
+        "5.0 PC,R2,GATE,>,PPID_B,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,STEP_PC_A,PC\n"
+        "PRODA,STEP_GATE_A,GATE\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    groups = meta["5.0 PC"]["groups"]
+    assert [g["step_desc"] for g in groups] == ["PC", "GATE"]
+    assert groups[0]["step_ids"] == ["STEP_PC_A"]
+    assert groups[0]["value"] == "PPID_A"
+    assert groups[0]["category"] == "ETCH"
+    assert "STEP_PC_B" not in groups[0]["step_ids"]
+
+
 def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(

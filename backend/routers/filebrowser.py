@@ -3910,7 +3910,7 @@ def domain_info(request: Request = None):
 
 
 @router.get("/roots")
-def list_roots(request: Request = None, all: bool = Query(False)):
+def list_roots(request: Request = None, all: bool = Query(False), fast: bool = Query(False)):
     """v7.1: only canonical whitelisted DBs (FAB/VM/MASK/KNOB/INLINE/ET/YLD/ML_TABLE).
 
     Pass ?all=1 to bypass the whitelist (admin diagnostics).
@@ -3927,7 +3927,7 @@ def list_roots(request: Request = None, all: bool = Query(False)):
     if not DB_BASE.exists():
         return {"roots": []}
     hidden_db_dirs = _hidden_db_dir_names()
-    cache_key = ("roots", bool(all), _path_sig(DB_BASE), tuple(sorted(hidden_db_dirs)))
+    cache_key = ("roots", bool(all), bool(fast), _path_sig(DB_BASE), tuple(sorted(hidden_db_dirs)))
     cached = _list_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -3940,9 +3940,10 @@ def list_roots(request: Request = None, all: bool = Query(False)):
         # v8.8.7: 숨김/시스템 폴더 스킵 (.trash, .git, __pycache__, 밑줄 시작 관리자용 등).
         if d.name.startswith(".") or d.name.startswith("__") or d.name.startswith("_"):
             continue
-        # v8.7.6: whitelist 바깥이어도 데이터가 있으면 표시 (hive/flat 인식).
-        file_count = count_data_files(d)
         whitelisted = is_visible_root(d.name)
+        # Fast mode is for first paint: known DB roots can be shown before the
+        # recursive file-count pass, then the frontend refreshes exact counts.
+        file_count = 0 if fast and whitelisted else count_data_files(d, limit=1 if fast else 2000)
         if not all and not whitelisted and file_count == 0:
             continue
         canon = canonical_name(d.name) if whitelisted else d.name
@@ -3969,6 +3970,7 @@ def list_roots(request: Request = None, all: bool = Query(False)):
             "structure": structure,
             "dir_count": sum(1 for x in d.iterdir() if x.is_dir()),
             "parquet_count": file_count,
+            "parquet_count_estimated": bool(fast and (whitelisted or file_count >= 1)),
             "whitelisted": whitelisted,
         })
     # v8.1.1: root-level single files are now served ONLY by /root-parquets (sidebar "Root Parquets" section).

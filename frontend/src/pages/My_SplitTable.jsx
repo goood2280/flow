@@ -404,7 +404,7 @@ export default function My_SplitTable({user}){
       if(!param) return;
       const km=knobLookup(param);
       if(Array.isArray(km?.groups)&&km.groups.length){
-        km.groups.forEach((g,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,function_step:g.func_step||"",step_ids:Array.isArray(g.step_ids)?g.step_ids:[]}));
+        km.groups.forEach((g,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,step_desc:g.step_desc||g.func_step||"",function_step:g.step_desc||g.func_step||"",step_ids:Array.isArray(g.step_ids)?g.step_ids:[]}));
         return;
       }
       const vm=vmLookup(param)||{};
@@ -454,6 +454,12 @@ export default function My_SplitTable({user}){
   const[rbRowRows,setRbRowRows]=useState([]);
   const[rbRowSaving,setRbRowSaving]=useState(false);
   const isCommonRulebook=(kind)=>kind==="knob_ppid";
+  const normalizeRbRow=(kind,row)=>{
+    const r={...(row||{})};
+    if((kind==="knob_ppid"||kind==="step_matching")&&!String(r.step_desc||"").trim()) r.step_desc=r.function_step||r.func_step||"";
+    if(kind==="knob_ppid"&&!String(r.value||"").trim()) r.value=r.ppid||r.category||"";
+    return r;
+  };
   const openRowEditor=(kind)=>{
     if(!selProd){toast.warn("먼저 제품을 선택하세요.");return;}
     setRbRowKind(kind);setRbRowRows([]);setRbRowCols([]);setRbRowReq([]);
@@ -461,10 +467,10 @@ export default function My_SplitTable({user}){
       .then(d=>{
         setRbRowCols(d.columns||[]);
         // required 는 FE 스키마 (product는 자동 스코프)
-        const reqMap={knob_ppid:["feature_name","function_step","operator","category"],step_matching:["product","step_id","function_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
+        const reqMap={knob_ppid:["feature_name","step_desc"],step_matching:["product","step_id","step_desc"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
         setRbRowReq(reqMap[kind]||[]);
         // KNOB 룰은 제품 공용, 적용 공정 매칭은 제품 행만 편집한다.
-        const prodRows=(isCommonRulebook(kind)?(d.rows||[]):(d.rows||[]).filter(r=>(r.product||"")===selProd)).map(r=>({...r}));
+        const prodRows=(isCommonRulebook(kind)?(d.rows||[]):(d.rows||[]).filter(r=>(r.product||"")===selProd)).map(r=>normalizeRbRow(kind,r));
         setRbRowRows(prodRows);
       })
       .catch(e=>{toast.error("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
@@ -1064,9 +1070,15 @@ export default function My_SplitTable({user}){
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
               <div style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>기본 표시 설정</div>
               <div style={{display:"grid",gap:8,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
-                <div>사용자에게 보이는 기본 표시 형식을 조정합니다.</div>
-                <div>적용 공정 정보, 하단 적용 요약, 표시 자리수는 화면 상단 토글과 기본 설정으로 조정할 수 있습니다.</div>
-                <div>데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
+                  <input type="checkbox" checked={showParamMeta} onChange={e=>setShowParamMeta(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                  적용 공정 정보
+                </label>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
+                  <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                  하단 적용 요약
+                </label>
+                <div>표시 자리수, 데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
               </div>
             </div>
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
@@ -1364,14 +1376,14 @@ export default function My_SplitTable({user}){
           })()}
 
           {/* v8.8.9: Column/step rulebook — prefix 별 섹션 분리.
-                KNOB: ppid_knob.csv 공용 룰 + Vehicle_matching.csv 제품별 func_step→step_id 확장
+                KNOB: ppid_knob.csv 공용 룰 + Vehicle_matching.csv 제품별 step_desc→step_id 확장
                 INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
                 VM: vm_matching.csv (feature_name/step_desc/step_id) — VM_<feature_name> 이 해당 step 에서 예측
              */}
           {selProd && (() => {
             const rulebookSpecs={
-              knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["func_step","func_step_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","category_col"]]},
-              step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["func_step","func_step_col"],["module","module_col"]]},
+              knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","value_col"],["category","category_col"]]},
+              step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["step_desc","step_desc_col"]]},
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["step_id","step_id_col"],["product","product_col"]]},
             };
@@ -1441,7 +1453,7 @@ export default function My_SplitTable({user}){
                 <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 컬럼/공정 연결 규칙 — {selProd}</div>
                 <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
-                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 공용 룰과 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 매칭으로 function_step / step_id 에 연결합니다.</div>
+                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 의 step_desc를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_*</span>, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_*</span> 은 측정/예측 항목을 각 matching 파일로 step_id 에 연결합니다.</div>
                   <div>열 이름이 다르거나 다른 Base 데이터와 연결해야 하면 각 섹션의 <b>편집</b> / <b>🔧 컬럼</b>에서 역할과 실제 CSV 헤더를 바꾸면 됩니다.</div>
                 </div>
@@ -1463,11 +1475,12 @@ export default function My_SplitTable({user}){
                           {(meta.groups || []).map((g, gi) => (
                             <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
                               <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order}</span>
-                              <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.func_step}</span>
+                              <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.step_desc||g.func_step}</span>
                               {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
                                 <span key={mod} style={{padding:"0 4px",background:"rgba(16,185,129,0.14)",color:"rgba(16,185,129,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{mod}</span>
                               ))}
-                              {g.category && <span style={{padding:"0 4px",background:"rgba(251,191,36,0.12)",color:"rgba(251,191,36,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.category}</span>}
+                              {g.category && g.category!==g.value && <span style={{padding:"0 4px",background:"rgba(251,191,36,0.12)",color:"rgba(251,191,36,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.category}</span>}
+                              {g.value && <span style={{padding:"0 4px",background:"rgba(34,197,94,0.12)",color:"rgba(34,197,94,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.value}</span>}
                               {g.operator && <span style={{padding:"0 4px",background:"rgba(96,165,250,0.12)",color:"rgba(96,165,250,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.operator}</span>}
                               <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:14,color:"var(--text-secondary)"}}>
                                 → [{(g.step_ids || []).join(", ") || "—"}]
@@ -1786,7 +1799,7 @@ export default function My_SplitTable({user}){
               {(()=>{const pLotN=notesForParam(row._param).length;return(
               <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+((rowKnob?.label)?`\n${rowKnob.label}`:"")} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+func_step 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
+                {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+step_desc 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
                     KNOB/INLINE/VM 항목은 클릭 시 매칭 규칙 모달이 열리고, 설정값은 그때만 표출한다. */}
                   <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam);}}
                     title={rowMatchKind ? `이 항목의 ${matchTitle} 보기` : ""}
@@ -1803,9 +1816,9 @@ export default function My_SplitTable({user}){
                       <div key={gi} style={{marginTop:gi>0?4:0,padding:"4px 6px",borderRadius:4,background:"rgba(251,191,36,0.06)",border:"1px solid rgba(251,191,36,0.18)"}}>
                         <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
                           {(Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:[]).map((sid, si) => (
-                            <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.func_step || "-"})</span>
+                            <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.step_desc || g.func_step || "-"})</span>
                           ))}
-                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="Vehicle_matching.csv 또는 fallback step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>적용공정 없음 ({g.func_step || "-"})</span>}
+                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="Vehicle_matching.csv 또는 fallback step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>적용공정 없음 ({g.step_desc || g.func_step || "-"})</span>}
                         </div>
                       </div>
                     ))}
@@ -1933,13 +1946,13 @@ export default function My_SplitTable({user}){
           </tbody>
         </table>
         {showLineageSummary && lineageSummary.length>0&&<div style={{margin:"12px 10px 18px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-card)",overflow:"hidden"}}>
-          <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → function_step → step_id 요약</div>
+          <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → step_desc → step_id 요약</div>
           <div style={{maxHeight:320,overflow:"auto"}}>
             <table style={{borderCollapse:"collapse",width:"100%",fontSize:14,fontFamily:"monospace"}}>
               <thead>
                 <tr>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:220,color:GRID_TEXT}}>항목</th>
-                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:180}}>function_step</th>
+                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:180}}>step_desc</th>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:260}}>step_id</th>
                 </tr>
               </thead>
@@ -1947,7 +1960,7 @@ export default function My_SplitTable({user}){
                 {lineageSummary.map(x=>(
                   <tr key={x.key}>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:GRID_TEXT}}>{x.parameter}</td>
-                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.function_step||"—"}</td>
+                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.step_desc||x.function_step||"—"}</td>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"rgba(147,197,253,0.95)",fontWeight:700}}>{(x.step_ids||[]).length?x.step_ids.join(", "):"—"}</td>
                   </tr>
                 ))}
@@ -2442,18 +2455,19 @@ export default function My_SplitTable({user}){
                     <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:"1px solid rgba(251,191,36,0.35)",background:"var(--bg-card)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
                         <span style={{padding:"0 4px",background:"rgba(59,130,246,0.12)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order ?? "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>function_step</span>
-                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:800,fontFamily:"monospace"}}>{g.func_step || "-"}</span>
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>step_desc</span>
+                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:800,fontFamily:"monospace"}}>{g.step_desc || g.func_step || "-"}</span>
                         {Array.isArray(g.modules) && g.modules.map(mod => <span key={mod} style={{padding:"0 5px",borderRadius:999,border:"1px solid rgba(16,185,129,0.35)",background:"rgba(16,185,129,0.1)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:14}}>{mod}</span>)}
                       </div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>condition</span>
                         <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>{g.operator || "-"}</span>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>cell value</span>
-                        <span style={{fontFamily:"monospace"}}>{g.category || "-"}</span>
+                        <span style={{fontFamily:"monospace"}}>{g.value || g.category || "-"}</span>
+                        {g.category && g.category!==g.value && <><span style={{color:"var(--text-secondary)",fontSize:14}}>category</span><span style={{fontFamily:"monospace"}}>{g.category}</span></>}
                         <span style={{flexBasis:"100%",height:0}}/>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
-                        {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{sid} ({g.func_step || "-"})</span>)}
+                        {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{sid} ({g.step_desc || g.func_step || "-"})</span>)}
                         {!(Array.isArray(g.step_ids) && g.step_ids.length) && <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>적용공정 없음</span>}
                       </div>
                     </div>
