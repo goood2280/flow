@@ -567,15 +567,15 @@ def test_filebrowser_settings_llm_draft_expert_fallback_builds_detailed_rules(mo
             file="ppid_knob.csv",
             prompt="적용규칙에 대해서 전문가처럼 가능한거 전부 상세하게 짜줘",
             columns=[
-                "product", "feature_name", "function_step", "rule_order",
-                "operator", "category", "rank", "start_time", "end_time",
+                "feature_name", "rule_order", "step_desc", "operator", "value",
+                "category", "rank", "start_time", "end_time",
             ],
             sample_rows=[{
-                "product": "PRODA",
                 "feature_name": "24 SORT",
-                "function_step": "SORT",
                 "rule_order": "R1",
+                "step_desc": "SORT",
                 "operator": "eq",
+                "value": "PPID_01_1",
                 "category": "KNOB",
                 "rank": "1",
                 "start_time": "2026-05-01",
@@ -587,19 +587,15 @@ def test_filebrowser_settings_llm_draft_expert_fallback_builds_detailed_rules(mo
     )
 
     draft = out["draft"]
-    assert "product" in draft["required_columns"]
-    assert "feature_name" in draft["not_empty"]
-    assert draft["unique_keys"][0] == ["product", "feature_name", "rule_order"]
+    assert draft["required_columns"] == ["feature_name", "rule_order", "step_desc", "operator", "value", "category"]
+    assert draft["not_empty"] == ["feature_name", "step_desc"]
+    assert draft["unique_keys"][0] == ["feature_name", "rule_order", "step_desc"]
     assert draft["enums"]["operator"] == ["eq"]
     assert draft["numeric"]["rank"]["integer"] is True
     assert "start_time" in draft["date"]
     assert draft["regex"]["feature_name"] == r"\d+(?:\.\d+)?\s+.+"
     assert draft["conditions"] == [{"expr": "end_time >= start_time", "message": "end_time must be >= start_time"}]
-    assert draft["sort"] == [
-        {"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
-        {"column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last"},
-        {"column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last"},
-    ]
+    assert "sort" not in draft
 
 
 def test_filebrowser_settings_llm_draft_explicit_duplicate_prompt_overrides_llm_noise(monkeypatch):

@@ -710,8 +710,10 @@ def test_knob_meta_maps_step_desc_to_product_vehicle_step_id(tmp_path, monkeypat
     groups = meta["5.0 PC"]["groups"]
     assert [g["step_desc"] for g in groups] == ["PC", "GATE"]
     assert groups[0]["step_ids"] == ["STEP_PC_A"]
+    assert groups[0]["operator"] == "="
     assert groups[0]["value"] == "PPID_A"
     assert groups[0]["category"] == "ETCH"
+    assert groups[1]["operator"] == ">"
     assert "STEP_PC_B" not in groups[0]["step_ids"]
 
 

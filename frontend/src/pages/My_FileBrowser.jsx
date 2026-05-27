@@ -386,10 +386,10 @@ const validationRuleFields=[
   ["date","날짜/시간 컬럼","created_at, updated_at"],
   ["regex","정규식","code=[A-Z]{2}\\d{2}"],
   ["conditions","AND 통과 조건","end_time >= start_time => 종료가 시작보다 빠를 수 없습니다"],
-  ["ordered_by","현재 순서 검증","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
+  ["ordered_by","현재 순서 검증","feature_name asc leading_number last\nrule_order asc rule_order last"],
 ];
 const sortRuleFields=[
-  ["sort","저장 정렬","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
+  ["sort","저장 정렬","feature_name asc leading_number last\nrule_order asc rule_order last"],
 ];
 const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}

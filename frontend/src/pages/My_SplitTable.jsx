@@ -39,6 +39,43 @@ const stripMlPrefix=(s)=>{
 };
 const stepIdsForGroup=(group)=>Array.isArray(group?.step_ids)?group.step_ids.filter(Boolean):[];
 const isCompositeKnobRule=(groups)=>Array.isArray(groups)&&groups.length>1;
+const normalizeOperatorKey=(value)=>String(value??"").trim().toLowerCase().replace(/[\s-]+/g,"_");
+const isNotNullOperator=(value)=>normalizeOperatorKey(value)==="not_null";
+const knobStepGroups=(groups,{excludeNotNull=false}={})=>{
+  const byStep=new Map();
+  (Array.isArray(groups)?groups:[]).forEach(g=>{
+    if(excludeNotNull&&isNotNullOperator(g?.operator))return;
+    const desc=String(g?.step_desc||g?.func_step||"").trim();
+    stepIdsForGroup(g).forEach(rawSid=>{
+      const sid=String(rawSid||"").trim();
+      if(!sid)return;
+      if(!byStep.has(sid))byStep.set(sid,{step_id:sid,step_descs:[],seen:new Set()});
+      const item=byStep.get(sid);
+      const key=desc.toLowerCase();
+      if(desc&&!item.seen.has(key)){item.seen.add(key);item.step_descs.push(desc);}
+    });
+  });
+  return Array.from(byStep.values()).map(({seen,...item})=>item);
+};
+const knobStepSummaryText=(items)=>items.map(item=>{
+  const descs=Array.isArray(item.step_descs)?item.step_descs.filter(Boolean):[];
+  return `${item.step_id}${descs.length?`(${descs.join(",")})`:""}`;
+}).join(" / ");
+const matchedWaferSummary=(matches)=>{
+  const wafers=[];
+  const seen=new Set();
+  (matches||[]).forEach(m=>{
+    const wafer=String(m?.wafer||"").replace(/^#?W/i,"").trim();
+    if(!wafer||seen.has(wafer))return;
+    seen.add(wafer);wafers.push(wafer);
+  });
+  wafers.sort((a,b)=>{
+    const na=Number(a), nb=Number(b);
+    if(Number.isFinite(na)&&Number.isFinite(nb))return na-nb;
+    return a.localeCompare(b);
+  });
+  return wafers.length?`해당 WF #${wafers.join(",")}`:"";
+};
 const knobRuleBadgeStyle=(highlight=false)=>({
   padding:"0 5px",
   borderRadius:2,
@@ -56,7 +93,6 @@ const waferFromCellKey=(key)=>{
   const parts=String(key||"").split("|");
   return parts.length>=2?String(parts[1]||"").trim():"";
 };
-const knobRuleSourceLabel=(source)=>source==="actual"?"actual":source==="plan"?"saved plan":source==="pending"?"pending plan":source;
 const matchKnobRuleToRowValues=(group,row,pendingValueFor)=>{
   const target=normalizeKnobRuleValue(group?.category);
   if(!target||!row||!row._cells)return[];
@@ -122,6 +158,7 @@ export default function My_SplitTable({user}){
   const[viewMode,setViewMode]=useState("all");
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
+  const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
   const[showConfirm,setShowConfirm]=useState(false);
@@ -450,7 +487,7 @@ export default function My_SplitTable({user}){
       const paramUpper=param.toUpperCase();
       const km=knobLookup(param);
       if(Array.isArray(km?.groups)&&km.groups.length){
-        km.groups.forEach((g,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,step_desc:g.step_desc||g.func_step||"",function_step:g.step_desc||g.func_step||"",step_ids:Array.isArray(g.step_ids)?g.step_ids:[]}));
+        knobStepGroups(km.groups,{excludeNotNull:excludeNotNullStepMeta}).forEach((item,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,step_desc:(item.step_descs||[]).join(", "),function_step:(item.step_descs||[]).join(", "),step_ids:[item.step_id]}));
         return;
       }
       const vm=vmLookup(param)||{};
@@ -1123,6 +1160,10 @@ export default function My_SplitTable({user}){
                 <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
                   <input type="checkbox" checked={showParamMeta} onChange={e=>setShowParamMeta(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                   적용 공정 정보
+                </label>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
+                  <input type="checkbox" checked={excludeNotNullStepMeta} onChange={e=>setExcludeNotNullStepMeta(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                  not_null operator는 적용공정 step 표시에서 제외
                 </label>
                 <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
                   <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
@@ -1849,9 +1890,11 @@ export default function My_SplitTable({user}){
             const matchTitle = rowMatchKind==="knob_ppid"?"KNOB 매칭 규칙"
               :rowMatchKind==="inline_matching"?"INLINE 매칭 규칙"
               :rowMatchKind==="vm_matching"?"VM 매칭 규칙":"";
+            const rowKnobSteps = rowMatchKind==="knob_ppid"?knobStepGroups(rowKnob?.groups||[],{excludeNotNull:excludeNotNullStepMeta}):[];
+            const rowKnobStepTitle = rowKnobSteps.length?knobStepSummaryText(rowKnobSteps):"";
             return(<tr key={ri}>
               {(()=>{const pLotN=notesForParam(row._param).length;return(
-              <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+((rowKnob?.label)?`\n${rowKnob.label}`:"")} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
+              <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+(rowKnobStepTitle?`\n${rowKnobStepTitle}`:"")} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+step_desc 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
                     KNOB/INLINE/VM 항목은 클릭 시 매칭 규칙 모달이 열리고, 설정값은 그때만 표출한다. */}
@@ -1862,23 +1905,17 @@ export default function My_SplitTable({user}){
                   {rowIsTag&&canManage&&<button onClick={(e)=>{e.stopPropagation();deleteCustomTagColumn(rowParam);}} title="TAG 열 삭제"
                     style={{marginLeft:"auto",padding:"0 6px",height:20,borderRadius:3,border:"1px solid rgba(239,68,68,0.65)",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,fontWeight:800,cursor:"pointer",lineHeight:"18px"}}>×</button>}
                 </div>
-                {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화.
-                    KNOB/INLINE/VM는 '항목명 클릭' 방식으로 전환되어 인라인 정보 노출을 억제한다. */}
-                {showParamMeta && rowMatchKind==="knob_ppid" && (()=>{const groups=Array.isArray(rowKnob?.groups)?rowKnob.groups:[];const matched=groups.filter(g=>stepIdsForGroup(g).length);const composite=isCompositeKnobRule(groups);return matched.length?(
-                  <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
-                    {matched.map((g, gi) => (
-                      <div key={gi} style={{marginTop:gi>0?4:0,padding:"4px 6px",borderRadius:4,background:"rgba(251,191,36,0.06)",border:"1px solid rgba(251,191,36,0.18)"}}>
-                        <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
-                          {composite && <span style={knobRuleBadgeStyle(true)}>{g.rule_order ?? `R${gi+1}`}</span>}
-                          {stepIdsForGroup(g).map((sid, si) => (
-                            <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.step_desc || g.func_step || "-"})</span>
-                          ))}
-                        </div>
-                      </div>
+                {/* KNOB 적용공정은 rule row가 아니라 step_id 기준의 보조 요약만 인라인 표시한다. */}
+                {showParamMeta && rowMatchKind==="knob_ppid" && (()=>{const groups=Array.isArray(rowKnob?.groups)?rowKnob.groups:[];const steps=rowKnobSteps;return steps.length?(
+                  <div title={knobStepSummaryText(steps)} style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:4,fontFamily:"monospace",fontSize:12,lineHeight:1.35,color:"var(--text-secondary)"}}>
+                    {steps.map(item=>(
+                      <span key={`${item.step_id}-${(item.step_descs||[]).join("|")}`} style={{padding:"1px 5px",borderRadius:3,background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.22)",color:"var(--text-secondary)",fontWeight:600}}>
+                        {item.step_id}{item.step_descs?.length?`(${item.step_descs.join(",")})`:""}
+                      </span>
                     ))}
                   </div>
                 ):(
-                  <div style={{fontSize:14,fontWeight:600,lineHeight:1.5,marginTop:4,fontFamily:"monospace",color:"var(--text-secondary)"}}>매칭정보 없음</div>
+                  <div style={{fontSize:12,fontWeight:500,lineHeight:1.4,marginTop:4,fontFamily:"monospace",color:"var(--text-secondary)"}}>{groups.length?"표시 대상 적용공정 없음":"매칭정보 없음"}</div>
                 );})()}
                 {/* v8.8.15/v8.8.33: VM_ prefix row 의 step_id/step_desc sub-label — 항상 렌더, step_id 없으면 "미등록" pill. */}
                 {showParamMeta && !showMatchInfo && (row._param||"").startsWith("VM_") && (()=>{const vm=vmLookup(row._param)||{};const hasMeta=vm.step_id||vm.step_desc;return(
@@ -2499,15 +2536,16 @@ export default function My_SplitTable({user}){
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchKind==="knob_ppid"?"KNOB 분류 규칙":`${rbMatchTitle} 매칭 규칙`}</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rbMatchParam}</span>
-            {canManage && <button onClick={()=>{setRbMatchKind(null);setRbMatchRow(null);openRowEditor(rbMatchKind);}}
-              style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>편집</button>}
             <span style={{flex:1}}/>
             <span onClick={closeRuleMatchView} style={{cursor:"pointer",fontSize:16}}>✕</span>
           </div>
           {rbMatchData ? (
             <div style={{overflow:"auto"}}>
-              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const composite=isCompositeKnobRule(groups);return(
+              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const composite=isCompositeKnobRule(groups);const steps=knobStepGroups(groups,{excludeNotNull:excludeNotNullStepMeta});return(
                 <div style={{display:"grid",gap:8}}>
+                  <div style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-secondary)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",lineHeight:1.4}}>
+                    적용공정: {steps.length?knobStepSummaryText(steps):(groups.length?"표시 대상 없음":"매칭정보 없음")}
+                  </div>
                   {groups.length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>분류 규칙이 없습니다.</div>}
                   {groups.map((g, gi) => {const ruleMatches=matchKnobRuleToRowValues(g,rbMatchRow,pendingValueFor);const checked=ruleMatches.length>0;return(
                     <div key={`${rbMatchParam}-${gi}`} style={{padding:"10px 12px",borderRadius:6,border:checked?"1px solid rgba(34,197,94,0.75)":"1px solid rgba(251,191,36,0.35)",background:checked?"rgba(34,197,94,0.06)":"var(--bg-card)"}}>
@@ -2522,8 +2560,8 @@ export default function My_SplitTable({user}){
                         <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontFamily:"monospace",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
                         {g.product && <span style={{padding:"1px 7px",borderRadius:3,background:"rgba(148,163,184,0.12)",border:"1px solid rgba(148,163,184,0.35)",fontFamily:"monospace",fontWeight:700,color:"var(--text-secondary)"}}>product {g.product}</span>}
                       </div>
-                      {ruleMatches.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:8,marginLeft:28,fontSize:14,color:"var(--text-secondary)"}}>
-                        {ruleMatches.map((m,mi)=><span key={`${m.wafer}-${m.source}-${mi}`} style={{padding:"1px 6px",borderRadius:999,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.28)",fontFamily:"monospace",color:"rgba(22,163,74,0.95)"}}>W{m.wafer} · {knobRuleSourceLabel(m.source)}: {m.value}</span>)}
+                      {ruleMatches.length>0&&<div style={{marginTop:8,marginLeft:28,fontSize:13,fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>
+                        {matchedWaferSummary(ruleMatches)}
                       </div>}
                     </div>
                   );})}

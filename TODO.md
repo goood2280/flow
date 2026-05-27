@@ -6,6 +6,7 @@
 
 ## Done
 
+- (Codex) SplitTable KNOB 룰북/적용공정 표시 정리
 - (Codex) FileBrowser Version History 저장 후 snapshot 정합성 보정
 - (Codex) SplitTable KNOB 분류 규칙 모달 row 값 체크 표시 보정
 - (Codex) FileBrowser 현재 버전 중복 major 증가 보정

@@ -248,8 +248,8 @@ CORE_BASE_FILES = {
         "order": 40,
     },
     "ppid_knob.csv": {
-        "role": "KNOB -> function_step",
-        "description": "SplitTable KNOB feature 를 적용 function_step 으로 연결",
+        "role": "KNOB common rulebook",
+        "description": "SplitTable KNOB feature 를 공용 룰로 분류하고 step_desc 는 Vehicle_matching.csv 에서 제품별 step_id 로 확장",
         "order": 41,
     },
     "mask.csv": {
@@ -2446,11 +2446,39 @@ def _order_prompt_segment(prompt: str) -> str:
     return " ".join(selected) if selected else text
 
 
-def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False) -> list[dict]:
+def _is_ppid_knob_settings_file(file_key: str) -> bool:
+    return Path(str(file_key or "")).name.casefold() == "ppid_knob.csv"
+
+
+def _ppid_knob_contract_columns(columns: list[str]) -> list[str]:
+    lookup = _column_lookup(columns)
+    out: list[str] = []
+    for key in ("feature_name", "rule_order", "step_desc", "operator", "value", "category"):
+        col = lookup.get(key)
+        if not col and key == "step_desc":
+            col = lookup.get("function_step") or lookup.get("func_step")
+        if not col and key == "value":
+            col = lookup.get("ppid")
+        if col and col not in out:
+            out.append(col)
+    return out or list(columns)
+
+
+def _ppid_knob_not_empty_columns(columns: list[str]) -> list[str]:
+    lookup = _column_lookup(columns)
+    out = [
+        lookup.get("feature_name"),
+        lookup.get("step_desc") or lookup.get("function_step") or lookup.get("func_step"),
+    ]
+    return [col for col in out if col] or _ppid_knob_contract_columns(columns)
+
+
+def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False, file_key: str = "") -> list[dict]:
     lookup = _column_lookup(columns)
     order_text = _order_prompt_segment(prompt)
     low = order_text.casefold()
     direction = _fallback_sort_direction(prompt)
+    is_ppid_knob = _is_ppid_knob_settings_file(file_key)
     mentioned = [
         col for col in columns
         if col.casefold() in low or col.casefold().replace("_", " ") in low
@@ -2461,6 +2489,8 @@ def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = Fals
             mentioned = [feature_col]
     if mentioned:
         candidates = mentioned
+    elif is_ppid_knob:
+        candidates = [lookup[col] for col in ("feature_name", "rule_order") if col in lookup]
     elif expert:
         candidates = [lookup[col] for col in ("product", "feature_name", "rule_order") if col in lookup]
         if not candidates:
@@ -2483,8 +2513,20 @@ def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = Fals
     return specs
 
 
-def _fallback_unique_keys(columns: list[str]) -> list[list[str]]:
+def _fallback_unique_keys(columns: list[str], *, file_key: str = "") -> list[list[str]]:
     lookup = _column_lookup(columns)
+    if _is_ppid_knob_settings_file(file_key):
+        combos: list[list[str]] = []
+        for combo in (
+            ("feature_name", "rule_order", "step_desc"),
+            ("feature_name", "rule_order", "function_step"),
+            ("feature_name", "step_desc"),
+            ("feature_name", "function_step"),
+        ):
+            cols = [lookup[c] for c in combo if c in lookup]
+            if len(cols) == len(combo):
+                combos.append(cols)
+        return combos[:2]
     combos: list[list[str]] = []
     for combo in (
         ("id",),
@@ -2559,23 +2601,27 @@ def _fallback_condition_rules(columns: list[str]) -> list[dict]:
 
 
 def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule: dict, warnings: list[str],
+                                  file_key: str = "",
                                   sample_rows: list[dict] | None = None) -> dict:
     rule = copy.deepcopy(current_rule) if isinstance(current_rule, dict) else {}
     low = str(prompt or "").lower()
     expert = _settings_prompt_wants_expert(prompt)
+    is_ppid_knob = _is_ppid_knob_settings_file(file_key)
     if not columns:
         _draft_warning(warnings, "No columns were supplied, so only schema-level cleanup was applied.")
         return rule
     if expert or any(token in low for token in ("required", "필수", "must have")):
-        rule["required_columns"] = columns
+        rule["required_columns"] = _ppid_knob_contract_columns(columns) if is_ppid_knob else columns
     if expert or any(token in low for token in ("not empty", "non-empty", "blank", "빈 값", "비어")):
-        if sample_rows and expert:
+        if is_ppid_knob:
+            rule["not_empty"] = _ppid_knob_not_empty_columns(columns)
+        elif sample_rows and expert:
             non_empty_cols = [col for col in columns if _sample_values_for_column(sample_rows, col)]
             rule["not_empty"] = non_empty_cols or columns
         else:
             rule["not_empty"] = columns
     if (expert or any(token in low for token in ("unique", "duplicate", "중복", "유니크"))) and not rule.get("unique_keys"):
-        unique_keys = _fallback_unique_keys(columns)
+        unique_keys = _fallback_unique_keys(columns, file_key=file_key)
         if unique_keys:
             rule["unique_keys"] = unique_keys
     if expert:
@@ -2595,10 +2641,11 @@ def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule:
         if conditions and not rule.get("conditions"):
             rule["conditions"] = conditions
     validate_order, save_sort = _order_intents_from_prompt(prompt)
-    if (expert or validate_order or save_sort or any(token in low or token in str(prompt or "") for token in (
+    has_order_token = validate_order or save_sort or any(token in low or token in str(prompt or "") for token in (
         "sort", "order", "정렬", "순서", "오름차순", "내림차순", "앞에 숫자", "앞 숫자", "선행 숫자",
-    ))) and not rule.get("sort") and not rule.get("ordered_by"):
-        specs = _fallback_sort_specs(prompt, columns, expert=expert)
+    ))
+    if (expert or has_order_token) and not (is_ppid_knob and expert and not has_order_token) and not rule.get("sort") and not rule.get("ordered_by"):
+        specs = _fallback_sort_specs(prompt, columns, expert=expert, file_key=file_key)
         if specs:
             if expert or validate_order:
                 rule["ordered_by"] = {"keys": specs}
@@ -10200,6 +10247,8 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
                 "If the user says 현재 순서 검증 or 순서가 맞는지 검사, use ordered_by. "
                 "If the user says 저장할 때 정렬 or 저장 순서대로 정렬, use sort. "
                 "Order spec type must be one of string, numeric, date, leading_number, rule_order. "
+                "For ppid_knob.csv, product is legacy/display-only; do not require or sort by product unless the user explicitly asks. "
+                "The ppid_knob.csv column contract is feature_name, rule_order, step_desc, operator, value, category. "
                 "conditions must be simple Polars SQL boolean expressions over supplied columns. "
                 "Do not write files, source code, paths, shell commands, or unsupported keys."
             ))
@@ -10270,7 +10319,7 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
     else:
         raw_rule = _settings_llm_rule_candidate(plan, file_key)
         if not raw_rule:
-            raw_rule = _settings_draft_fallback_rule(prompt, columns, current_rule, warnings, sample_rows)
+            raw_rule = _settings_draft_fallback_rule(prompt, columns, current_rule, warnings, file_key, sample_rows)
     draft, draft_warnings = _normalize_csv_rule_draft(raw_rule, columns=columns)
     for item in draft_warnings:
         _draft_warning(warnings, item)

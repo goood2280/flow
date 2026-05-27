@@ -236,34 +236,21 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 - 정렬로직은 검증 통과 후에만 저장할 실제 CSV row 순서를 바꾼다. 허용 key는 `sort` 하나다.
 - `/base-file/validate`는 검증 결과와 정렬 preview를 반환하되, 실제 저장은 `_save_base_file`에서 검증 성공 후 `sort`를 적용한다. 검증 실패 시 원본 파일은 바뀌지 않는다.
 
-`ppid_knob.csv` 예시는 product 오름차순, 같은 product 안에서 `feature_name` 앞 숫자 오름차순, 같은 feature 안에서 `R1`, `R2`, `R3`, ..., `RO` 순서를 적용한다.
+`ppid_knob.csv`는 product 없는 공용 KNOB 룰북으로 관리한다. legacy `product` 컬럼이 있어도 SplitTable 매칭 필터로 쓰지 않으며, 기본 컬럼 계약은 `feature_name`, `rule_order`, `step_desc`, `operator`, `value`, `category`다.
 
 ```json
 {
   "csv_rules": {
     "ppid_knob.csv": {
-      "required_columns": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
-      "not_empty": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
-      "enums": { "operator": ["eq"] },
+      "required_columns": ["feature_name", "rule_order", "step_desc", "operator", "value", "category"],
+      "not_empty": ["feature_name", "step_desc"],
       "regex": {
         "feature_name": "\\d+(?:\\.\\d+)?\\s+.+",
         "rule_order": "R\\d+|RO"
       },
       "conditions": [
-        { "expr": "product != ''", "message": "product는 비어 있을 수 없습니다" },
-        { "expr": "feature_name != ''", "message": "feature_name은 비어 있을 수 없습니다" }
-      ],
-      "ordered_by": {
-        "keys": [
-          { "column": "product", "direction": "asc", "type": "string", "nulls": "last" },
-          { "column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last" },
-          { "column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last" }
-        ]
-      },
-      "sort": [
-        { "column": "product", "direction": "asc", "type": "string", "nulls": "last" },
-        { "column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last" },
-        { "column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last" }
+        { "expr": "feature_name != ''", "message": "feature_name은 비어 있을 수 없습니다" },
+        { "expr": "step_desc != ''", "message": "step_desc는 비어 있을 수 없습니다" }
       ]
     }
   }
