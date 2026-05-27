@@ -353,6 +353,8 @@ function revStyle(rev){
 }
 function versionChangeLabel(summary){
   const s=summary&&typeof summary==="object"?summary:{};
+  const raw=String(s.label||"");
+  if(s.schema_reinitialized||raw==="초기 버전"||raw==="initial snapshot")return"초기 버전";
   const modified=Number(s.modified_rows||0);
   const added=Number(s.added_rows||0);
   const deleted=Number(s.deleted_rows||0);
@@ -368,8 +370,6 @@ function versionChangeLabel(summary){
   const colDelta=Number(s.columns_delta||0);
   if(!addedCols&&!removedCols&&colDelta)parts.push(`열 ${colDelta>0?"+":""}${colDelta}`);
   if(parts.length)return parts.join(" / ");
-  const raw=String(s.label||"");
-  if(raw==="initial snapshot")return"초기 버전";
   if(raw==="content updated")return"내용 수정";
   if(raw==="no data change")return"변경 없음";
   if(/cells changed/i.test(raw)||/\brows\b/i.test(raw)){

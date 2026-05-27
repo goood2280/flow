@@ -2979,7 +2979,7 @@ def test_base_file_view_reads_small_csv_fully_and_threshold_falls_back(monkeypat
     assert paged["preview_row_limit"] == 100
 
 
-def test_base_file_view_reinitializes_ragged_csv_added_columns(monkeypatch, tmp_path):
+def test_base_file_view_reinitializes_ragged_csv_without_extra_columns(monkeypatch, tmp_path):
     fp = tmp_path / "ragged_lookup.csv"
     fp.write_text("id,value\n1,alpha\n2,beta,added\n", encoding="utf-8")
 
@@ -3002,8 +3002,8 @@ def test_base_file_view_reinitializes_ragged_csv_added_columns(monkeypatch, tmp_
 
     assert preview["csv_schema_reinitialized"] is True
     assert preview["csv_ragged_rows_normalized"] is True
-    assert preview["all_columns"] == ["id", "value", "extra_col_3"]
-    assert preview["data"][1]["extra_col_3"] == "added"
+    assert preview["all_columns"] == ["id", "value"]
+    assert "extra_col_3" not in preview["data"][1]
 
     saved = filebrowser._save_base_file(
         filebrowser.BaseFileSaveReq(
@@ -3016,12 +3016,29 @@ def test_base_file_view_reinitializes_ragged_csv_added_columns(monkeypatch, tmp_
         _Request("admin", "admin"),
     )
 
-    assert saved["cols"] == 3
+    assert saved["cols"] == 2
+    assert saved["dropped_generated_extra_columns"] is True
     assert pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False).collect_schema().names() == [
         "id",
         "value",
-        "extra_col_3",
     ]
+    assert "extra_col_" not in fp.read_text(encoding="utf-8")
+
+
+def test_version_diff_reinitializes_when_columns_change(tmp_path):
+    previous = tmp_path / "v1.csv"
+    current = tmp_path / "current.csv"
+    previous.write_text("id,value\n1,old\n", encoding="utf-8")
+    current.write_text("id,value,new_value\n1,old,added\n", encoding="utf-8")
+
+    summary = filebrowser._snapshot_change_summary(current, previous)
+
+    assert summary["label"] == "초기 버전"
+    assert summary["schema_reinitialized"] is True
+    assert summary["added_rows"] == 0
+    assert summary["modified_rows"] == 0
+    assert summary["added_columns"] == ["new_value"]
+    assert filebrowser._diff_table_between(current, previous) is None
 
 
 def test_base_file_view_ml_table_defaults_to_100_then_filtered_preview(monkeypatch, tmp_path):

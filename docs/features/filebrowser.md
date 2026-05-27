@@ -199,7 +199,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 
 - DB product / root parquet / base parquet 화면 preview는 최대 100행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
 - 관리용 단일 CSV/JSON/YAML/MD는 기존처럼 전체 표시 경로를 유지한다. cache 파일, `ML_TABLE_*.parquet`, 일반 대형 parquet은 lazy/DuckDB 경로로 100행과 제한된 열만 반환한다.
-- 관리용 단일 CSV가 header보다 긴 row를 가져 `found more fields than defined` 형태로 스캔 실패하면 FileBrowser는 Python CSV fallback으로 컬럼을 다시 잡고 초과 필드는 `extra_col_N`으로 보여준다. 이 상태에서 저장하면 새 header가 물리 CSV에 기록되고 EDM version diff는 갱신된 컬럼 수를 기준으로 이어진다.
+- 관리용 단일 CSV가 header보다 긴 row를 가져 `found more fields than defined` 형태로 스캔 실패하면 FileBrowser는 Python CSV fallback으로 header 범위까지만 복구한다. 초과 필드는 `extra_col_N` 같은 임시 컬럼으로 노출하거나 저장하지 않으며, 컬럼 set이 바뀐 EDM version diff는 행 단위 비교 대신 초기 버전 요약으로 남긴다.
 - SQL 실행과 컬럼 선택도 표시 결과는 최대 100행이다. 사용자는 조건 적용 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
 - `/api/filebrowser/base-file-view`, `/api/filebrowser/view`, `/api/filebrowser/root-parquet-view`는 `meta_only=true`를 계속 지원한다. FileBrowser 화면의 첫 open은 `meta_only=false`이며 100행 샘플을 바로 요청한다. 응답에는 `meta_only`, `meta_cached`, `row_count_unknown`, `source_size`, `preview_capped`, `truncated_cols`, `requires_filter`, `query_block_reason`을 포함한다.
 - `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 `max_bytes <= 100MB`, `max_rows <= 500000`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_bytes`를 `max_bytes`로 보내고 `csv_download_max_rows`는 보조 제한으로 보낸다.

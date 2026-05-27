@@ -1000,14 +1000,15 @@ def _normalize_rows(rows: list[list[str]], width: int, fill: str = "") -> tuple[
     return norm, width
 
 
+_GENERATED_EXTRA_COL_RE = re.compile(r"^extra_col_\d+$", re.IGNORECASE)
+
+
 def _csv_header_names(raw_header: list[str], width: int) -> list[str]:
     names: list[str] = []
     seen: dict[str, int] = {}
     for idx in range(width):
         raw = raw_header[idx] if idx < len(raw_header) else ""
-        name = str(raw or "").lstrip("\ufeff").strip() or f"extra_col_{idx + 1}"
-        if idx >= len(raw_header):
-            name = f"extra_col_{idx + 1}"
+        name = str(raw or "").lstrip("\ufeff").strip() or f"col_{idx + 1}"
         base = name
         count = seen.get(base.casefold(), 0)
         if count:
@@ -1015,6 +1016,16 @@ def _csv_header_names(raw_header: list[str], width: int) -> list[str]:
         seen[base.casefold()] = count + 1
         names.append(name)
     return names
+
+
+def _drop_generated_extra_columns(header: list[str], data_rows: list[list[str]]) -> tuple[list[str], list[list[str]], bool]:
+    drop = {idx for idx, col in enumerate(header) if _GENERATED_EXTRA_COL_RE.fullmatch(str(col or "").strip())}
+    if not drop:
+        return header, data_rows, False
+    keep = [idx for idx in range(len(header)) if idx not in drop]
+    next_header = [header[idx] for idx in keep]
+    next_rows = [[row[idx] if idx < len(row) else "" for idx in keep] for row in data_rows]
+    return next_header, next_rows, True
 
 
 def _read_csv_lenient_rows(fp: Path) -> tuple[list[str], list[list[str]], str, bool] | None:
@@ -1029,10 +1040,11 @@ def _read_csv_lenient_rows(fp: Path) -> tuple[list[str], list[list[str]], str, b
         return [], [], used_delim, False
     raw_header = ["" if v is None else str(v) for v in (rows[0] or [])]
     data_rows = rows[1:]
-    width = max([len(raw_header), *[len(r or []) for r in data_rows], 1])
+    data_width = max((len(r or []) for r in data_rows), default=0)
+    width = max(len(raw_header), 1)
     columns = _csv_header_names(raw_header, width)
     normalized, _ = _normalize_rows(data_rows, width, "")
-    return columns, normalized, used_delim, width > len(raw_header)
+    return columns, normalized, used_delim, data_width != width
 
 
 def _csv_lenient_lazy_frame(fp: Path) -> tuple[pl.LazyFrame, list[str], dict[str, str], int, dict] | None:
@@ -3239,6 +3251,21 @@ def _snapshot_change_summary(current: Path, previous: Path | None, file: str = "
     cur_profile = _file_profile(current)
     prev_profile = _file_profile(previous)
     diff = _profile_diff(cur_profile, prev_profile)
+    schema_changed = [str(c) for c in (cur_profile.get("columns") or [])] != [str(c) for c in (prev_profile.get("columns") or [])]
+    if schema_changed:
+        return {
+            "label": "초기 버전",
+            "schema_reinitialized": True,
+            "rows_delta": diff.get("rows_delta"),
+            "columns_delta": diff.get("columns_delta"),
+            "changed_cells": None,
+            "added_rows": 0,
+            "deleted_rows": 0,
+            "modified_rows": 0,
+            "added_columns": diff.get("added_columns_in_current") or [],
+            "removed_columns": diff.get("removed_columns_from_current") or [],
+            "checksum_equal": diff.get("checksum_equal"),
+        }
     table_diff = _diff_table_between(current, previous, file=file)
     counts = table_diff.get("counts") if isinstance(table_diff, dict) else {}
     added_rows = int(counts.get("added") or 0) if isinstance(counts, dict) else 0
@@ -3452,6 +3479,8 @@ def _diff_table_between(current: Path, previous: Path | None, max_changes: int =
         cur_cols, cur_rows = _table_rows_for_diff(current)
         prev_cols, prev_rows = _table_rows_for_diff(previous)
     except Exception:
+        return None
+    if cur_cols != prev_cols:
         return None
     all_cols = list(dict.fromkeys([*cur_cols, *prev_cols]))
     if not all_cols:
@@ -10261,12 +10290,16 @@ def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
         data_rows = rows
     if not header:
         header = [f"col_{i + 1}" for i in range(max((len(r) for r in data_rows), default=1))]
+    header, data_rows, dropped_generated_extra_columns = _drop_generated_extra_columns(header, data_rows)
+    if not header:
+        raise HTTPException(400, "CSV header has no editable columns")
     data_rows, _ = _normalize_rows(data_rows, len(header), "")
     sorted_rows, result = _validate_and_sort_csv_rows(req.file, header, data_rows)
     result.update({
         "file": req.file,
         "delimiter": used_delim,
         "columns_list": header,
+        "dropped_generated_extra_columns": dropped_generated_extra_columns,
         "preview_rows": [dict(zip(header, row)) for row in sorted_rows[:20]],
         "sorted_csv_text": _rows_to_csv_text(header, sorted_rows, used_delim, include_header=req.include_header) if result.get("ok") else "",
         "save_policy": "validation_blocks_save; sort_applies_only_after_validation_passes",
@@ -10317,6 +10350,9 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
     if not header:
         header = [f"col_{i + 1}" for i in range(max((len(r) for r in data_rows), default=1))]
 
+    header, data_rows, dropped_generated_extra_columns = _drop_generated_extra_columns(header, data_rows)
+    if not header:
+        raise HTTPException(400, "CSV header has no editable columns")
     data_rows, _ = _normalize_rows(data_rows, len(header), "")
     if len(data_rows) > BASE_FILE_EDIT_MAX_ROWS:
         raise HTTPException(413, f"Row count too large: {len(data_rows):,} rows (max {BASE_FILE_EDIT_MAX_ROWS:,})")
@@ -10401,6 +10437,7 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             "step_cache_rows": None,
             "s3_sync": sync_result,
             "csv_validation": csv_validation,
+            "dropped_generated_extra_columns": dropped_generated_extra_columns,
         }
     except Exception as e:
         raise HTTPException(500, f"Failed to read result after save: {e}")
