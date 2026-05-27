@@ -217,6 +217,7 @@ const STATUS_META = {
   registered:      { label: "등록", tone: "info", color: INFO.fg, dot: "○" },
   mail_completed:  { label: "메일완료", tone: "brand", color: WARN.fg, dot: "◑" },
   apply_confirmed: { label: "등록적용확인", tone: "ok", color: OK.fg, dot: "●" },
+  reinform:        { label: "재인폼", tone: "neutral", color: "var(--text-secondary)", dot: "↳" },
 };
 const STATUS_ORDER = ["registered", "mail_completed", "apply_confirmed"];
 
@@ -820,7 +821,7 @@ function ThreadNode({
   const [splitForm, setSplitForm] = useState({ column: "", old_value: "", new_value: "" });
   const [replyImages, setReplyImages] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const canEdit = !!onReply && (user?.role === "admin" || user?.username === node.author);
+  const canReInform = !!onReInform;
 
   const handleFile = async (fl) => {
     if (!fl || fl.length === 0) return;
@@ -874,7 +875,7 @@ function ThreadNode({
             display: "inline-flex", alignItems: "center", gap: 4,
           }}>🕐 {(node.created_at || "").replace("T", " ").slice(0, 16)}</span>
           <div style={{ flex: 1 }} />
-          {/* v8.8.13: 우측 액션 3버튼 통일 — 확인 · 답글 · 삭제. 상태 라벨은 CheckPill 로 좌측에 표시. */}
+          {/* v8.8.13: 우측 액션은 확인 · 답글 · 재인폼 · 삭제. 상태 라벨은 CheckPill 로 좌측에 표시. */}
           <button onClick={() => onToggleCheck(node)} title={node.checked ? "미확인으로 되돌리기" : "확인 완료 처리"}
             style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
               border: "1px solid " + (node.checked ? BAD.fg : OK.fg),
@@ -887,12 +888,12 @@ function ThreadNode({
               border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 700 }}>
             {replyOpen ? "닫기" : "답글"}
           </button>
-          {canEdit && (
+          {canReInform && (
             <button onClick={() => onReInform?.(node)}
               title="재인폼 작성"
               style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${INFO.fg}`, background: "transparent", color: INFO.fg, fontWeight: 700 }}>
-              ✎ 수정
+              재인폼
             </button>
           )}
           {canDelete && kids.length === 0 && (
@@ -1651,6 +1652,7 @@ export default function My_Inform({ user }) {
   const [thread, setThread] = useState([]);          // 선택 scope 의 전체 entries (wafer/lot/product)
   const [lotWafers, setLotWafers] = useState([]);    // lot 모드에서 포함된 wafer 들
   const [listRoots, setListRoots] = useState([]);
+  const [listChildrenByParent, setListChildrenByParent] = useState({});
   const [lotMatrix, setLotMatrix] = useState({ products: [], module_order: [] });
   const [lotMatrixLoading, setLotMatrixLoading] = useState(false);
   const [selectedRootId, setSelectedRootId] = useState("");
@@ -1748,9 +1750,15 @@ export default function My_Inform({ user }) {
   };
 
   const loadInformList = () => {
-    sf(API + "/recent?limit=500")
-      .then(d => setListRoots(d.informs || []))
-      .catch(() => setListRoots([]));
+    sf(API + "/recent?limit=500&include_children=true")
+      .then(d => {
+        setListRoots(d.informs || []);
+        setListChildrenByParent(d.children_by_parent || {});
+      })
+      .catch(() => {
+        setListRoots([]);
+        setListChildrenByParent({});
+      });
   };
 
   const loadAuditLog = () => {
@@ -3070,7 +3078,7 @@ export default function My_Inform({ user }) {
                   <span><b style={{ color: "var(--accent)" }}>{filteredListRoots.length}</b>건 표시 / 전체 {listRoots.length}건</span>
                   <span style={{ marginLeft: "auto" }}><NewInformButton onClick={openCreateWizard} /></span>
                 </div>
-                <InformVirtualList roots={filteredListRoots} selectedId={selectedRootId} onOpen={openRootForDetail} />
+                <InformVirtualList roots={filteredListRoots} childrenByParent={listChildrenByParent} selectedId={selectedRootId} onOpen={openRootForDetail} />
               </>
             )}
           </section>
@@ -3796,7 +3804,7 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
   );
 }
 
-function InformVirtualList({ roots, selectedId, onOpen }) {
+function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen }) {
   const tableStyle = {
     width: "100%",
     minWidth: 1160,
@@ -3817,6 +3825,18 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
     textAlign: "left",
     whiteSpace: "nowrap",
   };
+  const renderRows = (node, root, depth = 0) => {
+    const kids = (childrenByParent[node.id] || [])
+      .slice()
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    return (
+      <React.Fragment key={`${root.id}:${node.id || depth}`}>
+        <InformListRow root={root} node={node} depth={depth} selected={selectedId === root.id} onOpen={() => onOpen(root)} />
+        {kids.map(child => renderRows(child, root, depth + 1))}
+      </React.Fragment>
+    );
+  };
+
   return (
     <TableWrap style={{ flex: 1, minHeight: 0, border: "none", borderRadius: 0, background: "var(--bg-secondary)" }}>
       {roots.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없어요</div>}
@@ -3849,9 +3869,7 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
             </tr>
           </thead>
           <tbody>
-            {roots.map(root => (
-              <InformListRow key={root.id} root={root} selected={selectedId === root.id} onOpen={() => onOpen(root)} />
-            ))}
+            {roots.map(root => renderRows(root, root, 0))}
           </tbody>
         </Tbl>
       )}
@@ -3870,16 +3888,22 @@ function rowRootLotLabel(root) {
   return rootLot ? rootLot.slice(0, 5) : "-";
 }
 
-function InformListRow({ root, selected, onOpen }) {
+function InformListRow({ root, node, depth = 0, selected, onOpen }) {
   const [hover, setHover] = useState(false);
-  const status = normalizeFlowStatus(root.flow_status, root);
-  const mailCount = (root.mail_history || []).length;
-  const replyCount = Number(root.reply_count || root.comment_count || 0);
-  const attachedSets = Array.isArray(root.embed_table?.attached_sets) ? root.embed_table.attached_sets.length : (Array.isArray(root.attachments) ? root.attachments.length : 0);
-  const embedCount = root.embed_table && attachedSets === 0 ? 1 : 0;
-  const attachCount = (root.images || []).length + embedCount + attachedSets;
-  const module = root.module || "기타";
+  const row = node || root;
+  const isChild = depth > 0 || !!row.parent_id;
+  const status = normalizeFlowStatus(row.flow_status, row);
+  const mailCount = (row.mail_history || []).length;
+  const replyCount = Number(row.reply_count || row.comment_count || 0);
+  const attachedSets = Array.isArray(row.embed_table?.attached_sets) ? row.embed_table.attached_sets.length : (Array.isArray(row.attachments) ? row.attachments.length : 0);
+  const embedCount = row.embed_table && attachedSets === 0 ? 1 : 0;
+  const attachCount = (row.images || []).length + embedCount + attachedSets;
+  const module = row.module || root.module || "기타";
   const mc = moduleColor(module);
+  const titleText = isChild
+    ? (reInformTextForDisplay(row).replace(/^\[RE\]\s*/, "") || informTitle(row))
+    : informTitle(row);
+  const timeValue = isChild ? row.created_at : (row.thread_updated_at || row.created_at);
   const cellStyle = {
     padding: "6px 8px",
     borderBottom: "1px solid var(--border)",
@@ -3907,19 +3931,20 @@ function InformListRow({ root, selected, onOpen }) {
           {rowRootLotLabel(root)}
         </span>
       </td>
-      <td title={stripMlPrefix(root.product || "")} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {stripMlPrefix(root.product || "-")}
+      <td title={stripMlPrefix(root.product || row.product || "")} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {stripMlPrefix(root.product || row.product || "-")}
       </td>
-      <td title={informTitle(root)} style={{ ...cellStyle, minWidth: 0 }}>
-        <span style={{ display: "block", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 900 }}>
-          {informTitle(root)}
+      <td title={isChild ? `↳ [RE] ${titleText}` : titleText} style={{ ...cellStyle, minWidth: 0 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden", whiteSpace: "nowrap", fontWeight: 900, paddingLeft: isChild ? Math.min(depth, 5) * 22 : 0 }}>
+          {isChild && <span style={{ flex: "0 0 auto", color: "var(--accent)", fontWeight: 900 }}>↳ [RE]</span>}
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{titleText}</span>
         </span>
       </td>
       <td style={{ ...cellStyle, minWidth: 0, overflow: "hidden", padding: "6px 4px" }}>
-        <StatusBadge status={status} compact />
+        <StatusBadge status={isChild ? "reinform" : status} compact />
       </td>
-      <td title={root.author || ""} style={{ ...cellStyle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{root.author || "-"}</td>
-      <td title={(root.thread_updated_at || root.created_at || "").replace("T", " ").slice(0, 16)} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap" }}>{relativeTime(root.thread_updated_at || root.created_at)}</td>
+      <td title={row.author || ""} style={{ ...cellStyle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{row.author || "-"}</td>
+      <td title={(timeValue || "").replace("T", " ").slice(0, 16)} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap" }}>{relativeTime(timeValue)}</td>
       <td style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap", color: "var(--text-secondary)", fontWeight: 800 }}>
         💬{replyCount || 0} · ✉{mailCount || 0} · 📎{attachCount || 0}
       </td>
@@ -3976,15 +4001,6 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
   const status = normalizeFlowStatus(root.flow_status, root);
   const completed = status === "apply_confirmed";
   const canEditDelete = user?.role === "admin" || userMatches(user?.username, root.author);
-  const childReInforms = childrenByParent[root.id] || [];
-  const removeAttachedSet = (setId) => {
-    const embed = root.embed_table || {};
-    const attached = (embed.attached_sets || []).filter(s => (s.id || s.name) !== setId);
-    const nextEmbed = attached.length
-      ? { ...embed, attached_sets: attached, source: embed.source || "SplitTable selected sets" }
-      : null;
-    onEdit(root.id, { embed_table: nextEmbed });
-  };
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
@@ -4002,11 +4018,6 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <button type="button" disabled={!canEditDelete} onClick={() => onReInform?.(root)}
-              title="원문을 덮어쓰지 않고 재인폼을 작성합니다"
-              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: canEditDelete ? "var(--text-primary)" : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
-              수정
-            </button>
             <button type="button" disabled={!canEditDelete} onClick={() => onDelete(root.id)}
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid " + BAD.fg, background: "transparent", color: canEditDelete ? BAD.fg : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
               삭제
@@ -4020,6 +4031,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
               ✉ 메일
             </button>
             <button type="button" onClick={() => onReInform?.(root)}
+              title="재인폼 작성"
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
               재인폼 {commentCount}
             </button>
@@ -4046,25 +4058,9 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
             </section>
             {root.embed_table && (
               <section style={informConnectedSection}>
-                <EmbedTableView embed={root.embed_table} product={root.product} canEdit={canEditDelete} onRemoveSet={removeAttachedSet} />
+                <EmbedTableView embed={root.embed_table} product={root.product} />
               </section>
             )}
-            <section style={informConnectedSectionLast}>
-              <div style={informConnectedSectionTitle}>재인폼</div>
-              {childReInforms.length === 0 && (
-                <div style={{ color: "var(--text-secondary)" }}>재인폼이 없습니다.</div>
-              )}
-              {childReInforms.length > 0 && (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {childReInforms.map(k => (
-                    <ThreadNode key={k.id} node={k} childrenByParent={childrenByParent}
-                      onReply={onReply} onDelete={onDelete} onToggleCheck={onToggleCheck}
-                      onEdit={onEdit} onReInform={onReInform}
-                      user={user} depth={1} constants={constants} />
-                  ))}
-                </div>
-              )}
-            </section>
           </div>
         )}
         {tab === "mail" && <InformMailHistoryPanel root={root} onOpenMail={() => onOpenMail(root)} />}

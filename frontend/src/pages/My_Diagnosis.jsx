@@ -6,6 +6,9 @@ import { postJson, sf } from "../lib/api";
 
 const AGENT_UNIT_RUN_ENDPOINT = "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run";
 const FILEBROWSER_AI_SQL_HISTORY_ENDPOINT = "/api/filebrowser/sql/history?limit=50";
+const INFORM_REGISTRATION_GRAPH_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/graph";
+const INFORM_REGISTRATION_RUN_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/run";
+const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/history?limit=50";
 
 function queryUrl(path, params) {
   const query = Object.entries(params || {})
@@ -250,6 +253,15 @@ const STATE_KEY_BY_NODE = {
   preview_apply: "preview",
 };
 
+const INFORM_STATE_KEY_BY_NODE = {
+  context_seed: "session",
+  slot_extract: "slots",
+  validate_missing: "missing",
+  snapshot_preview: "snapshot",
+  review: "draft",
+  register: "created_inform",
+};
+
 const FALLBACK_GRAPH = {
   nodes: [
     { id: "context_sample", label: "용어해석 준비", phase: "context", status: "pending" },
@@ -269,6 +281,24 @@ const FALLBACK_GRAPH = {
   ],
 };
 
+const INFORM_FALLBACK_GRAPH = {
+  nodes: [
+    { id: "context_seed", label: "Session seed", phase: "context", status: "pending" },
+    { id: "slot_extract", label: "Slot extract", phase: "semantic", status: "pending" },
+    { id: "validate_missing", label: "필수값 확인", phase: "validate", status: "pending" },
+    { id: "snapshot_preview", label: "Snapshot preview", phase: "preview", status: "pending" },
+    { id: "review", label: "등록 검토", phase: "review", status: "pending" },
+    { id: "register", label: "Inform 저장", phase: "write", status: "pending" },
+  ],
+  edges: [
+    { source: "context_seed", target: "slot_extract" },
+    { source: "slot_extract", target: "validate_missing" },
+    { source: "validate_missing", target: "snapshot_preview" },
+    { source: "snapshot_preview", target: "review" },
+    { source: "review", target: "register" },
+  ],
+};
+
 const HOME_FLOWI_FALLBACK_GRAPH = {
   nodes: [
     { id: "prompt_input", label: "프롬프트 입력", phase: "input", status: "pending" },
@@ -285,7 +315,7 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
   ],
 };
 
-function buildAccumulatedState(result, request, upToIdx) {
+function buildAccumulatedState(result, request, upToIdx, stateKeyByNode = STATE_KEY_BY_NODE) {
   const trace = result?.trace || [];
   const state = {
     run_id: result?.run_id || null,
@@ -294,7 +324,7 @@ function buildAccumulatedState(result, request, upToIdx) {
   const limit = Number.isFinite(upToIdx) ? upToIdx + 1 : trace.length;
   for (let i = 0; i < limit && i < trace.length; i += 1) {
     const row = trace[i];
-    const key = STATE_KEY_BY_NODE[row.node_id];
+    const key = stateKeyByNode[row.node_id];
     if (key) state[key] = row.output;
   }
   return state;
@@ -915,6 +945,420 @@ function FileBrowserAiSqlUnitPanel() {
   );
 }
 
+function InformRegistrationUnitPanel() {
+  const [graph, setGraph] = useState(null);
+  const [prompt, setPrompt] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [graphErr, setGraphErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [lastRequest, setLastRequest] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+
+  const loadHistory = () => {
+    setHistoryLoading(true);
+    return sf(INFORM_REGISTRATION_HISTORY_ENDPOINT)
+      .then((payload) => {
+        const nextHistory = payload?.history || [];
+        setHistory(nextHistory);
+        if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+      })
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sf(INFORM_REGISTRATION_GRAPH_ENDPOINT).catch((e) => ({ error: e.message || String(e) })),
+      sf(INFORM_REGISTRATION_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
+    ]).then(([graphPayload, historyPayload]) => {
+      if (graphPayload?.error) {
+        setGraphErr(graphPayload.error);
+        setGraph(null);
+      } else {
+        setGraphErr("");
+        setGraph(graphPayload?.graph || null);
+      }
+      const nextHistory = historyPayload?.history || [];
+      setHistory(nextHistory);
+      if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (result?.session_id) setSessionId(result.session_id);
+  }, [result?.session_id]);
+
+  const activeGraph = result?.graph || graph || INFORM_FALLBACK_GRAPH;
+  const graphNodes = activeGraph?.nodes || [];
+  const firstGraphNodeId = graphNodes[0]?.id || null;
+  const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
+  const trace = result?.trace || [];
+
+  useEffect(() => {
+    if (trace.length) setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
+  }, [result?.run_id]);
+
+  useEffect(() => {
+    if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
+  }, [selectedNodeId, firstGraphNodeId]);
+
+  const selectedIdx = currentSelectedNodeId
+    ? trace.findIndex((row) => row.node_id === currentSelectedNodeId)
+    : -1;
+  const selectedTraceNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedGraphNode = graphNodes.find((node) => node.id === currentSelectedNodeId) || graphNodes[0] || null;
+  const selectedNode = selectedTraceNode
+    ? {
+      ...selectedGraphNode,
+      ...selectedTraceNode,
+      id: selectedGraphNode?.id || selectedTraceNode.node_id,
+      node_id: selectedTraceNode.node_id || selectedGraphNode?.id,
+      persona: selectedGraphNode?.persona || selectedTraceNode.persona || "",
+      prompt: selectedGraphNode?.prompt || selectedTraceNode.prompt || {},
+      state_io: selectedGraphNode?.state_io || selectedTraceNode.state_io || {},
+      reads: selectedGraphNode?.reads || selectedTraceNode.reads || [],
+      writes: selectedGraphNode?.writes || selectedTraceNode.writes || [],
+      shared_state: selectedGraphNode?.shared_state || selectedTraceNode.shared_state || [],
+      answer_attach_rule: selectedGraphNode?.answer_attach_rule || selectedTraceNode.answer_attach_rule || "",
+    }
+    : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
+  const accumulatedState = useMemo(
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, INFORM_STATE_KEY_BY_NODE),
+    [result, lastRequest, selectedIdx]
+  );
+  const stateDesign = activeGraph?.state_design || {};
+  const stateValue = trace.length ? accumulatedState : stateDesign;
+  const stateSubtitle = selectedTraceNode
+    ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}`
+    : (trace.length ? "final state" : "");
+  const graphSubtitle = trace.length
+    ? `${trace.length}/${graphNodes.length} nodes · click to inspect`
+    : "";
+  const selectedNodeOutput = compactRowsPayload(selectedTraceNode?.output);
+  const selectedPromptSystem = selectedNode?.prompt?.system || "";
+  const selectedPromptMode = selectedNode?.prompt?.mode || "deterministic";
+  const selectedStateIo = selectedNode?.state_io || {
+    reads: selectedNode?.reads || [],
+    writes: selectedNode?.writes || [],
+  };
+
+  const selectedHistory = useMemo(() => (
+    history.find((item) => item.history_id === selectedHistoryId) || history[0] || null
+  ), [history, selectedHistoryId]);
+  const historyPrompt = (item) => item?.prompt || item?.natural_language || "";
+  const debugRequest = {
+    prompt: prompt.trim(),
+    session_id: sessionId,
+    action: "continue",
+    slot_overrides: {},
+  };
+  const canContinue = !!(prompt.trim() || sessionId);
+  const canConfirm = !!(result?.requires_confirmation && sessionId);
+
+  const runAction = (action) => {
+    if (action === "continue" && !canContinue) return;
+    if (action === "confirm" && !sessionId) return;
+    if (action === "cancel" && !sessionId) return;
+    const body = {
+      prompt: action === "continue" ? prompt.trim() : "",
+      session_id: sessionId,
+      action,
+      slot_overrides: {},
+    };
+    setBusy(true);
+    setErr("");
+    setLastRequest(body);
+    postJson(INFORM_REGISTRATION_RUN_ENDPOINT, body)
+      .then((payload) => {
+        setResult(payload);
+        if (payload?.session_id) setSessionId(payload.session_id);
+        loadHistory();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const continueFromHistory = (item) => {
+    setSessionId(item?.session_id || "");
+    setPrompt(historyPrompt(item));
+    setSelectedHistoryId(item?.history_id || "");
+    setErr("");
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      {graphErr && (
+        <Banner tone="warn" onClose={() => setGraphErr("")}>
+          graph fetch 실패 — 기본 노드 구조로 표시: {graphErr}
+        </Banner>
+      )}
+      <Panel
+        title="질문 이력"
+        subtitle={historyLoading ? "loading" : `${history.length} items`}
+        right={<Button variant="ghost" onClick={loadHistory} disabled={historyLoading} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.05fr) minmax(320px, 0.95fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ maxHeight: 230, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            {history.length ? history.map((item) => {
+              const active = (item.history_id || "") === (selectedHistory?.history_id || "");
+              return (
+                <button
+                  type="button"
+                  key={item.history_id || `${item.timestamp}:${historyPrompt(item)}`}
+                  onClick={() => setSelectedHistoryId(item.history_id || "")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    width: "100%",
+                    textAlign: "left",
+                    justifyContent: "stretch",
+                    justifyItems: "stretch",
+                    alignItems: "start",
+                    padding: "8px 9px",
+                    border: 0,
+                    borderBottom: "1px solid var(--border)",
+                    background: active ? "var(--bg-tertiary)" : "transparent",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyPrompt(item) || item.answer || "(empty)"}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyActorLabel(item)} · {historyTimestampLabel(item)}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.status || "status"} · {item.action || "continue"} · {item.session_id || ""}
+                  </span>
+                </button>
+              );
+            }) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                저장된 Inform 등록 이력이 없습니다.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {selectedHistory ? (
+              <>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill tone={toneForStatus(selectedHistory.status)}>{selectedHistory.status || "history"}</Pill>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {historyActorLabel(selectedHistory)} · {historyTimestampLabel(selectedHistory)}
+                  </span>
+                  <Button
+                    variant="primary"
+                    onClick={() => continueFromHistory(selectedHistory)}
+                    style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px", height: 28 }}
+                  >이어하기</Button>
+                </div>
+                <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {historyPrompt(selectedHistory) || selectedHistory.answer || "(empty)"}
+                </div>
+                {selectedHistory.answer ? (
+                  <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                    {selectedHistory.answer}
+                  </div>
+                ) : null}
+                <JsonBlock
+                  value={{
+                    missing: selectedHistory.missing || [],
+                    slots: selectedHistory.slots || {},
+                    draft: selectedHistory.draft || {},
+                    requires_confirmation: !!selectedHistory.requires_confirmation,
+                    created_inform: selectedHistory.created_inform || {},
+                    warnings: selectedHistory.warnings || [],
+                  }}
+                  maxHeight={190}
+                />
+              </>
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                이력을 선택하면 Inform draft와 session 상태를 확인할 수 있습니다.
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="flow-agent-unit-grid">
+        <Panel title="State" subtitle={stateSubtitle}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+            {trace.length && Object.keys(stateDesign).length ? (
+              <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
+                  state_design
+                </summary>
+                <JsonBlock value={stateDesign} maxHeight={220} />
+              </details>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel title="LangGraph" subtitle={graphSubtitle}>
+          <div className="flow-agent-node-grid">
+            <RuntimeGraph graph={activeGraph} selectedId={currentSelectedNodeId} onSelect={setSelectedNodeId} />
+            <div style={{ display: "grid", gap: 8 }}>
+              {selectedNode ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{selectedNode.label || selectedNode.node_id}</strong>
+                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
+                    {selectedTraceNode ? (
+                      <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span>
+                    ) : null}
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  {(selectedTraceNode?.warnings || []).length ? (
+                    <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
+                  ) : null}
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                  <JsonBlock
+                    value={{
+                      persona: selectedNode.persona || "",
+                      prompt: {
+                        mode: selectedPromptMode,
+                        system: selectedPromptSystem,
+                      },
+                      answer_attach_rule: selectedNode.answer_attach_rule || "",
+                    }}
+                    maxHeight={selectedPromptSystem ? 220 : 140}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                  <JsonBlock
+                    value={{
+                      reads: selectedStateIo.reads || selectedNode.reads || [],
+                      writes: selectedStateIo.writes || selectedNode.writes || [],
+                    }}
+                    maxHeight={150}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
+                  <JsonBlock
+                    value={selectedTraceNode ? {
+                      status: selectedTraceNode.status,
+                      input_summary: selectedTraceNode.input_summary || {},
+                      output: selectedNodeOutput || {},
+                      duration_ms: selectedTraceNode.duration_ms || 0,
+                    } : {
+                      status: selectedNode.status || "pending",
+                      input_summary: {},
+                      output: {},
+                    }}
+                    maxHeight={230}
+                  />
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                  노드 정보 없음
+                </div>
+              )}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Test prompt"
+          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : "")}
+          right={<Pill tone={toneForStatus(result?.status)}>{result?.status || (loading ? "loading" : "ready")}</Pill>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              placeholder="예: product: PRODA lot: R1000 module: GATE note: IOFF drift to alice@example.test"
+            />
+            <Field label="session_id">
+              <input
+                value={sessionId}
+                onChange={(e) => setSessionId(e.target.value)}
+                placeholder="새 session은 비워두세요"
+                style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
+              />
+            </Field>
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+              <JsonBlock value={debugRequest} maxHeight={120} />
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button variant="primary" onClick={() => runAction("continue")} disabled={!canContinue || busy}>
+                {busy ? "실행 중" : "실행"}
+              </Button>
+              <Button variant="primary" onClick={() => runAction("confirm")} disabled={!canConfirm || busy}>
+                등록
+              </Button>
+              <Button variant="ghost" onClick={() => runAction("cancel")} disabled={!sessionId || busy}>
+                취소
+              </Button>
+            </div>
+            {result ? (
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <strong style={{ fontSize: 12 }}>결과</strong>
+                  <Pill tone={result.requires_confirmation ? "warn" : toneForStatus(result.status)}>
+                    {result.requires_confirmation ? "confirm 필요" : (result.status || "done")}
+                  </Pill>
+                  {result.created_inform?.id ? <Pill tone="ok">{result.created_inform.id}</Pill> : null}
+                </div>
+                {result.answer ? (
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                    {result.answer}
+                  </div>
+                ) : null}
+                {result.question ? (
+                  <Banner tone={result.missing?.length ? "warn" : "neutral"}>{result.question}</Banner>
+                ) : null}
+                <JsonBlock
+                  value={{
+                    missing: result.missing || [],
+                    slots: result.slots || {},
+                    draft: result.draft || {},
+                    mail_draft: result.draft?.mail_draft || {},
+                    requires_confirmation: !!result.requires_confirmation,
+                    created_inform: result.created_inform || {},
+                    warnings: result.warnings || [],
+                  }}
+                  maxHeight={260}
+                />
+              </div>
+            ) : null}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function UnitAiPanel() {
+  const [activeUnit, setActiveUnit] = useState("filebrowser_ai_sql");
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <TabStrip
+        active={activeUnit}
+        onChange={setActiveUnit}
+        items={[
+          { k: "filebrowser_ai_sql", l: "FileBrowser AI SQL" },
+          { k: "inform_registration", l: "Inform 등록 도우미" },
+        ]}
+      />
+      {activeUnit === "filebrowser_ai_sql" ? <FileBrowserAiSqlUnitPanel /> : <InformRegistrationUnitPanel />}
+    </div>
+  );
+}
+
 function HomeFlowiRuntimePanel() {
   const [baseGraph, setBaseGraph] = useState(null);
   const [runs, setRuns] = useState([]);
@@ -1100,7 +1544,7 @@ export default function My_Diagnosis({ user }) {
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>
             {activeTab === "home-flowi"
               ? <HomeFlowiRuntimePanel />
-              : (activeTab === "unit-ai" ? <FileBrowserAiSqlUnitPanel /> : <LlmTab isAdmin={isAdminUser} />)}
+              : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />)}
           </div>
         </div>
       </PageShell>

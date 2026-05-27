@@ -109,8 +109,14 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "에이전트" in ui
     assert "단위기능 AI" in ui
     assert "FileBrowser AI SQL" in ui
+    assert "Inform 등록 도우미" in ui
     assert "LLM 설정" in ui
+    assert "질문 이력" in ui
+    assert "State" in ui
+    assert "LangGraph" in ui
+    assert "Test prompt" in ui
     assert "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run" in ui
+    assert "/api/agent/unit-ai/inform_registration/runtime/run" in ui
     assert "state_design" in ui
     assert "Persona" in ui
     assert "State I/O" in ui

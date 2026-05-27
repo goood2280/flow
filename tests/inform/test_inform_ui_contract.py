@@ -169,7 +169,9 @@ def test_inform_detail_tabs_are_body_and_mail_history_with_comment_button():
 def test_inform_detail_edit_creates_reinform_instead_of_body_edit():
     src = MY_INFORM.read_text(encoding="utf-8")
 
-    assert "원문을 덮어쓰지 않고 재인폼을 작성합니다" in src
+    assert "원문을 덮어쓰지 않고 재인폼을 작성합니다" not in src
+    assert "✎ 수정" not in src
+    assert ">수정<" not in src
     assert "ReInformComposer" not in src
     assert "const openReInformWizard = (root) =>" in src
     assert 'setWizardMode("reinform")' in src
@@ -183,13 +185,32 @@ def test_inform_detail_edit_creates_reinform_instead_of_body_edit():
     assert "withRePrefix(form.text)" in src
     assert "parent_id: isReInform ? reInformParent.id : null" in src
     assert "return postJson(API, payload)" in src
-    assert "childrenByParent[root.id] || []" in src
+    assert "const childReInforms" not in src
+    assert "재인폼이 없습니다." not in src
     assert "↳ [RE]" in src
     assert "onReInform={openReInformWizard}" in src
     assert "onClick={() => onReInform?.(root)}" in src
     assert "onClick={() => onReInform?.(node)}" in src
-    assert "onEdit={onEdit} onReInform={onReInform}" in src
+    assert "재인폼 {commentCount}" in src
     assert "reInformTextForDisplay(node)" in src
+    assert 'title="재인폼 작성"' in src
+    assert 'canEdit={canEditDelete}' not in src
+    assert "onRemoveSet={removeAttachedSet}" not in src
+
+
+def test_inform_recent_list_renders_reinform_children_as_tree_rows():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert 'sf(API + "/recent?limit=500&include_children=true")' in src
+    assert "const [listChildrenByParent, setListChildrenByParent] = useState({});" in src
+    assert "setListChildrenByParent(d.children_by_parent || {});" in src
+    assert "childrenByParent={listChildrenByParent}" in src
+    assert "function InformVirtualList({ roots, childrenByParent = {}, selectedId, onOpen })" in src
+    assert "const renderRows = (node, root, depth = 0) =>" in src
+    assert "kids.map(child => renderRows(child, root, depth + 1))" in src
+    assert "onOpen={() => onOpen(root)}" in src
+    assert "StatusBadge status={isChild ? \"reinform\" : status} compact" in src
+    assert "↳ [RE]" in src
 
 
 def test_inform_pagegear_reason_subject_templates_are_saved_and_used():

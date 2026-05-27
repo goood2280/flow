@@ -13,6 +13,12 @@ from core.flowi_units.filebrowser_ai_sql_runtime import (
     filebrowser_ai_sql_graph,
     run_filebrowser_ai_sql_runtime,
 )
+from core.flowi_units.inform_registration_runtime import (
+    UNIT_AI_KEY as INFORM_REGISTRATION_UNIT_KEY,
+    inform_registration_graph,
+    list_inform_registration_history,
+    run_inform_registration_runtime,
+)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -27,6 +33,15 @@ class FileBrowserAiSqlRuntimeRunReq(BaseModel):
     dtypes: dict[str, str] = Field(default_factory=dict)
     sample_rows: list[dict[str, Any]] = Field(default_factory=list)
     preferred_selected_columns: list[str] = Field(default_factory=list)
+
+
+class UnitAiRuntimeRunReq(BaseModel):
+    model_config = {"extra": "allow"}
+
+    prompt: str = ""
+    session_id: str = ""
+    action: str = "continue"
+    slot_overrides: dict[str, Any] = Field(default_factory=dict)
 
 
 def _unit_catalog_item(unit) -> dict[str, Any]:
@@ -109,6 +124,113 @@ def filebrowser_ai_sql_runtime_run(req: FileBrowserAiSqlRuntimeRunReq, request: 
     except Exception:
         pass
     return result
+
+
+@router.get("/unit-ai/inform_registration/runtime/graph")
+def inform_registration_runtime_graph(request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(INFORM_REGISTRATION_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="inform_registration unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": INFORM_REGISTRATION_UNIT_KEY,
+        "graph": inform_registration_graph(),
+    }
+
+
+@router.post("/unit-ai/inform_registration/runtime/run")
+def inform_registration_runtime_run(req: UnitAiRuntimeRunReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(INFORM_REGISTRATION_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="inform_registration unit is not registered")
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    return run_inform_registration_runtime(
+        payload,
+        username=(me or {}).get("username") or "",
+        request=request,
+    )
+
+
+@router.get("/unit-ai/inform_registration/runtime/history")
+def inform_registration_runtime_history(request: Request, limit: int = 50) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(INFORM_REGISTRATION_UNIT_KEY)
+    if unit is None:
+        raise HTTPException(status_code=404, detail="inform_registration unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": INFORM_REGISTRATION_UNIT_KEY,
+        "history": list_inform_registration_history(limit=limit, username=(me or {}).get("username") or ""),
+    }
+
+
+@router.get("/unit-ai/{unit_key}/runtime/graph")
+def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    if unit_key == FILEBROWSER_AI_SQL_UNIT_KEY:
+        graph = filebrowser_ai_sql_graph()
+    elif unit_key == INFORM_REGISTRATION_UNIT_KEY:
+        graph = inform_registration_graph()
+    else:
+        raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "graph": graph,
+    }
+
+
+@router.post("/unit-ai/{unit_key}/runtime/run")
+def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Request) -> dict[str, Any]:
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    if unit_key == FILEBROWSER_AI_SQL_UNIT_KEY:
+        from routers import filebrowser as filebrowser_router
+
+        me = filebrowser_router._require_filebrowser_user(request)
+        if not payload.get("natural_language") and payload.get("prompt"):
+            payload["natural_language"] = payload.get("prompt")
+        result = run_filebrowser_ai_sql_runtime(payload, username=(me or {}).get("username") or "")
+        try:
+            filebrowser_router._record_filebrowser_ai_sql_history(
+                (me or {}).get("username") or "",
+                source="agent_test_prompt",
+                request_payload=payload,
+                result_payload=result,
+            )
+        except Exception:
+            pass
+        return result
+    if unit_key == INFORM_REGISTRATION_UNIT_KEY:
+        me = current_user(request)
+        return run_inform_registration_runtime(
+            payload,
+            username=(me or {}).get("username") or "",
+            request=request,
+        )
+    raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
+
+
+@router.get("/unit-ai/{unit_key}/runtime/history")
+def unit_ai_runtime_history(unit_key: str, request: Request, limit: int = 50) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    if unit_key != INFORM_REGISTRATION_UNIT_KEY:
+        raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "history": list_inform_registration_history(limit=limit, username=(me or {}).get("username") or ""),
+    }
 
 
 @router.get("/home-flowi/runtime/graph")

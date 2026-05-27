@@ -11,14 +11,14 @@
 
 규약:
   - parent_id 가 null 이면 루트 인폼. 답글/재인폼은 parent_id 로 트리 구성.
-  - 수정은 작성자 본인 또는 admin 가능. 삭제는 작성자/admin/모듈 담당자 가능.
+  - 원문 edit endpoint 는 내부 유지보수용으로 유지. 사용자 보완은 parent_id 재인폼으로 남긴다.
   - 체크·상태변경은 해당 인폼 module 을 담당하는 유저 또는 admin.
   - flow_status: received | reviewing | in_progress | completed (순서 강제는 안 함).
   - splittable_change 는 자유형 메타. FE 에서 plan 변경 요약 카드로 렌더.
 
 엔드포인트:
   GET  /api/informs?wafer_id=...        — 특정 wafer 스레드
-  GET  /api/informs/recent              — 최근 루트 (role 필터 적용)
+  GET  /api/informs/recent              — 최근 루트 (role 필터 적용, include_children 옵션)
   GET  /api/informs/wafers              — 인폼 있는 wafer 목록
   GET  /api/informs/by-lot?lot_id=...   — 해당 lot 의 모든 스레드 (root+전체뷰)
   GET  /api/informs/by-product?product= — 해당 product 인폼 목록
@@ -3101,10 +3101,29 @@ def sidebar(request: Request,
     return _sidebar_payload(_without_deleted(_load_upgraded()), me, my_mods, wafer_limit, product_limit, lot_limit)
 
 
+def _children_by_parent_for_roots(items: list[dict], root_ids: set[str]) -> dict[str, list[dict]]:
+    by_id = {str(x.get("id") or ""): x for x in items or [] if x.get("id")}
+    children: dict[str, list[dict]] = {}
+    for entry in items or []:
+        parent_id = str(entry.get("parent_id") or "").strip()
+        if not parent_id:
+            continue
+        if _inform_root_id_fast(by_id, entry) not in root_ids:
+            continue
+        row = dict(entry)
+        row["attachments"] = _attachment_view(row)
+        children.setdefault(parent_id, []).append(row)
+    for rows in children.values():
+        rows.sort(key=lambda x: str(x.get("created_at") or ""))
+    return children
+
+
 @router.get("/recent")
 def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500),
-                 include_deleted: bool = Query(False)):
+                 include_deleted: bool = Query(False),
+                 include_children: bool = Query(False)):
     include_deleted = include_deleted if isinstance(include_deleted, bool) else False
+    include_children = include_children if isinstance(include_children, bool) else False
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded(), include_deleted)
@@ -3112,7 +3131,12 @@ def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500),
     roots = [x for x in roots if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
     roots = _attach_thread_stats(roots, items)
     roots.sort(key=lambda x: x.get("thread_updated_at") or x.get("created_at", ""), reverse=True)
-    return {"informs": _attach_root_lot_module_counts(roots[:limit], roots)}
+    limited_roots = _attach_root_lot_module_counts(roots[:limit], roots)
+    payload = {"informs": limited_roots}
+    if include_children:
+        root_ids = {str(x.get("id") or "") for x in limited_roots if x.get("id")}
+        payload["children_by_parent"] = _children_by_parent_for_roots(items, root_ids)
+    return payload
 
 
 @router.get("/wafers")

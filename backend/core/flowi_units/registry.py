@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from core.flowi_units.base import UnitAI
 from core.flowi_units.filebrowser import FileBrowserAiSqlUnitAI
+from core.flowi_units.inform_registration import InformRegistrationUnitAI
 
 _UNIT_AI_CLASSES = (
     FileBrowserAiSqlUnitAI,
+    InformRegistrationUnitAI,
 )
 
 UNIT_AIS: dict[str, UnitAI] = {cls.KEY: cls() for cls in _UNIT_AI_CLASSES}

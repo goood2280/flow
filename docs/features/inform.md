@@ -12,6 +12,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 다중 fab lot 등록용 `POST /api/informs/bulk-create` 순서 보존 저장
 - module-wise mail compose/send
 - 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
+- Agent `inform_registration` unit의 최종 저장 계약. Agent는 slot 수집과 review를 담당하고, confirm 시 기존 `InformCreate`/`create_inform()` 경로만 호출한다.
 - Dashboard inform widget용 요약 데이터
 
 ## Does Not Own
@@ -39,6 +40,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 신규 등록용 `/config.products`, `/products`, sidebar product 후보는 LOT progress cache의 unique `product` 값에서 자동 생성한다. 별도 Inform product catalog를 관리하지 않는다.
 - Inform product와 SplitTable product는 `ML_TABLE_` prefix와 대소문자가 달라도 같은 product로 본다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
+- Agent `inform_registration` unit은 confirm 전에는 Inform 저장 파일을 쓰지 않는다. short memory session은 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/`에 1시간 TTL로만 남긴다.
 - 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
 - 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
 - Config/modules, product contacts 변경은 `inform` page manager 이상만 수행한다.
@@ -48,7 +50,9 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - Inform 페이지 권한이 있는 사용자는 별도 유저별 모듈 조회 권한 없이 모든 module의 Inform을 조회한다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
-- 상세 화면의 `수정`은 원문을 덮어쓰지 않고 `재인폼 작성` wizard를 열어 기존 인폼의 `parent_id` 아래에 `[RE]` 재인폼을 새로 만든다. 원본의 lot/product/module/text와 기존 SplitTable 첨부 상태를 초기값으로 가져오며, 저장 시 새 SplitTable snapshot을 남긴다. 원문 edit endpoint는 첨부 제거 같은 내부 유지보수 흐름에만 사용한다.
+- 상세 화면은 원문 `수정` 버튼을 노출하지 않는다. 열람 가능한 사용자는 `재인폼 {count}` 버튼으로 `재인폼 작성` wizard를 열어 기존 인폼의 `parent_id` 아래에 `[RE]` 재인폼을 새로 만든다.
+- 재인폼은 목록 표에서 원 인폼 바로 아래에 들여쓰기와 `↳ [RE]` 표시로 항상 펼쳐 보인다. 목록 필터와 카운트는 루트 인폼 기준으로 유지한다.
+- 원본 edit endpoint는 내부 유지보수용으로 유지하되, 작성 후 공개 UI에서는 본문 수정이나 첨부 세트 제거 진입을 노출하지 않는다.
 - 메일 제목 기본값은 사유별 `reason_templates.<reason>.subject`가 있으면 신규 작성 미리보기, 메일 미리보기, 발송 기본 제목에 동일하게 적용한다. 지원 변수는 `{product}`, `{lot}`, `{module}`, `{reason}`이며, 템플릿이 비어 있으면 기존 `[plan 적용 통보] ...` 제목을 사용한다.
 
 ## Verify

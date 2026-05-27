@@ -27,6 +27,28 @@ def test_recent_roots_include_root_lot_module_counts(monkeypatch):
     out = informs.recent_roots(object(), limit=10, include_deleted=False)
     rows = {row["id"]: row for row in out["informs"]}
 
+    assert "children_by_parent" not in out
     assert rows["gate_1"]["root_lot_module_counts"] == {"GATE": 2, "ET": 1}
     assert rows["gate_1"]["informed_modules"] == ["GATE", "ET"]
     assert rows["other_lot"]["root_lot_module_counts"] == {"PC": 1}
+
+
+def test_recent_roots_can_include_children_by_parent_without_flattening(monkeypatch):
+    items = [
+        {"id": "root_a", "product": "PRODA", "root_lot_id": "R1000", "lot_id": "R1000", "module": "GATE", "created_at": "2099-01-10T09:00:00"},
+        {"id": "child_late", "parent_id": "root_a", "product": "PRODA", "root_lot_id": "R1000", "lot_id": "R1000", "module": "GATE", "created_at": "2099-01-10T11:00:00"},
+        {"id": "child_early", "parent_id": "root_a", "product": "PRODA", "root_lot_id": "R1000", "lot_id": "R1000", "module": "GATE", "created_at": "2099-01-10T10:00:00"},
+        {"id": "grandchild", "parent_id": "child_early", "product": "PRODA", "root_lot_id": "R1000", "lot_id": "R1000", "module": "GATE", "created_at": "2099-01-10T10:30:00"},
+        {"id": "root_b", "product": "PRODA", "root_lot_id": "R2000", "lot_id": "R2000", "module": "PC", "created_at": "2099-01-10T08:00:00"},
+        {"id": "child_b", "parent_id": "root_b", "product": "PRODA", "root_lot_id": "R2000", "lot_id": "R2000", "module": "PC", "created_at": "2099-01-10T08:30:00"},
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+    monkeypatch.setattr(informs, "_effective_modules", lambda _username, _role: {"__all__"})
+
+    out = informs.recent_roots(object(), limit=1, include_deleted=False, include_children=True)
+
+    assert [row["id"] for row in out["informs"]] == ["root_a"]
+    assert [row["id"] for row in out["children_by_parent"]["root_a"]] == ["child_early", "child_late"]
+    assert [row["id"] for row in out["children_by_parent"]["child_early"]] == ["grandchild"]
+    assert "root_b" not in out["children_by_parent"]
