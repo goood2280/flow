@@ -2810,6 +2810,70 @@ def test_base_file_save_reports_added_rows_in_version_diff(monkeypatch, tmp_path
     assert preview["diff_table"]["counts"]["added"] == 1
 
 
+def test_base_file_versions_report_current_semver_for_content_and_schema_changes(monkeypatch, tmp_path):
+    fp = tmp_path / "lookup.csv"
+    fp.write_text("id,value\n1,old\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    initial_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    assert initial_versions["current_profile"]["current_version"] == "v1.0"
+
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="lookup.csv",
+            csv_text="id,value\n1,new\n",
+            delimiter="comma",
+            include_header=True,
+            note="content change",
+        ),
+        _Request("admin", "admin"),
+    )
+    content_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    assert content_versions["current_profile"]["current_version"] == "v1.1"
+    assert content_versions["versions"][0]["change_summary"]["label"] == "수정 1행"
+
+    saved_schema = filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="lookup.csv",
+            csv_text="id,value,owner\n1,new,eda\n",
+            delimiter="comma",
+            include_header=True,
+            note="add column",
+        ),
+        _Request("admin", "admin"),
+    )
+    schema_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    schema_summary = schema_versions["versions"][0]["change_summary"]
+    assert saved_schema["version"]["change_summary"]["added_columns"] == ["owner"]
+    assert saved_schema["version"]["change_summary"]["columns_delta"] == 1
+    assert schema_summary["label"] == "열 +1"
+    assert schema_summary["added_columns"] == ["owner"]
+    assert schema_versions["current_profile"]["current_version"] == "v2.0"
+
+    filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="lookup.csv",
+            csv_text="id,value,owner\n1,newer,eda\n",
+            delimiter="comma",
+            include_header=True,
+            note="same schema content change",
+        ),
+        _Request("admin", "admin"),
+    )
+    latest_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+    assert latest_versions["current_profile"]["current_version"] == "v2.1"
+
+
 def test_version_diff_preserves_duplicate_inferred_key_additions(tmp_path):
     previous = tmp_path / "v1.csv"
     current = tmp_path / "current.csv"
@@ -3033,12 +3097,14 @@ def test_version_diff_reinitializes_when_columns_change(tmp_path):
 
     summary = filebrowser._snapshot_change_summary(current, previous)
 
-    assert summary["label"] == "초기 버전"
-    assert summary["schema_reinitialized"] is True
+    assert summary["label"] == "열 +1"
+    assert summary["schema_changed"] is True
     assert summary["added_rows"] == 0
     assert summary["modified_rows"] == 0
     assert summary["added_columns"] == ["new_value"]
-    assert filebrowser._diff_table_between(current, previous) is None
+    diff_table = filebrowser._diff_table_between(current, previous)
+    assert diff_table["schema_changed"] is True
+    assert diff_table["added_columns"] == ["new_value"]
 
 
 def test_base_file_view_ml_table_defaults_to_100_then_filtered_preview(monkeypatch, tmp_path):

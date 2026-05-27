@@ -103,6 +103,54 @@ const normalizeGridRows=(rows,width,fill="")=>{
     return src;
   });
 };
+const normalizeColumnNames=(cols)=>{
+  const used=new Set();
+  return (cols||[]).map((value,index)=>{
+    const raw=String(value||"").trim();
+    const fallback=`new_col_${index+1}`;
+    const base=raw||fallback;
+    let name=base;
+    let suffix=2;
+    while(used.has(name.toLowerCase())){
+      name=`${base}_${suffix}`;
+      suffix+=1;
+    }
+    used.add(name.toLowerCase());
+    return name;
+  });
+};
+const nextGeneratedColumnName=(cols)=>{
+  const used=new Set((cols||[]).map(c=>String(c||"").trim().toLowerCase()).filter(Boolean));
+  let idx=1;
+  while(used.has(`new_col_${idx}`))idx+=1;
+  return `new_col_${idx}`;
+};
+const extendColumns=(cols,width)=>{
+  const next=[...(cols||[])];
+  while(next.length<width)next.push(nextGeneratedColumnName(next));
+  return normalizeColumnNames(next);
+};
+const extendRow=(row,width,fill="")=>{
+  const next=(row||[]).map(v=>v==null?"":String(v));
+  while(next.length<width)next.push(fill);
+  if(next.length>width)return next.slice(0,width);
+  return next;
+};
+const looksLikePasteHeader=(firstRow,rowsAfter,cols,startC=0)=>{
+  const cells=(firstRow||[]).map(v=>String(v||"").trim());
+  if(!cells.length||!cells.some(Boolean))return false;
+  const lowerCells=cells.map(v=>v.toLowerCase());
+  const slice=(cols||[]).slice(startC,startC+cells.length).map(v=>String(v||"").trim().toLowerCase());
+  if(slice.length===cells.length&&slice.length&&lowerCells.every((v,i)=>v===slice[i]))return true;
+  const existing=(cols||[]).map(v=>String(v||"").trim().toLowerCase());
+  if(startC===0&&cells.length>=existing.length&&existing.length&&existing.every((v,i)=>lowerCells[i]===v))return true;
+  if(startC!==0||cells.length<=(cols||[]).length||!(rowsAfter||[]).length)return false;
+  if(cells.some(v=>!v))return false;
+  if(new Set(lowerCells).size!==lowerCells.length)return false;
+  const hasHeaderText=cells.some(v=>/[A-Za-z_\u3131-\uD79D]/.test(v)&&!/^-?\d+(?:\.\d+)?$/.test(v));
+  const differsFromData=(rowsAfter||[]).some(row=>cells.some((cell,i)=>String(row?.[i]??"").trim()!==cell));
+  return hasHeaderText&&differsFromData;
+};
 const isHeaderMatch=(pastedRows,cols)=>{
   if(!pastedRows||!pastedRows.length||!cols.length)return false;
   const first=(pastedRows[0]||[]).map(v=>String(v||"").trim().toLowerCase()).filter(Boolean);
@@ -354,7 +402,6 @@ function revStyle(rev){
 function versionChangeLabel(summary){
   const s=summary&&typeof summary==="object"?summary:{};
   const raw=String(s.label||"");
-  if(s.schema_reinitialized||raw==="초기 버전"||raw==="initial snapshot")return"초기 버전";
   const modified=Number(s.modified_rows||0);
   const added=Number(s.added_rows||0);
   const deleted=Number(s.deleted_rows||0);
@@ -370,6 +417,8 @@ function versionChangeLabel(summary){
   const colDelta=Number(s.columns_delta||0);
   if(!addedCols&&!removedCols&&colDelta)parts.push(`열 ${colDelta>0?"+":""}${colDelta}`);
   if(parts.length)return parts.join(" / ");
+  if(raw==="초기 버전"||raw==="initial snapshot")return"초기 버전";
+  if(s.schema_reinitialized||s.schema_changed)return raw||"열 변경";
   if(raw==="content updated")return"내용 수정";
   if(raw==="no data change")return"변경 없음";
   if(/cells changed/i.test(raw)||/\brows\b/i.test(raw)){
@@ -436,6 +485,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[editRows,setEditRows]=useState([]);
   const[editCols,setEditCols]=useState([]);
   const[editOriginRows,setEditOriginRows]=useState([]);
+  const[editOriginCols,setEditOriginCols]=useState([]);
   const[pasteMode,setPasteMode]=useState("replace");
   const[saveDelimiter,setSaveDelimiter]=useState("tab");
   const[includeHeader,setIncludeHeader]=useState(true);
@@ -1037,7 +1087,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setBaseFiles(prev=>prev.filter(f=>f.name!==name));
     if(selBaseFile===name){setSelBaseFile("");setData(null);setBaseRaw(null);setBaseVersions([]);setBaseVersioned(false);setBaseVersionPreview(null);setRawEditing(false);setRawEditText("");}
     if(selBaseMeta?.name===name)setSelBaseMeta(null);
-    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
     }catch(e){toast.error("삭제 실패: "+(e?.message||e));}
   };
 
@@ -1094,6 +1144,7 @@ export default function My_FileBrowser({user,onNavigate}){
     setEditCols(cols);
     setEditRows(rows);
     setEditOriginRows(rows.map(r=>r.slice()));
+    setEditOriginCols(cols.slice());
   };
   const selectedColsFromResponse=(d,fallback=[])=>{
     if(Array.isArray(d?.showing_cols)&&d.showing_cols.length)return d.showing_cols.map(c=>String(c));
@@ -1194,7 +1245,7 @@ export default function My_FileBrowser({user,onNavigate}){
     setSortSpec(null);setAggregateSpec(null);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
@@ -1269,7 +1320,7 @@ export default function My_FileBrowser({user,onNavigate}){
   // 첫 클릭도 100행 샘플을 보여주고, SQL/SELECT는 같은 cap 안에서 조건 결과를 조회한다.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
-    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
@@ -1281,7 +1332,7 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
-    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
@@ -1441,6 +1492,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   const cancelBaseEdit=()=>{
+    setEditCols(editOriginCols.map(c=>String(c||"")));
     setEditRows(editOriginRows.map(r=>r.slice()));
     setIsBaseEditing(false);
     setSelectedEditCell({r:0,c:0});
@@ -1449,10 +1501,43 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   const restoreBaseEdit=()=>{
+    setEditCols(editOriginCols.map(c=>String(c||"")));
     setEditRows(editOriginRows.map(r=>r.slice()));
     setSelectedEditCell({r:0,c:0});
     setBaseEditContextMenu(null);
     baseEditCopiedRowsRef.current=null;
+  };
+
+  const patchBaseHeader=(c,value)=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    setEditCols(prev=>prev.map((col,i)=>i===c?value:col));
+    setSelectedEditCell(cur=>({r:cur.r||0,c}));
+  };
+
+  const finalizeBaseHeaders=()=>{
+    setEditCols(prev=>normalizeColumnNames(prev));
+  };
+
+  const addBaseEditColumn=()=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    setEditCols(prev=>{
+      const next=[...prev,nextGeneratedColumnName(prev)];
+      setSelectedEditCell(cur=>({r:cur.r||0,c:next.length-1}));
+      return next;
+    });
+    setEditRows(prev=>prev.map(row=>[...row,""]));
+  };
+
+  const deleteBaseEditColumn=(targetC=selectedEditCell.c)=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    if(editCols.length<=1){
+      toast.warn("마지막 열은 삭제할 수 없습니다.");
+      return;
+    }
+    const idx=Math.max(0,Math.min(targetC,editCols.length-1));
+    setEditCols(prev=>prev.filter((_,i)=>i!==idx));
+    setEditRows(prev=>prev.map(row=>row.filter((_,i)=>i!==idx)));
+    setSelectedEditCell(cur=>({r:cur.r||0,c:Math.max(0,Math.min(idx,editCols.length-2))}));
   };
 
   const insertBaseEditRowBelow=(targetR=selectedEditCell.r)=>{
@@ -1529,30 +1614,46 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const pasteBaseRows=useCallback((rowsRaw,targetCell=null)=>{
     if(!canEditCurrentBase||!isBaseEditing)return;
-    let rows=rowsRaw||[];
-    if(isHeaderMatch(rows,editCols)){
+    let rows=(rowsRaw||[]).map(r=>(r||[]).map(v=>v==null?"":String(v)));
+    const targetR=Number.isFinite(targetCell?.r)?targetCell.r:selectedEditCell.r;
+    const targetC=Number.isFinite(targetCell?.c)?targetCell.c:selectedEditCell.c;
+    const startR=pasteMode==="append"?null:(Math.max(0,Math.min(targetR,Math.max(editRows.length-1,0))));
+    const startC=pasteMode==="append"?0:Math.max(0,Math.min(targetC,Math.max(editCols.length-1,0)));
+    const headerLike=looksLikePasteHeader(rows[0],rows.slice(1),editCols,startC)||isHeaderMatch(rows,editCols);
+    const headerCells=headerLike?(rows[0]||[]):null;
+    if(headerLike){
       rows=rows.slice(1);
     }
-    if(!rows.length)return;
-    const normalized=normalizeGridRows(rows,editCols.length,"");
+    if(!rows.length&&!headerCells)return;
+    const pasteWidth=Math.max(headerCells?.length||0,...rows.map(r=>r.length),1);
+    const nextWidth=Math.max(editCols.length,startC+pasteWidth);
+    let nextCols=extendColumns(editCols,nextWidth);
+    if(headerCells){
+      headerCells.forEach((value,ci)=>{
+        if(startC+ci<nextCols.length)nextCols[startC+ci]=String(value||"").trim()||nextCols[startC+ci];
+      });
+      nextCols=normalizeColumnNames(nextCols);
+      setEditCols(nextCols);
+    }else if(nextWidth>editCols.length){
+      setEditCols(nextCols);
+    }
+    const normalized=normalizeGridRows(rows,pasteWidth,"");
     setEditRows(prev=>{
-      let next=prev.map(x=>x.slice());
-      const targetR=Number.isFinite(targetCell?.r)?targetCell.r:selectedEditCell.r;
-      const targetC=Number.isFinite(targetCell?.c)?targetCell.c:selectedEditCell.c;
-      const startR=pasteMode==="append"?(next.length):(Math.max(0,Math.min(targetR,Math.max(next.length-1,0))));
-      const startC=pasteMode==="append"?0:Math.max(0,Math.min(targetC,editCols.length-1));
+      let next=prev.map(x=>extendRow(x,nextWidth,""));
+      const actualStartR=pasteMode==="append"?(next.length):(startR??0);
       normalized.forEach((row,ri)=>{
-        const targetR=startR+ri;
+        const targetR=actualStartR+ri;
         while(next.length<=targetR)next.push(Array(editCols.length).fill(""));
-        for(let ci=0;ci<Math.min(editCols.length,row.length);ci++){
-          if(startC+ci>=editCols.length)break;
+        next[targetR]=extendRow(next[targetR],nextWidth,"");
+        for(let ci=0;ci<row.length;ci++){
+          if(startC+ci>=nextWidth)break;
           next[targetR][startC+ci]=row[ci];
         }
       });
-      setSelectedEditCell({r:startR,c:startC});
+      setSelectedEditCell({r:actualStartR,c:startC});
       return next;
     });
-  },[canEditCurrentBase,editCols,isBaseEditing,pasteMode,selectedEditCell]);
+  },[canEditCurrentBase,editCols,editRows.length,isBaseEditing,pasteMode,selectedEditCell]);
 
   const readBasePasteRows=useCallback((e)=>{
     const text=e.clipboardData?.getData("text/plain")||"";
@@ -1595,19 +1696,40 @@ export default function My_FileBrowser({user,onNavigate}){
     if(isHeaderMatch(rows,editCols)){
       rows=rows.slice(1);
     }
+    const headerLike=looksLikePasteHeader(rows[0],rows.slice(1),editCols,0);
+    const headerCells=headerLike?(rows[0]||[]):null;
+    if(headerLike)rows=rows.slice(1);
     if(!rows.length){
+      if(headerCells?.length){
+        const nextWidth=Math.max(editCols.length,headerCells.length);
+        let nextCols=extendColumns(editCols,nextWidth);
+        headerCells.forEach((value,ci)=>{nextCols[ci]=String(value||"").trim()||nextCols[ci];});
+        setEditCols(normalizeColumnNames(nextCols));
+        setEditRows(prev=>prev.map(row=>extendRow(row,nextWidth,"")));
+        setBaseEditContextMenu(null);
+        return;
+      }
       setBaseEditContextMenu(null);
       toast.error("복사한 행이 없습니다.");
       return;
     }
-    const normalized=normalizeGridRows(rows,editCols.length,"");
+    const pasteWidth=Math.max(headerCells?.length||0,...rows.map(r=>r.length),1);
+    const nextWidth=Math.max(editCols.length,pasteWidth);
+    let nextCols=extendColumns(editCols,nextWidth);
+    if(headerCells){
+      headerCells.forEach((value,ci)=>{nextCols[ci]=String(value||"").trim()||nextCols[ci];});
+      setEditCols(normalizeColumnNames(nextCols));
+    }else if(nextWidth>editCols.length){
+      setEditCols(nextCols);
+    }
+    const normalized=normalizeGridRows(rows,pasteWidth,"").map(row=>extendRow(row,nextWidth,""));
     setEditRows(prev=>{
       const idx=prev.length?Math.max(0,Math.min(targetR,prev.length-1)):-1;
       const insertAt=idx+1;
       const next=[
-        ...prev.slice(0,insertAt),
+        ...prev.slice(0,insertAt).map(row=>extendRow(row,nextWidth,"")),
         ...normalized.map(r=>r.slice()),
-        ...prev.slice(insertAt),
+        ...prev.slice(insertAt).map(row=>extendRow(row,nextWidth,"")),
       ];
       setSelectedEditCell({r:insertAt,c:0});
       return next;
@@ -1636,7 +1758,11 @@ export default function My_FileBrowser({user,onNavigate}){
   const saveBaseEdit=async()=>{
     if(!canEditCurrentBase||!isBaseEditing){setError("현재 편집 상태가 아닙니다.");return;}
     if(!editCols.length){setError("열이 없습니다.");return;}
-    const csvText=buildSaveText(editCols,editRows,saveDelimiter,includeHeader);
+    const saveCols=normalizeColumnNames(editCols);
+    const saveRows=editRows.map(row=>extendRow(row,saveCols.length,""));
+    setEditCols(saveCols);
+    setEditRows(saveRows);
+    const csvText=buildSaveText(saveCols,saveRows,saveDelimiter,includeHeader);
     const note=window.prompt("변경 사유를 입력하세요.", "Grid EDM edit");
     if(note===null)return;
     const payload=JSON.stringify({
@@ -1767,6 +1893,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const previewStatusLabel=data?.single_file_full_read
     ?"전체 표시"
     :(activeQueryMode?"검색 결과":`예시 ${activePreviewLimit}행`);
+  const baseCurrentVersion=baseCurrentProfile?.current_version||"";
 
   const sidebarText={flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"};
   const sidebarMeta={fontSize:11,color:FB_MUTED,flexShrink:0,maxWidth:82,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"};
@@ -1803,7 +1930,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {scopes.map(s=>{
             const active=scope===s.key;const disabled=s.exists===false;
             return(<span key={s.key} className={"filebrowser-scope-option filebrowser-scope-"+s.key} data-scope={s.key} data-active={active?"1":"0"}
-              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);}}
+              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);}}
               title={s.description+(disabled?"\n(경로 없음 — admin_settings 확인)":"")}
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
@@ -1846,7 +1973,7 @@ export default function My_FileBrowser({user,onNavigate}){
                     setBaseRaw(null);
                     return;
                   }
-                  setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+                  setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
                 }}
                 title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
                 style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
@@ -1978,6 +2105,12 @@ export default function My_FileBrowser({user,onNavigate}){
           {mode==="base"&&selBaseFile&&<div style={{margin:"10px 12px 0",padding:12,border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
             <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
               <b style={{fontSize:14}}>Version History</b>
+              <span style={{fontSize:12,color:"var(--text-secondary)",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selBaseFile}>
+                {selBaseFile}
+              </span>
+              {baseCurrentVersion&&<span style={{fontSize:12,fontWeight:800,color:"var(--accent)",background:"var(--accent-glow)",border:"1px solid var(--accent)",borderRadius:4,padding:"2px 6px",fontFamily:"monospace"}}>
+                현재 {baseCurrentVersion}
+              </span>}
               <span style={{fontSize:12,color:baseVersioned?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace"}}>
                 {baseVersioned?`versioned · ${baseVersions.length}/${baseVersionCap}`:"preview only"}
               </span>
@@ -1987,7 +2120,7 @@ export default function My_FileBrowser({user,onNavigate}){
               <button onClick={()=>loadBaseVersions(selBaseFile)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>새로고침</button>
             </div>
             {baseCurrentProfile&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:8,fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-              <span>현재 버전</span>
+              <span>현재 {baseCurrentVersion||"-"}</span>
               <span>{baseCurrentProfile.rows??"-"}행 / {baseCurrentProfile.columns??"-"}열</span>
               <span>size={formatSize(baseCurrentProfile.size)}</span>
               <span>modified={(baseCurrentProfile.modified_at||"").replace("T"," ").slice(0,16)||"-"}</span>
@@ -2108,6 +2241,9 @@ export default function My_FileBrowser({user,onNavigate}){
                       : "클립보드로 붙여넣고 저장할 수 있습니다."}
                       style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--accent)",background:canEnterBaseEdit?"var(--accent)":"transparent",color:canEnterBaseEdit?"#fff":"var(--text-secondary)",fontSize:14,fontWeight:600,cursor:canEnterBaseEdit?"pointer":"default"}}>편집</button>}
                   {isBaseEditingMode&&<>
+                    <button onClick={addBaseEditColumn} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:13,fontWeight:700,cursor:"pointer"}}>열 추가</button>
+                    <button onClick={()=>deleteBaseEditColumn(selectedEditCell.c)} disabled={editCols.length<=1}
+                      style={{padding:"5px 10px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:editCols.length>1?FB_BAD.fg:"var(--text-secondary)",fontSize:13,fontWeight:700,cursor:editCols.length>1?"pointer":"default",opacity:editCols.length>1?1:0.45}}>활성 열 삭제</button>
                     <button onClick={saveBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
                     <button onClick={restoreBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>원본복원</button>
                     <button onClick={cancelBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>취소</button>
@@ -2148,7 +2284,7 @@ export default function My_FileBrowser({user,onNavigate}){
               </div>
               {tab==="data"&&isBaseEditingMode&&<>
                 <div style={{margin:"0 0 8px",fontSize:12,color:"var(--text-secondary)"}}>
-                  셀 기준 붙여넣기: 입력 중인 셀을 시작점으로 반영되며, 첫 행 헤더가 기존 헤더와 일치하면 자동으로 제외됩니다.
+                  셀 기준 붙여넣기: 입력 중인 셀을 시작점으로 반영되며, 첫 행이 헤더면 열 이름으로 반영됩니다.
                 </div>
                 <div style={baseEditWrap} onPaste={onBasePaste} data-base-edit-grid="1">
                   <table style={baseEditTable}>
@@ -2157,8 +2293,14 @@ export default function My_FileBrowser({user,onNavigate}){
                       {editCols.map((c,i)=>{
                         const isColActive = isBaseEditingMode&&selectedEditCell.c===i;
                         return <th key={i}
-                          style={{...baseEditHeaderInput,background:isColActive? "#dbeafe":"var(--bg-tertiary)"}}>
-                          {c}
+                          onClick={()=>setSelectedEditCell(cur=>({r:cur.r||0,c:i}))}
+                          style={{...baseEditHeaderInput,background:isColActive? "#dbeafe":"var(--bg-tertiary)",padding:0}}>
+                          <input value={String(c||"")}
+                            onChange={(e)=>patchBaseHeader(i,e.target.value)}
+                            onFocus={()=>setSelectedEditCell(cur=>({r:cur.r||0,c:i}))}
+                            onBlur={finalizeBaseHeaders}
+                            style={{width:"100%",height:34,boxSizing:"border-box",border:"none",outline:isColActive?"2px solid var(--accent)":"none",outlineOffset:-2,background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:800,fontFamily:"inherit",padding:"0 10px"}}
+                            title={String(c||"")}/>
                         </th>;
                       })}
                     </tr></thead>

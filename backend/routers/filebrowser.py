@@ -3095,6 +3095,51 @@ def _next_semver(vdir: Path, *, rows: int | None = None, columns: int | None = N
     return f"v{major}.{minor + 1}"
 
 
+def _latest_base_version_meta(file: str) -> tuple[dict, Path] | None:
+    vdir = _version_dir(file)
+    if not vdir.is_dir():
+        return None
+    candidates = []
+    for meta_fp in vdir.glob("v*.meta.json"):
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        storage_version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
+        candidates.append((_version_number(storage_version), meta_fp.stat().st_mtime, meta, meta_fp))
+    if not candidates:
+        return None
+    _, _, meta, meta_fp = sorted(candidates, key=lambda x: (x[0], x[1]))[-1]
+    return meta, meta_fp
+
+
+def _current_base_file_version_info(file: str, target: Path, profile: dict | None = None) -> dict:
+    if not _base_file_versioned(file, target):
+        return {}
+    profile = profile or _file_profile(target)
+    rows = profile.get("rows")
+    columns = profile.get("column_count")
+    vdir = _version_dir(file)
+    current_version = _next_semver(vdir, rows=rows, columns=columns)
+    info = {
+        "current_version": current_version,
+        "current_version_state": "computed_next",
+    }
+    latest = _latest_base_version_meta(file)
+    if latest is None:
+        return info
+    latest_meta, _ = latest
+    latest_display = str(latest_meta.get("display_version") or latest_meta.get("version") or "")
+    latest_storage = str(latest_meta.get("version") or "")
+    checksum = str(profile.get("checksum") or "")
+    if checksum and checksum == str(latest_meta.get("checksum") or ""):
+        info["current_version"] = latest_display or latest_storage or current_version
+        info["current_version_state"] = "latest_snapshot"
+        if latest_storage:
+            info["current_storage_version"] = latest_storage
+    return info
+
+
 def _cap_file_versions(vdir: Path) -> None:
     try:
         metas = sorted(vdir.glob("v*.meta.json"), key=lambda p: p.stat().st_mtime)
@@ -3253,17 +3298,32 @@ def _snapshot_change_summary(current: Path, previous: Path | None, file: str = "
     diff = _profile_diff(cur_profile, prev_profile)
     schema_changed = [str(c) for c in (cur_profile.get("columns") or [])] != [str(c) for c in (prev_profile.get("columns") or [])]
     if schema_changed:
+        added_columns = diff.get("added_columns_in_current") or []
+        removed_columns = diff.get("removed_columns_from_current") or []
+        parts = []
+        if added_columns:
+            parts.append(f"열 +{len(added_columns)}")
+        if removed_columns:
+            parts.append(f"열 -{len(removed_columns)}")
+        if not parts and diff.get("columns_delta") not in (None, 0):
+            parts.append(f"열 {'+' if diff['columns_delta'] > 0 else ''}{diff['columns_delta']}")
+        if not parts:
+            parts.append("열 순서 변경")
+        if diff.get("rows_delta") not in (None, 0):
+            parts.append(("행 +" if diff["rows_delta"] > 0 else "행 ") + str(diff["rows_delta"]))
         return {
-            "label": "초기 버전",
-            "schema_reinitialized": True,
+            "label": " / ".join(parts),
+            "schema_changed": True,
             "rows_delta": diff.get("rows_delta"),
             "columns_delta": diff.get("columns_delta"),
             "changed_cells": None,
             "added_rows": 0,
             "deleted_rows": 0,
             "modified_rows": 0,
-            "added_columns": diff.get("added_columns_in_current") or [],
-            "removed_columns": diff.get("removed_columns_from_current") or [],
+            "added_columns": added_columns,
+            "removed_columns": removed_columns,
+            "added_columns_count": len(added_columns),
+            "removed_columns_count": len(removed_columns),
             "checksum_equal": diff.get("checksum_equal"),
         }
     table_diff = _diff_table_between(current, previous, file=file)
@@ -3480,9 +3540,26 @@ def _diff_table_between(current: Path, previous: Path | None, max_changes: int =
         prev_cols, prev_rows = _table_rows_for_diff(previous)
     except Exception:
         return None
-    if cur_cols != prev_cols:
-        return None
     all_cols = list(dict.fromkeys([*cur_cols, *prev_cols]))
+    added_columns = [c for c in cur_cols if c not in set(prev_cols)]
+    removed_columns = [c for c in prev_cols if c not in set(cur_cols)]
+    if cur_cols != prev_cols:
+        return {
+            "kind": "version_diff_table",
+            "title": "직전 버전 대비 스키마 변경",
+            "columns": ["rev", "changed_cols", *all_cols],
+            "key_columns": [],
+            "match_strategy": "schema_changed",
+            "schema_changed": True,
+            "columns_delta": len(cur_cols) - len(prev_cols),
+            "added_columns": added_columns,
+            "removed_columns": removed_columns,
+            "added_columns_count": len(added_columns),
+            "removed_columns_count": len(removed_columns),
+            "rows": [],
+            "counts": {"added": 0, "deleted": 0, "modified": 0, "unchanged": 0},
+            "truncated": False,
+        }
     if not all_cols:
         return None
     key_cols, match_strategy = _select_diff_key_columns(
@@ -3493,8 +3570,6 @@ def _diff_table_between(current: Path, previous: Path | None, max_changes: int =
         file=file,
         current=current,
     )
-    added_columns = [c for c in cur_cols if c not in set(prev_cols)]
-    removed_columns = [c for c in prev_cols if c not in set(cur_cols)]
     out_rows = []
     counts = {"added": 0, "deleted": 0, "modified": 0, "unchanged": 0}
 
@@ -3666,7 +3741,7 @@ def _list_base_file_versions(file: str) -> list[dict]:
             continue
         storage_version = meta.get("version") or meta_fp.name.split(".", 1)[0]
         change_summary = meta.get("change_summary") or {}
-        if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows")):
+        if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows", "added_columns", "removed_columns", "columns_delta")):
             content_fp = vdir / str(meta.get("content_file") or "")
             try:
                 diff_table = _diff_table_between(content_fp, _previous_version_content(file, storage_version), file=file)
@@ -3675,6 +3750,8 @@ def _list_base_file_versions(file: str) -> list[dict]:
                     added_rows = int(counts.get("added") or 0)
                     deleted_rows = int(counts.get("deleted") or 0)
                     modified_rows = int(counts.get("modified") or 0)
+                    added_columns = list(diff_table.get("added_columns") or []) if isinstance(diff_table, dict) else []
+                    removed_columns = list(diff_table.get("removed_columns") or []) if isinstance(diff_table, dict) else []
                     parts = []
                     if modified_rows:
                         parts.append(f"수정 {modified_rows}행")
@@ -3682,6 +3759,10 @@ def _list_base_file_versions(file: str) -> list[dict]:
                         parts.append(f"추가 {added_rows}행")
                     if deleted_rows:
                         parts.append(f"삭제 {deleted_rows}행")
+                    if added_columns:
+                        parts.append(f"열 +{len(added_columns)}")
+                    if removed_columns:
+                        parts.append(f"열 -{len(removed_columns)}")
                     if parts:
                         change_summary = {
                             **change_summary,
@@ -3689,6 +3770,11 @@ def _list_base_file_versions(file: str) -> list[dict]:
                             "added_rows": added_rows,
                             "deleted_rows": deleted_rows,
                             "modified_rows": modified_rows,
+                            "added_columns": added_columns,
+                            "removed_columns": removed_columns,
+                            "added_columns_count": len(added_columns),
+                            "removed_columns_count": len(removed_columns),
+                            "columns_delta": diff_table.get("columns_delta", change_summary.get("columns_delta")),
                         }
             except Exception:
                 pass
@@ -10519,18 +10605,21 @@ def base_file_versions(request: Request, file: str = Query(...)):
         modified_at = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
     except Exception:
         modified_at = ""
+    current_version_info = _current_base_file_version_info(file, fp, profile)
     return {
         "ok": True,
         "file": file,
         "versioned": versioned,
         "cap": BASE_VERSION_CAP,
         "versions": versions[:BASE_VERSION_CAP],
+        "current_storage_version": current_version_info.get("current_storage_version"),
         "current_profile": {
             "rows": profile.get("rows"),
             "columns": profile.get("column_count"),
             "size": profile.get("size"),
             "modified_at": modified_at,
             "checksum": profile.get("checksum") or "",
+            **current_version_info,
         },
     }
 
