@@ -500,6 +500,96 @@ def test_custom_tag_rows_keep_numeric_sort_position(tmp_path, monkeypatch):
     assert [row["_param"] for row in result["rows"]] == ["KNOB_1.0 AA", column, "KNOB_2.0 BB"]
 
 
+def test_custom_sets_hide_invalid_names_and_clean_invalid_columns(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+
+    (plan_dir / "custom_undefined.json").write_text(json.dumps({
+        "name": "kept_file_name_is_invalid",
+        "columns": ["KNOB_HIDDEN"],
+    }), encoding="utf-8")
+    (plan_dir / "custom_badname.json").write_text(json.dumps({
+        "name": "undefined",
+        "columns": ["KNOB_HIDDEN"],
+    }), encoding="utf-8")
+    (plan_dir / "custom_dirty.json").write_text(json.dumps({
+        "name": " dirty ",
+        "columns": ["KNOB_A", "", "undefined", "null", None, {"column": "TAG_BAD"}, "MGMT_Purpose", "KNOB_A"],
+    }), encoding="utf-8")
+
+    customs = splittable.list_customs()["customs"]
+
+    assert [c["name"] for c in customs] == ["dirty"]
+    assert customs[0]["columns"] == ["KNOB_A"]
+    assert json.loads((plan_dir / "custom_dirty.json").read_text(encoding="utf-8"))["columns"] == ["KNOB_A"]
+    assert splittable._select_columns(["KNOB_A", "KNOB_B"], "", "", custom_cols="undefined,KNOB_B,,null,MGMT_Purpose") == ["KNOB_B"]
+    assert splittable._select_columns(["KNOB_A"], "undefined", "", custom_cols="") == []
+
+
+def test_custom_save_rejects_invalid_name_and_requires_valid_columns(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+
+    with pytest.raises(HTTPException) as exc:
+        splittable.save_custom(
+            splittable.CustomSaveReq(name="undefined", username="owner", columns=["KNOB_A"], expected_version=0)
+        )
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        splittable.save_custom(
+            splittable.CustomSaveReq(name="valid", username="owner", columns=["", "undefined", None, "MGMT_Purpose"], expected_version=0)
+        )
+    assert exc.value.status_code == 400
+
+    splittable.save_custom(
+        splittable.CustomSaveReq(name=" valid ", username="owner", columns=["KNOB_A", "null", "KNOB_A"], expected_version=0)
+    )
+
+    saved = json.loads((plan_dir / "custom_valid.json").read_text(encoding="utf-8"))
+    assert saved["name"] == "valid"
+    assert saved["columns"] == ["KNOB_A"]
+
+
+def test_runtime_overlay_cleanup_removes_invalid_columns_without_deleting_mgmt(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+
+    (plan_dir / "custom_tags.json").write_text(json.dumps({
+        "columns": [
+            {"product": "ML_TABLE_PRODA", "column": "TAG_review", "label": "review"},
+            {"product": "ML_TABLE_PRODA", "column": "undefined", "label": "bad"},
+            {"product": "ML_TABLE_PRODA", "column": "", "label": "bad"},
+        ],
+        "values": {
+            "ML_TABLE_PRODA|LOT1|1|TAG_review": {"value": "hold"},
+            "ML_TABLE_PRODA|LOT1|1|undefined": {"value": "bad"},
+            "ML_TABLE_PRODA|LOT1|1|": {"value": "bad"},
+        },
+    }), encoding="utf-8")
+    (plan_dir / "management_rows.json").write_text(json.dumps({
+        "columns": [
+            {"product": "ML_TABLE_PRODA", "column": "MGMT_Purpose", "label": "Purpose"},
+            {"product": "ML_TABLE_PRODA", "column": "null", "label": "bad"},
+        ],
+        "values": {
+            "ML_TABLE_PRODA|LOT1|1|MGMT_Purpose": {"value": "Reliability"},
+            "ML_TABLE_PRODA|LOT1|1|null": {"value": "bad"},
+        },
+    }), encoding="utf-8")
+
+    tags = splittable._load_custom_tags_data()
+    mgmt = splittable._load_management_rows_data()
+
+    assert [c["column"] for c in tags["columns"]] == ["TAG_review"]
+    assert list(tags["values"]) == ["ML_TABLE_PRODA|LOT1|1|TAG_review"]
+    assert [c["column"] for c in mgmt["columns"]] == ["MGMT_Purpose"]
+    assert list(mgmt["values"]) == ["ML_TABLE_PRODA|LOT1|1|MGMT_Purpose"]
+
+
 def test_custom_tag_delete_requires_splittable_manager(monkeypatch):
     monkeypatch.setattr(auth_core, "get_page_admins", lambda: {})
 
@@ -520,7 +610,7 @@ def test_custom_tag_delete_routes_are_registered():
     assert "/api/splittable/custom-tags/columns/delete" in paths
 
 
-def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypatch):
+def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["LOT927AA", "LOT927AA"],
         "wafer_id": ["1", "2"],
@@ -555,9 +645,16 @@ def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypat
             username="owner",
         )
     )
+    with pytest.raises(HTTPException) as exc:
+        splittable.save_custom(
+            splittable.CustomSaveReq(name="mgmt_check", username="owner", columns=[column], expected_version=0)
+        )
+    assert exc.value.status_code == 400
     splittable.save_custom(
-        splittable.CustomSaveReq(name="mgmt_check", username="owner", columns=[column], expected_version=0)
+        splittable.CustomSaveReq(name="mgmt_mix", username="owner", columns=["KNOB_ALPHA", column], expected_version=0)
     )
+    saved_custom = json.loads((plan_dir / "custom_mgmt_mix.json").read_text(encoding="utf-8"))
+    assert saved_custom["columns"] == ["KNOB_ALPHA"]
 
     schema = splittable.get_schema(product="ML_TABLE_PRODA")
     default_result = splittable.view_split(
@@ -576,7 +673,7 @@ def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypat
         root_lot_id="LOT927AA",
         wafer_ids="",
         prefix="",
-        custom_name="mgmt_check",
+        custom_name="mgmt_mix",
         view_mode="all",
         history_mode="all",
         fab_lot_id="",
@@ -585,50 +682,12 @@ def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypat
 
     assert any(c["name"] == column and c["dtype"] == "management_row" for c in schema["columns"])
     assert all(r["_param"] != column for r in default_result["rows"])
-    assert result["all_columns"].count(column) == 1
-    assert result["rows"][0]["_param"] == column
-    assert result["rows"][0]["_display"] == "Purpose"
-    assert result["rows"][0]["_cells"]["0"]["actual"] == "Reliability"
-    assert result["rows"][0]["_cells"]["1"]["actual"] == "Monitor"
-    assert result["rows"][0]["_cells"]["0"]["can_plan"] is False
-    assert result["rows"][0]["_cells"]["0"]["is_management_row"] is True
-    assert result["rows"][0]["_cells"]["0"]["can_management_edit"] is True
+    assert all(r["_param"] != column for r in result["rows"])
+    assert [r["_param"] for r in result["rows"]] == ["KNOB_ALPHA"]
 
     overlay = json.loads((plan_dir / "management_rows.json").read_text(encoding="utf-8"))
     assert overlay["values"][f"ML_TABLE_PRODA|LOT927AA|1|{column}"]["value"] == "Reliability"
     assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
-
-    csv_body = _read_streaming_response(splittable.download_csv(
-        product="ML_TABLE_PRODA",
-        root_lot_id="LOT927AA",
-        wafer_ids="",
-        prefix="",
-        custom_name="mgmt_check",
-        transposed="true",
-        username="owner",
-        custom_cols="",
-    )).decode("utf-8-sig")
-    assert "Purpose" in csv_body
-    assert "Reliability" in csv_body
-    assert "Monitor" in csv_body
-    assert "MGMT_Purpose" not in csv_body
-
-    from openpyxl import load_workbook
-
-    xlsx_body = _read_streaming_response(splittable.download_xlsx(
-        product="ML_TABLE_PRODA",
-        root_lot_id="LOT927AA",
-        wafer_ids="",
-        prefix="",
-        custom_name="mgmt_check",
-        username="owner",
-        custom_cols="",
-    ))
-    workbook = load_workbook(io.BytesIO(xlsx_body), data_only=True)
-    rows = list(workbook.active.iter_rows(values_only=True))
-    purpose_row = next(row for row in rows if row and row[0] == "Purpose")
-    assert "Reliability" in purpose_row
-    assert "Monitor" in purpose_row
 
 
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():

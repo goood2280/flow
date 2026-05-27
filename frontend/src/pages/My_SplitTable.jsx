@@ -316,7 +316,7 @@ export default function My_SplitTable({user}){
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
   const[customTags,setCustomTags]=useState([]);
 
-  const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(d.customs||[]));
+  const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
     return sf(API+"/custom-tags?product="+encodeURIComponent(selProd))
       .then(d=>setCustomTags(d.columns||[]))
@@ -663,8 +663,8 @@ export default function My_SplitTable({user}){
   // FAB 공정 진행 중 fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 검증으로 검색을 막지 않는다.
   const loadView=(opts={})=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;setLoading(true);
     const effectiveCustomMode=opts.customMode ?? isCustomMode;
-    const effectiveCustomCols=opts.customCols ?? customCols;
-    const effectiveCustomName=opts.customName ?? selCustom;
+    const effectiveCustomCols=cleanCustomColumns(opts.customCols ?? customCols);
+    const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
     const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
     let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
@@ -917,15 +917,43 @@ export default function My_SplitTable({user}){
 
   // v8.6.1: 낙관적 잠금 — 동일 name 의 기존 custom version 을 expected_version 으로 첨부.
   // 충돌(다른 사용자 저장) 시 conflict 응답 → confirm 으로 덮어쓸지 reload 할지 선택.
-  const cleanCustomColumns=(cols=[])=>cols.filter(col=>!String(col||"").toUpperCase().startsWith("MGMT_"));
-  const saveCustom=(force)=>{const colsToSave=cleanCustomColumns(customCols);if(!customName.trim()||!colsToSave.length)return;
-    const existing=customs.find(c=>c.name===customName);
+  const cleanCustomName=(name)=>{
+    if(typeof name!=="string")return "";
+    const next=name.trim();
+    if(!next)return "";
+    const lowered=next.toLowerCase();
+    return lowered==="undefined"||lowered==="null"?"":next;
+  };
+  const cleanCustomColumns=(cols=[])=>{
+    const out=[];const seen=new Set();
+    (Array.isArray(cols)?cols:[]).forEach(col=>{
+      if(typeof col!=="string")return;
+      const next=col.trim();
+      if(!next)return;
+      const lowered=next.toLowerCase();
+      if(lowered==="undefined"||lowered==="null")return;
+      if(next.toUpperCase().startsWith("MGMT_"))return;
+      if(seen.has(next))return;
+      seen.add(next);out.push(next);
+    });
+    return out;
+  };
+  const cleanCustomSet=(set)=>{
+    if(!set||typeof set!=="object")return null;
+    const name=cleanCustomName(set.name);
+    const columns=cleanCustomColumns(set.columns);
+    if(!name||!columns.length)return null;
+    return {...set,name,columns};
+  };
+  const cleanCustomSets=(sets=[])=>(Array.isArray(sets)?sets:[]).map(cleanCustomSet).filter(Boolean);
+  const saveCustom=(force)=>{const nameToSave=cleanCustomName(customName);const colsToSave=cleanCustomColumns(customCols);if(!nameToSave||!colsToSave.length)return;
+    const existing=customs.find(c=>c.name===nameToSave);
     const ev=force?null:(existing?(existing.version||1):0);
     sf(API+"/customs/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:customName,username:user?.username||"",columns:colsToSave,expected_version:ev})})
+      body:JSON.stringify({name:nameToSave,username:user?.username||"",columns:colsToSave,expected_version:ev})})
       .then(d=>{
         if(d&&d.conflict){
-          if(confirm("⚠ '"+customName+"' 가 다른 사용자에 의해 변경되었습니다.\n\nOK = 그래도 덮어쓰기\nCancel = 최신 데이터 불러오기")){
+          if(confirm("⚠ '"+nameToSave+"' 가 다른 사용자에 의해 변경되었습니다.\n\nOK = 그래도 덮어쓰기\nCancel = 최신 데이터 불러오기")){
             saveCustom(true);
           } else {
             reloadCustoms();
@@ -934,20 +962,22 @@ export default function My_SplitTable({user}){
           }
           return;
         }
-        reloadCustoms();setSelCustom(customName);setCustomCols(colsToSave);setIsCustomMode(true);
+        reloadCustoms();setSelCustom(nameToSave);setCustomName(nameToSave);setCustomCols(colsToSave);setIsCustomMode(true);
       }).catch(e=>toast.error("저장 실패: "+(e.message||e)));};
   const deleteCustom=(name)=>{if(!confirm("Delete '"+name+"'?"))return;
     sf(API+"/customs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,username:user?.username||""})})
       .then(()=>{reloadCustoms();if(selCustom===name)setSelCustom("");}).catch(e=>toast.error(e.message));};
   const selectCustomSet=(c)=>{
     // v8.8.33: 저장 set 에서 기본 식별자(root_lot_id/wafer_id/lot_id/fab_lot_id/product) 자동 제거 — 자동 첨부되는 컬럼.
+    const set=cleanCustomSet(c);
+    if(!set)return;
     const _drop=new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
-    const cleaned=cleanCustomColumns((c.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase())));
-    setSelCustom(c.name);setCustomCols(cleaned);setCustomName(c.name);
+    const cleaned=cleanCustomColumns((set.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase())));
+    setSelCustom(set.name);setCustomCols(cleaned);setCustomName(set.name);
   };
   const currentResultParams=()=>Array.from(new Set((data?.rows||[]).map(r=>String(r?._param||"").trim()).filter(Boolean)));
   const includeTagInCurrentResult=(column)=>{
-    const nextCols=Array.from(new Set([...currentResultParams(),column].filter(Boolean)));
+    const nextCols=cleanCustomColumns([...currentResultParams(),column]);
     setIsCustomMode(true);
     setSelCustom("");
     setCustomCols(nextCols);
@@ -980,7 +1010,7 @@ export default function My_SplitTable({user}){
       .then(d=>{
         setCustomTags(d.columns||[]);
         setProductSchema(prev=>prev.filter(c=>c!==column));
-        setCustomCols(prev=>prev.filter(c=>c!==column));
+        setCustomCols(prev=>cleanCustomColumns(prev).filter(c=>c!==column));
         setPendingTags(prev=>Object.fromEntries(Object.entries(prev||{}).filter(([k])=>!String(k).endsWith("|"+column))));
         setData(cur=>cur?{...cur,all_columns:(cur.all_columns||[]).filter(c=>c!==column),rows:(cur.rows||[]).filter(r=>r?._param!==column)}:cur);
         toast.ok("꼬리표 열 삭제됨");
@@ -1055,13 +1085,14 @@ export default function My_SplitTable({user}){
   //   집중하도록 근본적으로 차단. 기존에 customCols 에 섞여있던 것도 로드 타임에 자동 제거.
   const _CUSTOM_HIDDEN_BASE = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
   const customPool=(()=>{const seen=new Set();const out=[];
-    for(const c of [...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t.column)]){
+    const candidateCols=cleanCustomColumns([...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t?.column)]);
+    for(const c of candidateCols){
       const lc = String(c).toLowerCase();
-      if(String(c||"").toUpperCase().startsWith("MGMT_")) continue;
       if(_CUSTOM_HIDDEN_BASE.has(lc)) continue;
       if(!seen.has(c)){seen.add(c);out.push(c);}
     }return out;})();
   const customLabelFor=(column)=>{
+    if(typeof column!=="string")return "";
     const hit=(customTags||[]).find(t=>t.column===column);
     if(hit)return `${hit.label||column} (${column})`;
     return column;
@@ -1069,6 +1100,8 @@ export default function My_SplitTable({user}){
   const filteredCustomCols=colSearch
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
     :customPool;
+  const activeCustomCols=cleanCustomColumns(customCols);
+  const activeCustomColSet=new Set(activeCustomCols);
   const filteredLots=lotFilter?lotSuggestions.filter(l=>String(l||"").toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
   const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
@@ -1137,12 +1170,12 @@ export default function My_SplitTable({user}){
           {(c.username===user?.username||isAdmin)&&<span onClick={e=>{e.stopPropagation();deleteCustom(c.name);}} style={{fontSize:14,color:"rgba(239,68,68,0.95)",cursor:"pointer",flexShrink:0}} title="Delete">✕</span>}
         </div>)}
         {/* v8.8.16: 선택된 Set 의 컬럼을 pill 로 현재 선택 상태에 노출 — 어느 컬럼이 포함됐는지 한눈에. */}
-        {selCustom&&customCols.length>0&&<div style={{marginTop:6,padding:"5px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
-          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:3,fontWeight:600}}>'{selCustom}' 선택 컬럼 ({customCols.length})</div>
+        {selCustom&&activeCustomCols.length>0&&<div style={{marginTop:6,padding:"5px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:3,fontWeight:600}}>'{selCustom}' 선택 컬럼 ({activeCustomCols.length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
-            {customCols.map(c=><span key={c} title={c}
+            {activeCustomCols.map(c=><span key={c} title={c}
               style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:14,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>
-              {customLabelFor(c)}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:14,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
+              {customLabelFor(c)}<span onClick={()=>setCustomCols(activeCustomCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:14,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
             </span>)}
           </div>
         </div>}
@@ -1150,27 +1183,27 @@ export default function My_SplitTable({user}){
         <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:14,marginBottom:4,marginTop:4}}/>
         {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
         <div style={{display:"flex",gap:4,marginBottom:4,fontSize:14,alignItems:"center"}}>
-          <button onClick={()=>{const all=Array.from(new Set([...customCols,...filteredCustomCols]));setCustomCols(all);}}
+          <button onClick={()=>{const all=cleanCustomColumns([...activeCustomCols,...filteredCustomCols]);setCustomCols(all);}}
             style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer",fontWeight:600}}>
             ✓ 전체 체크{colSearch?` (${filteredCustomCols.length})`:""}
           </button>
-          <button onClick={()=>{if(colSearch){const fs=new Set(filteredCustomCols);setCustomCols(customCols.filter(c=>!fs.has(c)));}else setCustomCols([]);}}
+          <button onClick={()=>{if(colSearch){const fs=new Set(filteredCustomCols);setCustomCols(activeCustomCols.filter(c=>!fs.has(c)));}else setCustomCols([]);}}
             style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,cursor:"pointer",fontWeight:600}}>
             ✕ 전체 제거
           </button>
-          <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{customCols.length}/{customPool.length} 선택</span>
+          <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{activeCustomCols.length}/{customPool.length} 선택</span>
         </div>
         <div style={{maxHeight:120,overflow:"auto"}}>
-          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)",fontFamily:String(c).startsWith("TAG_")?"monospace":"inherit"}}>{customCols.includes(c)?"✓ ":""}{customLabelFor(c)}</div>)}
+          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!activeCustomColSet.has(c))setCustomCols(cleanCustomColumns([...activeCustomCols,c]));else setCustomCols(activeCustomCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:activeCustomColSet.has(c)?"var(--accent)":"var(--text-secondary)",fontFamily:String(c).startsWith("TAG_")?"monospace":"inherit"}}>{activeCustomColSet.has(c)?"✓ ":""}{customLabelFor(c)}</div>)}
           {filteredCustomCols.length===0&&<div style={{fontSize:14,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
             {productSchema.length===0?"제품 스키마 로딩 중...":"검색 결과 없음"}
           </div>}
         </div>
-        {customCols.length>0&&<div style={{marginTop:4}}>
-          <div style={{fontSize:14,color:"var(--text-secondary)"}}>{customCols.length}개 선택</div>
+        {activeCustomCols.length>0&&<div style={{marginTop:4}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)"}}>{activeCustomCols.length}개 선택</div>
           <div style={{display:"flex",gap:4,marginTop:4}}>
             <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...S,flex:1,fontSize:14}}/>
-            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,cursor:"pointer"}}>저장</button>
+            <button onClick={()=>saveCustom(false)} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,cursor:"pointer"}}>저장</button>
           </div>
           <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>같은 이름은 덮어쓰기</div>
         </div>}
@@ -1688,8 +1721,8 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
-            <button onClick={()=>{const customQ=isCustomMode&&customCols.length?"&custom_cols="+encodeURIComponent(customCols.join(",")):(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const customQ=isCustomMode&&customCols.length?"&custom_cols="+encodeURIComponent(customCols.join(",")):(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
+            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
+            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>

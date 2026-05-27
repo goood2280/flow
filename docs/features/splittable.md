@@ -45,6 +45,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `TAG_*` 꼬리표 행은 맨 아래에 고정하지 않고 이름 앞 숫자의 natural sort 위치에 표시한다.
 - `TAG_*` 꼬리표 열 삭제는 admin 또는 `splittable` page manager만 가능하다. 삭제 시 product별 TAG 정의와 `custom_tags.json`에 저장된 해당 열의 모든 값을 함께 제거한다.
 - 기존 `MGMT_*` 관리 행 저장값은 `data/flow-data/splittable/management_rows.json`에 남아도 원본 파일을 수정하지 않는다. 신규 UI에서는 CUSTOM 선택 풀과 저장 set에서 `MGMT_*`를 제외한다.
+- CUSTOM 세트명과 선택 컬럼은 빈 문자열, 비문자 값, `undefined`, `null`을 저장/표시하지 않는다. 잘못 남은 `custom_*.json`, `custom_tags.json`, `management_rows.json` 항목은 로드 시 유효한 문자열 컬럼만 남기고 정리한다.
 - KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `step_desc -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
 - `ppid_knob.csv`는 product 없는 공용 룰북이며 `feature_name`, `rule_order`, `step_desc`, `operator`, `value`, `category` 컬럼을 기본 계약으로 한다. `feature_name`은 KNOB 이름이고 같은 KNOB에 등록된 CSV rule row 전체가 `R1`, `R2`, ..., `RO` 순서로 표시된다. 같은 `rule_order`에 여러 row가 있으면 하나의 AND 조건 묶음으로 표시한다. legacy `product` 컬럼이 있어도 읽기 필터나 UI 표시에는 쓰지 않는다.
 - `Vehicle_matching.csv`는 `product`, `step_id`, `step_desc` 컬럼을 기본 계약으로 하며, 현재 선택 product에 직접 매칭되는 row만 대소문자 구분 없이 `step_desc`별 step 후보로 노출한다. `product` 셀은 `"PRODA, PRODB"`처럼 쉼표로 여러 제품을 적을 수 있고, 각 토큰 중 현재 product와 맞는 row만 사용한다. `ML_TABLE_` 접두와 `PRODUCT_A0`/`PRODA0` 같은 동일 제품 표기는 허용하지만, `PRODA` 선택이 `PRODA0`/`PRODA1`을 함께 끌어오지는 않는다.

@@ -184,6 +184,7 @@ DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
 CUSTOM_TAG_PREFIX = "TAG"
 MANAGEMENT_ROW_PREFIX = "MGMT"
+_INVALID_CUSTOM_TOKENS = {"undefined", "null"}
 # v8.8.6: paste 세트 공유 저장소 — LocalStorage 대신 BE 에 올려 팀 공용 풀 + CUSTOM 탭 연동.
 PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 # v8.4.9: 엑셀 메모/태그 저장소 — wafer 단위(tag) + parameter 단위(memo) 공용.
@@ -193,6 +194,107 @@ PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 NOTES_FILE = PLAN_DIR / "notes.json"
 TRACKER_ISSUES_FILE = PATHS.data_root / "tracker" / "issues.json"
 INFORMS_FILE = PATHS.data_root / "informs" / "informs.json"
+
+
+def _clean_custom_token(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    token = value.strip()
+    if not token or token.casefold() in _INVALID_CUSTOM_TOKENS:
+        return ""
+    return token
+
+
+def _clean_custom_column_name(value: Any, *, allow_management: bool = False) -> str:
+    column = _clean_custom_token(value)
+    if not column:
+        return ""
+    if not allow_management and column.upper().startswith(f"{MANAGEMENT_ROW_PREFIX}_"):
+        return ""
+    return column
+
+
+def _clean_custom_columns(columns: Any, *, allow_management: bool = False) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in columns if isinstance(columns, list) else []:
+        column = _clean_custom_column_name(raw, allow_management=allow_management)
+        if not column or column in seen:
+            continue
+        seen.add(column)
+        out.append(column)
+    return out
+
+
+def _clean_custom_set_name(value: Any) -> str:
+    return _clean_custom_token(value)
+
+
+def _custom_file_path_for_name(value: Any) -> tuple[Path, str]:
+    name = _clean_custom_set_name(value)
+    safe_name = safe_id(name) if name else ""
+    if not name or not safe_name or safe_name.casefold() in _INVALID_CUSTOM_TOKENS:
+        raise HTTPException(400, "custom name required")
+    return PLAN_DIR / f"custom_{safe_name}.json", name
+
+
+def _custom_file_stem_invalid(path: Path) -> bool:
+    stem = path.stem
+    raw = stem[len("custom_"):] if stem.startswith("custom_") else stem
+    return not _clean_custom_set_name(raw)
+
+
+def _sanitize_custom_record(record: Any, path: Path | None = None, *, persist: bool = False) -> dict | None:
+    if not isinstance(record, dict):
+        return None
+    if path is not None and _custom_file_stem_invalid(path):
+        return None
+    name = _clean_custom_set_name(record.get("name"))
+    if not name:
+        return None
+    columns = _clean_custom_columns(record.get("columns") or [])
+    if not columns:
+        return None
+    cleaned = {**record, "name": name, "columns": columns}
+    if persist and path is not None and cleaned != record:
+        save_json(path, cleaned)
+    return cleaned
+
+
+def _clean_overlay_store_data(data: Any, *, allow_management: bool = True) -> tuple[dict, bool]:
+    if not isinstance(data, dict):
+        return {"columns": [], "values": {}}, False
+    changed = False
+    cleaned_cols = []
+    for raw in data.get("columns") if isinstance(data.get("columns"), list) else []:
+        if not isinstance(raw, dict):
+            changed = True
+            continue
+        column = _clean_custom_column_name(raw.get("column"), allow_management=allow_management)
+        if not column:
+            changed = True
+            continue
+        entry = {**raw, "column": column}
+        if entry != raw:
+            changed = True
+        cleaned_cols.append(entry)
+    cleaned_values = {}
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    for raw_key, value in values.items():
+        parts = str(raw_key or "").split("|", 3)
+        if len(parts) != 4:
+            changed = True
+            continue
+        column = _clean_custom_column_name(parts[3], allow_management=allow_management)
+        if not column:
+            changed = True
+            continue
+        parts[3] = column
+        key = "|".join(parts)
+        if key != raw_key:
+            changed = True
+        cleaned_values[key] = value
+    return {"columns": cleaned_cols, "values": cleaned_values}, changed
 
 
 def _load_prefixes():
@@ -640,15 +742,16 @@ def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: 
     """
     # ad-hoc custom_cols 우선
     if custom_cols:
-        ad_hoc = [c.strip() for c in custom_cols.split(",") if c.strip()]
-        if ad_hoc:
-            return ad_hoc
+        return _clean_custom_columns(custom_cols.split(","))
     if custom_name:
-        cfp = PLAN_DIR / f"custom_{custom_name}.json"
+        try:
+            cfp, _clean_name = _custom_file_path_for_name(custom_name)
+        except HTTPException:
+            return []
         data = load_json(cfp, {})
-        saved = list(data.get("columns", []) or [])
-        if saved:
-            return saved
+        cleaned = _sanitize_custom_record(data, cfp, persist=True)
+        if cleaned:
+            return list(cleaned.get("columns") or [])
         return all_data_cols[:max_fallback]
     if prefix.upper() == "ALL":
         return all_data_cols[: max_fallback * 4]
@@ -667,11 +770,10 @@ def _custom_tags_path() -> Path:
 
 def _load_custom_tags_data() -> dict:
     data = load_json(_custom_tags_path(), {"columns": [], "values": {}})
-    if not isinstance(data, dict):
-        data = {"columns": [], "values": {}}
-    cols = data.get("columns") if isinstance(data.get("columns"), list) else []
-    values = data.get("values") if isinstance(data.get("values"), dict) else {}
-    return {"columns": cols, "values": values}
+    cleaned, changed = _clean_overlay_store_data(data, allow_management=True)
+    if changed:
+        _save_custom_tags_data(cleaned)
+    return cleaned
 
 
 def _save_custom_tags_data(data: dict) -> None:
@@ -787,11 +889,10 @@ def _management_rows_path() -> Path:
 
 def _load_management_rows_data() -> dict:
     data = load_json(_management_rows_path(), {"columns": [], "values": {}})
-    if not isinstance(data, dict):
-        data = {"columns": [], "values": {}}
-    cols = data.get("columns") if isinstance(data.get("columns"), list) else []
-    values = data.get("values") if isinstance(data.get("values"), dict) else {}
-    return {"columns": cols, "values": values}
+    cleaned, changed = _clean_overlay_store_data(data, allow_management=True)
+    if changed:
+        _save_management_rows_data(cleaned)
+    return cleaned
 
 
 def _save_management_rows_data(data: dict) -> None:
@@ -3836,13 +3937,15 @@ def paste_set_to_custom(
     if request is not None:
         me = current_user(request)
         actor = me.get("username") or actor
-    name = src.get("name") or "paste_custom"
-    fp = PLAN_DIR / f"custom_{safe_id(name)}.json"
+    fp, name = _custom_file_path_for_name(src.get("name") or "paste_custom")
+    columns = _clean_custom_columns(src.get("columns") or [])
+    if not columns:
+        raise HTTPException(400, "custom columns required")
     now = datetime.datetime.now().isoformat(timespec="seconds")
     existing = load_json(fp, None) if fp.exists() else None
     save_json(fp, {
         "name": name, "username": actor,
-        "columns": list(src.get("columns") or []),
+        "columns": columns,
         "created": (existing or {}).get("created", now),
         "updated": now,
         "version": int((existing or {}).get("version", 0)) + 1,
@@ -3857,7 +3960,7 @@ def paste_set_to_custom(
 def list_customs():
     customs = []
     for f in sorted(PLAN_DIR.glob("custom_*.json")):
-        c = load_json(f, None)
+        c = _sanitize_custom_record(load_json(f, None), f, persist=True)
         if c:
             c["_file"] = f.name
             customs.append(c)
@@ -3867,7 +3970,7 @@ def list_customs():
 class CustomSaveReq(BaseModel):
     name: str
     username: str
-    columns: List[str]
+    columns: List[Any]
     # v8.6.1: 낙관적 잠금 — 동일 name 의 기존 커스텀이 있으면 expected_version 일치 시에만 덮어쓴다.
     # 신규(처음 저장)면 0 또는 None.
     expected_version: int | None = None
@@ -3883,7 +3986,10 @@ def save_custom(
     if request is not None:
         me = current_user(request)
         actor = me.get("username") or actor
-    fp = PLAN_DIR / f"custom_{safe_id(req.name)}.json"
+    fp, name = _custom_file_path_for_name(req.name)
+    columns = _clean_custom_columns(req.columns)
+    if not columns:
+        raise HTTPException(400, "custom columns required")
     now = datetime.datetime.now().isoformat()
     existing = load_json(fp, None) if fp.exists() else None
     if existing:
@@ -3902,7 +4008,7 @@ def save_custom(
         new_v = 1
         created = now
     save_json(fp, {
-        "name": req.name, "username": actor, "columns": req.columns,
+        "name": name, "username": actor, "columns": columns,
         "created": created, "updated": now, "version": new_v,
     })
     invalidate_splittable_sets_cache()
