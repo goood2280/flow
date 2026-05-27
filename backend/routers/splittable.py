@@ -427,13 +427,21 @@ def _step_matching_product_alias_keys(product: str) -> set[str]:
     return {str(alias or "").strip().casefold() for alias in aliases if str(alias or "").strip()}
 
 
+def _product_cell_tokens(row_product: object) -> list[str]:
+    row_value = str(row_product or "").strip()
+    if not row_value:
+        return []
+    return [part.strip() for part in row_value.split(",") if part.strip()]
+
+
 def _step_matching_product_matches(product: str, row_product: object, *, allow_common: bool = True) -> bool:
     if not str(product or "").strip():
         return True
-    row_value = str(row_product or "").strip()
-    if not row_value:
+    row_values = _product_cell_tokens(row_product)
+    if not row_values:
         return allow_common
-    return row_value.casefold() in _step_matching_product_alias_keys(product)
+    product_keys = _step_matching_product_alias_keys(product)
+    return any(row_value.casefold() in product_keys for row_value in row_values)
 
 
 def _step_desc_match_key(value: object) -> str:

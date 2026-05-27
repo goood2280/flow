@@ -736,6 +736,30 @@ def test_knob_meta_vehicle_matching_uses_only_current_product_rows(tmp_path, mon
     assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PC_A"]
 
 
+def test_knob_meta_vehicle_matching_accepts_comma_separated_product_cells(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,rule_order,step_desc,operator,value,category\n"
+        "5.0 PC,R1,PC,=,PPID_A,ETCH\n"
+        "5.0 PC,R2,GATE,=,PPID_B,ETCH\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "\"PRODB, PRODA\",STEP_PC_A,PC\n"
+        "\"PRODA0, PRODA1\",STEP_PC_VARIANT,PC\n"
+        "\"ML_TABLE_PRODA, PRODC\",STEP_GATE_A,GATE\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    groups = meta["5.0 PC"]["groups"]
+    assert groups[0]["step_ids"] == ["STEP_PC_A"]
+    assert groups[1]["step_ids"] == ["STEP_GATE_A"]
+    assert "STEP_PC_VARIANT" not in groups[0]["step_ids"]
+
+
 def test_knob_meta_vehicle_matching_product_header_accepts_utf8_bom(tmp_path, monkeypatch):
     _setup_knob_meta_fixture(tmp_path, monkeypatch)
     (tmp_path / "ppid_knob.csv").write_text(
@@ -792,6 +816,21 @@ def test_vehicle_rulebook_filters_product_alias_case_insensitively(tmp_path, mon
     rows = splittable.get_rulebook(kind="step_matching", product="ML_TABLE_PRODA")["rows"]
 
     assert rows == [{"product": "proda", "step_id": "STEP_PC_A", "step_desc": "PC"}]
+
+
+def test_vehicle_rulebook_filters_comma_separated_product_cells(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "\"PRODB, PRODA\",STEP_PC_A,PC\n"
+        "\"PRODA0, PRODA1\",STEP_PC_VARIANT,PC\n"
+        "PRODB,STEP_PC_B,PC\n",
+        encoding="utf-8",
+    )
+
+    rows = splittable.get_rulebook(kind="step_matching", product="ML_TABLE_PRODA")["rows"]
+
+    assert rows == [{"product": "PRODB, PRODA", "step_id": "STEP_PC_A", "step_desc": "PC"}]
 
 
 def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, monkeypatch):
