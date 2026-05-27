@@ -969,7 +969,7 @@ export default function My_Meeting({ user }) {
           </div>
         )}
         {viewMode === "list" && selected && (
-          <div style={{ padding: 20, maxWidth: 980 }}>
+          <div style={meetingDetailPane}>
             <Card padding={0}>
             {/* Meta */}
             <section style={connectedPanelSection}>
@@ -1357,7 +1357,7 @@ export default function My_Meeting({ user }) {
                           <thead>
                             <tr style={{ background: "var(--bg-card)" }}>
                               <th style={th}>내용</th>
-                              <th style={{ ...th, width: 180 }}>📅 달력 (회의 일자로 등록)</th>
+                              <th style={{ ...th, width: 260, minWidth: 260, whiteSpace: "nowrap" }}>📅 달력 (회의 일자로 등록)</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1366,12 +1366,14 @@ export default function My_Meeting({ user }) {
                               return (
                                 <tr key={obj.id || i}>
                                   <td style={td}>{obj.text}</td>
-                                  <td style={td}>
+                                  <td style={calendarTd}>
                                     {obj.calendar_pushed ? (
-                                      <div style={{ fontSize: 14, lineHeight: 1.4 }}>
-                                        <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
-                                        <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
-                                        <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
+                                      <div style={calendarStatusBox}>
+                                        <div style={calendarStatusLine}>
+                                          <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
+                                          <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
+                                        </div>
+                                        <div style={calendarStatusMeta}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
                                       </div>
                                     ) : (
                                       <button onClick={() => pushDecision(obj)} style={btnTiny} disabled={!obj.id}>📅 달력 등록</button>
@@ -1393,7 +1395,7 @@ export default function My_Meeting({ user }) {
                               <th style={th}>내용</th>
                               <th style={{ ...th, width: 100 }}>담당</th>
                               <th style={{ ...th, width: 100 }}>마감</th>
-                              <th style={{ ...th, width: 160 }}>📅 달력</th>
+                              <th style={{ ...th, width: 210, minWidth: 210, whiteSpace: "nowrap" }}>📅 달력</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1402,14 +1404,16 @@ export default function My_Meeting({ user }) {
                                 <td style={td}>{a.text}</td>
                                 <td style={td}>{a.owner || "—"}</td>
                                 <td style={td}>{a.due || "—"}</td>
-                                <td style={td}>
+                                <td style={calendarTd}>
                                   {a.calendar_pushed ? (
-                                    <div style={{ fontSize: 14, lineHeight: 1.4 }}>
-                                      <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
-                                      <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                                    <div style={calendarStatusBox}>
+                                      <div style={calendarStatusLine}>
+                                        <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
+                                        <span onClick={() => unpushAction(a)} style={delLink}>해제</span>
+                                      </div>
+                                      <div style={calendarStatusMeta}>
                                         {a.calendar_pushed_by} · {dtPretty(a.calendar_pushed_at)}
                                       </div>
-                                      <span onClick={() => unpushAction(a)} style={delLink}>해제</span>
                                     </div>
                                   ) : (
                                     <button onClick={() => pushAction(a)} style={btnTiny}>📅 달력 등록</button>
@@ -1857,6 +1861,7 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
 const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
 const lbl = { fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" };
 const val = { fontSize: 14, color: "var(--text-primary)" };
+const meetingDetailPane = { padding: 20, maxWidth: 1120 };
 const connectedPanelSection = { padding: 16, borderBottom: "1px solid var(--border)" };
 const connectedPanelSectionLast = { ...connectedPanelSection, borderBottom: "none" };
 const connectedSectionTitle = { fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" };
@@ -1871,6 +1876,10 @@ const editLink = { fontSize: 14, color: "var(--accent)", cursor: "pointer", text
 const delLink = { fontSize: 14, color: "var(--danger)", cursor: "pointer", textDecoration: "underline" };
 const th = { padding: "6px 8px", textAlign: "left", fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", fontWeight: 600 };
 const td = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+const calendarTd = { ...td, whiteSpace: "nowrap" };
+const calendarStatusBox = { fontSize: 14, lineHeight: 1.4, whiteSpace: "nowrap", maxWidth: "100%" };
+const calendarStatusLine = { display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" };
+const calendarStatusMeta = { color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 
 // v8.7.6: 액션아이템 간트 차트 (모든 회의·차수 취합). SVG 기반.
 function ActionItemsGantt({ meetings, onPickMeeting }) {
