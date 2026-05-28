@@ -501,7 +501,7 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
     """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
     v9.x: admin 메일 설정(domain 포함)을 사용해 사용자에게 임시 비번을 발송."""
     from core.auth import hash_password, revoke_user_tokens
-    from core.mail import send_mail
+    from core.mail import send_mail, temp_password_attachment
     users = read_users()
     try:
         actor = (current_user(request).get("username") or "flow-admin").strip()
@@ -514,6 +514,7 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
             u["password_hash"] = hash_password(new_pw)
             write_users(users)
             safe_username = html.escape(req.username)
+            requested_at = dt.datetime.now().isoformat(timespec="seconds")
             content = (
                 "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
                 "<p>Your password has been reset by an administrator.</p>"
@@ -529,6 +530,7 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
                     receiver_usernames=[req.username],
                     title="[flow] Password Reset",
                     content=content,
+                    files=[temp_password_attachment(req.username, new_pw, requested_at=requested_at)],
                     status_code="auth",
                 )
             except Exception as e:

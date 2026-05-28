@@ -38,6 +38,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - Legacy alias는 읽을 때만 흡수한다: `informs -> inform`, `meetings -> meeting`, `dbmap -> tablemap`.
 - Shared 설정, catalog, rulebook, cache, credential, wiki/schema write는 global admin 또는 해당 page manager 이상만 허용한다.
 - 비밀번호 reset/bulk-create API 응답과 audit log에는 임시/기본 비밀번호를 남기지 않는다.
+- 비밀번호 reset 메일은 첨부 전용 사내 메일 API 호환을 위해 임시 비밀번호 txt 파일을 명시 첨부한다.
 
 ## Delegated Write Rules
 

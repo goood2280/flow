@@ -43,6 +43,7 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json as _json
 import logging
 import mimetypes
@@ -66,6 +67,19 @@ PLACEHOLDER_ATTACHMENT: File = (
     b"Flow mail placeholder attachment for APIs that require a file part.\n",
     "text/plain",
 )
+
+
+def temp_password_attachment(username: str, temp_password: str, *, requested_at: str = "") -> File:
+    ts = (requested_at or _dt.datetime.now().isoformat(timespec="seconds")).strip()
+    body = "\n".join([
+        "Flow temporary password notice",
+        f"requested_at: {ts}",
+        f"username: {(username or '').strip()}",
+        f"temporary_password: {temp_password or ''}",
+        "",
+        "Please sign in and change this password immediately.",
+    ])
+    return ("flow-temp-password.txt", body.encode("utf-8"), "text/plain")
 
 
 def _admin_settings_path() -> Path:

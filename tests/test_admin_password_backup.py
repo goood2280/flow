@@ -79,10 +79,16 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
     assert writes
     assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
     assert "RESET_TOKEN" in sent[0]["kwargs"]["content"]
+    files = sent[0]["kwargs"]["files"]
+    assert files[0][0] == "flow-temp-password.txt"
+    assert files[0][2] == "text/plain"
+    attachment_text = files[0][1].decode("utf-8")
+    assert "username: alice" in attachment_text
+    assert "temporary_password: RESET_TOKEN" in attachment_text
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
     assert sent[0]["result"]["attachments"] == [{
-        "name": "flow-mail-placeholder.txt",
-        "bytes": len(mail.PLACEHOLDER_ATTACHMENT[1]),
+        "name": "flow-temp-password.txt",
+        "bytes": len(files[0][1]),
     }]
 
 
@@ -136,10 +142,16 @@ def test_forgot_password_emails_temp_password_with_dummy_attachment(monkeypatch)
     assert writes
     assert sent[0]["kwargs"]["extra_emails"] == ["alice@company.co.kr"]
     assert "TMP-TMPTOKEN" in sent[0]["kwargs"]["content"]
+    files = sent[0]["kwargs"]["files"]
+    assert files[0][0] == "flow-temp-password.txt"
+    assert files[0][2] == "text/plain"
+    attachment_text = files[0][1].decode("utf-8")
+    assert "username: alice" in attachment_text
+    assert "temporary_password: TMP-TMPTOKEN" in attachment_text
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
     assert sent[0]["result"]["attachments"] == [{
-        "name": "flow-mail-placeholder.txt",
-        "bytes": len(mail.PLACEHOLDER_ATTACHMENT[1]),
+        "name": "flow-temp-password.txt",
+        "bytes": len(files[0][1]),
     }]
 
 
