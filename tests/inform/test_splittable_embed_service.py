@@ -430,6 +430,9 @@ def test_inform_mail_splittable_snapshot_html_renders_plan_cells_like_split_tabl
     assert "📌 R3" in html
     assert "✓ R4" in html
     assert "plan 적용" in html
+    assert "font-size:14px" in html
+    assert "color:#000000;font-weight:700'>✗ R1" in html
+    assert "color:#000000;font-style:italic;font-weight:700'>📌 R3" in html
     assert "→ R2" not in html
     assert "Wafer별 적용 plan 요약" not in html
 
@@ -531,10 +534,10 @@ def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns
     assert "S0" in html
     assert "S1" in html
     assert "✓" in html
-    assert "background:#C6EFCE;color:#006100;font-weight:700;'>S0" in html
-    assert "background:#FFEB9C;color:#9C5700;font-weight:700;'>S1" in html
-    assert html.count("background:#C6EFCE;color:#006100;font-weight:700;") == 3
-    assert html.count("background:#FFEB9C;color:#9C5700;font-weight:700;") == 2
+    assert "background:#C6EFCE;color:#000000;font-weight:700;'>S0" in html
+    assert "background:#FFEB9C;color:#000000;font-weight:700;'>S1" in html
+    assert html.count("background:#C6EFCE;color:#000000;font-weight:700;") == 3
+    assert html.count("background:#FFEB9C;color:#000000;font-weight:700;") == 2
     assert "Split table" in html
     assert "KNOB별 step_desc → step_id 요약" in html
     assert "STEP_GATE_A, STEP_ETCH_A" in html

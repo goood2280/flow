@@ -4422,6 +4422,8 @@ _ST_CELL_COLORS = [
 _GO_FLOW_URL = "http://go/flow_process"
 _MAIL_FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif'
 _MAIL_MIN_FONT = "12px"
+_MAIL_SNAPSHOT_FONT = "14px"
+_MAIL_GRID_TEXT = "#000000"
 _MAIL_BORDER = "#d1d5db"
 _MAIL_HEAD_BG = "#f3f4f6"
 _MAIL_TEXT = "#111827"
@@ -4522,7 +4524,7 @@ def _st_cell_bg(val: str, uniq_map: dict, pname: str) -> str:
     if idx is None:
         return ""
     c = _ST_CELL_COLORS[idx % len(_ST_CELL_COLORS)]
-    return f"background:{c['bg']};color:{c['fg']};"
+    return f"background:{c['bg']};color:{_MAIL_GRID_TEXT};"
 
 
 def _split_check_color_style(split_label: Any) -> str:
@@ -4530,7 +4532,7 @@ def _split_check_color_style(split_label: Any) -> str:
     if not match:
         return ""
     color = _ST_CELL_COLORS[int(match.group(1)) % len(_ST_CELL_COLORS)]
-    return f"background:{color['bg']};color:{color['fg']};font-weight:700;"
+    return f"background:{color['bg']};color:{_MAIL_GRID_TEXT};font-weight:700;"
 
 
 def _st_has_value(val: Any) -> bool:
@@ -4866,7 +4868,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         shown = rows_st[:max_rows]
         dense = len(headers) >= 12
         data_pad = "4px 5px" if dense else "4px 8px"
-        font_sz = _MAIL_MIN_FONT
+        font_sz = _MAIL_SNAPSHOT_FONT
         line_h = "1.25"
         total_data_cols = max(0, len(headers) + len(prefix_columns) - 1)
         first_col_style, data_col_style = _mail_scroll_col_styles(total_data_cols)
@@ -4878,11 +4880,11 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                    f"font-size:{_MAIL_MIN_FONT};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
         th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
                     f"font-size:{font_sz};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
-        td_prefix = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
+        td_prefix = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;color:{_MAIL_GRID_TEXT};"
                      f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};"
                      "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
         td_check = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
-                    f"font-size:{font_sz};font-family:monospace;line-height:{line_h};color:#111827;")
+                    f"font-size:{font_sz};font-family:monospace;line-height:{line_h};color:{_MAIL_GRID_TEXT};")
         hdr = (
             f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;'>"
             f"Split table"
@@ -4960,14 +4962,14 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         dense = len(headers) >= 12
         data_pad = "4px 5px" if dense else "4px 8px"
         first_pad = "4px 6px" if dense else "4px 8px"
-        font_sz = _MAIL_MIN_FONT
+        font_sz = _MAIL_SNAPSHOT_FONT
         line_h = "1.25"
         first_col_style, data_col_style = _mail_scroll_col_styles(len(headers))
         colgroup = _mail_colgroup_html(first_col_style, data_col_style, len(headers))
-        td_first = (f"border:1px solid #d1d5db;padding:{first_pad};background:#f9fafb;"
+        td_first = (f"border:1px solid #d1d5db;padding:{first_pad};background:#f9fafb;color:{_MAIL_GRID_TEXT};"
                     f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};")
         td_cell_base = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
-                        f"font-size:{font_sz};font-family:monospace;line-height:{line_h};")
+                        f"font-size:{font_sz};font-family:monospace;line-height:{line_h};color:{_MAIL_GRID_TEXT};")
         th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
                     f"font-size:{font_sz};color:#111827;text-align:center;font-family:monospace;line-height:{line_h};")
         th_label = th_style + first_col_style + "text-align:left;font-weight:700;color:#6b7280;"
@@ -5005,18 +5007,18 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 if plan_diff:
                     cell_plan_style = "border-left:3px solid #ef4444;box-shadow:inset 0 0 0 1px rgba(239,68,68,0.45);"
                     disp_html = (
-                        f"<span style='color:#dc2626;font-weight:700'>✗ {esc(disp)}"
-                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#ef4444'> (≠{esc(str(plan))})</span></span>"
+                        f"<span style='color:{_MAIL_GRID_TEXT};font-weight:700'>✗ {esc(disp)}"
+                        f"<span style='font-size:{_MAIL_SNAPSHOT_FONT};color:{_MAIL_GRID_TEXT}'> (≠{esc(str(plan))})</span></span>"
                     )
                 elif plan_applied:
-                    cell_plan_style = "border-left:3px solid #6b7280;font-weight:700;"
+                    cell_plan_style = "border-left:3px solid #16a34a;font-weight:700;"
                     disp_html = (
-                        f"<span style='color:#374151;font-weight:700'>✓ {esc(str(plan))}"
-                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#374151'> (plan 적용)</span></span>"
+                        f"<span style='color:{_MAIL_GRID_TEXT};font-weight:700'>✓ {esc(str(plan))}"
+                        f"<span style='font-size:{_MAIL_SNAPSHOT_FONT};color:{_MAIL_GRID_TEXT}'> (plan 적용)</span></span>"
                     )
                 elif plan_only:
-                    cell_plan_style = "border-left:3px solid #9ca3af;font-style:italic;font-weight:700;"
-                    disp_html = f"<span style='font-style:italic;font-weight:700'>📌 {esc(str(plan))}</span>"
+                    cell_plan_style = "border-left:3px solid #d97706;font-style:italic;font-weight:700;"
+                    disp_html = f"<span style='color:{_MAIL_GRID_TEXT};font-style:italic;font-weight:700'>📌 {esc(str(plan))}</span>"
                 else:
                     disp_html = esc(disp)
                 # plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.

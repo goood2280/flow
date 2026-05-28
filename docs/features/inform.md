@@ -52,6 +52,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - SplitTable snapshot endpoint는 같은 product/lot/custom_cols 요청이 겹치면 짧은 in-memory cache로 중복 계산을 피하되, 저장되는 embed payload shape는 유지한다.
 - SplitTable snapshot은 사용자가 선택한 KNOB/CUSTOM/세트 컬럼만 포함한다. 저장된 plan 값은 선택된 컬럼 row 안에 overlay할 수 있지만, 선택하지 않은 plan-only 컬럼 row를 자동으로 추가하지 않는다.
 - Inform에 첨부되는 SplitTable snapshot 화면/메일에는 SplitTable 하단 적용 요약과 동일하게 KNOB별 한 줄 `step_desc`/`step_id` 정보를 붙인다. 이 정보는 어떤 KNOB을 바꾸려면 어떤 `step_id`를 수정해야 하는지 확인하는 용도이며, `item_id`는 별도 열로 노출하지 않는다.
+- Inform 메일의 SplitTable snapshot plan 셀은 SplitTable 화면처럼 14px 표 셀, 검은 값 텍스트, plan 상태용 좌측 border를 사용한다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
 - Inform 페이지 권한이 있는 사용자는 별도 유저별 모듈 조회 권한 없이 모든 module의 Inform을 조회한다.
 - LOT matrix 열은 톱니바퀴 설정의 module 목록만 사용하며, 설정 순서 그대로 왼쪽부터 배치한다. 저장 데이터에 설정 밖 module이 있어도 matrix 열로 자동 추가하지 않는다.

@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Inform 메일 plan 표시와 Split 체크 XLSX/세션 만료 보정
 - (Codex) 임시 비밀번호 메일 txt 첨부 400 보정
 - (Codex) SplitTable/Inform 하단 적용 요약 KNOB별 한 줄 표시 보정
 - (Codex) Agent Semantic layer 관리 API/UI와 Inform 등록 도우미 graph 연결

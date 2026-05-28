@@ -8359,14 +8359,83 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
     return csv_response(csv_bytes, f"{product}_{root_lot_id or 'all'}.csv")
 
 
+SPLIT_CHECK_XLSX_PREFIX_COLUMNS = ["항목", "값", "Split"]
+
+
+def _export_has_value(value: Any) -> bool:
+    text = "" if value is None else str(value).strip()
+    return bool(text and text not in {"None", "null"})
+
+
+def _split_check_export_supported(selected: list[str]) -> bool:
+    for column in selected or []:
+        up = str(column or "").strip().upper()
+        if up in {"INLINE", "VM"} or up.startswith("INLINE_") or up.startswith("VM_"):
+            return False
+    return True
+
+
+def _build_split_check_export_rows(
+    selected: list[str],
+    wafer_count: int,
+    value_maps: dict[str, tuple[dict[int, str], dict[int, str]]],
+    col_rename: dict[str, str] | None = None,
+) -> list[list[str]]:
+    rows: list[list[str]] = []
+    rename = col_rename or {}
+    for column in selected or []:
+        display_name = str(rename.get(column, column) or column)
+        actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
+        values_by_idx: dict[int, str] = {}
+        order: list[str] = []
+        seen: set[str] = set()
+        for idx in range(max(0, int(wafer_count or 0))):
+            plan_value = plan_by_idx.get(idx, "")
+            actual_value = actual_by_idx.get(idx, "")
+            value = plan_value if _export_has_value(plan_value) else actual_value
+            if not _export_has_value(value):
+                continue
+            text = str(value)
+            values_by_idx[idx] = text
+            if text not in seen:
+                seen.add(text)
+                order.append(text)
+        for split_idx, value in enumerate(order):
+            label = f"S{split_idx}"
+            checks = ["✓" if values_by_idx.get(idx) == value else "" for idx in range(max(0, int(wafer_count or 0)))]
+            rows.append([display_name, value, label, *checks])
+    return rows
+
+
+def _split_check_param_merges(rows: list[list[str]], start_row: int) -> list[tuple[int, int, int, int]]:
+    merges: list[tuple[int, int, int, int]] = []
+    current = ""
+    run_start = 0
+    for idx, row in enumerate([*(rows or []), ["__flow_end__"]]):
+        param = str(row[0] if row else "")
+        if idx == 0:
+            current = param
+            run_start = 0
+            continue
+        if param == current:
+            continue
+        if current and idx - run_start > 1:
+            merges.append((start_row + run_start, 1, start_row + idx - 1, 1))
+        current = param
+        run_start = idx
+    return merges
+
+
 @router.get("/download-xlsx")
 def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                   wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
                   custom_name: str = Query(""), username: str = Query(""),
-                  custom_cols: str = Query("")):
+                  custom_cols: str = Query(""),
+                  display_mode: str = Query("")):
     """v8.4.4 — XLSX 내보내기. fab_lot_id 행이 동일 값 구간별로 셀 병합되어
     UI 의 그룹 헤더와 동일하게 표시.
     v8.8.33: custom_cols 추가 — save 없이 체크만 한 ad-hoc 컬럼.
+    v8.8.34: display_mode=split_check 이면 화면의 Split 체크 표시 행 형식으로 export.
     """
     openpyxl_error = None
     try:
@@ -8421,6 +8490,55 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     plans = _load_plan_data(product).get("plans", {})
     tag_values = _custom_tag_values_for_root(product, root_lot_id)
     management_values = _management_row_values_for_root(product, root_lot_id)
+    split_check_mode = (
+        str(display_mode or "").strip().lower() == "split_check"
+        and _split_check_export_supported(selected)
+    )
+
+    def _xlsx_value_maps_for_col(col_name: str) -> tuple[dict[int, str], dict[int, str]]:
+        actual_by_idx: dict[int, str] = {}
+        plan_by_idx: dict[int, str] = {}
+        if col_name in tag_labels:
+            for idx, wk in enumerate(wf_sorted):
+                tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                if _export_has_value(tv):
+                    actual_by_idx[idx] = str(tv)
+        elif col_name in management_labels:
+            for idx, wk in enumerate(wf_sorted):
+                mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                if _export_has_value(mv):
+                    actual_by_idx[idx] = str(mv)
+        elif col_name in df.columns:
+            vals = df[col_name].to_list()
+            for i, v in enumerate(vals):
+                wk = wf_vals[i] if i < len(wf_vals) else None
+                idx = wf_idx.get(wk)
+                if idx is None:
+                    continue
+                sv = str(v) if _export_has_value(v) else ""
+                ck = f"{root_lot_id}|{wk}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if _export_has_value(sv):
+                    actual_by_idx[idx] = sv
+                if _export_has_value(pv):
+                    plan_by_idx[idx] = str(pv)
+        else:
+            for idx, wk in enumerate(wf_sorted):
+                ck = f"{root_lot_id}|{wk}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if _export_has_value(pv):
+                    plan_by_idx[idx] = str(pv)
+        return actual_by_idx, plan_by_idx
+
+    split_check_rows: list[list[str]] = []
+    if split_check_mode:
+        value_maps = {col_name: _xlsx_value_maps_for_col(col_name) for col_name in selected}
+        split_check_rows = _build_split_check_export_rows(
+            selected,
+            len(wf_sorted),
+            value_maps,
+            col_rename,
+        )
 
     if openpyxl_error is not None:
         try:
@@ -8435,85 +8553,88 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
         download_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         n_wafers = len(wf_sorted)
-        last_col = 1 + n_wafers
-        rows = [
-            ["downloaded_at", download_ts],
-            ["username", username or ""],
-            ["root_lot_id", root_lot_id or "", *["" for _ in range(max(0, n_wafers - 1))]],
-        ]
+        prefix_count = len(SPLIT_CHECK_XLSX_PREFIX_COLUMNS) if split_check_mode else 1
+        last_col = max(prefix_count + n_wafers, prefix_count + 1) if split_check_mode else prefix_count + n_wafers
+        rows = [["downloaded_at", download_ts], ["username", username or ""]]
         merges = []
-        if n_wafers > 1:
-            merges.append((3, 2, 3, last_col))
 
-        has_fab_row = bool(fab_col and wf_sorted)
-        if has_fab_row:
-            fab_row = ["fab_lot_id", *["" for _ in wf_sorted]]
-            cur = None
-            start = 0
-            for i, w in enumerate(wf_sorted):
-                f = wf2fab.get(w, "")
-                if f != cur:
-                    if cur is not None and i - start > 0:
-                        fab_row[1 + start] = cur
-                        if i - start > 1:
-                            merges.append((4, 2 + start, 4, 2 + i - 1))
-                    cur = f
-                    start = i
-            if cur is not None and len(wf_sorted) - start > 0:
-                fab_row[1 + start] = cur
-                if len(wf_sorted) - start > 1:
-                    merges.append((4, 2 + start, 4, 2 + len(wf_sorted) - 1))
-            rows.append(fab_row)
+        if split_check_mode:
+            root_row = ["root_lot_id", "", "", root_lot_id or "", *["" for _ in range(max(0, n_wafers - 1))]]
+            rows.append(root_row)
+            merges.append((3, 1, 3, prefix_count))
+            if n_wafers > 1:
+                merges.append((3, prefix_count + 1, 3, last_col))
 
-        rows.append(["Parameter", *[f"#{w}" for w in wf_sorted]])
-        for col_name in selected:
-            display_name = col_rename.get(col_name, col_name)
-            vals = df[col_name].to_list() if col_name in df.columns else []
-            actual_by_idx = {}
-            plan_by_idx = {}
-            if col_name in tag_labels:
-                for idx, wk in enumerate(wf_sorted):
-                    tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
-                    if tv:
-                        actual_by_idx[idx] = str(tv)
-            elif col_name in management_labels:
-                for idx, wk in enumerate(wf_sorted):
-                    mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
-                    if mv:
-                        actual_by_idx[idx] = str(mv)
-            else:
-                for i, v in enumerate(vals):
-                    wk = wf_vals[i] if i < len(wf_vals) else None
-                    idx = wf_idx.get(wk)
-                    if idx is None:
-                        continue
-                    sv = str(v) if v is not None and str(v) not in ("None", "null") else ""
-                    ck = f"{root_lot_id}|{wk}|{col_name}"
-                    pv = plans.get(ck, {}).get("value")
-                    if sv:
-                        actual_by_idx[idx] = sv
-                    if pv:
-                        plan_by_idx[idx] = str(pv)
-            if col_name not in df.columns and col_name not in tag_labels and col_name not in management_labels:
-                for idx, wk in enumerate(wf_sorted):
-                    ck = f"{root_lot_id}|{wk}|{col_name}"
-                    pv = plans.get(ck, {}).get("value")
-                    if pv:
-                        plan_by_idx[idx] = str(pv)
-            out = [display_name, *["" for _ in wf_sorted]]
-            for idx in sorted(set(list(actual_by_idx.keys()) + list(plan_by_idx.keys()))):
-                sv = actual_by_idx.get(idx, "")
-                pv = plan_by_idx.get(idx, "")
-                if sv and pv and sv != pv:
-                    out[1 + idx] = f"{sv} != {pv}"
-                elif pv and not sv:
-                    out[1 + idx] = f"PLAN: {pv}"
-                else:
-                    out[1 + idx] = sv or pv
-            rows.append(out)
+            has_fab_row = bool(fab_col and wf_sorted)
+            if has_fab_row:
+                fab_row = ["fab_lot_id", "", "", *["" for _ in wf_sorted]]
+                cur = None
+                start = 0
+                row_no = len(rows) + 1
+                merges.append((row_no, 1, row_no, prefix_count))
+                for i, w in enumerate(wf_sorted):
+                    f = wf2fab.get(w, "")
+                    if f != cur:
+                        if cur is not None and i - start > 0:
+                            fab_row[prefix_count + start] = cur
+                            if i - start > 1:
+                                merges.append((row_no, prefix_count + 1 + start, row_no, prefix_count + i))
+                        cur = f
+                        start = i
+                if cur is not None and len(wf_sorted) - start > 0:
+                    fab_row[prefix_count + start] = cur
+                    if len(wf_sorted) - start > 1:
+                        merges.append((row_no, prefix_count + 1 + start, row_no, prefix_count + len(wf_sorted)))
+                rows.append(fab_row)
+
+            header_row_no = len(rows) + 1
+            rows.append([*SPLIT_CHECK_XLSX_PREFIX_COLUMNS, *[f"#{w}" for w in wf_sorted]])
+            data_start_row = header_row_no + 1
+            rows.extend(split_check_rows)
+            merges.extend(_split_check_param_merges(split_check_rows, data_start_row))
+        else:
+            rows.append(["root_lot_id", root_lot_id or "", *["" for _ in range(max(0, n_wafers - 1))]])
+            if n_wafers > 1:
+                merges.append((3, 2, 3, last_col))
+
+            has_fab_row = bool(fab_col and wf_sorted)
+            if has_fab_row:
+                fab_row = ["fab_lot_id", *["" for _ in wf_sorted]]
+                cur = None
+                start = 0
+                for i, w in enumerate(wf_sorted):
+                    f = wf2fab.get(w, "")
+                    if f != cur:
+                        if cur is not None and i - start > 0:
+                            fab_row[1 + start] = cur
+                            if i - start > 1:
+                                merges.append((4, 2 + start, 4, 2 + i - 1))
+                        cur = f
+                        start = i
+                if cur is not None and len(wf_sorted) - start > 0:
+                    fab_row[1 + start] = cur
+                    if len(wf_sorted) - start > 1:
+                        merges.append((4, 2 + start, 4, 2 + len(wf_sorted) - 1))
+                rows.append(fab_row)
+
+            rows.append(["Parameter", *[f"#{w}" for w in wf_sorted]])
+            for col_name in selected:
+                display_name = col_rename.get(col_name, col_name)
+                actual_by_idx, plan_by_idx = _xlsx_value_maps_for_col(col_name)
+                out = [display_name, *["" for _ in wf_sorted]]
+                for idx in sorted(set(list(actual_by_idx.keys()) + list(plan_by_idx.keys()))):
+                    sv = actual_by_idx.get(idx, "")
+                    pv = plan_by_idx.get(idx, "")
+                    if sv and pv and sv != pv:
+                        out[1 + idx] = f"{sv} != {pv}"
+                    elif pv and not sv:
+                        out[1 + idx] = f"PLAN: {pv}"
+                    else:
+                        out[1 + idx] = sv or pv
+                rows.append(out)
 
         data = build_workbook([{"title": product[:31], "rows": rows, "merges": merges}])
-        fname = f"{product}_{root_lot_id or 'all'}.xlsx"
+        fname = f"{product}_{root_lot_id or 'all'}{'_split_check' if split_check_mode else ''}.xlsx"
         return StreamingResponse(
             iter([data]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -8533,6 +8654,129 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     thin = Side(style="thin", color="555555")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     download_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if split_check_mode:
+        prefix_count = len(SPLIT_CHECK_XLSX_PREFIX_COLUMNS)
+        n_wafers = len(wf_sorted)
+        first_wafer_col = prefix_count + 1
+        last_col = max(prefix_count + n_wafers, first_wafer_col)
+        prefix_fill = PatternFill("solid", fgColor="F9FAFB")
+        mark_font = Font(color="000000", bold=True, name="Consolas", size=11)
+        prefix_font = Font(color="000000", bold=True, name="Consolas", size=11)
+        value_font = Font(color="000000", name="Consolas", size=11)
+        palette = [
+            ("C6EFCE", "000000"),
+            ("FFEB9C", "000000"),
+            ("FBE5D6", "000000"),
+            ("BDD7EE", "000000"),
+            ("E2BFEE", "000000"),
+            ("B4DED4", "000000"),
+            ("F4CCCC", "000000"),
+        ]
+
+        def _split_fill(label: str):
+            import re as _re
+            m = _re.fullmatch(r"S(\d+)", str(label or "").strip(), flags=_re.I)
+            if not m:
+                return None
+            bg, _fg = palette[int(m.group(1)) % len(palette)]
+            return PatternFill("solid", fgColor=bg)
+
+        def _style_cell(cell, *, fill=None, font=None, alignment=None):
+            if fill is not None:
+                cell.fill = fill
+            if font is not None:
+                cell.font = font
+            if alignment is not None:
+                cell.alignment = alignment
+            cell.border = border
+
+        ws.cell(row=1, column=1, value="downloaded_at")
+        _style_cell(ws.cell(row=1, column=1), fill=hdr_fill, font=white)
+        ws.cell(row=1, column=2, value=download_ts)
+        ws.cell(row=2, column=1, value="username")
+        _style_cell(ws.cell(row=2, column=1), fill=hdr_fill, font=white)
+        ws.cell(row=2, column=2, value=username or "")
+
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=prefix_count)
+        _style_cell(ws.cell(row=3, column=1, value="root_lot_id"), fill=hdr_fill, font=white, alignment=center)
+        root_value_col = first_wafer_col
+        ws.cell(row=3, column=root_value_col, value=root_lot_id or "")
+        if n_wafers > 1:
+            ws.merge_cells(start_row=3, start_column=first_wafer_col, end_row=3, end_column=prefix_count + n_wafers)
+        for col_idx in range(root_value_col, (prefix_count + n_wafers if n_wafers else root_value_col) + 1):
+            _style_cell(ws.cell(row=3, column=col_idx), fill=hdr_fill, font=Font(color="FBBF24", bold=True, name="Consolas", size=13), alignment=center)
+
+        has_fab_row = bool(fab_col and wf_sorted)
+        header_row = 5 if has_fab_row else 4
+        if has_fab_row:
+            ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=prefix_count)
+            _style_cell(ws.cell(row=4, column=1, value="fab_lot_id"), fill=hdr_fill, font=white, alignment=center)
+            cur = None
+            start = 0
+            for i, w in enumerate(wf_sorted):
+                f = wf2fab.get(w, "")
+                if f != cur:
+                    if cur is not None and i - start > 0:
+                        c = ws.cell(row=4, column=first_wafer_col + start, value=cur)
+                        _style_cell(c, fill=fab_fill, font=fab_font, alignment=center)
+                        if i - start > 1:
+                            ws.merge_cells(start_row=4, start_column=first_wafer_col + start, end_row=4, end_column=first_wafer_col + i - 1)
+                    cur = f
+                    start = i
+            if cur is not None and len(wf_sorted) - start > 0:
+                c = ws.cell(row=4, column=first_wafer_col + start, value=cur)
+                _style_cell(c, fill=fab_fill, font=fab_font, alignment=center)
+                if len(wf_sorted) - start > 1:
+                    ws.merge_cells(start_row=4, start_column=first_wafer_col + start, end_row=4, end_column=first_wafer_col + len(wf_sorted) - 1)
+
+        for i, label in enumerate(SPLIT_CHECK_XLSX_PREFIX_COLUMNS, start=1):
+            c = ws.cell(row=header_row, column=i, value=label)
+            _style_cell(c, fill=param_fill, font=white, alignment=center)
+        for i, w in enumerate(wf_sorted):
+            c = ws.cell(row=header_row, column=first_wafer_col + i, value=f"#{w}")
+            _style_cell(c, fill=param_fill, font=white, alignment=center)
+
+        data_start = header_row + 1
+        for r_idx, row in enumerate(split_check_rows, start=data_start):
+            label = str(row[2] if len(row) > 2 else "")
+            fill = _split_fill(label)
+            for c_idx, value in enumerate(row, start=1):
+                cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                if c_idx <= prefix_count:
+                    _style_cell(cell, fill=(fill if c_idx == 3 and fill else prefix_fill), font=(mark_font if c_idx == 3 else prefix_font), alignment=center if c_idx == 3 else Alignment(horizontal="left", vertical="top"))
+                else:
+                    mark_fill = fill if value else None
+                    _style_cell(cell, fill=mark_fill, font=mark_font if value else value_font, alignment=center)
+        for r1, c1, r2, c2 in _split_check_param_merges(split_check_rows, data_start):
+            ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
+            ws.cell(row=r1, column=c1).alignment = Alignment(horizontal="left", vertical="top")
+
+        ws.column_dimensions["A"].width = 28
+        ws.column_dimensions["B"].width = 18
+        ws.column_dimensions["C"].width = 10
+        for i in range(len(wf_sorted)):
+            ws.column_dimensions[get_column_letter(first_wafer_col + i)].width = 12
+        ws.freeze_panes = f"{get_column_letter(first_wafer_col)}{data_start}"
+
+        last_row = header_row + len(split_check_rows)
+        for row_cells in ws.iter_rows(min_row=1, max_row=max(last_row, header_row), min_col=1, max_col=last_col):
+            for c in row_cells:
+                b = c.border
+                if not (b and b.left and b.left.style):
+                    c.border = border
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        from fastapi.responses import StreamingResponse
+        fname = f"{product}_{root_lot_id or 'all'}_split_check.xlsx"
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
     n_wafers = len(wf_sorted)
     last_col = 1 + n_wafers

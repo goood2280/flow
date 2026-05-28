@@ -77,11 +77,13 @@ def test_splittable_knob_rule_modal_checks_current_row_values():
 def test_splittable_view_has_split_check_display_toggle():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
     snapshot_view = (ROOT / "frontend" / "src" / "components" / "SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
+    backend = (ROOT / "backend" / "routers" / "splittable.py").read_text(encoding="utf-8")
     assert "showSplitCheckView" in ui
     assert "Split 체크 표시" in ui
     assert "isInlineVmSplitParam" in ui
     assert "splitCheckDisabled" in ui
     assert "disabled={splitCheckDisabled}" in ui
+    assert "display_mode=split_check" in ui
     assert 'import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS }' in ui
     assert "const splitCheckStView=buildSplitCheckStView" in ui
     assert "prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS" in ui
@@ -95,6 +97,25 @@ def test_splittable_view_has_split_check_display_toggle():
     assert "KNOB별 step_desc → step_id 요약" in snapshot_view
     assert "function_step</th>" not in snapshot_view
     assert "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요." not in snapshot_view
+    assert 'display_mode: str = Query("")' in backend
+    assert "SPLIT_CHECK_XLSX_PREFIX_COLUMNS = [\"항목\", \"값\", \"Split\"]" in backend
+
+
+def test_splittable_split_check_xlsx_rows_use_plan_as_display_value():
+    rows = splittable._build_split_check_export_rows(
+        ["KNOB_GATE"],
+        3,
+        {"KNOB_GATE": ({0: "R1", 1: "R1", 2: "R3"}, {1: "R2"})},
+        {"KNOB_GATE": "KNOB_GATE"},
+    )
+
+    assert rows == [
+        ["KNOB_GATE", "R1", "S0", "✓", "", ""],
+        ["KNOB_GATE", "R2", "S1", "", "✓", ""],
+        ["KNOB_GATE", "R3", "S2", "", "", "✓"],
+    ]
+    assert not splittable._split_check_export_supported(["INLINE_TEMP"])
+    assert not splittable._split_check_export_supported(["VM_STEP_ITEM"])
 
 
 def test_meeting_page_does_not_embed_flowi_prompt_box():

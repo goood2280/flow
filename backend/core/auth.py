@@ -1,7 +1,7 @@
 """core/auth.py — session tokens + password hashing (v8.4.6).
 
 v8.4.6 보안 패치:
-  - 모든 /api/* 는 이제 세션 토큰 검증. 토큰은 로그인 성공 시 발급되고 4h idle 만료.
+  - 모든 /api/* 는 이제 세션 토큰 검증. 토큰은 로그인 성공 시 발급되고 6h idle 만료.
   - 비밀번호는 PBKDF2-HMAC-SHA256 (salted). 기존 sha256(no-salt) 해시는 첫 로그인 시 자동 업그레이드.
   - FastAPI dependency: current_user(), require_admin(), verify_owner(username).
   - 토큰 store 는 {data_root}/sessions/tokens.json (atomic write, in-proc cache).

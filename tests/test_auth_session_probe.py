@@ -52,6 +52,28 @@ def test_auth_me_returns_current_user_for_valid_token(monkeypatch):
     assert out["tabs"] == "dashboard,inform"
 
 
+def test_session_token_expires_after_six_hours_idle(monkeypatch):
+    now = 100_000.0
+    token = "tok_idle"
+    monkeypatch.setattr(auth_core, "_cache_loaded", True)
+    monkeypatch.setattr(auth_core, "_cache", {
+        token: {
+            "username": "alice",
+            "role": "user",
+            "issued_at": now - 60,
+            "last_seen": now - auth_core.SESSION_IDLE_SECONDS - 1,
+        },
+    })
+    saves = []
+    monkeypatch.setattr(auth_core, "_now", lambda: now)
+    monkeypatch.setattr(auth_core, "_save_tokens", lambda: saves.append(dict(auth_core._cache)))
+
+    assert auth_core.SESSION_IDLE_SECONDS == 6 * 3600
+    assert auth_core.validate_token(token) is None
+    assert token not in auth_core._cache
+    assert saves
+
+
 def test_change_password_wrong_current_password_is_local_form_error(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "alice", "role": "user"})
     monkeypatch.setattr(
