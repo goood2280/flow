@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i 사용자별 Q/A 메모리와 후속 질문 context 병합
 - (Codex) SplitTable ML_TABLE 제품 RAM cache 계층 추가
 - (Codex) 앱 API 에러 AI 설명과 원문 fallback 표시
 - (Codex) 운영 메모리 활용 preview cache와 Dashboard LOT latest cache source 연결

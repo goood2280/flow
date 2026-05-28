@@ -38,6 +38,7 @@ from core import dashboard_join as dashboard_charting
 from core import knowledge_impact
 from core import knowledge_vault as kv
 from core import flowi_multisource
+from core import home_memory
 from app_v2.modules.agent_runtime.actions import (
     build_action_plans as _agent_runtime_build_action_plans,
     compact_plan_rows as _agent_runtime_compact_plan_rows,
@@ -19430,6 +19431,22 @@ def _attach_flowi_trace(
         result["runtime_status"] = runtime.get("status") or ""
     except Exception as exc:
         logger.warning("home flowi runtime snapshot failed: %s", exc)
+    try:
+        row = home_memory.remember_turn(
+            username=str(result.get("user") or ""),
+            prompt=prompt,
+            answer=str(result.get("answer") or ""),
+            tool=tool,
+            source="llm_flowi_chat",
+            run_id=str(result.get("run_id") or ""),
+        )
+        result["home_memory"] = {
+            "stored": bool(row),
+            "memory_id": (row or {}).get("memory_id") or "",
+            "context_message_count": len(_flowi_context_messages(agent_context)),
+        }
+    except Exception as exc:
+        logger.debug("home flowi memory append failed: %s", exc)
     clarification_loop = result["trace"].get("clarification_loop") if isinstance(result.get("trace"), dict) else {}
     if isinstance(clarification_loop, dict) and clarification_loop.get("needs_input"):
         result["needs_input"] = True
@@ -19601,10 +19618,39 @@ def _run_flowi_chat(
 
     source = _clean_source_ai(source_ai) if source_ai else ""
     client_run_id = str(client_run_id or "").strip()[:120]
-    agent_context = agent_context if isinstance(agent_context, dict) else {}
+    agent_context = home_memory.merge_agent_context(
+        agent_context if isinstance(agent_context, dict) else {},
+        username=username,
+    )
 
     allowed_keys = _allowed_flowi_feature_keys(me)
     prompt = _flowi_resolve_pending_core_prompt(prompt, agent_context, allowed_keys)
+    if home_memory.is_memory_recall_prompt(prompt):
+        tool = home_memory.recall_answer(prompt=prompt, username=username, agent_context=agent_context)
+        answer = tool.get("answer") or ""
+        _append_user_event(username, "home_memory_recall", _event_fields(
+            {"prompt": prompt, "answer": answer, "turn_count": (tool.get("memory") or {}).get("turn_count")},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
     admin_block = _flowi_home_admin_function_block(prompt, me)
     if admin_block.get("handled"):
         answer = admin_block["answer"]

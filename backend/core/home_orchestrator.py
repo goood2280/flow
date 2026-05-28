@@ -36,6 +36,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+from core import home_memory
 from core import tool_registry
 from core.paths import PATHS
 
@@ -1193,6 +1194,18 @@ def _attach_runtime_result(
     out["graph"] = snapshot["graph"]
     out["action_log"] = snapshot["action_log"]
     out["runtime_status"] = snapshot["status"]
+    try:
+        row = home_memory.remember_turn(
+            username=str((user or {}).get("username") or out.get("user") or ""),
+            prompt=prompt,
+            answer=str(out.get("reply") or out.get("answer") or ""),
+            tool=out.get("tool") if isinstance(out.get("tool"), dict) else {},
+            source=source,
+            run_id=str(out.get("run_id") or ""),
+        )
+        out["home_memory"] = {"stored": bool(row), "memory_id": (row or {}).get("memory_id") or ""}
+    except Exception:
+        logger.debug("home orchestrator memory append failed", exc_info=True)
     return out
 
 
@@ -1231,6 +1244,18 @@ def orchestrate(
     prompt = str(prompt or "").strip()
     if not prompt:
         return {"ok": False, "error": "빈 prompt", "trace": []}
+    username = str((user or {}).get("username") or "")
+    if home_memory.is_memory_recall_prompt(prompt):
+        tool = home_memory.recall_answer(prompt=prompt, username=username, agent_context=None)
+        return _attach_runtime_result({
+            "ok": True,
+            "prompt": prompt,
+            "trace": [],
+            "meta": {"planner": "home_memory", "step_count": 0},
+            "reply": tool.get("answer") or "",
+            "tool": tool,
+            "picked_count": 0,
+        }, prompt=prompt, user=user)
 
     tools = tool_registry.list_tools(include_stats=False)
     plan: list[dict[str, Any]] | None = None

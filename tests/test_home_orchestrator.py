@@ -287,6 +287,115 @@ def test_home_runtime_snapshot_save_list_load_shape(monkeypatch, tmp_path):
     assert loaded and loaded["run_id"] == snapshot["run_id"]
 
 
+def test_flowi_chat_merges_server_memory_into_agent_context(monkeypatch, tmp_path):
+    from core import home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    home_memory.remember_turn(
+        username="alice",
+        prompt="A1000 IOFF 보여줘",
+        answer="A1000 IOFF preview 3 rows",
+        tool={"feature": "filebrowser", "intent": "filebrowser_data_preview", "action": "preview_filebrowser_data"},
+    )
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"filebrowser"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-memory-run", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_legacy_handler(
+        prompt,
+        product,
+        max_rows=12,
+        allowed_keys=None,
+        username="flowi",
+        role="user",
+        agent_context=None,
+    ):
+        captured["messages"] = list((agent_context or {}).get("messages") or [])
+        return {
+            "handled": True,
+            "intent": "pytest_memory_context",
+            "action": "pytest.memory",
+            "feature": "filebrowser",
+            "answer": "current answer",
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_flowi_query", fake_legacy_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="현재 상태 알려줘",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["answer"] == "current answer"
+    messages = captured["messages"]
+    assert any(m.get("role") == "user" and "A1000 IOFF" in m.get("prompt", "") for m in messages)
+    assert any(m.get("role") == "assistant" and "preview 3 rows" in m.get("text", "") for m in messages)
+
+
+def test_flowi_chat_answers_memory_recall_without_client_context(monkeypatch, tmp_path):
+    from core import home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    home_memory.remember_turn(
+        username="alice",
+        prompt="변경점 관리 회의 결정사항 알려줘",
+        answer="결정사항은 device owner 확인입니다.",
+        tool={"feature": "meeting", "intent": "meeting_recall_summary"},
+    )
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"meeting", "calendar"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-memory-recall", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    result = llm_router._run_flowi_chat(
+        prompt="아까 내가 뭐 물어봤지?",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["tool"]["intent"] == "home_memory_recall"
+    assert "변경점 관리 회의" in result["answer"]
+    assert "device owner" in result["answer"]
+
+
+def test_home_orchestrator_answers_memory_recall(monkeypatch, tmp_path):
+    from core import home_memory, home_orchestrator
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(home_orchestrator, "HOME_AGENT_RUNS_DIR", tmp_path / "runs")
+    home_memory.remember_turn(
+        username="alice",
+        prompt="인폼 등록할 때 필수값 뭐야?",
+        answer="product, lot_id, module, note, mail target이 필요합니다.",
+        tool={"feature": "inform", "intent": "inform_registration_help"},
+    )
+
+    out = home_orchestrator.orchestrate("이전 질문과 답변 기억해?", user={"username": "alice"})
+
+    assert out["ok"] is True
+    assert out["meta"]["planner"] == "home_memory"
+    assert "인폼 등록" in out["reply"]
+    assert "product" in out["reply"]
+
+
 def test_pick_tools_internal_excludes_disabled(monkeypatch, tmp_path):
     from core import home_orchestrator, tool_registry
 
@@ -356,10 +465,11 @@ def test_flowi_unit_dispatcher_returns_registered_handle_result(monkeypatch):
     assert captured["ctx"]["me"] == {"username": "alice"}
 
 
-def test_run_flowi_chat_falls_back_after_unhandled_unit_dispatch(monkeypatch):
-    from core import home_orchestrator
+def test_run_flowi_chat_falls_back_after_unhandled_unit_dispatch(monkeypatch, tmp_path):
+    from core import home_memory, home_orchestrator
     from routers import llm as llm_router
 
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"filebrowser"})
     monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
@@ -407,4 +517,6 @@ def test_run_flowi_chat_falls_back_after_unhandled_unit_dispatch(monkeypatch):
     assert result["answer"] == "legacy fallback"
     assert result["run_id"] == "pytest-run"
     assert called["allowed_keys"] == {"filebrowser"}
-    assert called["agent_context"] == {"source": "pytest"}
+    assert called["agent_context"]["source"] == "pytest"
+    assert called["agent_context"]["server_memory"]["enabled"] is True
+    assert called["agent_context"]["messages"] == []

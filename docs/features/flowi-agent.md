@@ -32,6 +32,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 - `change_management` unit의 회의/변경점 저장 데이터 기반 plain text recall 답변
 - `data/flow-data/semantic` JSON lexicon, intent hint, proposal queue 관리
 - Home Flow-i 실행의 공개 runtime graph snapshot 관찰
+- Home Flow-i 사용자별 Q/A 메모리(`data/flow-data/home_agent_memory/conversation.jsonl`) 저장과 후속 질문 context 병합
 
 ## Does Not Own
 
@@ -90,6 +91,8 @@ Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `ru
 
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
 
+Home Flow-i는 응답 생성 후 사용자별 prompt/answer와 공개 tool summary만 `FLOW_DATA_ROOT/home_agent_memory/conversation.jsonl`에 append한다. 다음 `/api/llm/flowi/chat` 요청은 frontend가 보낸 현재 세션 context와 서버 메모리의 최근 Q/A를 병합해 후속 질문 해석에 사용한다. `아까 내가 뭐 물어봤지?`처럼 이전 질문/답변을 묻는 prompt는 LLM 없이 메모리 기반 plain text 답변을 반환한다. 이 메모리에는 raw preview row dump, 내부 reasoning, source DB 원문을 저장하지 않는다.
+
 ## Semantic Layer Tab
 
 `Semantic layer` 탭은 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 사용자는 JSON 편집으로 alias group과 intent hint를 저장할 수 있고, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
@@ -114,6 +117,7 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 | Agent router | `backend/routers/agent.py` |
 | LLM status/error explain router | `backend/routers/llm.py` |
 | Home runtime graph | `backend/core/home_orchestrator.py` |
+| Home Q/A memory | `backend/core/home_memory.py` |
 | Unit registry | `backend/core/flowi_units/registry.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |
