@@ -9,6 +9,8 @@
 
 ## Done
 
+- (Codex) 공유 Semantic Layer 서비스와 Dashboard Agent/Home Orchestrator 사슬화
+- (Codex) Home Flow-i SQL→JOIN→Dashboard 단위기능 AI 추가
 - (Codex) Home Flow-i step matching deterministic lookup
 - (Codex) Home Flow-i 사용자별 Q/A 메모리와 후속 질문 context 병합
 - (Codex) SplitTable ML_TABLE 제품 RAM cache 계층 추가

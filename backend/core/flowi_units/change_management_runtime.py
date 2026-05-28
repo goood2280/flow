@@ -385,7 +385,9 @@ def run_change_management_runtime(
     *,
     username: str = "",
     request: Request | None = None,
+    agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    del agent_context
     if request is None:
         raise HTTPException(status_code=400, detail="request is required for Change Management Flow-i")
     body = deepcopy(payload or {})

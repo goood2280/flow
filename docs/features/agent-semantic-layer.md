@@ -29,6 +29,8 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 
 `effective` view는 in-code seed와 disk override를 merge한 결과다. 현재 Agent API는 `backend/app_v2/modules/semantic_lexicon/service.py`에서 disk value를 우선 적용한다.
 
+런타임 resolver의 공유 진입점은 `backend/core/agent_semantic_service.py`의 `resolve(prompt, columns=None, product="", dtypes=None)`다. Unit runtime은 필요에 따라 기존 공개 frame shape만 골라 노출한다.
+
 ## Semantic APIs
 
 | Endpoint | 용도 | 권한 | write 여부 |
@@ -65,7 +67,7 @@ context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> pre
 ```
 
 - `context_sample`은 FileBrowser source of truth에서 schema와 compact `sample_profile`을 얻는다.
-- `semantic_layer`는 prompt와 resolved schema를 보고 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`을 `semantic_frame`에 넣는다.
+- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 기존 shape인 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`을 `semantic_frame`에 넣는다.
 - `filter_draft`와 `column_draft`는 `semantic_frame`을 참고하지만 SQL validation, selected column validation, preview는 FileBrowser helper를 재사용한다.
 - root/file/schema 해석의 source of truth는 `backend/routers/filebrowser.py`와 `backend/core/flowi_units/filebrowser_ai_sql_runtime.py`다.
 - Agent history에는 preview row 전체를 싣지 않는다. preview table은 사용자가 `적용`을 눌러 FileBrowser preview endpoint를 다시 호출한 결과만 보여준다.
@@ -78,7 +80,7 @@ context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> pre
 context_seed -> semantic_layer -> slot_extract -> validate_missing -> snapshot_preview -> review -> register
 ```
 
-- `semantic_layer`는 shared lexicon의 alias hit, slot hint, unknown term, matched intent를 공개 trace에 남긴다.
+- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 alias hit, slot hint, unknown term, matched intent를 공개 trace에 남긴다.
 - 필수 slot은 `product`, 단일 `lot_id`, `module`, `note`, mail target이다.
 - slot merge는 short-memory state와 semantic hint를 먼저 깔고, prompt에서 명확히 추출된 값과 explicit `slot_overrides`가 덮어쓴다.
 - `continue`는 `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/*.json` short memory만 갱신한다.
@@ -97,6 +99,18 @@ context_scope -> meeting_reference -> evidence_pack -> answer_compose
 - `evidence_pack`은 agenda, minutes, decision, action item, change-management calendar event summary만 근거로 묶는다.
 - `answer_compose`는 plain text 답변을 만든다. 근거가 없으면 없다고 답하고 markdown decoration은 제거한다.
 - 실행 이력만 `FLOW_DATA_ROOT/agent_unit_ai_sessions/change_management/history.jsonl`에 append한다.
+
+### Dashboard Agent
+
+위치:
+
+```text
+semantic_layer -> chart_intent -> chart_type_select -> params_fill -> spec_validate -> render_spec
+```
+
+- `semantic_layer`는 공유 `agent_semantic_service.resolve()`를 호출한다.
+- 입력은 `{natural_language, columns, sample_rows}`이며 source root/file에는 의존하지 않는다.
+- 출력은 기존 `chart_result` shape를 유지해 `PlotlyChart.jsx`가 그대로 받을 수 있어야 한다.
 
 ## DB And File References
 
@@ -139,6 +153,7 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 | Layer | Path |
 |---|---|
 | Agent semantic API | `backend/routers/agent.py` |
+| Shared semantic resolver | `backend/core/agent_semantic_service.py` |
 | Semantic lexicon storage/service | `backend/app_v2/modules/semantic_lexicon/` |
 | Semantic proposal queue/classifier | `backend/app_v2/modules/semantic_learning/` |
 | Agent runtime semantic seed placeholder | `backend/app_v2/modules/agent_runtime/semantic.py` |
@@ -146,6 +161,7 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |
 | Change management runtime | `backend/core/flowi_units/change_management_runtime.py` |
+| Dashboard Agent runtime | `backend/core/flowi_units/dashboard_agent_runtime.py` |
 | DB/data root resolution | `backend/core/roots.py`, `backend/core/paths.py` |
 | FileBrowser source of truth | `backend/routers/filebrowser.py` |
 | SplitTable rulebook/source matching | `backend/routers/splittable.py` |
@@ -158,4 +174,5 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 ```bash
 git diff --check -- docs/AGENT_FLOW_CONTEXT.md docs/features/README.md docs/features/flowi-agent.md docs/features/agent-semantic-layer.md
 python3 -m pytest tests/test_feature_contracts.py
+python3 -m pytest tests/agent/test_agent_semantic_service.py
 ```

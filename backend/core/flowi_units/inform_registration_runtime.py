@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 
 from app_v2.modules.semantic_learning import extractor as semantic_extractor
 from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
+from core import agent_semantic_service
 from core.paths import PATHS
 from core.utils import load_json, save_json
 
@@ -459,22 +460,12 @@ def _semantic_unknown_terms(
 
 
 def _semantic_layer(prompt: str, current_slots: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    alias_groups = _inform_alias_groups()
-    intent_hints = _inform_intent_hints()
-    alias_hits, matched_norms = _semantic_alias_hits(prompt, alias_groups)
-    slot_hints = _semantic_slot_hints(prompt, alias_hits, alias_groups)
-    ignored_values = [value for value in slot_hints.values() if isinstance(value, str)]
-    ignored_values.extend(_string_list(slot_hints.get("snapshot_custom_cols"), limit=80))
-    unknown_terms = _semantic_unknown_terms(prompt, alias_groups, matched_norms, ignored_values)
-    hit_canonicals = {str(hit.get("canonical") or "") for hit in alias_hits}
-    intent_matches = {
-        intent: required
-        for intent, required in (intent_hints or {}).items()
-        if required and all(str(item) in hit_canonicals for item in required)
-    }
-    warnings: list[str] = []
-    if unknown_terms:
-        warnings.append("Unmapped semantic terms: " + ", ".join(unknown_terms[:8]))
+    resolved = agent_semantic_service.resolve(prompt)
+    alias_hits = list(resolved.get("alias_hits") or [])
+    slot_hints = deepcopy(resolved.get("slot_hints") or {})
+    unknown_terms = list(resolved.get("unknown_terms") or [])
+    intent_matches = dict(resolved.get("intent_matches") or {})
+    warnings = list(resolved.get("warnings") or [])
     semantic_frame = {
         "alias_hits": alias_hits,
         "slot_hints": deepcopy(slot_hints),
@@ -788,7 +779,9 @@ def run_inform_registration_runtime(
     *,
     username: str = "",
     request: Request | None = None,
+    agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    del agent_context
     body = deepcopy(payload or {})
     prompt = _clean_text(body.get("prompt") or body.get("natural_language"), 5000)
     action = _clean_text(body.get("action") or "continue", 40).casefold()

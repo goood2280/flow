@@ -21,6 +21,9 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `GET /api/agent/unit-ai/change_management/runtime/graph`
   - `POST /api/agent/unit-ai/change_management/runtime/run`
   - `GET /api/agent/unit-ai/change_management/runtime/history`
+  - `GET /api/agent/unit-ai/dashboard_agent/runtime/graph`
+  - `POST /api/agent/unit-ai/dashboard_agent/runtime/run`
+  - `GET/PUT /api/agent/unit-ai/{unit_key}/runtime/overrides`
   - `GET /api/agent/semantic/lexicon`
   - `PUT/DELETE /api/agent/semantic/alias-groups/{canonical}`
   - `PUT/DELETE /api/agent/semantic/intent-hints/{intent}`
@@ -30,6 +33,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 - `filebrowser_ai_sql` unit의 공개 실행 trace와 LangGraph-ready DAG 가시화
 - `inform_registration` unit의 short-memory slot 수집, draft review, confirm-only Inform 저장 흐름
 - `change_management` unit의 회의/변경점 저장 데이터 기반 plain text recall 답변
+- `dashboard_agent` unit의 source-agnostic chart_result draft 생성
 - `data/flow-data/semantic` JSON lexicon, intent hint, proposal queue 관리
 - Home Flow-i 실행의 공개 runtime graph snapshot 관찰
 - Home Flow-i 사용자별 Q/A 메모리(`data/flow-data/home_agent_memory/conversation.jsonl`) 저장과 후속 질문 context 병합
@@ -85,6 +89,20 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 
 이 unit은 Meeting/Calendar 데이터를 쓰지 않는다. 실행 이력만 `FLOW_DATA_ROOT/agent_unit_ai_sessions/change_management/history.jsonl`에 append한다.
 
+## Dashboard Agent Unit
+
+`dashboard_agent`는 Agent 단위기능 AI의 네 번째 unit이다. 입력은 source 종류와 무관하게 `{natural_language, columns, sample_rows}`만 본다.
+
+실행 graph는 `semantic_layer -> chart_intent -> chart_type_select -> params_fill -> spec_validate -> render_spec`다. `semantic_layer`는 `backend/core/agent_semantic_service.py`를 공유하고, LLM이 없거나 실패하면 chart type과 x/y/group 파라미터를 deterministic fallback으로 채운다.
+
+출력은 기존 Home/Dashboard가 쓰는 `chart_result` shape를 유지한다. `PlotlyChart.jsx`가 받는 `kind`, `chart_type`, `points`, `config`, `chart_config`, `total` 필드를 깨지 않는다.
+
+Agent 단위기능 AI 탭의 `Persona/Prompt/Cache 편집` 패널은 `FLOW_DATA_ROOT/agent_unit_overrides.json`에 node별 override를 저장한다. 저장된 `prompt_system`은 Dashboard Agent의 `chart_type_select`와 `params_fill` LLM 호출에 반영된다.
+
+## Home SQL Join Dashboard Unit
+
+`home_sql_join_dashboard`는 기준 source SQL draft, schema relation 기반 JOIN, output route를 담당한다. `dashboard_draft` 노드는 직접 chart spec을 만들지 않고 `dashboard_agent`를 sub-runtime으로 호출하며, sub-trace를 parent trace의 `dashboard.sub_trace`와 Home ToolCall `sub_trace`에 남긴다.
+
 ## Home Flow-i Runtime Tab
 
 Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.
@@ -121,9 +139,11 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 | Home runtime graph | `backend/core/home_orchestrator.py` |
 | Home Q/A memory | `backend/core/home_memory.py` |
 | Unit registry | `backend/core/flowi_units/registry.py` |
+| Shared semantic resolver | `backend/core/agent_semantic_service.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |
 | Change management runtime | `backend/core/flowi_units/change_management_runtime.py` |
+| Dashboard Agent runtime | `backend/core/flowi_units/dashboard_agent_runtime.py` |
 | Semantic lexicon store | `backend/app_v2/modules/semantic_lexicon/` |
 | Semantic proposal queue | `backend/app_v2/modules/semantic_learning/` |
 | FileBrowser owner | `backend/routers/filebrowser.py` |
@@ -132,6 +152,8 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 ## Validation
 
 - `python3 -m pytest tests/agent/test_filebrowser_ai_sql_runtime.py`
+- `python3 -m pytest tests/agent/test_agent_semantic_service.py tests/agent/test_dashboard_agent_runtime.py`
+- `python3 -m pytest tests/agent/test_home_orchestrator_chaining.py tests/agent/test_home_sql_join_dashboard_runtime.py`
 - `python3 -m pytest tests/agent/test_inform_registration_runtime.py`
 - `python3 -m pytest tests/agent/test_change_management_runtime.py`
 - `python3 -m pytest tests/agent/test_semantic_agent_api.py tests/test_semantic_lexicon.py tests/test_semantic_learning_extractor.py`

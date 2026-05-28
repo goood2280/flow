@@ -3,13 +3,17 @@ from __future__ import annotations
 
 from core.flowi_units.base import UnitAI
 from core.flowi_units.change_management import ChangeManagementUnitAI
+from core.flowi_units.dashboard_agent import DashboardAgentUnitAI
 from core.flowi_units.filebrowser import FileBrowserAiSqlUnitAI
+from core.flowi_units.home_sql_join_dashboard import HomeSqlJoinDashboardUnitAI
 from core.flowi_units.inform_registration import InformRegistrationUnitAI
 
 _UNIT_AI_CLASSES = (
     FileBrowserAiSqlUnitAI,
     InformRegistrationUnitAI,
     ChangeManagementUnitAI,
+    DashboardAgentUnitAI,
+    HomeSqlJoinDashboardUnitAI,
 )
 
 UNIT_AIS: dict[str, UnitAI] = {cls.KEY: cls() for cls in _UNIT_AI_CLASSES}

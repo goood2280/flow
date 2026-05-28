@@ -103,13 +103,21 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         assert node["answer_attach_rule"]
 
     catalog = agent.unit_ai_catalog(_Request())
-    assert [unit["key"] for unit in catalog["units"]] == ["filebrowser_ai_sql", "inform_registration", "change_management"]
+    assert [unit["key"] for unit in catalog["units"]] == [
+        "filebrowser_ai_sql",
+        "inform_registration",
+        "change_management",
+        "dashboard_agent",
+        "home_sql_join_dashboard",
+    ]
 
     status = agent.agent_reset_status()
     assert status["ok"] is True
     assert status["unit_ai_endpoint"] == "/api/agent/unit-ai/catalog"
     assert status["active_unit_endpoints"]["inform_registration"]["graph"] == "/api/agent/unit-ai/inform_registration/runtime/graph"
     assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
+    assert status["active_unit_endpoints"]["dashboard_agent"]["graph"] == "/api/agent/unit-ai/dashboard_agent/runtime/graph"
+    assert status["active_unit_endpoints"]["home_sql_join_dashboard"]["graph"] == "/api/agent/unit-ai/home_sql_join_dashboard/runtime/graph"
     assert "backend_version" in status
     assert "backend_commit" in status
 

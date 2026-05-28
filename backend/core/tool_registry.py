@@ -91,6 +91,7 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
     t = (title or "").lower()
     if "dashboard" in t:
         tags.append("dashboard")
+        tags.append("chart")
     if "tracker" in t:
         tags.append("tracker")
     if "meeting" in t or "회의" in t:
@@ -109,6 +110,9 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
         tags.append("calendar")
     if "tablemap" in t:
         tags.append("tablemap")
+    if "sql" in t or "join" in t or "조인" in t:
+        tags.append("sql_workspace")
+        tags.append("filebrowser")
     tags.append("unit_ai")
     return sorted(set(tags))
 

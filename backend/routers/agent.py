@@ -18,6 +18,7 @@ from app_v2.modules.semantic_learning import proposer as semantic_proposer
 from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
 from app_v2.modules.semantic_lexicon import store as semantic_lexicon_store
 from core import home_orchestrator
+from core import agent_prompt_overrides
 from core.auth import current_user, is_page_manager
 from core.flowi_units import all_unit_ais, get_unit_ai
 from core.flowi_units.change_management_runtime import (
@@ -26,10 +27,20 @@ from core.flowi_units.change_management_runtime import (
     list_change_management_history,
     run_change_management_runtime,
 )
+from core.flowi_units.dashboard_agent_runtime import (
+    UNIT_AI_KEY as DASHBOARD_AGENT_UNIT_KEY,
+    dashboard_agent_graph,
+    run_dashboard_agent_runtime,
+)
 from core.flowi_units.filebrowser_ai_sql_runtime import (
     UNIT_AI_KEY as FILEBROWSER_AI_SQL_UNIT_KEY,
     filebrowser_ai_sql_graph,
     run_filebrowser_ai_sql_runtime,
+)
+from core.flowi_units.home_sql_join_dashboard_runtime import (
+    UNIT_AI_KEY as HOME_SQL_JOIN_DASHBOARD_UNIT_KEY,
+    home_sql_join_dashboard_graph,
+    run_home_sql_join_dashboard_runtime,
 )
 from core.flowi_units.inform_registration_runtime import (
     UNIT_AI_KEY as INFORM_REGISTRATION_UNIT_KEY,
@@ -56,6 +67,16 @@ _ACTIVE_UNIT_ENDPOINTS = {
         "graph": "/api/agent/unit-ai/change_management/runtime/graph",
         "run": "/api/agent/unit-ai/change_management/runtime/run",
         "history": "/api/agent/unit-ai/change_management/runtime/history",
+    },
+    DASHBOARD_AGENT_UNIT_KEY: {
+        "graph": "/api/agent/unit-ai/dashboard_agent/runtime/graph",
+        "run": "/api/agent/unit-ai/dashboard_agent/runtime/run",
+        "overrides": "/api/agent/unit-ai/dashboard_agent/runtime/overrides",
+    },
+    HOME_SQL_JOIN_DASHBOARD_UNIT_KEY: {
+        "graph": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/graph",
+        "run": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/run",
+        "overrides": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/overrides",
     },
 }
 
@@ -145,6 +166,10 @@ class SemanticProposalDecisionReq(BaseModel):
 
 class SemanticDraftReq(BaseModel):
     text: str = ""
+
+
+class UnitAiOverrideReq(BaseModel):
+    nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def _string_list(value: Any, limit: int = 80) -> list[str]:
@@ -622,6 +647,10 @@ def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
         graph = inform_registration_graph()
     elif unit_key == CHANGE_MANAGEMENT_UNIT_KEY:
         graph = change_management_graph()
+    elif unit_key == DASHBOARD_AGENT_UNIT_KEY:
+        graph = dashboard_agent_graph()
+    elif unit_key == HOME_SQL_JOIN_DASHBOARD_UNIT_KEY:
+        graph = home_sql_join_dashboard_graph()
     else:
         raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
     return {
@@ -668,7 +697,57 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
             username=(me or {}).get("username") or "",
             request=request,
         )
+    if unit_key == DASHBOARD_AGENT_UNIT_KEY:
+        me = current_user(request)
+        if not payload.get("natural_language") and payload.get("prompt"):
+            payload["natural_language"] = payload.get("prompt")
+        return run_dashboard_agent_runtime(
+            payload,
+            username=(me or {}).get("username") or "",
+        )
+    if unit_key == HOME_SQL_JOIN_DASHBOARD_UNIT_KEY:
+        me = current_user(request)
+        if not payload.get("natural_language") and payload.get("prompt"):
+            payload["natural_language"] = payload.get("prompt")
+        return run_home_sql_join_dashboard_runtime(
+            payload,
+            username=(me or {}).get("username") or "",
+        )
     raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
+
+
+@router.get("/unit-ai/{unit_key}/runtime/overrides")
+def unit_ai_runtime_overrides(unit_key: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "overrides": agent_prompt_overrides.load_unit(unit_key),
+    }
+
+
+@router.put("/unit-ai/{unit_key}/runtime/overrides")
+def unit_ai_runtime_overrides_save(unit_key: str, req: UnitAiOverrideReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    try:
+        saved = agent_prompt_overrides.save_unit(
+            unit_key,
+            req.model_dump() if hasattr(req, "model_dump") else req.dict(),
+            by=str(user.get("username") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "overrides": saved,
+    }
 
 
 @router.get("/unit-ai/{unit_key}/runtime/history")

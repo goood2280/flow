@@ -12,6 +12,8 @@ const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registra
 const CHANGE_MANAGEMENT_GRAPH_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/graph";
 const CHANGE_MANAGEMENT_RUN_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/run";
 const CHANGE_MANAGEMENT_HISTORY_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/history?limit=50";
+const DASHBOARD_AGENT_GRAPH_ENDPOINT = "/api/agent/unit-ai/dashboard_agent/runtime/graph";
+const DASHBOARD_AGENT_RUN_ENDPOINT = "/api/agent/unit-ai/dashboard_agent/runtime/run";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
 const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 
@@ -284,6 +286,15 @@ const CHANGE_STATE_KEY_BY_NODE = {
   answer_compose: "answer_pack",
 };
 
+const DASHBOARD_STATE_KEY_BY_NODE = {
+  semantic_layer: "semantic_frame",
+  chart_intent: "chart_intent",
+  chart_type_select: "chart_type",
+  params_fill: "params",
+  spec_validate: "spec",
+  render_spec: "chart_result",
+};
+
 const FALLBACK_GRAPH = {
   nodes: [
     { id: "context_sample", label: "용어해석 준비", phase: "context", status: "pending" },
@@ -337,6 +348,24 @@ const CHANGE_FALLBACK_GRAPH = {
   ],
 };
 
+const DASHBOARD_FALLBACK_GRAPH = {
+  nodes: [
+    { id: "semantic_layer", label: "용어해석", phase: "semantic", status: "pending" },
+    { id: "chart_intent", label: "차트 의도", phase: "intent", status: "pending" },
+    { id: "chart_type_select", label: "차트 타입 선택", phase: "llm", status: "pending" },
+    { id: "params_fill", label: "파라미터 채우기", phase: "llm", status: "pending" },
+    { id: "spec_validate", label: "스펙 검증", phase: "validate", status: "pending" },
+    { id: "render_spec", label: "Plotly spec", phase: "render", status: "pending" },
+  ],
+  edges: [
+    { source: "semantic_layer", target: "chart_intent" },
+    { source: "chart_intent", target: "chart_type_select" },
+    { source: "chart_type_select", target: "params_fill" },
+    { source: "params_fill", target: "spec_validate" },
+    { source: "spec_validate", target: "render_spec" },
+  ],
+};
+
 const HOME_FLOWI_FALLBACK_GRAPH = {
   nodes: [
     { id: "prompt_input", label: "프롬프트 입력", phase: "input", status: "pending" },
@@ -346,6 +375,7 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
     { id: "unit_ai:filebrowser_ai_sql", label: "FileBrowser AI SQL", phase: "unit_ai_mcp", status: "available" },
     { id: "unit_ai:inform_registration", label: "Inform 등록 도우미", phase: "unit_ai_mcp", status: "available" },
     { id: "unit_ai:change_management", label: "변경점 관리 Flow-i", phase: "unit_ai_mcp", status: "available" },
+    { id: "unit_ai:dashboard_agent", label: "Dashboard Agent", phase: "unit_ai_mcp", status: "available" },
   ],
   edges: [
     { source: "prompt_input", target: "semantic_layer" },
@@ -353,6 +383,7 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
     { source: "orchestrator", target: "unit_ai:filebrowser_ai_sql" },
     { source: "orchestrator", target: "unit_ai:inform_registration" },
     { source: "orchestrator", target: "unit_ai:change_management" },
+    { source: "orchestrator", target: "unit_ai:dashboard_agent" },
     { source: "orchestrator", target: "result_renderer" },
   ],
 };
@@ -389,6 +420,119 @@ function listFromValue(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
   if (typeof value === "string") return value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
   return [];
+}
+
+function UnitImprovementPanel({ unitKey, graph, result, history = [], selectedHistory = null }) {
+  const nodes = graph?.nodes || [];
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [overrides, setOverrides] = useState({ nodes: {} });
+  const [draft, setDraft] = useState({ persona: "", prompt_system: "", cache: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null;
+  const nodeId = selectedNode?.id || "";
+  const overrideNode = overrides?.nodes?.[nodeId] || {};
+
+  const loadOverrides = () => {
+    if (!unitKey) return Promise.resolve();
+    return sf(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`)
+      .then((payload) => setOverrides(payload?.overrides || { nodes: {} }))
+      .catch((e) => setErr(e.message || String(e)));
+  };
+
+  useEffect(() => {
+    if (!selectedNodeId && nodes[0]?.id) setSelectedNodeId(nodes[0].id);
+  }, [selectedNodeId, nodes]);
+
+  useEffect(() => { loadOverrides(); }, [unitKey]);
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const current = overrides?.nodes?.[selectedNode.id] || {};
+    setDraft({
+      persona: current.persona ?? selectedNode.persona ?? "",
+      prompt_system: current.prompt_system ?? selectedNode.prompt?.system ?? "",
+      cache: current.cache ?? selectedNode.cache ?? "",
+    });
+  }, [selectedNode?.id, overrides]);
+
+  const save = () => {
+    if (!unitKey || !nodeId) return;
+    const next = {
+      nodes: {
+        ...(overrides?.nodes || {}),
+        [nodeId]: {
+          persona: draft.persona,
+          prompt_system: draft.prompt_system,
+          cache: draft.cache,
+        },
+      },
+    };
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    putJson(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`, next)
+      .then((payload) => {
+        setOverrides(payload?.overrides || next);
+        setMsg("override 저장 완료");
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const resultTrace = Array.isArray(result?.trace) ? result.trace : [];
+  const historyTrace = Array.isArray(selectedHistory?.trace)
+    ? selectedHistory.trace
+    : (Array.isArray(selectedHistory?.trace_summary) ? selectedHistory.trace_summary : []);
+
+  return (
+    <Panel
+      title="Persona/Prompt/Cache 편집"
+      subtitle={unitKey}
+      right={<Button variant="ghost" onClick={loadOverrides} disabled={busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 0.75fr) minmax(0, 1.25fr) minmax(280px, 0.9fr)", gap: 10, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 8 }}>
+          {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
+          {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
+          <Field label="node">
+            <Select value={nodeId} onChange={(e) => setSelectedNodeId(e.target.value)}>
+              {nodes.map((node) => <option key={node.id} value={node.id}>{node.label || node.id}</option>)}
+            </Select>
+          </Field>
+          <JsonBlock
+            value={{
+              state_io: selectedNode?.state_io || {},
+              shared_state: selectedNode?.shared_state || [],
+              override_saved: !!Object.keys(overrideNode || {}).length,
+              updated_at: overrides?.updated_at || "",
+              updated_by: overrides?.updated_by || "",
+            }}
+            maxHeight={210}
+          />
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <Field label="persona">
+            <Textarea value={draft.persona} onChange={(e) => setDraft((prev) => ({ ...prev, persona: e.target.value }))} rows={3} />
+          </Field>
+          <Field label="prompt system">
+            <Textarea value={draft.prompt_system} onChange={(e) => setDraft((prev) => ({ ...prev, prompt_system: e.target.value }))} rows={5} />
+          </Field>
+          <Field label="cache">
+            <Textarea value={draft.cache} onChange={(e) => setDraft((prev) => ({ ...prev, cache: e.target.value }))} rows={3} />
+          </Field>
+          <Button variant="primary" onClick={save} disabled={busy || !nodeId}>저장</Button>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800 }}>최근 실행 trace 비교</div>
+          <JsonBlock value={{ current: resultTrace.map((row) => ({ node_id: row.node_id, status: row.status, warnings: row.warnings || [], output: row.output || {} })) }} maxHeight={190} />
+          <JsonBlock value={{ selected_history: historyTrace, history_count: history.length }} maxHeight={190} />
+        </div>
+      </div>
+    </Panel>
+  );
 }
 
 function FileBrowserAiSqlUnitPanel() {
@@ -812,6 +956,14 @@ function FileBrowserAiSqlUnitPanel() {
           </div>
         </div>
       </Panel>
+
+      <UnitImprovementPanel
+        unitKey="filebrowser_ai_sql"
+        graph={activeGraph}
+        result={result}
+        history={history}
+        selectedHistory={selectedHistory}
+      />
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
@@ -1254,6 +1406,14 @@ function InformRegistrationUnitPanel() {
         </div>
       </Panel>
 
+      <UnitImprovementPanel
+        unitKey="inform_registration"
+        graph={activeGraph}
+        result={result}
+        history={history}
+        selectedHistory={selectedHistory}
+      />
+
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
           <div style={{ display: "grid", gap: 8 }}>
@@ -1645,6 +1805,14 @@ function ChangeManagementUnitPanel() {
         </div>
       </Panel>
 
+      <UnitImprovementPanel
+        unitKey="change_management"
+        graph={activeGraph}
+        result={result}
+        history={history}
+        selectedHistory={selectedHistory}
+      />
+
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
           <div style={{ display: "grid", gap: 8 }}>
@@ -1785,6 +1953,206 @@ function ChangeManagementUnitPanel() {
                   maxHeight={260}
                 />
               </div>
+            ) : null}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function DashboardAgentUnitPanel() {
+  const [graph, setGraph] = useState(null);
+  const [prompt, setPrompt] = useState("wafer별 IOFF 산점도 그려줘");
+  const [columnsText, setColumnsText] = useState("wafer_id, IOFF, lot_id");
+  const [rowsText, setRowsText] = useState('[{"wafer_id":1,"IOFF":0.12,"lot_id":"A1000"},{"wafer_id":2,"IOFF":0.2,"lot_id":"A1000"}]');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [graphErr, setGraphErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [lastRequest, setLastRequest] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    sf(DASHBOARD_AGENT_GRAPH_ENDPOINT)
+      .then((payload) => {
+        setGraph(payload?.graph || null);
+        setGraphErr("");
+      })
+      .catch((e) => {
+        setGraph(null);
+        setGraphErr(formatAgentEndpointError(e, DASHBOARD_AGENT_GRAPH_ENDPOINT));
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const activeGraph = result?.graph || graph || DASHBOARD_FALLBACK_GRAPH;
+  const graphNodes = activeGraph?.nodes || [];
+  const firstGraphNodeId = graphNodes[0]?.id || null;
+  const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
+  const trace = result?.trace || [];
+
+  useEffect(() => {
+    if (trace.length) setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
+  }, [result?.run_id]);
+
+  useEffect(() => {
+    if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
+  }, [selectedNodeId, firstGraphNodeId]);
+
+  const selectedIdx = currentSelectedNodeId
+    ? trace.findIndex((row) => row.node_id === currentSelectedNodeId)
+    : -1;
+  const selectedTraceNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedGraphNode = graphNodes.find((node) => node.id === currentSelectedNodeId) || graphNodes[0] || null;
+  const selectedNode = selectedTraceNode
+    ? {
+      ...selectedGraphNode,
+      ...selectedTraceNode,
+      id: selectedGraphNode?.id || selectedTraceNode.node_id,
+      node_id: selectedTraceNode.node_id || selectedGraphNode?.id,
+      persona: selectedGraphNode?.persona || selectedTraceNode.persona || "",
+      prompt: selectedGraphNode?.prompt || selectedTraceNode.prompt || {},
+      state_io: selectedGraphNode?.state_io || selectedTraceNode.state_io || {},
+      shared_state: selectedGraphNode?.shared_state || selectedTraceNode.shared_state || [],
+      answer_attach_rule: selectedGraphNode?.answer_attach_rule || selectedTraceNode.answer_attach_rule || "",
+    }
+    : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
+  const accumulatedState = useMemo(
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, DASHBOARD_STATE_KEY_BY_NODE),
+    [result, lastRequest, selectedIdx]
+  );
+  const stateDesign = activeGraph?.state_design || {};
+  const stateValue = trace.length ? accumulatedState : stateDesign;
+  const selectedNodeOutput = compactRowsPayload(selectedTraceNode?.output);
+  const selectedPromptSystem = selectedNode?.prompt?.system || "";
+  const selectedPromptMode = selectedNode?.prompt?.mode || "deterministic";
+  const selectedStateIo = selectedNode?.state_io || {};
+
+  const parseColumns = () => {
+    const raw = columnsText.trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item || "").trim()).filter(Boolean);
+    } catch {
+      // fall through to comma parsing
+    }
+    return raw.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+  };
+
+  const parseRows = () => {
+    const raw = rowsText.trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("sample_rows JSON은 array여야 합니다.");
+    return parsed.filter((row) => row && typeof row === "object" && !Array.isArray(row));
+  };
+
+  const debugRequest = useMemo(() => {
+    let rows = [];
+    try { rows = parseRows(); } catch { rows = []; }
+    return {
+      natural_language: prompt.trim(),
+      columns: parseColumns(),
+      sample_rows: rows.slice(0, 3),
+    };
+  }, [prompt, columnsText, rowsText]);
+
+  const run = () => {
+    if (!prompt.trim()) return;
+    let rows = [];
+    try {
+      rows = parseRows();
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    const body = {
+      natural_language: prompt.trim(),
+      columns: parseColumns(),
+      sample_rows: rows,
+    };
+    setBusy(true);
+    setErr("");
+    setResult(null);
+    setLastRequest(body);
+    postJson(DASHBOARD_AGENT_RUN_ENDPOINT, body)
+      .then((payload) => setResult(payload))
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      {graphErr && <Banner tone="warn" onClose={() => setGraphErr("")}>Dashboard graph fetch 진단: {graphErr}</Banner>}
+
+      <UnitImprovementPanel
+        unitKey="dashboard_agent"
+        graph={activeGraph}
+        result={result}
+        history={[]}
+        selectedHistory={null}
+      />
+
+      <div className="flow-agent-unit-grid">
+        <Panel title="State" subtitle={selectedTraceNode ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}` : ""}>
+          <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+        </Panel>
+
+        <Panel title="LangGraph" subtitle={trace.length ? `${trace.length}/${graphNodes.length} nodes · click to inspect` : ""}>
+          <div className="flow-agent-node-grid">
+            <RuntimeGraph graph={activeGraph} selectedId={currentSelectedNodeId} onSelect={setSelectedNodeId} />
+            <div style={{ display: "grid", gap: 8 }}>
+              {selectedNode ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{selectedNode.label || selectedNode.node_id}</strong>
+                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
+                    {selectedTraceNode ? <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span> : null}
+                  </div>
+                  {(selectedTraceNode?.warnings || []).length ? <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner> : null}
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                  <JsonBlock value={{ persona: selectedNode.persona || "", prompt: { mode: selectedPromptMode, system: selectedPromptSystem }, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={selectedPromptSystem ? 220 : 140} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                  <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
+                  <JsonBlock value={selectedTraceNode ? { status: selectedTraceNode.status, input_summary: selectedTraceNode.input_summary || {}, output: selectedNodeOutput || {}, duration_ms: selectedTraceNode.duration_ms || 0 } : { status: selectedNode.status || "pending" }} maxHeight={230} />
+                </>
+              ) : <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>노드 정보 없음</div>}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Test prompt"
+          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : "")}
+          right={<Pill tone={toneForStatus(result?.status)}>{result?.status || (loading ? "loading" : "ready")}</Pill>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} />
+            <Field label="columns">
+              <Textarea value={columnsText} onChange={(e) => setColumnsText(e.target.value)} rows={2} />
+            </Field>
+            <Field label="sample_rows">
+              <Textarea value={rowsText} onChange={(e) => setRowsText(e.target.value)} rows={5} />
+            </Field>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+            <JsonBlock value={debugRequest} maxHeight={130} />
+            <Button variant="primary" onClick={run} disabled={!prompt.trim() || busy}>{busy ? "실행 중" : "실행"}</Button>
+            {result?.chart_result ? (
+              <JsonBlock
+                value={{
+                  chart_type: result.chart_result.chart_type,
+                  config: result.chart_result.chart_config || result.chart_result.config || {},
+                  total: result.chart_result.total,
+                  warnings: result.warnings || [],
+                }}
+                maxHeight={220}
+              />
             ) : null}
           </div>
         </Panel>
@@ -2058,11 +2426,14 @@ function UnitAiPanel() {
           { k: "filebrowser_ai_sql", l: "FileBrowser AI SQL" },
           { k: "inform_registration", l: "Inform 등록 도우미" },
           { k: "change_management", l: "변경점 관리 Flow-i" },
+          { k: "dashboard_agent", l: "Dashboard Agent" },
         ]}
       />
       {activeUnit === "filebrowser_ai_sql"
         ? <FileBrowserAiSqlUnitPanel />
-        : (activeUnit === "inform_registration" ? <InformRegistrationUnitPanel /> : <ChangeManagementUnitPanel />)}
+        : (activeUnit === "inform_registration"
+          ? <InformRegistrationUnitPanel />
+          : (activeUnit === "change_management" ? <ChangeManagementUnitPanel /> : <DashboardAgentUnitPanel />))}
     </div>
   );
 }

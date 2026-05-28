@@ -16,6 +16,8 @@ from typing import Annotated, Any, Callable, TypedDict
 
 from fastapi import HTTPException
 
+from core import agent_semantic_service
+
 
 UNIT_AI_KEY = "filebrowser_ai_sql"
 
@@ -442,30 +444,26 @@ def _semantic_aliases(columns: list[str], resolved_columns: list[str]) -> dict[s
 
 
 def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
-    fb = _fb()
     req = state.get("request") or {}
     prompt = _safe_text(req.get("natural_language"), 2000)
     columns = list(state.get("columns") or [])
-    resolved_columns, unknown_terms = fb._resolve_ai_sql_prompt_columns(prompt, columns)
+    resolved = agent_semantic_service.resolve(
+        prompt,
+        columns=columns,
+        product=_safe_text(req.get("product"), 160),
+        dtypes=state.get("dtypes") if isinstance(state.get("dtypes"), dict) else {},
+    )
+    resolved_columns = list(resolved.get("resolved_columns") or [])
+    unknown_terms = list(resolved.get("unknown_column_terms") or [])
     if unknown_terms:
         warnings.append("Unknown column-like terms: " + ", ".join(unknown_terms[:8]))
-    try:
-        value_terms = fb._ai_sql_prompt_priority_values(prompt, columns)[:20]
-    except Exception:
-        value_terms = []
-    try:
-        step_mapping = fb._public_ai_sql_step_mapping_context(
-            fb._ai_sql_step_mapping_context(prompt, columns, _safe_text(req.get("product"), 160))
-        )
-    except Exception:
-        step_mapping = {}
     semantic_frame = {
         "natural_language": prompt,
         "resolved_columns": resolved_columns,
         "unknown_column_terms": unknown_terms,
-        "value_terms": value_terms,
-        "synonyms": _semantic_aliases(columns, resolved_columns),
-        "step_mapping": step_mapping,
+        "value_terms": list(resolved.get("value_terms") or []),
+        "synonyms": dict(resolved.get("synonyms") or {}),
+        "step_mapping": dict(resolved.get("step_mapping") or {}),
         "source": _target_summary(req),
     }
     return {"semantic_frame": semantic_frame}
@@ -851,7 +849,13 @@ def _run_sequential(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def run_filebrowser_ai_sql_runtime(payload: dict[str, Any], *, username: str = "") -> dict[str, Any]:
+def run_filebrowser_ai_sql_runtime(
+    payload: dict[str, Any],
+    *,
+    username: str = "",
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    del agent_context
     req = deepcopy(payload or {})
     prompt = _safe_text(req.get("natural_language"), 2000)
     if not prompt:

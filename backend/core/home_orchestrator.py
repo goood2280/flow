@@ -32,17 +32,19 @@ import os
 import re
 import time
 import uuid
+import inspect
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from core import home_memory
 from core import tool_registry
+from core.agent_tool_contract import ToolCall
 from core.paths import PATHS
 
 logger = logging.getLogger("flow.home_orchestrator")
 
-_MAX_STEPS = 10
+_MAX_STEPS = 3
 _LLM_ENV_FLAG = "FLOW_LLM_TOOL_CALL"
 HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
 _RUN_ID_PREFIX = "home_flowi"
@@ -718,6 +720,21 @@ def _execute_tool(tool: dict[str, Any], prompt: str) -> dict[str, Any]:
     return _execute_step(tool, {"prompt": prompt or ""})
 
 
+def _call_runtime_with_context(func, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    agent_context = kwargs.pop("agent_context", None)
+    try:
+        sig = inspect.signature(func)
+        accepts_context = "agent_context" in sig.parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in sig.parameters.values()
+        )
+    except (TypeError, ValueError):
+        accepts_context = True
+    if accepts_context:
+        kwargs["agent_context"] = agent_context
+    return func(payload, **kwargs)
+
+
 def _summarize_result(res: dict[str, Any]) -> str:
     if not isinstance(res, dict):
         return str(res)[:200]
@@ -794,6 +811,7 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
     # 카탈로그에 실제 존재하는 도구만 남김.
     tool_by_name = {t["name"]: t for t in enabled_tools}
     plan: list[dict[str, Any]] = []
+    seen_unit_ai: set[str] = set()
     for s in steps[:_MAX_STEPS]:
         if not isinstance(s, dict):
             continue
@@ -801,6 +819,12 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
         tool = tool_by_name.get(name)
         if not tool:
             continue
+        if tool.get("kind") == "unit_ai":
+            normalized = _normalize_unit_name(name, tool)
+            if normalized in seen_unit_ai:
+                continue
+            if normalized:
+                seen_unit_ai.add(normalized)
         plan.append({
             "tool": tool,
             "input": s.get("input") if isinstance(s.get("input"), dict) else {"prompt": prompt},
@@ -816,6 +840,7 @@ def _execute_step(
     *,
     request: Any | None = None,
     user: dict[str, Any] | None = None,
+    agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """단일 step 실행. step_input 은 input_schema 기준 dict.
 
@@ -824,7 +849,7 @@ def _execute_step(
     name = tool.get("name") or ""
     kind = tool.get("kind") or ""
     t0 = time.perf_counter()
-    out: dict[str, Any] = {"ok": False, "kind": kind, "name": name, "input": step_input}
+    out: dict[str, Any] = {"ok": False, "kind": kind, "name": name, "input": step_input, "agent_context": deepcopy(agent_context or {})}
     try:
         if kind == "unit_ai":
             if name == "filebrowser_ai_sql":
@@ -856,7 +881,12 @@ def _execute_step(
                     "sample_rows": step_input.get("sample_rows") if isinstance(step_input.get("sample_rows"), list) else [],
                     "preferred_selected_columns": step_input.get("preferred_selected_columns") if isinstance(step_input.get("preferred_selected_columns"), list) else [],
                 }
-                res = run_filebrowser_ai_sql_runtime(payload, username=str((step_input.get("username") or "")))
+                res = _call_runtime_with_context(
+                    run_filebrowser_ai_sql_runtime,
+                    payload,
+                    username=str((step_input.get("username") or "")),
+                    agent_context=agent_context,
+                )
                 try:
                     from routers import filebrowser as filebrowser_router
                     filebrowser_router._record_filebrowser_ai_sql_history(
@@ -871,6 +901,7 @@ def _execute_step(
                 out["status"] = _status_from_filebrowser_runtime(res)
                 out["warnings"] = _warnings_from_filebrowser_runtime(res)
                 out["result"] = _trim_filebrowser_runtime_result(res)
+                out["sub_trace"] = deepcopy(res.get("trace") or [])
                 out["result_preview"] = _summarize_filebrowser_runtime_result(res)
                 return _finish_exec_out(out, t0)
             if name == "inform_registration":
@@ -882,16 +913,19 @@ def _execute_step(
                     "action": step_input.get("action") or "continue",
                     "slot_overrides": step_input.get("slot_overrides") if isinstance(step_input.get("slot_overrides"), dict) else {},
                 }
-                res = run_inform_registration_runtime(
+                res = _call_runtime_with_context(
+                    run_inform_registration_runtime,
                     payload,
                     username=str((user or {}).get("username") or step_input.get("username") or ""),
                     request=request,
+                    agent_context=agent_context,
                 )
                 out["ok"] = bool(res.get("ok"))
                 out["status"] = str(res.get("status") or ("success" if res.get("ok") else "failed"))
                 out["warnings"] = _warnings_from_inform_registration_runtime(res)
                 out["result"] = _trim_inform_registration_runtime_result(res)
                 out["public_result"] = out["result"]
+                out["sub_trace"] = deepcopy(res.get("trace") or [])
                 out["result_preview"] = _summarize_inform_registration_runtime_result(res)
                 return _finish_exec_out(out, t0)
             if name == "change_management":
@@ -902,17 +936,69 @@ def _execute_step(
                     "meeting_id": step_input.get("meeting_id") or "",
                     "session_id": step_input.get("session_id") or "",
                 }
-                res = run_change_management_runtime(
+                res = _call_runtime_with_context(
+                    run_change_management_runtime,
                     payload,
                     username=str((user or {}).get("username") or step_input.get("username") or ""),
                     request=request,
+                    agent_context=agent_context,
                 )
                 out["ok"] = bool(res.get("ok"))
                 out["status"] = str(res.get("status") or ("success" if res.get("ok") else "failed"))
                 out["warnings"] = _warnings_from_change_management_runtime(res)
                 out["result"] = _trim_change_management_runtime_result(res)
                 out["public_result"] = out["result"]
+                out["sub_trace"] = deepcopy(res.get("trace") or [])
                 out["result_preview"] = _summarize_change_management_runtime_result(res)
+                return _finish_exec_out(out, t0)
+            if name == "dashboard_agent":
+                from core.flowi_units.dashboard_agent_runtime import run_dashboard_agent_runtime
+
+                payload = {
+                    "natural_language": str(step_input.get("natural_language") or step_input.get("prompt") or ""),
+                    "columns": step_input.get("columns") if isinstance(step_input.get("columns"), list) else [],
+                    "sample_rows": step_input.get("sample_rows") if isinstance(step_input.get("sample_rows"), list) else [],
+                    "product": str(step_input.get("product") or ""),
+                    "dtypes": step_input.get("dtypes") if isinstance(step_input.get("dtypes"), dict) else {},
+                }
+                res = _call_runtime_with_context(
+                    run_dashboard_agent_runtime,
+                    payload,
+                    username=str((user or {}).get("username") or step_input.get("username") or ""),
+                    agent_context=agent_context,
+                )
+                out["ok"] = bool(res.get("ok"))
+                out["status"] = str(res.get("status") or ("success" if res.get("ok") else "failed"))
+                out["warnings"] = _safe_string_list(res.get("warnings"), 12)
+                out["result"] = _trim_dashboard_agent_runtime_result(res)
+                out["public_result"] = out["result"]
+                out["sub_trace"] = deepcopy(res.get("trace") or [])
+                out["result_preview"] = _summarize_dashboard_agent_runtime_result(res)
+                return _finish_exec_out(out, t0)
+            if name == "home_sql_join_dashboard":
+                from core.flowi_units.home_sql_join_dashboard_runtime import run_home_sql_join_dashboard_runtime
+
+                payload = {
+                    "natural_language": str(step_input.get("natural_language") or step_input.get("prompt") or ""),
+                    "root": str(step_input.get("root") or ""),
+                    "product": str(step_input.get("product") or ""),
+                    "file": str(step_input.get("file") or ""),
+                    "max_rows": step_input.get("max_rows") or 12,
+                    "preferred_selected_columns": step_input.get("preferred_selected_columns") if isinstance(step_input.get("preferred_selected_columns"), list) else [],
+                }
+                res = _call_runtime_with_context(
+                    run_home_sql_join_dashboard_runtime,
+                    payload,
+                    username=str((user or {}).get("username") or step_input.get("username") or ""),
+                    agent_context=agent_context,
+                )
+                out["ok"] = bool(res.get("ok"))
+                out["status"] = str(res.get("status") or ("blocked" if res.get("blocked") else ("success" if res.get("ok") else "failed")))
+                out["warnings"] = _warnings_from_home_sql_join_dashboard_runtime(res)
+                out["result"] = _trim_home_sql_join_dashboard_runtime_result(res)
+                out["public_result"] = out["result"]
+                out["sub_trace"] = deepcopy(res.get("trace") or [])
+                out["result_preview"] = _summarize_home_sql_join_dashboard_runtime_result(res)
                 return _finish_exec_out(out, t0)
             from core.flowi_units.dispatcher import try_dispatch
             prompt = str(step_input.get("prompt") or "").strip()
@@ -1104,6 +1190,129 @@ def _summarize_change_management_runtime_result(result: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def _trim_dashboard_agent_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    chart_result = result.get("chart_result") if isinstance(result.get("chart_result"), dict) else {}
+    return {
+        "ok": bool(result.get("ok")),
+        "status": result.get("status") or "",
+        "run_id": result.get("run_id") or "",
+        "unit_ai": result.get("unit_ai") or "dashboard_agent",
+        "graph": deepcopy(result.get("graph") or {}),
+        "trace": deepcopy(result.get("trace") or []),
+        "semantic_frame": deepcopy(result.get("semantic_frame") or {}),
+        "chart_type": result.get("chart_type") or chart_result.get("chart_type") or "",
+        "params": deepcopy(result.get("params") or {}),
+        "config": deepcopy(result.get("config") or chart_result.get("config") or {}),
+        "chart_result": deepcopy(chart_result),
+        "warnings": _safe_string_list(result.get("warnings"), 12),
+    }
+
+
+def _summarize_dashboard_agent_runtime_result(result: dict[str, Any]) -> str:
+    status = _short_text(result.get("status"), 80) or "unknown"
+    chart_result = result.get("chart_result") if isinstance(result.get("chart_result"), dict) else {}
+    chart_type = _short_text(result.get("chart_type") or chart_result.get("chart_type"), 80)
+    total = chart_result.get("total")
+    bits = [f"status {status}"]
+    if chart_type:
+        bits.append(f"chart {chart_type}")
+    if total is not None:
+        bits.append(f"points {total}")
+    warnings = _safe_string_list(result.get("warnings"), 12)
+    if warnings:
+        bits.append(f"warnings {len(warnings)}")
+    return " · ".join(bits)
+
+
+def _warnings_from_home_sql_join_dashboard_runtime(result: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    sources = [
+        result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        (result.get("joined") or {}).get("warnings") if isinstance(result.get("joined"), dict) else [],
+        (result.get("join_plan") or {}).get("missing_evidence") if isinstance(result.get("join_plan"), dict) else [],
+        (result.get("ai_sql") or {}).get("sub_warnings") if isinstance(result.get("ai_sql"), dict) else [],
+    ]
+    for source in sources:
+        for item in source or []:
+            text = _short_text(item, 240)
+            if text and text not in warnings:
+                warnings.append(text)
+    return warnings[:12]
+
+
+def _trim_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    joined = result.get("joined") if isinstance(result.get("joined"), dict) else {}
+    ai_sql = result.get("ai_sql") if isinstance(result.get("ai_sql"), dict) else {}
+    join_plan = result.get("join_plan") if isinstance(result.get("join_plan"), dict) else {}
+    dashboard = result.get("dashboard") if isinstance(result.get("dashboard"), dict) else {}
+    return {
+        "ok": bool(result.get("ok")),
+        "status": result.get("status") or "",
+        "blocked": bool(result.get("blocked")),
+        "run_id": result.get("run_id") or "",
+        "unit_ai": result.get("unit_ai") or "home_sql_join_dashboard",
+        "graph": deepcopy(result.get("graph") or {}),
+        "trace": deepcopy(result.get("trace") or []),
+        "base_source": deepcopy(result.get("base_source") or {}),
+        "ai_sql": {
+            "where_sql": _short_text(ai_sql.get("where_sql"), 1000),
+            "display_sql": _short_text(ai_sql.get("display_sql"), 1000),
+            "selected_columns": _safe_string_list(ai_sql.get("selected_columns"), _MAX_PREVIEW_COLS),
+            "sort": deepcopy(ai_sql.get("sort") or {}),
+            "preview_total_rows": ai_sql.get("preview_total_rows"),
+            "ok": bool(ai_sql.get("ok")),
+        },
+        "join_candidates": deepcopy(result.get("join_candidates") or [])[:10],
+        "join_plan": {
+            "sources": deepcopy(join_plan.get("sources") or [])[:6],
+            "relation_ids": _safe_string_list(join_plan.get("relation_ids"), 20),
+            "join_keys": _safe_string_list(join_plan.get("join_keys"), 20),
+            "steps": deepcopy(join_plan.get("steps") or [])[:6],
+            "missing_evidence": _safe_string_list(join_plan.get("missing_evidence"), 12),
+            "blocked": bool(join_plan.get("blocked")),
+            "single_source": bool(join_plan.get("single_source")),
+        },
+        "joined": {
+            "row_count": joined.get("row_count") or 0,
+            "columns": _safe_string_list(joined.get("columns"), _MAX_PREVIEW_COLS),
+            "sample_rows": _safe_rows(joined.get("sample_rows")),
+            "blocked": bool(joined.get("blocked")),
+            "reason": joined.get("reason") or "",
+            "fallback": joined.get("fallback") or "",
+            "filters": deepcopy(joined.get("filters") or {}),
+        },
+        "output_route": deepcopy(result.get("output_route") or {}),
+        "dashboard": deepcopy(dashboard),
+        "warnings": _warnings_from_home_sql_join_dashboard_runtime(result),
+    }
+
+
+def _summarize_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) -> str:
+    status = _short_text(result.get("status"), 80) or "unknown"
+    joined = result.get("joined") if isinstance(result.get("joined"), dict) else {}
+    route = result.get("output_route") if isinstance(result.get("output_route"), dict) else {}
+    join_plan = result.get("join_plan") if isinstance(result.get("join_plan"), dict) else {}
+    dashboard = result.get("dashboard") if isinstance(result.get("dashboard"), dict) else {}
+    bits = [f"status {status}"]
+    if join_plan.get("relation_ids"):
+        bits.append("join " + ", ".join(_safe_string_list(join_plan.get("relation_ids"), 3)))
+    if joined.get("row_count") is not None:
+        bits.append(f"rows {joined.get('row_count')}")
+    mode = _short_text(route.get("mode"), 16)
+    if mode:
+        bits.append(f"mode {mode}")
+    if dashboard and not dashboard.get("skipped") and dashboard.get("chart_type"):
+        bits.append(f"chart {dashboard.get('chart_type')}")
+    warnings = _warnings_from_home_sql_join_dashboard_runtime(result)
+    if warnings:
+        bits.append(f"warnings {len(warnings)}")
+    return " · ".join(bits)
+
+
 def _plan_from_heuristic(prompt: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """휴리스틱 keyword 매칭 → step list. orchestrate fallback 용."""
     picks, meta = _pick_tools(prompt, top_k=top_k)
@@ -1141,6 +1350,8 @@ def _make_trace_row(step: dict[str, Any], exec_out: dict[str, Any]) -> dict[str,
         row["confidence"] = round(min(1.0, score / 5.0), 2)
     if "public_result" in exec_out:
         row["result"] = deepcopy(exec_out.get("public_result") or {})
+    if exec_out.get("sub_trace"):
+        row["sub_trace"] = deepcopy(exec_out.get("sub_trace") or [])
     return row
 
 
@@ -1169,6 +1380,75 @@ def _tool_summary_from_trace(trace: list[dict[str, Any]]) -> dict[str, Any]:
         "warnings": first.get("warnings") or [],
         "inline_summary": first.get("result_preview") or "",
     }
+
+
+def _make_tool_call(step: dict[str, Any], exec_out: dict[str, Any]) -> ToolCall:
+    status = str(exec_out.get("status") or ("success" if exec_out.get("ok") else ("blocked" if exec_out.get("blocked") else "failed")))
+    output = exec_out.get("result") if isinstance(exec_out.get("result"), dict) else {}
+    return {
+        "tool": str((step.get("tool") or {}).get("name") or exec_out.get("name") or ""),
+        "input": deepcopy(step.get("input") or exec_out.get("input") or {}),
+        "output": deepcopy(output),
+        "status": status if status in {"success", "warning", "failed", "blocked"} else ("success" if exec_out.get("ok") else "failed"),
+        "sub_trace": deepcopy(exec_out.get("sub_trace") or []),
+        "warnings": list(exec_out.get("warnings") or []),
+    }
+
+
+def _parent_context_from_tool_calls(tool_calls: list[ToolCall]) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    last_output: dict[str, Any] = {}
+    for call in tool_calls[-5:]:
+        output = call.get("output") if isinstance(call.get("output"), dict) else {}
+        last_output = output or last_output
+        summary: dict[str, Any] = {
+            "tool": call.get("tool") or "",
+            "status": call.get("status") or "",
+            "warnings": list(call.get("warnings") or [])[:5],
+        }
+        for key in (
+            "product",
+            "lot_id",
+            "root_lot_id",
+            "wafer_id",
+            "semantic_frame",
+            "merged",
+            "preview",
+            "joined",
+            "chart_result",
+            "columns",
+        ):
+            if key in output:
+                summary[key] = deepcopy(output.get(key))
+        summaries.append(summary)
+    return {
+        "tool_calls": summaries,
+        "last_output": deepcopy(last_output),
+    }
+
+
+def _merge_step_input_with_parent(step_input: dict[str, Any], parent_context: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(step_input or {})
+    last_output = parent_context.get("last_output") if isinstance(parent_context.get("last_output"), dict) else {}
+    if not last_output:
+        return merged
+    if not merged.get("columns"):
+        preview = last_output.get("preview") if isinstance(last_output.get("preview"), dict) else {}
+        joined = last_output.get("joined") if isinstance(last_output.get("joined"), dict) else {}
+        columns_result = last_output.get("columns") if isinstance(last_output.get("columns"), dict) else {}
+        columns = preview.get("columns") or joined.get("columns") or columns_result.get("selected_columns") or []
+        if isinstance(columns, list):
+            merged["columns"] = columns
+    if not merged.get("sample_rows"):
+        preview = last_output.get("preview") if isinstance(last_output.get("preview"), dict) else {}
+        joined = last_output.get("joined") if isinstance(last_output.get("joined"), dict) else {}
+        rows = preview.get("rows") or joined.get("sample_rows") or []
+        if isinstance(rows, list):
+            merged["sample_rows"] = rows
+    for key in ("product", "lot_id", "root_lot_id", "wafer_id"):
+        if not merged.get(key) and isinstance(last_output.get(key), str):
+            merged[key] = last_output.get(key)
+    return merged
 
 
 def _attach_runtime_result(
@@ -1283,14 +1563,18 @@ def orchestrate(
         }, prompt=prompt, user=user)
 
     trace: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
     accumulated: dict[str, Any] = {}
     for step in plan[:_MAX_STEPS]:
+        parent_context = _parent_context_from_tool_calls(tool_calls)
         merged_input = {**step.get("input", {}), **{k: v for k, v in accumulated.items() if k not in (step.get("input") or {})}}
+        merged_input = _merge_step_input_with_parent(merged_input, parent_context)
         if "prompt" not in merged_input:
             merged_input["prompt"] = prompt
         step["input"] = merged_input
-        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user)
+        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user, agent_context=parent_context)
         trace.append(_make_trace_row(step, exec_out))
+        tool_calls.append(_make_tool_call(step, exec_out))
         # 다음 step input 에 사용할 수 있도록 product 같은 단순 값 누적.
         if exec_out.get("ok") and isinstance(exec_out.get("result"), dict):
             res = exec_out["result"]
@@ -1303,6 +1587,7 @@ def orchestrate(
         "ok": True,
         "prompt": prompt,
         "trace": trace,
+        "tool_calls": tool_calls,
         "meta": meta,
         "reply": _synthesize_reply(trace),
         "picked_count": len(trace),
@@ -1404,9 +1689,12 @@ def orchestrate_stream(
         return
 
     trace: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
     accumulated: dict[str, Any] = {}
     for idx, step in enumerate(plan[:_MAX_STEPS]):
+        parent_context = _parent_context_from_tool_calls(tool_calls)
         merged_input = {**step.get("input", {}), **{k: v for k, v in accumulated.items() if k not in (step.get("input") or {})}}
+        merged_input = _merge_step_input_with_parent(merged_input, parent_context)
         if "prompt" not in merged_input:
             merged_input["prompt"] = prompt
         step["input"] = merged_input
@@ -1425,9 +1713,10 @@ def orchestrate_stream(
             "kind": step["tool"]["kind"],
             "input": merged_input,
         }
-        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user)
+        exec_out = _execute_step(step["tool"], merged_input, request=request, user=user, agent_context=parent_context)
         row = _make_trace_row(step, exec_out)
         trace.append(row)
+        tool_calls.append(_make_tool_call(step, exec_out))
         step_statuses = _runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units)
         yield {
             "type": "step_end",
@@ -1462,6 +1751,7 @@ def orchestrate_stream(
         "type": "reply",
         "ok": True,
         "trace": trace,
+        "tool_calls": tool_calls,
         "reply": _synthesize_reply(trace),
         "picked_count": len(trace),
         "meta": meta,
