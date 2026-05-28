@@ -12699,6 +12699,9 @@ def _flowi_scan_registered_table(*, purposes: tuple[str, ...], name_hints: tuple
     return {"lf": None, "columns": [], "errors": errors}
 
 
+_FLOWI_STEP_MATCHING_HINTS = ("Vehicle_matching.csv", "step_matching.csv", "matching_step.csv")
+
+
 def _knob_rulebook_lookup_intent(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
@@ -12710,41 +12713,370 @@ def _knob_rulebook_lookup_intent(prompt: str) -> bool:
     return bool(_ppid_tokens(text) or _step_id_terms_from_prompt(text) or _flowi_func_step_token(text))
 
 
+def _flowi_product_cell_matches(raw: Any, aliases: set[str]) -> bool:
+    if not aliases:
+        return True
+    parts = [p for p in re.split(r"[,;/|]+", str(raw or "")) if p.strip()]
+    values = {_upper(p) for p in (parts or [raw]) if _upper(p)}
+    expanded: set[str] = set()
+    for value in values:
+        expanded.update(_product_aliases(value) or {value})
+    return bool(expanded & aliases)
+
+
+def _flowi_step_mapping_query_terms(prompt: str, product: str = "") -> list[str]:
+    blocked = {
+        "STEP",
+        "STEP_ID",
+        "FUNCTION_STEP",
+        "FUNC_STEP",
+        "PRODUCT",
+        "PROD",
+        "KNOB",
+        "PPID",
+    } | set(_STOP_TOKENS)
+    blocked.update(_product_aliases(product))
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        value = _text(raw).strip(" .,;:()[]{}")
+        key = _upper(value)
+        if not key or key in blocked or key in seen:
+            return
+        seen.add(key)
+        out.append(value)
+
+    for term in _step_id_terms_from_prompt(prompt, product=product):
+        add(term)
+    add(_flowi_func_step_token(prompt))
+    for tok in _tokens(prompt):
+        key = _upper(tok)
+        if key in blocked or key.startswith(("ML_TABLE_", "PRODUCT_")):
+            continue
+        if _is_step_id_token(key) or "_" in key:
+            add(tok)
+    return out[:8]
+
+
 def _flowi_step_matching_maps(product: str = "") -> dict[str, Any]:
-    src = _flowi_scan_registered_table(purposes=("matching", "lookup_table"), name_hints=("step_matching.csv", "matching_step.csv"))
+    src = _flowi_scan_registered_table(purposes=("matching", "lookup_table"), name_hints=_FLOWI_STEP_MATCHING_HINTS)
     lf = src.get("lf")
     if lf is None:
-        return {"rows": [], "by_step": {}, "by_function": {}, "source": src}
+        return {"rows": [], "by_step": {}, "by_step_rows": {}, "by_function": {}, "source": src}
     cols = src.get("columns") or []
-    product_col = _ci_col(cols, "product", "PRODUCT")
-    step_col = _ci_col(cols, "step_id", "STEP_ID")
-    func_col = _ci_col(cols, "function_step", "func_step", "FUNCTION_STEP", "FUNC_STEP")
+    product_col = _ci_col(cols, "product", "PRODUCT", "process_id", "prod")
+    step_col = _ci_col(cols, "step_id", "STEP_ID", "raw_step_id", "step")
+    func_col = _ci_col(cols, "function_step", "func_step", "step_desc", "canonical_step", "step_function", "FUNCTION_STEP", "FUNC_STEP")
     if not step_col or not func_col:
-        return {"rows": [], "by_step": {}, "by_function": {}, "source": src}
+        return {"rows": [], "by_step": {}, "by_step_rows": {}, "by_function": {}, "source": src}
     aliases = _product_aliases(product)
-    if aliases and product_col:
-        lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
     exprs = [
         pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(product).alias("product"),
         pl.col(step_col).cast(_STR, strict=False).alias("step_id"),
         pl.col(func_col).cast(_STR, strict=False).alias("function_step"),
     ]
     try:
-        rows = lf.select(exprs).drop_nulls(subset=["step_id", "function_step"]).collect().to_dicts()
+        raw_rows = lf.select(exprs).drop_nulls(subset=["step_id", "function_step"]).collect().to_dicts()
     except Exception:
-        rows = []
+        raw_rows = []
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        if aliases and product_col and not _flowi_product_cell_matches(row.get("product"), aliases):
+            continue
+        step = _text(row.get("step_id"))
+        func = _text(row.get("function_step"))
+        if not step or not func:
+            continue
+        rows.append({
+            "product": _text(row.get("product") or product),
+            "step_id": step,
+            "function_step": func,
+        })
     by_step: dict[str, dict[str, Any]] = {}
+    by_step_rows: dict[str, list[dict[str, Any]]] = {}
     by_function: dict[tuple[str, str], list[str]] = {}
     for row in rows:
         step = _upper(row.get("step_id"))
         func = _upper(row.get("function_step"))
         prod = _upper(row.get("product"))
         if step:
-            by_step[step] = row
+            by_step.setdefault(step, row)
+            by_step_rows.setdefault(step, []).append(row)
         if func:
             by_function.setdefault((prod, func), []).append(_text(row.get("step_id")))
             by_function.setdefault(("", func), []).append(_text(row.get("step_id")))
-    return {"rows": rows, "by_step": by_step, "by_function": by_function, "source": src}
+    return {"rows": rows, "by_step": by_step, "by_step_rows": by_step_rows, "by_function": by_function, "source": src}
+
+
+def _step_mapping_lookup_intent(prompt: str, product: str = "") -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    has_step_word = any(t in low or t in text for t in ("step", "step_id", "function_step", "func_step", "스텝", "공정"))
+    has_lookup_word = any(t in low or t in text for t in ("어떤", "무슨", "뭐", "영향", "매칭", "mapping", "lookup", "관련", "연결"))
+    return bool(has_step_word and has_lookup_word and _flowi_step_mapping_query_terms(text, product=product))
+
+
+def _flowi_matching_source_id(src: dict[str, Any], fallback: str) -> str:
+    return _text(src.get("source_id") or Path(str(src.get("path") or fallback)).name)
+
+
+def _flowi_collect_ppid_rulebook_rows(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    src = _flowi_scan_registered_table(purposes=("rulebook", "lookup_table"), name_hints=("ppid_knob.csv", "knob_ppid.csv"))
+    lf = src.get("lf")
+    if lf is None:
+        return {"rows": [], "source": src, "columns": [], "errors": src.get("errors") or []}
+    cols = src.get("columns") or []
+    product_col = _ci_col(cols, "product", "PRODUCT", "process_id", "prod")
+    feature_col = _ci_col(cols, "feature_name", "FEATURE_NAME", "feature", "FEATURE", "knob", "KNOB")
+    func_col = _ci_col(cols, "function_step", "func_step", "step_desc", "canonical_step", "step_function", "FUNCTION_STEP", "FUNC_STEP")
+    rule_col = _ci_col(cols, "rule_order", "RULE_ORDER", "order", "ORDER", "priority", "PRIORITY")
+    op_col = _ci_col(cols, "operator", "OPERATOR", "op", "OP")
+    ppid_col = _ci_col(cols, "ppid", "PPID", "category", "CATEGORY", "rule_category", "RULE_CATEGORY")
+    if not (feature_col or func_col):
+        return {"rows": [], "source": src, "columns": cols, "errors": ["feature/function column not found"]}
+    exprs = [
+        pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(product).alias("product"),
+        pl.col(feature_col).cast(_STR, strict=False).alias("feature_name") if feature_col else pl.lit("").alias("feature_name"),
+        pl.col(func_col).cast(_STR, strict=False).alias("function_step") if func_col else pl.lit("").alias("function_step"),
+        pl.col(rule_col).cast(_STR, strict=False).alias("rule_order") if rule_col else pl.lit("").alias("rule_order"),
+        pl.col(op_col).cast(_STR, strict=False).alias("operator") if op_col else pl.lit("").alias("operator"),
+        pl.col(ppid_col).cast(_STR, strict=False).alias("ppid") if ppid_col else pl.lit("").alias("ppid"),
+    ]
+    try:
+        raw_rows = lf.select(exprs).limit(max(100, min(5000, max_rows * 200))).collect().to_dicts()
+    except Exception as e:
+        return {"rows": [], "source": src, "columns": cols, "errors": [str(e)]}
+
+    terms = [_upper(t) for t in _flowi_step_mapping_query_terms(prompt, product=product) if _upper(t)]
+    aliases = _product_aliases(product)
+    rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        if aliases and product_col and not _flowi_product_cell_matches(row.get("product"), aliases):
+            continue
+        hay_values = [_upper(row.get("feature_name")), _upper(row.get("function_step")), _upper(row.get("ppid"))]
+        if terms and not any(term and any(term in hay or hay in term for hay in hay_values if hay) for term in terms):
+            continue
+        clean = {k: _text(row.get(k)) for k in ("product", "feature_name", "function_step", "rule_order", "operator", "ppid")}
+        if clean.get("function_step") or clean.get("feature_name"):
+            rows.append(clean)
+    return {"rows": rows, "source": src, "columns": cols, "errors": []}
+
+
+def _flowi_step_rows_for_function(step_maps: dict[str, Any], function_step: str, product: str = "") -> list[dict[str, Any]]:
+    func = _upper(function_step)
+    aliases = _product_aliases(product)
+    out: list[dict[str, Any]] = []
+    for row in step_maps.get("rows") or []:
+        if _upper(row.get("function_step")) != func:
+            continue
+        if aliases and not _flowi_product_cell_matches(row.get("product"), aliases):
+            continue
+        out.append(row)
+    return out
+
+
+def _flowi_group_step_ids_by_product(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        prod = _text(row.get("product")) or "(common)"
+        sid = _text(row.get("step_id"))
+        if not sid:
+            continue
+        grouped.setdefault(prod, [])
+        if sid not in grouped[prod]:
+            grouped[prod].append(sid)
+    return grouped
+
+
+def _flowi_step_group_text(grouped: dict[str, list[str]]) -> str:
+    return "; ".join(f"{prod}: {', '.join(step_ids)}" for prod, step_ids in grouped.items() if step_ids)
+
+
+def _handle_step_mapping_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    product_hint = _product_hint(prompt, product)
+    if not _step_mapping_lookup_intent(prompt, product_hint):
+        return {"handled": False}
+
+    step_maps = _flowi_step_matching_maps(product_hint)
+    step_src = step_maps.get("source") or {}
+    step_source_id = _flowi_matching_source_id(step_src, "step_matching.csv")
+    step_terms = _step_id_terms_from_prompt(prompt, product=product_hint)
+    query_terms = _flowi_step_mapping_query_terms(prompt, product=product_hint)
+    table_rows: list[dict[str, Any]] = []
+    term_resolution: list[dict[str, Any]] = []
+    source_ids: list[str] = [step_source_id] if step_source_id else []
+
+    if step_terms:
+        direct_rows: list[dict[str, Any]] = []
+        for term in step_terms:
+            direct_rows.extend(step_maps.get("by_step_rows", {}).get(_upper(term), []) or [])
+        seen_direct: set[tuple[str, str, str]] = set()
+        for row in direct_rows:
+            key = (_text(row.get("product")), _text(row.get("step_id")), _text(row.get("function_step")))
+            if key in seen_direct:
+                continue
+            seen_direct.add(key)
+            table_rows.append({
+                "product": key[0],
+                "step_id": key[1],
+                "function_step": key[2],
+                "feature_name": "",
+                "ppid": "",
+                "rule_order": "",
+                "mapping_source": step_source_id,
+                "rulebook_source": "",
+            })
+        if table_rows:
+            funcs = sorted({_text(row.get("function_step")) for row in table_rows if _text(row.get("function_step"))})
+            products = sorted({_text(row.get("product")) for row in table_rows if _text(row.get("product"))})
+            if len(funcs) == 1:
+                product_text = ", ".join(products) if products else (product_hint or "공통")
+                answer = f"{step_terms[0]}은 {product_text} 기준 {funcs[0]} step입니다. 근거: {step_source_id}"
+            else:
+                answer = (
+                    f"{step_terms[0]}은 제품별 function_step mapping이 달라 product 확인이 필요합니다. "
+                    f"후보 function_step: {', '.join(funcs)}. 근거: {step_source_id}"
+                )
+            term_resolution.append({
+                "token": step_terms[0],
+                "meaning": "step_id를 matching CSV의 function_step/step_desc로 해석",
+                "wiki_refs": [step_source_id],
+                "query_filter": f"step_id={step_terms[0]} product={product_hint or '(all)'}",
+                "status": "resolved",
+            })
+            cols_out = ["product", "step_id", "function_step", "mapping_source"]
+            return {
+                "handled": True,
+                "intent": "step_mapping_lookup",
+                "action": "query_step_mapping_lookup",
+                "answer": answer,
+                "feature": "knowledge",
+                "source_ids": source_ids,
+                "table": {"kind": "step_mapping_lookup", "title": "Step matching lookup", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in table_rows], "total": len(table_rows), "source": step_source_id},
+                "filters": {"product": product_hint, "step_id_terms": step_terms, "query_terms": query_terms, "matching_file": _path_tail(step_src.get("path")) if isinstance(step_src.get("path"), Path) else "", "row_count": len(table_rows)},
+                "term_resolution": term_resolution,
+            }
+
+    rulebook = _flowi_collect_ppid_rulebook_rows(prompt, product_hint, max_rows)
+    rule_src = rulebook.get("source") or {}
+    rule_source_id = _flowi_matching_source_id(rule_src, "ppid_knob.csv")
+    if rulebook.get("rows") and rule_source_id and rule_source_id not in source_ids:
+        source_ids.insert(0, rule_source_id)
+    matched_functions: list[str] = []
+    for rule in rulebook.get("rows") or []:
+        func = _text(rule.get("function_step"))
+        if not func:
+            continue
+        if func not in matched_functions:
+            matched_functions.append(func)
+        scoped_product = product_hint or _text(rule.get("product"))
+        step_rows = _flowi_step_rows_for_function(step_maps, func, scoped_product)
+        grouped = _flowi_group_step_ids_by_product(step_rows)
+        if not grouped:
+            table_rows.append({
+                "product": _text(rule.get("product")),
+                "step_id": "",
+                "function_step": func,
+                "feature_name": _text(rule.get("feature_name")),
+                "ppid": _text(rule.get("ppid")),
+                "rule_order": _text(rule.get("rule_order")),
+                "mapping_source": step_source_id,
+                "rulebook_source": rule_source_id,
+            })
+            continue
+        for prod, step_ids in grouped.items():
+            table_rows.append({
+                "product": prod,
+                "step_id": ", ".join(step_ids),
+                "function_step": func,
+                "feature_name": _text(rule.get("feature_name")),
+                "ppid": _text(rule.get("ppid")),
+                "rule_order": _text(rule.get("rule_order")),
+                "mapping_source": step_source_id,
+                "rulebook_source": rule_source_id,
+            })
+
+    if not table_rows and not matched_functions:
+        function_hits: list[dict[str, Any]] = []
+        for term in query_terms:
+            function_hits.extend(_flowi_step_rows_for_function(step_maps, term, product_hint))
+        grouped = _flowi_group_step_ids_by_product(function_hits)
+        for prod, step_ids in grouped.items():
+            table_rows.append({
+                "product": prod,
+                "step_id": ", ".join(step_ids),
+                "function_step": query_terms[0] if query_terms else "",
+                "feature_name": "",
+                "ppid": "",
+                "rule_order": "",
+                "mapping_source": step_source_id,
+                "rulebook_source": "",
+            })
+        if table_rows and query_terms:
+            matched_functions = [query_terms[0]]
+
+    cols_out = ["product", "feature_name", "function_step", "step_id", "ppid", "rule_order", "mapping_source", "rulebook_source"]
+    if table_rows:
+        grouped = _flowi_group_step_ids_by_product([
+            {"product": row.get("product"), "step_id": sid.strip()}
+            for row in table_rows
+            for sid in str(row.get("step_id") or "").split(",")
+            if sid.strip()
+        ])
+        group_text = _flowi_step_group_text(grouped)
+        feature_token = next((_text(row.get("feature_name")) for row in table_rows if _text(row.get("feature_name"))), query_terms[0] if query_terms else "요청 항목")
+        if rulebook.get("rows"):
+            answer = (
+                f"{feature_token}은 {rule_source_id}에서 {', '.join(matched_functions[:4])}로 해석됐고, "
+                f"{step_source_id} 기준 step_id는 {group_text or '매칭 없음'} 입니다. 근거: {rule_source_id} -> {step_source_id}"
+            )
+            term_resolution.append({
+                "token": feature_token,
+                "meaning": "ppid_knob.csv feature_name/step_desc에서 function_step 후보 확인",
+                "wiki_refs": [rule_source_id],
+                "query_filter": f"feature/function contains {query_terms}",
+                "status": "resolved",
+            })
+        else:
+            answer = f"{matched_functions[0]}에 매핑된 step_id는 {group_text or '매칭 없음'} 입니다. 근거: {step_source_id}"
+        term_resolution.append({
+            "token": ", ".join(matched_functions[:4]) if matched_functions else (query_terms[0] if query_terms else ""),
+            "meaning": "matching CSV에서 function_step/step_desc를 step_id 목록으로 확장",
+            "wiki_refs": [step_source_id],
+            "query_filter": f"function_step in {matched_functions or query_terms} product={product_hint or '(all)'}",
+            "status": "resolved",
+        })
+        return {
+            "handled": True,
+            "intent": "step_mapping_lookup",
+            "action": "query_step_mapping_lookup",
+            "answer": answer,
+            "feature": "knowledge",
+            "source_ids": source_ids,
+            "table": {"kind": "step_mapping_lookup", "title": "Step matching lookup", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in table_rows[:max(1, min(100, max_rows * 8))]], "total": len(table_rows), "source": " -> ".join(source_ids)},
+            "filters": {
+                "product": product_hint,
+                "step_id_terms": step_terms,
+                "query_terms": query_terms,
+                "function_steps": matched_functions,
+                "rulebook_file": _path_tail(rule_src.get("path")) if isinstance(rule_src.get("path"), Path) else "",
+                "matching_file": _path_tail(step_src.get("path")) if isinstance(step_src.get("path"), Path) else "",
+                "row_count": len(table_rows),
+                "search_conditions": {"product": product_hint or "(all)", "feature_or_function_contains": query_terms},
+            },
+            "term_resolution": term_resolution,
+        }
+
+    return {
+        "handled": True,
+        "intent": "step_mapping_lookup",
+        "action": "query_step_mapping_lookup",
+        "answer": f"matching/rulebook CSV에서 {', '.join(query_terms) or '요청 항목'}에 해당하는 step mapping을 찾지 못했습니다.",
+        "feature": "knowledge",
+        "source_ids": source_ids,
+        "filters": {"product": product_hint, "step_id_terms": step_terms, "query_terms": query_terms, "matching_errors": step_src.get("errors") or [], "rulebook_errors": rulebook.get("errors") or []},
+    }
 
 
 def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -17581,7 +17913,7 @@ def _handle_flowi_query_core(
         process_out = _handle_product_process_id_lookup(prompt, product, max_rows)
         if process_out.get("handled"):
             return process_out
-        for handler in (_handle_inline_item_lookup, _handle_knob_rulebook_lookup, _handle_ppid_knob_lookup, _handle_index_form_lookup):
+        for handler in (_handle_inline_item_lookup, _handle_step_mapping_lookup, _handle_knob_rulebook_lookup, _handle_ppid_knob_lookup, _handle_index_form_lookup):
             meta_out = handler(prompt, product, max_rows)
             if meta_out.get("handled"):
                 return meta_out
@@ -18420,6 +18752,22 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             callee="_flowi_progress_for_lot_rows",
             purpose="검색된 lot_wf 후보를 최신 FAB 진행 step과 연결",
             payload={"join_key": "lot_wf"},
+        )
+    elif action == "query_step_mapping_lookup" or intent == "step_mapping_lookup":
+        add(
+            name="Step matching lookup",
+            method="internal",
+            path="registered matching/rulebook source or data/Fab/Vehicle_matching.csv + step_matching.csv + ppid_knob.csv",
+            callee="_handle_step_mapping_lookup",
+            purpose="승인 등록된 matching/rulebook catalog 또는 fallback CSV에서 step_id와 function_step/step_desc 연결 근거 조회",
+            payload={
+                "source_ids": tool.get("source_ids") or [],
+                "product": filters.get("product") or "",
+                "step_id_terms": filters.get("step_id_terms") or [],
+                "query_terms": filters.get("query_terms") or [],
+                "function_steps": filters.get("function_steps") or [],
+                "row_count": filters.get("row_count") or 0,
+            },
         )
     elif action == "query_knob_rulebook_rows" or intent == "knob_rulebook_lookup":
         add(
@@ -19461,6 +19809,7 @@ def _attach_flowi_trace(
 _FLOWI_HOME_USER_TOOL_KEYS = {
     "type",
     "answer",
+    "intent",
     "inline_summary",
     "action",
     "feature",
@@ -19502,6 +19851,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "session_id",
     "slots",
     "filters",
+    "term_resolution",
     "sql_draft",
     "source_ids",
     "relation_ids",
@@ -20390,7 +20740,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.startswith("inform_"):
         return True
-    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search", "filebrowser_multisource_join", "dashboard_multisource_chart"}:
+    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "step_mapping_lookup", "knob_rulebook_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search", "filebrowser_multisource_join", "dashboard_multisource_chart"}:
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True

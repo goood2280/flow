@@ -115,6 +115,8 @@ context_scope -> meeting_reference -> evidence_pack -> answer_compose
 | Matching/rulebook CSV | KNOB/INLINE/VM step_desc, step_id, function step, ppid rulebook | `FLOW_DB_ROOT/Vehicle_matching.csv`, `FLOW_DB_ROOT/step_matching.csv`, `FLOW_DB_ROOT/ppid_knob.csv`, related rulebook CSV | `backend/routers/splittable.py`, `backend/core/lot_progress_cache.py`, `backend/routers/filebrowser.py` | SplitTable rulebook/FileBrowser admin | manager/admin rulebook 또는 base-file save 경로만 가능 | step/function alias, KNOB rule, split-check explanation |
 | FileBrowser root file | DB root-level single parquet/csv/yaml/json file | `FLOW_DB_ROOT/<file>` | `backend/routers/filebrowser.py` | FileBrowser | FileBrowser base-file edit/version API만 가능 | user selected `rootpq`/`base` target의 schema/profile |
 
+Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evidence로 조회할 수 있다. 이 경로는 등록된 schema catalog/single-file source를 먼저 보고, 없으면 DB root의 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`, `ppid_knob.csv` fallback을 읽어 `step_id`, `function_step`/`step_desc`, `feature_name` 연결만 공개 trace에 남긴다.
+
 ### `FLOW_DATA_ROOT`
 
 `FLOW_DATA_ROOT`는 runtime/user state root다. 코드 업데이트나 Agent semantic draft가 이 파일들을 임의로 덮어쓰면 안 된다.

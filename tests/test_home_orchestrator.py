@@ -520,3 +520,91 @@ def test_run_flowi_chat_falls_back_after_unhandled_unit_dispatch(monkeypatch, tm
     assert called["agent_context"]["source"] == "pytest"
     assert called["agent_context"]["server_memory"]["enabled"] is True
     assert called["agent_context"]["messages"] == []
+
+
+def _run_step_mapping_flowi_chat(monkeypatch, tmp_path, prompt):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    class DummyPaths:
+        def __init__(self, root):
+            self.base_root = root
+            self.db_root = root
+            self.data_root = root / "flow-data"
+            self.cache_dir = self.data_root / "cache"
+
+    paths = DummyPaths(tmp_path)
+    paths.data_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(llm_router, "PATHS", paths)
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(flowi_units, "try_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"filebrowser", "splittable"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-step-mapping", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    return llm_router._run_flowi_chat(
+        prompt=prompt,
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+
+def test_flowi_chat_answers_step_id_from_step_matching_csv(monkeypatch, tmp_path):
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\n"
+        "PRODA,AA100090,SD_EPI\n",
+        encoding="utf-8",
+    )
+
+    result = _run_step_mapping_flowi_chat(monkeypatch, tmp_path, "AA100090은 어떤 스텝이야")
+
+    assert result["tool"]["intent"] == "step_mapping_lookup"
+    assert result["tool"]["action"] == "query_step_mapping_lookup"
+    assert "SD_EPI" in result["answer"]
+    assert "step_matching.csv" in result["answer"]
+    assert result["tool"]["source_ids"] == ["step_matching.csv"]
+
+
+def test_flowi_chat_expands_ppid_knob_feature_to_step_ids(monkeypatch, tmp_path):
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,function_step,rule_order,operator,category\n"
+        "3.0 VTN,VT_ADJUST,RO,eq,PPID_03_0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\n"
+        "PRODA,AA300100,VT_ADJUST\n"
+        "PRODB,BB300100,VT_ADJUST\n",
+        encoding="utf-8",
+    )
+
+    result = _run_step_mapping_flowi_chat(monkeypatch, tmp_path, "3.0 VTN이 어떤 step_id에 영향을 받냐")
+
+    assert result["tool"]["intent"] == "step_mapping_lookup"
+    assert result["tool"]["source_ids"] == ["ppid_knob.csv", "step_matching.csv"]
+    assert "ppid_knob.csv" in result["answer"]
+    assert "VT_ADJUST" in result["answer"]
+    assert "PRODA: AA300100" in result["answer"]
+    assert "PRODB: BB300100" in result["answer"]
+    assert any(item.get("token") == "3.0 VTN" for item in result["tool"]["term_resolution"])
+
+
+def test_flowi_chat_uses_vehicle_matching_step_desc_as_function_step(monkeypatch, tmp_path):
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\n"
+        "PRODA,AA100090,SD_EPI\n",
+        encoding="utf-8",
+    )
+
+    result = _run_step_mapping_flowi_chat(monkeypatch, tmp_path, "AA100090은 어떤 스텝이야")
+
+    assert "SD_EPI" in result["answer"]
+    assert "Vehicle_matching.csv" in result["answer"]
+    assert result["tool"]["source_ids"] == ["Vehicle_matching.csv"]
