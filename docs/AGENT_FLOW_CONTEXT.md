@@ -19,6 +19,7 @@
 - `docs/README.md` - 문서 지도
 - `docs/DEVELOPMENT.md` - scope, validation, data rules, refactor rules
 - `docs/features/` - 기능별 책임, 계약, 코드 진입점
+- `docs/features/agent-semantic-layer.md` - Agent semantic layer API, data-root, unit별 사용 규칙
 
 `archive/`, runtime logs, generated task specs, moved legacy docs는 historical reference다. 사용자가 명시하지 않으면 현재 구현 가이드로 쓰지 않는다.
 

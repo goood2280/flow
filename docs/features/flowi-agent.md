@@ -96,6 +96,8 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 
 자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent JSON 초안만 생성한다. 실제 저장은 사용자가 `초안 저장` 또는 JSON 저장 버튼을 눌렀을 때만 `/api/agent/semantic/alias-groups/*`와 `/api/agent/semantic/intent-hints/*` write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
 
+Semantic layer의 API, data-root, unit별 사용 규칙은 [agent-semantic-layer.md](agent-semantic-layer.md)를 기준으로 본다.
+
 ## App Error Explanation
 
 공통 frontend API helper는 `/api/*` 응답이 실패하면 원문 에러를 먼저 만든 뒤 `/api/llm/error/explain`에 발생 화면, API, HTTP status, 원문을 전달한다. LLM이 사용 가능하고 설명 생성에 성공하면 UI에는 `문제`, `발생 위치`, `가능한 원인`, `해결 방법`, `원문 에러` 순서로 표시한다.

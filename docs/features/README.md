@@ -17,6 +17,7 @@
 | TableMap | [diagnosis-knowledge.md](diagnosis-knowledge.md) | `frontend/src/pages/My_TableMap.jsx` |
 | Admin, Groups, Monitor | [admin.md](admin.md) | `frontend/src/pages/My_Admin.jsx`, `backend/routers/admin.py` |
 | Agent | [flowi-agent.md](flowi-agent.md) | `frontend/src/pages/My_Diagnosis.jsx`, `frontend/src/components/agent/LlmTab.jsx`, `backend/routers/agent.py` |
+| Agent Semantic Layer | [agent-semantic-layer.md](agent-semantic-layer.md) | `backend/routers/agent.py`, `backend/app_v2/modules/semantic_lexicon/`, `backend/app_v2/modules/semantic_learning/` |
 
 ## Update Rule
 
