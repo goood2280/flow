@@ -88,6 +88,8 @@ FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 | `lookup_lot_progress`가 `items` list를 매 호출 선형 scan | `by_product`, `by_lot_id`, `by_root_lot_id`, `by_wafer_id`, `by_lot_wf` 인덱스 사용 |
 | Tracker 최신 FAB step fallback이 cache parquet를 매번 `pl.scan_parquet` | `lot_progress_snapshot(refresh_if_missing=False)`로 메모리/JSON cache만 읽음 |
 | Inform product 옵션이 cache parquet를 매번 `pl.scan_parquet` | `list_products()`가 기존 JSON/memory cache를 읽고 source refresh를 트리거하지 않음 |
+| FileBrowser preview cache hit도 디스크 JSON을 매번 읽음 | `FLOW_PREVIEW_MEMORY_CACHE_GB` 기본 6GB process-local LRU가 hot preview 응답을 메모리에서 반환 |
+| Dashboard 차트 소스에서 LOT latest cache가 빠짐 | DB root의 `cache/lot_progress_latest_lot_by_root_wafer.parquet`를 `Cache/LOT latest` read-only chart source로 노출 |
 
 현재 probe에서 남은 병목:
 
@@ -104,6 +106,7 @@ FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 |---|---|---|
 | runtime thread 제한 | `backend/core/runtime_limits.py` | Polars/Rayon/PyArrow/BLAS thread 수 기본 제한 |
 | memory soft guard | `backend/app_v2/runtime/resource_guard.py` | heavy API 동시성 제한, memory high 상태에서 503/429 반환 |
+| preview memory cache | `backend/core/filebrowser_cache.py` | 반복 FileBrowser preview/schema 응답을 최대 6GB 기본 메모리 LRU에서 반환, `FLOW_PREVIEW_MEMORY_CACHE_GB=0`으로 비활성화 |
 | heavy background opt-in | `backend/app_v2/runtime/startup.py` | 대형 DB scanner scheduler를 기본 비활성화 |
 | sample-first FileBrowser | `backend/routers/filebrowser.py`, `frontend/src/pages/My_FileBrowser.jsx` | 대형 parquet를 첫 화면에서 전체 scan하지 않음 |
 | lock/log 기반 cache refresh | `backend/core/lot_progress_cache.py` | 중복 cache build 방지, refresh 결과 기록 |

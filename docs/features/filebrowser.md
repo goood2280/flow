@@ -49,6 +49,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - `POST /api/filebrowser/ml-table/lookup`은 `file` 또는 `product`, `root_lot_id`, `select_cols`, 선택 `wafer_id`를 받는다. cache가 없으면 원본 parquet을 즉시 scan하지 않고 `lookup_cache_hit=false`, `cache_status=queued|missing|running`과 빈 row를 반환하며 background build queue에 등록한다. stale cache가 있으면 `source_stale=true`를 표시하고 기존 cache로 조회하면서 rebuild를 queue한다. 이 endpoint는 호환 기능이며 FileBrowser 화면의 기본 preview 흐름에서는 호출하지 않는다.
 - `select_cols`가 비어 있으면 identity 컬럼(`root_lot_id`, `lot_id`/`fab_lot_id`, `wafer_id`, `step_id`, `function_step`, time 후보)만 반환한다. `*`/전체 컬럼 요청은 차단하고, 없는 컬럼은 `code=unknown_column` 400으로 반환한다. 결과 row는 최대 25행이다.
 - canonical cache 파일은 일반 파일처럼 목록 진입, schema 확인, 100행 샘플 preview가 가능해야 한다. cache 폴더의 CSV/Parquet을 직접 열어도 작다는 이유로 전체 읽기 경로를 타지 않는다.
+- 같은 canonical cache 파일은 Dashboard `+ 차트 추가` 데이터 소스 목록에서 `Cache/LOT latest`로도 노출된다. FileBrowser가 생성/갱신을 소유하고 Dashboard는 read-only `root_parquet` chart source로만 읽는다.
 
 ### LOT 진행 최신 캐시 파이프라인
 

@@ -37,3 +37,24 @@ def test_find_all_sources_uses_nested_product_partition_names(monkeypatch, tmp_p
         "label": "1.RAWDATA_DB_FAB/PRODA",
     } in sources
     assert all(s.get("product") != "fab_history" for s in sources)
+
+
+def test_find_all_sources_exposes_lot_progress_latest_cache(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    cache_fp = db / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
+    cache_fp.parent.mkdir(parents=True)
+    cache_fp.write_bytes(b"placeholder")
+    monkeypatch.setattr(utils, "PATHS", _FakePaths(db))
+
+    sources = utils.find_all_sources()
+
+    assert {
+        "source_type": "root_parquet",
+        "root": "",
+        "product": "",
+        "file": "cache/lot_progress_latest_lot_by_root_wafer.parquet",
+        "canonical": "CACHE",
+        "level": "cache",
+        "label": "Cache/LOT latest",
+        "role": "latest lot/step cache",
+    } in sources

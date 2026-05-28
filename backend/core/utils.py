@@ -62,6 +62,7 @@ def _locked_append_file(path: Path):
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
 DATA_EXTENSIONS = {".parquet", ".csv"}
+LOT_PROGRESS_LATEST_CACHE_REL = "cache/lot_progress_latest_lot_by_root_wafer.parquet"
 MAX_WAFER_ID = 25
 WAFER_COLUMN_CANDIDATES = ("wafer_id", "wf_id")
 INLINE_COORD_COLUMNS = ("shot_x", "shot_y")
@@ -892,6 +893,15 @@ def find_all_sources(apply_whitelist: bool = True):
                         })
         except Exception:
             pass
+    latest_cache = DB_BASE / LOT_PROGRESS_LATEST_CACHE_REL
+    if latest_cache.is_file():
+        sources.append({
+            "source_type": "root_parquet", "root": "", "product": "",
+            "file": LOT_PROGRESS_LATEST_CACHE_REL,
+            "canonical": "CACHE", "level": "cache",
+            "label": "Cache/LOT latest",
+            "role": "latest lot/step cache",
+        })
     # Nested product directories — v8.8.5: `1.RAWDATA_DB*` prefix 도 whitelist 우회.
     for root_dir in sorted(DB_BASE.iterdir()):
         if not root_dir.is_dir():

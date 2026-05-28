@@ -27,8 +27,12 @@ def _isolate_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(PATHS, "cache_dir", cache_root, raising=False)
     monkeypatch.setattr(PATHS, "data_root", data_root, raising=False)
     fbcache._INFLIGHT.clear()
+    fbcache._MEMORY_CACHE.clear()
+    fbcache._MEMORY_CACHE_BYTES = 0
     yield
     fbcache._INFLIGHT.clear()
+    fbcache._MEMORY_CACHE.clear()
+    fbcache._MEMORY_CACHE_BYTES = 0
 
 
 def _make_source_file(tmp_path: Path, name: str = "src.parquet", content: bytes = b"abc") -> tuple[Path, dict]:
@@ -57,6 +61,42 @@ def test_cache_hit_when_file_unchanged(tmp_path):
     assert len(calls) == 1
     assert out1.get("preview_cache_hit") is not True
     assert out2.get("preview_cache_hit") is True
+
+
+def test_memory_cache_serves_hot_entry_without_disk(tmp_path):
+    fp, source = _make_source_file(tmp_path)
+    calls = []
+
+    def compute():
+        calls.append(1)
+        return {"data": [{"x": 1}], "showing": 1}
+
+    fbcache.get_or_compute(endpoint="view", source=source, key_payload=_basic_payload(), compute=compute)
+    for cache_file in fbcache.cache_dir().glob("*.json"):
+        cache_file.unlink()
+
+    out = fbcache.get_or_compute(endpoint="view", source=source, key_payload=_basic_payload(), compute=compute)
+
+    assert len(calls) == 1
+    assert out.get("preview_cache_hit") is True
+
+
+def test_memory_cache_can_be_disabled(monkeypatch, tmp_path):
+    fp, source = _make_source_file(tmp_path)
+    calls = []
+    monkeypatch.setenv("FLOW_PREVIEW_MEMORY_CACHE_GB", "0")
+
+    def compute():
+        calls.append(1)
+        return {"data": [{"x": len(calls)}], "showing": 1}
+
+    fbcache.get_or_compute(endpoint="view", source=source, key_payload=_basic_payload(), compute=compute)
+    for cache_file in fbcache.cache_dir().glob("*.json"):
+        cache_file.unlink()
+
+    fbcache.get_or_compute(endpoint="view", source=source, key_payload=_basic_payload(), compute=compute)
+
+    assert len(calls) == 2
 
 
 def test_cache_miss_when_mtime_changes(tmp_path):
@@ -96,9 +136,10 @@ def test_cache_miss_when_size_changes(tmp_path):
     assert len(calls) == 2
 
 
-def test_cache_corrupted_file_recovers(tmp_path):
+def test_cache_corrupted_file_recovers(monkeypatch, tmp_path):
     fp, source = _make_source_file(tmp_path)
     calls = []
+    monkeypatch.setenv("FLOW_PREVIEW_MEMORY_CACHE_GB", "0")
 
     def compute():
         calls.append(1)

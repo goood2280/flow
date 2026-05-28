@@ -13,6 +13,13 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import dashboard  # noqa: E402
+from core import utils  # noqa: E402
+
+
+class _FakePaths:
+    def __init__(self, root: Path):
+        self.db_root = root
+        self.base_root = root
 
 
 def test_fab_progress_target_eta_uses_last_three_same_product_lots(monkeypatch):
@@ -201,3 +208,33 @@ def test_dashboard_compute_chart_joins_lazy_right_source(monkeypatch):
     assert out["error"] is None
     assert out["total"] == 2
     assert [p["y"] for p in out["points"]] == [10.0, 20.0]
+
+
+def test_dashboard_compute_chart_reads_lot_progress_latest_cache_source(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    cache_fp = db / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
+    cache_fp.parent.mkdir(parents=True)
+    pl.DataFrame({
+        "product": ["PRODA", "PRODA"],
+        "root_lot_id": ["R100", "R100"],
+        "wafer_id": ["1", "2"],
+        "lot_id": ["L100A", "L100B"],
+        "step_id": ["STEP_A", "STEP_B"],
+        "function_step": ["FUNC_A", "FUNC_B"],
+        "tkout_time": ["2026-05-01T01:00:00", "2026-05-01T02:00:00"],
+        "update_time": ["2026-05-01T03:00:00", "2026-05-01T03:00:00"],
+    }).write_parquet(cache_fp)
+    monkeypatch.setattr(utils, "PATHS", _FakePaths(db))
+
+    out = dashboard._compute_chart({
+        "id": "lot-latest-cache-table",
+        "source_type": "root_parquet",
+        "file": "cache/lot_progress_latest_lot_by_root_wafer.parquet",
+        "chart_type": "table",
+        "table_columns": ["product", "root_lot_id", "wafer_id", "lot_id", "step_id"],
+    })
+
+    assert out["error"] is None
+    assert out["total"] == 2
+    assert out["table_columns"] == ["product", "root_lot_id", "wafer_id", "lot_id", "step_id"]
+    assert out["points"][0]["step_id"] == "STEP_A"

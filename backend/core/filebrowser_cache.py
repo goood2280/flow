@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,9 @@ _ACCESS_LOG_NAME = "filebrowser_preview_access.jsonl"
 
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
+_MEMORY_LOCK = threading.Lock()
+_MEMORY_CACHE: OrderedDict[str, tuple[int, dict]] = OrderedDict()
+_MEMORY_CACHE_BYTES = 0
 
 
 def cache_dir() -> Path:
@@ -66,6 +70,22 @@ def is_enabled(settings: dict | None = None) -> bool:
         return True
     value = settings.get("preview_cache_enabled", True)
     return bool(value)
+
+
+def memory_cache_budget_bytes() -> int:
+    """Process-local hot preview cache budget.
+
+    The disk cache remains the durable cross-process fallback.  This memory
+    layer is intentionally operator-tunable because internal hosts often have
+    spare RAM and repeated preview reads should not pay JSON disk I/O.
+    """
+    raw = os.environ.get("FLOW_PREVIEW_MEMORY_CACHE_GB", "")
+    try:
+        gb = float(raw if raw not in (None, "") else 6.0)
+    except Exception:
+        gb = 6.0
+    gb = max(0.0, min(64.0, gb))
+    return int(gb * 1024 * 1024 * 1024)
 
 
 def settings_signature(settings: dict | None) -> str:
@@ -182,6 +202,56 @@ def _log_event(event: str, endpoint: str, key: str, path: str) -> None:
         logger.debug("filebrowser cache access log write failed: %s", exc)
 
 
+def _drop_memory_key(key: str) -> None:
+    global _MEMORY_CACHE_BYTES
+    existing = _MEMORY_CACHE.pop(key, None)
+    if existing is not None:
+        _MEMORY_CACHE_BYTES = max(0, _MEMORY_CACHE_BYTES - int(existing[0] or 0))
+
+
+def _read_memory_cached(key: str, source: dict) -> dict | None:
+    if memory_cache_budget_bytes() <= 0:
+        return None
+    with _MEMORY_LOCK:
+        cached = _MEMORY_CACHE.get(key)
+        if cached is None:
+            return None
+        _size, data = cached
+        if not isinstance(data, dict) or int(data.get("version") or 0) != CACHE_VERSION:
+            _drop_memory_key(key)
+            return None
+        if not _unchanged(data.get("source"), source):
+            _drop_memory_key(key)
+            return None
+        _MEMORY_CACHE.move_to_end(key)
+        return data
+
+
+def _write_memory_cached(key: str, payload: dict, size_bytes: int | None = None) -> None:
+    global _MEMORY_CACHE_BYTES
+    budget = memory_cache_budget_bytes()
+    if budget <= 0:
+        with _MEMORY_LOCK:
+            _MEMORY_CACHE.clear()
+            _MEMORY_CACHE_BYTES = 0
+        return
+    if size_bytes is None:
+        try:
+            size_bytes = len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            size_bytes = 0
+    size_bytes = max(0, int(size_bytes or 0))
+    if size_bytes <= 0 or size_bytes > budget:
+        return
+    with _MEMORY_LOCK:
+        _drop_memory_key(key)
+        _MEMORY_CACHE[key] = (size_bytes, payload)
+        _MEMORY_CACHE_BYTES += size_bytes
+        while _MEMORY_CACHE_BYTES > budget and _MEMORY_CACHE:
+            _old_key, (old_size, _old_payload) = _MEMORY_CACHE.popitem(last=False)
+            _MEMORY_CACHE_BYTES = max(0, _MEMORY_CACHE_BYTES - int(old_size or 0))
+
+
 def _read_cached(cache_fp: Path) -> dict | None:
     try:
         with cache_fp.open("r", encoding="utf-8") as fh:
@@ -199,6 +269,7 @@ def _write_cached(cache_fp: Path, payload: dict) -> None:
     cache_fp.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache_fp.with_suffix(cache_fp.suffix + ".tmp")
     blob = json.dumps(payload, ensure_ascii=False, default=str)
+    _write_memory_cached(cache_fp.stem, payload, len(blob.encode("utf-8")))
     try:
         with tmp.open("w", encoding="utf-8") as fh:
             fh.write(blob)
@@ -245,8 +316,11 @@ def get_or_compute(
     key = _hash_key(endpoint, source["path"], key_payload)
     cache_fp = _cache_file(key)
 
-    cached = _read_cached(cache_fp)
+    cached = _read_memory_cached(key, source)
+    if cached is None:
+        cached = _read_cached(cache_fp)
     if cached is not None and _unchanged(cached.get("source"), source):
+        _write_memory_cached(key, cached)
         resp = cached.get("response")
         if isinstance(resp, dict):
             out = dict(resp)
@@ -258,8 +332,11 @@ def get_or_compute(
     if not is_leader:
         if follower_event is not None:
             follower_event.wait(timeout=_INFLIGHT_TIMEOUT_SECONDS)
-        cached = _read_cached(cache_fp)
+        cached = _read_memory_cached(key, source)
+        if cached is None:
+            cached = _read_cached(cache_fp)
         if cached is not None and _unchanged(cached.get("source"), source):
+            _write_memory_cached(key, cached)
             resp = cached.get("response")
             if isinstance(resp, dict):
                 out = dict(resp)

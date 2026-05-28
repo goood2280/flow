@@ -8,6 +8,7 @@ Dashboard는 저장된 chart와 snapshot을 통해 운영 상태를 빠르게 �
 - chart session과 dashboard snapshot
 - 일반 chart 종류와 Inform preset을 한 곳에서 추가하는 chart library
 - Flow-i/LLM dashboard chart draft 생성과 사용자의 저장 확인 경계
+- canonical LOT 진행 최신 캐시(`cache/lot_progress_latest_lot_by_root_wafer.parquet`)의 read-only chart source 사용
 
 ## Does Not Own
 
@@ -16,6 +17,7 @@ Dashboard는 저장된 chart와 snapshot을 통해 운영 상태를 빠르게 �
 - issue lifecycle의 원본 상태 변경
 - Home Flow-i Agent 화면 연계
 - FAB progress와 alert watch 화면 책임. 기존 API는 호환용으로 유지하지만 Dashboard 기본 UI에서는 호출하지 않는다.
+- LOT 진행 최신 캐시 생성/갱신. 생성과 설정은 FileBrowser cache pipeline이 소유하고 Dashboard는 이미 만들어진 parquet만 읽는다.
 
 ## Code Entrypoints
 
@@ -32,6 +34,7 @@ Dashboard는 저장된 chart와 snapshot을 통해 운영 상태를 빠르게 �
 - plan/actual 편집은 SplitTable로 넘긴다.
 - 자동 refresh와 snapshot은 사용자에게 상태가 보여야 한다.
 - Dashboard 진입 시 `/api/dashboard/fab-progress`, `/api/dashboard/summary`, `/api/dashboard/trend-alerts`를 호출하지 않는다.
+- `+ 차트 추가`의 데이터 소스 목록에는 DB root의 `cache/lot_progress_latest_lot_by_root_wafer.parquet`가 존재할 때 `Cache/LOT latest`로 노출된다. 이 소스는 `root_parquet` read-only 경로를 그대로 사용하므로 chart/table/join 입력으로 쓸 수 있지만 Dashboard에서 갱신하지 않는다.
 - `+ 차트 추가`는 일반 chart type, Inform preset, AI draft 생성의 단일 진입점이다.
 - Flow-i/LLM은 chart draft 또는 chart session을 만들고, 실제 저장은 사용자의 `저장` 또는 명시적 확인 이후 `/api/dashboard/charts/save`로 수행한다.
 - Flow-i unit action은 `dashboard.chart.llm.draft`로 노출하며 Home에서는 chart draft/config와 inline preview를 먼저 보여준다. 여러 DB/단일파일을 거친 chart draft는 `core.flowi_multisource`가 실제 source rows와 confirmed `schema_relations` join plan을 만든 뒤 chart config의 `source_evidence`에 `source_ids`, `relation_ids`, `join_keys`, `selected_columns`, `sql_plan`을 보존하고 Dashboard 편집 화면에 노출한다.
