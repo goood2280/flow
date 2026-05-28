@@ -17,6 +17,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
 import json, datetime, io, csv as csv_mod, hashlib, logging, time, threading, os, gc
 from pathlib import Path
 import sys
+from collections import OrderedDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -179,6 +180,9 @@ _MATCH_CACHE_JOB_STATE: dict = {
 _PLAN_RISK_CACHE: dict[tuple[str, bool], dict] = {}
 _PLAN_RISK_CACHE_LOCK = threading.Lock()
 _PLAN_RISK_CACHE_MAX = 64
+_VIEW_CACHE: OrderedDict[tuple, tuple[tuple, dict]] = OrderedDict()
+_VIEW_CACHE_LOCK = threading.Lock()
+_VIEW_CACHE_MAX = 96
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
@@ -7629,6 +7633,103 @@ def _resolve_fab_lot_for_cell(product: str, cell_key: str, root_lot_id: str = ""
     return resolve_fab_lot_snapshot(product, root, wafer)
 
 
+def _split_view_cache_key(product: str, root_lot_id: str, wafer_ids: str, prefix: str,
+                          custom_name: str, view_mode: str, history_mode: str,
+                          fab_lot_id: str, custom_cols: str) -> tuple:
+    canonical_product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    cleaned_custom_cols = ",".join(_clean_custom_columns(str(custom_cols or "").split(","))) if custom_cols else ""
+    return (
+        canonical_product,
+        str(root_lot_id or "").strip(),
+        str(wafer_ids or "").strip(),
+        str(prefix or "").strip().upper(),
+        str(custom_name or "").strip(),
+        str(view_mode or "all").strip().lower() or "all",
+        str(history_mode or "all").strip().lower() or "all",
+        str(fab_lot_id or "").strip(),
+        cleaned_custom_cols,
+    )
+
+
+def _split_view_cache_dep_signature(product: str, custom_name: str = "", product_fp: Path | None = None) -> tuple:
+    paths: list[Path] = [
+        product_fp or _product_path(product),
+        SOURCE_CFG,
+        PREFIX_CFG,
+        PRECISION_CFG,
+        RULEBOOK_SCHEMA_FILE,
+        MATCH_CACHE_STATE_FILE,
+        _latest_lot_step_cache_path(),
+        PATHS.cache_dir / "lot_progress" / "lot_wf_current.json",
+        PATHS.cache_dir / "lot_progress" / "lot_wf_current.parquet",
+        _custom_tags_path(),
+        _management_rows_path(),
+    ]
+    paths.extend(_plan_alias_paths(product))
+    for kind in _RULEBOOK_FILES:
+        try:
+            paths.append(_rulebook_path(kind))
+        except Exception:
+            pass
+    if str(custom_name or "").strip():
+        try:
+            custom_fp, _clean_name = _custom_file_path_for_name(custom_name)
+            paths.append(custom_fp)
+        except HTTPException:
+            pass
+    return tuple(_path_cache_sig(path) for path in paths)
+
+
+def _clear_split_view_cache() -> None:
+    with _VIEW_CACHE_LOCK:
+        _VIEW_CACHE.clear()
+
+
+def _split_view_cache_get(key: tuple, dep_signature: tuple) -> dict | None:
+    with _VIEW_CACHE_LOCK:
+        cached = _VIEW_CACHE.get(key)
+        if not cached:
+            return None
+        cached_sig, payload = cached
+        if cached_sig != dep_signature:
+            _VIEW_CACHE.pop(key, None)
+            return None
+        _VIEW_CACHE.move_to_end(key)
+        return dict(payload)
+
+
+def _split_view_cache_put(key: tuple, dep_signature: tuple, payload: dict) -> None:
+    stored = dict(payload)
+    stored.pop("related_issues", None)
+    with _VIEW_CACHE_LOCK:
+        _VIEW_CACHE[key] = (dep_signature, stored)
+        _VIEW_CACHE.move_to_end(key)
+        while len(_VIEW_CACHE) > _VIEW_CACHE_MAX:
+            _VIEW_CACHE.popitem(last=False)
+
+
+def _split_view_request_user(request: Request | None) -> tuple[str, str]:
+    if request is None:
+        return "", "admin"
+    try:
+        me = current_user(request)
+        return me.get("username") or "", me.get("role") or "user"
+    except Exception:
+        return "", "admin"
+
+
+def _attach_split_view_runtime_fields(payload: dict, request: Request | None) -> dict:
+    out = dict(payload)
+    username, role = _split_view_request_user(request)
+    out["related_issues"] = _related_tracker_issues(
+        out.get("product") or "",
+        out.get("root_lot_id") or "",
+        username,
+        role,
+    )
+    return out
+
+
 # ── View ──
 @router.get("/view")
 def view_split(product: str = Query(...), root_lot_id: str = Query(""),
@@ -7646,6 +7747,14 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         raise HTTPException(400, "history_mode must be one of: all, final, lot_all")
     _lot_warn = ""
     fp = _product_path(product)
+    view_cache_key = _split_view_cache_key(
+        product, root_lot_id, wafer_ids, prefix, custom_name,
+        view_mode, _history_mode, fab_lot_id, custom_cols,
+    )
+    view_cache_sig = _split_view_cache_dep_signature(product, custom_name=custom_name, product_fp=fp)
+    cached_view = _split_view_cache_get(view_cache_key, view_cache_sig)
+    if cached_view is not None:
+        return _attach_split_view_runtime_fields(cached_view, request)
     try:
         lf = _scan_product(product, root_lot_id=root_lot_id,
                            fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
@@ -7973,17 +8082,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
             if hist_lots.get("candidates"):
                 available_fab_lots = hist_lots["candidates"]
-        viewer_username = ""
-        viewer_role = "admin"
-        if request is not None:
-            try:
-                me = current_user(request)
-                viewer_username = me.get("username") or ""
-                viewer_role = me.get("role") or "user"
-            except Exception:
-                viewer_username = ""
-                viewer_role = "admin"
-        return {
+        viewer_username, viewer_role = _split_view_request_user(request)
+        payload = {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
             "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
@@ -8000,6 +8100,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "lot_warn": _lot_warn,
             "related_issues": _related_tracker_issues(product, root_lot_id, viewer_username, viewer_role),
         }
+        _split_view_cache_put(view_cache_key, view_cache_sig, payload)
+        return payload
     except HTTPException:
         raise
     except Exception as e:

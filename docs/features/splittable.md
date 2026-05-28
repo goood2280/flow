@@ -37,6 +37,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - Inform snapshot과 SplitTable의 root/fab/wafer 표시 규칙을 맞춘다.
 - Inform용 fab lot snapshot은 선택된 fab lot의 header/wafer scope를 유지하고, root plan overlay는 해당 scope의 wafer cell에만 적용한다.
 - fab lot 연결은 SplitTable 전용 match cache를 만들지 않고 LOT 진행 최신 캐시를 우선 사용한다. 캐시가 없거나 scope가 맞지 않으면 기존 FAB source raw scan으로 fallback한다.
+- `/api/splittable/view`는 product/root/fab/wafer/prefix/custom 조건별 in-process 응답 캐시를 사용한다. product 원본, plan/tag/management overlay, rulebook/settings, `lot_progress_latest_lot_by_root_wafer.parquet` 또는 LOT progress cache 파일이 바뀌면 다음 조회에서 다시 계산한다.
 - ML_TABLE lot view는 `root_lot_id`가 있을 때 `backend/core/ml_table_lookup.py`의 root-lot lookup cache를 먼저 사용한다. cache hit 시 원본 `ML_TABLE_*.parquet` 전체 scan 대신 해당 `root_lot_id=<id>` partition에서 필요한 KNOB/MASK/CUSTOM 컬럼을 읽고, cache miss 시 기존 small/local fallback 경로를 유지한다.
 - History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.

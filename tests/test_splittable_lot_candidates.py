@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import sys
+import time
 from pathlib import Path
 
 import polars as pl
@@ -1545,6 +1546,98 @@ def test_view_uses_lot_progress_cache_before_raw_override_fallback(tmp_path, mon
     )
     assert cached_result["match_cache"]["hit"] is True
     assert cached_result["header_groups"] == result["header_groups"]
+
+
+def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monkeypatch):
+    product = "ML_TABLE_VIEWCACHE"
+    pl.DataFrame({
+        "root_lot_id": ["RVC01", "RVC01"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / f"{product}.parquet")
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    latest_path = cache_root / "lot_progress_latest_lot_by_root_wafer.parquet"
+
+    def write_latest(fab_lot: str) -> None:
+        pl.DataFrame({
+            "product": [product, product],
+            "root_lot_id": ["RVC01", "RVC01"],
+            "wafer_id": ["1", "2"],
+            "lot_id": [fab_lot, fab_lot],
+            "step_id": ["", ""],
+            "function_step": ["", ""],
+            "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+            "update_time": ["2024-04-20T10:02:00", "2024-04-20T10:02:00"],
+        }).write_parquet(latest_path)
+
+    write_latest("FVC01_OLD")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", tmp_path / "flow-data" / "splittable" / "match_cache")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", tmp_path / "flow-data" / "splittable" / "source_config.json")
+    monkeypatch.setattr(splittable, "PREFIX_CFG", tmp_path / "flow-data" / "splittable" / "prefix_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", tmp_path / "flow-data" / "splittable" / "precision_config.json")
+    monkeypatch.setattr(splittable, "RULEBOOK_SCHEMA_FILE", tmp_path / "flow-data" / "splittable" / "rulebook_schema.json")
+    monkeypatch.setattr(splittable, "MATCH_CACHE_STATE_FILE", tmp_path / "flow-data" / "splittable" / "match_cache_state.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "flow-data" / "tracker" / "issues.json")
+    monkeypatch.setattr(splittable, "_custom_tags_path", lambda: tmp_path / "flow-data" / "splittable" / "custom_tags.json")
+    monkeypatch.setattr(splittable, "_management_rows_path", lambda: tmp_path / "flow-data" / "splittable" / "management_rows.json")
+    monkeypatch.setattr(splittable, "_plan_alias_paths", lambda raw_product: [tmp_path / "flow-data" / "splittable" / f"{raw_product}.json"])
+    splittable._clear_split_view_cache()
+
+    result = splittable.view_split(
+        product=product,
+        root_lot_id="RVC01",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    assert result["header_groups"] == [{"label": "FVC01_OLD", "span": 2}]
+
+    scan_calls = 0
+    original_scan_product = splittable._scan_product
+
+    def counting_scan_product(*args, **kwargs):
+        nonlocal scan_calls
+        scan_calls += 1
+        return original_scan_product(*args, **kwargs)
+
+    monkeypatch.setattr(splittable, "_scan_product", counting_scan_product)
+    cached_result = splittable.view_split(
+        product=product,
+        root_lot_id="RVC01",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    assert scan_calls == 0
+    assert cached_result["header_groups"] == result["header_groups"]
+
+    time.sleep(0.02)
+    write_latest("FVC01_NEW")
+    refreshed_result = splittable.view_split(
+        product=product,
+        root_lot_id="RVC01",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    assert scan_calls == 1
+    assert refreshed_result["header_groups"] == [{"label": "FVC01_NEW", "span": 2}]
 
 
 def test_match_cache_searches_entire_fab_db_when_product_folder_is_missing(tmp_path, monkeypatch):

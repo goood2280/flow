@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) SplitTable view 응답 캐시와 LOT 최신 캐시 연동
 - (Codex) FileBrowser SQL SELECT 공백 컬럼 invalid_filter 보정
 - (Codex) 비밀번호 찾기 메일 무첨부 전송 400 보정
 - (Codex) Inform 메일 plan 표시와 Split 체크 XLSX/세션 만료 보정
