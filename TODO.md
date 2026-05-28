@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) 앱 API 에러 AI 설명과 원문 fallback 표시
 - (Codex) 운영 메모리 활용 preview cache와 Dashboard LOT latest cache source 연결
 - (Codex) SplitTable view 응답 캐시와 LOT 최신 캐시 연동
 - (Codex) FileBrowser SQL SELECT 공백 컬럼 invalid_filter 보정

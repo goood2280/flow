@@ -20351,6 +20351,192 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     return False
 
 
+ERROR_EXPLAIN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "where": {"type": "string"},
+        "cause": {"type": "string"},
+        "how_to_fix": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "where", "cause", "how_to_fix"],
+}
+
+
+class ErrorExplainReq(BaseModel):
+    status: int | None = None
+    method: str = ""
+    url: str = ""
+    page: str = ""
+    raw_error: str = ""
+    body: Any = None
+    context: str = ""
+
+
+def _clip_error_text(value: Any, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;\"']+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(x-session-token\s*[:=]\s*)[^\s,;\"']+", r"\1<redacted>", text)
+    text = re.sub(
+        r"(?i)(admin_token|access_token|refresh_token|api_key|password|passwd|token)([\"'\s:=]+)([^\"'\s,;&]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+    if len(text) > limit:
+        return text[:limit].rstrip() + "\n...<truncated>"
+    return text
+
+
+def _first_error_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        clean = line.strip()
+        if clean:
+            return clean[:220]
+    return ""
+
+
+def _fallback_error_explanation(req: ErrorExplainReq, raw_error: str) -> dict[str, Any]:
+    method = (req.method or "").strip().upper()
+    url = (req.url or "").strip()
+    page = (req.page or "").strip()
+    status = req.status if isinstance(req.status, int) else None
+    where_parts = []
+    if page:
+        where_parts.append(f"화면 {page}")
+    api = " ".join(part for part in [method, url] if part)
+    if api:
+        where_parts.append(f"API {api}")
+    if status:
+        where_parts.append(f"HTTP {status}")
+    return {
+        "summary": _first_error_line(raw_error) or (f"HTTP {status} 오류" if status else "앱 요청 처리 오류"),
+        "where": " / ".join(where_parts) or "오류가 발생한 화면 또는 API를 확인해야 합니다.",
+        "cause": "서버가 요청을 정상 처리하지 못했습니다. 자세한 원인은 원문 에러를 기준으로 확인해야 합니다.",
+        "how_to_fix": [
+            "같은 동작을 다시 시도해 재현되는지 확인하세요.",
+            "입력값, 선택한 대상, 권한 또는 세션 상태가 맞는지 확인하세요.",
+            "반복되면 발생 위치와 원문 에러를 관리자에게 전달하세요.",
+        ],
+        "raw_error": raw_error,
+    }
+
+
+def _clean_error_explanation(obj: dict[str, Any], fallback: dict[str, Any], raw_error: str) -> dict[str, Any]:
+    def line(key: str, limit: int = 320) -> str:
+        value = obj.get(key)
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        return text[:limit] or fallback.get(key, "")
+
+    fixes = obj.get("how_to_fix")
+    if isinstance(fixes, str):
+        fixes = [part.strip(" -•\t") for part in fixes.splitlines() if part.strip(" -•\t")]
+    if not isinstance(fixes, list):
+        fixes = []
+    clean_fixes = []
+    for item in fixes:
+        text = str(item or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if text:
+            clean_fixes.append(text[:220])
+        if len(clean_fixes) >= 4:
+            break
+    if not clean_fixes:
+        clean_fixes = list(fallback.get("how_to_fix") or [])[:4]
+    return {
+        "summary": line("summary", 220),
+        "where": line("where", 320),
+        "cause": line("cause", 360),
+        "how_to_fix": clean_fixes,
+        "raw_error": raw_error,
+    }
+
+
+def _format_error_explanation_message(exp: dict[str, Any]) -> str:
+    fixes = [str(item).strip() for item in (exp.get("how_to_fix") or []) if str(item).strip()]
+    parts = [
+        "AI 오류 해석",
+        f"문제: {exp.get('summary') or '앱 요청 처리 오류'}",
+        f"발생 위치: {exp.get('where') or '확인 필요'}",
+        f"가능한 원인: {exp.get('cause') or '확인 필요'}",
+    ]
+    if fixes:
+        parts.append("해결 방법:\n" + "\n".join(f"- {item}" for item in fixes))
+    raw_error = str(exp.get("raw_error") or "").strip()
+    if raw_error:
+        parts.append("원문 에러:\n" + raw_error)
+    return "\n\n".join(parts)
+
+
+def _build_error_explain_prompt(req: ErrorExplainReq, raw_error: str) -> str:
+    payload = {
+        "status": req.status,
+        "method": (req.method or "").strip().upper(),
+        "url": (req.url or "").strip(),
+        "page": (req.page or "").strip(),
+        "context": _clip_error_text(req.context, 1000),
+        "body": _clip_error_text(req.body, 2500),
+        "raw_error": raw_error,
+    }
+    return (
+        "Flow 웹앱에서 발생한 API 오류를 한국어로 쉽게 설명해줘.\n"
+        "반드시 사용자가 확인할 수 있는 발생 위치(API, 화면, HTTP status)를 적고, 해결 방법을 2~4개로 구체화해.\n"
+        "근거가 없는 파일명, 코드 라인, 담당자를 추측하지 말고 확인 필요라고 말해.\n"
+        "원문 에러는 응답 JSON에 다시 넣지 않아도 되지만, 해석은 아래 원문을 기준으로 해.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+@router.post("/error/explain")
+def explain_error(req: ErrorExplainReq, request: Request):
+    current_user(request)
+    raw_error = _clip_error_text(req.raw_error or req.body or "", 4000)
+    fallback = _fallback_error_explanation(req, raw_error)
+    available = llm_adapter.is_available()
+    if not available:
+        return {
+            "ok": True,
+            "llm": {"available": False, "used": False},
+            "explanation": fallback,
+            "message": raw_error,
+        }
+
+    out = llm_adapter.complete_json(
+        _build_error_explain_prompt(req, raw_error),
+        system=(
+            "You explain Flow app errors for Korean end users. "
+            "Return only JSON with summary, where, cause, how_to_fix. "
+            "Do not reveal secrets. Do not invent internal stack details."
+        ),
+        schema=ERROR_EXPLAIN_SCHEMA,
+        timeout=8,
+        max_retries=1,
+    )
+    if not out.get("ok"):
+        return {
+            "ok": True,
+            "llm": {"available": True, "used": False, "error": str(out.get("error") or "")[:200]},
+            "explanation": fallback,
+            "message": raw_error,
+        }
+    explanation = _clean_error_explanation(out.get("obj") or {}, fallback, raw_error)
+    return {
+        "ok": True,
+        "llm": {"available": True, "used": True},
+        "explanation": explanation,
+        "message": _format_error_explanation_message(explanation),
+    }
+
+
 @router.get("/status")
 def status(request: Request):
     me = current_user(request)

@@ -6,6 +6,8 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 
 - `frontend/src/pages/My_Diagnosis.jsx`의 Agent 화면 shell
 - `Flow-i`, `Semantic layer`, `단위기능 AI`, `LLM 설정` 탭 구성
+- LLM 연결 시 공통 API 에러를 사용자용 설명으로 바꾸는 보조 endpoint:
+  - `POST /api/llm/error/explain`
 - Agent scoped endpoint:
   - `GET /api/agent/home-flowi/runtime/graph`
   - `GET /api/agent/home-flowi/runtime/runs`
@@ -94,13 +96,21 @@ Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않�
 
 자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent JSON 초안만 생성한다. 실제 저장은 사용자가 `초안 저장` 또는 JSON 저장 버튼을 눌렀을 때만 `/api/agent/semantic/alias-groups/*`와 `/api/agent/semantic/intent-hints/*` write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
 
+## App Error Explanation
+
+공통 frontend API helper는 `/api/*` 응답이 실패하면 원문 에러를 먼저 만든 뒤 `/api/llm/error/explain`에 발생 화면, API, HTTP status, 원문을 전달한다. LLM이 사용 가능하고 설명 생성에 성공하면 UI에는 `문제`, `발생 위치`, `가능한 원인`, `해결 방법`, `원문 에러` 순서로 표시한다.
+
+LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메시지를 그대로 보여준다. 이 endpoint는 원문을 prompt에 넣기 전 token/password류 문자열을 redaction하고, 내부 reasoning이나 숨은 trace를 노출하지 않는다.
+
 ## Code Entrypoints
 
 | Layer | Path |
 |---|---|
 | Frontend page | `frontend/src/pages/My_Diagnosis.jsx` |
+| Common API error formatting | `frontend/src/lib/api.js` |
 | LLM settings panel | `frontend/src/components/agent/LlmTab.jsx` |
 | Agent router | `backend/routers/agent.py` |
+| LLM status/error explain router | `backend/routers/llm.py` |
 | Home runtime graph | `backend/core/home_orchestrator.py` |
 | Unit registry | `backend/core/flowi_units/registry.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
