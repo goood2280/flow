@@ -183,6 +183,36 @@ _PLAN_RISK_CACHE_MAX = 64
 _VIEW_CACHE: OrderedDict[tuple, tuple[tuple, dict]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX = 96
+PRODUCT_RAM_CACHE_VERSION = 1
+PRODUCT_RAM_CACHE_REFRESH_MINUTES_DEFAULT = 30
+PRODUCT_RAM_CACHE_REFRESH_MINUTES_MIN = 30
+PRODUCT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
+PRODUCT_RAM_CACHE_MAX_GB_DEFAULT = 4.0
+_PRODUCT_RAM_CACHE_LOCK = threading.RLock()
+_PRODUCT_RAM_CACHE: dict[str, dict] = {}
+_PRODUCT_RAM_CACHE_STATUS: dict[str, dict] = {}
+_PRODUCT_RAM_CACHE_REFRESHING: set[str] = set()
+_PRODUCT_RAM_CACHE_BUILD_LOCK = threading.Lock()
+_PRODUCT_RAM_CACHE_STOP = threading.Event()
+_PRODUCT_RAM_CACHE_THREAD: threading.Thread | None = None
+_PRODUCT_RAM_CACHE_STARTED = False
+_PRODUCT_RAM_CACHE_JOB_LOCK = threading.Lock()
+_PRODUCT_RAM_CACHE_JOB_THREAD: threading.Thread | None = None
+_PRODUCT_RAM_CACHE_JOB_STATE: dict = {
+    "running": False,
+    "queued": False,
+    "reason": "",
+    "started_at": "",
+    "finished_at": "",
+    "current_product": "",
+    "total": 0,
+    "done": 0,
+    "ok_count": 0,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "last_error": "",
+    "products": [],
+}
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
@@ -693,6 +723,9 @@ def _product_path(product: str):
 def _scan_product_base(product: str):
     """Scan the ML_TABLE file only, without FAB override joins."""
     product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    ram_lf = _product_ram_cache_lazyframe(product)
+    if ram_lf is not None:
+        return ram_lf
     fp = _product_path(product)
     if fp.suffix.lower() == ".csv":
         return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
@@ -703,6 +736,14 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
     """Use the ML_TABLE root lookup cache when a lot-scoped view is available."""
     if not str(root_lot_id or "").strip():
         return None
+    ram_lf = _product_ram_cache_lazyframe(product)
+    if ram_lf is not None:
+        try:
+            lot_col, wf_col = _detect_lot_wafer(ram_lf, product)
+            return _filter_lot_wafer(ram_lf, lot_col, wf_col, root_lot_id, wafer_ids)
+        except Exception as exc:
+            logger.debug("Product RAM cache scope filter unavailable product=%s root=%s: %s", product, root_lot_id, exc)
+            return ram_lf
     try:
         fp = _product_path(product)
         if fp.suffix.lower() != ".parquet":
@@ -713,6 +754,523 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
     except Exception as exc:
         logger.debug("ML_TABLE lookup cache unavailable product=%s root=%s: %s", product, root_lot_id, exc)
     return None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _product_ram_cache_available() -> bool:
+    return not _env_bool("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE", False)
+
+
+def _product_ram_cache_scheduler_enabled() -> bool:
+    if not _product_ram_cache_available():
+        return False
+    if "FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ:
+        return _env_bool("FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE", False)
+    try:
+        from core.runtime_limits import splittable_product_ram_cache_scheduler_enabled
+        return bool(splittable_product_ram_cache_scheduler_enabled())
+    except Exception:
+        return False
+
+
+def _product_ram_cache_refresh_minutes() -> int:
+    raw = os.environ.get("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_REFRESH_MINUTES", "")
+    if raw == "":
+        raw = _match_cache_refresh_minutes()
+    try:
+        value = int(raw)
+    except Exception:
+        value = PRODUCT_RAM_CACHE_REFRESH_MINUTES_DEFAULT
+    return max(PRODUCT_RAM_CACHE_REFRESH_MINUTES_MIN, min(PRODUCT_RAM_CACHE_REFRESH_MINUTES_MAX, value))
+
+
+def _product_ram_cache_max_bytes() -> int:
+    try:
+        gb = float(os.environ.get("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", "") or PRODUCT_RAM_CACHE_MAX_GB_DEFAULT)
+    except Exception:
+        gb = PRODUCT_RAM_CACHE_MAX_GB_DEFAULT
+    if gb <= 0:
+        return 0
+    return int(gb * 1024 * 1024 * 1024)
+
+
+def _product_ram_cache_products(product: str = "") -> list[str]:
+    raw = str(product or "").strip()
+    if raw:
+        return [_canonical_mltable_product_name(raw, allow_bare=True) or raw]
+    try:
+        return [p.get("name") for p in list_products().get("products", []) if p.get("name")]
+    except Exception:
+        return []
+
+
+def _product_ram_cache_source(product: str) -> tuple[str, Path]:
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    return canonical, _product_path(canonical)
+
+
+def _product_ram_cache_estimated_bytes(df: pl.DataFrame) -> int:
+    try:
+        return int(df.estimated_size())
+    except Exception:
+        try:
+            return int(df.height) * max(1, len(df.columns)) * 16
+        except Exception:
+            return 0
+
+
+def _product_ram_cache_total_bytes_locked(exclude_product: str = "") -> int:
+    exclude = str(exclude_product or "").strip().upper()
+    total = 0
+    for product, entry in _PRODUCT_RAM_CACHE.items():
+        if exclude and product.upper() == exclude:
+            continue
+        try:
+            total += int(entry.get("estimated_bytes") or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _read_product_ram_cache_frame(fp: Path) -> pl.DataFrame:
+    if fp.suffix.lower() == ".csv":
+        lf = pl.scan_csv(str(fp), infer_schema_length=5000)
+    else:
+        lf = _scan_parquet_compat(str(fp))
+    return _cast_cats_lazy(lf).collect()
+
+
+def _product_ram_cache_is_refreshing(product: str = "") -> bool:
+    raw = str(product or "").strip()
+    with _PRODUCT_RAM_CACHE_LOCK:
+        if not raw:
+            return bool(_PRODUCT_RAM_CACHE_REFRESHING)
+        canonical = _canonical_mltable_product_name(raw, allow_bare=True) or raw
+        return canonical in _PRODUCT_RAM_CACHE_REFRESHING or "*" in _PRODUCT_RAM_CACHE_REFRESHING
+
+
+def _product_ram_cache_mark_status(product: str, updates: dict) -> None:
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    if not canonical:
+        return
+    with _PRODUCT_RAM_CACHE_LOCK:
+        cur = dict(_PRODUCT_RAM_CACHE_STATUS.get(canonical) or {})
+        cur.update(updates)
+        cur["product"] = canonical
+        _PRODUCT_RAM_CACHE_STATUS[canonical] = cur
+
+
+def _product_ram_cache_entry(product: str) -> dict | None:
+    if not _product_ram_cache_available():
+        return None
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    if not canonical:
+        return None
+    with _PRODUCT_RAM_CACHE_LOCK:
+        return _PRODUCT_RAM_CACHE.get(canonical)
+
+
+def _product_ram_cache_lazyframe(product: str):
+    entry = _product_ram_cache_entry(product)
+    if not entry:
+        return None
+    df = entry.get("df")
+    if df is None:
+        return None
+    try:
+        return _cast_cats_lazy(df.lazy())
+    except Exception as exc:
+        logger.debug("Product RAM cache lazyframe failed product=%s: %s", product, exc)
+        return None
+
+
+def _product_ram_cache_public_meta(product: str, *, include_detail: bool = False) -> dict:
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    source_sig = ("", 0.0, 0)
+    source_path = ""
+    try:
+        canonical, fp = _product_ram_cache_source(canonical)
+        source_path = str(fp)
+        source_sig = _path_cache_sig(fp)
+    except Exception:
+        pass
+    with _PRODUCT_RAM_CACHE_LOCK:
+        entry = _PRODUCT_RAM_CACHE.get(canonical)
+        status = dict(_PRODUCT_RAM_CACHE_STATUS.get(canonical) or {})
+    stale = bool(entry and entry.get("source_sig") != source_sig)
+    out = {
+        "product": canonical,
+        "enabled": _product_ram_cache_available(),
+        "hit": bool(entry and _product_ram_cache_available()),
+        "stale": stale,
+        "refreshing": _product_ram_cache_is_refreshing(canonical),
+        "loaded_at": entry.get("loaded_at", "") if entry else "",
+        "row_count": int(entry.get("row_count") or 0) if entry else 0,
+        "estimated_mb": round(float(entry.get("estimated_bytes") or 0) / (1024 * 1024), 3) if entry else 0.0,
+        "source_mtime": source_sig[1] or None,
+        "source_size": source_sig[2] or 0,
+        "skipped": bool(status.get("skipped")) if not entry else False,
+    }
+    if include_detail:
+        out.update({
+            "source_path": source_path,
+            "source_sig": source_sig,
+            "cache_source_sig": entry.get("source_sig") if entry else None,
+            "error": status.get("error") or "",
+            "skip_reason": status.get("skip_reason") or "",
+            "last_refresh_at": status.get("last_refresh_at") or "",
+        })
+    return out
+
+
+def _product_ram_cache_response_meta(product: str) -> dict:
+    meta = _product_ram_cache_public_meta(product, include_detail=False)
+    return {
+        "hit": meta.get("hit", False),
+        "stale": meta.get("stale", False),
+        "refreshing": meta.get("refreshing", False),
+        "loaded_at": meta.get("loaded_at", ""),
+        "row_count": meta.get("row_count", 0),
+        "estimated_mb": meta.get("estimated_mb", 0.0),
+        "source_mtime": meta.get("source_mtime"),
+    }
+
+
+def _product_ram_cache_view_signature(product: str) -> tuple:
+    if not _product_ram_cache_available():
+        return ("product_ram_cache", "disabled")
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    with _PRODUCT_RAM_CACHE_LOCK:
+        entry = _PRODUCT_RAM_CACHE.get(canonical)
+        status = dict(_PRODUCT_RAM_CACHE_STATUS.get(canonical) or {})
+    if entry:
+        return (
+            "product_ram_cache",
+            canonical,
+            entry.get("source_sig"),
+            entry.get("loaded_epoch"),
+            entry.get("estimated_bytes"),
+        )
+    return (
+        "product_ram_cache",
+        canonical,
+        status.get("last_refresh_epoch"),
+        status.get("skipped"),
+        status.get("skip_reason"),
+    )
+
+
+def _refresh_product_ram_cache_products(products: list[str], force: bool = False) -> dict:
+    products = [p for p in products if str(p or "").strip()]
+    results: list[dict] = []
+    if not _product_ram_cache_available():
+        return {
+            "ok": False,
+            "products": [{"product": p, "ok": False, "skipped": True, "reason": "disabled"} for p in products],
+            "interval_minutes": _product_ram_cache_refresh_minutes(),
+        }
+    max_bytes = _product_ram_cache_max_bytes()
+    with _PRODUCT_RAM_CACHE_BUILD_LOCK:
+        for raw_product in products:
+            canonical = _canonical_mltable_product_name(raw_product, allow_bare=True) or str(raw_product or "").strip()
+            result = {"product": canonical, "ok": False, "skipped": False, "row_count": 0}
+            try:
+                canonical, fp = _product_ram_cache_source(canonical)
+                result["product"] = canonical
+                result["source_path"] = str(fp)
+                source_sig = _path_cache_sig(fp)
+                with _PRODUCT_RAM_CACHE_LOCK:
+                    current = _PRODUCT_RAM_CACHE.get(canonical)
+                    if current and not force and current.get("source_sig") == source_sig:
+                        result.update({
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "fresh",
+                            "row_count": int(current.get("row_count") or 0),
+                            "estimated_mb": round(float(current.get("estimated_bytes") or 0) / (1024 * 1024), 3),
+                        })
+                        results.append(result)
+                        continue
+                    used_bytes = _product_ram_cache_total_bytes_locked(exclude_product=canonical)
+                source_bytes = int(source_sig[2] or 0)
+                if max_bytes and source_bytes > max(0, max_bytes - used_bytes):
+                    reason = "memory_budget_precheck"
+                    _product_ram_cache_mark_status(canonical, {
+                        "skipped": True,
+                        "skip_reason": reason,
+                        "error": "",
+                        "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "last_refresh_epoch": time.time(),
+                    })
+                    result.update({"skipped": True, "reason": reason})
+                    results.append(result)
+                    continue
+                try:
+                    from core.runtime_limits import process_memory_high
+                    if process_memory_high():
+                        reason = "process_memory_high"
+                        _product_ram_cache_mark_status(canonical, {
+                            "skipped": True,
+                            "skip_reason": reason,
+                            "error": "",
+                            "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "last_refresh_epoch": time.time(),
+                        })
+                        result.update({"skipped": True, "reason": reason})
+                        results.append(result)
+                        continue
+                except Exception:
+                    pass
+                with _PRODUCT_RAM_CACHE_LOCK:
+                    _PRODUCT_RAM_CACHE_REFRESHING.add(canonical)
+                df = None
+                try:
+                    df = _read_product_ram_cache_frame(fp)
+                    estimated_bytes = _product_ram_cache_estimated_bytes(df)
+                    with _PRODUCT_RAM_CACHE_LOCK:
+                        used_bytes = _product_ram_cache_total_bytes_locked(exclude_product=canonical)
+                    if max_bytes and used_bytes + estimated_bytes > max_bytes:
+                        reason = "memory_budget"
+                        _product_ram_cache_mark_status(canonical, {
+                            "skipped": True,
+                            "skip_reason": reason,
+                            "error": "",
+                            "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "last_refresh_epoch": time.time(),
+                        })
+                        result.update({
+                            "skipped": True,
+                            "reason": reason,
+                            "estimated_mb": round(estimated_bytes / (1024 * 1024), 3),
+                        })
+                        results.append(result)
+                        continue
+                    now = time.time()
+                    loaded_at = datetime.datetime.fromtimestamp(now).isoformat(timespec="seconds")
+                    entry = {
+                        "version": PRODUCT_RAM_CACHE_VERSION,
+                        "product": canonical,
+                        "source_path": str(fp),
+                        "source_sig": source_sig,
+                        "df": df,
+                        "row_count": int(df.height),
+                        "estimated_bytes": int(estimated_bytes),
+                        "loaded_at": loaded_at,
+                        "loaded_epoch": now,
+                        "error": "",
+                        "skipped": False,
+                    }
+                    with _PRODUCT_RAM_CACHE_LOCK:
+                        _PRODUCT_RAM_CACHE[canonical] = entry
+                        _PRODUCT_RAM_CACHE_STATUS[canonical] = {
+                            "product": canonical,
+                            "skipped": False,
+                            "skip_reason": "",
+                            "error": "",
+                            "last_refresh_at": loaded_at,
+                            "last_refresh_epoch": now,
+                        }
+                    result.update({
+                        "ok": True,
+                        "row_count": int(df.height),
+                        "estimated_mb": round(estimated_bytes / (1024 * 1024), 3),
+                        "loaded_at": loaded_at,
+                    })
+                    df = None
+                    _LOT_LOOKUP_CACHE.clear()
+                    _clear_split_view_cache()
+                finally:
+                    with _PRODUCT_RAM_CACHE_LOCK:
+                        _PRODUCT_RAM_CACHE_REFRESHING.discard(canonical)
+                    if df is not None:
+                        try:
+                            del df
+                        except Exception:
+                            pass
+                results.append(result)
+            except Exception as e:
+                with _PRODUCT_RAM_CACHE_LOCK:
+                    _PRODUCT_RAM_CACHE_REFRESHING.discard(canonical)
+                reason = f"{type(e).__name__}: {e}"
+                logger.warning("SplitTable product RAM cache refresh failed (product=%s) %s", canonical, reason, exc_info=True)
+                _product_ram_cache_mark_status(canonical, {
+                    "skipped": False,
+                    "skip_reason": "",
+                    "error": reason,
+                    "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "last_refresh_epoch": time.time(),
+                })
+                result["reason"] = reason
+                results.append(result)
+            try:
+                gc.collect()
+            except Exception:
+                pass
+    return {
+        "ok": any(r.get("ok") for r in results),
+        "products": results,
+        "interval_minutes": _product_ram_cache_refresh_minutes(),
+        "max_gb": round(_product_ram_cache_max_bytes() / (1024 ** 3), 3) if _product_ram_cache_max_bytes() else 0,
+    }
+
+
+def refresh_product_ram_cache(product: str = "", force: bool = False) -> dict:
+    return _refresh_product_ram_cache_products(_product_ram_cache_products(product), force=force)
+
+
+def _product_ram_cache_job_status() -> dict:
+    with _PRODUCT_RAM_CACHE_JOB_LOCK:
+        out = dict(_PRODUCT_RAM_CACHE_JOB_STATE)
+        out["products"] = [dict(r) for r in (_PRODUCT_RAM_CACHE_JOB_STATE.get("products") or [])]
+    return out
+
+
+def _product_ram_cache_job_update(**updates) -> None:
+    with _PRODUCT_RAM_CACHE_JOB_LOCK:
+        _PRODUCT_RAM_CACHE_JOB_STATE.update(updates)
+
+
+def _begin_product_ram_cache_job(products: list[str], force: bool, reason: str) -> tuple[bool, dict]:
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with _PRODUCT_RAM_CACHE_JOB_LOCK:
+        if _PRODUCT_RAM_CACHE_JOB_STATE.get("running"):
+            status = dict(_PRODUCT_RAM_CACHE_JOB_STATE)
+            status["products"] = [dict(r) for r in (_PRODUCT_RAM_CACHE_JOB_STATE.get("products") or [])]
+            return False, status
+        _PRODUCT_RAM_CACHE_JOB_STATE.clear()
+        _PRODUCT_RAM_CACHE_JOB_STATE.update({
+            "running": True,
+            "queued": True,
+            "force": bool(force),
+            "reason": reason or "manual",
+            "started_at": now,
+            "finished_at": "",
+            "current_product": "",
+            "total": len(products),
+            "done": 0,
+            "ok_count": 0,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "last_error": "",
+            "products": [],
+        })
+        status = dict(_PRODUCT_RAM_CACHE_JOB_STATE)
+        status["products"] = []
+        return True, status
+
+
+def _append_product_ram_cache_job_rows(rows: list[dict]) -> None:
+    if not rows:
+        return
+    with _PRODUCT_RAM_CACHE_JOB_LOCK:
+        current = [dict(r) for r in (_PRODUCT_RAM_CACHE_JOB_STATE.get("products") or [])]
+        current.extend(dict(r) for r in rows)
+        _PRODUCT_RAM_CACHE_JOB_STATE["products"] = current[-500:]
+        _PRODUCT_RAM_CACHE_JOB_STATE["done"] = int(_PRODUCT_RAM_CACHE_JOB_STATE.get("done") or 0) + len(rows)
+        _PRODUCT_RAM_CACHE_JOB_STATE["ok_count"] = int(_PRODUCT_RAM_CACHE_JOB_STATE.get("ok_count") or 0) + len([r for r in rows if r.get("ok")])
+        _PRODUCT_RAM_CACHE_JOB_STATE["failed_count"] = int(_PRODUCT_RAM_CACHE_JOB_STATE.get("failed_count") or 0) + len([r for r in rows if not r.get("ok") and not r.get("skipped")])
+        _PRODUCT_RAM_CACHE_JOB_STATE["skipped_count"] = int(_PRODUCT_RAM_CACHE_JOB_STATE.get("skipped_count") or 0) + len([r for r in rows if r.get("skipped")])
+        for row in reversed(rows):
+            if row.get("reason"):
+                _PRODUCT_RAM_CACHE_JOB_STATE["last_error"] = str(row.get("reason") or "")
+                break
+
+
+def _run_started_product_ram_cache_job(products: list[str], force: bool, reason: str = "manual") -> dict:
+    try:
+        for product in products:
+            if _PRODUCT_RAM_CACHE_STOP.is_set():
+                break
+            _product_ram_cache_job_update(current_product=product, queued=False)
+            result = _refresh_product_ram_cache_products([product], force=force)
+            _append_product_ram_cache_job_rows(result.get("products") or [])
+    finally:
+        _product_ram_cache_job_update(
+            running=False,
+            queued=False,
+            current_product="",
+            finished_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+    status = _product_ram_cache_job_status()
+    return {
+        "ok": bool(status.get("ok_count")),
+        "queued": False,
+        "products": status.get("products") or [],
+        "interval_minutes": _product_ram_cache_refresh_minutes(),
+        "job": status,
+        "reason": reason,
+    }
+
+
+def enqueue_product_ram_cache_refresh(product: str = "", force: bool = True, reason: str = "manual") -> dict:
+    global _PRODUCT_RAM_CACHE_JOB_THREAD
+    products = _product_ram_cache_products(product)
+    started, status = _begin_product_ram_cache_job(products, force=force, reason=reason)
+    if not started:
+        return {
+            "ok": True,
+            "queued": False,
+            "running": True,
+            "products": [],
+            "interval_minutes": _product_ram_cache_refresh_minutes(),
+            "job": status,
+            "detail": "SplitTable product RAM cache refresh is already running.",
+        }
+    _PRODUCT_RAM_CACHE_JOB_THREAD = threading.Thread(
+        target=_run_started_product_ram_cache_job,
+        args=(products, force, reason),
+        name="splittable-product-ram-cache-refresh",
+        daemon=True,
+    )
+    _PRODUCT_RAM_CACHE_JOB_THREAD.start()
+    return {
+        "ok": True,
+        "queued": True,
+        "running": True,
+        "products": [{"product": p, "queued": True} for p in products],
+        "interval_minutes": _product_ram_cache_refresh_minutes(),
+        "job": _product_ram_cache_job_status(),
+    }
+
+
+def _product_ram_cache_loop() -> None:
+    while not _PRODUCT_RAM_CACHE_STOP.is_set():
+        try:
+            products = _product_ram_cache_products("")
+            if products:
+                _refresh_product_ram_cache_products(products, force=False)
+        except Exception as e:
+            logger.warning("SplitTable product RAM cache scheduler tick failed: %s", e)
+        wait_s = max(60.0, _product_ram_cache_refresh_minutes() * 60.0)
+        while wait_s > 0 and not _PRODUCT_RAM_CACHE_STOP.is_set():
+            step = min(wait_s, 60.0)
+            _PRODUCT_RAM_CACHE_STOP.wait(step)
+            wait_s -= step
+
+
+def start_product_ram_cache_scheduler() -> bool:
+    global _PRODUCT_RAM_CACHE_THREAD, _PRODUCT_RAM_CACHE_STARTED
+    if _PRODUCT_RAM_CACHE_STARTED:
+        return False
+    if not _product_ram_cache_scheduler_enabled():
+        logger.info("SplitTable product RAM cache scheduler disabled")
+        return False
+    _PRODUCT_RAM_CACHE_STOP.clear()
+    _PRODUCT_RAM_CACHE_THREAD = threading.Thread(
+        target=_product_ram_cache_loop,
+        name="splittable-product-ram-cache",
+        daemon=True,
+    )
+    _PRODUCT_RAM_CACHE_THREAD.start()
+    _PRODUCT_RAM_CACHE_STARTED = True
+    logger.info("SplitTable product RAM cache scheduler started (interval=%sm)", _product_ram_cache_refresh_minutes())
+    return True
 
 
 def _strip_non_authoritative_fab_fields(lf, product: str):
@@ -6089,6 +6647,11 @@ class MatchCacheRefreshReq(BaseModel):
     force: bool = True
 
 
+class ProductRamCacheRefreshReq(BaseModel):
+    product: str = ""
+    force: bool = True
+
+
 @router.get("/match-cache/status")
 def match_cache_status(request: Request, product: str = Query("")):
     me = current_user(request)
@@ -6127,6 +6690,34 @@ def match_cache_status(request: Request, product: str = Query("")):
 @router.post("/match-cache/refresh")
 def refresh_match_cache_now(req: MatchCacheRefreshReq, request: Request, _a=Depends(require_page_manager("splittable"))):
     return enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="manual")
+
+
+@router.get("/product-cache/status")
+def product_ram_cache_status(request: Request, product: str = Query("")):
+    me = current_user(request)
+    include_detail = is_page_manager(me, "splittable")
+    products = _product_ram_cache_products(product)
+    rows = [_product_ram_cache_public_meta(prod, include_detail=include_detail) for prod in products]
+    return {
+        "ok": True,
+        "enabled": _product_ram_cache_available(),
+        "scheduler_enabled": _product_ram_cache_scheduler_enabled(),
+        "interval_minutes": _product_ram_cache_refresh_minutes(),
+        "max_gb": round(_product_ram_cache_max_bytes() / (1024 ** 3), 3) if _product_ram_cache_max_bytes() else 0,
+        "products": rows,
+        "job": _product_ram_cache_job_status() if include_detail else {
+            "running": _product_ram_cache_job_status().get("running", False),
+            "queued": _product_ram_cache_job_status().get("queued", False),
+        },
+    }
+
+
+@router.post("/product-cache/refresh")
+def refresh_product_ram_cache_now(req: ProductRamCacheRefreshReq, request: Request):
+    me = current_user(request)
+    if not is_page_manager(me, "splittable"):
+        raise HTTPException(403, "Admin or page manager (splittable) only")
+    return enqueue_product_ram_cache_refresh(product=req.product or "", force=bool(req.force), reason="manual")
 
 
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
@@ -7677,7 +8268,9 @@ def _split_view_cache_dep_signature(product: str, custom_name: str = "", product
             paths.append(custom_fp)
         except HTTPException:
             pass
-    return tuple(_path_cache_sig(path) for path in paths)
+    sig = [_path_cache_sig(path) for path in paths]
+    sig.append(_product_ram_cache_view_signature(product))
+    return tuple(sig)
 
 
 def _clear_split_view_cache() -> None:
@@ -7727,6 +8320,7 @@ def _attach_split_view_runtime_fields(payload: dict, request: Request | None) ->
         username,
         role,
     )
+    out["product_cache"] = _product_ram_cache_response_meta(out.get("product") or "")
     return out
 
 
@@ -7780,6 +8374,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         if not root_lot_id.strip() and not fab_lot_id.strip():
             return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
                     "headers": [], "rows": [], "prefixes": _load_prefixes(),
+                    "product_cache": _product_ram_cache_response_meta(product),
                     "msg": "Enter a Root Lot ID or Fab Lot ID to view"}
 
         fab_scope = {}
@@ -7917,7 +8512,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                                    product, root_input, type(e).__name__, e)
         if df.height == 0:
             return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
-                    "headers": [], "rows": [], "prefixes": _load_prefixes(), "msg": "No data"}
+                    "headers": [], "rows": [], "prefixes": _load_prefixes(),
+                    "product_cache": _product_ram_cache_response_meta(product),
+                    "msg": "No data"}
         if not root_lot_id.strip() and lot_col and lot_col in df.columns:
             roots = []
             for v in df[lot_col].cast(_STR, strict=False).to_list():
@@ -8097,6 +8694,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "mismatch_count": len(mismatches),
             "override": override_meta,
             "match_cache": _match_cache_response_meta(product),
+            "product_cache": _product_ram_cache_response_meta(product),
             "lot_warn": _lot_warn,
             "related_issues": _related_tracker_issues(product, root_lot_id, viewer_username, viewer_role),
         }

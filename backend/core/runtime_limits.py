@@ -90,6 +90,15 @@ def splittable_match_cache_enabled() -> bool:
     return False
 
 
+def splittable_product_ram_cache_scheduler_enabled() -> bool:
+    """Whether startup should warm SplitTable ML_TABLE product files in RAM."""
+    if "FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ:
+        return not _env_flag("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE")
+    if "FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ:
+        return _env_flag("FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE")
+    return resource_profile() in (_FULL_PROFILES | {"prod", "production"})
+
+
 def tracker_et_lot_cache_enabled() -> bool:
     """Whether Tracker Analysis ET lot-cache jobs may run.
 

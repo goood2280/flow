@@ -337,6 +337,8 @@ export default function My_SplitTable({user}){
   const[featMask,setFeatMask]=useState("");
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
   const[customTags,setCustomTags]=useState([]);
+  const[productCacheStatus,setProductCacheStatus]=useState(null);
+  const[productCacheBusy,setProductCacheBusy]=useState(false);
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
@@ -371,6 +373,11 @@ export default function My_SplitTable({user}){
       .then(d=>setMlMatch(toMlMatch(d)))
       .catch(()=>{});
   };
+  const reloadProductRamCacheStatus=()=>{const q=selProd?("?product="+encodeURIComponent(selProd)):"";
+    return sf(API+"/product-cache/status"+q)
+      .then(d=>setProductCacheStatus(d))
+      .catch(()=>setProductCacheStatus(null));
+  };
   const persistLotOverrides=async(nextLotOverrides)=>{
     await sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:nextLotOverrides||lotOverrides||{}})});
@@ -397,6 +404,25 @@ export default function My_SplitTable({user}){
       })
       .catch(e=>toast.error("FAB 매칭 캐시 스캔 실패: "+(e?.message||e)))
       .finally(()=>setFabCacheBusy(false));
+  };
+  const runProductRamCache=()=>{
+    setProductCacheBusy(true);
+    sf(API+"/product-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
+      .then(r=>{
+        const rows=r.products||[];
+        if(r.queued){
+          toast.info(`제품 원본 RAM cache 갱신 예약됨: ${rows.length}개 제품`);
+        }else if(r.running){
+          toast.warn("제품 원본 RAM cache 갱신이 이미 실행 중입니다.");
+        }else{
+          const ok=rows.filter(x=>x.ok).length;
+          toast.ok(`제품 원본 RAM cache 갱신 완료: ${ok}/${rows.length}`);
+        }
+        reloadProductRamCacheStatus();
+        if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
+      })
+      .catch(e=>toast.error("제품 원본 RAM cache 갱신 실패: "+(e?.message||e)))
+      .finally(()=>setProductCacheBusy(false));
   };
   useEffect(()=>{
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
@@ -468,8 +494,9 @@ export default function My_SplitTable({user}){
   //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);setProductCacheStatus(null);return;}
     reloadCustomTags();
+    reloadProductRamCacheStatus();
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
         setProductSchema((d.columns||[]).map(c=>c.name||c));
@@ -694,6 +721,7 @@ export default function My_SplitTable({user}){
     else if(effectiveCustomMode&&effectiveCustomName)url+="&custom_name="+encodeURIComponent(effectiveCustomName);
     sf(url).then(d=>{
       setData(d);
+      if(d.product_cache)setProductCacheStatus(prev=>prev?{...prev,products:[{...d.product_cache,product:selProd}]}:{products:[{...d.product_cache,product:selProd}]});
       if(d.precision)setPrecision(d.precision);
       // v9.0.1: 응답에 동봉된 같은 root 의 fab_lot_id 들로 콤보박스 자동 채움 —
       //   별도 lot-candidates 호출 없이 즉시 보임. 빈 배열이면 기존 fabSuggestions 유지.
@@ -1290,6 +1318,19 @@ export default function My_SplitTable({user}){
               </button>
               <span style={{fontSize:14,color:"var(--text-secondary)"}}>현재 선택 제품 기준. 제품 미선택 시 전체 표시 제품을 스캔합니다.</span>
             </div>
+            {(()=>{const pc=(productCacheStatus?.products||[])[0]||data?.product_cache||{};const hit=!!pc.hit;const stale=!!pc.stale;const refreshing=!!pc.refreshing||!!productCacheStatus?.job?.running;const tone=stale?"rgba(245,158,11,0.95)":hit?"rgba(37,99,235,0.95)":"var(--text-secondary)";return(
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",paddingTop:2}}>
+                <button onClick={runProductRamCache} disabled={productCacheBusy}
+                  style={{padding:"5px 12px",borderRadius:999,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:productCacheBusy?"wait":"pointer",opacity:productCacheBusy?0.65:1}}>
+                  {productCacheBusy?"제품 원본 RAM cache 갱신 중...":"제품 원본 RAM cache 수동 갱신"}
+                </button>
+                <span style={{fontSize:14,color:tone,fontWeight:700}}>
+                  {refreshing?"refreshing":stale?"stale":hit?"hit":"miss"}
+                </span>
+                <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                  rows {pc.row_count||0} · {Number(pc.estimated_mb||0).toFixed(1)} MB · {pc.loaded_at||"not loaded"}
+                </span>
+              </div>);})()}
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>사용자 표시 대상</div>

@@ -43,6 +43,17 @@ class _Request:
         self.state = _State({"username": username, "role": role})
 
 
+def _reset_product_ram_cache(monkeypatch):
+    monkeypatch.delenv("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", raising=False)
+    with splittable._PRODUCT_RAM_CACHE_LOCK:
+        splittable._PRODUCT_RAM_CACHE.clear()
+        splittable._PRODUCT_RAM_CACHE_STATUS.clear()
+        splittable._PRODUCT_RAM_CACHE_REFRESHING.clear()
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._clear_split_view_cache()
+
+
 def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", tmp_path / "match_cache")
     splittable._LOT_LOOKUP_CACHE.clear()
@@ -609,6 +620,145 @@ def test_custom_tag_delete_routes_are_registered():
 
     assert "/api/splittable/custom-tags/delete" in paths
     assert "/api/splittable/custom-tags/columns/delete" in paths
+
+
+def test_product_ram_cache_hit_avoids_product_parquet_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+
+    result = splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+    assert result["products"][0]["ok"] is True
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("raw parquet scan should not run on RAM hit")
+
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_scan)
+    df = splittable._scan_product_base("ML_TABLE_PRODA").select("KNOB_GATE").collect()
+
+    assert df["KNOB_GATE"].to_list() == ["R1"]
+
+
+def test_product_ram_cache_serves_stale_until_refresh_swaps(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(fp)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+
+    splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+    time.sleep(0.02)
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R2"],
+    }).write_parquet(fp)
+
+    stale = splittable._scan_product_base_lookup_cache("ML_TABLE_PRODA", root_lot_id="A1000", wafer_ids="1")
+    assert stale.select("KNOB_GATE").collect()["KNOB_GATE"].to_list() == ["R1"]
+    assert splittable._product_ram_cache_response_meta("ML_TABLE_PRODA")["stale"] is True
+
+    splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+    fresh = splittable._scan_product_base_lookup_cache("ML_TABLE_PRODA", root_lot_id="A1000", wafer_ids="1")
+    assert fresh.select("KNOB_GATE").collect()["KNOB_GATE"].to_list() == ["R2"]
+    assert splittable._product_ram_cache_response_meta("ML_TABLE_PRODA")["stale"] is False
+
+
+def test_product_ram_cache_refresh_failure_keeps_previous_entry(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+
+    def fail_read(_fp):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(splittable, "_read_product_ram_cache_frame", fail_read)
+    result = splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+    df = splittable._scan_product_base("ML_TABLE_PRODA").select("KNOB_GATE").collect()
+    detail = splittable._product_ram_cache_public_meta("ML_TABLE_PRODA", include_detail=True)
+
+    assert result["ok"] is False
+    assert df["KNOB_GATE"].to_list() == ["R1"]
+    assert "boom" in detail["error"]
+
+
+def test_product_ram_cache_memory_skip_falls_back_to_view_disk_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setenv("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", "0.000000001")
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+
+    refresh = splittable.refresh_product_ram_cache("ML_TABLE_PRODA", force=True)
+    view = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert refresh["products"][0]["skipped"] is True
+    assert view["product_cache"]["hit"] is False
+    assert [row["_param"] for row in view["rows"]] == ["KNOB_GATE"]
+
+
+def test_product_ram_cache_status_and_refresh_permissions(monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {})
+
+    viewer_status = splittable.product_ram_cache_status(_Request("viewer", "user"), product="ML_TABLE_PRODA")
+    assert "source_path" not in viewer_status["products"][0]
+
+    with pytest.raises(HTTPException) as exc:
+        splittable.refresh_product_ram_cache_now(
+            splittable.ProductRamCacheRefreshReq(product="ML_TABLE_PRODA", force=True),
+            _Request("viewer", "user"),
+        )
+    assert exc.value.status_code == 403
+
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {"splittable": ["viewer"]})
+    monkeypatch.setattr(splittable, "enqueue_product_ram_cache_refresh", lambda **_kwargs: {"ok": True, "queued": True})
+
+    manager_status = splittable.product_ram_cache_status(_Request("viewer", "user"), product="ML_TABLE_PRODA")
+    refresh = splittable.refresh_product_ram_cache_now(
+        splittable.ProductRamCacheRefreshReq(product="ML_TABLE_PRODA", force=True),
+        _Request("viewer", "user"),
+    )
+
+    assert "source_path" in manager_status["products"][0]
+    assert refresh == {"ok": True, "queued": True}
 
 
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):

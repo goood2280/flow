@@ -7,6 +7,7 @@ from core.auth import hash_password
 from core.runtime_limits import (
     heavy_background_jobs_enabled,
     splittable_match_cache_enabled,
+    splittable_product_ram_cache_scheduler_enabled,
     tracker_et_lot_cache_enabled,
 )
 
@@ -33,6 +34,15 @@ def start_background_services(logger) -> None:
         logger.info(
             "SplitTable match cache scheduler disabled "
             "(set FLOW_ENABLE_SPLITTABLE_MATCH_CACHE=1 to enable)"
+        )
+    if splittable_product_ram_cache_scheduler_enabled():
+        starters = starters + (
+            ("splittable product RAM cache scheduler", "routers.splittable", "start_product_ram_cache_scheduler"),
+        )
+    else:
+        logger.info(
+            "SplitTable product RAM cache scheduler disabled "
+            "(set FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE=1 to enable)"
         )
     if heavy_background_jobs_enabled():
         starters = starters + heavy_starters
