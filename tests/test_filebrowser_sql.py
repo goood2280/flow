@@ -1642,6 +1642,37 @@ def test_filebrowser_run_view_parses_order_by_from_display_sql():
     assert result["sort"] == {"column": "feature_name", "direction": "desc", "nulls": "last"}
 
 
+def test_filebrowser_run_view_select_accepts_space_column_name():
+    result = filebrowser._run_view(
+        pl.DataFrame({
+            "code invalid filter message": ["ok", "warn"],
+            "value": [1, 2],
+        }),
+        sql="SELECT `code invalid filter message`",
+        select_cols="",
+        rows=20,
+    )
+
+    assert result["columns"] == ["code invalid filter message"]
+    assert result["selected_cols"] == "code invalid filter message"
+    assert result["display_sql"] == "SELECT `code invalid filter message`"
+
+
+def test_filebrowser_run_view_select_accepts_legacy_unquoted_space_column_name():
+    result = filebrowser._run_view(
+        pl.DataFrame({
+            "code invalid filter message": ["ok", "warn"],
+            "value": [1, 2],
+        }),
+        sql="SELECT code invalid filter message",
+        select_cols="",
+        rows=20,
+    )
+
+    assert result["columns"] == ["code invalid filter message"]
+    assert result["where_sql"] == ""
+
+
 def test_filebrowser_download_lazy_csv_parses_order_by_from_display_sql():
     df, _csv_bytes = filebrowser._download_lazy_csv(
         pl.DataFrame({"lot_id": ["B", "A"], "rank": [2, 1]}).lazy(),

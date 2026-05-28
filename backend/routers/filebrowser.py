@@ -6518,13 +6518,10 @@ def _normalize_polars_view_sql_filter(
     return _polars_time_cast_filter(_normalize_view_sql_filter(sql, columns, dtypes))
 
 
-_AI_SQL_SELECT_PREFIX_RE = re.compile(
-    r"^\s*SELECT\s+(?P<cols>[^;]+?)(?:\s+WHERE\s+(?P<rest>.+?))?\s*$",
-    re.IGNORECASE | re.DOTALL,
-)
 _AI_SQL_ORDER_BY_SPLIT_RE = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
+_AI_SQL_DISPLAY_IDENTIFIER_RE = r"(?:`(?:``|[^`])+`|\"(?:\"\"|[^\"])+\"|[A-Za-z_][A-Za-z0-9_]*)"
 _AI_SQL_ORDER_BY_RE = re.compile(
-    r"^\s*(?P<col>`?[A-Za-z_][A-Za-z0-9_]*`?|\"[A-Za-z_][A-Za-z0-9_]*\")"
+    rf"^\s*(?P<col>{_AI_SQL_DISPLAY_IDENTIFIER_RE})"
     r"\s+(?P<direction>ASC|DESC)"
     r"(?:\s+NULLS\s+(?P<nulls>FIRST|LAST))?\s*$",
     re.IGNORECASE,
@@ -6556,7 +6553,7 @@ def _parse_ai_sql_order_by(order_sql: str, columns: list[str] | tuple[str, ...] 
     match = _AI_SQL_ORDER_BY_RE.match(text)
     if not match:
         raise ValueError("ORDER BY must use: column ASC|DESC [NULLS FIRST|LAST]")
-    column = match.group("col").strip().strip("`").strip('"')
+    column = _unquote_ai_sql_display_identifier(match.group("col"))
     lookup = _column_lookup(list(columns or []))
     hit = lookup.get(column.casefold()) if lookup else column
     if columns and not hit:
@@ -6566,6 +6563,102 @@ def _parse_ai_sql_order_by(order_sql: str, columns: list[str] | tuple[str, ...] 
         "direction": match.group("direction").casefold(),
         "nulls": (match.group("nulls") or "last").casefold(),
     }
+
+
+def _quote_ai_sql_display_identifier(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        return text
+    return "`" + text.replace("`", "``") + "`"
+
+
+def _unquote_ai_sql_display_identifier(raw: str) -> str:
+    text = str(raw or "").strip()
+    if len(text) >= 2 and text[0] == "`" and text[-1] == "`":
+        return text[1:-1].replace("``", "`")
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text[1:-1].replace('""', '"')
+    return text
+
+
+def _split_ai_sql_identifier_list(raw_cols: str) -> list[str] | None:
+    text = str(raw_cols or "")
+    parts: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    idx = 0
+    while idx < len(text):
+        ch = text[idx]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                if idx + 1 < len(text) and text[idx + 1] == quote:
+                    buf.append(text[idx + 1])
+                    idx += 2
+                    continue
+                quote = ""
+            idx += 1
+            continue
+        if ch in {"`", '"'}:
+            quote = ch
+            buf.append(ch)
+        elif ch == ",":
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+        else:
+            buf.append(ch)
+        idx += 1
+    if quote:
+        return None
+    part = "".join(buf).strip()
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _split_ai_sql_select_body(text: str) -> tuple[str, str] | None:
+    match = re.match(r"^\s*SELECT\b", str(text or ""), flags=re.I)
+    if not match:
+        return None
+    body = str(text or "")[match.end():].strip()
+    quote = ""
+    idx = 0
+    while idx < len(body):
+        ch = body[idx]
+        if quote:
+            if ch == quote:
+                if idx + 1 < len(body) and body[idx + 1] == quote:
+                    idx += 2
+                    continue
+                quote = ""
+            idx += 1
+            continue
+        if ch in {"`", '"', "'"}:
+            quote = ch
+            idx += 1
+            continue
+        where_match = re.match(r"\bWHERE\b", body[idx:], flags=re.I)
+        if where_match:
+            return body[:idx].strip(), body[idx + where_match.end():].strip()
+        idx += 1
+    return body, ""
+
+
+def _resolve_ai_sql_display_column(raw: str, columns: list[str] | tuple[str, ...] | None) -> str:
+    token = _unquote_ai_sql_display_identifier(raw)
+    if not token:
+        return ""
+    all_columns = list(columns or [])
+    lookup = _column_lookup(all_columns)
+    if lookup:
+        return lookup.get(token.casefold(), "")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token) or token != str(raw or "").strip():
+        return token
+    return ""
 
 
 def _parse_ai_sql_select_prefix(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> tuple[str, list[str]]:
@@ -6588,32 +6681,22 @@ def _parse_ai_sql_select_prefix(sql: str, columns: list[str] | tuple[str, ...] |
         return text, []
     if re.search(r"\bFROM\b", _mask_sql_literals(text), flags=re.I):
         return text, []
-    match = _AI_SQL_SELECT_PREFIX_RE.match(text)
-    if not match:
+    select_body = _split_ai_sql_select_body(text)
+    if not select_body:
         return text, []
-    raw_cols = (match.group("cols") or "").strip()
-    rest = (match.group("rest") or "").strip()
+    raw_cols, rest = select_body
     if not raw_cols or raw_cols == "*":
         return rest, []
     out_cols: list[str] = []
-    for part in raw_cols.split(","):
-        token = part.strip().strip("`").strip('"')
+    parts = _split_ai_sql_identifier_list(raw_cols)
+    if parts is None:
+        return text, []
+    for part in parts:
+        token = _resolve_ai_sql_display_column(part, columns)
         if not token:
-            continue
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
             return text, []
-        out_cols.append(token)
-    all_columns = list(columns or [])
-    if all_columns:
-        lookup = {str(c).casefold(): str(c) for c in all_columns}
-        resolved: list[str] = []
-        for col in out_cols:
-            hit = lookup.get(col.casefold())
-            if hit is None:
-                return text, []
-            if hit not in resolved:
-                resolved.append(hit)
-        out_cols = resolved
+        if token not in out_cols:
+            out_cols.append(token)
     return rest, out_cols
 
 
@@ -6668,15 +6751,16 @@ def _build_ai_sql_display_sql(
     selected = [str(c or "").strip() for c in (selected_columns or []) if str(c or "").strip()]
     where = str(where_sql or "").strip()
     sort = _normalize_ai_sql_sort(sort_spec or {}, selected + ([str((sort_spec or {}).get("column") or "")] if sort_spec else []), [], "sort") if sort_spec else {}
+    rendered_selected = [_quote_ai_sql_display_identifier(c) for c in selected]
     if selected and where:
-        base = f"SELECT {', '.join(selected)} WHERE {where}"
+        base = f"SELECT {', '.join(rendered_selected)} WHERE {where}"
     elif selected:
-        base = f"SELECT {', '.join(selected)}"
+        base = f"SELECT {', '.join(rendered_selected)}"
     else:
         base = where
     if not sort:
         return base
-    order = f"ORDER BY {sort['column']} {str(sort.get('direction') or 'asc').upper()}"
+    order = f"ORDER BY {_quote_ai_sql_display_identifier(sort['column'])} {str(sort.get('direction') or 'asc').upper()}"
     if str(sort.get("nulls") or "last").casefold() == "first":
         order += " NULLS FIRST"
     return f"{base} {order}".strip()

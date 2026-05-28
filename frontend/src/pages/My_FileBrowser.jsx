@@ -1194,14 +1194,48 @@ export default function My_FileBrowser({user,onNavigate}){
     (remoteCols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!cols.includes(text))cols.push(text);});
     return cols;
   };
+  const displaySqlIdent=(name)=>{
+    const text=String(name||"").trim();
+    if(!text)return"";
+    if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(text))return text;
+    return "`"+text.replace(/`/g,"``")+"`";
+  };
+  const unquoteDisplaySqlIdent=(value)=>{
+    const text=String(value||"").trim();
+    if(text.length>=2&&text[0]==="`"&&text[text.length-1]==="`")return text.slice(1,-1).replace(/``/g,"`");
+    if(text.length>=2&&text[0]==='"'&&text[text.length-1]==='"')return text.slice(1,-1).replace(/""/g,'"');
+    return text;
+  };
+  const splitDisplaySqlIdentifiers=(value)=>{
+    const text=String(value||"");
+    const parts=[];let buf="";let quote="";
+    for(let i=0;i<text.length;i+=1){
+      const ch=text[i];
+      if(quote){
+        buf+=ch;
+        if(ch===quote){
+          if(text[i+1]===quote){buf+=text[i+1];i+=1;}
+          else quote="";
+        }
+        continue;
+      }
+      if(ch==="`"||ch==='"'){quote=ch;buf+=ch;continue;}
+      if(ch===","){const part=buf.trim();if(part)parts.push(part);buf="";continue;}
+      buf+=ch;
+    }
+    if(quote)return null;
+    const part=buf.trim();if(part)parts.push(part);
+    return parts;
+  };
   const splitDisplaySql=(value,columns=currentColumns())=>{
     const text=String(value||"").trim();
-    const orderMatch=text.match(/^(.*?)\s+ORDER\s+BY\s+(`?[A-Za-z_][A-Za-z0-9_]*`?|"[A-Za-z_][A-Za-z0-9_]*")\s+(ASC|DESC)(?:\s+NULLS\s+(FIRST|LAST))?\s*$/i);
+    const identPattern="(?:`(?:``|[^`])+`|\"(?:\"\"|[^\"])+\"|[A-Za-z_][A-Za-z0-9_]*)";
+    const orderMatch=text.match(new RegExp("^(.*?)\\s+ORDER\\s+BY\\s+("+identPattern+")\\s+(ASC|DESC)(?:\\s+NULLS\\s+(FIRST|LAST))?\\s*$","i"));
     const body=orderMatch?String(orderMatch[1]||"").trim():text;
     const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
     let sortSpec=null;
     if(orderMatch){
-      const sortCol=String(orderMatch[2]||"").trim().replace(/^`|`$/g,"").replace(/^"|"$/g,"");
+      const sortCol=unquoteDisplaySqlIdent(orderMatch[2]);
       const hit=lookup.get(sortCol.toLowerCase());
       if(hit)sortSpec={column:hit,direction:String(orderMatch[3]||"asc").toLowerCase(),nulls:String(orderMatch[4]||"last").toLowerCase()};
     }
@@ -1212,9 +1246,10 @@ export default function My_FileBrowser({user,onNavigate}){
     const whereSql=String(match[2]||"").trim();
     if(!rawCols||rawCols==="*")return{whereSql,selectedColumns:[],sortSpec};
     const selected=[];
-    for(const part of rawCols.split(",")){
-      const token=part.trim().replace(/^`|`$/g,"").replace(/^"|"$/g,"");
-      if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(token))return{whereSql:body,selectedColumns:[],sortSpec};
+    const parts=splitDisplaySqlIdentifiers(rawCols);
+    if(!parts)return{whereSql:body,selectedColumns:[],sortSpec};
+    for(const part of parts){
+      const token=unquoteDisplaySqlIdent(part);
       const hit=lookup.get(token.toLowerCase());
       if(!hit)return{whereSql:body,selectedColumns:[],sortSpec};
       if(!selected.includes(hit))selected.push(hit);
@@ -1226,11 +1261,12 @@ export default function My_FileBrowser({user,onNavigate}){
     (cols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!selected.includes(text))selected.push(text);});
     const where=String(whereSql||"").trim();
     let base="";
-    if(selected.length&&where)base=`SELECT ${selected.join(", ")} WHERE ${where}`;
-    else if(selected.length)base=`SELECT ${selected.join(", ")}`;
+    const rendered=selected.map(displaySqlIdent);
+    if(selected.length&&where)base=`SELECT ${rendered.join(", ")} WHERE ${where}`;
+    else if(selected.length)base=`SELECT ${rendered.join(", ")}`;
     else base=where;
     const s=cleanSortSpec(sortOverride);
-    if(s)base=`${base} ORDER BY ${s.column} ${s.direction.toUpperCase()}${s.nulls==="first"?" NULLS FIRST":""}`.trim();
+    if(s)base=`${base} ORDER BY ${displaySqlIdent(s.column)} ${s.direction.toUpperCase()}${s.nulls==="first"?" NULLS FIRST":""}`.trim();
     return base;
   };
   const setSqlFromInput=(value)=>{
