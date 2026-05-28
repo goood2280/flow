@@ -15,8 +15,8 @@
       "title":             <subject>,
       ... admin.extra_data 병합 ...
     }
-    files = 1..N 개의 바이너리 파트 (각 파트 name="files"). 첨부가 없으면
-      사내 API 호환을 위해 작은 placeholder 파일을 자동 첨부한다.
+    files = 0..N 개의 바이너리 파트 (각 파트 name="files"). 첨부가 없으면
+      Inform/Meeting 메일과 동일하게 파일 파트 없이 전송한다.
 
   주의: v8.8.21~v8.8.23 에서는 form field 이름이 "data" 였고 그 값 안에
   다시 {"mailSendString": "<json>"} 를 JSON 으로 감싸서 보냈다. 이는 잘못된
@@ -43,7 +43,6 @@
 """
 from __future__ import annotations
 
-import datetime as _dt
 import json as _json
 import logging
 import mimetypes
@@ -62,24 +61,6 @@ ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total
 MAX_RECIPIENTS = 199                   # 사내 API 제약
 
 File = Tuple[str, bytes, Optional[str]]   # (filename, content, mime)
-PLACEHOLDER_ATTACHMENT: File = (
-    "flow-mail-placeholder.txt",
-    b"Flow mail placeholder attachment for APIs that require a file part.\n",
-    "text/plain",
-)
-
-
-def temp_password_attachment(username: str, temp_password: str, *, requested_at: str = "") -> File:
-    ts = (requested_at or _dt.datetime.now().isoformat(timespec="seconds")).strip()
-    body = "\n".join([
-        "Flow temporary password notice",
-        f"requested_at: {ts}",
-        f"username: {(username or '').strip()}",
-        f"temporary_password: {temp_password or ''}",
-        "",
-        "Please sign in and change this password immediately.",
-    ])
-    return ("flow-temp-password.txt", body.encode("utf-8"), "text/plain")
 
 
 def _admin_settings_path() -> Path:
@@ -263,7 +244,7 @@ def send_mail(
                 "reason": f"본문이 {CONTENT_MAX // (1024*1024)}MB 한도를 초과."}
 
     attach_list: List[File] = []
-    if files:
+    if files is not None:
         total = 0
         for f in files:
             total += len(f[1])
@@ -271,8 +252,6 @@ def send_mail(
                 return {"ok": False, "status": 0, "to": emails, "skipped": skipped,
                         "reason": f"첨부 총 용량이 {ATTACH_MAX // (1024*1024)}MB 초과."}
             attach_list.append(f)
-    else:
-        attach_list.append(PLACEHOLDER_ATTACHMENT)
 
     receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1}
                      for i, em in enumerate(emails)]

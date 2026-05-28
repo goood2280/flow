@@ -79,20 +79,33 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
     assert writes
     assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
     assert "RESET_TOKEN" in sent[0]["kwargs"]["content"]
-    files = sent[0]["kwargs"]["files"]
-    assert files[0][0] == "flow-temp-password.txt"
-    assert files[0][2] == "text/plain"
-    attachment_text = files[0][1].decode("utf-8")
-    assert "username: alice" in attachment_text
-    assert "temporary_password: RESET_TOKEN" in attachment_text
+    assert sent[0]["kwargs"]["files"] == []
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
-    assert sent[0]["result"]["attachments"] == [{
-        "name": "flow-temp-password.txt",
-        "bytes": len(files[0][1]),
-    }]
+    assert sent[0]["result"]["attachments"] == []
 
 
-def test_forgot_password_emails_temp_password_with_dummy_attachment(monkeypatch):
+def test_core_mail_does_not_add_placeholder_attachment_when_files_omitted():
+    result = mail.send_mail(
+        sender_username="flow@example.test",
+        receiver_usernames=["alice@example.test"],
+        title="No attachment",
+        content="<p>body</p>",
+        cfg_override={
+            "enabled": True,
+            "api_url": "dry-run",
+            "from_addr": "flow@example.test",
+            "domain": "",
+            "status_code": "",
+            "headers": {},
+            "extra_data": {},
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["attachments"] == []
+
+
+def test_forgot_password_emails_temp_password_without_attachment(monkeypatch):
     users = [{
         "username": "alice",
         "password_hash": "old-hash",
@@ -142,17 +155,9 @@ def test_forgot_password_emails_temp_password_with_dummy_attachment(monkeypatch)
     assert writes
     assert sent[0]["kwargs"]["extra_emails"] == ["alice@company.co.kr"]
     assert "TMP-TMPTOKEN" in sent[0]["kwargs"]["content"]
-    files = sent[0]["kwargs"]["files"]
-    assert files[0][0] == "flow-temp-password.txt"
-    assert files[0][2] == "text/plain"
-    attachment_text = files[0][1].decode("utf-8")
-    assert "username: alice" in attachment_text
-    assert "temporary_password: TMP-TMPTOKEN" in attachment_text
+    assert sent[0]["kwargs"]["files"] == []
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
-    assert sent[0]["result"]["attachments"] == [{
-        "name": "flow-temp-password.txt",
-        "bytes": len(files[0][1]),
-    }]
+    assert sent[0]["result"]["attachments"] == []
 
 
 def test_forgot_password_rolls_back_password_when_mail_fails(monkeypatch):

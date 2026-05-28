@@ -12,7 +12,7 @@ from core.paths import PATHS
 from core.notify import send_to_admins
 from core import auth as auth_core
 from core.audit import record_user as _audit_user
-from core.mail import send_mail as _send_mail, resolve_usernames_to_emails, temp_password_attachment
+from core.mail import send_mail as _send_mail, resolve_usernames_to_emails
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -229,8 +229,6 @@ def forgot_password(req: ForgotPasswordReq):
     temp_pw = "TMP-" + secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:10]
     u["password_hash"] = auth_core.hash_password(temp_pw)
     write_users(users)
-    requested_at = datetime.datetime.now().isoformat(timespec="seconds")
-
     title = "[flow] Temporary Password"
     content = (
         "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
@@ -247,7 +245,7 @@ def forgot_password(req: ForgotPasswordReq):
         extra_emails=emails,
         title=title,
         content=content,
-        files=[temp_password_attachment(username, temp_pw, requested_at=requested_at)],
+        files=[],
         status_code="auth",
     )
     if not res.get("ok"):
