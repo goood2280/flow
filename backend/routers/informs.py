@@ -4738,71 +4738,65 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         if not rows_st or not product:
             return ""
         try:
-            from routers.splittable import _build_knob_meta, _build_inline_meta, _build_vm_meta
+            from routers.splittable import _build_knob_meta
             knob_meta = _build_knob_meta(product) or {}
-            inline_meta = _build_inline_meta(product) or {}
-            vm_meta = _build_vm_meta(product) or {}
         except Exception:
             return ""
+        def _meta_lookup(meta_map: dict, param: str, prefix: str) -> dict:
+            full = str(param or "").strip()
+            tail = re.sub(rf"^{re.escape(prefix)}_", "", full, flags=re.I).strip()
+            if full in meta_map:
+                return meta_map.get(full) or {}
+            if tail in meta_map:
+                return meta_map.get(tail) or {}
+            full_key = full.casefold()
+            tail_key = tail.casefold()
+            for key, value in meta_map.items():
+                key_text = str(key or "").strip()
+                key_fold = key_text.casefold()
+                if key_fold == full_key or key_fold == tail_key:
+                    return value or {}
+            return {}
+
+        def _knob_lineage_row(param: str, groups: list[dict]) -> Optional[dict]:
+            descs: list[str] = []
+            seen_desc: set[str] = set()
+            step_ids: list[str] = []
+            seen_step: set[str] = set()
+            for g in groups or []:
+                desc = str(g.get("step_desc") or g.get("func_step") or "").strip()
+                desc_key = desc.casefold()
+                raw_ids = g.get("step_ids") or ([g.get("step_id")] if g.get("step_id") else [])
+                ids = [str(x or "").strip() for x in raw_ids if str(x or "").strip()]
+                if not ids:
+                    continue
+                if desc and desc_key not in seen_desc:
+                    seen_desc.add(desc_key)
+                    descs.append(desc)
+                for sid in ids:
+                    sid_key = sid.casefold()
+                    if sid_key not in seen_step:
+                        seen_step.add(sid_key)
+                        step_ids.append(sid)
+            if not step_ids:
+                return None
+            return {"key": param, "parameter": param, "step_desc": ", ".join(descs), "step_ids": step_ids}
+
         out = []
         seen_params: set[str] = set()
         for r in rows_st:
             param = str(r.get("_param") or "").strip()
             if not param:
                 continue
-            if param in seen_params:
+            param_key = param.casefold()
+            if param_key in seen_params:
                 continue
-            seen_params.add(param)
-            km = knob_meta.get(param) or {}
+            km = _meta_lookup(knob_meta, param, "KNOB")
             if km.get("groups"):
-                for gi, g in enumerate(km.get("groups") or []):
-                    out.append({
-                        "key": f"{param}-k-{gi}",
-                        "parameter": param,
-                        "function_step": str(g.get("func_step") or ""),
-                        "step_ids": [str(x) for x in (g.get("step_ids") or []) if str(x or "").strip()],
-                    })
-                continue
-            tail_vm = param.replace("VM_", "", 1)
-            vm = vm_meta.get(param) or vm_meta.get(tail_vm) or {}
-            if param.startswith("VM_") and (vm.get("groups") or vm.get("step_id") or vm.get("function_step")):
-                if vm.get("groups"):
-                    for gi, g in enumerate(vm.get("groups") or []):
-                        sid = str(g.get("step_id") or "").strip()
-                        out.append({
-                            "key": f"{param}-v-{gi}",
-                            "parameter": param,
-                            "function_step": str(g.get("function_step") or vm.get("function_step") or ""),
-                            "step_ids": [sid] if sid else ([str(vm.get("step_id"))] if vm.get("step_id") else []),
-                        })
-                else:
-                    sid = str(vm.get("step_id") or "").strip()
-                    out.append({
-                        "key": f"{param}-v",
-                        "parameter": param,
-                        "function_step": str(vm.get("function_step") or ""),
-                        "step_ids": [sid] if sid else [],
-                    })
-                continue
-            tail_in = param.replace("INLINE_", "", 1)
-            im = inline_meta.get(param) or inline_meta.get(tail_in) or {}
-            if param.startswith("INLINE_") and (im.get("groups") or im.get("step_id") or im.get("function_step")):
-                if im.get("groups"):
-                    for gi, g in enumerate(im.get("groups") or []):
-                        sid = str(g.get("step_id") or "").strip()
-                        out.append({
-                            "key": f"{param}-i-{gi}",
-                            "parameter": param,
-                            "function_step": str(g.get("function_step") or im.get("function_step") or ""),
-                            "step_ids": [sid] if sid else [str(x) for x in (im.get("step_ids") or []) if str(x or "").strip()],
-                        })
-                else:
-                    out.append({
-                        "key": f"{param}-i",
-                        "parameter": param,
-                        "function_step": str(im.get("function_step") or ""),
-                        "step_ids": [str(x) for x in (im.get("step_ids") or ([im.get("step_id")] if im.get("step_id") else [])) if str(x or "").strip()],
-                    })
+                summary = _knob_lineage_row(param, km.get("groups") or [])
+                if summary:
+                    out.append(summary)
+                    seen_params.add(param_key)
         if not out:
             return ""
         th = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
@@ -4813,17 +4807,17 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             body.append(
                 "<tr>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['parameter'])}</td>"
-                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['function_step'] or '—')}</td>"
+                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['step_desc'] or '—')}</td>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#374151;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
                 + "</td>"
                 "</tr>"
             )
         return (
             "<div style='margin-top:8px;'>"
-            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;margin-bottom:4px;'>Parameter별 적용 step 요약</div>"
+            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;margin-bottom:4px;'>KNOB별 step_desc → step_id 요약</div>"
             f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};max-width:100%;table-layout:fixed;'>"
             "<thead><tr>"
-            f"<th style='{th}'>parameter</th><th style='{th}'>function_step</th><th style='{th}'>step_id</th>"
+            f"<th style='{th}'>KNOB</th><th style='{th}'>step_desc</th><th style='{th}'>step_id</th>"
             "</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table>"
             "</div>"
@@ -4956,7 +4950,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"<tbody>{''.join(body_parts)}</tbody>"
             "</table></div>"
         )
-        return f"{hdr}{table_html}{trunc_html}{_attached_sets_html()}"
+        return f"{hdr}{table_html}{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
 
     if rows_st and headers:
         truncated = len(rows_st) > max_rows

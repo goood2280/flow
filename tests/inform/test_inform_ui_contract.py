@@ -119,6 +119,7 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
         'String(r._display || r._param || "").replace(/^[A-Z]+_/, "")',
         "const splitCheckMode = String(st.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || \"\") === \"split_check\"",
         "const rawPrefixColumns = Array.isArray(st.prefix_columns)",
+        "KNOB별 step_desc → step_id 요약",
         "const isPlanOnly = !splitCheckMode && hasPlan && !hasActual",
         "const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
         "const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual)",
@@ -139,14 +140,16 @@ def test_split_check_snapshot_renderer_merges_param_cell_without_step_refs():
         "export function buildSplitCheckStView",
         "rowSpan: span",
         "sf(`/api/splittable/knob-meta${metaQs}`)",
-        "sf(`/api/splittable/vm-meta${metaQs}`)",
-        "sf(`/api/splittable/inline-meta${metaQs}`)",
+        "knobLineageRow",
     ]:
         assert token in view
 
     assert "renderSplitParamCell" not in view
     assert "splitParamRefs" not in view
+    assert "sf(`/api/splittable/vm-meta${metaQs}`)" not in view
+    assert "sf(`/api/splittable/inline-meta${metaQs}`)" not in view
     assert "[ {ref.step_id}" not in view
+    assert "function_step</th>" not in view
     assert "복수 step_id 이므로 적용 전 담당 엔지니어가 실제 사용 step_id를 확인해 주세요." not in view
 
 

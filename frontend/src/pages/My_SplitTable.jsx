@@ -65,6 +65,22 @@ const knobStepSummaryText=(items)=>items.map(item=>{
   const descs=Array.isArray(item.step_descs)?item.step_descs.filter(Boolean):[];
   return `${item.step_id}${descs.length?`(${descs.join(",")})`:""}`;
 }).join(" / ");
+const knobLineageRow=(param,groups,{excludeNotNull=false}={})=>{
+  const steps=knobStepGroups(groups,{excludeNotNull});
+  if(!steps.length)return null;
+  const descs=[];const seenDesc=new Set();
+  const stepIds=[];const seenStep=new Set();
+  steps.forEach(item=>{
+    (item.step_descs||[]).forEach(desc=>{
+      const key=String(desc||"").trim().toLowerCase();
+      if(key&&!seenDesc.has(key)){seenDesc.add(key);descs.push(desc);}
+    });
+    const sid=String(item.step_id||"").trim();
+    const sidKey=sid.toLowerCase();
+    if(sid&&!seenStep.has(sidKey)){seenStep.add(sidKey);stepIds.push(sid);}
+  });
+  return {key:param,parameter:param,step_desc:descs.join(", "),step_ids:stepIds};
+};
 const matchedWaferSummary=(matches)=>{
   const wafers=[];
   const seen=new Set();
@@ -498,31 +514,16 @@ export default function My_SplitTable({user}){
   const inlineLookup=(param)=>metaLookup(inlineMetaSt,param,"INLINE");
   const buildLineageSummary=(rows)=>{
     const out=[];
+    const seen=new Set();
     (rows||[]).forEach((row)=>{
       const param=String(row?._param||"");
       if(!param) return;
-      const paramUpper=param.toUpperCase();
+      const paramKey=param.toLowerCase();
+      if(seen.has(paramKey))return;
       const km=knobLookup(param);
       if(Array.isArray(km?.groups)&&km.groups.length){
-        knobStepGroups(km.groups,{excludeNotNull:excludeNotNullStepMeta}).forEach((item,gi)=>out.push({key:`${param}-k-${gi}`,parameter:param,step_desc:(item.step_descs||[]).join(", "),function_step:(item.step_descs||[]).join(", "),step_ids:[item.step_id]}));
-        return;
-      }
-      const vm=vmLookup(param)||{};
-      if(paramUpper.startsWith("VM_")&&(vm.step_id||vm.step_desc||vm.item_id||Array.isArray(vm.groups))){
-        if(Array.isArray(vm.groups)&&vm.groups.length){
-          vm.groups.forEach((g,gi)=>out.push({key:`${param}-v-${gi}`,parameter:param,step_desc:g.step_desc||vm.step_desc||"",item_id:g.item_id||vm.item_id||"",function_step:g.function_step||vm.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])))}));
-        }else{
-          out.push({key:`${param}-v`,parameter:param,step_desc:vm.step_desc||"",item_id:vm.item_id||"",function_step:vm.function_step||"",step_ids:Array.isArray(vm.step_ids)?vm.step_ids:(vm.step_id?[vm.step_id]:[])});
-        }
-        return;
-      }
-      const im=inlineLookup(param)||{};
-      if(paramUpper.startsWith("INLINE_")&&(im.step_id||im.item_id||im.function_step||Array.isArray(im.groups))){
-        if(Array.isArray(im.groups)&&im.groups.length){
-          im.groups.forEach((g,gi)=>out.push({key:`${param}-i-${gi}`,parameter:param,item_id:g.item_id||im.item_id||"",function_step:g.function_step||im.function_step||"",step_ids:Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:(Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])))}));
-        }else{
-          out.push({key:`${param}-i`,parameter:param,item_id:im.item_id||"",function_step:im.function_step||"",step_ids:Array.isArray(im.step_ids)?im.step_ids:(im.step_id?[im.step_id]:[])});
-        }
+        const summary=knobLineageRow(param,km.groups,{excludeNotNull:excludeNotNullStepMeta});
+        if(summary){out.push(summary);seen.add(paramKey);}
       }
     });
     return out;
@@ -2113,14 +2114,13 @@ export default function My_SplitTable({user}){
         </table>
         )}
         {showLineageSummary && lineageSummary.length>0&&<div style={{margin:"12px 10px 18px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-card)",overflow:"hidden"}}>
-          <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → step_desc → step_id 요약</div>
+          <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>KNOB별 step_desc → step_id 요약</div>
           <div style={{maxHeight:320,overflow:"auto"}}>
             <table style={{borderCollapse:"collapse",width:"100%",fontSize:14,fontFamily:"monospace"}}>
               <thead>
                 <tr>
-                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:220,color:GRID_TEXT}}>항목</th>
+                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:220,color:GRID_TEXT}}>KNOB</th>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:180}}>step_desc</th>
-                  <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:160}}>item_id</th>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,minWidth:260}}>step_id</th>
                 </tr>
               </thead>
@@ -2128,8 +2128,7 @@ export default function My_SplitTable({user}){
                 {lineageSummary.map(x=>(
                   <tr key={x.key}>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:GRID_TEXT}}>{x.parameter}</td>
-                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.step_desc||x.function_step||"—"}</td>
-                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.item_id||"—"}</td>
+                    <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"var(--text-secondary)"}}>{x.step_desc||"—"}</td>
                     <td style={{padding:"6px 10px",borderBottom:GRID_LINE,color:"rgba(147,197,253,0.95)",fontWeight:700}}>{(x.step_ids||[]).length?x.step_ids.join(", "):"—"}</td>
                   </tr>
                 ))}

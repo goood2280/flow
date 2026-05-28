@@ -52,7 +52,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `vm_matching.csv`는 `step_desc`, `item_id`만 기본 계약으로 둔다. SplitTable row 이름은 `VM_<step_desc>_<item_id>`이고, step 후보는 `vm_matching.csv`에 저장하지 않고 현재 product와 같은 `Vehicle_matching.csv` row에서 `step_desc`로 찾아 노출한다.
 - `inline_matching.csv`는 `product`, `step_id`, `item_id`를 기본 계약으로 둔다. SplitTable row 이름은 `INLINE_<item_id>`이며, 현재 product와 직접 매칭되는 row의 `step_id`/`item_id`만 노출한다.
 - `Split 체크 표시`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
-- 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있다. KNOB 적용공정 표시에서는 기본적으로 `operator=not_null` rule row를 제외하며, 같은 기본 설정에서 다시 포함할 수 있다. 룰북 파일명/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` / `inline_matching.csv` / `vm_matching.csv` 섹션에서 관리한다. 고급 설정 화면은 룰북 row 미리보기를 직접 나열하지 않는다.
+- 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있다. 하단 적용 요약은 어떤 KNOB 변경이 어떤 `step_id` 수정으로 이어지는지 확인하기 위한 정보이므로 KNOB별 한 줄로 `step_desc`와 `step_id`만 표시하고 `item_id`는 별도 열로 노출하지 않는다. KNOB 적용공정 표시에서는 기본적으로 `operator=not_null` rule row를 제외하며, 같은 기본 설정에서 다시 포함할 수 있다. 룰북 파일명/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` / `inline_matching.csv` / `vm_matching.csv` 섹션에서 관리한다. 고급 설정 화면은 룰북 row 미리보기를 직접 나열하지 않는다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.

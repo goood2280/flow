@@ -99,6 +99,31 @@ function knobStepGroups(groups) {
   return Array.from(byStep.values()).map(({ seen, ...item }) => item);
 }
 
+function knobLineageRow(param, groups) {
+  const steps = knobStepGroups(groups);
+  if (!steps.length) return null;
+  const stepDesc = [];
+  const seenDesc = new Set();
+  const stepIds = [];
+  const seenStep = new Set();
+  steps.forEach(item => {
+    (item.step_descs || []).forEach(desc => {
+      const key = String(desc || "").trim().toLowerCase();
+      if (key && !seenDesc.has(key)) {
+        seenDesc.add(key);
+        stepDesc.push(desc);
+      }
+    });
+    const sid = String(item.step_id || "").trim();
+    const sidKey = sid.toLowerCase();
+    if (sid && !seenStep.has(sidKey)) {
+      seenStep.add(sidKey);
+      stepIds.push(sid);
+    }
+  });
+  return { key: param, parameter: param, step_desc: stepDesc.join(", "), step_ids: stepIds };
+}
+
 function metaLookup(metaMap, param, prefix) {
   if (!param || !metaMap) return null;
   const full = String(param || "").trim();
@@ -114,70 +139,21 @@ function metaLookup(metaMap, param, prefix) {
   return hitKey ? metaMap[hitKey] : null;
 }
 
-function buildLineageSummary(rows, knobMeta, vmMeta, inlineMeta) {
+function buildLineageSummary(rows, knobMeta) {
   const out = [];
   const knobLookup = (param) => metaLookup(knobMeta, param, "KNOB");
-  const vmLookup = (param) => metaLookup(vmMeta, param, "VM");
-  const inlineLookup = (param) => metaLookup(inlineMeta, param, "INLINE");
+  const seen = new Set();
   (rows || []).forEach(row => {
     const param = String(row?._param || "");
     if (!param) return;
-    const paramUpper = param.toUpperCase();
+    const paramKey = param.toLowerCase();
+    if (seen.has(paramKey)) return;
     const km = knobLookup(param);
     if (Array.isArray(km?.groups) && km.groups.length) {
-      knobStepGroups(km.groups).forEach((item, gi) => out.push({
-        key: `${param}-k-${gi}`,
-        parameter: param,
-        function_step: (item.step_descs || []).join(", "),
-        step_desc: (item.step_descs || []).join(", "),
-        step_ids: [item.step_id],
-        module: "",
-      }));
-      return;
-    }
-    const vm = vmLookup(param) || {};
-    if (paramUpper.startsWith("VM_") && (vm.step_id || vm.step_desc || vm.function_step || Array.isArray(vm.groups))) {
-      if (Array.isArray(vm.groups) && vm.groups.length) {
-        vm.groups.forEach((g, gi) => out.push({
-          key: `${param}-v-${gi}`,
-          parameter: param,
-          function_step: g.function_step || vm.function_step || "",
-          step_desc: g.step_desc || g.function_step || vm.step_desc || vm.function_step || "",
-          step_ids: stepIdsForGroup(g).length ? stepIdsForGroup(g) : stepIdsForGroup(vm),
-          module: "",
-        }));
-      } else {
-        out.push({
-          key: `${param}-v`,
-          parameter: param,
-          function_step: vm.function_step || "",
-          step_desc: vm.step_desc || vm.function_step || "",
-          step_ids: stepIdsForGroup(vm),
-          module: "",
-        });
-      }
-      return;
-    }
-    const im = inlineLookup(param) || {};
-    if (paramUpper.startsWith("INLINE_") && (im.step_id || im.item_id || im.function_step || Array.isArray(im.groups))) {
-      if (Array.isArray(im.groups) && im.groups.length) {
-        im.groups.forEach((g, gi) => out.push({
-          key: `${param}-i-${gi}`,
-          parameter: param,
-          function_step: g.function_step || im.function_step || "",
-          step_desc: g.step_desc || g.function_step || im.function_step || "",
-          step_ids: stepIdsForGroup(g).length ? stepIdsForGroup(g) : stepIdsForGroup(im),
-          module: "",
-        }));
-      } else {
-        out.push({
-          key: `${param}-i`,
-          parameter: param,
-          function_step: im.function_step || "",
-          step_desc: im.function_step || "",
-          step_ids: stepIdsForGroup(im),
-          module: "",
-        });
+      const summary = knobLineageRow(param, km.groups);
+      if (summary) {
+        out.push(summary);
+        seen.add(paramKey);
       }
     }
   });
@@ -260,20 +236,14 @@ export default function SplitTableSnapshotView({
   const effectiveNote = note ?? embed?.note ?? "";
   const effectiveProduct = inferProductFromEmbed(embed, product, effectiveSource);
   const [knobMeta, setKnobMeta] = useState({});
-  const [vmMeta, setVmMeta] = useState({});
-  const [inlineMeta, setInlineMeta] = useState({});
 
   useEffect(() => {
     if (!effectiveProduct) {
       setKnobMeta({});
-      setVmMeta({});
-      setInlineMeta({});
       return;
     }
     const metaQs = qs({ product: effectiveProduct });
     sf(`/api/splittable/knob-meta${metaQs}`).then(d => setKnobMeta(d.features || {})).catch(() => setKnobMeta({}));
-    sf(`/api/splittable/vm-meta${metaQs}`).then(d => setVmMeta(d.items || {})).catch(() => setVmMeta({}));
-    sf(`/api/splittable/inline-meta${metaQs}`).then(d => setInlineMeta(d.items || {})).catch(() => setInlineMeta({}));
   }, [effectiveProduct]);
 
   const headers = st.headers || [];
@@ -303,8 +273,8 @@ export default function SplitTableSnapshotView({
   const waferTop = rootHeaderHeight + lotHeaderHeight;
   const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
   const lineageSummary = useMemo(
-    () => buildLineageSummary(st.rows, knobMeta, vmMeta, inlineMeta),
-    [st.rows, knobMeta, vmMeta, inlineMeta],
+    () => buildLineageSummary(st.rows, knobMeta),
+    [st.rows, knobMeta],
   );
   const rowSpans = useMemo(() => {
     if (!splitCheckMode) return st.rows.map(() => 1);
@@ -473,15 +443,15 @@ export default function SplitTableSnapshotView({
           </tbody>
         </table>
       </div>
-      {!splitCheckMode && showLineageSummary && lineageSummary.length > 0 && (
+      {showLineageSummary && lineageSummary.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>Parameter별 적용 step 요약</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>KNOB별 step_desc → step_id 요약</div>
           <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
             <table style={{ ...tableStyle, width: "100%" }}>
               <thead>
                 <tr>
-                  <th style={{ ...headStyle, textAlign: "left", minWidth: 220 }}>parameter</th>
-                  <th style={{ ...headStyle, textAlign: "left", minWidth: 180 }}>function_step</th>
+                  <th style={{ ...headStyle, textAlign: "left", minWidth: 220 }}>KNOB</th>
+                  <th style={{ ...headStyle, textAlign: "left", minWidth: 180 }}>step_desc</th>
                   <th style={{ ...headStyle, textAlign: "left", minWidth: 240 }}>step_id</th>
                 </tr>
               </thead>
@@ -489,7 +459,7 @@ export default function SplitTableSnapshotView({
                 {lineageSummary.map(x => (
                   <tr key={x.key}>
                     <td style={{ ...cellStyle, textAlign: "left" }}>{x.parameter}</td>
-                    <td style={{ ...cellStyle, textAlign: "left", color: "var(--text-secondary)" }}>{x.function_step || "-"}</td>
+                    <td style={{ ...cellStyle, textAlign: "left", color: "var(--text-secondary)" }}>{x.step_desc || "-"}</td>
                     <td style={{ ...cellStyle, textAlign: "left", color: INFO.fg, fontWeight: 700 }}>
                       {(x.step_ids || []).length ? x.step_ids.join(", ") : "-"}
                     </td>

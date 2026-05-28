@@ -495,6 +495,7 @@ def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns
         "KNOB_GATE": {
             "groups": [
                 {"step_desc": "GATE", "func_step": "GATE", "step_ids": ["STEP_GATE_A"]},
+                {"step_desc": "ETCH", "func_step": "ETCH", "step_ids": ["STEP_ETCH_A"]},
             ],
         },
     })
@@ -535,7 +536,11 @@ def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns
     assert html.count("background:#C6EFCE;color:#006100;font-weight:700;") == 3
     assert html.count("background:#FFEB9C;color:#9C5700;font-weight:700;") == 2
     assert "Split table" in html
+    assert "KNOB별 step_desc → step_id 요약" in html
+    assert "STEP_GATE_A, STEP_ETCH_A" in html
+    assert "GATE, ETCH" in html
     assert "Parameter별 적용 step 요약" not in html
+    assert "item_id" not in html
 
 
 def test_inform_mail_body_links_go_flow_in_new_tab():
