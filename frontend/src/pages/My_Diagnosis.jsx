@@ -4,18 +4,26 @@ import { PageHeader, PageShell, Panel, Banner, Button, Field, Pill, Select, TabS
 import LlmTab from "../components/agent/LlmTab";
 import { postJson, putJson, sf } from "../lib/api";
 
-const AGENT_UNIT_RUN_ENDPOINT = "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run";
-const FILEBROWSER_AI_SQL_HISTORY_ENDPOINT = "/api/filebrowser/sql/history?limit=50";
-const INFORM_REGISTRATION_GRAPH_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/graph";
-const INFORM_REGISTRATION_RUN_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/run";
-const INFORM_REGISTRATION_HISTORY_ENDPOINT = "/api/agent/unit-ai/inform_registration/runtime/history?limit=50";
-const CHANGE_MANAGEMENT_GRAPH_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/graph";
-const CHANGE_MANAGEMENT_RUN_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/run";
-const CHANGE_MANAGEMENT_HISTORY_ENDPOINT = "/api/agent/unit-ai/change_management/runtime/history?limit=50";
-const DASHBOARD_AGENT_GRAPH_ENDPOINT = "/api/agent/unit-ai/dashboard_agent/runtime/graph";
-const DASHBOARD_AGENT_RUN_ENDPOINT = "/api/agent/unit-ai/dashboard_agent/runtime/run";
+const AGENT_UNIT_CATALOG_ENDPOINT = "/api/agent/catalog";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
 const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
+const EMPTY_GRAPH = { nodes: [], edges: [], state_design: {} };
+
+function agentUnitGraphEndpoint(unitKey) {
+  return `/api/agent/unit/${encodeURIComponent(unitKey)}/graph`;
+}
+
+function agentUnitRunEndpoint(unitKey) {
+  return `/api/agent/unit/${encodeURIComponent(unitKey)}/run`;
+}
+
+function agentUnitHistoryEndpoint(unitKey, limit = 50) {
+  return `/api/agent/unit/${encodeURIComponent(unitKey)}/history?limit=${encodeURIComponent(String(limit))}`;
+}
+
+function agentUnitOverridesEndpoint(unitKey) {
+  return `/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`;
+}
 
 function formatAgentEndpointError(error, endpoint, method = "GET") {
   const statusText = error?.status ? `HTTP ${error.status}` : "request failed";
@@ -260,112 +268,6 @@ function compactRowsPayload(value) {
   };
 }
 
-const STATE_KEY_BY_NODE = {
-  context_sample: "context_sample",
-  semantic_layer: "semantic_frame",
-  filter_draft: "filter",
-  column_draft: "columns_result",
-  merge: "merged",
-  preview_apply: "preview",
-};
-
-const INFORM_STATE_KEY_BY_NODE = {
-  context_seed: "session",
-  semantic_layer: "semantic_frame",
-  slot_extract: "slots",
-  validate_missing: "missing",
-  snapshot_preview: "snapshot",
-  review: "draft",
-  register: "created_inform",
-};
-
-const CHANGE_STATE_KEY_BY_NODE = {
-  context_scope: "context_scope",
-  meeting_reference: "meeting_reference",
-  evidence_pack: "evidence",
-  answer_compose: "answer_pack",
-};
-
-const DASHBOARD_STATE_KEY_BY_NODE = {
-  semantic_layer: "semantic_frame",
-  chart_intent: "chart_intent",
-  chart_type_select: "chart_type",
-  params_fill: "params",
-  spec_validate: "spec",
-  render_spec: "chart_result",
-};
-
-const FALLBACK_GRAPH = {
-  nodes: [
-    { id: "context_sample", label: "용어해석 준비", phase: "context", status: "pending" },
-    { id: "semantic_layer", label: "용어해석", phase: "semantic", status: "pending" },
-    { id: "filter_draft", label: "filter SQL 생성", phase: "llm", status: "pending" },
-    { id: "column_draft", label: "표시 컬럼 생성", phase: "llm", status: "pending" },
-    { id: "merge", label: "병합", phase: "validate", status: "pending" },
-    { id: "preview_apply", label: "preview 적용", phase: "preview", status: "pending" },
-  ],
-  edges: [
-    { source: "context_sample", target: "semantic_layer" },
-    { source: "semantic_layer", target: "filter_draft" },
-    { source: "semantic_layer", target: "column_draft" },
-    { source: "filter_draft", target: "merge" },
-    { source: "column_draft", target: "merge" },
-    { source: "merge", target: "preview_apply" },
-  ],
-};
-
-const INFORM_FALLBACK_GRAPH = {
-  nodes: [
-    { id: "context_seed", label: "Session seed", phase: "context", status: "pending" },
-    { id: "semantic_layer", label: "용어해석", phase: "semantic", status: "pending" },
-    { id: "slot_extract", label: "Slot extract", phase: "semantic", status: "pending" },
-    { id: "validate_missing", label: "필수값 확인", phase: "validate", status: "pending" },
-    { id: "snapshot_preview", label: "Snapshot preview", phase: "preview", status: "pending" },
-    { id: "review", label: "등록 검토", phase: "review", status: "pending" },
-    { id: "register", label: "Inform 저장", phase: "write", status: "pending" },
-  ],
-  edges: [
-    { source: "context_seed", target: "semantic_layer" },
-    { source: "semantic_layer", target: "slot_extract" },
-    { source: "slot_extract", target: "validate_missing" },
-    { source: "validate_missing", target: "snapshot_preview" },
-    { source: "snapshot_preview", target: "review" },
-    { source: "review", target: "register" },
-  ],
-};
-
-const CHANGE_FALLBACK_GRAPH = {
-  nodes: [
-    { id: "context_scope", label: "Visible scope", phase: "context", status: "pending" },
-    { id: "meeting_reference", label: "회의 참조 해석", phase: "semantic", status: "pending" },
-    { id: "evidence_pack", label: "회의/변경점 근거 수집", phase: "read", status: "pending" },
-    { id: "answer_compose", label: "Plain text 답변", phase: "render", status: "pending" },
-  ],
-  edges: [
-    { source: "context_scope", target: "meeting_reference" },
-    { source: "meeting_reference", target: "evidence_pack" },
-    { source: "evidence_pack", target: "answer_compose" },
-  ],
-};
-
-const DASHBOARD_FALLBACK_GRAPH = {
-  nodes: [
-    { id: "semantic_layer", label: "용어해석", phase: "semantic", status: "pending" },
-    { id: "chart_intent", label: "차트 의도", phase: "intent", status: "pending" },
-    { id: "chart_type_select", label: "차트 타입 선택", phase: "llm", status: "pending" },
-    { id: "params_fill", label: "파라미터 채우기", phase: "llm", status: "pending" },
-    { id: "spec_validate", label: "스펙 검증", phase: "validate", status: "pending" },
-    { id: "render_spec", label: "Plotly spec", phase: "render", status: "pending" },
-  ],
-  edges: [
-    { source: "semantic_layer", target: "chart_intent" },
-    { source: "chart_intent", target: "chart_type_select" },
-    { source: "chart_type_select", target: "params_fill" },
-    { source: "params_fill", target: "spec_validate" },
-    { source: "spec_validate", target: "render_spec" },
-  ],
-};
-
 const HOME_FLOWI_FALLBACK_GRAPH = {
   nodes: [
     { id: "prompt_input", label: "프롬프트 입력", phase: "input", status: "pending" },
@@ -388,8 +290,18 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
   ],
 };
 
-function buildAccumulatedState(result, request, upToIdx, stateKeyByNode = STATE_KEY_BY_NODE) {
+function stateKeyByNodeFromGraph(graph) {
+  const design = graph?.state_design || {};
+  return Object.fromEntries(
+    Object.entries(design)
+      .map(([key, meta]) => [meta?.producer, key])
+      .filter(([producer]) => producer && producer !== "runtime")
+  );
+}
+
+function buildAccumulatedState(result, request, upToIdx, graph = result?.graph || EMPTY_GRAPH) {
   const trace = result?.trace || [];
+  const stateKeyByNode = stateKeyByNodeFromGraph(graph);
   const state = {
     run_id: result?.run_id || null,
     request: request || null,
@@ -419,7 +331,18 @@ function parseJsonObject(text, label) {
 function listFromValue(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
   if (typeof value === "string") return value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+  if (value && typeof value === "object" && Array.isArray(value.aliases)) return listFromValue(value.aliases);
   return [];
+}
+
+function aliasPayloadFromValue(value) {
+  const payload = { aliases: listFromValue(value) };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (value.semantic_class !== undefined) payload.semantic_class = String(value.semantic_class || "");
+    if (value.normalization !== undefined) payload.normalization = value.normalization;
+    if (value.value_domain !== undefined) payload.value_domain = value.value_domain;
+  }
+  return payload;
 }
 
 function UnitImprovementPanel({ unitKey, graph, result, history = [], selectedHistory = null }) {
@@ -437,7 +360,7 @@ function UnitImprovementPanel({ unitKey, graph, result, history = [], selectedHi
 
   const loadOverrides = () => {
     if (!unitKey) return Promise.resolve();
-    return sf(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`)
+    return sf(agentUnitOverridesEndpoint(unitKey))
       .then((payload) => setOverrides(payload?.overrides || { nodes: {} }))
       .catch((e) => setErr(e.message || String(e)));
   };
@@ -473,7 +396,7 @@ function UnitImprovementPanel({ unitKey, graph, result, history = [], selectedHi
     setBusy(true);
     setErr("");
     setMsg("");
-    putJson(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`, next)
+    putJson(agentUnitOverridesEndpoint(unitKey), next)
       .then((payload) => {
         setOverrides(payload?.overrides || next);
         setMsg("override 저장 완료");
@@ -566,7 +489,7 @@ function FileBrowserAiSqlUnitPanel() {
 
   const loadHistory = () => {
     setHistoryLoading(true);
-    return sf(FILEBROWSER_AI_SQL_HISTORY_ENDPOINT)
+    return sf(agentUnitHistoryEndpoint("filebrowser_ai_sql"))
       .then((payload) => {
         const nextHistory = payload?.history || [];
         setHistory(nextHistory);
@@ -580,11 +503,11 @@ function FileBrowserAiSqlUnitPanel() {
     setLoading(true);
     Promise.all([
       sf("/api/agent/status").catch((e) => ({ error: e.message || String(e) })),
-      sf("/api/agent/unit-ai/catalog").catch((e) => ({ error: e.message || String(e) })),
-      sf("/api/agent/unit-ai/filebrowser_ai_sql/runtime/graph").catch((e) => ({ error: e.message || String(e) })),
+      sf(AGENT_UNIT_CATALOG_ENDPOINT).catch((e) => ({ error: e.message || String(e) })),
+      sf(agentUnitGraphEndpoint("filebrowser_ai_sql")).catch((e) => ({ error: e.message || String(e) })),
       sf("/api/filebrowser/roots").catch(() => ({ roots: [] })),
       sf("/api/filebrowser/base-files").catch(() => ({ files: [] })),
-      sf(FILEBROWSER_AI_SQL_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
+      sf(agentUnitHistoryEndpoint("filebrowser_ai_sql")).catch(() => ({ history: [] })),
     ]).then(([statusPayload, catalogPayload, graphPayload, rootsPayload, filesPayload, historyPayload]) => {
       const routesOk = statusPayload?.ok === true;
       setAgentRoutesPresent(routesOk);
@@ -628,7 +551,7 @@ function FileBrowserAiSqlUnitPanel() {
       .filter((item) => ["parquet", "csv"].includes(String(item.ext || "").toLowerCase()))
       .map((item) => ({ value: item.path || item.name, label: item.path || item.name, ext: item.ext, source: item.source || "" }))
   ), [baseFiles]);
-  const activeGraph = result?.graph || graph || FALLBACK_GRAPH;
+  const activeGraph = result?.graph || graph || EMPTY_GRAPH;
   const graphNodes = activeGraph?.nodes || [];
   const firstGraphNodeId = graphNodes[0]?.id || null;
   const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
@@ -667,7 +590,7 @@ function FileBrowserAiSqlUnitPanel() {
       file: targetMode !== "db_product" ? file.trim() : "",
     };
     setLastRequest(body);
-    postJson(AGENT_UNIT_RUN_ENDPOINT, body)
+    postJson(agentUnitRunEndpoint("filebrowser_ai_sql"), body)
       .then((payload) => {
         setResult(payload);
         loadHistory();
@@ -772,8 +695,8 @@ function FileBrowserAiSqlUnitPanel() {
     }
     : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
   const accumulatedState = useMemo(
-    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined),
-    [result, lastRequest, selectedIdx]
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, activeGraph),
+    [result, lastRequest, selectedIdx, activeGraph]
   );
   const stateDesign = activeGraph?.state_design || {};
   const stateValue = trace.length ? accumulatedState : stateDesign;
@@ -1175,7 +1098,7 @@ function InformRegistrationUnitPanel() {
 
   const loadHistory = () => {
     setHistoryLoading(true);
-    return sf(INFORM_REGISTRATION_HISTORY_ENDPOINT)
+    return sf(agentUnitHistoryEndpoint("inform_registration"))
       .then((payload) => {
         const nextHistory = payload?.history || [];
         setHistory(nextHistory);
@@ -1188,10 +1111,10 @@ function InformRegistrationUnitPanel() {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      sf(INFORM_REGISTRATION_GRAPH_ENDPOINT).catch((e) => ({
-        error: formatAgentEndpointError(e, INFORM_REGISTRATION_GRAPH_ENDPOINT),
+      sf(agentUnitGraphEndpoint("inform_registration")).catch((e) => ({
+        error: formatAgentEndpointError(e, agentUnitGraphEndpoint("inform_registration")),
       })),
-      sf(INFORM_REGISTRATION_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
+      sf(agentUnitHistoryEndpoint("inform_registration")).catch(() => ({ history: [] })),
     ]).then(([graphPayload, historyPayload]) => {
       if (graphPayload?.error) {
         setGraphErr(graphPayload.error);
@@ -1211,7 +1134,7 @@ function InformRegistrationUnitPanel() {
     if (result?.session_id) setSessionId(result.session_id);
   }, [result?.session_id]);
 
-  const activeGraph = result?.graph || graph || INFORM_FALLBACK_GRAPH;
+  const activeGraph = result?.graph || graph || EMPTY_GRAPH;
   const graphNodes = activeGraph?.nodes || [];
   const firstGraphNodeId = graphNodes[0]?.id || null;
   const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
@@ -1246,8 +1169,8 @@ function InformRegistrationUnitPanel() {
     }
     : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
   const accumulatedState = useMemo(
-    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, INFORM_STATE_KEY_BY_NODE),
-    [result, lastRequest, selectedIdx]
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, activeGraph),
+    [result, lastRequest, selectedIdx, activeGraph]
   );
   const stateDesign = activeGraph?.state_design || {};
   const stateValue = trace.length ? accumulatedState : stateDesign;
@@ -1291,7 +1214,7 @@ function InformRegistrationUnitPanel() {
     setBusy(true);
     setErr("");
     setLastRequest(body);
-    postJson(INFORM_REGISTRATION_RUN_ENDPOINT, body)
+    postJson(agentUnitRunEndpoint("inform_registration"), body)
       .then((payload) => {
         setResult(payload);
         if (payload?.session_id) setSessionId(payload.session_id);
@@ -1583,7 +1506,7 @@ function ChangeManagementUnitPanel() {
 
   const loadHistory = () => {
     setHistoryLoading(true);
-    return sf(CHANGE_MANAGEMENT_HISTORY_ENDPOINT)
+    return sf(agentUnitHistoryEndpoint("change_management"))
       .then((payload) => {
         const nextHistory = payload?.history || [];
         setHistory(nextHistory);
@@ -1596,10 +1519,10 @@ function ChangeManagementUnitPanel() {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      sf(CHANGE_MANAGEMENT_GRAPH_ENDPOINT).catch((e) => ({
-        error: formatAgentEndpointError(e, CHANGE_MANAGEMENT_GRAPH_ENDPOINT),
+      sf(agentUnitGraphEndpoint("change_management")).catch((e) => ({
+        error: formatAgentEndpointError(e, agentUnitGraphEndpoint("change_management")),
       })),
-      sf(CHANGE_MANAGEMENT_HISTORY_ENDPOINT).catch(() => ({ history: [] })),
+      sf(agentUnitHistoryEndpoint("change_management")).catch(() => ({ history: [] })),
     ]).then(([graphPayload, historyPayload]) => {
       if (graphPayload?.error) {
         setGraphErr(graphPayload.error);
@@ -1615,7 +1538,7 @@ function ChangeManagementUnitPanel() {
       .finally(() => setLoading(false));
   }, []);
 
-  const activeGraph = result?.graph || graph || CHANGE_FALLBACK_GRAPH;
+  const activeGraph = result?.graph || graph || EMPTY_GRAPH;
   const graphNodes = activeGraph?.nodes || [];
   const firstGraphNodeId = graphNodes[0]?.id || null;
   const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
@@ -1650,8 +1573,8 @@ function ChangeManagementUnitPanel() {
     }
     : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
   const accumulatedState = useMemo(
-    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, CHANGE_STATE_KEY_BY_NODE),
-    [result, lastRequest, selectedIdx]
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, activeGraph),
+    [result, lastRequest, selectedIdx, activeGraph]
   );
   const stateDesign = activeGraph?.state_design || {};
   const stateValue = trace.length ? accumulatedState : stateDesign;
@@ -1691,7 +1614,7 @@ function ChangeManagementUnitPanel() {
     setErr("");
     setResult(null);
     setLastRequest(body);
-    postJson(CHANGE_MANAGEMENT_RUN_ENDPOINT, body)
+    postJson(agentUnitRunEndpoint("change_management"), body)
       .then((payload) => {
         setResult(payload);
         loadHistory();
@@ -1976,19 +1899,19 @@ function DashboardAgentUnitPanel() {
 
   useEffect(() => {
     setLoading(true);
-    sf(DASHBOARD_AGENT_GRAPH_ENDPOINT)
+    sf(agentUnitGraphEndpoint("dashboard_agent"))
       .then((payload) => {
         setGraph(payload?.graph || null);
         setGraphErr("");
       })
       .catch((e) => {
         setGraph(null);
-        setGraphErr(formatAgentEndpointError(e, DASHBOARD_AGENT_GRAPH_ENDPOINT));
+        setGraphErr(formatAgentEndpointError(e, agentUnitGraphEndpoint("dashboard_agent")));
       })
       .finally(() => setLoading(false));
   }, []);
 
-  const activeGraph = result?.graph || graph || DASHBOARD_FALLBACK_GRAPH;
+  const activeGraph = result?.graph || graph || EMPTY_GRAPH;
   const graphNodes = activeGraph?.nodes || [];
   const firstGraphNodeId = graphNodes[0]?.id || null;
   const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
@@ -2021,8 +1944,8 @@ function DashboardAgentUnitPanel() {
     }
     : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
   const accumulatedState = useMemo(
-    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, DASHBOARD_STATE_KEY_BY_NODE),
-    [result, lastRequest, selectedIdx]
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, activeGraph),
+    [result, lastRequest, selectedIdx, activeGraph]
   );
   const stateDesign = activeGraph?.state_design || {};
   const stateValue = trace.length ? accumulatedState : stateDesign;
@@ -2079,7 +2002,7 @@ function DashboardAgentUnitPanel() {
     setErr("");
     setResult(null);
     setLastRequest(body);
-    postJson(DASHBOARD_AGENT_RUN_ENDPOINT, body)
+    postJson(agentUnitRunEndpoint("dashboard_agent"), body)
       .then((payload) => setResult(payload))
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
@@ -2175,7 +2098,7 @@ function SemanticLayerPanel() {
 
   const syncPayload = (next) => {
     setPayload(next || null);
-    setAliasJson(JSON.stringify(next?.alias_groups?.disk || {}, null, 2));
+    setAliasJson(JSON.stringify(next?.alias_group_entries?.disk || next?.alias_groups?.disk || {}, null, 2));
     setIntentJson(JSON.stringify(next?.intent_hints?.disk || {}, null, 2));
   };
 
@@ -2204,7 +2127,7 @@ function SemanticLayerPanel() {
       setErr(e.message || String(e));
       return;
     }
-    const current = payload?.alias_groups?.disk || {};
+    const current = payload?.alias_group_entries?.disk || payload?.alias_groups?.disk || {};
     const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
     setBusy(true);
     setErr("");
@@ -2213,7 +2136,7 @@ function SemanticLayerPanel() {
       ...deletions.map((key) => sf(`/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`, { method: "DELETE" })),
       ...Object.entries(next).map(([key, value]) => putJson(
         `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
-        { aliases: listFromValue(value) }
+        aliasPayloadFromValue(value)
       )),
     ]).then(() => {
       setMsg("alias_groups 저장 완료");
@@ -2267,7 +2190,7 @@ function SemanticLayerPanel() {
     Promise.all([
       ...Object.entries(aliasGroups).map(([key, value]) => putJson(
         `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
-        { aliases: listFromValue(value) }
+        aliasPayloadFromValue(value)
       )),
       ...Object.entries(intentHints).map(([key, value]) => putJson(
         `/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`,
@@ -2329,6 +2252,7 @@ function SemanticLayerPanel() {
             <JsonBlock
               value={{
                 alias_groups: payload?.alias_groups?.effective || {},
+                alias_group_entries: payload?.alias_group_entries?.effective || {},
                 intent_hints: payload?.intent_hints?.effective || {},
               }}
               maxHeight={360}
@@ -2415,25 +2339,51 @@ function SemanticLayerPanel() {
   );
 }
 
+const UNIT_PANEL_RENDERERS = {
+  filebrowser_ai_sql: FileBrowserAiSqlUnitPanel,
+  inform_registration: InformRegistrationUnitPanel,
+  change_management: ChangeManagementUnitPanel,
+  dashboard_agent: DashboardAgentUnitPanel,
+};
+
+const UNIT_PANEL_FALLBACK_ITEMS = [
+  { k: "filebrowser_ai_sql", l: "FileBrowser AI SQL" },
+  { k: "inform_registration", l: "Inform 등록 도우미" },
+  { k: "change_management", l: "변경점 관리 Flow-i" },
+  { k: "dashboard_agent", l: "Dashboard Agent" },
+];
+
 function UnitAiPanel() {
   const [activeUnit, setActiveUnit] = useState("filebrowser_ai_sql");
+  const [catalogUnits, setCatalogUnits] = useState([]);
+  const items = useMemo(() => {
+    const catalogItems = (catalogUnits || [])
+      .filter((unit) => UNIT_PANEL_RENDERERS[unit?.key])
+      .map((unit) => ({ k: unit.key, l: unit.title || unit.key }));
+    return catalogItems.length ? catalogItems : UNIT_PANEL_FALLBACK_ITEMS;
+  }, [catalogUnits]);
+  const ActivePanel = UNIT_PANEL_RENDERERS[activeUnit] || FileBrowserAiSqlUnitPanel;
+
+  useEffect(() => {
+    sf(AGENT_UNIT_CATALOG_ENDPOINT)
+      .then((payload) => setCatalogUnits(payload?.units || []))
+      .catch(() => setCatalogUnits([]));
+  }, []);
+
+  useEffect(() => {
+    if (!items.find((item) => item.k === activeUnit)) {
+      setActiveUnit(items[0]?.k || "filebrowser_ai_sql");
+    }
+  }, [items, activeUnit]);
+
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <TabStrip
         active={activeUnit}
         onChange={setActiveUnit}
-        items={[
-          { k: "filebrowser_ai_sql", l: "FileBrowser AI SQL" },
-          { k: "inform_registration", l: "Inform 등록 도우미" },
-          { k: "change_management", l: "변경점 관리 Flow-i" },
-          { k: "dashboard_agent", l: "Dashboard Agent" },
-        ]}
+        items={items}
       />
-      {activeUnit === "filebrowser_ai_sql"
-        ? <FileBrowserAiSqlUnitPanel />
-        : (activeUnit === "inform_registration"
-          ? <InformRegistrationUnitPanel />
-          : (activeUnit === "change_management" ? <ChangeManagementUnitPanel /> : <DashboardAgentUnitPanel />))}
+      <ActivePanel />
     </div>
   );
 }

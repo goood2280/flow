@@ -49,12 +49,23 @@ def semantic_store(tmp_path, monkeypatch):
 def test_semantic_lexicon_alias_intent_roundtrip(semantic_store):
     req = _Request(role="admin")
 
-    agent.semantic_alias_group_upsert("ioff", agent.SemanticAliasGroupReq(aliases=["IOFF", "누설전류"]), req)
+    agent.semantic_alias_group_upsert(
+        "ioff",
+        agent.SemanticAliasGroupReq(
+            aliases=["IOFF", "누설전류"],
+            semantic_class="metric",
+            normalization={"case": "upper"},
+            value_domain=["numeric"],
+        ),
+        req,
+    )
     agent.semantic_intent_hint_upsert("inform_registration", agent.SemanticIntentHintReq(required_canonicals=["product", "lot_id"]), req)
 
     payload = agent.semantic_lexicon(req)
     assert payload["ok"] is True
     assert payload["alias_groups"]["disk"]["ioff"] == ["IOFF", "누설전류"]
+    assert payload["alias_group_entries"]["disk"]["ioff"]["semantic_class"] == "metric"
+    assert payload["alias_group_meta"]["effective"]["ioff"]["value_domain"] == ["numeric"]
     assert payload["intent_hints"]["disk"]["inform_registration"] == ["product", "lot_id"]
     assert payload["changes"]
 

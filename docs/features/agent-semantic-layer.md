@@ -21,7 +21,7 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 
 | 개념 | 의미 | 저장 위치 | write 규칙 |
 |---|---|---|---|
-| `alias_groups` | 사용자가 쓰는 표현과 canonical key를 묶는 사전. 예: `IOFF`, `LKG` 같은 별칭을 내부 column/slot 의미로 연결한다. | `FLOW_DATA_ROOT/semantic/alias_groups.json` | 명시 save API 또는 승인된 proposal decision만 가능 |
+| `alias_groups` | 사용자가 쓰는 표현과 canonical key를 묶는 사전. 예: `IOFF`, `LKG` 같은 별칭을 내부 column/slot 의미로 연결한다. 값은 기존 `["alias"]` 형식과 신규 `{aliases, semantic_class, normalization, value_domain}` 형식을 모두 읽는다. | `FLOW_DATA_ROOT/semantic/alias_groups.json` | 명시 save API 또는 승인된 proposal decision만 가능 |
 | `intent_hints` | 특정 intent가 요구하는 canonical slot/key 목록. Inform registration 같은 slot-fill unit이 required hint로 참고한다. | `FLOW_DATA_ROOT/semantic/intent_hints.json` | 명시 save API만 가능 |
 | `proposal queue` | meeting/inform/tracker/activity log 등에서 나온 새 용어 후보의 pending queue. | `FLOW_DATA_ROOT/semantic/proposals/*.json` | enqueue는 proposal producer, approve/reject는 권한 있는 사용자만 가능 |
 | `changes` | alias/intent write audit log. | `FLOW_DATA_ROOT/semantic/changes.jsonl` | semantic lexicon service가 append |
@@ -29,7 +29,14 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 
 `effective` view는 in-code seed와 disk override를 merge한 결과다. 현재 Agent API는 `backend/app_v2/modules/semantic_lexicon/service.py`에서 disk value를 우선 적용한다.
 
-런타임 resolver의 공유 진입점은 `backend/core/agent_semantic_service.py`의 `resolve(prompt, columns=None, product="", dtypes=None)`다. Unit runtime은 필요에 따라 기존 공개 frame shape만 골라 노출한다.
+런타임 resolver의 공유 진입점은 `backend/core/agent_semantic_service.py`의 `resolve(prompt, columns=None, product="", dtypes=None, sample_profile=None, source_ref=None)`다. Unit runtime은 필요에 따라 기존 공개 frame shape만 골라 노출한다.
+
+`semantic_frame`은 기존 `resolved_columns`, `value_terms`, `synonyms`, `step_mapping`, `alias_hits`, `slot_hints`를 유지하면서 아래 additive 필드를 더한다.
+
+- `alias_group_meta`: canonical별 `semantic_class`, `normalization`, `value_domain`
+- `value_catalog_matches`: FileBrowser owner read path로 즉석 조회한 실제 distinct/sample value hit
+- `unknown_terms`: `{term, search_priority:[{location, table_file, confidence}]}` 구조의 미지어 탐색 우선순위
+- `unknown_term_texts`: 기존 list 소비자를 위한 plain term 요약
 
 ## Semantic APIs
 
@@ -37,7 +44,7 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 |---|---|---|---|
 | `GET /api/agent/semantic/lexicon` | effective/disk alias, intent, changes, pending proposals 조회 | 로그인 사용자 | 없음 |
 | `POST /api/agent/semantic/draft` | 자연어 또는 JSON에서 alias/intent 초안 생성 | 로그인 사용자 | 없음 |
-| `PUT /api/agent/semantic/alias-groups/{canonical}` | disk alias group 저장 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
+| `PUT /api/agent/semantic/alias-groups/{canonical}` | disk alias group 저장. Body는 `aliases`와 선택 메타 `semantic_class`, `normalization`, `value_domain`을 받을 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
 | `DELETE /api/agent/semantic/alias-groups/{canonical}` | disk alias group 삭제 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
 | `PUT /api/agent/semantic/intent-hints/{intent}` | disk intent hint 저장 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `intent_hints.json`, `changes.jsonl` |
 | `DELETE /api/agent/semantic/intent-hints/{intent}` | disk intent hint 삭제 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `intent_hints.json`, `changes.jsonl` |
@@ -67,8 +74,9 @@ context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> pre
 ```
 
 - `context_sample`은 FileBrowser source of truth에서 schema와 compact `sample_profile`을 얻는다.
-- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 기존 shape인 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`을 `semantic_frame`에 넣는다.
+- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 기존 shape인 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`과 신규 `value_catalog_matches`, 구조화된 `unknown_terms`를 `semantic_frame`에 넣는다.
 - `filter_draft`와 `column_draft`는 `semantic_frame`을 참고하지만 SQL validation, selected column validation, preview는 FileBrowser helper를 재사용한다.
+- `value_catalog_matches`는 선택된 FileBrowser source의 hot distinct/sample value를 즉석 조회한 read-only 결과다. 캐시는 process memory TTL만 사용하고 원본 DB/CSV/Parquet와 schema profile 파일은 쓰지 않는다.
 - root/file/schema 해석의 source of truth는 `backend/routers/filebrowser.py`와 `backend/core/flowi_units/filebrowser_ai_sql_runtime.py`다.
 - Agent history에는 preview row 전체를 싣지 않는다. preview table은 사용자가 `적용`을 눌러 FileBrowser preview endpoint를 다시 호출한 결과만 보여준다.
 
@@ -156,7 +164,7 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 | Shared semantic resolver | `backend/core/agent_semantic_service.py` |
 | Semantic lexicon storage/service | `backend/app_v2/modules/semantic_lexicon/` |
 | Semantic proposal queue/classifier | `backend/app_v2/modules/semantic_learning/` |
-| Agent runtime semantic seed placeholder | `backend/app_v2/modules/agent_runtime/semantic.py` |
+| Agent runtime shared executor/prompt/validation | `backend/app_v2/modules/agent_runtime/` |
 | Unit metadata and `DataSourceRef` | `backend/core/flowi_units/base.py`, `backend/core/flowi_units/*.py` |
 | FileBrowser AI SQL runtime | `backend/core/flowi_units/filebrowser_ai_sql_runtime.py` |
 | Inform registration runtime | `backend/core/flowi_units/inform_registration_runtime.py` |

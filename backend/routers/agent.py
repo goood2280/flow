@@ -81,6 +81,16 @@ _ACTIVE_UNIT_ENDPOINTS = {
 }
 
 
+def _unit_v2_endpoints(unit_key: str) -> dict[str, str]:
+    base = f"/api/agent/unit/{unit_key}"
+    return {
+        "graph": f"{base}/graph",
+        "run": f"{base}/run",
+        "history": f"{base}/history",
+        "overrides": f"/api/agent/unit-ai/{unit_key}/runtime/overrides",
+    }
+
+
 def _clean_commit(value: str) -> str:
     commit = str(value or "").strip()
     if len(commit) >= 7 and all(ch in "0123456789abcdef" for ch in commit.lower()):
@@ -153,6 +163,10 @@ class UnitAiRuntimeRunReq(BaseModel):
 
 class SemanticAliasGroupReq(BaseModel):
     aliases: list[str] = Field(default_factory=list)
+    semantic_class: str = ""
+    normalization: Any = None
+    value_domain: Any = None
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class SemanticIntentHintReq(BaseModel):
@@ -206,6 +220,14 @@ def _semantic_effective_alias_groups() -> dict[str, list[str]]:
     return semantic_lexicon_service.effective_alias_groups(_semantic_seed_alias_groups())
 
 
+def _semantic_effective_alias_group_entries() -> dict[str, dict[str, Any]]:
+    return semantic_lexicon_service.effective_alias_group_entries(_semantic_seed_alias_groups())
+
+
+def _semantic_alias_group_meta() -> dict[str, Any]:
+    return semantic_lexicon_service.effective_alias_group_meta(_semantic_seed_alias_groups())
+
+
 def _semantic_effective_intent_hints() -> dict[str, list[str]]:
     return semantic_lexicon_service.effective_intent_hints(_semantic_seed_intent_hints())
 
@@ -242,6 +264,21 @@ def _append_alias_term(canonical: str, term: str, *, by: str) -> dict[str, list[
         by=by,
         seed=_semantic_seed_alias_groups(),
     )
+
+
+def _alias_req_meta(req: SemanticAliasGroupReq) -> dict[str, Any]:
+    meta = dict(req.meta or {})
+    if req.semantic_class:
+        meta["semantic_class"] = str(req.semantic_class or "").strip()
+    if req.normalization is not None:
+        meta["normalization"] = req.normalization
+    if req.value_domain is not None:
+        meta["value_domain"] = req.value_domain
+    return {
+        key: value
+        for key, value in meta.items()
+        if key in {"semantic_class", "normalization", "value_domain"}
+    }
 
 
 def _canonical_from_term(term: str) -> str:
@@ -318,8 +355,9 @@ def _semantic_draft_from_text(text: str) -> dict[str, Any]:
 
 
 def _unit_catalog_item(unit) -> dict[str, Any]:
+    key = unit.key()
     return {
-        "key": unit.key(),
+        "key": key,
         "title": unit.title(),
         "description": unit.description(),
         "llm_profile": unit.llm_profile(),
@@ -328,6 +366,7 @@ def _unit_catalog_item(unit) -> dict[str, Any]:
         "input_schema": unit.input_schema(),
         "output_schema": unit.output_schema(),
         "examples": unit.examples(),
+        "runtime_endpoints": _unit_v2_endpoints(key),
         "handler_entry": {
             "module": unit.handler_entry().module,
             "function": unit.handler_entry().function,
@@ -352,7 +391,9 @@ def agent_reset_status() -> dict[str, Any]:
         "status": "archived_for_rebuild",
         "settings_endpoint": "/api/llm/status",
         "unit_ai_endpoint": "/api/agent/unit-ai/catalog",
+        "unit_endpoint": "/api/agent/catalog",
         "active_unit_endpoints": _ACTIVE_UNIT_ENDPOINTS,
+        "active_unit_endpoints_v2": {key: _unit_v2_endpoints(key) for key in _ACTIVE_UNIT_ENDPOINTS},
         "home_flowi_runtime_endpoints": {
             "graph": "/api/agent/home-flowi/runtime/graph",
             "runs": "/api/agent/home-flowi/runtime/runs",
@@ -371,6 +412,11 @@ def unit_ai_catalog(request: Request) -> dict[str, Any]:
         "ok": True,
         "units": units,
     }
+
+
+@router.get("/catalog")
+def agent_unit_catalog(request: Request) -> dict[str, Any]:
+    return unit_ai_catalog(request)
 
 
 @router.get("/unit-ai/filebrowser_ai_sql/runtime/graph")
@@ -497,6 +543,17 @@ def semantic_lexicon(request: Request, limit: int = 100) -> dict[str, Any]:
             "effective": _semantic_effective_alias_groups(),
             "disk": semantic_lexicon_store.load_alias_groups(),
         },
+        "alias_group_entries": {
+            "effective": _semantic_effective_alias_group_entries(),
+            "disk": semantic_lexicon_store.load_alias_group_entries(),
+        },
+        "alias_group_meta": {
+            "effective": _semantic_alias_group_meta(),
+            "disk": {
+                key: {meta_key: value for meta_key, value in (entry or {}).items() if meta_key != "aliases"}
+                for key, entry in semantic_lexicon_store.load_alias_group_entries().items()
+            },
+        },
         "intent_hints": {
             "effective": _semantic_effective_intent_hints(),
             "disk": semantic_lexicon_store.load_intent_hints(),
@@ -515,6 +572,7 @@ def semantic_alias_group_upsert(canonical: str, req: SemanticAliasGroupReq, requ
             req.aliases,
             by=str(user.get("username") or ""),
             seed=_semantic_seed_alias_groups(),
+            meta=_alias_req_meta(req),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -523,6 +581,10 @@ def semantic_alias_group_upsert(canonical: str, req: SemanticAliasGroupReq, requ
         "alias_groups": {
             "effective": _semantic_effective_alias_groups(),
             "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+        "alias_group_entries": {
+            "effective": _semantic_effective_alias_group_entries(),
+            "disk": semantic_lexicon_store.load_alias_group_entries(),
         },
     }
 
@@ -537,6 +599,10 @@ def semantic_alias_group_delete(canonical: str, request: Request) -> dict[str, A
         "alias_groups": {
             "effective": _semantic_effective_alias_groups(),
             "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+        "alias_group_entries": {
+            "effective": _semantic_effective_alias_group_entries(),
+            "disk": semantic_lexicon_store.load_alias_group_entries(),
         },
     }
 
@@ -622,6 +688,10 @@ def semantic_proposal_decision(proposal_id: str, req: SemanticProposalDecisionRe
         "alias_groups": {
             "effective": _semantic_effective_alias_groups(),
             "disk": semantic_lexicon_store.load_alias_groups(),
+        },
+        "alias_group_entries": {
+            "effective": _semantic_effective_alias_group_entries(),
+            "disk": semantic_lexicon_store.load_alias_group_entries(),
         },
     }
 
@@ -768,8 +838,33 @@ def unit_ai_runtime_history(unit_key: str, request: Request, limit: int = 50) ->
             "unit_ai": unit_key,
             "history": list_change_management_history(limit=limit, username=(me or {}).get("username") or ""),
         }
+    if unit_key == FILEBROWSER_AI_SQL_UNIT_KEY:
+        from routers import filebrowser as filebrowser_router
+
+        payload = filebrowser_router.filebrowser_sql_history(request, limit=max(1, min(int(limit or 50), 200)))
+        return {
+            "ok": True,
+            "unit_ai": unit_key,
+            "history": payload.get("history") or [],
+            "limit": payload.get("limit") or limit,
+        }
     if unit_key != INFORM_REGISTRATION_UNIT_KEY:
         raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
+
+
+@router.get("/unit/{unit_key}/graph")
+def unit_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
+    return unit_ai_runtime_graph(unit_key, request)
+
+
+@router.post("/unit/{unit_key}/run")
+def unit_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Request) -> dict[str, Any]:
+    return unit_ai_runtime_run(unit_key, req, request)
+
+
+@router.get("/unit/{unit_key}/history")
+def unit_runtime_history(unit_key: str, request: Request, limit: int = 50) -> dict[str, Any]:
+    return unit_ai_runtime_history(unit_key, request, limit=limit)
 
 
 @router.get("/home-flowi/runtime/graph")
@@ -818,6 +913,8 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
     normalized = path.strip("/")
     if normalized == "unit-ai/catalog":
         return unit_ai_catalog(request)
+    if normalized == "catalog":
+        return agent_unit_catalog(request)
     if normalized == "home-flowi/runtime/graph":
         return home_flowi_runtime_graph(request)
     if normalized == "home-flowi/runtime/runs":
@@ -834,6 +931,12 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
             return unit_ai_runtime_graph(unit_key, request)
         if parts[3] == "history":
             return unit_ai_runtime_history(unit_key, request, limit=_query_limit(request, 50))
+    if len(parts) == 3 and parts[0] == "unit":
+        unit_key = unquote(parts[1])
+        if parts[2] == "graph":
+            return unit_runtime_graph(unit_key, request)
+        if parts[2] == "history":
+            return unit_runtime_history(unit_key, request, limit=_query_limit(request, 50))
     return None
 
 

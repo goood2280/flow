@@ -165,6 +165,8 @@ def test_filebrowser_ai_sql_runtime_separates_filter_and_column_llm(monkeypatch,
     assert all(call["payload"]["sample_rows"] == [] for call in calls)
     assert all(call["payload"]["sample_profile"]["sampling_policy"]["row_dump_in_prompt"] is False for call in calls)
     assert out["filter"]["sql"] == "root_lot_id = 'A1000'"
+    assert out["semantic_frame"]["value_catalog_matches"]
+    assert any(match.get("column") == "root_lot_id" for match in out["semantic_frame"]["value_catalog_matches"])
     assert out["columns"]["selected_columns"] == ["root_lot_id", "wafer_id", "value"]
     assert out["preview"]["columns"] == ["root_lot_id", "wafer_id", "value"]
     assert out["preview"]["rows"] == []

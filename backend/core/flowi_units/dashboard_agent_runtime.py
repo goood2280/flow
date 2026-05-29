@@ -11,6 +11,12 @@ from typing import Annotated, Any, Callable, TypedDict
 
 from fastapi import HTTPException
 
+from app_v2.modules.agent_runtime.executor import (
+    NodeExecutor,
+    StateReducer,
+    TraceRecorder,
+    run_sequential as run_nodes_sequential,
+)
 from core import agent_prompt_overrides
 from core import agent_semantic_service
 
@@ -237,37 +243,23 @@ def _trace_output(node_id: str, state: dict[str, Any], result: dict[str, Any]) -
     }.get(node_id, ""), result)
 
 
+def _node_label(node_id: str) -> str:
+    return next((node["label"] for node in GRAPH_NODES if node["id"] == node_id), node_id)
+
+
+_NODE_EXECUTOR = NodeExecutor(
+    trace_output=lambda node_id, state, result: _trace_output(node_id, state, result),
+    trace_recorder=TraceRecorder(label_for=_node_label),
+)
+
+
 def _execute_node(
     state: dict[str, Any],
     node_id: str,
     body: Callable[[dict[str, Any], list[str]], dict[str, Any] | None],
     input_summary: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
-    started = time.perf_counter()
-    warnings: list[str] = []
-    failed = False
-    result: dict[str, Any] = {}
-    diff: dict[str, Any] = {}
-    try:
-        result = body(state, warnings) or {}
-        diff.update(result)
-    except Exception as exc:
-        failed = True
-        warnings.append(f"{type(exc).__name__}: {exc}")
-        diff["node_errors"] = {**(state.get("node_errors") or {}), node_id: warnings[-1]}
-    status = _node_status(warnings, failed)
-    merged_view = {**state, **diff}
-    diff["trace"] = [
-        _trace_row(
-            node_id=node_id,
-            status=status,
-            input_summary=input_summary(merged_view),
-            output=_trace_output(node_id, merged_view, result),
-            warnings=warnings,
-            started=started,
-        )
-    ]
-    return diff
+    return _NODE_EXECUTOR.execute(state, node_id, body, input_summary)
 
 
 def _llm_json(
@@ -561,12 +553,7 @@ _NODE_RUNNERS: tuple[tuple[str, Callable[[dict[str, Any], list[str]], dict[str, 
 
 
 def _merge_diff_into_state(state: dict[str, Any], diff: dict[str, Any]) -> dict[str, Any]:
-    for key, value in diff.items():
-        if key in ("trace", "runtime_warnings"):
-            state[key] = list(state.get(key) or []) + list(value or [])
-        else:
-            state[key] = value
-    return state
+    return StateReducer.merge_diff(state, diff)
 
 
 def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -597,11 +584,7 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _run_sequential(state: dict[str, Any]) -> dict[str, Any]:
-    state.setdefault("runtime_warnings", []).append("LangGraph is not installed; sequential fallback runner used.")
-    for node_id, body, input_summary in _NODE_RUNNERS:
-        diff = _execute_node(state, node_id, body, input_summary)
-        _merge_diff_into_state(state, diff)
-    return state
+    return run_nodes_sequential(state, _NODE_RUNNERS, _NODE_EXECUTOR)
 
 
 def run_dashboard_agent_runtime(

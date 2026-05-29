@@ -108,6 +108,7 @@ _CANONICAL_LOT_PROGRESS_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parq
 _SINGLE_FILE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
+_AI_SQL_VALUE_CATALOG_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
 FILEBROWSER_AGENT_PROMPTS_FILE = "filebrowser_agent_prompts.json"
 FILEBROWSER_AI_SQL_FEEDBACK_FILE = "filebrowser_ai_sql_feedback.jsonl"
@@ -8637,6 +8638,133 @@ def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: st
         priority_values=priority_values,
     )
     return clean_columns, dict(dtypes or {}), clean_rows, profile, warnings
+
+
+def _ai_sql_value_catalog_source(source_ref: dict | None):
+    source = source_ref or {}
+    scope = _cache_safe_text(source.get("scope"), 80)
+    root = _cache_safe_text(source.get("root"), 160)
+    product = _cache_safe_text(source.get("product"), 160)
+    file = _cache_safe_text(source.get("file"), 240)
+    if root and product:
+        lf = lazy_read_source(
+            root=root,
+            product=product,
+            recent_days=30,
+            max_files=LATEST_PREVIEW_MAX_FILES,
+            latest_only=True,
+        )
+        return lf, f"hive:{root}/{product}"
+    if file:
+        fp = _resolve_ai_sql_profile_file(scope, file)
+        if fp is None:
+            fp = _resolve_data_file_for_schema(file, _load_filebrowser_settings())
+        if fp is not None:
+            return scan_one_file(fp), f"file:{file}"
+    return None, ""
+
+
+def _ai_sql_value_catalog_candidates(columns: list[str], dtypes: dict | None, prompt: str, sample_profile: dict | None) -> list[str]:
+    clean_columns = _settings_context_columns(columns)
+    dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
+    candidates = _ai_sql_profile_column_candidates(clean_columns, dtype_map, prompt=prompt)
+    prompt_norm = re.sub(r"[^0-9a-z가-힣]+", "", str(prompt or "").casefold())
+    for item in (sample_profile or {}).get("columns") or []:
+        if not isinstance(item, dict):
+            continue
+        col = _cache_safe_text(item.get("name"), 160)
+        if not col or col not in clean_columns:
+            continue
+        values = [_cache_safe_text(value, 160) for value in (item.get("sample_values") or [])]
+        if any(
+            (value_norm := re.sub(r"[^0-9a-z가-힣]+", "", value.casefold())) and value_norm in prompt_norm
+            for value in values
+            if len(value) >= 2
+        ):
+            if col not in candidates:
+                candidates.insert(0, col)
+    return candidates[:20]
+
+
+def _ai_sql_distinct_values(lf, column: str, limit: int = 30) -> list[str]:
+    if lf is None or not column:
+        return []
+    try:
+        q = (
+            lf.select(pl.col(column).cast(_SORT_STR, strict=False).alias(column))
+            .drop_nulls(subset=[column])
+            .unique(subset=[column], maintain_order=True)
+            .limit(max(1, min(100, int(limit or 30))))
+        )
+        try:
+            from core.parquet_perf import collect_streaming
+            df = collect_streaming(q)
+        except Exception:
+            df = q.collect()
+        values: list[str] = []
+        for row in serialize_rows(df.to_dicts()):
+            text = _cache_safe_text(row.get(column), 160).strip()
+            if text and text not in values:
+                values.append(text)
+        return values
+    except Exception:
+        return []
+
+
+def _ai_sql_value_catalog_matches(*, prompt: str, columns: list[str], dtypes: dict | None,
+                                  sample_profile: dict | None, source_ref: dict | None) -> list[dict]:
+    """Read-only, on-demand value lookup for Agent semantic resolution.
+
+    This reuses the FileBrowser source resolver and keeps only hot in-memory
+    cache entries. It never writes to DB/CSV/Parquet or schema profile files.
+    """
+    prompt_text = _cache_safe_text(prompt, 2000)
+    clean_columns = _settings_context_columns(columns)
+    candidates = _ai_sql_value_catalog_candidates(clean_columns, dtypes or {}, prompt_text, sample_profile)
+    if not prompt_text or not clean_columns or not candidates:
+        return []
+    source_lf, source_id = _ai_sql_value_catalog_source(source_ref)
+    if source_lf is None:
+        return []
+    priority_values = _ai_sql_prompt_priority_values(prompt_text, clean_columns)
+    prompt_norm = re.sub(r"[^0-9a-z가-힣]+", "", prompt_text.casefold())
+    cache_key = (
+        source_id,
+        tuple(candidates),
+        tuple(sorted(str(value).casefold() for value in priority_values[:20])),
+    )
+    now = time.monotonic()
+    cached = _AI_SQL_VALUE_CATALOG_CACHE.get(cache_key)
+    if cached and now - cached[0] < 300:
+        return copy.deepcopy(cached[1])
+    matches: list[dict] = []
+    for column in candidates:
+        values = _ai_sql_distinct_values(source_lf, column, limit=30)
+        for value in values:
+            value_norm = re.sub(r"[^0-9a-z가-힣]+", "", value.casefold())
+            if len(value_norm) < 2:
+                continue
+            priority_hit = any(value.casefold() == str(item).casefold() for item in priority_values)
+            prompt_hit = value_norm in prompt_norm
+            if not priority_hit and not prompt_hit:
+                continue
+            matches.append({
+                "column": column,
+                "value": value,
+                "source": source_id,
+                "confidence": 0.86 if prompt_hit else 0.72,
+                "match_reason": "prompt_value" if prompt_hit else "priority_value",
+            })
+            if len(matches) >= 40:
+                break
+        if len(matches) >= 40:
+            break
+    _AI_SQL_VALUE_CATALOG_CACHE[cache_key] = (now, copy.deepcopy(matches))
+    if len(_AI_SQL_VALUE_CATALOG_CACHE) > 32:
+        oldest = sorted(_AI_SQL_VALUE_CATALOG_CACHE.items(), key=lambda item: item[1][0])[:8]
+        for key, _ in oldest:
+            _AI_SQL_VALUE_CATALOG_CACHE.pop(key, None)
+    return matches
 
 
 def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],

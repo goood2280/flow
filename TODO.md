@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Agent semantic layer Phase 2와 unit runtime Phase 3 스케치 적용
 - (Claude) Home Flow-i 반복 ReAct 루프 추가 (flag FLOW_LLM_REACT_LOOP, 단일 control-flow + snapshot 반복 노드)
 - (Codex) FileBrowser reformatter 단일파일 CSV 다운로드 보정
 - (Codex) SplitTable root lot RAM cache CPU/메모리 guard 보정

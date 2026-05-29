@@ -114,7 +114,9 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     status = agent.agent_reset_status()
     assert status["ok"] is True
     assert status["unit_ai_endpoint"] == "/api/agent/unit-ai/catalog"
+    assert status["unit_endpoint"] == "/api/agent/catalog"
     assert status["active_unit_endpoints"]["inform_registration"]["graph"] == "/api/agent/unit-ai/inform_registration/runtime/graph"
+    assert status["active_unit_endpoints_v2"]["inform_registration"]["graph"] == "/api/agent/unit/inform_registration/graph"
     assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
     assert status["active_unit_endpoints"]["dashboard_agent"]["graph"] == "/api/agent/unit-ai/dashboard_agent/runtime/graph"
     assert status["active_unit_endpoints"]["home_sql_join_dashboard"]["graph"] == "/api/agent/unit-ai/home_sql_join_dashboard/runtime/graph"
@@ -126,6 +128,8 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     assert graph["unit_ai"] == "inform_registration"
     assert graph["graph"]["nodes"][0]["id"] == "context_seed"
     assert graph["graph"]["nodes"][1]["id"] == "semantic_layer"
+    graph_v2 = agent.unit_runtime_graph("inform_registration", _Request())
+    assert graph_v2["graph"]["nodes"][1]["id"] == "semantic_layer"
 
 
 def test_agent_runtime_routes_are_before_archived_catchall():
@@ -139,6 +143,10 @@ def test_agent_runtime_routes_are_before_archived_catchall():
         "/api/agent/unit-ai/change_management/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/run",
+        "/api/agent/catalog",
+        "/api/agent/unit/{unit_key}/graph",
+        "/api/agent/unit/{unit_key}/run",
+        "/api/agent/unit/{unit_key}/history",
         "/api/agent/home-flowi/runtime/graph",
         "/api/agent/home-flowi/runtime/runs",
         "/api/agent/semantic/lexicon",
@@ -156,6 +164,9 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
         "/api/agent/unit-ai/inform_registration/runtime/history": "inform_registration_runtime_history",
         "/api/agent/unit-ai/change_management/runtime/graph": "change_management_runtime_graph",
         "/api/agent/unit-ai/change_management/runtime/history": "change_management_runtime_history",
+        "/api/agent/catalog": "agent_unit_catalog",
+        "/api/agent/unit/inform_registration/graph": "unit_runtime_graph",
+        "/api/agent/unit/inform_registration/history": "unit_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
         "/api/agent/semantic/lexicon": "semantic_lexicon",
     }
@@ -170,6 +181,8 @@ def test_archived_catchall_does_not_archive_active_inform_graph(monkeypatch):
     assert graph["ok"] is True
     assert graph["unit_ai"] == "inform_registration"
     assert graph["graph"]["nodes"][0]["id"] == "context_seed"
+    graph_v2 = agent.archived_agent_endpoint("unit/inform_registration/graph", _Request())
+    assert graph_v2["graph"]["nodes"][0]["id"] == "context_seed"
 
     with pytest.raises(HTTPException) as excinfo:
         agent.archived_agent_endpoint("runtime", _Request())

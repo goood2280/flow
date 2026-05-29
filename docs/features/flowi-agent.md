@@ -9,6 +9,10 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 - LLM 연결 시 공통 API 에러를 사용자용 설명으로 바꾸는 보조 endpoint:
   - `POST /api/llm/error/explain`
 - Agent scoped endpoint:
+  - `GET /api/agent/catalog`
+  - `POST /api/agent/unit/{key}/run`
+  - `GET /api/agent/unit/{key}/graph`
+  - `GET /api/agent/unit/{key}/history`
   - `GET /api/agent/home-flowi/runtime/graph`
   - `GET /api/agent/home-flowi/runtime/runs`
   - `GET /api/agent/home-flowi/runtime/runs/{run_id}`
@@ -99,6 +103,8 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 
 Agent 단위기능 AI 탭의 `Persona/Prompt/Cache 편집` 패널은 `FLOW_DATA_ROOT/agent_unit_overrides.json`에 node별 override를 저장한다. 저장된 `prompt_system`은 Dashboard Agent의 `chart_type_select`와 `params_fill` LLM 호출에 반영된다.
 
+신규 단위기능 AI 실행 surface는 `/api/agent/unit/{key}/graph|run|history`를 우선 사용한다. 기존 `/api/agent/unit-ai/{key}/runtime/*` 경로는 호환용으로 유지한다. 공통 node timing, trace row, exception wrapping, state diff merge는 `backend/app_v2/modules/agent_runtime/executor.py`가 맡고, 각 unit runtime은 노드 정의, persona, 도메인 prompt, owner API 호출만 보존한다.
+
 ## Home SQL Join Dashboard Unit
 
 `home_sql_join_dashboard`는 기준 source SQL draft, schema relation 기반 JOIN, output route를 담당한다. `dashboard_draft` 노드는 직접 chart spec을 만들지 않고 `dashboard_agent`를 sub-runtime으로 호출하며, sub-trace를 parent trace의 `dashboard.sub_trace`와 Home ToolCall `sub_trace`에 남긴다.
@@ -141,6 +147,7 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 | Common API error formatting | `frontend/src/lib/api.js` |
 | LLM settings panel | `frontend/src/components/agent/LlmTab.jsx` |
 | Agent router | `backend/routers/agent.py` |
+| Shared Agent runtime helpers | `backend/app_v2/modules/agent_runtime/` |
 | LLM status/error explain router | `backend/routers/llm.py` |
 | Home runtime graph | `backend/core/home_orchestrator.py` |
 | Home Q/A memory | `backend/core/home_memory.py` |

@@ -63,10 +63,19 @@ def test_effective_merges_seed_and_disk(lex_dir):
 
 def test_upsert_alias_group_persists_and_audits(lex_dir):
     seed = {"knob": ["knob", "split"]}
-    service.upsert_alias_group("knob", ["knob", "split", "ppid", "분기"], by="hol", seed=seed)
+    service.upsert_alias_group(
+        "knob",
+        ["knob", "split", "ppid", "분기"],
+        by="hol",
+        seed=seed,
+        meta={"semantic_class": "rulebook", "normalization": {"case": "upper"}, "value_domain": ["ppid"]},
+    )
 
     disk = store.load_alias_groups()
     assert disk["knob"] == ["knob", "split", "ppid", "분기"]
+    entries = store.load_alias_group_entries()
+    assert entries["knob"]["semantic_class"] == "rulebook"
+    assert service.effective_alias_group_meta(seed)["knob"]["value_domain"] == ["ppid"]
 
     changes = store.list_changes()
     assert any(c.get("scope") == "alias_groups" and c.get("key") == "knob" for c in changes)

@@ -149,8 +149,8 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "State" in ui
     assert "LangGraph" in ui
     assert "Test prompt" in ui
-    assert "/api/agent/unit-ai/filebrowser_ai_sql/runtime/run" in ui
-    assert "/api/agent/unit-ai/inform_registration/runtime/run" in ui
+    assert "/api/agent/catalog" in ui
+    assert "/api/agent/unit/${encodeURIComponent(unitKey)}/run" in ui
     assert "/api/agent/semantic/lexicon" in ui
     assert "active Agent unit route" in ui
     assert "Inform graph fetch 진단" in ui

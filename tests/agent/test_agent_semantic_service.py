@@ -37,3 +37,22 @@ def test_resolve_inform_alias_slot_shape():
     assert frame["slot_hints"]["lot_id"] == "R1000"
     assert "unknown_terms" in frame
     assert "intent_matches" in frame
+
+
+def test_resolve_adds_value_catalog_matches_and_unknown_routes():
+    frame = agent_semantic_service.resolve(
+        "A1000 FOOBAR만 확인",
+        columns=["root_lot_id", "item_id"],
+        sample_profile={
+            "source": "hive:FAB/PRODA",
+            "columns": [
+                {"name": "root_lot_id", "dtype": "String", "sample_values": ["A1000", "B2000"]},
+            ],
+        },
+        source_ref={"scope": "db_product", "root": "FAB", "product": "PRODA"},
+    )
+
+    assert any(match.get("column") == "root_lot_id" for match in frame["value_catalog_matches"])
+    unknown = frame["unknown_terms"]
+    assert unknown and "term" in unknown[0]
+    assert unknown[0]["search_priority"]

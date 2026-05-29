@@ -921,11 +921,25 @@ def _semantic_frame_summary(frame: dict[str, Any]) -> dict[str, Any]:
         if isinstance(intent_matches_raw, dict)
         else []
     )
+    unknown_raw = frame.get("unknown_terms")
+    if isinstance(unknown_raw, list) and unknown_raw and isinstance(unknown_raw[0], dict):
+        unknown_terms = _safe_string_list([item.get("term") for item in unknown_raw if isinstance(item, dict)], 12)
+    else:
+        unknown_terms = _safe_string_list(unknown_raw, 12)
     return {
         "resolved_columns": _safe_string_list(frame.get("resolved_columns"), 20),
         "alias_hits": canonical_hits,
         "slot_hints": slot_hints,
-        "unknown_terms": _safe_string_list(frame.get("unknown_terms"), 12),
+        "unknown_terms": unknown_terms,
+        "value_catalog_matches": [
+            {
+                "column": _short_text(item.get("column"), 80),
+                "value": _short_text(item.get("value"), 120),
+                "confidence": item.get("confidence"),
+            }
+            for item in (frame.get("value_catalog_matches") or [])[:12]
+            if isinstance(item, dict)
+        ],
         "value_terms": _safe_string_list(frame.get("value_terms"), 12),
         "intent_matches": intent_matches,
     }

@@ -16,6 +16,12 @@ from typing import Annotated, Any, Callable, TypedDict
 
 from fastapi import HTTPException
 
+from app_v2.modules.agent_runtime.executor import (
+    NodeExecutor,
+    StateReducer,
+    TraceRecorder,
+    run_sequential as run_nodes_sequential,
+)
 from core import agent_semantic_service
 
 
@@ -85,7 +91,7 @@ STATE_DESIGN: dict[str, dict[str, Any]] = {
         "public": True,
     },
     "semantic_frame": {
-        "description": "Prompt interpretation, resolved columns, value terms, aliases, and step mapping hints.",
+        "description": "Prompt interpretation, resolved columns, value catalog matches, aliases, and step mapping hints.",
         "producer": "semantic_layer",
         "public": True,
     },
@@ -334,43 +340,23 @@ def _node_status(warnings: list[str], failed: bool = False) -> str:
     return "warning" if warnings else "success"
 
 
+def _node_label(node_id: str) -> str:
+    return next((node["label"] for node in GRAPH_NODES if node["id"] == node_id), node_id)
+
+
+_NODE_EXECUTOR = NodeExecutor(
+    trace_output=lambda node_id, state, result: _trace_output(node_id, state, result),
+    trace_recorder=TraceRecorder(label_for=_node_label),
+)
+
+
 def _execute_node(
     state: dict[str, Any],
     node_id: str,
     body: Callable[[dict[str, Any], list[str]], dict[str, Any] | None],
     input_summary: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
-    """Run a node and return the diff to merge into state.
-
-    The diff contains only the keys this node produced plus a single-row trace
-    list, so two parallel branches can run concurrently and their state
-    updates can be merged by LangGraph's reducer (operator.add for trace).
-    """
-    started = time.perf_counter()
-    warnings: list[str] = []
-    failed = False
-    result: dict[str, Any] = {}
-    diff: dict[str, Any] = {}
-    try:
-        result = body(state, warnings) or {}
-        diff.update(result)
-    except Exception as exc:
-        failed = True
-        warnings.append(f"{type(exc).__name__}: {exc}")
-        diff["node_errors"] = {**(state.get("node_errors") or {}), node_id: warnings[-1]}
-    status = _node_status(warnings, failed)
-    merged_view = {**state, **diff}
-    diff["trace"] = [
-        _trace_row(
-            node_id=node_id,
-            status=status,
-            input_summary=input_summary(merged_view),
-            output=_trace_output(node_id, merged_view, result),
-            warnings=warnings,
-            started=started,
-        )
-    ]
-    return diff
+    return _NODE_EXECUTOR.execute(state, node_id, body, input_summary)
 
 
 def _context_input(state: dict[str, Any]) -> dict[str, Any]:
@@ -452,6 +438,8 @@ def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
         columns=columns,
         product=_safe_text(req.get("product"), 160),
         dtypes=state.get("dtypes") if isinstance(state.get("dtypes"), dict) else {},
+        sample_profile=state.get("sample_profile") if isinstance(state.get("sample_profile"), dict) else {},
+        source_ref=_target_summary(req),
     )
     resolved_columns = list(resolved.get("resolved_columns") or [])
     unknown_terms = list(resolved.get("unknown_column_terms") or [])
@@ -462,8 +450,11 @@ def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
         "resolved_columns": resolved_columns,
         "unknown_column_terms": unknown_terms,
         "value_terms": list(resolved.get("value_terms") or []),
+        "value_catalog_matches": list(resolved.get("value_catalog_matches") or []),
         "synonyms": dict(resolved.get("synonyms") or {}),
         "step_mapping": dict(resolved.get("step_mapping") or {}),
+        "unknown_terms": list(resolved.get("unknown_terms") or []),
+        "unknown_term_texts": list(resolved.get("unknown_term_texts") or []),
         "source": _target_summary(req),
     }
     return {"semantic_frame": semantic_frame}
@@ -795,13 +786,7 @@ _NODE_RUNNERS: tuple[tuple[str, Callable[[dict[str, Any], list[str]], dict[str, 
 
 
 def _merge_diff_into_state(state: dict[str, Any], diff: dict[str, Any]) -> dict[str, Any]:
-    for key, value in diff.items():
-        if key in ("trace", "runtime_warnings"):
-            existing = state.get(key) or []
-            state[key] = list(existing) + list(value or [])
-        else:
-            state[key] = value
-    return state
+    return StateReducer.merge_diff(state, diff)
 
 
 def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -842,11 +827,7 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _run_sequential(state: dict[str, Any]) -> dict[str, Any]:
-    state.setdefault("runtime_warnings", []).append("LangGraph is not installed; sequential fallback runner used.")
-    for node_id, body, input_summary in _NODE_RUNNERS:
-        diff = _execute_node(state, node_id, body, input_summary)
-        _merge_diff_into_state(state, diff)
-    return state
+    return run_nodes_sequential(state, _NODE_RUNNERS, _NODE_EXECUTOR)
 
 
 def run_filebrowser_ai_sql_runtime(
