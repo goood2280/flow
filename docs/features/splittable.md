@@ -37,9 +37,9 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - Inform snapshot과 SplitTable의 root/fab/wafer 표시 규칙을 맞춘다.
 - Inform용 fab lot snapshot은 선택된 fab lot의 header/wafer scope를 유지하고, root plan overlay는 해당 scope의 wafer cell에만 적용한다.
 - fab lot 연결은 SplitTable 전용 match cache를 만들지 않고 LOT 진행 최신 캐시를 우선 사용한다. 캐시가 없거나 scope가 맞지 않으면 기존 FAB source raw scan으로 fallback한다.
-- `/api/splittable/view`는 product/root/fab/wafer/prefix/custom 조건별 in-process 응답 캐시를 사용한다. product 원본, plan/tag/management overlay, rulebook/settings, `lot_progress_latest_lot_by_root_wafer.parquet` 또는 LOT progress cache 파일이 바뀌면 다음 조회에서 다시 계산한다.
+- `/api/splittable/view`는 product/root/fab/wafer/prefix/custom 조건별 view payload cache를 사용한다. product 원본, plan/tag/management overlay, rulebook/settings, `lot_progress_latest_lot_by_root_wafer.parquet` 또는 LOT progress cache 파일이 바뀌면 다음 조회에서 다시 계산한다. 응답은 `runtime_profile`과 `view_cache`를 포함해 total/collect/matrix/overlay 시간, root cache hit, payload cache hit를 노출한다.
 - ML_TABLE 제품 원본은 선택적으로 프로세스 RAM cache에 올릴 수 있다. `/api/splittable/view`와 lot 후보 조회는 RAM hit를 우선 쓰고, miss/skip/disable 상태에서는 기존 root-lot lookup cache 또는 원본 parquet/CSV scan으로 fallback한다. 갱신 실패나 메모리 예산 초과 시 마지막 정상 RAM cache를 유지하고, source mtime/size가 바뀐 동안에는 `/view`의 `product_cache.stale=true`로 표시한다. 기본 제품 RAM 예산은 3GB이며 `FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB`로 조정한다.
-- ML_TABLE lot view는 `root_lot_id`가 있을 때 `backend/core/ml_table_lookup.py`의 root-lot lookup cache를 먼저 사용한다. cache hit 시 원본 `ML_TABLE_*.parquet` 전체 scan 대신 해당 `root_lot_id=<id>` partition에서 필요한 KNOB/MASK/CUSTOM 컬럼을 읽고, cache miss 시 기존 small/local fallback 경로를 유지한다.
+- ML_TABLE lot view는 `root_lot_id`가 있을 때 `backend/core/ml_table_lookup.py`의 root-lot lookup cache를 먼저 사용한다. cache hit 시 원본 `ML_TABLE_*.parquet` 전체 scan 대신 해당 `root_lot_id=<id>` partition에서 필요한 KNOB/MASK/CUSTOM 컬럼을 읽고, cache miss 시 build를 큐잉한다. `FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB`보다 큰 parquet는 miss/stale 상태에서 raw scan으로 즉시 fallback하지 않고 "캐시 준비 중" 빠른 응답을 반환한다.
 - root-lot lookup cache 위에는 root lot별 RAM cache를 둔다. 기본 예산은 3GB(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB`)이고, root-lot RAM cache CPU 예산은 최대 2 core(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_CPU_CORES`, 상한 2.0)로 둔다. 스케줄러는 30분마다 톱니바퀴의 root lot cache 설정을 읽어 기본 `AZ` prefix root lot을 최대 설정 개수까지 예열한다. prefix/최근 검색 root lot 캐싱 개수 설정 상한은 50,000이다. prefix가 맞지 않아도 사용자가 최근 검색한 root lot은 기본 50개까지 유지한다. lookup partition이 아직 없거나 원본이 stale이면 작은 ML_TABLE 파일은 background build를 enqueue하고 현재 요청은 기존 fallback을 유지한다. 프로세스 CPU/메모리 guard가 초과 상태이면 남은 root 예열을 건너뛰고 상태 응답에 `last_resource_guard_reason`을 남긴다.
 - History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
@@ -61,7 +61,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - Product RAM cache 상태 조회는 로그인 사용자에게 요약만 제공하고, source path/error 상세와 수동 refresh는 admin 또는 `splittable` page manager만 사용한다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.
-- plan이 actual DB 값과 달라지는 경우 plan 작성자에게 `my_plan_actual_mismatch` 알림을 1회 발행한다. 저장 시 기존 actual과 이미 다르면 즉시 발행하고, 이후 DB 갱신으로 `/view`에서 새 mismatch가 관측돼도 같은 cell/plan/actual 조합은 재발행하지 않는다.
+- plan이 actual DB 값과 달라지는 경우 plan 작성자에게 `my_plan_actual_mismatch` 알림을 1회 발행한다. 저장 시 기존 actual과 이미 다르면 즉시 발행하고, 이후 DB 갱신으로 `/view`에서 새 mismatch가 관측되면 background queue가 같은 cell/plan/actual 조합을 dedupe해 발행한다. `/view` 첫 응답은 matrix와 mismatch count를 먼저 반환하고, related issue는 `/api/splittable/related-issues` 후속 호출로 붙인다.
 
 ## Verify
 

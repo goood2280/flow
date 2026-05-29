@@ -51,6 +51,7 @@ def _reset_product_ram_cache(monkeypatch):
     monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIXES", raising=False)
     monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS", raising=False)
     monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_SEARCHED_ROOTS", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", raising=False)
     with splittable._PRODUCT_RAM_CACHE_LOCK:
         splittable._PRODUCT_RAM_CACHE.clear()
         splittable._PRODUCT_RAM_CACHE_STATUS.clear()
@@ -58,6 +59,8 @@ def _reset_product_ram_cache(monkeypatch):
     ml_table_lookup.clear_root_ram_cache()
     splittable._LOT_LOOKUP_CACHE.clear()
     splittable._clear_split_view_cache()
+    with splittable._MISMATCH_NOTIFY_LOCK:
+        splittable._MISMATCH_NOTIFY_PENDING.clear()
 
 
 def test_root_lot_ram_cache_settings_read_splittable_source_config(tmp_path, monkeypatch):
@@ -357,6 +360,7 @@ def test_view_plan_actual_mismatch_notification_is_deduped(tmp_path, monkeypatch
 
     assert first["mismatch_count"] == 1
     assert second["mismatch_count"] == 1
+    splittable._drain_plan_actual_mismatch_notifications_for_tests()
     assert len(events) == 1
     assert events[0][0][0] == "my_plan_actual_mismatch"
     assert events[0][1]["target_user"] == "plan_owner"
@@ -409,16 +413,9 @@ def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch
     monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
     monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tracker_file)
 
-    result = splittable.view_split(
+    result = splittable.related_issues_for_view(
         product="ML_TABLE_PRODA",
         root_lot_id="LOT900AA",
-        wafer_ids="",
-        prefix="KNOB",
-        custom_name="",
-        view_mode="all",
-        history_mode="all",
-        fab_lot_id="",
-        custom_cols="",
     )
 
     assert [x["id"] for x in result["related_issues"]] == ["iss_related"]
@@ -924,6 +921,96 @@ def test_split_view_root_lookup_enqueues_partition_cache_when_missing(tmp_path, 
 
     assert lf is None
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+
+
+def test_view_large_lookup_cache_miss_returns_prepare_without_raw_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    calls = []
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("raw parquet scan should not run while lookup cache is preparing")
+
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_scan)
+
+    view = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert view["rows"] == []
+    assert "캐시 준비" in view["msg"]
+    assert view["lookup_cache"]["queued"] is True
+    assert view["runtime_profile"]["root_cache_hit"] is False
+    assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+
+
+def test_view_root_lookup_cache_hit_avoids_raw_parquet_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A2000"],
+        "wafer_id": ["1", "1"],
+        "KNOB_GATE": ["R1", "R2"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("raw parquet scan should not run on root lookup cache hit")
+
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_scan)
+
+    view = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert [row["_param"] for row in view["rows"]] == ["KNOB_GATE"]
+    assert view["runtime_profile"]["root_cache_hit"] is True
+    assert view["view_cache"]["payload_cache_hit"] is False
 
 
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):
@@ -1937,6 +2024,9 @@ def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monk
     )
     assert scan_calls == 0
     assert cached_result["header_groups"] == result["header_groups"]
+    assert result["view_cache"]["payload_cache_hit"] is False
+    assert cached_result["view_cache"]["payload_cache_hit"] is True
+    assert "total_ms" in cached_result["runtime_profile"]
 
     time.sleep(0.02)
     write_latest("FVC01_NEW")
@@ -1953,6 +2043,70 @@ def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monk
     )
     assert scan_calls == 1
     assert refreshed_result["header_groups"] == [{"label": "FVC01_NEW", "span": 2}]
+
+
+def test_view_cache_invalidates_when_plan_file_changes(tmp_path, monkeypatch):
+    product = "ML_TABLE_PRODA"
+    pl.DataFrame({
+        "root_lot_id": ["PVC01"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / f"{product}.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    splittable._clear_split_view_cache()
+
+    first = splittable.view_split(
+        product=product,
+        root_lot_id="PVC01",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    assert first["rows"][0]["_cells"]["0"]["plan"] is None
+
+    time.sleep(0.02)
+    (plan_dir / f"{product}.json").write_text(json.dumps({
+        "plans": {"PVC01|1|KNOB_GATE": {"value": "R1", "user": "owner", "updated": "2026-05-29T10:00:00"}},
+        "history": [],
+    }), encoding="utf-8")
+
+    scan_calls = 0
+    original_scan_product = splittable._scan_product
+
+    def counting_scan_product(*args, **kwargs):
+        nonlocal scan_calls
+        scan_calls += 1
+        return original_scan_product(*args, **kwargs)
+
+    monkeypatch.setattr(splittable, "_scan_product", counting_scan_product)
+    second = splittable.view_split(
+        product=product,
+        root_lot_id="PVC01",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert scan_calls == 1
+    assert second["view_cache"]["payload_cache_hit"] is False
+    assert second["rows"][0]["_cells"]["0"]["plan"] == "R1"
 
 
 def test_match_cache_searches_entire_fab_db_when_product_folder_is_missing(tmp_path, monkeypatch):

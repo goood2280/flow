@@ -772,10 +772,37 @@ export default function My_SplitTable({user}){
   useEffect(()=>{
     if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
   },[splitCheckDisabled,showSplitCheckView]);
+  const expireSessionFromPreflight=()=>{
+    try{localStorage.removeItem("hol_user");}catch(_e){}
+    window.dispatchEvent(new Event("flow:session-expired"));
+  };
+  const ensureSessionForSearch=async()=>{
+    const me=await sf("/api/auth/me");
+    if(!me?.authenticated||!me?.username){
+      expireSessionFromPreflight();
+      throw new Error("Session expired — please log in again");
+    }
+    return me;
+  };
+  const loadRelatedIssuesForView=(viewData)=>{
+    const prod=String(viewData?.product||selProd||"").trim();
+    const root=String(viewData?.root_lot_id||lotId||"").trim();
+    if(!prod||!root)return;
+    const url=API+"/related-issues?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(root);
+    sf(url).then(d=>{
+      const issues=Array.isArray(d.related_issues)?d.related_issues:[];
+      setData(prev=>{
+        if(!prev)return prev;
+        const sameProd=String(prev.product||selProd||"").trim()===prod;
+        const sameRoot=String(prev.root_lot_id||lotId||"").trim()===root;
+        return sameProd&&sameRoot?{...prev,related_issues:issues}:prev;
+      });
+    }).catch(()=>{});
+  };
   // diff 모드는 클라이언트에서 즉시 필터 → 항상 "all" 로 fetch
   // v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다.
   // FAB 공정 진행 중 fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 검증으로 검색을 막지 않는다.
-  const loadView=(opts={})=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;setLoading(true);
+  const loadView=(opts={})=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;
     const effectiveCustomMode=opts.customMode ?? isCustomMode;
     const effectiveCustomCols=cleanCustomColumns(opts.customCols ?? customCols);
     const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
@@ -785,7 +812,11 @@ export default function My_SplitTable({user}){
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
     if(effectiveCustomMode&&effectiveCustomCols.length>0)url+="&custom_cols="+encodeURIComponent(effectiveCustomCols.join(","));
     else if(effectiveCustomMode&&effectiveCustomName)url+="&custom_name="+encodeURIComponent(effectiveCustomName);
-    sf(url).then(d=>{
+    let loadingStarted=false;
+    ensureSessionForSearch().then(()=>{
+      loadingStarted=true;setLoading(true);
+      return sf(url);
+    }).then(d=>{
       setData(d);
       if(d.product_cache)setProductCacheStatus(prev=>prev?{...prev,products:[{...d.product_cache,product:selProd}]}:{products:[{...d.product_cache,product:selProd}]});
       if(d.precision)setPrecision(d.precision);
@@ -794,8 +825,12 @@ export default function My_SplitTable({user}){
       if(Array.isArray(d.available_fab_lots)&&d.available_fab_lots.length>0){
         setFabSuggestions(d.available_fab_lots);
       }
-      setLoading(false);setPendingPlans({});setPendingTags({});setPendingManagement({});clearCellSelection();reloadNotes();
-    }).catch(e=>{toast.error(e.message);setLoading(false);});};
+      setPendingPlans({});setPendingTags({});setPendingManagement({});clearCellSelection();reloadNotes();
+      loadRelatedIssuesForView(d);
+    }).catch(e=>{
+      if(String(e?.message||"").includes("Session expired"))return;
+      toast.error(e.message);
+    }).finally(()=>{if(loadingStarted)setLoading(false);});};
   // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
   const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
     sf(API+"/notes?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(lot))

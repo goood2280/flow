@@ -182,7 +182,14 @@ _PLAN_RISK_CACHE_LOCK = threading.Lock()
 _PLAN_RISK_CACHE_MAX = 64
 _VIEW_CACHE: OrderedDict[tuple, tuple[tuple, dict]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
-_VIEW_CACHE_MAX = 96
+_VIEW_CACHE_MAX = 128
+_VIEW_RAW_FALLBACK_MAX_MB_DEFAULT = 16.0
+_MISMATCH_NOTIFY_LOCK = threading.Lock()
+_MISMATCH_NOTIFY_WAKE = threading.Event()
+_MISMATCH_NOTIFY_PENDING: OrderedDict[tuple, dict] = OrderedDict()
+_MISMATCH_NOTIFY_THREAD: threading.Thread | None = None
+_MISMATCH_NOTIFY_DEBOUNCE_SEC = 0.2
+_MISMATCH_NOTIFY_PENDING_MAX = 2000
 PRODUCT_RAM_CACHE_VERSION = 1
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_DEFAULT = 30
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_MIN = 30
@@ -733,7 +740,12 @@ def _scan_product_base(product: str):
     return _cast_cats_lazy(_scan_parquet_compat(str(fp)))
 
 
-def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_ids: str = ""):
+def _scan_product_base_lookup_cache(
+    product: str,
+    root_lot_id: str = "",
+    wafer_ids: str = "",
+    runtime_profile: dict | None = None,
+):
     """Use the ML_TABLE root lookup cache when a lot-scoped view is available."""
     if not str(root_lot_id or "").strip():
         return None
@@ -741,6 +753,8 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
     _ml_table_lookup.record_root_access(fp, root_lot_id)
     ram_lf = _product_ram_cache_lazyframe(product)
     if ram_lf is not None:
+        if runtime_profile is not None:
+            runtime_profile["product_cache_hit"] = True
         try:
             lot_col, wf_col = _detect_lot_wafer(ram_lf, product)
             return _filter_lot_wafer(ram_lf, lot_col, wf_col, root_lot_id, wafer_ids)
@@ -751,6 +765,9 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
         if fp.suffix.lower() != ".parquet":
             return None
         lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root_lot_id, wafer_ids=wafer_ids)
+        if runtime_profile is not None:
+            runtime_profile["root_cache_status"] = status.get("status") or ""
+            runtime_profile["root_cache_hit"] = lf is not None
         if lf is not None:
             return _cast_cats_lazy(lf)
     except Exception as exc:
@@ -763,6 +780,18 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None or str(raw).strip() == "":
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except Exception:
+        return default
+
+
+def _split_view_raw_fallback_max_bytes() -> int:
+    mb = max(0.0, _env_float("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", _VIEW_RAW_FALLBACK_MAX_MB_DEFAULT))
+    return int(mb * 1024 * 1024)
 
 
 def _product_ram_cache_available() -> bool:
@@ -1907,6 +1936,78 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
         return sent
     except Exception:
         return 0
+
+
+def _mismatch_notify_pending_key(product: str, mismatch: dict) -> tuple:
+    return (
+        str(product or "").strip(),
+        str(mismatch.get("key") or mismatch.get("cell") or ""),
+        _clean_str(mismatch.get("plan")),
+        _clean_str(mismatch.get("actual")),
+    )
+
+
+def _mismatch_notify_worker() -> None:
+    while True:
+        _MISMATCH_NOTIFY_WAKE.wait(_MISMATCH_NOTIFY_DEBOUNCE_SEC)
+        _MISMATCH_NOTIFY_WAKE.clear()
+        with _MISMATCH_NOTIFY_LOCK:
+            items = list(_MISMATCH_NOTIFY_PENDING.values())
+            _MISMATCH_NOTIFY_PENDING.clear()
+        if not items:
+            with _MISMATCH_NOTIFY_LOCK:
+                if not _MISMATCH_NOTIFY_PENDING:
+                    return
+            continue
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for item in items:
+            grouped.setdefault((item["product"], item["actor"]), []).append(dict(item["mismatch"]))
+        for (product, actor), batch in grouped.items():
+            try:
+                _notify_plan_actual_mismatches_once(product, batch, actor=actor)
+            except Exception:
+                logger.debug("background mismatch notification failed product=%s", product, exc_info=True)
+
+
+def _enqueue_plan_actual_mismatches(product: str, mismatches: list[dict], actor: str = "flow") -> None:
+    if not mismatches:
+        return
+    global _MISMATCH_NOTIFY_THREAD
+    with _MISMATCH_NOTIFY_LOCK:
+        for mm in mismatches[:100]:
+            key = _mismatch_notify_pending_key(product, mm)
+            if not key[1]:
+                continue
+            _MISMATCH_NOTIFY_PENDING[key] = {
+                "product": str(product or "").strip(),
+                "actor": actor or "flow",
+                "mismatch": dict(mm),
+            }
+            _MISMATCH_NOTIFY_PENDING.move_to_end(key)
+            while len(_MISMATCH_NOTIFY_PENDING) > _MISMATCH_NOTIFY_PENDING_MAX:
+                _MISMATCH_NOTIFY_PENDING.popitem(last=False)
+        if _MISMATCH_NOTIFY_THREAD is None or not _MISMATCH_NOTIFY_THREAD.is_alive():
+            _MISMATCH_NOTIFY_THREAD = threading.Thread(
+                target=_mismatch_notify_worker,
+                name="splittable-mismatch-notify",
+                daemon=True,
+            )
+            _MISMATCH_NOTIFY_THREAD.start()
+    _MISMATCH_NOTIFY_WAKE.set()
+
+
+def _drain_plan_actual_mismatch_notifications_for_tests(timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + max(0.1, float(timeout or 0.0))
+    while time.monotonic() < deadline:
+        with _MISMATCH_NOTIFY_LOCK:
+            thread = _MISMATCH_NOTIFY_THREAD
+            pending = bool(_MISMATCH_NOTIFY_PENDING)
+        if not pending and (thread is None or not thread.is_alive()):
+            return
+        if thread is not None:
+            thread.join(timeout=0.05)
+        else:
+            time.sleep(0.05)
 
 
 def _notify_tracker_owner_for_note(entry: dict, actor: str) -> None:
@@ -7743,8 +7844,14 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         return finish({"candidates": [], "source_col": col, "root_ids": []})
 
 
-def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
-                  wafer_ids: str = ""):
+def _scan_product(
+    product: str,
+    root_lot_id: str = "",
+    fab_lot_id: str = "",
+    wafer_ids: str = "",
+    base_lf=None,
+    runtime_profile: dict | None = None,
+):
     """Scan ML_TABLE_<PROD>.parquet + hive override join.
 
     v8.8.26: 실패 경로마다 logger.warning 로 가시화 (이전 blanket except 제거).
@@ -7752,7 +7859,16 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
       - override_cols 가 join_keys 만 남으면 경고 후 raw lf 반환.
     """
     product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
-    lf = _scan_product_base_lookup_cache(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
+    lf = base_lf
+    if lf is not None and runtime_profile is not None:
+        runtime_profile["root_cache_hit"] = True
+    if lf is None:
+        lf = _scan_product_base_lookup_cache(
+            product,
+            root_lot_id=root_lot_id,
+            wafer_ids=wafer_ids,
+            runtime_profile=runtime_profile,
+        )
     if lf is None:
         lf = _scan_product_base(product)
 
@@ -8314,6 +8430,53 @@ def _split_view_cache_key(product: str, root_lot_id: str, wafer_ids: str, prefix
     )
 
 
+def _split_view_cache_stats(hit: bool, key: tuple | None = None) -> dict:
+    key_hash = ""
+    if key is not None:
+        try:
+            raw = json.dumps(key, sort_keys=True, ensure_ascii=False, default=str)
+            key_hash = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        except Exception:
+            key_hash = ""
+    with _VIEW_CACHE_LOCK:
+        size = len(_VIEW_CACHE)
+    return {
+        "hit": bool(hit),
+        "payload_cache_hit": bool(hit),
+        "entries": size,
+        "max_entries": _VIEW_CACHE_MAX,
+        "key": key_hash,
+    }
+
+
+def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *, payload_cache_hit: bool) -> dict:
+    src = runtime_profile or {}
+    return {
+        "total_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "root_cache_hit": bool(src.get("root_cache_hit")),
+        "product_cache_hit": bool(src.get("product_cache_hit")),
+        "payload_cache_hit": bool(payload_cache_hit),
+        "collect_ms": round(float(src.get("collect_ms") or 0.0), 3),
+        "matrix_ms": round(float(src.get("matrix_ms") or 0.0), 3),
+        "overlay_ms": round(float(src.get("overlay_ms") or 0.0), 3),
+        "root_cache_status": str(src.get("root_cache_status") or ""),
+    }
+
+
+def _split_view_finish_payload(
+    payload: dict,
+    *,
+    started: float,
+    runtime_profile: dict | None,
+    payload_cache_hit: bool,
+    view_cache_key: tuple | None,
+) -> dict:
+    out = dict(payload)
+    out["runtime_profile"] = _split_view_runtime_profile(started, runtime_profile, payload_cache_hit=payload_cache_hit)
+    out["view_cache"] = _split_view_cache_stats(payload_cache_hit, view_cache_key)
+    return out
+
+
 def _split_view_cache_dep_signature(product: str, custom_name: str = "", product_fp: Path | None = None) -> tuple:
     paths: list[Path] = [
         product_fp or _product_path(product),
@@ -8366,6 +8529,8 @@ def _split_view_cache_get(key: tuple, dep_signature: tuple) -> dict | None:
 def _split_view_cache_put(key: tuple, dep_signature: tuple, payload: dict) -> None:
     stored = dict(payload)
     stored.pop("related_issues", None)
+    stored.pop("runtime_profile", None)
+    stored.pop("view_cache", None)
     with _VIEW_CACHE_LOCK:
         _VIEW_CACHE[key] = (dep_signature, stored)
         _VIEW_CACHE.move_to_end(key)
@@ -8406,17 +8571,162 @@ def _audit_split_view_search(
     _audit_user(username, "splittable:view_search", detail=detail, tab="splittable")
 
 
-def _attach_split_view_runtime_fields(payload: dict, request: Request | None) -> dict:
-    out = dict(payload)
-    username, role = _split_view_request_user(request)
-    out["related_issues"] = _related_tracker_issues(
-        out.get("product") or "",
-        out.get("root_lot_id") or "",
-        username,
-        role,
+def _split_view_lookup_cache_public(status: dict | None, queued: dict | None = None) -> dict:
+    status = status or {}
+    queued = queued or {}
+    return {
+        "status": queued.get("status") or status.get("status") or "",
+        "has_cache": bool(status.get("has_cache")),
+        "source_stale": bool(status.get("source_stale")),
+        "job_status": status.get("job_status") or "",
+        "queued": bool(queued.get("ok") or queued.get("queued")),
+    }
+
+
+def _split_view_cache_preparing_payload(
+    product: str,
+    root_lot_id: str,
+    wafer_ids: str,
+    prefix: str,
+    history_mode: str,
+    status: dict | None,
+    queued: dict | None,
+    *,
+    message: str,
+    started: float,
+    runtime_profile: dict,
+    view_cache_key: tuple,
+) -> dict:
+    payload = {
+        "product": product,
+        "lot_col": "root_lot_id",
+        "wf_col": "wafer_id",
+        "headers": [],
+        "rows": [],
+        "header_groups": [],
+        "wafer_fab_list": [],
+        "prefixes": _load_prefixes(),
+        "root_lot_id": str(root_lot_id or "").strip(),
+        "prefix": str(prefix or "").strip(),
+        "history_mode": history_mode,
+        "mismatch_count": 0,
+        "product_cache": _product_ram_cache_response_meta(product),
+        "lookup_cache": _split_view_lookup_cache_public(status, queued),
+        "msg": message,
+    }
+    return _split_view_finish_payload(
+        payload,
+        started=started,
+        runtime_profile=runtime_profile,
+        payload_cache_hit=False,
+        view_cache_key=view_cache_key,
     )
+
+
+def _split_view_large_root_cache_or_defer(
+    product: str,
+    root_lot_id: str,
+    wafer_ids: str,
+    fp: Path,
+    *,
+    started: float,
+    runtime_profile: dict,
+    view_cache_key: tuple,
+    prefix: str,
+    history_mode: str,
+) -> tuple[Any | None, dict | None]:
+    root = str(root_lot_id or "").strip()
+    if not root or fp.suffix.lower() != ".parquet":
+        return None, None
+    if _product_ram_cache_entry(product):
+        return None, None
+    threshold = _split_view_raw_fallback_max_bytes()
+    try:
+        source_size = int(fp.stat().st_size)
+    except Exception:
+        source_size = 0
+    if threshold and source_size < threshold:
+        return None, None
+    status = _ml_table_lookup.cache_status(fp)
+    runtime_profile["root_cache_status"] = status.get("status") or ""
+    if not status.get("has_cache") or status.get("source_stale"):
+        queued = _ml_table_lookup.enqueue_build(fp)
+        return None, _split_view_cache_preparing_payload(
+            product,
+            root,
+            wafer_ids,
+            prefix,
+            history_mode,
+            status,
+            queued,
+            message="캐시 준비 중입니다. 잠시 후 다시 검색하세요.",
+            started=started,
+            runtime_profile=runtime_profile,
+            view_cache_key=view_cache_key,
+        )
+    lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids)
+    runtime_profile["root_cache_status"] = status.get("status") or ""
+    runtime_profile["root_cache_hit"] = lf is not None
+    if lf is None:
+        return None, _split_view_cache_preparing_payload(
+            product,
+            root,
+            wafer_ids,
+            prefix,
+            history_mode,
+            status,
+            {},
+            message="No data",
+            started=started,
+            runtime_profile=runtime_profile,
+            view_cache_key=view_cache_key,
+        )
+    return _cast_cats_lazy(lf), None
+
+
+def _attach_split_view_runtime_fields(
+    payload: dict,
+    request: Request | None,
+    *,
+    include_related: bool = False,
+    started: float | None = None,
+    runtime_profile: dict | None = None,
+    payload_cache_hit: bool = False,
+    view_cache_key: tuple | None = None,
+) -> dict:
+    out = dict(payload)
+    if include_related:
+        username, role = _split_view_request_user(request)
+        out["related_issues"] = _related_tracker_issues(
+            out.get("product") or "",
+            out.get("root_lot_id") or "",
+            username,
+            role,
+        )
     out["product_cache"] = _product_ram_cache_response_meta(out.get("product") or "")
+    if started is not None:
+        out = _split_view_finish_payload(
+            out,
+            started=started,
+            runtime_profile=runtime_profile,
+            payload_cache_hit=payload_cache_hit,
+            view_cache_key=view_cache_key,
+        )
     return out
+
+
+@router.get("/related-issues")
+def related_issues_for_view(
+    product: str = Query(...),
+    root_lot_id: str = Query(""),
+    request: Request = None,
+):
+    username, role = _split_view_request_user(request)
+    return {
+        "product": product,
+        "root_lot_id": root_lot_id,
+        "related_issues": _related_tracker_issues(product, root_lot_id, username, role),
+    }
 
 
 # ── View ──
@@ -8427,10 +8737,20 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                history_mode: str = Query("all"),
                fab_lot_id: str = Query(""),
                custom_cols: str = Query(""),
+               include_related: bool = Query(False),
                request: Request = None):
     # v8.8.33: custom_cols (쉼표 구분) 추가 — Save 없이 체크만 한 컬럼을 ad-hoc 으로 전달.
     # v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다. FAB 공정 진행 중
     #   fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 여부를 검증/경고 기준으로 쓰지 않는다.
+    started = time.perf_counter()
+    runtime_profile = {
+        "root_cache_hit": False,
+        "product_cache_hit": False,
+        "collect_ms": 0.0,
+        "matrix_ms": 0.0,
+        "overlay_ms": 0.0,
+        "root_cache_status": "",
+    }
     _history_mode = (history_mode or "all").strip().lower() or "all"
     if _history_mode not in ("all", "final", "lot_all"):
         raise HTTPException(400, "history_mode must be one of: all, final, lot_all")
@@ -8444,10 +8764,37 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     view_cache_sig = _split_view_cache_dep_signature(product, custom_name=custom_name, product_fp=fp)
     cached_view = _split_view_cache_get(view_cache_key, view_cache_sig)
     if cached_view is not None:
-        return _attach_split_view_runtime_fields(cached_view, request)
+        return _attach_split_view_runtime_fields(
+            cached_view,
+            request,
+            include_related=include_related,
+            started=started,
+            runtime_profile=runtime_profile,
+            payload_cache_hit=True,
+            view_cache_key=view_cache_key,
+        )
     try:
-        lf = _scan_product(product, root_lot_id=root_lot_id,
-                           fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
+        base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
+            product,
+            root_lot_id,
+            wafer_ids,
+            fp,
+            started=started,
+            runtime_profile=runtime_profile,
+            view_cache_key=view_cache_key,
+            prefix=prefix,
+            history_mode=_history_mode,
+        )
+        if deferred_payload is not None:
+            return deferred_payload
+        lf = _scan_product(
+            product,
+            root_lot_id=root_lot_id,
+            fab_lot_id=fab_lot_id,
+            wafer_ids=wafer_ids,
+            base_lf=base_lf,
+            runtime_profile=runtime_profile,
+        )
         lot_col, wf_col = _detect_lot_wafer(lf, product)
         # v8.4.4/v8.8.3: fab_lot_col — 매뉴얼 override > 자동 추론 > "fab_lot_id".
         fab_lot_col = "fab_lot_id"
@@ -8468,10 +8815,16 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             pass
 
         if not root_lot_id.strip() and not fab_lot_id.strip():
-            return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
-                    "headers": [], "rows": [], "prefixes": _load_prefixes(),
-                    "product_cache": _product_ram_cache_response_meta(product),
-                    "msg": "Enter a Root Lot ID or Fab Lot ID to view"}
+            return _split_view_finish_payload(
+                {"product": product, "lot_col": lot_col, "wf_col": wf_col,
+                 "headers": [], "rows": [], "prefixes": _load_prefixes(),
+                 "product_cache": _product_ram_cache_response_meta(product),
+                 "msg": "Enter a Root Lot ID or Fab Lot ID to view"},
+                started=started,
+                runtime_profile=runtime_profile,
+                payload_cache_hit=False,
+                view_cache_key=view_cache_key,
+            )
 
         fab_scope = {}
         fab_filter_for_join = fab_lot_id
@@ -8491,10 +8844,12 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 fab_filter_for_join = ""
                 forced_fab_scope_label = fab_lot_id.strip()
 
+        joined_lf = lf
         lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids,
                                fab_lot_id=fab_filter_for_join, fab_lot_col=fab_lot_col)
 
         def _prepare_view_frame(view_lf):
+            collect_started = time.perf_counter()
             view_schema = view_lf.collect_schema().names()
             all_data = [c for c in view_schema if c != lot_col and c != wf_col]
             tag_labels = _custom_tag_label_map(product)
@@ -8534,7 +8889,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 if c in view_schema and c not in keep_cols:
                     keep_cols.append(c)
             q = view_lf.select(keep_cols) if keep_cols else view_lf
-            return q.head(SPLITTABLE_VIEW_MAX_WAFERS).collect(), all_data, sel, rename
+            df_out = q.head(SPLITTABLE_VIEW_MAX_WAFERS).collect()
+            runtime_profile["collect_ms"] = float(runtime_profile.get("collect_ms") or 0.0) + (time.perf_counter() - collect_started) * 1000.0
+            return df_out, all_data, sel, rename
 
         df, all_data_cols, selected, col_rename = _prepare_view_frame(lf)
         if df.height == 0 and root_lot_id.strip() and fab_lot_id.strip():
@@ -8542,13 +8899,11 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             # valid root lot, do not let the stale secondary field hide the
             # renderable SplitTable rows. Root remains the primary scope.
             try:
-                root_only_lf = _scan_product(product, root_lot_id=root_lot_id,
-                                             wafer_ids=wafer_ids)
-                root_only_df = _filter_lot_wafer(
-                    root_only_lf, lot_col, wf_col, root_lot_id, wafer_ids,
+                root_only_lf = _filter_lot_wafer(
+                    joined_lf, lot_col, wf_col, root_lot_id, wafer_ids,
                     fab_lot_col=fab_lot_col,
                 )
-                root_only_df, all_data_cols, selected, col_rename = _prepare_view_frame(root_only_df)
+                root_only_df, all_data_cols, selected, col_rename = _prepare_view_frame(root_only_lf)
                 if root_only_df.height > 0:
                     df = root_only_df
                     _lot_warn = "Fab Lot ID와 Root Lot ID 조합이 없어 Root Lot ID 기준으로 조회했습니다."
@@ -8573,11 +8928,13 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         fallback_lf = _scan_product(
                             product, root_lot_id=fallback_root,
                             wafer_ids=fallback_wafers,
+                            runtime_profile=runtime_profile,
                         )
                     else:
                         fallback_root = ""
                         fallback_lf = _scan_product(product, fab_lot_id=root_input,
-                                                    wafer_ids=wafer_ids)
+                                                    wafer_ids=wafer_ids,
+                                                    runtime_profile=runtime_profile)
                     fallback_names = fallback_lf.collect_schema().names()
                     fallback_fab_col = (
                         _ci_resolve_in(fab_lot_col, fallback_names)
@@ -8607,10 +8964,16 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     logger.warning("view_split fab_lot fallback 실패 (product=%s input=%s) %s: %s",
                                    product, root_input, type(e).__name__, e)
         if df.height == 0:
-            return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
-                    "headers": [], "rows": [], "prefixes": _load_prefixes(),
-                    "product_cache": _product_ram_cache_response_meta(product),
-                    "msg": "No data"}
+            return _split_view_finish_payload(
+                {"product": product, "lot_col": lot_col, "wf_col": wf_col,
+                 "headers": [], "rows": [], "prefixes": _load_prefixes(),
+                 "product_cache": _product_ram_cache_response_meta(product),
+                 "msg": "No data"},
+                started=started,
+                runtime_profile=runtime_profile,
+                payload_cache_hit=False,
+                view_cache_key=view_cache_key,
+            )
         if not root_lot_id.strip() and lot_col and lot_col in df.columns:
             roots = []
             for v in df[lot_col].cast(_STR, strict=False).to_list():
@@ -8676,13 +9039,16 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             wafer_fab_list = []
             header_groups = []
 
+        overlay_started = time.perf_counter()
         # Load plans
         plans = _load_plan_data(product).get("plans", {})
         tag_labels = _custom_tag_label_map(product)
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
         management_labels = _management_row_label_map(product)
         management_values = _management_row_values_for_root(product, root_lot_id)
+        runtime_profile["overlay_ms"] = float(runtime_profile.get("overlay_ms") or 0.0) + (time.perf_counter() - overlay_started) * 1000.0
 
+        matrix_started = time.perf_counter()
         rows = []
         df_cols_set = set(df.columns)
         for col_name in selected:
@@ -8761,8 +9127,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         "plan_user": plan_info.get("user", ""),
                         "plan_updated": plan_info.get("updated", ""),
                     })
-        _notify_plan_actual_mismatches_once(product, mismatches, actor="flow")
+        runtime_profile["matrix_ms"] = float(runtime_profile.get("matrix_ms") or 0.0) + (time.perf_counter() - matrix_started) * 1000.0
+        _enqueue_plan_actual_mismatches(product, mismatches, actor="flow")
 
+        overlay_started = time.perf_counter()
         # v8.8.5: view 응답에 오버라이드 resolve 결과 동봉 — FE 상단 배지에 "어디서 읽어왔는지" 바로 표시.
         override_meta = _resolve_override_meta_light(product)
         # v9.0.5: FAB 후보는 DB FAB 원천의 정확한 root 매칭만 노출한다.
@@ -8775,7 +9143,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
             if hist_lots.get("candidates"):
                 available_fab_lots = hist_lots["candidates"]
-        viewer_username, viewer_role = _split_view_request_user(request)
+        runtime_profile["overlay_ms"] = float(runtime_profile.get("overlay_ms") or 0.0) + (time.perf_counter() - overlay_started) * 1000.0
         payload = {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
@@ -8792,10 +9160,17 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "match_cache": _match_cache_response_meta(product),
             "product_cache": _product_ram_cache_response_meta(product),
             "lot_warn": _lot_warn,
-            "related_issues": _related_tracker_issues(product, root_lot_id, viewer_username, viewer_role),
         }
         _split_view_cache_put(view_cache_key, view_cache_sig, payload)
-        return payload
+        return _attach_split_view_runtime_fields(
+            payload,
+            request,
+            include_related=include_related,
+            started=started,
+            runtime_profile=runtime_profile,
+            payload_cache_hit=False,
+            view_cache_key=view_cache_key,
+        )
     except HTTPException:
         raise
     except Exception as e:
