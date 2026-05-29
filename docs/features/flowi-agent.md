@@ -109,6 +109,12 @@ Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `ru
 
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
 
+### 반복 ReAct 루프 (선택, flag 기본 off)
+
+`FLOW_LLM_REACT_LOOP=1`이고 LLM planner(`FLOW_LLM_TOOL_CALL` + 연결된 LLM)도 활성이면 Home Flow-i는 단일 패스 plan 대신 **반복 ReAct 루프**로 동작한다. 루프는 `prompt -> semantic_layer(공유 resolver) -> [관찰 -> 다음 도구 1개 결정 -> 실행]* -> 결론` 순서로, 각 턴에서 `llm_adapter.complete_json`으로 "도구 1개 호출" 또는 "finalize"를 strict JSON으로 결정한다. native `tool_calls`는 쓰지 않아 GPT-OSS 120B급 on-prem 서빙과 호환된다. 무한 루프는 `FLOW_LLM_REACT_MAX_ITERS`(기본 6, [1,12] clamp) 상한 + 반복-액션 가드 + 무진전 가드 + `model_final`/`blocked`로 막는다. LLM이 실패해 한 step도 못 돌면 기존 alias/heuristic 단일 패스로 graceful degrade한다.
+
+react 실행의 snapshot은 기존 graph/`node_details` shape를 유지하면서 `iter:{i}:{tool}` 반복 노드 chain(`orchestrator -> iter:0 -> ... -> result_renderer`)과 additive 필드(`iterations`, `stop_reason`, `semantic_frame`)를 더한다. 공개에는 도구/상태/결과 요약/`reason`만 싣고 모델 내부 `thought`는 노출하지 않는다. flag off 기본값에서는 단일 패스 동작과 snapshot 계약이 그대로다. 구현은 `backend/core/home_orchestrator.py`의 `_run_react_loop`, `_decide_next_action`, `_compose_final_reply`다.
+
 Home Flow-i는 응답 생성 후 사용자별 prompt/answer와 공개 tool summary만 `FLOW_DATA_ROOT/home_agent_memory/conversation.jsonl`에 append한다. 다음 `/api/llm/flowi/chat` 요청은 frontend가 보낸 현재 세션 context와 서버 메모리의 최근 Q/A를 병합해 후속 질문 해석에 사용한다. `아까 내가 뭐 물어봤지?`처럼 이전 질문/답변을 묻는 prompt는 LLM 없이 메모리 기반 plain text 답변을 반환한다. 이 메모리에는 raw preview row dump, 내부 reasoning, source DB 원문을 저장하지 않는다.
 
 Home Flow-i는 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`, `ppid_knob.csv`가 schema catalog 또는 DB root single-file로 등록되어 있으면 read-only evidence로 사용할 수 있다. `step_id -> function_step/step_desc` 직접 조회와 `ppid_knob.csv feature_name -> function_step -> step_id` 확장은 `/api/llm/flowi/chat` 응답의 `tool.source_ids`, `tool.filters`, `tool.table`, `term_resolution`, `trace.api_calls`에 근거 파일과 필터를 남기며 원본 CSV를 수정하지 않는다.
@@ -154,6 +160,7 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 - `python3 -m pytest tests/agent/test_filebrowser_ai_sql_runtime.py`
 - `python3 -m pytest tests/agent/test_agent_semantic_service.py tests/agent/test_dashboard_agent_runtime.py`
 - `python3 -m pytest tests/agent/test_home_orchestrator_chaining.py tests/agent/test_home_sql_join_dashboard_runtime.py`
+- `python3 -m pytest tests/agent/test_home_react_loop.py`
 - `python3 -m pytest tests/agent/test_inform_registration_runtime.py`
 - `python3 -m pytest tests/agent/test_change_management_runtime.py`
 - `python3 -m pytest tests/agent/test_semantic_agent_api.py tests/test_semantic_lexicon.py tests/test_semantic_learning_extractor.py`

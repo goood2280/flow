@@ -46,6 +46,9 @@ logger = logging.getLogger("flow.home_orchestrator")
 
 _MAX_STEPS = 3
 _LLM_ENV_FLAG = "FLOW_LLM_TOOL_CALL"
+_REACT_ENV_FLAG = "FLOW_LLM_REACT_LOOP"
+_MAX_ITERATIONS = 6
+_REACT_MAX_ITERS_ENV = "FLOW_LLM_REACT_MAX_ITERS"
 HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
 _RUN_ID_PREFIX = "home_flowi"
 _MAX_SNAPSHOT_RUNS = 120
@@ -285,11 +288,15 @@ def build_home_runtime_graph(
     *,
     selected_units: list[str] | None = None,
     statuses: dict[str, str] | None = None,
+    iterations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the public Home Flow-i runtime graph shown in Agent.
 
     The graph is deliberately public-state only: node status, short labels, and
     MCP candidate availability. It does not expose model reasoning text.
+
+    ``iterations`` is optional and additive: when provided (ReAct 실행), 반복 노드
+    chain 을 result_renderer 로 연결한다. None 이면 기존 단일 패스 그래프와 동일하다.
     """
     statuses = statuses or {}
     selected = [name for name in (selected_units or []) if name]
@@ -317,6 +324,27 @@ def build_home_runtime_graph(
     edges = [dict(edge) for edge in _RUNTIME_BASE_EDGES]
     for node in unit_nodes:
         edges.append({"source": "orchestrator", "target": node["id"]})
+    iter_list = iterations if isinstance(iterations, list) else []
+    if iter_list:
+        # ReAct 반복 노드 chain: orchestrator → iter:0 → … → iter:last → result_renderer.
+        prev = "orchestrator"
+        for it in iter_list:
+            idx = it.get("index")
+            tool_name = str(it.get("tool") or "")
+            node_id = f"iter:{idx}:{tool_name}"
+            label_no = (int(idx) + 1) if isinstance(idx, int) else "?"
+            nodes.append({
+                "id": node_id,
+                "label": f"#{label_no} {it.get('title') or tool_name}",
+                "phase": "react_iteration",
+                "kind": "unit_ai",
+                "tool": tool_name,
+                "status": it.get("status") or "success",
+            })
+            edges.append({"source": prev, "target": node_id})
+            prev = node_id
+        edges.append({"source": prev, "target": "result_renderer"})
+        return {"nodes": nodes, "edges": edges}
     for name in selected:
         node_id = f"unit_ai:{name}"
         if any(node.get("id") == node_id for node in unit_nodes):
@@ -390,6 +418,31 @@ def _selected_units_from_result(result: dict[str, Any]) -> list[str]:
     return selected
 
 
+def _iterations_from_trace(trace: Any) -> list[dict[str, Any]]:
+    """ReAct trace(list of trace rows)를 공개 가능한 iteration 요약 list 로.
+
+    snapshot graph 의 반복 노드와 node_details, 그리고 snapshot 의 additive
+    `iterations` 필드가 공유한다.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(trace, list):
+        return out
+    for idx, row in enumerate(trace):
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "index": idx,
+            "tool": str(row.get("tool") or ""),
+            "title": _short_text(row.get("title") or row.get("tool") or f"#{idx + 1}", 80),
+            "status": _status_from_trace_row(row),
+            "ok": bool(row.get("ok")),
+            "ms": row.get("ms", 0),
+            "result_preview": _short_text(row.get("result_preview"), 400),
+            "reason": _short_text(row.get("reason"), 200),
+        })
+    return out
+
+
 def _runtime_statuses(result: dict[str, Any], selected_units: list[str]) -> dict[str, str]:
     trace = result.get("trace")
     warnings = _result_warnings(result)
@@ -461,6 +514,7 @@ def _node_details_for_result(
     selected_units: list[str],
     statuses: dict[str, str],
     source: str,
+    iterations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     trace = result.get("trace")
     tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
@@ -475,6 +529,10 @@ def _node_details_for_result(
         interpretation = trace.get("interpretation") if isinstance(trace.get("interpretation"), dict) else {}
         plan = trace.get("plan") if isinstance(trace.get("plan"), list) else []
         unit_selection = trace.get("unit_ai_selection") if isinstance(trace.get("unit_ai_selection"), list) else []
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    if not semantic and isinstance(meta.get("semantic_summary"), dict):
+        # ReAct(list-trace) 실행은 trace 가 dict 가 아니므로 meta 에 담긴 frame 을 노출.
+        semantic = meta.get("semantic_summary")
     details: dict[str, Any] = {
         "prompt_input": {
             "node_id": "prompt_input",
@@ -543,6 +601,23 @@ def _node_details_for_result(
             "warnings": _safe_string_list(row.get("warnings"), 8) or warnings,
             "preview": _preview_from_result(result),
         }
+    for it in (iterations or []):
+        idx = it.get("index")
+        row = trace_rows[idx] if isinstance(idx, int) and 0 <= idx < len(trace_rows) and isinstance(trace_rows[idx], dict) else {}
+        node_id = f"iter:{idx}:{it.get('tool') or ''}"
+        details[node_id] = {
+            "node_id": node_id,
+            "status": it.get("status") or "success",
+            "input_summary": row.get("input") if isinstance(row.get("input"), dict) else {},
+            "output_summary": {
+                "tool": it.get("tool") or "",
+                "title": it.get("title") or it.get("tool") or "",
+                "result_preview": it.get("result_preview") or "",
+                "reason": it.get("reason") or "",
+            },
+            "warnings": _safe_string_list(row.get("warnings"), 8),
+            "preview": {},
+        }
     return details
 
 
@@ -586,7 +661,14 @@ def build_home_runtime_snapshot(
     run_id = _safe_run_id(run_id or str(result.get("run_id") or "") or _new_run_id())
     selected_units = _selected_units_from_result(result)
     statuses = _runtime_statuses(result, selected_units)
-    graph = build_home_runtime_graph(selected_units=selected_units, statuses=statuses)
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    is_react = meta.get("planner") == "react"
+    iterations = _iterations_from_trace(result.get("trace")) if is_react else []
+    graph = build_home_runtime_graph(
+        selected_units=selected_units,
+        statuses=statuses,
+        iterations=iterations or None,
+    )
     snapshot = {
         "ok": bool(result.get("ok", True)),
         "run_id": run_id,
@@ -603,6 +685,11 @@ def build_home_runtime_snapshot(
         "node_details": {},
         "warnings": _result_warnings(result),
     }
+    if is_react:
+        # additive 필드 — 프론트는 미지 필드를 무시한다.
+        snapshot["iterations"] = iterations
+        snapshot["stop_reason"] = _short_text(meta.get("stop_reason"), 60)
+        snapshot["semantic_frame"] = meta.get("semantic_summary") if isinstance(meta.get("semantic_summary"), dict) else {}
     snapshot["action_log"] = _synth_action_log(result, graph)
     snapshot["node_details"] = _node_details_for_result(
         prompt=prompt,
@@ -610,6 +697,7 @@ def build_home_runtime_snapshot(
         selected_units=selected_units,
         statuses=statuses,
         source=source,
+        iterations=iterations,
     )
     if save:
         save_home_runtime_snapshot(snapshot)
@@ -761,6 +849,106 @@ def _llm_planner_enabled() -> bool:
         return False
 
 
+def _react_loop_enabled() -> bool:
+    """반복 ReAct 루프 사용 여부.
+
+    `FLOW_LLM_REACT_LOOP=1` 이고 LLM planner(`FLOW_LLM_TOOL_CALL` + llm_adapter
+    available)도 활성일 때만 True. 어느 하나라도 꺼져 있으면 기존 단일 패스
+    경로로 graceful degrade 한다. 기본 off — 회귀 위험 0 유지.
+    """
+    if str(os.environ.get(_REACT_ENV_FLAG, "")).strip() not in ("1", "true", "yes", "on"):
+        return False
+    return _llm_planner_enabled()
+
+
+def _react_max_iters() -> int:
+    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 12] clamp."""
+    raw = str(os.environ.get(_REACT_MAX_ITERS_ENV, "")).strip()
+    try:
+        value = int(raw) if raw else _MAX_ITERATIONS
+    except (TypeError, ValueError):
+        value = _MAX_ITERATIONS
+    return max(1, min(12, value))
+
+
+def _semantic_frame_for_prompt(prompt: str) -> dict[str, Any]:
+    """공유 semantic resolver 를 호출해 frame 을 반환.
+
+    resolve() 가 실패해도 오케스트레이터를 막지 않도록 예외는 삼키고 {} 를 반환한다.
+    """
+    try:
+        from core import agent_semantic_service
+        frame = agent_semantic_service.resolve(str(prompt or ""))
+        return frame if isinstance(frame, dict) else {}
+    except Exception:
+        logger.info("semantic frame resolve failed", exc_info=True)
+        return {}
+
+
+def _semantic_frame_summary(frame: dict[str, Any]) -> dict[str, Any]:
+    """decision prompt 와 snapshot 에 쓸 compact·공개 안전 projection.
+
+    내부 추론 원문은 담지 않고, 해석된 용어/슬롯/미지어만 추린다.
+    """
+    if not isinstance(frame, dict):
+        return {}
+    canonical_hits: list[str] = []
+    alias_hits = frame.get("alias_hits")
+    if isinstance(alias_hits, list):
+        for hit in alias_hits:
+            if isinstance(hit, dict):
+                canonical = _short_text(hit.get("canonical"), 80)
+                if canonical and canonical not in canonical_hits:
+                    canonical_hits.append(canonical)
+            if len(canonical_hits) >= 20:
+                break
+    slot_hints: dict[str, Any] = {}
+    slot_hints_raw = frame.get("slot_hints")
+    if isinstance(slot_hints_raw, dict):
+        for key, value in slot_hints_raw.items():
+            slot_key = _short_text(key, 60)
+            if not slot_key:
+                continue
+            if isinstance(value, list):
+                slot_hints[slot_key] = _safe_string_list(value, 12)
+            else:
+                slot_hints[slot_key] = _safe_value(value, 160)
+            if len(slot_hints) >= 20:
+                break
+    intent_matches_raw = frame.get("intent_matches")
+    intent_matches = (
+        _safe_string_list(list(intent_matches_raw.keys()), 12)
+        if isinstance(intent_matches_raw, dict)
+        else []
+    )
+    return {
+        "resolved_columns": _safe_string_list(frame.get("resolved_columns"), 20),
+        "alias_hits": canonical_hits,
+        "slot_hints": slot_hints,
+        "unknown_terms": _safe_string_list(frame.get("unknown_terms"), 12),
+        "value_terms": _safe_string_list(frame.get("value_terms"), 12),
+        "intent_matches": intent_matches,
+    }
+
+
+def _format_tool_catalog(tools: list[dict[str, Any]]) -> str:
+    """도구 카탈로그를 LLM 이 한 번에 보기 좋은 짧은 list 텍스트로.
+
+    planner(`_plan_with_llm`)와 ReAct decision(`_decide_next_action`)이 같은
+    카탈로그 포맷을 공유하도록 추출한 함수다.
+    """
+    tool_lines: list[str] = []
+    for t in tools[:40]:
+        ex = ""
+        if t.get("examples"):
+            first = t["examples"][0]
+            ex_prompt = first.get("prompt") if isinstance(first, dict) else None
+            if ex_prompt:
+                ex = f' | 예: "{str(ex_prompt)[:50]}"'
+        tool_lines.append(f"- {t['name']} ({t['kind']}): {t.get('description','')[:120]}{ex}")
+    return "\n".join(tool_lines) or "(empty)"
+
+
 def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     """LLM 에게 prompt + tool catalog 을 주고 step list(JSON) 를 받아 반환.
 
@@ -771,17 +959,7 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
     except Exception:
         return None
     enabled_tools = [t for t in tools if t.get("enabled")]
-    # 도구 카탈로그를 LLM 이 한 번에 보기 좋은 짧은 list 로.
-    tool_lines = []
-    for t in enabled_tools[:40]:
-        ex = ""
-        if t.get("examples"):
-            first = t["examples"][0]
-            ex_prompt = first.get("prompt") if isinstance(first, dict) else None
-            if ex_prompt:
-                ex = f' | 예: "{str(ex_prompt)[:50]}"'
-        tool_lines.append(f"- {t['name']} ({t['kind']}): {t.get('description','')[:120]}{ex}")
-    tools_text = "\n".join(tool_lines) or "(empty)"
+    tools_text = _format_tool_catalog(enabled_tools)
 
     system = (
         "You are Flow-i's home agent planner. Pick the minimum set of tools from "
@@ -832,6 +1010,120 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
             "source": "llm",
         })
     return plan or None
+
+
+def _observation_summary(trace: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+    """이전 step 결과를 decision LLM 에게 줄 compact observation list.
+
+    trace row 에서 도구/상태/결과 요약/경고만 추리고 내부 추론 원문은 담지 않는다.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(trace, list):
+        return out
+    for row in trace[-max(1, limit):]:
+        if not isinstance(row, dict):
+            continue
+        status = row.get("status") or ("success" if row.get("ok") else "failed")
+        out.append({
+            "tool": _short_text(row.get("tool"), 80),
+            "status": _short_text(status, 40),
+            "result_preview": _short_text(row.get("result_preview"), 400),
+            "warnings": _safe_string_list(row.get("warnings"), 3),
+        })
+    return out
+
+
+def _decide_next_action(
+    *,
+    prompt: str,
+    tools: list[dict[str, Any]],
+    semantic_summary: dict[str, Any],
+    observations: list[dict[str, Any]],
+    step_index: int,
+    max_steps: int,
+) -> dict[str, Any] | None:
+    """ReAct 한 턴 결정: 도구 1개를 호출하거나 finalize.
+
+    반환:
+      - `{"action": "call_tool", "tool": <tool dict>, "tool_name": str, "input": dict, "reason": str}`
+      - `{"action": "final", "answer": str, "reason": str}`
+      - LLM 실패 시 `None` (호출자는 fallback 으로 degrade).
+
+    내부 `thought` 는 프롬프트 schema 에만 두고 반환/공개에는 싣지 않는다.
+    """
+    try:
+        from core import llm_adapter
+    except Exception:
+        return None
+    enabled_tools = [t for t in tools if t.get("enabled")]
+    tool_by_name = {t["name"]: t for t in enabled_tools}
+    tools_text = _format_tool_catalog(enabled_tools)
+    remaining = max(0, int(max_steps) - int(step_index))
+    obs_text = json.dumps(observations, ensure_ascii=False)[:2500] if observations else "(없음)"
+    system = (
+        "You are Flow-i's home agent controller running a ReAct loop. "
+        "Each turn you either call exactly ONE tool from the catalog or finalize "
+        "with an answer. Use only tools that appear in the catalog. Base decisions "
+        "on the user goal, the resolved semantic terms, and prior observations. "
+        "Prefer to finalize as soon as the observations answer the goal. "
+        "Respond with strict JSON only."
+    )
+    user_prompt = (
+        f"# 사용자 목표\n{prompt}\n\n"
+        f"# 의미 분석(semantic frame)\n{json.dumps(semantic_summary, ensure_ascii=False)[:1500]}\n\n"
+        f"# 사용 가능한 도구 카탈로그\n{tools_text}\n\n"
+        f"# 지금까지의 관찰(observations)\n{obs_text}\n\n"
+        f"# 남은 단계: {remaining}\n\n"
+        "# 출력 형식 (JSON, 다른 텍스트 금지)\n"
+        "{\n"
+        '  "thought": "<한 줄 추론>",\n'
+        '  "action": "call_tool | final",\n'
+        '  "tool": "<카탈로그 name, action=call_tool 일 때만>",\n'
+        '  "input": {"prompt": "<단일 도구용 자연어>", "product": "<선택>", "max_rows": 12},\n'
+        '  "reason": "<왜 이 선택인지 한 줄>",\n'
+        '  "answer": "<action=final 일 때 최종 답변>"\n'
+        "}"
+    )
+    out = llm_adapter.complete_json(
+        user_prompt,
+        system=system,
+        schema={
+            "keys": ["thought", "action", "tool", "input", "reason", "answer"],
+            "required": ["action"],
+        },
+    )
+    if not out.get("ok"):
+        logger.info("react decision failed: %s", out.get("error"))
+        return None
+    obj = out.get("obj") or {}
+    action = str(obj.get("action") or "").strip().lower()
+    reason = _short_text(obj.get("reason"), 200)
+    if action == "call_tool":
+        name = str(obj.get("tool") or "").strip()
+        tool = tool_by_name.get(name)
+        if not tool:
+            # 도구가 없거나 카탈로그 밖이면 finalize 로 강등.
+            return {
+                "action": "final",
+                "answer": _short_text(obj.get("answer"), 4000),
+                "reason": reason or "no usable tool in catalog",
+            }
+        step_input = obj.get("input")
+        if not isinstance(step_input, dict):
+            step_input = {"prompt": prompt}
+        return {
+            "action": "call_tool",
+            "tool": tool,
+            "tool_name": _normalize_unit_name(name, tool) or name,
+            "input": step_input,
+            "reason": reason,
+        }
+    # action 미지정/그 외는 final 로 처리.
+    return {
+        "action": "final",
+        "answer": _short_text(obj.get("answer"), 4000),
+        "reason": reason,
+    }
 
 
 def _execute_step(
@@ -1510,6 +1802,176 @@ def _plan_from_alias(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str,
     }]
 
 
+def _action_signature(tool_name: str, merged_input: dict[str, Any]) -> str:
+    """반복-액션 가드용 서명. 의미 있는 입력 키만 정규화해 해시한다."""
+    payload: dict[str, Any] = {}
+    for key in ("prompt", "product", "root", "file", "columns", "max_rows"):
+        if isinstance(merged_input, dict) and key in merged_input:
+            payload[key] = merged_input.get(key)
+    try:
+        sig = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        sig = str(payload)
+    return f"{tool_name}|{sig}"
+
+
+def _compose_final_reply(
+    prompt: str,
+    trace: list[dict[str, Any]],
+    model_answer: str,
+    semantic_summary: dict[str, Any],
+) -> str:
+    """최종 답변 생성.
+
+    1) model 이 final.answer 를 줬으면 그대로 사용 (공통 경로 — LLM 재호출 없음).
+    2) 아니면 루프 활성 시 관찰 기반으로 1회 LLM 요약.
+    3) 실패/비활성/관찰없음 시 항상 `_synthesize_reply(trace)` fallback.
+    """
+    answer = _short_text(model_answer, 4000) if model_answer else ""
+    if answer:
+        return answer
+    if not _react_loop_enabled():
+        return _synthesize_reply(trace)
+    observations = _observation_summary(trace)
+    if not observations:
+        return _synthesize_reply(trace)
+    try:
+        from core import llm_adapter
+        system = (
+            "You are Flow-i. Summarize the tool observations into a concise Korean "
+            "answer to the user goal. Do not invent data not present in observations."
+        )
+        user_prompt = (
+            f"# 사용자 목표\n{prompt}\n\n"
+            f"# 관찰(observations)\n{json.dumps(observations, ensure_ascii=False)[:2500]}\n\n"
+            "위 관찰만 근거로 한국어로 간결히 답하라."
+        )
+        out = llm_adapter.complete(user_prompt, system=system)
+        if out.get("ok") and out.get("text"):
+            return _short_text(out.get("text"), 4000)
+    except Exception:
+        logger.info("react final compose failed", exc_info=True)
+    return _synthesize_reply(trace)
+
+
+def _run_react_loop(
+    *,
+    prompt: str,
+    tools: list[dict[str, Any]],
+    semantic_summary: dict[str, Any],
+    user: dict[str, Any] | None,
+    request: Any | None,
+    max_steps: int,
+) -> Iterator[dict[str, Any]]:
+    """관찰→결정→실행을 반복하는 단일 control-flow 제너레이터.
+
+    orchestrate() 는 이 제너레이터를 drain 해 최종 `final` 이벤트만 쓰고,
+    orchestrate_stream() 는 중간 이벤트를 SSE 로 매핑한다. 두 진입점이 같은
+    루프 구현을 공유하므로 로직 드리프트가 없다.
+
+    내부 이벤트 union:
+      {"kind": "loop_start", "max_steps": int}
+      {"kind": "decision", "index": int, "action": str, "tool": str, "reason": str}
+      {"kind": "step_start", "index": int, "tool": str, "tool_def": dict, "input": dict}
+      {"kind": "step_end", "index": int, "tool": str, "exec_out": dict,
+       "trace_row": dict, "tool_call": ToolCall}
+      {"kind": "final", "trace": list, "tool_calls": list, "reply": str, "stop_reason": str}
+
+    종료 가드 3중 + model_final/blocked/llm_error 로 무한 루프를 막는다.
+    """
+    trace: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
+    accumulated: dict[str, Any] = {}
+    seen_signatures: set[str] = set()
+    model_answer = ""
+    stop_reason = "max_steps"
+    no_progress_streak = 0
+
+    yield {"kind": "loop_start", "max_steps": max_steps}
+
+    for index in range(max_steps):
+        parent_context = _parent_context_from_tool_calls(tool_calls)
+        observations = _observation_summary(trace)
+        decision = _decide_next_action(
+            prompt=prompt,
+            tools=tools,
+            semantic_summary=semantic_summary,
+            observations=observations,
+            step_index=index,
+            max_steps=max_steps,
+        )
+        if decision is None:
+            stop_reason = "llm_error"
+            break
+        if decision.get("action") == "final":
+            model_answer = _short_text(decision.get("answer"), 4000)
+            stop_reason = "model_final"
+            yield {"kind": "decision", "index": index, "action": "final",
+                   "tool": "", "reason": decision.get("reason", "")}
+            break
+
+        tool_def = decision.get("tool") or {}
+        tool_name = decision.get("tool_name") or str(tool_def.get("name") or "")
+        yield {"kind": "decision", "index": index, "action": "call_tool",
+               "tool": tool_name, "reason": decision.get("reason", "")}
+
+        # 입력 병합: 기존 단일 패스 로직과 동일.
+        decision_input = decision.get("input") if isinstance(decision.get("input"), dict) else {}
+        merged_input = {**decision_input, **{k: v for k, v in accumulated.items() if k not in decision_input}}
+        merged_input = _merge_step_input_with_parent(merged_input, parent_context)
+        if "prompt" not in merged_input:
+            merged_input["prompt"] = prompt
+
+        # 반복-액션 가드: 동일 tool + 의미입력 재호출 차단.
+        signature = _action_signature(tool_name, merged_input)
+        if signature in seen_signatures:
+            stop_reason = "repeated_action"
+            break
+        seen_signatures.add(signature)
+
+        step = {"tool": tool_def, "input": merged_input,
+                "reason": decision.get("reason", ""), "source": "react"}
+        yield {"kind": "step_start", "index": index, "tool": tool_name,
+               "tool_def": tool_def, "input": merged_input}
+        exec_out = _execute_step(tool_def, merged_input, request=request, user=user, agent_context=parent_context)
+        trace_row = _make_trace_row(step, exec_out)
+        tool_call = _make_tool_call(step, exec_out)
+        trace.append(trace_row)
+        tool_calls.append(tool_call)
+        yield {"kind": "step_end", "index": index, "tool": tool_name,
+               "exec_out": exec_out, "trace_row": trace_row, "tool_call": tool_call}
+
+        # 스칼라 누적(기존 :1786-1791 로직과 동일) + 진전 판정.
+        progressed = bool(exec_out.get("ok"))
+        if exec_out.get("ok") and isinstance(exec_out.get("result"), dict):
+            res = exec_out["result"]
+            for key in ("product", "lot_id", "root_lot_id", "wafer_id"):
+                v = res.get(key)
+                if isinstance(v, str) and v and key not in accumulated:
+                    accumulated[key] = v
+
+        if exec_out.get("blocked"):
+            stop_reason = "blocked"
+            break
+
+        if progressed:
+            no_progress_streak = 0
+        else:
+            no_progress_streak += 1
+            if no_progress_streak >= 2:
+                stop_reason = "no_progress"
+                break
+
+    reply = _compose_final_reply(prompt, trace, model_answer, semantic_summary)
+    yield {
+        "kind": "final",
+        "trace": trace,
+        "tool_calls": tool_calls,
+        "reply": reply,
+        "stop_reason": stop_reason,
+    }
+
+
 def orchestrate(
     prompt: str,
     user: dict[str, Any] | None = None,
@@ -1538,6 +2000,38 @@ def orchestrate(
         }, prompt=prompt, user=user)
 
     tools = tool_registry.list_tools(include_stats=False)
+
+    if _react_loop_enabled():
+        semantic_summary = _semantic_frame_summary(_semantic_frame_for_prompt(prompt))
+        react_out: dict[str, Any] | None = None
+        for event in _run_react_loop(
+            prompt=prompt,
+            tools=tools,
+            semantic_summary=semantic_summary,
+            user=user,
+            request=request,
+            max_steps=_react_max_iters(),
+        ):
+            if event.get("kind") == "final":
+                react_out = event
+        # llm_error 로 아무 step 도 못 돌면 기존 alias/heuristic 경로로 graceful degrade.
+        if react_out is not None and (react_out.get("trace") or react_out.get("stop_reason") != "llm_error"):
+            react_trace = react_out.get("trace") or []
+            return _attach_runtime_result({
+                "ok": True,
+                "prompt": prompt,
+                "trace": react_trace,
+                "tool_calls": react_out.get("tool_calls") or [],
+                "meta": {
+                    "planner": "react",
+                    "step_count": len(react_trace),
+                    "stop_reason": react_out.get("stop_reason"),
+                    "semantic_summary": semantic_summary,
+                },
+                "reply": react_out.get("reply") or "",
+                "picked_count": len(react_trace),
+            }, prompt=prompt, user=user)
+
     plan: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = {"planner": "heuristic"}
 
@@ -1594,6 +2088,130 @@ def orchestrate(
     }, prompt=prompt, user=user)
 
 
+def _orchestrate_stream_react(
+    prompt: str,
+    tools: list[dict[str, Any]],
+    user: dict[str, Any] | None,
+    request: Any | None,
+    run_id: str,
+) -> Iterator[dict[str, Any]]:
+    """orchestrate_stream 의 ReAct 분기.
+
+    `_run_react_loop` 내부 이벤트를 기존 SSE shape(status/plan/step_start/step_end/reply)
+    로 매핑한다. 사전 plan 이 없으므로 `plan` 이벤트의 steps 는 빈 배열이고, 실행된
+    도구로 selected_units 와 graph 를 incremental 하게 키운다.
+    """
+    semantic_summary = _semantic_frame_summary(_semantic_frame_for_prompt(prompt))
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "semantic_layer",
+        "status": "용어해석중",
+        "graph": build_home_runtime_graph(statuses={"prompt_input": "success", "semantic_layer": "running"}),
+        "semantic": semantic_summary,
+    }
+    plan_statuses = {"prompt_input": "success", "semantic_layer": "success", "orchestrator": "running"}
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "orchestrator",
+        "status": "실행 계획 정리중",
+        "graph": build_home_runtime_graph(statuses=plan_statuses),
+    }
+    yield {
+        "type": "plan",
+        "run_id": run_id,
+        "meta": {"planner": "react"},
+        "graph": build_home_runtime_graph(statuses=plan_statuses),
+        "steps": [],
+    }
+
+    selected_units: list[str] = []
+    trace: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
+    stop_reason = "max_steps"
+    reply = ""
+    for event in _run_react_loop(
+        prompt=prompt,
+        tools=tools,
+        semantic_summary=semantic_summary,
+        user=user,
+        request=request,
+        max_steps=_react_max_iters(),
+    ):
+        kind = event.get("kind")
+        if kind == "step_start":
+            tool_def = event.get("tool_def") or {}
+            unit = _normalize_unit_name(str(tool_def.get("name") or "")) if tool_def.get("kind") == "unit_ai" else ""
+            if unit and unit not in selected_units:
+                selected_units.append(unit)
+            running_statuses = {"prompt_input": "success", "semantic_layer": "success", "orchestrator": "success"}
+            for done_unit in selected_units:
+                running_statuses[f"unit_ai:{done_unit}"] = "success"
+            if unit:
+                running_statuses[f"unit_ai:{unit}"] = "running"
+            yield {
+                "type": "step_start",
+                "run_id": run_id,
+                "status": "단위AI 실행중" if tool_def.get("kind") == "unit_ai" else "실행 계획 정리중",
+                "graph": build_home_runtime_graph(selected_units=selected_units, statuses=running_statuses),
+                "index": event.get("index"),
+                "tool": str(tool_def.get("name") or ""),
+                "kind": tool_def.get("kind"),
+                "input": event.get("input") or {},
+            }
+        elif kind == "step_end":
+            row = event.get("trace_row") or {}
+            trace.append(row)
+            tool_call = event.get("tool_call")
+            if tool_call is not None:
+                tool_calls.append(tool_call)
+            step_statuses = _runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units)
+            yield {
+                "type": "step_end",
+                "run_id": run_id,
+                "status": "단위AI 실행중",
+                "graph": build_home_runtime_graph(selected_units=selected_units, statuses=step_statuses),
+                "index": event.get("index"),
+                "tool": event.get("tool"),
+                "ok": row.get("ok"),
+                "node_status": row.get("status"),
+                "ms": row.get("ms", 0),
+                "result_preview": row.get("result_preview", ""),
+            }
+        elif kind == "final":
+            trace = event.get("trace") or trace
+            tool_calls = event.get("tool_calls") or tool_calls
+            reply = event.get("reply") or ""
+            stop_reason = event.get("stop_reason") or stop_reason
+
+    yield {
+        "type": "status",
+        "run_id": run_id,
+        "stage": "result_renderer",
+        "status": "결과 정리중",
+        "graph": build_home_runtime_graph(
+            selected_units=selected_units,
+            statuses=_runtime_statuses({"ok": True, "trace": trace, "tool": _tool_summary_from_trace(trace)}, selected_units),
+        ),
+    }
+    final = _attach_runtime_result({
+        "type": "reply",
+        "ok": True,
+        "trace": trace,
+        "tool_calls": tool_calls,
+        "reply": reply,
+        "picked_count": len(trace),
+        "meta": {
+            "planner": "react",
+            "step_count": len(trace),
+            "stop_reason": stop_reason,
+            "semantic_summary": semantic_summary,
+        },
+    }, prompt=prompt, user=user, run_id=run_id)
+    yield final
+
+
 def orchestrate_stream(
     prompt: str,
     user: dict[str, Any] | None = None,
@@ -1620,6 +2238,9 @@ def orchestrate_stream(
         "graph": build_home_runtime_graph(statuses={"prompt_input": "running"}),
     }
     tools = tool_registry.list_tools(include_stats=False)
+    if _react_loop_enabled():
+        yield from _orchestrate_stream_react(prompt, tools, user, request, run_id)
+        return
     plan: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = {"planner": "heuristic"}
     yield {
