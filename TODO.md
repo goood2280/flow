@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) 비밀번호 찾기 아이디-only 메일 도메인 전송 보정
 - (Codex) 공유 Semantic Layer 서비스와 Dashboard Agent/Home Orchestrator 사슬화
 - (Codex) Home Flow-i SQL→JOIN→Dashboard 단위기능 AI 추가
 - (Codex) Home Flow-i step matching deterministic lookup

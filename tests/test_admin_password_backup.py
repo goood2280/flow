@@ -105,7 +105,7 @@ def test_core_mail_does_not_add_placeholder_attachment_when_files_omitted():
     assert result["attachments"] == []
 
 
-def test_forgot_password_emails_temp_password_without_attachment(monkeypatch):
+def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
     users = [{
         "username": "alice",
         "password_hash": "old-hash",
@@ -153,11 +153,37 @@ def test_forgot_password_emails_temp_password_without_attachment(monkeypatch):
     assert "temporary password" in result["message"].lower()
     assert users[0]["password_hash"] == "hashed:TMP-TMPTOKEN"
     assert writes
-    assert sent[0]["kwargs"]["extra_emails"] == ["alice@company.co.kr"]
+    assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
+    assert "extra_emails" not in sent[0]["kwargs"]
     assert "TMP-TMPTOKEN" in sent[0]["kwargs"]["content"]
     assert sent[0]["kwargs"]["files"] == []
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
     assert sent[0]["result"]["attachments"] == []
+
+
+def test_forgot_password_does_not_lookup_by_email(monkeypatch):
+    users = [{
+        "username": "alice",
+        "password_hash": "old-hash",
+        "role": "user",
+        "status": "approved",
+        "created": "",
+        "tabs": "",
+        "email": "alice@example.test",
+        "name": "",
+    }]
+    writes = []
+    sent = []
+
+    monkeypatch.setattr(auth_router, "read_users", lambda: users)
+    monkeypatch.setattr(auth_router, "write_users", lambda next_users: writes.append([dict(u) for u in next_users]))
+    monkeypatch.setattr(auth_router, "_send_mail", lambda **kwargs: sent.append(kwargs) or {"ok": True, "to": ["alice@example.test"]})
+
+    result = auth_router.forgot_password(auth_router.ForgotPasswordReq(username="alice@example.test"))
+
+    assert result["ok"] is True
+    assert writes == []
+    assert sent == []
 
 
 def test_forgot_password_rolls_back_password_when_mail_fails(monkeypatch):

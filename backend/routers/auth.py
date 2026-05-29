@@ -12,7 +12,7 @@ from core.paths import PATHS
 from core.notify import send_to_admins
 from core import auth as auth_core
 from core.audit import record_user as _audit_user
-from core.mail import send_mail as _send_mail, resolve_usernames_to_emails
+from core.mail import send_mail as _send_mail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -70,14 +70,13 @@ def _sanitize_username(name: str) -> str:
     return name.strip()
 
 
-def _find_user_by_login_key(users, login_key: str):
-    key = (login_key or "").strip().lower()
+def _find_user_by_username(users, username: str):
+    key = (username or "").strip().lower()
     if not key:
         return None
     for u in users:
-        username = (u.get("username") or "").strip().lower()
-        email = (u.get("email") or "").strip().lower()
-        if key == username or (email and key == email):
+        existing_username = (u.get("username") or "").strip().lower()
+        if key == existing_username:
             return u
     return None
 
@@ -206,25 +205,18 @@ def reset_request(req: ResetReq):
 
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordReq):
-    login_key = (req.username or "").strip()
-    if not login_key:
-        raise HTTPException(400, "Username or email required")
+    username_input = _sanitize_username(req.username)
+    if not username_input:
+        raise HTTPException(400, "Username required")
 
     users = read_users()
-    u = _find_user_by_login_key(users, login_key)
+    u = _find_user_by_username(users, username_input)
     # 계정 존재 여부는 과하게 노출하지 않는다.
     generic = {"ok": True, "message": "If the account exists, a temporary password has been sent."}
     if not u or u.get("status") != "approved":
         return generic
 
     username = (u.get("username") or "").strip()
-    emails, _ = resolve_usernames_to_emails([username])
-    email = (u.get("email") or "").strip()
-    if email and email not in emails:
-        emails.insert(0, email)
-    if not emails:
-        raise HTTPException(400, "No registered email for this account")
-
     old_hash = u.get("password_hash", "")
     temp_pw = "TMP-" + secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:10]
     u["password_hash"] = auth_core.hash_password(temp_pw)
@@ -241,8 +233,7 @@ def forgot_password(req: ForgotPasswordReq):
     )
     res = _send_mail(
         sender_username="flow",
-        receiver_usernames=[],
-        extra_emails=emails,
+        receiver_usernames=[username],
         title=title,
         content=content,
         files=[],
@@ -259,7 +250,8 @@ def forgot_password(req: ForgotPasswordReq):
         raise HTTPException(503, res.get("reason") or "Temporary password email failed")
 
     revoked = auth_core.revoke_user_tokens(username)
-    _audit_user(username, "auth:forgot-password-issued", detail=f"revoked={revoked};to={','.join(emails)}", tab="auth")
+    mail_to = ",".join(res.get("to") or [])
+    _audit_user(username, "auth:forgot-password-issued", detail=f"revoked={revoked};to={mail_to}", tab="auth")
     return generic
 
 

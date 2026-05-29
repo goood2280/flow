@@ -158,7 +158,7 @@ export default function My_Login({ onLogin }) {
         if (!r.ok) { setMsg(d.detail || "Registration failed"); setLoading(false); return; }
         setMsg("Registered! Waiting for admin approval."); setMode("login"); setP(""); setNm("");
       } else if (mode === "reset") {
-        if (!u) { setMsg("Enter username or email first"); setLoading(false); return; }
+        if (!u) { setMsg("Enter username first"); setLoading(false); return; }
         const r = await fetch("/api/auth/forgot-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u }) });
         const d = await r.json();
         setMsg(r.ok ? (d.message || "Temporary password sent by email.") : (d.detail || "Error"));
@@ -207,7 +207,7 @@ export default function My_Login({ onLogin }) {
           </>}
 
           <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>
-            {mode === "register" ? "USERNAME (ID)" : mode === "reset" ? "USERNAME / EMAIL" : "USERNAME"}
+            {mode === "register" ? "USERNAME (ID)" : mode === "reset" ? "USERNAME (ID)" : "USERNAME"}
           </div>
           <input
             value={u}
@@ -217,7 +217,7 @@ export default function My_Login({ onLogin }) {
             onBlur={onB}
             onKeyDown={e => e.key === "Enter" && submit()}
             autoComplete="username"
-            placeholder={mode === "register" ? "knox id" : mode === "reset" ? "registered username or email" : ""}
+            placeholder={mode === "register" ? "knox id" : mode === "reset" ? "knox id" : ""}
           />
 
           {(mode === "login" || mode === "register") && <>
@@ -236,7 +236,7 @@ export default function My_Login({ onLogin }) {
               letterSpacing: 2, textTransform: "uppercase",
               boxShadow: "0 0 10px rgba(249,115,22,0.1)", transition: "all 0.2s",
             }}>
-            {loading ? "..." : mode === "login" ? "Sign In" : mode === "register" ? "Create Account" : "Send Temp Password"}
+            {loading ? "..." : mode === "login" ? "Sign In" : mode === "register" ? "Create Account" : "Send"}
           </button>
 
           {msg && <div style={{
