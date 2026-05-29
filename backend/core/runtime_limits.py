@@ -99,6 +99,15 @@ def splittable_product_ram_cache_scheduler_enabled() -> bool:
     return resource_profile() in (_FULL_PROFILES | {"prod", "production"})
 
 
+def splittable_root_lot_ram_cache_scheduler_enabled() -> bool:
+    """Whether startup should warm root_lot_id-scoped ML_TABLE RAM partitions."""
+    if "FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE" in os.environ:
+        return not _env_flag("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE")
+    if "FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE" in os.environ:
+        return _env_flag("FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE")
+    return True
+
+
 def tracker_et_lot_cache_enabled() -> bool:
     """Whether Tracker Analysis ET lot-cache jobs may run.
 

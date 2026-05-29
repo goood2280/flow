@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from core import auth as auth_core  # noqa: E402
+from core import auth as auth_core, ml_table_lookup  # noqa: E402
 from routers import informs, splittable  # noqa: E402
 
 
@@ -46,10 +46,13 @@ class _Request:
 def _reset_product_ram_cache(monkeypatch):
     monkeypatch.delenv("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE", raising=False)
     monkeypatch.delenv("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", raising=False)
+    monkeypatch.delenv("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", raising=False)
     with splittable._PRODUCT_RAM_CACHE_LOCK:
         splittable._PRODUCT_RAM_CACHE.clear()
         splittable._PRODUCT_RAM_CACHE_STATUS.clear()
         splittable._PRODUCT_RAM_CACHE_REFRESHING.clear()
+    ml_table_lookup.clear_root_ram_cache()
     splittable._LOT_LOOKUP_CACHE.clear()
     splittable._clear_split_view_cache()
 
@@ -759,6 +762,72 @@ def test_product_ram_cache_status_and_refresh_permissions(monkeypatch):
 
     assert "source_path" in manager_status["products"][0]
     assert refresh == {"ok": True, "queued": True}
+
+
+def test_root_lot_ram_cache_hit_avoids_partition_rescan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A2000"],
+        "wafer_id": ["1", "1"],
+        "KNOB_GATE": ["R1", "R2"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+
+    first, status = ml_table_lookup.scan_root_lot_cache(fp, "A1000")
+    assert status["has_cache"] is True
+    assert first.select("KNOB_GATE").collect()["KNOB_GATE"].to_list() == ["R1"]
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("partition scan should not run on root RAM hit")
+
+    monkeypatch.setattr(ml_table_lookup.pl, "scan_parquet", fail_scan)
+    second, _status = ml_table_lookup.scan_root_lot_cache(fp, "A1000")
+
+    assert second.select("KNOB_GATE").collect()["KNOB_GATE"].to_list() == ["R1"]
+
+
+def test_root_lot_ram_cache_refresh_uses_recent_and_frequent_roots(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A2000"],
+        "wafer_id": ["1", "1"],
+        "KNOB_GATE": ["R1", "R2"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    monkeypatch.setattr(ml_table_lookup, "resolve_ml_table_file", lambda **_kwargs: fp)
+    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", lambda _fp, _limit: ["A1000"])
+    ml_table_lookup._record_root_access(fp, "A2000")
+    ml_table_lookup._record_root_access(fp, "A2000")
+
+    result = ml_table_lookup.refresh_root_lot_ram_cache(file=fp.name, force=True)
+    status = ml_table_lookup.root_ram_cache_status(fp, include_detail=True)
+    roots = {row["root_lot_id"] for row in status["roots"]}
+
+    assert result["ok"] is True
+    assert {"A1000", "A2000"}.issubset(roots)
+
+
+def test_split_view_root_lookup_enqueues_partition_cache_when_missing(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    calls = []
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
+
+    lf = splittable._scan_product_base_lookup_cache("ML_TABLE_PRODA", root_lot_id="A1000", wafer_ids="")
+
+    assert lf is None
+    assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):

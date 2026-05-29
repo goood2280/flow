@@ -187,7 +187,7 @@ PRODUCT_RAM_CACHE_VERSION = 1
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_DEFAULT = 30
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_MIN = 30
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
-PRODUCT_RAM_CACHE_MAX_GB_DEFAULT = 4.0
+PRODUCT_RAM_CACHE_MAX_GB_DEFAULT = 3.0
 _PRODUCT_RAM_CACHE_LOCK = threading.RLock()
 _PRODUCT_RAM_CACHE: dict[str, dict] = {}
 _PRODUCT_RAM_CACHE_STATUS: dict[str, dict] = {}
@@ -894,8 +894,10 @@ def _product_ram_cache_public_meta(product: str, *, include_detail: bool = False
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
     source_sig = ("", 0.0, 0)
     source_path = ""
+    source_fp = None
     try:
         canonical, fp = _product_ram_cache_source(canonical)
+        source_fp = fp
         source_path = str(fp)
         source_sig = _path_cache_sig(fp)
     except Exception:
@@ -916,6 +918,7 @@ def _product_ram_cache_public_meta(product: str, *, include_detail: bool = False
         "source_mtime": source_sig[1] or None,
         "source_size": source_sig[2] or 0,
         "skipped": bool(status.get("skipped")) if not entry else False,
+        "root_lot_cache": _ml_table_lookup.root_ram_cache_status(source_fp, include_detail=False),
     }
     if include_detail:
         out.update({
@@ -925,6 +928,7 @@ def _product_ram_cache_public_meta(product: str, *, include_detail: bool = False
             "error": status.get("error") or "",
             "skip_reason": status.get("skip_reason") or "",
             "last_refresh_at": status.get("last_refresh_at") or "",
+            "root_lot_cache": _ml_table_lookup.root_ram_cache_status(source_fp, include_detail=True),
         })
     return out
 
@@ -939,6 +943,7 @@ def _product_ram_cache_response_meta(product: str) -> dict:
         "row_count": meta.get("row_count", 0),
         "estimated_mb": meta.get("estimated_mb", 0.0),
         "source_mtime": meta.get("source_mtime"),
+        "root_lot_cache": meta.get("root_lot_cache") or {},
     }
 
 

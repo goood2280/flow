@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,28 @@ _BUILD_STATE: dict[str, Any] = {
     "last_source": "",
 }
 
+ROOT_RAM_CACHE_VERSION = 1
+ROOT_RAM_CACHE_MAX_GB_DEFAULT = 3.0
+ROOT_RAM_CACHE_REFRESH_MINUTES_DEFAULT = 30
+ROOT_RAM_CACHE_REFRESH_MINUTES_MIN = 5
+ROOT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
+ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT = 100
+ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT = 100
+ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
+_ROOT_RAM_CACHE_LOCK = threading.RLock()
+_ROOT_RAM_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+_ROOT_RAM_ACCESS: dict[tuple[str, str], dict[str, Any]] = {}
+_ROOT_RAM_STATUS: dict[str, Any] = {
+    "last_refresh_at": "",
+    "last_refresh_epoch": 0.0,
+    "last_error": "",
+    "products": [],
+}
+_ROOT_RAM_STOP = threading.Event()
+_ROOT_RAM_THREAD: threading.Thread | None = None
+_ROOT_RAM_STARTED = False
+_ROOT_RAM_REFRESH_LOCK = threading.Lock()
+
 
 class MlTableLookupError(ValueError):
     """Machine-readable lookup validation failure."""
@@ -96,6 +119,518 @@ def _source_sig(fp: Path) -> dict[str, Any]:
         "source_mtime": st.st_mtime,
         "source_size": st.st_size,
     }
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        value = float(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def root_ram_cache_available() -> bool:
+    return not _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False)
+
+
+def root_ram_cache_refresh_minutes() -> int:
+    return _env_int(
+        "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_REFRESH_MINUTES",
+        ROOT_RAM_CACHE_REFRESH_MINUTES_DEFAULT,
+        ROOT_RAM_CACHE_REFRESH_MINUTES_MIN,
+        ROOT_RAM_CACHE_REFRESH_MINUTES_MAX,
+    )
+
+
+def _root_ram_cache_recent_limit() -> int:
+    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_RECENT_ROOTS", ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT, 0, 5000)
+
+
+def _root_ram_cache_frequent_limit() -> int:
+    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS", ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT, 0, 5000)
+
+
+def _root_ram_cache_max_bytes() -> int:
+    gb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", ROOT_RAM_CACHE_MAX_GB_DEFAULT, 0.0, 64.0)
+    return int(gb * 1024 * 1024 * 1024)
+
+
+def _root_ram_cache_build_max_bytes() -> int:
+    mb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_BUILD_MAX_MB", ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT, 0.0, 1024 * 1024.0)
+    return int(mb * 1024 * 1024)
+
+
+def _estimated_df_bytes(df: pl.DataFrame) -> int:
+    try:
+        return int(df.estimated_size())
+    except Exception:
+        try:
+            return int(df.height) * max(1, len(df.columns)) * 16
+        except Exception:
+            return 0
+
+
+def _root_cache_key(fp: Path, root_lot_id: str) -> tuple[str, str]:
+    return (str(Path(fp).resolve()), str(root_lot_id or "").strip().upper())
+
+
+def _partition_sig(files: list[Path]) -> tuple[int, float, int]:
+    count = 0
+    max_mtime = 0.0
+    total_size = 0
+    for fp in files or []:
+        try:
+            st = fp.stat()
+        except Exception:
+            continue
+        count += 1
+        max_mtime = max(max_mtime, float(st.st_mtime))
+        total_size += int(st.st_size)
+    return (count, max_mtime, total_size)
+
+
+def _root_ram_source_key(status: dict[str, Any]) -> tuple[Any, ...]:
+    meta = status.get("meta") or {}
+    return (
+        meta.get("version") or CACHE_VERSION,
+        meta.get("source_path") or "",
+        meta.get("source_mtime") or 0,
+        meta.get("source_size") or 0,
+        meta.get("built_at") or "",
+    )
+
+
+def _root_ram_total_bytes_locked(exclude_key: tuple[str, str] | None = None) -> int:
+    total = 0
+    for key, entry in _ROOT_RAM_CACHE.items():
+        if exclude_key is not None and key == exclude_key:
+            continue
+        try:
+            total += int(entry.get("estimated_bytes") or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _evict_root_ram_locked(reserve_bytes: int = 0, keep_keys: set[tuple[str, str]] | None = None) -> None:
+    keep_keys = keep_keys or set()
+    max_bytes = _root_ram_cache_max_bytes()
+    if max_bytes <= 0:
+        _ROOT_RAM_CACHE.clear()
+        return
+    while _ROOT_RAM_CACHE and _root_ram_total_bytes_locked() + max(0, reserve_bytes) > max_bytes:
+        evicted = False
+        for key in list(_ROOT_RAM_CACHE.keys()):
+            if key in keep_keys and len(_ROOT_RAM_CACHE) > len(keep_keys):
+                continue
+            _ROOT_RAM_CACHE.pop(key, None)
+            evicted = True
+            break
+        if not evicted:
+            _ROOT_RAM_CACHE.clear()
+            return
+
+
+def clear_root_ram_cache() -> None:
+    with _ROOT_RAM_CACHE_LOCK:
+        _ROOT_RAM_CACHE.clear()
+        _ROOT_RAM_ACCESS.clear()
+        _ROOT_RAM_STATUS.update({
+            "last_refresh_at": "",
+            "last_refresh_epoch": 0.0,
+            "last_error": "",
+            "products": [],
+        })
+
+
+def _record_root_access(fp: Path, root_lot_id: str) -> None:
+    root = str(root_lot_id or "").strip().upper()
+    if not root:
+        return
+    key = _root_cache_key(fp, root)
+    now = time.time()
+    with _ROOT_RAM_CACHE_LOCK:
+        cur = dict(_ROOT_RAM_ACCESS.get(key) or {})
+        cur.update({
+            "source_path": key[0],
+            "root_lot_id": root,
+            "last_access_epoch": now,
+            "access_count": int(cur.get("access_count") or 0) + 1,
+        })
+        _ROOT_RAM_ACCESS[key] = cur
+
+
+def _root_ram_cache_get(fp: Path, root_lot_id: str, files: list[Path], status: dict[str, Any]) -> pl.LazyFrame | None:
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
+        return None
+    root = str(root_lot_id or "").strip().upper()
+    key = _root_cache_key(fp, root)
+    source_key = _root_ram_source_key(status)
+    part_sig = _partition_sig(files)
+    with _ROOT_RAM_CACHE_LOCK:
+        entry = _ROOT_RAM_CACHE.get(key)
+        if not entry:
+            return None
+        if entry.get("source_key") != source_key or entry.get("partition_sig") != part_sig:
+            _ROOT_RAM_CACHE.pop(key, None)
+            return None
+        entry["last_access_epoch"] = time.time()
+        entry["access_count"] = int(entry.get("access_count") or 0) + 1
+        _ROOT_RAM_CACHE.move_to_end(key)
+        df = entry.get("df")
+    if df is None:
+        return None
+    try:
+        return df.lazy()
+    except Exception:
+        return None
+
+
+def _load_root_ram_cache_frame(files: list[Path]) -> pl.DataFrame:
+    return pl.scan_parquet([str(p) for p in files], hive_partitioning=True).collect()
+
+
+def _root_ram_cache_put(
+    fp: Path,
+    root_lot_id: str,
+    files: list[Path],
+    status: dict[str, Any],
+) -> pl.LazyFrame | None:
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0 or not files:
+        return None
+    root = str(root_lot_id or "").strip().upper()
+    key = _root_cache_key(fp, root)
+    source_key = _root_ram_source_key(status)
+    part_sig = _partition_sig(files)
+    try:
+        df = _load_root_ram_cache_frame(files)
+    except Exception as exc:
+        logger.debug("ML_TABLE root RAM cache load failed source=%s root=%s: %s", fp, root, exc)
+        return None
+    estimated_bytes = _estimated_df_bytes(df)
+    max_bytes = _root_ram_cache_max_bytes()
+    if max_bytes and estimated_bytes > max_bytes:
+        return None
+    now = time.time()
+    with _ROOT_RAM_CACHE_LOCK:
+        _evict_root_ram_locked(reserve_bytes=estimated_bytes, keep_keys={key})
+        _ROOT_RAM_CACHE[key] = {
+            "version": ROOT_RAM_CACHE_VERSION,
+            "source_path": str(Path(fp).resolve()),
+            "root_lot_id": root,
+            "source_key": source_key,
+            "partition_sig": part_sig,
+            "df": df,
+            "row_count": int(df.height),
+            "estimated_bytes": estimated_bytes,
+            "loaded_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+            "loaded_epoch": now,
+            "last_access_epoch": now,
+            "access_count": int((_ROOT_RAM_ACCESS.get(key) or {}).get("access_count") or 0),
+        }
+        _ROOT_RAM_CACHE.move_to_end(key)
+        _evict_root_ram_locked()
+    return df.lazy()
+
+
+def _product_match_keys(fp: Path) -> set[str]:
+    stem = Path(fp).stem.strip().upper()
+    keys = {stem}
+    if stem.startswith("ML_TABLE_"):
+        keys.add(stem[len("ML_TABLE_"):])
+    return {k for k in keys if k}
+
+
+def _row_time_text(row: dict[str, Any]) -> str:
+    return str(row.get("update_time") or row.get("tkout_time") or row.get("tkin_time") or row.get("time") or "")
+
+
+def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    try:
+        from core import lot_progress_cache
+        state = lot_progress_cache.read_lot_progress_cache(allow_stale=True)
+    except Exception:
+        return []
+    keys = _product_match_keys(fp)
+    rows = [row for row in (state.get("items") or []) if isinstance(row, dict)]
+    rows.sort(key=_row_time_text, reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        product = str(row.get("product") or row.get("process_id") or "").strip().upper()
+        if keys and product and product not in keys:
+            continue
+        root = str(row.get("root_lot_id") or "").strip().upper()
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        out.append(root)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _frequent_root_lot_ids(fp: Path, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    source_path = str(Path(fp).resolve())
+    with _ROOT_RAM_CACHE_LOCK:
+        rows = [
+            dict(row)
+            for key, row in _ROOT_RAM_ACCESS.items()
+            if key[0] == source_path and row.get("root_lot_id")
+        ]
+    rows.sort(key=lambda row: (int(row.get("access_count") or 0), float(row.get("last_access_epoch") or 0.0)), reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        root = str(row.get("root_lot_id") or "").strip().upper()
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        out.append(root)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _discover_ml_table_files() -> list[Path]:
+    roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for root in (PATHS.base_root, PATHS.db_root):
+        try:
+            key = str(Path(root).resolve())
+        except Exception:
+            key = str(root)
+        if key and key not in seen_roots:
+            seen_roots.add(key)
+            roots.append(Path(root))
+    files: list[Path] = []
+    seen_files: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            candidates = sorted(root.glob("ML_TABLE_*.parquet"), key=lambda p: p.name.lower())
+        except Exception:
+            candidates = []
+        for fp in candidates:
+            try:
+                key = str(fp.resolve())
+            except Exception:
+                key = str(fp)
+            if key not in seen_files and fp.is_file():
+                seen_files.add(key)
+                files.append(fp)
+    return files
+
+
+def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any]) -> bool:
+    if status.get("has_cache") and not status.get("source_stale"):
+        return True
+    try:
+        source_size = int(_source_sig(fp).get("source_size") or 0)
+    except Exception:
+        source_size = 0
+    max_build_bytes = _root_ram_cache_build_max_bytes()
+    if max_build_bytes and source_size and source_size <= max_build_bytes:
+        enqueue_build(fp)
+    return False
+
+
+def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool = False) -> dict[str, Any]:
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
+        return {
+            "ok": False,
+            "enabled": root_ram_cache_available(),
+            "skipped": True,
+            "reason": "disabled",
+            "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
+        }
+    if product or file:
+        fp = resolve_ml_table_file(product=product, file=file)
+        files = [fp] if fp else []
+    else:
+        files = _discover_ml_table_files()
+    recent_limit = _root_ram_cache_recent_limit()
+    frequent_limit = _root_ram_cache_frequent_limit()
+    rows: list[dict[str, Any]] = []
+    with _ROOT_RAM_REFRESH_LOCK:
+        for fp in files:
+            if fp is None:
+                continue
+            status = cache_status(fp)
+            if not _ensure_lookup_cache_ready_for_root_ram(fp, status):
+                rows.append({
+                    "file": Path(fp).name,
+                    "ok": False,
+                    "skipped": True,
+                    "reason": status.get("status") or "missing",
+                    "cache_status": status.get("status") or "",
+                })
+                continue
+            roots: list[str] = []
+            seen: set[str] = set()
+            for root in [
+                *_recent_root_lot_ids_from_latest_cache(fp, recent_limit),
+                *_frequent_root_lot_ids(fp, frequent_limit),
+            ]:
+                root = str(root or "").strip().upper()
+                if root and root not in seen:
+                    seen.add(root)
+                    roots.append(root)
+            cached = 0
+            missing = 0
+            for root in roots:
+                part_files = _partition_files(cache_dir_for(fp), root)
+                if not part_files:
+                    missing += 1
+                    continue
+                if not force and _root_ram_cache_get(fp, root, part_files, status) is not None:
+                    cached += 1
+                    continue
+                if _root_ram_cache_put(fp, root, part_files, status) is not None:
+                    cached += 1
+            rows.append({
+                "file": Path(fp).name,
+                "ok": True,
+                "target_roots": len(roots),
+                "cached_roots": cached,
+                "missing_roots": missing,
+                "cache_status": status.get("status") or "",
+            })
+    now = time.time()
+    with _ROOT_RAM_CACHE_LOCK:
+        _ROOT_RAM_STATUS.update({
+            "last_refresh_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+            "last_refresh_epoch": now,
+            "last_error": "",
+            "products": rows,
+        })
+    return {
+        "ok": any(row.get("ok") for row in rows),
+        "enabled": True,
+        "products": rows,
+        "interval_minutes": root_ram_cache_refresh_minutes(),
+        "recent_roots": recent_limit,
+        "frequent_roots": frequent_limit,
+        "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3),
+        "status": root_ram_cache_status(include_detail=False),
+    }
+
+
+def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = False) -> dict[str, Any]:
+    source_path = str(Path(fp).resolve()) if fp else ""
+    with _ROOT_RAM_CACHE_LOCK:
+        entries = [
+            (key, dict(entry))
+            for key, entry in _ROOT_RAM_CACHE.items()
+            if not source_path or key[0] == source_path
+        ]
+        access_count = len([
+            1 for key in _ROOT_RAM_ACCESS
+            if not source_path or key[0] == source_path
+        ])
+        status = dict(_ROOT_RAM_STATUS)
+    total_bytes = sum(int(entry.get("estimated_bytes") or 0) for _, entry in entries)
+    out = {
+        "enabled": root_ram_cache_available(),
+        "hit_roots": len(entries),
+        "estimated_mb": round(total_bytes / (1024 * 1024), 3),
+        "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
+        "recent_roots": _root_ram_cache_recent_limit(),
+        "frequent_roots": _root_ram_cache_frequent_limit(),
+        "interval_minutes": root_ram_cache_refresh_minutes(),
+        "scheduler_started": _ROOT_RAM_STARTED,
+        "last_refresh_at": status.get("last_refresh_at") or "",
+        "last_error": status.get("last_error") or "",
+        "access_roots": access_count,
+    }
+    if include_detail:
+        out["roots"] = [
+            {
+                "source_path": key[0],
+                "root_lot_id": key[1],
+                "row_count": int(entry.get("row_count") or 0),
+                "estimated_mb": round(float(entry.get("estimated_bytes") or 0) / (1024 * 1024), 3),
+                "loaded_at": entry.get("loaded_at") or "",
+                "access_count": int(entry.get("access_count") or 0),
+            }
+            for key, entry in entries
+        ]
+        out["products"] = status.get("products") or []
+    return out
+
+
+def _filter_wafer_lf(lf: pl.LazyFrame, wafer_ids: str = "") -> pl.LazyFrame:
+    wf_values = [str(w).strip() for w in str(wafer_ids or "").split(",") if str(w).strip()]
+    if not wf_values:
+        return lf
+    cols = lf.collect_schema().names()
+    wf_col = _ci_col(cols, "wafer_id", "wf_id", "WAFER_ID", "WF_ID")
+    if not wf_col:
+        return lf
+    forms: set[str] = set()
+    for raw in wf_values:
+        value = raw.upper().lstrip("#")
+        forms.add(value)
+        try:
+            n = int(value)
+            forms.update({str(n), f"{n:02d}", f"W{n}", f"W{n:02d}", f"WF{n}", f"WF{n:02d}"})
+        except Exception:
+            pass
+    return lf.filter(pl.col(wf_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(forms)))
+
+
+def _root_ram_cache_loop() -> None:
+    while not _ROOT_RAM_STOP.is_set():
+        try:
+            refresh_root_lot_ram_cache(force=False)
+        except Exception as exc:
+            logger.warning("ML_TABLE root RAM cache scheduler tick failed: %s", exc)
+            with _ROOT_RAM_CACHE_LOCK:
+                _ROOT_RAM_STATUS["last_error"] = f"{type(exc).__name__}: {exc}"
+        wait_s = max(60.0, root_ram_cache_refresh_minutes() * 60.0)
+        while wait_s > 0 and not _ROOT_RAM_STOP.is_set():
+            step = min(wait_s, 60.0)
+            _ROOT_RAM_STOP.wait(step)
+            wait_s -= step
+
+
+def start_root_lot_ram_cache_scheduler() -> bool:
+    global _ROOT_RAM_THREAD, _ROOT_RAM_STARTED
+    if _ROOT_RAM_STARTED:
+        return False
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
+        logger.info("ML_TABLE root RAM cache scheduler disabled")
+        return False
+    _ROOT_RAM_STOP.clear()
+    _ROOT_RAM_THREAD = threading.Thread(
+        target=_root_ram_cache_loop,
+        name="ml-table-root-ram-cache",
+        daemon=True,
+    )
+    _ROOT_RAM_THREAD.start()
+    _ROOT_RAM_STARTED = True
+    logger.info("ML_TABLE root RAM cache scheduler started (interval=%sm)", root_ram_cache_refresh_minutes())
+    return True
 
 
 def _cache_root() -> Path:
@@ -452,28 +987,24 @@ def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "") -> tupl
     fp = Path(fp).resolve()
     root = str(root_lot_id or "").strip().upper()
     status = cache_status(fp)
-    if not root or not status.get("has_cache"):
+    if not root:
+        return None, status
+    _record_root_access(fp, root)
+    if not status.get("has_cache"):
+        _ensure_lookup_cache_ready_for_root_ram(fp, status)
+        return None, status
+    if status.get("source_stale"):
+        _ensure_lookup_cache_ready_for_root_ram(fp, status)
         return None, status
     files = _partition_files(cache_dir_for(fp), root)
     if not files:
         return None, status
-    lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
-    wf_values = [str(w).strip() for w in str(wafer_ids or "").split(",") if str(w).strip()]
-    if wf_values:
-        cols = lf.collect_schema().names()
-        wf_col = _ci_col(cols, "wafer_id", "wf_id", "WAFER_ID", "WF_ID")
-        if wf_col:
-            forms: set[str] = set()
-            for raw in wf_values:
-                value = raw.upper().lstrip("#")
-                forms.add(value)
-                try:
-                    n = int(value)
-                    forms.update({str(n), f"{n:02d}", f"W{n}", f"W{n:02d}", f"WF{n}", f"WF{n:02d}"})
-                except Exception:
-                    pass
-            lf = lf.filter(pl.col(wf_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(forms)))
-    return lf, status
+    lf = _root_ram_cache_get(fp, root, files, status)
+    if lf is None:
+        lf = _root_ram_cache_put(fp, root, files, status)
+    if lf is None:
+        lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
+    return _filter_wafer_lf(lf, wafer_ids), status
 
 
 def readiness_response(fp: Path, root_lot_id: str, selected_cols: list[str], status: dict[str, Any], queued: dict[str, Any] | None = None) -> dict[str, Any]:

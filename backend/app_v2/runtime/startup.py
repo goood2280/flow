@@ -8,6 +8,7 @@ from core.runtime_limits import (
     heavy_background_jobs_enabled,
     splittable_match_cache_enabled,
     splittable_product_ram_cache_scheduler_enabled,
+    splittable_root_lot_ram_cache_scheduler_enabled,
     tracker_et_lot_cache_enabled,
 )
 
@@ -43,6 +44,15 @@ def start_background_services(logger) -> None:
         logger.info(
             "SplitTable product RAM cache scheduler disabled "
             "(set FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE=1 to enable)"
+        )
+    if splittable_root_lot_ram_cache_scheduler_enabled():
+        starters = starters + (
+            ("splittable root lot RAM cache scheduler", "core.ml_table_lookup", "start_root_lot_ram_cache_scheduler"),
+        )
+    else:
+        logger.info(
+            "SplitTable root lot RAM cache scheduler disabled "
+            "(set FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE=1 to enable)"
         )
     if heavy_background_jobs_enabled():
         starters = starters + heavy_starters
