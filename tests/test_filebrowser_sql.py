@@ -2917,6 +2917,57 @@ def test_default_reformatter_folder_versions_json_and_csv(monkeypatch, tmp_path)
     assert csv_versions["versioned"] is True
 
 
+def test_reformatter_single_file_folder_csv_download_uses_db_root_file(monkeypatch, tmp_path):
+    db_root = tmp_path / "db"
+    data_root = tmp_path / "flow-data"
+    (db_root / "reformatter").mkdir(parents=True)
+    (data_root / "reformatter").mkdir(parents=True)
+    (db_root / "reformatter" / "PRODA0.csv").write_text("item,rank\nbase,1\n", encoding="utf-8")
+    (data_root / "reformatter" / "PRODA0.csv").write_text("item,rank\nruntime,9\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(db_root)
+    dummy_paths.data_root = data_root
+    dummy_paths.log_dir = data_root / "logs"
+    dummy_paths.activity_log = dummy_paths.log_dir / "activity.jsonl"
+    dummy_paths.download_log = dummy_paths.log_dir / "downloads.jsonl"
+    dummy_paths.log_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "DL_LOG", dummy_paths.download_log)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    filebrowser._LIST_CACHE.clear()
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    response = filebrowser.download_csv(
+        _Request("viewer", "user"),
+        root="",
+        product="",
+        file="reformatter/PRODA0.csv",
+        sql="",
+        select_cols="",
+        agg_func="",
+        agg_column="",
+        agg_group_by="",
+        apply_reformatter=True,
+        max_rows=10,
+        max_bytes=0,
+    )
+
+    async def read_body():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    body = asyncio.run(read_body())
+    assert b"base" in body
+    assert b"runtime" not in body
+
+
 def _assert_latest_base_version_matches_current(versions: dict) -> dict:
     latest = versions["versions"][0]
     current = versions["current_profile"]

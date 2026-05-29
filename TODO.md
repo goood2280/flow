@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) FileBrowser reformatter 단일파일 CSV 다운로드 보정
 - (Codex) SplitTable root lot RAM cache CPU/메모리 guard 보정
 - (Codex) SplitTable root lot RAM cache prefix/최근조회 설정과 활동 대시보드 검색 lot 표시
 - (Codex) 비밀번호 찾기 메일 API 수신자와 S3 등록 실패 이력 사유 보정

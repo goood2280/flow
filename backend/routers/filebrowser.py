@@ -10152,7 +10152,24 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
         source_files: list[Path] = []
         if file:
             rel = Path(file)
-            if rel.parts and rel.parts[0] == "reformatter":
+            folder_key = str(rel.parts[0]).casefold() if rel.parts else ""
+            single_file_fp = None
+            single_file_folders = _single_file_folder_names(settings)
+            if folder_key in single_file_folders:
+                single_file_fp = _resolve_single_file_folder_data_path(
+                    file,
+                    (_base_root(), _db_root()),
+                    single_file_folders,
+                )
+            if single_file_fp is not None:
+                if single_file_fp.suffix.lower() not in DATA_EXTENSIONS:
+                    raise HTTPException(400, f"Unsupported file type for CSV download: {single_file_fp.suffix}")
+                source_files = [single_file_fp]
+                lazy_lf = scan_one_file(single_file_fp)
+                if lazy_lf is None:
+                    raise HTTPException(400, f"Cannot read: {file}")
+                label = file
+            elif folder_key == "reformatter":
                 suffix = Path(rel.parts[1]).suffix.lower() if len(rel.parts) == 2 else ""
                 if len(rel.parts) != 2 or rel.parts[1].startswith(".") or suffix not in (".csv", ".json"):
                     raise HTTPException(400, "Invalid reformatter path")
