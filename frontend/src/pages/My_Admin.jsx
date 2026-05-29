@@ -742,6 +742,10 @@ export default function My_Admin({user}){
           <Gauge label="메모리" pct={Math.round(sys.memory_percent||0)} used={(sys.memory_used_gb||0).toFixed(1)} total={(sys.memory_total_gb||0).toFixed(1)} unit="GB"/>
           <Gauge label="디스크" pct={Math.round(sys.disk_percent||0)} used={(sys.disk_used_gb||0).toFixed(0)} total={(sys.disk_total_gb||0).toFixed(0)} unit="GB"/>
         </div>
+        {(sys.process_cpu_budget_cores||sys.memory_source)&&<div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginTop:-8,marginBottom:16,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+          <span>Flow CPU {Number(sys.process_cpu_cores||0).toFixed(2)} / {Number(sys.process_cpu_guard_cores||sys.process_cpu_budget_cores||0).toFixed(2)} cores{sys.process_cpu_over_limit?" · over":""}</span>
+          <span>MEM source {sys.memory_source||sys.system_memory_source||"-"}{sys.system_memory_raw_total_gb&&sys.system_memory_raw_total_gb!==sys.system_memory_total_gb?` · raw ${Number(sys.system_memory_raw_total_gb||0).toFixed(1)}GB`:""}</span>
+        </div>}
         <div style={{marginBottom:16}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:8}}>
             <div style={{fontSize:14,fontWeight:700}}>리소스 차트</div>

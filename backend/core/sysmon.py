@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from core.paths import PATHS
-from core.runtime_limits import manual_load_test_enabled, process_memory_snapshot
+from core.runtime_limits import (
+    manual_load_test_enabled,
+    process_cpu_snapshot,
+    process_memory_snapshot,
+    system_memory_snapshot,
+)
 from core.utils import jsonl_append, jsonl_read, jsonl_trim
 
 logger = logging.getLogger("flow.sysmon")
@@ -146,9 +151,22 @@ def _read_proc_meminfo() -> tuple:
         avail_kb = _kb("MemAvailable") or (_kb("MemFree") + _kb("Buffers") + _kb("Cached"))
         used_kb = max(0, total_kb - avail_kb)
         pct = (100.0 * used_kb / total_kb) if total_kb > 0 else 0.0
-        return round(pct, 1), round(used_kb / 1e6, 2), round(total_kb / 1e6, 2)
+        return round(pct, 1), round(used_kb / (1024 ** 2), 2), round(total_kb / (1024 ** 2), 2)
     except Exception:
         return 0.0, 0.0, 0.0
+
+
+def _apply_effective_memory(sample: dict) -> dict:
+    snap = system_memory_snapshot()
+    total = float(snap.get("system_memory_total_gb") or 0.0)
+    available = float(snap.get("system_memory_available_gb") or 0.0)
+    percent = float(snap.get("system_memory_percent") or 0.0)
+    if total > 0:
+        sample["memory_total_gb"] = round(total, 2)
+        sample["memory_used_gb"] = round(max(0.0, total - available), 2)
+        sample["memory_percent"] = round(percent, 1)
+        sample["memory_source"] = snap.get("system_memory_source") or sample.get("source") or ""
+    return sample
 
 
 def _read_proc_disk(path: Path) -> tuple:
@@ -185,7 +203,9 @@ def _collect_stats() -> dict:
             "psutil": False,
             "source": "proc_fallback",
         }
+        _apply_effective_memory(sample)
         sample.update(process_memory_snapshot())
+        sample.update(process_cpu_snapshot())
         return sample
     try:
         cpu = float(_psutil.cpu_percent(interval=0.3))
@@ -216,7 +236,9 @@ def _collect_stats() -> dict:
         "disk_total_gb": round(disk_total, 2),
         "psutil": True,
     }
+    _apply_effective_memory(sample)
     sample.update(process_memory_snapshot())
+    sample.update(process_cpu_snapshot())
     return sample
 
 

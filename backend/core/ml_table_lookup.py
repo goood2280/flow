@@ -21,6 +21,12 @@ from typing import Any
 import polars as pl
 
 from core.paths import PATHS
+from core.runtime_limits import (
+    cpu_budget_cores,
+    process_cpu_snapshot,
+    process_memory_high,
+    process_memory_snapshot,
+)
 
 logger = logging.getLogger("flow.ml_table_lookup")
 
@@ -73,6 +79,8 @@ ROOT_RAM_CACHE_PREFIXES_DEFAULT = ("AZ",)
 ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT = 5000
 ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 50
 ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
+ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
+ROOT_RAM_CACHE_RESOURCE_CHECK_SEC = 1.0
 ROOT_RAM_CACHE_SETTINGS_FILE = PATHS.data_root / "splittable" / "source_config.json"
 _ROOT_RAM_CACHE_LOCK = threading.RLock()
 _ROOT_RAM_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
@@ -87,6 +95,11 @@ _ROOT_RAM_STOP = threading.Event()
 _ROOT_RAM_THREAD: threading.Thread | None = None
 _ROOT_RAM_STARTED = False
 _ROOT_RAM_REFRESH_LOCK = threading.Lock()
+_ROOT_RAM_RESOURCE_STATE: dict[str, Any] = {
+    "checked_epoch": 0.0,
+    "reason": "",
+    "snapshot": {},
+}
 
 
 class MlTableLookupError(ValueError):
@@ -258,6 +271,56 @@ def root_ram_cache_settings() -> dict[str, Any]:
     }
 
 
+def _root_ram_cache_cpu_budget_cores() -> float:
+    default = min(ROOT_RAM_CACHE_CPU_CORES_DEFAULT, cpu_budget_cores())
+    return _env_float(
+        "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_CPU_CORES",
+        default,
+        0.1,
+        ROOT_RAM_CACHE_CPU_CORES_DEFAULT,
+    )
+
+
+def _root_ram_cache_resource_snapshot() -> dict[str, Any]:
+    snap: dict[str, Any] = {}
+    try:
+        snap.update(process_memory_snapshot())
+    except Exception:
+        pass
+    try:
+        snap.update(process_cpu_snapshot(guard_cores=_root_ram_cache_cpu_budget_cores()))
+    except Exception:
+        pass
+    return snap
+
+
+def _root_ram_cache_resource_guard_reason() -> tuple[str, dict[str, Any]]:
+    now = time.time()
+    with _ROOT_RAM_CACHE_LOCK:
+        last = float(_ROOT_RAM_RESOURCE_STATE.get("checked_epoch") or 0.0)
+        if now - last < ROOT_RAM_CACHE_RESOURCE_CHECK_SEC:
+            return (
+                str(_ROOT_RAM_RESOURCE_STATE.get("reason") or ""),
+                dict(_ROOT_RAM_RESOURCE_STATE.get("snapshot") or {}),
+            )
+    snap = _root_ram_cache_resource_snapshot()
+    reason = ""
+    try:
+        if bool(snap.get("process_memory_over_limit")) or process_memory_high():
+            reason = "process_memory_high"
+    except Exception:
+        pass
+    if not reason and bool(snap.get("process_cpu_over_limit")):
+        reason = "process_cpu_high"
+    with _ROOT_RAM_CACHE_LOCK:
+        _ROOT_RAM_RESOURCE_STATE.update({
+            "checked_epoch": now,
+            "reason": reason,
+            "snapshot": snap,
+        })
+    return reason, snap
+
+
 def _root_ram_cache_max_bytes() -> int:
     gb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", ROOT_RAM_CACHE_MAX_GB_DEFAULT, 0.0, 64.0)
     return int(gb * 1024 * 1024 * 1024)
@@ -349,6 +412,7 @@ def clear_root_ram_cache() -> None:
             "last_error": "",
             "products": [],
         })
+        _ROOT_RAM_RESOURCE_STATE.update({"checked_epoch": 0.0, "reason": "", "snapshot": {}})
 
 
 def _record_root_access(fp: Path, root_lot_id: str) -> None:
@@ -409,6 +473,9 @@ def _root_ram_cache_put(
     status: dict[str, Any],
 ) -> pl.LazyFrame | None:
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0 or not files:
+        return None
+    guard_reason, _snap = _root_ram_cache_resource_guard_reason()
+    if guard_reason:
         return None
     root = str(root_lot_id or "").strip().upper()
     key = _root_cache_key(fp, root)
@@ -650,7 +717,9 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                     roots.append(root)
             cached = 0
             missing = 0
-            for root in roots:
+            resource_skipped = 0
+            last_skip_reason = ""
+            for idx, root in enumerate(roots):
                 part_files = _partition_files(cache_dir_for(fp), root)
                 if not part_files:
                     missing += 1
@@ -658,6 +727,11 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 if not force and _root_ram_cache_get(fp, root, part_files, status) is not None:
                     cached += 1
                     continue
+                guard_reason, _snap = _root_ram_cache_resource_guard_reason()
+                if guard_reason:
+                    resource_skipped += len(roots) - idx
+                    last_skip_reason = guard_reason
+                    break
                 if _root_ram_cache_put(fp, root, part_files, status) is not None:
                     cached += 1
             rows.append({
@@ -669,14 +743,19 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 "prefix_roots": len(prefix_roots),
                 "latest_roots": len(latest_roots),
                 "searched_roots": len(searched_roots),
+                "resource_skipped_roots": resource_skipped,
+                "last_skip_reason": last_skip_reason,
                 "cache_status": status.get("status") or "",
             })
     now = time.time()
+    resource_reason, resource_snapshot = _root_ram_cache_resource_guard_reason()
     with _ROOT_RAM_CACHE_LOCK:
         _ROOT_RAM_STATUS.update({
             "last_refresh_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
             "last_refresh_epoch": now,
-            "last_error": "",
+            "last_error": resource_reason or "",
+            "last_resource_guard_reason": resource_reason,
+            "resource": resource_snapshot,
             "products": rows,
         })
     return {
@@ -690,6 +769,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         "searched_roots": searched_limit,
         "frequent_roots": searched_limit,
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3),
+        "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
         "status": root_ram_cache_status(include_detail=False),
     }
 
@@ -714,6 +794,8 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         "hit_roots": len(entries),
         "estimated_mb": round(total_bytes / (1024 * 1024), 3),
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
+        "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
+        "polars_threads": os.environ.get("POLARS_MAX_THREADS") or os.environ.get("FLOW_POLARS_MAX_THREADS") or "",
         "prefixes": settings["prefixes"],
         "prefix_roots": settings["prefix_limit"],
         "searched_roots": settings["searched_limit"],
@@ -723,8 +805,11 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         "scheduler_started": _ROOT_RAM_STARTED,
         "last_refresh_at": status.get("last_refresh_at") or "",
         "last_error": status.get("last_error") or "",
+        "last_resource_guard_reason": status.get("last_resource_guard_reason") or "",
         "access_roots": access_count,
     }
+    if include_detail:
+        out["resource"] = status.get("resource") or _root_ram_cache_resource_snapshot()
     if include_detail:
         out["roots"] = [
             {

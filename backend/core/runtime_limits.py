@@ -1,7 +1,7 @@
 """Runtime resource defaults for small Flow deployments.
 
 The default resource profile is intentionally sized below a 4-core / 16GB test
-host. Flow should stay inside roughly 3 CPU cores and 12GB process RSS unless an
+host. Flow should stay inside roughly 2 CPU cores and 12GB process RSS unless an
 operator explicitly opts into a larger profile.
 
 These defaults should run before importing Polars, NumPy, or other native
@@ -11,10 +11,16 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 
 
 _SMALL_PROFILES = {"", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
+_SMALL_CPU_BUDGET_CORES_DEFAULT = 2.0
+_CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
+_PROCESS_CPU_LOCK = threading.Lock()
+_PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -46,13 +52,50 @@ def is_small_profile() -> bool:
     return resource_profile() in _SMALL_PROFILES
 
 
+def _read_float_file(path: str) -> float:
+    try:
+        raw = open(path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return 0.0
+    try:
+        return float(raw)
+    except Exception:
+        return 0.0
+
+
+def _cgroup_cpu_quota_cores() -> float:
+    try:
+        raw = open("/sys/fs/cgroup/cpu.max", "r", encoding="utf-8").read().strip()
+        quota_raw, period_raw, *_ = raw.split()
+        if quota_raw != "max":
+            quota = float(quota_raw)
+            period = float(period_raw)
+            if quota > 0 and period > 0:
+                return quota / period
+    except Exception:
+        pass
+    quota = _read_float_file("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+    period = _read_float_file("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+    if quota > 0 and period > 0:
+        return quota / period
+    return 0.0
+
+
+def effective_cpu_count() -> float:
+    detected = float(os.cpu_count() or 1)
+    quota = _cgroup_cpu_quota_cores()
+    if quota > 0:
+        detected = min(detected, quota)
+    return max(1.0, detected)
+
+
 def cpu_budget_cores() -> float:
-    raw = os.environ.get("FLOW_CPU_BUDGET_CORES", "3.3" if is_small_profile() else "")
+    raw = os.environ.get("FLOW_CPU_BUDGET_CORES", str(_SMALL_CPU_BUDGET_CORES_DEFAULT) if is_small_profile() else "")
     try:
         value = float(raw)
     except Exception:
-        value = 3.3 if is_small_profile() else float(os.cpu_count() or 1)
-    return max(1.0, value)
+        value = _SMALL_CPU_BUDGET_CORES_DEFAULT if is_small_profile() else effective_cpu_count()
+    return max(1.0, min(value, effective_cpu_count()))
 
 
 def process_memory_limit_gb() -> float:
@@ -157,25 +200,111 @@ def _read_meminfo_kb(field: str) -> int:
         return 0
 
 
-def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
-    """Host/container memory state used by the soft guard."""
-    total_gb = 0.0
-    available_gb = 0.0
-    percent = 0.0
+def _read_int_file(path: str) -> int:
+    try:
+        raw = open(path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return 0
+    if raw.lower() in {"", "max"}:
+        return 0
+    try:
+        value = int(raw)
+    except Exception:
+        return 0
+    if value <= 0 or value >= _CGROUP_MEMORY_UNLIMITED_BYTES:
+        return 0
+    return value
+
+
+def _cgroup_memory_snapshot_bytes() -> dict[str, float | str]:
+    total = _read_int_file("/sys/fs/cgroup/memory.max")
+    used = _read_int_file("/sys/fs/cgroup/memory.current")
+    source = "cgroup_v2" if total else ""
+    if not total:
+        total = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        used = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        source = "cgroup_v1" if total else ""
+    if not total:
+        return {}
+    used = max(0, min(int(total), int(used or 0)))
+    return {"total_bytes": float(total), "used_bytes": float(used), "source": source}
+
+
+def _memory_override_total_bytes() -> int:
+    raw = (
+        os.environ.get("FLOW_SYSTEM_MEMORY_TOTAL_GB")
+        or os.environ.get("FLOW_EFFECTIVE_MEMORY_TOTAL_GB")
+        or ""
+    )
+    try:
+        gb = float(raw)
+    except Exception:
+        return 0
+    if gb <= 0:
+        return 0
+    return int(gb * 1024 * 1024 * 1024)
+
+
+def _host_memory_snapshot_bytes() -> dict[str, float | str]:
     try:
         import psutil  # type: ignore
 
         vm = psutil.virtual_memory()
-        total_gb = float(vm.total) / (1024 ** 3)
-        available_gb = float(vm.available) / (1024 ** 3)
-        percent = float(vm.percent)
+        return {
+            "total_bytes": float(vm.total),
+            "available_bytes": float(vm.available),
+            "percent": float(vm.percent),
+            "source": "psutil",
+        }
     except Exception:
         total_kb = _read_meminfo_kb("MemTotal")
         avail_kb = _read_meminfo_kb("MemAvailable")
-        total_gb = float(total_kb) / (1024 ** 2) if total_kb else 0.0
-        available_gb = float(avail_kb) / (1024 ** 2) if avail_kb else 0.0
-        if total_gb > 0:
-            percent = max(0.0, min(100.0, (1.0 - available_gb / total_gb) * 100.0))
+        total_bytes = float(total_kb) * 1024.0 if total_kb else 0.0
+        available_bytes = float(avail_kb) * 1024.0 if avail_kb else 0.0
+        percent = 0.0
+        if total_bytes > 0:
+            percent = max(0.0, min(100.0, (1.0 - available_bytes / total_bytes) * 100.0))
+        return {
+            "total_bytes": total_bytes,
+            "available_bytes": available_bytes,
+            "percent": percent,
+            "source": "proc_meminfo",
+        }
+
+
+def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
+    """Host/container memory state used by the soft guard."""
+    host = _host_memory_snapshot_bytes()
+    total_bytes = float(host.get("total_bytes") or 0.0)
+    available_bytes = float(host.get("available_bytes") or 0.0)
+    percent = float(host.get("percent") or 0.0)
+    source = str(host.get("source") or "")
+    raw_total_bytes = total_bytes
+
+    limit = _cgroup_memory_snapshot_bytes()
+    override_total = _memory_override_total_bytes()
+    if override_total:
+        limit = {
+            "total_bytes": float(override_total),
+            "source": "env_override",
+        }
+    if limit:
+        limit_total = float(limit.get("total_bytes") or 0.0)
+        if limit_total > 0 and (not total_bytes or limit_total < total_bytes):
+            used_bytes = float(limit.get("used_bytes") or 0.0)
+            if used_bytes > 0:
+                total_bytes = limit_total
+                available_bytes = max(0.0, total_bytes - min(total_bytes, used_bytes))
+                percent = max(0.0, min(100.0, 100.0 * used_bytes / total_bytes))
+            else:
+                total_bytes = limit_total
+                available_bytes = min(available_bytes, total_bytes) if available_bytes else 0.0
+                if total_bytes > 0:
+                    percent = max(0.0, min(100.0, (1.0 - available_bytes / total_bytes) * 100.0))
+            source = str(limit.get("source") or source)
+
+    total_gb = total_bytes / (1024 ** 3) if total_bytes else 0.0
+    available_gb = available_bytes / (1024 ** 3) if available_bytes else 0.0
     min_available = _env_float(
         "FLOW_SYSTEM_MEMORY_MIN_AVAILABLE_GB",
         max(2.0, float(reserve_gb or 0.0)),
@@ -197,6 +326,8 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
         "system_memory_min_available_gb": round(min_available, 3),
         "system_memory_guard_percent": round(high_percent, 1),
         "system_memory_low": low,
+        "system_memory_source": source,
+        "system_memory_raw_total_gb": round(raw_total_bytes / (1024 ** 3), 3) if raw_total_bytes else 0,
     }
 
 
@@ -228,6 +359,55 @@ def process_memory_snapshot() -> dict:
     return out
 
 
+def _read_process_cpu_seconds() -> float:
+    try:
+        import psutil  # type: ignore
+
+        times = psutil.Process(os.getpid()).cpu_times()
+        return float(getattr(times, "user", 0.0)) + float(getattr(times, "system", 0.0))
+    except Exception:
+        try:
+            times = os.times()
+            return float(times.user) + float(times.system)
+        except Exception:
+            return 0.0
+
+
+def process_cpu_snapshot(sample_seconds: float = 0.0, guard_cores: float | None = None) -> dict:
+    """Current process CPU pressure measured in full-core equivalents."""
+    if sample_seconds and sample_seconds > 0:
+        time.sleep(max(0.0, min(float(sample_seconds), 1.0)))
+    now = time.time()
+    cpu_seconds = _read_process_cpu_seconds()
+    with _PROCESS_CPU_LOCK:
+        prev_cpu = float(_PROCESS_CPU_LAST.get("cpu_seconds") or 0.0)
+        prev_wall = float(_PROCESS_CPU_LAST.get("wall") or 0.0)
+        _PROCESS_CPU_LAST["cpu_seconds"] = cpu_seconds
+        _PROCESS_CPU_LAST["wall"] = now
+    percent = 0.0
+    if prev_wall > 0 and now > prev_wall and cpu_seconds >= prev_cpu:
+        percent = max(0.0, 100.0 * (cpu_seconds - prev_cpu) / (now - prev_wall))
+    budget = cpu_budget_cores()
+    guard = guard_cores if guard_cores is not None else _env_float("FLOW_PROCESS_CPU_GUARD_CORES", budget, 0.1, 1024.0)
+    try:
+        guard = float(guard)
+    except Exception:
+        guard = budget
+    cores_used = percent / 100.0
+    return {
+        "process_cpu_percent": round(percent, 1),
+        "process_cpu_cores": round(cores_used, 3),
+        "process_cpu_budget_cores": round(budget, 3),
+        "process_cpu_guard_cores": round(max(0.1, guard), 3),
+        "process_cpu_over_limit": bool(cores_used >= max(0.1, guard)),
+        "system_cpu_count": round(effective_cpu_count(), 3),
+    }
+
+
+def process_cpu_high(guard_cores: float | None = None, sample_seconds: float = 0.0) -> bool:
+    return bool(process_cpu_snapshot(sample_seconds=sample_seconds, guard_cores=guard_cores).get("process_cpu_over_limit"))
+
+
 def process_memory_high(reserve_gb: float = 1.0) -> bool:
     limit = process_memory_limit_gb()
     if limit <= 0:
@@ -253,17 +433,17 @@ def _default_polars_threads() -> str:
     raw = os.environ.get("FLOW_POLARS_MAX_THREADS", "").strip()
     if raw:
         return raw
-    cores = os.cpu_count() or 2
+    cores = int(effective_cpu_count())
     budget_threads = int(cpu_budget_cores())
-    # Keep one core free for uvicorn/event loop/OS. On the default 3.3-core
-    # budget this resolves to 3 Polars threads.
+    # Keep one core free for uvicorn/event loop/OS. On the default small
+    # budget this resolves to 2 Polars threads, including 5-core hosts.
     return str(max(1, min(budget_threads, max(1, cores - 1))))
 
 
 def apply_runtime_limits() -> None:
     """Apply CPU/memory-conscious defaults unless deploy set explicit values."""
     os.environ.setdefault("FLOW_RESOURCE_PROFILE", "small")
-    os.environ.setdefault("FLOW_CPU_BUDGET_CORES", "3.3" if is_small_profile() else "")
+    os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(_SMALL_CPU_BUDGET_CORES_DEFAULT) if is_small_profile() else "")
     os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_GB", "12" if is_small_profile() else "0")
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
     os.environ.setdefault("RAYON_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))

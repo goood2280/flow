@@ -118,6 +118,16 @@ def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monk
     assert "C1000" not in roots
 
 
+def test_root_lot_ram_cache_cpu_budget_is_capped_at_two_cores(monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setenv("FLOW_CPU_BUDGET_CORES", "5")
+    monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_CPU_CORES", "5")
+
+    status = ml_table_lookup.root_ram_cache_status()
+
+    assert status["cpu_budget_cores"] == 2.0
+
+
 def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", tmp_path / "match_cache")
     splittable._LOT_LOOKUP_CACHE.clear()
