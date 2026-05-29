@@ -501,12 +501,16 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
     """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
     v9.x: admin 메일 설정(domain 포함)을 사용해 사용자에게 임시 비번을 발송."""
     from core.auth import hash_password, revoke_user_tokens
-    from core.mail import send_mail
+    from core.mail import load_mail_cfg, send_mail
     users = read_users()
     try:
         actor = (current_user(request).get("username") or "flow-admin").strip()
     except Exception:
         actor = "flow-admin"
+    try:
+        mail_sender = (load_mail_cfg().get("from_addr") or "").strip()
+    except Exception:
+        mail_sender = ""
     for u in users:
         if u["username"] == req.username:
             new_pw = secrets.token_urlsafe(9)  # ≈12 chars
@@ -525,12 +529,11 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
             )
             try:
                 mail_res = send_mail(
-                    sender_username=actor or "flow-admin",
+                    sender_username=mail_sender or actor or "flow-admin",
                     receiver_usernames=[req.username],
                     title="[flow] Password Reset",
                     content=content,
                     files=[],
-                    status_code="auth",
                 )
             except Exception as e:
                 mail_res = {"ok": False, "reason": f"{type(e).__name__}: {e}", "to": [], "skipped": [req.username]}

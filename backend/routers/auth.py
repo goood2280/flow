@@ -5,7 +5,7 @@ v8.4.6 보안 패치:
   - /api/auth/logout 추가 (토큰 revoke).
   - /change-password 는 X-Session-Token 의 소유자만 본인 비번 변경 가능.
 """
-import csv, datetime, secrets
+import csv, datetime, html, secrets
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from core.paths import PATHS
@@ -92,6 +92,14 @@ def _forgot_password_mail_recipient(username: str) -> str:
     except Exception:
         domain = ""
     return f"{login_id}@{domain}" if domain else login_id
+
+
+def _auth_mail_sender(fallback: str = "flow") -> str:
+    try:
+        from_addr = (_mail.load_mail_cfg().get("from_addr") or "").strip()
+    except Exception:
+        from_addr = ""
+    return from_addr or fallback
 
 
 def write_users(users):
@@ -235,22 +243,23 @@ def forgot_password(req: ForgotPasswordReq):
     u["password_hash"] = auth_core.hash_password(temp_pw)
     write_users(users)
     title = "[flow] Temporary Password"
+    safe_username = html.escape(username)
+    safe_temp_pw = html.escape(temp_pw)
     content = (
         "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
         "<p>Your temporary password has been issued.</p>"
-        f"<p><b>Username</b>: {username}<br/>"
-        f"<b>Temporary Password</b>: {temp_pw}</p>"
+        f"<p><b>Username</b>: {safe_username}<br/>"
+        f"<b>Temporary Password</b>: {safe_temp_pw}</p>"
         "<p>Please sign in and change your password immediately.</p>"
         "<p style='color:#666;font-size:12px'>If you did not request this, contact the administrator.</p>"
         "</div>"
     )
     res = _send_mail(
-        sender_username="flow",
+        sender_username=_auth_mail_sender("flow"),
         receiver_usernames=[_forgot_password_mail_recipient(username)],
         title=title,
         content=content,
         files=[],
-        status_code="auth",
     )
     if not res.get("ok"):
         # 메일 발송 실패 시 temp 비번만 바뀌어 계정 잠김이 되지 않도록 롤백.

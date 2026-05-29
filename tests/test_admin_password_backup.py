@@ -64,7 +64,7 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
         "api_url": "dry-run",
         "from_addr": "flow@example.com",
         "domain": "company.co.kr",
-        "status_code": "auth",
+        "status_code": "PASSWORD_RESET",
         "headers": {},
         "extra_data": {},
     })
@@ -78,9 +78,13 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
     assert users[0]["password_hash"] == "hashed:RESET_TOKEN"
     assert writes
     assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
+    assert sent[0]["kwargs"]["sender_username"] == "flow@example.com"
+    assert sent[0]["kwargs"].get("status_code", "") != "auth"
     assert "RESET_TOKEN" in sent[0]["kwargs"]["content"]
     assert sent[0]["kwargs"]["files"] == []
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
+    assert sent[0]["result"]["payload"]["senderMailAddress"] == "flow@example.com"
+    assert sent[0]["result"]["payload"]["statusCode"] == "PASSWORD_RESET"
     assert sent[0]["result"]["attachments"] == []
 
 
@@ -132,9 +136,11 @@ def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
 
     monkeypatch.setattr(auth_router, "read_users", lambda: users)
     monkeypatch.setattr(auth_router, "write_users", fake_write_users)
+    temp_pw = "TMP-TMPTOKEN"
+
     monkeypatch.setattr(auth_router.secrets, "token_urlsafe", lambda _n: "TMP_TOKEN")
-    monkeypatch.setattr(auth_core, "hash_password", lambda pw: f"hashed:{pw}")
     monkeypatch.setattr(auth_core, "revoke_user_tokens", lambda username: 1)
+    monkeypatch.setattr(auth_core, "issue_token", lambda username, role: ("session-token", 1234567890.0))
     monkeypatch.setattr(auth_router, "_audit_user", lambda *args, **kwargs: None)
     monkeypatch.setattr(auth_router, "_send_mail", spy_send_mail)
     monkeypatch.setattr(mail, "load_mail_cfg", lambda: {
@@ -142,7 +148,7 @@ def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
         "api_url": "dry-run",
         "from_addr": "flow@example.com",
         "domain": "company.co.kr",
-        "status_code": "auth",
+        "status_code": "PASSWORD_RESET",
         "headers": {},
         "extra_data": {},
     })
@@ -151,14 +157,21 @@ def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
 
     assert result["ok"] is True
     assert "temporary password" in result["message"].lower()
-    assert users[0]["password_hash"] == "hashed:TMP-TMPTOKEN"
+    assert auth_core.verify_password(temp_pw, users[0]["password_hash"])[0] is True
     assert writes
     assert sent[0]["kwargs"]["receiver_usernames"] == ["alice@company.co.kr"]
+    assert sent[0]["kwargs"]["sender_username"] == "flow@example.com"
+    assert sent[0]["kwargs"].get("status_code", "") != "auth"
     assert "extra_emails" not in sent[0]["kwargs"]
-    assert "TMP-TMPTOKEN" in sent[0]["kwargs"]["content"]
+    assert temp_pw in sent[0]["kwargs"]["content"]
     assert sent[0]["kwargs"]["files"] == []
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
+    assert sent[0]["result"]["payload"]["senderMailAddress"] == "flow@example.com"
+    assert sent[0]["result"]["payload"]["statusCode"] == "PASSWORD_RESET"
     assert sent[0]["result"]["attachments"] == []
+    login_result = auth_router.login(auth_router.LoginReq(username="alice", password=temp_pw))
+    assert login_result["ok"] is True
+    assert login_result["username"] == "alice"
 
 
 def test_forgot_password_does_not_lookup_by_email(monkeypatch):
