@@ -188,6 +188,7 @@ PRODUCT_RAM_CACHE_REFRESH_MINUTES_DEFAULT = 30
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_MIN = 30
 PRODUCT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
 PRODUCT_RAM_CACHE_MAX_GB_DEFAULT = 3.0
+ROOT_LOT_CACHE_LIMIT_MAX = 50000
 _PRODUCT_RAM_CACHE_LOCK = threading.RLock()
 _PRODUCT_RAM_CACHE: dict[str, dict] = {}
 _PRODUCT_RAM_CACHE_STATUS: dict[str, dict] = {}
@@ -3237,7 +3238,7 @@ def _normalize_root_lot_cache_settings(raw: dict | None) -> dict:
             value = int(data.get(key))
         except Exception:
             value = default
-        return max(0, min(5000, value))
+        return max(0, min(ROOT_LOT_CACHE_LIMIT_MAX, value))
 
     return {
         "prefixes": prefixes,

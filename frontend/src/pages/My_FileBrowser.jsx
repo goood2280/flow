@@ -501,6 +501,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[baseVersionPreviewLoading,setBaseVersionPreviewLoading]=useState(false);
   const[baseVersionFilter,setBaseVersionFilter]=useState("");
   const[baseCurrentProfile,setBaseCurrentProfile]=useState(null);
+  const[baseSaveBusy,setBaseSaveBusy]=useState("");
   const[rawEditing,setRawEditing]=useState(false);
   const[rawEditText,setRawEditText]=useState("");
   const[schemaSnapshotMsg,setSchemaSnapshotMsg]=useState("");
@@ -690,8 +691,11 @@ export default function My_FileBrowser({user,onNavigate}){
   const canEditRawBase=mode==="base"&&!!baseRaw&&baseVersioned&&isFileBrowserAdmin&&["yaml","json","md","txt"].includes(String(baseRaw.kind||"").toLowerCase());
   const saveRawBaseFile=async()=>{
     if(!canEditRawBase||!selBaseFile)return;
+    if(baseSaveBusy)return;
     const note=window.prompt("변경 사유를 입력하세요.", "Raw EDM edit");
     if(note===null)return;
+    setBaseSaveBusy("raw");
+    setBaseVersionMsg("저장 중...");
     try{
       const d=await sf(API+"/base-file/text-save",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({file:selBaseFile,text:rawEditText,username:user?.username||"",note})});
@@ -701,6 +705,7 @@ export default function My_FileBrowser({user,onNavigate}){
       loadBaseVersions(selBaseFile);
       loadBaseFileView(selBaseFile,{});
     }catch(e){setBaseVersionMsg(e.message||"저장 실패");}
+    finally{setBaseSaveBusy("");}
   };
   const saveSchemaSnapshot=async()=>{
     const cols=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
@@ -1802,6 +1807,7 @@ export default function My_FileBrowser({user,onNavigate}){
   },[canEditCurrentBase,isBaseEditing,readBasePasteRows,pasteBaseRows]);
 
   const saveBaseEdit=async()=>{
+    if(baseSaveBusy)return;
     if(!canEditCurrentBase||!isBaseEditing){setError("현재 편집 상태가 아닙니다.");return;}
     if(!editCols.length){setError("열이 없습니다.");return;}
     const saveCols=normalizeColumnNames(editCols);
@@ -1811,6 +1817,8 @@ export default function My_FileBrowser({user,onNavigate}){
     const csvText=buildSaveText(saveCols,saveRows,saveDelimiter,includeHeader);
     const note=window.prompt("변경 사유를 입력하세요.", "Grid EDM edit");
     if(note===null)return;
+    setBaseSaveBusy("grid");
+    setBaseVersionMsg("저장 중...");
     const payload=JSON.stringify({
       file:selBaseFile,
       mode:"replace",
@@ -1847,6 +1855,7 @@ export default function My_FileBrowser({user,onNavigate}){
       }else{
         setError(lastErr?.message||"저장 실패");
       }
+      setBaseSaveBusy("");
       return;
     }
     try{
@@ -1857,6 +1866,7 @@ export default function My_FileBrowser({user,onNavigate}){
       loadBaseVersions(selBaseFile);
       loadBaseFileView(selBaseFile,reloadState);
     }catch(e){setError(e?.message||"저장 처리 중 오류");}
+    finally{setBaseSaveBusy("");}
   };
 
   const toggleCol=(col)=>{
@@ -2163,7 +2173,8 @@ export default function My_FileBrowser({user,onNavigate}){
                 {baseVersioned?`versioned · ${baseVersions.length}/${baseVersionCap}`:"preview only"}
               </span>
               {(baseVersionLoading||baseVersionPreviewLoading)&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>loading...</span>}
-              {baseVersionMsg&&<span style={{fontSize:12,color:baseVersionMsg.includes("완료")?FB_OK.fg:FB_BAD.fg}}>{baseVersionMsg}</span>}
+              {baseSaveBusy&&<Loading text="저장 중..." size="sm" />}
+              {baseVersionMsg&&<span style={{fontSize:12,color:baseVersionMsg.includes("완료")?FB_OK.fg:(baseVersionMsg.includes("중")?"var(--text-secondary)":FB_BAD.fg)}}>{baseVersionMsg}</span>}
               <input value={baseVersionFilter} onChange={e=>setBaseVersionFilter(e.target.value)} placeholder="filter actor/action/note" style={{marginLeft:"auto",padding:"3px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:170}}/>
               <button onClick={()=>loadBaseVersions(selBaseFile)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>새로고침</button>
             </div>
@@ -2246,11 +2257,11 @@ export default function My_FileBrowser({user,onNavigate}){
               </span>
               {canEditRawBase&&!rawEditing&&<button onClick={()=>{setRawEditText(baseRaw.text||"");setRawEditing(true);}} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:"pointer"}}>편집</button>}
               {rawEditing&&<>
-                <button onClick={saveRawBaseFile} style={{padding:"4px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>저장</button>
-                <button onClick={()=>{setRawEditing(false);setRawEditText("");}} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>취소</button>
+                <button onClick={saveRawBaseFile} disabled={!!baseSaveBusy} style={{padding:"4px 10px",borderRadius:5,border:"none",background:baseSaveBusy?"var(--text-secondary)":"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.75:1}}>{baseSaveBusy==="raw"?"저장 중...":"저장"}</button>
+                <button onClick={()=>{setRawEditing(false);setRawEditText("");}} disabled={!!baseSaveBusy} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>취소</button>
               </>}
             </div>
-            {rawEditing?<textarea value={rawEditText} onChange={e=>setRawEditText(e.target.value)} spellCheck={false}
+            {rawEditing?<textarea value={rawEditText} onChange={e=>setRawEditText(e.target.value)} spellCheck={false} disabled={!!baseSaveBusy}
               style={{width:"100%",minHeight:"55vh",boxSizing:"border-box",margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--accent)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",resize:"vertical"}}/>:
               <pre style={{margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",whiteSpace:"pre-wrap",wordBreak:"break-word",maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
                 <code>{baseRaw.text}</code>
@@ -2295,9 +2306,9 @@ export default function My_FileBrowser({user,onNavigate}){
                     <button onClick={addBaseEditColumn} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:13,fontWeight:700,cursor:"pointer"}}>열 추가</button>
                     <button onClick={()=>deleteBaseEditColumn(selectedEditCell.c)} disabled={editCols.length<=1}
                       style={{padding:"5px 10px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:editCols.length>1?FB_BAD.fg:"var(--text-secondary)",fontSize:13,fontWeight:700,cursor:editCols.length>1?"pointer":"default",opacity:editCols.length>1?1:0.45}}>활성 열 삭제</button>
-                    <button onClick={saveBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
-                    <button onClick={restoreBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>원본복원</button>
-                    <button onClick={cancelBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>취소</button>
+                    <button onClick={saveBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"none",background:baseSaveBusy?"var(--text-secondary)":"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.75:1}}>{baseSaveBusy==="grid"?"저장 중...":"저장"}</button>
+                    <button onClick={restoreBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>원본복원</button>
+                    <button onClick={cancelBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>취소</button>
                     <span style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center"}}>
                       <span>붙여넣기:</span>
                       <select value={pasteMode} onChange={e=>setPasteMode(e.target.value)} style={{padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>

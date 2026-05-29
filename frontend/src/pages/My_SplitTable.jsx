@@ -33,6 +33,7 @@ const CELL_COLORS=[
 const COLOR_PREFIXES=["KNOB","MASK"];
 const CANDIDATE_PREVIEW_LIMIT=50;
 const CANDIDATE_SEARCH_LIMIT=120;
+const ROOT_LOT_CACHE_LIMIT_MAX=50000;
 const ROOT_LOT_CACHE_DEFAULT={prefixes:["AZ"],prefix_limit:5000,searched_limit:50};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
 const normalizeRootLotCacheSettings=(raw={})=>{
@@ -47,7 +48,7 @@ const normalizeRootLotCacheSettings=(raw={})=>{
   const num=(key, fallback)=>{
     const n=Number(src[key]);
     if(!Number.isFinite(n))return fallback;
-    return Math.max(0,Math.min(5000,Math.floor(n)));
+    return Math.max(0,Math.min(ROOT_LOT_CACHE_LIMIT_MAX,Math.floor(n)));
   };
   return {
     prefixes:prefixes.length?prefixes:[...ROOT_LOT_CACHE_DEFAULT.prefixes],
@@ -1410,10 +1411,10 @@ export default function My_SplitTable({user}){
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,alignItems:"center"}}>
                   <input value={rootLotCacheDraft.prefixText||""} onChange={e=>setRootLotCacheDraft(d=>({...d,prefixText:e.target.value}))}
                     placeholder="AZ, A9" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <input type="number" min="0" max="5000" value={rootLotCacheDraft.prefix_limit}
+                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.prefix_limit}
                     onChange={e=>setRootLotCacheDraft(d=>({...d,prefix_limit:e.target.value}))}
                     title="prefix 대상 최대 캐싱 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <input type="number" min="0" max="5000" value={rootLotCacheDraft.searched_limit}
+                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.searched_limit}
                     onChange={e=>setRootLotCacheDraft(d=>({...d,searched_limit:e.target.value}))}
                     title="prefix가 안 맞아도 유지할 최근 검색 root lot 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
                   <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}

@@ -79,6 +79,31 @@ def test_root_lot_ram_cache_settings_read_splittable_source_config(tmp_path, mon
     assert settings["searched_limit"] == 7
 
 
+def test_root_lot_ram_cache_settings_cap_at_50000(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    cfg = tmp_path / "source_config.json"
+    cfg.write_text(json.dumps({
+        "root_lot_cache": {
+            "prefixes": ["AZ"],
+            "prefix_limit": 60000,
+            "searched_limit": 70000,
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
+
+    settings = ml_table_lookup.root_ram_cache_settings()
+    normalized = splittable._normalize_root_lot_cache_settings({
+        "prefixes": ["AZ"],
+        "prefix_limit": 60000,
+        "searched_limit": 70000,
+    })
+
+    assert settings["prefix_limit"] == 50000
+    assert settings["searched_limit"] == 50000
+    assert normalized["prefix_limit"] == 50000
+    assert normalized["searched_limit"] == 50000
+
+
 def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
 

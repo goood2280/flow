@@ -78,6 +78,7 @@ ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT = 100
 ROOT_RAM_CACHE_PREFIXES_DEFAULT = ("AZ",)
 ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT = 5000
 ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 50
+ROOT_RAM_CACHE_ROOTS_MAX = 50000
 ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
 ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
 ROOT_RAM_CACHE_RESOURCE_CHECK_SEC = 1.0
@@ -212,11 +213,11 @@ def root_ram_cache_refresh_minutes() -> int:
 
 
 def _root_ram_cache_recent_limit() -> int:
-    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_RECENT_ROOTS", ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT, 0, 5000)
+    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_RECENT_ROOTS", ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT, 0, ROOT_RAM_CACHE_ROOTS_MAX)
 
 
 def _root_ram_cache_frequent_limit() -> int:
-    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS", ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT, 0, 5000)
+    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS", ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT, 0, ROOT_RAM_CACHE_ROOTS_MAX)
 
 
 def _root_ram_cache_prefixes() -> list[str]:
@@ -233,13 +234,13 @@ def _root_ram_cache_prefix_limit() -> int:
             "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS",
             ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
             0,
-            5000,
+            ROOT_RAM_CACHE_ROOTS_MAX,
         )
     return _bounded_int(
         _root_ram_settings().get("prefix_limit"),
         ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
         0,
-        5000,
+        ROOT_RAM_CACHE_ROOTS_MAX,
     )
 
 
@@ -249,7 +250,7 @@ def _root_ram_cache_searched_limit() -> int:
             "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_SEARCHED_ROOTS",
             ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT,
             0,
-            5000,
+            ROOT_RAM_CACHE_ROOTS_MAX,
         )
     if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS" in os.environ:
         return _root_ram_cache_frequent_limit()
@@ -257,7 +258,7 @@ def _root_ram_cache_searched_limit() -> int:
         _root_ram_settings().get("searched_limit"),
         ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT,
         0,
-        5000,
+        ROOT_RAM_CACHE_ROOTS_MAX,
     )
 
 

@@ -8,6 +8,7 @@ import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
 import { canManagePage } from "../lib/permissions";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
+import Loading from "../components/Loading";
 import { toast } from "../components/Toast";
 import { Button, Card, Chip, Pill, TableWrap, Tbl, statusPalette, chartPalette } from "../components/UXKit";
 import SplitTableSnapshotView from "../components/SplitTableSnapshotView";
@@ -1144,6 +1145,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   const [attachments, setAttachments] = useState([]); // inform image URLs to include
   const [filter, setFilter] = useState("");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [sent, setSent] = useState(null);
   const [error, setError] = useState("");
   const [showMgr, setShowMgr] = useState(false);  // v8.8.3: 공용 메일 그룹 관리 서브모달
@@ -1222,10 +1224,12 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   const effectiveEmailCount = totalEmails || (preview?.auto_module_used ? previewEmails.length : 0);
 
   const doSend = () => {
+    if (sendingRef.current) return;
     setError(""); setSent(null);
     const to = computedEmails();
     if (to.length === 0 && !(root.module || "").trim()) { setError("수신자를 선택하거나 인폼 모듈을 지정하세요."); return; }
     if (to.length > 199) { setError(`수신자는 최대 199명입니다 (현재 ${to.length}명).`); return; }
+    sendingRef.current = true;
     setSending(true);
     sf(`${API}/${root.id}/send-mail`, {
       method: "POST",
@@ -1240,7 +1244,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
       setSent({ ok: true, to: r.to || to, status: r.status, dry_run: !!r.dry_run });
     }).catch(e => {
       setError(e?.message || "메일 전송 실패");
-    }).finally(() => setSending(false));
+    }).finally(() => { sendingRef.current = false; setSending(false); });
   };
 
   const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
@@ -1411,6 +1415,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
         />
 
         {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
+        {sending && <div style={{ padding: "6px 10px", background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Loading text="메일 전송 중..." size="sm" /></div>}
         {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -1666,6 +1671,8 @@ export default function My_Inform({ user }) {
   const [mailDialogRoot, setMailDialogRoot] = useState(null);
 
   const [creating, setCreating] = useState(false);
+  const [informSubmitting, setInformSubmitting] = useState(false);
+  const informSubmittingRef = useRef(false);
   const [wizardMode, setWizardMode] = useState("create");
   const [reInformParent, setReInformParent] = useState(null);
   const [form, setForm] = useState(defaultInformForm);
@@ -2096,6 +2103,10 @@ export default function My_Inform({ user }) {
   };
 
   const create = async () => {
+    if (informSubmittingRef.current) {
+      setMsg("등록 처리 중입니다.");
+      return Promise.reject(new Error("submit pending"));
+    }
     const isReInform = wizardMode === "reinform" && !!reInformParent?.id;
     const fabTargets = uniqueClean(form.fab_lot_ids || []);
     const lot = (form.lot_id || "").trim() || (fabTargets[0] || "");
@@ -2108,6 +2119,9 @@ export default function My_Inform({ user }) {
     if (!form.text.trim() && createImages.length === 0 && !(isReInform && form.attach_embed && hasEmbedSnapshot(form.embed))) {
       setMsg("note 를 입력해 주세요."); return Promise.reject(new Error("text required"));
     }
+    informSubmittingRef.current = true;
+    setInformSubmitting(true);
+    setMsg("등록 저장 중...");
     const attachedSetsForSubmit = () => (
       wizardAttachMode === "sets" && Array.isArray(form.embed?.attached_sets)
         ? form.embed.attached_sets.map(s => ({
@@ -2196,11 +2210,12 @@ export default function My_Inform({ user }) {
       }
       return body;
     };
-    const payloads = [];
-    for (const targetLot of submitTargets) payloads.push(await buildBody(targetLot));
-    if (isReInform) {
-      const payload = payloads[0];
-      return postJson(API, payload).then((res) => {
+    try {
+      const payloads = [];
+      for (const targetLot of submitTargets) payloads.push(await buildBody(targetLot));
+      if (isReInform) {
+        const payload = payloads[0];
+        const res = await postJson(API, payload);
         setForm(defaultInformForm());
         setCreateImages([]);
         setWizardStep(0);
@@ -2225,9 +2240,9 @@ export default function My_Inform({ user }) {
           loadDetailForRoot(res.inform);
         }
         setTimeout(refreshAll, 50);
-      }).catch(e => setMsg(e.message));
-    }
-    return postJson(API + "/bulk-create", { informs: payloads }).then((bulk) => {
+        return res;
+      }
+      const bulk = await postJson(API + "/bulk-create", { informs: payloads });
       const results = (bulk.informs || []).map(inform => ({ inform }));
       setForm(defaultInformForm());
       setCreateImages([]);
@@ -2266,7 +2281,14 @@ export default function My_Inform({ user }) {
         if (mailPrefill) setMailDialogRoot({ ...created, __mail_prefill: mailPrefill });
       }
       setTimeout(refreshAll, 50);
-    }).catch(e => setMsg(e.message));
+      return bulk;
+    } catch (e) {
+      setMsg(e.message || "등록 저장 실패");
+      throw e;
+    } finally {
+      informSubmittingRef.current = false;
+      setInformSubmitting(false);
+    }
   };
 
   // v8.8.0: 본문 textarea 에 이미지 Ctrl+V 붙여넣기 → 업로드 후 본문에 markdown 으로 즉시 inline 삽입.
@@ -3158,8 +3180,10 @@ export default function My_Inform({ user }) {
           user={user}
           msg={msg}
           setMsg={setMsg}
+          submitting={informSubmitting}
           onSubmit={() => create().catch(() => {})}
           onClose={() => {
+            if (informSubmittingRef.current) return;
             setCreating(false);
             setWizardMode("create");
             setReInformParent(null);
@@ -4332,7 +4356,7 @@ function InformWizard({
   form, setForm, constants, products, productContacts, lotOptions, fabSearch, setFabSearch, step, setStep,
   attachMode, setAttachMode, selectedSetIds, setSelectedSetIds, embedFetching, embedSchemaCols,
   embedCustomCols, setEmbedCustomCols, embedCustomSearch, setEmbedCustomSearch,
-  setSnapshotTick, mailDraft, setMailDraft, mailMeta, setMailMeta, reasonTemplates, user, msg, setMsg, onSubmit, onClose,
+  setSnapshotTick, mailDraft, setMailDraft, mailMeta, setMailMeta, reasonTemplates, user, msg, setMsg, submitting = false, onSubmit, onClose,
 }) {
   const isReInform = mode === "reinform";
   const productOptions = Array.from(new Set((products || []).map(p => stripMlPrefix(String(p || "").trim())).filter(Boolean))).sort();
@@ -4698,11 +4722,11 @@ function InformWizard({
           )}
           {!isReInform && <div style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>draft 자동 저장</div>}
           {isReInform && <div style={{ marginLeft: "auto" }} />}
-          <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 20 }}>×</button>
+          <button type="button" onClick={onClose} disabled={submitting} style={{ border: "none", background: "transparent", color: "var(--text-secondary)", cursor: submitting ? "wait" : "pointer", fontSize: 20, opacity: submitting ? 0.5 : 1 }}>×</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 14 }}>
           {steps.map((label, i) => {
-            const disabled = isReInform && i === 3;
+            const disabled = submitting || (isReInform && i === 3);
             return (
               <button key={label} type="button" disabled={disabled} onClick={() => { if (!disabled) setStep(i); }}
                 style={{ padding: "7px 8px", borderRadius: 8, border: "1px solid " + (i === step ? "var(--accent)" : "var(--border)"), background: i === step ? "var(--accent)" : "var(--bg-primary)", color: i === step ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 800, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1 }}>
@@ -5106,16 +5130,16 @@ function InformWizard({
             )}
           </div>
         )}
-        {msg && <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BAD.fg}`, color: BAD.fg, background: BAD.bg }}>{msg}</div>}
+        {msg && <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 8, border: `1px solid ${submitting ? INFO.fg : BAD.fg}`, color: submitting ? INFO.fg : BAD.fg, background: submitting ? INFO.bg : BAD.bg }}>{submitting ? <Loading text={msg} size="sm" /> : msg}</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-          <button type="button" onClick={prev} disabled={step === 0}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: step === 0 ? "not-allowed" : "pointer", opacity: step === 0 ? 0.5 : 1, fontSize: 14 }}>이전</button>
+          <button type="button" onClick={prev} disabled={step === 0 || submitting}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: step === 0 || submitting ? "not-allowed" : "pointer", opacity: step === 0 || submitting ? 0.5 : 1, fontSize: 14 }}>이전</button>
           {step < 4 ? (
-            <button type="button" onClick={next}
-              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: "pointer", fontSize: 14 }}>다음</button>
+            <button type="button" onClick={next} disabled={submitting}
+              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: submitting ? "var(--text-secondary)" : "var(--accent)", color: "#fff", fontWeight: 900, cursor: submitting ? "wait" : "pointer", fontSize: 14, opacity: submitting ? 0.75 : 1 }}>다음</button>
           ) : (
-            <button type="button" onClick={() => { if (validate()) onSubmit(); }}
-              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: "pointer", fontSize: 14 }}>{isReInform ? "재인폼 등록" : "등록"}</button>
+            <button type="button" disabled={submitting} onClick={() => { if (!submitting && validate()) onSubmit(); }}
+              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: submitting ? "var(--text-secondary)" : "var(--accent)", color: "#fff", fontWeight: 900, cursor: submitting ? "wait" : "pointer", fontSize: 14, opacity: submitting ? 0.75 : 1 }}>{submitting ? "등록 저장 중..." : (isReInform ? "재인폼 등록" : "등록")}</button>
           )}
         </div>
     </Modal>
