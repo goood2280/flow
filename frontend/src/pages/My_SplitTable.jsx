@@ -33,7 +33,37 @@ const CELL_COLORS=[
 const COLOR_PREFIXES=["KNOB","MASK"];
 const CANDIDATE_PREVIEW_LIMIT=50;
 const CANDIDATE_SEARCH_LIMIT=120;
+const ROOT_LOT_CACHE_DEFAULT={prefixes:["AZ"],prefix_limit:5000,searched_limit:50};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
+const normalizeRootLotCacheSettings=(raw={})=>{
+  const src=raw&&typeof raw==="object"?raw:{};
+  const prefixRaw=Array.isArray(src.prefixes)?src.prefixes:String(src.prefixes||"").split(",");
+  const prefixes=[];const seen=new Set();
+  prefixRaw.forEach(item=>{
+    const p=String(item||"").trim().toUpperCase();
+    if(!p||seen.has(p))return;
+    seen.add(p);prefixes.push(p);
+  });
+  const num=(key, fallback)=>{
+    const n=Number(src[key]);
+    if(!Number.isFinite(n))return fallback;
+    return Math.max(0,Math.min(5000,Math.floor(n)));
+  };
+  return {
+    prefixes:prefixes.length?prefixes:[...ROOT_LOT_CACHE_DEFAULT.prefixes],
+    prefix_limit:num("prefix_limit",ROOT_LOT_CACHE_DEFAULT.prefix_limit),
+    searched_limit:num("searched_limit",ROOT_LOT_CACHE_DEFAULT.searched_limit),
+  };
+};
+const rootLotCacheDraftFromSettings=(raw={})=>{
+  const s=normalizeRootLotCacheSettings(raw);
+  return {...s,prefixText:s.prefixes.join(", ")};
+};
+const settingsFromRootLotCacheDraft=(draft={})=>normalizeRootLotCacheSettings({
+  prefixes:String(draft.prefixText||"").split(","),
+  prefix_limit:draft.prefix_limit,
+  searched_limit:draft.searched_limit,
+});
 const isInlineVmSplitParam=(value)=>{
   const v=String(value||"").trim().toUpperCase();
   return v==="INLINE"||v==="VM"||v.startsWith("INLINE_")||v.startsWith("VM_");
@@ -339,6 +369,10 @@ export default function My_SplitTable({user}){
   const[customTags,setCustomTags]=useState([]);
   const[productCacheStatus,setProductCacheStatus]=useState(null);
   const[productCacheBusy,setProductCacheBusy]=useState(false);
+  const[rootLotCacheStatus,setRootLotCacheStatus]=useState(null);
+  const[rootLotCacheBusy,setRootLotCacheBusy]=useState(false);
+  const[rootLotCacheSaveBusy,setRootLotCacheSaveBusy]=useState(false);
+  const[rootLotCacheDraft,setRootLotCacheDraft]=useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
@@ -366,6 +400,7 @@ export default function My_SplitTable({user}){
   const loadSourceConfig=()=>sf(API+"/source-config").then(d=>{
     setEnabledSources(normalizeEnabledProducts(d.enabled));
     if(d.lot_overrides)setLotOverrides(normalizeOverrideConfig(d.lot_overrides));
+    setRootLotCacheDraft(rootLotCacheDraftFromSettings(d.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
     return d;
   }).catch(()=>({}));
   const reloadMlMatch=()=>{if(!selProd)return Promise.resolve();
@@ -377,6 +412,11 @@ export default function My_SplitTable({user}){
     return sf(API+"/product-cache/status"+q)
       .then(d=>setProductCacheStatus(d))
       .catch(()=>setProductCacheStatus(null));
+  };
+  const reloadRootLotCacheStatus=()=>{const q=selProd?("?product="+encodeURIComponent(selProd)):"";
+    return sf(API+"/root-lot-cache/status"+q)
+      .then(d=>setRootLotCacheStatus(d))
+      .catch(()=>setRootLotCacheStatus(null));
   };
   const persistLotOverrides=async(nextLotOverrides)=>{
     await sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -424,6 +464,29 @@ export default function My_SplitTable({user}){
       .catch(e=>toast.error("제품 원본 RAM cache 갱신 실패: "+(e?.message||e)))
       .finally(()=>setProductCacheBusy(false));
   };
+  const saveRootLotCacheSettings=()=>{
+    const settings=settingsFromRootLotCacheDraft(rootLotCacheDraft);
+    const enabledForSave=enabledSources?[...enabledSources]:(products||[]).filter(p=>p.source_type==="base_file").map(p=>p.name).filter(Boolean);
+    setRootLotCacheSaveBusy(true);
+    sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({enabled:enabledForSave,lot_overrides:lotOverrides||{},root_lot_cache:settings})})
+      .then(()=>{setRootLotCacheDraft(rootLotCacheDraftFromSettings(settings));toast.ok("Root lot RAM cache 설정 저장됨");return Promise.all([loadSourceConfig(),reloadRootLotCacheStatus()]);})
+      .catch(e=>toast.error("Root lot RAM cache 설정 저장 실패: "+(e?.message||e)))
+      .finally(()=>setRootLotCacheSaveBusy(false));
+  };
+  const runRootLotRamCache=()=>{
+    setRootLotCacheBusy(true);
+    sf(API+"/root-lot-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
+      .then(r=>{
+        const rows=r.products||[];
+        const ok=rows.filter(x=>x.ok).length;
+        toast.ok(`Root lot RAM cache 갱신 완료: ${ok}/${rows.length}`);
+        reloadRootLotCacheStatus();
+        reloadProductRamCacheStatus();
+      })
+      .catch(e=>toast.error("Root lot RAM cache 갱신 실패: "+(e?.message||e)))
+      .finally(()=>setRootLotCacheBusy(false));
+  };
   useEffect(()=>{
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
@@ -431,6 +494,7 @@ export default function My_SplitTable({user}){
         const enabled=normalizeEnabledProducts(srcRes.enabled, prods);
         setEnabledSources(enabled);
         if(srcRes.lot_overrides) setLotOverrides(normalizeOverrideConfig(srcRes.lot_overrides));
+        setRootLotCacheDraft(rootLotCacheDraftFromSettings(srcRes.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
         // Set initial product to first visible source
         const visible=enabled?prods.filter(p=>enabled.has(p.name)):prods;
         if(visible.length)setSelProd(visible[0].name);else if(prods.length)setSelProd(prods[0].name);
@@ -494,9 +558,10 @@ export default function My_SplitTable({user}){
   //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);setProductCacheStatus(null);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);setProductCacheStatus(null);setRootLotCacheStatus(null);return;}
     reloadCustomTags();
     reloadProductRamCacheStatus();
+    reloadRootLotCacheStatus();
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
         setProductSchema((d.columns||[]).map(c=>c.name||c));
@@ -1330,6 +1395,36 @@ export default function My_SplitTable({user}){
                 <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                   rows {pc.row_count||0} · {Number(pc.estimated_mb||0).toFixed(1)} MB · {pc.loaded_at||"not loaded"}
                 </span>
+              </div>);})()}
+            {(()=>{const rc=rootLotCacheStatus?.cache||{};const settings=rootLotCacheStatus?.settings||settingsFromRootLotCacheDraft(rootLotCacheDraft);return(
+              <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>Root lot RAM cache</div>
+                  <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                    cached {rc.hit_roots||0} roots · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB
+                  </span>
+                  <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                    prefix {(settings.prefixes||[]).join(",")||"-"} · max {settings.prefix_limit||0} · searched {settings.searched_limit||0}
+                  </span>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,alignItems:"center"}}>
+                  <input value={rootLotCacheDraft.prefixText||""} onChange={e=>setRootLotCacheDraft(d=>({...d,prefixText:e.target.value}))}
+                    placeholder="AZ, A9" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                  <input type="number" min="0" max="5000" value={rootLotCacheDraft.prefix_limit}
+                    onChange={e=>setRootLotCacheDraft(d=>({...d,prefix_limit:e.target.value}))}
+                    title="prefix 대상 최대 캐싱 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                  <input type="number" min="0" max="5000" value={rootLotCacheDraft.searched_limit}
+                    onChange={e=>setRootLotCacheDraft(d=>({...d,searched_limit:e.target.value}))}
+                    title="prefix가 안 맞아도 유지할 최근 검색 root lot 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                  <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}
+                    style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:rootLotCacheSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
+                    {rootLotCacheSaveBusy?"저장 중":"설정 저장"}
+                  </button>
+                  <button onClick={runRootLotRamCache} disabled={rootLotCacheBusy}
+                    style={{padding:"6px 10px",borderRadius:6,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:rootLotCacheBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
+                    {rootLotCacheBusy?"갱신 중":"Root cache 갱신"}
+                  </button>
+                </div>
               </div>);})()}
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}

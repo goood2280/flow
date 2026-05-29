@@ -1422,6 +1422,17 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
     by_tab = collections.Counter()
     by_day = collections.Counter()
     filtered: list = []
+    split_table_lot_searches: list = []
+
+    def _detail_pairs(detail: str) -> dict:
+        out: dict = {}
+        for part in str(detail or "").split():
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            out[key] = value
+        return out
+
     for r in rows:
         ts = (r.get("timestamp") or r.get("time") or "").strip()
         try:
@@ -1440,7 +1451,19 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         t = (r.get("tab") or "") or "(none)"
         by_tab[t] += 1
         by_day[dt.strftime("%Y-%m-%d")] += 1
+        if a == "splittable:view_search":
+            detail = _detail_pairs(r.get("detail") or "")
+            split_table_lot_searches.append({
+                "timestamp": ts,
+                "username": u,
+                "product": detail.get("product", ""),
+                "root_lot_id": detail.get("root_lot_id", ""),
+                "fab_lot_id": detail.get("fab_lot_id", ""),
+                "wafer_ids": detail.get("wafer_ids", ""),
+                "prefix": detail.get("prefix", ""),
+            })
     filtered.sort(key=lambda r: r.get("timestamp") or r.get("time") or "", reverse=True)
+    split_table_lot_searches.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
     return {
         "window_days": days,
         "total": len(filtered),
@@ -1449,6 +1472,7 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         "by_tab": dict(by_tab.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "recent": filtered[:50],
+        "split_table_lot_searches": split_table_lot_searches[:50],
     }
 
 

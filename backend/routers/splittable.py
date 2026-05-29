@@ -736,6 +736,8 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
     """Use the ML_TABLE root lookup cache when a lot-scoped view is available."""
     if not str(root_lot_id or "").strip():
         return None
+    fp = _product_path(product)
+    _ml_table_lookup.record_root_access(fp, root_lot_id)
     ram_lf = _product_ram_cache_lazyframe(product)
     if ram_lf is not None:
         try:
@@ -745,7 +747,6 @@ def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_i
             logger.debug("Product RAM cache scope filter unavailable product=%s root=%s: %s", product, root_lot_id, exc)
             return ram_lf
     try:
-        fp = _product_path(product)
         if fp.suffix.lower() != ".parquet":
             return None
         lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root_lot_id, wafer_ids=wafer_ids)
@@ -3169,6 +3170,7 @@ def get_source_config():
     cfg = load_json(SOURCE_CFG, {"enabled": []})
     cfg.setdefault("enabled", [])
     cfg.setdefault("lot_overrides", {})  # v8.4.4: product-scoped {root_col, fab_col, fab_source, ts_col, join_keys}
+    cfg.setdefault("root_lot_cache", _ml_table_lookup.root_ram_cache_settings())
     # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
     _migrate_legacy_root_prefix(cfg)
     return cfg
@@ -3176,6 +3178,7 @@ def get_source_config():
 class SourceConfigReq(BaseModel):
     enabled: List[str] = []
     lot_overrides: dict = {}  # v8.4.4
+    root_lot_cache: dict | None = None
 
 
 def _normalize_fab_source_path(v: str) -> str:
@@ -3209,12 +3212,48 @@ def _migrate_legacy_root_prefix(cfg: dict) -> dict:
     return cfg
 
 
+def _normalize_root_lot_cache_settings(raw: dict | None) -> dict:
+    data = raw if isinstance(raw, dict) else {}
+    prefixes_raw = data.get("prefixes")
+    if isinstance(prefixes_raw, str):
+        prefix_parts = prefixes_raw.replace("\n", ",").split(",")
+    elif isinstance(prefixes_raw, (list, tuple, set)):
+        prefix_parts = list(prefixes_raw)
+    else:
+        prefix_parts = []
+    prefixes = []
+    seen = set()
+    for item in prefix_parts:
+        prefix = str(item or "").strip().upper()
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        prefixes.append(prefix)
+    if not prefixes:
+        prefixes = ["AZ"]
+
+    def _num(key: str, default: int) -> int:
+        try:
+            value = int(data.get(key))
+        except Exception:
+            value = default
+        return max(0, min(5000, value))
+
+    return {
+        "prefixes": prefixes,
+        "prefix_limit": _num("prefix_limit", 5000),
+        "searched_limit": _num("searched_limit", 50),
+    }
+
+
 @router.post("/source-config/save")
 def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_manager("splittable"))):
     cur = load_json(SOURCE_CFG, {"enabled": [], "lot_overrides": {}})
     cur["enabled"] = req.enabled
     if req.lot_overrides:
         cur.setdefault("lot_overrides", {}).update(req.lot_overrides)
+    if req.root_lot_cache is not None:
+        cur["root_lot_cache"] = _normalize_root_lot_cache_settings(req.root_lot_cache)
     # v8.8.21: legacy root:~~ 삭제.
     _migrate_legacy_root_prefix(cur)
     save_json(SOURCE_CFG, cur)
@@ -6657,6 +6696,11 @@ class ProductRamCacheRefreshReq(BaseModel):
     force: bool = True
 
 
+class RootLotRamCacheRefreshReq(BaseModel):
+    product: str = ""
+    force: bool = True
+
+
 @router.get("/match-cache/status")
 def match_cache_status(request: Request, product: str = Query("")):
     me = current_user(request)
@@ -6723,6 +6767,28 @@ def refresh_product_ram_cache_now(req: ProductRamCacheRefreshReq, request: Reque
     if not is_page_manager(me, "splittable"):
         raise HTTPException(403, "Admin or page manager (splittable) only")
     return enqueue_product_ram_cache_refresh(product=req.product or "", force=bool(req.force), reason="manual")
+
+
+@router.get("/root-lot-cache/status")
+def root_lot_ram_cache_status(request: Request, product: str = Query("")):
+    me = current_user(request)
+    include_detail = is_page_manager(me, "splittable")
+    source_fp = None
+    if str(product or "").strip():
+        try:
+            source_fp = _product_path(product)
+        except Exception:
+            source_fp = None
+    return {
+        "ok": True,
+        "settings": _ml_table_lookup.root_ram_cache_settings(),
+        "cache": _ml_table_lookup.root_ram_cache_status(source_fp, include_detail=include_detail),
+    }
+
+
+@router.post("/root-lot-cache/refresh")
+def refresh_root_lot_ram_cache_now(req: RootLotRamCacheRefreshReq, _perm=Depends(require_page_manager("splittable"))):
+    return _ml_table_lookup.refresh_root_lot_ram_cache(product=req.product or "", force=bool(req.force))
 
 
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
@@ -8316,6 +8382,29 @@ def _split_view_request_user(request: Request | None) -> tuple[str, str]:
         return "", "admin"
 
 
+def _audit_split_view_search(
+    request: Request | None,
+    product: str,
+    root_lot_id: str,
+    fab_lot_id: str,
+    wafer_ids: str,
+    prefix: str,
+) -> None:
+    if request is None or not (str(root_lot_id or "").strip() or str(fab_lot_id or "").strip()):
+        return
+    username, _role = _split_view_request_user(request)
+    if not username:
+        return
+    detail = (
+        f"product={str(product or '').strip()} "
+        f"root_lot_id={str(root_lot_id or '').strip()} "
+        f"fab_lot_id={str(fab_lot_id or '').strip()} "
+        f"wafer_ids={str(wafer_ids or '').strip()} "
+        f"prefix={str(prefix or '').strip()}"
+    )
+    _audit_user(username, "splittable:view_search", detail=detail, tab="splittable")
+
+
 def _attach_split_view_runtime_fields(payload: dict, request: Request | None) -> dict:
     out = dict(payload)
     username, role = _split_view_request_user(request)
@@ -8344,6 +8433,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     _history_mode = (history_mode or "all").strip().lower() or "all"
     if _history_mode not in ("all", "final", "lot_all"):
         raise HTTPException(400, "history_mode must be one of: all, final, lot_all")
+    _audit_split_view_search(request, product, root_lot_id, fab_lot_id, wafer_ids, prefix)
     _lot_warn = ""
     fp = _product_path(product)
     view_cache_key = _split_view_cache_key(

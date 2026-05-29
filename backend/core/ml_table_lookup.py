@@ -69,7 +69,11 @@ ROOT_RAM_CACHE_REFRESH_MINUTES_MIN = 5
 ROOT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
 ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT = 100
 ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT = 100
+ROOT_RAM_CACHE_PREFIXES_DEFAULT = ("AZ",)
+ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT = 5000
+ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 50
 ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
+ROOT_RAM_CACHE_SETTINGS_FILE = PATHS.data_root / "splittable" / "source_config.json"
 _ROOT_RAM_CACHE_LOCK = threading.RLock()
 _ROOT_RAM_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _ROOT_RAM_ACCESS: dict[tuple[str, str], dict[str, Any]] = {}
@@ -144,6 +148,43 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _bounded_int(value: Any, default: int, lo: int, hi: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(lo, min(hi, parsed))
+
+
+def _root_ram_settings() -> dict[str, Any]:
+    try:
+        raw = json.loads(ROOT_RAM_CACHE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    settings = raw.get("root_lot_cache") or {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def _normalize_prefixes(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        parts = raw.replace("\n", ",").split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        parts = list(raw)
+    else:
+        parts = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parts:
+        prefix = str(item or "").strip().upper()
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        out.append(prefix)
+    return out
+
+
 def root_ram_cache_available() -> bool:
     return not _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False)
 
@@ -163,6 +204,58 @@ def _root_ram_cache_recent_limit() -> int:
 
 def _root_ram_cache_frequent_limit() -> int:
     return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS", ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT, 0, 5000)
+
+
+def _root_ram_cache_prefixes() -> list[str]:
+    raw = os.environ.get("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIXES")
+    if raw is None:
+        raw = _root_ram_settings().get("prefixes")
+    prefixes = _normalize_prefixes(raw)
+    return prefixes or list(ROOT_RAM_CACHE_PREFIXES_DEFAULT)
+
+
+def _root_ram_cache_prefix_limit() -> int:
+    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS" in os.environ:
+        return _env_int(
+            "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS",
+            ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
+            0,
+            5000,
+        )
+    return _bounded_int(
+        _root_ram_settings().get("prefix_limit"),
+        ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
+        0,
+        5000,
+    )
+
+
+def _root_ram_cache_searched_limit() -> int:
+    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_SEARCHED_ROOTS" in os.environ:
+        return _env_int(
+            "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_SEARCHED_ROOTS",
+            ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT,
+            0,
+            5000,
+        )
+    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS" in os.environ:
+        return _root_ram_cache_frequent_limit()
+    return _bounded_int(
+        _root_ram_settings().get("searched_limit"),
+        ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT,
+        0,
+        5000,
+    )
+
+
+def root_ram_cache_settings() -> dict[str, Any]:
+    return {
+        "prefixes": _root_ram_cache_prefixes(),
+        "prefix_limit": _root_ram_cache_prefix_limit(),
+        "searched_limit": _root_ram_cache_searched_limit(),
+        "recent_roots": _root_ram_cache_recent_limit(),
+        "frequent_roots": _root_ram_cache_frequent_limit(),
+    }
 
 
 def _root_ram_cache_max_bytes() -> int:
@@ -273,6 +366,10 @@ def _record_root_access(fp: Path, root_lot_id: str) -> None:
             "access_count": int(cur.get("access_count") or 0) + 1,
         })
         _ROOT_RAM_ACCESS[key] = cur
+
+
+def record_root_access(fp: Path, root_lot_id: str) -> None:
+    _record_root_access(fp, root_lot_id)
 
 
 def _root_ram_cache_get(fp: Path, root_lot_id: str, files: list[Path], status: dict[str, Any]) -> pl.LazyFrame | None:
@@ -411,6 +508,58 @@ def _frequent_root_lot_ids(fp: Path, limit: int) -> list[str]:
     return out
 
 
+def _searched_root_lot_ids(fp: Path, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    source_path = str(Path(fp).resolve())
+    with _ROOT_RAM_CACHE_LOCK:
+        rows = [
+            dict(row)
+            for key, row in _ROOT_RAM_ACCESS.items()
+            if key[0] == source_path and row.get("root_lot_id")
+        ]
+    rows.sort(key=lambda row: float(row.get("last_access_epoch") or 0.0), reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        root = str(row.get("root_lot_id") or "").strip().upper()
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        out.append(root)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _prefix_root_lot_ids_from_lookup_cache(fp: Path, prefixes: list[str], limit: int) -> list[str]:
+    prefixes = [str(p or "").strip().upper() for p in prefixes or [] if str(p or "").strip()]
+    if not prefixes or limit <= 0:
+        return []
+    cache_dir = cache_dir_for(fp)
+    try:
+        children = sorted(cache_dir.iterdir(), key=lambda p: p.name.upper())
+    except Exception:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    marker = "root_lot_id="
+    for child in children:
+        name = child.name
+        if not child.is_dir() or not name.startswith(marker):
+            continue
+        root = name[len(marker):].strip().upper()
+        if not root or root in seen:
+            continue
+        if not any(root.startswith(prefix) for prefix in prefixes):
+            continue
+        seen.add(root)
+        out.append(root)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _discover_ml_table_files() -> list[Path]:
     roots: list[Path] = []
     seen_roots: set[str] = set()
@@ -469,8 +618,11 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         files = [fp] if fp else []
     else:
         files = _discover_ml_table_files()
-    recent_limit = _root_ram_cache_recent_limit()
-    frequent_limit = _root_ram_cache_frequent_limit()
+    settings = root_ram_cache_settings()
+    prefixes = settings["prefixes"]
+    prefix_limit = int(settings["prefix_limit"])
+    recent_limit = int(settings["recent_roots"])
+    searched_limit = int(settings["searched_limit"])
     rows: list[dict[str, Any]] = []
     with _ROOT_RAM_REFRESH_LOCK:
         for fp in files:
@@ -488,10 +640,10 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 continue
             roots: list[str] = []
             seen: set[str] = set()
-            for root in [
-                *_recent_root_lot_ids_from_latest_cache(fp, recent_limit),
-                *_frequent_root_lot_ids(fp, frequent_limit),
-            ]:
+            prefix_roots = _prefix_root_lot_ids_from_lookup_cache(fp, prefixes, prefix_limit)
+            latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
+            searched_roots = _searched_root_lot_ids(fp, searched_limit)
+            for root in [*prefix_roots, *latest_roots, *searched_roots]:
                 root = str(root or "").strip().upper()
                 if root and root not in seen:
                     seen.add(root)
@@ -514,6 +666,9 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 "target_roots": len(roots),
                 "cached_roots": cached,
                 "missing_roots": missing,
+                "prefix_roots": len(prefix_roots),
+                "latest_roots": len(latest_roots),
+                "searched_roots": len(searched_roots),
                 "cache_status": status.get("status") or "",
             })
     now = time.time()
@@ -529,8 +684,11 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         "enabled": True,
         "products": rows,
         "interval_minutes": root_ram_cache_refresh_minutes(),
+        "prefixes": prefixes,
+        "prefix_roots": prefix_limit,
         "recent_roots": recent_limit,
-        "frequent_roots": frequent_limit,
+        "searched_roots": searched_limit,
+        "frequent_roots": searched_limit,
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3),
         "status": root_ram_cache_status(include_detail=False),
     }
@@ -550,13 +708,17 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         ])
         status = dict(_ROOT_RAM_STATUS)
     total_bytes = sum(int(entry.get("estimated_bytes") or 0) for _, entry in entries)
+    settings = root_ram_cache_settings()
     out = {
         "enabled": root_ram_cache_available(),
         "hit_roots": len(entries),
         "estimated_mb": round(total_bytes / (1024 * 1024), 3),
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
-        "recent_roots": _root_ram_cache_recent_limit(),
-        "frequent_roots": _root_ram_cache_frequent_limit(),
+        "prefixes": settings["prefixes"],
+        "prefix_roots": settings["prefix_limit"],
+        "searched_roots": settings["searched_limit"],
+        "recent_roots": settings["recent_roots"],
+        "frequent_roots": settings["searched_limit"],
         "interval_minutes": root_ram_cache_refresh_minutes(),
         "scheduler_started": _ROOT_RAM_STARTED,
         "last_refresh_at": status.get("last_refresh_at") or "",

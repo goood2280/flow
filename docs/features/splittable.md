@@ -40,7 +40,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `/api/splittable/view`는 product/root/fab/wafer/prefix/custom 조건별 in-process 응답 캐시를 사용한다. product 원본, plan/tag/management overlay, rulebook/settings, `lot_progress_latest_lot_by_root_wafer.parquet` 또는 LOT progress cache 파일이 바뀌면 다음 조회에서 다시 계산한다.
 - ML_TABLE 제품 원본은 선택적으로 프로세스 RAM cache에 올릴 수 있다. `/api/splittable/view`와 lot 후보 조회는 RAM hit를 우선 쓰고, miss/skip/disable 상태에서는 기존 root-lot lookup cache 또는 원본 parquet/CSV scan으로 fallback한다. 갱신 실패나 메모리 예산 초과 시 마지막 정상 RAM cache를 유지하고, source mtime/size가 바뀐 동안에는 `/view`의 `product_cache.stale=true`로 표시한다. 기본 제품 RAM 예산은 3GB이며 `FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB`로 조정한다.
 - ML_TABLE lot view는 `root_lot_id`가 있을 때 `backend/core/ml_table_lookup.py`의 root-lot lookup cache를 먼저 사용한다. cache hit 시 원본 `ML_TABLE_*.parquet` 전체 scan 대신 해당 `root_lot_id=<id>` partition에서 필요한 KNOB/MASK/CUSTOM 컬럼을 읽고, cache miss 시 기존 small/local fallback 경로를 유지한다.
-- root-lot lookup cache 위에는 root lot별 RAM cache를 둔다. 기본 예산은 3GB(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB`)이고, 스케줄러는 30분마다 LOT progress latest cache 기준 최근 100개 root lot과 실제 조회 빈도 상위 root lot을 예열한다. lookup partition이 아직 없거나 원본이 stale이면 작은 ML_TABLE 파일은 background build를 enqueue하고 현재 요청은 기존 fallback을 유지한다.
+- root-lot lookup cache 위에는 root lot별 RAM cache를 둔다. 기본 예산은 3GB(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB`)이고, 스케줄러는 30분마다 톱니바퀴의 root lot cache 설정을 읽어 기본 `AZ` prefix root lot을 최대 설정 개수까지 예열한다. prefix가 맞지 않아도 사용자가 최근 검색한 root lot은 기본 50개까지 유지한다. lookup partition이 아직 없거나 원본이 stale이면 작은 ML_TABLE 파일은 background build를 enqueue하고 현재 요청은 기존 fallback을 유지한다.
 - History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 - `TAG_*` 꼬리표 값은 `data/flow-data/splittable/custom_tags.json`에만 저장하고, 원본 `ML_TABLE_*.parquet` / CSV / FAB source에는 쓰지 않는다.
@@ -57,7 +57,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `Split 체크 표시`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
 - SplitTable 탭에서 `Split 체크 표시`가 켜진 상태로 XLSX를 내려받으면 `항목 / 값 / Split / wafer` 열 구조의 split-check 형식으로 export한다.
 - 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있다. 하단 적용 요약은 어떤 KNOB 변경이 어떤 `step_id` 수정으로 이어지는지 확인하기 위한 정보이므로 KNOB별 한 줄로 `step_desc`와 `step_id`만 표시하고 `item_id`는 별도 열로 노출하지 않는다. KNOB 적용공정 표시에서는 기본적으로 `operator=not_null` rule row를 제외하며, 같은 기본 설정에서 다시 포함할 수 있다. 룰북 파일명/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` / `inline_matching.csv` / `vm_matching.csv` 섹션에서 관리한다. 고급 설정 화면은 룰북 row 미리보기를 직접 나열하지 않는다.
-- Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
+- Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh, root lot RAM cache prefix/max/recent-search 유지)은 `splittable` page manager 이상만 쓴다.
 - Product RAM cache 상태 조회는 로그인 사용자에게 요약만 제공하고, source path/error 상세와 수동 refresh는 admin 또는 `splittable` page manager만 사용한다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.

@@ -1071,6 +1071,23 @@ function ActivityDashboardPanel(){
       </div>
     </div>
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>SplitTable LOT 검색</div>
+      <div style={{maxHeight:220,overflowY:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+          <thead><tr>{["시각","유저","product","root_lot_id","fab_lot_id","prefix"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{h}</th>)}</tr></thead>
+          <tbody>{_arr(summary?.split_table_lot_searches).map((r,i)=>(<tr key={i}>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||"").replace("T"," ").slice(0,16)}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||""}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.product||""}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--accent)"}}>{r.root_lot_id||""}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.fab_lot_id||""}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.prefix||""}</td>
+          </tr>))}</tbody>
+        </table>
+        {_arr(summary?.split_table_lot_searches).length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>최근 SplitTable LOT 검색이 없습니다</div>}
+      </div>
+    </div>
+    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>최근 이벤트 (50건)</div>
       <div style={{maxHeight:400,overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>

@@ -48,6 +48,9 @@ def _reset_product_ram_cache(monkeypatch):
     monkeypatch.delenv("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", raising=False)
     monkeypatch.delenv("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", raising=False)
     monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIXES", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS", raising=False)
+    monkeypatch.delenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_SEARCHED_ROOTS", raising=False)
     with splittable._PRODUCT_RAM_CACHE_LOCK:
         splittable._PRODUCT_RAM_CACHE.clear()
         splittable._PRODUCT_RAM_CACHE_STATUS.clear()
@@ -55,6 +58,64 @@ def _reset_product_ram_cache(monkeypatch):
     ml_table_lookup.clear_root_ram_cache()
     splittable._LOT_LOOKUP_CACHE.clear()
     splittable._clear_split_view_cache()
+
+
+def test_root_lot_ram_cache_settings_read_splittable_source_config(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    cfg = tmp_path / "source_config.json"
+    cfg.write_text(json.dumps({
+        "root_lot_cache": {
+            "prefixes": ["AZ", "B9", "AZ"],
+            "prefix_limit": 25,
+            "searched_limit": 7,
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
+
+    settings = ml_table_lookup.root_ram_cache_settings()
+
+    assert settings["prefixes"] == ["AZ", "B9"]
+    assert settings["prefix_limit"] == 25
+    assert settings["searched_limit"] == 7
+
+
+def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+
+    class DummyPaths:
+        base_root = tmp_path
+        db_root = tmp_path
+        db_cache_dir = tmp_path / "cache"
+        data_root = tmp_path / "flow-data"
+
+    monkeypatch.setattr(ml_table_lookup, "PATHS", DummyPaths())
+    cfg = tmp_path / "source_config.json"
+    cfg.write_text(json.dumps({
+        "root_lot_cache": {
+            "prefixes": ["AZ"],
+            "prefix_limit": 10,
+            "searched_limit": 1,
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
+    monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", "1")
+
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["AZ1000", "B1000", "C1000"],
+        "wafer_id": ["1", "1", "1"],
+        "KNOB_A": ["R1", "R2", "R3"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    ml_table_lookup.record_root_access(fp, "B1000")
+
+    result = ml_table_lookup.refresh_root_lot_ram_cache(product="ML_TABLE_PRODA", force=True)
+    roots = {row["root_lot_id"] for row in ml_table_lookup.root_ram_cache_status(include_detail=True)["roots"]}
+
+    assert result["products"][0]["prefix_roots"] == 1
+    assert result["products"][0]["searched_roots"] == 1
+    assert {"AZ1000", "B1000"} <= roots
+    assert "C1000" not in roots
 
 
 def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
