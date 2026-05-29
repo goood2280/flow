@@ -130,6 +130,86 @@ def test_filebrowser_manager_can_list_history_and_run_existing_s3_item(tmp_path,
     assert run == {"ok": True, "started": True, "queued": True}
 
 
+def test_s3_save_validation_error_is_recorded_with_ai_explanation(tmp_path, monkeypatch):
+    history = tmp_path / "history.jsonl"
+    monkeypatch.setattr(s3_ingest, "HISTORY_FILE", history)
+    monkeypatch.setattr(s3_ingest.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        s3_ingest.llm_adapter,
+        "complete_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "obj": {
+                "summary": "S3 URL 형식 오류",
+                "cause": "S3 URL이 s3:// 형식이 아닙니다.",
+                "how_to_fix": ["s3://bucket/prefix 형식으로 다시 저장하세요."],
+            },
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        s3_ingest.save_item(
+            s3_ingest.SaveReq(
+                username="root",
+                kind="db",
+                target="DB1",
+                s3_url="http://bad-url",
+                command="sync",
+                direction="download",
+            ),
+            _perm={"username": "root", "role": "admin"},
+        )
+
+    assert exc.value.status_code == 400
+    entries = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert entries[-1]["action"] == "save"
+    assert entries[-1]["target"] == "DB1"
+    assert entries[-1]["status"] == "error"
+    assert "invalid s3 url" in entries[-1]["reason"]
+    assert entries[-1]["ai_explanation"]["summary"] == "S3 URL 형식 오류"
+
+
+def test_s3_run_error_history_keeps_reason_and_output_tail(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    history = tmp_path / "history.jsonl"
+    cfg.write_text(json.dumps({
+        "items": [{
+            "id": "db1",
+            "kind": "db",
+            "target": "DB1",
+            "s3_url": "s3://bucket/DB1",
+            "command": "sync",
+            "direction": "download",
+            "interval_min": 0,
+            "enabled": True,
+        }]
+    }), encoding="utf-8")
+    status.write_text("{}", encoding="utf-8")
+
+    class Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "AccessDenied: user is not authorized to perform s3:ListBucket"
+
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "HISTORY_FILE", history)
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(s3_ingest.subprocess, "run", lambda *args, **kwargs: Proc())
+    monkeypatch.setattr(s3_ingest.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {"db1": {}})
+
+    s3_ingest._run_item_blocking("db1")
+
+    entries = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    saved_status = json.loads(status.read_text(encoding="utf-8"))
+    assert entries[-1]["status"] == "error"
+    assert entries[-1]["reason"] == "AccessDenied: user is not authorized to perform s3:ListBucket"
+    assert entries[-1]["output_tail"] == entries[-1]["reason"]
+    assert saved_status["db1"]["last_reason"] == entries[-1]["reason"]
+
+
 def test_item_due_state_uses_last_end_and_interval():
     now = datetime.datetime(2026, 5, 8, 12, 0, 0).timestamp()
     item = {"interval_min": 30}

@@ -1076,6 +1076,16 @@ export default function My_FileBrowser({user,onNavigate}){
     const m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);
     return m>=60?Math.floor(m/60)+"시간 "+(m%60)+"분":m+"분 "+s+"초";
   };
+  const s3HistoryReason=(h)=>{
+    const ai=h?.ai_explanation||{};
+    return ai.summary||h?.reason||h?.error||h?.output_tail||h?.stderr_tail||h?.stdout_tail||"";
+  };
+  const s3HistoryAction=(h)=>{
+    const a=(h?.action||"").toString();
+    if(a==="save")return"등록";
+    if(a==="run")return"실행";
+    return h?.cmd?"실행":"등록";
+  };
 
   // v8.8.3: Admin Base 단일파일 원본 삭제 (archive to .trash). host_root 자동 감지.
   const deleteBaseFile=async(name)=>{
@@ -2782,7 +2792,7 @@ export default function My_FileBrowser({user,onNavigate}){
                         <td style={{padding:"6px 8px",fontSize:14,color:isRunning?FB_AMBER:"var(--text-secondary)"}}>{isRunning?"실행 중…":s3FmtETA(it)}</td>
                         <td style={{padding:"6px 8px",fontSize:14,color:"var(--text-secondary)"}}>
                           {st.last_end?<span title={"exit="+st.last_exit_code+" dur="+st.last_duration_sec+"s"}>{st.last_end.slice(5,16).replace("T"," ")}</span>:"-"}
-                          {st.last_output_tail&&<span onClick={()=>setS3Detail({id:it.id,tail:st.last_output_tail,cmd:it.s3_url,exit:st.last_exit_code})} style={{marginLeft:4,cursor:"pointer",color:"var(--accent)"}}>로그</span>}
+                          {st.last_output_tail&&<span onClick={()=>setS3Detail({id:it.id,tail:st.last_output_tail,cmd:it.s3_url,exit:st.last_exit_code,reason:st.last_reason||st.last_output_tail,aiExplanation:st.last_ai_explanation,action:"run"})} style={{marginLeft:4,cursor:"pointer",color:"var(--accent)"}}>로그</span>}
                         </td>
                         <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
                           <button disabled={isRunning} onClick={()=>s3Run(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:isRunning?FB_DISABLED:"var(--accent)",color:"#fff",fontSize:14,cursor:isRunning?"default":"pointer",marginRight:3}}>▶ 실행</button>
@@ -2870,17 +2880,27 @@ export default function My_FileBrowser({user,onNavigate}){
                 {s3Hist.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>이력이 아직 없습니다.</div>
                 :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                   <thead><tr style={{background:"var(--bg-secondary)"}}>
-                    {["시간","항목","상태","종료코드","소요시간","명령"].map(h=>(<th key={h} style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:"var(--text-secondary)",borderBottom:FB_GRID_LINE}}>{h}</th>))}
+                    {["시간","구분","항목","상태","종료코드","소요시간","사유","명령"].map(h=>(<th key={h} style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:"var(--text-secondary)",borderBottom:FB_GRID_LINE}}>{h}</th>))}
                   </tr></thead>
                   <tbody>
-                    {s3Hist.map((h,i)=>(<tr key={i} style={{borderBottom:FB_GRID_LINE}}>
-                      <td style={{padding:"5px 8px",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{(h.timestamp||"").slice(5,19).replace("T"," ")}</td>
-                      <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace"}}>{h.id}</td>
-                      <td style={{padding:"5px 8px"}}><span style={{fontSize:14,padding:"2px 6px",borderRadius:3,background:h.status==="ok"?"#22c55e22":"#ef444422",color:h.status==="ok"?FB_OK.fg:FB_BAD.fg,fontWeight:700}}>{h.status}</span></td>
-                      <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace"}}>{h.exit_code??"-"}</td>
-                      <td style={{padding:"5px 8px",fontSize:14}}>{h.duration_sec!=null?h.duration_sec+"s":"-"}</td>
-                      <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={h.cmd||h.error||""}>{h.cmd||h.error||"-"}</td>
-                    </tr>))}
+                    {s3Hist.map((h,i)=>{
+                      const reason=s3HistoryReason(h);
+                      const ai=h.ai_explanation||null;
+                      const tail=h.output_tail||h.stderr_tail||h.stdout_tail||h.error||h.reason||"";
+                      return(<tr key={i} style={{borderBottom:FB_GRID_LINE}}>
+                        <td style={{padding:"5px 8px",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{(h.timestamp||"").slice(5,19).replace("T"," ")}</td>
+                        <td style={{padding:"5px 8px",fontSize:14,whiteSpace:"nowrap"}}>{s3HistoryAction(h)}</td>
+                        <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace"}}>{h.id}</td>
+                        <td style={{padding:"5px 8px"}}><span style={{fontSize:14,padding:"2px 6px",borderRadius:3,background:h.status==="ok"?"#22c55e22":"#ef444422",color:h.status==="ok"?FB_OK.fg:FB_BAD.fg,fontWeight:700}}>{h.status}</span></td>
+                        <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace"}}>{h.exit_code??"-"}</td>
+                        <td style={{padding:"5px 8px",fontSize:14}}>{h.duration_sec!=null?h.duration_sec+"s":"-"}</td>
+                        <td style={{padding:"5px 8px",fontSize:14,maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={reason}>
+                          {reason?<span onClick={()=>setS3Detail({id:h.id||h.target||"S3",tail,cmd:h.cmd||"",exit:h.exit_code,reason,aiExplanation:ai,action:s3HistoryAction(h)})} style={{cursor:"pointer",color:h.status==="ok"?"var(--text-secondary)":"var(--accent)"}}>{reason}</span>:"-"}
+                          {ai&&<span onClick={()=>setS3Detail({id:h.id||h.target||"S3",tail,cmd:h.cmd||"",exit:h.exit_code,reason,aiExplanation:ai,action:s3HistoryAction(h)})} style={{marginLeft:6,padding:"1px 5px",borderRadius:3,background:"var(--accent-glow)",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:"pointer"}}>AI</span>}
+                        </td>
+                        <td style={{padding:"5px 8px",fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={h.cmd||""}>{h.cmd||"-"}</td>
+                      </tr>);
+                    })}
                   </tbody>
                 </table>}
               </>}
@@ -2891,11 +2911,21 @@ export default function My_FileBrowser({user,onNavigate}){
           </Modal>
           {/* Detail log overlay */}
           {s3Detail&&(
-            <Modal open onClose={()=>setS3Detail(null)} width={700} zIndex={100}>
+            <Modal open onClose={()=>setS3Detail(null)} width={760} zIndex={100}>
             <div style={{display:"flex",flexDirection:"column",maxHeight:"70vh"}}>
               <div style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center"}}>
-                <span style={{flex:1,fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{s3Detail.id} — exit={s3Detail.exit}</span>
+                <span style={{flex:1,fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{s3Detail.id} — {s3Detail.action||"실행"} · exit={s3Detail.exit??"-"}</span>
                 <span onClick={()=>setS3Detail(null)} style={{cursor:"pointer",fontSize:16,color:"var(--text-secondary)"}}>✕</span>
+              </div>
+              <div style={{padding:"12px 14px",display:"grid",gap:8,borderBottom:"1px solid var(--border)",fontSize:14,lineHeight:1.55}}>
+                {s3Detail.reason&&<div><b style={{color:"var(--text-primary)"}}>사유</b><div style={{marginTop:3,color:"var(--text-secondary)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{s3Detail.reason}</div></div>}
+                {s3Detail.aiExplanation&&<div style={{padding:10,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                  <div style={{fontWeight:700,color:"var(--accent)",marginBottom:5}}>AI 오류 해석</div>
+                  {s3Detail.aiExplanation.summary&&<div><b>문제:</b> {s3Detail.aiExplanation.summary}</div>}
+                  {s3Detail.aiExplanation.cause&&<div><b>가능한 원인:</b> {s3Detail.aiExplanation.cause}</div>}
+                  {(s3Detail.aiExplanation.how_to_fix||[]).length>0&&<div><b>확인할 것:</b> {(s3Detail.aiExplanation.how_to_fix||[]).join(" / ")}</div>}
+                </div>}
+                {s3Detail.cmd&&<div><b style={{color:"var(--text-primary)"}}>명령</b><div style={{marginTop:3,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{s3Detail.cmd}</div></div>}
               </div>
               <pre style={{flex:1,overflow:"auto",margin:0,padding:12,fontSize:14,fontFamily:"monospace",color:"var(--text-primary)",background:"var(--bg-primary)",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{s3Detail.tail||"(출력 없음)"}</pre>
             </div>

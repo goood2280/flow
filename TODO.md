@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) 비밀번호 찾기 메일 API 수신자와 S3 등록 실패 이력 사유 보정
 - (Codex) SplitTable root lot별 ML_TABLE RAM cache 예열
 - (Codex) 비밀번호 찾기 아이디-only 메일 도메인 전송 보정
 - (Codex) 공유 Semantic Layer 서비스와 Dashboard Agent/Home Orchestrator 사슬화

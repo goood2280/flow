@@ -113,7 +113,7 @@ def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
         "status": "approved",
         "created": "",
         "tabs": "",
-        "email": "",
+        "email": "alice.private@example.test",
         "name": "",
     }]
     writes = []
@@ -153,7 +153,7 @@ def test_forgot_password_sends_to_username_with_mail_domain(monkeypatch):
     assert "temporary password" in result["message"].lower()
     assert users[0]["password_hash"] == "hashed:TMP-TMPTOKEN"
     assert writes
-    assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
+    assert sent[0]["kwargs"]["receiver_usernames"] == ["alice@company.co.kr"]
     assert "extra_emails" not in sent[0]["kwargs"]
     assert "TMP-TMPTOKEN" in sent[0]["kwargs"]["content"]
     assert sent[0]["kwargs"]["files"] == []

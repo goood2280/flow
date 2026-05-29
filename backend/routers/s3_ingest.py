@@ -12,12 +12,13 @@ Storage:
   data_root/s3_ingest/history.jsonl     — recent run history (trimmed 500)
 """
 from __future__ import annotations
-import os, re, time, uuid, shlex, shutil, datetime, threading, subprocess, configparser
+import json, os, re, time, uuid, shlex, shutil, datetime, threading, subprocess, configparser
 from pathlib import Path
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from core.paths import PATHS
+from core import llm_adapter
 from core import aws_credentials as _aws_credentials
 from core.utils import load_json, save_json, jsonl_append, jsonl_read, jsonl_trim
 from core.auth import require_admin, require_page_manager
@@ -154,6 +155,151 @@ def _update_status(item_id: str, direction: str | None = None, **patch):
 
 def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+S3_ERROR_EXPLAIN_SCHEMA = {
+    "keys": ["summary", "cause", "how_to_fix"],
+    "required": [],
+    "properties": {"summary": {}, "cause": {}, "how_to_fix": {}},
+}
+
+
+def _clip_s3_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        text = "\n".join(lines[-10:])
+    return text[-limit:] if len(text) > limit else text
+
+
+def _redact_s3_text(value: Any, limit: int = 1200) -> str:
+    text = _clip_s3_text(value, limit)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;\"']+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(aws_secret_access_key|aws_session_token|secret_access_key)([\"'\s:=]+)([^\"'\s,;&]+)", r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)(x-amz-security-token|x-amz-credential)([\"'\s:=]+)([^\"'\s,;&]+)", r"\1\2<redacted>", text)
+    return text
+
+
+def _s3_failure_reason(tail: str, exit_code: int | None = None, fallback: str = "") -> str:
+    reason = _clip_s3_text(tail) or _clip_s3_text(fallback)
+    if reason:
+        return reason
+    if exit_code not in (None, 0):
+        return f"aws CLI exited with code {exit_code} without output"
+    return ""
+
+
+def _clean_s3_ai_explanation(obj: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(obj, dict):
+        return None
+
+    def line(key: str, limit: int = 260) -> str:
+        text = str(obj.get(key) or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        return text[:limit]
+
+    fixes = obj.get("how_to_fix")
+    if isinstance(fixes, str):
+        fixes = [part.strip(" -\t") for part in fixes.splitlines() if part.strip(" -\t")]
+    if not isinstance(fixes, list):
+        fixes = []
+    clean_fixes = []
+    for item in fixes:
+        text = str(item or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if text:
+            clean_fixes.append(text[:180])
+        if len(clean_fixes) >= 3:
+            break
+    out = {
+        "summary": line("summary", 180),
+        "cause": line("cause", 300),
+        "how_to_fix": clean_fixes,
+    }
+    if not out["summary"] and not out["cause"] and not out["how_to_fix"]:
+        return None
+    return out
+
+
+def _explain_s3_failure(*, action: str, item_id: str, target: str, kind: str,
+                        direction: str, reason: str, exit_code: int | None = None) -> dict[str, Any] | None:
+    clean_reason = _redact_s3_text(reason, 1600)
+    if not clean_reason:
+        return None
+    try:
+        if not llm_adapter.is_available():
+            return None
+        prompt = {
+            "surface": "FileBrowser S3",
+            "action": action,
+            "item_id": item_id,
+            "target": target,
+            "kind": kind,
+            "direction": direction,
+            "exit_code": exit_code,
+            "raw_error": clean_reason,
+        }
+        out = llm_adapter.complete_json(
+            "Flow FileBrowser S3 등록/동기화 실패를 한국어로 설명해줘. "
+            "summary, cause, how_to_fix JSON만 반환하고 확인되지 않은 내부 원인은 추측하지 마.\n\n"
+            + json.dumps(prompt, ensure_ascii=False),
+            system="You explain Flow app S3 errors for Korean end users. Return concise JSON only.",
+            schema=S3_ERROR_EXPLAIN_SCHEMA,
+            timeout=8,
+            max_retries=1,
+        )
+        if not out.get("ok"):
+            return None
+        return _clean_s3_ai_explanation(out.get("obj") or {})
+    except Exception:
+        return None
+
+
+def _append_s3_error_history(*, action: str, item_id: str = "", target: str = "",
+                             kind: str = "", direction: str = "download",
+                             reason: str = "", exit_code: int | None = None,
+                             duration_sec: int | None = None, cmd: str = "",
+                             output_tail: str = "", actor: str = "") -> dict[str, Any] | None:
+    safe_reason = _s3_failure_reason(output_tail, exit_code, reason)
+    ai_explanation = _explain_s3_failure(
+        action=action,
+        item_id=item_id,
+        target=target,
+        kind=kind,
+        direction=direction,
+        reason=safe_reason,
+        exit_code=exit_code,
+    )
+    entry: Dict[str, Any] = {
+        "id": item_id or target or "s3_save",
+        "target": target,
+        "kind": kind,
+        "direction": _normalize_direction(direction),
+        "action": action,
+        "status": "error",
+        "reason": safe_reason,
+        "error": safe_reason,
+    }
+    if actor:
+        entry["actor"] = actor
+    if exit_code is not None:
+        entry["exit_code"] = exit_code
+    if duration_sec is not None:
+        entry["duration_sec"] = duration_sec
+    if cmd:
+        entry["cmd"] = cmd
+    if output_tail:
+        entry["output_tail"] = _clip_s3_text(output_tail, 2000)
+    if ai_explanation:
+        entry["ai_explanation"] = ai_explanation
+    try:
+        jsonl_append(HISTORY_FILE, entry)
+        jsonl_trim(HISTORY_FILE, 500)
+    except Exception:
+        pass
+    return ai_explanation
 
 
 def _fmt_ts(ts: float | None) -> str | None:
@@ -519,13 +665,23 @@ def _run_item_blocking(item_id: str):
     try:
         args, _local = _build_cmd(item)
     except HTTPException as e:
+        reason = f"validation failed: {e.detail}"
+        ai_explanation = _append_s3_error_history(
+            action="run",
+            item_id=item_id,
+            target=item.get("target", ""),
+            kind=item.get("kind", ""),
+            direction=direction,
+            reason=reason,
+        )
         _update_status(item_id,
                        direction=direction,
                        last_status="error",
-                       last_output_tail=f"validation failed: {e.detail}",
+                       last_output_tail=reason,
+                       last_reason=reason,
+                       last_ai_explanation=ai_explanation,
                        last_end=_now_iso(),
                        last_duration_sec=0)
-        jsonl_append(HISTORY_FILE, {"id": item_id, "status": "error", "error": str(e.detail)})
         with _RUNNING_LOCK:
             _RUNNING.pop(item_id, None)
         return
@@ -546,19 +702,41 @@ def _run_item_blocking(item_id: str):
         tail = f"exception: {str(e)[:1800]}"
 
     dur = int(time.time() - t0)
+    reason = _s3_failure_reason(tail, exit_code) if status == "error" else ""
+    ai_explanation = None
+    if status == "error":
+        ai_explanation = _explain_s3_failure(
+            action="run",
+            item_id=item_id,
+            target=item.get("target", ""),
+            kind=item.get("kind", ""),
+            direction=direction,
+            reason=reason,
+            exit_code=exit_code,
+        )
     _update_status(item_id,
                    direction=direction,
                    last_end=_now_iso(),
                    last_status=status,
                    last_exit_code=exit_code,
                    last_output_tail=tail,
+                   last_reason=reason,
+                   last_ai_explanation=ai_explanation,
                    last_duration_sec=dur)
-    jsonl_append(HISTORY_FILE, {
+    entry = {
         "id": item_id, "target": item.get("target"), "kind": item.get("kind"),
         "direction": (item.get("direction") or "download").lower(),
         "status": status, "exit_code": exit_code, "duration_sec": dur,
         "cmd": " ".join(args),
-    })
+    }
+    if tail:
+        entry["output_tail"] = tail
+    if reason:
+        entry["reason"] = reason
+        entry["error"] = reason
+    if ai_explanation:
+        entry["ai_explanation"] = ai_explanation
+    jsonl_append(HISTORY_FILE, entry)
     jsonl_trim(HISTORY_FILE, 500)
     with _RUNNING_LOCK:
         _RUNNING.pop(item_id, None)
@@ -708,6 +886,25 @@ def _find_existing_item_id(items: list[dict], *, kind: str, target: str, directi
 
 @router.post("/save")
 def save_item(req: SaveReq, _perm=Depends(require_admin)):
+    try:
+        return _save_item_checked(req)
+    except HTTPException as exc:
+        actor = ""
+        if isinstance(_perm, dict):
+            actor = str(_perm.get("username") or "")
+        _append_s3_error_history(
+            action="save",
+            item_id=(req.id or "").strip(),
+            target=req.target or "",
+            kind=req.kind or "",
+            direction=req.direction or "download",
+            reason=str(exc.detail or ""),
+            actor=actor or (req.username or ""),
+        )
+        raise
+
+
+def _save_item_checked(req: SaveReq):
     if req.command not in ALLOWED_COMMANDS:
         raise HTTPException(400, f"invalid command: {req.command}")
     if req.kind not in {"db", "root_parquet"}:

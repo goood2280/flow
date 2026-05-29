@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.notify import send_to_admins
 from core import auth as auth_core
+from core import mail as _mail
 from core.audit import record_user as _audit_user
 from core.mail import send_mail as _send_mail
 
@@ -79,6 +80,18 @@ def _find_user_by_username(users, username: str):
         if key == existing_username:
             return u
     return None
+
+
+def _forgot_password_mail_recipient(username: str) -> str:
+    """Use the reset login id as the mail API recipient id, then apply the configured domain."""
+    login_id = (username or "").strip()
+    if not login_id or "@" in login_id:
+        return login_id
+    try:
+        domain = (_mail.load_mail_cfg().get("domain") or "").strip().lstrip("@")
+    except Exception:
+        domain = ""
+    return f"{login_id}@{domain}" if domain else login_id
 
 
 def write_users(users):
@@ -233,7 +246,7 @@ def forgot_password(req: ForgotPasswordReq):
     )
     res = _send_mail(
         sender_username="flow",
-        receiver_usernames=[username],
+        receiver_usernames=[_forgot_password_mail_recipient(username)],
         title=title,
         content=content,
         files=[],
