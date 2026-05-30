@@ -152,20 +152,25 @@ def post_feedback(request: Request, body: FeedbackRequest):
     if rating in {"up", "down"}:
         trace = body.trace_summary if isinstance(body.trace_summary, list) else []
         first = next((item for item in trace if isinstance(item, dict)), {})
-        tool_name = (body.suggested_tool or first.get("tool") or "").strip()
+        raw_tool_name = (body.suggested_tool or first.get("tool") or "").strip()
+        unit_key = agent_feedback_penalties.home_feedback_unit_key(
+            first,
+            suggested_tool=raw_tool_name,
+        )
+        feedback_tool = unit_key or raw_tool_name
         try:
             agent_feedback_penalties.record_home_feedback(
                 rating=rating,
                 planner=str(first.get("source") or ""),
-                tool=tool_name,
+                tool=feedback_tool,
                 source="home_agent",
                 reason=body.note or first.get("reason") or "",
                 actor=me.get("username") or "",
             )
-            tool = tool_registry.get_tool(tool_name) if tool_name else None
+            tool = tool_registry.get_tool(unit_key) if unit_key else (tool_registry.get_tool(raw_tool_name) if raw_tool_name else None)
             if tool and tool.get("kind") == "unit_ai":
                 agent_feedback_penalties.record_feedback(
-                    tool_name,
+                    tool.get("name") or unit_key or raw_tool_name,
                     rating,
                     run_id=str(first.get("run_id") or ""),
                     reason=body.note or first.get("reason") or "",

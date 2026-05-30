@@ -99,6 +99,28 @@ def test_runtime_graph_and_trace_include_node_feedback_penalty(monkeypatch, tmp_
     assert trace[0]["feedback_penalty"]["down_count"] == 1
 
 
+def test_home_answer_feedback_maps_feature_to_unit_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_feedback_penalties, "PENALTIES_FILE", tmp_path / "agent_feedback_penalties.json")
+
+    unit_key = agent_feedback_penalties.home_feedback_unit_key({"feature": "dashboard", "intent": "dashboard_box"})
+    assert unit_key == "dashboard_agent"
+
+    agent_feedback_penalties.record_home_feedback(
+        rating="down",
+        planner="dashboard_box",
+        tool=unit_key,
+        source="llm_flowi_chat",
+        reason="wrong axis",
+        actor="tester",
+    )
+    agent_feedback_penalties.record_feedback(unit_key, "down", run_id="home-run-1", reason="wrong axis", actor="tester")
+
+    profile = agent_feedback_penalties.feedback_profile("dashboard_agent")
+    assert profile["unit"]["penalty"] == 1
+    assert profile["home_methods"][0]["tool"] == "dashboard_agent"
+    assert profile["home_methods"][0]["penalty"] == 1
+
+
 def test_home_routing_uses_unit_feedback_penalty_for_tie_break(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_feedback_penalties, "PENALTIES_FILE", tmp_path / "agent_feedback_penalties.json")
     tools = [

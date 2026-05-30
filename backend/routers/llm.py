@@ -39,6 +39,7 @@ from core import knowledge_impact
 from core import knowledge_vault as kv
 from core import flowi_multisource
 from core import home_memory
+from core import agent_feedback_penalties
 from app_v2.modules.agent_runtime.actions import (
     build_action_plans as _agent_runtime_build_action_plans,
     compact_plan_rows as _agent_runtime_compact_plan_rows,
@@ -21028,6 +21029,7 @@ class FlowiFeedbackReq(BaseModel):
     rating: str = ""
     prompt: str = ""
     answer: str = ""
+    run_id: str = ""
     intent: str = ""
     note: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -21306,6 +21308,7 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "username": me.get("username") or "",
         "rating": rating,
+        "run_id": (req.run_id or "").strip()[:160],
         "intent": ((req.intent or "").strip()[:80] if is_admin else ""),
         "prompt_excerpt": (req.prompt or "").strip()[:500],
         "answer_excerpt": (req.answer or "").strip()[:800],
@@ -21343,7 +21346,31 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
         "note": rec["note"],
         "prompt": rec["prompt_excerpt"],
     })
-    return {"ok": True, "id": rec["id"], "needs_review": needs_review}
+    penalty_profile = None
+    if rating in {"up", "down"}:
+        unit_key = agent_feedback_penalties.home_feedback_unit_key(req.tool)
+        feedback_tool = unit_key or str((req.tool or {}).get("feature") or (req.tool or {}).get("intent") or req.intent or "").strip()
+        reason = rec["note"] or ", ".join(tags) or rec["intent"]
+        try:
+            agent_feedback_penalties.record_home_feedback(
+                rating=rating,
+                planner=str((req.tool or {}).get("action") or rec["intent"] or ""),
+                tool=feedback_tool,
+                source="llm_flowi_chat",
+                reason=reason,
+                actor=me.get("username") or "",
+            )
+            if unit_key:
+                penalty_profile = agent_feedback_penalties.record_feedback(
+                    unit_key,
+                    rating,
+                    run_id=rec["run_id"],
+                    reason=reason,
+                    actor=me.get("username") or "",
+                )
+        except Exception:
+            logger.debug("flowi feedback penalty update failed", exc_info=True)
+    return {"ok": True, "id": rec["id"], "needs_review": needs_review, "penalty_profile": penalty_profile}
 
 
 @router.get("/flowi/feedback/summary")

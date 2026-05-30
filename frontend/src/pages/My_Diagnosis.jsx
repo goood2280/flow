@@ -429,56 +429,34 @@ function NodeFeedbackInline({ feedback, nodeId, runId, fallback = null }) {
   );
 }
 
-function UnitFeedbackPanel({ unitKey, graph, result, feedback }) {
-  const nodes = graph?.nodes || [];
-  const unit = feedback?.profile?.unit || {};
-  const nodeProfiles = feedback?.profile?.nodes || {};
-  const rows = nodes.map((node) => {
-    const row = nodeProfiles[node.id] || node.feedback_penalty || {};
-    return {
-      id: node.id,
-      label: node.label || node.id,
-      penalty: Number(row.penalty || 0),
-      up_count: row.up_count || 0,
-      down_count: row.down_count || 0,
-      last_rating: row.last_rating || "",
-    };
-  });
+function UnitFeedbackStatus({ feedback }) {
   return (
-    <Panel
-      title="Feedback penalty"
-      subtitle={unitKey}
-      right={<Button variant="ghost" onClick={feedback?.load} disabled={!!feedback?.busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
-    >
-      <div style={{ display: "grid", gap: 10 }}>
-        {feedback?.err ? <Banner tone="bad" onClose={() => feedback.setErr("")}>{feedback.err}</Banner> : null}
-        {feedback?.msg ? <Banner tone="ok" onClose={() => feedback.setMsg("")}>{feedback.msg}</Banner> : null}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 0.85fr) minmax(0, 1.15fr)", gap: 10, alignItems: "start" }}>
-          <div style={{ display: "grid", gap: 8, padding: 10, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 13 }}>Unit 전체</strong>
-              <Pill tone={Number(unit.penalty || 0) > 0 ? "warn" : "neutral"}>penalty {formatPenaltyNumber(unit.penalty)}</Pill>
-              <Pill tone={Number(unit.boost || 0) > 0 ? "ok" : "neutral"}>boost {formatPenaltyNumber(unit.boost)}</Pill>
-            </div>
-            <RatingButtons feedback={feedback} runId={result?.run_id || ""} reason="agent_unit_panel" />
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-              up {unit.up_count || 0} · down {unit.down_count || 0}{unit.last_rating ? ` · last ${unit.last_rating}` : ""}
-            </div>
-          </div>
-          <div style={{ display: "grid", gap: 6, maxHeight: 190, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-            {rows.length ? rows.map((row) => (
-              <div key={row.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 8, alignItems: "center", padding: "7px 9px", borderBottom: "1px solid var(--border)" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
-                <Pill tone={row.penalty > 0 ? "warn" : "neutral"}>penalty {formatPenaltyNumber(row.penalty)}</Pill>
-                <span style={{ fontSize: 11, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>up {row.up_count} · down {row.down_count}</span>
-              </div>
-            )) : (
-              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>node 없음</div>
-            )}
-          </div>
-        </div>
-      </div>
-    </Panel>
+    <>
+      {feedback?.err ? <Banner tone="bad" onClose={() => feedback.setErr("")}>{feedback.err}</Banner> : null}
+      {feedback?.msg ? <Banner tone="ok" onClose={() => feedback.setMsg("")}>{feedback.msg}</Banner> : null}
+    </>
+  );
+}
+
+function UnitAnswerFeedback({ feedback, runId = "", reason = "agent_unit_answer" }) {
+  const unit = feedback?.profile?.unit || {};
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 700 }}>답변 feedback</span>
+      <RatingButtons feedback={feedback} runId={runId} reason={reason} />
+      <Pill tone={Number(unit.penalty || 0) > 0 ? "warn" : "neutral"}>
+        penalty {formatPenaltyNumber(unit.penalty)}
+      </Pill>
+      <Pill tone={Number(unit.boost || 0) > 0 ? "ok" : "neutral"}>
+        boost {formatPenaltyNumber(unit.boost)}
+      </Pill>
+      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+        up {unit.up_count || 0} · down {unit.down_count || 0}
+      </span>
+      <Button variant="ghost" onClick={feedback?.load} disabled={!!feedback?.busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>
+        새로고침
+      </Button>
+    </div>
   );
 }
 
@@ -806,6 +784,7 @@ function FileBrowserAiSqlUnitPanel() {
               graph fetch 실패 — 기본 노드 구조로 표시: {graphErr}
             </Banner>
           )}
+          <UnitFeedbackStatus feedback={feedback} />
         </>
       )}
       <Panel
@@ -878,6 +857,11 @@ function FileBrowserAiSqlUnitPanel() {
                 <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {selectedHistory.natural_language || "(empty)"}
                 </div>
+                <UnitAnswerFeedback
+                  feedback={feedback}
+                  runId={selectedHistory.run_id || selectedHistory.history_id || ""}
+                  reason="agent_unit_history"
+                />
                 {selectedHistory.answer ? (
                   <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                     {selectedHistory.answer}
@@ -904,13 +888,6 @@ function FileBrowserAiSqlUnitPanel() {
           </div>
         </div>
       </Panel>
-
-      <UnitFeedbackPanel
-        unitKey="filebrowser_ai_sql"
-        graph={activeGraph}
-        result={result}
-        feedback={feedback}
-      />
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
@@ -1075,6 +1052,7 @@ function FileBrowserAiSqlUnitPanel() {
                     style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", height: 22 }}
                   >복사</Button>
                 </div>
+                <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
                 <Textarea value={appliedSql} onChange={(e) => setAppliedSql(e.target.value)} rows={3} />
                 <Button variant="primary" onClick={applyPreviewSql} disabled={applyBusy}>
                   {applyBusy ? "적용 중" : "적용"}
@@ -1270,6 +1248,7 @@ function InformRegistrationUnitPanel() {
           Inform graph fetch 진단 — 기본 노드 구조로 표시: {graphErr}
         </Banner>
       )}
+      <UnitFeedbackStatus feedback={feedback} />
       <Panel
         title="질문 이력"
         subtitle={historyLoading ? "loading" : `${history.length} items`}
@@ -1334,6 +1313,11 @@ function InformRegistrationUnitPanel() {
                 <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {historyPrompt(selectedHistory) || selectedHistory.answer || "(empty)"}
                 </div>
+                <UnitAnswerFeedback
+                  feedback={feedback}
+                  runId={selectedHistory.run_id || selectedHistory.history_id || ""}
+                  reason="agent_unit_history"
+                />
                 {selectedHistory.answer ? (
                   <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                     {selectedHistory.answer}
@@ -1359,13 +1343,6 @@ function InformRegistrationUnitPanel() {
           </div>
         </div>
       </Panel>
-
-      <UnitFeedbackPanel
-        unitKey="inform_registration"
-        graph={activeGraph}
-        result={result}
-        feedback={feedback}
-      />
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
@@ -1495,6 +1472,7 @@ function InformRegistrationUnitPanel() {
                   </Pill>
                   {result.created_inform?.id ? <Pill tone="ok">{result.created_inform.id}</Pill> : null}
                 </div>
+                <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
                 {result.answer ? (
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                     {result.answer}
@@ -1676,6 +1654,7 @@ function ChangeManagementUnitPanel() {
           변경점관리 graph fetch 진단 — 기본 노드 구조로 표시: {graphErr}
         </Banner>
       )}
+      <UnitFeedbackStatus feedback={feedback} />
       <Panel
         title="질문 이력"
         subtitle={historyLoading ? "loading" : `${history.length} items`}
@@ -1740,6 +1719,11 @@ function ChangeManagementUnitPanel() {
                 <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {historyPrompt(selectedHistory) || "(empty)"}
                 </div>
+                <UnitAnswerFeedback
+                  feedback={feedback}
+                  runId={selectedHistory.run_id || selectedHistory.history_id || ""}
+                  reason="agent_unit_history"
+                />
                 {selectedHistory.answer ? (
                   <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
                     {selectedHistory.answer}
@@ -1764,13 +1748,6 @@ function ChangeManagementUnitPanel() {
           </div>
         </div>
       </Panel>
-
-      <UnitFeedbackPanel
-        unitKey="change_management"
-        graph={activeGraph}
-        result={result}
-        feedback={feedback}
-      />
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
@@ -1902,6 +1879,7 @@ function ChangeManagementUnitPanel() {
                   </Pill>
                   {result.meeting_reference?.focus_meeting_title ? <Pill tone="neutral">{result.meeting_reference.focus_meeting_title}</Pill> : null}
                 </div>
+                <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
                 {result.answer ? (
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
                     {result.answer}
@@ -2055,13 +2033,7 @@ function DashboardAgentUnitPanel() {
     <div style={{ display: "grid", gap: 10 }}>
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       {graphErr && <Banner tone="warn" onClose={() => setGraphErr("")}>Dashboard graph fetch 진단: {graphErr}</Banner>}
-
-      <UnitFeedbackPanel
-        unitKey="dashboard_agent"
-        graph={activeGraph}
-        result={result}
-        feedback={feedback}
-      />
+      <UnitFeedbackStatus feedback={feedback} />
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={selectedTraceNode ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}` : ""}>
@@ -2116,15 +2088,18 @@ function DashboardAgentUnitPanel() {
             <JsonBlock value={debugRequest} maxHeight={130} />
             <Button variant="primary" onClick={run} disabled={!prompt.trim() || busy}>{busy ? "실행 중" : "실행"}</Button>
             {result?.chart_result ? (
-              <JsonBlock
-                value={{
-                  chart_type: result.chart_result.chart_type,
-                  config: result.chart_result.chart_config || result.chart_result.config || {},
-                  total: result.chart_result.total,
-                  warnings: result.warnings || [],
-                }}
-                maxHeight={220}
-              />
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
+                <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
+                <JsonBlock
+                  value={{
+                    chart_type: result.chart_result.chart_type,
+                    config: result.chart_result.chart_config || result.chart_result.config || {},
+                    total: result.chart_result.total,
+                    warnings: result.warnings || [],
+                  }}
+                  maxHeight={220}
+                />
+              </div>
             ) : null}
           </div>
         </Panel>

@@ -1321,6 +1321,7 @@ function FlowiFeedback({result,tool,prompt,isAdmin=false}){
       rating:r,
       prompt:prompt||"",
       answer:result?.answer||"",
+      run_id:result?.run_id||"",
       intent:tool?.intent||"",
       note:note||"",
       tags:payloadTags,

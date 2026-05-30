@@ -16,6 +16,20 @@ from core.paths import PATHS
 
 PENALTIES_FILE = PATHS.data_root / "agent_feedback_penalties.json"
 _VALID_RATINGS = {"up", "down"}
+_UNIT_KEYS = {"filebrowser_ai_sql", "inform_registration", "change_management", "dashboard_agent"}
+_HOME_FEATURE_UNIT_MAP = {
+    "filebrowser": "filebrowser_ai_sql",
+    "filebrowser_ai_sql": "filebrowser_ai_sql",
+    "inform": "inform_registration",
+    "inform_registration": "inform_registration",
+    "meeting": "change_management",
+    "calendar": "change_management",
+    "change": "change_management",
+    "change_management": "change_management",
+    "dashboard": "dashboard_agent",
+    "chart": "dashboard_agent",
+    "dashboard_agent": "dashboard_agent",
+}
 
 
 def _now_iso() -> str:
@@ -31,6 +45,33 @@ def _clean_text(value: Any, limit: int = 240) -> str:
 def _clean_key(value: Any, limit: int = 120) -> str:
     text = _clean_text(value, limit)
     return re.sub(r"[^A-Za-z0-9_.:-]+", "_", text).strip("._-")[:limit]
+
+
+def home_feedback_unit_key(tool: Any = None, *, suggested_tool: str = "") -> str:
+    """Map a Home answer/tool payload to the unit feedback profile key."""
+    candidates: list[Any] = [suggested_tool]
+    if isinstance(tool, dict):
+        candidates.extend([
+            tool.get("unit_ai"),
+            tool.get("unit_key"),
+            tool.get("tool"),
+            tool.get("name"),
+            tool.get("feature"),
+            tool.get("action"),
+            tool.get("intent"),
+        ])
+    elif tool is not None:
+        candidates.append(tool)
+    for candidate in candidates:
+        key = _clean_key(candidate).lower()
+        if not key:
+            continue
+        if key in _UNIT_KEYS:
+            return key
+        mapped = _HOME_FEATURE_UNIT_MAP.get(key)
+        if mapped:
+            return mapped
+    return ""
 
 
 def _empty_store() -> dict[str, Any]:

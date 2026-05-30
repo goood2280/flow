@@ -106,7 +106,7 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 
 prompt가 `x축`, `y축`, `x/y축`, `x axis`, `y axis`처럼 data table 축 값을 명시하면 `params_fill/spec_validate`가 해당 축 컬럼이 실제 columns에 있고 비어 있지 않은지 확인한다. 축 컬럼명이 비어 있거나 table에 없거나 sample row에서 전부 빈 값이면 chart를 추측 생성하지 않고 `status=blocked`, `needs_input=true`, `question`으로 사용자에게 다시 채울 값을 묻는다.
 
-Agent 단위기능 AI 탭은 Unit 전체와 LangGraph node별 `좋아요` / `싫어요` feedback을 저장한다. feedback은 `FLOW_DATA_ROOT/agent_feedback_penalties.json`의 runtime penalty profile만 갱신하며 prompt, code, rule, cache를 자동 수정하지 않는다. 각 runtime trace row와 graph node에는 현재 node penalty metadata를 붙인다. v1에서는 penalty가 높아도 node 실행 자체를 skip하지 않고, Home Flow-i의 휴리스틱 점수와 LLM/ReAct planner catalog의 낮은 우선순위/avoid 표시 신호로만 사용한다.
+Agent 단위기능 AI 탭은 각 unit의 실행 결과/질문 이력 답변과 LangGraph node detail에 `좋아요` / `싫어요` feedback을 붙여 저장한다. feedback은 `FLOW_DATA_ROOT/agent_feedback_penalties.json`의 runtime penalty profile만 갱신하며 prompt, code, rule, cache를 자동 수정하지 않는다. 각 runtime trace row와 graph node에는 현재 node penalty metadata를 붙인다. v1에서는 penalty가 높아도 node 실행 자체를 skip하지 않고, Home Flow-i의 휴리스틱 점수와 LLM/ReAct planner catalog의 낮은 우선순위/avoid 표시 신호로만 사용한다.
 
 기존 `FLOW_DATA_ROOT/agent_unit_overrides.json`와 `/runtime/overrides` API는 과거 저장값 호환을 위해 backend에 남긴다. Agent UI에서는 persona/prompt/cache 편집 textarea를 노출하지 않는다.
 
@@ -130,7 +130,7 @@ Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `ru
 
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
 
-Home Flow-i는 같은 feedback penalty profile을 읽어 자동 Unit AI 후보 점수에 `boost - penalty`를 반영한다. 명시적 alias나 사용자가 `/api/home-agent/run-tool`로 특정 unit을 직접 실행하는 경우에는 차단하지 않고, 실행 trace와 runtime graph에 penalty metadata만 남긴다. LLM/ReAct planner catalog는 down-rated unit을 `low_priority` 또는 `avoid` 후보로 표시한다.
+Home Flow-i는 같은 feedback penalty profile을 읽어 자동 Unit AI 후보 점수에 `boost - penalty`를 반영한다. Home 답변의 `좋아요` / `개선 필요` feedback도 관련 feature를 unit key로 정규화해 home/unit penalty profile에 반영한다. 명시적 alias나 사용자가 `/api/home-agent/run-tool`로 특정 unit을 직접 실행하는 경우에는 차단하지 않고, 실행 trace와 runtime graph에 penalty metadata만 남긴다. LLM/ReAct planner catalog는 down-rated unit을 `low_priority` 또는 `avoid` 후보로 표시한다.
 
 ### 반복 ReAct 루프 (선택, flag 기본 off)
 
