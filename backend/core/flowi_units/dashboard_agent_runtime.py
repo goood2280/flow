@@ -1,12 +1,14 @@
 """Standalone Dashboard Agent runtime graph."""
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import operator
 import re
 import time
 import uuid
 from copy import deepcopy
+from pathlib import Path
 from typing import Annotated, Any, Callable, TypedDict
 
 from fastapi import HTTPException
@@ -20,6 +22,8 @@ from app_v2.modules.agent_runtime.executor import (
 from core import agent_feedback_penalties
 from core import agent_prompt_overrides
 from core import agent_semantic_service
+from core.paths import PATHS
+from core.utils import jsonl_append, jsonl_read, jsonl_trim
 
 
 UNIT_AI_KEY = "dashboard_agent"
@@ -136,6 +140,14 @@ def _safe_text(value: Any, max_len: int = 2000) -> str:
     return text[: max(1, max_len)].strip()
 
 
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _history_path() -> Path:
+    return PATHS.data_root / "agent_unit_ai_sessions" / UNIT_AI_KEY / "history.jsonl"
+
+
 def _string_list(value: Any, limit: int = 100) -> list[str]:
     if value is None:
         return []
@@ -164,6 +176,126 @@ def _safe_rows(rows: Any, *, max_rows: int = 500, max_cols: int = 80) -> list[di
             clean[_safe_text(key, 120)] = value if value is None or isinstance(value, (bool, int, float, str)) else _safe_text(value, 240)
         out.append(clean)
     return out
+
+
+_RAW_ROW_KEYS = {"sample_rows", "rows", "preview_rows", "row_payloads", "data", "points"}
+
+
+def _history_safe_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 5:
+        return {}
+    if isinstance(value, dict):
+        return {
+            _safe_text(key, 120): _history_safe_value(item, depth=depth + 1)
+            for key, item in value.items()
+            if _safe_text(key, 120) not in _RAW_ROW_KEYS
+        }
+    if isinstance(value, list):
+        return [_history_safe_value(item, depth=depth + 1) for item in value[:50]]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _safe_text(value, 1000)
+
+
+def _trace_history_summary(trace: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in trace[:8] if isinstance(trace, list) else []:
+        if not isinstance(row, dict):
+            continue
+        warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+        out.append({
+            "node_id": _safe_text(row.get("node_id"), 80),
+            "status": _safe_text(row.get("status"), 40),
+            "duration_ms": row.get("duration_ms") if isinstance(row.get("duration_ms"), int) else 0,
+            "warnings": [_safe_text(item, 180) for item in warnings[:3] if str(item or "").strip()],
+        })
+    return out
+
+
+def _chart_history_summary(result_payload: dict[str, Any]) -> dict[str, Any]:
+    chart = result_payload.get("chart_result") if isinstance(result_payload.get("chart_result"), dict) else {}
+    config = chart.get("chart_config") if isinstance(chart.get("chart_config"), dict) else chart.get("config")
+    if not isinstance(config, dict):
+        config = result_payload.get("config") if isinstance(result_payload.get("config"), dict) else {}
+    points = chart.get("points") if isinstance(chart.get("points"), list) else []
+    total = chart.get("total")
+    try:
+        total = int(total)
+    except Exception:
+        total = len(points)
+    return {
+        "kind": _safe_text(chart.get("kind"), 120),
+        "chart_type": _safe_text(chart.get("chart_type") or result_payload.get("chart_type"), 80),
+        "title": _safe_text(chart.get("title"), 200),
+        "status": _safe_text(chart.get("status"), 80),
+        "total": total,
+        "points_count": len(points),
+        "config": _history_safe_value(config),
+    }
+
+
+def record_dashboard_agent_history(
+    username: str,
+    *,
+    source: str,
+    request_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    prompt = _safe_text((request_payload or {}).get("natural_language") or (request_payload or {}).get("prompt"), 2000)
+    if not prompt or not bool((result_payload or {}).get("ok")):
+        return None
+    columns = _string_list((request_payload or {}).get("columns"), limit=300)
+    if not columns:
+        spec = (result_payload or {}).get("spec") if isinstance((result_payload or {}).get("spec"), dict) else {}
+        columns = _string_list(spec.get("columns"), limit=300)
+    sample_rows = (request_payload or {}).get("sample_rows")
+    sample_row_count = len(sample_rows) if isinstance(sample_rows, list) else 0
+    run_id = _safe_text((result_payload or {}).get("run_id"), 120) or "agent_dashboard_" + uuid.uuid4().hex[:12]
+    row = {
+        "event": "history",
+        "history_id": run_id,
+        "run_id": run_id,
+        "source": _safe_text(source, 80),
+        "timestamp": _now_iso(),
+        "username": _safe_text(username, 80),
+        "prompt": prompt,
+        "natural_language": prompt,
+        "columns": columns,
+        "ok": bool((result_payload or {}).get("ok")),
+        "status": _safe_text((result_payload or {}).get("status"), 80),
+        "chart_type": _safe_text((result_payload or {}).get("chart_type"), 80),
+        "run_metadata": {
+            "unit_ai": UNIT_AI_KEY,
+            "status": _safe_text((result_payload or {}).get("status"), 80),
+            "ok": bool((result_payload or {}).get("ok")),
+            "blocked": bool((result_payload or {}).get("blocked")),
+            "needs_input": bool((result_payload or {}).get("needs_input")),
+            "question": _safe_text((result_payload or {}).get("question"), 240),
+            "product": _safe_text((request_payload or {}).get("product"), 160),
+            "columns_count": len(columns),
+            "sample_row_count": sample_row_count,
+            "axis_requirements": _history_safe_value((result_payload or {}).get("axis_requirements") or {}),
+        },
+        "chart_summary": _chart_history_summary(result_payload or {}),
+        "warnings": [_safe_text(item, 240) for item in ((result_payload or {}).get("warnings") or [])[:10] if str(item or "").strip()],
+        "trace_summary": _trace_history_summary((result_payload or {}).get("trace")),
+    }
+    jsonl_append(_history_path(), row, add_timestamp=False)
+    jsonl_trim(_history_path(), 500)
+    return row
+
+
+def list_dashboard_agent_history(limit: int = 50, *, username: str = "") -> list[dict[str, Any]]:
+    def _visible(row: dict[str, Any]) -> bool:
+        return not username or not row.get("username") or row.get("username") == username
+
+    rows = jsonl_read(
+        _history_path(),
+        limit=max(1, min(int(limit or 50), 500)),
+        filter_fn=_visible,
+    )
+    rows.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    return rows[: max(1, min(int(limit or 50), 200))]
 
 
 def _node_metadata(node_id: str) -> dict[str, Any]:

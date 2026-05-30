@@ -151,6 +151,7 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Test prompt" in ui
     assert "/api/agent/catalog" in ui
     assert "/api/agent/unit/${encodeURIComponent(unitKey)}/run" in ui
+    assert 'agentUnitHistoryEndpoint("dashboard_agent")' in ui
     assert "/api/agent/semantic/lexicon" in ui
     assert "active Agent unit route" in ui
     assert "Inform graph fetch 진단" in ui

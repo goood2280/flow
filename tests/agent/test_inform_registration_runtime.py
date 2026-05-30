@@ -118,6 +118,7 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     assert status["active_unit_endpoints_v2"]["inform_registration"]["graph"] == "/api/agent/unit/inform_registration/graph"
     assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
     assert status["active_unit_endpoints"]["dashboard_agent"]["graph"] == "/api/agent/unit-ai/dashboard_agent/runtime/graph"
+    assert status["active_unit_endpoints"]["dashboard_agent"]["history"] == "/api/agent/unit-ai/dashboard_agent/runtime/history"
     assert "backend_version" in status
     assert "backend_commit" in status
 
@@ -141,6 +142,7 @@ def test_agent_runtime_routes_are_before_archived_catchall():
         "/api/agent/unit-ai/change_management/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/graph",
         "/api/agent/unit-ai/{unit_key}/runtime/run",
+        "/api/agent/unit-ai/{unit_key}/runtime/history",
         "/api/agent/unit-ai/{unit_key}/feedback-profile",
         "/api/agent/unit-ai/{unit_key}/feedback",
         "/api/agent/catalog",
@@ -164,18 +166,28 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
         "/api/agent/unit-ai/inform_registration/runtime/history": "inform_registration_runtime_history",
         "/api/agent/unit-ai/change_management/runtime/graph": "change_management_runtime_graph",
         "/api/agent/unit-ai/change_management/runtime/history": "change_management_runtime_history",
+        "/api/agent/unit-ai/dashboard_agent/runtime/graph": "unit_ai_runtime_graph",
+        "/api/agent/unit-ai/dashboard_agent/runtime/history": "unit_ai_runtime_history",
         "/api/agent/unit-ai/inform_registration/feedback-profile": "unit_ai_feedback_profile",
         "/api/agent/catalog": "agent_unit_catalog",
         "/api/agent/unit/inform_registration/graph": "unit_runtime_graph",
         "/api/agent/unit/inform_registration/history": "unit_runtime_history",
+        "/api/agent/unit/dashboard_agent/graph": "unit_runtime_graph",
+        "/api/agent/unit/dashboard_agent/history": "unit_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
         "/api/agent/semantic/lexicon": "semantic_lexicon",
     }
     for path, endpoint in expected.items():
         assert _first_matching_endpoint(flow_app.routes, path) == endpoint
+    expected_post = {
+        "/api/agent/unit-ai/dashboard_agent/runtime/run": "unit_ai_runtime_run",
+        "/api/agent/unit/dashboard_agent/run": "unit_runtime_run",
+    }
+    for path, endpoint in expected_post.items():
+        assert _first_matching_endpoint(flow_app.routes, path, method="POST") == endpoint
 
 
-def test_archived_catchall_does_not_archive_active_inform_graph(monkeypatch):
+def test_archived_catchall_does_not_archive_active_unit_graph_and_history(monkeypatch):
     monkeypatch.setattr(agent, "current_user", lambda _request: {"username": "tester", "role": "admin"})
 
     graph = agent.archived_agent_endpoint("unit-ai/inform_registration/runtime/graph", _Request())
@@ -184,6 +196,16 @@ def test_archived_catchall_does_not_archive_active_inform_graph(monkeypatch):
     assert graph["graph"]["nodes"][0]["id"] == "context_seed"
     graph_v2 = agent.archived_agent_endpoint("unit/inform_registration/graph", _Request())
     assert graph_v2["graph"]["nodes"][0]["id"] == "context_seed"
+    dashboard_graph = agent.archived_agent_endpoint("unit-ai/dashboard_agent/runtime/graph", _Request())
+    assert dashboard_graph["unit_ai"] == "dashboard_agent"
+    assert dashboard_graph["graph"]["nodes"][0]["id"] == "semantic_layer"
+    dashboard_history = agent.archived_agent_endpoint("unit-ai/dashboard_agent/runtime/history", _Request())
+    assert dashboard_history["ok"] is True
+    assert dashboard_history["unit_ai"] == "dashboard_agent"
+    dashboard_graph_v2 = agent.archived_agent_endpoint("unit/dashboard_agent/graph", _Request())
+    assert dashboard_graph_v2["graph"]["nodes"][0]["id"] == "semantic_layer"
+    dashboard_history_v2 = agent.archived_agent_endpoint("unit/dashboard_agent/history", _Request())
+    assert dashboard_history_v2["unit_ai"] == "dashboard_agent"
 
     with pytest.raises(HTTPException) as excinfo:
         agent.archived_agent_endpoint("runtime", _Request())

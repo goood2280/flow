@@ -27,6 +27,7 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `GET /api/agent/unit-ai/change_management/runtime/history`
   - `GET /api/agent/unit-ai/dashboard_agent/runtime/graph`
   - `POST /api/agent/unit-ai/dashboard_agent/runtime/run`
+  - `GET /api/agent/unit-ai/dashboard_agent/runtime/history`
   - `GET /api/agent/unit-ai/{unit_key}/feedback-profile`
   - `POST /api/agent/unit-ai/{unit_key}/feedback`
   - `GET/PUT /api/agent/unit-ai/{unit_key}/runtime/overrides` (호환용 backend API)
@@ -105,6 +106,8 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 출력은 기존 Home/Dashboard가 쓰는 `chart_result` shape를 유지한다. `PlotlyChart.jsx`가 받는 `kind`, `chart_type`, `points`, `config`, `chart_config`, `total` 필드를 깨지 않는다.
 
 prompt가 `x축`, `y축`, `x/y축`, `x axis`, `y axis`처럼 data table 축 값을 명시하면 `params_fill/spec_validate`가 해당 축 컬럼이 실제 columns에 있고 비어 있지 않은지 확인한다. 축 컬럼명이 비어 있거나 table에 없거나 sample row에서 전부 빈 값이면 chart를 추측 생성하지 않고 `status=blocked`, `needs_input=true`, `question`으로 사용자에게 다시 채울 값을 묻는다.
+
+Dashboard Agent 질문 이력은 `FLOW_DATA_ROOT/agent_unit_ai_sessions/dashboard_agent/history.jsonl`에 저장한다. 이력에는 prompt, columns, 실행 metadata, chart summary, warning, trace summary만 남기며 `sample_rows`, chart points, preview row payload는 저장하지 않는다.
 
 Agent 단위기능 AI 탭은 각 unit의 실행 결과/질문 이력 답변과 LangGraph node detail에 `좋아요` / `싫어요` feedback을 붙여 저장한다. feedback은 `FLOW_DATA_ROOT/agent_feedback_penalties.json`의 runtime penalty profile만 갱신하며 prompt, code, rule, cache를 자동 수정하지 않는다. 각 runtime trace row와 graph node에는 현재 node penalty metadata를 붙인다. v1에서는 penalty가 높아도 node 실행 자체를 skip하지 않고, Home Flow-i의 휴리스틱 점수와 LLM/ReAct planner catalog의 낮은 우선순위/avoid 표시 신호로만 사용한다.
 

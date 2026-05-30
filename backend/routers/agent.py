@@ -31,6 +31,8 @@ from core.flowi_units.change_management_runtime import (
 from core.flowi_units.dashboard_agent_runtime import (
     UNIT_AI_KEY as DASHBOARD_AGENT_UNIT_KEY,
     dashboard_agent_graph,
+    list_dashboard_agent_history,
+    record_dashboard_agent_history,
     run_dashboard_agent_runtime,
 )
 from core.flowi_units.filebrowser_ai_sql_runtime import (
@@ -67,6 +69,7 @@ _ACTIVE_UNIT_ENDPOINTS = {
     DASHBOARD_AGENT_UNIT_KEY: {
         "graph": "/api/agent/unit-ai/dashboard_agent/runtime/graph",
         "run": "/api/agent/unit-ai/dashboard_agent/runtime/run",
+        "history": "/api/agent/unit-ai/dashboard_agent/runtime/history",
         "overrides": "/api/agent/unit-ai/dashboard_agent/runtime/overrides",
     },
 }
@@ -778,10 +781,20 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
                 DASHBOARD_AGENT_UNIT_KEY,
                 home_orchestrator.dashboard_agent_result_from_source_runtime_result(result),
             )
-        return agent_feedback_penalties.annotate_result(DASHBOARD_AGENT_UNIT_KEY, run_dashboard_agent_runtime(
+        result = run_dashboard_agent_runtime(
             payload,
             username=(me or {}).get("username") or "",
-        ))
+        )
+        try:
+            record_dashboard_agent_history(
+                (me or {}).get("username") or "",
+                source="agent_test_prompt",
+                request_payload=payload,
+                result_payload=result,
+            )
+        except Exception:
+            pass
+        return agent_feedback_penalties.annotate_result(DASHBOARD_AGENT_UNIT_KEY, result)
     raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
 
 
@@ -887,8 +900,13 @@ def unit_ai_runtime_history(unit_key: str, request: Request, limit: int = 50) ->
             "history": payload.get("history") or [],
             "limit": payload.get("limit") or limit,
         }
-    if unit_key != INFORM_REGISTRATION_UNIT_KEY:
-        raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
+    if unit_key == DASHBOARD_AGENT_UNIT_KEY:
+        return {
+            "ok": True,
+            "unit_ai": unit_key,
+            "history": list_dashboard_agent_history(limit=limit, username=(me or {}).get("username") or ""),
+        }
+    raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
 
 
 @router.get("/unit/{unit_key}/graph")

@@ -11,6 +11,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from core import llm_adapter  # noqa: E402
+from core.flowi_units import dashboard_agent_runtime as runtime  # noqa: E402
 from core.flowi_units.dashboard_agent_runtime import dashboard_agent_graph, run_dashboard_agent_runtime  # noqa: E402
 from routers import agent  # noqa: E402
 
@@ -22,9 +23,23 @@ class _State:
 
 class _Request:
     headers = {}
+    method = "GET"
+    query_params = {}
 
-    def __init__(self):
-        self.state = _State({"username": "tester", "role": "admin"})
+    def __init__(self, username: str = "tester"):
+        self.state = _State({"username": username, "role": "admin"})
+
+
+class _DummyPaths:
+    def __init__(self, root: Path):
+        self.data_root = root / "flow-data"
+        self.data_root.mkdir(parents=True, exist_ok=True)
+
+
+def _install_history_fixture(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(runtime, "PATHS", _DummyPaths(tmp_path))
+    monkeypatch.setattr(agent, "current_user", lambda request: request.state.user)
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
 
 
 def test_dashboard_agent_graph_and_catalog(monkeypatch):
@@ -155,3 +170,41 @@ def test_dashboard_agent_accepts_explicit_x_y_axes(monkeypatch):
     assert out["ok"] is True
     assert out["params"]["x"] == "wafer_id"
     assert out["params"]["y"] == "IOFF"
+
+
+def test_dashboard_agent_run_records_sanitized_user_history(monkeypatch, tmp_path):
+    _install_history_fixture(monkeypatch, tmp_path)
+    payload = {
+        "natural_language": "wafer별 IOFF 산점도 그려줘",
+        "columns": ["wafer_id", "IOFF", "lot_id"],
+        "sample_rows": [
+            {"wafer_id": 1, "IOFF": 0.12, "lot_id": "SENSITIVE_SAMPLE_ROW"},
+            {"wafer_id": 2, "IOFF": 0.2, "lot_id": "SENSITIVE_SAMPLE_ROW"},
+        ],
+    }
+
+    direct = agent.unit_runtime_run("dashboard_agent", agent.UnitAiRuntimeRunReq(**payload), _Request("tester"))
+    compat = agent.unit_ai_runtime_run(
+        "dashboard_agent",
+        agent.UnitAiRuntimeRunReq(**{
+            **payload,
+            "natural_language": "lot별 IOFF trend",
+            "sample_rows": [{"wafer_id": 3, "IOFF": 0.3, "lot_id": "OTHER_PRIVATE_ROW"}],
+        }),
+        _Request("other"),
+    )
+
+    history = agent.unit_runtime_history("dashboard_agent", _Request("tester"))["history"]
+    compat_history = agent.unit_ai_runtime_history("dashboard_agent", _Request("other"))["history"]
+    assert [row["run_id"] for row in history] == [direct["run_id"]]
+    assert [row["run_id"] for row in compat_history] == [compat["run_id"]]
+
+    row = history[0]
+    serialized = json.dumps(row, ensure_ascii=False)
+    assert row["columns"] == ["wafer_id", "IOFF", "lot_id"]
+    assert row["chart_summary"]["chart_type"]
+    assert row["chart_summary"]["points_count"] == direct["chart_result"]["total"]
+    assert row["trace_summary"][0]["node_id"] == "semantic_layer"
+    assert "sample_rows" not in row
+    assert "points" not in row["chart_summary"]
+    assert "SENSITIVE_SAMPLE_ROW" not in serialized

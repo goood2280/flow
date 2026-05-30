@@ -120,6 +120,7 @@ semantic_layer -> chart_intent -> chart_type_select -> params_fill -> spec_valid
 - 입력은 `{natural_language, columns, sample_rows}`를 기본으로 한다. Home Agent가 source/chart 요청으로 Dashboard Agent를 선택하면 내부 source orchestration이 `root/product/file` 힌트를 처리한다.
 - 출력은 기존 `chart_result` shape를 유지해 `PlotlyChart.jsx`가 그대로 받을 수 있어야 한다.
 - prompt에 x/y축 컬럼이 명시됐는데 값이 비어 있거나 table columns/sample row에서 확인되지 않으면 chart를 만들지 않고 `needs_input` 질문으로 멈춘다.
+- 단위기능 AI 화면의 Dashboard 질문 이력은 `FLOW_DATA_ROOT/agent_unit_ai_sessions/dashboard_agent/history.jsonl`에 prompt, columns, 실행 metadata, chart/trace summary만 저장한다. 원본 `sample_rows`, preview rows, chart points는 저장하지 않는다.
 
 ### Dashboard Agent Source Orchestration
 
@@ -162,7 +163,7 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 |---|---|---|---|---|---|---|
 | Semantic lexicon | shared alias/intent override와 audit | `FLOW_DATA_ROOT/semantic/alias_groups.json`, `intent_hints.json`, `changes.jsonl` | `backend/app_v2/modules/semantic_lexicon/`, `backend/routers/agent.py` | Agent Semantic layer | semantic writer API만 가능 | prompt 용어를 canonical key/slot hint로 정규화할 때 |
 | Semantic proposals | 새 용어 후보 queue | `FLOW_DATA_ROOT/semantic/proposals/*.json` | `backend/app_v2/modules/semantic_learning/`, `backend/routers/agent.py` | Agent Semantic layer | enqueue 또는 approve/reject API만 가능 | unknown term을 바로 저장하지 않고 검토 queue로 보낼 때 |
-| Agent unit sessions | unit별 실행 session/history | `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/*.json`, `change_management/history.jsonl` | `backend/core/flowi_units/*_runtime.py` | 각 unit runtime | unit runtime만 write | short memory, 실행 이력, 재현 가능한 public trace |
+| Agent unit sessions | unit별 실행 session/history | `FLOW_DATA_ROOT/agent_unit_ai_sessions/inform_registration/*.json`, `change_management/history.jsonl`, `dashboard_agent/history.jsonl` | `backend/core/flowi_units/*_runtime.py` | 각 unit runtime | unit runtime만 write | short memory, 실행 이력, 재현 가능한 public trace |
 | Home Flow-i runs | Home prompt의 공개 runtime graph snapshot | `FLOW_DATA_ROOT/home_agent_runs/*.json` | `backend/core/home_orchestrator.py`, `backend/routers/agent.py` | Home Flow-i | Home orchestrator만 write | Agent `Flow-i` tab에서 Home 실행 흐름을 관찰할 때 |
 | Home Flow-i memory | 사용자별 최근 prompt/answer와 공개 tool summary | `FLOW_DATA_ROOT/home_agent_memory/conversation.jsonl` | `backend/core/home_memory.py`, `backend/routers/llm.py`, `backend/core/home_orchestrator.py` | Home Flow-i | Home Flow-i 응답 종료 시 append | 새로고침/외부 호출 후에도 후속 질문 context를 이어받을 때 |
 | Inform runtime data | Inform rows, mail draft, audit 흐름 | `FLOW_DATA_ROOT/informs/informs.json` and related Inform files | `backend/routers/informs.py`, `backend/core/flowi_units/inform_registration_runtime.py` | Inform | Inform owner API만 가능 | Inform registration confirm 전/후 상태와 권한 설명 |

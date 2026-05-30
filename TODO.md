@@ -9,6 +9,8 @@
 
 ## Done
 
+- (Codex) Dashboard Agent 질문 이력/active route 보정
+- (Codex) Agent/Home 답변 단위 feedback penalty 부착 위치 보정
 - (Codex) Dashboard Agent source/JOIN orchestration과 axis validation 적용
 - (Codex) Agent feedback penalty profile runtime 적용
 - (Codex) Agent semantic layer Phase 2와 unit runtime Phase 3 스케치 적용

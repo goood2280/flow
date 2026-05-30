@@ -1916,19 +1916,42 @@ function DashboardAgentUnitPanel() {
   const [result, setResult] = useState(null);
   const [lastRequest, setLastRequest] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const feedback = useAgentFeedbackProfile("dashboard_agent");
+
+  const loadHistory = () => {
+    setHistoryLoading(true);
+    return sf(agentUnitHistoryEndpoint("dashboard_agent"))
+      .then((payload) => {
+        const nextHistory = payload?.history || [];
+        setHistory(nextHistory);
+        if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+      })
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  };
 
   useEffect(() => {
     setLoading(true);
-    sf(agentUnitGraphEndpoint("dashboard_agent"))
-      .then((payload) => {
-        setGraph(payload?.graph || null);
-        setGraphErr("");
-      })
-      .catch((e) => {
+    Promise.all([
+      sf(agentUnitGraphEndpoint("dashboard_agent")).catch((e) => ({
+        error: formatAgentEndpointError(e, agentUnitGraphEndpoint("dashboard_agent")),
+      })),
+      sf(agentUnitHistoryEndpoint("dashboard_agent")).catch(() => ({ history: [] })),
+    ]).then(([graphPayload, historyPayload]) => {
+      if (graphPayload?.error) {
         setGraph(null);
-        setGraphErr(formatAgentEndpointError(e, agentUnitGraphEndpoint("dashboard_agent")));
-      })
+        setGraphErr(graphPayload.error);
+      } else {
+        setGraph(graphPayload?.graph || null);
+        setGraphErr("");
+      }
+      const nextHistory = historyPayload?.history || [];
+      setHistory(nextHistory);
+      if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+    }).catch((e) => setErr(e.message || String(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -1974,6 +1997,10 @@ function DashboardAgentUnitPanel() {
   const selectedPromptSystem = selectedNode?.prompt?.system || "";
   const selectedPromptMode = selectedNode?.prompt?.mode || "deterministic";
   const selectedStateIo = selectedNode?.state_io || {};
+  const selectedHistory = useMemo(() => (
+    history.find((item) => item.history_id === selectedHistoryId) || history[0] || null
+  ), [history, selectedHistoryId]);
+  const historyPrompt = (item) => item?.prompt || item?.natural_language || "";
 
   const parseColumns = () => {
     const raw = columnsText.trim();
@@ -2024,15 +2051,113 @@ function DashboardAgentUnitPanel() {
     setResult(null);
     setLastRequest(body);
     postJson(agentUnitRunEndpoint("dashboard_agent"), body)
-      .then((payload) => setResult(payload))
+      .then((payload) => {
+        setResult(payload);
+        loadHistory();
+      })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
+  };
+
+  const replayHistory = (item) => {
+    setPrompt(historyPrompt(item));
+    if (Array.isArray(item?.columns)) {
+      setColumnsText(item.columns.join(", "));
+    }
+    setSelectedHistoryId(item?.history_id || "");
+    setResult(null);
+    setLastRequest(null);
+    setSelectedNodeId(null);
+    setErr("");
   };
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       {graphErr && <Banner tone="warn" onClose={() => setGraphErr("")}>Dashboard graph fetch 진단: {graphErr}</Banner>}
+      <Panel
+        title="질문 이력"
+        subtitle={historyLoading ? "loading" : `${history.length} items`}
+        right={<Button variant="ghost" onClick={loadHistory} disabled={historyLoading} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.05fr) minmax(320px, 0.95fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ maxHeight: 230, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            {history.length ? history.map((item) => {
+              const active = (item.history_id || "") === (selectedHistory?.history_id || "");
+              return (
+                <button
+                  type="button"
+                  key={item.history_id || `${item.timestamp}:${historyPrompt(item)}`}
+                  onClick={() => setSelectedHistoryId(item.history_id || "")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    width: "100%",
+                    textAlign: "left",
+                    justifyContent: "stretch",
+                    justifyItems: "stretch",
+                    alignItems: "start",
+                    padding: "8px 9px",
+                    border: 0,
+                    borderBottom: "1px solid var(--border)",
+                    background: active ? "var(--bg-tertiary)" : "transparent",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyPrompt(item) || "(empty)"}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyActorLabel(item)} · {historyTimestampLabel(item)}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.status || "status"} · {item.chart_summary?.chart_type || item.chart_type || "chart"} · {(item.columns || []).length} cols
+                  </span>
+                </button>
+              );
+            }) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                저장된 Dashboard 질문 이력이 없습니다.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {selectedHistory ? (
+              <>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill tone={toneForStatus(selectedHistory.status)}>{selectedHistory.status || "history"}</Pill>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {historyActorLabel(selectedHistory)} · {historyTimestampLabel(selectedHistory)}
+                  </span>
+                  <Button
+                    variant="primary"
+                    onClick={() => replayHistory(selectedHistory)}
+                    style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px", height: 28 }}
+                  >재현</Button>
+                </div>
+                <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {historyPrompt(selectedHistory) || "(empty)"}
+                </div>
+                <JsonBlock
+                  value={{
+                    columns: selectedHistory.columns || [],
+                    run_metadata: selectedHistory.run_metadata || {},
+                    chart_summary: selectedHistory.chart_summary || {},
+                    warnings: selectedHistory.warnings || [],
+                    trace_summary: selectedHistory.trace_summary || [],
+                  }}
+                  maxHeight={190}
+                />
+              </>
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                저장된 Dashboard 질문 이력이 없습니다.
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
       <UnitFeedbackStatus feedback={feedback} />
 
       <div className="flow-agent-unit-grid">
