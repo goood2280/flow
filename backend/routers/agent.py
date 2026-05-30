@@ -20,6 +20,8 @@ from app_v2.modules.semantic_lexicon import store as semantic_lexicon_store
 from core import home_orchestrator
 from core import agent_feedback_penalties
 from core import agent_prompt_overrides
+from core import semantic_source_catalog
+from core import semantic_measure_catalog
 from core.auth import current_user, is_page_manager
 from core.flowi_units import all_unit_ais, get_unit_ai
 from core.flowi_units.change_management_runtime import (
@@ -174,6 +176,10 @@ class SemanticProposalDecisionReq(BaseModel):
 
 class SemanticDraftReq(BaseModel):
     text: str = ""
+
+
+class SemanticMeasurementTermReq(BaseModel):
+    term: dict[str, Any] = Field(default_factory=dict)
 
 
 class UnitAiOverrideReq(BaseModel):
@@ -562,6 +568,47 @@ def semantic_lexicon(request: Request, limit: int = 100) -> dict[str, Any]:
         "changes": semantic_lexicon_store.list_changes(limit=max(1, min(int(limit or 100), 500))),
         "proposals": semantic_inbox.list_proposals(status="pending", limit=100),
     }
+
+
+@router.get("/semantic/sources")
+def semantic_sources(request: Request) -> dict[str, Any]:
+    current_user(request)
+    return {
+        "ok": True,
+        "sources": semantic_source_catalog.catalog_sources(),
+        "roles": semantic_source_catalog.catalog_roles(),
+        "docs_base": semantic_source_catalog.DOCS_BASE,
+    }
+
+
+@router.get("/semantic/measurements")
+def semantic_measurements(request: Request) -> dict[str, Any]:
+    current_user(request)
+    catalog = semantic_measure_catalog.load_catalog(ensure=True)
+    return {
+        "ok": True,
+        "catalog": catalog,
+        "terms": catalog.get("terms") or [],
+        "path": catalog.get("path") or "",
+        "change_log_path": catalog.get("change_log_path") or "",
+    }
+
+
+@router.put("/semantic/measurements/{term_id}")
+def semantic_measurement_upsert(term_id: str, req: SemanticMeasurementTermReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    term = dict(req.term or {})
+    term["id"] = term_id
+    saved = semantic_measure_catalog.save_term(term, actor=str(user.get("username") or ""))
+    catalog = semantic_measure_catalog.load_catalog(ensure=True)
+    return {"ok": True, "term": saved, "terms": catalog.get("terms") or []}
+
+
+@router.post("/semantic/measurements/merge-defaults")
+def semantic_measurements_merge_defaults(request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    catalog = semantic_measure_catalog.ensure_catalog(actor=str(user.get("username") or ""))
+    return {"ok": True, **catalog}
 
 
 @router.put("/semantic/alias-groups/{canonical}")
@@ -972,6 +1019,12 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
         return unit_ai_catalog(request)
     if normalized == "catalog":
         return agent_unit_catalog(request)
+    if normalized == "semantic/sources":
+        return semantic_sources(request)
+    if normalized == "semantic/measurements":
+        return semantic_measurements(request)
+    if normalized == "semantic/lexicon":
+        return semantic_lexicon(request, limit=_query_limit(request, 100))
     if normalized == "home-flowi/runtime/graph":
         return home_flowi_runtime_graph(request)
     if normalized == "home-flowi/runtime/runs":

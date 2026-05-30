@@ -113,6 +113,10 @@ def _infer_tags_for_unit_ai(key: str, title: str) -> list[str]:
     if "sql" in t or "join" in t or "조인" in t:
         tags.append("sql_workspace")
         tags.append("filebrowser")
+    if "step" in t or "스텝" in t:
+        tags.append("step")
+    if "knob" in t or "노브" in t or "ppid" in t:
+        tags.append("knob")
     tags.append("unit_ai")
     return sorted(set(tags))
 

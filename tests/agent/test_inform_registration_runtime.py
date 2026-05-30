@@ -108,6 +108,8 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         "inform_registration",
         "change_management",
         "dashboard_agent",
+        "step_lookup",
+        "ppid_knob",
     ]
 
     status = agent.agent_reset_status()
@@ -152,6 +154,7 @@ def test_agent_runtime_routes_are_before_archived_catchall():
         "/api/agent/home-flowi/runtime/graph",
         "/api/agent/home-flowi/runtime/runs",
         "/api/agent/semantic/lexicon",
+        "/api/agent/semantic/sources",
         "/api/agent/semantic/proposals",
     ):
         idx = next(i for i, row in enumerate(routes) if row[0] == path)
@@ -176,6 +179,7 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
         "/api/agent/unit/dashboard_agent/history": "unit_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
         "/api/agent/semantic/lexicon": "semantic_lexicon",
+        "/api/agent/semantic/sources": "semantic_sources",
     }
     for path, endpoint in expected.items():
         assert _first_matching_endpoint(flow_app.routes, path) == endpoint

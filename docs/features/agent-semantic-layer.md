@@ -25,6 +25,8 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 | `intent_hints` | 특정 intent가 요구하는 canonical slot/key 목록. Inform registration 같은 slot-fill unit이 required hint로 참고한다. | `FLOW_DATA_ROOT/semantic/intent_hints.json` | 명시 save API만 가능 |
 | `proposal queue` | meeting/inform/tracker/activity log 등에서 나온 새 용어 후보의 pending queue. | `FLOW_DATA_ROOT/semantic/proposals/*.json` | enqueue는 proposal producer, approve/reject는 권한 있는 사용자만 가능 |
 | `changes` | alias/intent write audit log. | `FLOW_DATA_ROOT/semantic/changes.jsonl` | semantic lexicon service가 append |
+| `source_catalog` | Agent가 semantic source search와 unknown-term priority에 쓰는 read-only source 목록. | `backend/core/semantic_source_catalog.py`, `docs/semantic/<id>.md` | code/docs 변경만 가능. source data write 금지 |
+| `measurement_terms` | `CA BCD`, `PCCB Chain`처럼 사용자가 부르는 측정 이름을 source_type/product/step_id/item_id/spec/evidence로 연결하는 사전. | `FLOW_DATA_ROOT/semantic/measurement_terms.json` | Semantic layer save API만 가능. 변경 근거는 measurement change log와 Change management history에 append |
 | `semantic_frame` | 실행 1회에서 prompt를 어떻게 해석했는지 담는 공개 trace payload. | runtime response 또는 unit history | 실행 결과로만 생성. shared semantic JSON write와 별개 |
 
 `effective` view는 in-code seed와 disk override를 merge한 결과다. 현재 Agent API는 `backend/app_v2/modules/semantic_lexicon/service.py`에서 disk value를 우선 적용한다.
@@ -35,15 +37,36 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 
 - `alias_group_meta`: canonical별 `semantic_class`, `normalization`, `value_domain`
 - `value_catalog_matches`: FileBrowser owner read path로 즉석 조회한 실제 distinct/sample value hit
+- `source_catalog_matches`: code catalog가 매칭한 semantic source와 docs link
+- `measurement_term_matches`: 측정 용어 catalog가 매칭한 source_type, product, step_id, item_id, spec/evidence 후보
 - `unknown_terms`: `{term, search_priority:[{location, table_file, confidence}]}` 구조의 미지어 탐색 우선순위
 - `unknown_term_texts`: 기존 list 소비자를 위한 plain term 요약
+
+## Semantic Source Catalog
+
+PR2의 source catalog는 deterministic-first source selection을 위한 공용 메타데이터다. 현재 source는 `backend/core/semantic_source_catalog.py`에서 dict로 관리하고, 각 source 문서는 `docs/semantic/<id>.md`에 둔다.
+
+| ID | Role | Source docs |
+|---|---|---|
+| `rulebook` | `ppid_knob.csv` rulebook rows for `feature_name` and PPID knob classification | `docs/semantic/rulebook.md` |
+| `step_matching` | `Vehicle_matching.csv` step/function mapping, with `step_matching.csv` fallback | `docs/semantic/step_matching.md` |
+| `split_base` | `ML_TABLE_<product>.parquet` SplitTable view and raw export source | `docs/semantic/split_base.md` |
+| `fab_db` | FAB raw parquet for latest progress and current location evidence | `docs/semantic/fab_db.md` |
+| `inline_db` | Inline measurement source for item/target/spec and trend/value lookup | `docs/semantic/inline_db.md` |
+| `et_db` | ET measurement source for electrical-test item/target/spec and trend/value lookup | `docs/semantic/et_db.md` |
+
+The catalog is source metadata only. It does not read source rows and does not decide PR3 deterministic routing by itself. Runtime code uses it to explain which source should be searched first when an unknown prompt term looks like step, knob, SplitTable, or FAB-progress language.
 
 ## Semantic APIs
 
 | Endpoint | 용도 | 권한 | write 여부 |
 |---|---|---|---|
 | `GET /api/agent/semantic/lexicon` | effective/disk alias, intent, changes, pending proposals 조회 | 로그인 사용자 | 없음 |
+| `GET /api/agent/semantic/sources` | source catalog, role index, and docs base 조회 | 로그인 사용자 | 없음 |
+| `GET /api/agent/semantic/measurements` | measurement term catalog와 evidence/update metadata 조회 | 로그인 사용자 | 없음 |
 | `POST /api/agent/semantic/draft` | 자연어 또는 JSON에서 alias/intent 초안 생성 | 로그인 사용자 | 없음 |
+| `PUT /api/agent/semantic/measurements/{id}` | 측정 용어 mapping 저장. Body는 `term` object이며 source_type/product/step_id/item_id/target/spec/evidence를 포함할 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json`, measurement changes, Change management history |
+| `POST /api/agent/semantic/measurements/merge-defaults` | 기본 측정 용어 seed를 누락분만 병합 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json` |
 | `PUT /api/agent/semantic/alias-groups/{canonical}` | disk alias group 저장. Body는 `aliases`와 선택 메타 `semantic_class`, `normalization`, `value_domain`을 받을 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
 | `DELETE /api/agent/semantic/alias-groups/{canonical}` | disk alias group 삭제 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
 | `PUT /api/agent/semantic/intent-hints/{intent}` | disk intent hint 저장 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `intent_hints.json`, `changes.jsonl` |
@@ -74,7 +97,7 @@ context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> pre
 ```
 
 - `context_sample`은 FileBrowser source of truth에서 schema와 compact `sample_profile`을 얻는다.
-- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 기존 shape인 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`과 신규 `value_catalog_matches`, 구조화된 `unknown_terms`를 `semantic_frame`에 넣는다.
+- `semantic_layer`는 공유 `agent_semantic_service.resolve()` 결과에서 기존 shape인 `resolved_columns`, `unknown_column_terms`, `value_terms`, `synonyms`, `step_mapping`과 신규 `value_catalog_matches`, `source_catalog_matches`, 구조화된 `unknown_terms`를 `semantic_frame`에 넣는다.
 - `filter_draft`와 `column_draft`는 `semantic_frame`을 참고하지만 SQL validation, selected column validation, preview는 FileBrowser helper를 재사용한다.
 - `value_catalog_matches`는 선택된 FileBrowser source의 hot distinct/sample value를 즉석 조회한 read-only 결과다. 캐시는 process memory TTL만 사용하고 원본 DB/CSV/Parquet와 schema profile 파일은 쓰지 않는다.
 - root/file/schema 해석의 source of truth는 `backend/routers/filebrowser.py`와 `backend/core/flowi_units/filebrowser_ai_sql_runtime.py`다.
@@ -178,6 +201,7 @@ Home Flow-i의 `/api/llm/flowi/chat`은 matching/rulebook CSV를 read-only evide
 |---|---|
 | Agent semantic API | `backend/routers/agent.py` |
 | Shared semantic resolver | `backend/core/agent_semantic_service.py` |
+| Semantic source catalog | `backend/core/semantic_source_catalog.py`, `docs/semantic/<id>.md` |
 | Semantic lexicon storage/service | `backend/app_v2/modules/semantic_lexicon/` |
 | Semantic proposal queue/classifier | `backend/app_v2/modules/semantic_learning/` |
 | Agent runtime shared executor/prompt/validation | `backend/app_v2/modules/agent_runtime/` |

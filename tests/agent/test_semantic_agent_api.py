@@ -74,6 +74,17 @@ def test_semantic_lexicon_alias_intent_roundtrip(semantic_store):
     assert "ioff" not in deleted["alias_groups"]["disk"]
 
 
+def test_semantic_sources_api_returns_catalog(semantic_store):
+    payload = agent.semantic_sources(_Request(role="user"))
+
+    assert payload["ok"] is True
+    assert payload["docs_base"] == "docs/semantic"
+    assert payload["sources"]["rulebook"]["path_patterns"] == ["FLOW_DB_ROOT/ppid_knob.csv"]
+    assert payload["sources"]["step_matching"]["fallback_path_patterns"] == ["FLOW_DB_ROOT/step_matching.csv"]
+    assert payload["sources"]["split_base"]["related_question_ids"] == ["Q4"]
+    assert "rulebook" in payload["roles"]
+
+
 def test_semantic_write_requires_admin_or_page_manager(semantic_store, monkeypatch):
     req = _Request(username="viewer", role="user")
     monkeypatch.setattr(agent, "is_page_manager", lambda _user, _page: False)

@@ -63,6 +63,8 @@ def test_dashboard_agent_graph_and_catalog(monkeypatch):
         "inform_registration",
         "change_management",
         "dashboard_agent",
+        "step_lookup",
+        "ppid_knob",
     ]
 
 

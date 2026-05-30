@@ -8,6 +8,7 @@ Home은 로그인 직후 필요한 상태와 최근 변경을 보여주고, Mess
 - Flow-i prompt entry와 LLM 연결 상태
 - Home 안에서 Flow-i 표/차트/회의 요약/SQL 초안 결과를 인라인 확인하는 원샷 응답
 - raw chain-of-thought가 아닌 공개 실행 로그(해석 로그 / 근거 흐름)
+- Home Flow-i few-shot workflow catalog 조회와 admin 편집
 - 사용자-admin 1:1 문의
 - admin notice, read state, bell 동기화
 
@@ -25,6 +26,8 @@ Home은 로그인 직후 필요한 상태와 최근 변경을 보여주고, Mess
 | App shell | `frontend/src/App.jsx` |
 | Shell state | `frontend/src/app/useFlowShell.js` |
 | Home router | `backend/routers/home.py` |
+| Flow-i chat/workflow API | `backend/routers/llm.py` |
+| Flow-i workflow catalog | `backend/core/flowi_workflow_catalog.py`, `backend/core/flowi_workflow_defaults.json` seed + generated variants |
 | Messages router | `backend/routers/messages.py` |
 | Notification data | `data/flow-data/notifications/` |
 | Messages data | `data/flow-data/messages/` |
@@ -37,6 +40,7 @@ Home은 로그인 직후 필요한 상태와 최근 변경을 보여주고, Mess
 - Flow-i 결과는 가능하면 Home card 안에서 answer, table/chart/preview, warnings, evidence trace를 같이 보여주고 화면 이동 버튼은 보조 동작으로 둔다.
 - 공개 trace는 입력 해석, 사용한 기능 AI, endpoint/payload 요약, rows/source/warnings/fallback 상태만 보여주며 모델 사고과정 원문은 표시하지 않는다.
 - Home Flow-i 응답은 `answer`와 별도로 공개 `action_log`를 내려준다. `action_log.summary`는 사용자용 사고과정 요약, `action_log.timeline`은 `semantic_layer -> task_planner -> unit_agents -> conclusion` 단계별 실행 로그, `action_log.final_answer`는 `answer`와 같은 최종답변이다.
+- `/api/llm/flowi/workflows` catalog는 few-shot 예시와 prompt cache에 쓰는 runtime workflow 목록이다. GET은 로그인 사용자에게 열고, draft/save/merge-defaults는 admin만 수행한다.
 - LLM polish는 raw reasoning을 요청하지 않고 `[생각요약]`과 `[최종답변]` 공개 형식만 파싱한다. deterministic 결과도 기존 public trace에서 `action_log`를 생성한다.
 
 ## Verify

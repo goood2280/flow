@@ -83,6 +83,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   const[messages,setMessages]=useState([]);
   const[liveStep,setLiveStep]=useState(0);
   const[activeChartSessionId,setActiveChartSessionId]=useState("");
+  const[workflowCatalog,setWorkflowCatalog]=useState(null);
   const promptRef=useRef(null);
   const scrollRef=useRef(null);
   const verifySeq=useRef(0);
@@ -107,6 +108,8 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
     }).catch(()=>{if(alive)setModelLabel("");});
     return()=>{alive=false;};
   },[]);
+  const loadWorkflows=()=>sf("/api/llm/flowi/workflows").then(d=>{if(d?.ok)setWorkflowCatalog(d);return d;}).catch(()=>null);
+  useEffect(()=>{if(active&&!workflowCatalog)loadWorkflows();},[active,workflowCatalog]);
 
   const activate=()=>{
     setActive(true);setErr("");setVerifyError("");
@@ -119,6 +122,9 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
         const msg=String(d?.message||d?.text||"");
         if(d?.ok&&msg.includes("확인완료")){
           setConnState("connected");
+          setVerifyError("");
+        }else if(d?.unavailable||d?.error==="llm unavailable"){
+          setConnState("unavailable");
           setVerifyError("");
         }else{
           setConnState("verify_failed");
@@ -228,8 +234,9 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
             <div style={{fontSize:14,color:HOME_UI.textDim,fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
             <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>
           </div>)}
-        {busy&&<FlowiLiveTrace step={liveStep}/>}
+        {busy&&<FlowiLiveTrace step={liveStep} prompt={lastPrompt}/>}
       </div>
+      <FlowiWorkflowCatalogPanel catalog={workflowCatalog} isAdmin={isAdmin} onRefresh={loadWorkflows}/>
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
         <span style={{color:HOME_UI.accent}}>{">"}</span>
@@ -257,11 +264,177 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   </section>);
 }
 
+function FlowiWorkflowCatalogPanel({catalog,isAdmin,onRefresh}){
+  const[open,setOpen]=useState(false);
+  const[draftPrompt,setDraftPrompt]=useState("");
+  const[editJson,setEditJson]=useState("");
+  const[editId,setEditId]=useState("");
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState("");
+  const workflows=Array.isArray(catalog?.workflows)?catalog.workflows:[];
+  const shown=workflows.slice(0,open?50:3);
+  const draftWorkflow=()=>{
+    const prompt=draftPrompt.trim();
+    if(!prompt&&!editJson.trim()){setErr("추가/수정할 workflow 내용을 입력해주세요.");return;}
+    setSaving(true);setErr("");
+    let workflow={};
+    if(editJson.trim()){
+      try{workflow=JSON.parse(editJson);}
+      catch(e){setErr("JSON 형식을 확인해주세요: "+e.message);setSaving(false);return;}
+    }
+    postJson("/api/llm/flowi/workflows/draft",{prompt,existing_id:editId,workflow})
+      .then(d=>{setEditJson(JSON.stringify(d.workflow||{},null,2));setEditId(d.workflow?.id||editId);})
+      .catch(e=>setErr(e?.message||"workflow draft 실패"))
+      .finally(()=>setSaving(false));
+  };
+  const saveWorkflow=()=>{
+    if(!editJson.trim()){setErr("저장할 workflow JSON이 없습니다.");return;}
+    let workflow={};
+    try{workflow=JSON.parse(editJson);}
+    catch(e){setErr("JSON 형식을 확인해주세요: "+e.message);return;}
+    setSaving(true);setErr("");
+    postJson("/api/llm/flowi/workflows",{workflow})
+      .then(d=>{setEditJson(JSON.stringify(d.workflow||workflow,null,2));setEditId(d.workflow?.id||workflow.id||"");return onRefresh&&onRefresh();})
+      .catch(e=>setErr(e?.message||"workflow 저장 실패"))
+      .finally(()=>setSaving(false));
+  };
+  const mergeDefaults=()=>{
+    setSaving(true);setErr("");
+    postJson("/api/llm/flowi/workflows/merge-defaults",{})
+      .then(()=>onRefresh&&onRefresh())
+      .catch(e=>setErr(e?.message||"기본 workflow 병합 실패"))
+      .finally(()=>setSaving(false));
+  };
+  const editWorkflow=(wf)=>{
+    setOpen(true);
+    setEditId(wf?.id||"");
+    setEditJson(JSON.stringify(wf||{},null,2));
+    setDraftPrompt("");
+    setErr("");
+  };
+  if(!catalog)return null;
+  return <div style={{borderBottom:"1px solid #262626",background:"#0f0f0f",padding:"8px 10px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+      <button type="button" onClick={()=>setOpen(v=>!v)} title="Flow-i 기본 few-shot workflow catalog" style={{border:"1px solid #333",background:"#151515",color:"#e5e5e5",borderRadius:6,padding:"4px 8px",fontSize:14,fontWeight:900,cursor:"pointer"}}>
+        워크플로우 리스트 {workflows.length}/{catalog.default_target_count||50}
+      </button>
+      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap"}}>{catalog.can_edit?"admin edit":"read only"} · /api/llm/flowi/workflows</span>
+    </div>
+    <div style={{marginTop:7,display:"grid",gap:6}}>
+      {shown.map(wf=><div key={wf.id} style={{border:"1px solid #262626",borderRadius:8,background:"#111",padding:"7px 8px",display:"grid",gap:4}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",minWidth:0}}>
+          <div style={{minWidth:0,color:"#f5f5f5",fontSize:14,fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{wf.title}</div>
+          {isAdmin&&<button type="button" onClick={()=>editWorkflow(wf)} style={{border:"1px solid #7c2d12",background:"#1f130b",color:"#f97316",borderRadius:6,padding:"2px 7px",fontSize:14,fontWeight:800,cursor:"pointer"}}>수정</button>}
+        </div>
+        <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+          {[wf.unit_ai,wf.action,...(wf.source_roles||[])].filter(Boolean).slice(0,7).map(x=><span key={x} style={{fontSize:14,color:"#a3a3a3",border:"1px solid #333",borderRadius:999,padding:"1px 6px"}}>{x}</span>)}
+        </div>
+        <div style={{fontSize:14,color:"#8f8f8f",lineHeight:1.45,whiteSpace:"normal",overflowWrap:"anywhere"}}>
+          {(wf.examples||[]).slice(0,1).join("")}{(wf.steps||[]).length?` · ${(wf.steps||[]).slice(0,2).join(" → ")}`:""}
+        </div>
+      </div>)}
+    </div>
+    {open&&isAdmin&&<div style={{marginTop:8,border:"1px solid #262626",borderRadius:8,padding:"8px",background:"#101010",display:"grid",gap:7}}>
+      <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>AI 형식화로 추가/수정</div>
+      <textarea value={draftPrompt} onChange={e=>setDraftPrompt(e.target.value)} placeholder="예: PRODA에서 특정 knob 값인 leading lot을 찾고 전체 리스트 다운로드까지 제공" rows={2}
+        style={{width:"100%",boxSizing:"border-box",border:"1px solid #333",borderRadius:6,background:"#151515",color:"#d4d4d4",padding:"7px 8px",fontSize:14,lineHeight:1.5,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
+      <textarea value={editJson} onChange={e=>setEditJson(e.target.value)} placeholder="workflow JSON draft" rows={open?8:4}
+        style={{width:"100%",boxSizing:"border-box",border:"1px solid #333",borderRadius:6,background:"#0b0b0b",color:"#d4d4d4",padding:"7px 8px",fontSize:14,lineHeight:1.45,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
+      {err&&<div style={{fontSize:14,color:"#fca5a5"}}>{err}</div>}
+      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+        <button type="button" onClick={draftWorkflow} disabled={saving} style={FLOWI_ACTION_BTN}>AI 형식화</button>
+        <button type="button" onClick={saveWorkflow} disabled={saving} style={FLOWI_ACTION_BTN}>저장</button>
+        <button type="button" onClick={()=>{setEditId("");setEditJson("");setDraftPrompt("");setErr("");}} disabled={saving} style={FLOWI_ACTION_BTN}>새로 작성</button>
+        <button type="button" onClick={mergeDefaults} disabled={saving} style={FLOWI_ACTION_BTN}>기본 병합</button>
+        {editId&&<span style={{fontSize:14,color:"#737373"}}>{editId}</span>}
+      </div>
+    </div>}
+  </div>;
+}
+
 const FLOWI_ACTION_BTN={fontSize:14,color:HOME_UI.accent,fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
 
 function flowiShortText(value,max=140){
   const text=String(value??"").replace(/\s+/g," ").trim();
   return text.length>max?`${text.slice(0,max-1)}...`:text;
+}
+
+function flowiUniqueLines(lines,max=6){
+  const seen=new Set();
+  const out=[];
+  (Array.isArray(lines)?lines:[]).forEach(line=>{
+    const text=String(line||"").replace(/\s+/g," ").trim();
+    if(!text||seen.has(text))return;
+    seen.add(text);
+    out.push(text);
+  });
+  return out.slice(0,max);
+}
+
+function flowiPromptEntities(prompt){
+  const text=String(prompt||"").replace(/\s+/g," ").trim();
+  if(!text)return {text:"",rootLot:"",knob:"",hasSplit:false,hasChart:false,hasFab:false,hasFile:false};
+  const rootLot=([...(text.matchAll(/\b[A-Z][A-Z0-9]?\d{3,}[A-Z0-9_.-]*\b/gi))]
+    .map(m=>m[0])
+    .find(v=>!String(v).includes(".")))||"";
+  const hasSplit=/(split\s*table|split|knob|스플릿|노브)/i.test(text);
+  const hasChart=/(chart|plot|scatter|trend|그래프|차트|산점도|추이)/i.test(text);
+  const hasFab=/(fab|current\s*location|progress|현재\s*위치|진행\s*상태|공정\s*진행)/i.test(text);
+  const hasFile=/(filebrowser|sql|raw\s*data|csv|parquet|파일|원천\s*데이터|로우\s*데이터)/i.test(text);
+  const hasMeasurement=/(측정값|값\s*(?:몇|보여|알려)|몇이야|measurement)/i.test(text);
+  let knob="";
+  if(hasSplit){
+    let scope=text;
+    if(rootLot){
+      const idx=text.toLowerCase().indexOf(rootLot.toLowerCase());
+      if(idx>=0)scope=text.slice(idx+rootLot.length).trim();
+    }
+    const beforeKeyword=scope.match(/^(.{1,90}?)(?=\s*(?:split\s*table|split|knob|스플릿|노브|\(|보여|찾아|조회|검색|$))/i);
+    const raw=beforeKeyword?.[1]||"";
+    knob=raw.replace(/\([^)]*\)/g," ")
+      .replace(/\b(?:split|table|knob|or|show|find|search)\b/gi," ")
+      .replace(/(?:보여줘|보여|찾아줘|찾아|조회해줘|조회|검색해줘|검색)/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    if(rootLot&&knob.toLowerCase().startsWith(rootLot.toLowerCase()))knob=knob.slice(rootLot.length).trim();
+  }
+  return {text,rootLot,knob,hasSplit,hasChart,hasFab,hasFile,hasMeasurement};
+}
+
+function flowiPromptProgressLines(prompt,tool={},phase="result"){
+  const entity=flowiPromptEntities(prompt);
+  const feature=String(tool?.feature||"").toLowerCase();
+  const kind=String(tool?.table?.kind||tool?.split_view?.kind||tool?.type||"").toLowerCase();
+  const splitRequested=entity.hasSplit||feature==="splittable"||kind.includes("split")||kind.includes("knob");
+  const chartRequested=entity.hasChart||feature==="dashboard"||kind.includes("chart");
+  const fabRequested=entity.hasFab||feature==="fab"||kind.includes("fab");
+  const fileRequested=entity.hasFile||feature==="filebrowser"||kind.includes("sql");
+  const measurementRequested=entity.hasMeasurement||kind.includes("semantic_measurement")||String(tool?.action||"").includes("semantic_measurement");
+  const running=phase==="live";
+  const lines=[];
+  if(entity.rootLot)lines.push(`${entity.rootLot}은 root_lot_id로 해석했습니다.`);
+  if(entity.knob)lines.push(`${entity.knob}는 Knob 이름 후보로 해석했습니다.`);
+  if(measurementRequested){
+    lines.push("질문을 semantic measurement term 조회 요청으로 분류했습니다.");
+    lines.push(running?"측정 용어를 source_type, item_id, spec으로 해석 중입니다.":"측정 용어와 source/item 매핑을 확인했습니다.");
+    lines.push(running?"측정값 조회 단위기능 실행 중입니다.":"wafer별 기본 집계 결과를 표로 정리했습니다.");
+  }else if(splitRequested){
+    lines.push(entity.rootLot||entity.knob
+      ?"SplitTable 단위기능에서 root_lot_id와 Knob 조건을 검색합니다."
+      :"질문을 SplitTable/Knob 조회 요청으로 분류했습니다.");
+    lines.push(running?"SplitTable 단위기능 실행 중입니다.":"SplitTable 단위기능으로 조회 경로를 잡았습니다.");
+    lines.push(running?"결과를 정리 중입니다.":"결과를 인라인 표와 요약으로 정리했습니다.");
+  }else if(chartRequested){
+    lines.push("질문을 Dashboard 차트 요청으로 분류했습니다.");
+    lines.push(running?"차트 단위기능 실행 중입니다.":"차트 단위기능 결과를 정리했습니다.");
+  }else if(fabRequested){
+    lines.push("질문을 FAB 진행/현재 위치 조회 요청으로 분류했습니다.");
+    lines.push(running?"FAB 조회 단위기능 실행 중입니다.":"FAB 조회 결과를 정리했습니다.");
+  }else if(fileRequested){
+    lines.push("질문을 FileBrowser/SQL 데이터 조회 요청으로 분류했습니다.");
+    lines.push(running?"FileBrowser 단위기능 실행 중입니다.":"FileBrowser 조회 결과를 정리했습니다.");
+  }
+  return flowiUniqueLines(lines,5);
 }
 
 function flowiInterpretationLines(trace,tool){
@@ -271,7 +444,7 @@ function flowiInterpretationLines(trace,tool){
   const terms=Array.isArray(interpretation.term_resolution)?interpretation.term_resolution:[];
   const knowledge=Array.isArray(trace?.retrieved_knowledge)?trace.retrieved_knowledge:[];
   const slotLabels=[
-    ["product","제품"],["lot","Lot"],["wafer","Wafer"],["step","Step"],["item","항목"],["source_candidates","소스"],
+    ["product","제품"],["root_lot_id","Root Lot"],["root_lot","Root Lot"],["lot","Lot"],["wafer","Wafer"],["step","Step"],["knob","Knob"],["knobs","Knob"],["semantic_term","측정용어"],["agg","집계"],["item","항목"],["source_candidates","소스"],
   ];
   const slotParts=slotLabels.map(([key,label])=>{
     const raw=slots[key];
@@ -305,13 +478,13 @@ function flowiMethodLine(trace,tool){
   return "";
 }
 
-function FlowiInterpretationSummary({trace,tool}){
-  const lines=flowiInterpretationLines(trace,tool).slice(0,2);
+function FlowiInterpretationSummary({trace,tool,prompt}){
+  const lines=flowiUniqueLines([...flowiPromptProgressLines(prompt,tool,"result"),...flowiInterpretationLines(trace,tool)],5);
   const method=flowiMethodLine(trace,tool);
   if(!lines.length&&!method)return null;
   return <div style={{margin:"0 0 10px",padding:"0 0 10px",borderBottom:"1px solid #262626",fontFamily:"'JetBrains Mono',monospace"}}>
     {lines.length>0&&<div style={{display:"grid",gap:4,marginBottom:method?8:0}}>
-      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>해석</div>
+      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>공개 해석/진행</div>
       {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.55,color:i===0?"#e5e5e5":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
     </div>}
     {method&&<div style={{display:"grid",gap:4}}>
@@ -341,21 +514,33 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
   const summary=flowiResultSummary(tool,result);
   const actions=flowiResultActions(tool,table,chartResult,onNavigate);
+  // 구조화된 콘텐츠(표/차트/선택지 등)가 없고 답변 텍스트만 있으면 plain text 로 단순 표시.
+  const hasStructured=!!(table||chart||chartResult||tool.split_view
+    ||(Array.isArray(tool.lot_list)&&tool.lot_list.length)
+    ||(Array.isArray(tool.rows)&&tool.rows.length)
+    ||(Array.isArray(tool.knobs)&&tool.knobs.length)
+    ||(Array.isArray(tool.blocks)&&tool.blocks.length)
+    ||tool.sql_draft
+    ||choices.length||hasArgumentChoices||hasMissingFreetext
+    ||(walkthrough&&walkthrough.session_id)
+    ||(result.proposal&&result.confirm));
+  const plain=!hasStructured&&!!result.answer;
   const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices||hasMissingFreetext)
     ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
     :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
   return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"visible"}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
-      <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
+    {(!plain||actions.length>0)&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
+      <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plain?"":summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
-    </div>
-    {result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
+    </div>}
+    {!plain&&result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>
       {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
     </div>}
+    <FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>
     <FlowiMarkdown text={result.answer||emptyHint}/>
     <FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>
-    {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+    {isAdmin&&!plain&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
@@ -613,8 +798,9 @@ function flowiTraceStatusColor(status){
   return status==="done"||status==="success"?"#22c55e":status==="blocked"||status==="error"||status==="failed"?"#ef4444":status==="skipped"||status==="available"?"#737373":"#f97316";
 }
 
-function FlowiLiveTrace({step=0}){
+function FlowiLiveTrace({step=0,prompt=""}){
   const active=FLOWI_LIVE_STEPS[Math.max(0,Math.min(step,FLOWI_LIVE_STEPS.length-1))]||FLOWI_LIVE_STEPS[0];
+  const promptLines=flowiPromptProgressLines(prompt,{},"live");
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 10px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:8}}>
       <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
@@ -622,6 +808,13 @@ function FlowiLiveTrace({step=0}){
       <span style={{fontSize:14,color:"#f97316",fontWeight:800}}>{active[0]}</span>
       <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{active[2]}</span>
     </div>
+    {promptLines.length>0&&<div style={{marginTop:8,display:"grid",gap:4,borderTop:"1px solid #262626",paddingTop:8}}>
+      <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>요청 해석</div>
+      {promptLines.map((line,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"14px minmax(0,1fr)",gap:7,fontSize:14,lineHeight:1.45}}>
+        <span style={{color:"#f97316"}}>{i+1}</span>
+        <span style={{color:i===0?"#d4d4d4":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</span>
+      </div>)}
+    </div>}
     <div style={{marginTop:8,display:"grid",gap:5}}>
       {FLOWI_LIVE_STEPS.map((row,i)=>{
         const status=i<step?"done":i===step?"running":"pending";

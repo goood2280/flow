@@ -471,6 +471,7 @@ def _semantic_layer(prompt: str, current_slots: dict[str, Any]) -> tuple[dict[st
         "alias_hits": alias_hits,
         "slot_hints": deepcopy(slot_hints),
         "unknown_terms": unknown_terms,
+        "source_catalog_matches": list(resolved.get("source_catalog_matches") or []),
         "intent_matches": intent_matches,
         "current_slot_keys": sorted((current_slots or {}).keys()),
         "warnings": warnings,

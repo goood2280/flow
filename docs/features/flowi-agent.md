@@ -32,6 +32,10 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
   - `POST /api/agent/unit-ai/{unit_key}/feedback`
   - `GET/PUT /api/agent/unit-ai/{unit_key}/runtime/overrides` (호환용 backend API)
   - `GET /api/agent/semantic/lexicon`
+  - `GET /api/agent/semantic/sources`
+  - `GET /api/agent/semantic/measurements`
+  - `PUT /api/agent/semantic/measurements/{id}`
+  - `POST /api/agent/semantic/measurements/merge-defaults`
   - `PUT/DELETE /api/agent/semantic/alias-groups/{canonical}`
   - `PUT/DELETE /api/agent/semantic/intent-hints/{intent}`
   - `GET /api/agent/semantic/proposals`

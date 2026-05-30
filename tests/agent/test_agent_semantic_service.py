@@ -37,6 +37,7 @@ def test_resolve_inform_alias_slot_shape():
     assert frame["slot_hints"]["lot_id"] == "R1000"
     assert "unknown_terms" in frame
     assert "intent_matches" in frame
+    assert "source_catalog_matches" in frame
 
 
 def test_resolve_adds_value_catalog_matches_and_unknown_routes():
@@ -53,6 +54,30 @@ def test_resolve_adds_value_catalog_matches_and_unknown_routes():
     )
 
     assert any(match.get("column") == "root_lot_id" for match in frame["value_catalog_matches"])
+    assert any(match.get("source_id") == "fab_db" for match in frame["source_catalog_matches"])
     unknown = frame["unknown_terms"]
     assert unknown and "term" in unknown[0]
     assert unknown[0]["search_priority"]
+    assert any(priority.get("source_id") == "fab_db" for priority in unknown[0]["search_priority"])
+
+
+def test_resolve_adds_catalog_backed_step_and_rulebook_priorities():
+    frame = agent_semantic_service.resolve(
+        "mystery step_id PPID knob rulebook 확인",
+        source_ref={"file": "ppid_knob.csv"},
+    )
+
+    match_ids = {row.get("source_id") for row in frame["source_catalog_matches"]}
+    assert {"rulebook", "step_matching"}.issubset(match_ids)
+
+    priorities = [
+        priority
+        for term in frame["unknown_terms"]
+        for priority in term.get("search_priority", [])
+    ]
+    assert any(priority.get("source_id") == "rulebook" for priority in priorities)
+    assert any(priority.get("source_id") == "step_matching" for priority in priorities)
+    assert all(
+        priority.get("table_file") != "FLOW_DB_ROOT/Vehicle_matching.csv, step_matching.csv, ppid_knob.csv"
+        for priority in priorities
+    )

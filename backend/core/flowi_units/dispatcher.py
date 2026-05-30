@@ -8,6 +8,11 @@ _UNIT_ALIASES = {
     "filebrowser": "filebrowser_ai_sql",
 }
 
+_FEATURE_ALLOWED_UNIT_KEYS = {
+    "step_lookup": {"filebrowser", "splittable", "dashboard"},
+    "ppid_knob": {"filebrowser", "splittable"},
+}
+
 
 def _candidate_keys(only: Iterable[str] | None, registered: set[str]) -> list[str]:
     raw_keys = [str(v).strip() for v in (only or []) if str(v).strip()]
@@ -29,6 +34,7 @@ def _allowed(key: str, allowed_keys: Iterable[str] | None) -> bool:
         return False
     aliases = {key}
     aliases.update(alias for alias, target in _UNIT_ALIASES.items() if target == key)
+    aliases.update(_FEATURE_ALLOWED_UNIT_KEYS.get(key, set()))
     return bool(aliases & allowed)
 
 

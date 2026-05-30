@@ -471,6 +471,7 @@ def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
             "value_terms": list(frame.get("value_terms") or []),
             "synonyms": dict(frame.get("synonyms") or {}),
             "step_mapping": dict(frame.get("step_mapping") or {}),
+            "source_catalog_matches": list(frame.get("source_catalog_matches") or []),
         }
     }
 

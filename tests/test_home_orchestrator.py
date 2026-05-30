@@ -83,6 +83,95 @@ def test_home_runtime_graph_basic_structure():
     assert ("orchestrator", "unit_ai:filebrowser_ai_sql") in edges
 
 
+def test_flowi_verify_marks_unavailable_without_llm_config(monkeypatch):
+    from routers import llm
+
+    class _Request:
+        pass
+
+    monkeypatch.setattr(llm, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+    monkeypatch.setattr(llm.llm_adapter, "is_available", lambda: False)
+
+    out = llm.flowi_verify(llm.FlowiVerifyReq(), _Request())
+
+    assert out["ok"] is False
+    assert out["unavailable"] is True
+    assert out["error"] == "llm unavailable"
+    assert out["message"] == "LLM 미설정"
+
+
+def test_flowi_workflows_api_lists_defaults(monkeypatch, tmp_path):
+    from routers import llm
+    from core import flowi_workflow_catalog as catalog
+
+    class _Request:
+        pass
+
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+    monkeypatch.setattr(llm, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+
+    out = llm.flowi_workflows(_Request())
+
+    assert out["ok"] is True
+    assert out["can_edit"] is True
+    assert len(out["workflows"]) == 50
+    assert out["default_target_count"] == 50
+    assert any(row["id"].startswith("wf_auto_") for row in out["workflows"])
+    assert len(catalog.workflow_few_shots(limit=50)) == 50
+
+
+def test_flowi_workflows_draft_and_save(monkeypatch, tmp_path):
+    from routers import llm
+    from core import flowi_workflow_catalog as catalog
+
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+    monkeypatch.setattr(llm, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    draft = llm.flowi_workflows_draft(
+        llm.FlowiWorkflowDraftReq(prompt="Inline 특정 item trend를 knob coloring까지 제공"),
+        _admin={"username": "admin", "role": "admin"},
+    )
+    saved = llm.flowi_workflows_save(
+        llm.FlowiWorkflowSaveReq(workflow=draft["workflow"]),
+        _admin={"username": "admin", "role": "admin"},
+    )
+
+    assert draft["ok"] is True
+    assert draft["workflow"]["source_roles"]
+    assert saved["ok"] is True
+    assert saved["workflow"]["id"] == draft["workflow"]["id"]
+
+
+def test_flowi_unit_dispatch_allows_step_lookup_from_filebrowser_permission(monkeypatch):
+    from core import fab_reference
+    from core.flowi_units import try_dispatch
+
+    monkeypatch.setattr(
+        fab_reference,
+        "lookup_step_in_text",
+        lambda prompt, product: {
+            "found": True,
+            "direction": "id_to_step",
+            "answer": "AA100090는 SD_EPI step입니다.",
+            "matches": [{"product": product or "PRODA", "step_id": "AA100090", "function_step": "SD_EPI"}],
+        },
+    )
+
+    out = try_dispatch(
+        "AA100090는 무슨 step이야",
+        product="PRODA",
+        allowed_keys={"filebrowser"},
+        only=("step_lookup",),
+    )
+
+    assert out is not None
+    assert out["unit_ai"] == "step_lookup"
+    assert out["table"]["rows"][0]["function_step"] == "SD_EPI"
+
+
 def test_home_runtime_graph_selected_unit_status_and_edge():
     from core import home_orchestrator
 

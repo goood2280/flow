@@ -131,6 +131,15 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "/api/llm/flowi/verify" in ui
     assert "연결확인중" in ui
     assert "LLM 확인 실패" in ui
+    assert 'd?.error==="llm unavailable"' in ui
+    assert "flowiPromptProgressLines" in ui
+    assert "root_lot_id로 해석했습니다" in ui
+    assert "SplitTable 단위기능 실행 중입니다" in ui
+    assert "공개 해석/진행" in ui
+    assert "워크플로우 리스트" in ui
+    assert "/api/llm/flowi/workflows" in ui
+    assert "/api/llm/flowi/workflows/draft" in ui
+    assert "AI 형식화" in ui
     assert "연결끊김" not in ui
     assert "flowiStartle" not in ui
     assert "READYING" not in ui
@@ -153,6 +162,12 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "/api/agent/unit/${encodeURIComponent(unitKey)}/run" in ui
     assert 'agentUnitHistoryEndpoint("dashboard_agent")' in ui
     assert "/api/agent/semantic/lexicon" in ui
+    assert "/api/agent/semantic/sources" in ui
+    assert "/api/agent/semantic/measurements" in ui
+    assert "Source catalog" in ui
+    assert "Measurement terms" in ui
+    assert "measurement_terms" in ui
+    assert "related_question_ids" in ui
     assert "active Agent unit route" in ui
     assert "Inform graph fetch 진단" in ui
     assert "state_design" in ui

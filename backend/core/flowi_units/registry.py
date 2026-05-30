@@ -6,12 +6,16 @@ from core.flowi_units.change_management import ChangeManagementUnitAI
 from core.flowi_units.dashboard_agent import DashboardAgentUnitAI
 from core.flowi_units.filebrowser import FileBrowserAiSqlUnitAI
 from core.flowi_units.inform_registration import InformRegistrationUnitAI
+from core.flowi_units.ppid_knob import PpidKnobUnitAI
+from core.flowi_units.step_lookup import StepLookupUnitAI
 
 _UNIT_AI_CLASSES = (
     FileBrowserAiSqlUnitAI,
     InformRegistrationUnitAI,
     ChangeManagementUnitAI,
     DashboardAgentUnitAI,
+    StepLookupUnitAI,
+    PpidKnobUnitAI,
 )
 
 UNIT_AIS: dict[str, UnitAI] = {cls.KEY: cls() for cls in _UNIT_AI_CLASSES}

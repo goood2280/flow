@@ -6,6 +6,8 @@ import { postJson, putJson, sf } from "../lib/api";
 
 const AGENT_UNIT_CATALOG_ENDPOINT = "/api/agent/catalog";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
+const SEMANTIC_SOURCES_ENDPOINT = "/api/agent/semantic/sources";
+const SEMANTIC_MEASUREMENTS_ENDPOINT = "/api/agent/semantic/measurements";
 const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 const EMPTY_GRAPH = { nodes: [], edges: [], state_design: {} };
 
@@ -2235,8 +2237,11 @@ function DashboardAgentUnitPanel() {
 
 function SemanticLayerPanel() {
   const [payload, setPayload] = useState(null);
+  const [sourceCatalog, setSourceCatalog] = useState({ sources: {}, roles: {}, docs_base: "docs/semantic" });
+  const [measurementCatalog, setMeasurementCatalog] = useState({ terms: [], path: "", change_log_path: "" });
   const [aliasJson, setAliasJson] = useState("{}");
   const [intentJson, setIntentJson] = useState("{}");
+  const [measurementJson, setMeasurementJson] = useState("{}");
   const [draftText, setDraftText] = useState("");
   const [draft, setDraft] = useState(null);
   const [proposalCanonicals, setProposalCanonicals] = useState({});
@@ -2256,8 +2261,22 @@ function SemanticLayerPanel() {
     setErr("");
     return Promise.all([
       sf(SEMANTIC_LEXICON_ENDPOINT),
+      sf(SEMANTIC_SOURCES_ENDPOINT).catch(() => ({ sources: {}, roles: {}, docs_base: "docs/semantic" })),
+      sf(SEMANTIC_MEASUREMENTS_ENDPOINT).catch(() => ({ terms: [], path: "", change_log_path: "" })),
       sf(SEMANTIC_PROPOSALS_ENDPOINT).catch(() => ({ proposals: [] })),
-    ]).then(([lexiconPayload, proposalsPayload]) => {
+    ]).then(([lexiconPayload, sourcesPayload, measurementsPayload, proposalsPayload]) => {
+      setSourceCatalog({
+        sources: sourcesPayload?.sources || {},
+        roles: sourcesPayload?.roles || {},
+        docs_base: sourcesPayload?.docs_base || "docs/semantic",
+      });
+      const terms = measurementsPayload?.terms || measurementsPayload?.catalog?.terms || [];
+      setMeasurementCatalog({
+        terms,
+        path: measurementsPayload?.path || measurementsPayload?.catalog?.path || "",
+        change_log_path: measurementsPayload?.change_log_path || measurementsPayload?.catalog?.change_log_path || "",
+      });
+      setMeasurementJson(JSON.stringify(Object.fromEntries((terms || []).map((term) => [term.id, term])), null, 2));
       syncPayload({
         ...lexiconPayload,
         proposals: proposalsPayload?.proposals || lexiconPayload?.proposals || [],
@@ -2320,6 +2339,27 @@ function SemanticLayerPanel() {
       .finally(() => setBusy(false));
   };
 
+  const saveMeasurementJson = () => {
+    let next = {};
+    try {
+      next = parseJsonObject(measurementJson, "measurement_terms");
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    Promise.all(Object.entries(next).map(([key, value]) => putJson(
+      `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
+      { term: { ...(value || {}), id: key } }
+    ))).then(() => {
+      setMsg("measurement terms 저장 완료");
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
   const makeDraft = () => {
     setBusy(true);
     setErr("");
@@ -2371,6 +2411,10 @@ function SemanticLayerPanel() {
 
   const proposals = payload?.proposals || [];
   const changes = payload?.changes || [];
+  const sourceRows = useMemo(() => {
+    const sources = sourceCatalog?.sources || {};
+    return Array.isArray(sources) ? sources : Object.values(sources);
+  }, [sourceCatalog]);
   const canApplyDraft = draft && (Object.keys(draft.alias_groups || {}).length || Object.keys(draft.intent_hints || {}).length);
 
   return (
@@ -2428,6 +2472,90 @@ function SemanticLayerPanel() {
           </div>
         </Panel>
       </div>
+
+      <Panel title="Source catalog" subtitle={`${sourceRows.length} sources`}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
+          {sourceRows.map((source) => {
+            const id = source?.id || source?.source_id || "";
+            const docsPath = source?.docs_path || `${sourceCatalog?.docs_base || "docs/semantic"}/${id}.md`;
+            return (
+              <div key={id || source?.title} style={{ display: "grid", gap: 6, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <strong style={{ fontSize: 13 }}>{source?.title || id}</strong>
+                  <Pill tone="neutral">{source?.role || "source"}</Pill>
+                  {docsPath ? (
+                    <a href={docsPath} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 11, color: "var(--brand, var(--text-primary))" }}>
+                      docs
+                    </a>
+                  ) : null}
+                </div>
+                <div style={{ display: "grid", gap: 4 }}>
+                  {(source?.path_patterns || []).map((pattern) => (
+                    <code key={pattern} style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pattern}</code>
+                  ))}
+                  {(source?.fallback_path_patterns || []).map((pattern) => (
+                    <code key={pattern} style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>fallback {pattern}</code>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                  <strong style={{ color: "var(--text-primary)" }}>owner</strong> {source?.owner || "-"}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                  <strong style={{ color: "var(--text-primary)" }}>write</strong> {source?.write_policy || "-"}
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {(source?.related_question_ids || []).map((qid) => <Pill key={qid} tone="neutral">{qid}</Pill>)}
+                </div>
+              </div>
+            );
+          })}
+          {!sourceRows.length ? (
+            <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+              source catalog 없음
+            </div>
+          ) : null}
+        </div>
+      </Panel>
+
+      <Panel title="Measurement terms" subtitle={`${measurementCatalog.terms.length} semantic measurement aliases`}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.9fr) minmax(0, 1.1fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Field label="measurement_terms">
+              <Textarea value={measurementJson} onChange={(e) => setMeasurementJson(e.target.value)} rows={14} />
+            </Field>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button variant="primary" onClick={saveMeasurementJson} disabled={busy}>measurement 저장</Button>
+              <Button variant="ghost" onClick={() => postJson("/api/agent/semantic/measurements/merge-defaults", {}).then(load).catch((e) => setErr(e.message || String(e)))} disabled={busy}>기본 병합</Button>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+              path {measurementCatalog.path || "-"} · evidence/change log {measurementCatalog.change_log_path || "-"}
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {(measurementCatalog.terms || []).slice(0, 12).map((term) => (
+              <div key={term.id} style={{ display: "grid", gap: 5, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <strong style={{ fontSize: 13 }}>{term.term}</strong>
+                  <Pill tone="neutral">{term.source_type}</Pill>
+                  {term.product ? <Pill tone="neutral">{term.product}</Pill> : null}
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)" }}>{term.updated_at || ""}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                  item_id {term.item_id || "-"} · step_id {term.step_id || "-"} · agg {term.default_agg || "-"} · target {term.target ?? "-"} · spec {term.spec_low ?? "-"} ~ {term.spec_high ?? "-"}
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {(term.aliases || []).slice(0, 6).map((alias) => <Pill key={alias} tone="neutral">{alias}</Pill>)}
+                </div>
+                {(term.evidence || []).length ? (
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                    근거 {(term.evidence || []).slice(0, 2).map((ev) => ev.label || ev.source || ev.type).filter(Boolean).join(" · ")}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Panel>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 10, alignItems: "start" }}>
         <Panel title="Proposals" subtitle={`${proposals.length} pending`}>

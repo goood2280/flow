@@ -11,6 +11,8 @@ from typing import Any, TypedDict
 
 from app_v2.modules.semantic_learning import extractor as semantic_extractor
 from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
+from core import semantic_source_catalog
+from core import semantic_measure_catalog
 
 
 class SemanticFrame(TypedDict, total=False):
@@ -26,6 +28,8 @@ class SemanticFrame(TypedDict, total=False):
     unknown_terms: list[dict[str, Any]]
     unknown_term_texts: list[str]
     value_catalog_matches: list[dict[str, Any]]
+    source_catalog_matches: list[dict[str, Any]]
+    measurement_term_matches: list[dict[str, Any]]
     intent_matches: dict[str, list[str]]
     warnings: list[str]
 
@@ -371,12 +375,11 @@ def _unknown_search_priority(
                         "confidence": 0.64,
                     })
                 break
-    if re.search(r"(step|ppid|knob|function|공정|스텝|노브)", term, re.IGNORECASE):
-        priorities.append({
-            "location": "matching_rulebook_csv",
-            "table_file": "FLOW_DB_ROOT/Vehicle_matching.csv, step_matching.csv, ppid_knob.csv",
-            "confidence": 0.46,
-        })
+    priorities.extend(semantic_source_catalog.search_priorities_for_term(
+        term,
+        source_ref=source_ref,
+        sample_profile=sample_profile,
+    ))
     priorities.append({
         "location": "glossary",
         "table_file": "FLOW_DATA_ROOT semantic/glossary or curated knowledge",
@@ -447,9 +450,34 @@ def resolve(
         source_ref,
         value_catalog,
     )
+    source_matches = semantic_source_catalog.source_catalog_matches(
+        prompt_text,
+        source_ref=source_ref,
+        sample_profile=sample_profile,
+    )
+    measurement_matches = semantic_measure_catalog.match_terms(
+        prompt_text,
+        product=_clean_text(product, 160),
+        limit=8,
+    )
+    if measurement_matches:
+        seen_sources = {str(row.get("source_id") or "") for row in source_matches if isinstance(row, dict)}
+        for match in measurement_matches:
+            source_id = f"{str(match.get('source_type') or '').strip().lower()}_db"
+            if source_id in seen_sources:
+                continue
+            source_matches.extend(semantic_source_catalog.source_catalog_matches(
+                str(match.get("source_type") or ""),
+                limit=2,
+            ))
+            seen_sources = {str(row.get("source_id") or "") for row in source_matches if isinstance(row, dict)}
     ignored_values = [value for value in slot_hints.values() if isinstance(value, str)]
     ignored_values.extend(_string_list(slot_hints.get("snapshot_custom_cols"), limit=80))
     ignored_values.extend(str(match.get("value") or "") for match in catalog_matches if isinstance(match, dict))
+    ignored_values.extend(str(match.get("term") or "") for match in measurement_matches if isinstance(match, dict))
+    for match in measurement_matches:
+        if isinstance(match, dict):
+            ignored_values.extend(_string_list(match.get("aliases"), limit=20))
     unknown_term_texts = _unknown_terms(prompt_text, alias_groups, matched_norms, ignored_values)
     unknown_terms = _structured_unknown_terms(
         unknown_term_texts,
@@ -482,6 +510,8 @@ def resolve(
         "unknown_terms": unknown_terms,
         "unknown_term_texts": unknown_term_texts,
         "value_catalog_matches": catalog_matches,
+        "source_catalog_matches": source_matches,
+        "measurement_term_matches": measurement_matches,
         "intent_matches": intent_matches,
         "warnings": warnings,
     }

@@ -129,6 +129,8 @@ def test_filebrowser_ai_sql_graph_shape_and_catalog(monkeypatch):
         "inform_registration",
         "change_management",
         "dashboard_agent",
+        "step_lookup",
+        "ppid_knob",
     ]
 
 

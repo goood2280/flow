@@ -452,6 +452,7 @@ def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
         "unknown_column_terms": unknown_terms,
         "value_terms": list(resolved.get("value_terms") or []),
         "value_catalog_matches": list(resolved.get("value_catalog_matches") or []),
+        "source_catalog_matches": list(resolved.get("source_catalog_matches") or []),
         "synonyms": dict(resolved.get("synonyms") or {}),
         "step_mapping": dict(resolved.get("step_mapping") or {}),
         "unknown_terms": list(resolved.get("unknown_terms") or []),

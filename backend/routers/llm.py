@@ -40,6 +40,8 @@ from core import knowledge_vault as kv
 from core import flowi_multisource
 from core import home_memory
 from core import agent_feedback_penalties
+from core import flowi_workflow_catalog
+from core import semantic_measure_catalog
 from app_v2.modules.agent_runtime.actions import (
     build_action_plans as _agent_runtime_build_action_plans,
     compact_plan_rows as _agent_runtime_compact_plan_rows,
@@ -833,9 +835,17 @@ def _flowi_persona_config() -> dict[str, Any]:
 
 def _flowi_few_shot_section(limit: int = 24) -> str:
     rows = []
-    for item in FLOWI_FUNCTION_FEW_SHOTS[: max(1, int(limit or 24))]:
+    workflow_rows = []
+    try:
+        workflow_rows = flowi_workflow_catalog.workflow_few_shots(limit=max(1, int(limit or 24)))
+    except Exception:
+        workflow_rows = []
+    for item in workflow_rows:
         rows.append(json.dumps(item, ensure_ascii=False, default=str))
-    return "[Few-shot examples]\n" + "\n".join(rows)
+    remaining = max(0, int(limit or 24) - len(rows))
+    for item in FLOWI_FUNCTION_FEW_SHOTS[: remaining]:
+        rows.append(json.dumps(item, ensure_ascii=False, default=str))
+    return "[Workflow/Few-shot examples]\n" + "\n".join(rows)
 
 
 def _flowi_promoted_knowledge_items(limit: int = 12) -> list[dict[str, Any]]:
@@ -19055,13 +19065,19 @@ def _flowi_trace_prompt_cache(allowed_keys: set[str]) -> dict[str, Any]:
                     feature_docs.append(fp.name)
     except Exception:
         feature_docs = []
+    workflow_count = 0
+    try:
+        workflow_count = len(flowi_workflow_catalog.load_catalog(ensure=True).get("workflows") or [])
+    except Exception:
+        workflow_count = 0
     return {
         "allowed_features": sorted(allowed_keys),
         "feature_entrypoint_count": len([item for item in FLOWI_FEATURE_ENTRYPOINTS if item.get("key") in allowed_keys]),
         "feature_docs": feature_docs[:12],
         "few_shot_count": len(FLOWI_FUNCTION_FEW_SHOTS),
+        "workflow_catalog_count": workflow_count,
         "promoted_knowledge_count": len(_flowi_promoted_knowledge_items(limit=200)),
-        "cache_scope": "feature docs, few-shot examples, promoted knowledge summaries",
+        "cache_scope": "feature docs, workflow catalog, few-shot examples, promoted knowledge summaries",
     }
 
 
@@ -19155,7 +19171,7 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
         source_candidates = [str(x) for x in tool.get("source_ids") or [] if str(x or "").strip()]
     missing = _flowi_trace_missing_slots(tool)
     filled = {}
-    for key in ("product", "root_lot_ids", "fab_lot_ids", "lot_ids", "wafer_ids", "step", "metric", "module", "meeting_title", "session_idx"):
+    for key in ("product", "root_lot_id", "root_lot_ids", "fab_lot_ids", "lot_ids", "wafer_id", "wafer_ids", "step", "step_id", "metric", "item_id", "semantic_term", "source_type", "module", "meeting_title", "session_idx"):
         value = first(key)
         if value not in (None, "", [], {}):
             filled[key] = value
@@ -19183,7 +19199,9 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
             "lot": first("root_lot_ids", "root_lot_id", "fab_lot_ids", "fab_lot_id", "lot_ids", "lot_id"),
             "wafer": first("wafer_ids", "wafer_id"),
             "step": first("step", "step_ids", "step_id"),
-            "item": first("metric", "metrics", "metrics_or_items", "item", "items"),
+            "item": first("metric", "metrics", "metrics_or_items", "item", "items", "item_id"),
+            "semantic_term": first("semantic_term"),
+            "agg": first("agg", "aggregation"),
             "meeting": first("meeting_title", "meeting_id"),
             "session": first("session_idx", "session_id"),
             "source_candidates": source_candidates,
@@ -19510,6 +19528,11 @@ def _flowi_public_trace(
             "ts": ts,
         }
         steps.insert(2 if wiki_context.get("pre_route") else 3, knowledge_step)
+    workflow_matches = []
+    try:
+        workflow_matches = flowi_workflow_catalog.match_workflows(prompt, limit=5)
+    except Exception:
+        workflow_matches = []
     api_calls = _flowi_trace_api_calls(
         result=result,
         tool=tool,
@@ -19532,6 +19555,7 @@ def _flowi_public_trace(
         "validation": _flowi_trace_validation(tool, result),
         "persona_snapshot": _flowi_trace_persona_snapshot(),
         "prompt_cache": _flowi_trace_prompt_cache(allowed_keys),
+        "workflow_matches": workflow_matches,
         "subagent_context": _flowi_trace_subagent_context(tool, api_calls),
         "clarification_loop": _flowi_trace_clarification_loop(tool, result),
         "retrieved_knowledge": retrieved_knowledge,
@@ -19853,6 +19877,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "slots",
     "filters",
     "term_resolution",
+    "measurement_term",
     "sql_draft",
     "source_ids",
     "relation_ids",
@@ -19942,12 +19967,73 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
                 "subagent_context",
                 "clarification_loop",
                 "retrieved_knowledge",
+                "workflow_matches",
                 "steps",
                 "api_calls",
             )
             if key in trace
         }
     return out
+
+
+def _handle_fab_reference(prompt: str, product: str = "") -> dict[str, Any] | None:
+    """결정적 단일 파일 FAB 레퍼런스 답변 (step_id <-> step, ppid -> knob).
+
+    LLM 유무와 무관하게 동작하는 read-only 조회. 매칭/의도가 없으면 None 을 돌려
+    기존 라우팅(LLM function-call / 휴리스틱 fallback)으로 자연스럽게 넘어간다.
+    답변은 단순 텍스트와 작은 근거 표를 함께 담는다.
+    """
+    try:
+        from core import fab_reference
+    except Exception:
+        return None
+    step = fab_reference.lookup_step_in_text(prompt, product)
+    if step:
+        cols = ["product", "step_id", "function_step"]
+        rows = [{c: match.get(c, "") for c in cols} for match in (step.get("matches") or [])]
+        return {
+            "handled": True,
+            "type": "answer",
+            "intent": "step_lookup",
+            "action": step.get("direction") or "lookup_step",
+            "feature": "step_lookup",
+            "unit_ai": "step_lookup",
+            "answer": step.get("answer") or "",
+            "table": {"kind": "step_matching", "title": "Step 매칭", "columns": _table_columns(cols), "rows": rows, "total": len(rows)} if rows else {},
+            "source_ids": ["step_matching.csv"],
+        }
+    ppid = fab_reference.classify_ppid_in_text(prompt, product)
+    if ppid:
+        cols = ["value", "category", "feature_name", "function_step", "rule_order"]
+        rows = [{c: match.get(c, "") for c in cols} for match in (ppid.get("matches") or [])]
+        return {
+            "handled": True,
+            "type": "answer",
+            "intent": "ppid_knob",
+            "action": "classify_ppid_knob",
+            "feature": "ppid_knob",
+            "unit_ai": "ppid_knob",
+            "answer": ppid.get("answer") or "",
+            "table": {"kind": "ppid_knob", "title": "PPID Knob 분류", "columns": _table_columns(cols), "rows": rows, "total": len(rows)} if rows else {},
+            "source_ids": ["ppid_knob.csv"],
+        }
+    return None
+
+
+def _handle_semantic_measurement(prompt: str, product: str = "", max_rows: int = 25) -> dict[str, Any] | None:
+    try:
+        out = semantic_measure_catalog.query_measurement(prompt, product=product, max_rows=max_rows)
+    except Exception as exc:
+        logger.debug("semantic measurement query failed", exc_info=True)
+        return {
+            "handled": True,
+            "intent": "semantic_measurement_lookup",
+            "action": "query_semantic_measurement",
+            "feature": "filebrowser_ai_sql",
+            "answer": f"측정 용어 semantic 조회 중 오류가 발생했습니다: {str(exc)[:160]}",
+            "warnings": [str(exc)[:200]],
+        }
+    return out if isinstance(out, dict) and out.get("handled") else None
 
 
 def _run_flowi_chat(
@@ -20002,6 +20088,35 @@ def _run_flowi_chat(
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    can_measurement_lookup = bool({"filebrowser", "dashboard"} & set(allowed_keys))
+    measurement_tool = _handle_semantic_measurement(prompt, product, max_rows=max_rows) if can_measurement_lookup else None
+    if measurement_tool:
+        answer = measurement_tool.get("answer") or ""
+        _append_user_event(username, measurement_tool.get("intent") or "semantic_measurement_lookup", _event_fields(
+            {"prompt": prompt, "intent": measurement_tool.get("intent") or "", "answer": answer},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": measurement_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=measurement_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
     admin_block = _flowi_home_admin_function_block(prompt, me)
     if admin_block.get("handled"):
         answer = admin_block["answer"]
@@ -20583,6 +20698,10 @@ def _run_flowi_chat(
         unit_only.append("dashboard")
     if "splittable" in allowed_keys:
         unit_only.append("splittable")
+    if {"filebrowser", "splittable", "dashboard"} & set(allowed_keys):
+        unit_only.append("step_lookup")
+    if {"filebrowser", "splittable"} & set(allowed_keys):
+        unit_only.append("ppid_knob")
     if "tablemap" in allowed_keys:
         unit_only.append("tablemap")
     if "diagnosis" in allowed_keys:
@@ -21061,6 +21180,16 @@ class FlowiAdminUpdateReq(BaseModel):
     data_refs: str = ""
 
 
+class FlowiWorkflowDraftReq(BaseModel):
+    prompt: str = ""
+    existing_id: str = ""
+    workflow: dict[str, Any] = Field(default_factory=dict)
+
+
+class FlowiWorkflowSaveReq(BaseModel):
+    workflow: dict[str, Any] = Field(default_factory=dict)
+
+
 class FlowiProfileReq(BaseModel):
     notes: str = ""
 
@@ -21098,7 +21227,12 @@ class FlowiInformWalkthroughConfirmReq(BaseModel):
 def flowi_verify(req: FlowiVerifyReq, request: Request):
     _ = current_user(request)
     if not llm_adapter.is_available():
-        return {"ok": False, "message": "LLM 설정이 비활성화되어 있습니다.", "error": "llm unavailable"}
+        return {
+            "ok": False,
+            "message": "LLM 미설정",
+            "error": "llm unavailable",
+            "unavailable": True,
+        }
     out = llm_adapter.complete(
         "연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.",
         system="Flowi 연결 확인 응답은 반드시 확인완료 한 단어로만 작성합니다.",
@@ -21186,6 +21320,80 @@ def flowi_persona_card(request: Request):
         "do_list": do_list,
         "dont_list": dont[:5],
     }
+
+
+@router.get("/flowi/workflows")
+def flowi_workflows(request: Request):
+    me = current_user(request)
+    catalog = flowi_workflow_catalog.load_catalog(ensure=True)
+    matches_preview = []
+    try:
+        matches_preview = flowi_workflow_catalog.match_workflows("split knob fab trend corr raw data step", limit=8)
+    except Exception:
+        matches_preview = []
+    return {
+        "ok": True,
+        "can_edit": (me.get("role") or "user") == "admin",
+        "schema_version": catalog.get("version"),
+        "default_target_count": catalog.get("default_target_count"),
+        "description": catalog.get("description") or "",
+        "path": catalog.get("path") or "",
+        "default_path": catalog.get("default_path") or "",
+        "workflows": catalog.get("workflows") or [],
+        "matches_preview": matches_preview,
+    }
+
+
+@router.post("/flowi/workflows/draft")
+def flowi_workflows_draft(req: FlowiWorkflowDraftReq, _admin=Depends(require_admin)):
+    prompt = (req.prompt or "").strip()
+    existing = None
+    if req.existing_id:
+        for row in flowi_workflow_catalog.load_catalog(ensure=True).get("workflows") or []:
+            if str(row.get("id") or "") == req.existing_id:
+                existing = row
+                break
+    if isinstance(req.workflow, dict) and req.workflow:
+        existing = {**(existing or {}), **req.workflow}
+    if not prompt and not existing:
+        raise HTTPException(400, "prompt 또는 workflow가 필요합니다.")
+    workflow = flowi_workflow_catalog.draft_workflow(
+        prompt or str((existing or {}).get("title") or ""),
+        base=existing,
+        actor=_admin.get("username") or "admin",
+    )
+    return {
+        "ok": True,
+        "workflow": workflow,
+        "llm": {"available": llm_adapter.is_available(), "used": False},
+        "note": "로컬 규칙으로 workflow schema에 맞게 형식화했습니다.",
+    }
+
+
+@router.post("/flowi/workflows")
+def flowi_workflows_save(req: FlowiWorkflowSaveReq, _admin=Depends(require_admin)):
+    if not isinstance(req.workflow, dict) or not req.workflow:
+        raise HTTPException(400, "workflow가 필요합니다.")
+    actor = _admin.get("username") or "admin"
+    workflow = flowi_workflow_catalog.save_workflow(req.workflow, actor=actor)
+    _append_user_event(actor, "flowi_workflow_save", {
+        "workflow_id": workflow.get("id") or "",
+        "title": workflow.get("title") or "",
+        "unit_ai": workflow.get("unit_ai") or "",
+        "action": workflow.get("action") or "",
+    })
+    return {"ok": True, "workflow": workflow}
+
+
+@router.post("/flowi/workflows/merge-defaults")
+def flowi_workflows_merge_defaults(_admin=Depends(require_admin)):
+    actor = _admin.get("username") or "admin"
+    catalog = flowi_workflow_catalog.ensure_runtime_catalog(actor=actor)
+    _append_user_event(actor, "flowi_workflow_merge_defaults", {
+        "installed_defaults": catalog.get("installed_defaults"),
+        "preserved": catalog.get("preserved"),
+    })
+    return {"ok": True, **catalog}
 
 
 @router.post("/flowi/inform/confirm")
