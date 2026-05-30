@@ -104,15 +104,25 @@ Inform 화면 안에는 별도 `Flow-i 인폼 질문` 입력창을 두지 않는
 
 출력은 기존 Home/Dashboard가 쓰는 `chart_result` shape를 유지한다. `PlotlyChart.jsx`가 받는 `kind`, `chart_type`, `points`, `config`, `chart_config`, `total` 필드를 깨지 않는다.
 
+prompt가 `x축`, `y축`, `x/y축`, `x axis`, `y axis`처럼 data table 축 값을 명시하면 `params_fill/spec_validate`가 해당 축 컬럼이 실제 columns에 있고 비어 있지 않은지 확인한다. 축 컬럼명이 비어 있거나 table에 없거나 sample row에서 전부 빈 값이면 chart를 추측 생성하지 않고 `status=blocked`, `needs_input=true`, `question`으로 사용자에게 다시 채울 값을 묻는다.
+
 Agent 단위기능 AI 탭은 Unit 전체와 LangGraph node별 `좋아요` / `싫어요` feedback을 저장한다. feedback은 `FLOW_DATA_ROOT/agent_feedback_penalties.json`의 runtime penalty profile만 갱신하며 prompt, code, rule, cache를 자동 수정하지 않는다. 각 runtime trace row와 graph node에는 현재 node penalty metadata를 붙인다. v1에서는 penalty가 높아도 node 실행 자체를 skip하지 않고, Home Flow-i의 휴리스틱 점수와 LLM/ReAct planner catalog의 낮은 우선순위/avoid 표시 신호로만 사용한다.
 
 기존 `FLOW_DATA_ROOT/agent_unit_overrides.json`와 `/runtime/overrides` API는 과거 저장값 호환을 위해 backend에 남긴다. Agent UI에서는 persona/prompt/cache 편집 textarea를 노출하지 않는다.
 
 신규 단위기능 AI 실행 surface는 `/api/agent/unit/{key}/graph|run|history`를 우선 사용한다. 기존 `/api/agent/unit-ai/{key}/runtime/*` 경로는 호환용으로 유지한다. 공통 node timing, trace row, exception wrapping, state diff merge는 `backend/app_v2/modules/agent_runtime/executor.py`가 맡고, 각 unit runtime은 노드 정의, persona, 도메인 prompt, owner API 호출만 보존한다.
 
-## Home SQL Join Dashboard Unit
+## Dashboard Agent Source Orchestration
 
-`home_sql_join_dashboard`는 기준 source SQL draft, schema relation 기반 JOIN, output route를 담당한다. `dashboard_draft` 노드는 직접 chart spec을 만들지 않고 `dashboard_agent`를 sub-runtime으로 호출하며, sub-trace를 parent trace의 `dashboard.sub_trace`와 Home ToolCall `sub_trace`에 남긴다.
+SQL/JOIN 차트 요청은 별도 “Home SQL JOIN Dashboard” 단위기능이 아니라 `dashboard_agent`의 내부 data access path로 실행된다. Dashboard 탭에서 Dashboard Agent가 만든 결과는 Dashboard 화면에서 차트로 보이고, Home Agent가 Dashboard Agent를 선택한 경우에는 같은 `chart_result`를 Home 응답 payload에 붙여 Home 화면에서 바로 렌더링한다.
+
+실행 graph는 `semantic_layer -> source_resolve -> filebrowser_sql_draft -> data_need_decision -> join_candidate_select -> join_plan_validate -> data_execute -> output_route -> dashboard_draft`다.
+
+- `source_resolve`는 explicit `root/product/file`을 우선 사용하고, 없으면 schema relation column catalog와 FileBrowser 후보를 점수화한다. 후보가 여러 개이거나 product/file 값이 비어 있으면 추측하지 않고 `needs_input` 후보 목록을 반환한다.
+- `filebrowser_sql_draft`는 직접 자유 SQL을 만들지 않고 `filebrowser_ai_sql` sub-runtime의 `display_sql`, `where_sql`, `selected_columns`, `sort` 계약을 재사용한다.
+- `data_need_decision`과 `join_plan_validate`는 단일 source로 충분한 요청은 JOIN 없이 FileBrowser preview rows를 사용하고, multi-source 요청은 confirmed `schema_relations`가 있을 때만 JOIN을 실행한다.
+- `dashboard_draft`는 직접 chart spec을 만들지 않고 `dashboard_agent`를 sub-runtime으로 호출한다. 결과 `chart_result.config.source_evidence`에는 source ids, relation ids, join keys, SQL summary, FileBrowser/Dashboard sub-trace가 남는다.
+- Dashboard Agent가 축 컬럼 누락/빈 값으로 `needs_input`을 반환하면 parent unit도 `blocked`로 끝나며 사용자에게 축 값을 다시 묻는다.
 
 ## Home Flow-i Runtime Tab
 

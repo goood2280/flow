@@ -108,7 +108,6 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         "inform_registration",
         "change_management",
         "dashboard_agent",
-        "home_sql_join_dashboard",
     ]
 
     status = agent.agent_reset_status()
@@ -119,7 +118,6 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     assert status["active_unit_endpoints_v2"]["inform_registration"]["graph"] == "/api/agent/unit/inform_registration/graph"
     assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
     assert status["active_unit_endpoints"]["dashboard_agent"]["graph"] == "/api/agent/unit-ai/dashboard_agent/runtime/graph"
-    assert status["active_unit_endpoints"]["home_sql_join_dashboard"]["graph"] == "/api/agent/unit-ai/home_sql_join_dashboard/runtime/graph"
     assert "backend_version" in status
     assert "backend_commit" in status
 

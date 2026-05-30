@@ -102,20 +102,20 @@ def test_runtime_graph_and_trace_include_node_feedback_penalty(monkeypatch, tmp_
 def test_home_routing_uses_unit_feedback_penalty_for_tie_break(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_feedback_penalties, "PENALTIES_FILE", tmp_path / "agent_feedback_penalties.json")
     tools = [
-        _tool("home_sql_join_dashboard", tags=["chart"]),
+        _tool("chart_renderer_alt", tags=["chart"]),
         _tool("dashboard_agent", tags=["chart"]),
     ]
     monkeypatch.setattr(tool_registry, "list_tools", lambda include_stats=False: tools)
 
     agent_feedback_penalties.record_feedback("dashboard_agent", "up", actor="tester")
     picks, meta = home_orchestrator._pick_tools("차트로 보여줘", top_k=2)
-    assert [row["tool"]["name"] for row in picks] == ["dashboard_agent", "home_sql_join_dashboard"]
+    assert [row["tool"]["name"] for row in picks] == ["dashboard_agent", "chart_renderer_alt"]
     assert meta["feedback_penalties"]["dashboard_agent"]["boost"] > 0
 
     monkeypatch.setattr(agent_feedback_penalties, "PENALTIES_FILE", tmp_path / "agent_feedback_penalties_2.json")
     agent_feedback_penalties.record_feedback("dashboard_agent", "down", actor="tester")
     picks, meta = home_orchestrator._pick_tools("차트로 보여줘", top_k=2)
-    assert [row["tool"]["name"] for row in picks] == ["home_sql_join_dashboard", "dashboard_agent"]
+    assert [row["tool"]["name"] for row in picks] == ["chart_renderer_alt", "dashboard_agent"]
     assert meta["feedback_penalties"]["dashboard_agent"]["penalty"] > 0
 
 

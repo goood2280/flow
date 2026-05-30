@@ -117,6 +117,12 @@ def _score_tool(tool: dict[str, Any], signals: dict[str, float], prompt_lower: s
             score += 0.8
         elif token in title:
             score += 0.5
+    mixed_source_chart = (
+        (signals.get("chart") or signals.get("dashboard"))
+        and any(signals.get(tag) for tag in ("sql_workspace", "filebrowser", "tablemap", "fab", "lot"))
+    )
+    if nm == "dashboard_agent" and mixed_source_chart:
+        score += 1.0
     if score <= 0.0:
         return score
     adjustment = agent_feedback_penalties.tool_score_adjustment(tool)
@@ -280,6 +286,8 @@ def _runtime_unit_names() -> set[str]:
 def _normalize_unit_name(name: str, tool: dict[str, Any] | None = None) -> str:
     name = str(name or "").strip()
     unit_names = _runtime_unit_names()
+    if name == "home_sql_join_dashboard" and "dashboard_agent" in unit_names:
+        return "dashboard_agent"
     if name in unit_names:
         return name
     if name == "filebrowser" and "filebrowser_ai_sql" in unit_names:
@@ -1171,6 +1179,119 @@ def _decide_next_action(
     }
 
 
+def _has_dashboard_rows_or_columns(payload: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(payload.get("columns"), list) and payload.get("columns")
+        or isinstance(payload.get("sample_rows"), list) and payload.get("sample_rows")
+    )
+
+
+def dashboard_agent_should_use_source_runtime(
+    payload: dict[str, Any],
+    *,
+    home_context: bool = False,
+) -> bool:
+    if not isinstance(payload, dict) or _has_dashboard_rows_or_columns(payload):
+        return False
+    if any(_short_text(payload.get(key), 240) for key in ("root", "product", "file", "scope")):
+        return True
+    if isinstance(payload.get("preferred_selected_columns"), list) and payload.get("preferred_selected_columns"):
+        return True
+    prompt = _short_text(payload.get("natural_language") or payload.get("prompt"), 2000)
+    if not prompt:
+        return False
+    signals, _matched = _keyword_signals(prompt)
+    has_chart = bool(signals.get("chart") or signals.get("dashboard"))
+    has_source = bool(any(signals.get(tag) for tag in ("sql_workspace", "filebrowser", "tablemap", "fab", "lot")))
+    if has_chart and has_source:
+        return True
+    return bool(home_context and has_chart)
+
+
+def dashboard_agent_source_payload(step_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "natural_language": str(step_input.get("natural_language") or step_input.get("prompt") or ""),
+        "root": str(step_input.get("root") or ""),
+        "product": str(step_input.get("product") or ""),
+        "file": str(step_input.get("file") or ""),
+        "scope": str(step_input.get("scope") or ""),
+        "max_rows": step_input.get("max_rows") or 12,
+        "preferred_selected_columns": step_input.get("preferred_selected_columns") if isinstance(step_input.get("preferred_selected_columns"), list) else [],
+    }
+
+
+def dashboard_agent_result_from_source_runtime_result(result: dict[str, Any]) -> dict[str, Any]:
+    trimmed = _trim_home_sql_join_dashboard_runtime_result(result)
+    dashboard = trimmed.get("dashboard") if isinstance(trimmed.get("dashboard"), dict) else {}
+    chart_result = dashboard.get("chart_result") if isinstance(dashboard.get("chart_result"), dict) else {}
+    source_resolution = trimmed.get("source_resolution") if isinstance(trimmed.get("source_resolution"), dict) else {}
+    question = (
+        _short_text(source_resolution.get("question"), 240)
+        or _short_text(dashboard.get("question"), 240)
+        or _short_text(trimmed.get("question"), 240)
+    )
+    needs_input = bool(trimmed.get("blocked") or source_resolution.get("needs_input") or dashboard.get("needs_input"))
+    out = {
+        **trimmed,
+        "unit_ai": "dashboard_agent",
+        "source_orchestration": True,
+        "needs_input": needs_input,
+        "question": question,
+        "chart_type": dashboard.get("chart_type") or chart_result.get("chart_type") or "",
+        "config": deepcopy(dashboard.get("config") or chart_result.get("config") or {}),
+        "chart_result": deepcopy(chart_result),
+    }
+    if needs_input and question:
+        out["question"] = question
+    return out
+
+
+def _dashboard_tool_from_result_output(output: dict[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return {}
+    dashboard = output.get("dashboard") if isinstance(output.get("dashboard"), dict) else {}
+    chart_result = output.get("chart_result") if isinstance(output.get("chart_result"), dict) else {}
+    if not chart_result and isinstance(dashboard.get("chart_result"), dict):
+        chart_result = dashboard.get("chart_result") or {}
+    if not chart_result and not output.get("blocked") and not output.get("needs_input"):
+        return {}
+    title = (
+        _short_text(chart_result.get("title"), 120)
+        or _short_text(dashboard.get("title"), 120)
+        or "Dashboard Agent"
+    )
+    tool: dict[str, Any] = {
+        "type": "chart" if chart_result else "message",
+        "feature": "dashboard",
+        "intent": "dashboard_agent",
+        "inline_summary": title,
+        "warnings": _safe_string_list(warnings or output.get("warnings"), 12),
+    }
+    if chart_result:
+        tool["chart_result"] = deepcopy(chart_result)
+        tool["chart_type"] = chart_result.get("chart_type") or output.get("chart_type") or ""
+        tool["config"] = deepcopy(output.get("config") or chart_result.get("config") or {})
+    if output.get("blocked") or output.get("needs_input"):
+        tool["blocked"] = True
+        question = _short_text(output.get("question"), 240)
+        if question:
+            tool["missing_freetext"] = [{"key": "dashboard_agent_input", "label": question}]
+    return tool
+
+
+def _tool_from_tool_calls(tool_calls: Any) -> dict[str, Any]:
+    if not isinstance(tool_calls, list):
+        return {}
+    for call in reversed(tool_calls):
+        if not isinstance(call, dict):
+            continue
+        output = call.get("output") if isinstance(call.get("output"), dict) else {}
+        tool = _dashboard_tool_from_result_output(output, call.get("warnings") if isinstance(call.get("warnings"), list) else [])
+        if tool:
+            return tool
+    return {}
+
+
 def _execute_step(
     tool: dict[str, Any],
     step_input: dict[str, Any],
@@ -1297,6 +1418,27 @@ def _execute_step(
                 return _finish_exec_out(out, t0)
             if name == "dashboard_agent":
                 from core.flowi_units.dashboard_agent_runtime import run_dashboard_agent_runtime
+
+                if dashboard_agent_should_use_source_runtime(step_input, home_context=True):
+                    from core.flowi_units.home_sql_join_dashboard_runtime import run_home_sql_join_dashboard_runtime
+
+                    payload = dashboard_agent_source_payload(step_input)
+                    res = _call_runtime_with_context(
+                        run_home_sql_join_dashboard_runtime,
+                        payload,
+                        username=str((user or {}).get("username") or step_input.get("username") or ""),
+                        agent_context=agent_context,
+                    )
+                    coerced = dashboard_agent_result_from_source_runtime_result(res)
+                    out["ok"] = bool(coerced.get("ok"))
+                    out["status"] = str(coerced.get("status") or ("blocked" if coerced.get("blocked") else ("success" if coerced.get("ok") else "failed")))
+                    out["blocked"] = bool(coerced.get("blocked") or coerced.get("needs_input"))
+                    out["warnings"] = _warnings_from_home_sql_join_dashboard_runtime(res)
+                    out["result"] = coerced
+                    out["public_result"] = out["result"]
+                    out["sub_trace"] = deepcopy(res.get("trace") or [])
+                    out["result_preview"] = _summarize_dashboard_agent_runtime_result(coerced)
+                    return _finish_exec_out(out, t0)
 
                 payload = {
                     "natural_language": str(step_input.get("natural_language") or step_input.get("prompt") or ""),
@@ -1593,14 +1735,26 @@ def _trim_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) -> dict
     ai_sql = result.get("ai_sql") if isinstance(result.get("ai_sql"), dict) else {}
     join_plan = result.get("join_plan") if isinstance(result.get("join_plan"), dict) else {}
     dashboard = result.get("dashboard") if isinstance(result.get("dashboard"), dict) else {}
+    source_resolution = result.get("source_resolution") if isinstance(result.get("source_resolution"), dict) else {}
+    data_need = result.get("data_need") if isinstance(result.get("data_need"), dict) else {}
+    chart_result = dashboard.get("chart_result") if isinstance(dashboard.get("chart_result"), dict) else {}
+    question = (
+        _short_text(source_resolution.get("question"), 240)
+        or _short_text(dashboard.get("question"), 240)
+        or _short_text(result.get("question"), 240)
+    )
     return {
         "ok": bool(result.get("ok")),
         "status": result.get("status") or "",
         "blocked": bool(result.get("blocked")),
+        "needs_input": bool(result.get("blocked") or source_resolution.get("needs_input") or dashboard.get("needs_input")),
+        "question": question,
         "run_id": result.get("run_id") or "",
         "unit_ai": result.get("unit_ai") or "home_sql_join_dashboard",
         "graph": deepcopy(result.get("graph") or {}),
         "trace": deepcopy(result.get("trace") or []),
+        "semantic_frame": deepcopy(result.get("semantic_frame") or {}),
+        "source_resolution": deepcopy(source_resolution),
         "base_source": deepcopy(result.get("base_source") or {}),
         "ai_sql": {
             "where_sql": _short_text(ai_sql.get("where_sql"), 1000),
@@ -1610,6 +1764,7 @@ def _trim_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) -> dict
             "preview_total_rows": ai_sql.get("preview_total_rows"),
             "ok": bool(ai_sql.get("ok")),
         },
+        "data_need": deepcopy(data_need),
         "join_candidates": deepcopy(result.get("join_candidates") or [])[:10],
         "join_plan": {
             "sources": deepcopy(join_plan.get("sources") or [])[:6],
@@ -1631,6 +1786,9 @@ def _trim_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) -> dict
         },
         "output_route": deepcopy(result.get("output_route") or {}),
         "dashboard": deepcopy(dashboard),
+        "chart_type": dashboard.get("chart_type") or chart_result.get("chart_type") or "",
+        "config": deepcopy(dashboard.get("config") or chart_result.get("config") or {}),
+        "chart_result": deepcopy(chart_result),
         "warnings": _warnings_from_home_sql_join_dashboard_runtime(result),
     }
 
@@ -1807,7 +1965,7 @@ def _attach_runtime_result(
 ) -> dict[str, Any]:
     trace = out.get("trace") if isinstance(out.get("trace"), list) else []
     if "tool" not in out:
-        out["tool"] = _tool_summary_from_trace(trace)
+        out["tool"] = _tool_from_tool_calls(out.get("tool_calls")) or _tool_summary_from_trace(trace)
     snapshot = build_home_runtime_snapshot(
         prompt=prompt,
         result=out,

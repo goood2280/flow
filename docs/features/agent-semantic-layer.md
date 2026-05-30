@@ -117,8 +117,23 @@ semantic_layer -> chart_intent -> chart_type_select -> params_fill -> spec_valid
 ```
 
 - `semantic_layer`는 공유 `agent_semantic_service.resolve()`를 호출한다.
-- 입력은 `{natural_language, columns, sample_rows}`이며 source root/file에는 의존하지 않는다.
+- 입력은 `{natural_language, columns, sample_rows}`를 기본으로 한다. Home Agent가 source/chart 요청으로 Dashboard Agent를 선택하면 내부 source orchestration이 `root/product/file` 힌트를 처리한다.
 - 출력은 기존 `chart_result` shape를 유지해 `PlotlyChart.jsx`가 그대로 받을 수 있어야 한다.
+- prompt에 x/y축 컬럼이 명시됐는데 값이 비어 있거나 table columns/sample row에서 확인되지 않으면 chart를 만들지 않고 `needs_input` 질문으로 멈춘다.
+
+### Dashboard Agent Source Orchestration
+
+위치:
+
+```text
+semantic_layer -> source_resolve -> filebrowser_sql_draft -> data_need_decision -> join_candidate_select -> join_plan_validate -> data_execute -> output_route -> dashboard_draft
+```
+
+- 별도 공개 Unit AI가 아니라 Dashboard Agent의 내부 data access path다. Home Agent가 Dashboard Agent를 뽑아 쓰면 이 graph를 실행하고, 결과 `chart_result`는 Home 화면에 바로 붙는다.
+- source 선택은 explicit `root/product/file`을 우선하고, 자동 후보가 모호하면 `source_resolution.needs_input=true`와 후보 목록만 반환한다.
+- SQL draft는 FileBrowser AI SQL runtime의 read-only `display_sql`, `where_sql`, `selected_columns`, `sort` 계약을 재사용한다.
+- JOIN은 confirmed `schema_relations`가 있을 때만 실행한다. unconfirmed/draft relation은 `join_plan.blocked`로 끝난다.
+- chart 생성은 `dashboard_agent` sub-runtime으로 위임하며 `chart_result.config.source_evidence`에 source ids, relation ids, join keys, SQL summary, sub-trace를 보존한다.
 
 ## DB And File References
 

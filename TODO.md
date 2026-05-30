@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Dashboard Agent source/JOIN orchestration과 axis validation 적용
 - (Codex) Agent feedback penalty profile runtime 적용
 - (Codex) Agent semantic layer Phase 2와 unit runtime Phase 3 스케치 적용
 - (Claude) Home Flow-i 반복 ReAct 루프 추가 (flag FLOW_LLM_REACT_LOOP, 단일 control-flow + snapshot 반복 노드)
@@ -19,7 +20,7 @@
 - (Codex) SplitTable root lot별 ML_TABLE RAM cache 예열
 - (Codex) 비밀번호 찾기 아이디-only 메일 도메인 전송 보정
 - (Codex) 공유 Semantic Layer 서비스와 Dashboard Agent/Home Orchestrator 사슬화
-- (Codex) Home Flow-i SQL→JOIN→Dashboard 단위기능 AI 추가
+- (Codex) Home Flow-i SQL→JOIN→Dashboard 내부 orchestration 추가
 - (Codex) Home Flow-i step matching deterministic lookup
 - (Codex) Home Flow-i 사용자별 Q/A 메모리와 후속 질문 context 병합
 - (Codex) SplitTable ML_TABLE 제품 RAM cache 계층 추가

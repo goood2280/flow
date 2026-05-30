@@ -48,7 +48,6 @@ def test_dashboard_agent_graph_and_catalog(monkeypatch):
         "inform_registration",
         "change_management",
         "dashboard_agent",
-        "home_sql_join_dashboard",
     ]
 
 
@@ -105,3 +104,54 @@ def test_dashboard_agent_falls_back_without_llm(monkeypatch):
     assert out["ok"] is True
     assert out["chart_result"]["chart_type"]
     assert out["warnings"]
+
+
+def test_dashboard_agent_blocks_when_explicit_axis_value_is_empty(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = run_dashboard_agent_runtime(
+        {
+            "natural_language": "x축은 wafer_id, y축은 scatter로 그려줘",
+            "columns": ["wafer_id", "IOFF", "lot_id"],
+            "sample_rows": [{"wafer_id": 1, "IOFF": 0.12, "lot_id": "A1000"}],
+        }
+    )
+
+    assert out["ok"] is False
+    assert out["status"] == "blocked"
+    assert out["needs_input"] is True
+    assert out["axis_requirements"]["needs_input"] is True
+    assert {"axis": "y", "reason": "axis_value_empty"} in out["axis_requirements"]["missing"]
+
+
+def test_dashboard_agent_blocks_when_both_axis_values_are_empty(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = run_dashboard_agent_runtime(
+        {
+            "natural_language": "x,y축 모두 필요한 scatter",
+            "columns": ["wafer_id", "IOFF", "lot_id"],
+            "sample_rows": [{"wafer_id": 1, "IOFF": 0.12, "lot_id": "A1000"}],
+        }
+    )
+
+    missing = out["axis_requirements"]["missing"]
+    assert out["status"] == "blocked"
+    assert {"axis": "x", "reason": "axis_value_empty"} in missing
+    assert {"axis": "y", "reason": "axis_value_empty"} in missing
+
+
+def test_dashboard_agent_accepts_explicit_x_y_axes(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = run_dashboard_agent_runtime(
+        {
+            "natural_language": "x축 wafer_id y축 IOFF scatter",
+            "columns": ["wafer_id", "IOFF", "lot_id"],
+            "sample_rows": [{"wafer_id": 1, "IOFF": 0.12, "lot_id": "A1000"}],
+        }
+    )
+
+    assert out["ok"] is True
+    assert out["params"]["x"] == "wafer_id"
+    assert out["params"]["y"] == "IOFF"

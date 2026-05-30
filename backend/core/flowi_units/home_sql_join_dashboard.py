@@ -1,4 +1,4 @@
-"""Home SQL → JOIN → Dashboard Unit AI metadata."""
+"""Internal source orchestration metadata for Dashboard Agent."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,13 +9,14 @@ from core.flowi_units.base import BaseUnitAI, CodeRef, DataSourceRef
 
 class HomeSqlJoinDashboardUnitAI(BaseUnitAI):
     KEY = "home_sql_join_dashboard"
-    TITLE = "Home SQL → JOIN → Dashboard"
+    TITLE = "Dashboard Agent Source Orchestration (internal)"
     DESCRIPTION = (
+        "Dashboard Agent가 Home Agent에서 source/chart 요청으로 선택됐을 때 "
         "FileBrowser AI SQL로 기준 소스의 WHERE/SELECT를 만들고, "
         "schema_relations에 등록된 confirmed relation으로 다른 파일/DB와 JOIN한 뒤, "
-        "사용자 의도에 따라 raw 결과 또는 Dashboard 차트 초안을 함께 제공한다."
+        "사용자 의도에 따라 raw 결과 또는 Dashboard 차트 초안을 제공하는 내부 runtime."
     )
-    LLM_PROFILE = "ai_sql_draft(서브그래프) + output_route + dashboard_draft 세 LLM 노드"
+    LLM_PROFILE = "filebrowser_sql_draft(서브그래프) + output_route + dashboard_draft(delegate)"
     DATA_SOURCES = (
         DataSourceRef(
             kind="db_product",
@@ -47,8 +48,9 @@ class HomeSqlJoinDashboardUnitAI(BaseUnitAI):
         module="backend.core.flowi_units.home_sql_join_dashboard_runtime",
         function="run_home_sql_join_dashboard_runtime",
         description=(
-            "base_source_resolve -> ai_sql_draft -> join_candidate_select -> "
-            "join_plan_validate -> join_execute -> output_route -> dashboard_draft"
+            "semantic_layer -> source_resolve -> filebrowser_sql_draft -> "
+            "data_need_decision -> join_candidate_select -> join_plan_validate -> "
+            "data_execute -> output_route -> dashboard_draft"
         ),
     )
     INPUT_SCHEMA = {
@@ -67,7 +69,10 @@ class HomeSqlJoinDashboardUnitAI(BaseUnitAI):
         "type": "object",
         "properties": {
             "trace": {"type": "array"},
+            "semantic_frame": {"type": "object"},
+            "source_resolution": {"type": "object"},
             "ai_sql": {"type": "object"},
+            "data_need": {"type": "object"},
             "join_plan": {"type": "object"},
             "joined": {"type": "object"},
             "output_route": {"type": "object"},

@@ -2,7 +2,7 @@
 
 flow 본진에는 이미 두 단계 추상화가 있다:
 
-  1. Feature-level Unit AI 11개 (core/flowi_units/registry.py)
+  1. Feature-level Unit AI registry (core/flowi_units/registry.py)
        - DataSources, SemanticBindings, LLM_PROFILE, HANDLER_ENTRY 메타데이터 포함
        - strangler-fig dispatcher 로 prompt → 적절한 unit AI 가 handle()
 
@@ -403,7 +403,7 @@ def _unit_ai_descriptions() -> dict[str, str]:
 
 
 def list_unit_ai_tools() -> list[dict[str, Any]]:
-    """Feature-level Unit AI 11개 도구 정보."""
+    """Feature-level Unit AI 도구 정보."""
     try:
         from core.flowi_units.registry import UNIT_AIS
     except Exception as e:

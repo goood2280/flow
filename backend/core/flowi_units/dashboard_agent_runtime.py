@@ -427,6 +427,114 @@ def _fallback_params(prompt: str, columns: list[str], rows: list[dict[str, Any]]
     }
 
 
+def _norm_axis_text(value: Any) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").casefold())
+
+
+def _axis_marker_re(axis: str) -> re.Pattern[str]:
+    if axis == "x":
+        return re.compile(r"(?:\bx\s*[-_ ]?axis\b|\baxis\s*x\b|x\s*축|x축|\bx\s*[=:])", re.I)
+    return re.compile(r"(?:\by\s*[-_ ]?axis\b|\baxis\s*y\b|y\s*축|y축|\by\s*[=:])", re.I)
+
+
+def _both_axes_requested(prompt: str) -> bool:
+    text = str(prompt or "")
+    return bool(re.search(r"(?:x\s*[,/&]\s*y\s*축|x\s*[,/&]\s*y\s*axis|x\s*축\s*(?:과|와|및|/|,)\s*y\s*축|x\s*axis\s*(?:and|/|,)\s*y\s*axis)", text, re.I))
+
+
+def _explicit_axis_column(prompt: str, axis: str, columns: list[str]) -> tuple[bool, str]:
+    text = str(prompt or "")
+    marker = _axis_marker_re(axis)
+    other_marker = _axis_marker_re("y" if axis == "x" else "x")
+    matches = list(marker.finditer(text))
+    if not matches:
+        return False, ""
+    norm_columns = [(col, _norm_axis_text(col)) for col in columns if _norm_axis_text(col)]
+    for match in matches:
+        window = text[match.end():match.end() + 120]
+        other = other_marker.search(window)
+        if other:
+            window = window[:other.start()]
+        window_norm = _norm_axis_text(window)
+        found: list[tuple[int, int, str]] = []
+        for col, norm_col in norm_columns:
+            idx = window_norm.find(norm_col)
+            if idx >= 0:
+                found.append((idx, -len(norm_col), col))
+        if found:
+            found.sort()
+            return True, found[0][2]
+    return True, ""
+
+
+def _axis_has_values(rows: list[dict[str, Any]], col: str) -> bool:
+    if not rows or not col:
+        return True
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get(col)
+        if value is not None and str(value).strip() != "":
+            return True
+    return False
+
+
+def _axis_requirements(
+    *,
+    prompt: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    params: dict[str, Any],
+    chart_type: str,
+) -> dict[str, Any]:
+    both_requested = _both_axes_requested(prompt)
+    x_marker, x_explicit = _explicit_axis_column(prompt, "x", columns)
+    y_marker, y_explicit = _explicit_axis_column(prompt, "y", columns)
+    required = set()
+    if both_requested:
+        required.update({"x", "y"})
+    if x_marker:
+        required.add("x")
+    if y_marker:
+        required.add("y")
+    if chart_type in {"scatter"}:
+        required.update({"x", "y"})
+    elif chart_type in {"line"} and (x_marker or y_marker or both_requested):
+        required.update({"x", "y"})
+
+    explicit = {"x": x_explicit, "y": y_explicit}
+    selected = {"x": _safe_text(params.get("x"), 120), "y": _safe_text(params.get("y"), 120)}
+    missing: list[dict[str, str]] = []
+    for axis in ("x", "y"):
+        marker_required = both_requested or (axis == "x" and x_marker) or (axis == "y" and y_marker)
+        if axis in required and marker_required and not explicit[axis]:
+            missing.append({"axis": axis, "reason": "axis_value_empty"})
+        if explicit[axis]:
+            selected[axis] = explicit[axis]
+        if axis in required and not selected[axis]:
+            missing.append({"axis": axis, "reason": "axis_column_missing"})
+        if selected[axis] and selected[axis] not in columns:
+            missing.append({"axis": axis, "reason": "axis_column_not_in_table", "column": selected[axis]})
+        if selected[axis] in columns and not _axis_has_values(rows, selected[axis]):
+            missing.append({"axis": axis, "reason": "axis_column_has_no_values", "column": selected[axis]})
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in missing:
+        key = (item.get("axis", ""), item.get("reason", ""), item.get("column", ""))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    needs_input = bool(deduped)
+    return {
+        "required_axes": sorted(required),
+        "explicit_axes": explicit,
+        "selected_axes": selected,
+        "missing": deduped,
+        "needs_input": needs_input,
+        "question": "차트에 필요한 x/y축 컬럼 값을 채워 주세요." if needs_input else "",
+    }
+
+
 def _params_fill(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     req = state.get("request") or {}
     prompt = _safe_text(req.get("natural_language"), 2000)
@@ -466,6 +574,21 @@ def _params_fill(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
         "llm": llm_info,
         "fallback": not bool(llm_info.get("used")),
     }
+    axis_requirements = _axis_requirements(
+        prompt=prompt,
+        columns=columns,
+        rows=rows,
+        params=params,
+        chart_type=_safe_text((state.get("chart_type") or {}).get("chart_type"), 40),
+    )
+    if axis_requirements.get("explicit_axes", {}).get("x"):
+        params["x"] = axis_requirements["explicit_axes"]["x"]
+    if axis_requirements.get("explicit_axes", {}).get("y"):
+        params["y"] = axis_requirements["explicit_axes"]["y"]
+    axis_requirements["selected_axes"] = {"x": params.get("x") or "", "y": params.get("y") or ""}
+    params["axis_requirements"] = axis_requirements
+    if axis_requirements.get("needs_input"):
+        warnings.append(axis_requirements.get("question") or "chart axis input is required")
     return {"params": params}
 
 
@@ -479,6 +602,17 @@ def _spec_validate(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
         columns,
     )
     params = state.get("params") or {}
+    axis_requirements = params.get("axis_requirements") if isinstance(params.get("axis_requirements"), dict) else {}
+    if axis_requirements.get("needs_input"):
+        return {
+            "spec": {
+                "blocked": True,
+                "needs_input": True,
+                "question": axis_requirements.get("question") or "차트 축 입력이 필요합니다.",
+                "axis_requirements": axis_requirements,
+                "columns": columns,
+            }
+        }
     selected_items = [col for col in (params.get("x"), params.get("y")) if col] or columns[:2]
     overrides = {
         key: value
@@ -503,6 +637,7 @@ def _spec_validate(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
             "title": title,
             "config": config,
             "columns": columns,
+            "axis_requirements": axis_requirements,
         }
     }
 
@@ -510,6 +645,14 @@ def _spec_validate(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
 def _render_spec(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     req = state.get("request") or {}
     spec = state.get("spec") or {}
+    if spec.get("blocked"):
+        warnings.append(spec.get("question") or "chart spec requires user input")
+        return {
+            "chart_result": {},
+            "needs_input": True,
+            "question": spec.get("question") or "",
+            "axis_requirements": spec.get("axis_requirements") or {},
+        }
     config = spec.get("config") if isinstance(spec.get("config"), dict) else {}
     columns = list(spec.get("columns") or req.get("columns") or [])
     rows = _safe_rows(req.get("sample_rows"), max_rows=500)
@@ -628,10 +771,15 @@ def run_dashboard_agent_runtime(
             if text and text not in warnings:
                 warnings.append(text)
     chart_result = final_state.get("chart_result") if isinstance(final_state.get("chart_result"), dict) else {}
-    ok = not bool(final_state.get("node_errors")) and bool(chart_result)
+    needs_input = bool(final_state.get("needs_input") or (final_state.get("spec") or {}).get("needs_input"))
+    ok = not needs_input and not bool(final_state.get("node_errors")) and bool(chart_result)
+    status = "blocked" if needs_input else ("success" if ok and not warnings else ("warning" if ok else "failed"))
     result = {
         "ok": ok,
-        "status": "success" if ok and not warnings else ("warning" if ok else "failed"),
+        "status": status,
+        "blocked": needs_input,
+        "needs_input": needs_input,
+        "question": _safe_text(final_state.get("question") or (final_state.get("spec") or {}).get("question"), 240),
         "run_id": run_id,
         "unit_ai": UNIT_AI_KEY,
         "graph": dashboard_agent_graph(statuses),
@@ -640,6 +788,7 @@ def run_dashboard_agent_runtime(
         "chart_intent": final_state.get("chart_intent") or {},
         "chart_type": (final_state.get("chart_type") or {}).get("chart_type") or chart_result.get("chart_type") or "",
         "params": final_state.get("params") or {},
+        "axis_requirements": final_state.get("axis_requirements") or (final_state.get("params") or {}).get("axis_requirements") or {},
         "config": (final_state.get("spec") or {}).get("config") or chart_result.get("config") or {},
         "spec": final_state.get("spec") or {},
         "chart_result": chart_result,

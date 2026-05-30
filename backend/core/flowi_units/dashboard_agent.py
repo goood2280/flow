@@ -11,15 +11,21 @@ class DashboardAgentUnitAI(BaseUnitAI):
     KEY = "dashboard_agent"
     TITLE = "Dashboard Agent"
     DESCRIPTION = (
-        "source와 무관한 natural_language, columns, sample_rows 입력을 받아 "
-        "공유 semantic layer와 Dashboard chart defaults 기반 Plotly chart_result를 만든다."
+        "natural_language, columns, sample_rows 입력을 받아 Plotly chart_result를 만들고, "
+        "Home Agent가 source/chart 요청으로 선택하면 FileBrowser AI SQL과 confirmed JOIN "
+        "source orchestration을 내부적으로 사용한다."
     )
     LLM_PROFILE = "chart_type_select + params_fill 두 LLM 노드, LLM 미설정 시 deterministic fallback"
     DATA_SOURCES = (
         DataSourceRef(
             kind="request_payload",
-            path="{natural_language, columns, sample_rows}",
-            description="호출자가 제공한 schema와 샘플 행. 원본 source는 직접 읽지 않는다.",
+            path="{natural_language, columns, sample_rows, root, product, file}",
+            description="호출자가 제공한 schema/샘플 행 또는 Home Agent가 넘긴 source 힌트.",
+        ),
+        DataSourceRef(
+            kind="filebrowser_source",
+            path="FLOW_DB_ROOT/FLOW_BASE_ROOT read-only source via internal FileBrowser AI SQL",
+            description="Home Agent source/chart 요청에서만 내부 source resolver와 JOIN runtime이 읽기 전용으로 사용한다.",
         ),
         DataSourceRef(
             kind="dashboard_defaults",
@@ -43,10 +49,13 @@ class DashboardAgentUnitAI(BaseUnitAI):
             "natural_language": {"type": "string"},
             "columns": {"type": "array", "items": {"type": "string"}},
             "sample_rows": {"type": "array", "items": {"type": "object"}},
+            "root": {"type": "string"},
             "product": {"type": "string"},
+            "file": {"type": "string"},
+            "max_rows": {"type": "integer", "minimum": 1, "maximum": 100},
             "dtypes": {"type": "object"},
         },
-        "required": ["natural_language", "columns", "sample_rows"],
+        "required": ["natural_language"],
     }
     OUTPUT_SCHEMA = {
         "type": "object",

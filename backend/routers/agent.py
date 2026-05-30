@@ -38,11 +38,6 @@ from core.flowi_units.filebrowser_ai_sql_runtime import (
     filebrowser_ai_sql_graph,
     run_filebrowser_ai_sql_runtime,
 )
-from core.flowi_units.home_sql_join_dashboard_runtime import (
-    UNIT_AI_KEY as HOME_SQL_JOIN_DASHBOARD_UNIT_KEY,
-    home_sql_join_dashboard_graph,
-    run_home_sql_join_dashboard_runtime,
-)
 from core.flowi_units.inform_registration_runtime import (
     UNIT_AI_KEY as INFORM_REGISTRATION_UNIT_KEY,
     inform_registration_graph,
@@ -73,11 +68,6 @@ _ACTIVE_UNIT_ENDPOINTS = {
         "graph": "/api/agent/unit-ai/dashboard_agent/runtime/graph",
         "run": "/api/agent/unit-ai/dashboard_agent/runtime/run",
         "overrides": "/api/agent/unit-ai/dashboard_agent/runtime/overrides",
-    },
-    HOME_SQL_JOIN_DASHBOARD_UNIT_KEY: {
-        "graph": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/graph",
-        "run": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/run",
-        "overrides": "/api/agent/unit-ai/home_sql_join_dashboard/runtime/overrides",
     },
 }
 
@@ -727,8 +717,6 @@ def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
         graph = change_management_graph()
     elif unit_key == DASHBOARD_AGENT_UNIT_KEY:
         graph = dashboard_agent_graph()
-    elif unit_key == HOME_SQL_JOIN_DASHBOARD_UNIT_KEY:
-        graph = home_sql_join_dashboard_graph()
     else:
         raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
     return {
@@ -779,15 +767,18 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
         me = current_user(request)
         if not payload.get("natural_language") and payload.get("prompt"):
             payload["natural_language"] = payload.get("prompt")
+        if home_orchestrator.dashboard_agent_should_use_source_runtime(payload, home_context=False):
+            from core.flowi_units.home_sql_join_dashboard_runtime import run_home_sql_join_dashboard_runtime
+
+            result = run_home_sql_join_dashboard_runtime(
+                home_orchestrator.dashboard_agent_source_payload(payload),
+                username=(me or {}).get("username") or "",
+            )
+            return agent_feedback_penalties.annotate_result(
+                DASHBOARD_AGENT_UNIT_KEY,
+                home_orchestrator.dashboard_agent_result_from_source_runtime_result(result),
+            )
         return agent_feedback_penalties.annotate_result(DASHBOARD_AGENT_UNIT_KEY, run_dashboard_agent_runtime(
-            payload,
-            username=(me or {}).get("username") or "",
-        ))
-    if unit_key == HOME_SQL_JOIN_DASHBOARD_UNIT_KEY:
-        me = current_user(request)
-        if not payload.get("natural_language") and payload.get("prompt"):
-            payload["natural_language"] = payload.get("prompt")
-        return agent_feedback_penalties.annotate_result(HOME_SQL_JOIN_DASHBOARD_UNIT_KEY, run_home_sql_join_dashboard_runtime(
             payload,
             username=(me or {}).get("username") or "",
         ))
