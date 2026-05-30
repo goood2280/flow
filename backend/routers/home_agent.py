@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core import agent_feedback, audit, home_orchestrator, tool_registry
+from core import agent_feedback, agent_feedback_penalties, audit, home_orchestrator, tool_registry
 from core.auth import current_user
 
 logger = logging.getLogger("flow.home_agent")
@@ -149,6 +149,30 @@ def post_feedback(request: Request, body: FeedbackRequest):
         detail=f"prompt={body.prompt[:60]} tool={body.suggested_tool or '-'}",
         tab="home",
     )
+    if rating in {"up", "down"}:
+        trace = body.trace_summary if isinstance(body.trace_summary, list) else []
+        first = next((item for item in trace if isinstance(item, dict)), {})
+        tool_name = (body.suggested_tool or first.get("tool") or "").strip()
+        try:
+            agent_feedback_penalties.record_home_feedback(
+                rating=rating,
+                planner=str(first.get("source") or ""),
+                tool=tool_name,
+                source="home_agent",
+                reason=body.note or first.get("reason") or "",
+                actor=me.get("username") or "",
+            )
+            tool = tool_registry.get_tool(tool_name) if tool_name else None
+            if tool and tool.get("kind") == "unit_ai":
+                agent_feedback_penalties.record_feedback(
+                    tool_name,
+                    rating,
+                    run_id=str(first.get("run_id") or ""),
+                    reason=body.note or first.get("reason") or "",
+                    actor=me.get("username") or "",
+                )
+        except Exception:
+            logger.debug("home feedback penalty update failed", exc_info=True)
     return {"ok": True, "feedback": row}
 
 
@@ -244,6 +268,7 @@ def run_tool(request: Request, body: RunToolRequest):
         "title": tool.get("title"),
         "input": step_input,
         "ms": exec_out.get("ms", 0),
+        "feedback_penalty": exec_out.get("feedback_penalty") or {},
         "result_preview": exec_out.get("result_preview", ""),
         "result": exec_out.get("result"),
     }

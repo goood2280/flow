@@ -21,8 +21,12 @@ function agentUnitHistoryEndpoint(unitKey, limit = 50) {
   return `/api/agent/unit/${encodeURIComponent(unitKey)}/history?limit=${encodeURIComponent(String(limit))}`;
 }
 
-function agentUnitOverridesEndpoint(unitKey) {
-  return `/api/agent/unit-ai/${encodeURIComponent(unitKey)}/runtime/overrides`;
+function agentUnitFeedbackProfileEndpoint(unitKey) {
+  return `/api/agent/unit-ai/${encodeURIComponent(unitKey)}/feedback-profile`;
+}
+
+function agentUnitFeedbackEndpoint(unitKey) {
+  return `/api/agent/unit-ai/${encodeURIComponent(unitKey)}/feedback`;
 }
 
 function formatAgentEndpointError(error, endpoint, method = "GET") {
@@ -345,113 +349,133 @@ function aliasPayloadFromValue(value) {
   return payload;
 }
 
-function UnitImprovementPanel({ unitKey, graph, result, history = [], selectedHistory = null }) {
-  const nodes = graph?.nodes || [];
-  const [selectedNodeId, setSelectedNodeId] = useState("");
-  const [overrides, setOverrides] = useState({ nodes: {} });
-  const [draft, setDraft] = useState({ persona: "", prompt_system: "", cache: "" });
-  const [busy, setBusy] = useState(false);
+function useAgentFeedbackProfile(unitKey) {
+  const [profile, setProfile] = useState(null);
+  const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
 
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null;
-  const nodeId = selectedNode?.id || "";
-  const overrideNode = overrides?.nodes?.[nodeId] || {};
-
-  const loadOverrides = () => {
+  const load = () => {
     if (!unitKey) return Promise.resolve();
-    return sf(agentUnitOverridesEndpoint(unitKey))
-      .then((payload) => setOverrides(payload?.overrides || { nodes: {} }))
+    setErr("");
+    return sf(agentUnitFeedbackProfileEndpoint(unitKey))
+      .then((payload) => setProfile(payload?.profile || null))
       .catch((e) => setErr(e.message || String(e)));
   };
 
-  useEffect(() => {
-    if (!selectedNodeId && nodes[0]?.id) setSelectedNodeId(nodes[0].id);
-  }, [selectedNodeId, nodes]);
-
-  useEffect(() => { loadOverrides(); }, [unitKey]);
-
-  useEffect(() => {
-    if (!selectedNode) return;
-    const current = overrides?.nodes?.[selectedNode.id] || {};
-    setDraft({
-      persona: current.persona ?? selectedNode.persona ?? "",
-      prompt_system: current.prompt_system ?? selectedNode.prompt?.system ?? "",
-      cache: current.cache ?? selectedNode.cache ?? "",
-    });
-  }, [selectedNode?.id, overrides]);
-
-  const save = () => {
-    if (!unitKey || !nodeId) return;
-    const next = {
-      nodes: {
-        ...(overrides?.nodes || {}),
-        [nodeId]: {
-          persona: draft.persona,
-          prompt_system: draft.prompt_system,
-          cache: draft.cache,
-        },
-      },
-    };
-    setBusy(true);
+  const submit = ({ rating, nodeId = "", runId = "", reason = "" }) => {
+    if (!unitKey || !rating) return Promise.resolve();
+    const target = `${rating}:${nodeId || "unit"}`;
+    setBusy(target);
     setErr("");
     setMsg("");
-    putJson(agentUnitOverridesEndpoint(unitKey), next)
-      .then((payload) => {
-        setOverrides(payload?.overrides || next);
-        setMsg("override 저장 완료");
-      })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
+    return postJson(agentUnitFeedbackEndpoint(unitKey), {
+      rating,
+      node_id: nodeId,
+      run_id: runId,
+      reason,
+    }).then((payload) => {
+      setProfile(payload?.profile || null);
+      setMsg(nodeId ? `node feedback 저장: ${nodeId}` : "unit feedback 저장");
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(""));
   };
 
-  const resultTrace = Array.isArray(result?.trace) ? result.trace : [];
-  const historyTrace = Array.isArray(selectedHistory?.trace)
-    ? selectedHistory.trace
-    : (Array.isArray(selectedHistory?.trace_summary) ? selectedHistory.trace_summary : []);
+  useEffect(() => { load(); }, [unitKey]);
+  return { profile, busy, err, msg, load, submit, setErr, setMsg };
+}
 
+function formatPenaltyNumber(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "0";
+  return Number.isInteger(num) ? String(num) : num.toFixed(1);
+}
+
+function RatingButtons({ feedback, nodeId = "", runId = "", reason = "" }) {
+  const target = nodeId || "unit";
+  const upBusy = feedback?.busy === `up:${target}`;
+  const downBusy = feedback?.busy === `down:${target}`;
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <Button
+        variant="ghost"
+        onClick={() => feedback?.submit?.({ rating: "up", nodeId, runId, reason })}
+        disabled={upBusy || downBusy}
+        style={{ fontSize: 12, padding: "4px 10px", height: 28 }}
+      >좋아요</Button>
+      <Button
+        variant="ghost"
+        onClick={() => feedback?.submit?.({ rating: "down", nodeId, runId, reason })}
+        disabled={upBusy || downBusy}
+        style={{ fontSize: 12, padding: "4px 10px", height: 28, color: "var(--danger)" }}
+      >싫어요</Button>
+    </div>
+  );
+}
+
+function NodeFeedbackInline({ feedback, nodeId, runId, fallback = null }) {
+  if (!nodeId) return null;
+  const nodeProfile = feedback?.profile?.nodes?.[nodeId] || fallback?.feedback_penalty || {};
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <RatingButtons feedback={feedback} nodeId={nodeId} runId={runId} reason="agent_node_detail" />
+      <Pill tone={Number(nodeProfile.penalty || 0) > 0 ? "warn" : "neutral"}>
+        penalty {formatPenaltyNumber(nodeProfile.penalty)}
+      </Pill>
+      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+        up {nodeProfile.up_count || 0} · down {nodeProfile.down_count || 0}
+      </span>
+    </div>
+  );
+}
+
+function UnitFeedbackPanel({ unitKey, graph, result, feedback }) {
+  const nodes = graph?.nodes || [];
+  const unit = feedback?.profile?.unit || {};
+  const nodeProfiles = feedback?.profile?.nodes || {};
+  const rows = nodes.map((node) => {
+    const row = nodeProfiles[node.id] || node.feedback_penalty || {};
+    return {
+      id: node.id,
+      label: node.label || node.id,
+      penalty: Number(row.penalty || 0),
+      up_count: row.up_count || 0,
+      down_count: row.down_count || 0,
+      last_rating: row.last_rating || "",
+    };
+  });
   return (
     <Panel
-      title="Persona/Prompt/Cache 편집"
+      title="Feedback penalty"
       subtitle={unitKey}
-      right={<Button variant="ghost" onClick={loadOverrides} disabled={busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+      right={<Button variant="ghost" onClick={feedback?.load} disabled={!!feedback?.busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
     >
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 0.75fr) minmax(0, 1.25fr) minmax(280px, 0.9fr)", gap: 10, alignItems: "start" }}>
-        <div style={{ display: "grid", gap: 8 }}>
-          {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
-          {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
-          <Field label="node">
-            <Select value={nodeId} onChange={(e) => setSelectedNodeId(e.target.value)}>
-              {nodes.map((node) => <option key={node.id} value={node.id}>{node.label || node.id}</option>)}
-            </Select>
-          </Field>
-          <JsonBlock
-            value={{
-              state_io: selectedNode?.state_io || {},
-              shared_state: selectedNode?.shared_state || [],
-              override_saved: !!Object.keys(overrideNode || {}).length,
-              updated_at: overrides?.updated_at || "",
-              updated_by: overrides?.updated_by || "",
-            }}
-            maxHeight={210}
-          />
-        </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          <Field label="persona">
-            <Textarea value={draft.persona} onChange={(e) => setDraft((prev) => ({ ...prev, persona: e.target.value }))} rows={3} />
-          </Field>
-          <Field label="prompt system">
-            <Textarea value={draft.prompt_system} onChange={(e) => setDraft((prev) => ({ ...prev, prompt_system: e.target.value }))} rows={5} />
-          </Field>
-          <Field label="cache">
-            <Textarea value={draft.cache} onChange={(e) => setDraft((prev) => ({ ...prev, cache: e.target.value }))} rows={3} />
-          </Field>
-          <Button variant="primary" onClick={save} disabled={busy || !nodeId}>저장</Button>
-        </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 12, fontWeight: 800 }}>최근 실행 trace 비교</div>
-          <JsonBlock value={{ current: resultTrace.map((row) => ({ node_id: row.node_id, status: row.status, warnings: row.warnings || [], output: row.output || {} })) }} maxHeight={190} />
-          <JsonBlock value={{ selected_history: historyTrace, history_count: history.length }} maxHeight={190} />
+      <div style={{ display: "grid", gap: 10 }}>
+        {feedback?.err ? <Banner tone="bad" onClose={() => feedback.setErr("")}>{feedback.err}</Banner> : null}
+        {feedback?.msg ? <Banner tone="ok" onClose={() => feedback.setMsg("")}>{feedback.msg}</Banner> : null}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 0.85fr) minmax(0, 1.15fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ display: "grid", gap: 8, padding: 10, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13 }}>Unit 전체</strong>
+              <Pill tone={Number(unit.penalty || 0) > 0 ? "warn" : "neutral"}>penalty {formatPenaltyNumber(unit.penalty)}</Pill>
+              <Pill tone={Number(unit.boost || 0) > 0 ? "ok" : "neutral"}>boost {formatPenaltyNumber(unit.boost)}</Pill>
+            </div>
+            <RatingButtons feedback={feedback} runId={result?.run_id || ""} reason="agent_unit_panel" />
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+              up {unit.up_count || 0} · down {unit.down_count || 0}{unit.last_rating ? ` · last ${unit.last_rating}` : ""}
+            </div>
+          </div>
+          <div style={{ display: "grid", gap: 6, maxHeight: 190, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            {rows.length ? rows.map((row) => (
+              <div key={row.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 8, alignItems: "center", padding: "7px 9px", borderBottom: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
+                <Pill tone={row.penalty > 0 ? "warn" : "neutral"}>penalty {formatPenaltyNumber(row.penalty)}</Pill>
+                <span style={{ fontSize: 11, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>up {row.up_count} · down {row.down_count}</span>
+              </div>
+            )) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>node 없음</div>
+            )}
+          </div>
         </div>
       </div>
     </Panel>
@@ -482,6 +506,7 @@ function FileBrowserAiSqlUnitPanel() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [manualPreviewVisible, setManualPreviewVisible] = useState(false);
+  const feedback = useAgentFeedbackProfile("filebrowser_ai_sql");
 
   useEffect(() => {
     setAppliedSql(result?.preview?.applied_sql || result?.merged?.display_sql || result?.merged?.sql || "");
@@ -880,12 +905,11 @@ function FileBrowserAiSqlUnitPanel() {
         </div>
       </Panel>
 
-      <UnitImprovementPanel
+      <UnitFeedbackPanel
         unitKey="filebrowser_ai_sql"
         graph={activeGraph}
         result={result}
-        history={history}
-        selectedHistory={selectedHistory}
+        feedback={feedback}
       />
 
       <div className="flow-agent-unit-grid">
@@ -917,6 +941,12 @@ function FileBrowserAiSqlUnitPanel() {
                     ) : null}
                   </div>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  <NodeFeedbackInline
+                    feedback={feedback}
+                    nodeId={selectedNode.node_id}
+                    runId={result?.run_id || ""}
+                    fallback={selectedNode}
+                  />
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
@@ -1095,6 +1125,7 @@ function InformRegistrationUnitPanel() {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const feedback = useAgentFeedbackProfile("inform_registration");
 
   const loadHistory = () => {
     setHistoryLoading(true);
@@ -1329,12 +1360,11 @@ function InformRegistrationUnitPanel() {
         </div>
       </Panel>
 
-      <UnitImprovementPanel
+      <UnitFeedbackPanel
         unitKey="inform_registration"
         graph={activeGraph}
         result={result}
-        history={history}
-        selectedHistory={selectedHistory}
+        feedback={feedback}
       />
 
       <div className="flow-agent-unit-grid">
@@ -1366,6 +1396,12 @@ function InformRegistrationUnitPanel() {
                     ) : null}
                   </div>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  <NodeFeedbackInline
+                    feedback={feedback}
+                    nodeId={selectedNode.node_id}
+                    runId={result?.run_id || ""}
+                    fallback={selectedNode}
+                  />
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
@@ -1503,6 +1539,7 @@ function ChangeManagementUnitPanel() {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const feedback = useAgentFeedbackProfile("change_management");
 
   const loadHistory = () => {
     setHistoryLoading(true);
@@ -1728,12 +1765,11 @@ function ChangeManagementUnitPanel() {
         </div>
       </Panel>
 
-      <UnitImprovementPanel
+      <UnitFeedbackPanel
         unitKey="change_management"
         graph={activeGraph}
         result={result}
-        history={history}
-        selectedHistory={selectedHistory}
+        feedback={feedback}
       />
 
       <div className="flow-agent-unit-grid">
@@ -1765,6 +1801,12 @@ function ChangeManagementUnitPanel() {
                     ) : null}
                   </div>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  <NodeFeedbackInline
+                    feedback={feedback}
+                    nodeId={selectedNode.node_id}
+                    runId={result?.run_id || ""}
+                    fallback={selectedNode}
+                  />
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
@@ -1896,6 +1938,7 @@ function DashboardAgentUnitPanel() {
   const [result, setResult] = useState(null);
   const [lastRequest, setLastRequest] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const feedback = useAgentFeedbackProfile("dashboard_agent");
 
   useEffect(() => {
     setLoading(true);
@@ -2013,12 +2056,11 @@ function DashboardAgentUnitPanel() {
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       {graphErr && <Banner tone="warn" onClose={() => setGraphErr("")}>Dashboard graph fetch 진단: {graphErr}</Banner>}
 
-      <UnitImprovementPanel
+      <UnitFeedbackPanel
         unitKey="dashboard_agent"
         graph={activeGraph}
         result={result}
-        history={[]}
-        selectedHistory={null}
+        feedback={feedback}
       />
 
       <div className="flow-agent-unit-grid">
@@ -2037,6 +2079,13 @@ function DashboardAgentUnitPanel() {
                     <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
                     {selectedTraceNode ? <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span> : null}
                   </div>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  <NodeFeedbackInline
+                    feedback={feedback}
+                    nodeId={selectedNode.node_id}
+                    runId={result?.run_id || ""}
+                    fallback={selectedNode}
+                  />
                   {(selectedTraceNode?.warnings || []).length ? <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner> : null}
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
                   <JsonBlock value={{ persona: selectedNode.persona || "", prompt: { mode: selectedPromptMode, system: selectedPromptSystem }, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={selectedPromptSystem ? 220 : 140} />

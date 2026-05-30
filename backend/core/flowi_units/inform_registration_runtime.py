@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 
 from app_v2.modules.semantic_learning import extractor as semantic_extractor
 from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
+from core import agent_feedback_penalties
 from core import agent_semantic_service
 from core.paths import PATHS
 from core.utils import load_json, save_json
@@ -1018,7 +1019,7 @@ def run_inform_registration_runtime(
     _save_session(session)
 
     statuses = {str(row.get("node_id")): str(row.get("status") or "pending") for row in trace}
-    return {
+    result = {
         "ok": status not in {"blocked"},
         "unit_ai": UNIT_AI_KEY,
         "run_id": run_id,
@@ -1036,6 +1037,7 @@ def run_inform_registration_runtime(
         "trace": trace,
         "warnings": warnings,
     }
+    return agent_feedback_penalties.annotate_result(UNIT_AI_KEY, result)
 
 
 def list_inform_registration_history(limit: int = 50, *, username: str = "") -> list[dict[str, Any]]:

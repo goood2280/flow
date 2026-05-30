@@ -18,6 +18,7 @@ from app_v2.modules.semantic_learning import proposer as semantic_proposer
 from app_v2.modules.semantic_lexicon import service as semantic_lexicon_service
 from app_v2.modules.semantic_lexicon import store as semantic_lexicon_store
 from core import home_orchestrator
+from core import agent_feedback_penalties
 from core import agent_prompt_overrides
 from core.auth import current_user, is_page_manager
 from core.flowi_units import all_unit_ais, get_unit_ai
@@ -184,6 +185,13 @@ class SemanticDraftReq(BaseModel):
 
 class UnitAiOverrideReq(BaseModel):
     nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class UnitAiFeedbackReq(BaseModel):
+    rating: str
+    node_id: str = ""
+    run_id: str = ""
+    reason: str = ""
 
 
 def _string_list(value: Any, limit: int = 80) -> list[str]:
@@ -428,7 +436,7 @@ def filebrowser_ai_sql_runtime_graph(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "unit_ai": FILEBROWSER_AI_SQL_UNIT_KEY,
-        "graph": filebrowser_ai_sql_graph(),
+        "graph": agent_feedback_penalties.annotate_graph(FILEBROWSER_AI_SQL_UNIT_KEY, filebrowser_ai_sql_graph()),
     }
 
 
@@ -451,7 +459,7 @@ def filebrowser_ai_sql_runtime_run(req: FileBrowserAiSqlRuntimeRunReq, request: 
         )
     except Exception:
         pass
-    return result
+    return agent_feedback_penalties.annotate_result(FILEBROWSER_AI_SQL_UNIT_KEY, result)
 
 
 @router.get("/unit-ai/inform_registration/runtime/graph")
@@ -463,7 +471,7 @@ def inform_registration_runtime_graph(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "unit_ai": INFORM_REGISTRATION_UNIT_KEY,
-        "graph": inform_registration_graph(),
+        "graph": agent_feedback_penalties.annotate_graph(INFORM_REGISTRATION_UNIT_KEY, inform_registration_graph()),
     }
 
 
@@ -474,11 +482,11 @@ def inform_registration_runtime_run(req: UnitAiRuntimeRunReq, request: Request) 
     if unit is None:
         raise HTTPException(status_code=404, detail="inform_registration unit is not registered")
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-    return run_inform_registration_runtime(
+    return agent_feedback_penalties.annotate_result(INFORM_REGISTRATION_UNIT_KEY, run_inform_registration_runtime(
         payload,
         username=(me or {}).get("username") or "",
         request=request,
-    )
+    ))
 
 
 @router.get("/unit-ai/inform_registration/runtime/history")
@@ -503,7 +511,7 @@ def change_management_runtime_graph(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "unit_ai": CHANGE_MANAGEMENT_UNIT_KEY,
-        "graph": change_management_graph(),
+        "graph": agent_feedback_penalties.annotate_graph(CHANGE_MANAGEMENT_UNIT_KEY, change_management_graph()),
     }
 
 
@@ -514,11 +522,11 @@ def change_management_runtime_run(req: UnitAiRuntimeRunReq, request: Request) ->
     if unit is None:
         raise HTTPException(status_code=404, detail="change_management unit is not registered")
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-    return run_change_management_runtime(
+    return agent_feedback_penalties.annotate_result(CHANGE_MANAGEMENT_UNIT_KEY, run_change_management_runtime(
         payload,
         username=(me or {}).get("username") or "",
         request=request,
-    )
+    ))
 
 
 @router.get("/unit-ai/change_management/runtime/history")
@@ -726,7 +734,7 @@ def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "unit_ai": unit_key,
-        "graph": graph,
+        "graph": agent_feedback_penalties.annotate_graph(unit_key, graph),
     }
 
 
@@ -752,38 +760,78 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
             )
         except Exception:
             pass
-        return result
+        return agent_feedback_penalties.annotate_result(FILEBROWSER_AI_SQL_UNIT_KEY, result)
     if unit_key == INFORM_REGISTRATION_UNIT_KEY:
         me = current_user(request)
-        return run_inform_registration_runtime(
+        return agent_feedback_penalties.annotate_result(INFORM_REGISTRATION_UNIT_KEY, run_inform_registration_runtime(
             payload,
             username=(me or {}).get("username") or "",
             request=request,
-        )
+        ))
     if unit_key == CHANGE_MANAGEMENT_UNIT_KEY:
         me = current_user(request)
-        return run_change_management_runtime(
+        return agent_feedback_penalties.annotate_result(CHANGE_MANAGEMENT_UNIT_KEY, run_change_management_runtime(
             payload,
             username=(me or {}).get("username") or "",
             request=request,
-        )
+        ))
     if unit_key == DASHBOARD_AGENT_UNIT_KEY:
         me = current_user(request)
         if not payload.get("natural_language") and payload.get("prompt"):
             payload["natural_language"] = payload.get("prompt")
-        return run_dashboard_agent_runtime(
+        return agent_feedback_penalties.annotate_result(DASHBOARD_AGENT_UNIT_KEY, run_dashboard_agent_runtime(
             payload,
             username=(me or {}).get("username") or "",
-        )
+        ))
     if unit_key == HOME_SQL_JOIN_DASHBOARD_UNIT_KEY:
         me = current_user(request)
         if not payload.get("natural_language") and payload.get("prompt"):
             payload["natural_language"] = payload.get("prompt")
-        return run_home_sql_join_dashboard_runtime(
+        return agent_feedback_penalties.annotate_result(HOME_SQL_JOIN_DASHBOARD_UNIT_KEY, run_home_sql_join_dashboard_runtime(
             payload,
             username=(me or {}).get("username") or "",
-        )
+        ))
     raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
+
+
+@router.get("/unit-ai/{unit_key}/feedback-profile")
+def unit_ai_feedback_profile(unit_key: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "profile": agent_feedback_penalties.feedback_profile(unit_key),
+    }
+
+
+@router.post("/unit-ai/{unit_key}/feedback")
+def unit_ai_feedback(unit_key: str, req: UnitAiFeedbackReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    unit = get_unit_ai(unit_key)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"{unit_key} unit is not registered")
+    rating = str(req.rating or "").strip().lower()
+    if rating not in {"up", "down"}:
+        raise HTTPException(status_code=400, detail="rating must be up or down")
+    try:
+        profile = agent_feedback_penalties.record_feedback(
+            unit_key,
+            rating,
+            node_id=req.node_id,
+            run_id=req.run_id,
+            reason=req.reason,
+            actor=str((me or {}).get("username") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "unit_ai": unit_key,
+        "profile": profile,
+    }
 
 
 @router.get("/unit-ai/{unit_key}/runtime/overrides")
@@ -931,6 +979,8 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
             return unit_ai_runtime_graph(unit_key, request)
         if parts[3] == "history":
             return unit_ai_runtime_history(unit_key, request, limit=_query_limit(request, 50))
+    if len(parts) == 3 and parts[0] == "unit-ai" and parts[2] == "feedback-profile":
+        return unit_ai_feedback_profile(unquote(parts[1]), request)
     if len(parts) == 3 and parts[0] == "unit":
         unit_key = unquote(parts[1])
         if parts[2] == "graph":

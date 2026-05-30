@@ -22,6 +22,7 @@ from app_v2.modules.agent_runtime.executor import (
     TraceRecorder,
     run_sequential as run_nodes_sequential,
 )
+from core import agent_feedback_penalties
 from core import agent_semantic_service
 
 
@@ -732,6 +733,7 @@ def _source_lazy_frame(state: dict[str, Any]):
 
 def _preview_apply(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
     fb = _fb()
+    req = state.get("request") or {}
     merged = state.get("merged") or {}
     sql = _safe_text(merged.get("sql"), 1000)
     selected_columns = _string_list(merged.get("selected_columns"), limit=300)
@@ -772,6 +774,13 @@ def _preview_apply(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]
         "applied_select_cols": list(selected_columns),
         "sort": merged.get("sort") if isinstance(merged.get("sort"), dict) else {},
     })
+    if bool(req.get("include_preview_rows")):
+        try:
+            row_limit = max(1, min(int(req.get("preview_row_limit") or 50), 100))
+        except (TypeError, ValueError):
+            row_limit = 50
+        preview["rows"] = fb._safe_sample_rows(resp.get("data") or [], max_rows=row_limit, max_cols=100, max_value_len=240)
+        preview["rows_returned"] = len(preview["rows"])
     return {"preview": preview}
 
 
@@ -868,7 +877,7 @@ def run_filebrowser_ai_sql_runtime(
     ok = bool(preview.get("columns") or preview.get("rows") or preview.get("total_rows") is not None)
     if any(row.get("node_id") == "preview_apply" and row.get("status") == "failed" for row in trace):
         ok = False
-    return {
+    result = {
         "ok": ok,
         "run_id": run_id,
         "unit_ai": UNIT_AI_KEY,
@@ -880,3 +889,4 @@ def run_filebrowser_ai_sql_runtime(
         "merged": final_state.get("merged") or {"sql": "", "display_sql": "", "where_sql": "", "selected_columns": []},
         "preview": preview or {"columns": [], "rows": [], "total_rows": 0, "preview_capped": False, "warnings": []},
     }
+    return agent_feedback_penalties.annotate_result(UNIT_AI_KEY, result)

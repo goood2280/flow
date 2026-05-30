@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from core import agent_feedback_penalties
 from core.auth import current_user
 from core.paths import PATHS
 from core.utils import jsonl_append, jsonl_read, jsonl_trim
@@ -527,7 +528,7 @@ def run_change_management_runtime(
     except Exception:
         pass
     summary = evidence.get("summary") if isinstance(evidence.get("summary"), dict) else {}
-    return {
+    result = {
         "ok": True,
         "unit_ai": UNIT_AI_KEY,
         "run_id": run_id,
@@ -558,6 +559,7 @@ def run_change_management_runtime(
         "trace": trace,
         "warnings": warnings,
     }
+    return agent_feedback_penalties.annotate_result(UNIT_AI_KEY, result)
 
 
 def list_change_management_history(limit: int = 50, *, username: str = "") -> list[dict[str, Any]]:

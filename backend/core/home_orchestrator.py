@@ -37,6 +37,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+from core import agent_feedback_penalties
 from core import home_memory
 from core import tool_registry
 from core.agent_tool_contract import ToolCall
@@ -116,6 +117,10 @@ def _score_tool(tool: dict[str, Any], signals: dict[str, float], prompt_lower: s
             score += 0.8
         elif token in title:
             score += 0.5
+    if score <= 0.0:
+        return score
+    adjustment = agent_feedback_penalties.tool_score_adjustment(tool)
+    score += float(adjustment.get("score_adjustment") or 0.0)
     return score
 
 
@@ -318,6 +323,7 @@ def build_home_runtime_graph(
             "phase": "unit_ai_mcp",
             "kind": "unit_ai",
             "tool": name,
+            "feedback_penalty": agent_feedback_penalties.tool_score_adjustment(name),
             "status": statuses.get(node_id, default),
         })
     nodes.extend(unit_nodes)
@@ -799,7 +805,18 @@ def _pick_tools(prompt: str, top_k: int = 2) -> tuple[list[dict[str, Any]], dict
     scored = [(t, s) for t, s in scored if s > 0.0]
     scored.sort(key=lambda x: -x[1])
     picked = scored[:top_k]
-    meta = {"signals": signals, "matched_terms": matched_terms, "candidate_count": len(scored)}
+    penalty_meta = {
+        str(t.get("name") or ""): adj
+        for t, _score in scored
+        for adj in [agent_feedback_penalties.tool_score_adjustment(t)]
+        if adj.get("penalty") or adj.get("boost")
+    }
+    meta = {
+        "signals": signals,
+        "matched_terms": matched_terms,
+        "candidate_count": len(scored),
+        "feedback_penalties": penalty_meta,
+    }
     return [{"tool": t, "score": s} for t, s in picked], meta
 
 
@@ -952,14 +969,28 @@ def _format_tool_catalog(tools: list[dict[str, Any]]) -> str:
     카탈로그 포맷을 공유하도록 추출한 함수다.
     """
     tool_lines: list[str] = []
-    for t in tools[:40]:
+    ranked_tools = [
+        (idx, t, agent_feedback_penalties.tool_score_adjustment(t))
+        for idx, t in enumerate(tools)
+    ]
+    ranked_tools.sort(key=lambda item: (-(float(item[2].get("score_adjustment") or 0.0)), item[0]))
+    for _idx, t, adjustment in ranked_tools[:40]:
         ex = ""
         if t.get("examples"):
             first = t["examples"][0]
             ex_prompt = first.get("prompt") if isinstance(first, dict) else None
             if ex_prompt:
                 ex = f' | 예: "{str(ex_prompt)[:50]}"'
-        tool_lines.append(f"- {t['name']} ({t['kind']}): {t.get('description','')[:120]}{ex}")
+        feedback = ""
+        penalty = float(adjustment.get("penalty") or 0.0)
+        boost = float(adjustment.get("boost") or 0.0)
+        if penalty >= 2.0:
+            feedback = f" | feedback: avoid penalty={penalty:g}"
+        elif penalty > 0.0:
+            feedback = f" | feedback: low_priority penalty={penalty:g}"
+        elif boost > 0.0:
+            feedback = f" | feedback: preferred boost={boost:g}"
+        tool_lines.append(f"- {t['name']} ({t['kind']}): {t.get('description','')[:120]}{ex}{feedback}")
     return "\n".join(tool_lines) or "(empty)"
 
 
@@ -1155,7 +1186,14 @@ def _execute_step(
     name = tool.get("name") or ""
     kind = tool.get("kind") or ""
     t0 = time.perf_counter()
-    out: dict[str, Any] = {"ok": False, "kind": kind, "name": name, "input": step_input, "agent_context": deepcopy(agent_context or {})}
+    out: dict[str, Any] = {
+        "ok": False,
+        "kind": kind,
+        "name": name,
+        "input": step_input,
+        "agent_context": deepcopy(agent_context or {}),
+        "feedback_penalty": agent_feedback_penalties.tool_score_adjustment(name),
+    }
     try:
         if kind == "unit_ai":
             if name == "filebrowser_ai_sql":
@@ -1630,6 +1668,7 @@ def _plan_from_heuristic(prompt: str, top_k: int) -> tuple[list[dict[str, Any]],
             "reason": f"휴리스틱 score={round(p['score'], 2)}",
             "source": "heuristic",
             "score": p["score"],
+            "feedback_penalty": agent_feedback_penalties.tool_score_adjustment(p["tool"]),
         })
     return plan, meta
 
@@ -1650,6 +1689,7 @@ def _make_trace_row(step: dict[str, Any], exec_out: dict[str, Any]) -> dict[str,
         "warnings": list(exec_out.get("warnings") or []),
         "reason": step.get("reason", ""),
         "source": step.get("source", ""),
+        "feedback_penalty": step.get("feedback_penalty") or exec_out.get("feedback_penalty") or agent_feedback_penalties.tool_score_adjustment(tool["name"]),
     }
     if score is not None:
         row["score"] = round(score, 2)

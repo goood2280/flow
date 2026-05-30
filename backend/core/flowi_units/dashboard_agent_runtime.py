@@ -17,6 +17,7 @@ from app_v2.modules.agent_runtime.executor import (
     TraceRecorder,
     run_sequential as run_nodes_sequential,
 )
+from core import agent_feedback_penalties
 from core import agent_prompt_overrides
 from core import agent_semantic_service
 
@@ -628,7 +629,7 @@ def run_dashboard_agent_runtime(
                 warnings.append(text)
     chart_result = final_state.get("chart_result") if isinstance(final_state.get("chart_result"), dict) else {}
     ok = not bool(final_state.get("node_errors")) and bool(chart_result)
-    return {
+    result = {
         "ok": ok,
         "status": "success" if ok and not warnings else ("warning" if ok else "failed"),
         "run_id": run_id,
@@ -645,3 +646,4 @@ def run_dashboard_agent_runtime(
         "warnings": warnings,
         "runtime_warnings": final_state.get("runtime_warnings") or [],
     }
+    return agent_feedback_penalties.annotate_result(UNIT_AI_KEY, result)
