@@ -2001,6 +2001,16 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": False,
             "side_effect": "none",
         }
+    if _is_fab_current_location_prompt(text):
+        return {
+            "name": "query_current_location",
+            "feature": "filebrowser",
+            "intent": "fab_current_location_lookup",
+            "confidence": 0.92,
+            "reason": _flowi_reason("FAB DB latest tkout_time current location lookup"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
     if _flowi_current_step_prompt(text):
         return {
             "name": "query_lot_current_step_from_progress_cache",
@@ -2201,6 +2211,10 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
 
 def _flowi_function_schema(name: str) -> dict[str, Any]:
     schemas = {
+        "query_current_location": {
+            "description": "FAB DB latest tkout_time row by lot and wafer, returning the current step_id.",
+            "required": ["lot_ids", "wafer_ids"],
+        },
         "query_current_fab_lot_from_fab_db": {
             "description": "FAB DB에서 product/root_lot_id/fab_lot_id/wafer_id 조건으로 최신 fab_lot_id를 조회한다.",
             "required": ["product", "lot_ids"],
@@ -9273,6 +9287,198 @@ def _flowi_exact_lot_scope_expr(cols: list[str], root_lots: list[str], fab_lots:
     if other_lots and not (roots or fabs):
         add(_or_contains([c for c in (root_col, lot_col, fab_col) if c], other_lots))
     return expr
+
+
+def _is_fab_current_location_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not _lot_tokens(text):
+        return False
+    if _is_current_fab_lot_prompt(text):
+        return False
+    has_location = any(t in low for t in ("where", "location")) or any(
+        t in text for t in ("\uc5b4\ub514", "\uc704\uce58")
+    )
+    has_current = any(t in low for t in ("current", "now")) or any(
+        t in text for t in ("\ud604\uc7ac", "\uc9c0\uae08")
+    )
+    return bool(has_location and has_current)
+
+
+def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
+    selected = str((preview.get("selected_function") or {}).get("name") or "")
+    if selected != "query_current_location" and not _is_fab_current_location_prompt(prompt):
+        return {"handled": False}
+
+    args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
+    classified = _classified_lot_tokens(prompt)
+
+    def strings(name: str) -> list[str]:
+        return [str(x).strip() for x in (args.get(name) or []) if str(x).strip()]
+
+    roots = strings("root_lot_ids") or [str(x).strip() for x in (classified.get("root_lot_ids") or []) if str(x).strip()]
+    fabs = strings("fab_lot_ids") or [str(x).strip() for x in (classified.get("fab_lot_ids") or []) if str(x).strip()]
+    lots = strings("lot_ids") or _lot_tokens(prompt)
+    wafers = strings("wafer_ids") or [str(x).strip() for x in _wafer_tokens(prompt) if str(x).strip()]
+    lookup_lots = list(dict.fromkeys([*roots, *fabs, *lots]))
+    action = "query_current_location"
+    slots = {
+        "product": str(args.get("product") or product or "").strip(),
+        "root_lot_ids": roots,
+        "fab_lot_ids": fabs,
+        "lot_ids": lots,
+        "wafer_ids": wafers,
+    }
+    if not lookup_lots:
+        return {
+            "handled": True,
+            "intent": "fab_current_location_lookup",
+            "action": action,
+            "answer": "FAB current location lookup needs a lot id.",
+            "missing": ["lot_ids"],
+            "slots": slots,
+            "feature": "filebrowser",
+        }
+    if not wafers:
+        return {
+            "handled": True,
+            "intent": "fab_current_location_lookup",
+            "action": action,
+            "answer": "FAB current location lookup needs a wafer id.",
+            "missing": ["wafer_ids"],
+            "slots": slots,
+            "feature": "filebrowser",
+        }
+
+    product_hint, candidate_tool = _product_or_candidate_tool(
+        prompt,
+        str(args.get("product") or product or "").strip(),
+        lookup_lots,
+        kinds=("FAB",),
+        intent="fab_current_location_lookup",
+    )
+    slots["product"] = product_hint
+    if candidate_tool:
+        candidate_tool.setdefault("action", action)
+        candidate_tool.setdefault("slots", slots)
+        return candidate_tool
+
+    files = _fab_files(product_hint)
+    filters = {
+        "product": product_hint,
+        "root_lot_ids": roots,
+        "fab_lot_ids": fabs,
+        "lot_ids": lots,
+        "wafer_ids": wafers,
+        "source": "FAB",
+        "latest_order": "tkout_time desc",
+    }
+    if not files:
+        return {
+            "handled": True,
+            "intent": "fab_current_location_lookup",
+            "action": action,
+            "answer": "FAB parquet files were not found for the requested lookup.",
+            "feature": "filebrowser",
+            "slots": slots,
+            "filters": filters,
+            "table": {"kind": "fab_current_location_lookup", "title": "Current FAB location", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "FAB not found"}], "total": 0},
+        }
+
+    try:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
+        product_col = _ci_col(cols, "product", "PRODUCT")
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+        fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+        wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        step_col = _ci_col(cols, "step_id", "STEP_ID")
+        process_col = _ci_col(cols, "process_id", "PROCESS_ID")
+        time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "move_time", "MOVE_TIME", "updated_at", "UPDATED_AT")
+        if product_hint and product_col:
+            lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(_product_aliases(product_hint))))
+        lot_expr = _flowi_exact_lot_scope_expr(cols, roots, fabs, lots)
+        if lot_expr is not None:
+            lf = lf.filter(lot_expr)
+        else:
+            lf = _source_filter_lots(lf, cols, lookup_lots)
+        wf_expr = _wafer_match_expr(wafer_col, wafers)
+        if wf_expr is not None:
+            lf = lf.filter(wf_expr)
+        exprs = [
+            pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(_core_product_name(product_hint)).alias("product"),
+            pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else (
+                pl.col(lot_col).cast(_STR, strict=False).str.slice(0, 5).alias("root_lot_id") if lot_col else (
+                    pl.col(fab_col).cast(_STR, strict=False).str.slice(0, 5).alias("root_lot_id") if fab_col else pl.lit("").alias("root_lot_id")
+                )
+            ),
+            pl.col(lot_col).cast(_STR, strict=False).alias("lot_id") if lot_col else pl.lit("").alias("lot_id"),
+            pl.col(fab_col).cast(_STR, strict=False).alias("fab_lot_id") if fab_col else pl.lit("").alias("fab_lot_id"),
+            _wafer_key_expr(wafer_col).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
+            pl.col(step_col).cast(_STR, strict=False).alias("step_id") if step_col else pl.lit("").alias("step_id"),
+            pl.col(process_col).cast(_STR, strict=False).alias("process_id") if process_col else pl.lit("").alias("process_id"),
+            pl.col(time_col).cast(_STR, strict=False).alias("tkout_time") if time_col else pl.lit("").alias("tkout_time"),
+        ]
+        rows_all = lf.select(exprs).limit(50000).collect().to_dicts()
+    except Exception as e:
+        return {
+            "handled": True,
+            "intent": "fab_current_location_lookup",
+            "action": action,
+            "answer": f"FAB current location lookup failed: {e}",
+            "feature": "filebrowser",
+            "slots": slots,
+            "filters": filters,
+        }
+
+    if not rows_all:
+        return {
+            "handled": True,
+            "intent": "fab_current_location_lookup",
+            "action": action,
+            "answer": "No FAB row matched the requested lot and wafer.",
+            "feature": "filebrowser",
+            "slots": slots,
+            "filters": filters,
+            "table": {"kind": "fab_current_location_lookup", "title": "Current FAB location", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "No FAB row matched"}], "total": 0},
+        }
+
+    rows_all.sort(
+        key=lambda row: (
+            _parse_flowi_datetime(row.get("tkout_time")) or datetime.min,
+            _step_rank_key(row.get("step_id")),
+        ),
+        reverse=True,
+    )
+    current = rows_all[0]
+    cols_out = ["product", "root_lot_id", "fab_lot_id", "lot_id", "wafer_id", "step_id", "process_id", "tkout_time"]
+    row = {k: current.get(k, "") for k in cols_out}
+    root_label = row.get("root_lot_id") or lookup_lots[0]
+    wafer_label = row.get("wafer_id") or wafers[0]
+    answer = f"{root_label} #{wafer_label} \ud604\uc7ac \uc704\uce58\ub294 step_id={row.get('step_id') or '-'} \uc785\ub2c8\ub2e4."
+    if row.get("tkout_time"):
+        answer += f" \ucd5c\uc2e0 tkout_time: {row.get('tkout_time')}."
+    return {
+        "handled": True,
+        "intent": "fab_current_location_lookup",
+        "action": action,
+        "answer": answer,
+        "feature": "filebrowser",
+        "slots": slots,
+        "filters": filters,
+        "source_ids": ["FAB", *[str(fp) for fp in files[:6]]],
+        "table": {
+            "kind": "fab_current_location_lookup",
+            "title": "Current FAB location",
+            "placement": "below",
+            "columns": _table_columns(cols_out),
+            "rows": [row],
+            "total": 1,
+            "matched_total": len(rows_all),
+        },
+    }
 
 
 def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -18520,6 +18726,9 @@ def _handle_flowi_query_core(
         fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
         if fab_lot_out.get("handled"):
             return fab_lot_out
+        current_location_out = _handle_fab_current_location_lookup(prompt, product, max_rows)
+        if current_location_out.get("handled"):
+            return current_location_out
         current_step_out = _handle_current_step_from_progress_cache(prompt, product, max_rows)
         if current_step_out.get("handled"):
             return current_step_out
@@ -21665,7 +21874,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.endswith("_guidance") or action == "flowi.feature.guidance" or table.get("kind") == "flowi_action_plan":
         return True
-    if intent == "current_fab_lot_lookup":
+    if intent in {"current_fab_lot_lookup", "fab_current_location_lookup"}:
         return True
     if intent.startswith("dashboard_") or intent == "tablemap_guidance":
         return True
