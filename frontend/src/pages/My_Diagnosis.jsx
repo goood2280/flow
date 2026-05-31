@@ -318,6 +318,39 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
   ],
 };
 
+const FLOWI_FEW_SHOT_QUESTIONS = [
+  {
+    title: "SplitTable KNOB 기본 조회",
+    prompt: "PRODA A1001 스플릿테이블 보여줘",
+    target: "SplitTable 탭 KNOB 열 기준 조회",
+  },
+  {
+    title: "제품명 확인 요청",
+    prompt: "A1001 스플릿테이블 보여줘",
+    target: "제품명을 먼저 확인",
+  },
+  {
+    title: "FileBrowser SQL 조회",
+    prompt: "PRODA INLINE에서 CA_BCD wafer별 평균 보여줘",
+    target: "filebrowser_ai_sql",
+  },
+  {
+    title: "Dashboard 추이",
+    prompt: "PRODA CA_BCD wafer별 trend 차트 보여줘",
+    target: "dashboard_agent",
+  },
+  {
+    title: "Step ID 매칭",
+    prompt: "AA100090은 어떤 공정이야",
+    target: "step_lookup",
+  },
+  {
+    title: "FAB 진행 상태",
+    prompt: "PRODA A1001 현재 step 알려줘",
+    target: "lot_current_step_lookup",
+  },
+];
+
 function stateKeyByNodeFromGraph(graph) {
   const design = graph?.state_design || {};
   return Object.fromEntries(
@@ -3015,6 +3048,51 @@ function UnitAiPanel() {
   );
 }
 
+function HomeFlowiFewShotPanel() {
+  const [copiedPrompt, setCopiedPrompt] = useState("");
+  const copyPrompt = (prompt) => {
+    setCopiedPrompt(prompt);
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(prompt).catch(() => {});
+    }
+  };
+
+  return (
+    <Panel
+      title="주요 few-shot 질문"
+      subtitle="Home Flow-i 라우팅 기준"
+      right={copiedPrompt ? <Pill tone="ok">복사됨</Pill> : null}
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+        {FLOWI_FEW_SHOT_QUESTIONS.map((item) => (
+          <button
+            key={item.prompt}
+            type="button"
+            onClick={() => copyPrompt(item.prompt)}
+            title="프롬프트 복사"
+            style={{
+              display: "grid",
+              gap: 6,
+              minHeight: 104,
+              textAlign: "left",
+              padding: "10px 11px",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              background: "var(--bg-primary)",
+              color: "var(--text-primary)",
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
+            <span style={{ fontSize: 12, lineHeight: 1.45, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{item.prompt}</span>
+            <span style={{ alignSelf: "end", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.target}</span>
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 function HomeFlowiRuntimePanel() {
   const [baseGraph, setBaseGraph] = useState(null);
   const [runs, setRuns] = useState([]);
@@ -3077,6 +3155,7 @@ function HomeFlowiRuntimePanel() {
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
+      <HomeFlowiFewShotPanel />
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr) 380px", gap: 10, alignItems: "start" }}>
         <Panel

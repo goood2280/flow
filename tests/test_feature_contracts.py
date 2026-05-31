@@ -151,10 +151,10 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "data/Fab/ML_TABLE 계열" not in ui
     assert "result_renderer" not in ui
     assert "워크플로우 리스트" not in ui
-    assert "워크플로우 관리" in ui
-    assert "/api/llm/flowi/workflows" in ui
-    assert "/api/llm/flowi/workflows/draft" in ui
-    assert "AI 형식화" in ui
+    assert "워크플로우 관리" not in ui
+    assert "/api/llm/flowi/workflows" not in ui
+    assert "/api/llm/flowi/workflows/draft" not in ui
+    assert "AI 형식화" not in ui
     assert "연결끊김" not in ui
     assert "flowiStartle" not in ui
     assert "READYING" not in ui
@@ -181,6 +181,12 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Inform 등록 도우미" in ui
     assert "Step ID 매칭" in ui
     assert "PPID Knob 분류" in ui
+    assert "Flow-i" in ui
+    assert "FLOWI_FEW_SHOT_QUESTIONS" in ui
+    assert "주요 few-shot 질문" in ui
+    assert "PRODA A1001 스플릿테이블 보여줘" in ui
+    assert "A1001 스플릿테이블 보여줘" in ui
+    assert "제품명을 먼저 확인" in ui
     assert "Semantic layer" in ui
     assert "LLM 설정" in ui
     assert "질문 이력" in ui

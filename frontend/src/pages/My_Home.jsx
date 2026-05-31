@@ -87,7 +87,6 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   const[liveStep,setLiveStep]=useState(0);
   const[liveElapsed,setLiveElapsed]=useState(0);
   const[activeChartSessionId,setActiveChartSessionId]=useState("");
-  const[workflowCatalog,setWorkflowCatalog]=useState(null);
   const promptRef=useRef(null);
   const scrollRef=useRef(null);
   const verifySeq=useRef(0);
@@ -118,9 +117,6 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
     }).catch(()=>{if(alive)setModelLabel("");});
     return()=>{alive=false;};
   },[]);
-  const loadWorkflows=()=>sf("/api/llm/flowi/workflows").then(d=>{if(d?.ok)setWorkflowCatalog(d);return d;}).catch(()=>null);
-  useEffect(()=>{if(active&&isAdmin&&!workflowCatalog)loadWorkflows();},[active,isAdmin,workflowCatalog]);
-
   const activate=()=>{
     setActive(true);setErr("");setVerifyError("");
     onActiveChange&&onActiveChange(true);
@@ -274,7 +270,6 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
           </div>)}
         {busy&&<FlowiLiveTrace step={liveStep} elapsed={liveElapsed} prompt={lastPrompt}/>}
       </div>
-      {isAdmin&&<FlowiWorkflowCatalogPanel catalog={workflowCatalog} isAdmin={isAdmin} onRefresh={loadWorkflows}/>}
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
         <span style={{color:HOME_UI.accent}}>{">"}</span>
@@ -300,94 +295,6 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
     </div>}
     {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask} isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>}
   </section>);
-}
-
-function FlowiWorkflowCatalogPanel({catalog,isAdmin,onRefresh}){
-  const[open,setOpen]=useState(false);
-  const[draftPrompt,setDraftPrompt]=useState("");
-  const[editJson,setEditJson]=useState("");
-  const[editId,setEditId]=useState("");
-  const[saving,setSaving]=useState(false);
-  const[err,setErr]=useState("");
-  const workflows=Array.isArray(catalog?.workflows)?catalog.workflows:[];
-  const shown=open?workflows.slice(0,6):[];
-  const draftWorkflow=()=>{
-    const prompt=draftPrompt.trim();
-    if(!prompt&&!editJson.trim()){setErr("추가/수정할 workflow 내용을 입력해주세요.");return;}
-    setSaving(true);setErr("");
-    let workflow={};
-    if(editJson.trim()){
-      try{workflow=JSON.parse(editJson);}
-      catch(e){setErr("JSON 형식을 확인해주세요: "+e.message);setSaving(false);return;}
-    }
-    postJson("/api/llm/flowi/workflows/draft",{prompt,existing_id:editId,workflow})
-      .then(d=>{setEditJson(JSON.stringify(d.workflow||{},null,2));setEditId(d.workflow?.id||editId);})
-      .catch(e=>setErr(e?.message||"workflow draft 실패"))
-      .finally(()=>setSaving(false));
-  };
-  const saveWorkflow=()=>{
-    if(!editJson.trim()){setErr("저장할 workflow JSON이 없습니다.");return;}
-    let workflow={};
-    try{workflow=JSON.parse(editJson);}
-    catch(e){setErr("JSON 형식을 확인해주세요: "+e.message);return;}
-    setSaving(true);setErr("");
-    postJson("/api/llm/flowi/workflows",{workflow})
-      .then(d=>{setEditJson(JSON.stringify(d.workflow||workflow,null,2));setEditId(d.workflow?.id||workflow.id||"");return onRefresh&&onRefresh();})
-      .catch(e=>setErr(e?.message||"workflow 저장 실패"))
-      .finally(()=>setSaving(false));
-  };
-  const mergeDefaults=()=>{
-    setSaving(true);setErr("");
-    postJson("/api/llm/flowi/workflows/merge-defaults",{})
-      .then(()=>onRefresh&&onRefresh())
-      .catch(e=>setErr(e?.message||"기본 workflow 병합 실패"))
-      .finally(()=>setSaving(false));
-  };
-  const editWorkflow=(wf)=>{
-    setOpen(true);
-    setEditId(wf?.id||"");
-    setEditJson(JSON.stringify(wf||{},null,2));
-    setDraftPrompt("");
-    setErr("");
-  };
-  if(!isAdmin||!catalog)return null;
-  return <div style={{borderBottom:"1px solid #262626",background:"#0f0f0f",padding:"8px 10px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
-      <button type="button" onClick={()=>setOpen(v=>!v)} title="Flow-i workflow 관리" style={{border:"1px solid #333",background:"#151515",color:"#e5e5e5",borderRadius:6,padding:"4px 8px",fontSize:14,fontWeight:900,cursor:"pointer"}}>
-        워크플로우 관리
-      </button>
-      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap"}}>{workflows.length}개 등록 · admin edit</span>
-    </div>
-    {open&&<div style={{marginTop:7,display:"grid",gap:6}}>
-      {shown.map(wf=><div key={wf.id} style={{border:"1px solid #262626",borderRadius:8,background:"#111",padding:"7px 8px",display:"grid",gap:4}}>
-        <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",minWidth:0}}>
-          <div style={{minWidth:0,color:"#f5f5f5",fontSize:14,fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{wf.title}</div>
-          {isAdmin&&<button type="button" onClick={()=>editWorkflow(wf)} style={{border:"1px solid #7c2d12",background:"#1f130b",color:"#f97316",borderRadius:6,padding:"2px 7px",fontSize:14,fontWeight:800,cursor:"pointer"}}>수정</button>}
-        </div>
-        <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-          {[wf.unit_ai,wf.action,...(wf.source_roles||[])].filter(Boolean).slice(0,7).map(x=><span key={x} style={{fontSize:14,color:"#a3a3a3",border:"1px solid #333",borderRadius:999,padding:"1px 6px"}}>{x}</span>)}
-        </div>
-        <div style={{fontSize:14,color:"#8f8f8f",lineHeight:1.45,whiteSpace:"normal",overflowWrap:"anywhere"}}>
-          {(wf.examples||[]).slice(0,1).join("")}{(wf.steps||[]).length?` · ${(wf.steps||[]).slice(0,2).join(" → ")}`:""}
-        </div>
-      </div>)}
-    </div>}
-    {open&&isAdmin&&<div style={{marginTop:8,border:"1px solid #262626",borderRadius:8,padding:"8px",background:"#101010",display:"grid",gap:7}}>
-      <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>AI 형식화로 추가/수정</div>
-      <textarea value={draftPrompt} onChange={e=>setDraftPrompt(e.target.value)} placeholder="예: PRODA에서 특정 knob 값인 leading lot을 찾고 전체 리스트 다운로드까지 제공" rows={2}
-        style={{width:"100%",boxSizing:"border-box",border:"1px solid #333",borderRadius:6,background:"#151515",color:"#d4d4d4",padding:"7px 8px",fontSize:14,lineHeight:1.5,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
-      <textarea value={editJson} onChange={e=>setEditJson(e.target.value)} placeholder="workflow JSON draft" rows={open?8:4}
-        style={{width:"100%",boxSizing:"border-box",border:"1px solid #333",borderRadius:6,background:"#0b0b0b",color:"#d4d4d4",padding:"7px 8px",fontSize:14,lineHeight:1.45,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
-      {err&&<div style={{fontSize:14,color:"#fca5a5"}}>{err}</div>}
-      <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-        <button type="button" onClick={draftWorkflow} disabled={saving} style={FLOWI_ACTION_BTN}>AI 형식화</button>
-        <button type="button" onClick={saveWorkflow} disabled={saving} style={FLOWI_ACTION_BTN}>저장</button>
-        <button type="button" onClick={()=>{setEditId("");setEditJson("");setDraftPrompt("");setErr("");}} disabled={saving} style={FLOWI_ACTION_BTN}>새로 작성</button>
-        <button type="button" onClick={mergeDefaults} disabled={saving} style={FLOWI_ACTION_BTN}>기본 병합</button>
-        {editId&&<span style={{fontSize:14,color:"#737373"}}>{editId}</span>}
-      </div>
-    </div>}
-  </div>;
 }
 
 const FLOWI_ACTION_BTN={fontSize:14,color:HOME_UI.accent,fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
