@@ -9305,6 +9305,28 @@ def _is_fab_current_location_prompt(prompt: str) -> bool:
     return bool(has_location and has_current)
 
 
+def _fab_current_location_interpretation_notes(
+    prompt: str,
+    *,
+    product: str,
+    roots: list[str],
+    fabs: list[str],
+    lots: list[str],
+    wafers: list[str],
+) -> list[str]:
+    notes: list[str] = []
+    if product:
+        notes.append(f"product={product} FAB source")
+    lot = (roots or lots or fabs or [""])[0]
+    if lot:
+        notes.append(f"{lot} -> root_lot_id={lot}")
+    for wafer in wafers[:3]:
+        display = f"#{wafer}" if re.search(rf"#\s*0?{re.escape(str(wafer))}(?=\D|$)", str(prompt or "")) else f"wafer {wafer}"
+        notes.append(f"{display} -> wafer_id={wafer}")
+    notes.append("current location -> latest FAB row ordered by tkout_time desc; return step_id only")
+    return notes
+
+
 def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
     selected = str((preview.get("selected_function") or {}).get("name") or "")
@@ -9374,6 +9396,14 @@ def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int
         "source": "FAB",
         "latest_order": "tkout_time desc",
     }
+    interpretation_notes = _fab_current_location_interpretation_notes(
+        prompt,
+        product=product_hint,
+        roots=roots,
+        fabs=fabs,
+        lots=lots,
+        wafers=wafers,
+    )
     if not files:
         return {
             "handled": True,
@@ -9383,6 +9413,7 @@ def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int
             "feature": "filebrowser",
             "slots": slots,
             "filters": filters,
+            "interpretation_notes": interpretation_notes,
             "table": {"kind": "fab_current_location_lookup", "title": "Current FAB location", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "FAB not found"}], "total": 0},
         }
 
@@ -9431,6 +9462,7 @@ def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int
             "feature": "filebrowser",
             "slots": slots,
             "filters": filters,
+            "interpretation_notes": interpretation_notes,
         }
 
     if not rows_all:
@@ -9442,6 +9474,7 @@ def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int
             "feature": "filebrowser",
             "slots": slots,
             "filters": filters,
+            "interpretation_notes": interpretation_notes,
             "table": {"kind": "fab_current_location_lookup", "title": "Current FAB location", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "No FAB row matched"}], "total": 0},
         }
 
@@ -9468,6 +9501,7 @@ def _handle_fab_current_location_lookup(prompt: str, product: str, max_rows: int
         "feature": "filebrowser",
         "slots": slots,
         "filters": filters,
+        "interpretation_notes": interpretation_notes,
         "source_ids": ["FAB", *[str(fp) for fp in files[:6]]],
         "table": {
             "kind": "fab_current_location_lookup",

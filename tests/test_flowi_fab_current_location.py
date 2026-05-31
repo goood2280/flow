@@ -77,6 +77,7 @@ def test_flowi_current_location_returns_latest_fab_step_without_lot_cards(monkey
     assert out["action"] == "query_current_location"
     assert out["intent"] == "fab_current_location_lookup"
     assert "AA100150" in out["answer"]
+    assert any("#3 -> wafer_id=3" in note for note in out["interpretation_notes"])
     assert "lot_list" not in out
     assert out["table"]["total"] == 1
     assert out["table"]["rows"][0]["step_id"] == "AA100150"

@@ -441,7 +441,10 @@ function flowiMethodLine(trace,tool){
 }
 
 function FlowiInterpretationSummary({trace,tool,prompt}){
-  const lines=flowiUniqueLines([...flowiPromptProgressLines(prompt,tool,"result"),...flowiInterpretationLines(trace,tool)],5);
+  const explicitNotes=Array.isArray(tool?.interpretation_notes)
+    ?tool.interpretation_notes.map(x=>String(x||"").trim()).filter(Boolean)
+    :[];
+  const lines=flowiUniqueLines([...explicitNotes,...flowiPromptProgressLines(prompt,tool,"result"),...flowiInterpretationLines(trace,tool)],5);
   const method=flowiMethodLine(trace,tool);
   if(!lines.length&&!method)return null;
   return <details style={{margin:"10px 0 0",border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
