@@ -504,6 +504,9 @@ def match_workflows(prompt: str, *, limit: int = 5) -> list[dict[str, Any]]:
     for wf in load_catalog(ensure=True).get("workflows", []):
         if not wf.get("enabled"):
             continue
+        workflow_id = str(wf.get("id") or "")
+        if workflow_id == "wf_split_table_root_lot_knob_custom_set" and not re.search(r"\d+(?:\.\d+)+\s+[A-Za-z0-9_]+", prompt or ""):
+            continue
         score = 0.0
         for term in wf.get("trigger_terms") or []:
             token = str(term or "").casefold().strip()
@@ -530,7 +533,6 @@ def match_workflows(prompt: str, *, limit: int = 5) -> list[dict[str, Any]]:
                 score += 2.0
         if score <= 0:
             continue
-        workflow_id = str(wf.get("id") or "")
         if workflow_id and not workflow_id.startswith("wf_auto_"):
             score += 2.5
         if str(wf.get("id") or "") == "wf_semantic_measurement_value_lookup" and not re.search(r"\b[A-Z][A-Z0-9]?\d{3,}[A-Z0-9_.-]*\b", prompt or "", re.I):

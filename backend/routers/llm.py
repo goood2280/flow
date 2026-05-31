@@ -1927,10 +1927,16 @@ def _flowi_complete_json(messages: list[dict[str, Any]], schema_dict: dict[str, 
 def _flowi_explicit_splittable_view_prompt(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
-    return any(
+    if any(
         term in low or term in text
         for term in ("split table", "splittable", "스플릿테이블", "스플릿 테이블")
+    ):
+        return True
+    has_show = any(term in low or term in text for term in ("show", "display", "보여", "조회", "열어"))
+    has_split_or_knob = bool(re.search(r"(?<![A-Za-z0-9_])(split|knob)(?![A-Za-z0-9_])", text, flags=re.I)) or any(
+        term in text for term in ("스플릿", "노브")
     )
+    return bool(has_show and has_split_or_knob and _flowi_func_step_token(text) and _lot_tokens(text))
 
 
 def _flowi_current_step_prompt(prompt: str) -> bool:
@@ -2050,6 +2056,16 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": False,
             "side_effect": "none",
         }
+    if _flowi_explicit_splittable_view_prompt(text) and (root_lots or fab_lots or lots):
+        return {
+            "name": "query_splittable_view",
+            "feature": "splittable",
+            "intent": "splittable_view",
+            "confidence": 0.9,
+            "reason": _flowi_reason("SplitTable 화면 조회"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
     has_split_lookup = (
         bool(re.search(r"(?<![A-Za-z0-9_])split(?!\s*table|[A-Za-z0-9_])", text, flags=re.I))
         or any(t in text for t in ("스플릿이", "스플릿 어떻게", "뭘로", "뭐 했", "적용된", "진행했", "진행했어"))
@@ -2061,16 +2077,6 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "intent": "wafer_split_at_step",
             "confidence": 0.85,
             "reason": _flowi_reason("wafer step split 조회"),
-            "requires_confirmation": False,
-            "side_effect": "none",
-        }
-    if _flowi_explicit_splittable_view_prompt(text) and (root_lots or fab_lots or lots):
-        return {
-            "name": "query_splittable_view",
-            "feature": "splittable",
-            "intent": "splittable_view",
-            "confidence": 0.88,
-            "reason": _flowi_reason("SplitTable 화면 조회"),
             "requires_confirmation": False,
             "side_effect": "none",
         }
@@ -2322,6 +2328,8 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     plan_assignments = assignments if selected_name == "preview_splittable_plan_update" else []
     step = _flowi_func_step_token(text) or ((slots.get("steps") or [""])[0] if slots.get("steps") else "")
     group = _flowi_group_token(text)
+    if selected_name == "query_splittable_view" and step and not group:
+        group = "KNOB"
     metric = _flowi_metric_token(text)
     agg = _flowi_metric_agg(text)
     module = _flowi_module_token(text)
@@ -15666,6 +15674,47 @@ def _flowi_splittable_prefixes_from_args(args: dict[str, Any], prompt: str) -> l
     return ["KNOB"]
 
 
+def _flowi_custom_col_tokens(value: Any) -> list[str]:
+    return [
+        token.casefold()
+        for token in re.findall(r"[A-Za-z0-9]+", str(value or ""))
+        if token.strip()
+    ]
+
+
+def _flowi_splittable_custom_cols_from_prompt(
+    product_for_view: str,
+    args: dict[str, Any],
+    prompt: str,
+    prefixes: list[str],
+) -> tuple[list[str], str]:
+    custom_filter = str(args.get("custom_set_filter") or args.get("knob_name") or args.get("step") or "").strip()
+    if not custom_filter:
+        custom_filter = _flowi_func_step_token(prompt)
+    query_tokens = _flowi_custom_col_tokens(custom_filter)
+    if len(query_tokens) < 2:
+        return [], custom_filter
+    wanted_prefixes = tuple(f"{str(p or '').strip().upper()}_" for p in (prefixes or ["KNOB"]) if str(p or "").strip()) or ("KNOB_",)
+    try:
+        from routers import splittable as splittable_router
+        lf = splittable_router._scan_product_base(product_for_view)
+        schema = lf.collect_schema()
+        cols = schema.names() if hasattr(schema, "names") else list(schema)
+    except Exception:
+        return [], custom_filter
+    matches: list[str] = []
+    for col in cols:
+        name = str(col or "")
+        if not _upper(name).startswith(wanted_prefixes):
+            continue
+        col_tokens = set(_flowi_custom_col_tokens(name))
+        if all(token in col_tokens for token in query_tokens) and name not in matches:
+            matches.append(name)
+        if len(matches) >= 80:
+            break
+    return matches, custom_filter
+
+
 def _flowi_splittable_view_to_inline(
     view: dict[str, Any],
     *,
@@ -15787,6 +15836,8 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         return {"handled": False}
     prefixes = _flowi_splittable_prefixes_from_args(args, prompt)
     prefix_filter = ",".join(prefixes)
+    custom_cols, custom_filter = _flowi_splittable_custom_cols_from_prompt(product_for_view, args, prompt, prefixes)
+    custom_cols_param = ",".join(custom_cols)
     started = time.monotonic()
     try:
         from routers import splittable as splittable_router
@@ -15799,7 +15850,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             view_mode="all",
             history_mode="all",
             fab_lot_id=fab,
-            custom_cols="",
+            custom_cols=custom_cols_param,
             request=None,
         )
     except Exception:
@@ -15815,12 +15866,17 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         max_rows=max_rows,
         prefixes=prefixes,
     )
-    intent = "wafer_split_at_step" if args.get("step") else "splittable_view"
-    action = "query_wafer_split_at_step" if args.get("step") else "query_splittable_view"
+    intent = "splittable_view" if custom_cols else ("wafer_split_at_step" if args.get("step") else "splittable_view")
+    action = "query_splittable_view" if custom_cols else ("query_wafer_split_at_step" if args.get("step") else "query_splittable_view")
     answer = (
         f"{product_for_view} {view.get('root_lot_id') or root or fab} SplitTable {prefix_filter} 기준으로 "
         f"{len(split_view.get('rows') or [])}개 row를 조회했습니다."
     )
+    if custom_cols:
+        answer = (
+            f"{product_for_view} {view.get('root_lot_id') or root or fab} "
+            f"{custom_filter} ad-hoc CUSTOM SET 기준으로 {len(split_view.get('rows') or [])}개 row를 조회했습니다."
+        )
     if not (split_view.get("rows") or []):
         answer = view.get("msg") or "SplitTable 화면 기준으로 표시할 split row를 찾지 못했습니다."
     if view.get("lot_warn"):
@@ -15840,6 +15896,8 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             "wafer_ids": args.get("wafer_ids") or [],
             "step": args.get("step") or "",
             "prefix": prefix_filter,
+            "custom_set_filter": custom_filter if custom_cols else "",
+            "custom_cols": custom_cols,
             "source": "splittable.view",
         },
         "splittable_view": view,
@@ -15849,6 +15907,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             "method": "GET",
             "elapsed_ms": elapsed_ms,
             "status": "done",
+            "custom_cols_count": len(custom_cols),
         },
         "runtime_profile": runtime_profile,
         "view_cache": view_cache,

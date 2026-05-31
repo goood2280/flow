@@ -27,6 +27,8 @@ def test_default_flowi_workflow_catalog_shape():
     assert {"split_base", "fab_db", "step_matching", "rulebook"}.issubset(
         {role for row in workflows for role in row["source_roles"]}
     )
+    custom_set = next(row for row in workflows if row["id"] == "wf_split_table_root_lot_knob_custom_set")
+    assert "{root_lot_id} {knob_name} Split(or Knob) 보여줘" in custom_set["examples"]
 
 
 def _example_prompt(workflow: dict) -> str:
@@ -111,7 +113,7 @@ def test_ensure_runtime_catalog_merges_defaults_without_overwriting(tmp_path, mo
     ("prompt", "expected_id", "unit_ai", "roles"),
     [
         ("A1001 스플릿테이블 보여줘", "wf_split_table_root_lot", "splittable", {"split_base"}),
-        ("A1001 1.0 STI Split(or Knob) 보여줘", "wf_split_table_root_lot_knob", "splittable", {"split_base", "rulebook"}),
+        ("A1001 1.0 STI Split(or Knob) 보여줘", "wf_split_table_root_lot_knob_custom_set", "splittable", {"split_base", "rulebook"}),
         ("A1001 #3 지금 어디에 있어?", "wf_fab_current_location", "fab_reference", {"fab_db", "step_matching"}),
         ("1.6.0 LDD Knob 어떻게 룰 구성되어있어?", "wf_rulebook_knob_rules", "ppid_knob", {"rulebook"}),
         ("AA100250는 무슨 step이야?", "wf_step_id_desc_lookup", "step_lookup", {"step_matching"}),

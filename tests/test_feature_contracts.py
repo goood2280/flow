@@ -182,11 +182,10 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Step ID 매칭" in ui
     assert "PPID Knob 분류" in ui
     assert "Flow-i" in ui
-    assert "FLOWI_FEW_SHOT_QUESTIONS" in ui
+    assert "FLOWI_FEW_SHOT_QUESTIONS" not in ui
+    assert "/api/llm/flowi/workflows" in ui
+    assert "flowiWorkflowPromptPreview" in ui
     assert "주요 few-shot 질문" in ui
-    assert "PRODA A1001 스플릿테이블 보여줘" in ui
-    assert "A1001 스플릿테이블 보여줘" in ui
-    assert "제품명을 먼저 확인" in ui
     assert "Semantic layer" in ui
     assert "LLM 설정" in ui
     assert "질문 이력" in ui

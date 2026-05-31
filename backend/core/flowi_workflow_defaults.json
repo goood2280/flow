@@ -47,6 +47,28 @@
       "result_contract": {"type": "split_view", "download": false}
     },
     {
+      "id": "wf_split_table_root_lot_knob_custom_set",
+      "title": "Root lot + Knob CUSTOM SET SplitTable 조회",
+      "enabled": true,
+      "priority": 101,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_split_table_custom_set",
+      "examples": ["{root_lot_id} {knob_name} Split(or Knob) 보여줘", "{root_lot_id} {knob_name} Split 보여줘"],
+      "trigger_terms": ["split(or knob)", "custom set", "split", "knob"],
+      "slots": [
+        {"name": "root_lot_id", "type": "lot", "required": true, "example": "A1001"},
+        {"name": "knob_name", "type": "knob", "required": true, "match": "contains_tokens", "example": "1.0 STI"}
+      ],
+      "source_roles": ["split_base", "rulebook"],
+      "steps": [
+        "root_lot_id와 knob_name 후보를 분리한다.",
+        "knob_name 토큰을 포함하는 SplitTable 컬럼을 ad-hoc CUSTOM SET으로 구성한다.",
+        "SplitTable 화면 API에 custom_cols를 넘겨 화면과 같은 header, group, row, cell 형식으로 반환한다."
+      ],
+      "result_contract": {"type": "split_view", "download": false}
+    },
+    {
       "id": "wf_fab_current_location",
       "title": "Wafer 현재 FAB 위치 조회",
       "enabled": true,

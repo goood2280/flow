@@ -318,39 +318,6 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
   ],
 };
 
-const FLOWI_FEW_SHOT_QUESTIONS = [
-  {
-    title: "SplitTable KNOB 기본 조회",
-    prompt: "PRODA A1001 스플릿테이블 보여줘",
-    target: "SplitTable 탭 KNOB 열 기준 조회",
-  },
-  {
-    title: "제품명 확인 요청",
-    prompt: "A1001 스플릿테이블 보여줘",
-    target: "제품명을 먼저 확인",
-  },
-  {
-    title: "FileBrowser SQL 조회",
-    prompt: "PRODA INLINE에서 CA_BCD wafer별 평균 보여줘",
-    target: "filebrowser_ai_sql",
-  },
-  {
-    title: "Dashboard 추이",
-    prompt: "PRODA CA_BCD wafer별 trend 차트 보여줘",
-    target: "dashboard_agent",
-  },
-  {
-    title: "Step ID 매칭",
-    prompt: "AA100090은 어떤 공정이야",
-    target: "step_lookup",
-  },
-  {
-    title: "FAB 진행 상태",
-    prompt: "PRODA A1001 현재 step 알려줘",
-    target: "lot_current_step_lookup",
-  },
-];
-
 function stateKeyByNodeFromGraph(graph) {
   const design = graph?.state_design || {};
   return Object.fromEntries(
@@ -3048,8 +3015,37 @@ function UnitAiPanel() {
   );
 }
 
+function flowiWorkflowPromptPreview(workflow) {
+  let prompt = String((workflow?.examples || [])[0] || workflow?.title || "").trim();
+  const slots = Array.isArray(workflow?.slots) ? workflow.slots : [];
+  slots.forEach((slot) => {
+    const name = String(slot?.name || "").trim();
+    if (!name) return;
+    const value = String(slot?.example || `{${name}}`).trim();
+    prompt = prompt.split(`{${name}}`).join(value);
+  });
+  return prompt || String(workflow?.action || workflow?.unit_ai || "").trim();
+}
+
+function flowiWorkflowFewShotItems(workflows) {
+  return (Array.isArray(workflows) ? workflows : [])
+    .filter((workflow) => workflow?.enabled !== false)
+    .map((workflow) => ({
+      id: workflow.id || flowiWorkflowPromptPreview(workflow),
+      title: workflow.title || workflow.id || "Flow-i workflow",
+      prompt: flowiWorkflowPromptPreview(workflow),
+      target: workflow.action || workflow.unit_ai || workflow.category || "",
+      priority: Number(workflow.priority || 0),
+    }))
+    .filter((item) => item.prompt)
+    .sort((a, b) => b.priority - a.priority || a.title.localeCompare(b.title))
+    .slice(0, 8);
+}
+
 function HomeFlowiFewShotPanel() {
   const [copiedPrompt, setCopiedPrompt] = useState("");
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const copyPrompt = (prompt) => {
     setCopiedPrompt(prompt);
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -3057,16 +3053,32 @@ function HomeFlowiFewShotPanel() {
     }
   };
 
+  useEffect(() => {
+    let alive = true;
+    sf("/api/llm/flowi/workflows")
+      .then((payload) => {
+        if (!alive) return;
+        setItems(flowiWorkflowFewShotItems(payload?.workflows || []));
+      })
+      .catch(() => {
+        if (alive) setItems([]);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => { alive = false; };
+  }, []);
+
   return (
     <Panel
       title="주요 few-shot 질문"
-      subtitle="Home Flow-i 라우팅 기준"
+      subtitle={loading ? "loading" : `${items.length} workflows`}
       right={copiedPrompt ? <Pill tone="ok">복사됨</Pill> : null}
     >
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-        {FLOWI_FEW_SHOT_QUESTIONS.map((item) => (
+        {items.map((item) => (
           <button
-            key={item.prompt}
+            key={item.id}
             type="button"
             onClick={() => copyPrompt(item.prompt)}
             title="프롬프트 복사"
@@ -3088,6 +3100,11 @@ function HomeFlowiFewShotPanel() {
             <span style={{ alignSelf: "end", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.target}</span>
           </button>
         ))}
+        {!loading && !items.length ? (
+          <div style={{ padding: 12, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 12 }}>
+            workflow seed 없음
+          </div>
+        ) : null}
       </div>
     </Panel>
   );

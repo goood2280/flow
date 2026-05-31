@@ -892,6 +892,72 @@ def test_flowi_explicit_splittable_view_prompt_accepts_korean():
     assert llm_router._flowi_explicit_splittable_view_prompt("PRODA A1001 스플릿테이블 보여줘") is True
     assert llm_router._flowi_explicit_splittable_view_prompt("A1001 스플릿 테이블 보여줘") is True
     assert llm_router._flowi_explicit_splittable_view_prompt("A1001 SplitTable 보여줘") is True
+    assert llm_router._flowi_explicit_splittable_view_prompt("A1001 1.0 STI Split(or Knob) 보여줘") is True
+
+
+def test_flowi_splittable_knob_prompt_routes_to_custom_set_view():
+    from routers import llm as llm_router
+
+    preview = llm_router._structure_flowi_function_call(
+        "A1001 1.0 STI Split(or Knob) 보여줘",
+        product="",
+        max_rows=12,
+    )
+    selected = preview["selected_function"]
+    args = preview["function_call"]["function"]["arguments"]
+
+    assert selected["name"] == "query_splittable_view"
+    assert selected["intent"] == "splittable_view"
+    assert args["root_lot_ids"] == ["A1001"]
+    assert args["step"] == "1.0 STI"
+    assert args["group"] == "KNOB"
+    assert "product" in preview["validation"]["missing"]
+
+
+def test_flowi_splittable_view_tool_passes_knob_custom_cols(monkeypatch):
+    from routers import llm as llm_router
+    from routers import splittable as splittable_router
+
+    class FakeSchema:
+        def names(self):
+            return ["root_lot_id", "wafer_id", "KNOB_1.0 STI", "KNOB_1.0 STI_BIAS", "KNOB_2.0 STI"]
+
+    class FakeLazyFrame:
+        def collect_schema(self):
+            return FakeSchema()
+
+    captured = {}
+    monkeypatch.setattr(splittable_router, "_scan_product_base", lambda _product: FakeLazyFrame())
+
+    def fake_view_split(**kwargs):
+        captured.update(kwargs)
+        return {
+            "product": kwargs["product"],
+            "root_lot_id": kwargs["root_lot_id"],
+            "headers": ["#1"],
+            "header_groups": [{"label": "A1001.1", "span": 1}],
+            "wafer_fab_list": ["A1001.1"],
+            "rows": [
+                {"_param": "KNOB_1.0 STI", "_display": "1.0 STI", "_cells": {"0": {"actual": "ON", "plan": ""}}},
+                {"_param": "KNOB_1.0 STI_BIAS", "_display": "1.0 STI BIAS", "_cells": {"0": {"actual": "LOW", "plan": ""}}},
+            ],
+        }
+
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+
+    out = llm_router._flowi_query_splittable_view_tool(
+        {"product": "PRODA", "root_lot_ids": ["A1001"], "wafer_ids": [], "step": "1.0 STI", "group": "KNOB"},
+        "PRODA",
+        "PRODA A1001 1.0 STI Split(or Knob) 보여줘",
+        12,
+    )
+
+    assert captured["custom_cols"] == "KNOB_1.0 STI,KNOB_1.0 STI_BIAS"
+    assert out["handled"] is True
+    assert out["action"] == "query_splittable_view"
+    assert out["filters"]["custom_set_filter"] == "1.0 STI"
+    assert out["split_api"]["custom_cols_count"] == 2
+    assert [row["parameter"] for row in out["split_view"]["rows"]] == ["KNOB_1.0 STI", "KNOB_1.0 STI_BIAS"]
 
 
 def test_flowi_splittable_inline_defaults_to_knob_and_keeps_lot_context():
