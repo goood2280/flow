@@ -51,6 +51,9 @@ LLM_ENV_KEYS = (
 def _clear_llm_env(monkeypatch):
     for key in LLM_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(llm_adapter, "_DOTENV_FILE", ROOT / ".pytest_missing_dotenv", raising=False)
+    if hasattr(llm_adapter, "_DOTENV_CACHE"):
+        llm_adapter._DOTENV_CACHE.update({"path": "", "mtime": None, "values": {}})
 
 
 def test_openai_compatible_blank_model_defaults_to_internal_gpt_oss(monkeypatch):
@@ -561,6 +564,39 @@ def test_env_fallback_requires_opt_in(monkeypatch):
     assert llm_adapter.is_available() is False
     assert cfg["api_url"] == ""
     assert cfg.get("source") != "env_fallback"
+
+
+def test_env_fallback_reads_local_dotenv_when_process_env_is_empty(monkeypatch, tmp_path):
+    _clear_llm_env(monkeypatch)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "GOOGLE_CLOUD_PROJECT=flow-dotenv\n"
+        "GOOGLE_CLOUD_LOCATION=asia-northeast3\n"
+        "FLOW_LLM_ENABLE_ENV_FALLBACK=1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llm_adapter, "_DOTENV_FILE", dotenv, raising=False)
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm": {
+                "enabled": True,
+                "provider": "vertex_gemini",
+                "model": "google/gemini-2.5-flash",
+                "auth_mode": "google_adc",
+            }
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["source"] == "env_fallback"
+    assert cfg["provider"] == "vertex_gemini"
+    assert "/projects/flow-dotenv/" in cfg["api_url"]
+    assert "/locations/asia-northeast3/" in cfg["api_url"]
 
 
 # --- LLM health circuit breaker ---------------------------------------------

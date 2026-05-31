@@ -60,6 +60,9 @@ from core.utils import load_json
 logger = logging.getLogger("flow.llm")
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
+_DOTENV_FILE = PATHS.app_root / ".env"
+_DOTENV_LOCK = threading.RLock()
+_DOTENV_CACHE: Dict[str, Any] = {"path": "", "mtime": None, "values": {}}
 
 _DEFAULT: Dict[str, Any] = {
     "enabled": False,
@@ -190,16 +193,56 @@ _GOOGLE_ADC_WARMUP_LOCK = threading.RLock()
 _GOOGLE_ADC_WARMUP_ACTIVE = False
 
 
+def _dotenv_values() -> Dict[str, str]:
+    path = _DOTENV_FILE
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    cache_key = str(path)
+    mtime = stat.st_mtime
+    with _DOTENV_LOCK:
+        if _DOTENV_CACHE.get("path") == cache_key and _DOTENV_CACHE.get("mtime") == mtime:
+            return dict(_DOTENV_CACHE.get("values") or {})
+        values: Dict[str, str] = {}
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key.startswith("export "):
+                    key = key.removeprefix("export ").strip()
+                if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    continue
+                text = value.strip()
+                if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+                    text = text[1:-1]
+                values[key] = text
+        except Exception as exc:
+            logger.debug("local .env unavailable: %s", exc)
+            values = {}
+        _DOTENV_CACHE.update({"path": cache_key, "mtime": mtime, "values": dict(values)})
+        return values
+
+
 def _env_first(*names: str) -> str:
+    local_env: Dict[str, str] | None = None
     for name in names:
         value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+        if local_env is None:
+            local_env = _dotenv_values()
+        value = str((local_env or {}).get(name) or "").strip()
         if value:
             return value
     return ""
 
 
 def _env_truthy(name: str) -> bool:
-    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return _env_first(name).lower() in {"1", "true", "yes", "on"}
 
 
 def _path_exists(path: str) -> bool:
