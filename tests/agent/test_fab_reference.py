@@ -10,6 +10,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from core import fab_reference  # noqa: E402
+from core.flowi_units import deterministic_lookup_runtime as lookup_runtime  # noqa: E402
 from core.flowi_units.ppid_knob import PpidKnobUnitAI  # noqa: E402
 from core.flowi_units.registry import UNIT_AIS  # noqa: E402
 from core.flowi_units.step_lookup import StepLookupUnitAI  # noqa: E402
@@ -17,6 +18,7 @@ from core.flowi_units.step_lookup import StepLookupUnitAI  # noqa: E402
 
 STEP_ROWS = [
     {"product": "PRODA", "step_id": "AA100090", "function_step": "SD_EPI"},
+    {"product": "PRODA", "step_id": "AA100160EC", "function_step": "VIA1_FORMATION_EC"},
     {"product": "PRODA", "step_id": "AA100290", "function_step": "SD_EPI"},
     {"product": "PRODA", "step_id": "AA100100", "function_step": "CONTACT_LITHO"},
     {"product": "PRODB", "step_id": "AB100090", "function_step": "SD_EPI"},
@@ -28,6 +30,12 @@ PPID_ROWS = [
 ]
 
 
+class _DummyPaths:
+    def __init__(self, root: Path):
+        self.data_root = root / "flow-data"
+        self.data_root.mkdir(parents=True, exist_ok=True)
+
+
 # ── lookup_step (pure) ────────────────────────────────────────────────────────
 def test_lookup_step_id_to_function_step():
     out = fab_reference.lookup_step("AA100090는 무슨 step이야", rows=STEP_ROWS)
@@ -35,6 +43,14 @@ def test_lookup_step_id_to_function_step():
     assert out["direction"] == "id_to_step"
     assert out["matches"] == [{"product": "PRODA", "step_id": "AA100090", "function_step": "SD_EPI"}]
     assert "SD_EPI" in out["answer"]
+
+
+def test_lookup_step_id_with_suffix_to_function_step():
+    out = fab_reference.lookup_step("AA100160EC는 무슨 step이야", rows=STEP_ROWS)
+    assert out["found"] is True
+    assert out["direction"] == "id_to_step"
+    assert out["matches"] == [{"product": "PRODA", "step_id": "AA100160EC", "function_step": "VIA1_FORMATION_EC"}]
+    assert "VIA1_FORMATION_EC" in out["answer"]
 
 
 def test_lookup_step_function_step_to_ids_groups_by_product():
@@ -134,6 +150,58 @@ def test_ppid_knob_unit_handles_and_ignores(monkeypatch):
 def test_new_units_registered_in_catalog():
     assert "step_lookup" in UNIT_AIS
     assert "ppid_knob" in UNIT_AIS
+
+
+def test_step_lookup_runtime_graph_run_and_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(fab_reference, "_read_rows", lambda filename: STEP_ROWS)
+    monkeypatch.setattr(lookup_runtime, "PATHS", _DummyPaths(tmp_path))
+
+    graph = lookup_runtime.deterministic_lookup_graph("step_lookup")
+    assert [node["id"] for node in graph["nodes"]] == [
+        "prompt_input",
+        "semantic_parse",
+        "lookup_execute",
+        "answer_render",
+    ]
+    assert graph["layout"]["rankdir"] == "LR"
+
+    out = lookup_runtime.run_deterministic_lookup_runtime(
+        "step_lookup",
+        {"prompt": "AA100090는 무슨 step이야", "product": "PRODA"},
+        username="tester",
+    )
+    assert out["ok"] is True
+    assert out["unit_ai"] == "step_lookup"
+    assert out["table"]["total"] == 1
+    assert [row["node_id"] for row in out["trace"]] == [
+        "prompt_input",
+        "semantic_parse",
+        "lookup_execute",
+        "answer_render",
+    ]
+
+    history = lookup_runtime.list_deterministic_lookup_history("step_lookup", username="tester")
+    assert history[0]["run_id"] == out["run_id"]
+    assert history[0]["table_summary"]["total"] == 1
+
+
+def test_ppid_knob_runtime_graph_run_and_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(fab_reference, "_read_rows", lambda filename: PPID_ROWS)
+    monkeypatch.setattr(lookup_runtime, "PATHS", _DummyPaths(tmp_path))
+
+    out = lookup_runtime.run_deterministic_lookup_runtime(
+        "ppid_knob",
+        {"prompt": "PPID_24_3는 어떤 knob으로 분류돼"},
+        username="tester",
+    )
+
+    assert out["ok"] is True
+    assert out["unit_ai"] == "ppid_knob"
+    assert out["lookup_result"]["feature"] == "ppid_knob"
+    assert "PPID_24_0" in out["answer"]
+    history = lookup_runtime.list_deterministic_lookup_history("ppid_knob", username="tester")
+    assert history[0]["run_id"] == out["run_id"]
+    assert history[0]["unit_ai"] == "ppid_knob"
 
 
 # ── Integration against real seed CSV (DuckDB-free to avoid cross-process lock) ─

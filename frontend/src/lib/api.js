@@ -59,6 +59,10 @@ const _AUTH_ERROR_EXPLAIN_EXEMPT = new Set([
   "/api/auth/forgot-password",
   "/api/auth/logout",
 ]);
+const _RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT = new Set([
+  "resource_queue_timeout",
+  "resource_memory_guard",
+]);
 
 function _requestMethod(opts) {
   return String((opts && opts.method) || "GET").toUpperCase();
@@ -97,6 +101,7 @@ function _explainCacheKey(url, method, status, rawMessage) {
 
 async function _explainApiError(url, opts, status, body, rawMessage) {
   if (!_canExplainApiError(url)) return null;
+  if (_RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT.has(String(body?.error_code || ""))) return null;
   const method = _requestMethod(opts);
   const key = _explainCacheKey(url, method, status, rawMessage);
   if (_errorExplainCache.has(key)) return _errorExplainCache.get(key);

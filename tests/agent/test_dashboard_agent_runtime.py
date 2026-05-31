@@ -47,6 +47,7 @@ def test_dashboard_agent_graph_and_catalog(monkeypatch):
 
     graph = dashboard_agent_graph()
     assert [node["id"] for node in graph["nodes"]] == [
+        "data_context",
         "semantic_layer",
         "chart_intent",
         "chart_type_select",
@@ -54,7 +55,8 @@ def test_dashboard_agent_graph_and_catalog(monkeypatch):
         "spec_validate",
         "render_spec",
     ]
-    assert graph["edges"][0] == {"source": "semantic_layer", "target": "chart_intent"}
+    assert graph["edges"][0] == {"source": "data_context", "target": "semantic_layer"}
+    assert graph["layout"]["rankdir"] == "LR"
 
     catalog = agent.unit_ai_catalog(_Request())
     keys = [unit["key"] for unit in catalog["units"]]
@@ -97,7 +99,10 @@ def test_dashboard_agent_run_returns_valid_chart_spec(monkeypatch):
     assert out["chart_result"]["chart_config"]["x"] == "wafer_id"
     assert out["chart_result"]["chart_config"]["y"] == "IOFF"
     assert out["chart_result"]["points"][0]["x"] == 1
+    assert out["chart_result_preview"]["points"][0]["x"] == 1
+    assert out["data_context"]["has_columns"] is True
     assert [row["node_id"] for row in out["trace"]] == [
+        "data_context",
         "semantic_layer",
         "chart_intent",
         "chart_type_select",
@@ -121,6 +126,20 @@ def test_dashboard_agent_falls_back_without_llm(monkeypatch):
     assert out["ok"] is True
     assert out["chart_result"]["chart_type"]
     assert out["warnings"]
+
+
+def test_dashboard_agent_data_context_blocks_without_schema_rows_or_source(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = run_dashboard_agent_runtime({"natural_language": "차트 그려줘"})
+
+    assert out["ok"] is False
+    assert out["status"] == "blocked"
+    assert out["needs_input"] is True
+    assert out["data_context"]["needs_input"] is True
+    assert out["trace"][0]["node_id"] == "data_context"
+    assert out["trace"][0]["status"] == "warning"
+    assert out["chart_result"] == {}
 
 
 def test_dashboard_agent_blocks_when_explicit_axis_value_is_empty(monkeypatch):
@@ -206,7 +225,7 @@ def test_dashboard_agent_run_records_sanitized_user_history(monkeypatch, tmp_pat
     assert row["columns"] == ["wafer_id", "IOFF", "lot_id"]
     assert row["chart_summary"]["chart_type"]
     assert row["chart_summary"]["points_count"] == direct["chart_result"]["total"]
-    assert row["trace_summary"][0]["node_id"] == "semantic_layer"
+    assert row["trace_summary"][0]["node_id"] == "data_context"
     assert "sample_rows" not in row
     assert "points" not in row["chart_summary"]
     assert "SENSITIVE_SAMPLE_ROW" not in serialized

@@ -16,6 +16,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from core.flowi_units import inform_registration_runtime as runtime  # noqa: E402
+from core import fab_reference  # noqa: E402
 from routers import agent, informs  # noqa: E402
 
 
@@ -45,11 +46,12 @@ class _State:
 
 class _Request:
     headers = {}
-    method = "GET"
     query_params = {}
 
-    def __init__(self, username: str = "tester", role: str = "admin"):
+    def __init__(self, username: str = "tester", role: str = "admin", method: str = "GET", json_body: dict | None = None):
         self.state = _State({"username": username, "role": role})
+        self.method = method
+        self._json = json_body or {}
 
 
 class _DummyPaths:
@@ -91,11 +93,13 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         "validate_missing",
         "snapshot_preview",
         "review",
+        "human_review",
         "register",
     ]
     assert graph_payload["state_design"]["semantic_frame"]["producer"] == "semantic_layer"
     assert graph_payload["state_design"]["slots"]["producer"] == "slot_extract"
     assert graph_payload["state_design"]["draft"]["producer"] == "review"
+    assert graph_payload["state_design"]["human_review"]["producer"] == "human_review"
     for node in graph_payload["nodes"]:
         assert node["persona"]
         assert isinstance(node["state_io"]["reads"], list)
@@ -114,6 +118,8 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
 
     status = agent.agent_reset_status()
     assert status["ok"] is True
+    assert status["status"] == "active_unit_ai"
+    assert status["legacy_agent_studio"]["status"] == "archived_for_rebuild"
     assert status["unit_ai_endpoint"] == "/api/agent/unit-ai/catalog"
     assert status["unit_endpoint"] == "/api/agent/catalog"
     assert status["active_unit_endpoints"]["inform_registration"]["graph"] == "/api/agent/unit-ai/inform_registration/runtime/graph"
@@ -121,6 +127,8 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
     assert status["active_unit_endpoints"]["change_management"]["graph"] == "/api/agent/unit-ai/change_management/runtime/graph"
     assert status["active_unit_endpoints"]["dashboard_agent"]["graph"] == "/api/agent/unit-ai/dashboard_agent/runtime/graph"
     assert status["active_unit_endpoints"]["dashboard_agent"]["history"] == "/api/agent/unit-ai/dashboard_agent/runtime/history"
+    assert status["active_unit_endpoints"]["step_lookup"]["graph"] == "/api/agent/unit-ai/step_lookup/runtime/graph"
+    assert status["active_unit_endpoints"]["ppid_knob"]["run"] == "/api/agent/unit-ai/ppid_knob/runtime/run"
     assert "backend_version" in status
     assert "backend_commit" in status
 
@@ -177,6 +185,10 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
         "/api/agent/unit/inform_registration/history": "unit_runtime_history",
         "/api/agent/unit/dashboard_agent/graph": "unit_runtime_graph",
         "/api/agent/unit/dashboard_agent/history": "unit_runtime_history",
+        "/api/agent/unit/step_lookup/graph": "unit_runtime_graph",
+        "/api/agent/unit/step_lookup/history": "unit_runtime_history",
+        "/api/agent/unit/ppid_knob/graph": "unit_runtime_graph",
+        "/api/agent/unit/ppid_knob/history": "unit_runtime_history",
         "/api/agent/home-flowi/runtime/graph": "home_flowi_runtime_graph",
         "/api/agent/semantic/lexicon": "semantic_lexicon",
         "/api/agent/semantic/sources": "semantic_sources",
@@ -186,6 +198,8 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
     expected_post = {
         "/api/agent/unit-ai/dashboard_agent/runtime/run": "unit_ai_runtime_run",
         "/api/agent/unit/dashboard_agent/run": "unit_runtime_run",
+        "/api/agent/unit/step_lookup/run": "unit_runtime_run",
+        "/api/agent/unit-ai/ppid_knob/runtime/run": "unit_ai_runtime_run",
     }
     for path, endpoint in expected_post.items():
         assert _first_matching_endpoint(flow_app.routes, path, method="POST") == endpoint
@@ -193,6 +207,9 @@ def test_mounted_app_dispatches_active_agent_get_routes_before_archived_catchall
 
 def test_archived_catchall_does_not_archive_active_unit_graph_and_history(monkeypatch):
     monkeypatch.setattr(agent, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+    monkeypatch.setattr(fab_reference, "_read_rows", lambda _filename: [
+        {"product": "PRODA", "step_id": "AA100090", "function_step": "SD_EPI"},
+    ])
 
     graph = agent.archived_agent_endpoint("unit-ai/inform_registration/runtime/graph", _Request())
     assert graph["ok"] is True
@@ -202,14 +219,31 @@ def test_archived_catchall_does_not_archive_active_unit_graph_and_history(monkey
     assert graph_v2["graph"]["nodes"][0]["id"] == "context_seed"
     dashboard_graph = agent.archived_agent_endpoint("unit-ai/dashboard_agent/runtime/graph", _Request())
     assert dashboard_graph["unit_ai"] == "dashboard_agent"
-    assert dashboard_graph["graph"]["nodes"][0]["id"] == "semantic_layer"
+    assert dashboard_graph["graph"]["nodes"][0]["id"] == "data_context"
     dashboard_history = agent.archived_agent_endpoint("unit-ai/dashboard_agent/runtime/history", _Request())
     assert dashboard_history["ok"] is True
     assert dashboard_history["unit_ai"] == "dashboard_agent"
     dashboard_graph_v2 = agent.archived_agent_endpoint("unit/dashboard_agent/graph", _Request())
-    assert dashboard_graph_v2["graph"]["nodes"][0]["id"] == "semantic_layer"
+    assert dashboard_graph_v2["graph"]["nodes"][0]["id"] == "data_context"
     dashboard_history_v2 = agent.archived_agent_endpoint("unit/dashboard_agent/history", _Request())
     assert dashboard_history_v2["unit_ai"] == "dashboard_agent"
+    step_graph = agent.archived_agent_endpoint("unit/step_lookup/graph", _Request())
+    assert step_graph["unit_ai"] == "step_lookup"
+    assert [node["id"] for node in step_graph["graph"]["nodes"]] == [
+        "prompt_input",
+        "semantic_parse",
+        "lookup_execute",
+        "answer_render",
+    ]
+    ppid_graph = agent.archived_agent_endpoint("unit-ai/ppid_knob/runtime/graph", _Request())
+    assert ppid_graph["unit_ai"] == "ppid_knob"
+
+    post_out = agent.archived_agent_endpoint(
+        "unit/step_lookup/run",
+        _Request(method="POST", json_body={"prompt": "AA100090는 무슨 step이야"}),
+    )
+    assert post_out["unit_ai"] == "step_lookup"
+    assert post_out["trace"][0]["node_id"] == "prompt_input"
 
     with pytest.raises(HTTPException) as excinfo:
         agent.archived_agent_endpoint("runtime", _Request())
@@ -238,6 +272,10 @@ def test_inform_registration_missing_slots_followup_and_history(monkeypatch, tmp
     assert second["session_id"] == first["session_id"]
     assert second["status"] == "review"
     assert second["requires_confirmation"] is True
+    assert second["human_review"]["approval_status"] == "pending"
+    assert second["human_review"]["action_required"] is True
+    assert second["human_review"]["can_confirm"] is True
+    assert "human_review" in [row["node_id"] for row in second["trace"]]
     assert second["missing"] == []
     assert second["slots"]["product"] == "PRODA"
     assert second["slots"]["lot_id"] == "R1000"
@@ -247,6 +285,7 @@ def test_inform_registration_missing_slots_followup_and_history(monkeypatch, tmp
     history = agent.unit_ai_runtime_history("inform_registration", _Request())["history"]
     assert history[0]["session_id"] == first["session_id"]
     assert history[0]["status"] == "review"
+    assert history[0]["human_review"]["approval_status"] == "pending"
     assert history[1]["status"] == "collecting"
 
 
@@ -294,6 +333,9 @@ def test_inform_registration_confirm_writes_inform_and_mail_draft(monkeypatch, t
     assert confirmed["ok"] is True
     assert confirmed["status"] == "registered"
     assert confirmed["requires_confirmation"] is False
+    assert confirmed["human_review"]["approval_status"] == "approved"
+    assert confirmed["human_review"]["approved_by"] == "tester"
+    assert confirmed["graph"]["nodes"][6]["id"] == "human_review"
     created = confirmed["created_inform"]
     assert created["lot_id"] == "R1000"
     assert created["product"] == "PRODA"
@@ -377,3 +419,59 @@ def test_inform_registration_without_snapshot_request_skips_embed(monkeypatch, t
     assert out["missing"] == []
     assert out["draft"]["snapshot"]["requested"] is False
     assert out["draft"]["embed_table"] is None
+
+
+def test_inform_registration_cancel_records_human_review_cancel(monkeypatch, tmp_path):
+    _install_inform_fixture(monkeypatch, tmp_path)
+
+    ready = _run({
+        "prompt": "",
+        "slot_overrides": {
+            "product": "PRODA",
+            "lot_id": "R1000",
+            "module": "GATE",
+            "note": "Cancel this draft",
+            "to_users": ["alice"],
+        },
+    })
+    cancelled = _run({
+        "session_id": ready["session_id"],
+        "action": "cancel",
+        "prompt": "",
+    })
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["human_review"]["approval_status"] == "cancelled"
+    assert cancelled["graph"]["nodes"][6]["status"] == "cancelled"
+    assert cancelled["graph"]["nodes"][7]["status"] == "skipped"
+
+
+def test_inform_registration_register_failure_keeps_human_approval(monkeypatch, tmp_path):
+    _install_inform_fixture(monkeypatch, tmp_path)
+    ready = _run({
+        "prompt": "",
+        "slot_overrides": {
+            "product": "PRODA",
+            "lot_id": "R1000",
+            "module": "GATE",
+            "note": "Will fail",
+            "to_users": ["alice"],
+        },
+    })
+
+    def boom(_draft, _request):
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(runtime, "_register_inform", boom)
+    failed = _run({
+        "session_id": ready["session_id"],
+        "action": "confirm",
+        "prompt": "",
+    })
+
+    assert failed["ok"] is False
+    assert failed["status"] == "blocked"
+    assert failed["human_review"]["approval_status"] == "approved"
+    assert failed["graph"]["nodes"][6]["status"] == "success"
+    assert failed["graph"]["nodes"][7]["status"] == "failed"
+    assert "write failed" in " ".join(failed["warnings"])

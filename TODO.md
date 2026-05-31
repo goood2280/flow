@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i client timeout / heavy request queue 분리 보정
 - (Codex) Home Flow-i few-shot workflow와 공개 실행흐름/표차트 보강
 - (Codex) Dashboard Agent 질문 이력/active route 보정
 - (Codex) Agent/Home 답변 단위 feedback penalty 부착 위치 보정

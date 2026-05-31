@@ -83,10 +83,12 @@ def test_change_management_graph_shape_and_catalog(monkeypatch):
     assert [node["id"] for node in graph_payload["nodes"]] == [
         "context_scope",
         "meeting_reference",
+        "clarification_gate",
         "evidence_pack",
         "answer_compose",
     ]
     assert graph_payload["state_design"]["answer_pack"]["producer"] == "answer_compose"
+    assert graph_payload["state_design"]["clarification_gate"]["producer"] == "clarification_gate"
     for node in graph_payload["nodes"]:
         assert node["persona"]
         assert isinstance(node["state_io"]["reads"], list)
@@ -121,6 +123,7 @@ def test_change_management_runtime_resolves_meeting_and_writes_history(monkeypat
     assert [row["node_id"] for row in out["trace"]] == [
         "context_scope",
         "meeting_reference",
+        "clarification_gate",
         "evidence_pack",
         "answer_compose",
     ]
@@ -143,10 +146,13 @@ def test_change_management_runtime_does_not_guess_ambiguous_meeting(monkeypatch,
     assert out["ok"] is True
     assert out["needs_clarification"] is True
     assert out["status"] == "needs_clarification"
+    assert out["clarification_gate"]["action_required"] is True
     titles = [row["title"] for row in out["meeting_reference"]["candidates"]]
     assert set(titles) == {"Device Change Sync", "Device Change Review"}
     assert "Device Change Secret" not in titles
     assert "회의명을 확인" in out["answer"]
+    assert "evidence_pack" in [row["node_id"] for row in out["trace"]]
+    assert next(row for row in out["trace"] if row["node_id"] == "evidence_pack")["status"] == "skipped"
 
 
 def test_change_management_runtime_strips_llm_markdown(monkeypatch, tmp_path):

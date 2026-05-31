@@ -206,6 +206,7 @@ class _RuntimeState(TypedDict, total=False):
 def filebrowser_ai_sql_graph(statuses: dict[str, str] | None = None) -> dict[str, Any]:
     statuses = statuses or {}
     return {
+        "layout": {"rankdir": "LR"},
         "nodes": [
             {
                 **node,
@@ -485,6 +486,10 @@ def _llm_json(
         llm_info["available"] = bool(llm_adapter.is_available())
         if not llm_info["available"]:
             warnings.append("LLM is not configured.")
+            return plan, llm_info, warnings
+        if not llm_adapter.should_attempt_llm():
+            llm_info["error"] = "llm circuit breaker open"
+            warnings.append("LLM temporarily unavailable (recent failure); skipped this node.")
             return plan, llm_info, warnings
         out = llm_adapter.complete_json(
             json.dumps(payload, ensure_ascii=False),

@@ -29,6 +29,7 @@ from core.utils import jsonl_append, jsonl_read, jsonl_trim
 UNIT_AI_KEY = "dashboard_agent"
 
 GRAPH_NODES: tuple[dict[str, str], ...] = (
+    {"id": "data_context", "label": "데이터 컨텍스트", "phase": "context"},
     {"id": "semantic_layer", "label": "용어해석", "phase": "semantic"},
     {"id": "chart_intent", "label": "차트 의도", "phase": "intent"},
     {"id": "chart_type_select", "label": "차트 타입 선택", "phase": "llm"},
@@ -38,6 +39,7 @@ GRAPH_NODES: tuple[dict[str, str], ...] = (
 )
 
 GRAPH_EDGES: tuple[dict[str, str], ...] = (
+    {"source": "data_context", "target": "semantic_layer"},
     {"source": "semantic_layer", "target": "chart_intent"},
     {"source": "chart_intent", "target": "chart_type_select"},
     {"source": "chart_type_select", "target": "params_fill"},
@@ -58,6 +60,7 @@ PARAMS_FILL_SYSTEM_PROMPT = (
 STATE_DESIGN: dict[str, dict[str, Any]] = {
     "run_id": {"description": "Runtime execution id.", "producer": "runtime", "public": True},
     "request": {"description": "natural_language, columns, sample_rows, optional product/dtypes.", "producer": "runtime", "public": True},
+    "data_context": {"description": "Validation of columns, sample rows, and source metadata before chart drafting.", "producer": "data_context", "public": True},
     "semantic_frame": {"description": "Shared semantic frame for the chart prompt.", "producer": "semantic_layer", "public": True},
     "chart_intent": {"description": "Chart intent confidence and fallback signals.", "producer": "chart_intent", "public": True},
     "chart_type": {"description": "Selected Dashboard chart type and LLM/fallback status.", "producer": "chart_type_select", "public": True},
@@ -69,6 +72,14 @@ STATE_DESIGN: dict[str, dict[str, Any]] = {
 }
 
 NODE_METADATA: dict[str, dict[str, Any]] = {
+    "data_context": {
+        "persona": "Checks that chart drafting has enough schema, sample row, or source context before semantic parsing.",
+        "prompt": {"system": "", "mode": "deterministic"},
+        "reads": ["request.natural_language", "request.columns", "request.sample_rows", "request.scope", "request.root", "request.product", "request.file"],
+        "writes": ["data_context"],
+        "shared_state": ["data_context.has_columns", "data_context.sample_row_count", "data_context.needs_input"],
+        "answer_attach_rule": "Block early with a clear question when no columns, rows, or source context are available.",
+    },
     "semantic_layer": {
         "persona": "Shared semantic resolver for dashboard prompts and available columns.",
         "prompt": {"system": "", "mode": "deterministic"},
@@ -124,6 +135,7 @@ class _RuntimeState(TypedDict, total=False):
     run_id: str
     request: dict[str, Any]
     username: str
+    data_context: dict[str, Any]
     semantic_frame: dict[str, Any]
     chart_intent: dict[str, Any]
     chart_type: dict[str, Any]
@@ -314,6 +326,7 @@ def _node_metadata(node_id: str) -> dict[str, Any]:
 def dashboard_agent_graph(statuses: dict[str, str] | None = None) -> dict[str, Any]:
     statuses = statuses or {}
     return {
+        "layout": {"rankdir": "LR"},
         "nodes": [
             {
                 **node,
@@ -368,6 +381,7 @@ def _trace_output(node_id: str, state: dict[str, Any], result: dict[str, Any]) -
             "config": chart.get("config") or {},
         }
     return state.get({
+        "data_context": "data_context",
         "semantic_layer": "semantic_frame",
         "chart_intent": "chart_intent",
         "chart_type_select": "chart_type",
@@ -423,6 +437,10 @@ def _llm_json(
         if not llm_info["available"]:
             warnings.append("LLM is not configured.")
             return plan, llm_info, warnings
+        if not llm_adapter.should_attempt_llm():
+            llm_info["error"] = "llm circuit breaker open"
+            warnings.append("LLM temporarily unavailable (recent failure); skipped this node.")
+            return plan, llm_info, warnings
         out = llm_adapter.complete_json(
             json.dumps(payload, ensure_ascii=False),
             system=effective_system,
@@ -452,7 +470,43 @@ def _prompt_input(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _data_context(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    req = state.get("request") or {}
+    columns = _string_list(req.get("columns"), limit=300)
+    rows = _safe_rows(req.get("sample_rows"), max_rows=10)
+    source_context = {
+        "scope": _safe_text(req.get("scope"), 80),
+        "root": _safe_text(req.get("root"), 160),
+        "product": _safe_text(req.get("product"), 160),
+        "file": _safe_text(req.get("file"), 240),
+        "source": _safe_text(req.get("source"), 240),
+    }
+    has_source = any(source_context.values())
+    needs_input = not columns and not rows and not has_source
+    question = "차트 생성을 위해 columns, sample_rows, 또는 source context를 제공해 주세요." if needs_input else ""
+    if needs_input:
+        warnings.append(question)
+    elif not rows:
+        warnings.append("sample_rows is empty; chart_result preview points may be empty.")
+    return {
+        "data_context": {
+            "has_columns": bool(columns),
+            "columns_count": len(columns),
+            "sample_row_count": len(rows),
+            "has_source": has_source,
+            "source_context": {key: value for key, value in source_context.items() if value},
+            "needs_input": needs_input,
+            "question": question,
+        },
+        "needs_input": needs_input,
+        "question": question,
+    }
+
+
 def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if (state.get("data_context") or {}).get("needs_input"):
+        warnings.append("data_context blocked semantic parsing.")
+        return {"semantic_frame": {}}
     req = state.get("request") or {}
     frame = agent_semantic_service.resolve(
         _safe_text(req.get("natural_language"), 2000),
@@ -477,6 +531,9 @@ def _semantic_layer(state: dict[str, Any], warnings: list[str]) -> dict[str, Any
 
 
 def _chart_intent(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if (state.get("data_context") or {}).get("needs_input"):
+        warnings.append("data_context blocked chart intent detection.")
+        return {"chart_intent": {"has_chart_intent": False, "matched_terms": [], "confidence": 0.0}}
     prompt = _safe_text((state.get("request") or {}).get("natural_language"), 2000)
     matched = [term for term in ("차트", "그래프", "시각화", "chart", "plot", "trend", "분포", "scatter", "box") if term.casefold() in prompt.casefold()]
     has_intent = bool(matched)
@@ -492,6 +549,9 @@ def _chart_intent(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
 
 
 def _chart_type_select(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if (state.get("data_context") or {}).get("needs_input"):
+        warnings.append("data_context blocked chart type selection.")
+        return {"chart_type": {"chart_type": "", "reason": "data_context_needs_input", "llm": {"available": False, "used": False}, "fallback": False}}
     from core import dashboard_join
 
     req = state.get("request") or {}
@@ -669,6 +729,9 @@ def _axis_requirements(
 
 
 def _params_fill(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if (state.get("data_context") or {}).get("needs_input"):
+        warnings.append("data_context blocked parameter fill.")
+        return {"params": {"axis_requirements": {"needs_input": True, "missing": [], "question": (state.get("data_context") or {}).get("question") or ""}}}
     req = state.get("request") or {}
     prompt = _safe_text(req.get("natural_language"), 2000)
     columns = list(req.get("columns") or [])
@@ -726,6 +789,18 @@ def _params_fill(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
 
 
 def _spec_validate(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    if (state.get("data_context") or {}).get("needs_input"):
+        question = (state.get("data_context") or {}).get("question") or "차트 데이터 컨텍스트가 필요합니다."
+        warnings.append(question)
+        return {
+            "spec": {
+                "blocked": True,
+                "needs_input": True,
+                "question": question,
+                "axis_requirements": {},
+                "columns": [],
+            }
+        }
     from core import dashboard_join
 
     req = state.get("request") or {}
@@ -820,6 +895,7 @@ def _render_spec(state: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
 
 
 _NODE_RUNNERS: tuple[tuple[str, Callable[[dict[str, Any], list[str]], dict[str, Any] | None], Callable[[dict[str, Any]], dict[str, Any]]], ...] = (
+    ("data_context", _data_context, _prompt_input),
     ("semantic_layer", _semantic_layer, _prompt_input),
     ("chart_intent", _chart_intent, _prompt_input),
     ("chart_type_select", _chart_type_select, _prompt_input),
@@ -851,7 +927,7 @@ def _run_with_langgraph(state: dict[str, Any]) -> dict[str, Any] | None:
                     _input,
                 ),
             )
-        graph.set_entry_point("semantic_layer")
+        graph.set_entry_point("data_context")
         for edge in GRAPH_EDGES:
             graph.add_edge(edge["source"], edge["target"])
         graph.add_edge("render_spec", END)
@@ -907,6 +983,13 @@ def run_dashboard_agent_runtime(
     needs_input = bool(final_state.get("needs_input") or (final_state.get("spec") or {}).get("needs_input"))
     ok = not needs_input and not bool(final_state.get("node_errors")) and bool(chart_result)
     status = "blocked" if needs_input else ("success" if ok and not warnings else ("warning" if ok else "failed"))
+    chart_result_preview = {
+        "chart_type": chart_result.get("chart_type") or "",
+        "title": chart_result.get("title") or "",
+        "config": chart_result.get("chart_config") or chart_result.get("config") or {},
+        "points": list(chart_result.get("points") or [])[:20] if isinstance(chart_result.get("points"), list) else [],
+        "total": chart_result.get("total") or 0,
+    } if chart_result else {}
     result = {
         "ok": ok,
         "status": status,
@@ -917,6 +1000,7 @@ def run_dashboard_agent_runtime(
         "unit_ai": UNIT_AI_KEY,
         "graph": dashboard_agent_graph(statuses),
         "trace": final_state.get("trace") or [],
+        "data_context": final_state.get("data_context") or {},
         "semantic_frame": final_state.get("semantic_frame") or {},
         "chart_intent": final_state.get("chart_intent") or {},
         "chart_type": (final_state.get("chart_type") or {}).get("chart_type") or chart_result.get("chart_type") or "",
@@ -925,6 +1009,7 @@ def run_dashboard_agent_runtime(
         "config": (final_state.get("spec") or {}).get("config") or chart_result.get("config") or {},
         "spec": final_state.get("spec") or {},
         "chart_result": chart_result,
+        "chart_result_preview": chart_result_preview,
         "warnings": warnings,
         "runtime_warnings": final_state.get("runtime_warnings") or [],
     }

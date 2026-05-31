@@ -39,14 +39,18 @@ caller 규약:
 """
 from __future__ import annotations
 
+import configparser
 import json
 import logging
+import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
@@ -74,6 +78,340 @@ _DEFAULT: Dict[str, Any] = {
     "timeout_s": 20,
 }
 
+# --- LLM health circuit breaker -------------------------------------------
+# When a live LLM call fails or times out, open a short breaker so the rest of
+# a chat turn (and near-future turns) fail fast instead of stacking slow
+# timeouts.  The home agent depends on the LLM for node decisions, so when the
+# endpoint cannot answer we want a clear, immediate "not connected" result —
+# never a multi-minute hang.
+_LLM_HEALTH_LOCK = threading.RLock()
+_LLM_HEALTH: Dict[str, Any] = {
+    "status": "unknown",          # unknown | healthy | unhealthy
+    "unhealthy_until": 0.0,
+    "last_error": "",
+    "last_latency_ms": 0,
+    "last_ok_at": 0.0,
+    "last_check_at": 0.0,
+}
+
+
+def _llm_breaker_cooldown_s() -> float:
+    raw = str(os.environ.get("FLOW_LLM_BREAKER_COOLDOWN_S", "") or "").strip()
+    try:
+        value = float(raw) if raw else 60.0
+    except (TypeError, ValueError):
+        value = 60.0
+    return max(5.0, min(600.0, value))
+
+
+def _mark_llm_healthy(latency_ms: int = 0) -> None:
+    now = time.time()
+    with _LLM_HEALTH_LOCK:
+        _LLM_HEALTH.update({
+            "status": "healthy",
+            "unhealthy_until": 0.0,
+            "last_error": "",
+            "last_latency_ms": int(latency_ms or 0),
+            "last_ok_at": now,
+            "last_check_at": now,
+        })
+
+
+def _mark_llm_unhealthy(error: str, latency_ms: int = 0) -> None:
+    now = time.time()
+    with _LLM_HEALTH_LOCK:
+        _LLM_HEALTH.update({
+            "status": "unhealthy",
+            "unhealthy_until": now + _llm_breaker_cooldown_s(),
+            "last_error": str(error or "")[:240],
+            "last_latency_ms": int(latency_ms or 0),
+            "last_check_at": now,
+        })
+
+
+def should_attempt_llm() -> bool:
+    """False while the breaker is open.  Callers gate enhancement/node LLM
+    calls on this so one failure short-circuits the rest of a turn."""
+    with _LLM_HEALTH_LOCK:
+        return time.time() >= float(_LLM_HEALTH.get("unhealthy_until") or 0.0)
+
+
+def health_snapshot() -> Dict[str, Any]:
+    """PII-safe LLM health for verify/status surfaces."""
+    now = time.time()
+    with _LLM_HEALTH_LOCK:
+        unhealthy_until = float(_LLM_HEALTH.get("unhealthy_until") or 0.0)
+        return {
+            "status": str(_LLM_HEALTH.get("status") or "unknown"),
+            "last_error": str(_LLM_HEALTH.get("last_error") or ""),
+            "last_latency_ms": int(_LLM_HEALTH.get("last_latency_ms") or 0),
+            "breaker_open": now < unhealthy_until,
+            "cooldown_remaining_s": max(0, int(unhealthy_until - now)),
+        }
+
+
+def reset_llm_health() -> None:
+    """Close the breaker immediately (used by an explicit live verify probe)."""
+    with _LLM_HEALTH_LOCK:
+        _LLM_HEALTH.update({
+            "status": "unknown",
+            "unhealthy_until": 0.0,
+            "last_error": "",
+            "last_latency_ms": 0,
+        })
+
+
+_EXTERNAL_AI_BLOCK_PATHS = (
+    "/config/work",
+    "/config/work/sharedworkspace",
+    "/config/work/sharedworkspace/flow-data",
+    "/config/work/sharedworkspace/DB",
+)
+_OPENAI_FALLBACK_MODEL = "gpt-4o-mini"
+_VERTEX_FALLBACK_MODEL = "google/gemini-2.5-flash"
+_VERTEX_FALLBACK_LOCATION = "us-central1"
+_GOOGLE_ADC_TOKEN_DEFAULT_TTL_S = 45 * 60
+_GOOGLE_ADC_TOKEN_MIN_TTL_S = 60
+try:
+    # gcloud cold start on Windows routinely needs several seconds; a 3s cap
+    # meant the token never cached and every call paid the cost then failed.
+    _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S = max(2.0, min(30.0, float(os.environ.get("FLOW_GOOGLE_ADC_TOKEN_TIMEOUT_S") or 8.0)))
+except (TypeError, ValueError):
+    _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S = 8.0
+_GOOGLE_ADC_TOKEN_CACHE_LOCK = threading.RLock()
+_GOOGLE_ADC_TOKEN_CACHE: Dict[str, Any] = {
+    "token": "",
+    "source": "",
+    "fetched_at": 0.0,
+    "expires_at": 0.0,
+    "last_status": "empty",
+}
+_GOOGLE_ADC_WARMUP_LOCK = threading.RLock()
+_GOOGLE_ADC_WARMUP_ACTIVE = False
+
+
+def _env_first(*names: str) -> str:
+    for name in names:
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _path_exists(path: str) -> bool:
+    try:
+        text = str(path or "")
+        # The external-AI block paths are Linux container locations (e.g.
+        # "/config/work").  On Windows a POSIX-absolute path resolves
+        # drive-relative (e.g. D:\config\work) and can false-match, wrongly
+        # disabling the LLM.  Never honor a POSIX-absolute path on a non-POSIX host.
+        if os.name != "posix" and (text.startswith("/") or text.startswith("\\")):
+            return False
+        return Path(text).exists()
+    except Exception:
+        return False
+
+
+def _path_under_config_work(value: Any) -> bool:
+    text = str(value or "").strip().replace("\\", "/").rstrip("/")
+    return text == "/config/work" or text.startswith("/config/work/")
+
+
+def _work_config_block_reason() -> str:
+    for path in _EXTERNAL_AI_BLOCK_PATHS:
+        if _path_exists(path):
+            return f"{path} exists"
+    for attr in ("data_root", "db_root"):
+        value = getattr(PATHS, attr, "")
+        if _path_under_config_work(value):
+            return f"{value} configured"
+    return ""
+
+
+def _profile_is_playground_connected(profile: Dict[str, Any], *, active: bool = False) -> bool:
+    provider = str(profile.get("provider") or "").strip().lower()
+    url = str(profile.get("api_url") or "").strip().lower()
+    auth_mode = str(profile.get("auth_mode") or "").strip().lower()
+    system_name = str(profile.get("system_name") or "").strip().lower()
+    enabled = bool(profile.get("enabled"))
+    has_connection = bool(url or str(profile.get("admin_token") or "").strip())
+    if active and provider == "playground":
+        return True
+    if provider == "playground":
+        return enabled or has_connection
+    if "playground" in url or system_name == "playground" or auth_mode == "dep_ticket":
+        return enabled or has_connection
+    return False
+
+
+def _playground_profile_block_reason(admin_settings: Dict[str, Any], active_cfg: Dict[str, Any]) -> str:
+    if _profile_is_playground_connected(active_cfg, active=True):
+        return "playground profile active"
+    profiles = admin_settings.get("llm_profiles") if isinstance(admin_settings.get("llm_profiles"), dict) else {}
+    for key, raw_profile in profiles.items():
+        if not isinstance(raw_profile, dict):
+            continue
+        profile = dict(raw_profile)
+        profile.setdefault("provider", str(key or "").strip().lower())
+        if _profile_is_playground_connected(profile):
+            return "playground profile configured"
+    return ""
+
+
+def _external_ai_block_reason(admin_settings: Dict[str, Any], active_cfg: Dict[str, Any]) -> str:
+    return _work_config_block_reason() or _playground_profile_block_reason(admin_settings, active_cfg)
+
+
+def _is_external_ai_config(cfg: Dict[str, Any]) -> bool:
+    provider = str(cfg.get("provider") or "").strip().lower()
+    if provider in {"openai", "vertex_gemini"}:
+        return True
+    url = str(cfg.get("api_url") or "").strip().lower()
+    host = urlparse(url).hostname or ""
+    return host.endswith("api.openai.com") or host.endswith("aiplatform.googleapis.com") or host.endswith("generativelanguage.googleapis.com")
+
+
+def _annotate_external_policy(cfg: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    if reason:
+        cfg["external_ai_blocked"] = True
+        cfg["external_ai_block_reason"] = reason
+    else:
+        cfg["external_ai_blocked"] = False
+        cfg["external_ai_block_reason"] = ""
+    return cfg
+
+
+def _blocked_external_config(cfg: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    out = dict(cfg)
+    out["enabled"] = False
+    out["api_url"] = ""
+    out["external_ai_blocked"] = True
+    out["external_ai_block_reason"] = reason
+    out["blocked_provider"] = str(cfg.get("provider") or "")
+    return out
+
+
+def _google_credentials_project() -> str:
+    path = _env_first("GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return str(data.get("project_id") or data.get("quota_project_id") or "").strip()
+    except Exception as exc:
+        logger.debug("google credentials project unavailable: %s", exc)
+    return ""
+
+
+def _gcloud_config_project() -> str:
+    roots: list[Path] = []
+    cloud_config = _env_first("CLOUDSDK_CONFIG")
+    if cloud_config:
+        roots.append(Path(cloud_config).expanduser())
+    roots.append(Path.home() / ".config" / "gcloud")
+    seen: set[str] = set()
+    for root in roots:
+        root_key = str(root)
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        try:
+            active = (root / "active_config").read_text(encoding="utf-8").strip() or "default"
+        except Exception:
+            active = "default"
+        active = active.removeprefix("config_") or "default"
+        candidates = [
+            root / "configurations" / f"config_{active}",
+            root / "configurations" / "config_default",
+        ]
+        for path in candidates:
+            try:
+                parser = configparser.ConfigParser()
+                parser.read(path, encoding="utf-8")
+                project = str(parser.get("core", "project", fallback="") or "").strip()
+                if project and project != "(unset)":
+                    return project
+            except Exception as exc:
+                logger.debug("gcloud config project unavailable from %s: %s", path, exc)
+    return ""
+
+
+def _normalize_vertex_model(model: str) -> str:
+    text = str(model or "").strip() or _VERTEX_FALLBACK_MODEL
+    if text.startswith("gemini"):
+        return f"google/{text}"
+    return text
+
+
+def _openai_env_fallback_config() -> Dict[str, Any]:
+    token = _env_first("FLOW_OPENAI_API_KEY", "OPENAI_API_KEY")
+    if not token:
+        return {}
+    cfg = dict(_DEFAULT)
+    cfg.update({
+        "enabled": True,
+        "api_url": _env_first("FLOW_OPENAI_API_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE") or "https://api.openai.com/v1",
+        "model": _env_first("FLOW_OPENAI_MODEL", "OPENAI_MODEL", "FLOW_LLM_MODEL") or _OPENAI_FALLBACK_MODEL,
+        "admin_token": token,
+        "provider": "openai",
+        "auth_mode": "bearer",
+        "format": "openai",
+        "timeout_s": 20,
+        "source": "env_fallback",
+    })
+    return cfg
+
+
+def _vertex_env_fallback_config() -> Dict[str, Any]:
+    project = _env_first(
+        "FLOW_VERTEX_PROJECT",
+        "VERTEX_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "CLOUDSDK_CORE_PROJECT",
+    ) or _google_credentials_project() or _gcloud_config_project()
+    if not project:
+        return {}
+    location = _env_first("FLOW_VERTEX_LOCATION", "VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION") or _VERTEX_FALLBACK_LOCATION
+    model = _normalize_vertex_model(_env_first("FLOW_VERTEX_MODEL", "VERTEX_MODEL", "GOOGLE_VERTEX_MODEL", "FLOW_LLM_MODEL") or _VERTEX_FALLBACK_MODEL)
+    cfg = dict(_DEFAULT)
+    cfg.update({
+        "enabled": True,
+        "api_url": _env_first("FLOW_VERTEX_API_URL", "VERTEX_OPENAI_API_URL") or (
+            f"https://aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/endpoints/openapi/chat/completions"
+        ),
+        "model": model,
+        "admin_token": "",
+        "provider": "vertex_gemini",
+        "auth_mode": "google_adc",
+        "format": "openai",
+        "timeout_s": 30,
+        "source": "env_fallback",
+    })
+    return cfg
+
+
+def _env_fallback_config(block_reason: str) -> Dict[str, Any]:
+    # Opt-in only.  An empty admin api_url must NOT silently enable an external
+    # endpoint just because a Google project / OpenAI key happens to be present
+    # in the environment — that unavailable->available flip is exactly what made
+    # the home agent start hanging.  Operators set FLOW_LLM_ENABLE_ENV_FALLBACK=1
+    # once the endpoint is confirmed reachable.
+    if block_reason or not _env_truthy("FLOW_LLM_ENABLE_ENV_FALLBACK"):
+        return {}
+    provider = str(os.environ.get("FLOW_LLM_PROVIDER") or "").strip().lower()
+    if provider in {"vertex", "vertex_gemini", "gemini", "google"}:
+        return _vertex_env_fallback_config() or _openai_env_fallback_config()
+    if provider in {"openai", "gpt", "gpt_mini", "gpt-mini"}:
+        return _openai_env_fallback_config() or _vertex_env_fallback_config()
+    return _openai_env_fallback_config() or _vertex_env_fallback_config()
+
 
 def _is_vertex_openai_compatible_config(cfg: Dict[str, Any]) -> bool:
     """Detect Google Vertex OpenAI-compatible Gemini endpoint profiles."""
@@ -91,6 +429,9 @@ def _raw_config() -> Dict[str, Any]:
         cfg = load_json(ADMIN_SETTINGS_FILE, {}) or {}
     except Exception:
         cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    admin_settings = cfg
     llm = cfg.get("llm") or {}
     if not isinstance(llm, dict):
         llm = {}
@@ -146,7 +487,15 @@ def _raw_config() -> Dict[str, Any]:
         merged["headers"] = {}
     if not isinstance(merged.get("extra_body"), dict):
         merged["extra_body"] = {}
-    return merged
+    block_reason = _external_ai_block_reason(admin_settings, merged)
+    if block_reason and _is_external_ai_config(merged) and merged.get("api_url"):
+        return _blocked_external_config(merged, block_reason)
+    if merged.get("api_url"):
+        return _annotate_external_policy(merged, block_reason)
+    fallback = _env_fallback_config(block_reason)
+    if fallback:
+        return _annotate_external_policy(fallback, "")
+    return _annotate_external_policy(merged, block_reason)
 
 
 def is_available() -> bool:
@@ -295,14 +644,115 @@ def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
     return text
 
 
-def _google_auth_adc_access_token() -> str:
+def _google_adc_bounded_timeout(timeout_s: Any = None) -> float:
+    try:
+        value = float(timeout_s or _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S)
+    except Exception:
+        value = _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S
+    return max(0.5, min(value, _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S))
+
+
+def _clear_google_adc_token_cache() -> None:
+    with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+        _GOOGLE_ADC_TOKEN_CACHE.update({
+            "token": "",
+            "source": "",
+            "fetched_at": 0.0,
+            "expires_at": 0.0,
+            "last_status": "empty",
+        })
+
+
+def _google_adc_cached_token(now: float | None = None) -> str:
+    now = float(now or time.time())
+    with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+        token = str(_GOOGLE_ADC_TOKEN_CACHE.get("token") or "").strip()
+        expires_at = float(_GOOGLE_ADC_TOKEN_CACHE.get("expires_at") or 0.0)
+        if token and expires_at - now > _GOOGLE_ADC_TOKEN_MIN_TTL_S:
+            _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "hit"
+            return token
+        if token:
+            _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "expired"
+        else:
+            _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "empty"
+    return ""
+
+
+def _store_google_adc_token(token: str, source: str, ttl_s: int = _GOOGLE_ADC_TOKEN_DEFAULT_TTL_S) -> str:
+    clean = str(token or "").strip()
+    if not clean:
+        return ""
+    now = time.time()
+    with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+        _GOOGLE_ADC_TOKEN_CACHE.update({
+            "token": clean,
+            "source": str(source or "")[:80],
+            "fetched_at": now,
+            "expires_at": now + max(_GOOGLE_ADC_TOKEN_MIN_TTL_S + 1, int(ttl_s or _GOOGLE_ADC_TOKEN_DEFAULT_TTL_S)),
+            "last_status": "refreshed",
+        })
+    return clean
+
+
+def _google_adc_token_cache_status() -> dict[str, Any]:
+    now = time.time()
+    with _GOOGLE_ADC_WARMUP_LOCK:
+        warmup_active = bool(_GOOGLE_ADC_WARMUP_ACTIVE)
+    with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+        token = str(_GOOGLE_ADC_TOKEN_CACHE.get("token") or "").strip()
+        expires_at = float(_GOOGLE_ADC_TOKEN_CACHE.get("expires_at") or 0.0)
+        source = str(_GOOGLE_ADC_TOKEN_CACHE.get("source") or "")
+        status = str(_GOOGLE_ADC_TOKEN_CACHE.get("last_status") or "empty")
+    valid = bool(token and expires_at - now > _GOOGLE_ADC_TOKEN_MIN_TTL_S)
+    return {
+        "cached": valid,
+        "status": "hit" if valid and status == "hit" else ("cached" if valid else status),
+        "source": source if token else "",
+        "expires_in_s": max(0, int(expires_at - now)) if token else 0,
+        "warmup_active": warmup_active,
+    }
+
+
+def warm_google_adc_token_cache(timeout_s: int | float = 8) -> bool:
+    """Start a best-effort ADC token warm-up without blocking request handling."""
+    global _GOOGLE_ADC_WARMUP_ACTIVE
+    if _google_adc_cached_token():
+        return False
+    with _GOOGLE_ADC_WARMUP_LOCK:
+        if _GOOGLE_ADC_WARMUP_ACTIVE:
+            return False
+        _GOOGLE_ADC_WARMUP_ACTIVE = True
+
+    def _worker() -> None:
+        global _GOOGLE_ADC_WARMUP_ACTIVE
+        try:
+            # Background warm-up gets the full cap so a slow gcloud cold start on
+            # Windows still populates the cache; the request path stays tight.
+            _google_adc_access_token(timeout_s=max(2.0, min(float(timeout_s or 8), _GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S)))
+        finally:
+            with _GOOGLE_ADC_WARMUP_LOCK:
+                _GOOGLE_ADC_WARMUP_ACTIVE = False
+
+    thread = threading.Thread(target=_worker, name="flow-google-adc-token-warmup", daemon=True)
+    thread.start()
+    return True
+
+
+def _google_auth_adc_access_token(timeout_s: int | float = 8) -> str:
     """Return a Google OAuth token from google-auth ADC, if available."""
     try:
         import google.auth  # type: ignore
         from google.auth.transport.requests import Request  # type: ignore
 
         creds, _project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        creds.refresh(Request())
+        base_request = Request()
+        refresh_timeout = _google_adc_bounded_timeout(timeout_s)
+
+        def request_with_timeout(url, method="GET", body=None, headers=None, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs.setdefault("timeout", refresh_timeout)
+            return base_request(url=url, method=method, body=body, headers=headers, **kwargs)
+
+        creds.refresh(request_with_timeout)
         return str(getattr(creds, "token", "") or "").strip()
     except Exception as import_or_refresh_error:
         logger.debug("google-auth ADC unavailable: %s", import_or_refresh_error)
@@ -311,7 +761,7 @@ def _google_auth_adc_access_token() -> str:
 
 def _gcloud_access_token(args: list[str], *, timeout_s: int, label: str) -> str:
     """Return a gcloud token without logging stdout or other secret-bearing values."""
-    timeout_i = max(2, min(int(timeout_s or 8), 8))
+    timeout_i = _google_adc_bounded_timeout(timeout_s)
     try:
         proc = subprocess.run(
             ["gcloud", *args],
@@ -330,24 +780,44 @@ def _gcloud_access_token(args: list[str], *, timeout_s: int, label: str) -> str:
 
 def _google_adc_access_token(timeout_s: int = 8) -> str:
     """Return a Google OAuth access token from ADC, without requiring google-auth at import time."""
-    timeout_i = max(2, min(int(timeout_s or 8), 8))
-    token = _google_auth_adc_access_token()
+    cached = _google_adc_cached_token()
+    if cached:
+        return cached
+    timeout_i = _google_adc_bounded_timeout(timeout_s)
+    deadline = time.monotonic() + timeout_i
+
+    def remaining_timeout() -> float:
+        return max(0.0, min(_GOOGLE_ADC_TOKEN_MAX_TIMEOUT_S, deadline - time.monotonic()))
+
+    token = _google_auth_adc_access_token(timeout_s=remaining_timeout() or timeout_i)
     if token:
-        return token
+        return _store_google_adc_token(token, "google-auth")
+    timeout_left = remaining_timeout()
+    if timeout_left <= 0.05:
+        with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+            _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "miss"
+        return ""
     token = _gcloud_access_token(
         ["auth", "application-default", "print-access-token"],
-        timeout_s=timeout_i,
+        timeout_s=timeout_left,
         label="gcloud application-default",
     )
     if token:
-        return token
+        return _store_google_adc_token(token, "gcloud application-default")
+    timeout_left = remaining_timeout()
+    if timeout_left <= 0.05:
+        with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+            _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "miss"
+        return ""
     token = _gcloud_access_token(
         ["auth", "print-access-token"],
-        timeout_s=timeout_i,
+        timeout_s=timeout_left,
         label="gcloud user",
     )
     if token:
-        return token
+        return _store_google_adc_token(token, "gcloud user")
+    with _GOOGLE_ADC_TOKEN_CACHE_LOCK:
+        _GOOGLE_ADC_TOKEN_CACHE["last_status"] = "miss"
     return ""
 
 
@@ -496,7 +966,8 @@ def _call_summary(cfg: Dict[str, Any], *, prompt_chars: int = 0, response_chars:
 
 def complete(prompt: str, *, system: Optional[str] = None,
              timeout: Optional[int] = None,
-             auth_token: Optional[str] = None) -> Dict[str, Any]:
+             auth_token: Optional[str] = None,
+             probe: bool = False) -> Dict[str, Any]:
     """단일 프롬프트 완성.  실패 시 {"ok":False, "error":...} 반환 (절대 throw 하지 않음).
 
     사내 LLM 이 `openai` 호환이면 messages 형식으로 POST.  `raw` 면 {"prompt": ...}.
@@ -513,6 +984,14 @@ def complete(prompt: str, *, system: Optional[str] = None,
     if not cfg.get("enabled"):
         return {"ok": False, "text": "", "error": "llm disabled",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm disabled")}
+    if not probe and not should_attempt_llm():
+        # Breaker open: a recent live call failed or timed out.  Fail fast so one
+        # chat turn doesn't stack several slow timeouts.  An explicit verify probe
+        # (probe=True) bypasses this to re-test whether the endpoint recovered.
+        with _LLM_HEALTH_LOCK:
+            reason = str(_LLM_HEALTH.get("last_error") or "recent llm failure")
+        return {"ok": False, "text": "", "error": ("llm circuit breaker open: " + reason)[:240],
+                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm circuit breaker open")}
     fmt = cfg.get("format") or "openai"
     url = _openai_chat_url(cfg.get("api_url") or "", fmt)
     if not url:
@@ -523,6 +1002,7 @@ def complete(prompt: str, *, system: Optional[str] = None,
     to = int(timeout or cfg.get("timeout_s") or 20)
     hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
     if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
+        _mark_llm_unhealthy("google adc token unavailable")
         return {"ok": False, "text": "", "error": "google adc token unavailable",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="google adc token unavailable")}
     last_error = ""
@@ -532,6 +1012,7 @@ def complete(prompt: str, *, system: Optional[str] = None,
             req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
             with urllib.request.urlopen(req, timeout=to) as resp:
                 raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
+            _mark_llm_healthy(int((time.monotonic() - started_at) * 1000))
             try:
                 obj = json.loads(raw)
             except Exception:
@@ -558,13 +1039,16 @@ def complete(prompt: str, *, system: Optional[str] = None,
                     delay = 0.8
                 time.sleep(delay)
                 continue
+            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000))
             return {"ok": False, "text": "", "error": last_error, "status_code": e.code,
                     "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
         except Exception as e:
             last_error = _redact_error_text(e)
             logger.warning("llm error: %s", last_error)
+            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000))
             return {"ok": False, "text": "", "error": last_error,
                     "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
+    _mark_llm_unhealthy(last_error or "llm request failed", int((time.monotonic() - started_at) * 1000))
     return {"ok": False, "text": "", "error": last_error or "llm request failed",
             "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at,
                                   error=last_error or "llm request failed")}

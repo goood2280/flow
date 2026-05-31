@@ -130,13 +130,28 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "flow-i 대화가 여기 이어집니다." not in ui
     assert "/api/llm/flowi/verify" in ui
     assert "연결확인중" in ui
+    assert "연결 확인 지연" in ui
     assert "LLM 확인 실패" in ui
     assert 'd?.error==="llm unavailable"' in ui
     assert "flowiPromptProgressLines" in ui
-    assert "root_lot_id로 해석했습니다" in ui
-    assert "SplitTable 단위기능 실행 중입니다" in ui
-    assert "공개 해석/진행" in ui
-    assert "워크플로우 리스트" in ui
+    assert "flowiIsStepIdToken" in ui
+    assert "공정/기능 step 정보를 확인하는 요청" in ui
+    assert "관련 데이터를 확인하는 요청" in ui
+    assert "SplitTable 데이터를 조회해 화면에 바로 보여줄 결과" in ui
+    assert "요청 해석" in ui
+    assert "답변 준비 중" in ui
+    assert "FLOWI_LIVE_STEPS" in ui
+    assert "FLOWI_CLIENT_TIMEOUT_MS=105000" in ui
+    assert "flowiLiveExecutionLines" not in ui
+    assert "예상 조회 경로" not in ui
+    assert "예상 단위기능: SplitTable view" not in ui
+    assert "후보가 하나면 자동 확정" not in ui
+    assert "실제 실행" in ui
+    assert "flowiSplitApiCall" in ui
+    assert "data/Fab/ML_TABLE 계열" not in ui
+    assert "result_renderer" not in ui
+    assert "워크플로우 리스트" not in ui
+    assert "워크플로우 관리" in ui
     assert "/api/llm/flowi/workflows" in ui
     assert "/api/llm/flowi/workflows/draft" in ui
     assert "AI 형식화" in ui
@@ -152,6 +167,8 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "단위기능 AI" in ui
     assert "FileBrowser AI SQL" in ui
     assert "Inform 등록 도우미" in ui
+    assert "Step ID 매칭" in ui
+    assert "PPID Knob 분류" in ui
     assert "Semantic layer" in ui
     assert "LLM 설정" in ui
     assert "질문 이력" in ui
@@ -170,6 +187,11 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "related_question_ids" in ui
     assert "active Agent unit route" in ui
     assert "Inform graph fetch 진단" in ui
+    assert "Human review" in ui
+    assert "can_confirm" in ui
+    assert "approval_status" in ui
+    assert "step_lookup" in ui
+    assert "ppid_knob" in ui
     assert "state_design" in ui
     assert "Persona" in ui
     assert "State I/O" in ui

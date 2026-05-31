@@ -29,6 +29,7 @@ GRAPH_NODES: tuple[dict[str, str], ...] = (
     {"id": "validate_missing", "label": "필수값 확인", "phase": "validate"},
     {"id": "snapshot_preview", "label": "Snapshot preview", "phase": "preview"},
     {"id": "review", "label": "등록 검토", "phase": "review"},
+    {"id": "human_review", "label": "Human review", "phase": "hitl"},
     {"id": "register", "label": "Inform 저장", "phase": "write"},
 )
 
@@ -38,7 +39,8 @@ GRAPH_EDGES: tuple[dict[str, str], ...] = (
     {"source": "slot_extract", "target": "validate_missing"},
     {"source": "validate_missing", "target": "snapshot_preview"},
     {"source": "snapshot_preview", "target": "review"},
-    {"source": "review", "target": "register"},
+    {"source": "review", "target": "human_review"},
+    {"source": "human_review", "target": "register"},
 )
 
 STATE_DESIGN: dict[str, dict[str, Any]] = {
@@ -80,6 +82,11 @@ STATE_DESIGN: dict[str, dict[str, Any]] = {
     "draft": {
         "description": "InformCreate-compatible draft, not written until confirm.",
         "producer": "review",
+        "public": True,
+    },
+    "human_review": {
+        "description": "Human-in-the-loop approval state before Inform registration.",
+        "producer": "human_review",
         "public": True,
     },
     "created_inform": {
@@ -143,6 +150,14 @@ NODE_METADATA: dict[str, dict[str, Any]] = {
         "shared_state": ["draft.inform", "draft.mail_draft", "requires_confirmation"],
         "answer_attach_rule": "Attach the draft, missing values, and confirmation requirement.",
     },
+    "human_review": {
+        "persona": "Represents the logged-in user's explicit approval gate before register.",
+        "prompt": {"system": "", "mode": "deterministic_hitl"},
+        "reads": ["request.action", "draft", "missing", "requires_confirmation"],
+        "writes": ["human_review"],
+        "shared_state": ["human_review.approval_status", "human_review.can_confirm", "human_review.approved_by"],
+        "answer_attach_rule": "Attach approval state, required values, and whether confirm is currently allowed.",
+    },
     "register": {
         "persona": "Calls routers.informs.create_inform() only for action=confirm with complete slots.",
         "prompt": {"system": "", "mode": "deterministic_write"},
@@ -190,6 +205,7 @@ _SEMANTIC_VALUE_STOPWORDS = {
 def inform_registration_graph(statuses: dict[str, str] | None = None) -> dict[str, Any]:
     statuses = statuses or {}
     return {
+        "layout": {"rankdir": "LR"},
         "nodes": [
             {
                 **node,
@@ -199,6 +215,7 @@ def inform_registration_graph(statuses: dict[str, str] | None = None) -> dict[st
                     "writes": list(NODE_METADATA.get(node["id"], {}).get("writes") or []),
                 },
                 "status": statuses.get(node["id"], "pending"),
+                "action_required": node["id"] == "human_review" and statuses.get(node["id"]) == "action_required",
             }
             for node in GRAPH_NODES
         ],
@@ -747,6 +764,7 @@ def _history_entry(
     semantic_frame: dict[str, Any],
     slots: dict[str, Any],
     draft: dict[str, Any],
+    human_review: dict[str, Any],
     requires_confirmation: bool,
     created_inform: dict[str, Any] | None,
     warnings: list[str],
@@ -770,6 +788,7 @@ def _history_entry(
             "snapshot": deepcopy((draft or {}).get("snapshot") or {}),
             "mail_draft": deepcopy((draft or {}).get("mail_draft") or {}),
         },
+        "human_review": deepcopy(human_review or {}),
         "requires_confirmation": bool(requires_confirmation),
         "created_inform": deepcopy(created_inform or {}),
         "warnings": list(warnings or []),
@@ -827,6 +846,22 @@ def run_inform_registration_runtime(
         draft: dict[str, Any] = {}
         created_inform: dict[str, Any] = {}
         requires_confirmation = False
+        started = time.perf_counter()
+        human_review = {
+            "approval_status": "cancelled",
+            "action_required": False,
+            "can_confirm": False,
+            "cancelled_by": _clean_text(username, 80),
+            "session_id": session.get("session_id") or "",
+        }
+        trace.append(_trace_row(
+            "human_review",
+            "cancelled",
+            human_review,
+            [],
+            started,
+            {"action": action},
+        ))
         statuses = {row["node_id"]: row["status"] for row in trace}
         for node_id in ("semantic_layer", "slot_extract", "validate_missing", "snapshot_preview", "review", "register"):
             statuses[node_id] = "skipped"
@@ -842,6 +877,7 @@ def run_inform_registration_runtime(
             semantic_frame=semantic_frame,
             slots=slots,
             draft=draft,
+            human_review=human_review,
             requires_confirmation=requires_confirmation,
             created_inform=created_inform,
             warnings=warnings,
@@ -861,6 +897,7 @@ def run_inform_registration_runtime(
             "semantic_frame": semantic_frame,
             "slots": slots,
             "draft": draft,
+            "human_review": human_review,
             "requires_confirmation": requires_confirmation,
             "created_inform": created_inform,
             "graph": inform_registration_graph(statuses),
@@ -962,6 +999,54 @@ def run_inform_registration_runtime(
         {"action": action},
     ))
 
+    started = time.perf_counter()
+    if missing:
+        human_review = {
+            "approval_status": "blocked_missing_slots",
+            "action_required": False,
+            "can_confirm": False,
+            "missing": list(missing),
+            "required_values": {
+                "product": bool(_clean_text(slots.get("product"))),
+                "lot_id": bool(_clean_text(slots.get("lot_id"))),
+                "module": bool(_clean_text(slots.get("module"))),
+                "note": bool(_clean_text(slots.get("note"))),
+                "mail_target": _mail_targets_present(slots.get("mail_draft")),
+            },
+            "session_id": session.get("session_id") or "",
+        }
+        human_review_status = "skipped"
+    elif action == "confirm":
+        human_review = {
+            "approval_status": "approved",
+            "action_required": False,
+            "can_confirm": False,
+            "approved_by": _clean_text(username, 80),
+            "approved_at": _now_iso(),
+            "session_id": session.get("session_id") or "",
+            "draft_ready": True,
+        }
+        human_review_status = "success"
+    else:
+        human_review = {
+            "approval_status": "pending",
+            "action_required": True,
+            "can_confirm": True,
+            "session_id": session.get("session_id") or "",
+            "draft_ready": True,
+            "confirm_action": "confirm",
+            "missing": [],
+        }
+        human_review_status = "action_required"
+    trace.append(_trace_row(
+        "human_review",
+        human_review_status,
+        human_review,
+        ["사용자 confirm 승인이 필요합니다."] if human_review_status == "action_required" else [],
+        started,
+        {"action": action, "missing": missing},
+    ))
+
     created_inform: dict[str, Any] = {}
     started = time.perf_counter()
     register_warnings: list[str] = []
@@ -1011,6 +1096,7 @@ def run_inform_registration_runtime(
         semantic_frame=semantic_frame,
         slots=slots,
         draft=draft,
+        human_review=human_review,
         requires_confirmation=requires_confirmation,
         created_inform=created_inform,
         warnings=warnings,
@@ -1032,6 +1118,7 @@ def run_inform_registration_runtime(
         "semantic_frame": semantic_frame,
         "slots": slots,
         "draft": draft,
+        "human_review": human_review,
         "requires_confirmation": requires_confirmation,
         "created_inform": created_inform,
         "graph": inform_registration_graph(statuses),

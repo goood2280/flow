@@ -74,11 +74,20 @@ def test_react_max_iters_default_and_clamp(monkeypatch):
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "3")
     assert home_orchestrator._react_max_iters() == 3
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "99")
-    assert home_orchestrator._react_max_iters() == 12
+    assert home_orchestrator._react_max_iters() == 6
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "0")
     assert home_orchestrator._react_max_iters() == 1
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "garbage")
     assert home_orchestrator._react_max_iters() == home_orchestrator._MAX_ITERATIONS
+
+
+def test_react_deadline_default_and_clamp(monkeypatch):
+    monkeypatch.delenv(home_orchestrator._REACT_DEADLINE_ENV, raising=False)
+    assert home_orchestrator._react_deadline_seconds() == home_orchestrator._REACT_DEFAULT_DEADLINE_S
+    monkeypatch.setenv(home_orchestrator._REACT_DEADLINE_ENV, "12")
+    assert home_orchestrator._react_deadline_seconds() == 15
+    monkeypatch.setenv(home_orchestrator._REACT_DEADLINE_ENV, "999")
+    assert home_orchestrator._react_deadline_seconds() == 110
 
 
 # --- C1: semantic frame 헬퍼 -----------------------------------------------
@@ -170,11 +179,17 @@ def test_observation_summary_compact():
 
 def test_decide_returns_call_tool_when_model_picks_tool(monkeypatch):
     tools = [_tool("send_mail", description="메일")]
-    monkeypatch.setattr(llm_adapter, "complete_json", lambda *a, **k: {
-        "ok": True,
-        "obj": {"action": "call_tool", "tool": "send_mail", "input": {"prompt": "보내줘"},
-                "reason": "메일 요청", "thought": "내부추론"},
-    })
+    calls = []
+
+    def fake_complete_json(*_args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "obj": {"action": "call_tool", "tool": "send_mail", "input": {"prompt": "보내줘"},
+                    "reason": "메일 요청", "thought": "내부추론"},
+        }
+
+    monkeypatch.setattr(llm_adapter, "complete_json", fake_complete_json)
     decision = home_orchestrator._decide_next_action(
         prompt="메일 보내줘", tools=tools, semantic_summary={}, observations=[],
         step_index=0, max_steps=6,
@@ -184,6 +199,7 @@ def test_decide_returns_call_tool_when_model_picks_tool(monkeypatch):
     assert decision["input"] == {"prompt": "보내줘"}
     assert decision["reason"] == "메일 요청"
     assert "thought" not in decision  # 내부 추론은 공개하지 않음
+    assert calls[0]["timeout"] == home_orchestrator._REACT_DECISION_TIMEOUT_S
 
 
 def test_decide_coerces_to_final_when_tool_unknown(monkeypatch):
@@ -372,6 +388,24 @@ def test_orchestrate_uses_react_loop_when_enabled(monkeypatch):
     assert out["picked_count"] == 1
     assert [r["tool"] for r in out["trace"]] == ["send_mail"]
     assert {"ok", "prompt", "trace", "tool_calls", "meta", "reply", "picked_count"}.issubset(out.keys())
+
+
+def test_attach_runtime_result_exposes_answer_alias(monkeypatch):
+    monkeypatch.setattr(
+        home_orchestrator,
+        "build_home_runtime_snapshot",
+        lambda **_kwargs: {"run_id": "pytest-run", "graph": {"nodes": [], "edges": []}, "status": "success", "action_log": {}},
+    )
+    monkeypatch.setattr(home_orchestrator.home_memory, "remember_turn", lambda **_kwargs: None)
+
+    out = home_orchestrator._attach_runtime_result(
+        {"ok": True, "prompt": "p", "trace": [], "reply": "결론"},
+        prompt="p",
+        user={"username": "t"},
+    )
+
+    assert out["answer"] == "결론"
+    assert out["reply"] == "결론"
 
 
 def test_orchestrate_falls_back_to_heuristic_when_llm_errors(monkeypatch):

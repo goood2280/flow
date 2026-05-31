@@ -16,7 +16,7 @@ from core.paths import PATHS
 
 PENALTIES_FILE = PATHS.data_root / "agent_feedback_penalties.json"
 _VALID_RATINGS = {"up", "down"}
-_UNIT_KEYS = {"filebrowser_ai_sql", "inform_registration", "change_management", "dashboard_agent"}
+_UNIT_KEYS = {"filebrowser_ai_sql", "inform_registration", "change_management", "dashboard_agent", "step_lookup", "ppid_knob"}
 _HOME_FEATURE_UNIT_MAP = {
     "filebrowser": "filebrowser_ai_sql",
     "filebrowser_ai_sql": "filebrowser_ai_sql",
@@ -29,6 +29,10 @@ _HOME_FEATURE_UNIT_MAP = {
     "dashboard": "dashboard_agent",
     "chart": "dashboard_agent",
     "dashboard_agent": "dashboard_agent",
+    "step_lookup": "step_lookup",
+    "lookup_step": "step_lookup",
+    "ppid_knob": "ppid_knob",
+    "classify_ppid_knob": "ppid_knob",
 }
 
 

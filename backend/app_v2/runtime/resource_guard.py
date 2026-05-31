@@ -43,6 +43,12 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/history",
     "/api/splittable/operational-history",
     "/api/tracker/et-lot-cache/status",
+    "/api/llm/flowi/verify",
+    "/api/llm/flowi/workflows",
+)
+
+DEFAULT_FLOWI_CHAT_PATHS = (
+    "/api/llm/flowi/chat",
 )
 
 META_ONLY_PATHS = (
@@ -82,6 +88,12 @@ def _light_paths() -> tuple[str, ...]:
     return DEFAULT_LIGHT_PATHS + extra
 
 
+def _flowi_chat_paths() -> tuple[str, ...]:
+    raw = os.environ.get("FLOW_FLOWI_CHAT_PATHS", "")
+    extra = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return DEFAULT_FLOWI_CHAT_PATHS + extra
+
+
 def _matches(path: str, prefixes: Iterable[str]) -> bool:
     return any(path.startswith(prefix) for prefix in prefixes)
 
@@ -107,11 +119,16 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         default_concurrency = 2 if is_small_profile() else 3
         self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
+        self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
+        self._flowi_queue_timeout = _float_env("FLOW_FLOWI_CHAT_QUEUE_TIMEOUT_SEC", 8.0, 1.0, 60.0)
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
         self._prefixes = _prefixes()
         self._light_paths = _light_paths()
+        self._flowi_chat_paths = _flowi_chat_paths()
         self._semaphore = asyncio.Semaphore(self._concurrency)
+        self._flowi_semaphore = asyncio.Semaphore(self._flowi_concurrency)
         self._active = 0
+        self._flowi_active = 0
 
     def _is_light_request(self, request: Request) -> bool:
         path = request.url.path
@@ -125,7 +142,20 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith("/api/") and self._is_light_request(request):
             return await call_next(request)
-        if not path.startswith("/api/") or not _matches(path, self._prefixes):
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        is_flowi_chat = _matches(path, self._flowi_chat_paths)
+        if is_flowi_chat:
+            semaphore = self._flowi_semaphore
+            queue_timeout = self._flowi_queue_timeout
+            concurrency = self._flowi_concurrency
+            group = "flowi_chat"
+        elif _matches(path, self._prefixes):
+            semaphore = self._semaphore
+            queue_timeout = self._queue_timeout
+            concurrency = self._concurrency
+            group = "heavy"
+        else:
             return await call_next(request)
 
         if process_memory_high(self._memory_reserve_gb):
@@ -141,20 +171,29 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             )
 
         try:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=self._queue_timeout)
+            await asyncio.wait_for(semaphore.acquire(), timeout=queue_timeout)
         except asyncio.TimeoutError:
+            active = self._flowi_active if group == "flowi_chat" else self._active
             return JSONResponse(
                 {
-                    "detail": "큰 작업이 이미 실행 중입니다. 현재 작업이 끝난 뒤 다시 실행하세요.",
+                    "detail": (
+                        "홈 Flow-i 요청이 이미 실행 중입니다. 현재 요청이 끝난 뒤 다시 실행하세요."
+                        if group == "flowi_chat"
+                        else "큰 작업이 이미 실행 중입니다. 현재 작업이 끝난 뒤 다시 실행하세요."
+                    ),
                     "error_code": "resource_queue_timeout",
-                    "active_heavy_requests": self._active,
-                    "heavy_request_concurrency": self._concurrency,
+                    "active_heavy_requests": active,
+                    "heavy_request_concurrency": concurrency,
+                    "heavy_request_group": group,
                 },
                 status_code=429,
                 headers={"Retry-After": "15"},
             )
 
-        self._active += 1
+        if group == "flowi_chat":
+            self._flowi_active += 1
+        else:
+            self._active += 1
         try:
             if process_memory_high(self._memory_reserve_gb):
                 snap = process_memory_snapshot()
@@ -168,8 +207,12 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": "30"},
                 )
             response = await call_next(request)
-            response.headers.setdefault("X-Flow-Heavy-Request-Concurrency", str(self._concurrency))
+            response.headers.setdefault("X-Flow-Heavy-Request-Concurrency", str(concurrency))
+            response.headers.setdefault("X-Flow-Heavy-Request-Group", group)
             return response
         finally:
-            self._active = max(0, self._active - 1)
-            self._semaphore.release()
+            if group == "flowi_chat":
+                self._flowi_active = max(0, self._flowi_active - 1)
+            else:
+                self._active = max(0, self._active - 1)
+            semaphore.release()

@@ -91,13 +91,74 @@ def test_flowi_verify_marks_unavailable_without_llm_config(monkeypatch):
 
     monkeypatch.setattr(llm, "current_user", lambda _request: {"username": "tester", "role": "admin"})
     monkeypatch.setattr(llm.llm_adapter, "is_available", lambda: False)
+    llm._FLOWI_VERIFY_CACHE["result"] = None
 
     out = llm.flowi_verify(llm.FlowiVerifyReq(), _Request())
 
     assert out["ok"] is False
+    assert out["status"] == "unavailable"
     assert out["unavailable"] is True
     assert out["error"] == "llm unavailable"
     assert out["message"] == "LLM 미설정"
+    assert isinstance(out["elapsed_ms"], int)
+    assert isinstance(out["meta"], dict)
+
+
+def test_flowi_verify_returns_connected_status(monkeypatch):
+    from routers import llm
+
+    class _Request:
+        pass
+
+    monkeypatch.setattr(llm, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+    monkeypatch.setattr(llm.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(llm.llm_adapter, "get_config", lambda redact=True: {"provider": "vertex_gemini", "model": "gemini", "auth_mode": "google_adc"})
+    monkeypatch.setattr(llm.llm_adapter, "_google_adc_token_cache_status", lambda: {"cached": True, "status": "hit"})
+    # Honest verify runs a real bounded probe; mock it as a healthy response.
+    monkeypatch.setattr(
+        llm.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": "확인완료", "meta": {"latency_ms": 12}},
+    )
+    monkeypatch.setattr(llm.llm_adapter, "warm_google_adc_token_cache", lambda *_args, **_kwargs: False)
+    llm._FLOWI_VERIFY_CACHE["result"] = None
+
+    out = llm.flowi_verify(llm.FlowiVerifyReq(), _Request())
+
+    assert out["ok"] is True
+    assert out["status"] == "connected"
+    assert out["message"] == "확인완료"
+    assert out["meta"]["provider"] == "vertex_gemini"
+    assert out["meta"]["token_cache"]["status"] == "hit"
+    assert out["meta"]["verify_mode"] == "live_probe"
+    assert out["meta"]["live_llm_call"] is True
+
+
+def test_flowi_verify_starts_vertex_token_warmup_then_probes(monkeypatch):
+    from routers import llm
+
+    class _Request:
+        pass
+
+    warmups = []
+    monkeypatch.setattr(llm, "current_user", lambda _request: {"username": "tester", "role": "admin"})
+    monkeypatch.setattr(llm.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(llm.llm_adapter, "get_config", lambda redact=True: {"provider": "vertex_gemini", "model": "gemini", "auth_mode": "google_adc"})
+    monkeypatch.setattr(llm.llm_adapter, "_google_adc_token_cache_status", lambda: {"cached": False, "status": "empty"})
+    monkeypatch.setattr(llm.llm_adapter, "warm_google_adc_token_cache", lambda **kwargs: warmups.append(kwargs) or True)
+    monkeypatch.setattr(
+        llm.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": "확인완료", "meta": {}},
+    )
+    llm._FLOWI_VERIFY_CACHE["result"] = None
+
+    out = llm.flowi_verify(llm.FlowiVerifyReq(), _Request())
+
+    assert out["ok"] is True
+    assert out["status"] == "connected"
+    assert out["meta"]["warmup_started"] is True
+    assert warmups == [{"timeout_s": 8}]
 
 
 def test_flowi_workflows_api_lists_defaults(monkeypatch, tmp_path):
@@ -143,6 +204,26 @@ def test_flowi_workflows_draft_and_save(monkeypatch, tmp_path):
     assert draft["workflow"]["source_roles"]
     assert saved["ok"] is True
     assert saved["workflow"]["id"] == draft["workflow"]["id"]
+
+
+def test_flowi_step_id_token_is_not_classified_as_lot():
+    from routers import llm
+
+    step_summary = llm._slot_summary("AA100160 무슨 step이야?")
+    assert step_summary["steps"] == ["AA100160"]
+    assert step_summary["lots"] == []
+    assert step_summary["root_lot_ids"] == []
+    assert step_summary["fab_lot_ids"] == []
+
+    suffix_step_summary = llm._slot_summary("AA100160EC 무슨 step이야?")
+    assert suffix_step_summary["steps"] == ["AA100160EC"]
+    assert suffix_step_summary["lots"] == []
+    assert suffix_step_summary["root_lot_ids"] == []
+    assert suffix_step_summary["fab_lot_ids"] == []
+
+    lot_summary = llm._slot_summary("A1001 스플릿테이블 보여줘")
+    assert lot_summary["steps"] == []
+    assert lot_summary["root_lot_ids"] == ["A1001"]
 
 
 def test_flowi_unit_dispatch_allows_step_lookup_from_filebrowser_permission(monkeypatch):
@@ -659,6 +740,195 @@ def test_flowi_chat_answers_step_id_from_step_matching_csv(monkeypatch, tmp_path
     assert "SD_EPI" in result["answer"]
     assert "step_matching.csv" in result["answer"]
     assert result["tool"]["source_ids"] == ["step_matching.csv"]
+
+
+def test_flowi_chat_skips_llm_polish_for_clarification(monkeypatch, tmp_path):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(flowi_units, "try_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable"})
+    monkeypatch.setattr(llm_router, "_handle_explicit_splittable_view_fast_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_router.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("LLM polish should be skipped")),
+    )
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-clarify", "graph": {"nodes": [], "edges": []}, "status": "waiting"},
+    )
+
+    def fake_legacy_handler(*_args, **_kwargs):
+        return {
+            "handled": True,
+            "intent": "splittable_context_followup",
+            "action": "clarify_product",
+            "feature": "splittable",
+            "answer": "product가 없는 SplitTable 요청입니다. 어느 product 기준으로 볼지 선택해주세요.",
+            "missing": ["product"],
+            "pending_prompt": "A1001 스플릿테이블",
+            "clarification": {"question": "어느 product 기준으로 볼까요?", "choices": []},
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_flowi_query", fake_legacy_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="A1001 스플릿테이블",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["answer"].startswith("product가 없는 SplitTable")
+    assert result["llm"]["used"] is False
+    assert result["llm"]["skipped"] == "deterministic_tool_result"
+
+
+def test_flowi_splittable_single_product_candidate_auto_executes(monkeypatch):
+    from routers import llm as llm_router
+
+    preview = {
+        "selected_function": {"name": "query_splittable_view"},
+        "function_call": {"function": {"arguments": {"product": "", "root_lot_ids": ["A1001"], "wafer_ids": []}}},
+        "validation": {"missing": ["product"]},
+    }
+    calls = []
+    monkeypatch.setattr(llm_router, "_structure_flowi_function_call", lambda *_args, **_kwargs: preview)
+    monkeypatch.setattr(
+        llm_router,
+        "_resolve_products_for_lots",
+        lambda *_args, **_kwargs: [{"product": "PRODA", "sources": "ML_TABLE", "lots": "A1001", "row_count": 12}],
+    )
+
+    def fake_view(args, product_hint, prompt, max_rows):
+        calls.append((dict(args), product_hint, prompt, max_rows))
+        return {"handled": True, "intent": "splittable_view", "action": "query_splittable_view", "feature": "splittable", "answer": "ok"}
+
+    monkeypatch.setattr(llm_router, "_flowi_query_splittable_view_tool", fake_view)
+
+    out = llm_router._handle_wafer_split_at_step("A1001 스플릿테이블 보여줘", "", 12)
+
+    assert out["action"] == "query_splittable_view"
+    assert calls
+    assert calls[0][0]["product"] == "PRODA"
+    assert calls[0][1] == "PRODA"
+
+
+def test_flowi_splittable_multiple_product_candidates_still_clarifies(monkeypatch):
+    from routers import llm as llm_router
+
+    preview = {
+        "selected_function": {"name": "query_splittable_view"},
+        "function_call": {"function": {"arguments": {"product": "", "root_lot_ids": ["A1001"], "wafer_ids": []}}},
+        "validation": {"missing": ["product"]},
+    }
+    monkeypatch.setattr(llm_router, "_structure_flowi_function_call", lambda *_args, **_kwargs: preview)
+    monkeypatch.setattr(
+        llm_router,
+        "_resolve_products_for_lots",
+        lambda *_args, **_kwargs: [
+            {"product": "PRODA", "sources": "ML_TABLE", "lots": "A1001", "row_count": 12},
+            {"product": "PRODB", "sources": "ML_TABLE", "lots": "A1001", "row_count": 8},
+        ],
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_flowi_query_splittable_view_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("view should wait for product choice")),
+    )
+
+    out = llm_router._handle_wafer_split_at_step("A1001 스플릿테이블 보여줘", "", 12)
+
+    assert out["action"] == "clarify_product"
+    choices = out["clarification"]["choices"]
+    assert [choice["title"] for choice in choices] == ["PRODA", "PRODB"]
+
+
+def test_flowi_splittable_view_tool_attaches_runtime_metadata(monkeypatch):
+    from routers import llm as llm_router
+    from routers import splittable as splittable_router
+
+    monkeypatch.setattr(
+        splittable_router,
+        "view_split",
+        lambda **_kwargs: {
+            "root_lot_id": "A1001",
+            "runtime_profile": {"total_ms": 11},
+            "view_cache": {"hit": True, "status": "fresh"},
+        },
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_flowi_splittable_view_to_inline",
+        lambda *_args, **_kwargs: (
+            {"kind": "splittable_inline", "title": "SplitTable inline", "rows": [{"cells": []}], "total": 1},
+            {"kind": "splittable_view_rows", "rows": [], "total": 0},
+        ),
+    )
+
+    out = llm_router._flowi_query_splittable_view_tool(
+        {"product": "PRODA", "root_lot_ids": ["A1001"], "wafer_ids": []},
+        "PRODA",
+        "A1001 스플릿테이블 보여줘",
+        12,
+    )
+
+    assert out["handled"] is True
+    assert out["split_api"]["path"] == "/api/splittable/view"
+    assert out["runtime_profile"] == {"total_ms": 11}
+    assert out["view_cache"] == {"hit": True, "status": "fresh"}
+    assert isinstance(out["elapsed_ms"], int)
+
+
+def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_path):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(flowi_units, "try_dispatch", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")))
+    monkeypatch.setattr(llm_router, "_handle_flowi_query", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("generic router should not run")))
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-fast-split", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    calls = []
+
+    def fake_split_handler(prompt, product, max_rows):
+        calls.append((prompt, product, max_rows))
+        return {
+            "handled": True,
+            "intent": "splittable_view",
+            "action": "query_splittable_view",
+            "feature": "splittable",
+            "answer": "SplitTable fast path ok",
+            "filters": {"product": "ML_TABLE_PRODA", "root_lot_ids": ["A1001"]},
+            "split_view": {"kind": "splittable_view", "rows": []},
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_wafer_split_at_step", fake_split_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="A1001 스플릿테이블 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["answer"] == "SplitTable fast path ok"
+    assert result["tool"]["action"] == "query_splittable_view"
+    assert calls == [("A1001 스플릿테이블 보여줘", "", 12)]
 
 
 def test_flowi_chat_expands_ppid_knob_feature_to_step_ids(monkeypatch, tmp_path):

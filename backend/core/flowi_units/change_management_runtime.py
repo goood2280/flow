@@ -22,13 +22,15 @@ UNIT_AI_KEY = "change_management"
 GRAPH_NODES: tuple[dict[str, str], ...] = (
     {"id": "context_scope", "label": "Visible scope", "phase": "context"},
     {"id": "meeting_reference", "label": "회의 참조 해석", "phase": "semantic"},
+    {"id": "clarification_gate", "label": "Clarification gate", "phase": "hitl"},
     {"id": "evidence_pack", "label": "회의/변경점 근거 수집", "phase": "read"},
     {"id": "answer_compose", "label": "Plain text 답변", "phase": "render"},
 )
 
 GRAPH_EDGES: tuple[dict[str, str], ...] = (
     {"source": "context_scope", "target": "meeting_reference"},
-    {"source": "meeting_reference", "target": "evidence_pack"},
+    {"source": "meeting_reference", "target": "clarification_gate"},
+    {"source": "clarification_gate", "target": "evidence_pack"},
     {"source": "evidence_pack", "target": "answer_compose"},
 )
 
@@ -57,6 +59,11 @@ STATE_DESIGN: dict[str, dict[str, Any]] = {
     "meeting_reference": {
         "description": "Resolved meeting focus or clarification candidates when the prompt is ambiguous.",
         "producer": "meeting_reference",
+        "public": True,
+    },
+    "clarification_gate": {
+        "description": "Human-facing gate that blocks evidence collection when the meeting reference is ambiguous.",
+        "producer": "clarification_gate",
         "public": True,
     },
     "evidence": {
@@ -93,6 +100,14 @@ NODE_METADATA: dict[str, dict[str, Any]] = {
         "shared_state": ["focus_meeting_id", "needs_clarification", "candidates"],
         "answer_attach_rule": "Attach selected meeting metadata or clarification candidates; do not guess one of several matches.",
     },
+    "clarification_gate": {
+        "persona": "Stops the runtime before evidence collection when the user needs to choose a meeting candidate.",
+        "prompt": {"system": "", "mode": "deterministic_hitl"},
+        "reads": ["meeting_reference.needs_clarification", "meeting_reference.candidates"],
+        "writes": ["clarification_gate"],
+        "shared_state": ["clarification_gate.action_required", "clarification_gate.candidates"],
+        "answer_attach_rule": "Attach visible candidates and action_required status only; evidence_pack stays skipped until clarified.",
+    },
     "evidence_pack": {
         "persona": "Builds compact read-only evidence from agendas, minutes, decisions, action items, and calendar events.",
         "prompt": {"system": "", "mode": "deterministic"},
@@ -115,6 +130,7 @@ NODE_METADATA: dict[str, dict[str, Any]] = {
 def change_management_graph(statuses: dict[str, str] | None = None) -> dict[str, Any]:
     statuses = statuses or {}
     return {
+        "layout": {"rankdir": "LR"},
         "nodes": [
             {
                 **node,
@@ -350,6 +366,7 @@ def _history_entry(
     answer: str,
     needs_clarification: bool,
     meeting_reference: dict[str, Any],
+    clarification_gate: dict[str, Any],
     evidence: dict[str, Any],
     llm: dict[str, Any],
     warnings: list[str],
@@ -366,6 +383,7 @@ def _history_entry(
         "answer": answer,
         "needs_clarification": needs_clarification,
         "meeting_reference": deepcopy(meeting_reference or {}),
+        "clarification_gate": deepcopy(clarification_gate or {}),
         "meeting": deepcopy((summary.get("meetings") or [{}])[0].get("meeting") if meeting_reference.get("focus_meeting_id") else {}),
         "meetings": [deepcopy(m.get("meeting") or {}) for m in (summary.get("meetings") or [])],
         "sources": deepcopy(evidence.get("sources") or []),
@@ -441,6 +459,25 @@ def run_change_management_runtime(
         ref_warnings,
         started,
         {"meeting_id": request_payload["meeting_id"]},
+    ))
+
+    started = time.perf_counter()
+    clarification_gate = {
+        "action_required": bool(clarification),
+        "needs_clarification": bool(clarification),
+        "reason": meeting_reference.get("reason") or "",
+        "message": meeting_reference.get("message") or "",
+        "candidates": deepcopy(meeting_reference.get("candidates") or []),
+        "focus_meeting_id": meeting_reference.get("focus_meeting_id") or "",
+    }
+    gate_warnings = ["회의 참조가 애매해 후보 선택이 필요합니다."] if clarification else []
+    trace.append(_trace_row(
+        "clarification_gate",
+        "action_required" if clarification else "success",
+        clarification_gate,
+        gate_warnings,
+        started,
+        {"needs_clarification": bool(clarification), "candidates": len(clarification_gate["candidates"])},
     ))
 
     evidence: dict[str, Any] = {"summary": {}, "sources": []}
@@ -519,6 +556,7 @@ def run_change_management_runtime(
         answer=answer,
         needs_clarification=needs_clarification,
         meeting_reference=meeting_reference,
+        clarification_gate=clarification_gate,
         evidence=evidence,
         llm=llm_info,
         warnings=warnings,
@@ -537,6 +575,7 @@ def run_change_management_runtime(
         "needs_clarification": needs_clarification,
         "context_scope": context_scope,
         "meeting_reference": meeting_reference,
+        "clarification_gate": clarification_gate,
         "evidence": {
             "meeting_count": evidence.get("meeting_count") or 0,
             "calendar_event_count": evidence.get("calendar_event_count") or 0,

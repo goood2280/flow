@@ -361,6 +361,10 @@ def _llm_json(
         if not llm_info["available"]:
             warnings.append("LLM is not configured.")
             return plan, llm_info, warnings
+        if not llm_adapter.should_attempt_llm():
+            llm_info["error"] = "llm circuit breaker open"
+            warnings.append("LLM temporarily unavailable (recent failure); skipped this node.")
+            return plan, llm_info, warnings
         out = llm_adapter.complete_json(
             json.dumps(payload, ensure_ascii=False),
             system=system,

@@ -18,6 +18,40 @@ from core.llm_adapter import (  # noqa: E402
     _parse_json_object,
 )
 
+LLM_ENV_KEYS = (
+    "FLOW_LLM_DISABLE_ENV_FALLBACK",
+    "FLOW_LLM_ENABLE_ENV_FALLBACK",
+    "FLOW_LLM_PROVIDER",
+    "FLOW_LLM_MODEL",
+    "FLOW_OPENAI_API_KEY",
+    "FLOW_OPENAI_API_URL",
+    "FLOW_OPENAI_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_MODEL",
+    "FLOW_VERTEX_PROJECT",
+    "FLOW_VERTEX_LOCATION",
+    "FLOW_VERTEX_MODEL",
+    "FLOW_VERTEX_API_URL",
+    "VERTEX_PROJECT",
+    "VERTEX_LOCATION",
+    "VERTEX_MODEL",
+    "VERTEX_OPENAI_API_URL",
+    "GOOGLE_VERTEX_MODEL",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+    "CLOUDSDK_CONFIG",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
+
+
+def _clear_llm_env(monkeypatch):
+    for key in LLM_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
 
 def test_openai_compatible_blank_model_defaults_to_internal_gpt_oss(monkeypatch):
     monkeypatch.setattr(
@@ -187,6 +221,158 @@ def test_vertex_openai_compatible_profile_forces_google_adc(monkeypatch):
     assert cfg["admin_token"] == ""
 
 
+def test_openai_env_fallback_enables_local_dev_without_admin_url(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("FLOW_LLM_ENABLE_ENV_FALLBACK", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {"llm": {"enabled": True, "provider": "generic", "api_url": ""}},
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["source"] == "env_fallback"
+    assert cfg["provider"] == "openai"
+    assert cfg["model"] == "gpt-4o-mini"
+    assert cfg["api_url"] == "https://api.openai.com/v1"
+    assert cfg["admin_token"] == "sk-test"
+
+
+def test_vertex_env_fallback_uses_google_adc(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("FLOW_LLM_ENABLE_ENV_FALLBACK", "1")
+    monkeypatch.setenv("FLOW_LLM_PROVIDER", "vertex")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "flow-dev")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_args, **_kwargs: {})
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["source"] == "env_fallback"
+    assert cfg["provider"] == "vertex_gemini"
+    assert cfg["auth_mode"] == "google_adc"
+    assert cfg["model"] == "google/gemini-2.5-flash"
+    assert "aiplatform.googleapis.com" in cfg["api_url"]
+    assert "/projects/flow-dev/" in cfg["api_url"]
+
+
+def test_vertex_fallback_reads_gcloud_config_project(monkeypatch, tmp_path):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("FLOW_LLM_ENABLE_ENV_FALLBACK", "1")
+    gcloud_root = tmp_path / "gcloud"
+    config_dir = gcloud_root / "configurations"
+    config_dir.mkdir(parents=True)
+    (gcloud_root / "active_config").write_text("default", encoding="utf-8")
+    (config_dir / "config_default").write_text("[core]\nproject = flow-gcloud\n", encoding="utf-8")
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(gcloud_root))
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_args, **_kwargs: {})
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["provider"] == "vertex_gemini"
+    assert cfg["source"] == "env_fallback"
+    assert "/projects/flow-gcloud/" in cfg["api_url"]
+
+
+def test_config_work_path_blocks_external_env_fallback(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda path: path == "/config/work")
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_args, **_kwargs: {})
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is False
+    assert cfg["provider"] == "generic"
+    assert cfg["external_ai_blocked"] is True
+    assert cfg["external_ai_block_reason"] == "/config/work exists"
+
+
+def test_config_work_path_blocks_configured_external_provider(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda path: path == "/config/work")
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm": {
+                "enabled": True,
+                "api_url": "https://api.openai.com/v1",
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "admin_token": "sk-test",
+            }
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is False
+    assert cfg["api_url"] == ""
+    assert cfg["blocked_provider"] == "openai"
+    assert cfg["external_ai_block_reason"] == "/config/work exists"
+
+
+def test_playground_profile_blocks_external_env_fallback(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm_profiles": {
+                "playground": {
+                    "enabled": True,
+                    "provider": "playground",
+                    "api_url": "https://playground.internal/v1",
+                }
+            },
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is False
+    assert cfg["provider"] == "generic"
+    assert cfg["external_ai_blocked"] is True
+    assert cfg["external_ai_block_reason"] == "playground profile configured"
+
+
+def test_active_playground_profile_remains_available_while_external_is_blocked(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm": {
+                "enabled": True,
+                "api_url": "https://playground.internal/v1/chat",
+                "provider": "playground",
+                "admin_token": "dep-ticket",
+                "system_name": "playground",
+            }
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["provider"] == "playground"
+    assert cfg["api_url"] == "https://playground.internal/v1/chat"
+    assert cfg["external_ai_blocked"] is True
+    assert cfg["external_ai_block_reason"] == "playground profile active"
+
+
 def test_google_adc_ignores_stored_admin_token_and_replaces_auth_header(monkeypatch):
     cfg = {
         "provider": "openai_compatible",
@@ -207,6 +393,7 @@ def test_google_adc_ignores_stored_admin_token_and_replaces_auth_header(monkeypa
 
 
 def test_google_adc_falls_back_to_gcloud_user_token(monkeypatch):
+    llm_adapter._clear_google_adc_token_cache()
     calls = []
 
     def fake_gcloud(args, *, timeout_s, label):
@@ -215,7 +402,7 @@ def test_google_adc_falls_back_to_gcloud_user_token(monkeypatch):
             return "user-token"
         return ""
 
-    monkeypatch.setattr(llm_adapter, "_google_auth_adc_access_token", lambda: "")
+    monkeypatch.setattr(llm_adapter, "_google_auth_adc_access_token", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(llm_adapter, "_gcloud_access_token", fake_gcloud)
 
     token = llm_adapter._google_adc_access_token(timeout_s=4)
@@ -225,6 +412,58 @@ def test_google_adc_falls_back_to_gcloud_user_token(monkeypatch):
         ["auth", "application-default", "print-access-token"],
         ["auth", "print-access-token"],
     ]
+    llm_adapter._clear_google_adc_token_cache()
+
+
+def test_google_adc_access_token_uses_process_cache(monkeypatch):
+    llm_adapter._clear_google_adc_token_cache()
+    calls = []
+
+    def fake_google_auth(*_args, **_kwargs):
+        calls.append("google-auth")
+        return "cached-token"
+
+    monkeypatch.setattr(llm_adapter, "_google_auth_adc_access_token", fake_google_auth)
+    monkeypatch.setattr(
+        llm_adapter,
+        "_gcloud_access_token",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("gcloud should not run")),
+    )
+
+    first = llm_adapter._google_adc_access_token(timeout_s=3)
+    second = llm_adapter._google_adc_access_token(timeout_s=3)
+
+    assert first == "cached-token"
+    assert second == "cached-token"
+    assert calls == ["google-auth"]
+    status = llm_adapter._google_adc_token_cache_status()
+    assert status["cached"] is True
+    assert status["source"] == "google-auth"
+    llm_adapter._clear_google_adc_token_cache()
+
+
+def test_google_adc_header_timeout_is_applied_to_token_generation(monkeypatch):
+    cfg = {
+        "provider": "vertex_gemini",
+        "auth_mode": "google_adc",
+        "admin_token": "",
+        "headers": {},
+        "format": "openai",
+        "extra_body": {},
+        "model": "google/gemini-2.5-flash",
+    }
+    calls = []
+
+    def fake_token(*, timeout_s):
+        calls.append(timeout_s)
+        return "adc-token"
+
+    monkeypatch.setattr(llm_adapter, "_google_adc_access_token", fake_token)
+
+    headers = _build_request_headers(cfg, timeout_s=2)
+
+    assert headers["Authorization"] == "Bearer adc-token"
+    assert calls == [2]
 
 
 def test_vertex_gemini_native_body_shape():
@@ -305,3 +544,113 @@ def test_complete_json_retries_malformed_json(monkeypatch):
     assert out["obj"] == {"target": "lot_progress"}
     assert out["repaired"] is True
     assert len(calls) == 2
+
+
+# --- env-fallback is opt-in -------------------------------------------------
+
+def test_env_fallback_requires_opt_in(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    # A Google project in the environment must NOT silently enable an external
+    # endpoint when the admin api_url is blank and the opt-in flag is absent.
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "flow-dev")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_args, **_kwargs: {})
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is False
+    assert cfg["api_url"] == ""
+    assert cfg.get("source") != "env_fallback"
+
+
+# --- LLM health circuit breaker ---------------------------------------------
+
+_OPENAI_FALLBACK_ADMIN = {
+    "llm": {
+        "enabled": True,
+        "api_url": "https://api.openai.com/v1",
+        "provider": "openai",
+        "admin_token": "sk-test",
+        "model": "gpt-4o-mini",
+    }
+}
+
+
+def test_circuit_breaker_marks_and_blocks():
+    llm_adapter.reset_llm_health()
+    try:
+        assert llm_adapter.should_attempt_llm() is True
+        llm_adapter._mark_llm_unhealthy("boom", 1200)
+        assert llm_adapter.should_attempt_llm() is False
+        snap = llm_adapter.health_snapshot()
+        assert snap["status"] == "unhealthy"
+        assert snap["breaker_open"] is True
+        assert snap["last_error"] == "boom"
+        assert snap["cooldown_remaining_s"] > 0
+        llm_adapter._mark_llm_healthy(50)
+        assert llm_adapter.should_attempt_llm() is True
+        assert llm_adapter.health_snapshot()["breaker_open"] is False
+    finally:
+        llm_adapter.reset_llm_health()
+
+
+def test_complete_short_circuits_when_breaker_open(monkeypatch):
+    llm_adapter.reset_llm_health()
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _p: False)
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_a, **_k: _OPENAI_FALLBACK_ADMIN)
+    calls = {"n": 0}
+
+    def fake_urlopen(*_a, **_k):
+        calls["n"] += 1
+        raise OSError("network down")
+
+    monkeypatch.setattr(llm_adapter.urllib.request, "urlopen", fake_urlopen)
+    try:
+        llm_adapter._mark_llm_unhealthy("prior failure")
+        out = llm_adapter.complete("hi")
+        assert out["ok"] is False
+        assert "circuit breaker open" in out["error"]
+        assert calls["n"] == 0  # breaker prevented the HTTP attempt
+
+        # An explicit probe bypasses the breaker and actually attempts the call.
+        out2 = llm_adapter.complete("hi", probe=True)
+        assert out2["ok"] is False
+        assert calls["n"] == 1
+    finally:
+        llm_adapter.reset_llm_health()
+
+
+def test_complete_opens_and_recovers_breaker(monkeypatch):
+    llm_adapter.reset_llm_health()
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _p: False)
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_a, **_k: _OPENAI_FALLBACK_ADMIN)
+
+    # First: a failing call opens the breaker.
+    monkeypatch.setattr(
+        llm_adapter.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")),
+    )
+    try:
+        out = llm_adapter.complete("hi")
+        assert out["ok"] is False
+        assert llm_adapter.should_attempt_llm() is False
+
+        # Then: a successful probe closes it again.
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, *_a):
+                return b'{"choices":[{"message":{"content":"hello"}}]}'
+
+        monkeypatch.setattr(llm_adapter.urllib.request, "urlopen", lambda *_a, **_k: FakeResp())
+        ok = llm_adapter.complete("hi", probe=True)
+        assert ok["ok"] is True
+        assert ok["text"] == "hello"
+        assert llm_adapter.should_attempt_llm() is True
+    finally:
+        llm_adapter.reset_llm_health()

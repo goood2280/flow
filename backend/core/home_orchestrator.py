@@ -48,8 +48,11 @@ logger = logging.getLogger("flow.home_orchestrator")
 _MAX_STEPS = 3
 _LLM_ENV_FLAG = "FLOW_LLM_TOOL_CALL"
 _REACT_ENV_FLAG = "FLOW_LLM_REACT_LOOP"
-_MAX_ITERATIONS = 6
+_MAX_ITERATIONS = 4
 _REACT_MAX_ITERS_ENV = "FLOW_LLM_REACT_MAX_ITERS"
+_REACT_DEADLINE_ENV = "FLOW_LLM_REACT_DEADLINE_SECONDS"
+_REACT_DECISION_TIMEOUT_S = 8
+_REACT_DEFAULT_DEADLINE_S = 75
 HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
 _RUN_ID_PREFIX = "home_flowi"
 _MAX_SNAPSHOT_RUNS = 120
@@ -887,13 +890,23 @@ def _react_loop_enabled() -> bool:
 
 
 def _react_max_iters() -> int:
-    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 12] clamp."""
+    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 6] clamp."""
     raw = str(os.environ.get(_REACT_MAX_ITERS_ENV, "")).strip()
     try:
         value = int(raw) if raw else _MAX_ITERATIONS
     except (TypeError, ValueError):
         value = _MAX_ITERATIONS
-    return max(1, min(12, value))
+    return max(1, min(6, value))
+
+
+def _react_deadline_seconds() -> int:
+    """End-to-end ReAct budget. Keeps optional loops inside the Home UI time target."""
+    raw = str(os.environ.get(_REACT_DEADLINE_ENV, "")).strip()
+    try:
+        value = int(raw) if raw else _REACT_DEFAULT_DEADLINE_S
+    except (TypeError, ValueError):
+        value = _REACT_DEFAULT_DEADLINE_S
+    return max(15, min(110, value))
 
 
 def _semantic_frame_for_prompt(prompt: str) -> dict[str, Any]:
@@ -1031,7 +1044,12 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
         "}\n"
         f"steps 는 최대 {_MAX_STEPS}개. 필요 없으면 빈 배열."
     )
-    out = llm_adapter.complete_json(user_prompt, system=system, schema={"keys": ["steps"]})
+    out = llm_adapter.complete_json(
+        user_prompt,
+        system=system,
+        schema={"keys": ["steps"]},
+        timeout=_REACT_DECISION_TIMEOUT_S,
+    )
     if not out.get("ok"):
         logger.info("llm planner failed: %s", out.get("error"))
         return None
@@ -1094,6 +1112,7 @@ def _decide_next_action(
     observations: list[dict[str, Any]],
     step_index: int,
     max_steps: int,
+    timeout_s: int = _REACT_DECISION_TIMEOUT_S,
 ) -> dict[str, Any] | None:
     """ReAct 한 턴 결정: 도구 1개를 호출하거나 finalize.
 
@@ -1144,6 +1163,7 @@ def _decide_next_action(
             "keys": ["thought", "action", "tool", "input", "reason", "answer"],
             "required": ["action"],
         },
+        timeout=max(1, min(int(timeout_s or _REACT_DECISION_TIMEOUT_S), _REACT_DECISION_TIMEOUT_S)),
     )
     if not out.get("ok"):
         logger.info("react decision failed: %s", out.get("error"))
@@ -1964,6 +1984,10 @@ def _attach_runtime_result(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     trace = out.get("trace") if isinstance(out.get("trace"), list) else []
+    if not out.get("answer") and out.get("reply"):
+        out["answer"] = out.get("reply")
+    if not out.get("reply") and out.get("answer"):
+        out["reply"] = out.get("answer")
     if "tool" not in out:
         out["tool"] = _tool_from_tool_calls(out.get("tool_calls")) or _tool_summary_from_trace(trace)
     snapshot = build_home_runtime_snapshot(
@@ -2032,6 +2056,8 @@ def _compose_final_reply(
     trace: list[dict[str, Any]],
     model_answer: str,
     semantic_summary: dict[str, Any],
+    *,
+    timeout_s: int = _REACT_DECISION_TIMEOUT_S,
 ) -> str:
     """최종 답변 생성.
 
@@ -2058,7 +2084,11 @@ def _compose_final_reply(
             f"# 관찰(observations)\n{json.dumps(observations, ensure_ascii=False)[:2500]}\n\n"
             "위 관찰만 근거로 한국어로 간결히 답하라."
         )
-        out = llm_adapter.complete(user_prompt, system=system)
+        out = llm_adapter.complete(
+            user_prompt,
+            system=system,
+            timeout=max(1, min(int(timeout_s or _REACT_DECISION_TIMEOUT_S), _REACT_DECISION_TIMEOUT_S)),
+        )
         if out.get("ok") and out.get("text"):
             return _short_text(out.get("text"), 4000)
     except Exception:
@@ -2098,10 +2128,16 @@ def _run_react_loop(
     model_answer = ""
     stop_reason = "max_steps"
     no_progress_streak = 0
+    started = time.monotonic()
+    deadline = started + _react_deadline_seconds()
 
     yield {"kind": "loop_start", "max_steps": max_steps}
 
     for index in range(max_steps):
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 2.0:
+            stop_reason = "deadline"
+            break
         parent_context = _parent_context_from_tool_calls(tool_calls)
         observations = _observation_summary(trace)
         decision = _decide_next_action(
@@ -2111,6 +2147,7 @@ def _run_react_loop(
             observations=observations,
             step_index=index,
             max_steps=max_steps,
+            timeout_s=max(1, min(_REACT_DECISION_TIMEOUT_S, int(remaining_s))),
         )
         if decision is None:
             stop_reason = "llm_error"
@@ -2174,7 +2211,14 @@ def _run_react_loop(
                 stop_reason = "no_progress"
                 break
 
-    reply = _compose_final_reply(prompt, trace, model_answer, semantic_summary)
+    remaining_s = max(1, int(deadline - time.monotonic()))
+    reply = _compose_final_reply(
+        prompt,
+        trace,
+        model_answer,
+        semantic_summary,
+        timeout_s=max(1, min(_REACT_DECISION_TIMEOUT_S, remaining_s)),
+    )
     yield {
         "kind": "final",
         "trace": trace,

@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import time
 import uuid
 import csv
 import io
@@ -92,20 +93,20 @@ FLOWI_BASE_WORKFLOW_GUIDE = [
     {
         "key": "root_lot_id",
         "label": "root lot",
-        "rule": "영문/숫자 혼합 5자 토큰은 기본적으로 root_lot_id로 해석합니다.",
+        "rule": "영문/숫자 혼합 5자 토큰은 기본적으로 root_lot_id로 해석합니다. 영문 2자+숫자 6자리와 EC 같은 영문 suffix가 붙은 step_id 패턴은 lot으로 보지 않습니다.",
         "examples": ["A0001", "B1234"],
     },
     {
         "key": "fab_lot_id",
         "label": "fab lot",
-        "rule": "영문/숫자 혼합 6자 이상 토큰 또는 AZAAAB.1 같은 점 suffix lot은 fab_lot_id로 해석합니다.",
+        "rule": "점 suffix lot 또는 6자 이상 혼합 토큰 중 step_id 패턴이 아닌 값은 fab_lot_id로 해석합니다.",
         "examples": ["A12345", "AZAAAB.1"],
     },
     {
         "key": "step_id",
         "label": "step",
-        "rule": "step_id는 영문 2자 + 숫자 6자리만 step으로 해석합니다. 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다.",
-        "examples": ["AA200000", "GAA_CHANNEL_RELEASE"],
+        "rule": "step_id는 영문 2자 + 숫자 6자리 또는 그 뒤에 EC 같은 영문 suffix가 붙은 토큰을 step으로 해석합니다. 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다.",
+        "examples": ["AA200000", "AA200000EC", "GAA_CHANNEL_RELEASE"],
     },
     {
         "key": "wafer_id",
@@ -139,13 +140,13 @@ FLOWI_NAMING_RULES = [
     {
         "key": "root_lot_id",
         "label": "root lot",
-        "rule": "영어/숫자 조합 5자리 토큰은 root_lot_id로 해석한다. product 토큰과 title 토큰은 lot에서 제외한다.",
+        "rule": "영어/숫자 조합 5자리 토큰은 root_lot_id로 해석한다. product 토큰, title 토큰, 영문 2자+숫자 6자리와 EC 같은 영문 suffix가 붙은 step_id 패턴은 lot에서 제외한다.",
         "examples": ["A1000", "R2001", "AB12C"],
     },
     {
         "key": "fab_lot_id",
         "label": "fab lot",
-        "rule": "점(.)이 들어간 lot 조합이나 6자 이상 fab lot 후보는 fab_lot_id로 해석한다.",
+        "rule": "점(.)이 들어간 lot 조합이나 6자 이상 후보 중 step_id 패턴이 아닌 값은 fab_lot_id로 해석한다.",
         "examples": ["AZGASB.1", "ASDGA.1", "ASDAGFH.NJ"],
     },
     {
@@ -157,8 +158,8 @@ FLOWI_NAMING_RULES = [
     {
         "key": "step_id",
         "label": "step",
-        "rule": "영문 2자 + 숫자 6자리 또는 등록된 func_step 이름만 step 후보로 확정한다.",
-        "examples": ["AA200000", "GAA_CHANNEL_RELEASE"],
+        "rule": "영문 2자 + 숫자 6자리 또는 그 뒤에 EC 같은 영문 suffix가 붙은 토큰, 또는 등록된 func_step 이름만 step 후보로 확정한다.",
+        "examples": ["AA200000", "AA200000EC", "GAA_CHANNEL_RELEASE"],
     },
     {
         "key": "func_step",
@@ -295,9 +296,9 @@ FLOWI_DEFAULT_SYSTEM_PROMPT = (
     "요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. "
     "먼저 사내 naming rule을 적용해 자연어를 function arguments JSON으로 구조화한 뒤, 그 파라미터와 답변이 어긋나지 않게 합니다. "
     "product는 product_config/products.yaml, ML_TABLE_<product>, FAB product directory에서 동적으로 확인합니다. "
-    "영어/숫자 조합 5자리 토큰은 root_lot_id, AZGASB.1/ASDAGFH.NJ처럼 점(.)이 들어간 lot 조합은 fab_lot_id로 해석합니다. "
+    "영어/숫자 조합 5자리 토큰은 root_lot_id, AZGASB.1/ASDAGFH.NJ처럼 점(.)이 들어간 lot 조합은 fab_lot_id로 해석합니다. 단 영문 2자+숫자 6자리와 EC 같은 영문 suffix가 붙은 step_id 패턴은 lot으로 보지 않습니다. "
     "#6, WF6, WAFER 6, slot 6, 6번 slot, 6번장, 6장은 wafer_id=6으로 해석하며 wafer_id는 1~25만 유효한 물리 slot으로 봅니다. "
-    "step_id는 영문 2자 + 숫자 6자리만 step으로 해석하고, 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다. "
+    "step_id는 영문 2자 + 숫자 6자리 또는 그 뒤에 EC 같은 영문 suffix가 붙은 토큰을 step으로 해석하고, 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다. "
     "FAB은 최신 route/progress 이력, ET는 기본 median, INLINE은 기본 avg이며 raw INLINE은 shot_x/shot_y가 아니라 subitem_id를 shot 구분자로 봅니다. "
     "SplitTable을 보여줄 때는 홈에서 따로 재구성하지 않고 SplitTable 화면 API의 headers, header_groups, rows, cell key, actual/plan/mismatch 결과를 기준으로 표시합니다. "
     "SplitTable/Inform 같은 앱 데이터 쓰기는 draft와 확인 선택지를 먼저 만들고, 확인 후에만 저장합니다. "
@@ -308,7 +309,7 @@ FLOWI_DEFAULT_SYSTEM_PROMPT = (
 FLOWI_DEFAULT_MUST_NOT = (
     "- DB root/raw data 원본을 직접 수정, 삭제, 덮어쓰기, 이동하지 않는다.\n"
     "- 로컬 tool/cache/schema 결과에 없는 숫자, lot, product, step, item 값을 지어내지 않는다.\n"
-    "- step_id는 영문 2자 + 숫자 6자리 또는 등록된 func_step 이름이 아니면 step으로 확정하지 않는다.\n"
+    "- step_id는 영문 2자 + 숫자 6자리 또는 그 뒤에 EC 같은 영문 suffix가 붙은 토큰, 또는 등록된 func_step 이름이 아니면 step으로 확정하지 않는다.\n"
     "- 기존 인폼/회의/이슈/일정 수정, 삭제, 상태 변경은 권한과 대상 내용을 확인하기 전 실행하지 않는다.\n"
     "- 파일 변경은 FLOWI_FILE_OP 또는 전용 단일파일 반영 플로우 없이 실행하지 않는다.\n"
     "- RAG/문서 내용은 flow-data 내부 저장소 밖으로 내보내지 않는다."
@@ -3499,10 +3500,17 @@ def _lot_tokens(prompt: str) -> list[str]:
             continue
         if tok in title_tokens:
             continue
+        if _is_step_id_token(tok):
+            continue
         is_root_like = _is_root_lot_token(tok)
         is_fab_like = (
             _is_fab_lot_token(tok)
-            or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok))
+            or (
+                len(tok) >= 6
+                and _is_mixed_alnum_token(tok)
+                and not _is_step_id_token(tok)
+                and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)
+            )
         )
         legacy_lot_like = bool(re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok))
         if (is_root_like or is_fab_like or legacy_lot_like) and tok not in seen:
@@ -3528,12 +3536,19 @@ def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
     for tok in _tokens(prompt):
         if tok in _FLOWI_NON_LOT_TOKENS or re.fullmatch(r"TEST\d+", tok, flags=re.I):
             continue
+        if _is_step_id_token(tok):
+            continue
         if _is_root_lot_token(tok):
             if _is_product_token(tok):
                 continue
             add_root(tok)
             continue
-        if _is_fab_lot_token(tok) or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)):
+        if _is_fab_lot_token(tok) or (
+            len(tok) >= 6
+            and _is_mixed_alnum_token(tok)
+            and not _is_step_id_token(tok)
+            and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)
+        ):
             if _is_product_token(tok):
                 continue
             if tok not in seen_fab:
@@ -3614,7 +3629,7 @@ def _flowi_lot_wf_ids(root_lot_ids: list[Any], fab_lot_ids: list[Any], wafer_ids
 
 
 def _is_step_id_token(tok: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z]{2}\d{6}", _upper(tok)))
+    return bool(re.fullmatch(r"[A-Z]{2}\d{6}(?:[A-Z]{1,4})?", _upper(tok)))
 
 
 def _known_func_step_names() -> list[str]:
@@ -8598,7 +8613,7 @@ def _flowi_guess_missing_for_preview(prompt: str, row: dict[str, Any]) -> dict[s
         return {}
     values = _flowi_deterministic_missing_guesses(prompt, row)
     rationale = "prompt에서 직접 확인 가능한 product/lot/wafer/module token을 우선 채웠습니다."
-    if llm_adapter.is_available():
+    if llm_adapter.is_available() and llm_adapter.should_attempt_llm():
         schema = {
             "values": {field: "string value or empty string" for field in missing[:8]},
             "rationale": "short Korean sentence; no hidden reasoning",
@@ -9335,6 +9350,8 @@ def _product_or_candidate_tool(prompt: str, product: str, lots: list[str], *, ki
         return product_hint, None
     candidates = _resolve_products_for_lots(lots, kinds=kinds)
     candidates = [row for row in candidates if _is_flowi_product_choice_name(str(row.get("product") or ""))]
+    if len(candidates) == 1:
+        return candidates[0]["product"], None
     if ask_if_any:
         return "", _flowi_product_candidate_tool(
             prompt,
@@ -9342,8 +9359,6 @@ def _product_or_candidate_tool(prompt: str, product: str, lots: list[str], *, ki
             intent=intent,
             answer="product가 없는 SplitTable 요청입니다. 어느 product 기준으로 볼지 선택해주세요.",
         )
-    if len(candidates) == 1:
-        return candidates[0]["product"], None
     if len(candidates) > 1:
         return "", _flowi_product_candidate_tool(prompt, candidates, intent=intent)
     return "", None
@@ -15752,6 +15767,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         return {"handled": False}
     prefixes = _flowi_splittable_prefixes_from_args(args, prompt)
     prefix_filter = ",".join(prefixes)
+    started = time.monotonic()
     try:
         from routers import splittable as splittable_router
         view = splittable_router.view_split(
@@ -15768,8 +15784,11 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         )
     except Exception:
         return {"handled": False}
+    elapsed_ms = int((time.monotonic() - started) * 1000)
     if not isinstance(view, dict):
         return {"handled": False}
+    runtime_profile = view.get("runtime_profile") if isinstance(view.get("runtime_profile"), dict) else {}
+    view_cache = view.get("view_cache") if isinstance(view.get("view_cache"), dict) else {}
     split_view, table = _flowi_splittable_view_to_inline(
         view,
         step=str(args.get("step") or ""),
@@ -15804,6 +15823,16 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             "source": "splittable.view",
         },
         "splittable_view": view,
+        "split_api": {
+            "path": "/api/splittable/view",
+            "callee": "routers.splittable.view_split",
+            "method": "GET",
+            "elapsed_ms": elapsed_ms,
+            "status": "done",
+        },
+        "runtime_profile": runtime_profile,
+        "view_cache": view_cache,
+        "elapsed_ms": elapsed_ms,
     }, "split_view", prompt=prompt)
 
 
@@ -18665,8 +18694,9 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
         purpose: str = "",
         payload: dict[str, Any] | None = None,
         output_label: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        calls.append({
+        call = {
             "stage": "feature_api",
             "feature": feature or "flowi",
             "action": action or intent,
@@ -18678,16 +18708,30 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             "payload": payload or {},
             "output": output_label or output,
             "status": status,
-        })
+        }
+        if metadata:
+            call["metadata"] = metadata
+        calls.append(call)
 
     if action in {"query_splittable_view", "query_wafer_split_at_step"} or intent in {"splittable_view", "wafer_split_at_step"}:
+        split_api = tool.get("split_api") if isinstance(tool.get("split_api"), dict) else {}
+        runtime_profile = tool.get("runtime_profile") if isinstance(tool.get("runtime_profile"), dict) else {}
+        view_cache = tool.get("view_cache") if isinstance(tool.get("view_cache"), dict) else {}
+        elapsed_ms = tool.get("elapsed_ms")
+        meta = {
+            "elapsed_ms": elapsed_ms,
+            "runtime_profile": runtime_profile,
+            "view_cache": view_cache,
+        }
+        meta = {k: v for k, v in meta.items() if v not in (None, "", [], {})}
         add(
             name="SplitTable view",
-            method="GET",
-            path="/api/splittable/view",
-            callee="routers.splittable.view_split",
+            method=str(split_api.get("method") or "GET"),
+            path=str(split_api.get("path") or "/api/splittable/view"),
+            callee=str(split_api.get("callee") or "routers.splittable.view_split"),
             purpose="product/root/wafer/step/prefix 조건으로 split table row를 조회",
             payload={k: args.get(k) or filters.get(k) or slots.get(k) for k in ("product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "prefix") if (args.get(k) or filters.get(k) or slots.get(k))},
+            metadata=meta,
         )
     elif action == "knowledge.impact_context.lookup" or intent == "knowledge_impact_context":
         add(
@@ -19595,7 +19639,7 @@ def _flowi_action_log_api_refs(api_calls: list[dict[str, Any]], stages: set[str]
             continue
         ref = {
             key: call.get(key)
-            for key in ("stage", "name", "method", "path", "callee", "status", "output")
+            for key in ("stage", "name", "method", "path", "callee", "status", "output", "metadata")
             if call.get(key) not in (None, "", [], {})
         }
         if ref:
@@ -19656,6 +19700,21 @@ def _flowi_action_log_summary(result: dict[str, Any], trace: dict[str, Any]) -> 
         names = [str(c.get("name") or c.get("callee") or c.get("path") or "").strip() for c in feature_calls]
         names = [name for name in names if name]
         lines.append(f"실행 경로는 {', '.join(names[:3])}입니다.")
+        split_call = next((c for c in feature_calls if str(c.get("path") or "") == "/api/splittable/view"), None)
+        split_meta = split_call.get("metadata") if isinstance(split_call, dict) and isinstance(split_call.get("metadata"), dict) else {}
+        if split_meta:
+            elapsed = split_meta.get("elapsed_ms")
+            cache = split_meta.get("view_cache") if isinstance(split_meta.get("view_cache"), dict) else {}
+            cache_bits = []
+            for key in ("status", "state", "hit", "source"):
+                if cache.get(key) not in (None, "", [], {}):
+                    cache_bits.append(f"{key}={cache.get(key)}")
+            detail = []
+            if elapsed not in (None, ""):
+                detail.append(f"{elapsed}ms")
+            if cache_bits:
+                detail.append("cache " + ", ".join(cache_bits[:3]))
+            lines.append("/api/splittable/view 실제 호출 완료" + (f" ({' / '.join(detail)})" if detail else "") + ".")
     rows = validation.get("rows")
     warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
     result_bits = []
@@ -19846,6 +19905,10 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "custom_sets",
     "lot_list",
     "split_view",
+    "split_api",
+    "runtime_profile",
+    "view_cache",
+    "elapsed_ms",
     "chart",
     "chart_result",
     "chart_type",
@@ -20036,6 +20099,38 @@ def _handle_semantic_measurement(prompt: str, product: str = "", max_rows: int =
     return out if isinstance(out, dict) and out.get("handled") else None
 
 
+def _flowi_chat_deadline_s() -> float:
+    """Per-turn wall-clock budget for LLM enhancement, kept under the 105s client
+    abort so the home agent always returns something before the browser gives up."""
+    raw = str(os.environ.get("FLOW_FLOWI_CHAT_DEADLINE_S", "") or "").strip()
+    try:
+        value = float(raw) if raw else 80.0
+    except (TypeError, ValueError):
+        value = 80.0
+    return max(15.0, min(100.0, value))
+
+
+def _handle_explicit_splittable_view_fast_path(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    allowed_keys: set[str] | None,
+) -> dict[str, Any] | None:
+    """Run obvious SplitTable view prompts before the generic Home router.
+
+    This path is read-only and avoids repeated generic router/LLM structure
+    passes for prompts such as "A1001 스플릿테이블 보여줘".
+    """
+    if allowed_keys is not None and "splittable" not in allowed_keys:
+        return None
+    if not _flowi_explicit_splittable_view_prompt(prompt):
+        return None
+    if _flowi_write_target_detected(prompt) or _flowi_splittable_note_intent(prompt):
+        return None
+    tool = _handle_wafer_split_at_step(prompt, product, max_rows)
+    return tool if isinstance(tool, dict) and tool.get("handled") else None
+
+
 def _run_flowi_chat(
     *,
     prompt: str,
@@ -20156,6 +20251,39 @@ def _run_flowi_chat(
                 client_run_id=client_run_id,
                 username=username,
                 tool=tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    fast_split_tool = _handle_explicit_splittable_view_fast_path(prompt, product, max_rows, allowed_keys)
+    if fast_split_tool:
+        _finalize_flowi_tool(fast_split_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+        answer = fast_split_tool.get("answer") or "SplitTable 조회 요청을 처리했습니다."
+        _append_user_event(username, fast_split_tool.get("intent") or "splittable_view", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": fast_split_tool.get("intent") or "",
+                "feature": fast_split_tool.get("feature") or "splittable",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": fast_split_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=fast_split_tool,
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
@@ -20746,7 +20874,22 @@ def _run_flowi_chat(
     skip_llm_polish = _flowi_should_skip_llm_polish(tool)
     if skip_llm_polish:
         llm_info["skipped"] = "deterministic_tool_result"
-    if llm_adapter.is_available() and not tool.get("blocked") and not skip_llm_polish:
+    chat_over_budget = (datetime.now(timezone.utc) - started_at).total_seconds() > _flowi_chat_deadline_s()
+    # The home agent uses the LLM to polish/route, but it must never hang on an
+    # endpoint that cannot answer in time: skip enhancement when the breaker is
+    # open or the per-turn budget is spent, and return the deterministic result.
+    llm_ready = llm_adapter.is_available() and llm_adapter.should_attempt_llm() and not chat_over_budget
+    if (not skip_llm_polish) and (not tool.get("blocked")) and (not llm_ready):
+        if chat_over_budget:
+            llm_info["skipped"] = "deadline_exceeded"
+        elif not llm_adapter.is_available():
+            llm_info["skipped"] = "llm_unavailable"
+        else:
+            llm_info["skipped"] = "llm_circuit_open"
+            _health_snap = llm_adapter.health_snapshot()
+            if _health_snap.get("last_error"):
+                llm_info["error"] = _health_snap.get("last_error")
+    if llm_ready and not tool.get("blocked") and not skip_llm_polish:
         source_line = f"외부 AI source: {source}\nclient_run_id: {client_run_id}\n" if source else ""
         context_line = f"외부 AI 입력 context JSON: {agent_ctx}\n\n" if agent_ctx else ""
         if tool.get("handled"):
@@ -20802,6 +20945,19 @@ def _run_flowi_chat(
         elif out.get("error"):
             llm_info["error"] = out.get("error")
 
+    if not str(answer or "").strip() and not llm_info.get("used"):
+        # No deterministic answer and the LLM could not produce one — tell the
+        # user plainly instead of returning an empty bubble or hanging.
+        if not llm_adapter.is_available():
+            answer = "LLM이 연결되어 있지 않습니다. 관리 > 진단에서 LLM 연결을 설정한 뒤 다시 시도해 주세요."
+        elif not llm_adapter.should_attempt_llm():
+            _reason = (llm_adapter.health_snapshot().get("last_error") or "최근 LLM 호출이 실패했습니다")
+            answer = f"LLM에 연결하지 못해 답변을 생성하지 못했습니다. ({_reason}) 연결 상태를 확인한 뒤 다시 시도해 주세요."
+        else:
+            answer = "지금은 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+        tool["answer"] = answer
+        llm_info.setdefault("skipped", "llm_unavailable")
+
     retrieved_ids = _flowi_tool_retrieved_ids(tool)
     system_knowledge_ids = [item.get("id") for item in _flowi_promoted_knowledge_items() if item.get("id")]
     elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
@@ -20846,6 +21002,12 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     intent = str(tool.get("intent") or "")
     action = str(tool.get("action") or "")
     table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    if action.startswith("clarify_") or tool.get("needs_input") or tool.get("pending_prompt"):
+        return True
+    if isinstance(tool.get("clarification"), dict) and tool.get("clarification"):
+        return True
+    if tool.get("missing") or tool.get("missing_freetext") or tool.get("arguments_choices"):
+        return True
     if intent.endswith("_guidance") or action == "flowi.feature.guidance" or table.get("kind") == "flowi_action_plan":
         return True
     if intent == "current_fab_lot_lookup":
@@ -20860,7 +21022,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.startswith("inform_"):
         return True
-    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "step_mapping_lookup", "knob_rulebook_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search", "filebrowser_multisource_join", "dashboard_multisource_chart"}:
+    if intent in {"lot_knobs", "splittable_context_followup", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "step_mapping_lookup", "knob_rulebook_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search", "filebrowser_multisource_join", "dashboard_multisource_chart"}:
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True
@@ -21223,25 +21385,102 @@ class FlowiInformWalkthroughConfirmReq(BaseModel):
     confirm: bool = False
 
 
-@router.post("/flowi/verify")
-def flowi_verify(req: FlowiVerifyReq, request: Request):
-    _ = current_user(request)
+def _flowi_verify_meta(call_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        cfg = llm_adapter.get_config(redact=True)
+    except Exception:
+        cfg = {}
+    token_cache = {}
+    try:
+        token_cache = llm_adapter._google_adc_token_cache_status()
+    except Exception:
+        token_cache = {}
+    out = {
+        "provider": str(cfg.get("provider") or ""),
+        "model": str(cfg.get("model") or ""),
+        "auth_mode": str(cfg.get("auth_mode") or ""),
+        "source": str(cfg.get("source") or ""),
+        "token_cache": token_cache,
+    }
+    if isinstance(call_meta, dict):
+        out["call"] = {
+            key: call_meta.get(key)
+            for key in ("provider", "profile", "model", "latency_ms", "error")
+            if call_meta.get(key) not in (None, "", [], {})
+        }
+    return out
+
+
+# Cache the live verify result briefly so opening the console isn't slow and we
+# don't probe the LLM on every poll.  TTL is short so a recovered/broken endpoint
+# is reflected quickly.
+_FLOWI_VERIFY_CACHE: dict[str, Any] = {"at": 0.0, "result": None}
+
+
+def _flowi_verify_ttl_s() -> float:
+    raw = str(os.environ.get("FLOW_FLOWI_VERIFY_TTL_S", "") or "").strip()
+    try:
+        value = float(raw) if raw else 45.0
+    except (TypeError, ValueError):
+        value = 45.0
+    return max(5.0, min(300.0, value))
+
+
+def _flowi_run_verify_probe() -> dict[str, Any]:
+    """Real, bounded LLM liveness probe.  Unlike a config-only check it surfaces
+    the true error (token / 403 / model) so the user can fix the connection, and
+    it updates the adapter health breaker that gates the chat."""
+    started = time.monotonic()
     if not llm_adapter.is_available():
         return {
-            "ok": False,
-            "message": "LLM 미설정",
-            "error": "llm unavailable",
-            "unavailable": True,
+            "ok": False, "status": "unavailable", "message": "LLM 미설정",
+            "error": "llm unavailable", "unavailable": True,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "meta": _flowi_verify_meta(),
         }
+    warmup_started = False
+    meta0 = _flowi_verify_meta()
+    if str(meta0.get("auth_mode") or "").strip().lower() == "google_adc":
+        token_cache = meta0.get("token_cache") if isinstance(meta0.get("token_cache"), dict) else {}
+        if not token_cache.get("cached"):
+            try:
+                warmup_started = bool(llm_adapter.warm_google_adc_token_cache(timeout_s=8))
+            except Exception:
+                warmup_started = False
     out = llm_adapter.complete(
         "연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.",
         system="Flowi 연결 확인 응답은 반드시 확인완료 한 단어로만 작성합니다.",
         timeout=8,
+        probe=True,
     )
-    text = str(out.get("text") or "").strip()
-    if out.get("ok") and "확인완료" in text:
-        return {"ok": True, "message": "확인완료"}
-    return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or text or "unknown"}
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    meta = _flowi_verify_meta(out.get("meta") if isinstance(out.get("meta"), dict) else None)
+    meta["verify_mode"] = "live_probe"
+    meta["live_llm_call"] = True
+    meta["warmup_started"] = warmup_started
+    if out.get("ok") and str(out.get("text") or "").strip():
+        return {"ok": True, "status": "connected", "message": "확인완료",
+                "elapsed_ms": elapsed_ms, "meta": meta}
+    err = str(out.get("error") or "").strip() or "unknown"
+    low = err.lower()
+    status = "delayed" if ("timed out" in low or "timeout" in low) else "verify_failed"
+    return {"ok": False, "status": status, "message": "LLM 연결 확인 실패",
+            "error": err, "elapsed_ms": elapsed_ms, "meta": meta}
+
+
+@router.post("/flowi/verify")
+def flowi_verify(req: FlowiVerifyReq, request: Request):
+    _ = current_user(request)
+    now = time.monotonic()
+    force = bool(str(getattr(req, "token", "") or "").strip())
+    cached = _FLOWI_VERIFY_CACHE.get("result")
+    cached_at = float(_FLOWI_VERIFY_CACHE.get("at") or 0.0)
+    if cached and not force and (now - cached_at) < _flowi_verify_ttl_s():
+        return {**cached, "cached": True}
+    result = _flowi_run_verify_probe()
+    _FLOWI_VERIFY_CACHE["result"] = result
+    _FLOWI_VERIFY_CACHE["at"] = time.monotonic()
+    return {**result, "cached": False}
 
 
 @router.get("/flowi/chart-session/raw-data.csv")

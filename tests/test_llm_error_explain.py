@@ -113,3 +113,12 @@ def test_frontend_api_helper_requests_ai_explanation_and_preserves_raw_error():
     assert "err.rawMessage = rawMessage" in api
     assert "data.llm.used" in api
     assert "if (body && body.error)" in api
+
+
+def test_frontend_api_helper_skips_ai_explanation_for_resource_guard_errors():
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+
+    assert "_RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT" in api
+    assert '"resource_queue_timeout"' in api
+    assert '"resource_memory_guard"' in api
+    assert 'if (_RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT.has(String(body?.error_code || ""))) return null;' in api

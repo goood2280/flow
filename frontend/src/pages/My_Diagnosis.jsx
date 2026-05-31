@@ -49,16 +49,16 @@ function queryUrl(path, params) {
 }
 
 function toneForStatus(status) {
-  if (status === "success") return "ok";
-  if (status === "warning") return "warn";
-  if (status === "failed" || status === "blocked") return "bad";
+  if (status === "success" || status === "registered") return "ok";
+  if (status === "warning" || status === "action_required" || status === "review" || status === "collecting" || status === "needs_clarification") return "warn";
+  if (status === "failed" || status === "blocked" || status === "no_match") return "bad";
   return "neutral";
 }
 
 function statusColor(status) {
-  if (status === "success") return { bg: "var(--ok-50)", fg: "var(--ok)", line: "var(--ok-line)" };
-  if (status === "warning") return { bg: "var(--warn-50)", fg: "var(--warn)", line: "var(--warn-line)" };
-  if (status === "failed" || status === "blocked") return { bg: "var(--danger-50)", fg: "var(--danger)", line: "var(--danger-line)" };
+  if (status === "success" || status === "registered") return { bg: "var(--ok-50)", fg: "var(--ok)", line: "var(--ok-line)" };
+  if (status === "warning" || status === "action_required" || status === "review" || status === "collecting" || status === "needs_clarification") return { bg: "var(--warn-50)", fg: "var(--warn)", line: "var(--warn-line)" };
+  if (status === "failed" || status === "blocked" || status === "no_match") return { bg: "var(--danger-50)", fg: "var(--danger)", line: "var(--danger-line)" };
   if (status === "running" || status === "planned") return { bg: "var(--warn-50)", fg: "var(--warn)", line: "var(--warn-line)" };
   if (status === "available" || status === "skipped") return { bg: "var(--bg-primary)", fg: "var(--text-secondary)", line: "var(--border)" };
   return { bg: "var(--bg-tertiary)", fg: "var(--text-secondary)", line: "var(--border)" };
@@ -113,9 +113,17 @@ function RuntimeGraph({ graph, selectedId, onSelect }) {
     const edges = graph?.edges || [];
     if (!nodes.length) return { nodes: [], edges: [], width: 320, height: 200 };
     const g = new dagre.graphlib.Graph();
-    const nodeW = 170;
+    const rankdir = graph?.layout?.rankdir || graph?.metadata?.layout?.rankdir || "TB";
+    const horizontal = rankdir === "LR" || rankdir === "RL";
+    const nodeW = 178;
     const nodeH = 58;
-    g.setGraph({ rankdir: "TB", nodesep: 28, ranksep: 36, marginx: 22, marginy: 22 });
+    g.setGraph({
+      rankdir,
+      nodesep: horizontal ? 24 : 28,
+      ranksep: horizontal ? 54 : 36,
+      marginx: 22,
+      marginy: 22,
+    });
     g.setDefaultEdgeLabel(() => ({}));
     nodes.forEach((node) => g.setNode(node.id, { width: nodeW, height: nodeH }));
     edges.forEach((edge) => g.setEdge(edge.source, edge.target));
@@ -136,7 +144,7 @@ function RuntimeGraph({ graph, selectedId, onSelect }) {
     });
     const maxX = Math.max(...laidNodes.map((node) => node.x + node.w), 280);
     const maxY = Math.max(...laidNodes.map((node) => node.y + node.h), 360);
-    return { nodes: laidNodes, edges: laidEdges, width: maxX + 28, height: maxY + 28 };
+    return { nodes: laidNodes, edges: laidEdges, width: maxX + 28, height: maxY + 28, rankdir };
   }, [graph]);
 
   const nodeById = Object.fromEntries(layout.nodes.map((node) => [node.id, node]));
@@ -148,6 +156,15 @@ function RuntimeGraph({ graph, selectedId, onSelect }) {
     const source = nodeById[edge.source];
     const target = nodeById[edge.target];
     if (!source || !target) return "";
+    const horizontal = layout.rankdir === "LR" || layout.rankdir === "RL";
+    if (horizontal) {
+      const x1 = source.x + source.w;
+      const y1 = source.y + source.h / 2;
+      const x2 = target.x;
+      const y2 = target.y + target.h / 2;
+      const mid = (x1 + x2) / 2;
+      return `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
+    }
     const x1 = source.x + source.w / 2;
     const y1 = source.y + source.h;
     const x2 = target.x + target.w / 2;
@@ -205,8 +222,9 @@ function RuntimeGraph({ graph, selectedId, onSelect }) {
                 stroke={color.line || color.fg}
                 strokeWidth={isSelected ? 2 : 1}
               />
-              <text x="12" y="23" fill="var(--text-primary)" fontSize="12" fontWeight="700">{node.label}</text>
-              <text x="12" y="42" fill={color.fg} fontSize="11">{node.id} · {node.status || "pending"}</text>
+              <text x="12" y="21" fill="var(--text-primary)" fontSize="12" fontWeight="700">{node.label}</text>
+              <text x="12" y="39" fill={color.fg} fontSize="11">{node.phase || "node"} · {node.status || "pending"}</text>
+              {node.action_required ? <circle cx={node.w - 14} cy="14" r="4" fill="var(--warn)" /> : null}
             </g>
           );
         })}
@@ -284,6 +302,8 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
     { id: "unit_ai:inform_registration", label: "Inform 등록 도우미", phase: "unit_ai_mcp", status: "available" },
     { id: "unit_ai:change_management", label: "변경점 관리 Flow-i", phase: "unit_ai_mcp", status: "available" },
     { id: "unit_ai:dashboard_agent", label: "Dashboard Agent", phase: "unit_ai_mcp", status: "available" },
+    { id: "unit_ai:step_lookup", label: "Step ID 매칭", phase: "unit_ai_mcp", status: "available" },
+    { id: "unit_ai:ppid_knob", label: "PPID Knob 분류", phase: "unit_ai_mcp", status: "available" },
   ],
   edges: [
     { source: "prompt_input", target: "semantic_layer" },
@@ -292,6 +312,8 @@ const HOME_FLOWI_FALLBACK_GRAPH = {
     { source: "orchestrator", target: "unit_ai:inform_registration" },
     { source: "orchestrator", target: "unit_ai:change_management" },
     { source: "orchestrator", target: "unit_ai:dashboard_agent" },
+    { source: "orchestrator", target: "unit_ai:step_lookup" },
+    { source: "orchestrator", target: "unit_ai:ppid_knob" },
     { source: "orchestrator", target: "result_renderer" },
   ],
 };
@@ -1152,8 +1174,12 @@ function InformRegistrationUnitPanel() {
   const trace = result?.trace || [];
 
   useEffect(() => {
+    if (result?.requires_confirmation) {
+      setSelectedNodeId("human_review");
+      return;
+    }
     if (trace.length) setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
-  }, [result?.run_id]);
+  }, [result?.run_id, result?.requires_confirmation]);
 
   useEffect(() => {
     if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
@@ -1210,7 +1236,7 @@ function InformRegistrationUnitPanel() {
     slot_overrides: {},
   };
   const canContinue = !!(prompt.trim() || sessionId);
-  const canConfirm = !!(result?.requires_confirmation && sessionId);
+  const canConfirm = !!(result?.requires_confirmation && result?.human_review?.can_confirm && sessionId);
 
   const runAction = (action) => {
     if (action === "continue" && !canContinue) return;
@@ -1330,6 +1356,7 @@ function InformRegistrationUnitPanel() {
                     missing: selectedHistory.missing || [],
                     slots: selectedHistory.slots || {},
                     draft: selectedHistory.draft || {},
+                    human_review: selectedHistory.human_review || {},
                     requires_confirmation: !!selectedHistory.requires_confirmation,
                     created_inform: selectedHistory.created_inform || {},
                     warnings: selectedHistory.warnings || [],
@@ -1459,7 +1486,7 @@ function InformRegistrationUnitPanel() {
                 {busy ? "실행 중" : "실행"}
               </Button>
               <Button variant="primary" onClick={() => runAction("confirm")} disabled={!canConfirm || busy}>
-                등록
+                승인 후 등록
               </Button>
               <Button variant="ghost" onClick={() => runAction("cancel")} disabled={!sessionId || busy}>
                 취소
@@ -1483,11 +1510,35 @@ function InformRegistrationUnitPanel() {
                 {result.question ? (
                   <Banner tone={result.missing?.length ? "warn" : "neutral"}>{result.question}</Banner>
                 ) : null}
+                {result.human_review ? (
+                  <div style={{ display: "grid", gap: 6, padding: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: 12 }}>Human review</strong>
+                      <Pill tone={result.human_review.action_required ? "warn" : toneForStatus(result.human_review.approval_status)}>
+                        {result.human_review.approval_status || "pending"}
+                      </Pill>
+                      <Pill tone={result.human_review.can_confirm ? "ok" : "neutral"}>
+                        can_confirm={String(!!result.human_review.can_confirm)}
+                      </Pill>
+                    </div>
+                    <JsonBlock
+                      value={{
+                        approval_status: result.human_review.approval_status || "",
+                        action_required: !!result.human_review.action_required,
+                        can_confirm: !!result.human_review.can_confirm,
+                        required_values: result.human_review.required_values || {},
+                        missing: result.human_review.missing || [],
+                      }}
+                      maxHeight={140}
+                    />
+                  </div>
+                ) : null}
                 <JsonBlock
                   value={{
                     missing: result.missing || [],
                     slots: result.slots || {},
                     draft: result.draft || {},
+                    human_review: result.human_review || {},
                     mail_draft: result.draft?.mail_draft || {},
                     requires_confirmation: !!result.requires_confirmation,
                     created_inform: result.created_inform || {},
@@ -2219,9 +2270,12 @@ function DashboardAgentUnitPanel() {
                 <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
                 <JsonBlock
                   value={{
+                    data_context: result.data_context || {},
+                    spec: result.spec || {},
                     chart_type: result.chart_result.chart_type,
                     config: result.chart_result.chart_config || result.chart_result.config || {},
                     total: result.chart_result.total,
+                    chart_result_preview: result.chart_result_preview || {},
                     warnings: result.warnings || [],
                   }}
                   maxHeight={220}
@@ -2233,6 +2287,298 @@ function DashboardAgentUnitPanel() {
       </div>
     </div>
   );
+}
+
+function DeterministicLookupUnitPanel({ unitKey, title, defaultPrompt }) {
+  const [graph, setGraph] = useState(null);
+  const [prompt, setPrompt] = useState(defaultPrompt || "");
+  const [product, setProduct] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [graphErr, setGraphErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [lastRequest, setLastRequest] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const feedback = useAgentFeedbackProfile(unitKey);
+
+  const loadHistory = () => {
+    setHistoryLoading(true);
+    return sf(agentUnitHistoryEndpoint(unitKey))
+      .then((payload) => {
+        const nextHistory = payload?.history || [];
+        setHistory(nextHistory);
+        if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+      })
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sf(agentUnitGraphEndpoint(unitKey)).catch((e) => ({
+        error: formatAgentEndpointError(e, agentUnitGraphEndpoint(unitKey)),
+      })),
+      sf(agentUnitHistoryEndpoint(unitKey)).catch(() => ({ history: [] })),
+    ]).then(([graphPayload, historyPayload]) => {
+      if (graphPayload?.error) {
+        setGraph(null);
+        setGraphErr(graphPayload.error);
+      } else {
+        setGraph(graphPayload?.graph || null);
+        setGraphErr("");
+      }
+      const nextHistory = historyPayload?.history || [];
+      setHistory(nextHistory);
+      if (!selectedHistoryId && nextHistory[0]?.history_id) setSelectedHistoryId(nextHistory[0].history_id);
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, [unitKey]);
+
+  const activeGraph = result?.graph || graph || EMPTY_GRAPH;
+  const graphNodes = activeGraph?.nodes || [];
+  const firstGraphNodeId = graphNodes[0]?.id || null;
+  const currentSelectedNodeId = selectedNodeId || firstGraphNodeId;
+  const trace = result?.trace || [];
+
+  useEffect(() => {
+    if (trace.length) setSelectedNodeId(trace[trace.length - 1]?.node_id || null);
+  }, [result?.run_id]);
+
+  useEffect(() => {
+    if (!selectedNodeId && firstGraphNodeId) setSelectedNodeId(firstGraphNodeId);
+  }, [selectedNodeId, firstGraphNodeId]);
+
+  const selectedIdx = currentSelectedNodeId
+    ? trace.findIndex((row) => row.node_id === currentSelectedNodeId)
+    : -1;
+  const selectedTraceNode = selectedIdx >= 0 ? trace[selectedIdx] : null;
+  const selectedGraphNode = graphNodes.find((node) => node.id === currentSelectedNodeId) || graphNodes[0] || null;
+  const selectedNode = selectedTraceNode
+    ? {
+      ...selectedGraphNode,
+      ...selectedTraceNode,
+      id: selectedGraphNode?.id || selectedTraceNode.node_id,
+      node_id: selectedTraceNode.node_id || selectedGraphNode?.id,
+      persona: selectedGraphNode?.persona || selectedTraceNode.persona || "",
+      prompt: selectedGraphNode?.prompt || selectedTraceNode.prompt || {},
+      state_io: selectedGraphNode?.state_io || selectedTraceNode.state_io || {},
+      shared_state: selectedGraphNode?.shared_state || selectedTraceNode.shared_state || [],
+      answer_attach_rule: selectedGraphNode?.answer_attach_rule || selectedTraceNode.answer_attach_rule || "",
+    }
+    : (selectedGraphNode ? { ...selectedGraphNode, node_id: selectedGraphNode.id } : null);
+  const accumulatedState = useMemo(
+    () => buildAccumulatedState(result, lastRequest, selectedIdx >= 0 ? selectedIdx : undefined, activeGraph),
+    [result, lastRequest, selectedIdx, activeGraph]
+  );
+  const stateValue = trace.length ? accumulatedState : (activeGraph?.state_design || {});
+  const selectedNodeOutput = compactRowsPayload(selectedTraceNode?.output);
+  const selectedStateIo = selectedNode?.state_io || {};
+  const selectedHistory = useMemo(() => (
+    history.find((item) => item.history_id === selectedHistoryId) || history[0] || null
+  ), [history, selectedHistoryId]);
+
+  const run = () => {
+    if (!prompt.trim()) return;
+    const body = { prompt: prompt.trim(), product: product.trim() };
+    setBusy(true);
+    setErr("");
+    setResult(null);
+    setLastRequest(body);
+    postJson(agentUnitRunEndpoint(unitKey), body)
+      .then((payload) => {
+        setResult(payload);
+        loadHistory();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const replayHistory = (item) => {
+    setPrompt(item?.prompt || item?.natural_language || "");
+    setProduct(item?.product || "");
+    setSelectedHistoryId(item?.history_id || "");
+    setResult(null);
+    setLastRequest(null);
+    setSelectedNodeId(null);
+    setErr("");
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      {graphErr && <Banner tone="warn" onClose={() => setGraphErr("")}>{title} graph fetch 진단: {graphErr}</Banner>}
+      <UnitFeedbackStatus feedback={feedback} />
+      <Panel
+        title="질문 이력"
+        subtitle={historyLoading ? "loading" : `${history.length} items`}
+        right={<Button variant="ghost" onClick={loadHistory} disabled={historyLoading} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.05fr) minmax(320px, 0.95fr)", gap: 10, alignItems: "start" }}>
+          <div style={{ maxHeight: 230, overflow: "auto", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+            {history.length ? history.map((item) => {
+              const active = (item.history_id || "") === (selectedHistory?.history_id || "");
+              return (
+                <button
+                  type="button"
+                  key={item.history_id || `${item.timestamp}:${item.prompt}`}
+                  onClick={() => setSelectedHistoryId(item.history_id || "")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    width: "100%",
+                    textAlign: "left",
+                    justifyContent: "stretch",
+                    justifyItems: "stretch",
+                    alignItems: "start",
+                    padding: "8px 9px",
+                    border: 0,
+                    borderBottom: "1px solid var(--border)",
+                    background: active ? "var(--bg-tertiary)" : "transparent",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.prompt || item.natural_language || "(empty)"}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {historyActorLabel(item)} · {historyTimestampLabel(item)}
+                  </span>
+                  <span style={{ width: "100%", textAlign: "left", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {item.status || "status"} · {item.table_summary?.kind || unitKey} · {item.table_summary?.total || 0} rows
+                  </span>
+                </button>
+              );
+            }) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+                저장된 {title} 질문 이력이 없습니다.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {selectedHistory ? (
+              <>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill tone={toneForStatus(selectedHistory.status)}>{selectedHistory.status || "history"}</Pill>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    {historyActorLabel(selectedHistory)} · {historyTimestampLabel(selectedHistory)}
+                  </span>
+                  <Button
+                    variant="primary"
+                    onClick={() => replayHistory(selectedHistory)}
+                    style={{ marginLeft: "auto", fontSize: 12, padding: "4px 10px", height: 28 }}
+                  >재현</Button>
+                </div>
+                <div style={{ textAlign: "left", fontSize: 12, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {selectedHistory.prompt || selectedHistory.natural_language || "(empty)"}
+                </div>
+                {selectedHistory.answer ? (
+                  <div style={{ textAlign: "left", fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
+                    {selectedHistory.answer}
+                  </div>
+                ) : null}
+                <JsonBlock
+                  value={{
+                    product: selectedHistory.product || "",
+                    table_summary: selectedHistory.table_summary || {},
+                    warnings: selectedHistory.warnings || [],
+                    trace_summary: selectedHistory.trace_summary || [],
+                  }}
+                  maxHeight={190}
+                />
+              </>
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                이력을 선택하면 조회 답변과 table 요약을 확인할 수 있습니다.
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="flow-agent-unit-grid">
+        <Panel title="State" subtitle={selectedTraceNode ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}` : ""}>
+          <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+        </Panel>
+
+        <Panel title="LangGraph" subtitle={trace.length ? `${trace.length}/${graphNodes.length} nodes · click to inspect` : ""}>
+          <div className="flow-agent-node-grid">
+            <RuntimeGraph graph={activeGraph} selectedId={currentSelectedNodeId} onSelect={setSelectedNodeId} />
+            <div style={{ display: "grid", gap: 8 }}>
+              {selectedNode ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{selectedNode.label || selectedNode.node_id}</strong>
+                    <Pill tone={toneForStatus(selectedNode.status)}>{selectedNode.status || "pending"}</Pill>
+                    {selectedTraceNode ? <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{selectedTraceNode.duration_ms || 0} ms</span> : null}
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
+                  <NodeFeedbackInline feedback={feedback} nodeId={selectedNode.node_id} runId={result?.run_id || ""} fallback={selectedNode} />
+                  {(selectedTraceNode?.warnings || []).length ? <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner> : null}
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                  <JsonBlock value={{ persona: selectedNode.persona || "", prompt: selectedNode.prompt || {}, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={140} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                  <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
+                  <JsonBlock value={selectedTraceNode ? { status: selectedTraceNode.status, input_summary: selectedTraceNode.input_summary || {}, output: selectedNodeOutput || {}, duration_ms: selectedTraceNode.duration_ms || 0 } : { status: selectedNode.status || "pending" }} maxHeight={230} />
+                </>
+              ) : <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>노드 정보 없음</div>}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Test prompt"
+          subtitle={result ? `${result.unit_ai} · ${result.run_id}` : (busy ? "running" : "")}
+          right={<Pill tone={toneForStatus(result?.status)}>{result?.status || (loading ? "loading" : "ready")}</Pill>}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} />
+            <Field label="product">
+              <input
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                placeholder="선택"
+                style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
+              />
+            </Field>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+            <JsonBlock value={{ prompt: prompt.trim(), product: product.trim() }} maxHeight={100} />
+            <Button variant="primary" onClick={run} disabled={!prompt.trim() || busy}>{busy ? "실행 중" : "실행"}</Button>
+            {result ? (
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
+                <UnitAnswerFeedback feedback={feedback} runId={result?.run_id || ""} />
+                {result.answer ? <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{result.answer}</div> : null}
+                <JsonBlock
+                  value={{
+                    product: result.product || "",
+                    semantic_frame: result.semantic_frame || {},
+                    lookup_result: result.lookup_result || {},
+                    table: result.table || {},
+                    warnings: result.warnings || [],
+                  }}
+                  maxHeight={260}
+                />
+              </div>
+            ) : null}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function StepLookupUnitPanel() {
+  return <DeterministicLookupUnitPanel unitKey="step_lookup" title="Step ID 매칭" defaultPrompt="AA100090는 무슨 step이야" />;
+}
+
+function PpidKnobUnitPanel() {
+  return <DeterministicLookupUnitPanel unitKey="ppid_knob" title="PPID Knob 분류" defaultPrompt="PPID_08_0는 어떤 knob으로 분류돼" />;
 }
 
 function SemanticLayerPanel() {
@@ -2621,6 +2967,8 @@ const UNIT_PANEL_RENDERERS = {
   inform_registration: InformRegistrationUnitPanel,
   change_management: ChangeManagementUnitPanel,
   dashboard_agent: DashboardAgentUnitPanel,
+  step_lookup: StepLookupUnitPanel,
+  ppid_knob: PpidKnobUnitPanel,
 };
 
 const UNIT_PANEL_FALLBACK_ITEMS = [
@@ -2628,6 +2976,8 @@ const UNIT_PANEL_FALLBACK_ITEMS = [
   { k: "inform_registration", l: "Inform 등록 도우미" },
   { k: "change_management", l: "변경점 관리 Flow-i" },
   { k: "dashboard_agent", l: "Dashboard Agent" },
+  { k: "step_lookup", l: "Step ID 매칭" },
+  { k: "ppid_knob", l: "PPID Knob 분류" },
 ];
 
 function UnitAiPanel() {

@@ -37,6 +37,12 @@ from core.flowi_units.dashboard_agent_runtime import (
     record_dashboard_agent_history,
     run_dashboard_agent_runtime,
 )
+from core.flowi_units.deterministic_lookup_runtime import (
+    RUNTIME_UNIT_KEYS as DETERMINISTIC_LOOKUP_UNIT_KEYS,
+    deterministic_lookup_graph,
+    list_deterministic_lookup_history,
+    run_deterministic_lookup_runtime,
+)
 from core.flowi_units.filebrowser_ai_sql_runtime import (
     UNIT_AI_KEY as FILEBROWSER_AI_SQL_UNIT_KEY,
     filebrowser_ai_sql_graph,
@@ -73,6 +79,16 @@ _ACTIVE_UNIT_ENDPOINTS = {
         "run": "/api/agent/unit-ai/dashboard_agent/runtime/run",
         "history": "/api/agent/unit-ai/dashboard_agent/runtime/history",
         "overrides": "/api/agent/unit-ai/dashboard_agent/runtime/overrides",
+    },
+    "step_lookup": {
+        "graph": "/api/agent/unit-ai/step_lookup/runtime/graph",
+        "run": "/api/agent/unit-ai/step_lookup/runtime/run",
+        "history": "/api/agent/unit-ai/step_lookup/runtime/history",
+    },
+    "ppid_knob": {
+        "graph": "/api/agent/unit-ai/ppid_knob/runtime/graph",
+        "run": "/api/agent/unit-ai/ppid_knob/runtime/run",
+        "history": "/api/agent/unit-ai/ppid_knob/runtime/history",
     },
 }
 
@@ -395,7 +411,11 @@ def agent_reset_status() -> dict[str, Any]:
     version_meta = _version_metadata(_APP_ROOT)
     return {
         "ok": True,
-        "status": "archived_for_rebuild",
+        "status": "active_unit_ai",
+        "legacy_agent_studio": {
+            "status": "archived_for_rebuild",
+            "detail": "Legacy Agent Studio endpoints remain archived; Unit AI runtime routes are active.",
+        },
         "settings_endpoint": "/api/llm/status",
         "unit_ai_endpoint": "/api/agent/unit-ai/catalog",
         "unit_endpoint": "/api/agent/catalog",
@@ -767,6 +787,8 @@ def unit_ai_runtime_graph(unit_key: str, request: Request) -> dict[str, Any]:
         graph = change_management_graph()
     elif unit_key == DASHBOARD_AGENT_UNIT_KEY:
         graph = dashboard_agent_graph()
+    elif unit_key in DETERMINISTIC_LOOKUP_UNIT_KEYS:
+        graph = deterministic_lookup_graph(unit_key)
     else:
         raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
     return {
@@ -842,6 +864,13 @@ def unit_ai_runtime_run(unit_key: str, req: UnitAiRuntimeRunReq, request: Reques
         except Exception:
             pass
         return agent_feedback_penalties.annotate_result(DASHBOARD_AGENT_UNIT_KEY, result)
+    if unit_key in DETERMINISTIC_LOOKUP_UNIT_KEYS:
+        me = current_user(request)
+        return run_deterministic_lookup_runtime(
+            unit_key,
+            payload,
+            username=(me or {}).get("username") or "",
+        )
     raise HTTPException(status_code=404, detail=f"{unit_key} runtime is not available")
 
 
@@ -953,6 +982,12 @@ def unit_ai_runtime_history(unit_key: str, request: Request, limit: int = 50) ->
             "unit_ai": unit_key,
             "history": list_dashboard_agent_history(limit=limit, username=(me or {}).get("username") or ""),
         }
+    if unit_key in DETERMINISTIC_LOOKUP_UNIT_KEYS:
+        return {
+            "ok": True,
+            "unit_ai": unit_key,
+            "history": list_deterministic_lookup_history(unit_key, limit=limit, username=(me or {}).get("username") or ""),
+        }
     raise HTTPException(status_code=404, detail=f"{unit_key} history is not available")
 
 
@@ -1010,6 +1045,31 @@ def _query_limit(request: Request, default: int) -> int:
     return max(1, min(200, limit))
 
 
+def _request_json_payload(request: Request) -> dict[str, Any]:
+    for attr in ("_json", "json_body", "body_json"):
+        value = getattr(request, attr, None)
+        if isinstance(value, dict):
+            return value
+    json_fn = getattr(request, "json", None)
+    if not callable(json_fn):
+        return {}
+    try:
+        import anyio
+
+        value = anyio.from_thread.run(json_fn)
+    except Exception:
+        try:
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return {}
+            value = loop.run_until_complete(json_fn())
+        except Exception:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | None:
     """Serve active Agent GET endpoints even if the archived catch-all is hit."""
     if request.method != "GET":
@@ -1041,6 +1101,8 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
             return unit_ai_runtime_graph(unit_key, request)
         if parts[3] == "history":
             return unit_ai_runtime_history(unit_key, request, limit=_query_limit(request, 50))
+        if parts[3] == "overrides":
+            return unit_ai_runtime_overrides(unit_key, request)
     if len(parts) == 3 and parts[0] == "unit-ai" and parts[2] == "feedback-profile":
         return unit_ai_feedback_profile(unquote(parts[1]), request)
     if len(parts) == 3 and parts[0] == "unit":
@@ -1052,9 +1114,31 @@ def _active_agent_get_fallback(path: str, request: Request) -> dict[str, Any] | 
     return None
 
 
+def _active_agent_write_fallback(path: str, request: Request) -> dict[str, Any] | None:
+    """Serve active Agent write endpoints even if route ordering reaches catch-all."""
+    method = str(getattr(request, "method", "") or "").upper()
+    if method not in {"POST", "PUT"}:
+        return None
+    normalized = path.strip("/")
+    parts = normalized.split("/")
+    body = _request_json_payload(request)
+    if method == "POST" and len(parts) == 4 and parts[0] == "unit-ai" and parts[2] == "runtime" and parts[3] == "run":
+        return unit_ai_runtime_run(unquote(parts[1]), UnitAiRuntimeRunReq(**body), request)
+    if method == "POST" and len(parts) == 3 and parts[0] == "unit" and parts[2] == "run":
+        return unit_runtime_run(unquote(parts[1]), UnitAiRuntimeRunReq(**body), request)
+    if method == "POST" and len(parts) == 3 and parts[0] == "unit-ai" and parts[2] == "feedback":
+        return unit_ai_feedback(unquote(parts[1]), UnitAiFeedbackReq(**body), request)
+    if method == "PUT" and len(parts) == 4 and parts[0] == "unit-ai" and parts[2] == "runtime" and parts[3] == "overrides":
+        return unit_ai_runtime_overrides_save(unquote(parts[1]), UnitAiOverrideReq(**body), request)
+    return None
+
+
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def archived_agent_endpoint(path: str, request: Request) -> dict[str, Any] | None:
     active_payload = _active_agent_get_fallback(path, request)
+    if active_payload is not None:
+        return active_payload
+    active_payload = _active_agent_write_fallback(path, request)
     if active_payload is not None:
         return active_payload
     raise HTTPException(status_code=410, detail="Agent implementation is archived for rebuild.")
