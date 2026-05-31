@@ -206,6 +206,125 @@ def test_flowi_workflows_draft_and_save(monkeypatch, tmp_path):
     assert saved["workflow"]["id"] == draft["workflow"]["id"]
 
 
+def test_dashboard_chart_knob_coloring_reuses_saved_chart_rows(monkeypatch, tmp_path):
+    import polars as pl
+    from routers import llm
+
+    monkeypatch.setattr(llm.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    sid = llm.dashboard_charting.save_chart_session({
+        "username": "tester",
+        "chart_type": "scatter",
+        "config": {
+            "chart_type": "scatter",
+            "source_type": "INLINE",
+            "metric": "15.0 M2",
+            "item_id": "15.0 M2",
+            "x_col": "tkout_time",
+            "product": "PRODA",
+        },
+        "base_data_query": {
+            "source_type": "INLINE",
+            "db": "1.RAWDATA_DB_INLINE",
+            "files": ["PRODA_inline.parquet"],
+            "sql": "SELECT root_lot_id, wafer_id, tkout_time, AVG(value) AS y FROM INLINE GROUP BY 1,2,3",
+        },
+        "data": [
+            {"x": 0, "y": 1.2, "tkout_time": "2026-01-01", "root_lot_id": "A1001", "wafer_id": "3", "lot_wf": "A1001_3"},
+            {"x": 1, "y": 1.7, "tkout_time": "2026-01-02", "root_lot_id": "A1001", "wafer_id": "4", "lot_wf": "A1001_4"},
+        ],
+    })
+
+    def _unexpected_requery(*_args, **_kwargs):
+        raise AssertionError("base chart data must be reused instead of re-queried")
+
+    monkeypatch.setattr(llm, "_handle_inline_trend_chart", _unexpected_requery)
+    monkeypatch.setattr(llm, "_handle_et_trend_chart", _unexpected_requery)
+
+    def _knob_lf(product, lots, prompt, xy_metrics):
+        assert product == "PRODA"
+        assert "A1001" in lots
+        assert xy_metrics == ["15.0 M2"]
+        return {
+            "ok": True,
+            "lf": pl.DataFrame([
+                {"lot_wf": "A1001_3", "root_lot_id": "A1001", "wafer_id": "3", "color_value": "PPID_A", "color_n": 1},
+                {"lot_wf": "A1001_4", "root_lot_id": "A1001", "wafer_id": "4", "color_value": "PPID_B", "color_n": 1},
+            ]).lazy(),
+            "group_cols": ["lot_wf"],
+            "knob_col": "KNOB_1.0_STI",
+            "display_name": "1.0 STI",
+            "file_count": 1,
+        }
+
+    monkeypatch.setattr(llm, "_flowi_knob_lf", _knob_lf)
+
+    out = llm._handle_dashboard_chart_context_followup(
+        "방금 차트 1.0 STI Knob으로 컬러링해줘",
+        "PRODA",
+        12,
+        {"chart_session_id": sid},
+    )
+
+    assert out["handled"] is True
+    assert out["action"] == "refine_chart_session_knob_coloring"
+    assert out["chart_session_id"] == sid
+    assert [p["y"] for p in out["chart_result"]["points"]] == [1.2, 1.7]
+    assert [p["color_value"] for p in out["chart_result"]["points"]] == ["PPID_A", "PPID_B"]
+    assert out["chart_result"]["sources"]["base_chart_session_id"] == sid
+    assert out["raw_data_download"]["url"].endswith(f"chart_session_id={sid}")
+
+    saved = llm.dashboard_charting.load_chart_session(sid)
+    assert [row["color_value"] for row in saved["data"]] == ["PPID_A", "PPID_B"]
+    assert saved["base_data_query"]["knob_join"]["reuse_base_chart_raw_data"] is True
+
+    raw_out = llm._handle_dashboard_chart_raw_data_followup(
+        "방금 차트 raw data 줘",
+        {"chart_session_id": sid},
+        12,
+        username="tester",
+        role="admin",
+    )
+    assert raw_out["handled"] is True
+    assert "color_value" in [col["key"] for col in raw_out["table"]["columns"]]
+    assert raw_out["table"]["rows"][0]["color_value"] == "PPID_A"
+
+
+def test_dashboard_chart_raw_data_provenance_uses_saved_session_query(monkeypatch, tmp_path):
+    from routers import llm
+
+    monkeypatch.setattr(llm.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    sid = llm.dashboard_charting.save_chart_session({
+        "username": "tester",
+        "chart_type": "scatter",
+        "config": {"chart_type": "scatter", "source_type": "INLINE", "metric": "15.0 M2", "product": "PRODA"},
+        "base_data_query": {
+            "source_type": "INLINE",
+            "db": "1.RAWDATA_DB_INLINE",
+            "files": ["PRODA_inline.parquet"],
+            "sql": "SELECT root_lot_id, wafer_id, tkout_time, AVG(value) AS y FROM INLINE GROUP BY 1,2,3",
+            "filters": {"product": "PRODA", "item_id": "15.0 M2"},
+            "aggregation": {"INLINE": "avg"},
+        },
+        "data": [{"root_lot_id": "A1001", "wafer_id": "3", "tkout_time": "2026-01-01", "y": 1.2}],
+    })
+
+    out = llm._handle_dashboard_chart_raw_data_provenance_followup(
+        "이 chart raw data 어떻게 뽑았어?",
+        {"chart_session_id": sid},
+        username="tester",
+        role="admin",
+    )
+
+    assert out["handled"] is True
+    assert out["action"] == "explain_chart_raw_data_query"
+    assert "1.RAWDATA_DB_INLINE" in out["answer"]
+    assert "SELECT root_lot_id" in out["answer"]
+    rows = {row["field"]: row["value"] for row in out["table"]["rows"]}
+    assert rows["source_type"] == "INLINE"
+    assert "PRODA_inline.parquet" in rows["files"]
+    assert "15.0 M2" in rows["filters"]
+
+
 def test_flowi_step_id_token_is_not_classified_as_lot():
     from routers import llm
 

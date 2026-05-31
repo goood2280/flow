@@ -4409,6 +4409,100 @@ def _dashboard_chart_title(product: str, chart_type: str, metrics: list[dict[str
     return " ".join(piece for piece in pieces if piece).strip() or _dashboard_chart_label(chart_type)
 
 
+def _flowi_compact_json(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
+
+
+def _flowi_dashboard_sql_from_config(cfg: dict[str, Any]) -> str:
+    source_type = _upper(cfg.get("source_type") or cfg.get("source") or "")
+    metric = _text(cfg.get("item_id") or cfg.get("metric") or cfg.get("y_col") or cfg.get("y_expr"))
+    product = _text(cfg.get("product"))
+    lots = [_text(x) for x in (cfg.get("lots") or []) if _text(x)] if isinstance(cfg.get("lots"), list) else []
+    if source_type == "INLINE":
+        where = ["item_id = :item_id"] if metric else []
+        if product:
+            where.append("product = :product")
+        if lots:
+            where.append("root_lot_id IN (:lots)")
+        return (
+            "SELECT root_lot_id, wafer_id, tkout_time, AVG(value) AS y "
+            "FROM INLINE "
+            + (f"WHERE {' AND '.join(where)} " if where else "")
+            + "GROUP BY root_lot_id, wafer_id, tkout_time"
+        )
+    if source_type == "ET":
+        where = ["item_id = :item_id"] if metric else []
+        if product:
+            where.append("product = :product")
+        if cfg.get("step_id"):
+            where.append("step_id = :step_id")
+        if lots:
+            where.append("root_lot_id IN (:lots)")
+        return (
+            "SELECT product, root_lot_id, wafer_id, tkout_time, MEDIAN(value) AS y "
+            "FROM ET "
+            + (f"WHERE {' AND '.join(where)} " if where else "")
+            + "GROUP BY product, root_lot_id, wafer_id, tkout_time"
+        )
+    return ""
+
+
+def _flowi_dashboard_base_data_query(
+    prompt: str,
+    product: str,
+    tool: dict[str, Any],
+    chart_result: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    sources = chart_result.get("sources") if isinstance(chart_result.get("sources"), dict) else {}
+    slots = tool.get("slots") if isinstance(tool.get("slots"), dict) else {}
+    source_type = _text(
+        sources.get("source_type")
+        or chart_result.get("source_type")
+        or config.get("source_type")
+        or config.get("source")
+        or slots.get("source_type")
+    )
+    files = sources.get("files") or sources.get("source_files") or tool.get("files") or tool.get("source_files") or []
+    if isinstance(files, (str, Path)):
+        files = [str(files)]
+    elif not isinstance(files, list):
+        files = []
+    query = {
+        "prompt": prompt,
+        "product": _text(config.get("product") or product or slots.get("product")),
+        "tool_intent": tool.get("intent") or "",
+        "source_type": source_type,
+        "db": sources.get("db") or sources.get("database") or (f"1.RAWDATA_DB_{source_type}" if source_type in {"INLINE", "ET", "FAB", "VM"} else ""),
+        "files": [str(x) for x in files[:40]],
+        "file_count": sources.get("file_count")
+        or sources.get("inline_file_count")
+        or sources.get("et_file_count")
+        or sources.get("fab_file_count")
+        or sources.get("vm_file_count")
+        or len(files),
+        "sql": sources.get("sql") or sources.get("sql_equivalent") or tool.get("sql") or _flowi_dashboard_sql_from_config(config),
+        "filters": chart_result.get("filters") or sources.get("filters") or {
+            k: v for k, v in {
+                "product": config.get("product") or product or slots.get("product"),
+                "item_id": config.get("item_id") or config.get("metric"),
+                "step_id": config.get("step_id"),
+                "lots": config.get("lots"),
+            }.items() if v not in (None, "", [])
+        },
+        "aggregation": chart_result.get("aggregations") or sources.get("aggregation") or ({source_type: config.get("aggregation")} if source_type and config.get("aggregation") else {}),
+        "join_keys": chart_result.get("join_cols") or config.get("join_cols") or ["root_lot_id", "wafer_id"],
+    }
+    return {k: v for k, v in query.items() if v not in (None, "", [], {})}
+
+
 def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = "", username: str = "flowi") -> dict[str, Any]:
     if not isinstance(tool, dict):
         return tool
@@ -4483,11 +4577,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
                 "username": username,
                 "chart_type": chart_type,
                 "config": config,
-                "base_data_query": {
-                    "prompt": prompt,
-                    "product": product,
-                    "tool_intent": tool.get("intent") or "",
-                },
+                "base_data_query": _flowi_dashboard_base_data_query(prompt, product, tool, chart_result, config),
                 "data": data,
             })
         except Exception:
@@ -4593,6 +4683,116 @@ def _flowi_chart_raw_filename(session: dict[str, Any], session_id: str) -> str:
     title = str(cfg.get("title") or session.get("chart_type") or "chart_raw").strip()
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("._") or "chart_raw"
     return f"flowi_{safe}_{str(session_id or '')[:8]}.csv"
+
+
+def _flowi_chart_raw_data_provenance_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    has_chart_data = any(t in low or t in text for t in ("chart", "차트", "raw data", "raw", "data", "데이터"))
+    asks_origin = any(t in low or t in text for t in ("how", "explain", "sql", "db", "file", "files", "source", "query", "어떻게", "뽑", "추출", "쿼리", "근거", "출처", "어느 DB"))
+    return bool(has_chart_data and asks_origin)
+
+
+def _flowi_chart_session_provenance(session: dict[str, Any]) -> dict[str, Any]:
+    cfg = session.get("config") if isinstance(session.get("config"), dict) else {}
+    query = session.get("base_data_query") if isinstance(session.get("base_data_query"), dict) else {}
+    source_type = _text(query.get("source_type") or cfg.get("source_type") or cfg.get("source"))
+    files = query.get("files") or query.get("source_files") or []
+    if isinstance(files, (str, Path)):
+        files = [str(files)]
+    elif not isinstance(files, list):
+        files = []
+    rows = _flowi_chart_session_rows(session)
+    return {
+        "source_type": source_type,
+        "db": _text(query.get("db") or query.get("database") or (f"1.RAWDATA_DB_{source_type}" if source_type else "")),
+        "files": [str(x) for x in files],
+        "file_count": query.get("file_count") or len(files),
+        "sql": _text(query.get("sql") or query.get("sql_equivalent") or _flowi_dashboard_sql_from_config(cfg)),
+        "filters": query.get("filters") or {},
+        "aggregation": query.get("aggregation") or cfg.get("aggregation") or {},
+        "join_keys": query.get("join_keys") or ["root_lot_id", "wafer_id"],
+        "knob_join": query.get("knob_join") or {},
+        "row_count": len(rows),
+    }
+
+
+def _handle_dashboard_chart_raw_data_provenance_followup(
+    prompt: str,
+    agent_context: dict[str, Any] | None,
+    *,
+    username: str = "flowi",
+    role: str = "user",
+) -> dict[str, Any]:
+    if not _flowi_chart_raw_data_provenance_intent(prompt):
+        return {"handled": False}
+    sid = _active_chart_session_id(agent_context)
+    if not sid:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_raw_data_provenance",
+            "action": "collect_required_fields",
+            "feature": "dashboard",
+            "missing": ["chart_session_id"],
+            "answer": "직전 chart session을 찾지 못했습니다. 먼저 Home에서 차트를 만든 뒤 raw data 추출 근거를 물어봐 주세요.",
+        }
+    try:
+        session = dashboard_charting.load_chart_session(sid)
+    except FileNotFoundError:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_raw_data_provenance",
+            "action": "explain_chart_raw_data_query",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": "chart session을 찾지 못했습니다. 차트를 다시 만든 뒤 물어봐 주세요.",
+        }
+    if not _flowi_chart_session_allowed(session, username, role):
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_raw_data_provenance",
+            "action": "explain_chart_raw_data_query",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": "다른 사용자의 chart session raw data 추출 근거는 볼 수 없습니다.",
+        }
+    prov = _flowi_chart_session_provenance(session)
+    file_label = ", ".join(prov["files"][:8]) if prov["files"] else f"{prov.get('file_count') or 0} files"
+    sql = prov.get("sql") or "저장된 SQL equivalent가 없습니다. chart config/filter 기준으로만 추적 가능합니다."
+    answer = (
+        f"직전 chart session({sid[:8]}) raw data는 {prov.get('source_type') or 'source'} "
+        f"DB={prov.get('db') or '-'}, Files={file_label} 기준으로 뽑았습니다. "
+        f"SQL/filter: {sql}"
+    )
+    rows = [
+        {"field": "chart_session_id", "value": sid},
+        {"field": "source_type", "value": prov.get("source_type") or ""},
+        {"field": "db", "value": prov.get("db") or ""},
+        {"field": "files", "value": file_label},
+        {"field": "sql", "value": sql},
+        {"field": "filters", "value": _flowi_compact_json(prov.get("filters"))},
+        {"field": "aggregation", "value": _flowi_compact_json(prov.get("aggregation"))},
+        {"field": "join_keys", "value": _flowi_compact_json(prov.get("join_keys"))},
+        {"field": "knob_join", "value": _flowi_compact_json(prov.get("knob_join"))},
+        {"field": "row_count", "value": str(prov.get("row_count") or 0)},
+    ]
+    return {
+        "handled": True,
+        "intent": "dashboard_chart_raw_data_provenance",
+        "action": "explain_chart_raw_data_query",
+        "feature": "dashboard",
+        "answer": answer,
+        "chart_session_id": sid,
+        "provenance": prov,
+        "table": {
+            "kind": "dashboard_chart_raw_data_provenance",
+            "title": "Chart raw data provenance",
+            "placement": "below",
+            "columns": _table_columns(["field", "value"]),
+            "rows": rows,
+            "total": len(rows),
+        },
+    }
 
 
 def _flowi_chart_raw_download_payload(
@@ -4813,11 +5013,269 @@ def _handle_dashboard_chart_session_fit(session: dict[str, Any], sid: str, cfg: 
     }
 
 
+def _flowi_chart_session_lot_hints(rows: list[dict[str, Any]], cfg: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = _upper(value)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+
+    if isinstance(cfg.get("lots"), list):
+        for value in cfg.get("lots") or []:
+            add(value)
+    for row in rows:
+        add(row.get("root_lot_id"))
+    for row in rows:
+        add(row.get("lot_wf") or row.get("label"))
+    return out[:500]
+
+
+def _flowi_chart_row_lookup_keys(row: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+
+    def add(value: Any) -> None:
+        text = _upper(value)
+        if text and text not in keys:
+            keys.append(text)
+
+    root = row.get("root_lot_id")
+    wafer = row.get("wafer_id")
+    add(row.get("lot_wf"))
+    add(row.get("label"))
+    add(_flowi_lot_wf_id(root, wafer))
+    add(root)
+    return keys
+
+
+def _flowi_collect_knob_lookup(knob: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    lf = knob.get("lf")
+    if lf is None:
+        return {}, []
+    df = lf.limit(50000).collect()
+    lookup: dict[str, dict[str, Any]] = {}
+    rows = df.to_dicts()
+    for row in rows:
+        value = _text(row.get("color_value"))
+        if not value:
+            continue
+        payload = {"color_value": value, "color_n": row.get("color_n") or ""}
+        root = row.get("root_lot_id")
+        wafer = row.get("wafer_id")
+        candidates = [
+            row.get("lot_wf"),
+            _flowi_lot_wf_id(root, wafer),
+            root,
+        ]
+        for key in candidates:
+            norm = _upper(key)
+            if norm and norm not in lookup:
+                lookup[norm] = payload
+    return lookup, rows
+
+
+def _handle_dashboard_chart_session_knob_coloring(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    session: dict[str, Any],
+    sid: str,
+    cfg: dict[str, Any],
+    *,
+    fit_requested: bool = False,
+    username: str = "flowi",
+) -> dict[str, Any]:
+    rows = [dict(row) for row in _flowi_chart_session_rows(session)]
+    if not rows:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_knob_coloring",
+            "action": "refine_chart_session_knob_coloring",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": "직전 chart session에 재사용할 raw data가 없습니다. 차트를 다시 만든 뒤 knob coloring을 요청해 주세요.",
+        }
+    product_hint = _text(cfg.get("product") or product)
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_knob_coloring",
+            "action": "collect_required_fields",
+            "feature": "dashboard",
+            "missing": ["product"],
+            "answer": "Knob coloring을 하려면 제품명이 필요합니다. 제품명을 알려주세요.",
+        }
+    metric = _text(cfg.get("metric") or cfg.get("item_id") or cfg.get("y_label") or cfg.get("title"))
+    lots = _flowi_chart_session_lot_hints(rows, cfg)
+    try:
+        knob = _flowi_knob_lf(product_hint, lots, prompt, [metric] if metric else [])
+    except Exception as exc:
+        logger.warning("flowi chart session knob lookup failed: %s", exc)
+        knob = {"ok": False, "error": str(exc)}
+    if not knob.get("ok"):
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_knob_coloring",
+            "action": "refine_chart_session_knob_coloring",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": knob.get("error") or "ML_TABLE에서 coloring 기준 KNOB을 찾지 못했습니다.",
+            "validation": {"status": "blocked", "reason": "knob_lookup_failed", **{k: v for k, v in knob.items() if k != "lf"}},
+        }
+    try:
+        lookup, knob_rows = _flowi_collect_knob_lookup(knob)
+    except Exception as exc:
+        logger.warning("flowi chart session knob collect failed: %s", exc)
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_knob_coloring",
+            "action": "refine_chart_session_knob_coloring",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": f"KNOB join 데이터를 읽는 중 실패했습니다: {exc}",
+        }
+    color_by = _text(knob.get("display_name") or knob.get("knob_col") or "KNOB")
+    excluded_values = {_text(x) for x in (knob.get("excluded_values") or []) if _text(x)}
+    colored_rows: list[dict[str, Any]] = []
+    color_counts: dict[str, int] = {}
+    missing_color_count = 0
+    for row in rows:
+        matched = next((lookup.get(key) for key in _flowi_chart_row_lookup_keys(row) if lookup.get(key)), None)
+        color_value = _text((matched or {}).get("color_value"))
+        if excluded_values and color_value in excluded_values:
+            continue
+        out_row = dict(row)
+        out_row["color_by"] = color_by
+        out_row["color_value"] = color_value
+        out_row["color_n"] = (matched or {}).get("color_n") or ""
+        if color_value:
+            color_counts[color_value] = color_counts.get(color_value, 0) + 1
+        else:
+            missing_color_count += 1
+        colored_rows.append(out_row)
+    chart_type = str(session.get("chart_type") or cfg.get("chart_type") or "scatter").replace("dashboard_", "") or "scatter"
+    refined_cfg = dict(cfg)
+    refined_cfg.update({
+        "chart_type": chart_type,
+        "product": product_hint,
+        "color_by": color_by,
+        "color_missing": "gray",
+        "knob_column": knob.get("knob_col") or "",
+        "knob_join_source": f"ML_TABLE_{product_hint}",
+    })
+    if fit_requested:
+        refined_cfg["fit"] = "linear"
+    fit = _chart_fit_from_rows(colored_rows) if fit_requested else {}
+    base_query = dict(session.get("base_data_query") or {})
+    base_query["knob_join"] = {
+        "reuse_base_chart_raw_data": True,
+        "source": f"ML_TABLE_{product_hint}",
+        "knob_column": knob.get("knob_col") or "",
+        "display_name": color_by,
+        "join_keys": ["lot_wf", "root_lot_id", "wafer_id"],
+        "base_chart_session_id": sid,
+        "matched_rows": len([row for row in colored_rows if _text(row.get("color_value"))]),
+        "knob_rows": len(knob_rows),
+        "sql": (
+            f"SELECT base.*, knob.{knob.get('knob_col') or 'KNOB'} AS color_value "
+            f"FROM chart_session_raw_data base LEFT JOIN ML_TABLE_{product_hint} knob "
+            "ON base.root_lot_id = knob.root_lot_id AND base.wafer_id = knob.wafer_id"
+        ),
+    }
+    history = list(session.get("history") or [])
+    history.append({
+        "action": "knob_coloring",
+        "value": color_by,
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "username": username,
+    })
+    dashboard_charting.save_chart_session({
+        "session_id": sid,
+        "username": session.get("username") or username,
+        "chart_type": chart_type,
+        "config": refined_cfg,
+        "base_data_query": base_query,
+        "data": colored_rows,
+        "created_at": session.get("created_at"),
+        "history": history,
+    })
+    color_values = [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if missing_color_count:
+        color_values.append({"value": "missing", "count": missing_color_count, "color": "gray"})
+    columns = _flowi_chart_raw_columns(colored_rows)
+    chart_result = {
+        "ok": True,
+        "kind": f"dashboard_{chart_type}",
+        "chart_type": chart_type,
+        "title": refined_cfg.get("title") or cfg.get("title") or "Flow-i chart",
+        "points": colored_rows,
+        "total": len(colored_rows),
+        "config": refined_cfg,
+        "chart_config": refined_cfg,
+        "fit": fit,
+        "fit_params": fit,
+        "color_by": color_by,
+        "color_values": color_values,
+        "chart_session_id": sid,
+        "sources": {
+            "base_chart_session_id": sid,
+            "reuse_base_chart_raw_data": True,
+            "knob_source": f"ML_TABLE_{product_hint}",
+            "knob_column": knob.get("knob_col") or "",
+            "join_keys": ["lot_wf", "root_lot_id", "wafer_id"],
+        },
+    }
+    answer = (
+        f"직전 chart session({sid[:8]}) raw data {len(rows):,}건은 그대로 두고 "
+        f"ML_TABLE_{product_hint}에서 {color_by} KNOB 값만 root_lot_id/wafer_id 기준으로 join해서 다시 그렸습니다."
+    )
+    if fit:
+        answer += f" 1차식 fitting line과 R²={fit.get('r2')}도 함께 반영했습니다."
+    return {
+        "handled": True,
+        "intent": "dashboard_chart_knob_coloring",
+        "action": "refine_chart_session_knob_coloring",
+        "feature": "dashboard",
+        "answer": answer,
+        "chart_type": chart_type,
+        "config": refined_cfg,
+        "chart_config": refined_cfg,
+        "chart_result": chart_result,
+        "fit": fit,
+        "chart_session_id": sid,
+        "raw_data_download": {
+            "url": f"/api/llm/flowi/chart-session/raw-data.csv?chart_session_id={sid}",
+            "chart_session_id": sid,
+            "filename": _flowi_chart_raw_filename({"config": refined_cfg, "chart_type": chart_type}, sid),
+            "row_count": len(colored_rows),
+            "column_count": len(columns),
+        },
+        "table": {
+            "kind": "dashboard_chart_knob_coloring_preview",
+            "title": "Chart raw data with KNOB color",
+            "placement": "below",
+            "columns": _table_columns(columns),
+            "rows": [{col: row.get(col, "") for col in columns} for row in colored_rows[:max(1, min(120, max_rows * 8))]],
+            "total": len(colored_rows),
+        },
+        "validation": {
+            "base_rows_reused": len(rows),
+            "colored_rows": len(colored_rows),
+            "matched_rows": len([row for row in colored_rows if _text(row.get("color_value"))]),
+            "missing_color_rows": missing_color_count,
+        },
+    }
+
+
 def _handle_dashboard_chart_context_followup(
     prompt: str,
     product: str,
     max_rows: int,
     agent_context: dict[str, Any] | None,
+    *,
+    username: str = "flowi",
 ) -> dict[str, Any]:
     color_requested = _chart_context_color_intent(prompt)
     fit_requested = _chart_fit_intent(prompt)
@@ -4831,6 +5289,17 @@ def _handle_dashboard_chart_context_followup(
     except FileNotFoundError:
         return {"handled": False}
     cfg = session.get("config") if isinstance(session.get("config"), dict) else {}
+    if color_requested:
+        return _handle_dashboard_chart_session_knob_coloring(
+            prompt,
+            product,
+            max_rows,
+            session,
+            sid,
+            cfg,
+            fit_requested=fit_requested,
+            username=username,
+        )
     source_type = _upper(cfg.get("source_type") or cfg.get("source") or "")
     metric = str(cfg.get("metric") or cfg.get("item_id") or "").strip()
     if source_type not in {"ET", "INLINE"} or not metric:
@@ -7024,6 +7493,9 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         "config_overrides": config_overrides,
         "render_preset": config_overrides["render_preset"],
         "sources": {
+            "db": "1.RAWDATA_DB_ET",
+            "files": [str(p) for p in files[:24]],
+            "sql": _flowi_dashboard_sql_from_config(config_overrides),
             "et_file_count": len(files),
             "et_items": item_matches or [metric],
             "lot_wf": config_overrides["group_by"],
@@ -7648,6 +8120,9 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "config_overrides": config_overrides,
             "render_preset": config_overrides["render_preset"],
             "sources": {
+                "db": "1.RAWDATA_DB_INLINE",
+                "files": [str(p) for p in inline_files[:24]],
+                "sql": _flowi_dashboard_sql_from_config(config_overrides),
                 "inline_file_count": len(inline_files),
                 "inline_items": item_matches or [metric],
                 "lot_wf": "root_lot_id + '_' + wafer_id" if root_col and wafer_col else "lot_wf",
@@ -17994,6 +18469,14 @@ def _handle_flowi_query_core(
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
     if allowed_keys is None or "dashboard" in allowed_keys:
+        provenance_out = _handle_dashboard_chart_raw_data_provenance_followup(
+            prompt,
+            agent_context,
+            username=username,
+            role=role,
+        )
+        if provenance_out.get("handled"):
+            return provenance_out
         raw_data_out = _handle_dashboard_chart_raw_data_followup(
             prompt,
             agent_context,
@@ -18003,7 +18486,7 @@ def _handle_flowi_query_core(
         )
         if raw_data_out.get("handled"):
             return raw_data_out
-        chart_context_out = _handle_dashboard_chart_context_followup(prompt, product, max_rows, agent_context)
+        chart_context_out = _handle_dashboard_chart_context_followup(prompt, product, max_rows, agent_context, username=username)
         if chart_context_out.get("handled"):
             return _augment_dashboard_tool(chart_context_out, prompt, product=product, username=username)
     impact_context_out = _handle_knowledge_impact_context(prompt, product, max_rows)

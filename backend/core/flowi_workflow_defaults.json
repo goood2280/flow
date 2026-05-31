@@ -251,6 +251,71 @@
       "result_contract": {"type": "chart", "default_agg": {"Inline": "avg", "ET": "median"}, "supports_refine": true}
     },
     {
+      "id": "wf_chart_knob_coloring_followup",
+      "title": "Existing chart KNOB coloring follow-up",
+      "enabled": true,
+      "priority": 100,
+      "category": "chart_refine",
+      "unit_ai": "dashboard_agent",
+      "action": "refine_chart_with_knob_coloring",
+      "examples": ["chart_demo chart 1.0 STI knob coloring", "방금 차트 1.0 STI Knob으로 컬러링해줘", "위 chart raw data에 1.0 STI join해서 다시 그려줘", "이 차트는 기존 raw data 유지하고 KNOB만 붙여서 색칠해줘"],
+      "trigger_terms": ["chart_demo", "chart", "차트", "raw data", "knob coloring", "coloring", "컬러링", "join"],
+      "slots": [
+        {"name": "chart_session_id", "type": "chart_session", "required": true, "example": "chart_demo"},
+        {"name": "knob_name", "type": "knob", "required": true, "example": "1.0 STI"}
+      ],
+      "source_roles": ["split_base", "inline_db", "et_db"],
+      "steps": [
+        "직전 chart_session_id의 raw data를 그대로 읽는다.",
+        "요청된 knob_name은 ML_TABLE_<product>에서 root_lot_id/wafer_id 또는 lot_wf 기준으로 조회한다.",
+        "기존 chart raw data에는 KNOB value만 left join하고 x/y/agg 값은 다시 계산하지 않는다.",
+        "같은 chart_session_id를 갱신해 이후 raw data 다운로드와 추출 근거 질문이 이어지게 한다."
+      ],
+      "result_contract": {"type": "chart", "requires_chart_session": true, "uses_existing_raw_data": true, "join_only": true, "supports_raw_data": true}
+    },
+    {
+      "id": "wf_chart_raw_data_followup",
+      "title": "Existing chart raw data export follow-up",
+      "enabled": true,
+      "priority": 99,
+      "category": "raw_export",
+      "unit_ai": "dashboard_agent",
+      "action": "export_chart_raw_data",
+      "examples": ["chart_demo chart raw data download", "방금 차트 raw data 줘", "이 차트 raw data csv로 내려줘", "위 차트 원본 데이터 보여줘"],
+      "trigger_terms": ["chart_demo", "chart", "차트", "raw data", "csv", "download", "다운로드", "원본 데이터"],
+      "slots": [
+        {"name": "chart_session_id", "type": "chart_session", "required": true, "example": "chart_demo"}
+      ],
+      "source_roles": ["inline_db", "et_db", "fab_db", "vm_db", "split_base"],
+      "steps": [
+        "직전 chart_session_id에 저장된 chart raw data를 찾는다.",
+        "preview table을 간단히 제공하고 CSV 다운로드 버튼을 제공한다.",
+        "KNOB coloring 후라면 join된 color_value까지 포함한다."
+      ],
+      "result_contract": {"type": "table", "download": true, "requires_chart_session": true}
+    },
+    {
+      "id": "wf_chart_raw_data_provenance_followup",
+      "title": "Existing chart raw data provenance follow-up",
+      "enabled": true,
+      "priority": 98,
+      "category": "explainability",
+      "unit_ai": "dashboard_agent",
+      "action": "explain_chart_raw_data_query",
+      "examples": ["chart_demo chart raw data SQL explain", "이 chart raw data 어떻게 뽑았어?", "방금 차트 어느 DB Files SQL로 뽑았어?", "이 raw data 추출 근거 알려줘"],
+      "trigger_terms": ["chart_demo", "chart", "차트", "raw data", "SQL", "DB", "Files", "어떻게", "뽑", "추출", "근거"],
+      "slots": [
+        {"name": "chart_session_id", "type": "chart_session", "required": true, "example": "chart_demo"}
+      ],
+      "source_roles": ["inline_db", "et_db", "fab_db", "vm_db", "split_base"],
+      "steps": [
+        "직전 chart_session_id의 base_data_query를 읽는다.",
+        "raw data를 만든 DB, Files, SQL equivalent, filters, aggregation을 plain text로 설명한다.",
+        "KNOB coloring이 이어졌다면 base raw data 재사용과 ML_TABLE join 조건도 같이 설명한다."
+      ],
+      "result_contract": {"type": "text", "requires_chart_session": true, "fields": ["db", "files", "sql", "filters", "aggregation", "knob_join"]}
+    },
+    {
       "id": "wf_semantic_measurement_value_lookup",
       "title": "Semantic measurement term wafer value lookup",
       "enabled": true,

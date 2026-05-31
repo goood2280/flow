@@ -144,6 +144,21 @@ def test_default_flowi_workflow_examples_are_matchable(tmp_path, monkeypatch):
             "Inline CA_BCD와 ET PCCB_CHAIN 상관 차트",
             "INLINE CD ET VTH scatter R2 fitting line",
         ]),
+        ("wf_chart_knob_coloring_followup", [
+            "chart_demo chart 1.0 STI knob coloring",
+            "방금 차트 1.0 STI Knob으로 컬러링해줘",
+            "위 chart raw data에 1.0 STI join해서 다시 그려줘",
+        ]),
+        ("wf_chart_raw_data_followup", [
+            "chart_demo chart raw data download",
+            "방금 차트 raw data 줘",
+            "이 차트 raw data csv로 내려줘",
+        ]),
+        ("wf_chart_raw_data_provenance_followup", [
+            "chart_demo chart raw data SQL explain",
+            "이 chart raw data 어떻게 뽑았어?",
+            "방금 차트 어느 DB Files SQL로 뽑았어?",
+        ]),
     ],
 )
 def test_default_flowi_workflow_user_scenarios_match_variations(expected_id, prompts, tmp_path, monkeypatch):
@@ -233,6 +248,9 @@ def test_ensure_runtime_catalog_refreshes_default_seed_workflows(tmp_path, monke
         ("ET VTH trend 그려줘", "wf_source_trend_chart_generic", "dashboard_agent", {"split_base"}),
         ("Inline 특정값이랑 ET 특정값이랑 Corr. Chart 그려줘", "wf_inline_et_corr_chart", "home_sql_join_dashboard", {"split_base"}),
         ("PRODA A1001 CA BCD 값 몇이야", "wf_semantic_measurement_value_lookup", "filebrowser_ai_sql", {"inline_db", "et_db"}),
+        ("chart_demo chart 1.0 STI knob coloring", "wf_chart_knob_coloring_followup", "dashboard_agent", {"split_base"}),
+        ("chart_demo chart raw data download", "wf_chart_raw_data_followup", "dashboard_agent", {"inline_db", "et_db"}),
+        ("chart_demo chart raw data SQL explain", "wf_chart_raw_data_provenance_followup", "dashboard_agent", {"inline_db", "et_db"}),
     ],
 )
 def test_flowi_workflow_scenario_matching(prompt, expected_id, unit_ai, roles, tmp_path, monkeypatch):

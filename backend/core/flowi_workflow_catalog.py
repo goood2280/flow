@@ -511,6 +511,12 @@ def match_workflows(prompt: str, *, limit: int = 5) -> list[dict[str, Any]]:
         workflow_id = str(wf.get("id") or "")
         if workflow_id == "wf_split_table_root_lot_knob_custom_set" and not re.search(r"\d+(?:\.\d+)+\s+[A-Za-z0-9_]+", prompt or ""):
             continue
+        if workflow_id in {"wf_chart_knob_coloring_followup", "wf_chart_raw_data_followup", "wf_chart_raw_data_provenance_followup"} and not re.search(
+            r"(chart_demo|chart[_ -]?session|방금|직전|위\s*(?:chart|차트)|이\s*(?:chart|차트)|해당\s*(?:chart|차트)|raw\s+data|join)",
+            prompt or "",
+            re.I,
+        ):
+            continue
         score = 0.0
         for term in wf.get("trigger_terms") or []:
             token = str(term or "").casefold().strip()
