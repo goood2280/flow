@@ -296,7 +296,7 @@ def _default_payload() -> dict[str, Any]:
         "version": int(data.get("version") or WORKFLOW_SCHEMA_VERSION),
         "default_target_count": target_count,
         "description": _text(data.get("description") or "", 500),
-        "workflows": workflows,
+        "workflows": sorted(workflows, key=lambda w: (-int(w.get("priority") or 0), str(w.get("id") or ""))),
     }
 
 
@@ -535,6 +535,8 @@ def match_workflows(prompt: str, *, limit: int = 5) -> list[dict[str, Any]]:
                 score += 2.0
             elif name == "measurement_term" and re.search(r"(값|측정값|몇이야|measurement)", prompt or "", re.I):
                 score += 2.0
+        if workflow_id == "wf_leading_lot_by_knob_value" and re.search(r"(leading\s+lot|리딩랏|가장\s+빠른)", prompt or "", re.I):
+            score += 3.0
         if score <= 0:
             continue
         if workflow_id and not workflow_id.startswith("wf_auto_"):

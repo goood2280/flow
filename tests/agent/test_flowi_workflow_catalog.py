@@ -23,12 +23,24 @@ def test_default_flowi_workflow_catalog_shape():
     assert all(row["id"].startswith("wf_") for row in workflows)
     assert all(row["examples"] for row in workflows)
     assert all(row["source_roles"] for row in workflows)
-    assert all("A1001" not in " ".join(row["examples"]) for row in workflows)
     assert {"split_base", "fab_db", "step_matching", "rulebook"}.issubset(
         {role for row in workflows for role in row["source_roles"]}
     )
+    first_examples = {row["id"]: row["examples"][0] for row in workflows[:10]}
+    assert first_examples == {
+        "wf_split_table_root_lot_knob_custom_set": "A1001 1.0 STI Split(or Knob) 보여줘",
+        "wf_split_table_root_lot": "A1001 스플릿테이블 보여줘",
+        "wf_fab_current_location": "A1001 #3 지금 어디에 있어?",
+        "wf_rulebook_knob_rules": "1.6.0 LDD Knob 어떻게 룰 구성되어있어?",
+        "wf_step_id_desc_lookup": "AA100250는 무슨 step이야?",
+        "wf_split_raw_data_download": "PRODA MASK_1.0 STI raw data 공유해줘",
+        "wf_leading_lot_by_knob_value": "PRODA에서 1.0 STI가 PPID_1인 leading lot이 뭐야?",
+        "wf_item_trend_chart_with_optional_knob_color": "Inline 15.0 M2의 trend를 그려줘",
+        "wf_source_trend_chart_generic": "ET VTH trend 그려줘",
+        "wf_inline_et_corr_chart": "Inline 15.0 M2랑 ET VTH Corr. Chart 그려줘",
+    }
     custom_set = next(row for row in workflows if row["id"] == "wf_split_table_root_lot_knob_custom_set")
-    assert "{root_lot_id} {knob_name} Split(or Knob) 보여줘" in custom_set["examples"]
+    assert "A1001 1.0 STI Split(or Knob) 보여줘" in custom_set["examples"]
     rulebook = next(row for row in workflows if row["id"] == "wf_rulebook_knob_rules")
     assert rulebook["examples"][0] == "1.6.0 LDD Knob 어떻게 룰 구성되어있어?"
     assert rulebook["steps"][0] == "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다."
@@ -75,6 +87,74 @@ def test_default_flowi_workflow_examples_are_matchable(tmp_path, monkeypatch):
         matches = catalog.match_workflows(prompt, limit=8)
         if not any(row["id"] == workflow["id"] for row in matches):
             misses.append((workflow["id"], prompt, [row["id"] for row in matches]))
+
+    assert misses == []
+
+
+@pytest.mark.parametrize(
+    ("expected_id", "prompts"),
+    [
+        ("wf_split_table_root_lot", [
+            "A1001 스플릿테이블 보여줘",
+            "A1002 split table 보여줘",
+            "A1003 knob 테이블 보여줘",
+        ]),
+        ("wf_split_table_root_lot_knob_custom_set", [
+            "A1001 1.0 STI Split(or Knob) 보여줘",
+            "A1002 1.0 STI knob 보여줘",
+            "A1003 1.0 STI Split 보여줘",
+        ]),
+        ("wf_fab_current_location", [
+            "A1001 #3 지금 어디에 있어?",
+            "A1002 wafer 7 current location",
+            "A1003 #12 현재 FAB 위치 알려줘",
+        ]),
+        ("wf_rulebook_knob_rules", [
+            "1.6.0 LDD Knob 어떻게 룰 구성되어있어?",
+            "1.0 STI knob rulebook 보여줘",
+            "2.0 PC Knob 룰 구성 알려줘",
+        ]),
+        ("wf_step_id_desc_lookup", [
+            "AA100250는 무슨 step이야?",
+            "AA100251 step_desc 알려줘",
+            "AA100252 function step 뭐야?",
+        ]),
+        ("wf_split_raw_data_download", [
+            "PRODA MASK_1.0 STI raw data 공유해줘",
+            "PRODA A1001 #3 MASK_1.0 STI raw data csv",
+            "PRODB 1.0 STI raw data 다운로드",
+        ]),
+        ("wf_leading_lot_by_knob_value", [
+            "PRODA에서 1.0 STI가 PPID_1인 leading lot이 뭐야?",
+            "PRODB 특정 knob 값 PPID_2 leading lot 찾아줘",
+            "PRODA knob 1.0 STI value PC인 리딩랏 뭐야?",
+        ]),
+        ("wf_item_trend_chart_with_optional_knob_color", [
+            "Inline 15.0 M2의 trend를 그려줘",
+            "INLINE CA_BCD trend chart",
+            "15.0 M2 trend를 1.0 STI Knob으로 컬러링해줘",
+        ]),
+        ("wf_source_trend_chart_generic", [
+            "ET VTH trend 그려줘",
+            "FAB step progress trend chart",
+            "VM VMIN 추이 보여줘",
+        ]),
+        ("wf_inline_et_corr_chart", [
+            "Inline 15.0 M2랑 ET VTH Corr. Chart 그려줘",
+            "Inline CA_BCD와 ET PCCB_CHAIN 상관 차트",
+            "INLINE CD ET VTH scatter R2 fitting line",
+        ]),
+    ],
+)
+def test_default_flowi_workflow_user_scenarios_match_variations(expected_id, prompts, tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+
+    misses = []
+    for prompt in prompts:
+        matches = catalog.match_workflows(prompt, limit=3)
+        if not any(row["id"] == expected_id for row in matches):
+            misses.append((prompt, [row["id"] for row in matches]))
 
     assert misses == []
 
