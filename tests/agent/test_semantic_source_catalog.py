@@ -55,3 +55,30 @@ def test_semantic_source_catalog_search_matches_terms_and_source_refs():
         source_ref={"root": "FAB", "product": "PRODA"},
     )
     assert any(row["source_id"] == "fab_db" for row in fab_priorities)
+
+
+def test_semantic_source_catalog_disk_override_add_delete(monkeypatch, tmp_path):
+    monkeypatch.setattr(semantic_source_catalog, "SOURCE_FILE", tmp_path / "semantic" / "source_catalog.json")
+    monkeypatch.setattr(semantic_source_catalog, "CHANGES_FILE", tmp_path / "semantic" / "source_catalog.changes.jsonl")
+
+    saved = semantic_source_catalog.save_source(
+        {
+            "id": "custom_inline",
+            "title": "Custom Inline source",
+            "role": "inline_db",
+            "roles": ["inline_db", "custom_measurement"],
+            "path_patterns": ["FLOW_DB_ROOT/custom_inline.parquet"],
+            "search_terms": ["custom inline"],
+        },
+        actor="tester",
+    )
+
+    assert saved["id"] == "custom_inline"
+    assert semantic_source_catalog.catalog_sources()["custom_inline"]["path_patterns"] == ["FLOW_DB_ROOT/custom_inline.parquet"]
+    assert any(row["source_id"] == "custom_inline" for row in semantic_source_catalog.source_catalog_matches("custom inline trend"))
+
+    deleted_default = semantic_source_catalog.delete_source("rulebook", actor="tester")
+
+    assert deleted_default is True
+    assert "rulebook" not in semantic_source_catalog.catalog_sources()
+    assert "rulebook" not in {row["source_id"] for row in semantic_source_catalog.source_catalog_matches("ppid knob rulebook")}

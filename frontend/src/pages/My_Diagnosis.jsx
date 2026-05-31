@@ -2587,6 +2587,7 @@ function SemanticLayerPanel() {
   const [measurementCatalog, setMeasurementCatalog] = useState({ terms: [], path: "", change_log_path: "" });
   const [aliasJson, setAliasJson] = useState("{}");
   const [intentJson, setIntentJson] = useState("{}");
+  const [sourceJson, setSourceJson] = useState("{}");
   const [measurementJson, setMeasurementJson] = useState("{}");
   const [draftText, setDraftText] = useState("");
   const [draft, setDraft] = useState(null);
@@ -2615,7 +2616,11 @@ function SemanticLayerPanel() {
         sources: sourcesPayload?.sources || {},
         roles: sourcesPayload?.roles || {},
         docs_base: sourcesPayload?.docs_base || "docs/semantic",
+        path: sourcesPayload?.path || "",
+        change_log_path: sourcesPayload?.change_log_path || "",
       });
+      const sourceRows = Object.values(sourcesPayload?.sources || {});
+      setSourceJson(JSON.stringify(Object.fromEntries(sourceRows.map((source) => [source.id || source.source_id, source])), null, 2));
       const terms = measurementsPayload?.terms || measurementsPayload?.catalog?.terms || [];
       setMeasurementCatalog({
         terms,
@@ -2685,6 +2690,63 @@ function SemanticLayerPanel() {
       .finally(() => setBusy(false));
   };
 
+  const saveSourceJson = () => {
+    let next = {};
+    try {
+      next = parseJsonObject(sourceJson, "source_catalog");
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    const current = sourceCatalog?.sources || {};
+    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    Promise.all([
+      ...deletions.map((key) => sf(`/api/agent/semantic/sources/${encodeURIComponent(key)}`, { method: "DELETE" })),
+      ...Object.entries(next).map(([key, value]) => putJson(
+        `/api/agent/semantic/sources/${encodeURIComponent(key)}`,
+        { source: { ...(value || {}), id: key } }
+      )),
+    ]).then(() => {
+      setMsg("source catalog 저장 완료");
+      return load();
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const addSourceTemplate = () => {
+    try {
+      const next = parseJsonObject(sourceJson, "source_catalog");
+      let idx = 1;
+      let id = "source_custom";
+      while (Object.prototype.hasOwnProperty.call(next, id)) {
+        idx += 1;
+        id = `source_custom_${idx}`;
+      }
+      next[id] = {
+        id,
+        title: "Custom source",
+        role: "source_search",
+        roles: ["source_search"],
+        path_patterns: ["FLOW_DB_ROOT/<path>"],
+        fallback_path_patterns: [],
+        owner: "",
+        write_policy: "Agent read-only. Update source data through owner feature APIs.",
+        docs_path: `docs/semantic/${id}.md`,
+        related_question_ids: [],
+        related_unit_keys: [],
+        columns: [],
+        search_terms: [],
+        base_confidence: 0.42,
+      };
+      setSourceJson(JSON.stringify(next, null, 2));
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  };
+
   const saveMeasurementJson = () => {
     let next = {};
     try {
@@ -2696,14 +2758,49 @@ function SemanticLayerPanel() {
     setBusy(true);
     setErr("");
     setMsg("");
-    Promise.all(Object.entries(next).map(([key, value]) => putJson(
-      `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
-      { term: { ...(value || {}), id: key } }
-    ))).then(() => {
+    const current = Object.fromEntries((measurementCatalog?.terms || []).map((term) => [term.id, term]));
+    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
+    Promise.all([
+      ...deletions.map((key) => sf(`/api/agent/semantic/measurements/${encodeURIComponent(key)}`, { method: "DELETE" })),
+      ...Object.entries(next).map(([key, value]) => putJson(
+        `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
+        { term: { ...(value || {}), id: key } }
+      )),
+    ]).then(() => {
       setMsg("measurement terms 저장 완료");
       return load();
     }).catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
+  };
+
+  const addMeasurementTemplate = () => {
+    try {
+      const next = parseJsonObject(measurementJson, "measurement_terms");
+      let idx = 1;
+      let id = "measure_custom";
+      while (Object.prototype.hasOwnProperty.call(next, id)) {
+        idx += 1;
+        id = `measure_custom_${idx}`;
+      }
+      next[id] = {
+        id,
+        term: "Custom measurement",
+        aliases: ["Custom measurement"],
+        source_type: "INLINE",
+        product: "",
+        step_id: "",
+        item_id: "",
+        value_column: "",
+        default_agg: "avg",
+        target: null,
+        spec_low: null,
+        spec_high: null,
+        evidence: [],
+      };
+      setMeasurementJson(JSON.stringify(next, null, 2));
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
   };
 
   const makeDraft = () => {
@@ -2820,6 +2917,18 @@ function SemanticLayerPanel() {
       </div>
 
       <Panel title="Source catalog" subtitle={`${sourceRows.length} sources`}>
+        <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+          <Field label="source_catalog">
+            <Textarea value={sourceJson} onChange={(e) => setSourceJson(e.target.value)} rows={10} />
+          </Field>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button variant="primary" onClick={saveSourceJson} disabled={busy}>source 저장</Button>
+            <Button variant="ghost" onClick={addSourceTemplate} disabled={busy}>source 추가</Button>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+            path {sourceCatalog.path || "-"} 쨌 change log {sourceCatalog.change_log_path || "-"}
+          </div>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
           {sourceRows.map((source) => {
             const id = source?.id || source?.source_id || "";
@@ -2871,6 +2980,7 @@ function SemanticLayerPanel() {
             </Field>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Button variant="primary" onClick={saveMeasurementJson} disabled={busy}>measurement 저장</Button>
+              <Button variant="ghost" onClick={addMeasurementTemplate} disabled={busy}>measurement 추가</Button>
               <Button variant="ghost" onClick={() => postJson("/api/agent/semantic/measurements/merge-defaults", {}).then(load).catch((e) => setErr(e.message || String(e)))} disabled={busy}>기본 병합</Button>
             </div>
             <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>

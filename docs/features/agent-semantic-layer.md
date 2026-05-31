@@ -25,7 +25,7 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 | `intent_hints` | 특정 intent가 요구하는 canonical slot/key 목록. Inform registration 같은 slot-fill unit이 required hint로 참고한다. | `FLOW_DATA_ROOT/semantic/intent_hints.json` | 명시 save API만 가능 |
 | `proposal queue` | meeting/inform/tracker/activity log 등에서 나온 새 용어 후보의 pending queue. | `FLOW_DATA_ROOT/semantic/proposals/*.json` | enqueue는 proposal producer, approve/reject는 권한 있는 사용자만 가능 |
 | `changes` | alias/intent write audit log. | `FLOW_DATA_ROOT/semantic/changes.jsonl` | semantic lexicon service가 append |
-| `source_catalog` | Agent가 semantic source search와 unknown-term priority에 쓰는 read-only source 목록. | `backend/core/semantic_source_catalog.py`, `docs/semantic/<id>.md` | code/docs 변경만 가능. source data write 금지 |
+| `source_catalog` | Agent가 semantic source search와 unknown-term priority에 쓰는 source 목록. 기본 seed는 code에 있고 운영 override/add/delete는 data-root에 저장한다. | `backend/core/semantic_source_catalog.py`, `FLOW_DATA_ROOT/semantic/source_catalog.json`, `docs/semantic/<id>.md` | Semantic layer save API만 가능. source raw data write 금지 |
 | `measurement_terms` | `CA BCD`, `PCCB Chain`처럼 사용자가 부르는 측정 이름을 source_type/product/step_id/item_id/spec/evidence로 연결하는 사전. | `FLOW_DATA_ROOT/semantic/measurement_terms.json` | Semantic layer save API만 가능. 변경 근거는 measurement change log와 Change management history에 append |
 | `semantic_frame` | 실행 1회에서 prompt를 어떻게 해석했는지 담는 공개 trace payload. | runtime response 또는 unit history | 실행 결과로만 생성. shared semantic JSON write와 별개 |
 
@@ -44,7 +44,7 @@ Semantic layer는 source data를 직접 수정하는 실행기가 아니다. DB/
 
 ## Semantic Source Catalog
 
-PR2의 source catalog는 deterministic-first source selection을 위한 공용 메타데이터다. 현재 source는 `backend/core/semantic_source_catalog.py`에서 dict로 관리하고, 각 source 문서는 `docs/semantic/<id>.md`에 둔다.
+PR2의 source catalog는 deterministic-first source selection을 위한 공용 메타데이터다. 기본 source는 `backend/core/semantic_source_catalog.py`에서 dict로 관리하고, 운영자가 수정/추가/삭제한 항목은 `FLOW_DATA_ROOT/semantic/source_catalog.json`에 override/tombstone으로 저장한다. 각 source 문서는 `docs/semantic/<id>.md`에 둔다.
 
 | ID | Role | Source docs |
 |---|---|---|
@@ -63,9 +63,12 @@ The catalog is source metadata only. It does not read source rows and does not d
 |---|---|---|---|
 | `GET /api/agent/semantic/lexicon` | effective/disk alias, intent, changes, pending proposals 조회 | 로그인 사용자 | 없음 |
 | `GET /api/agent/semantic/sources` | source catalog, role index, and docs base 조회 | 로그인 사용자 | 없음 |
+| `PUT /api/agent/semantic/sources/{id}` | source catalog 항목 저장 또는 추가. Body는 `source` object이며 role/roles/path_patterns/search_terms/docs_path 등을 포함할 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `source_catalog.json`, source catalog changes |
+| `DELETE /api/agent/semantic/sources/{id}` | source catalog 항목 삭제. 기본 seed 삭제는 tombstone으로 보존되어 재병합되지 않는다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `source_catalog.json`, source catalog changes |
 | `GET /api/agent/semantic/measurements` | measurement term catalog와 evidence/update metadata 조회 | 로그인 사용자 | 없음 |
 | `POST /api/agent/semantic/draft` | 자연어 또는 JSON에서 alias/intent 초안 생성 | 로그인 사용자 | 없음 |
 | `PUT /api/agent/semantic/measurements/{id}` | 측정 용어 mapping 저장. Body는 `term` object이며 source_type/product/step_id/item_id/target/spec/evidence를 포함할 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json`, measurement changes, Change management history |
+| `DELETE /api/agent/semantic/measurements/{id}` | 측정 용어 mapping 삭제. 기본 seed 삭제는 tombstone으로 보존되어 재병합되지 않는다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json`, measurement changes, Change management history |
 | `POST /api/agent/semantic/measurements/merge-defaults` | 기본 측정 용어 seed를 누락분만 병합 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json` |
 | `PUT /api/agent/semantic/alias-groups/{canonical}` | disk alias group 저장. Body는 `aliases`와 선택 메타 `semantic_class`, `normalization`, `value_domain`을 받을 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |
 | `DELETE /api/agent/semantic/alias-groups/{canonical}` | disk alias group 삭제 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `alias_groups.json`, `changes.jsonl` |

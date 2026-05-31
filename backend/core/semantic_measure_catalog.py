@@ -153,13 +153,20 @@ def default_terms() -> list[dict[str, Any]]:
     return [normalize_term(row, actor="default_seed") for row in raw_terms if isinstance(row, dict)]
 
 
-def _payload(terms: list[dict[str, Any]], *, actor: str = "system", created_at: str = "") -> dict[str, Any]:
+def _payload(
+    terms: list[dict[str, Any]],
+    *,
+    actor: str = "system",
+    created_at: str = "",
+    deleted_ids: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "version": SCHEMA_VERSION,
         "description": "Semantic measurement names mapped to source DB, step_id, item_id, specs, update metadata, and evidence.",
         "created_at": created_at or _now(),
         "updated_at": _now(),
         "updated_by": actor,
+        "deleted_ids": sorted({_clean(value, 100) for value in (deleted_ids or []) if _clean(value, 100)}),
         "terms": sorted(terms, key=lambda r: (str(r.get("source_type") or ""), str(r.get("product") or ""), str(r.get("term") or ""))),
     }
 
@@ -171,17 +178,20 @@ def ensure_catalog(*, actor: str = "runtime") -> dict[str, Any]:
         payload = _payload(defaults, actor=actor)
         save_json(TERMS_FILE, payload, indent=2)
         return {**deepcopy(payload), "installed_defaults": len(defaults), "preserved": 0}
+    deleted_ids = {_clean(value, 100) for value in (existing.get("deleted_ids") or []) if _clean(value, 100)}
     by_id = {
         str(row.get("id") or ""): normalize_term(row, actor=str(row.get("updated_by") or actor))
         for row in existing.get("terms", [])
-        if isinstance(row, dict) and row.get("id")
+        if isinstance(row, dict) and row.get("id") and str(row.get("id") or "") not in deleted_ids
     }
     added = 0
     for row in defaults:
+        if row["id"] in deleted_ids:
+            continue
         if row["id"] not in by_id:
             by_id[row["id"]] = row
             added += 1
-    payload = _payload(list(by_id.values()), actor=actor, created_at=str(existing.get("created_at") or ""))
+    payload = _payload(list(by_id.values()), actor=actor, created_at=str(existing.get("created_at") or ""), deleted_ids=sorted(deleted_ids))
     save_json(TERMS_FILE, payload, indent=2)
     return {**deepcopy(payload), "installed_defaults": added, "preserved": len(by_id) - added}
 
@@ -238,9 +248,25 @@ def save_term(term: dict[str, Any], *, actor: str = "admin") -> dict[str, Any]:
     base = existing.get(term_id) if term_id else None
     normalized = normalize_term(term, actor=actor, base=base)
     existing[normalized["id"]] = normalized
-    save_json(TERMS_FILE, _payload(list(existing.values()), actor=actor, created_at=str(catalog.get("created_at") or "")), indent=2)
+    deleted_ids = {_clean(value, 100) for value in (catalog.get("deleted_ids") or []) if _clean(value, 100)}
+    deleted_ids.discard(normalized["id"])
+    save_json(TERMS_FILE, _payload(list(existing.values()), actor=actor, created_at=str(catalog.get("created_at") or ""), deleted_ids=sorted(deleted_ids)), indent=2)
     _log_change("save", normalized, actor=actor)
     return normalized
+
+
+def delete_term(term_id: str, *, actor: str = "admin") -> bool:
+    catalog = load_catalog(ensure=True)
+    existing = {str(row.get("id") or ""): row for row in catalog.get("terms", []) if isinstance(row, dict)}
+    term_id = _clean(term_id, 100)
+    if term_id not in existing:
+        return False
+    removed = existing.pop(term_id)
+    deleted_ids = {_clean(value, 100) for value in (catalog.get("deleted_ids") or []) if _clean(value, 100)}
+    deleted_ids.add(term_id)
+    save_json(TERMS_FILE, _payload(list(existing.values()), actor=actor, created_at=str(catalog.get("created_at") or ""), deleted_ids=sorted(deleted_ids)), indent=2)
+    _log_change("delete", removed, actor=actor)
+    return True
 
 
 def match_terms(prompt: str, *, product: str = "", limit: int = 6) -> list[dict[str, Any]]:

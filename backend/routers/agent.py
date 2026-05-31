@@ -198,6 +198,10 @@ class SemanticMeasurementTermReq(BaseModel):
     term: dict[str, Any] = Field(default_factory=dict)
 
 
+class SemanticSourceCatalogReq(BaseModel):
+    source: dict[str, Any] = Field(default_factory=dict)
+
+
 class UnitAiOverrideReq(BaseModel):
     nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -596,8 +600,42 @@ def semantic_sources(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "sources": semantic_source_catalog.catalog_sources(),
+        "disk": semantic_source_catalog.disk_sources(),
+        "deleted_ids": semantic_source_catalog.deleted_source_ids(),
         "roles": semantic_source_catalog.catalog_roles(),
         "docs_base": semantic_source_catalog.DOCS_BASE,
+        "path": str(semantic_source_catalog.SOURCE_FILE),
+        "change_log_path": str(semantic_source_catalog.CHANGES_FILE),
+    }
+
+
+@router.put("/semantic/sources/{source_id}")
+def semantic_source_upsert(source_id: str, req: SemanticSourceCatalogReq, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    source = dict(req.source or {})
+    source["id"] = source_id
+    saved = semantic_source_catalog.save_source(source, actor=str(user.get("username") or ""))
+    return {
+        "ok": True,
+        "source": saved,
+        "sources": semantic_source_catalog.catalog_sources(),
+        "disk": semantic_source_catalog.disk_sources(),
+        "deleted_ids": semantic_source_catalog.deleted_source_ids(),
+        "roles": semantic_source_catalog.catalog_roles(),
+    }
+
+
+@router.delete("/semantic/sources/{source_id}")
+def semantic_source_delete(source_id: str, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    deleted = semantic_source_catalog.delete_source(source_id, actor=str(user.get("username") or ""))
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "sources": semantic_source_catalog.catalog_sources(),
+        "disk": semantic_source_catalog.disk_sources(),
+        "deleted_ids": semantic_source_catalog.deleted_source_ids(),
+        "roles": semantic_source_catalog.catalog_roles(),
     }
 
 
@@ -622,6 +660,14 @@ def semantic_measurement_upsert(term_id: str, req: SemanticMeasurementTermReq, r
     saved = semantic_measure_catalog.save_term(term, actor=str(user.get("username") or ""))
     catalog = semantic_measure_catalog.load_catalog(ensure=True)
     return {"ok": True, "term": saved, "terms": catalog.get("terms") or []}
+
+
+@router.delete("/semantic/measurements/{term_id}")
+def semantic_measurement_delete(term_id: str, request: Request) -> dict[str, Any]:
+    user = _require_semantic_writer(request)
+    deleted = semantic_measure_catalog.delete_term(term_id, actor=str(user.get("username") or ""))
+    catalog = semantic_measure_catalog.load_catalog(ensure=True)
+    return {"ok": True, "deleted": deleted, "terms": catalog.get("terms") or []}
 
 
 @router.post("/semantic/measurements/merge-defaults")

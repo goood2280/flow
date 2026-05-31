@@ -7,10 +7,16 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
+
+from core.paths import PATHS
+from core.utils import jsonl_append, load_json, save_json
 
 
 DOCS_BASE = "docs/semantic"
+SOURCE_FILE = PATHS.data_root / "semantic" / "source_catalog.json"
+CHANGES_FILE = PATHS.data_root / "semantic" / "source_catalog.changes.jsonl"
 
 SEMANTIC_SOURCE_CATALOG: dict[str, dict[str, Any]] = {
     "rulebook": {
@@ -190,13 +196,165 @@ def _clean_text(value: Any, limit: int = 240) -> str:
     return str(value or "").replace("\x00", " ").strip()[: max(1, limit)]
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _safe_id(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip()).strip("._-").lower()
+    return (text or "semantic_source")[:100]
+
+
+def _list_text(value: Any, limit: int = 80) -> list[str]:
+    raw = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+    out: list[str] = []
+    for item in raw:
+        text = _clean_text(item, 300)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _load_disk_payload() -> dict[str, Any]:
+    data = load_json(SOURCE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _disk_sources_from_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_sources = payload.get("sources")
+    if isinstance(raw_sources, dict):
+        items = raw_sources.items()
+    elif isinstance(raw_sources, list):
+        items = ((row.get("id"), row) for row in raw_sources if isinstance(row, dict))
+    else:
+        items = []
+    out: dict[str, dict[str, Any]] = {}
+    for key, value in items:
+        if not isinstance(value, dict):
+            continue
+        source_id = _safe_id(value.get("id") or key)
+        if source_id:
+            out[source_id] = value
+    return out
+
+
+def _deleted_ids(payload: dict[str, Any]) -> set[str]:
+    return {_safe_id(value) for value in (payload.get("deleted_ids") or []) if _safe_id(value)}
+
+
+def _save_disk_payload(sources: dict[str, dict[str, Any]], deleted_ids: set[str], *, actor: str) -> None:
+    save_json(
+        SOURCE_FILE,
+        {
+            "version": 1,
+            "description": "Operator editable semantic source catalog overrides. Source data files remain owner-managed.",
+            "updated_at": _now(),
+            "updated_by": _clean_text(actor or "system", 80),
+            "deleted_ids": sorted(deleted_ids),
+            "sources": sorted(sources.values(), key=lambda row: str(row.get("id") or "")),
+        },
+        indent=2,
+    )
+
+
+def _log_change(action: str, source: dict[str, Any], *, actor: str) -> None:
+    jsonl_append(CHANGES_FILE, {
+        "action": action,
+        "actor": _clean_text(actor or "system", 80),
+        "source_id": source.get("id") or "",
+        "title": source.get("title") or "",
+        "role": source.get("role") or "",
+    })
+
+
+def normalize_source(raw: dict[str, Any], *, actor: str = "system", base: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    base = deepcopy(base) if isinstance(base, dict) else {}
+    source_id = _safe_id(raw.get("id") or base.get("id") or raw.get("title") or base.get("title"))
+    now = _now()
+    return {
+        "id": source_id,
+        "title": _clean_text(raw.get("title") if "title" in raw else base.get("title") or source_id, 160),
+        "role": _clean_text(raw.get("role") if "role" in raw else base.get("role") or source_id, 100),
+        "roles": _list_text(raw.get("roles") if "roles" in raw else base.get("roles"), 30),
+        "path_patterns": _list_text(raw.get("path_patterns") if "path_patterns" in raw else base.get("path_patterns"), 40),
+        "fallback_path_patterns": _list_text(raw.get("fallback_path_patterns") if "fallback_path_patterns" in raw else base.get("fallback_path_patterns"), 40),
+        "owner": _clean_text(raw.get("owner") if "owner" in raw else base.get("owner"), 240),
+        "write_policy": _clean_text(raw.get("write_policy") if "write_policy" in raw else base.get("write_policy"), 320),
+        "docs_path": _clean_text(raw.get("docs_path") if "docs_path" in raw else base.get("docs_path") or f"{DOCS_BASE}/{source_id}.md", 240),
+        "related_question_ids": _list_text(raw.get("related_question_ids") if "related_question_ids" in raw else base.get("related_question_ids"), 30),
+        "related_unit_keys": _list_text(raw.get("related_unit_keys") if "related_unit_keys" in raw else base.get("related_unit_keys"), 30),
+        "columns": _list_text(raw.get("columns") if "columns" in raw else base.get("columns"), 80),
+        "search_terms": _list_text(raw.get("search_terms") if "search_terms" in raw else base.get("search_terms"), 80),
+        "base_confidence": max(0.01, min(float(raw.get("base_confidence", base.get("base_confidence", 0.42)) or 0.42), 0.99)),
+        "created_at": str(base.get("created_at") or raw.get("created_at") or now),
+        "updated_at": now,
+        "updated_by": _clean_text(actor or raw.get("updated_by") or base.get("updated_by") or "system", 80),
+    }
+
+
 def catalog_sources() -> dict[str, dict[str, Any]]:
-    return deepcopy(SEMANTIC_SOURCE_CATALOG)
+    payload = _load_disk_payload()
+    deleted = _deleted_ids(payload)
+    sources = {
+        source_id: deepcopy(source)
+        for source_id, source in SEMANTIC_SOURCE_CATALOG.items()
+        if source_id not in deleted
+    }
+    for source_id, raw in _disk_sources_from_payload(payload).items():
+        sources[source_id] = normalize_source(raw, actor=str(raw.get("updated_by") or "runtime"), base=sources.get(source_id) or SEMANTIC_SOURCE_CATALOG.get(source_id))
+    return sources
+
+
+def disk_sources() -> dict[str, dict[str, Any]]:
+    payload = _load_disk_payload()
+    return {
+        source_id: normalize_source(raw, actor=str(raw.get("updated_by") or "runtime"), base=SEMANTIC_SOURCE_CATALOG.get(source_id))
+        for source_id, raw in _disk_sources_from_payload(payload).items()
+    }
+
+
+def deleted_source_ids() -> list[str]:
+    return sorted(_deleted_ids(_load_disk_payload()))
+
+
+def save_source(source: dict[str, Any], *, actor: str = "admin") -> dict[str, Any]:
+    payload = _load_disk_payload()
+    sources = _disk_sources_from_payload(payload)
+    deleted = _deleted_ids(payload)
+    raw_id = _safe_id((source or {}).get("id"))
+    base = (catalog_sources().get(raw_id) if raw_id else None) or (SEMANTIC_SOURCE_CATALOG.get(raw_id) if raw_id else None)
+    normalized = normalize_source(source, actor=actor, base=base)
+    sources[normalized["id"]] = normalized
+    deleted.discard(normalized["id"])
+    _save_disk_payload(sources, deleted, actor=actor)
+    _log_change("save", normalized, actor=actor)
+    return normalized
+
+
+def delete_source(source_id: str, *, actor: str = "admin") -> bool:
+    source_id = _safe_id(source_id)
+    if not source_id:
+        return False
+    payload = _load_disk_payload()
+    sources = _disk_sources_from_payload(payload)
+    deleted = _deleted_ids(payload)
+    existed = source_id in sources or source_id in SEMANTIC_SOURCE_CATALOG
+    removed = sources.pop(source_id, None)
+    if source_id in SEMANTIC_SOURCE_CATALOG:
+        deleted.add(source_id)
+    if not existed:
+        return False
+    _save_disk_payload(sources, deleted, actor=actor)
+    _log_change("delete", removed or SEMANTIC_SOURCE_CATALOG.get(source_id) or {"id": source_id}, actor=actor)
+    return True
 
 
 def catalog_roles() -> dict[str, list[str]]:
     roles: dict[str, list[str]] = {}
-    for source_id, source in SEMANTIC_SOURCE_CATALOG.items():
+    for source_id, source in catalog_sources().items():
         for role in [source.get("role"), *list(source.get("roles") or [])]:
             role_text = _clean_text(role, 80)
             if not role_text:
@@ -238,9 +396,10 @@ def source_catalog_matches(
 ) -> list[dict[str, Any]]:
     prompt_norm = _norm(prompt)
     matches: dict[str, dict[str, Any]] = {}
+    sources = catalog_sources()
 
     def add(source_id: str, confidence: float, reason: str) -> None:
-        source = SEMANTIC_SOURCE_CATALOG.get(source_id)
+        source = sources.get(source_id)
         if not source:
             return
         row = matches.setdefault(
@@ -261,7 +420,7 @@ def source_catalog_matches(
         if reason and reason not in row["match_reasons"]:
             row["match_reasons"].append(reason)
 
-    for source_id, source in SEMANTIC_SOURCE_CATALOG.items():
+    for source_id, source in sources.items():
         token_hits = 0
         for term in source.get("search_terms") or []:
             term_norm = _norm(term)

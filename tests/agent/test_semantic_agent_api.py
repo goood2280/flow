@@ -85,6 +85,51 @@ def test_semantic_sources_api_returns_catalog(semantic_store):
     assert "rulebook" in payload["roles"]
 
 
+def test_semantic_sources_api_allows_writer_crud(semantic_store, monkeypatch, tmp_path):
+    from core import semantic_source_catalog
+
+    monkeypatch.setattr(semantic_source_catalog, "SOURCE_FILE", tmp_path / "semantic" / "source_catalog.json")
+    monkeypatch.setattr(semantic_source_catalog, "CHANGES_FILE", tmp_path / "semantic" / "source_catalog.changes.jsonl")
+    req = _Request(role="admin")
+
+    out = agent.semantic_source_upsert(
+        "custom_inline",
+        agent.SemanticSourceCatalogReq(source={
+            "title": "Custom Inline source",
+            "role": "inline_db",
+            "roles": ["inline_db"],
+            "path_patterns": ["FLOW_DB_ROOT/custom_inline.parquet"],
+            "search_terms": ["custom inline"],
+        }),
+        req,
+    )
+
+    assert out["ok"] is True
+    assert out["sources"]["custom_inline"]["title"] == "Custom Inline source"
+    deleted = agent.semantic_source_delete("custom_inline", req)
+    assert deleted["deleted"] is True
+    assert "custom_inline" not in deleted["sources"]
+
+
+def test_semantic_measurements_api_delete(semantic_store, monkeypatch, tmp_path):
+    from core import semantic_measure_catalog
+
+    monkeypatch.setattr(semantic_measure_catalog, "TERMS_FILE", tmp_path / "semantic" / "measurement_terms.json")
+    monkeypatch.setattr(semantic_measure_catalog, "CHANGES_FILE", tmp_path / "semantic" / "measurement_terms.changes.jsonl")
+    monkeypatch.setattr(semantic_measure_catalog, "CHANGE_MANAGEMENT_HISTORY", tmp_path / "semantic" / "measurement_history.jsonl")
+    req = _Request(role="admin")
+    agent.semantic_measurement_upsert(
+        "measure_test_term",
+        agent.SemanticMeasurementTermReq(term={"term": "Test Term", "source_type": "INLINE", "item_id": "TEST"}),
+        req,
+    )
+
+    deleted = agent.semantic_measurement_delete("measure_test_term", req)
+
+    assert deleted["deleted"] is True
+    assert all(row["id"] != "measure_test_term" for row in deleted["terms"])
+
+
 def test_semantic_write_requires_admin_or_page_manager(semantic_store, monkeypatch):
     req = _Request(username="viewer", role="user")
     monkeypatch.setattr(agent, "is_page_manager", lambda _user, _page: False)

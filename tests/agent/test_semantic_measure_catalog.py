@@ -52,6 +52,17 @@ def test_semantic_measure_catalog_defaults_and_save_log(monkeypatch, tmp_path):
     assert catalog.CHANGE_MANAGEMENT_HISTORY.exists()
 
 
+def test_semantic_measure_catalog_delete_term(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    catalog.ensure_catalog(actor="tester")
+
+    assert catalog.delete_term("measure_inline_proda_ca_bcd", actor="tester") is True
+    out = catalog.load_catalog(ensure=False)
+
+    assert all(row["id"] != "measure_inline_proda_ca_bcd" for row in out["terms"])
+    assert catalog.delete_term("missing", actor="tester") is False
+
+
 def test_semantic_measure_query_inline_avg_by_wafer(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     src_dir = tmp_path / "DB" / "1.RAWDATA_DB_INLINE" / "PRODA"
