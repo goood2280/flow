@@ -332,15 +332,19 @@ def ensure_runtime_catalog(*, actor: str = "setup.py") -> dict[str, Any]:
         if isinstance(row, dict) and row.get("id")
     }
     added = 0
+    refreshed = 0
     for row in defaults:
         workflow_id = str(row.get("id") or "")
         if workflow_id and workflow_id not in by_id:
             by_id[workflow_id] = row
             added += 1
+        elif workflow_id and str((by_id.get(workflow_id) or {}).get("updated_by") or "") in {"default_seed", "setup.py", "runtime"}:
+            by_id[workflow_id] = row
+            refreshed += 1
     payload = _catalog_payload(list(by_id.values()), created_at=str(existing.get("created_at") or ""), updated_by=actor)
     payload["description"] = existing.get("description") or payload.get("description") or ""
     save_json(RUNTIME_CATALOG_FILE, payload, indent=2)
-    return {**deepcopy(payload), "installed_defaults": added, "preserved": len(by_id) - added}
+    return {**deepcopy(payload), "installed_defaults": added, "refreshed_defaults": refreshed, "preserved": len(by_id) - added - refreshed}
 
 
 def load_catalog(*, ensure: bool = True) -> dict[str, Any]:

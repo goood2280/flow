@@ -12736,6 +12736,29 @@ def _flowi_scan_registered_table(*, purposes: tuple[str, ...], name_hints: tuple
 _FLOWI_STEP_MATCHING_HINTS = ("Vehicle_matching.csv", "step_matching.csv", "matching_step.csv")
 
 
+def _knob_rulebook_feature_terms(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        value = _text(raw).strip(" .,;:()[]{}")
+        key = _upper(value)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(value)
+
+    patterns = (
+        r"(?<![A-Za-z0-9_.-])((?:\d+\.)+\d+\s+[A-Za-z][A-Za-z0-9_/.-]*)(?=\s*(?:KNOB|노브)\b)",
+        r"(?:KNOB|노브)\s+((?:\d+\.)+\d+\s+[A-Za-z][A-Za-z0-9_/.-]*)",
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, text, flags=re.I):
+            add(m.group(1))
+    return out[:6]
+
+
 def _knob_rulebook_lookup_intent(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
@@ -12744,7 +12767,7 @@ def _knob_rulebook_lookup_intent(prompt: str) -> bool:
         return False
     if not any(t in low or t in text for t in ("rule", "rulebook", "룰", "규칙", "매칭", "matching")):
         return False
-    return bool(_ppid_tokens(text) or _step_id_terms_from_prompt(text) or _flowi_func_step_token(text))
+    return bool(_ppid_tokens(text) or _step_id_terms_from_prompt(text) or _flowi_func_step_token(text) or _knob_rulebook_feature_terms(text))
 
 
 def _flowi_product_cell_matches(raw: Any, aliases: set[str]) -> bool:
@@ -13117,6 +13140,7 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
     if not _knob_rulebook_lookup_intent(prompt):
         return {"handled": False}
     product_hint = _product_hint(prompt, product)
+    feature_terms = _knob_rulebook_feature_terms(prompt)
     ppids = _ppid_tokens(prompt)
     step_terms = _step_id_terms_from_prompt(prompt, product=product_hint)
     if not step_terms and _flowi_func_step_token(prompt):
@@ -13142,7 +13166,7 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
             "action": "query_knob_rulebook_rows",
             "answer": "KNOB rulebook CSV를 찾지 못했습니다. Agent Wiki에서 rulebook 단일 파일을 등록하거나 data root의 ppid_knob.csv를 확인해주세요.",
             "feature": "knowledge",
-            "filters": {"product": product_hint, "step_terms": step_terms, "ppid": ppids, "errors": rule_src.get("errors") or []},
+            "filters": {"product": product_hint, "feature_terms": feature_terms, "step_terms": step_terms, "ppid": ppids, "errors": rule_src.get("errors") or []},
         }
     cols = rule_src.get("columns") or []
     product_col = _ci_col(cols, "product", "PRODUCT")
@@ -13165,10 +13189,19 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
     filters = []
     if aliases and product_col:
         filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    exact_feature_filter = bool(feature_terms and feature_col)
+    if exact_feature_filter and feature_col:
+        filters.append(
+            pl.col(feature_col)
+            .cast(_STR, strict=False)
+            .str.strip_chars()
+            .str.to_uppercase()
+            .is_in([_upper(v) for v in feature_terms])
+        )
     if ppids and ppid_col:
         filters.append(pl.col(ppid_col).cast(_STR, strict=False).str.to_uppercase().is_in([_upper(v) for v in ppids]))
     step_search_terms = list(dict.fromkeys([*step_terms, *expanded_functions, *expanded_step_ids]))
-    if step_search_terms:
+    if step_search_terms and not exact_feature_filter:
         expr = None
         search_cols = [c for c in (feature_col, func_col) if c]
         for col in search_cols:
@@ -13180,7 +13213,7 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
                 expr = piece if expr is None else (expr | piece)
         if expr is not None:
             filters.append(expr)
-    if not filters and not (ppids or step_terms):
+    if not filters and not (feature_terms or ppids or step_terms):
         return {
             "handled": True,
             "intent": "knob_rulebook_lookup",
@@ -13241,6 +13274,7 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
         },
         "filters": {
             "product": product_hint,
+            "feature_terms": feature_terms,
             "step_terms": step_terms,
             "expanded_functions": expanded_functions,
             "expanded_step_ids": expanded_step_ids,
@@ -13250,12 +13284,13 @@ def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> di
             "row_count": len(rows),
             "search_conditions": {
                 "product": product_hint or "(all)",
+                "feature_name": feature_terms,
                 "step_or_function_step_contains": step_search_terms,
                 "ppid": ppids,
             },
         },
         "term_resolution": [
-            {"token": "KNOB rulebook", "meaning": "ppid_knob.csv 등록 source 또는 fallback 파일", "wiki_refs": [rule_source_id], "query_filter": f"source={rule_source_id}", "status": "resolved"},
+            {"token": ", ".join(feature_terms) or "KNOB rulebook", "meaning": "ppid_knob.csv 등록 source 또는 fallback 파일", "wiki_refs": [rule_source_id], "query_filter": f"feature_name={feature_terms or '(not specified)'} source={rule_source_id}", "status": "resolved"},
             {"token": "function_step", "meaning": "step_matching.csv로 step_id 후보 확장", "wiki_refs": [step_source_id], "query_filter": f"expanded={expanded_functions or expanded_step_ids}", "status": "resolved"},
         ],
     }
@@ -17991,6 +18026,7 @@ def _handle_flowi_query_core(
         (allowed_keys is None or "splittable" in allowed_keys)
         and _flowi_knob_table_lookup_intent(prompt)
         and not _flowi_explicit_splittable_view_prompt(prompt)
+        and not _knob_rulebook_lookup_intent(prompt)
     ):
         knob_table_out = _handle_knob_query(prompt, product, max_rows)
         if knob_table_out.get("handled"):
@@ -18039,7 +18075,7 @@ def _handle_flowi_query_core(
         fab_progress_out = _handle_fab_progress_query(prompt, product, max_rows)
         if fab_progress_out.get("handled"):
             return fab_progress_out
-    if (allowed_keys is None or "splittable" in allowed_keys) and _flowi_knob_table_lookup_intent(prompt):
+    if (allowed_keys is None or "splittable" in allowed_keys) and _flowi_knob_table_lookup_intent(prompt) and not _knob_rulebook_lookup_intent(prompt):
         knob_table_out = _handle_knob_query(prompt, product, max_rows)
         if knob_table_out.get("handled"):
             return knob_table_out

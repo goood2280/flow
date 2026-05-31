@@ -29,6 +29,9 @@ def test_default_flowi_workflow_catalog_shape():
     )
     custom_set = next(row for row in workflows if row["id"] == "wf_split_table_root_lot_knob_custom_set")
     assert "{root_lot_id} {knob_name} Split(or Knob) 보여줘" in custom_set["examples"]
+    rulebook = next(row for row in workflows if row["id"] == "wf_rulebook_knob_rules")
+    assert rulebook["examples"][0] == "1.6.0 LDD Knob 어떻게 룰 구성되어있어?"
+    assert rulebook["steps"][0] == "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다."
 
 
 def _example_prompt(workflow: dict) -> str:
@@ -107,6 +110,33 @@ def test_ensure_runtime_catalog_merges_defaults_without_overwriting(tmp_path, mo
     assert "wf_split_table_root_lot" in ids
     preserved = next(row for row in out["workflows"] if row["id"] == "wf_custom_inline_review")
     assert preserved["steps"] == ["custom step preserved"]
+
+
+def test_ensure_runtime_catalog_refreshes_default_seed_workflows(tmp_path, monkeypatch):
+    runtime_file = tmp_path / "flowi_workflows.json"
+    change_log = tmp_path / "flowi_workflows.changes.jsonl"
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", runtime_file)
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", change_log)
+
+    stale_default = {
+        "id": "wf_rulebook_knob_rules",
+        "title": "Knob rulebook 구성 조회",
+        "unit_ai": "ppid_knob",
+        "action": "query_knob_rulebook",
+        "examples": ["{knob_name} Knob 어떻게 룰 구성되어있어?"],
+        "trigger_terms": ["룰", "rulebook", "knob"],
+        "source_roles": ["rulebook"],
+        "slots": [{"name": "knob_name", "type": "knob", "required": True, "example": "1.6.0 LDD"}],
+        "steps": ["old default step"],
+        "updated_by": "default_seed",
+    }
+    runtime_file.write_text(json.dumps({"version": 1, "workflows": [stale_default]}, ensure_ascii=False), encoding="utf-8")
+
+    out = catalog.ensure_runtime_catalog(actor="test")
+
+    refreshed = next(row for row in out["workflows"] if row["id"] == "wf_rulebook_knob_rules")
+    assert refreshed["examples"][0] == "1.6.0 LDD Knob 어떻게 룰 구성되어있어?"
+    assert refreshed["steps"][0] == "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다."
 
 
 @pytest.mark.parametrize(

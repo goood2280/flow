@@ -1158,6 +1158,25 @@ def test_flowi_chat_expands_ppid_knob_feature_to_step_ids(monkeypatch, tmp_path)
     assert any(item.get("token") == "3.0 VTN" for item in result["tool"]["term_resolution"])
 
 
+def test_flowi_chat_knob_rulebook_filters_exact_feature_name(monkeypatch, tmp_path):
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,function_step,rule_order,operator,category,ppid\n"
+        "1.6.0 LDD,LDD_RULE,10,eq,CAT_LDD,PPID_LDD\n"
+        "11.6.0 LDD,OTHER_RULE,20,eq,CAT_OTHER,PPID_OTHER\n"
+        "6.0 LDD,PARTIAL_RULE,30,eq,CAT_PARTIAL,PPID_PARTIAL\n",
+        encoding="utf-8",
+    )
+
+    result = _run_step_mapping_flowi_chat(monkeypatch, tmp_path, "1.6.0 LDD Knob 어떻게 룰 구성되어있어?")
+
+    assert result["tool"]["intent"] == "knob_rulebook_lookup"
+    assert result["tool"]["action"] == "query_knob_rulebook_rows"
+    rows = result["tool"]["table"]["rows"]
+    assert [row["feature_name"] for row in rows] == ["1.6.0 LDD"]
+    assert rows[0]["function_step"] == "LDD_RULE"
+    assert result["tool"]["filters"]["search_conditions"]["feature_name"] == ["1.6.0 LDD"]
+
+
 def test_flowi_chat_uses_vehicle_matching_step_desc_as_function_step(monkeypatch, tmp_path):
     (tmp_path / "Vehicle_matching.csv").write_text(
         "product,step_id,step_desc\n"

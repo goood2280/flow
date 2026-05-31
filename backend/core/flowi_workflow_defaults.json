@@ -98,14 +98,14 @@
       "category": "rulebook",
       "unit_ai": "ppid_knob",
       "action": "query_knob_rulebook",
-      "examples": ["{knob_name} Knob 어떻게 룰 구성되어있어?", "{knob_name} rulebook 보여줘"],
+      "examples": ["1.6.0 LDD Knob 어떻게 룰 구성되어있어?", "{knob_name} Knob 어떻게 룰 구성되어있어?", "{knob_name} rulebook 보여줘"],
       "trigger_terms": ["룰", "rule", "rulebook", "ppid", "knob"],
       "slots": [
         {"name": "knob_name", "type": "knob", "required": true, "example": "1.6.0 LDD"}
       ],
       "source_roles": ["rulebook"],
       "steps": [
-        "ppid_knob.csv에서 feature_name이 knob_name과 매칭되는 row를 찾는다.",
+        "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다.",
         "PPID, step_id, value mapping을 테이블로 구성한다.",
         "검색 조건과 source를 함께 표시한다."
       ],
