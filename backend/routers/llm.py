@@ -11610,6 +11610,8 @@ def _flowi_resolve_pending_core_prompt(
         return prompt
     pending_action = str(pending.get("action") or "").strip()
     selected_action = str(selected.get("name") or "").strip()
+    if pending_action.startswith("clarify_"):
+        return combined
     loose_actions = {"route_flowi_feature", "open_filebrowser", "open_splittable", "open_inform", "collect_required_fields"}
     if pending_action and selected_action and pending_action != selected_action and pending_action not in loose_actions:
         return prompt

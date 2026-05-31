@@ -172,6 +172,16 @@ def test_home_flowi_split_table_uses_snapshot_renderer_and_collapsed_context():
     assert ui.index("<FlowiMarkdown text={result.answer||emptyHint}/>") < ui.index("<FlowiInterpretationSummary")
 
 
+def test_home_flowi_clarification_renders_plain_choice_reply():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
+
+    assert "isClarificationOnly" in ui
+    assert "flowiResultShellStyle" in ui
+    assert "!isClarificationOnly&&<FlowiInterpretationSummary" in ui
+    assert "!isClarificationOnly&&<FlowiExecutionProof" in ui
+    assert "!isClarificationOnly&&<FlowiActionLogPanel" in ui
+
+
 def test_agent_page_exposes_unit_ai_and_llm_settings():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
     css = (ROOT / "frontend" / "src" / "global.css").read_text(encoding="utf-8")

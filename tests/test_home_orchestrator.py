@@ -1076,6 +1076,73 @@ def test_flowi_chat_explicit_splittable_view_asks_product_when_missing(monkeypat
     assert "product" in result["question"].lower()
 
 
+def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch, tmp_path):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    pending_prompt = "A1002 1.0 STI Split(or Knob) show"
+    calls = []
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable", "filebrowser", "dashboard"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        flowi_units,
+        "try_dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_semantic_measurement",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("measurement lookup should not run")),
+    )
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-split-product-followup", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    def fake_split_handler(prompt, product, max_rows):
+        calls.append((prompt, product, max_rows))
+        return {
+            "handled": True,
+            "intent": "splittable_view",
+            "action": "query_splittable_view",
+            "feature": "splittable",
+            "answer": "SplitTable resumed with product",
+            "filters": {"product": "ML_TABLE_PRODA", "root_lot_ids": ["A1002"]},
+            "split_view": {"kind": "splittable_view", "rows": []},
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_wafer_split_at_step", fake_split_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="PRODA",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={
+            "messages": [
+                {"role": "user", "prompt": pending_prompt, "text": pending_prompt},
+                {
+                    "role": "assistant",
+                    "prompt": pending_prompt,
+                    "feature": "splittable",
+                    "intent": "splittable_view",
+                    "action": "clarify_product",
+                    "missing": ["product"],
+                    "pending_prompt": pending_prompt,
+                },
+            ],
+        },
+    )
+
+    assert result["answer"] == "SplitTable resumed with product"
+    assert result["tool"]["action"] == "query_splittable_view"
+    assert calls == [(pending_prompt + "\nproduct: PRODA", "", 12)]
+
+
 def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeypatch, tmp_path):
     from core import flowi_units, home_memory, home_orchestrator
     from routers import llm as llm_router

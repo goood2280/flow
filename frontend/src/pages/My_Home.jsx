@@ -458,6 +458,13 @@ function FlowiInterpretationSummary({trace,tool,prompt}){
   </details>;
 }
 
+function flowiResultShellStyle(embedded=false,isClarificationOnly=false){
+  if(isClarificationOnly){
+    return {width:"100%",boxSizing:"border-box",marginTop:embedded?0:8,padding:"2px 0 0",background:"transparent",border:"0",borderRadius:0,overflow:"visible"};
+  }
+  return {width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"visible"};
+}
+
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
@@ -487,24 +494,32 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     ||choices.length||hasArgumentChoices||hasMissingFreetext
     ||(walkthrough&&walkthrough.session_id)
     ||(result.proposal&&result.confirm));
+  const isClarificationOnly=!!(choices.length&&!table&&!chart&&!chartResult&&!tool.split_view
+    &&!(Array.isArray(tool.lot_list)&&tool.lot_list.length)
+    &&!(Array.isArray(tool.rows)&&tool.rows.length)
+    &&!(Array.isArray(tool.knobs)&&tool.knobs.length)
+    &&!(Array.isArray(tool.blocks)&&tool.blocks.length)
+    &&!tool.sql_draft
+    &&!hasArgumentChoices&&!hasMissingFreetext
+    &&(tool.needs_input||result.needs_input||String(tool.action||"").startsWith("clarify_")||String(workflow.status||"").startsWith("awaiting")));
   const plain=!hasStructured&&!!result.answer;
   const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices||hasMissingFreetext)
     ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
     :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
-  return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"visible"}}>
-    {(!plain||actions.length>0)&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
+  return(<div style={flowiResultShellStyle(embedded,isClarificationOnly)}>
+    {!isClarificationOnly&&(!plain||actions.length>0)&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plain?"":summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>}
-    {!plain&&result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
+    {!isClarificationOnly&&!plain&&result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>
       {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
     </div>}
     <FlowiMarkdown text={result.answer||emptyHint}/>
-    <FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>
-    <FlowiExecutionProof tool={tool} trace={result.trace}/>
-    <FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>
-    {isAdmin&&!plain&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+    {!isClarificationOnly&&<FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>}
+    {!isClarificationOnly&&<FlowiExecutionProof tool={tool} trace={result.trace}/>}
+    {!isClarificationOnly&&<FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>}
+    {!isClarificationOnly&&isAdmin&&!plain&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
@@ -522,8 +537,8 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
-    {isAdmin&&<FlowiTrace trace={result.trace}/>}
-    <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
+    {!isClarificationOnly&&isAdmin&&<FlowiTrace trace={result.trace}/>}
+    {!isClarificationOnly&&<FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>}
   </div>);
 }
 
@@ -1073,11 +1088,11 @@ function FlowiTraceKV({label,value,wide=false,tone="#d4d4d4"}){
   </div>;
 }
 
-const FLOWI_CHOICE_BTN={textAlign:"left",border:`1px solid ${HOME_UI.accent}`,borderRadius:7,background:HOME_UI.card,padding:"8px 12px",cursor:"pointer",color:HOME_UI.textSoft,fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};
+const FLOWI_CHOICE_BTN={textAlign:"left",border:`1px solid ${HOME_UI.accent}`,borderRadius:6,background:"#1f130b",padding:"7px 10px",cursor:"pointer",color:HOME_UI.textSoft,fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};
 
 function FlowiChoices({question,choices,onChoice,onNavigate}){
-  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"10px 11px"}}>
-    <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace",marginBottom:8}}>{question||"어떻게 진행할까요?"}</div>
+  return(<div style={{marginTop:8}}>
+    <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace",marginBottom:7}}>{question||"어떻게 진행할까요?"}</div>
     <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
       {choices.map((c,i)=><button key={c.id||i} type="button" onClick={()=>{
         const tab=c.tab||c.feature||"";
@@ -1089,7 +1104,6 @@ function FlowiChoices({question,choices,onChoice,onNavigate}){
         style={{...FLOWI_CHOICE_BTN,minWidth:150,maxWidth:"100%"}}>
         <span style={{fontWeight:900,color:"#f97316",marginRight:7}}>{c.label||i+1}</span>
         <span style={{fontWeight:900,color:"#e5e5e5"}}>{c.title||c.value}</span>
-        {c.description&&<span style={{display:"block",marginTop:3,color:"#a3a3a3",whiteSpace:"normal"}}>{c.description}</span>}
       </button>)}
     </div>
   </div>);
