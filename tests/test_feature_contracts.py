@@ -160,6 +160,18 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "READYING" not in ui
 
 
+def test_home_flowi_split_table_uses_snapshot_renderer_and_collapsed_context():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
+
+    assert 'import SplitTableSnapshotView from "../components/SplitTableSnapshotView"' in ui
+    assert "function flowiSplitStView" in ui
+    assert "<SplitTableSnapshotView" in ui
+    assert "return <details" in ui
+    assert "요청 해석 / 진행 방식" in ui
+    assert "<FlowiMarkdown text={result.answer||emptyHint}/>" in ui
+    assert ui.index("<FlowiMarkdown text={result.answer||emptyHint}/>") < ui.index("<FlowiInterpretationSummary")
+
+
 def test_agent_page_exposes_unit_ai_and_llm_settings():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
     css = (ROOT / "frontend" / "src" / "global.css").read_text(encoding="utf-8")

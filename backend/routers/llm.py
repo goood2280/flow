@@ -15663,7 +15663,7 @@ def _flowi_splittable_prefixes_from_args(args: dict[str, Any], prompt: str) -> l
     group = str(args.get("group") or _flowi_group_token(prompt) or "").strip().upper()
     if group in {"KNOB", "MASK", "FAB", "INLINE", "VM"}:
         return [group]
-    return ["KNOB", "MASK", "FAB"]
+    return ["KNOB"]
 
 
 def _flowi_splittable_view_to_inline(
@@ -15676,9 +15676,25 @@ def _flowi_splittable_view_to_inline(
     headers = [str(h) for h in (view.get("headers") or [])]
     raw_rows = view.get("rows") if isinstance(view.get("rows"), list) else []
     step_u = _upper(step)
-    normalized_prefixes = [str(p or "").strip().upper() for p in (prefixes or ["KNOB", "MASK", "FAB"]) if str(p or "").strip()]
-    wanted_prefixes = tuple(f"{p}_" for p in normalized_prefixes) or ("KNOB_", "MASK_", "FAB_")
-    row_label = "/".join(normalized_prefixes) if normalized_prefixes else "KNOB/MASK/FAB"
+    normalized_prefixes = [str(p or "").strip().upper() for p in (prefixes or ["KNOB"]) if str(p or "").strip()]
+    wanted_prefixes = tuple(f"{p}_" for p in normalized_prefixes) or ("KNOB_",)
+    row_label = "/".join(normalized_prefixes) if normalized_prefixes else "KNOB"
+    wafer_fab_list = view.get("wafer_fab_list") or []
+    header_groups = view.get("header_groups") or []
+    lot_values = []
+    header_group_items = header_groups if isinstance(header_groups, list) else []
+    wafer_fab_items = wafer_fab_list if isinstance(wafer_fab_list, list) else []
+    wafer_fab_list = wafer_fab_items
+    header_groups = header_group_items
+    for group in header_group_items:
+        label = str((group or {}).get("label") or "").strip() if isinstance(group, dict) else ""
+        if label and label not in lot_values:
+            lot_values.append(label)
+    for value in wafer_fab_items:
+        label = str(value or "").strip()
+        if label and label not in lot_values:
+            lot_values.append(label)
+    lot_id_label = ", ".join(lot_values)
 
     def row_text(row: dict[str, Any]) -> str:
         return _upper(" ".join([
@@ -15719,7 +15735,8 @@ def _flowi_splittable_view_to_inline(
                 flat_rows.append({
                     "product": view.get("product") or "",
                     "root_lot_id": view.get("root_lot_id") or "",
-                    "fab_lot_id": (view.get("wafer_fab_list") or [""] * len(headers))[idx] if idx < len(view.get("wafer_fab_list") or []) else "",
+                    "lot_id": wafer_fab_list[idx] if idx < len(wafer_fab_list) else "",
+                    "fab_lot_id": wafer_fab_list[idx] if idx < len(wafer_fab_list) else "",
                     "wafer_id": header.lstrip("#"),
                     "step": step or "",
                     "parameter": param,
@@ -15734,8 +15751,11 @@ def _flowi_splittable_view_to_inline(
         "kind": "splittable_view",
         "title": "SplitTable view",
         "headers": headers,
-        "header_groups": view.get("header_groups") or [],
-        "wafer_fab_list": view.get("wafer_fab_list") or [],
+        "header_groups": header_groups,
+        "wafer_fab_list": wafer_fab_list,
+        "root_lot_id": view.get("root_lot_id") or "",
+        "lot_id_label": lot_id_label,
+        "row_labels": view.get("row_labels") or {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
         "rows": split_rows,
         "total": len(flat_rows) if flat_rows else sum(len(r.get("cells") or []) for r in split_rows),
         "row_label": row_label,
@@ -15743,7 +15763,7 @@ def _flowi_splittable_view_to_inline(
         "lot_warn": view.get("lot_warn") or "",
         "available_fab_lots": view.get("available_fab_lots") or [],
     }
-    cols_out = ["product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "parameter", "display", "actual", "plan", "mismatch", "cell_key"]
+    cols_out = ["product", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "step", "parameter", "display", "actual", "plan", "mismatch", "cell_key"]
     table = {
         "kind": "splittable_view_rows",
         "title": "SplitTable rows",
@@ -19905,6 +19925,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "custom_sets",
     "lot_list",
     "split_view",
+    "splittable_view",
     "split_api",
     "runtime_profile",
     "view_cache",

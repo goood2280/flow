@@ -5,6 +5,7 @@ import { isAdmin as isAdminUser, isPageAdmin } from "../lib/permissions";
 import { toast } from "../components/Toast";
 import { PageHeader, statusPalette } from "../components/UXKit";
 import { FlowPlotlyChart } from "../components/PlotlyChart";
+import SplitTableSnapshotView from "../components/SplitTableSnapshotView";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 const HOME_UI={
   accent:statusPalette.warn.fg,
@@ -536,7 +537,8 @@ function FlowiInterpretationSummary({trace,tool,prompt}){
   const lines=flowiUniqueLines([...flowiPromptProgressLines(prompt,tool,"result"),...flowiInterpretationLines(trace,tool)],5);
   const method=flowiMethodLine(trace,tool);
   if(!lines.length&&!method)return null;
-  return <div style={{margin:"0 0 10px",padding:"0 0 10px",borderBottom:"1px solid #262626",fontFamily:"'JetBrains Mono',monospace"}}>
+  return <details style={{margin:"10px 0 0",border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
+    <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontWeight:900}}>요청 해석 / 진행 방식</summary>
     {lines.length>0&&<div style={{display:"grid",gap:4,marginBottom:method?8:0}}>
       <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>요청 해석</div>
       {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.55,color:i===0?"#e5e5e5":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
@@ -546,7 +548,7 @@ function FlowiInterpretationSummary({trace,tool,prompt}){
       <div style={{fontSize:14,lineHeight:1.55,color:"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{method}</div>
     </div>
     }
-  </div>;
+  </details>;
 }
 
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
@@ -591,8 +593,8 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>
       {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
     </div>}
-    <FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>
     <FlowiMarkdown text={result.answer||emptyHint}/>
+    <FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>
     <FlowiExecutionProof tool={tool} trace={result.trace}/>
     <FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>
     {isAdmin&&!plain&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
@@ -704,6 +706,16 @@ function flowiDownloadTable(table){
   URL.revokeObjectURL(url);
 }
 
+function flowiSplitStView(tool){
+  const st=tool?.splittable_view&&typeof tool.splittable_view==="object"?tool.splittable_view:null;
+  if(st&&Array.isArray(st.headers)&&Array.isArray(st.rows)&&st.rows.some(r=>r&&typeof r==="object"&&r._cells))return st;
+  return null;
+}
+
+function flowiSplitProduct(tool,stView){
+  return stView?.product||tool?.filters?.product||tool?.arguments?.product||"";
+}
+
 function FlowiInlineContent({tool,table,chart,chartResult}){
   const type=flowiResultType(tool,table,chartResult);
   const explicitBlocks=Array.isArray(tool?.blocks)?tool.blocks:[];
@@ -716,7 +728,12 @@ function FlowiInlineContent({tool,table,chart,chartResult}){
   if(sqlDraft)blocks.push(<FlowiSqlDraft key="sql" draft={sqlDraft}/>);
   if((type==="chart"||chartResult)&&chartResult)blocks.push(<FlowiScatterResult key="chart-result" data={chartResult}/>);
   else if(type==="chart"&&chart)blocks.push(<FlowiChartPlan key="chart-plan" chart={chart}/>);
-  else if((type==="split_view"||tool?.split_view)&&tool?.split_view)blocks.push(<FlowiSplitView key="split" view={tool.split_view}/>);
+  else if((type==="split_view"||tool?.split_view)&&tool?.split_view){
+    const stView=flowiSplitStView(tool);
+    blocks.push(stView
+      ? <SplitTableSnapshotView key="split" stView={stView} product={flowiSplitProduct(tool,stView)} source="Home Flow-i" maxHeight={360}/>
+      : <FlowiSplitView key="split" view={tool.split_view}/>);
+  }
   else if((type==="lot_list"||lotList.length>0)&&lotList.length>0)blocks.push(<FlowiLotList key="lots" items={lotList}/>);
   else if(table)blocks.push(<FlowiDataTable key="table" table={table}/>);
   else if(rows.length>0)blocks.push(<FlowiDataTable key="rows" table={{kind:"flowi_rows",title:"Flowi rows",columns:_legacyRowColumns(rows),rows,total:rows.length}}/>);

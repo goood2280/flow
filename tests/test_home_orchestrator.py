@@ -894,6 +894,33 @@ def test_flowi_explicit_splittable_view_prompt_accepts_korean():
     assert llm_router._flowi_explicit_splittable_view_prompt("A1001 SplitTable 보여줘") is True
 
 
+def test_flowi_splittable_inline_defaults_to_knob_and_keeps_lot_context():
+    from routers import llm as llm_router
+
+    split_view, table = llm_router._flowi_splittable_view_to_inline(
+        {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1001",
+            "headers": ["#1"],
+            "header_groups": [{"label": "A1001.1", "span": 1}],
+            "wafer_fab_list": ["A1001.1"],
+            "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
+            "rows": [
+                {"_param": "KNOB_GATE", "_display": "Gate", "_cells": {"0": {"actual": "A", "plan": ""}}},
+                {"_param": "MASK_GATE", "_display": "Mask", "_cells": {"0": {"actual": "M", "plan": ""}}},
+                {"_param": "FAB_STATE", "_display": "Fab", "_cells": {"0": {"actual": "RUN", "plan": ""}}},
+            ],
+        },
+        max_rows=12,
+    )
+
+    assert [row["parameter"] for row in split_view["rows"]] == ["KNOB_GATE"]
+    assert split_view["row_label"] == "KNOB"
+    assert split_view["root_lot_id"] == "A1001"
+    assert split_view["lot_id_label"] == "A1001.1"
+    assert table["rows"][0]["lot_id"] == "A1001.1"
+
+
 def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_path):
     from core import flowi_units, home_memory, home_orchestrator
     from routers import llm as llm_router
