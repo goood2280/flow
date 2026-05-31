@@ -20127,6 +20127,60 @@ def _handle_explicit_splittable_view_fast_path(
         return None
     if _flowi_write_target_detected(prompt) or _flowi_splittable_note_intent(prompt):
         return None
+    if not _product_hint(prompt, product):
+        classified = _classified_lot_tokens(prompt)
+        wafers = [int(w) for w in _wafer_tokens(prompt)]
+        args = {
+            "product": "",
+            "root_lot_ids": classified.get("root_lot_ids") or [],
+            "fab_lot_ids": classified.get("fab_lot_ids") or [],
+            "wafer_ids": wafers,
+            "lot_wf_ids": _flowi_lot_wf_ids(classified.get("root_lot_ids") or [], classified.get("fab_lot_ids") or [], wafers),
+            "max_rows": max(1, min(int(max_rows or 12), 200)),
+            "read_only": True,
+            "side_effect": "none",
+        }
+        step = _flowi_func_step_token(prompt)
+        if step:
+            args["step"] = step
+        choices_meta = _flowi_arguments_choices(["product"], prompt, args)
+        choices: list[dict[str, Any]] = []
+        fields = choices_meta.get("fields") if isinstance(choices_meta, dict) else []
+        if isinstance(fields, list):
+            for field in fields:
+                if isinstance(field, dict) and field.get("field") == "product":
+                    choices = [c for c in (field.get("choices") or []) if isinstance(c, dict) and not c.get("free_input")]
+                    break
+        return _flowi_set_inline_type({
+            "handled": True,
+            "intent": "splittable_view",
+            "action": "clarify_product",
+            "feature": "splittable",
+            "answer": "product가 없는 SplitTable 요청입니다. 어느 product 기준으로 볼지 알려주세요.",
+            "needs_input": True,
+            "missing": ["product"],
+            "pending_prompt": prompt.strip(),
+            "arguments": args,
+            "arguments_partial": args,
+            "arguments_choices": choices_meta,
+            "validation": {
+                "valid": False,
+                "missing": ["product"],
+                "requires_confirmation": False,
+                "raw_db_policy": "read_only",
+            },
+            "slots": {
+                "product": "",
+                "root_lot_ids": args.get("root_lot_ids") or [],
+                "fab_lot_ids": args.get("fab_lot_ids") or [],
+                "wafer_ids": args.get("wafer_ids") or [],
+                "step": args.get("step") or "",
+            },
+            "clarification": {
+                "question": "어느 product 기준으로 SplitTable을 볼까요?",
+                "choices": choices[:3],
+            },
+        }, "message", prompt=prompt)
     tool = _handle_wafer_split_at_step(prompt, product, max_rows)
     return tool if isinstance(tool, dict) and tool.get("handled") else None
 

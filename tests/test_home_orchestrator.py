@@ -927,7 +927,7 @@ def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_pat
     monkeypatch.setattr(llm_router, "_handle_wafer_split_at_step", fake_split_handler)
 
     result = llm_router._run_flowi_chat(
-        prompt="A1001 스플릿테이블 보여줘",
+        prompt="PRODA A1001 스플릿테이블 보여줘",
         product="",
         max_rows=12,
         me={"username": "alice", "role": "admin"},
@@ -936,7 +936,51 @@ def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_pat
 
     assert result["answer"] == "SplitTable fast path ok"
     assert result["tool"]["action"] == "query_splittable_view"
-    assert calls == [("A1001 스플릿테이블 보여줘", "", 12)]
+    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "", 12)]
+
+
+def test_flowi_chat_explicit_splittable_view_asks_product_when_missing(monkeypatch, tmp_path):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable", "filebrowser", "dashboard"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        flowi_units,
+        "try_dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_semantic_measurement",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("measurement lookup should not run")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_wafer_split_at_step",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("split view should wait for product")),
+    )
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-split-product-clarify", "graph": {"nodes": [], "edges": []}, "status": "waiting"},
+    )
+
+    result = llm_router._run_flowi_chat(
+        prompt="A1001 스플릿테이블 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["tool"]["action"] == "clarify_product"
+    assert result["needs_input"] is True
+    assert result["missing"] == ["product"]
+    assert result["pending_prompt"] == "A1001 스플릿테이블 보여줘"
+    assert "product" in result["question"].lower()
 
 
 def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeypatch, tmp_path):
