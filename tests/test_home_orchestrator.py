@@ -886,6 +886,14 @@ def test_flowi_splittable_view_tool_attaches_runtime_metadata(monkeypatch):
     assert isinstance(out["elapsed_ms"], int)
 
 
+def test_flowi_explicit_splittable_view_prompt_accepts_korean():
+    from routers import llm as llm_router
+
+    assert llm_router._flowi_explicit_splittable_view_prompt("PRODA A1001 스플릿테이블 보여줘") is True
+    assert llm_router._flowi_explicit_splittable_view_prompt("A1001 스플릿 테이블 보여줘") is True
+    assert llm_router._flowi_explicit_splittable_view_prompt("A1001 SplitTable 보여줘") is True
+
+
 def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_path):
     from core import flowi_units, home_memory, home_orchestrator
     from routers import llm as llm_router
@@ -929,6 +937,64 @@ def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_pat
     assert result["answer"] == "SplitTable fast path ok"
     assert result["tool"]["action"] == "query_splittable_view"
     assert calls == [("A1001 스플릿테이블 보여줘", "", 12)]
+
+
+def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeypatch, tmp_path):
+    from core import flowi_units, home_memory, home_orchestrator
+    from routers import llm as llm_router
+
+    monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable", "filebrowser", "dashboard"})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(
+        flowi_units,
+        "try_dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_semantic_measurement",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("measurement lookup should not run")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_flowi_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("generic router should not run")),
+    )
+    monkeypatch.setattr(
+        home_orchestrator,
+        "record_flowi_runtime_run",
+        lambda *_args, **_kwargs: {"run_id": "pytest-fast-split-korean", "graph": {"nodes": [], "edges": []}, "status": "success"},
+    )
+
+    calls = []
+
+    def fake_split_handler(prompt, product, max_rows):
+        calls.append((prompt, product, max_rows))
+        return {
+            "handled": True,
+            "intent": "splittable_view",
+            "action": "query_splittable_view",
+            "feature": "splittable",
+            "answer": "SplitTable fast path ok",
+            "filters": {"product": "ML_TABLE_PRODA", "root_lot_ids": ["A1001"]},
+            "split_view": {"kind": "splittable_view", "rows": []},
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_wafer_split_at_step", fake_split_handler)
+
+    result = llm_router._run_flowi_chat(
+        prompt="PRODA A1001 스플릿테이블 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "alice", "role": "admin"},
+        agent_context={},
+    )
+
+    assert result["answer"] == "SplitTable fast path ok"
+    assert result["tool"]["action"] == "query_splittable_view"
+    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "", 12)]
 
 
 def test_flowi_chat_expands_ppid_knob_feature_to_step_ids(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i 한글 SplitTable 조회 라우팅 우선순위 보정
 - (Codex) Home Flow-i client timeout / heavy request queue 분리 보정
 - (Codex) Home Flow-i few-shot workflow와 공개 실행흐름/표차트 보강
 - (Codex) Dashboard Agent 질문 이력/active route 보정

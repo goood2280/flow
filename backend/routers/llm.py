@@ -20184,6 +20184,39 @@ def _run_flowi_chat(
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
+    fast_split_tool = _handle_explicit_splittable_view_fast_path(prompt, product, max_rows, allowed_keys)
+    if fast_split_tool:
+        _finalize_flowi_tool(fast_split_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+        answer = fast_split_tool.get("answer") or "SplitTable 조회 요청을 처리했습니다."
+        _append_user_event(username, fast_split_tool.get("intent") or "splittable_view", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": fast_split_tool.get("intent") or "",
+                "feature": fast_split_tool.get("feature") or "splittable",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": fast_split_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=fast_split_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
     can_measurement_lookup = bool({"filebrowser", "dashboard"} & set(allowed_keys))
     measurement_tool = _handle_semantic_measurement(prompt, product, max_rows=max_rows) if can_measurement_lookup else None
     if measurement_tool:
@@ -20251,39 +20284,6 @@ def _run_flowi_chat(
                 client_run_id=client_run_id,
                 username=username,
                 tool=tool,
-                agent_context=agent_context,
-            )
-        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
-
-    fast_split_tool = _handle_explicit_splittable_view_fast_path(prompt, product, max_rows, allowed_keys)
-    if fast_split_tool:
-        _finalize_flowi_tool(fast_split_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
-        answer = fast_split_tool.get("answer") or "SplitTable 조회 요청을 처리했습니다."
-        _append_user_event(username, fast_split_tool.get("intent") or "splittable_view", _event_fields(
-            {
-                "prompt": prompt,
-                "intent": fast_split_tool.get("intent") or "",
-                "feature": fast_split_tool.get("feature") or "splittable",
-                "answer": answer,
-            },
-            source=source,
-            client_run_id=client_run_id,
-        ))
-        result = {
-            "ok": True,
-            "active": True,
-            "user": username,
-            "answer": answer,
-            "tool": fast_split_tool,
-            "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
-            "allowed_features": sorted(allowed_keys),
-        }
-        if source:
-            result["agent_api"] = _agent_api_meta(
-                source=source,
-                client_run_id=client_run_id,
-                username=username,
-                tool=fast_split_tool,
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
