@@ -5515,6 +5515,157 @@ def _handle_flowi_multisource_query(
     return tool
 
 
+def _flowi_dashboard_source_runtime_prompt(prompt: str) -> bool:
+    if not _contains_chart_intent(prompt):
+        return False
+    text = str(prompt or "")
+    low = text.lower()
+    if _flowi_multisource_explicit_prompt(text) or _source_terms(text):
+        return True
+    return bool(re.search(r"(?<![a-z0-9_])(?:db|database|file|files|source|parquet|csv)(?![a-z0-9_])", low))
+
+
+def _flowi_dashboard_source_runtime_payload(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    sources = sorted(_source_terms(prompt))
+    root = sources[0] if len(sources) == 1 and sources[0] != "ML_TABLE" else ""
+    file_match = re.search(r"\b([A-Za-z0-9_.\-/]+\.(?:parquet|csv))\b", str(prompt or ""), flags=re.I)
+    file_name = file_match.group(1) if file_match else ""
+    return {
+        "natural_language": str(prompt or ""),
+        "root": root if not file_name else "",
+        "product": _product_hint(prompt, product),
+        "file": file_name,
+        "max_rows": max(1, min(int(max_rows or 12), 100)),
+    }
+
+
+def _flowi_dashboard_source_runtime_tool(result: dict[str, Any], prompt: str, product: str) -> dict[str, Any]:
+    dashboard = result.get("dashboard") if isinstance(result.get("dashboard"), dict) else {}
+    chart_result = result.get("chart_result") if isinstance(result.get("chart_result"), dict) else {}
+    if not chart_result and isinstance(dashboard.get("chart_result"), dict):
+        chart_result = dashboard.get("chart_result") or {}
+    config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    if not config:
+        config = dashboard.get("config") if isinstance(dashboard.get("config"), dict) else {}
+    chart_config = chart_result.get("chart_config") if isinstance(chart_result.get("chart_config"), dict) else config
+    evidence = {}
+    for candidate in (chart_result.get("config"), chart_result.get("chart_config"), config):
+        if isinstance(candidate, dict) and isinstance(candidate.get("source_evidence"), dict):
+            evidence = candidate.get("source_evidence") or {}
+            break
+    source_resolution = result.get("source_resolution") if isinstance(result.get("source_resolution"), dict) else {}
+    selected_source = source_resolution.get("selected") if isinstance(source_resolution.get("selected"), dict) else {}
+    ai_sql = result.get("ai_sql") if isinstance(result.get("ai_sql"), dict) else {}
+    join_plan = result.get("join_plan") if isinstance(result.get("join_plan"), dict) else {}
+    joined = result.get("joined") if isinstance(result.get("joined"), dict) else {}
+    selected_columns = [str(x) for x in (evidence.get("selected_columns") or ai_sql.get("selected_columns") or joined.get("columns") or []) if str(x or "").strip()]
+    source_ids = [str(x) for x in (evidence.get("source_ids") or []) if str(x or "").strip()]
+    if not source_ids and selected_source.get("source_id"):
+        source_ids = [str(selected_source.get("source_id"))]
+    relation_ids = [str(x) for x in (evidence.get("relation_ids") or join_plan.get("relation_ids") or []) if str(x or "").strip()]
+    join_keys = [str(x) for x in (evidence.get("join_keys") or join_plan.get("join_keys") or []) if str(x or "").strip()]
+    rows = joined.get("sample_rows") if isinstance(joined.get("sample_rows"), list) else []
+    row_count = int(joined.get("row_count") or chart_result.get("total") or len(rows) or 0)
+    blocked = bool(result.get("blocked") or result.get("needs_input") or source_resolution.get("needs_input") or dashboard.get("needs_input"))
+    question = _text(result.get("question") or source_resolution.get("question") or dashboard.get("question"))
+    if blocked:
+        answer = question or "Dashboard 차트를 만들기 전에 DB/File source를 먼저 확인해야 합니다."
+    else:
+        answer = (
+            "Dashboard Agent source orchestration으로 차트를 생성했습니다.\n"
+            f"- source: {', '.join(source_ids) or '-'}\n"
+            f"- selected columns: {', '.join(selected_columns[:12]) or '-'}\n"
+            f"- join: {', '.join(relation_ids) if relation_ids else 'single source'}\n"
+            f"- rows: {row_count}"
+        )
+    tool: dict[str, Any] = {
+        "handled": True,
+        "intent": "dashboard_source_chart_runtime",
+        "action": "dashboard.source_chart_runtime",
+        "feature": "dashboard",
+        "type": "chart" if chart_result else "message",
+        "source_orchestration": True,
+        "answer": answer,
+        "inline_summary": chart_result.get("title") or dashboard.get("title") or "Dashboard source chart",
+        "chart_type": result.get("chart_type") or dashboard.get("chart_type") or chart_result.get("chart_type") or "",
+        "config": config,
+        "chart_config": chart_config,
+        "chart_result": chart_result,
+        "selected_columns": selected_columns,
+        "source_ids": source_ids,
+        "relation_ids": relation_ids,
+        "join_keys": join_keys,
+        "join_plan": join_plan,
+        "sql_plan": evidence.get("sql_plan") or ai_sql.get("display_sql") or "",
+        "filters": joined.get("filters") if isinstance(joined.get("filters"), dict) else {},
+        "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        "source_runtime": {
+            "run_id": result.get("run_id") or "",
+            "status": result.get("status") or "",
+            "unit_ai": result.get("unit_ai") or "home_sql_join_dashboard",
+            "output_route": result.get("output_route") if isinstance(result.get("output_route"), dict) else {},
+            "ai_sql": {
+                "display_sql": ai_sql.get("display_sql") or "",
+                "selected_columns": selected_columns,
+                "ok": bool(ai_sql.get("ok")),
+            },
+        },
+        "table": {
+            "kind": "dashboard_source_chart_rows",
+            "title": "Dashboard source rows",
+            "placement": "below",
+            "columns": _table_columns(selected_columns[:48]),
+            "rows": [{k: row.get(k, "") for k in selected_columns[:48]} for row in rows[:max(1, min(80, len(rows) or 1))]],
+            "total": row_count,
+        } if rows and selected_columns else {},
+        "validation": {
+            "rows": row_count,
+            "source_count": len(source_ids),
+            "join_count": len(relation_ids),
+            "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+        },
+    }
+    if blocked:
+        tool["blocked"] = True
+        if question:
+            tool["missing_freetext"] = [{"key": "dashboard_source", "label": question}]
+    return tool
+
+
+def _handle_dashboard_source_chart_runtime(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    *,
+    allowed_keys: set[str] | None = None,
+    username: str = "flowi",
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if allowed_keys is not None and "dashboard" not in allowed_keys:
+        return {"handled": False}
+    if not _flowi_dashboard_source_runtime_prompt(prompt):
+        return {"handled": False}
+    payload = _flowi_dashboard_source_runtime_payload(prompt, product, max_rows)
+    try:
+        from core.flowi_units.home_sql_join_dashboard_runtime import run_home_sql_join_dashboard_runtime
+
+        result = run_home_sql_join_dashboard_runtime(
+            payload,
+            username=username,
+            agent_context=agent_context if isinstance(agent_context, dict) else None,
+        )
+    except Exception as exc:
+        logger.warning("home dashboard source runtime failed: %s", exc)
+        return {"handled": False}
+    chart_result = result.get("chart_result") if isinstance(result.get("chart_result"), dict) else {}
+    dashboard = result.get("dashboard") if isinstance(result.get("dashboard"), dict) else {}
+    if not chart_result and isinstance(dashboard.get("chart_result"), dict):
+        chart_result = dashboard.get("chart_result") or {}
+    if not chart_result and not (result.get("blocked") or result.get("needs_input")):
+        return {"handled": False}
+    return _flowi_dashboard_source_runtime_tool(result, prompt, product)
+
+
 def _chart_default_join_key(sources: set[str]) -> str:
     return "lot_wf"
 
@@ -18817,6 +18968,16 @@ def _handle_flowi_query_core(
         if diag_out.get("handled"):
             return diag_out
     if allowed_keys is None or {"filebrowser", "dashboard"} & set(allowed_keys):
+        source_chart_out = _handle_dashboard_source_chart_runtime(
+            prompt,
+            product,
+            max_rows,
+            allowed_keys=allowed_keys,
+            username=username,
+            agent_context=agent_context,
+        )
+        if source_chart_out.get("handled"):
+            return _augment_dashboard_tool(source_chart_out, prompt, product=product, username=username)
         multisource_out = _handle_flowi_multisource_query(
             prompt,
             product,
