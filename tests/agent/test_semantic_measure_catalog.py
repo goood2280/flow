@@ -118,6 +118,19 @@ def test_flowi_semantic_measurement_handler_returns_table(monkeypatch, tmp_path)
     assert tool["table"]["rows"][0]["value_avg"] == 2.0
 
 
+def test_semantic_measurement_does_not_match_source_only_chart_prompt(monkeypatch, tmp_path):
+    from routers import llm
+
+    _isolate(monkeypatch, tmp_path)
+    catalog.ensure_catalog(actor="tester")
+
+    prompt = "Inline 15.0 M2 trend chart"
+
+    assert catalog.match_terms(prompt, product="", limit=5) == []
+    assert catalog.query_measurement(prompt, product="", max_rows=25) is None
+    assert llm._handle_semantic_measurement(prompt, product="", max_rows=25) is None
+
+
 def test_agent_semantic_service_includes_measurement_matches(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     catalog.ensure_catalog(actor="tester")

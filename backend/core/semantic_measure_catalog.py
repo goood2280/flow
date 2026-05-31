@@ -276,11 +276,15 @@ def match_terms(prompt: str, *, product: str = "", limit: int = 6) -> list[dict[
     matches: list[dict[str, Any]] = []
     for term in load_catalog(ensure=True).get("terms", []):
         score = 0.0
-        for alias in [term.get("term"), *list(term.get("aliases") or [])]:
+        matched_term = False
+        for alias in [term.get("term"), *list(term.get("aliases") or []), term.get("item_id")]:
             alias_norm = _norm(alias)
             if len(alias_norm) >= 2 and alias_norm in prompt_norm:
                 score += 5.0 if alias == term.get("term") else 4.0
+                matched_term = True
                 break
+        if not matched_term:
+            continue
         term_product = _upper(term.get("product"))
         if term_product:
             if product_u and product_u == term_product:
