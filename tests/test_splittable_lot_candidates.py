@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from core import auth as auth_core, ml_table_lookup  # noqa: E402
+from core import auth as auth_core, lot_progress_cache, ml_table_lookup  # noqa: E402
 from routers import informs, splittable  # noqa: E402
 
 
@@ -947,6 +947,39 @@ def test_root_lot_ram_cache_refresh_uses_recent_and_frequent_roots(tmp_path, mon
 
     assert result["ok"] is True
     assert {"A1000", "A2000"}.issubset(roots)
+
+
+def test_root_lot_ram_cache_reads_recent_roots_from_latest_lot_parquet(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+
+    class DummyPaths:
+        base_root = tmp_path
+        db_root = tmp_path
+        db_cache_dir = tmp_path / "cache"
+        data_root = tmp_path / "flow-data"
+
+    monkeypatch.setattr(ml_table_lookup, "PATHS", DummyPaths())
+    monkeypatch.setattr(
+        lot_progress_cache,
+        "read_lot_progress_cache",
+        lambda **_kwargs: {"items": []},
+    )
+    latest_path = DummyPaths.db_cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet"
+    latest_path.parent.mkdir(parents=True)
+    pl.DataFrame({
+        "product": ["OTHER", "PRODA", "PRODA"],
+        "root_lot_id": ["AZ9999", "AZ2000", "B1000"],
+        "lot_id": ["F9999", "F2000", "F1000"],
+        "wafer_id": ["1", "1", "2"],
+        "tkout_time": ["2026-05-03T00:00:00", "2026-05-02T00:00:00", "2026-05-01T00:00:00"],
+    }).write_parquet(latest_path)
+
+    roots = ml_table_lookup._recent_root_lot_ids_from_latest_cache(
+        tmp_path / "ML_TABLE_PRODA.parquet",
+        5,
+    )
+
+    assert roots == ["AZ2000", "B1000"]
 
 
 def test_split_view_root_lookup_enqueues_partition_cache_when_missing(tmp_path, monkeypatch):

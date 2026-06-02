@@ -34,6 +34,7 @@ CACHE_VERSION = 1
 MAX_RESULT_ROWS = 25
 LOOKUP_CACHE_DIRNAME = "ml_table_lookup"
 META_FILE = "_meta.json"
+LATEST_LOT_BY_ROOT_WAFER_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
 IDENTITY_COLUMN_CANDIDATES = (
@@ -566,28 +567,74 @@ def _row_time_text(row: dict[str, Any]) -> str:
     return str(row.get("update_time") or row.get("tkout_time") or row.get("tkin_time") or row.get("time") or "")
 
 
+def _latest_lot_by_root_wafer_path() -> Path:
+    return PATHS.db_cache_dir / LATEST_LOT_BY_ROOT_WAFER_FILE
+
+
+def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int) -> list[str]:
+    cache_fp = _latest_lot_by_root_wafer_path()
+    if limit <= 0 or not cache_fp.is_file():
+        return []
+    keys = _product_match_keys(fp)
+    try:
+        lf = pl.scan_parquet(str(cache_fp))
+        cols = lf.collect_schema().names()
+    except Exception:
+        return []
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    if not root_col:
+        return []
+    product_col = _ci_col(cols, "product", "process_id", "PRODUCT", "PROCESS_ID")
+    time_col = _ci_col(cols, "update_time", "tkout_time", "tkin_time", "time", "timestamp", "datetime")
+    q = lf
+    if product_col and keys:
+        q = q.filter(pl.col(product_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(keys)))
+    q = q.select([
+        pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("root_lot_id"),
+        (
+            pl.col(time_col).cast(_STR, strict=False).alias("__time")
+            if time_col else pl.lit("").alias("__time")
+        ),
+    ]).filter(pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != ""))
+    if time_col:
+        q = q.sort("__time", descending=True, nulls_last=True)
+    try:
+        rows = q.unique(subset=["root_lot_id"], keep="first", maintain_order=True).head(limit).collect()
+    except Exception:
+        return []
+    return [str(v or "").strip().upper() for v in rows["root_lot_id"].to_list() if str(v or "").strip()]
+
+
 def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int) -> list[str]:
     if limit <= 0:
         return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(root_lot_id: str) -> None:
+        root = str(root_lot_id or "").strip().upper()
+        if not root or root in seen or len(out) >= limit:
+            return
+        seen.add(root)
+        out.append(root)
+
+    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit):
+        add(root)
+    if len(out) >= limit:
+        return out
     try:
         from core import lot_progress_cache
         state = lot_progress_cache.read_lot_progress_cache(allow_stale=True)
     except Exception:
-        return []
+        return out
     keys = _product_match_keys(fp)
     rows = [row for row in (state.get("items") or []) if isinstance(row, dict)]
     rows.sort(key=_row_time_text, reverse=True)
-    out: list[str] = []
-    seen: set[str] = set()
     for row in rows:
         product = str(row.get("product") or row.get("process_id") or "").strip().upper()
         if keys and product and product not in keys:
             continue
-        root = str(row.get("root_lot_id") or "").strip().upper()
-        if not root or root in seen:
-            continue
-        seen.add(root)
-        out.append(root)
+        add(str(row.get("root_lot_id") or ""))
         if len(out) >= limit:
             break
     return out
