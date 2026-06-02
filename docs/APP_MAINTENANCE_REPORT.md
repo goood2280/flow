@@ -104,8 +104,8 @@ FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 
 | 장치 | 위치 | 역할 |
 |---|---|---|
-| runtime thread 제한 | `backend/core/runtime_limits.py` | Polars/Rayon/PyArrow/BLAS thread 수 기본 제한 |
-| memory soft guard | `backend/app_v2/runtime/resource_guard.py` | heavy API 동시성 제한, memory high 상태에서 503/429 반환 |
+| runtime thread 제한 | `backend/core/runtime_limits.py` | small profile 기본 CPU budget 4.5 core, process RSS limit 11.3GB, Polars/Rayon/PyArrow/BLAS thread 수 제한 |
+| resource guard | `backend/app_v2/runtime/resource_guard.py` | heavy API 기본 순차 처리, CPU/RAM 초과 상태에서 지연 후 429/503 반환 |
 | preview memory cache | `backend/core/filebrowser_cache.py` | 반복 FileBrowser preview/schema 응답을 최대 6GB 기본 메모리 LRU에서 반환, `FLOW_PREVIEW_MEMORY_CACHE_GB=0`으로 비활성화 |
 | heavy background opt-in | `backend/app_v2/runtime/startup.py` | 대형 DB scanner scheduler를 기본 비활성화 |
 | sample-first FileBrowser | `backend/routers/filebrowser.py`, `frontend/src/pages/My_FileBrowser.jsx` | 대형 parquet를 첫 화면에서 전체 scan하지 않음 |
@@ -116,7 +116,7 @@ FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 
 1. `/api/system/stats`에서 CPU/memory를 확인한다.
 2. `/api/filebrowser/cache/status` 또는 `/api/lot-progress/status`에서 cache refresh가 running인지 확인한다.
-3. heavy endpoint가 429/503을 냈다면 `Retry-After`를 따르고 동시에 실행 중인 scan/download를 줄인다.
+3. heavy endpoint가 429/503을 냈다면 `Retry-After`를 따르고 동시에 실행 중인 scan/download를 줄인다. small profile 기본 heavy 요청은 1개씩 순차 실행된다.
 4. `FLOW_ENABLE_HEAVY_BACKGROUND_JOBS`, `FLOW_ENABLE_TRACKER_ET_LOT_CACHE`, `FLOW_ENABLE_SPLITTABLE_MATCH_CACHE`가 켜져 있는지 확인한다.
 5. 운영 data root는 삭제하지 말고, `scripts/preflight_internal.py --write-probe`로 root 보존을 먼저 확인한다.
 

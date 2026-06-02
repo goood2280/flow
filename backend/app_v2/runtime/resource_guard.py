@@ -8,7 +8,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from core.runtime_limits import is_small_profile, process_memory_high, process_memory_snapshot
+from core.runtime_limits import is_small_profile, process_cpu_snapshot, process_memory_high, process_memory_snapshot
 
 
 DEFAULT_HEAVY_PREFIXES = (
@@ -105,23 +105,24 @@ def _truthy(raw: str | None) -> bool:
 class ResourceGuardMiddleware(BaseHTTPMiddleware):
     """Serialize heavy API work and reject it before the process reaches OOM.
 
-    The app must keep manual screens usable on small 4-core / 16GB hosts.  The
-    risky pattern is concurrent manual data scans, not normal navigation.  This
+    The app must keep manual screens usable on bounded shared hosts.  The risky
+    pattern is concurrent manual data scans, not normal navigation.  This
     middleware lets light endpoints through, queues heavy endpoints, and refuses
-    new heavy work when the process is near its configured RSS budget.
+    new heavy work when CPU or RSS is over the configured budget.
     """
 
     def __init__(self, app):
         super().__init__(app)
-        # Metadata/list requests stay light; heavy scans may run two at a time
-        # on the default 4-core/16GB target while remaining bounded by the
-        # memory guard. Operators can still lower this via env.
-        default_concurrency = 2 if is_small_profile() else 3
+        # Metadata/list requests stay light; heavy scans run sequentially by
+        # default on the bounded profile. Operators can still raise this via env.
+        default_concurrency = 1 if is_small_profile() else 3
         self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
         self._flowi_queue_timeout = _float_env("FLOW_FLOWI_CHAT_QUEUE_TIMEOUT_SEC", 8.0, 1.0, 60.0)
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
+        self._guard_recheck_delay_sec = _float_env("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", 1.0, 0.0, 30.0)
+        self._guard_retry_after_sec = _int_env("FLOW_RESOURCE_GUARD_RETRY_AFTER_SEC", 15, 1, 300)
         self._prefixes = _prefixes()
         self._light_paths = _light_paths()
         self._flowi_chat_paths = _flowi_chat_paths()
@@ -137,6 +138,39 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         if path in META_ONLY_PATHS and _truthy(request.query_params.get("meta_only")):
             return True
         return False
+
+    def _cpu_guard_snapshot(self) -> dict:
+        snap = process_cpu_snapshot()
+        return snap if bool(snap.get("process_cpu_over_limit")) else {}
+
+    async def _delayed_cpu_guard_snapshot(self) -> dict:
+        snap = self._cpu_guard_snapshot()
+        if not snap:
+            return {}
+        if self._guard_recheck_delay_sec > 0:
+            await asyncio.sleep(self._guard_recheck_delay_sec)
+            snap = self._cpu_guard_snapshot()
+        return snap if bool(snap.get("process_cpu_over_limit")) else {}
+
+    async def _memory_high_after_delay(self) -> bool:
+        if not process_memory_high(self._memory_reserve_gb):
+            return False
+        if self._guard_recheck_delay_sec > 0:
+            await asyncio.sleep(self._guard_recheck_delay_sec)
+            return process_memory_high(self._memory_reserve_gb)
+        return True
+
+    def _cpu_guard_response(self, snap: dict, group: str) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": "서버 CPU 보호로 큰 작업을 잠시 미뤘습니다. 현재 작업이 끝난 뒤 다시 실행하세요.",
+                "error_code": "resource_cpu_guard",
+                "heavy_request_group": group,
+                **snap,
+            },
+            status_code=429,
+            headers={"Retry-After": str(self._guard_retry_after_sec)},
+        )
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -158,7 +192,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         else:
             return await call_next(request)
 
-        if process_memory_high(self._memory_reserve_gb):
+        if await self._memory_high_after_delay():
             snap = process_memory_snapshot()
             return JSONResponse(
                 {
@@ -169,6 +203,9 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                 status_code=503,
                 headers={"Retry-After": "30"},
             )
+        cpu_snap = await self._delayed_cpu_guard_snapshot()
+        if cpu_snap:
+            return self._cpu_guard_response(cpu_snap, group)
 
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=queue_timeout)
@@ -195,7 +232,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         else:
             self._active += 1
         try:
-            if process_memory_high(self._memory_reserve_gb):
+            if await self._memory_high_after_delay():
                 snap = process_memory_snapshot()
                 return JSONResponse(
                     {
@@ -206,6 +243,9 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                     status_code=503,
                     headers={"Retry-After": "30"},
                 )
+            cpu_snap = await self._delayed_cpu_guard_snapshot()
+            if cpu_snap:
+                return self._cpu_guard_response(cpu_snap, group)
             response = await call_next(request)
             response.headers.setdefault("X-Flow-Heavy-Request-Concurrency", str(concurrency))
             response.headers.setdefault("X-Flow-Heavy-Request-Group", group)

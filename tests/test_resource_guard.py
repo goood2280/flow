@@ -17,6 +17,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app_v2.runtime import resource_guard  # noqa: E402
 
 
+def _cpu_ok() -> dict:
+    return {
+        "process_cpu_cores": 0.0,
+        "process_cpu_guard_cores": 4.5,
+        "process_cpu_over_limit": False,
+    }
+
+
 def test_flowi_verify_and_workflow_catalog_are_default_light_paths(monkeypatch):
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
 
@@ -33,6 +41,7 @@ def test_flowi_verify_and_workflow_catalog_bypass_heavy_middleware(monkeypatch):
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
     monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
     monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: False)
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
 
     app = FastAPI()
 
@@ -71,6 +80,7 @@ def test_flowi_chat_does_not_wait_behind_generic_heavy_request(monkeypatch):
     monkeypatch.setenv("FLOW_FLOWI_CHAT_CONCURRENCY", "1")
     monkeypatch.setenv("FLOW_FLOWI_CHAT_QUEUE_TIMEOUT_SEC", "1")
     monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: False)
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
 
     app = FastAPI()
     blocker_started = threading.Event()
@@ -97,3 +107,95 @@ def test_flowi_chat_does_not_wait_behind_generic_heavy_request(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["X-Flow-Heavy-Request-Group"] == "flowi_chat"
+
+
+def test_small_profile_heavy_requests_are_sequential_by_default(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.delenv("FLOW_HEAVY_REQUEST_CONCURRENCY", raising=False)
+    monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", "2")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: False)
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    @app.get("/api/dashboard/slow")
+    def dashboard_slow():
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.2)
+        with lock:
+            active -= 1
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    threads = [threading.Thread(target=lambda: client.get("/api/dashboard/slow"), daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3.0)
+
+    assert max_active == 1
+
+
+def test_heavy_request_delays_then_blocks_when_cpu_stays_high(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0.01")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: False)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_cpu_snapshot",
+        lambda guard_cores=None: {
+            "process_cpu_cores": 4.6,
+            "process_cpu_guard_cores": 4.5,
+            "process_cpu_over_limit": True,
+        },
+    )
+
+    app = FastAPI()
+    called = False
+
+    @app.get("/api/dashboard/heavy")
+    def dashboard_heavy():
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    response = client.get("/api/dashboard/heavy")
+
+    assert response.status_code == 429
+    assert response.json()["error_code"] == "resource_cpu_guard"
+    assert response.headers["Retry-After"] == "15"
+    assert called is False
+
+
+def test_heavy_request_proceeds_when_memory_recovers_after_delay(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0.01")
+    memory_checks = iter([True, False, False])
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: next(memory_checks))
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+
+    @app.get("/api/dashboard/heavy")
+    def dashboard_heavy():
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    response = client.get("/api/dashboard/heavy")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}

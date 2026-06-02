@@ -1,7 +1,7 @@
 """Runtime resource defaults for small Flow deployments.
 
-The default resource profile is intentionally sized below a 4-core / 16GB test
-host. Flow should stay inside roughly 2 CPU cores and 12GB process RSS unless an
+The default resource profile is intentionally bounded for a shared Flow host.
+Flow should stay inside roughly 4.5 CPU cores and 11.3GB process RSS unless an
 operator explicitly opts into a larger profile.
 
 These defaults should run before importing Polars, NumPy, or other native
@@ -17,7 +17,8 @@ import time
 
 _SMALL_PROFILES = {"", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
-_SMALL_CPU_BUDGET_CORES_DEFAULT = 2.0
+_SMALL_CPU_BUDGET_CORES_DEFAULT = 4.5
+_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 11.3
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
 _PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
@@ -43,7 +44,7 @@ def resource_profile() -> str:
     """Return the configured resource profile name.
 
     `small` is the default because this app is expected to be usable on a
-    4-core / 16GB box without consuming the whole machine.
+    shared workstation without consuming the whole machine.
     """
     return os.environ.get("FLOW_RESOURCE_PROFILE", "small").strip().lower()
 
@@ -99,11 +100,14 @@ def cpu_budget_cores() -> float:
 
 
 def process_memory_limit_gb() -> float:
-    raw = os.environ.get("FLOW_PROCESS_MEMORY_LIMIT_GB", "12" if is_small_profile() else "0")
+    raw = os.environ.get(
+        "FLOW_PROCESS_MEMORY_LIMIT_GB",
+        str(_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT) if is_small_profile() else "0",
+    )
     try:
         value = float(raw)
     except Exception:
-        value = 12.0 if is_small_profile() else 0.0
+        value = _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT if is_small_profile() else 0.0
     return max(0.0, value)
 
 
@@ -414,6 +418,8 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
         return False
     snap = process_memory_snapshot()
     rss = float(snap.get("process_rss_gb") or 0.0)
+    if rss >= limit:
+        return True
     rss_high = rss >= max(0.0, limit - max(0.0, reserve_gb))
     if not rss_high:
         return False
@@ -444,7 +450,10 @@ def apply_runtime_limits() -> None:
     """Apply CPU/memory-conscious defaults unless deploy set explicit values."""
     os.environ.setdefault("FLOW_RESOURCE_PROFILE", "small")
     os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(_SMALL_CPU_BUDGET_CORES_DEFAULT) if is_small_profile() else "")
-    os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_GB", "12" if is_small_profile() else "0")
+    os.environ.setdefault(
+        "FLOW_PROCESS_MEMORY_LIMIT_GB",
+        str(_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT) if is_small_profile() else "0",
+    )
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
     os.environ.setdefault("RAYON_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
     os.environ.setdefault("PYARROW_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
