@@ -229,6 +229,7 @@ export function TabStrip({ items = [], active, onChange, right = null }) {
                 style={{
                   padding: "6px 12px", fontSize: 14,
                   cursor: "pointer", userSelect: "none",
+                  whiteSpace: "nowrap",
                   background: isA ? c.accentGlow : "transparent",
                   color: isA ? c.accent : c.textSub,
                   fontWeight: isA ? 600 : 400,

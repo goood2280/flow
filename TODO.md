@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Agent Semantic layer 관리 화면 섹션화와 archived fallback 문구 보정
 - (Codex) Home Flow-i Step_ID routing and recent run prompt display
 - (Codex) Home Flow-i SplitTable 제품/root lot 재질문과 KNOB 기본 inline 렌더 보정
 - (Codex) runtime CPU 4.5 core/RAM 11.3GB guard와 heavy 작업 순차 처리

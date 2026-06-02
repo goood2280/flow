@@ -10,6 +10,12 @@ const SEMANTIC_SOURCES_ENDPOINT = "/api/agent/semantic/sources";
 const SEMANTIC_MEASUREMENTS_ENDPOINT = "/api/agent/semantic/measurements";
 const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 const EMPTY_GRAPH = { nodes: [], edges: [], state_design: {} };
+const SEMANTIC_SECTIONS = [
+  { k: "lexicon", l: "Lexicon 관리" },
+  { k: "sources", l: "Sources 관리" },
+  { k: "measurements", l: "Measurements 관리" },
+  { k: "review", l: "검토 이력" },
+];
 
 function agentUnitGraphEndpoint(unitKey) {
   return `/api/agent/unit/${encodeURIComponent(unitKey)}/graph`;
@@ -34,8 +40,8 @@ function agentUnitFeedbackEndpoint(unitKey) {
 function formatAgentEndpointError(error, endpoint, method = "GET") {
   const statusText = error?.status ? `HTTP ${error.status}` : "request failed";
   const detail = error?.body?.detail || error?.message || String(error || "");
-  if (error?.status === 410 && String(detail).includes("Agent implementation is archived")) {
-    return `${method} ${endpoint} -> HTTP 410. 실행 중인 backend가 active Agent unit route를 로딩하지 않았습니다. 서버 재시작 또는 배포 갱신 후 프론트 번들을 새로 로드하세요. detail: ${detail}`;
+  if (error?.status === 410 && String(detail).includes("archived for rebuild")) {
+    return `${method} ${endpoint} -> HTTP 410. 요청한 legacy Agent Studio path는 archive 상태입니다. active Agent unit route 또는 Semantic layer route를 사용하세요. detail: ${detail}`;
   }
   return `${method} ${endpoint} -> ${statusText}${detail ? `: ${detail}` : ""}`;
 }
@@ -105,6 +111,13 @@ function JsonBlock({ value, maxHeight = 160 }) {
       {JSON.stringify(value ?? {}, null, 2)}
     </pre>
   );
+}
+
+function semanticSectionSummary(section, counts) {
+  if (section === "sources") return `${counts.sourceCount || 0} sources`;
+  if (section === "measurements") return `${counts.measurementCount || 0} terms`;
+  if (section === "review") return `${counts.proposalCount || 0} pending · ${counts.changeCount || 0} changes`;
+  return `${counts.aliasCount || 0} alias · ${counts.intentCount || 0} intent`;
 }
 
 function RuntimeGraph({ graph, selectedId, onSelect }) {
@@ -2583,7 +2596,7 @@ function PpidKnobUnitPanel() {
 
 function SemanticLayerPanel() {
   const [payload, setPayload] = useState(null);
-  const [sourceCatalog, setSourceCatalog] = useState({ sources: {}, roles: {}, docs_base: "docs/semantic" });
+  const [sourceCatalog, setSourceCatalog] = useState({ sources: {}, disk: {}, deleted_ids: [], roles: {}, docs_base: "docs/semantic" });
   const [measurementCatalog, setMeasurementCatalog] = useState({ terms: [], path: "", change_log_path: "" });
   const [aliasJson, setAliasJson] = useState("{}");
   const [intentJson, setIntentJson] = useState("{}");
@@ -2596,6 +2609,7 @@ function SemanticLayerPanel() {
   const [proposalCanonicals, setProposalCanonicals] = useState({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [activeSection, setActiveSection] = useState("lexicon");
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
 
@@ -2616,6 +2630,8 @@ function SemanticLayerPanel() {
     ]).then(([lexiconPayload, sourcesPayload, measurementsPayload, proposalsPayload]) => {
       setSourceCatalog({
         sources: sourcesPayload?.sources || {},
+        disk: sourcesPayload?.disk || {},
+        deleted_ids: sourcesPayload?.deleted_ids || [],
         roles: sourcesPayload?.roles || {},
         docs_base: sourcesPayload?.docs_base || "docs/semantic",
         path: sourcesPayload?.path || "",
@@ -2974,12 +2990,34 @@ function SemanticLayerPanel() {
     return Array.isArray(sources) ? sources : Object.values(sources);
   }, [sourceCatalog]);
   const canApplyDraft = draft && (Object.keys(draft.alias_groups || {}).length || Object.keys(draft.intent_hints || {}).length);
+  const semanticCounts = {
+    aliasCount: Object.keys(payload?.alias_group_entries?.disk || payload?.alias_groups?.disk || {}).length,
+    intentCount: Object.keys(payload?.intent_hints?.disk || {}).length,
+    sourceCount: sourceRows.length,
+    measurementCount: measurementCatalog.terms.length,
+    proposalCount: proposals.length,
+    changeCount: changes.length,
+  };
+  const semanticSectionItems = SEMANTIC_SECTIONS.map((section) => {
+    if (section.k === "lexicon") return { ...section, badge: semanticCounts.aliasCount + semanticCounts.intentCount };
+    if (section.k === "sources") return { ...section, badge: semanticCounts.sourceCount };
+    if (section.k === "measurements") return { ...section, badge: semanticCounts.measurementCount };
+    return { ...section, badge: semanticCounts.proposalCount };
+  });
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
       {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
       {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
 
+      <TabStrip
+        active={activeSection}
+        onChange={setActiveSection}
+        items={semanticSectionItems}
+        right={<Pill tone="neutral">{semanticSectionSummary(activeSection, semanticCounts)}</Pill>}
+      />
+
+      {activeSection === "lexicon" ? (
       <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(0, 1.05fr)", gap: 10, alignItems: "start" }}>
         <Panel
           title="Lexicon"
@@ -3030,7 +3068,9 @@ function SemanticLayerPanel() {
           </div>
         </Panel>
       </div>
+      ) : null}
 
+      {activeSection === "sources" ? (
       <Panel title="Source catalog" subtitle={`${sourceRows.length} sources`}>
         <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
           <Field label="source 자연어">
@@ -3052,7 +3092,7 @@ function SemanticLayerPanel() {
             <Button variant="ghost" onClick={addSourceTemplate} disabled={busy}>source 추가</Button>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-            path {sourceCatalog.path || "-"} 쨌 change log {sourceCatalog.change_log_path || "-"}
+            path {sourceCatalog.path || "-"} · change log {sourceCatalog.change_log_path || "-"}
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
@@ -3101,7 +3141,9 @@ function SemanticLayerPanel() {
           ) : null}
         </div>
       </Panel>
+      ) : null}
 
+      {activeSection === "measurements" ? (
       <Panel title="Measurement terms" subtitle={`${measurementCatalog.terms.length} semantic measurement aliases`}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.9fr) minmax(0, 1.1fr)", gap: 10, alignItems: "start" }}>
           <div style={{ display: "grid", gap: 8 }}>
@@ -3153,7 +3195,9 @@ function SemanticLayerPanel() {
           </div>
         </div>
       </Panel>
+      ) : null}
 
+      {activeSection === "review" ? (
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 10, alignItems: "start" }}>
         <Panel title="Proposals" subtitle={`${proposals.length} pending`}>
           <div style={{ display: "grid", gap: 6, maxHeight: 420, overflow: "auto" }}>
@@ -3209,6 +3253,7 @@ function SemanticLayerPanel() {
           </div>
         </Panel>
       </div>
+      ) : null}
     </div>
   );
 }

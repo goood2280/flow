@@ -195,6 +195,7 @@ def test_home_flowi_clarification_renders_plain_choice_reply():
 def test_agent_page_exposes_unit_ai_and_llm_settings():
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
     css = (ROOT / "frontend" / "src" / "global.css").read_text(encoding="utf-8")
+    uxkit = (ROOT / "frontend" / "src" / "components" / "UXKit.jsx").read_text(encoding="utf-8")
     assert "에이전트" in ui
     assert "단위기능 AI" in ui
     assert "FileBrowser AI SQL" in ui
@@ -219,6 +220,14 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "/api/agent/semantic/sources" in ui
     assert "/api/agent/semantic/measurements" in ui
     assert "Source catalog" in ui
+    assert "쨌" not in ui
+    assert "SEMANTIC_SECTIONS" in ui
+    assert "activeSection" in ui
+    assert "semanticSectionSummary" in ui
+    assert "Lexicon 관리" in ui
+    assert "Sources 관리" in ui
+    assert "Measurements 관리" in ui
+    assert "검토 이력" in ui
     assert "source_catalog" in ui
     assert "source 저장" in ui
     assert "source 추가" in ui
@@ -226,6 +235,8 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "editSourceEntry" in ui
     assert "deleteSourceEntry" in ui
     assert "const current = sourceCatalog?.disk || {};" in ui
+    assert "disk: sourcesPayload?.disk || {}" in ui
+    assert "deleted_ids: sourcesPayload?.deleted_ids || []" in ui
     assert "Measurement terms" in ui
     assert "measurement 추가" in ui
     assert "measurement 자연어 저장" in ui
@@ -248,6 +259,7 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "실행 결과" in ui
     assert "flow-agent-unit-grid" in ui
     assert "flow-agent-node-grid" in ui
+    assert 'cursor: "pointer", userSelect: "none",\n                  whiteSpace: "nowrap",' in uxkit
     assert ".flow-agent-unit-grid" in css
     assert "repeat(auto-fit" in css
     assert "LlmTab" in ui

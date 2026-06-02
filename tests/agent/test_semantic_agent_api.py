@@ -215,3 +215,15 @@ def test_semantic_draft_builds_source_and_measurement_catalog_entries(semantic_s
     assert term["spec_high"] == 12
     assert term["evidence"][0]["label"] == "Inline spec review"
     assert store.load_alias_groups() == {}
+
+
+def test_archived_agent_fallback_explains_legacy_scope(semantic_store):
+    req = _Request(role="user")
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent.archived_agent_endpoint("runtime", req)
+
+    assert excinfo.value.status_code == 410
+    detail = str(excinfo.value.detail)
+    assert "Legacy Agent Studio endpoint is archived for rebuild." in detail
+    assert "active Unit AI and Semantic layer routes remain available" in detail

@@ -1340,4 +1340,11 @@ def archived_agent_endpoint(path: str, request: Request) -> dict[str, Any] | Non
     active_payload = _active_agent_write_fallback(path, request)
     if active_payload is not None:
         return active_payload
-    raise HTTPException(status_code=410, detail="Agent implementation is archived for rebuild.")
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy Agent Studio endpoint is archived for rebuild. "
+            "The active Unit AI and Semantic layer routes remain available under "
+            "/api/agent/unit-ai/*, /api/agent/unit/*, /api/agent/home-flowi/runtime/*, and /api/agent/semantic/*."
+        ),
+    )
