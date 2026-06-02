@@ -1264,6 +1264,44 @@ def cache_status(fp: Path) -> dict[str, Any]:
     }
 
 
+def root_lot_candidates_from_lookup_cache(fp: Path, prefix: str = "", limit: int = 500) -> dict[str, Any]:
+    """Return root_lot_id candidates from hive partition names when cache is fresh."""
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    status = cache_status(fp)
+    meta = status.get("meta") or {}
+    out = {
+        "ok": True,
+        "status": status.get("status") or "",
+        "has_cache": bool(status.get("has_cache")),
+        "source_stale": bool(status.get("source_stale")),
+        "job_status": status.get("job_status") or "",
+        "root_lot_id_count": int(meta.get("root_lot_id_count") or 0),
+        "candidates": [],
+    }
+    if not status.get("has_cache") or status.get("source_stale"):
+        return out
+    needle = str(prefix or "").strip().upper()
+    roots: list[str] = []
+    try:
+        for path in cache_dir_for(fp).iterdir():
+            if not path.is_dir() or not path.name.startswith("root_lot_id="):
+                continue
+            root = path.name.split("=", 1)[1].strip()
+            if not root:
+                continue
+            if needle and needle not in root.upper():
+                continue
+            roots.append(root)
+    except Exception as exc:
+        out.update({"ok": False, "error": str(exc), "candidates": []})
+        return out
+    out["candidates"] = sorted(dict.fromkeys(roots), key=lambda s: str(s).upper())[:limit]
+    return out
+
+
 def _scan_schema(fp: Path) -> tuple[list[str], dict[str, str]]:
     schema_obj = pl.scan_parquet(str(fp)).collect_schema()
     cols = list(schema_obj.names())

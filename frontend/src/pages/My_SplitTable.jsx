@@ -36,6 +36,12 @@ const CANDIDATE_SEARCH_LIMIT=120;
 const ROOT_LOT_CACHE_LIMIT_MAX=50000;
 const ROOT_LOT_CACHE_DEFAULT={prefixes:["AZ"],prefix_limit:5000,searched_limit:50};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
+const isLookupCachePreparing=(payload)=>{
+  const mode=String(payload?.match_mode||"");
+  const cache=payload?.lookup_cache||{};
+  const status=String(cache.status||"");
+  return mode==="lookup_cache_preparing" || (!!cache.queued && ["queued","running","missing","stale"].includes(status));
+};
 const normalizeRootLotCacheSettings=(raw={})=>{
   const src=raw&&typeof raw==="object"?raw:{};
   const prefixRaw=Array.isArray(src.prefixes)?src.prefixes:String(src.prefixes||"").split(",");
@@ -356,6 +362,7 @@ export default function My_SplitTable({user}){
   const isAdmin = role.isAdmin;
   const canManage = role.canManagePage("splittable");
   const lotRef=useRef(null);
+  const lotSuggestSeqRef=useRef(0);
   const splitTableRef=useRef(null);
   const settingsLotLinkRef=useRef(null);
   const scrollToSettingsLotLink=()=>settingsLotLinkRef.current?.scrollIntoView({behavior:"smooth",block:"start"});
@@ -514,27 +521,34 @@ export default function My_SplitTable({user}){
     }
   },[enabledSources,products]);
   useEffect(()=>{
+    const seq=++lotSuggestSeqRef.current;
     if(!selProd){setLotSuggestions([]);setLotSuggestBusy(false);setLotSuggestMsg("");return;}
+    const controller=new AbortController();
+    const isCurrent=()=>seq===lotSuggestSeqRef.current&&!controller.signal.aborted;
     const prefix=(lotId||"").trim();
     const limit=candidateLimit(prefix);
     let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+limit;
     if(prefix) url+="&prefix="+encodeURIComponent(prefix);
     setLotSuggestBusy(true);setLotSuggestMsg("");
-    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit)
+    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit,{signal:controller.signal})
       .then(d=>{
+        if(!isCurrent())return;
         const lots=normalizeLotList(d.lot_ids||[]);
         setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
         setLotSuggestMsg(lots.length?"":"Lot 후보가 없습니다. DB 연결/제품 매칭을 확인하세요.");
       })
-      .catch(e=>{setLotSuggestions([]);setLotSuggestMsg(e?.message||"Lot 후보 조회 실패");})
-      .finally(()=>setLotSuggestBusy(false));
-    sf(url)
+      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;setLotSuggestions([]);setLotSuggestMsg(e?.message||"Lot 후보 조회 실패");})
+      .finally(()=>{if(isCurrent())setLotSuggestBusy(false);});
+    const timer=setTimeout(()=>sf(url,{signal:controller.signal})
       .then(d=>{
+        if(!isCurrent())return;
         const candidates=normalizeLotList(d.candidates||[]);
         if(candidates.length){setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
+        else if(isLookupCachePreparing(d)){setLotSuggestions([]);setLotSuggestMsg("Root lot cache 준비 중입니다. 잠시 후 다시 검색하세요.");setLotSuggestBusy(false);}
         else fallbackLots();
       })
-      .catch(()=>fallbackLots());
+      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();}),250);
+    return()=>{clearTimeout(timer);controller.abort();};
   },[selProd,lotId]);
   // v9.0.0: 제품 변경 시 lotId/fabLotId/waferIds 초기화 — 직전 제품의 lot 이 남아 잘못된 필터링 방지.
   //   (예: PRODA 의 A1000A.1_V1 이 PRODB 로 전환 후에도 fab_lot_id 칸에 남아 있으면 B0001 root 와 어긋나는 조합 생성).
