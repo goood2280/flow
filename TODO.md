@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) LLM internal profile connected state blocks dev AI routing
 - (Codex) SplitTable root_lot_id RAM cache prefix/other grouping and prefix-first warmup
 - (Codex) FileBrowser 단일파일 SELECT 적용 버튼화와 WHERE 컬럼 식별자 보정
 - (Codex) Home Flow-i 한글 SplitTable 조회 라우팅 우선순위 보정

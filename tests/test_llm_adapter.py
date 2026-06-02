@@ -376,6 +376,83 @@ def test_active_playground_profile_remains_available_while_external_is_blocked(m
     assert cfg["external_ai_block_reason"] == "playground profile active"
 
 
+def test_connected_internal_profile_prevents_active_dev_provider(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm_profiles": {
+                "openai_compatible": {
+                    "enabled": True,
+                    "api_url": "https://llm.internal/v1/chat/completions",
+                    "provider": "openai_compatible",
+                    "model": "gpt-oss-120b",
+                    "format": "openai",
+                },
+                "vertex_gemini": {
+                    "enabled": True,
+                    "api_url": "https://aiplatform.googleapis.com/v1/projects/dev/locations/us-central1/endpoints/openapi/chat/completions",
+                    "provider": "vertex_gemini",
+                    "model": "google/gemini-2.5-flash",
+                    "format": "openai",
+                },
+            },
+            "llm": {
+                "enabled": True,
+                "api_url": "https://aiplatform.googleapis.com/v1/projects/dev/locations/us-central1/endpoints/openapi/chat/completions",
+                "provider": "vertex_gemini",
+                "model": "google/gemini-2.5-flash",
+                "format": "openai",
+            },
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["provider"] == "openai_compatible"
+    assert cfg["api_url"] == "https://llm.internal/v1/chat/completions"
+    assert cfg["dev_ai_blocked"] is True
+    assert cfg["blocked_provider"] == "vertex_gemini"
+
+
+def test_connected_internal_profile_prevents_env_dev_fallback(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("FLOW_LLM_ENABLE_ENV_FALLBACK", "1")
+    monkeypatch.setenv("FLOW_LLM_PROVIDER", "vertex")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "flow-dev")
+    monkeypatch.setattr(llm_adapter, "_path_exists", lambda _path: False)
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm_profiles": {
+                "openai_compatible": {
+                    "enabled": True,
+                    "api_url": "https://llm.internal/v1/chat/completions",
+                    "provider": "openai_compatible",
+                    "model": "gpt-oss-120b",
+                    "format": "openai",
+                },
+            },
+            "llm": {
+                "enabled": True,
+                "api_url": "",
+                "provider": "generic",
+            },
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert llm_adapter.is_available() is True
+    assert cfg["provider"] == "openai_compatible"
+    assert cfg["source"] != "env_fallback"
+    assert cfg["dev_ai_blocked"] is True
+
+
 def test_google_adc_ignores_stored_admin_token_and_replaces_auth_header(monkeypatch):
     cfg = {
         "provider": "openai_compatible",

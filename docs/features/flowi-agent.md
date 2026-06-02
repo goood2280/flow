@@ -163,6 +163,12 @@ Semantic layer의 API, data-root, unit별 사용 규칙은 [agent-semantic-layer
 
 LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메시지를 그대로 보여준다. 이 endpoint는 원문을 prompt에 넣기 전 token/password류 문자열을 redaction하고, 내부 reasoning이나 숨은 trace를 노출하지 않는다.
 
+## LLM Routing Policy
+
+- If a saved internal GPT OSS-compatible profile (`openai_compatible`, `local`, or internal `generic`) is enabled and has an internal endpoint, runtime LLM selection must use that internal profile before any dev AI profile.
+- In that state, active dev providers (`vertex_gemini`, external `openai`) and `FLOW_LLM_ENABLE_ENV_FALLBACK` env fallback are blocked from becoming the runtime config. `/api/llm/status.config` exposes `dev_ai_blocked`, `dev_ai_block_reason`, and `blocked_provider` when this policy redirects the runtime back to the internal profile.
+- Saved `playground` profiles keep the existing behavior: when inactive they block external env fallback but are not auto-activated; when active they remain available.
+
 ## Code Entrypoints
 
 | Layer | Path |

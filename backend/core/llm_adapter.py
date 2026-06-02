@@ -338,6 +338,102 @@ def _blocked_external_config(cfg: Dict[str, Any], reason: str) -> Dict[str, Any]
     return out
 
 
+_ALLOWED_PROVIDERS = {"generic", "openai", "openai_compatible", "local", "playground", "vertex_gemini"}
+
+
+def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(_DEFAULT)
+    merged.update({k: v for k, v in raw.items() if k in _DEFAULT})
+    merged["enabled"] = bool(merged.get("enabled"))
+    merged["api_url"] = str(merged.get("api_url") or "").strip()
+    merged["model"] = str(merged.get("model") or "").strip()
+    merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
+    merged["admin_token"] = str(merged.get("admin_token") or "").strip()
+    provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
+    if provider not in _ALLOWED_PROVIDERS:
+        provider = "generic"
+    merged["provider"] = provider
+    auth_mode = str(merged.get("auth_mode") or "").strip().lower()
+    if not auth_mode:
+        if provider == "playground":
+            auth_mode = "dep_ticket"
+        elif provider == "local":
+            auth_mode = "none"
+        elif provider == "vertex_gemini":
+            auth_mode = "google_adc"
+        else:
+            auth_mode = "bearer"
+    if auth_mode not in {"bearer", "dep_ticket", "google_adc", "none"}:
+        auth_mode = "bearer"
+    merged["auth_mode"] = auth_mode
+    merged["system_name"] = str(merged.get("system_name") or "").strip()
+    if provider == "playground" and not merged["system_name"]:
+        merged["system_name"] = "playground"
+    if provider in {"local", "openai_compatible"} and not merged["model"]:
+        merged["model"] = "gpt-oss-120b"
+    if provider == "vertex_gemini" and not merged["model"]:
+        merged["model"] = "google/gemini-2.5-flash"
+    if _is_vertex_openai_compatible_config(merged):
+        # Vertex's OpenAI-compatible Gemini endpoint must use a fresh Google
+        # OAuth token. A persisted bearer token expires quickly and causes
+        # Home Flow-i verification to fail with HTTP 401.
+        merged["auth_mode"] = "google_adc"
+        merged["format"] = "openai"
+        if provider == "generic":
+            merged["provider"] = "openai_compatible"
+        merged["admin_token"] = ""
+    merged["user_id"] = str(merged.get("user_id") or "").strip()
+    merged["user_type"] = str(merged.get("user_type") or "").strip()
+    merged["format"] = str(merged.get("format") or "openai").strip() or "openai"
+    try:
+        merged["timeout_s"] = int(merged.get("timeout_s") or 20)
+    except Exception:
+        merged["timeout_s"] = 20
+    if not isinstance(merged.get("headers"), dict):
+        merged["headers"] = {}
+    if not isinstance(merged.get("extra_body"), dict):
+        merged["extra_body"] = {}
+    return merged
+
+
+def _is_connected_internal_ai_config(cfg: Dict[str, Any]) -> bool:
+    if not bool(cfg.get("enabled")) or not str(cfg.get("api_url") or "").strip():
+        return False
+    provider = str(cfg.get("provider") or "").strip().lower()
+    if provider not in {"generic", "openai_compatible", "local", "playground"}:
+        return False
+    return not _is_external_ai_config(cfg)
+
+
+def _connected_internal_profile(admin_settings: Dict[str, Any]) -> Dict[str, Any]:
+    profiles = admin_settings.get("llm_profiles") if isinstance(admin_settings.get("llm_profiles"), dict) else {}
+    ordered_keys = ["openai_compatible", "local", "generic"]
+    ordered_keys.extend([str(key or "").strip().lower() for key in profiles.keys() if str(key or "").strip().lower() not in ordered_keys])
+    for key in ordered_keys:
+        raw_profile = profiles.get(key)
+        if not isinstance(raw_profile, dict):
+            continue
+        profile = dict(raw_profile)
+        profile["provider"] = str(profile.get("provider") or key).strip().lower()
+        normalized = _normalize_runtime_config(profile)
+        if normalized.get("provider") == "playground":
+            continue
+        if _is_connected_internal_ai_config(normalized):
+            return normalized
+    return {}
+
+
+def _internal_profile_override(internal_cfg: Dict[str, Any], blocked_cfg: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    out = dict(internal_cfg)
+    out["source"] = str(out.get("source") or "internal_profile")
+    out["dev_ai_blocked"] = True
+    out["dev_ai_block_reason"] = reason
+    out["blocked_provider"] = str(blocked_cfg.get("provider") or "")
+    return out
+
+
 def _google_credentials_project() -> str:
     path = _env_first("GOOGLE_APPLICATION_CREDENTIALS")
     if not path:
@@ -478,65 +574,21 @@ def _raw_config() -> Dict[str, Any]:
     llm = cfg.get("llm") or {}
     if not isinstance(llm, dict):
         llm = {}
-    merged = dict(_DEFAULT)
-    merged.update({k: v for k, v in llm.items() if k in _DEFAULT})
-    # ensure types
-    merged["enabled"] = bool(merged.get("enabled"))
-    merged["api_url"] = str(merged.get("api_url") or "").strip()
-    merged["model"] = str(merged.get("model") or "").strip()
-    merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
-    merged["admin_token"] = str(merged.get("admin_token") or "").strip()
-    provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
-    if provider not in {"generic", "openai", "openai_compatible", "local", "playground", "vertex_gemini"}:
-        provider = "generic"
-    merged["provider"] = provider
-    auth_mode = str(merged.get("auth_mode") or "").strip().lower()
-    if not auth_mode:
-        if provider == "playground":
-            auth_mode = "dep_ticket"
-        elif provider == "local":
-            auth_mode = "none"
-        elif provider == "vertex_gemini":
-            auth_mode = "google_adc"
-        else:
-            auth_mode = "bearer"
-    if auth_mode not in {"bearer", "dep_ticket", "google_adc", "none"}:
-        auth_mode = "bearer"
-    merged["auth_mode"] = auth_mode
-    merged["system_name"] = str(merged.get("system_name") or "").strip()
-    if provider == "playground" and not merged["system_name"]:
-        merged["system_name"] = "playground"
-    if provider in {"local", "openai_compatible"} and not merged["model"]:
-        merged["model"] = "gpt-oss-120b"
-    if provider == "vertex_gemini" and not merged["model"]:
-        merged["model"] = "google/gemini-2.5-flash"
-    if _is_vertex_openai_compatible_config(merged):
-        # Vertex's OpenAI-compatible Gemini endpoint must use a fresh Google
-        # OAuth token. A persisted bearer token expires quickly and causes
-        # Home Flow-i verification to fail with HTTP 401.
-        merged["auth_mode"] = "google_adc"
-        merged["format"] = "openai"
-        if provider == "generic":
-            merged["provider"] = "openai_compatible"
-        merged["admin_token"] = ""
-    merged["user_id"] = str(merged.get("user_id") or "").strip()
-    merged["user_type"] = str(merged.get("user_type") or "").strip()
-    merged["format"] = (merged.get("format") or "openai").strip() or "openai"
-    try:
-        merged["timeout_s"] = int(merged.get("timeout_s") or 20)
-    except Exception:
-        merged["timeout_s"] = 20
-    if not isinstance(merged.get("headers"), dict):
-        merged["headers"] = {}
-    if not isinstance(merged.get("extra_body"), dict):
-        merged["extra_body"] = {}
+    merged = _normalize_runtime_config(llm)
     block_reason = _external_ai_block_reason(admin_settings, merged)
+    internal = _connected_internal_profile(admin_settings)
+    if internal and not _is_connected_internal_ai_config(merged):
+        out = _internal_profile_override(internal, merged, "connected internal AI profile configured")
+        return _annotate_external_policy(out, block_reason)
     if block_reason and _is_external_ai_config(merged) and merged.get("api_url"):
         return _blocked_external_config(merged, block_reason)
     if merged.get("api_url"):
         return _annotate_external_policy(merged, block_reason)
     fallback = _env_fallback_config(block_reason)
     if fallback:
+        if internal:
+            out = _internal_profile_override(internal, fallback, "connected internal AI profile configured")
+            return _annotate_external_policy(out, block_reason)
         return _annotate_external_policy(fallback, "")
     return _annotate_external_policy(merged, block_reason)
 
