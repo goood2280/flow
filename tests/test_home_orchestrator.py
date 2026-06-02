@@ -861,6 +861,56 @@ def test_flowi_chat_answers_step_id_from_step_matching_csv(monkeypatch, tmp_path
     assert result["tool"]["source_ids"] == ["step_matching.csv"]
 
 
+def test_flowi_structures_step_id_question_before_tablemap():
+    from routers import llm
+
+    result = llm._structure_flowi_function_call("VC100020은 무슨 step이야", product="", max_rows=12)
+
+    selected = result["selected_function"]
+    assert selected["name"] == "query_step_mapping_lookup"
+    assert selected["intent"] == "step_mapping_lookup"
+    assert result["function_call"]["function"]["arguments"]["step_ids"] == ["VC100020"]
+
+    ascii_result = llm._structure_flowi_function_call("VC100020 what step", product="", max_rows=12)
+    assert ascii_result["selected_function"]["name"] == "query_step_mapping_lookup"
+
+
+def test_flowi_core_step_id_lookup_preempts_tablemap_guidance(monkeypatch, tmp_path):
+    from routers import llm as llm_router
+
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\n"
+        "PRODA,VC100020,CONTACT_LITHO\n",
+        encoding="utf-8",
+    )
+
+    class DummyPaths:
+        def __init__(self, root):
+            self.base_root = root
+            self.db_root = root
+            self.data_root = root / "flow-data"
+            self.cache_dir = self.data_root / "cache"
+
+    paths = DummyPaths(tmp_path)
+    paths.data_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(llm_router, "PATHS", paths)
+
+    result = llm_router._handle_flowi_query_core(
+        "VC100020은 무슨 step이야",
+        product="",
+        max_rows=12,
+        allowed_keys={"filebrowser", "splittable", "dashboard", "tablemap"},
+        username="tester",
+        role="admin",
+        agent_context={},
+    )
+
+    assert result["intent"] == "step_mapping_lookup"
+    assert result["action"] == "query_step_mapping_lookup"
+    assert "CONTACT_LITHO" in result["answer"]
+    assert result["table"]["rows"][0]["step_id"] == "VC100020"
+
+
 def test_flowi_chat_skips_llm_polish_for_clarification(monkeypatch, tmp_path):
     from core import flowi_units, home_memory, home_orchestrator
     from routers import llm as llm_router
@@ -1277,6 +1327,7 @@ def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch
 
     pending_prompt = "A1002 1.0 STI Split(or Knob) show"
     calls = []
+    runtime_calls = []
 
     monkeypatch.setattr(home_memory, "MEMORY_FILE", tmp_path / "home_memory.jsonl")
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
@@ -1292,11 +1343,11 @@ def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch
         "_handle_semantic_measurement",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("measurement lookup should not run")),
     )
-    monkeypatch.setattr(
-        home_orchestrator,
-        "record_flowi_runtime_run",
-        lambda *_args, **_kwargs: {"run_id": "pytest-split-product-followup", "graph": {"nodes": [], "edges": []}, "status": "success"},
-    )
+    def fake_record_flowi_runtime_run(**kwargs):
+        runtime_calls.append(kwargs)
+        return {"run_id": "pytest-split-product-followup", "graph": {"nodes": [], "edges": []}, "status": "success"}
+
+    monkeypatch.setattr(home_orchestrator, "record_flowi_runtime_run", fake_record_flowi_runtime_run)
 
     def fake_split_handler(prompt, product, max_rows):
         calls.append((prompt, product, max_rows))
@@ -1336,6 +1387,10 @@ def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch
     assert result["answer"] == "SplitTable resumed with product"
     assert result["tool"]["action"] == "query_splittable_view"
     assert calls == [(pending_prompt + "\nproduct: PRODA", "PRODA", 12)]
+    assert result["input_prompt"] == "PRODA"
+    assert result["resolved_prompt"] == pending_prompt + "\nproduct: PRODA"
+    assert runtime_calls[0]["prompt"] == pending_prompt + "\nproduct: PRODA"
+    assert runtime_calls[0]["result"]["input_prompt"] == "PRODA"
 
 
 def test_flowi_chat_product_followup_keeps_bare_alpha_splittable_prompt(monkeypatch, tmp_path):

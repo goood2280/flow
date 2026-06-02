@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i Step_ID routing and recent run prompt display
 - (Codex) Home Flow-i SplitTable 제품/root lot 재질문과 KNOB 기본 inline 렌더 보정
 - (Codex) runtime CPU 4.5 core/RAM 11.3GB guard와 heavy 작업 순차 처리
 - (Codex) Home Flow-i 실행근거 기본 접힘과 결과 우선 표시

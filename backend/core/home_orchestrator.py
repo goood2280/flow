@@ -693,6 +693,8 @@ def build_home_runtime_snapshot(
         "source": source,
         "username": _short_text((user or {}).get("username") or result.get("user") or "", 80),
         "prompt": _short_text(prompt, 2000),
+        "input_prompt": _short_text(result.get("input_prompt"), 2000),
+        "resolved_prompt": _short_text(result.get("resolved_prompt") or result.get("prompt"), 2000),
         "status": statuses.get("result_renderer", "pending"),
         "reply": result.get("reply") or result.get("answer") or "",
         "graph": graph,
@@ -781,6 +783,8 @@ def list_home_runtime_runs(limit: int = 20) -> list[dict[str, Any]]:
             "source": data.get("source") or "",
             "username": data.get("username") or "",
             "prompt": _short_text(data.get("prompt"), 240),
+            "input_prompt": _short_text(data.get("input_prompt"), 240),
+            "resolved_prompt": _short_text(data.get("resolved_prompt") or data.get("prompt"), 240),
             "status": data.get("status") or "",
             "reply": _short_text(data.get("reply"), 240),
         })

@@ -2021,6 +2021,16 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
     inform_terms = ("인폼", "inform", "등록", "기록", "남겨", "올려")
     inform_transfer_terms = ("모듈 전달", "모듈전달", "module transfer", "module handoff")
     batch_entries = _flowi_parse_inform_batch_entries(text)
+    if _step_mapping_lookup_intent(text, str(slots.get("product") or "")):
+        return {
+            "name": "query_step_mapping_lookup",
+            "feature": "filebrowser",
+            "intent": "step_mapping_lookup",
+            "confidence": 0.92,
+            "reason": _flowi_reason("Step ID/function_step matching lookup"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
     if entries and (entries[0].get("key") or "") == "tablemap":
         primary = entries[0]
         return {
@@ -13851,7 +13861,10 @@ def _step_mapping_lookup_intent(prompt: str, product: str = "") -> bool:
     low = text.lower()
     has_step_word = any(t in low or t in text for t in ("step", "step_id", "function_step", "func_step", "스텝", "공정"))
     has_lookup_word = any(t in low or t in text for t in ("어떤", "무슨", "뭐", "영향", "매칭", "mapping", "lookup", "관련", "연결"))
-    return bool(has_step_word and has_lookup_word and _flowi_step_mapping_query_terms(text, product=product))
+    query_terms = _flowi_step_mapping_query_terms(text, product=product)
+    if has_step_word and _step_id_terms_from_prompt(text, product=product):
+        return True
+    return bool(has_step_word and has_lookup_word and query_terms)
 
 
 def _flowi_matching_source_id(src: dict[str, Any], fallback: str) -> str:
@@ -18998,6 +19011,10 @@ def _handle_flowi_query_core(
     context_view_out = _handle_flowi_splittable_context_followup(prompt, product, max_rows, allowed_keys, agent_context)
     if context_view_out.get("handled"):
         return context_view_out
+    if allowed_keys is None or {"filebrowser", "dashboard", "splittable"} & set(allowed_keys):
+        step_mapping_out = _handle_step_mapping_lookup(prompt, product, max_rows)
+        if step_mapping_out.get("handled"):
+            return step_mapping_out
     if _flowi_context_prefers_splittable(agent_context) and _flowi_should_continue_splittable_context(prompt):
         prompt = f"{prompt} Split"
     if any(term in str(prompt or "").lower() or term in str(prompt or "") for term in ("테이블맵", "테이블 맵", "tablemap", "table map")):
@@ -20944,6 +20961,13 @@ def _attach_flowi_trace(
     allowed_keys: set[str],
     agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(agent_context, dict):
+        input_prompt = str(agent_context.get("_flowi_input_prompt") or "").strip()
+        resolved_prompt = str(agent_context.get("_flowi_resolved_prompt") or prompt or "").strip()
+        if input_prompt and resolved_prompt and input_prompt != resolved_prompt:
+            result["prompt"] = resolved_prompt
+            result["input_prompt"] = input_prompt
+            result["resolved_prompt"] = resolved_prompt
     tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
     if tool:
         _finalize_flowi_tool(tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
@@ -21091,6 +21115,9 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
     }
     if result.get("run_id"):
         out["run_id"] = result.get("run_id")
+    for key in ("prompt", "input_prompt", "resolved_prompt"):
+        if result.get(key):
+            out[key] = result.get(key)
     if isinstance(result.get("graph"), dict):
         out["graph"] = deepcopy(result.get("graph") or {})
     if result.get("runtime_status"):
@@ -21336,7 +21363,14 @@ def _run_flowi_chat(
     )
 
     allowed_keys = _allowed_flowi_feature_keys(me)
+    input_prompt = prompt
     prompt = _flowi_resolve_pending_core_prompt(prompt, agent_context, allowed_keys)
+    if input_prompt and input_prompt != prompt:
+        agent_context = {
+            **agent_context,
+            "_flowi_input_prompt": input_prompt,
+            "_flowi_resolved_prompt": prompt,
+        }
     if home_memory.is_memory_recall_prompt(prompt):
         tool = home_memory.recall_answer(prompt=prompt, username=username, agent_context=agent_context)
         answer = tool.get("answer") or ""

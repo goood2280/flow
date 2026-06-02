@@ -3419,7 +3419,9 @@ function HomeFlowiRuntimePanel() {
   const detail = (selectedNodeId && details[selectedNodeId]) || selectedNode || {};
   const detailWarnings = Array.isArray(detail?.warnings) ? detail.warnings.filter(Boolean) : [];
   const preview = detail?.preview && typeof detail.preview === "object" ? detail.preview : {};
-  const promptText = run?.prompt || "";
+  const promptText = run?.resolved_prompt || run?.prompt || "";
+  const inputPromptText = run?.input_prompt || "";
+  const actionSummary = Array.isArray(run?.action_log?.summary) ? run.action_log.summary.filter(Boolean).slice(0, 4) : [];
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -3453,7 +3455,7 @@ function HomeFlowiRuntimePanel() {
                   }}
                 >
                   <span style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {item.prompt || "(empty)"}
+                    {item.resolved_prompt || item.prompt || "(empty)"}
                   </span>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.run_id}
@@ -3480,8 +3482,18 @@ function HomeFlowiRuntimePanel() {
           right={<Pill tone={toneForStatus(run?.status)}>{run?.status || "ready"}</Pill>}
         >
           {promptText ? (
-            <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={promptText}>
+            <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }} title={promptText}>
               {promptText}
+            </div>
+          ) : null}
+          {inputPromptText && inputPromptText !== promptText ? (
+            <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+              input: {inputPromptText}
+            </div>
+          ) : null}
+          {actionSummary.length ? (
+            <div style={{ marginBottom: 8, display: "grid", gap: 3, fontSize: 11, color: "var(--text-secondary)" }}>
+              {actionSummary.map((line, idx) => <div key={`${idx}-${line}`} style={{ overflowWrap: "anywhere" }}>{line}</div>)}
             </div>
           ) : null}
           <RuntimeGraph graph={activeGraph} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
@@ -3494,10 +3506,15 @@ function HomeFlowiRuntimePanel() {
         >
           <div style={{ display: "grid", gap: 8 }}>
             {detailWarnings.length ? <Banner tone="warn">{detailWarnings.slice(0, 4).join(" / ")}</Banner> : null}
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>input</div>
-            <JsonBlock value={detail?.input_summary || {}} maxHeight={120} />
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>output</div>
-            <JsonBlock value={detail?.output_summary || detail || {}} maxHeight={230} />
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "8px 10px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 800, color: "var(--text-secondary)" }}>node details</summary>
+              <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>input</div>
+                <JsonBlock value={detail?.input_summary || {}} maxHeight={120} />
+                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>output</div>
+                <JsonBlock value={detail?.output_summary || detail || {}} maxHeight={230} />
+              </div>
+            </details>
             {preview?.rows?.length ? (
               <>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
