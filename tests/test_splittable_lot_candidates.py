@@ -1001,7 +1001,7 @@ def test_split_view_root_lookup_enqueues_partition_cache_when_missing(tmp_path, 
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
-def test_view_large_lookup_cache_miss_returns_prepare_without_raw_scan(tmp_path, monkeypatch):
+def test_view_large_lookup_cache_miss_queues_build_and_uses_raw_fallback(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
@@ -1023,11 +1023,6 @@ def test_view_large_lookup_cache_miss_returns_prepare_without_raw_scan(tmp_path,
     calls = []
     monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
 
-    def fail_scan(*_args, **_kwargs):
-        raise AssertionError("raw parquet scan should not run while lookup cache is preparing")
-
-    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_scan)
-
     view = splittable.view_split(
         product="ML_TABLE_PRODA",
         root_lot_id="A1000",
@@ -1040,11 +1035,41 @@ def test_view_large_lookup_cache_miss_returns_prepare_without_raw_scan(tmp_path,
         custom_cols="",
     )
 
-    assert view["rows"] == []
-    assert "캐시 준비" in view["msg"]
+    assert [row["_param"] for row in view["rows"]] == ["KNOB_GATE"]
     assert view["lookup_cache"]["queued"] is True
     assert view["runtime_profile"]["root_cache_hit"] is False
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+
+
+def test_lookup_cache_worker_skips_when_cache_is_already_fresh(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+
+    def fail_build(_fp):
+        raise AssertionError("fresh lookup cache should not rebuild")
+
+    monkeypatch.setattr(ml_table_lookup, "_build_lookup_cache", fail_build)
+    with ml_table_lookup._BUILD_LOCK:
+        ml_table_lookup._BUILD_QUEUE.clear()
+        ml_table_lookup._BUILD_QUEUE.append(fp)
+        ml_table_lookup._BUILD_STATE.update({
+            "running": False,
+            "current": "",
+            "last_error": "",
+            "last_source": "",
+        })
+
+    ml_table_lookup._worker_loop()
+
+    assert ml_table_lookup._BUILD_STATE["last_error"] == ""
+    assert ml_table_lookup._BUILD_STATE["last_source"] == str(fp.resolve())
 
 
 def test_view_root_lookup_cache_hit_avoids_raw_parquet_scan(tmp_path, monkeypatch):

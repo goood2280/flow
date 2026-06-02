@@ -34,6 +34,7 @@ CACHE_VERSION = 1
 MAX_RESULT_ROWS = 25
 LOOKUP_CACHE_DIRNAME = "ml_table_lookup"
 META_FILE = "_meta.json"
+BUILD_LOCK_STALE_SECONDS = 30 * 60
 LATEST_LOT_BY_ROOT_WAFER_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
@@ -1072,6 +1073,55 @@ def _write_meta(fp: Path, meta: dict[str, Any]) -> None:
     tmp.replace(meta_fp)
 
 
+def _build_lock_path(fp: Path) -> Path:
+    root = _cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{_safe_product_token(Path(fp).stem)}.build.lock"
+
+
+def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
+    lock_fp = _build_lock_path(fp)
+    payload = json.dumps({
+        "pid": os.getpid(),
+        "started_at": _utc_now(),
+        "source_path": str(Path(fp).resolve()),
+    }, ensure_ascii=False)
+    for attempt in range(2):
+        try:
+            fd = os.open(str(lock_fp), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, payload.encode("utf-8"))
+            return fd, lock_fp, ""
+        except FileExistsError:
+            try:
+                age = time.time() - lock_fp.stat().st_mtime
+            except Exception:
+                age = 0.0
+            if attempt == 0 and age > BUILD_LOCK_STALE_SECONDS:
+                try:
+                    lock_fp.unlink()
+                    continue
+                except Exception:
+                    pass
+            try:
+                owner = lock_fp.read_text(encoding="utf-8")[:1000]
+            except Exception:
+                owner = ""
+            return None, lock_fp, owner
+    return None, lock_fp, ""
+
+
+def _release_build_lock(fd: int | None, lock_fp: Path) -> None:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+    try:
+        lock_fp.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _normalize_product(product: str) -> str:
     raw = str(product or "").strip()
     if not raw:
@@ -1284,7 +1334,28 @@ def build_lookup_cache(fp: Path, *, force: bool = False) -> dict[str, Any]:
     status = cache_status(fp)
     if not force and status.get("status") == "fresh":
         return {"ok": True, "skipped": True, "cache_dir": status.get("cache_dir"), "meta": status.get("meta") or {}}
-    return _build_lookup_cache(fp)
+    lock_fd, lock_fp, lock_owner = _try_acquire_build_lock(fp)
+    if lock_fd is None:
+        status = cache_status(fp)
+        if status.get("status") == "fresh":
+            return {"ok": True, "skipped": True, "cache_dir": status.get("cache_dir"), "meta": status.get("meta") or {}}
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "build_lock_held",
+            "lock_path": str(lock_fp),
+            "lock_owner": lock_owner,
+            "cache_status": status.get("status") or "",
+            "cache_dir": status.get("cache_dir") or "",
+            "meta": status.get("meta") or {},
+        }
+    try:
+        status = cache_status(fp)
+        if not force and status.get("status") == "fresh":
+            return {"ok": True, "skipped": True, "cache_dir": status.get("cache_dir"), "meta": status.get("meta") or {}}
+        return _build_lookup_cache(fp)
+    finally:
+        _release_build_lock(lock_fd, lock_fp)
 
 
 def _worker_loop() -> None:
@@ -1300,7 +1371,7 @@ def _worker_loop() -> None:
             _BUILD_STATE["started_at"] = _utc_now()
             _BUILD_STATE["last_error"] = ""
         try:
-            build_lookup_cache(fp, force=True)
+            build_lookup_cache(fp, force=False)
             with _BUILD_LOCK:
                 _BUILD_STATE["last_source"] = str(fp.resolve())
                 _BUILD_STATE["finished_at"] = _utc_now()

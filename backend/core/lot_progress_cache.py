@@ -465,6 +465,46 @@ def _cache_state_fresh(state: dict, max_age_seconds: int) -> bool:
     return age <= max_age_seconds
 
 
+def _state_db_root_matches(state: dict | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    stored = _safe_text(state.get("db_root"))
+    if not stored:
+        return True
+    try:
+        return str(Path(stored).resolve()).casefold() == str(PATHS.db_root.resolve()).casefold()
+    except Exception:
+        return stored == str(PATHS.db_root)
+
+
+def _fresh_existing_cache_state(
+    cache_path: Path,
+    source_root_hint: str,
+    column_mapping: dict,
+    max_age_seconds: int,
+) -> dict | None:
+    candidates: list[dict] = []
+    if isinstance(_CACHE_STATE, dict):
+        candidates.append(_CACHE_STATE)
+    if cache_path.is_file():
+        try:
+            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                candidates.append(loaded)
+        except Exception:
+            pass
+    for state in candidates:
+        if (
+            _cache_state_fresh(state, max_age_seconds)
+            and _state_db_root_matches(state)
+            and _state_source_root_matches(state, source_root_hint)
+            and _state_column_mapping_matches(state, column_mapping)
+        ):
+            _set_cache_state(state)
+            return dict(state)
+    return None
+
+
 def _empty_cache_state() -> dict:
     return {
         "version": CACHE_VERSION,
@@ -1020,6 +1060,11 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
     with _CACHE_LOCK:
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
+        fresh_state = _fresh_existing_cache_state(cache_path, source_root_hint, column_mapping, max_age_seconds)
+        if fresh_state is not None:
+            _CACHE_LAST_SKIPPED_BY_LOCK = False
+            fresh_state["skipped_recent_success"] = bool(force)
+            return _state_with_runtime(fresh_state)
         if (
             not force
             and _CACHE_STATE

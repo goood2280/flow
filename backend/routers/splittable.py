@@ -8531,6 +8531,7 @@ def _split_view_cache_put(key: tuple, dep_signature: tuple, payload: dict) -> No
     stored.pop("related_issues", None)
     stored.pop("runtime_profile", None)
     stored.pop("view_cache", None)
+    stored.pop("lookup_cache", None)
     with _VIEW_CACHE_LOCK:
         _VIEW_CACHE[key] = (dep_signature, stored)
         _VIEW_CACHE.move_to_end(key)
@@ -8651,22 +8652,13 @@ def _split_view_large_root_cache_or_defer(
     runtime_profile["root_cache_status"] = status.get("status") or ""
     if not status.get("has_cache") or status.get("source_stale"):
         queued = _ml_table_lookup.enqueue_build(fp)
-        return None, _split_view_cache_preparing_payload(
-            product,
-            root,
-            wafer_ids,
-            prefix,
-            history_mode,
-            status,
-            queued,
-            message="캐시 준비 중입니다. 잠시 후 다시 검색하세요.",
-            started=started,
-            runtime_profile=runtime_profile,
-            view_cache_key=view_cache_key,
-        )
+        runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, queued)
+        runtime_profile["root_cache_hit"] = False
+        return None, None
     lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids)
     runtime_profile["root_cache_status"] = status.get("status") or ""
     runtime_profile["root_cache_hit"] = lf is not None
+    runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, {})
     if lf is None:
         return None, _split_view_cache_preparing_payload(
             product,
@@ -8695,6 +8687,18 @@ def _attach_split_view_runtime_fields(
     view_cache_key: tuple | None = None,
 ) -> dict:
     out = dict(payload)
+    if "lookup_cache" not in out:
+        status = None
+        try:
+            product = out.get("product") or ""
+            root = str(out.get("root_lot_id") or "").strip()
+            if product and root:
+                fp = _product_path(product)
+                if fp.suffix.lower() == ".parquet":
+                    status = _ml_table_lookup.cache_status(fp)
+        except Exception:
+            status = None
+        out["lookup_cache"] = _split_view_lookup_cache_public(status, None)
     if include_related:
         username, role = _split_view_request_user(request)
         out["related_issues"] = _related_tracker_issues(
@@ -9159,6 +9163,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "override": override_meta,
             "match_cache": _match_cache_response_meta(product),
             "product_cache": _product_ram_cache_response_meta(product),
+            "lookup_cache": runtime_profile.get("_lookup_cache") or _split_view_lookup_cache_public(None, None),
             "lot_warn": _lot_warn,
         }
         _split_view_cache_put(view_cache_key, view_cache_sig, payload)

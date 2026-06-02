@@ -80,6 +80,56 @@ def test_tracker_lot_status_cache_keeps_requested_fields(monkeypatch, tmp_path):
     }]
 
 
+def test_forced_lot_progress_refresh_reuses_recent_shared_cache(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+    state = {
+        "version": cache.CACHE_VERSION,
+        "generated_at": cache._now_iso(),
+        "configured_source_root": "",
+        "source_root": "",
+        "source_roots": [],
+        "column_mapping": dict(cache.DEFAULT_LOT_PROGRESS_COLUMN_MAPPING),
+        "cache_file": str(cache.cache_file()),
+        "count": 1,
+        "files_scanned": 10,
+        "rows_seen": 100,
+        "errors": [],
+        "items": [{
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.1",
+            "wafer_id": "1",
+            "step_id": "STEP_010",
+        }],
+    }
+    cache.cache_file().parent.mkdir(parents=True, exist_ok=True)
+    cache.cache_file().write_text(json.dumps(state), encoding="utf-8")
+    cache._append_refresh_log({"status": "success", "generated_at": state["generated_at"]})
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("recent shared cache should avoid FAB source scan")
+
+    monkeypatch.setattr(cache, "_fab_source_roots", fail_scan)
+
+    result = cache.refresh_lot_progress_cache(force=True)
+
+    assert result["count"] == 1
+    assert result["items"][0]["lot_id"] == "A1000A.1"
+    assert result["skipped_recent_success"] is True
+
+
 def test_lot_progress_summary_returns_wafers_and_steps(monkeypatch):
     monkeypatch.setattr(cache, "load_lot_progress_cache", lambda max_age_seconds=None: {
         "items": [
