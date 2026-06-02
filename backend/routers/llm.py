@@ -1939,6 +1939,47 @@ def _flowi_explicit_splittable_view_prompt(prompt: str) -> bool:
     return bool(has_show and has_split_or_knob and _flowi_func_step_token(text) and _lot_tokens(text))
 
 
+def _flowi_explicit_splittable_root_hints(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    if not _flowi_explicit_splittable_view_prompt(text):
+        return []
+    match = re.search(r"^(.*?)(?:split\s*table|splittable|스플릿\s*테이블|스플릿테이블)", text, flags=re.I | re.S)
+    prefix = match.group(1) if match else text
+    blocked = {
+        "SPLIT",
+        "TABLE",
+        "SPLITTABLE",
+        "SHOW",
+        "DISPLAY",
+        "VIEW",
+        "QUERY",
+        "PRODUCT",
+        "PRODUCTS",
+        "PROD",
+        "KNOB",
+        "MASK",
+        "CUSTOM",
+        "SET",
+        "ML_TABLE",
+        "FILE",
+        "BROWSER",
+        "SQL",
+        "FAB",
+        "ET",
+        "INLINE",
+        "VM",
+        "EDS",
+    } | set(_FLOWI_NON_LOT_TOKENS)
+    for tok in reversed(_tokens(prefix)):
+        if tok in blocked or re.fullmatch(r"TEST\d+", tok, flags=re.I):
+            continue
+        if _is_step_id_token(tok) or _is_product_token(tok):
+            continue
+        if re.fullmatch(r"[A-Z]{5}", tok):
+            return [tok]
+    return []
+
+
 def _flowi_current_step_prompt(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
@@ -2291,8 +2332,16 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     text = str(prompt or "").strip()
     product_info = _flowi_product_resolution(text, product)
     resolved_product = str(product_info.get("value") or "")
-    slots = _slot_summary(text, resolved_product)
     classified = _classified_lot_tokens(text)
+    if not (classified.get("root_lot_ids") or classified.get("fab_lot_ids")):
+        root_hints = _flowi_explicit_splittable_root_hints(text)
+        if root_hints:
+            classified = {**classified, "root_lot_ids": root_hints}
+    slots = _slot_summary(text, resolved_product)
+    if classified.get("root_lot_ids") or classified.get("fab_lot_ids"):
+        slots["root_lot_ids"] = classified.get("root_lot_ids") or []
+        slots["fab_lot_ids"] = classified.get("fab_lot_ids") or []
+        slots["lots"] = _flowi_lot_scope_terms(slots["root_lot_ids"], slots["fab_lot_ids"])
     wafers = [int(w) for w in _wafer_tokens(text)]
     assignments, invalid_wafers = _flowi_parse_splittable_plan_assignments(text)
     invalid_wafers = sorted(set(invalid_wafers + _flowi_invalid_wafer_mentions(text)), key=lambda x: int(x))
@@ -12401,6 +12450,12 @@ def _flowi_looks_like_core_missing_followup(prompt: str, pending: dict[str, Any]
     if text.startswith(_FLOWI_INFORM_CONFIRM_MARKER) or text.startswith(_FLOWI_INFORM_WALKTHROUGH_MARKER):
         return False
     missing = {_flowi_missing_key(x) for x in (pending.get("missing") or [])}
+    field_match = re.match(r"\s*([A-Za-z가-힣_][A-Za-z가-힣0-9_ -]{0,40})\s*[:=]", text)
+    if field_match:
+        field_key = _flowi_missing_key(field_match.group(1))
+        field_key = {"제품": "product", "프로덕트": "product"}.get(field_key, field_key)
+        if field_key in missing:
+            return True
     if len(text) > 160 and not (":" in text or missing & {"note", "reason", "entries"}):
         return False
     entries = _matched_feature_entrypoints(text, limit=1)
@@ -21134,6 +21189,10 @@ def _handle_explicit_splittable_view_fast_path(
         return None
     if not _product_hint(prompt, product):
         classified = _classified_lot_tokens(prompt)
+        if not (classified.get("root_lot_ids") or classified.get("fab_lot_ids")):
+            root_hints = _flowi_explicit_splittable_root_hints(prompt)
+            if root_hints:
+                classified = {**classified, "root_lot_ids": root_hints}
         wafers = [int(w) for w in _wafer_tokens(prompt)]
         args = {
             "product": "",

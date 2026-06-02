@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i SplitTable 후속 선택이 FileBrowser로 라우팅되는 문제 보정
 - (Codex) SplitTable cache 준비 중 검색 차단 제거와 shared cache 30분 재생성 skip
 - (Codex) Semantic layer Source catalog/Measurement terms 자연어 저장과 등록 항목 수정·삭제
 - (Codex) SplitTable root_lot_id 최신 LOT cache 기반 조회 가속
