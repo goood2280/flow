@@ -2700,7 +2700,7 @@ function SemanticLayerPanel() {
       setErr(e.message || String(e));
       return;
     }
-    const current = sourceCatalog?.sources || {};
+    const current = sourceCatalog?.disk || {};
     const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
     setBusy(true);
     setErr("");

@@ -21189,6 +21189,10 @@ def _handle_explicit_splittable_view_fast_path(
         return None
     if not _product_hint(prompt, product):
         classified = _classified_lot_tokens(prompt)
+        if classified.get("fab_lot_ids"):
+            tool = _handle_wafer_split_at_step(prompt, product, max_rows)
+            if isinstance(tool, dict) and tool.get("handled"):
+                return tool
         if not (classified.get("root_lot_ids") or classified.get("fab_lot_ids")):
             root_hints = _flowi_explicit_splittable_root_hints(prompt)
             if root_hints:

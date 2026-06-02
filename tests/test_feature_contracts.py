@@ -215,6 +215,7 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "source 자연어 저장" in ui
     assert "editSourceEntry" in ui
     assert "deleteSourceEntry" in ui
+    assert "const current = sourceCatalog?.disk || {};" in ui
     assert "Measurement terms" in ui
     assert "measurement 추가" in ui
     assert "measurement 자연어 저장" in ui
