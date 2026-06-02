@@ -514,19 +514,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plain?"":summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>}
-    {!isClarificationOnly&&!plain&&result.run_id&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"-2px 0 8px",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
-      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>
-      {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
-    </div>}
     <FlowiMarkdown text={result.answer||emptyHint}/>
-    {!isClarificationOnly&&<FlowiInterpretationSummary trace={result.trace} tool={tool} prompt={prompt}/>}
-    {!isClarificationOnly&&<FlowiExecutionProof tool={tool} trace={result.trace}/>}
-    {!isClarificationOnly&&<FlowiActionLogPanel actionLog={result.action_log} trace={result.trace}/>}
-    {!isClarificationOnly&&isAdmin&&!plain&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
-      {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
-      {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
-      {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
-    </div>}
     {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
     {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
     {hasMissingFreetext&&<FlowiMissingFreetext fields={missingFreetext} basePrompt={partialPrompt} onChoice={onChoice}/>}
@@ -540,9 +528,42 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
-    {!isClarificationOnly&&isAdmin&&<FlowiTrace trace={result.trace}/>}
+    {!isClarificationOnly&&<FlowiDiagnosticsDetails result={result} tool={tool} trace={result.trace} prompt={prompt} isAdmin={isAdmin} plain={plain}/>}
     {!isClarificationOnly&&<FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>}
   </div>);
+}
+
+function FlowiDiagnosticsDetails({result,tool,trace,prompt,isAdmin=false,plain=false}){
+  const workflow=tool?.workflow_state||result?.workflow_state||{};
+  const actionLog=result?.action_log||{};
+  const timeline=Array.isArray(actionLog?.timeline)?actionLog.timeline.filter(Boolean):[];
+  const summary=Array.isArray(actionLog?.summary)?actionLog.summary.filter(Boolean):[];
+  const splitCall=flowiSplitApiCall(trace);
+  const splitApi=tool?.split_api&&typeof tool.split_api==="object"?tool.split_api:null;
+  const splitIntent=String([tool?.feature,tool?.intent,tool?.action,tool?.table?.kind,tool?.split_view?.kind].filter(Boolean).join(" ")).toLowerCase();
+  const hasSplit=!!(tool?.split_view||splitCall||splitApi||splitIntent.includes("split"));
+  const hasTrace=!!(trace&&(trace.interpretation||trace.evidence||trace.validation||(Array.isArray(trace.steps)&&trace.steps.length)||Array.isArray(trace.api_calls)));
+  const hasRun=!!(!plain&&(result?.run_id||result?.runtime_status));
+  const hasAdmin=!!(isAdmin&&!plain&&(tool?.intent||workflow.status||result?.llm));
+  if(!hasRun&&!hasSplit&&!hasTrace&&!summary.length&&!timeline.length&&!hasAdmin)return null;
+  return <details style={{marginTop:10,border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
+    <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontWeight:900}}>
+      실행 정보 <span style={{fontWeight:400,color:"#737373"}}>필요할 때 펼쳐보기</span>
+    </summary>
+    {hasRun&&<div style={{display:"flex",gap:6,alignItems:"center",margin:"8px 0 0",fontFamily:"monospace",fontSize:14,color:"#737373",flexWrap:"wrap"}}>
+      {result.run_id&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>}
+      {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
+    </div>}
+    <FlowiInterpretationSummary trace={trace} tool={tool} prompt={prompt}/>
+    <FlowiExecutionProof tool={tool} trace={trace}/>
+    <FlowiActionLogPanel actionLog={actionLog} trace={trace}/>
+    {hasAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+      {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
+      {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
+      {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
+    </div>}
+    {isAdmin&&<FlowiTrace trace={trace}/>}
+  </details>;
 }
 
 function FlowiMarkdown({text}){

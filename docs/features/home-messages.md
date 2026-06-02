@@ -37,7 +37,7 @@ Home은 로그인 직후 필요한 상태와 최근 변경을 보여주고, Mess
 - 공지와 알림은 업무 화면을 가리지 않는다.
 - Messages는 운영 설정 변경이 아니라 문의/공지 기록에 집중한다.
 - read state와 bell count는 서로 어긋나지 않아야 한다.
-- Flow-i 결과는 가능하면 Home card 안에서 answer, table/chart/preview, warnings, evidence trace를 같이 보여주고 화면 이동 버튼은 보조 동작으로 둔다.
+- Flow-i 결과는 Home card 안에서 answer와 table/chart/preview 같은 실제 결과물을 우선 보여준다. warnings, evidence trace, action log, runtime/debug 정보는 보존하되 기본 접힘 상태의 실행 정보 영역에 둔다.
 - 공개 trace는 입력 해석, 사용한 기능 AI, endpoint/payload 요약, rows/source/warnings/fallback 상태만 보여주며 모델 사고과정 원문은 표시하지 않는다.
 - Home Flow-i 응답은 `answer`와 별도로 공개 `action_log`를 내려준다. `action_log.summary`는 사용자용 사고과정 요약, `action_log.timeline`은 `semantic_layer -> task_planner -> unit_agents -> conclusion` 단계별 실행 로그, `action_log.final_answer`는 `answer`와 같은 최종답변이다.
 - `/api/llm/flowi/workflows` catalog는 few-shot 예시와 prompt cache에 쓰는 runtime workflow 목록이다. GET은 로그인 사용자에게 열고, draft/save/merge-defaults는 admin만 수행한다.

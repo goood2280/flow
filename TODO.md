@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Home Flow-i 실행근거 기본 접힘과 결과 우선 표시
 - (Codex) Agent Semantic source 수정과 Flow-i SplitTable 제품/lot 라우팅 보정
 - (Codex) Home Flow-i SplitTable 후속 선택이 FileBrowser로 라우팅되는 문제 보정
 - (Codex) SplitTable cache 준비 중 검색 차단 제거와 shared cache 30분 재생성 skip

@@ -170,6 +170,18 @@ def test_home_flowi_split_table_uses_snapshot_renderer_and_collapsed_context():
     assert "요청 해석 / 진행 방식" in ui
     assert "<FlowiMarkdown text={result.answer||emptyHint}/>" in ui
     assert ui.index("<FlowiMarkdown text={result.answer||emptyHint}/>") < ui.index("<FlowiInterpretationSummary")
+    assert ui.index("<FlowiInlineContent") < ui.index("<FlowiDiagnosticsDetails")
+
+
+def test_home_flowi_execution_details_are_collapsed_by_default():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
+
+    assert "function FlowiDiagnosticsDetails" in ui
+    assert "실행 정보" in ui
+    assert "!isClarificationOnly&&<FlowiDiagnosticsDetails" in ui
+    assert "!isClarificationOnly&&<FlowiExecutionProof" not in ui
+    assert "!isClarificationOnly&&<FlowiActionLogPanel" not in ui
+    assert "!isClarificationOnly&&isAdmin&&<FlowiTrace" not in ui
 
 
 def test_home_flowi_clarification_renders_plain_choice_reply():
@@ -177,9 +189,7 @@ def test_home_flowi_clarification_renders_plain_choice_reply():
 
     assert "isClarificationOnly" in ui
     assert "flowiResultShellStyle" in ui
-    assert "!isClarificationOnly&&<FlowiInterpretationSummary" in ui
-    assert "!isClarificationOnly&&<FlowiExecutionProof" in ui
-    assert "!isClarificationOnly&&<FlowiActionLogPanel" in ui
+    assert "!isClarificationOnly&&<FlowiDiagnosticsDetails" in ui
 
 
 def test_agent_page_exposes_unit_ai_and_llm_settings():
