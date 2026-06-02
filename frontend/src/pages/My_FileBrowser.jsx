@@ -1877,12 +1877,11 @@ export default function My_FileBrowser({user,onNavigate}){
     const nextSql=buildDisplaySql(next,parsed.whereSql,parsed.sortSpec);
     setSql(nextSql);
     setSelectedCols(next);
-    applySql(nextSql,next);
   };
 
   const insertColToSql=(col)=>{
     const parsed=splitDisplaySql(sql);
-    const clause=col+" == ''";
+    const clause=displaySqlIdent(col)+" == ''";
     const nextWhere=parsed.whereSql?parsed.whereSql+" & ("+clause+")":clause;
     const nextSql=buildDisplaySql(parsed.selectedColumns,nextWhere,parsed.sortSpec);
     setSql(nextSql);
@@ -2148,7 +2147,7 @@ export default function My_FileBrowser({user,onNavigate}){
             <div>CAST(value AS DOUBLE) &gt;= 10 <span style={{color:"var(--accent)"}}>— 문자열 숫자 비교</span></div>
             <div>CAST(tkout_time AS TIMESTAMP) &gt;= '2024-04-21' <span style={{color:"var(--accent)"}}>— 문자열 시간 비교</span></div>
             <div>tkout_time IS NOT NULL <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
-            <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, + WHERE → 조건 템플릿 삽입</div>
+            <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, 실행 → 조회 적용, + WHERE → 조건 템플릿 삽입</div>
           </div>}
         </div>
 
@@ -2445,7 +2444,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   {selectedCols.length>0&&<span style={{fontSize:14,color:"var(--accent)",fontWeight:600}}>{selectedCols.length}개 선택됨</span>}
                 </div>
               <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,padding:"4px 0",lineHeight:1.6}}>
-                컬럼명 클릭 → SELECT 토글 후 바로 조회 | + WHERE → 조건 템플릿 삽입
+                컬럼명 클릭 → SELECT 토글 후 실행으로 조회 | + WHERE → 조건 템플릿 삽입
                 {data.all_columns_truncated&&<span style={{color:"var(--accent)"}}> | schema {data.schema_columns_returned}/{data.total_cols}열 표시{remoteColsLoading?" · 검색 중":""}</span>}
               </div>
               <div style={{maxHeight:"calc(100vh - 340px)",overflow:"auto"}}>
@@ -2454,10 +2453,10 @@ export default function My_FileBrowser({user,onNavigate}){
                   return(
                   <div key={i} style={{display:"flex",alignItems:"center",padding:"5px 12px",borderBottom:"1px solid var(--border)",fontSize:14,gap:8}}>
                     {/* Checkbox mirrors the SELECT clause for keyboard-friendly toggling. */}
-                    <input type="checkbox" checked={isSelected} onChange={()=>toggleCol(c)}
+                    <input type="checkbox" checked={isSelected} onChange={()=>toggleCol(c)} title="실행을 눌러 조회에 적용됩니다."
                       style={{width:14,height:14,accentColor:"var(--accent)",cursor:"pointer",flexShrink:0}}/>
                     {/* Column name toggles SELECT projection. */}
-                    <span onClick={()=>toggleCol(c)} style={{flex:1,cursor:"pointer",fontWeight:isSelected?600:500,color:isSelected?"var(--accent)":"var(--text-primary)"}} title={"클릭하면 SELECT 절에 추가/제거됩니다"}>
+                    <span onClick={()=>toggleCol(c)} style={{flex:1,cursor:"pointer",fontWeight:isSelected?600:500,color:isSelected?"var(--accent)":"var(--text-primary)"}} title={"SELECT 절에 추가/제거됩니다. 실행을 눌러 조회에 적용됩니다."}>
                       {c}
                     </span>
                     {data.dtypes&&<span style={{fontSize:14,padding:"1px 6px",borderRadius:3,background:"var(--bg-tertiary)",color:"var(--accent)",flexShrink:0}}>{data.dtypes[c]}</span>}

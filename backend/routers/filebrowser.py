@@ -5819,7 +5819,7 @@ _AI_SQL_CAST_TYPES = {
 }
 _AI_SQL_CAST_CALL_RE = re.compile(r"\b(?P<fn>TRY_CAST|CAST)\s*\(", re.I)
 _AI_SQL_CAST_BODY_RE = re.compile(
-    r"^\s*(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s+AS\s+(?P<type>[A-Za-z0-9_]+)\s*$",
+    r"^\s*(?P<col>`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_]*)\s+AS\s+(?P<type>[A-Za-z0-9_]+)\s*$",
     re.I,
 )
 _AI_SQL_ARITHMETIC_RE = re.compile(r"(?:\+|\*|/(?![/*]))")
@@ -5835,8 +5835,34 @@ _AI_SQL_CAST_GUIDE = {
 }
 
 
+def _quote_sql_filter_identifier(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        return text
+    return "`" + text.replace("`", "``") + "`"
+
+
+def _unquote_sql_filter_identifier(raw: str) -> str:
+    text = str(raw or "").strip()
+    if len(text) >= 2 and text[0] == "`" and text[-1] == "`":
+        return text[1:-1].replace("``", "`")
+    return text
+
+
+def _sql_filter_identifiers_to_duckdb(expr: str) -> str:
+    def repl(match: re.Match) -> str:
+        return duckdb_engine.quote_ident(_unquote_sql_filter_identifier(match.group(0)))
+
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", str(expr or ""))
+    for idx in range(0, len(parts), 2):
+        parts[idx] = re.sub(r"`(?:``|[^`])+`", repl, parts[idx])
+    return "".join(parts)
+
+
 def _strip_sql_literals(expr: str) -> str:
-    return re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", str(expr or ""))
+    return re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])+`", " ", str(expr or ""))
 
 
 def _canonicalize_sql_columns(expr: str, columns: list[str]) -> str:
@@ -5846,11 +5872,32 @@ def _canonicalize_sql_columns(expr: str, columns: list[str]) -> str:
     parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", str(expr or ""))
     for idx in range(0, len(parts), 2):
         parts[idx] = re.sub(
+            r"`(?:``|[^`])+`",
+            lambda m: _quote_sql_filter_identifier(
+                lookup.get(_unquote_sql_filter_identifier(m.group(0)).casefold(), _unquote_sql_filter_identifier(m.group(0)))
+            ),
+            parts[idx],
+        )
+        parts[idx] = re.sub(
             r"\b[A-Za-z_][A-Za-z0-9_]*\b",
             lambda m: lookup.get(m.group(0).casefold(), m.group(0)),
             parts[idx],
         )
     return "".join(parts).strip()
+
+
+def _sql_unknown_quoted_columns(expr: str, columns: list[str]) -> list[str]:
+    lookup = _column_lookup(columns)
+    if not lookup:
+        return []
+    missing: list[str] = []
+    for match in re.finditer(r"`(?:``|[^`])+`", str(expr or "")):
+        token = _unquote_sql_filter_identifier(match.group(0))
+        if lookup.get(token.casefold()):
+            continue
+        if token not in missing:
+            missing.append(token)
+    return missing
 
 
 def _sql_missing_columns(expr: str, columns: list[str]) -> list[str]:
@@ -6133,7 +6180,7 @@ def _validate_ai_sql_filter(raw_sql: str, columns: list[str]) -> tuple[str, list
         raise ValueError("LLM did not return a SQL filter expression")
     sql = _normalize_where_expression(sql, columns)
     _validate_ai_sql_date_literals(sql, columns)
-    duckdb_engine.normalize_filter_expr(sql)
+    duckdb_engine.normalize_filter_expr(_sql_filter_identifiers_to_duckdb(sql))
     _lazy_filter_expr(sql, columns or ["value"])
     return sql, warnings
 
@@ -6332,7 +6379,12 @@ def _sql_column_alias_pairs(columns: list[str] | tuple[str, ...] | None) -> list
         for alias in aliases:
             text = str(alias or "").strip()
             key = (text.casefold(), canonical)
-            if not text or text.casefold() == canonical.casefold() or key in seen:
+            if (
+                not text
+                or key in seen
+                or text.casefold() == canonical.casefold()
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text)
+            ):
                 continue
             seen.add(key)
             pairs.append((text, canonical))
@@ -6352,11 +6404,11 @@ def _canonicalize_sql_column_aliases(expr: str, columns: list[str] | tuple[str, 
     pairs = _sql_column_alias_pairs(columns)
     if not text or not pairs:
         return _canonicalize_sql_columns(text, list(columns or []))
-    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", text)
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])+`)", text)
     for idx in range(0, len(parts), 2):
         segment = parts[idx]
         for alias, canonical in pairs:
-            segment = re.sub(_sql_alias_pattern(alias), canonical, segment, flags=re.I)
+            segment = re.sub(_sql_alias_pattern(alias), _quote_sql_filter_identifier(canonical), segment, flags=re.I)
         parts[idx] = segment
     return _canonicalize_sql_columns("".join(parts), list(columns or []))
 
@@ -6383,7 +6435,20 @@ def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
     text = str(expr or "")
     if not text or not columns:
         return text
-    col_pat = "|".join(re.escape(str(c)) for c in sorted(columns, key=lambda item: len(str(item)), reverse=True))
+    col_tokens: list[str] = []
+    seen_tokens: set[str] = set()
+    for col in sorted(columns, key=lambda item: len(str(item)), reverse=True):
+        rendered = str(col)
+        candidates = [rendered]
+        quoted = _quote_sql_filter_identifier(rendered)
+        if quoted != rendered:
+            candidates.insert(0, quoted)
+        for candidate in candidates:
+            if candidate in seen_tokens:
+                continue
+            seen_tokens.add(candidate)
+            col_tokens.append(re.escape(candidate))
+    col_pat = "|".join(col_tokens)
     if not col_pat:
         return text
     parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", text)
@@ -6401,7 +6466,8 @@ def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
 
     def quote_compare(match: re.Match) -> str:
         rhs = match.group("rhs")
-        if not _should_quote_sql_rhs(rhs, columns, match.group("col")):
+        lhs_col = _unquote_sql_filter_identifier(match.group("col"))
+        if not _should_quote_sql_rhs(rhs, columns, lhs_col):
             return match.group(0)
         return f"{match.group('col')} {match.group('op')} {_sql_literal_for_filter(rhs, columns)}"
 
@@ -6412,8 +6478,9 @@ def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
             return match.group(0)
         changed = False
         rendered: list[str] = []
+        lhs_col = _unquote_sql_filter_identifier(match.group("col"))
         for value in values:
-            if _should_quote_sql_rhs(value, columns, match.group("col")):
+            if _should_quote_sql_rhs(value, columns, lhs_col):
                 rendered.append(_sql_literal_for_filter(value, columns))
                 changed = True
             else:
@@ -6430,7 +6497,7 @@ def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
 
 
 def _validate_no_sql_arithmetic(expr: str) -> None:
-    masked = _mask_sql_literals(expr)
+    masked = _strip_sql_literals(expr)
     if _AI_SQL_ARITHMETIC_RE.search(masked):
         raise ValueError("SQL arithmetic expressions are not supported.")
 
@@ -6467,14 +6534,14 @@ def _normalize_sql_casts(expr: str, columns: list[str]) -> str:
         body_match = _AI_SQL_CAST_BODY_RE.match(body)
         if not body_match:
             raise ValueError("CAST must target one column: CAST(column AS TYPE).")
-        raw_col = body_match.group("col")
+        raw_col = _unquote_sql_filter_identifier(body_match.group("col"))
         column = lookup.get(raw_col.casefold()) if lookup else raw_col
         if columns and not column:
             raise ValueError(f"SQL referenced unknown column(s): {raw_col}")
         cast_type = _AI_SQL_CAST_TYPES.get(body_match.group("type").upper())
         if not cast_type:
             raise ValueError(f"Unsupported CAST type: {body_match.group('type')}")
-        replacements.append((span[0], span[1], f"TRY_CAST({column} AS {cast_type})"))
+        replacements.append((span[0], span[1], f"TRY_CAST({_quote_sql_filter_identifier(column)} AS {cast_type})"))
         occupied.append(span)
     out = text
     for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
@@ -6487,20 +6554,23 @@ def _normalize_where_expression(sql: str, columns: list[str] | tuple[str, ...] |
     if not text:
         return ""
     text = re.sub(r"^where\s+", "", text, flags=re.I).strip()
-    if _AI_SQL_FORBIDDEN_RE.search(text):
+    if _AI_SQL_FORBIDDEN_RE.search(_strip_sql_literals(text)):
         raise ValueError("SQL must be a single read-only WHERE expression.")
     all_columns = list(columns or [])
     text = _canonicalize_sql_column_aliases(text, all_columns)
     text = _quote_bare_sql_values(text, all_columns)
     _validate_no_sql_arithmetic(text)
     text = _normalize_sql_casts(text, all_columns)
+    quoted_missing = _sql_unknown_quoted_columns(text, all_columns)
+    if quoted_missing:
+        raise ValueError("SQL referenced unknown column(s): " + ", ".join(quoted_missing[:8]))
     missing = _sql_missing_columns(text, all_columns)
     if missing:
         raise ValueError("SQL referenced unknown column(s): " + ", ".join(missing[:8]))
     return text.strip()
 
 
-def _normalize_view_sql_filter(
+def _normalize_common_view_sql_filter(
     sql: str,
     columns: list[str] | tuple[str, ...] | None = None,
     dtypes: dict | None = None,
@@ -6511,12 +6581,20 @@ def _normalize_view_sql_filter(
     return _normalize_time_cast_literals(text)
 
 
+def _normalize_view_sql_filter(
+    sql: str,
+    columns: list[str] | tuple[str, ...] | None = None,
+    dtypes: dict | None = None,
+) -> str:
+    return _sql_filter_identifiers_to_duckdb(_normalize_common_view_sql_filter(sql, columns, dtypes))
+
+
 def _normalize_polars_view_sql_filter(
     sql: str,
     columns: list[str] | tuple[str, ...] | None = None,
     dtypes: dict | None = None,
 ) -> str:
-    return _polars_time_cast_filter(_normalize_view_sql_filter(sql, columns, dtypes))
+    return _polars_time_cast_filter(_normalize_common_view_sql_filter(sql, columns, dtypes))
 
 
 _AI_SQL_ORDER_BY_SPLIT_RE = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)

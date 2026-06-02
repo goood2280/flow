@@ -1658,6 +1658,27 @@ def test_filebrowser_run_view_select_accepts_space_column_name():
     assert result["display_sql"] == "SELECT `code invalid filter message`"
 
 
+def test_filebrowser_lazy_view_filters_quoted_space_column_before_projection():
+    lf = pl.DataFrame({
+        "code invalid filter message": ["ok", "warn"],
+        "value": [1, 2],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="`code invalid filter message` = 'ok'",
+        select_cols="value",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["columns"] == ["value"]
+    assert result["where_sql"] == "`code invalid filter message` = 'ok'"
+    assert result["data"] == [{"value": 1}]
+
+
 def test_filebrowser_run_view_select_accepts_legacy_unquoted_space_column_name():
     result = filebrowser._run_view(
         pl.DataFrame({
@@ -2049,6 +2070,27 @@ def test_filebrowser_duckdb_view_accepts_select_prefix_projection(tmp_path):
     assert result["selected_cols"] == "wafer_id,value"
     assert result["columns"] == ["wafer_id", "value"]
     assert result["data"] == [{"wafer_id": "1", "value": 10}]
+
+
+def test_filebrowser_duckdb_view_filters_quoted_space_column_before_projection(tmp_path):
+    if not duckdb_engine.is_available():
+        pytest.skip("duckdb is not installed")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "code invalid filter message": ["ok", "warn"],
+        "value": [1, 2],
+    }).write_parquet(fp)
+
+    result = filebrowser._run_view_duckdb(
+        [fp],
+        "`code invalid filter message` = 'ok'",
+        "value",
+        20,
+    )
+
+    assert result["columns"] == ["value"]
+    assert result["where_sql"] == "`code invalid filter message` = 'ok'"
+    assert result["data"] == [{"value": 1}]
 
 
 def test_filebrowser_wafer_sql_normalizer_handles_in_and_prefixed_literals():
