@@ -8,7 +8,7 @@
 - 원격은 `origin`이고 URL은 `https://github.com/goood2280/flow.git`.
 - GitHub에는 앱 코드와 문서만 올린다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 로컬/사내 데이터 루트이며 push 대상이 아니다.
 - 로컬 작업트리 변경을 사용자가 "지금 로컬한 것"으로 요청해도 runtime/cache 파일은 Git 추적 대상에서 제외한다.
-- GitHub `main`에 푸시하는 커밋은 항상 `_build_setup.py`로 재생성한 최신 `setup.py`를 포함한다.
+- GitHub `main`에 푸시하는 커밋은 항상 `_build_setup.py`로 재생성한 최신 `setup.py`를 포함한다. 변경이 문서 한 줄뿐이거나 직전에 build/smoke를 돌렸어도 이 단계는 생략하지 않는다.
 - runtime/user data를 임의로 되돌리지 않는다. `git diff --check`가 runtime 기록 파일의 trailing whitespace 때문에 실패하더라도, 요청이 로컬 상태 보존이면 파일 내용을 임의 정리하지 않는다.
 - WSL Git에 GitHub credential이 없을 수 있다. 이 경우 Windows Git credential을 쓰는 `git.exe push origin main`이 동작한다.
 
@@ -38,7 +38,7 @@ python3 _build_setup.py
 python3 setup.py version
 ```
 
-이 단계는 source/doc 변경이 작아도 GitHub `main` 푸시 전에는 항상 실행한다. 생성된 `setup.py` diff를 커밋에 포함한다.
+이 단계는 source/doc 변경이 작아도, 직전 작업에서 이미 검증을 했어도 GitHub `main` 푸시 전에는 항상 실행한다. 생성된 `setup.py` diff를 커밋에 포함한다.
 
 4. 변경 내용을 한 번 요약한다.
 
