@@ -1437,7 +1437,7 @@ export default function My_SplitTable({user}){
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>Root lot RAM cache</div>
                   <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    cached {rc.hit_roots||0} roots · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB · CPU {Number(rc.cpu_budget_cores||0).toFixed(1)} cores
+                    cached {rc.hit_roots||0} roots (prefix {rc.prefix_hit_roots||0} / other {rc.other_hit_roots||0}) · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB · CPU {Number(rc.cpu_budget_cores||0).toFixed(1)} cores
                   </span>
                   <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                     prefix {(settings.prefixes||[]).join(",")||"-"} · max {settings.prefix_limit||0} · searched {settings.searched_limit||0}

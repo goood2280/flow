@@ -146,6 +146,51 @@ def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monk
     assert "C1000" not in roots
 
 
+def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    cfg = tmp_path / "source_config.json"
+    cfg.write_text(json.dumps({
+        "root_lot_cache": {
+            "prefixes": ["AZ"],
+            "prefix_limit": 0,
+            "searched_limit": 3,
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
+    monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", "1")
+    monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_RECENT_ROOTS", "0")
+
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["B1000", "AZ2000", "AZ1000"],
+        "wafer_id": ["1", "1", "1"],
+        "KNOB_A": ["R1", "R2", "R3"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    monkeypatch.setattr(ml_table_lookup, "resolve_ml_table_file", lambda **_kwargs: fp)
+    ml_table_lookup.record_root_access(fp, "AZ1000")
+    time.sleep(0.01)
+    ml_table_lookup.record_root_access(fp, "AZ2000")
+    time.sleep(0.01)
+    ml_table_lookup.record_root_access(fp, "B1000")
+
+    result = ml_table_lookup.refresh_root_lot_ram_cache(file=fp.name, force=True)
+    product = result["products"][0]
+    status = ml_table_lookup.root_ram_cache_status(fp, include_detail=True)
+    roots = status["roots"]
+
+    assert product["prefix_roots"] == 0
+    assert product["prefix_target_roots"] == 2
+    assert product["other_target_roots"] == 1
+    assert [row["root_lot_id"] for row in roots[:2]] == ["AZ2000", "AZ1000"]
+    assert {row["root_lot_id"]: row["cache_group"] for row in roots} == {
+        "AZ1000": "prefix",
+        "AZ2000": "prefix",
+        "B1000": "other",
+    }
+
+
 def test_root_lot_ram_cache_cpu_budget_is_capped_at_two_cores(monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setenv("FLOW_CPU_BUDGET_CORES", "5")

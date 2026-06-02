@@ -467,11 +467,48 @@ def _load_root_ram_cache_frame(files: list[Path]) -> pl.DataFrame:
     return pl.scan_parquet([str(p) for p in files], hive_partitioning=True).collect()
 
 
+def _root_matches_prefix(root_lot_id: str, prefixes: list[str]) -> bool:
+    root = str(root_lot_id or "").strip().upper()
+    if not root:
+        return False
+    normalized = [str(prefix or "").strip().upper() for prefix in prefixes or [] if str(prefix or "").strip()]
+    return any(root.startswith(prefix) for prefix in normalized)
+
+
+def _root_ram_cache_group(root_lot_id: str, prefixes: list[str]) -> str:
+    return "prefix" if _root_matches_prefix(root_lot_id, prefixes) else "other"
+
+
+def _root_ram_cache_update_metadata(
+    fp: Path,
+    root_lot_id: str,
+    *,
+    cache_group: str = "",
+    cache_sources: list[str] | None = None,
+) -> None:
+    root = str(root_lot_id or "").strip().upper()
+    if not root:
+        return
+    key = _root_cache_key(fp, root)
+    sources = [str(source or "").strip() for source in (cache_sources or []) if str(source or "").strip()]
+    with _ROOT_RAM_CACHE_LOCK:
+        entry = _ROOT_RAM_CACHE.get(key)
+        if not entry:
+            return
+        if cache_group:
+            entry["cache_group"] = cache_group
+        if sources:
+            entry["cache_sources"] = sources
+
+
 def _root_ram_cache_put(
     fp: Path,
     root_lot_id: str,
     files: list[Path],
     status: dict[str, Any],
+    *,
+    cache_group: str = "",
+    cache_sources: list[str] | None = None,
 ) -> pl.LazyFrame | None:
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0 or not files:
         return None
@@ -492,6 +529,8 @@ def _root_ram_cache_put(
     if max_bytes and estimated_bytes > max_bytes:
         return None
     now = time.time()
+    group = cache_group or _root_ram_cache_group(root, _root_ram_cache_prefixes())
+    sources = [str(source or "").strip() for source in (cache_sources or []) if str(source or "").strip()]
     with _ROOT_RAM_CACHE_LOCK:
         _evict_root_ram_locked(reserve_bytes=estimated_bytes, keep_keys={key})
         _ROOT_RAM_CACHE[key] = {
@@ -507,6 +546,8 @@ def _root_ram_cache_put(
             "loaded_epoch": now,
             "last_access_epoch": now,
             "access_count": int((_ROOT_RAM_ACCESS.get(key) or {}).get("access_count") or 0),
+            "cache_group": group,
+            "cache_sources": sources,
         }
         _ROOT_RAM_CACHE.move_to_end(key)
         _evict_root_ram_locked()
@@ -619,13 +660,54 @@ def _prefix_root_lot_ids_from_lookup_cache(fp: Path, prefixes: list[str], limit:
         root = name[len(marker):].strip().upper()
         if not root or root in seen:
             continue
-        if not any(root.startswith(prefix) for prefix in prefixes):
+        if not _root_matches_prefix(root, prefixes):
             continue
         seen.add(root)
         out.append(root)
         if len(out) >= limit:
             break
     return out
+
+
+def _root_ram_cache_candidates(
+    *,
+    prefixes: list[str],
+    prefix_roots: list[str],
+    latest_roots: list[str],
+    searched_roots: list[str],
+) -> list[dict[str, Any]]:
+    candidates: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def add(root_lot_id: str, source: str) -> None:
+        root = str(root_lot_id or "").strip().upper()
+        if not root:
+            return
+        group = _root_ram_cache_group(root, prefixes)
+        current = candidates.get(root)
+        if current is None:
+            candidates[root] = {
+                "root_lot_id": root,
+                "cache_group": group,
+                "cache_sources": [source],
+            }
+            return
+        if group == "prefix":
+            current["cache_group"] = group
+        sources = current.setdefault("cache_sources", [])
+        if source not in sources:
+            sources.append(source)
+
+    for root in prefix_roots:
+        add(root, "prefix")
+    for root in latest_roots:
+        add(root, "latest")
+    for root in searched_roots:
+        add(root, "searched")
+
+    rows = list(candidates.values())
+    prefix_rows = [row for row in rows if row.get("cache_group") == "prefix"]
+    other_rows = [row for row in rows if row.get("cache_group") != "prefix"]
+    return [*prefix_rows, *other_rows]
 
 
 def _discover_ml_table_files() -> list[Path]:
@@ -711,29 +793,53 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             prefix_roots = _prefix_root_lot_ids_from_lookup_cache(fp, prefixes, prefix_limit)
             latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
             searched_roots = _searched_root_lot_ids(fp, searched_limit)
-            for root in [*prefix_roots, *latest_roots, *searched_roots]:
-                root = str(root or "").strip().upper()
+            candidates = _root_ram_cache_candidates(
+                prefixes=prefixes,
+                prefix_roots=prefix_roots,
+                latest_roots=latest_roots,
+                searched_roots=searched_roots,
+            )
+            for candidate in candidates:
+                root = str(candidate.get("root_lot_id") or "").strip().upper()
                 if root and root not in seen:
                     seen.add(root)
                     roots.append(root)
+            prefix_target_roots = len([row for row in candidates if row.get("cache_group") == "prefix"])
+            other_target_roots = len(candidates) - prefix_target_roots
             cached = 0
             missing = 0
             resource_skipped = 0
             last_skip_reason = ""
-            for idx, root in enumerate(roots):
+            for idx, candidate in enumerate(candidates):
+                root = str(candidate.get("root_lot_id") or "").strip().upper()
+                cache_group = str(candidate.get("cache_group") or "")
+                cache_sources = [str(source) for source in (candidate.get("cache_sources") or [])]
                 part_files = _partition_files(cache_dir_for(fp), root)
                 if not part_files:
                     missing += 1
                     continue
                 if not force and _root_ram_cache_get(fp, root, part_files, status) is not None:
+                    _root_ram_cache_update_metadata(
+                        fp,
+                        root,
+                        cache_group=cache_group,
+                        cache_sources=cache_sources,
+                    )
                     cached += 1
                     continue
                 guard_reason, _snap = _root_ram_cache_resource_guard_reason()
                 if guard_reason:
-                    resource_skipped += len(roots) - idx
+                    resource_skipped += len(candidates) - idx
                     last_skip_reason = guard_reason
                     break
-                if _root_ram_cache_put(fp, root, part_files, status) is not None:
+                if _root_ram_cache_put(
+                    fp,
+                    root,
+                    part_files,
+                    status,
+                    cache_group=cache_group,
+                    cache_sources=cache_sources,
+                ) is not None:
                     cached += 1
             rows.append({
                 "file": Path(fp).name,
@@ -742,6 +848,8 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 "cached_roots": cached,
                 "missing_roots": missing,
                 "prefix_roots": len(prefix_roots),
+                "prefix_target_roots": prefix_target_roots,
+                "other_target_roots": other_target_roots,
                 "latest_roots": len(latest_roots),
                 "searched_roots": len(searched_roots),
                 "resource_skipped_roots": resource_skipped,
@@ -790,9 +898,12 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         status = dict(_ROOT_RAM_STATUS)
     total_bytes = sum(int(entry.get("estimated_bytes") or 0) for _, entry in entries)
     settings = root_ram_cache_settings()
+    entry_groups = [_root_ram_cache_group(key[1], settings["prefixes"]) for key, _entry in entries]
     out = {
         "enabled": root_ram_cache_available(),
         "hit_roots": len(entries),
+        "prefix_hit_roots": len([group for group in entry_groups if group == "prefix"]),
+        "other_hit_roots": len([group for group in entry_groups if group != "prefix"]),
         "estimated_mb": round(total_bytes / (1024 * 1024), 3),
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
         "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
@@ -820,6 +931,8 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
                 "estimated_mb": round(float(entry.get("estimated_bytes") or 0) / (1024 * 1024), 3),
                 "loaded_at": entry.get("loaded_at") or "",
                 "access_count": int(entry.get("access_count") or 0),
+                "cache_group": _root_ram_cache_group(key[1], settings["prefixes"]),
+                "cache_sources": list(entry.get("cache_sources") or []),
             }
             for key, entry in entries
         ]
