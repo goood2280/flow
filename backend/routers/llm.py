@@ -1360,7 +1360,7 @@ def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
 
 
 def _flowi_product_resolution(prompt: str, explicit: str = "") -> dict[str, Any]:
-    product = _product_hint(prompt, explicit)
+    product = _flowi_explicit_splittable_product_hint(prompt, explicit)
     configured = {} if explicit else _configured_product_names()
     source = "missing"
     if explicit:
@@ -2333,6 +2333,8 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     product_info = _flowi_product_resolution(text, product)
     resolved_product = str(product_info.get("value") or "")
     classified = _classified_lot_tokens(text)
+    if resolved_product:
+        classified = _flowi_prune_product_lot_tokens(classified, resolved_product)
     if not (classified.get("root_lot_ids") or classified.get("fab_lot_ids")):
         root_hints = _flowi_explicit_splittable_root_hints(text)
         if root_hints:
@@ -3562,6 +3564,45 @@ def _product_hint(prompt: str, explicit: str = "") -> str:
     return ""
 
 
+def _flowi_explicit_splittable_product_hint(prompt: str, explicit: str = "") -> str:
+    product = _product_hint(prompt, explicit)
+    if product or not _flowi_explicit_splittable_view_prompt(prompt):
+        return product
+    text = str(prompt or "")
+    match = re.search(r"^(.*?)(?:split\s*table|splittable|스플릿\s*테이블|스플릿테이블)", text, flags=re.I | re.S)
+    prefix = match.group(1) if match else text
+    blocked = {
+        "SPLIT",
+        "TABLE",
+        "SPLITTABLE",
+        "SHOW",
+        "DISPLAY",
+        "VIEW",
+        "QUERY",
+        "PRODUCT",
+        "PRODUCTS",
+        "PROD",
+        "KNOB",
+        "MASK",
+        "CUSTOM",
+        "SET",
+        "ML_TABLE",
+    } | set(_FLOWI_NON_LOT_TOKENS)
+    toks = [tok for tok in _tokens(prefix) if tok and tok not in blocked and not _is_step_id_token(tok)]
+    if len(toks) < 2:
+        return ""
+    first = toks[0]
+    if _is_root_lot_token(first) or re.fullmatch(r"TEST\d+", first, flags=re.I):
+        return ""
+    rest_has_lot = any(
+        _is_root_lot_token(tok)
+        or _is_fab_lot_token(tok)
+        or re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok)
+        for tok in toks[1:]
+    )
+    return first if rest_has_lot else ""
+
+
 def _lot_tokens(prompt: str) -> list[str]:
     out = []
     seen = set()
@@ -3638,6 +3679,22 @@ def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
     for fab in fab_ids:
         add_root(_flowi_root_from_fab_lot(fab))
     return {"root_lot_ids": root_ids, "fab_lot_ids": fab_ids}
+
+
+def _flowi_prune_product_lot_tokens(classified: dict[str, list[str]], product: str) -> dict[str, list[str]]:
+    product_key = _upper(product)
+    if not product_key:
+        return classified
+    blocked = {product_key}
+    if product_key.startswith("ML_TABLE_"):
+        blocked.add(product_key[len("ML_TABLE_"):])
+    product_root = _flowi_root_from_fab_lot(product_key)
+    if product_root:
+        blocked.add(product_root)
+    return {
+        "root_lot_ids": [x for x in (classified.get("root_lot_ids") or []) if _upper(x) not in blocked],
+        "fab_lot_ids": [x for x in (classified.get("fab_lot_ids") or []) if _upper(x) not in blocked],
+    }
 
 
 def _flowi_root_from_fab_lot(value: str) -> str:
@@ -16738,7 +16795,7 @@ def _flowi_splittable_view_to_inline(
                 "key": src.get("key") or "",
                 "can_plan": bool(src.get("can_plan")),
             })
-            if actual not in (None, "") or plan not in (None, ""):
+            if actual not in (None, "") or plan not in (None, "") or src:
                 flat_rows.append({
                     "product": view.get("product") or "",
                     "root_lot_id": view.get("root_lot_id") or "",
@@ -21187,7 +21244,8 @@ def _handle_explicit_splittable_view_fast_path(
         return None
     if _flowi_write_target_detected(prompt) or _flowi_splittable_note_intent(prompt):
         return None
-    if not _product_hint(prompt, product):
+    product_hint = _flowi_explicit_splittable_product_hint(prompt, product)
+    if not product_hint:
         classified = _classified_lot_tokens(prompt)
         if classified.get("fab_lot_ids"):
             tool = _handle_wafer_split_at_step(prompt, product, max_rows)
@@ -21249,7 +21307,7 @@ def _handle_explicit_splittable_view_fast_path(
                 "choices": choices[:3],
             },
         }, "message", prompt=prompt)
-    tool = _handle_wafer_split_at_step(prompt, product, max_rows)
+    tool = _handle_wafer_split_at_step(prompt, product_hint, max_rows)
     return tool if isinstance(tool, dict) and tool.get("handled") else None
 
 

@@ -1051,6 +1051,33 @@ def test_flowi_splittable_knob_prompt_routes_to_custom_set_view():
     assert "product" in preview["validation"]["missing"]
 
 
+def test_flowi_explicit_splittable_view_keeps_dotted_product_token(monkeypatch):
+    from routers import llm as llm_router
+
+    calls = []
+    monkeypatch.setattr(llm_router, "_configured_product_names", lambda: {})
+    monkeypatch.setattr(
+        llm_router,
+        "_flowi_query_splittable_view_tool",
+        lambda args, product_hint, prompt, max_rows: calls.append((dict(args), product_hint, prompt, max_rows))
+        or {"handled": True, "intent": "splittable_view", "action": "query_splittable_view", "feature": "splittable", "answer": "ok"},
+    )
+
+    out = llm_router._handle_explicit_splittable_view_fast_path(
+        "AZAAA.1 A1001 스플릿테이블 보여줘",
+        "",
+        12,
+        {"splittable"},
+    )
+
+    assert out and out["handled"] is True
+    assert out["action"] == "query_splittable_view"
+    assert calls
+    assert calls[0][0]["product"] == "AZAAA.1"
+    assert calls[0][0]["root_lot_ids"] == ["A1001"]
+    assert calls[0][1] == "AZAAA.1"
+
+
 def test_flowi_splittable_view_tool_passes_knob_custom_cols(monkeypatch):
     from routers import llm as llm_router
     from routers import splittable as splittable_router
@@ -1124,6 +1151,37 @@ def test_flowi_splittable_inline_defaults_to_knob_and_keeps_lot_context():
     assert table["rows"][0]["lot_id"] == "A1001.1"
 
 
+def test_flowi_splittable_inline_counts_blank_knob_cells_as_displayable():
+    from routers import llm as llm_router
+
+    split_view, table = llm_router._flowi_splittable_view_to_inline(
+        {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1001",
+            "headers": ["#1", "#2"],
+            "header_groups": [{"label": "A1001.1", "span": 2}],
+            "wafer_fab_list": ["A1001.1", "A1001.1"],
+            "rows": [
+                {
+                    "_param": "KNOB_GATE",
+                    "_display": "Gate",
+                    "_cells": {
+                        "0": {"actual": "", "plan": "", "key": "k0"},
+                        "1": {"actual": "", "plan": "", "key": "k1"},
+                    },
+                },
+            ],
+        },
+        max_rows=12,
+    )
+
+    assert split_view["rows"]
+    assert split_view["total"] == 2
+    assert table["total"] == 2
+    assert table["rows"][0]["parameter"] == "KNOB_GATE"
+    assert table["rows"][0]["cell_key"] == "k0"
+
+
 def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_path):
     from core import flowi_units, home_memory, home_orchestrator
     from routers import llm as llm_router
@@ -1166,7 +1224,7 @@ def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_pat
 
     assert result["answer"] == "SplitTable fast path ok"
     assert result["tool"]["action"] == "query_splittable_view"
-    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "", 12)]
+    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "PRODA", 12)]
 
 
 def test_flowi_chat_explicit_splittable_view_asks_product_when_missing(monkeypatch, tmp_path):
@@ -1277,7 +1335,7 @@ def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch
 
     assert result["answer"] == "SplitTable resumed with product"
     assert result["tool"]["action"] == "query_splittable_view"
-    assert calls == [(pending_prompt + "\nproduct: PRODA", "", 12)]
+    assert calls == [(pending_prompt + "\nproduct: PRODA", "PRODA", 12)]
 
 
 def test_flowi_chat_product_followup_keeps_bare_alpha_splittable_prompt(monkeypatch, tmp_path):
@@ -1349,7 +1407,7 @@ def test_flowi_chat_product_followup_keeps_bare_alpha_splittable_prompt(monkeypa
 
     assert result["answer"] == "SplitTable resumed with product"
     assert result["tool"]["action"] == "query_splittable_view"
-    assert calls == [(pending_prompt + "\nproduct: PRODA", "", 12)]
+    assert calls == [(pending_prompt + "\nproduct: PRODA", "PRODA", 12)]
 
 
 def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeypatch, tmp_path):
@@ -1407,7 +1465,7 @@ def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeyp
 
     assert result["answer"] == "SplitTable fast path ok"
     assert result["tool"]["action"] == "query_splittable_view"
-    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "", 12)]
+    assert calls == [("PRODA A1001 스플릿테이블 보여줘", "PRODA", 12)]
 
 
 def test_flowi_chat_product_name_fab_lot_splittable_prompt_uses_view(monkeypatch, tmp_path):
