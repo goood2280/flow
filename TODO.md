@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Semantic layer Source catalog/Measurement terms 자연어 저장과 등록 항목 수정·삭제
 - (Codex) SplitTable root_lot_id 최신 LOT cache 기반 조회 가속
 - (Codex) LLM internal profile connected state blocks dev AI routing
 - (Codex) SplitTable root_lot_id RAM cache prefix/other grouping and prefix-first warmup

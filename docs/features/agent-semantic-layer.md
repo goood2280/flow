@@ -66,7 +66,7 @@ The catalog is source metadata only. It does not read source rows and does not d
 | `PUT /api/agent/semantic/sources/{id}` | source catalog 항목 저장 또는 추가. Body는 `source` object이며 role/roles/path_patterns/search_terms/docs_path 등을 포함할 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `source_catalog.json`, source catalog changes |
 | `DELETE /api/agent/semantic/sources/{id}` | source catalog 항목 삭제. 기본 seed 삭제는 tombstone으로 보존되어 재병합되지 않는다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `source_catalog.json`, source catalog changes |
 | `GET /api/agent/semantic/measurements` | measurement term catalog와 evidence/update metadata 조회 | 로그인 사용자 | 없음 |
-| `POST /api/agent/semantic/draft` | 자연어 또는 JSON에서 alias/intent 초안 생성 | 로그인 사용자 | 없음 |
+| `POST /api/agent/semantic/draft` | 자연어 또는 JSON에서 alias/intent/source_catalog/measurement_terms 초안 생성 | 로그인 사용자 | 없음 |
 | `PUT /api/agent/semantic/measurements/{id}` | 측정 용어 mapping 저장. Body는 `term` object이며 source_type/product/step_id/item_id/target/spec/evidence를 포함할 수 있다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json`, measurement changes, Change management history |
 | `DELETE /api/agent/semantic/measurements/{id}` | 측정 용어 mapping 삭제. 기본 seed 삭제는 tombstone으로 보존되어 재병합되지 않는다. | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json`, measurement changes, Change management history |
 | `POST /api/agent/semantic/measurements/merge-defaults` | 기본 측정 용어 seed를 누락분만 병합 | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | `measurement_terms.json` |
@@ -77,7 +77,7 @@ The catalog is source metadata only. It does not read source rows and does not d
 | `GET /api/agent/semantic/proposals` | proposal queue 조회 | 로그인 사용자 | 없음 |
 | `POST /api/agent/semantic/proposals/{id}/decision` | proposal approve/reject | admin 또는 `agent`/`diagnosis`/`knowledge` page manager | proposal status, 승인 시 alias group |
 
-`draft`는 항상 read-only다. 초안 응답에 `alias_groups`나 `intent_hints`가 있어도 disk에는 저장하지 않는다. 저장은 사용자가 `PUT` API를 호출하거나 pending proposal을 승인할 때만 가능하다.
+`draft`는 항상 read-only다. 초안 응답에 `alias_groups`, `intent_hints`, `source_catalog`, `measurement_terms`가 있어도 disk에는 저장하지 않는다. 저장은 사용자가 자연어 저장 버튼 또는 JSON 저장 버튼으로 각 `PUT` API를 호출하거나 pending proposal을 승인할 때만 가능하다.
 
 ## Guardrails
 

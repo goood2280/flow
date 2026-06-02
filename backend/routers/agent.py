@@ -316,15 +316,145 @@ def _canonical_from_term(term: str) -> str:
     return compact[:80] or text[:80]
 
 
-def _parse_semantic_json_draft(text: str) -> dict[str, dict[str, list[str]]]:
+def _draft_split_list(value: Any, limit: int = 30) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw = value
+    else:
+        raw = re.split(r"[,|]+", str(value or ""))
+    return _string_list(raw, limit=limit)
+
+
+def _draft_number(value: Any) -> int | float | None:
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value or ""))
+    if not match:
+        return None
+    number = float(match.group(0))
+    return int(number) if number.is_integer() else number
+
+
+def _parse_semantic_kv_text(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for match in re.finditer(r"([A-Za-z가-힣_][A-Za-z0-9가-힣_ -]{0,40})\s*[:=]\s*([^;\n]+)", str(text or "")):
+        key = re.sub(r"[\s-]+", "_", str(match.group(1) or "").strip().casefold())
+        value = str(match.group(2) or "").strip()
+        if key and value:
+            fields[key] = value
+    return fields
+
+
+def _field_value(fields: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = fields.get(key)
+        if value:
+            return value
+    return ""
+
+
+def _path_tokens(text: str) -> list[str]:
+    tokens = re.findall(
+        r"(?:FLOW_(?:DB|DATA)_ROOT/[^\s;,]+|docs/semantic/[^\s;,]+|[A-Za-z]:\\[^\s;,]+|[^\s;,]+\.(?:parquet|csv|json|ya?ml|md))",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    return _string_list(tokens, limit=20)
+
+
+def _semantic_source_draft_from_text(text: str) -> dict[str, dict[str, Any]]:
+    raw = str(text or "").strip()
+    fields = _parse_semantic_kv_text(raw)
+    has_source_signal = any(
+        key in fields
+        for key in (
+            "source_id",
+            "source",
+            "title",
+            "role",
+            "path",
+            "path_patterns",
+            "docs_path",
+            "columns",
+            "search_terms",
+        )
+    )
+    has_source_signal = has_source_signal or bool(re.search(r"\bsource\s+catalog\b|source\s+id\s*=|docs?\s+path\s*=", raw, re.IGNORECASE))
+    if not has_source_signal:
+        return {}
+
+    source_id = _field_value(fields, "source_id", "source", "id")
+    title = _field_value(fields, "title", "name", "이름", "제목")
+    role = _field_value(fields, "role", "역할")
+    explicit_paths = _draft_split_list(_field_value(fields, "path_patterns", "paths", "path", "경로"), limit=40)
+    paths = explicit_paths or [token for token in _path_tokens(raw) if not token.casefold().endswith(".md")]
+    docs_path = _field_value(fields, "docs_path", "doc_path", "docs", "문서")
+    if not docs_path:
+        docs_candidates = [token for token in _path_tokens(raw) if token.casefold().endswith(".md")]
+        docs_path = docs_candidates[0] if docs_candidates else ""
+    source = semantic_source_catalog.normalize_source(
+        {
+            "id": source_id or title or role,
+            "title": title or source_id or "Semantic source",
+            "role": role or "source_search",
+            "roles": _draft_split_list(_field_value(fields, "roles"), limit=30) or ["source_search"],
+            "path_patterns": paths,
+            "fallback_path_patterns": _draft_split_list(_field_value(fields, "fallback_path_patterns", "fallback_paths"), limit=40),
+            "owner": _field_value(fields, "owner", "소유자"),
+            "write_policy": _field_value(fields, "write_policy", "write", "policy", "정책") or "Agent read-only. Update source data through owner feature APIs.",
+            "docs_path": docs_path,
+            "related_question_ids": _draft_split_list(_field_value(fields, "related_question_ids", "questions"), limit=30),
+            "related_unit_keys": _draft_split_list(_field_value(fields, "related_unit_keys", "units"), limit=30),
+            "columns": _draft_split_list(_field_value(fields, "columns", "컬럼"), limit=80),
+            "search_terms": _draft_split_list(_field_value(fields, "search_terms", "terms", "검색어"), limit=80),
+        },
+        actor="draft",
+    )
+    return {str(source.get("id") or ""): source} if source.get("id") else {}
+
+
+def _semantic_measurement_draft_from_text(text: str) -> dict[str, dict[str, Any]]:
+    raw = str(text or "").strip()
+    fields = _parse_semantic_kv_text(raw)
+    source_type = _field_value(fields, "source_type", "source", "measurement_source")
+    if not source_type:
+        match = re.search(r"\b(INLINE|ET|VM|EDS)\b", raw, re.IGNORECASE)
+        source_type = match.group(1) if match else ""
+    term = _field_value(fields, "measurement_term", "term", "measurement", "측정명", "측정", "항목")
+    item_id = _field_value(fields, "item_id", "item", "rawitem_id")
+    if not (term or item_id) or not source_type:
+        return {}
+
+    evidence = _field_value(fields, "evidence", "근거", "source_ref")
+    term_row = semantic_measure_catalog.normalize_term(
+        {
+            "id": _field_value(fields, "measurement_id", "term_id", "id"),
+            "term": term or item_id,
+            "aliases": _draft_split_list(_field_value(fields, "aliases", "alias", "별칭"), limit=30),
+            "source_type": source_type,
+            "product": _field_value(fields, "product", "제품"),
+            "step_id": _field_value(fields, "step_id", "step"),
+            "item_id": item_id,
+            "value_column": _field_value(fields, "value_column", "value"),
+            "default_agg": _field_value(fields, "default_agg", "agg") or ("avg" if source_type.upper() == "INLINE" else "median"),
+            "target": _draft_number(_field_value(fields, "target", "목표")),
+            "spec_low": _draft_number(_field_value(fields, "spec_low", "lsl")),
+            "spec_high": _draft_number(_field_value(fields, "spec_high", "usl")),
+            "evidence": [{"type": "manual", "label": evidence}] if evidence else [],
+        },
+        actor="draft",
+    )
+    return {str(term_row.get("id") or ""): term_row} if term_row.get("id") else {}
+
+
+def _parse_semantic_json_draft(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except Exception:
-        return {"alias_groups": {}, "intent_hints": {}}
+        return {"alias_groups": {}, "intent_hints": {}, "source_catalog": {}, "measurement_terms": {}}
     if not isinstance(parsed, dict):
-        return {"alias_groups": {}, "intent_hints": {}}
+        return {"alias_groups": {}, "intent_hints": {}, "source_catalog": {}, "measurement_terms": {}}
     raw_alias = parsed.get("alias_groups", parsed.get("groups", {}))
     raw_intents = parsed.get("intent_hints", parsed.get("intents", {}))
+    raw_sources = parsed.get("source_catalog", parsed.get("sources", {}))
+    raw_measurements = parsed.get("measurement_terms", parsed.get("measurements", {}))
     alias_groups = {
         str(key).strip(): _string_list(value)
         for key, value in (raw_alias.items() if isinstance(raw_alias, dict) else [])
@@ -335,16 +465,37 @@ def _parse_semantic_json_draft(text: str) -> dict[str, dict[str, list[str]]]:
         for key, value in (raw_intents.items() if isinstance(raw_intents, dict) else [])
         if str(key).strip()
     }
-    return {"alias_groups": alias_groups, "intent_hints": intent_hints}
+    source_catalog = {
+        str(source.get("id") or key): source
+        for key, value in (raw_sources.items() if isinstance(raw_sources, dict) else [])
+        if isinstance(value, dict)
+        for source in [semantic_source_catalog.normalize_source({**value, "id": value.get("id") or key}, actor="draft")]
+        if source.get("id")
+    }
+    measurement_terms = {
+        str(term.get("id") or key): term
+        for key, value in (raw_measurements.items() if isinstance(raw_measurements, dict) else [])
+        if isinstance(value, dict)
+        for term in [semantic_measure_catalog.normalize_term({**value, "id": value.get("id") or key}, actor="draft")]
+        if term.get("id")
+    }
+    return {
+        "alias_groups": alias_groups,
+        "intent_hints": intent_hints,
+        "source_catalog": source_catalog,
+        "measurement_terms": measurement_terms,
+    }
 
 
 def _semantic_draft_from_text(text: str) -> dict[str, Any]:
     raw = str(text or "").strip()
     parsed = _parse_semantic_json_draft(raw)
-    if parsed["alias_groups"] or parsed["intent_hints"]:
+    if parsed["alias_groups"] or parsed["intent_hints"] or parsed["source_catalog"] or parsed["measurement_terms"]:
         return {
             "alias_groups": parsed["alias_groups"],
             "intent_hints": parsed["intent_hints"],
+            "source_catalog": parsed["source_catalog"],
+            "measurement_terms": parsed["measurement_terms"],
             "terms": [],
             "classifications": [],
             "source": "json",
@@ -375,6 +526,8 @@ def _semantic_draft_from_text(text: str) -> dict[str, Any]:
     return {
         "alias_groups": alias_groups,
         "intent_hints": intent_hints,
+        "source_catalog": _semantic_source_draft_from_text(raw),
+        "measurement_terms": _semantic_measurement_draft_from_text(raw),
         "terms": terms,
         "classifications": classifications,
         "source": "text",

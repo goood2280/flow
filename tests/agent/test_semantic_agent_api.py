@@ -179,3 +179,39 @@ def test_semantic_draft_from_json_and_text_is_read_only(semantic_store):
     assert text_out["draft"]["alias_groups"]
     assert text_out["draft"]["intent_hints"]["inform_registration"] == ["product", "lot_id"]
     assert store.load_alias_groups() == {}
+
+
+def test_semantic_draft_builds_source_and_measurement_catalog_entries(semantic_store):
+    req = _Request(role="user")
+
+    out = agent.semantic_draft(
+        agent.SemanticDraftReq(text=(
+            "source id=custom_inline; title=Custom Inline source; role=inline_db; "
+            "path=FLOW_DB_ROOT/custom_inline.parquet; columns=product,step_id,item_id; "
+            "search_terms=custom inline,trend; docs_path=docs/semantic/custom_inline.md\n"
+            "measurement term=CA BCD; source_type=INLINE; product=PRODA; "
+            "step_id=AA100001; item_id=CA_BCD; target=10; spec_low=8; spec_high=12; "
+            "aliases=CA BCD,CABCD; evidence=Inline spec review"
+        )),
+        req,
+    )
+
+    draft = out["draft"]
+    source = draft["source_catalog"]["custom_inline"]
+    assert source["title"] == "Custom Inline source"
+    assert source["role"] == "inline_db"
+    assert source["path_patterns"] == ["FLOW_DB_ROOT/custom_inline.parquet"]
+    assert source["columns"] == ["product", "step_id", "item_id"]
+    assert source["search_terms"] == ["custom inline", "trend"]
+
+    term = draft["measurement_terms"]["measure_inline_proda_ca_bcd"]
+    assert term["term"] == "CA BCD"
+    assert term["source_type"] == "INLINE"
+    assert term["product"] == "PRODA"
+    assert term["step_id"] == "AA100001"
+    assert term["item_id"] == "CA_BCD"
+    assert term["target"] == 10
+    assert term["spec_low"] == 8
+    assert term["spec_high"] == 12
+    assert term["evidence"][0]["label"] == "Inline spec review"
+    assert store.load_alias_groups() == {}

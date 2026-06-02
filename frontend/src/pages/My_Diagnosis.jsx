@@ -2589,6 +2589,8 @@ function SemanticLayerPanel() {
   const [intentJson, setIntentJson] = useState("{}");
   const [sourceJson, setSourceJson] = useState("{}");
   const [measurementJson, setMeasurementJson] = useState("{}");
+  const [sourceNaturalText, setSourceNaturalText] = useState("");
+  const [measurementNaturalText, setMeasurementNaturalText] = useState("");
   const [draftText, setDraftText] = useState("");
   const [draft, setDraft] = useState(null);
   const [proposalCanonicals, setProposalCanonicals] = useState({});
@@ -2716,6 +2718,63 @@ function SemanticLayerPanel() {
       .finally(() => setBusy(false));
   };
 
+  const saveSourceNatural = () => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    postJson("/api/agent/semantic/draft", { text: sourceNaturalText })
+      .then((out) => {
+        const draftPayload = out?.draft || {};
+        const entries = draftPayload.source_catalog || {};
+        setDraft(draftPayload);
+        if (!Object.keys(entries).length) {
+          throw new Error("source catalog 초안을 만들 수 없습니다. id/title/path/role/docs_path 중 일부를 포함해 주세요.");
+        }
+        return Promise.all(Object.entries(entries).map(([key, value]) => putJson(
+          `/api/agent/semantic/sources/${encodeURIComponent(key)}`,
+          { source: { ...(value || {}), id: key } }
+        )));
+      })
+      .then(() => {
+        setSourceNaturalText("");
+        setMsg("source 자연어 저장 완료");
+        return load();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const editSourceEntry = (source) => {
+    const id = source?.id || source?.source_id || "";
+    if (!id) return;
+    let next = {};
+    try {
+      next = parseJsonObject(sourceJson, "source_catalog");
+    } catch {
+      const sources = sourceCatalog?.sources || {};
+      next = Array.isArray(sources) ? Object.fromEntries(sources.map((row) => [row.id || row.source_id, row])) : { ...sources };
+    }
+    next[id] = source;
+    setSourceJson(JSON.stringify(next, null, 2));
+    setMsg(`${id} source를 JSON 편집기에 올렸습니다.`);
+  };
+
+  const deleteSourceEntry = (source) => {
+    const id = source?.id || source?.source_id || "";
+    if (!id) return;
+    if (typeof window !== "undefined" && !window.confirm(`${id} source를 삭제할까요?`)) return;
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    sf(`/api/agent/semantic/sources/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(() => {
+        setMsg(`${id} source 삭제 완료`);
+        return load();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
   const addSourceTemplate = () => {
     try {
       const next = parseJsonObject(sourceJson, "source_catalog");
@@ -2770,6 +2829,62 @@ function SemanticLayerPanel() {
       setMsg("measurement terms 저장 완료");
       return load();
     }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const saveMeasurementNatural = () => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    postJson("/api/agent/semantic/draft", { text: measurementNaturalText })
+      .then((out) => {
+        const draftPayload = out?.draft || {};
+        const entries = draftPayload.measurement_terms || {};
+        setDraft(draftPayload);
+        if (!Object.keys(entries).length) {
+          throw new Error("measurement term 초안을 만들 수 없습니다. term/source_type/item_id 중 일부를 포함해 주세요.");
+        }
+        return Promise.all(Object.entries(entries).map(([key, value]) => putJson(
+          `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
+          { term: { ...(value || {}), id: key } }
+        )));
+      })
+      .then(() => {
+        setMeasurementNaturalText("");
+        setMsg("measurement 자연어 저장 완료");
+        return load();
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const editMeasurementEntry = (term) => {
+    const id = term?.id || "";
+    if (!id) return;
+    let next = {};
+    try {
+      next = parseJsonObject(measurementJson, "measurement_terms");
+    } catch {
+      next = Object.fromEntries((measurementCatalog?.terms || []).map((row) => [row.id, row]));
+    }
+    next[id] = term;
+    setMeasurementJson(JSON.stringify(next, null, 2));
+    setMsg(`${id} measurement를 JSON 편집기에 올렸습니다.`);
+  };
+
+  const deleteMeasurementEntry = (term) => {
+    const id = term?.id || "";
+    if (!id) return;
+    if (typeof window !== "undefined" && !window.confirm(`${term?.term || id} measurement를 삭제할까요?`)) return;
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    sf(`/api/agent/semantic/measurements/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(() => {
+        setMsg(`${term?.term || id} measurement 삭제 완료`);
+        return load();
+      })
+      .catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
   };
 
@@ -2918,6 +3033,17 @@ function SemanticLayerPanel() {
 
       <Panel title="Source catalog" subtitle={`${sourceRows.length} sources`}>
         <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+          <Field label="source 자연어">
+            <Textarea
+              value={sourceNaturalText}
+              onChange={(e) => setSourceNaturalText(e.target.value)}
+              rows={3}
+              placeholder="id=custom_inline; title=Custom Inline source; role=inline_db; path=FLOW_DB_ROOT/custom_inline.parquet; columns=product,step_id; search_terms=inline,trend"
+            />
+          </Field>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button variant="primary" onClick={saveSourceNatural} disabled={!sourceNaturalText.trim() || busy}>source 자연어 저장</Button>
+          </div>
           <Field label="source_catalog">
             <Textarea value={sourceJson} onChange={(e) => setSourceJson(e.target.value)} rows={10} />
           </Field>
@@ -2938,11 +3064,15 @@ function SemanticLayerPanel() {
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <strong style={{ fontSize: 13 }}>{source?.title || id}</strong>
                   <Pill tone="neutral">{source?.role || "source"}</Pill>
-                  {docsPath ? (
-                    <a href={docsPath} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 11, color: "var(--brand, var(--text-primary))" }}>
-                      docs
-                    </a>
-                  ) : null}
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
+                    {docsPath ? (
+                      <a href={docsPath} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--brand, var(--text-primary))" }}>
+                        docs
+                      </a>
+                    ) : null}
+                    <Button variant="ghost" onClick={() => editSourceEntry(source)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>수정</Button>
+                    <Button variant="ghost" onClick={() => deleteSourceEntry(source)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>삭제</Button>
+                  </div>
                 </div>
                 <div style={{ display: "grid", gap: 4 }}>
                   {(source?.path_patterns || []).map((pattern) => (
@@ -2975,6 +3105,15 @@ function SemanticLayerPanel() {
       <Panel title="Measurement terms" subtitle={`${measurementCatalog.terms.length} semantic measurement aliases`}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.9fr) minmax(0, 1.1fr)", gap: 10, alignItems: "start" }}>
           <div style={{ display: "grid", gap: 8 }}>
+            <Field label="measurement 자연어">
+              <Textarea
+                value={measurementNaturalText}
+                onChange={(e) => setMeasurementNaturalText(e.target.value)}
+                rows={3}
+                placeholder="term=CA BCD; source_type=INLINE; product=PRODA; step_id=AA100001; item_id=CA_BCD; target=10; spec_low=8; spec_high=12; aliases=CA BCD,CABCD"
+              />
+            </Field>
+            <Button variant="primary" onClick={saveMeasurementNatural} disabled={!measurementNaturalText.trim() || busy}>measurement 자연어 저장</Button>
             <Field label="measurement_terms">
               <Textarea value={measurementJson} onChange={(e) => setMeasurementJson(e.target.value)} rows={14} />
             </Field>
@@ -2995,6 +3134,8 @@ function SemanticLayerPanel() {
                   <Pill tone="neutral">{term.source_type}</Pill>
                   {term.product ? <Pill tone="neutral">{term.product}</Pill> : null}
                   <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)" }}>{term.updated_at || ""}</span>
+                  <Button variant="ghost" onClick={() => editMeasurementEntry(term)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>수정</Button>
+                  <Button variant="ghost" onClick={() => deleteMeasurementEntry(term)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>삭제</Button>
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                   item_id {term.item_id || "-"} · step_id {term.step_id || "-"} · agg {term.default_agg || "-"} · target {term.target ?? "-"} · spec {term.spec_low ?? "-"} ~ {term.spec_high ?? "-"}

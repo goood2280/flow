@@ -151,9 +151,9 @@ Home Flow-i는 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`,
 
 ## Semantic Layer Tab
 
-`Semantic layer` 탭은 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 사용자는 JSON 편집으로 alias group, intent hint, Source Catalog, Measurement terms를 저장/추가/삭제할 수 있고, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
+`Semantic layer` 탭은 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 사용자는 JSON 편집으로 alias group, intent hint, Source Catalog, Measurement terms를 저장/추가/삭제할 수 있고, Source Catalog와 Measurement terms는 자연어 입력으로 초안을 만든 뒤 즉시 저장할 수 있다. 등록된 Source docs와 Measurement term 카드는 개별 수정/삭제 액션을 제공하며, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
 
-자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent JSON 초안만 생성한다. 실제 저장은 사용자가 `초안 저장` 또는 JSON 저장 버튼을 눌렀을 때만 `/api/agent/semantic/alias-groups/*`와 `/api/agent/semantic/intent-hints/*` write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
+자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent/source_catalog/measurement_terms JSON 초안을 생성한다. draft endpoint 자체는 read-only이며, 실제 저장은 사용자가 `초안 저장`, Source/Measurement 자연어 저장, 또는 JSON 저장 버튼을 눌렀을 때만 semantic write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
 
 Semantic layer의 API, data-root, unit별 사용 규칙은 [agent-semantic-layer.md](agent-semantic-layer.md)를 기준으로 본다.
 

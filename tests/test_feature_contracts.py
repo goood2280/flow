@@ -212,8 +212,14 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "source_catalog" in ui
     assert "source 저장" in ui
     assert "source 추가" in ui
+    assert "source 자연어 저장" in ui
+    assert "editSourceEntry" in ui
+    assert "deleteSourceEntry" in ui
     assert "Measurement terms" in ui
     assert "measurement 추가" in ui
+    assert "measurement 자연어 저장" in ui
+    assert "editMeasurementEntry" in ui
+    assert "deleteMeasurementEntry" in ui
     assert 'method: "DELETE"' in ui
     assert "measurement_terms" in ui
     assert "related_question_ids" in ui
