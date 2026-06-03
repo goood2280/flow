@@ -16,6 +16,10 @@ const SEMANTIC_SECTIONS = [
   { k: "measurements", l: "Measurements 관리" },
   { k: "review", l: "검토 이력" },
 ];
+const FLOWI_SECTIONS = [
+  { k: "workflows", l: "Workflow 템플릿" },
+  { k: "runtime", l: "Runtime trace" },
+];
 
 function agentUnitGraphEndpoint(unitKey) {
   return `/api/agent/unit/${encodeURIComponent(unitKey)}/graph`;
@@ -3323,6 +3327,10 @@ function flowiWorkflowPromptPreview(workflow) {
   return prompt || String(workflow?.action || workflow?.unit_ai || "").trim();
 }
 
+function flowiWorkflowTemplatePreview(workflow) {
+  return String(workflow?.question_template || (workflow?.examples || []).find((example) => String(example || "").includes("{")) || (workflow?.examples || [])[0] || workflow?.title || "").trim();
+}
+
 function flowiWorkflowFewShotItems(workflows) {
   return (Array.isArray(workflows) ? workflows : [])
     .filter((workflow) => workflow?.enabled !== false)
@@ -3330,8 +3338,16 @@ function flowiWorkflowFewShotItems(workflows) {
       id: workflow.id || flowiWorkflowPromptPreview(workflow),
       title: workflow.title || workflow.id || "Flow-i workflow",
       prompt: flowiWorkflowPromptPreview(workflow),
+      template: flowiWorkflowTemplatePreview(workflow),
       target: workflow.action || workflow.unit_ai || workflow.category || "",
       priority: Number(workflow.priority || 0),
+      unitAi: workflow.unit_ai || "",
+      action: workflow.action || "",
+      category: workflow.category || "",
+      slots: Array.isArray(workflow.slots) ? workflow.slots : [],
+      sourceRoles: Array.isArray(workflow.source_roles) ? workflow.source_roles : [],
+      orchestration: Array.isArray(workflow.orchestration) && workflow.orchestration.length ? workflow.orchestration : (Array.isArray(workflow.steps) ? workflow.steps : []),
+      resultType: workflow.result_contract?.type || "",
     }))
     .filter((item) => item.prompt)
     .sort((a, b) => b.priority - a.priority || a.title.localeCompare(b.title))
@@ -3341,6 +3357,7 @@ function flowiWorkflowFewShotItems(workflows) {
 function HomeFlowiFewShotPanel() {
   const [copiedPrompt, setCopiedPrompt] = useState("");
   const [items, setItems] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(true);
   const copyPrompt = (prompt) => {
     setCopiedPrompt(prompt);
@@ -3365,44 +3382,110 @@ function HomeFlowiFewShotPanel() {
     return () => { alive = false; };
   }, []);
 
+  useEffect(() => {
+    if (!items.length) {
+      setSelectedId("");
+      return;
+    }
+    if (!items.some((item) => item.id === selectedId)) setSelectedId(items[0].id);
+  }, [items, selectedId]);
+
+  const activeItem = items.find((item) => item.id === selectedId) || items[0] || null;
+
   return (
     <Panel
       title="주요 few-shot 질문"
       subtitle={loading ? "loading" : `${items.length} workflows`}
       right={copiedPrompt ? <Pill tone="ok">복사됨</Pill> : null}
     >
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-        {items.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => copyPrompt(item.prompt)}
-            title="프롬프트 복사"
-            style={{
-              display: "grid",
-              gap: 6,
-              minHeight: 104,
-              textAlign: "left",
-              padding: "10px 11px",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              background: "var(--bg-primary)",
-              color: "var(--text-primary)",
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ fontSize: 12, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
-            <span style={{ fontSize: 12, lineHeight: 1.45, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{item.prompt}</span>
-            <span style={{ alignSelf: "end", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.target}</span>
-          </button>
-        ))}
-        {!loading && !items.length ? (
-          <div style={{ padding: 12, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 12 }}>
-            workflow seed 없음
-          </div>
-        ) : null}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, maxHeight: 760, overflow: "auto" }}>
+          {items.map((item) => {
+            const active = item.id === activeItem?.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setSelectedId(item.id)}
+                style={{
+                  display: "grid",
+                  gap: 6,
+                  minHeight: 124,
+                  textAlign: "left",
+                  padding: "10px 11px",
+                  border: `1px solid ${active ? "var(--brand, var(--text-primary))" : "var(--border)"}`,
+                  borderRadius: 6,
+                  background: active ? "var(--bg-tertiary)" : "var(--bg-primary)",
+                  color: "var(--text-primary)",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
+                <span style={{ fontSize: 11, lineHeight: 1.45, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>{item.template}</span>
+                <span style={{ fontSize: 12, lineHeight: 1.45, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{item.prompt}</span>
+                <span style={{ alignSelf: "end", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.target}</span>
+              </button>
+            );
+          })}
+          {!loading && !items.length ? (
+            <div style={{ padding: 12, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 12 }}>
+              workflow seed 없음
+            </div>
+          ) : null}
+        </div>
+
+        <div style={{ display: "grid", gap: 10, padding: 11, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", minHeight: 260 }}>
+          {activeItem ? (
+            <>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{activeItem.title}</div>
+                  <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-secondary)" }}>{[activeItem.unitAi, activeItem.action, activeItem.resultType].filter(Boolean).join(" · ")}</div>
+                </div>
+                <Button variant="ghost" onClick={() => copyPrompt(activeItem.prompt)} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>예시 복사</Button>
+              </div>
+              <div style={{ display: "grid", gap: 5 }}>
+                <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>질문 템플릿</div>
+                <code style={{ display: "block", padding: 8, border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", background: "var(--bg-secondary)", fontSize: 12, lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{activeItem.template}</code>
+              </div>
+              <div style={{ display: "grid", gap: 5 }}>
+                <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>예시 질문</div>
+                <div style={{ fontSize: 12, color: "var(--text-primary)", lineHeight: 1.45, overflowWrap: "anywhere" }}>{activeItem.prompt}</div>
+              </div>
+              <div style={{ display: "grid", gap: 5 }}>
+                <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>오케스트레이션 진행</div>
+                <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4, fontSize: 12, lineHeight: 1.5, color: "var(--text-primary)" }}>
+                  {activeItem.orchestration.map((step, idx) => <li key={`${idx}-${step}`} style={{ overflowWrap: "anywhere" }}>{step}</li>)}
+                </ol>
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {activeItem.slots.map((slot) => <Pill key={slot.name || slot.type} tone={slot.required ? "warn" : "neutral"}>{slot.name || slot.type}</Pill>)}
+                {activeItem.sourceRoles.map((role) => <Pill key={role} tone="neutral">{role}</Pill>)}
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+              workflow seed 없음
+            </div>
+          )}
+        </div>
       </div>
     </Panel>
+  );
+}
+
+function HomeFlowiPanel() {
+  const [activeFlowiSection, setActiveFlowiSection] = useState("workflows");
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <TabStrip
+        active={activeFlowiSection}
+        onChange={setActiveFlowiSection}
+        items={FLOWI_SECTIONS}
+      />
+      {activeFlowiSection === "workflows" ? <HomeFlowiFewShotPanel /> : <HomeFlowiRuntimePanel />}
+    </div>
   );
 }
 
@@ -3470,7 +3553,6 @@ function HomeFlowiRuntimePanel() {
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      <HomeFlowiFewShotPanel />
       {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
       <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0, 1fr) 380px", gap: 10, alignItems: "start" }}>
         <Panel
@@ -3609,7 +3691,7 @@ export default function My_Diagnosis({ user }) {
           </div>
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>
             {activeTab === "home-flowi"
-              ? <HomeFlowiRuntimePanel />
+              ? <HomeFlowiPanel />
               : (activeTab === "semantic" ? <SemanticLayerPanel /> : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />))}
           </div>
         </div>

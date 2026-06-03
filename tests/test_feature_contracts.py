@@ -207,6 +207,10 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "/api/llm/flowi/workflows" in ui
     assert "flowiWorkflowPromptPreview" in ui
     assert "주요 few-shot 질문" in ui
+    assert "FLOWI_SECTIONS" in ui
+    assert "activeFlowiSection" in ui
+    assert "질문 템플릿" in ui
+    assert "오케스트레이션 진행" in ui
     assert "Semantic layer" in ui
     assert "LLM 설정" in ui
     assert "질문 이력" in ui

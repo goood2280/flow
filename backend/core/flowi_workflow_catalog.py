@@ -110,6 +110,32 @@ def _slot(name: str, typ: str, *, required: bool = True, example: str = "") -> d
     return row
 
 
+def _question_template(value: Any, examples: list[str], slots: list[dict[str, Any]]) -> str:
+    explicit = _text(value, 300)
+    if explicit:
+        return explicit
+    template = ""
+    best_placeholder_count = -1
+    for example in examples:
+        placeholder_count = len(re.findall(r"\{[A-Za-z0-9_]+\}", example or ""))
+        if placeholder_count > best_placeholder_count:
+            template = example
+            best_placeholder_count = placeholder_count
+    template = template or (examples[0] if examples else "")
+    for slot in slots:
+        name = str(slot.get("name") or "").strip()
+        if not name:
+            continue
+        placeholder = "{" + name + "}"
+        if placeholder in template:
+            continue
+        for key in ("example", "default"):
+            sample = str(slot.get(key) or "").strip()
+            if sample:
+                template = re.sub(re.escape(sample), placeholder, template, flags=re.I)
+    return _text(template, 300)
+
+
 def _normalize_source_roles(value: Any) -> list[str]:
     roles = []
     for role in _string_list(value, limit=12):
@@ -128,6 +154,13 @@ def normalize_workflow(raw: dict[str, Any], *, actor: str = "", base: dict[str, 
     examples = _string_list(raw.get("examples") if "examples" in raw else base.get("examples"), limit=12)
     trigger_terms = _string_list(raw.get("trigger_terms") if "trigger_terms" in raw else base.get("trigger_terms"), limit=24)
     steps = _string_list(raw.get("steps") if "steps" in raw else base.get("steps"), limit=12)
+    slots = _slot_list(raw.get("slots") if "slots" in raw else base.get("slots"))
+    question_template = _question_template(
+        raw.get("question_template") if "question_template" in raw else base.get("question_template"),
+        examples,
+        slots,
+    )
+    orchestration = _string_list(raw.get("orchestration") if "orchestration" in raw else base.get("orchestration"), limit=12) or steps
     source_roles = _normalize_source_roles(raw.get("source_roles") if "source_roles" in raw else base.get("source_roles"))
     unit_ai = _text(raw.get("unit_ai") or base.get("unit_ai") or "filebrowser_ai_sql", 80)
     action = _text(raw.get("action") or base.get("action") or unit_ai, 120)
@@ -151,10 +184,12 @@ def normalize_workflow(raw: dict[str, Any], *, actor: str = "", base: dict[str, 
         "unit_ai": unit_ai,
         "action": action,
         "examples": examples,
+        "question_template": question_template,
         "trigger_terms": trigger_terms,
-        "slots": _slot_list(raw.get("slots") if "slots" in raw else base.get("slots")),
+        "slots": slots,
         "source_roles": source_roles,
         "steps": steps,
+        "orchestration": orchestration,
         "result_contract": deepcopy(result_contract),
         "created_at": created_at,
         "updated_at": now,
@@ -494,7 +529,9 @@ def workflow_few_shots(limit: int = 50) -> list[dict[str, Any]]:
             "function": wf.get("action") or wf.get("unit_ai"),
             "unit_ai": wf.get("unit_ai"),
             "prompt": (wf.get("examples") or [""])[0],
+            "question_template": wf.get("question_template") or (wf.get("examples") or [""])[0],
             "arguments": arguments,
+            "orchestration": wf.get("orchestration") or wf.get("steps") or [],
             "source_roles": wf.get("source_roles") or [],
         })
         if len(rows) >= max(1, int(limit or 50)):
@@ -559,7 +596,9 @@ def match_workflows(prompt: str, *, limit: int = 5) -> list[dict[str, Any]]:
             "source_roles": wf.get("source_roles") or [],
             "slots": wf.get("slots") or [],
             "examples": wf.get("examples") or [],
+            "question_template": wf.get("question_template") or (wf.get("examples") or [""])[0],
             "steps": wf.get("steps") or [],
+            "orchestration": wf.get("orchestration") or wf.get("steps") or [],
         }
         matches.append(row)
     return sorted(matches, key=lambda row: (-float(row.get("score") or 0), str(row.get("id") or "")))[: max(1, int(limit or 5))]

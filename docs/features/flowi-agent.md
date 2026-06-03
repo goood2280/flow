@@ -135,6 +135,8 @@ SQL/JOIN 차트 요청은 별도 “Home SQL JOIN Dashboard” 단위기능이 �
 
 Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.
 
+`Flow-i` 탭 내부는 Semantic layer 탭과 같이 하위 탭으로 나눈다. `Workflow 템플릿`은 `/api/llm/flowi/workflows`의 enabled workflow 중 우선순위가 높은 few-shot 질문을 보여주며, 각 항목은 `question_template`, 채워진 예시 질문, slot/source role, 공개 `orchestration` 단계를 함께 표시한다. `Runtime trace`는 기존 최근 실행 목록, runtime graph, node detail을 보여준다.
+
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
 
 Home Flow-i는 같은 feedback penalty profile을 읽어 자동 Unit AI 후보 점수에 `boost - penalty`를 반영한다. Home 답변의 `좋아요` / `개선 필요` feedback도 관련 feature를 unit key로 정규화해 home/unit penalty profile에 반영한다. 명시적 alias나 사용자가 `/api/home-agent/run-tool`로 특정 unit을 직접 실행하는 경우에는 차단하지 않고, 실행 trace와 runtime graph에 penalty metadata만 남긴다. LLM/ReAct planner catalog는 down-rated unit을 `low_priority` 또는 `avoid` 후보로 표시한다.

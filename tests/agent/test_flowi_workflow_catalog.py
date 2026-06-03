@@ -41,6 +41,8 @@ def test_default_flowi_workflow_catalog_shape():
     }
     custom_set = next(row for row in workflows if row["id"] == "wf_split_table_root_lot_knob_custom_set")
     assert "A1001 1.0 STI Split(or Knob) 보여줘" in custom_set["examples"]
+    assert custom_set["question_template"] == "{root_lot_id} {knob_name} Split(or Knob) 보여줘"
+    assert custom_set["orchestration"][0] == "root_lot_id와 knob_name 후보를 분리한다."
     rulebook = next(row for row in workflows if row["id"] == "wf_rulebook_knob_rules")
     assert rulebook["examples"][0] == "1.6.0 LDD Knob 어떻게 룰 구성되어있어?"
     assert rulebook["steps"][0] == "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다."
@@ -271,3 +273,17 @@ def test_flowi_workflow_draft_shapes_new_requests():
     assert draft["unit_ai"] in catalog.KNOWN_UNIT_AIS
     assert draft["slots"]
     assert draft["source_roles"]
+    assert draft["question_template"]
+    assert draft["orchestration"]
+
+
+def test_flowi_workflow_few_shots_include_templates_and_orchestration(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+
+    rows = catalog.workflow_few_shots(limit=3)
+    custom_set = next(row for row in rows if row["workflow_id"] == "wf_split_table_root_lot_knob_custom_set")
+
+    assert custom_set["question_template"] == "{root_lot_id} {knob_name} Split(or Knob) 보여줘"
+    assert custom_set["orchestration"][0] == "root_lot_id와 knob_name 후보를 분리한다."
+    assert custom_set["prompt"] == "A1001 1.0 STI Split(or Knob) 보여줘"
