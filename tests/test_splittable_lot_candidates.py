@@ -1243,6 +1243,51 @@ def test_view_large_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_pat
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
+def test_view_cache_first_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    calls = []
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
+
+    def fail_raw_scan(*_args, **_kwargs):
+        raise AssertionError("cache_first /view should not raw-scan when lookup cache is missing")
+
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_raw_scan)
+
+    view = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+        cache_first=True,
+    )
+
+    assert view["rows"] == []
+    assert view["lookup_cache"]["queued"] is True
+    assert view["lookup_cache"]["status"] == "queued"
+    assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+
+
 def test_lookup_cache_worker_skips_when_cache_is_already_fresh(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
@@ -1316,6 +1361,37 @@ def test_view_root_lookup_cache_hit_avoids_raw_parquet_scan(tmp_path, monkeypatc
     assert [row["_param"] for row in view["rows"]] == ["KNOB_GATE"]
     assert view["runtime_profile"]["root_cache_hit"] is True
     assert view["view_cache"]["payload_cache_hit"] is False
+
+
+def test_long_wide_preview_queues_pivot_cache_without_inline_pivoting(tmp_path, monkeypatch):
+    from core import long_pivot
+
+    monkeypatch.setattr(splittable, "_LONG_PIVOT_CACHE_DIR", tmp_path / "long_pivot_cache", raising=False)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(
+        long_pivot,
+        "scan_long_inline",
+        lambda _product, _db_root: pl.DataFrame({
+            "product": ["PRODA"],
+            "root_lot_id": ["A1000"],
+            "lot_id": ["A1000.1"],
+            "wafer_id": ["1"],
+            "item_id": ["CD"],
+            "value": [1.0],
+        }).lazy(),
+    )
+
+    def fail_pivot(_lf):
+        raise AssertionError("long-wide-preview should queue background pivot work")
+
+    monkeypatch.setattr(long_pivot, "pivot_inline_wafer", fail_pivot)
+
+    out = splittable.long_wide_preview(source="inline", product="PRODA", limit=20)
+
+    assert out["rows"] == []
+    assert out["columns"] == []
+    assert out["pivot_cache"]["queued"] is True
+    assert out["pivot_cache"]["status"] == "queued"
 
 
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):

@@ -17,7 +17,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
 import json, datetime, io, csv as csv_mod, hashlib, logging, time, threading, os, gc
 from pathlib import Path
 import sys
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -224,6 +224,20 @@ _PRODUCT_RAM_CACHE_JOB_STATE: dict = {
     "skipped_count": 0,
     "last_error": "",
     "products": [],
+}
+LONG_PIVOT_CACHE_VERSION = 1
+_LONG_PIVOT_CACHE_DIR = PLAN_DIR / "long_pivot_cache"
+_LONG_PIVOT_JOB_LOCK = threading.Lock()
+_LONG_PIVOT_QUEUE: deque[tuple[str, str, bool]] = deque()
+_LONG_PIVOT_JOB_THREAD: threading.Thread | None = None
+_LONG_PIVOT_JOB_STATE: dict = {
+    "running": False,
+    "queued": False,
+    "current": "",
+    "started_at": "",
+    "finished_at": "",
+    "last_error": "",
+    "last_source": "",
 }
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
@@ -784,6 +798,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None or str(raw).strip() == "":
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _truthy_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
 
 
 def _env_float(name: str, default: float) -> float:
@@ -3148,6 +3172,268 @@ def _join_features(et: pl.DataFrame, inl: pl.DataFrame) -> pl.DataFrame:
     return et.join(inl, on=keys, how="left")
 
 
+def _long_pivot_source(source: str) -> str:
+    src = str(source or "").strip().lower()
+    if src not in {"fab", "inline", "et"}:
+        raise HTTPException(400, "source must be fab|inline|et")
+    return src
+
+
+def _long_pivot_product(product: str) -> str:
+    prod = str(product or "").strip()
+    if prod.upper().startswith("ML_TABLE_"):
+        prod = prod[len("ML_TABLE_"):]
+    return prod
+
+
+def _long_pivot_key(source: str, product: str) -> str:
+    return f"{_long_pivot_source(source)}:{_long_pivot_product(product).upper()}"
+
+
+def _long_pivot_cache_path(source: str, product: str) -> Path:
+    name = f"{_long_pivot_source(source)}_{safe_id(_long_pivot_product(product) or 'product')}.parquet"
+    return _LONG_PIVOT_CACHE_DIR / name
+
+
+def _long_pivot_meta_path(source: str, product: str) -> Path:
+    return _long_pivot_cache_path(source, product).with_suffix(".json")
+
+
+def _long_pivot_source_dir(source: str, product: str) -> Path:
+    src = _long_pivot_source(source)
+    folder = {
+        "fab": "1.RAWDATA_DB_FAB",
+        "inline": "1.RAWDATA_DB_INLINE",
+        "et": "1.RAWDATA_DB_ET",
+    }[src]
+    return _db_base() / folder / _long_pivot_product(product)
+
+
+def _long_pivot_source_signature(source: str, product: str) -> dict:
+    root = _long_pivot_source_dir(source, product)
+    count = 0
+    total_size = 0
+    max_mtime = 0.0
+    try:
+        files = sorted(root.rglob("*.parquet")) if root.is_dir() else []
+    except Exception:
+        files = []
+    for fp in files:
+        try:
+            st = fp.stat()
+        except Exception:
+            continue
+        count += 1
+        total_size += int(st.st_size)
+        max_mtime = max(max_mtime, float(st.st_mtime))
+    return {
+        "root": str(root),
+        "file_count": count,
+        "total_size": total_size,
+        "max_mtime": max_mtime,
+    }
+
+
+def _read_long_pivot_meta(source: str, product: str) -> dict:
+    fp = _long_pivot_meta_path(source, product)
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_long_pivot_meta(source: str, product: str, meta: dict) -> None:
+    fp = _long_pivot_meta_path(source, product)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = fp.with_suffix(fp.suffix + ".tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(fp)
+
+
+def _long_pivot_job_status(source: str, product: str) -> str:
+    target = _long_pivot_key(source, product)
+    with _LONG_PIVOT_JOB_LOCK:
+        if _LONG_PIVOT_JOB_STATE.get("running") and _LONG_PIVOT_JOB_STATE.get("current") == target:
+            return "running"
+        queued = {_long_pivot_key(src, prod) for src, prod, _force in _LONG_PIVOT_QUEUE}
+    return "queued" if target in queued else ""
+
+
+def _long_pivot_cache_status(source: str, product: str) -> dict:
+    src = _long_pivot_source(source)
+    prod = _long_pivot_product(product)
+    cache_fp = _long_pivot_cache_path(src, prod)
+    meta = _read_long_pivot_meta(src, prod)
+    source_sig = _long_pivot_source_signature(src, prod)
+    has_cache = bool(cache_fp.is_file() and meta.get("version") == LONG_PIVOT_CACHE_VERSION)
+    stale = bool(has_cache and meta.get("source_signature") != source_sig)
+    status = "fresh" if has_cache and not stale else ("stale" if has_cache else "missing")
+    job = _long_pivot_job_status(src, prod)
+    if job and status != "fresh":
+        status = job
+    return {
+        "ok": True,
+        "source": src,
+        "product": prod,
+        "status": status,
+        "has_cache": has_cache,
+        "source_stale": stale,
+        "source_exists": int(source_sig.get("file_count") or 0) > 0,
+        "source_signature": source_sig,
+        "cache_path": str(cache_fp),
+        "meta_path": str(_long_pivot_meta_path(src, prod)),
+        "job_status": job,
+        "meta": meta,
+    }
+
+
+def _long_pivot_cache_public(status: dict | None, queued: dict | None = None) -> dict:
+    status = status or {}
+    queued = queued or {}
+    queued_status = str(queued.get("status") or "").strip()
+    queued_flag = bool(queued.get("queued") or queued_status in {"queued", "running"})
+    meta = status.get("meta") or {}
+    return {
+        "status": queued_status if queued_flag else str(status.get("status") or ""),
+        "hit": str(status.get("status") or "") == "fresh",
+        "queued": queued_flag,
+        "has_cache": bool(status.get("has_cache")),
+        "source_stale": bool(status.get("source_stale")),
+        "source_exists": bool(status.get("source_exists")),
+        "row_count": int(meta.get("row_count") or 0),
+        "built_at": meta.get("built_at") or "",
+    }
+
+
+def _scan_long_pivot_source(source: str, product: str):
+    from core.long_pivot import scan_long_fab, scan_long_inline, scan_long_et
+
+    src = _long_pivot_source(source)
+    prod = _long_pivot_product(product)
+    db_root = _db_base()
+    if src == "fab":
+        return scan_long_fab(prod, db_root)
+    if src == "inline":
+        return scan_long_inline(prod, db_root)
+    return scan_long_et(prod, db_root)
+
+
+def _long_pivot_function(source: str):
+    from core.long_pivot import pivot_fab_wide, pivot_inline_wafer, pivot_et_wafer
+
+    src = _long_pivot_source(source)
+    if src == "fab":
+        return pivot_fab_wide
+    if src == "inline":
+        return pivot_inline_wafer
+    return pivot_et_wafer
+
+
+def _build_long_pivot_cache(source: str, product: str, *, force: bool = False) -> dict:
+    src = _long_pivot_source(source)
+    prod = _long_pivot_product(product)
+    status = _long_pivot_cache_status(src, prod)
+    if status.get("status") == "fresh" and not force:
+        return {"ok": True, "skipped": True, "reason": "fresh", "pivot_cache": _long_pivot_cache_public(status)}
+    try:
+        from core.runtime_limits import process_memory_high
+        if process_memory_high():
+            return {"ok": False, "skipped": True, "reason": "process_memory_high", "pivot_cache": _long_pivot_cache_public(status)}
+    except Exception:
+        pass
+    lf = _scan_long_pivot_source(src, prod)
+    if lf is None:
+        return {"ok": False, "skipped": True, "reason": "source_missing", "pivot_cache": _long_pivot_cache_public(status)}
+    pivot = _long_pivot_function(src)
+    cache_fp = _long_pivot_cache_path(src, prod)
+    tmp = cache_fp.with_suffix(cache_fp.suffix + ".tmp")
+    cache_fp.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    wide = None
+    try:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        wide = pivot(lf)
+        wide.write_parquet(str(tmp))
+        tmp.replace(cache_fp)
+        meta = {
+            "version": LONG_PIVOT_CACHE_VERSION,
+            "source": src,
+            "product": prod,
+            "source_signature": _long_pivot_source_signature(src, prod),
+            "row_count": int(wide.height),
+            "total_cols": len(wide.columns),
+            "schema": {col: str(wide.schema[col]) for col in wide.columns},
+            "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "build_seconds": round(time.monotonic() - started, 3),
+        }
+        _write_long_pivot_meta(src, prod, meta)
+        return {"ok": True, "cache_path": str(cache_fp), "meta": meta}
+    finally:
+        if wide is not None:
+            try:
+                del wide
+            except Exception:
+                pass
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+
+def _long_pivot_worker_loop() -> None:
+    while True:
+        with _LONG_PIVOT_JOB_LOCK:
+            if not _LONG_PIVOT_QUEUE:
+                _LONG_PIVOT_JOB_STATE.update({"running": False, "queued": False, "current": ""})
+                return
+            source, product, force = _LONG_PIVOT_QUEUE.popleft()
+            key = _long_pivot_key(source, product)
+            _LONG_PIVOT_JOB_STATE.update({
+                "running": True,
+                "queued": bool(_LONG_PIVOT_QUEUE),
+                "current": key,
+                "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "last_error": "",
+            })
+        try:
+            result = _build_long_pivot_cache(source, product, force=force)
+            with _LONG_PIVOT_JOB_LOCK:
+                _LONG_PIVOT_JOB_STATE["last_source"] = key
+                if result.get("reason") and not result.get("ok"):
+                    _LONG_PIVOT_JOB_STATE["last_error"] = str(result.get("reason") or "")
+        except Exception as exc:
+            logger.warning("SplitTable long pivot cache build failed source=%s product=%s: %s", source, product, exc, exc_info=True)
+            with _LONG_PIVOT_JOB_LOCK:
+                _LONG_PIVOT_JOB_STATE["last_error"] = f"{type(exc).__name__}: {exc}"
+                _LONG_PIVOT_JOB_STATE["last_source"] = key
+        finally:
+            with _LONG_PIVOT_JOB_LOCK:
+                _LONG_PIVOT_JOB_STATE["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def enqueue_long_pivot_cache(source: str, product: str, *, force: bool = False) -> dict:
+    global _LONG_PIVOT_JOB_THREAD
+    src = _long_pivot_source(source)
+    prod = _long_pivot_product(product)
+    target = _long_pivot_key(src, prod)
+    with _LONG_PIVOT_JOB_LOCK:
+        current = str(_LONG_PIVOT_JOB_STATE.get("current") or "")
+        queued = {_long_pivot_key(q_src, q_prod) for q_src, q_prod, _force in _LONG_PIVOT_QUEUE}
+        if target != current and target not in queued:
+            _LONG_PIVOT_QUEUE.append((src, prod, bool(force)))
+        _LONG_PIVOT_JOB_STATE["queued"] = bool(_LONG_PIVOT_QUEUE)
+        if _LONG_PIVOT_JOB_THREAD is None or not _LONG_PIVOT_JOB_THREAD.is_alive():
+            _LONG_PIVOT_JOB_THREAD = threading.Thread(target=_long_pivot_worker_loop, name="splittable-long-pivot-cache", daemon=True)
+            _LONG_PIVOT_JOB_THREAD.start()
+        state = dict(_LONG_PIVOT_JOB_STATE)
+    status = "running" if state.get("running") and state.get("current") == target else "queued"
+    return {"ok": True, "queued": True, "status": status, "job": state}
+
+
 # FAB/INLINE/ET datalake 진단 엔드포인트.
 #   FAB 는 wafer 단위 공정이력이고, INLINE/ET 는 item/value 계측 long format 이다.
 #   FAB preview 는 canonical 공정이력 컬럼을 보여주고, INLINE/ET 는 wide pivot sample 을 보여준다.
@@ -3180,27 +3466,42 @@ def long_wide_preview(source: str = Query(..., description="fab|inline|et"),
                       product: str = Query(...),
                       limit: int = Query(20)):
     """FAB 공정이력 또는 INLINE/ET pivot 결과 상위 N 행 미리보기."""
-    from core.long_pivot import (scan_long_fab, scan_long_inline, scan_long_et,
-                                  pivot_fab_wide, pivot_inline_wafer, pivot_et_wafer)
-    prod = product.replace("ML_TABLE_", "").strip()
-    db_root = _db_base()
-    if source == "fab":
-        lf = scan_long_fab(prod, db_root); pivot = pivot_fab_wide
-    elif source == "inline":
-        lf = scan_long_inline(prod, db_root); pivot = pivot_inline_wafer
-    elif source == "et":
-        lf = scan_long_et(prod, db_root); pivot = pivot_et_wafer
-    else:
-        raise HTTPException(400, "source must be fab|inline|et")
+    src = _long_pivot_source(source)
+    prod = _long_pivot_product(product)
+    lf = _scan_long_pivot_source(src, prod)
     if lf is None:
-        return {"source": source, "product": prod, "rows": [], "columns": [],
-                "note": "원천 hive 경로 미존재"}
-    wide = pivot(lf).head(limit)
+        return {
+            "source": src,
+            "product": prod,
+            "rows": [],
+            "columns": [],
+            "note": "원천 hive 경로 미존재",
+            "pivot_cache": _long_pivot_cache_public(_long_pivot_cache_status(src, prod)),
+        }
+    status = _long_pivot_cache_status(src, prod)
+    if status.get("status") == "fresh":
+        try:
+            limit = max(1, min(500, int(limit or 20)))
+        except Exception:
+            limit = 20
+        wide = pl.scan_parquet(status["cache_path"]).head(limit).collect()
+        return {
+            "source": src,
+            "product": prod,
+            "columns": wide.columns,
+            "rows": wide.to_dicts(),
+            "total_preview": wide.height,
+            "pivot_cache": _long_pivot_cache_public(status),
+        }
+    queued = enqueue_long_pivot_cache(src, prod, force=False)
     return {
-        "source": source, "product": prod,
-        "columns": wide.columns,
-        "rows": wide.to_dicts(),
-        "total_preview": wide.height,
+        "source": src,
+        "product": prod,
+        "columns": [],
+        "rows": [],
+        "total_preview": 0,
+        "note": "Pivot cache is preparing in the background.",
+        "pivot_cache": _long_pivot_cache_public(status, queued),
     }
 
 
@@ -8769,13 +9070,14 @@ def _split_view_large_root_cache_or_defer(
     view_cache_key: tuple,
     prefix: str,
     history_mode: str,
+    force_defer_raw_fallback: bool = False,
 ) -> tuple[Any | None, dict | None]:
     root = str(root_lot_id or "").strip()
     if not root or fp.suffix.lower() != ".parquet":
         return None, None
     if _product_ram_cache_entry(product):
         return None, None
-    if not _split_view_should_defer_raw_fallback(fp):
+    if not force_defer_raw_fallback and not _split_view_should_defer_raw_fallback(fp):
         return None, None
     status = _ml_table_lookup.cache_status(fp)
     runtime_profile["root_cache_status"] = status.get("status") or ""
@@ -8883,6 +9185,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                fab_lot_id: str = Query(""),
                custom_cols: str = Query(""),
                include_related: bool = Query(False),
+               cache_first: bool = Query(False),
                request: Request = None):
     # v8.8.33: custom_cols (쉼표 구분) 추가 — Save 없이 체크만 한 컬럼을 ad-hoc 으로 전달.
     # v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다. FAB 공정 진행 중
@@ -8899,6 +9202,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     _history_mode = (history_mode or "all").strip().lower() or "all"
     if _history_mode not in ("all", "final", "lot_all"):
         raise HTTPException(400, "history_mode must be one of: all, final, lot_all")
+    cache_first_enabled = _truthy_value(cache_first)
     _audit_split_view_search(request, product, root_lot_id, fab_lot_id, wafer_ids, prefix)
     _lot_warn = ""
     fp = _product_path(product)
@@ -8918,6 +9222,17 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             payload_cache_hit=True,
             view_cache_key=view_cache_key,
         )
+    if not root_lot_id.strip() and not fab_lot_id.strip():
+        return _split_view_finish_payload(
+            {"product": product, "lot_col": "root_lot_id", "wf_col": "wafer_id",
+             "headers": [], "rows": [], "prefixes": _load_prefixes(),
+             "product_cache": _product_ram_cache_response_meta(product),
+             "msg": "Enter a Root Lot ID or Fab Lot ID to view"},
+            started=started,
+            runtime_profile=runtime_profile,
+            payload_cache_hit=False,
+            view_cache_key=view_cache_key,
+        )
     try:
         base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
             product,
@@ -8929,6 +9244,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             view_cache_key=view_cache_key,
             prefix=prefix,
             history_mode=_history_mode,
+            force_defer_raw_fallback=cache_first_enabled,
         )
         if deferred_payload is not None:
             return deferred_payload
@@ -8958,18 +9274,6 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         break
         except Exception:
             pass
-
-        if not root_lot_id.strip() and not fab_lot_id.strip():
-            return _split_view_finish_payload(
-                {"product": product, "lot_col": lot_col, "wf_col": wf_col,
-                 "headers": [], "rows": [], "prefixes": _load_prefixes(),
-                 "product_cache": _product_ram_cache_response_meta(product),
-                 "msg": "Enter a Root Lot ID or Fab Lot ID to view"},
-                started=started,
-                runtime_profile=runtime_profile,
-                payload_cache_hit=False,
-                view_cache_key=view_cache_key,
-            )
 
         fab_scope = {}
         fab_filter_for_join = fab_lot_id

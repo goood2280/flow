@@ -822,6 +822,7 @@ export default function My_SplitTable({user}){
     const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
     const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
     let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
+    if(lotId.trim())url+="&cache_first=1";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
     if(effectiveCustomMode&&effectiveCustomCols.length>0)url+="&custom_cols="+encodeURIComponent(effectiveCustomCols.join(","));

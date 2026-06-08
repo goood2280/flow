@@ -57,6 +57,10 @@ META_ONLY_PATHS = (
     "/api/filebrowser/root-parquet-view",
 )
 
+CACHE_FIRST_LIGHT_PATHS = (
+    "/api/splittable/view",
+)
+
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     try:
@@ -136,6 +140,8 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         if _matches(path, self._light_paths):
             return True
         if path in META_ONLY_PATHS and _truthy(request.query_params.get("meta_only")):
+            return True
+        if path in CACHE_FIRST_LIGHT_PATHS and _truthy(request.query_params.get("cache_first")):
             return True
         return False
 

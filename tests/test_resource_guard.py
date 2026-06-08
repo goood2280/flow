@@ -37,6 +37,43 @@ def test_flowi_verify_and_workflow_catalog_are_default_light_paths(monkeypatch):
     assert not resource_guard._matches("/api/llm/flowi/chat", paths)
 
 
+def test_splittable_view_cache_first_bypasses_heavy_middleware(monkeypatch):
+    monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
+    monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 12.0, "process_memory_over_limit": True},
+    )
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+    calls = {"plain": 0, "cache_first": 0}
+
+    @app.get("/api/splittable/view")
+    def splittable_view(cache_first: int = 0):
+        if cache_first:
+            calls["cache_first"] += 1
+        else:
+            calls["plain"] += 1
+        return {"ok": True, "cache_first": bool(cache_first)}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    plain = client.get("/api/splittable/view?product=ML_TABLE_PRODA&root_lot_id=A1000")
+    cache_first = client.get("/api/splittable/view?product=ML_TABLE_PRODA&root_lot_id=A1000&cache_first=1")
+
+    assert plain.status_code == 503
+    assert plain.json()["error_code"] == "resource_memory_guard"
+    assert cache_first.status_code == 200
+    assert cache_first.json() == {"ok": True, "cache_first": True}
+    assert calls == {"plain": 0, "cache_first": 1}
+    assert "X-Flow-Heavy-Request-Concurrency" not in cache_first.headers
+
+
 def test_flowi_verify_and_workflow_catalog_bypass_heavy_middleware(monkeypatch):
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
     monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
