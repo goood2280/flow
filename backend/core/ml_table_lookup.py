@@ -35,6 +35,8 @@ MAX_RESULT_ROWS = 25
 LOOKUP_CACHE_DIRNAME = "ml_table_lookup"
 META_FILE = "_meta.json"
 BUILD_LOCK_STALE_SECONDS = 30 * 60
+LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT = 5.0
+LOOKUP_CACHE_PARTITION_MAX_ROWS_DEFAULT = 250_000
 LATEST_LOT_BY_ROOT_WAFER_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
@@ -62,6 +64,9 @@ _BUILD_QUEUE: deque[Path] = deque()
 _BUILD_THREAD: threading.Thread | None = None
 _BUILD_STATE: dict[str, Any] = {
     "running": False,
+    "paused": False,
+    "pause_reason": "",
+    "resource_snapshot": {},
     "queued": [],
     "current": "",
     "started_at": "",
@@ -1321,6 +1326,68 @@ def _normalize_root_expr(root_col: str) -> pl.Expr:
     return pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
 
 
+def _lookup_cache_memory_wait_seconds() -> float:
+    return _env_float("FLOW_ML_TABLE_LOOKUP_CACHE_MEMORY_WAIT_SECONDS", LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT, 0.0, 300.0)
+
+
+def _lookup_cache_partition_max_rows() -> int:
+    return _env_int(
+        "FLOW_ML_TABLE_LOOKUP_CACHE_MAX_ROWS_PER_FILE",
+        LOOKUP_CACHE_PARTITION_MAX_ROWS_DEFAULT,
+        10_000,
+        2_000_000,
+    )
+
+
+def _wait_for_lookup_cache_memory(fp: Path) -> None:
+    while process_memory_high():
+        snapshot = process_memory_snapshot()
+        with _BUILD_LOCK:
+            _BUILD_STATE["paused"] = True
+            _BUILD_STATE["pause_reason"] = "memory_high"
+            _BUILD_STATE["resource_snapshot"] = snapshot
+        logger.info("ML_TABLE lookup cache build paused by memory guard source=%s snapshot=%s", fp, snapshot)
+        time.sleep(_lookup_cache_memory_wait_seconds())
+    with _BUILD_LOCK:
+        _BUILD_STATE["paused"] = False
+        _BUILD_STATE["pause_reason"] = ""
+        _BUILD_STATE["resource_snapshot"] = {}
+
+
+def _sink_lookup_cache_partitions(lf: pl.LazyFrame, tmp_dir: Path) -> None:
+    sink_target = pl.PartitionBy(
+        tmp_dir,
+        key="root_lot_id",
+        include_key=True,
+        max_rows_per_file=_lookup_cache_partition_max_rows(),
+        approximate_bytes_per_file="auto",
+    )
+    lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+
+
+def _parquet_row_count(fp: Path) -> int:
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+
+        return int(pq.ParquetFile(str(fp)).metadata.num_rows)
+    except Exception:
+        return int(pl.read_parquet(str(fp), columns=[]).height)
+
+
+def _lookup_cache_written_stats(cache_dir: Path) -> tuple[int, int]:
+    row_count = 0
+    roots: set[str] = set()
+    for fp in _partition_files(cache_dir):
+        row_count += _parquet_row_count(fp)
+        for part in fp.parts:
+            if str(part).startswith("root_lot_id="):
+                root = str(part).split("=", 1)[1].strip()
+                if root:
+                    roots.add(root.upper())
+                break
+    return row_count, len(roots)
+
+
 def _build_lookup_cache(fp: Path) -> dict[str, Any]:
     fp = Path(fp).resolve()
     started = time.monotonic()
@@ -1339,21 +1406,26 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
     else:
         lf = lf.with_columns(_normalize_root_expr("root_lot_id").alias("root_lot_id"))
     lf = lf.filter(pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != ""))
-    df = lf.collect()
+    final_schema_obj = lf.collect_schema()
+    final_cols = list(final_schema_obj.names())
+    final_schema = {c: str(final_schema_obj[c]) for c in final_cols}
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(tmp_dir, partition_by="root_lot_id", mkdir=True)
+    try:
+        _sink_lookup_cache_partitions(lf, tmp_dir)
+    except Exception:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        raise
     if cdir.exists():
         shutil.rmtree(cdir)
     tmp_dir.replace(cdir)
-    final_cols = list(df.columns)
-    final_schema = {c: str(df.schema[c]) for c in final_cols}
-    root_count = int(df.select(pl.col("root_lot_id").n_unique()).item()) if df.height else 0
+    row_count, root_count = _lookup_cache_written_stats(cdir)
     meta = {
         "version": CACHE_VERSION,
         **_source_sig(fp),
-        "row_count": int(df.height),
+        "row_count": row_count,
         "total_cols": len(final_cols),
         "root_lot_id_count": root_count,
         "root_col": "root_lot_id",
@@ -1401,14 +1473,22 @@ def _worker_loop() -> None:
         with _BUILD_LOCK:
             if not _BUILD_QUEUE:
                 _BUILD_STATE["running"] = False
+                _BUILD_STATE["paused"] = False
+                _BUILD_STATE["pause_reason"] = ""
+                _BUILD_STATE["resource_snapshot"] = {}
                 _BUILD_STATE["current"] = ""
                 return
             fp = _BUILD_QUEUE.popleft()
             _BUILD_STATE["running"] = True
+            _BUILD_STATE["paused"] = False
+            _BUILD_STATE["pause_reason"] = ""
+            _BUILD_STATE["resource_snapshot"] = {}
             _BUILD_STATE["current"] = str(fp.resolve())
             _BUILD_STATE["started_at"] = _utc_now()
             _BUILD_STATE["last_error"] = ""
         try:
+            if cache_status(fp).get("status") != "fresh":
+                _wait_for_lookup_cache_memory(fp)
             build_lookup_cache(fp, force=False)
             with _BUILD_LOCK:
                 _BUILD_STATE["last_source"] = str(fp.resolve())
@@ -1419,6 +1499,9 @@ def _worker_loop() -> None:
                 _BUILD_STATE["last_error"] = str(exc)
                 _BUILD_STATE["last_source"] = str(fp.resolve())
                 _BUILD_STATE["finished_at"] = _utc_now()
+                _BUILD_STATE["paused"] = False
+                _BUILD_STATE["pause_reason"] = ""
+                _BUILD_STATE["resource_snapshot"] = {}
 
 
 def enqueue_build(fp: Path) -> dict[str, Any]:

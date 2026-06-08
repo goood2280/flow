@@ -1288,6 +1288,80 @@ def test_view_cache_first_lookup_cache_miss_returns_preparing_without_raw_scan(t
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
+def test_lookup_cache_build_uses_lazy_partition_sink(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1000", "B2000"],
+        "wafer_id": ["1", "2", "1"],
+        "KNOB_GATE": ["R1", "R2", "R3"],
+    }).write_parquet(fp)
+    calls = []
+    original_collect = ml_table_lookup.pl.LazyFrame.collect
+
+    def guarded_collect(self, *args, **kwargs):
+        import inspect
+
+        if any(frame.function == "sink_parquet" for frame in inspect.stack()):
+            return original_collect(self, *args, **kwargs)
+        raise AssertionError("lookup cache build should not bulk collect")
+
+    monkeypatch.setattr(ml_table_lookup.pl.LazyFrame, "collect", guarded_collect)
+    original_sink_parquet = ml_table_lookup.pl.LazyFrame.sink_parquet
+
+    def spy_sink_parquet(self, path, *args, **kwargs):
+        calls.append((path, kwargs))
+        return original_sink_parquet(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(ml_table_lookup.pl.LazyFrame, "sink_parquet", spy_sink_parquet)
+
+    result = ml_table_lookup.build_lookup_cache(fp, force=True)
+
+    assert calls
+    assert result["meta"]["row_count"] == 3
+    assert result["meta"]["root_lot_id_count"] == 2
+    assert (tmp_path / "lookup_cache" / "ML_TABLE_PRODA" / "root_lot_id=A1000").is_dir()
+
+
+def test_lookup_cache_worker_waits_for_memory_guard_before_build(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    fp.write_bytes(b"placeholder")
+    events = []
+
+    def memory_high():
+        events.append("memory")
+        return events.count("memory") == 1
+
+    def sleep(seconds):
+        events.append(("sleep", seconds))
+
+    def build(path, *, force=False):
+        events.append("build")
+        assert Path(path) == fp.resolve()
+        assert force is False
+        return {"ok": True}
+
+    monkeypatch.setattr(ml_table_lookup, "process_memory_high", memory_high)
+    monkeypatch.setattr(ml_table_lookup, "_lookup_cache_memory_wait_seconds", lambda: 0, raising=False)
+    monkeypatch.setattr(ml_table_lookup.time, "sleep", sleep)
+    monkeypatch.setattr(ml_table_lookup, "build_lookup_cache", build)
+    with ml_table_lookup._BUILD_LOCK:
+        ml_table_lookup._BUILD_QUEUE.clear()
+        ml_table_lookup._BUILD_QUEUE.append(fp.resolve())
+        ml_table_lookup._BUILD_STATE.update({
+            "running": False,
+            "current": "",
+            "last_error": "",
+            "last_source": "",
+        })
+
+    ml_table_lookup._worker_loop()
+
+    assert events == ["memory", ("sleep", 0), "memory", "build"]
+
+
 def test_lookup_cache_worker_skips_when_cache_is_already_fresh(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
