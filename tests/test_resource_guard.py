@@ -37,7 +37,7 @@ def test_flowi_verify_and_workflow_catalog_are_default_light_paths(monkeypatch):
     assert not resource_guard._matches("/api/llm/flowi/chat", paths)
 
 
-def test_splittable_view_cache_first_bypasses_heavy_middleware(monkeypatch):
+def test_splittable_view_cache_first_uses_heavy_middleware(monkeypatch):
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
     monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
     monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
@@ -68,10 +68,9 @@ def test_splittable_view_cache_first_bypasses_heavy_middleware(monkeypatch):
 
     assert plain.status_code == 503
     assert plain.json()["error_code"] == "resource_memory_guard"
-    assert cache_first.status_code == 200
-    assert cache_first.json() == {"ok": True, "cache_first": True}
-    assert calls == {"plain": 0, "cache_first": 1}
-    assert "X-Flow-Heavy-Request-Concurrency" not in cache_first.headers
+    assert cache_first.status_code == 503
+    assert cache_first.json()["error_code"] == "resource_memory_guard"
+    assert calls == {"plain": 0, "cache_first": 0}
 
 
 def test_flowi_verify_and_workflow_catalog_bypass_heavy_middleware(monkeypatch):

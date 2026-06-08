@@ -8157,6 +8157,7 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         return _lot_lookup_cache_set(cache_key, payload)
 
     try:
+        lookup_meta = {}
         if str(col or "").casefold() == "root_lot_id":
             lookup = _root_lot_lookup_cache_candidates(product, prefix=prefix, limit=limit)
             if lookup is not None:
@@ -8183,13 +8184,7 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
                     not lookup.get("has_cache") or lookup.get("source_stale")
                 ):
                     queued = _ml_table_lookup.enqueue_build(source_fp)
-                    return {
-                        "candidates": [],
-                        "source_col": "root_lot_id",
-                        "root_ids": [],
-                        "match_mode": "lookup_cache_preparing",
-                        "lookup_cache": _lookup_cache_public_meta(lookup, queued),
-                    }
+                    lookup_meta = _lookup_cache_public_meta(lookup, queued)
         lf = _scan_product_base(product)
         schema_names = lf.collect_schema().names()
         lot_col, _ = _detect_lot_wafer(lf, product)
@@ -8216,7 +8211,12 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         preview_only = not bool(root_scope) and str(col or "").casefold() != "root_lot_id"
         values = _limited_unique_values(lf, target, prefix=prefix, limit=limit,
                                         preview_only=preview_only)
-        return finish({"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []})
+        payload = {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
+        if str(col or "").casefold() == "root_lot_id":
+            payload["match_mode"] = "splittable_roots"
+            if lookup_meta:
+                payload["lookup_cache"] = lookup_meta
+        return finish(payload)
     except Exception as e:
         logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
                        product, col, type(e).__name__, e)
@@ -8396,6 +8396,7 @@ def _scan_product(
 @router.get("/lot-ids")
 def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     lookup = _root_lot_lookup_cache_candidates(product, prefix="", limit=limit)
+    lookup_meta = _lookup_cache_public_meta(lookup) if lookup is not None else {}
     if lookup is not None and lookup.get("candidates"):
         lots_list = _merge_candidate_values(lookup.get("candidates") or [], limit=limit)
         fab_source = ""
@@ -8418,7 +8419,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
             "lot_ids": lots_list,
             "fallback": "",
             "fab_source": fab_source,
-            "lookup_cache": _lookup_cache_public_meta(lookup),
+            "lookup_cache": lookup_meta,
         }
     if lookup is not None:
         source_fp = lookup.get("source_fp")
@@ -8426,13 +8427,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
             not lookup.get("has_cache") or lookup.get("source_stale")
         ):
             queued = _ml_table_lookup.enqueue_build(source_fp)
-            return {
-                "lot_col": "root_lot_id",
-                "lot_ids": [],
-                "fallback": "lookup_cache_preparing",
-                "fab_source": "",
-                "lookup_cache": _lookup_cache_public_meta(lookup, queued),
-            }
+            lookup_meta = _lookup_cache_public_meta(lookup, queued)
     lf = _scan_product(product)
     lot_col, _ = _detect_lot_wafer(lf)
     lots_list: list = []
@@ -8486,7 +8481,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     return {"lot_col": lot_col, "lot_ids": lots_list,
             "fallback": "fab_source" if fallback_used else "",
             "fab_source": fab_source,
-            "lookup_cache": _lookup_cache_public_meta(lookup)}
+            "lookup_cache": lookup_meta}
 
 
 @router.get("/lot-candidates")
@@ -8513,18 +8508,6 @@ def get_lot_candidates(
         hist = _fab_history_root_candidates(product, prefix=prefix, limit=limit)
         main_candidates = main.get("candidates") or []
         hist_candidates = hist.get("candidates") or []
-        if not main_candidates and main.get("match_mode") == "lookup_cache_preparing":
-            return {
-                "col": "root_lot_id",
-                "candidates": [],
-                "prefix": prefix,
-                "root_scope": root_scope,
-                "match_mode": "lookup_cache_preparing",
-                "source": "mltable",
-                "fab_source": hist.get("source", ""),
-                "lookup_cache": main.get("lookup_cache") or {},
-                "strict": False,
-            }
         if main_candidates:
             main_keys = {str(v).upper() for v in main_candidates}
             hist_candidates = [v for v in hist_candidates if str(v).upper() in main_keys]
@@ -8574,7 +8557,9 @@ def get_lot_candidates(
             "candidates": [],
             "prefix": prefix,
             "root_scope": root_scope,
-            "match_mode": main.get("match_mode") or "no_root_lot_candidates",
+            "match_mode": "no_root_lot_candidates"
+                if main.get("match_mode") == "lookup_cache_preparing"
+                else (main.get("match_mode") or "no_root_lot_candidates"),
             "source": "mltable",
             "fab_source": hist.get("source", ""),
             "lookup_cache": main.get("lookup_cache") or fallback.get("lookup_cache") or {},
@@ -9085,19 +9070,7 @@ def _split_view_large_root_cache_or_defer(
         queued = _ml_table_lookup.enqueue_build(fp)
         runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, queued)
         runtime_profile["root_cache_hit"] = False
-        return None, _split_view_cache_preparing_payload(
-            product,
-            root,
-            wafer_ids,
-            prefix,
-            history_mode,
-            status,
-            queued,
-            message="Root lot lookup cache is preparing. Try again after cache build completes.",
-            started=started,
-            runtime_profile=runtime_profile,
-            view_cache_key=view_cache_key,
-        )
+        return None, None
     lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids)
     runtime_profile["root_cache_status"] = status.get("status") or ""
     runtime_profile["root_cache_hit"] = lf is not None

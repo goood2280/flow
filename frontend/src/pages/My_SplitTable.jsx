@@ -36,12 +36,6 @@ const CANDIDATE_SEARCH_LIMIT=120;
 const ROOT_LOT_CACHE_LIMIT_MAX=50000;
 const ROOT_LOT_CACHE_DEFAULT={prefixes:["AZ"],prefix_limit:5000,searched_limit:50};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
-const isLookupCachePreparing=(payload)=>{
-  const mode=String(payload?.match_mode||"");
-  const cache=payload?.lookup_cache||{};
-  const status=String(cache.status||"");
-  return mode==="lookup_cache_preparing" || (!!cache.queued && ["queued","running","missing","stale"].includes(status));
-};
 const normalizeRootLotCacheSettings=(raw={})=>{
   const src=raw&&typeof raw==="object"?raw:{};
   const prefixRaw=Array.isArray(src.prefixes)?src.prefixes:String(src.prefixes||"").split(",");
@@ -544,7 +538,6 @@ export default function My_SplitTable({user}){
         if(!isCurrent())return;
         const candidates=normalizeLotList(d.candidates||[]);
         if(candidates.length){setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
-        else if(isLookupCachePreparing(d)){setLotSuggestions([]);setLotSuggestMsg("Root lot cache 준비 중입니다. 잠시 후 다시 검색하세요.");setLotSuggestBusy(false);}
         else fallbackLots();
       })
       .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();}),250);
@@ -822,7 +815,6 @@ export default function My_SplitTable({user}){
     const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
     const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
     let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
-    if(lotId.trim())url+="&cache_first=1";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
     if(effectiveCustomMode&&effectiveCustomCols.length>0)url+="&custom_cols="+encodeURIComponent(effectiveCustomCols.join(","));

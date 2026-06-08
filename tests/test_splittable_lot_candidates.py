@@ -292,26 +292,29 @@ def test_lot_ids_use_lookup_cache_without_raw_scan(tmp_path, monkeypatch):
     assert result["lookup_cache"]["has_cache"] is True
 
 
-def test_root_lot_candidates_large_missing_lookup_cache_returns_preparing(tmp_path, monkeypatch):
+def test_root_lot_candidates_large_missing_lookup_cache_uses_raw_fallback(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
-        "root_lot_id": ["A1000"],
-        "wafer_id": ["1"],
-        "KNOB_GATE": ["R1"],
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "1"],
+        "KNOB_GATE": ["R1", "R2"],
     }).write_parquet(fp)
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
     monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
     monkeypatch.setattr(splittable, "_fab_history_root_candidates", lambda *args, **kwargs: {"candidates": [], "source": ""})
     calls = []
     monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda path: calls.append(Path(path)) or {"ok": True, "status": "queued"})
+    raw_calls = []
+    original_scan = splittable._scan_parquet_compat
 
-    def fail_raw_scan(*_args, **_kwargs):
-        raise AssertionError("large missing lookup cache should not fall back to raw parquet for root candidates")
+    def spy_raw_scan(source, **kwargs):
+        raw_calls.append(Path(str(source)))
+        return original_scan(source, **kwargs)
 
-    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_raw_scan)
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", spy_raw_scan)
 
     result = splittable.get_lot_candidates(
         product="ML_TABLE_PRODA",
@@ -322,10 +325,11 @@ def test_root_lot_candidates_large_missing_lookup_cache_returns_preparing(tmp_pa
         root_lot_id="",
     )
 
-    assert result["candidates"] == []
-    assert result["match_mode"] == "lookup_cache_preparing"
+    assert result["candidates"] == ["A1000"]
+    assert result["match_mode"] == "splittable_roots"
     assert result["lookup_cache"]["queued"] is True
     assert calls and calls[0] == fp
+    assert raw_calls and raw_calls[0] == fp
 
 
 def test_root_lot_candidates_small_missing_lookup_cache_uses_raw_fallback(tmp_path, monkeypatch):
@@ -354,7 +358,7 @@ def test_root_lot_candidates_small_missing_lookup_cache_uses_raw_fallback(tmp_pa
     assert result["candidates"] == ["A1000"]
 
 
-def test_root_lot_candidate_preparing_result_does_not_hide_later_fresh_cache(tmp_path, monkeypatch):
+def test_root_lot_candidate_raw_fallback_result_does_not_hide_later_fresh_cache(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
@@ -392,7 +396,9 @@ def test_root_lot_candidate_preparing_result_does_not_hide_later_fresh_cache(tmp
         root_lot_id="",
     )
 
-    assert first["match_mode"] == "lookup_cache_preparing"
+    assert first["match_mode"] == "splittable_roots"
+    assert first["candidates"] == ["A1000"]
+    assert first["lookup_cache"]["queued"] is True
     assert second["match_mode"] == "lookup_cache_roots"
     assert second["candidates"] == ["A1000"]
 
@@ -1197,7 +1203,7 @@ def test_split_view_root_lookup_enqueues_partition_cache_when_missing(tmp_path, 
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
-def test_view_large_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_path, monkeypatch):
+def test_view_large_lookup_cache_miss_uses_raw_fallback(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_RAW_FALLBACK_MAX_MB", "0")
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
@@ -1218,11 +1224,14 @@ def test_view_large_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_pat
     monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
     calls = []
     monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
+    raw_calls = []
+    original_scan = splittable._scan_parquet_compat
 
-    def fail_raw_scan(*_args, **_kwargs):
-        raise AssertionError("large missing lookup cache should not fall back to raw parquet for /view")
+    def spy_raw_scan(source, **kwargs):
+        raw_calls.append(Path(str(source)))
+        return original_scan(source, **kwargs)
 
-    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_raw_scan)
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", spy_raw_scan)
 
     view = splittable.view_split(
         product="ML_TABLE_PRODA",
@@ -1236,14 +1245,15 @@ def test_view_large_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_pat
         custom_cols="",
     )
 
-    assert view["rows"] == []
+    assert view["rows"]
     assert view["lookup_cache"]["queued"] is True
     assert view["lookup_cache"]["status"] == "queued"
     assert view["runtime_profile"]["root_cache_hit"] is False
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+    assert raw_calls and raw_calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
-def test_view_cache_first_lookup_cache_miss_returns_preparing_without_raw_scan(tmp_path, monkeypatch):
+def test_view_cache_first_lookup_cache_miss_uses_raw_fallback(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
     pl.DataFrame({
@@ -1263,11 +1273,14 @@ def test_view_cache_first_lookup_cache_miss_returns_preparing_without_raw_scan(t
     monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
     calls = []
     monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda fp: calls.append(Path(fp)) or {"ok": True, "status": "queued"})
+    raw_calls = []
+    original_scan = splittable._scan_parquet_compat
 
-    def fail_raw_scan(*_args, **_kwargs):
-        raise AssertionError("cache_first /view should not raw-scan when lookup cache is missing")
+    def spy_raw_scan(source, **kwargs):
+        raw_calls.append(Path(str(source)))
+        return original_scan(source, **kwargs)
 
-    monkeypatch.setattr(splittable, "_scan_parquet_compat", fail_raw_scan)
+    monkeypatch.setattr(splittable, "_scan_parquet_compat", spy_raw_scan)
 
     view = splittable.view_split(
         product="ML_TABLE_PRODA",
@@ -1282,10 +1295,11 @@ def test_view_cache_first_lookup_cache_miss_returns_preparing_without_raw_scan(t
         cache_first=True,
     )
 
-    assert view["rows"] == []
+    assert view["rows"]
     assert view["lookup_cache"]["queued"] is True
     assert view["lookup_cache"]["status"] == "queued"
     assert calls and calls[0].name == "ML_TABLE_PRODA.parquet"
+    assert raw_calls and raw_calls[0].name == "ML_TABLE_PRODA.parquet"
 
 
 def test_lookup_cache_build_uses_lazy_partition_sink(tmp_path, monkeypatch):
