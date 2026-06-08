@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Admin backup 범위를 웹 생성 flow-data로 제한
 - (Codex) GitHub main 푸시 전 setup.py 재생성
 - (Codex) SplitTable lookup cache build streaming/serial memory guard
 - (Codex) SplitTable cache-first 조회와 long pivot background cache로 메모리 보호 오탐 완화

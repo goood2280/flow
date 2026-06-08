@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from core import auth as auth_core, backup, mail  # noqa: E402
+from core import auth as auth_core, backup, mail, roots  # noqa: E402
 from routers import admin, auth as auth_router  # noqa: E402
 
 
@@ -22,6 +22,18 @@ def test_backup_override_path_still_wins(monkeypatch, tmp_path):
     monkeypatch.setattr(backup, "get_settings", lambda: {"path": str(override)})
 
     assert backup._resolve_backup_root() == override
+
+
+def test_backup_sources_only_include_flow_data(monkeypatch, tmp_path):
+    flow_data = tmp_path / "flow-data"
+    base_root = tmp_path / "Base"
+    flow_data.mkdir()
+    base_root.mkdir()
+
+    monkeypatch.setattr(backup.PATHS, "data_root", flow_data)
+    monkeypatch.setattr(roots, "get_base_root", lambda: base_root)
+
+    assert backup._collect_sources() == [(flow_data.resolve(), "")]
 
 
 def test_admin_reset_password_emails_domain_address(monkeypatch):

@@ -102,9 +102,11 @@ curl http://localhost:8080/runtime-roots.json
 /config/work/sharedworkspace/
 ```
 
+백업 대상은 `FLOW_DATA_ROOT` 또는 로컬 fallback `data/flow-data` 아래의 웹 생성 사용자/운영 데이터다. DB/Base/Fab/wafer map 같은 원천 데이터 루트는 백업 zip에 포함하지 않는다.
+
 Admin UI의 `Admin > 백업` 또는 `Admin > 데이터 루트 > 자동 백업`에서 즉시 백업과 롤백을 실행할 수 있다.
 
-롤백은 선택한 zip을 `data_root`로 복원한다. 복원 직전 현재 상태는 자동으로 `pre-restore` 백업으로 한 번 더 저장된다. DB 루트 최상단 파일은 공유 원천 데이터에 영향을 줄 수 있으므로 API 옵션을 명시하지 않으면 복원하지 않는다.
+롤백은 선택한 zip을 `data_root`로 복원한다. 복원 직전 현재 상태는 자동으로 `pre-restore` 백업으로 한 번 더 저장된다. 이전 버전에서 만든 `DB-root-files/` 항목이 들어 있는 zip은 API 옵션을 명시하지 않으면 DB 루트로 복원하지 않는다.
 
 API 예:
 

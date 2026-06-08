@@ -1,8 +1,8 @@
 """core/backup.py v8.8.3 — 데이터 자동 백업 (사용자 기록 보호).
 
 범위 (v8.7.4 재정의):
-  - 가벼운 *사용자 기록* 만 백업. 대용량 DB parquet 는 **제외**.
-  - 포함: data_root (flow-data) 전체 + DB 루트 최상단 CSV 등 가벼운 설정 파일.
+  - 웹에서 생성/관리되는 data_root (flow-data) 사용자 기록만 백업.
+  - DB/Base/Fab/wafer_maps 같은 원천 데이터 루트는 백업하지 않는다.
   - 제외: `*.parquet`, `*.pyc`, `__pycache__`, `_backups`, `cache`, `tmp`, `node_modules`.
   - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
   - 백업 경로: admin_settings.json `backup.path` (없으면 /config/work/sharedworkspace).
@@ -29,7 +29,7 @@ logger = logging.getLogger("flow.backup")
 _PROD_SHARED = Path("/config/work/sharedworkspace")
 _DEFAULT_BACKUP_ROOT = _PROD_SHARED
 
-# 제외 규칙 — 큰 바이너리/휘발성/tmp/파이썬 캐시.  logs/uploads 는 **포함**.
+# 제외 규칙 — 파생 parquet/cache/tmp/파이썬 캐시.  logs/uploads 는 **포함**.
 _EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules"}
 _EXCLUDE_GLOBS = ("*.pyc", "*.parquet")
 
@@ -155,24 +155,8 @@ def _collect_sources() -> List[Tuple[Path, str]]:
                 pass
         srcs.append((rp, prefix))
 
-    # 1) data_root (flow-data) — 사용자 기록 메인
+    # data_root (flow-data) — 웹 앱이 생성/관리하는 사용자 기록만 백업한다.
     _add(PATHS.data_root, "")
-
-    # 2) DB 루트 최상단 단일 파일 — admin 이 편집하는 CSV 들.
-    #    parquet 는 _EXCLUDE_GLOBS 로 자동 제외.
-    base_path: Optional[Path] = None
-    try:
-        from core.roots import get_base_root as _br  # type: ignore
-        p = Path(_br())
-        if p.is_dir():
-            base_path = p
-    except Exception:
-        pass
-    if base_path is None:
-        base_path = None
-    if base_path is not None:
-        _add(base_path, "DB-root-files/")
-
     return srcs
 
 
