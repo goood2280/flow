@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) GitHub main 푸시 전 setup.py 재생성
 - (Codex) SplitTable lookup cache build streaming/serial memory guard
 - (Codex) SplitTable cache-first 조회와 long pivot background cache로 메모리 보호 오탐 완화
 - (Codex) Flow-i workflow template/orchestration guide subtabs
