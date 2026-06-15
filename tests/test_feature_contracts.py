@@ -138,9 +138,10 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "공정/기능 step 정보를 확인하는 요청" in ui
     assert "관련 데이터를 확인하는 요청" in ui
     assert "SplitTable 데이터를 조회해 화면에 바로 보여줄 결과" in ui
-    assert "요청 해석" in ui
     assert "답변 준비 중" in ui
-    assert "FLOWI_LIVE_STEPS" in ui
+    assert "요청 해석" not in ui
+    assert "실행 경로 선택" not in ui
+    assert "FLOWI_LIVE_STEPS" not in ui
     assert "FLOWI_CLIENT_TIMEOUT_MS=105000" in ui
     assert "flowiLiveExecutionLines" not in ui
     assert "예상 조회 경로" not in ui
@@ -167,9 +168,10 @@ def test_home_flowi_split_table_uses_snapshot_renderer_and_collapsed_context():
     assert "function flowiSplitStView" in ui
     assert "<SplitTableSnapshotView" in ui
     assert "return <details" in ui
-    assert "요청 해석 / 진행 방식" in ui
+    assert "function FlowiPlainProgressText" in ui
+    assert "요청 해석 / 진행 방식" not in ui
     assert "<FlowiMarkdown text={result.answer||emptyHint}/>" in ui
-    assert ui.index("<FlowiMarkdown text={result.answer||emptyHint}/>") < ui.index("<FlowiInterpretationSummary")
+    assert ui.index("<FlowiMarkdown text={result.answer||emptyHint}/>") < ui.index("<FlowiPlainProgressText")
     assert ui.index("<FlowiInlineContent") < ui.index("<FlowiDiagnosticsDetails")
 
 
@@ -178,7 +180,8 @@ def test_home_flowi_execution_details_are_collapsed_by_default():
 
     assert "function FlowiDiagnosticsDetails" in ui
     assert "실행 정보" in ui
-    assert "!isClarificationOnly&&<FlowiDiagnosticsDetails" in ui
+    assert "showDiagnostics&&<FlowiDiagnosticsDetails" in ui
+    assert "!isClarificationOnly&&<FlowiDiagnosticsDetails" not in ui
     assert "!isClarificationOnly&&<FlowiExecutionProof" not in ui
     assert "!isClarificationOnly&&<FlowiActionLogPanel" not in ui
     assert "!isClarificationOnly&&isAdmin&&<FlowiTrace" not in ui
@@ -189,7 +192,9 @@ def test_home_flowi_clarification_renders_plain_choice_reply():
 
     assert "isClarificationOnly" in ui
     assert "flowiResultShellStyle" in ui
-    assert "!isClarificationOnly&&<FlowiDiagnosticsDetails" in ui
+    assert "const hasInputControls" in ui
+    assert "const hasResultArtifact" in ui
+    assert "showDiagnostics&&<FlowiDiagnosticsDetails" in ui
 
 
 def test_agent_page_exposes_unit_ai_and_llm_settings():

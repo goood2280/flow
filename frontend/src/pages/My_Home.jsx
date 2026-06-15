@@ -440,25 +440,17 @@ function flowiMethodLine(trace,tool){
   return "";
 }
 
-function FlowiInterpretationSummary({trace,tool,prompt}){
+function FlowiPlainProgressText({trace,tool,prompt}){
   const explicitNotes=Array.isArray(tool?.interpretation_notes)
     ?tool.interpretation_notes.map(x=>String(x||"").trim()).filter(Boolean)
     :[];
   const lines=flowiUniqueLines([...explicitNotes,...flowiPromptProgressLines(prompt,tool,"result"),...flowiInterpretationLines(trace,tool)],5);
   const method=flowiMethodLine(trace,tool);
-  if(!lines.length&&!method)return null;
-  return <details style={{margin:"10px 0 0",border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"'JetBrains Mono',monospace"}}>
-    <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontWeight:900}}>요청 해석 / 진행 방식</summary>
-    {lines.length>0&&<div style={{display:"grid",gap:4,marginBottom:method?8:0}}>
-      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>요청 해석</div>
-      {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.55,color:i===0?"#e5e5e5":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
-    </div>}
-    {method&&<div style={{display:"grid",gap:4}}>
-      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>진행 방식</div>
-      <div style={{fontSize:14,lineHeight:1.55,color:"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{method}</div>
-    </div>
-    }
-  </details>;
+  const all=flowiUniqueLines([...lines,method],5);
+  if(!all.length)return null;
+  return <div style={{marginTop:8,fontSize:14,lineHeight:1.65,color:"#a3a3a3",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>
+    {all.map((line,i)=><div key={i} style={{marginTop:i?2:0,color:i===0?"#d4d4d4":"#a3a3a3"}}>{line}</div>)}
+  </div>;
 }
 
 function flowiResultShellStyle(embedded=false,isClarificationOnly=false){
@@ -487,34 +479,30 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
   const summary=flowiResultSummary(tool,result);
   const actions=flowiResultActions(tool,table,chartResult,onNavigate);
-  // 구조화된 콘텐츠(표/차트/선택지 등)가 없고 답변 텍스트만 있으면 plain text 로 단순 표시.
-  const hasStructured=!!(table||chart||chartResult||tool.split_view
+  const hasResultArtifact=!!(table||chart||chartResult||tool.split_view
     ||(Array.isArray(tool.lot_list)&&tool.lot_list.length)
     ||(Array.isArray(tool.rows)&&tool.rows.length)
     ||(Array.isArray(tool.knobs)&&tool.knobs.length)
     ||(Array.isArray(tool.blocks)&&tool.blocks.length)
     ||tool.sql_draft
-    ||choices.length||hasArgumentChoices||hasMissingFreetext
     ||(walkthrough&&walkthrough.session_id)
     ||(result.proposal&&result.confirm));
-  const isClarificationOnly=!!(choices.length&&!table&&!chart&&!chartResult&&!tool.split_view
-    &&!(Array.isArray(tool.lot_list)&&tool.lot_list.length)
-    &&!(Array.isArray(tool.rows)&&tool.rows.length)
-    &&!(Array.isArray(tool.knobs)&&tool.knobs.length)
-    &&!(Array.isArray(tool.blocks)&&tool.blocks.length)
-    &&!tool.sql_draft
-    &&!hasArgumentChoices&&!hasMissingFreetext
-    &&(tool.needs_input||result.needs_input||String(tool.action||"").startsWith("clarify_")||String(workflow.status||"").startsWith("awaiting")));
-  const plain=!hasStructured&&!!result.answer;
+  const hasInputControls=!!(choices.length||hasArgumentChoices||hasMissingFreetext);
+  const hasMissing=!!((Array.isArray(tool.missing)&&tool.missing.length)||(Array.isArray(result.missing)&&result.missing.length));
+  const isClarificationOnly=!!(!hasResultArtifact
+    &&(hasInputControls||hasMissing||tool.needs_input||result.needs_input||String(tool.action||"").startsWith("clarify_")||String(workflow.status||"").startsWith("awaiting")));
+  const plain=!hasResultArtifact&&!!result.answer;
+  const showDiagnostics=!!(isAdmin&&hasResultArtifact);
   const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices||hasMissingFreetext)
     ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
     :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
-  return(<div style={flowiResultShellStyle(embedded,isClarificationOnly)}>
+  return(<div style={flowiResultShellStyle(embedded,isClarificationOnly||plain)}>
     {!isClarificationOnly&&(!plain||actions.length>0)&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plain?"":summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>}
     <FlowiMarkdown text={result.answer||emptyHint}/>
+    {!isClarificationOnly&&<FlowiPlainProgressText trace={result.trace} tool={tool} prompt={prompt}/>}
     {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
     {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
     {hasMissingFreetext&&<FlowiMissingFreetext fields={missingFreetext} basePrompt={partialPrompt} onChoice={onChoice}/>}
@@ -528,7 +516,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
-    {!isClarificationOnly&&<FlowiDiagnosticsDetails result={result} tool={tool} trace={result.trace} prompt={prompt} isAdmin={isAdmin} plain={plain}/>}
+    {showDiagnostics&&<FlowiDiagnosticsDetails result={result} tool={tool} trace={result.trace} prompt={prompt} isAdmin={isAdmin} plain={plain}/>}
     {!isClarificationOnly&&<FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>}
   </div>);
 }
@@ -554,7 +542,7 @@ function FlowiDiagnosticsDetails({result,tool,trace,prompt,isAdmin=false,plain=f
       {result.run_id&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#151515"}}>run {String(result.run_id).slice(0,22)}</span>}
       {result.runtime_status&&<span style={{color:flowiTraceStatusColor(result.runtime_status)}}>{result.runtime_status}</span>}
     </div>}
-    <FlowiInterpretationSummary trace={trace} tool={tool} prompt={prompt}/>
+    <FlowiPlainProgressText trace={trace} tool={tool} prompt={prompt}/>
     <FlowiExecutionProof tool={tool} trace={trace}/>
     <FlowiActionLogPanel actionLog={actionLog} trace={trace}/>
     {hasAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
@@ -845,47 +833,30 @@ function FlowiExecutionProof({tool,trace}){
   </div>;
 }
 
-const FLOWI_LIVE_STEPS=[
-  {key:"interpret",label:"요청 해석",detail:"lot, step, product, 차트/표 의도를 확인합니다."},
-  {key:"route",label:"실행 경로 선택",detail:"권한과 입력값 기준으로 사용할 단위기능을 고릅니다."},
-  {key:"run",label:"단위기능 실행",detail:"FileBrowser, SplitTable, Dashboard 등 read-only 경로를 호출합니다."},
-  {key:"render",label:"출력 정리",detail:"답변, 표/차트, 실행 근거를 화면 응답으로 묶습니다."},
-];
-
 function flowiTraceStatusColor(status){
   return status==="done"||status==="success"?"#22c55e":status==="blocked"||status==="error"||status==="failed"?"#ef4444":status==="skipped"||status==="available"?"#737373":"#f97316";
 }
 
 function FlowiLiveTrace({step=0,elapsed=0,prompt=""}){
   const lines=flowiPromptProgressLines(prompt,{},"live");
-  const activeIndex=Math.max(0,Math.min(step,FLOWI_LIVE_STEPS.length-1));
   const delayed=elapsed>=60;
+  const progressText=elapsed<2
+    ?"질문을 이해하고 있습니다."
+    :elapsed<18
+      ?"필요한 데이터와 단위기능을 확인하고 있습니다."
+      :"답변을 정리하고 있습니다.";
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"9px 10px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"space-between",minWidth:0}}>
       <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
         <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite",flexShrink:0}}/>
         <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5",whiteSpace:"nowrap"}}>답변 준비 중</span>
-        <span style={{fontSize:14,color:"#a3a3a3",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{FLOWI_LIVE_STEPS[activeIndex]?.label}</span>
+        <span style={{fontSize:14,color:"#a3a3a3",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{progressText}</span>
       </div>
       <span style={{fontSize:14,color:delayed?"#fb923c":"#737373",whiteSpace:"nowrap"}}>{elapsed}s / {FLOWI_CLIENT_TIMEOUT_S}s</span>
     </div>
     {lines.length>0&&<div style={{marginTop:7,display:"grid",gap:3}}>
       {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.45,color:i===0?"#d4d4d4":"#8f8f8f",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
     </div>}
-    <div style={{marginTop:8,display:"grid",gap:5}}>
-      {FLOWI_LIVE_STEPS.map((item,i)=>{
-        const done=i<activeIndex;
-        const current=i===activeIndex;
-        const color=done?"#22c55e":current?"#f97316":"#737373";
-        return <div key={item.key} style={{display:"grid",gridTemplateColumns:"18px minmax(82px,126px) minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
-          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10,border:`1px solid ${color}99`,color}}>
-            {done?"✓":current?"•":i+1}
-          </span>
-          <span style={{color:current?"#e5e5e5":"#a3a3a3",fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.label}</span>
-          <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={item.detail}>{item.detail}</span>
-        </div>;
-      })}
-    </div>
     {delayed&&<div style={{marginTop:7,fontSize:14,color:"#fb923c",lineHeight:1.45}}>
       응답이 길어지고 있습니다. 클라이언트는 {FLOWI_CLIENT_TIMEOUT_S}초에서 요청을 중단하고 다시 시도할 수 있게 합니다.
     </div>}
