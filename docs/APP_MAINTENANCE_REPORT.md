@@ -104,7 +104,7 @@ FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 
 | 장치 | 위치 | 역할 |
 |---|---|---|
-| runtime thread 제한 | `backend/core/runtime_limits.py` | small profile 기본 CPU budget 4.5 core, process RSS limit 11.3GB, Polars/Rayon/PyArrow/BLAS thread 수 제한 |
+| runtime thread 제한 | `backend/core/runtime_limits.py` | small profile 기본 CPU budget 4 core, process RSS limit 10GB, Polars/Rayon/PyArrow/BLAS thread 수 제한 |
 | resource guard | `backend/app_v2/runtime/resource_guard.py` | heavy API 기본 순차 처리, CPU/RAM 초과 상태에서 지연 후 429/503 반환 |
 | preview memory cache | `backend/core/filebrowser_cache.py` | 반복 FileBrowser preview/schema 응답을 최대 6GB 기본 메모리 LRU에서 반환, `FLOW_PREVIEW_MEMORY_CACHE_GB=0`으로 비활성화 |
 | heavy background opt-in | `backend/app_v2/runtime/startup.py` | 대형 DB scanner scheduler를 기본 비활성화 |

@@ -1535,6 +1535,49 @@ def test_long_wide_preview_fresh_cache_reads_pivot_file_without_source_scan(tmp_
     assert out["pivot_cache"]["queued"] is False
 
 
+def test_long_wide_preview_guard_skips_source_pivot_when_cache_missing(tmp_path, monkeypatch):
+    from core import long_pivot, runtime_limits
+
+    monkeypatch.setattr(splittable, "_LONG_PIVOT_CACHE_DIR", tmp_path / "long_pivot_cache", raising=False)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    source_dir = tmp_path / "1.RAWDATA_DB_INLINE" / "PRODA" / "date=2026-01-01"
+    source_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "lot_id": ["A1000.1"],
+        "wafer_id": ["1"],
+        "item_id": ["CD"],
+        "value": [99.0],
+    }).write_parquet(source_dir / "raw.parquet")
+    monkeypatch.setattr(runtime_limits, "process_memory_high", lambda reserve_gb=1.0: True)
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 9.2, "process_memory_limit_gb": 10.0},
+    )
+
+    def fail_scan(_product, _db_root):
+        raise AssertionError("guarded cache miss must not scan or pivot source inline")
+
+    monkeypatch.setattr(long_pivot, "scan_long_inline", fail_scan)
+    queued = []
+    monkeypatch.setattr(
+        splittable,
+        "enqueue_long_pivot_cache",
+        lambda source, product, force=False: queued.append((source, product, force))
+        or {"ok": True, "queued": True, "status": "queued"},
+    )
+
+    out = splittable.long_wide_preview(source="inline", product="PRODA", limit=20)
+
+    assert out["rows"] == []
+    assert out["columns"] == []
+    assert out["pivot_cache"]["queued"] is True
+    assert out["pivot_cache"]["status"] == "queued"
+    assert out["resource_guard"]["reason"] == "process_memory_high"
+    assert queued == [("inline", "PRODA", False)]
+
+
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["LOT927AA", "LOT927AA"],

@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) SplitTable CPU 4core/RAM 10GB and concurrent search guard
 - (Codex) flow-data 파일 버전 백업 보관 개수 5개 제한
 - (Codex) SplitTable root lot lookup cache miss raw fallback
 - (Codex) Admin backup 범위를 웹 생성 flow-data로 제한

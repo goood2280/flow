@@ -3434,6 +3434,19 @@ def enqueue_long_pivot_cache(source: str, product: str, *, force: bool = False) 
     return {"ok": True, "queued": True, "status": status, "job": state}
 
 
+def _long_pivot_inline_resource_guard() -> tuple[str, dict]:
+    try:
+        from core import runtime_limits
+        if runtime_limits.process_memory_high():
+            return "process_memory_high", runtime_limits.process_memory_snapshot()
+        cpu = runtime_limits.process_cpu_snapshot()
+        if bool(cpu.get("process_cpu_over_limit")):
+            return "process_cpu_high", cpu
+    except Exception:
+        return "", {}
+    return "", {}
+
+
 # FAB/INLINE/ET datalake 진단 엔드포인트.
 #   FAB 는 wafer 단위 공정이력이고, INLINE/ET 는 item/value 계측 long format 이다.
 #   FAB preview 는 canonical 공정이력 컬럼을 보여주고, INLINE/ET 는 wide pivot sample 을 보여준다.
@@ -3482,6 +3495,19 @@ def long_wide_preview(source: str = Query(..., description="fab|inline|et"),
             "rows": wide.to_dicts(),
             "total_preview": wide.height,
             "pivot_cache": _long_pivot_cache_public(status),
+        }
+    guard_reason, guard_snapshot = _long_pivot_inline_resource_guard()
+    if guard_reason:
+        queued = enqueue_long_pivot_cache(src, prod, force=False) if status.get("source_exists") else {}
+        return {
+            "source": src,
+            "product": prod,
+            "columns": [],
+            "rows": [],
+            "total_preview": 0,
+            "note": "Pivot cache is preparing in the background.",
+            "pivot_cache": _long_pivot_cache_public(status, queued),
+            "resource_guard": {"reason": guard_reason, **guard_snapshot},
         }
     lf = _scan_long_pivot_source(src, prod)
     if lf is None:

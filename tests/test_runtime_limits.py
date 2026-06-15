@@ -12,7 +12,7 @@ if str(ROOT / "backend") not in sys.path:
 from core import runtime_limits  # noqa: E402
 
 
-def test_small_profile_defaults_to_four_point_five_core_budget(monkeypatch):
+def test_small_profile_defaults_to_four_core_ten_gb_budget(monkeypatch):
     monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
     monkeypatch.delenv("FLOW_CPU_BUDGET_CORES", raising=False)
     monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_GB", raising=False)
@@ -21,8 +21,8 @@ def test_small_profile_defaults_to_four_point_five_core_budget(monkeypatch):
     monkeypatch.setattr(runtime_limits, "_cgroup_cpu_quota_cores", lambda: 0.0)
 
     assert runtime_limits.effective_cpu_count() == 5
-    assert runtime_limits.cpu_budget_cores() == 4.5
-    assert runtime_limits.process_memory_limit_gb() == 11.3
+    assert runtime_limits.cpu_budget_cores() == 4.0
+    assert runtime_limits.process_memory_limit_gb() == 10.0
     assert runtime_limits._default_polars_threads() == "4"
 
 
@@ -76,12 +76,29 @@ def test_process_cpu_snapshot_flags_core_budget_overage(monkeypatch):
 
 
 def test_process_memory_high_blocks_at_hard_process_limit(monkeypatch):
-    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "11.3")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
     monkeypatch.setattr(
         runtime_limits,
         "process_memory_snapshot",
         lambda: {
-            "process_rss_gb": 11.31,
+            "process_rss_gb": 10.01,
+            "system_memory_total_gb": 128.0,
+            "system_memory_low": False,
+        },
+    )
+
+    assert runtime_limits.process_memory_high(reserve_gb=1.0) is True
+
+
+def test_small_profile_memory_guard_blocks_before_ten_gb_by_default(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {
+            "process_rss_gb": 9.1,
             "system_memory_total_gb": 128.0,
             "system_memory_low": False,
         },

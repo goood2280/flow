@@ -1,7 +1,7 @@
 """Runtime resource defaults for small Flow deployments.
 
 The default resource profile is intentionally bounded for a shared Flow host.
-Flow should stay inside roughly 4.5 CPU cores and 11.3GB process RSS unless an
+Flow should stay inside roughly 4 CPU cores and 10GB process RSS unless an
 operator explicitly opts into a larger profile.
 
 These defaults should run before importing Polars, NumPy, or other native
@@ -17,8 +17,8 @@ import time
 
 _SMALL_PROFILES = {"", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
-_SMALL_CPU_BUDGET_CORES_DEFAULT = 4.5
-_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 11.3
+_SMALL_CPU_BUDGET_CORES_DEFAULT = 4.0
+_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
 _PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
@@ -423,7 +423,7 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
     rss_high = rss >= max(0.0, limit - max(0.0, reserve_gb))
     if not rss_high:
         return False
-    if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", False):
+    if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", is_small_profile()):
         return True
 
     # The process limit is a soft default for small deployments. On internal
@@ -441,8 +441,7 @@ def _default_polars_threads() -> str:
         return raw
     cores = int(effective_cpu_count())
     budget_threads = int(cpu_budget_cores())
-    # Keep one core free for uvicorn/event loop/OS. On the default small
-    # budget this resolves to 2 Polars threads, including 5-core hosts.
+    # Keep one core free for uvicorn/event loop/OS when host capacity allows it.
     return str(max(1, min(budget_threads, max(1, cores - 1))))
 
 
@@ -454,6 +453,7 @@ def apply_runtime_limits() -> None:
         "FLOW_PROCESS_MEMORY_LIMIT_GB",
         str(_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT) if is_small_profile() else "0",
     )
+    os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_STRICT", "1" if is_small_profile() else "0")
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
     os.environ.setdefault("RAYON_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
     os.environ.setdefault("PYARROW_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))

@@ -31,8 +31,6 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/prefixes",
     "/api/splittable/customs",
     "/api/splittable/schema",
-    "/api/splittable/lot-candidates",
-    "/api/splittable/lot-ids",
     "/api/splittable/ml-table-match",
     "/api/splittable/fab-roots",
     "/api/splittable/knob-meta",

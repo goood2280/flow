@@ -20,7 +20,7 @@ from app_v2.runtime import resource_guard  # noqa: E402
 def _cpu_ok() -> dict:
     return {
         "process_cpu_cores": 0.0,
-        "process_cpu_guard_cores": 4.5,
+        "process_cpu_guard_cores": 4.0,
         "process_cpu_over_limit": False,
     }
 
@@ -71,6 +71,40 @@ def test_splittable_view_cache_first_uses_heavy_middleware(monkeypatch):
     assert cache_first.status_code == 503
     assert cache_first.json()["error_code"] == "resource_memory_guard"
     assert calls == {"plain": 0, "cache_first": 0}
+
+
+def test_splittable_lot_candidate_search_uses_heavy_middleware(monkeypatch):
+    monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
+    monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 9.2, "process_memory_over_limit": False},
+    )
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    assert "/api/splittable/lot-candidates" not in resource_guard._light_paths()
+    assert "/api/splittable/lot-ids" not in resource_guard._light_paths()
+
+    app = FastAPI()
+    called = False
+
+    @app.get("/api/splittable/lot-candidates")
+    def lot_candidates():
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    response = client.get("/api/splittable/lot-candidates?product=ML_TABLE_PRODA&col=root_lot_id")
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "resource_memory_guard"
+    assert called is False
 
 
 def test_flowi_verify_and_workflow_catalog_bypass_heavy_middleware(monkeypatch):
@@ -190,7 +224,7 @@ def test_heavy_request_delays_then_blocks_when_cpu_stays_high(monkeypatch):
         "process_cpu_snapshot",
         lambda guard_cores=None: {
             "process_cpu_cores": 4.6,
-            "process_cpu_guard_cores": 4.5,
+            "process_cpu_guard_cores": 4.0,
             "process_cpu_over_limit": True,
         },
     )
