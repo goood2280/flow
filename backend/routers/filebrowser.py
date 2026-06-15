@@ -85,7 +85,7 @@ BASE_EDIT_ALLOWED_EXTENSIONS = {".csv", ".parquet"}
 BASE_EDIT_HISTORY_DIR = ".history"
 BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads", "cache"}
 BASE_VERSION_DIR = PATHS.data_root / "file_versions"
-BASE_VERSION_CAP = 50
+BASE_VERSION_CAP = 5
 EDM_VERSION_MAX_CSV_BYTES = 5_000_000
 SINGLE_FILE_FOLDER_TEXT_EXTENSIONS = {".json", ".yaml", ".yml", ".md", ".txt"}
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
@@ -3287,7 +3287,7 @@ def _current_base_file_version_info(file: str, target: Path, profile: dict | Non
 
 def _cap_file_versions(vdir: Path) -> None:
     try:
-        metas = sorted(vdir.glob("v*.meta.json"), key=lambda p: p.stat().st_mtime)
+        metas = sorted(vdir.glob("v*.meta.json"), key=lambda p: (p.stat().st_mtime, p.name))
         excess = len(metas) - BASE_VERSION_CAP
         if excess <= 0:
             return

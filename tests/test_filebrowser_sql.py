@@ -3179,6 +3179,46 @@ def test_base_file_versions_report_current_semver_for_content_and_schema_changes
     assert latest_versions["current_profile"]["current_version"] == "v2.1"
 
 
+def test_base_file_versions_keep_only_five_latest_backups(monkeypatch, tmp_path):
+    fp = tmp_path / "lookup.csv"
+    fp.write_text("id,value\n1,initial\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": [],
+        "versioned_single_file_dirs": [],
+        "csv_rules": {},
+    })
+
+    for idx in range(6):
+        filebrowser._save_base_file(
+            filebrowser.BaseFileSaveReq(
+                file="lookup.csv",
+                csv_text=f"id,value\n1,{idx}\n",
+                delimiter="comma",
+                include_header=True,
+                note=f"save {idx}",
+            ),
+            _Request("admin", "admin"),
+        )
+
+    version_dir = tmp_path / "file_versions" / "lookup.csv"
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="lookup.csv")
+
+    assert versions["cap"] == 5
+    assert len(versions["versions"]) == 5
+    assert len(list(version_dir.glob("v*.meta.json"))) == 5
+    assert len([p for p in version_dir.glob("v*.*") if not p.name.endswith(".meta.json")]) == 5
+    assert not (version_dir / "v1.meta.json").exists()
+    assert not (version_dir / "v1.csv").exists()
+    assert (version_dir / "v6.meta.json").is_file()
+    assert (version_dir / "v6.csv").is_file()
+
+
 def test_base_file_versions_use_post_save_profile_to_avoid_duplicate_major(monkeypatch, tmp_path):
     fp = tmp_path / "ppid_knob.csv"
     fp.write_text("product,feature_name\nPRODA,1 AA\n", encoding="utf-8")
