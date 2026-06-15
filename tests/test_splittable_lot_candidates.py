@@ -201,6 +201,54 @@ def test_root_lot_ram_cache_cpu_budget_is_capped_at_two_cores(monkeypatch):
     assert status["cpu_budget_cores"] == 2.0
 
 
+def test_lookup_cache_build_writes_candidate_index(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1001", "A1000"],
+        "wafer_id": ["1", "1", "2"],
+        "KNOB_GATE": ["R1", "R2", "R1"],
+        "MASK_ID": ["M1", "M2", "M1"],
+    }).write_parquet(fp)
+
+    result = ml_table_lookup.build_lookup_cache(fp, force=True)
+    index = ml_table_lookup.read_candidate_index(fp)
+
+    assert result["meta"]["candidate_index"]["has_index"] is True
+    assert index["root_lot_ids"] == ["A1000", "A1001"]
+    assert index["columns_by_prefix"]["KNOB"] == ["KNOB_GATE"]
+
+
+def test_root_lot_candidates_use_candidate_index_without_partition_scan(tmp_path, monkeypatch):
+    _reset_product_ram_cache(monkeypatch)
+    monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "AX2000", "B1000"],
+        "wafer_id": ["1", "1", "1"],
+        "KNOB_GATE": ["R1", "R2", "R3"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_fab_history_root_candidates", lambda *args, **kwargs: {"candidates": [], "source": ""})
+    monkeypatch.setattr(ml_table_lookup, "_partition_files", lambda *args, **kwargs: [])
+
+    result = splittable.get_lot_candidates(
+        product="ML_TABLE_PRODA",
+        col="root_lot_id",
+        prefix="A",
+        limit=10,
+        source="auto",
+        root_lot_id="",
+    )
+
+    assert result["match_mode"] == "lookup_cache_roots"
+    assert result["lookup_cache"]["candidate_index"] is True
+    assert result["candidates"] == ["A1000", "AX2000"]
+
+
 def test_root_lot_candidates_use_lookup_cache_without_raw_scan(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")

@@ -34,6 +34,9 @@ CACHE_VERSION = 1
 MAX_RESULT_ROWS = 25
 LOOKUP_CACHE_DIRNAME = "ml_table_lookup"
 META_FILE = "_meta.json"
+CANDIDATE_INDEX_FILE = "_candidate_index.json"
+CANDIDATE_INDEX_VERSION = 1
+CANDIDATE_COLUMN_PREFIXES = ("KNOB", "MASK", "INLINE", "VM", "TAG", "MGMT")
 BUILD_LOCK_STALE_SECONDS = 30 * 60
 LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT = 5.0
 LOOKUP_CACHE_PARTITION_MAX_ROWS_DEFAULT = 250_000
@@ -1059,6 +1062,10 @@ def meta_path_for(fp: Path) -> Path:
     return cache_dir_for(fp) / META_FILE
 
 
+def candidate_index_path_for(fp: Path) -> Path:
+    return cache_dir_for(fp) / CANDIDATE_INDEX_FILE
+
+
 def _read_meta(fp: Path) -> dict[str, Any]:
     meta_fp = meta_path_for(fp)
     if not meta_fp.is_file():
@@ -1076,6 +1083,25 @@ def _write_meta(fp: Path, meta: dict[str, Any]) -> None:
     tmp = meta_fp.with_suffix(meta_fp.suffix + ".tmp")
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(meta_fp)
+
+
+def read_candidate_index(fp: Path) -> dict[str, Any]:
+    index_fp = candidate_index_path_for(fp)
+    if not index_fp.is_file():
+        return {}
+    try:
+        data = json.loads(index_fp.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_candidate_index(fp: Path, index: dict[str, Any]) -> None:
+    index_fp = candidate_index_path_for(fp)
+    index_fp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = index_fp.with_suffix(index_fp.suffix + ".tmp")
+    tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(index_fp)
 
 
 def _build_lock_path(fp: Path) -> Path:
@@ -1233,6 +1259,104 @@ def _partition_files(cache_dir: Path, root_lot_id: str = "") -> list[Path]:
     return sorted(p for p in cache_dir.rglob("*.parquet") if p.name != META_FILE)
 
 
+def _root_lot_ids_from_cache_dir(cache_dir: Path) -> list[str]:
+    if not cache_dir.is_dir():
+        return []
+    roots: dict[str, str] = {}
+    try:
+        for path in cache_dir.iterdir():
+            if not path.is_dir() or not path.name.startswith("root_lot_id="):
+                continue
+            root = path.name.split("=", 1)[1].strip()
+            if not root:
+                continue
+            roots.setdefault(root.upper(), root)
+    except Exception:
+        return []
+    return [roots[key] for key in sorted(roots)]
+
+
+def _columns_by_candidate_prefix(columns: list[str]) -> dict[str, list[str]]:
+    grouped = {prefix: [] for prefix in CANDIDATE_COLUMN_PREFIXES}
+    for col in columns:
+        text = str(col or "").strip()
+        if not text:
+            continue
+        upper = text.upper()
+        for prefix in CANDIDATE_COLUMN_PREFIXES:
+            if upper.startswith(f"{prefix}_"):
+                grouped[prefix].append(text)
+                break
+    return {prefix: sorted(dict.fromkeys(values), key=lambda s: str(s).upper()) for prefix, values in grouped.items()}
+
+
+def _candidate_index_source_stale(index: dict[str, Any], fp: Path) -> bool:
+    if not index:
+        return True
+    try:
+        sig = _source_sig(fp)
+    except Exception:
+        return True
+    return (
+        str(index.get("source_path") or "") != str(sig["source_path"])
+        or float(index.get("source_mtime") or 0) != float(sig["source_mtime"])
+        or int(index.get("source_size") or -1) != int(sig["source_size"])
+    )
+
+
+def _candidate_index_summary(fp: Path, index: dict[str, Any]) -> dict[str, Any]:
+    columns_by_prefix = index.get("columns_by_prefix") if isinstance(index.get("columns_by_prefix"), dict) else {}
+    return {
+        "has_index": bool(index),
+        "path": str(candidate_index_path_for(fp)),
+        "version": int(index.get("version") or 0) if index else CANDIDATE_INDEX_VERSION,
+        "root_lot_id_count": int(index.get("root_lot_id_count") or len(index.get("root_lot_ids") or [])) if index else 0,
+        "default_prefix": str(index.get("default_prefix") or "KNOB") if index else "KNOB",
+        "knob_column_count": len(columns_by_prefix.get("KNOB") or []),
+    }
+
+
+def _build_candidate_index_from_cache(fp: Path, cache_dir: Path, final_cols: list[str]) -> dict[str, Any]:
+    columns_by_prefix = _columns_by_candidate_prefix(final_cols)
+    default_prefix = "KNOB"
+    if not columns_by_prefix.get(default_prefix):
+        default_prefix = next((prefix for prefix, values in columns_by_prefix.items() if values), "KNOB")
+    roots = _root_lot_ids_from_cache_dir(cache_dir)
+    return {
+        "version": CANDIDATE_INDEX_VERSION,
+        **_source_sig(fp),
+        "built_at": _utc_now(),
+        "root_lot_ids": roots,
+        "root_lot_id_count": len(roots),
+        "columns_by_prefix": columns_by_prefix,
+        "default_prefix": default_prefix,
+    }
+
+
+def _root_lot_candidates_from_index(index: dict[str, Any], prefix: str = "", limit: int = 500) -> list[str]:
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    needle = str(prefix or "").strip().upper()
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in index.get("root_lot_ids") or []:
+        root = str(value or "").strip()
+        if not root:
+            continue
+        root_upper = root.upper()
+        if needle and needle not in root_upper:
+            continue
+        if root_upper in seen:
+            continue
+        seen.add(root_upper)
+        out.append(root)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _meta_source_stale(meta: dict[str, Any], fp: Path) -> bool:
     if not meta:
         return False
@@ -1275,6 +1399,35 @@ def root_lot_candidates_from_lookup_cache(fp: Path, prefix: str = "", limit: int
         limit = max(1, int(limit or 500))
     except Exception:
         limit = 500
+    fp = Path(fp)
+    cdir = cache_dir_for(fp)
+    meta = _read_meta(fp)
+    has_candidate_cache = bool(meta and cdir.is_dir())
+    source_stale = _meta_source_stale(meta, fp) if has_candidate_cache else False
+    job_status = _job_status_for(fp)
+    status_text = "fresh" if has_candidate_cache and not source_stale else ("stale" if has_candidate_cache and source_stale else "missing")
+    if job_status and status_text != "fresh":
+        status_text = job_status
+    out = {
+        "ok": True,
+        "status": status_text,
+        "has_cache": has_candidate_cache,
+        "source_stale": source_stale,
+        "job_status": job_status,
+        "root_lot_id_count": int(meta.get("root_lot_id_count") or 0),
+        "candidate_index": False,
+        "meta": meta,
+        "candidates": [],
+    }
+    if has_candidate_cache and not source_stale:
+        index = read_candidate_index(fp)
+        if index and not _candidate_index_source_stale(index, fp):
+            out["candidate_index"] = True
+            out["root_lot_id_count"] = int(index.get("root_lot_id_count") or len(index.get("root_lot_ids") or []))
+            out["candidate_index_meta"] = _candidate_index_summary(fp, index)
+            out["candidates"] = _root_lot_candidates_from_index(index, prefix=prefix, limit=limit)
+            return out
+
     status = cache_status(fp)
     meta = status.get("meta") or {}
     out = {
@@ -1284,6 +1437,8 @@ def root_lot_candidates_from_lookup_cache(fp: Path, prefix: str = "", limit: int
         "source_stale": bool(status.get("source_stale")),
         "job_status": status.get("job_status") or "",
         "root_lot_id_count": int(meta.get("root_lot_id_count") or 0),
+        "candidate_index": False,
+        "meta": meta,
         "candidates": [],
     }
     if not status.get("has_cache") or status.get("source_stale"):
@@ -1422,6 +1577,8 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         shutil.rmtree(cdir)
     tmp_dir.replace(cdir)
     row_count, root_count = _lookup_cache_written_stats(cdir)
+    candidate_index = _build_candidate_index_from_cache(fp, cdir, final_cols)
+    _write_candidate_index(fp, candidate_index)
     meta = {
         "version": CACHE_VERSION,
         **_source_sig(fp),
@@ -1433,6 +1590,7 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         "schema": final_schema,
         "original_schema": schema,
         "identity_columns": identity_columns(final_cols),
+        "candidate_index": _candidate_index_summary(fp, candidate_index),
         "built_at": _utc_now(),
         "build_seconds": round(time.monotonic() - started, 3),
     }

@@ -835,6 +835,10 @@ def _lookup_cache_public_meta(status: dict | None, queued: dict | None = None) -
         "job_status": status.get("job_status") or "",
         "queued": queued_flag,
         "root_lot_id_count": int(status.get("root_lot_id_count") or meta.get("root_lot_id_count") or 0),
+        "candidate_index": bool(
+            status.get("candidate_index")
+            or (meta.get("candidate_index") or {}).get("has_index")
+        ),
     }
 
 
