@@ -3468,6 +3468,21 @@ def long_wide_preview(source: str = Query(..., description="fab|inline|et"),
     """FAB 공정이력 또는 INLINE/ET pivot 결과 상위 N 행 미리보기."""
     src = _long_pivot_source(source)
     prod = _long_pivot_product(product)
+    try:
+        limit = max(1, min(500, int(limit or 20)))
+    except Exception:
+        limit = 20
+    status = _long_pivot_cache_status(src, prod)
+    if status.get("status") == "fresh":
+        wide = pl.scan_parquet(status["cache_path"]).head(limit).collect()
+        return {
+            "source": src,
+            "product": prod,
+            "columns": wide.columns,
+            "rows": wide.to_dicts(),
+            "total_preview": wide.height,
+            "pivot_cache": _long_pivot_cache_public(status),
+        }
     lf = _scan_long_pivot_source(src, prod)
     if lf is None:
         return {
@@ -3478,31 +3493,31 @@ def long_wide_preview(source: str = Query(..., description="fab|inline|et"),
             "note": "원천 hive 경로 미존재",
             "pivot_cache": _long_pivot_cache_public(_long_pivot_cache_status(src, prod)),
         }
-    status = _long_pivot_cache_status(src, prod)
-    if status.get("status") == "fresh":
-        try:
-            limit = max(1, min(500, int(limit or 20)))
-        except Exception:
-            limit = 20
-        wide = pl.scan_parquet(status["cache_path"]).head(limit).collect()
+    queued = enqueue_long_pivot_cache(src, prod, force=False)
+    pivot = _long_pivot_function(src)
+    wide = None
+    try:
+        wide = pivot(lf)
+        preview = wide.head(limit)
         return {
             "source": src,
             "product": prod,
-            "columns": wide.columns,
-            "rows": wide.to_dicts(),
-            "total_preview": wide.height,
-            "pivot_cache": _long_pivot_cache_public(status),
+            "columns": preview.columns,
+            "rows": preview.to_dicts(),
+            "total_preview": preview.height,
+            "note": "Pivot cache is preparing in the background.",
+            "pivot_cache": _long_pivot_cache_public(status, queued),
         }
-    queued = enqueue_long_pivot_cache(src, prod, force=False)
-    return {
-        "source": src,
-        "product": prod,
-        "columns": [],
-        "rows": [],
-        "total_preview": 0,
-        "note": "Pivot cache is preparing in the background.",
-        "pivot_cache": _long_pivot_cache_public(status, queued),
-    }
+    finally:
+        if wide is not None:
+            try:
+                del wide
+            except Exception:
+                pass
+        try:
+            gc.collect()
+        except Exception:
+            pass
 
 
 @router.get("/features", deprecated=True)

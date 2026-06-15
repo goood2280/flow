@@ -1451,7 +1451,7 @@ def test_view_root_lookup_cache_hit_avoids_raw_parquet_scan(tmp_path, monkeypatc
     assert view["view_cache"]["payload_cache_hit"] is False
 
 
-def test_long_wide_preview_queues_pivot_cache_without_inline_pivoting(tmp_path, monkeypatch):
+def test_long_wide_preview_cache_miss_pivots_source_and_queues_cache(tmp_path, monkeypatch):
     from core import long_pivot
 
     monkeypatch.setattr(splittable, "_LONG_PIVOT_CACHE_DIR", tmp_path / "long_pivot_cache", raising=False)
@@ -1460,26 +1460,79 @@ def test_long_wide_preview_queues_pivot_cache_without_inline_pivoting(tmp_path, 
         long_pivot,
         "scan_long_inline",
         lambda _product, _db_root: pl.DataFrame({
-            "product": ["PRODA"],
-            "root_lot_id": ["A1000"],
-            "lot_id": ["A1000.1"],
-            "wafer_id": ["1"],
-            "item_id": ["CD"],
-            "value": [1.0],
+            "product": ["PRODA", "PRODA"],
+            "root_lot_id": ["A1000", "A1000"],
+            "lot_id": ["A1000.1", "A1000.1"],
+            "wafer_id": ["1", "1"],
+            "item_id": ["CD", "CD"],
+            "value": [1.0, 3.0],
         }).lazy(),
     )
-
-    def fail_pivot(_lf):
-        raise AssertionError("long-wide-preview should queue background pivot work")
-
-    monkeypatch.setattr(long_pivot, "pivot_inline_wafer", fail_pivot)
+    queued = []
+    monkeypatch.setattr(
+        splittable,
+        "enqueue_long_pivot_cache",
+        lambda source, product, force=False: queued.append((source, product, force))
+        or {"ok": True, "queued": True, "status": "queued"},
+    )
 
     out = splittable.long_wide_preview(source="inline", product="PRODA", limit=20)
 
-    assert out["rows"] == []
-    assert out["columns"] == []
+    assert out["rows"]
+    assert "INLINE_CD_MEAN" in out["columns"]
+    assert out["rows"][0]["INLINE_CD_MEAN"] == 2.0
     assert out["pivot_cache"]["queued"] is True
     assert out["pivot_cache"]["status"] == "queued"
+    assert queued == [("inline", "PRODA", False)]
+
+
+def test_long_wide_preview_fresh_cache_reads_pivot_file_without_source_scan(tmp_path, monkeypatch):
+    from core import long_pivot
+
+    monkeypatch.setattr(splittable, "_LONG_PIVOT_CACHE_DIR", tmp_path / "long_pivot_cache", raising=False)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    source_dir = tmp_path / "1.RAWDATA_DB_INLINE" / "PRODA" / "date=2026-01-01"
+    source_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "lot_id": ["A1000.1"],
+        "wafer_id": ["1"],
+        "item_id": ["CD"],
+        "value": [99.0],
+    }).write_parquet(source_dir / "raw.parquet")
+    cache_fp = splittable._long_pivot_cache_path("inline", "PRODA")
+    cache_fp.parent.mkdir(parents=True)
+    wide = pl.DataFrame({
+        "product": ["PRODA"],
+        "root_lot_id": ["A1000"],
+        "lot_id": ["A1000.1"],
+        "wafer_id": ["1"],
+        "INLINE_CD_MEAN": [2.0],
+    })
+    wide.write_parquet(cache_fp)
+    splittable._write_long_pivot_meta("inline", "PRODA", {
+        "version": splittable.LONG_PIVOT_CACHE_VERSION,
+        "source": "inline",
+        "product": "PRODA",
+        "source_signature": splittable._long_pivot_source_signature("inline", "PRODA"),
+        "row_count": wide.height,
+        "total_cols": len(wide.columns),
+        "schema": {col: str(wide.schema[col]) for col in wide.columns},
+        "built_at": "2026-01-01T00:00:00",
+        "build_seconds": 0.1,
+    })
+
+    def fail_scan(_product, _db_root):
+        raise AssertionError("fresh pivot cache should be read before scanning source")
+
+    monkeypatch.setattr(long_pivot, "scan_long_inline", fail_scan)
+
+    out = splittable.long_wide_preview(source="inline", product="PRODA", limit=20)
+
+    assert out["rows"] == wide.to_dicts()
+    assert out["columns"] == wide.columns
+    assert out["pivot_cache"]["hit"] is True
+    assert out["pivot_cache"]["queued"] is False
 
 
 def test_management_rows_overlay_stays_hidden_from_custom_sets(tmp_path, monkeypatch):
