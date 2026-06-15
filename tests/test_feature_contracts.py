@@ -210,8 +210,14 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Flow-i" in ui
     assert "FLOWI_FEW_SHOT_QUESTIONS" not in ui
     assert "/api/llm/flowi/workflows" in ui
+    assert "/api/llm/flowi/workflows/draft" in ui
+    assert "/api/llm/flowi/workflows/delete" in ui
     assert "flowiWorkflowPromptPreview" in ui
-    assert "주요 few-shot 질문" in ui
+    assert "주요 few-shot 질문" not in ui
+    assert "flowiWorkflowFewShotItems" not in ui
+    assert "Workflow 템플릿 관리" in ui
+    assert "템플릿 추가" in ui
+    assert "LLM 형식 맞춤" in ui
     assert "FLOWI_SECTIONS" in ui
     assert "activeFlowiSection" in ui
     assert "질문 템플릿" in ui

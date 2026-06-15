@@ -22566,6 +22566,10 @@ class FlowiWorkflowSaveReq(BaseModel):
     workflow: dict[str, Any] = Field(default_factory=dict)
 
 
+class FlowiWorkflowDeleteReq(BaseModel):
+    workflow_id: str = ""
+
+
 class FlowiProfileReq(BaseModel):
     notes: str = ""
 
@@ -22797,6 +22801,68 @@ def flowi_workflows(request: Request):
     }
 
 
+FLOWI_WORKFLOW_FORMAT_SCHEMA = {
+    "type": "object",
+    "required": ["title"],
+    "properties": {
+        "title": {"type": "string"},
+        "enabled": {"type": "boolean"},
+        "priority": {"type": "integer"},
+        "category": {"type": "string"},
+        "unit_ai": {"type": "string"},
+        "action": {"type": "string"},
+        "examples": {"type": "array", "items": {"type": "string"}},
+        "question_template": {"type": "string"},
+        "trigger_terms": {"type": "array", "items": {"type": "string"}},
+        "slots": {"type": "array", "items": {"type": "object"}},
+        "source_roles": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array", "items": {"type": "string"}},
+        "orchestration": {"type": "array", "items": {"type": "string"}},
+        "result_contract": {"type": "object"},
+    },
+}
+
+
+def _flowi_format_workflow_with_connected_llm(
+    prompt: str,
+    fallback: dict[str, Any],
+    *,
+    actor: str,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    if not llm_adapter.is_available():
+        return fallback, {"available": False, "used": False}, "로컬 규칙으로 workflow schema에 맞게 형식화했습니다."
+    payload = {
+        "instruction": (
+            "사용자 입력과 현재 workflow 초안을 Flow-i workflow JSON 형식에 맞게 정리한다. "
+            "도구를 실행하거나 결과를 추측하지 말고, 저장 가능한 공개 필드만 반환한다."
+        ),
+        "allowed_unit_ai": sorted(flowi_workflow_catalog.KNOWN_UNIT_AIS),
+        "allowed_source_roles": sorted(flowi_workflow_catalog.KNOWN_SOURCE_ROLES),
+        "user_input": prompt,
+        "current_workflow": fallback,
+    }
+    out = llm_adapter.complete_json(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        system=(
+            "You format Flow-i workflow templates. Return only JSON fields that match the schema. "
+            "Do not include hidden reasoning, markdown, prose, execution results, or database content."
+        ),
+        schema=FLOWI_WORKFLOW_FORMAT_SCHEMA,
+        timeout=10,
+        max_retries=1,
+    )
+    if not out.get("ok") or not isinstance(out.get("obj"), dict):
+        err = str(out.get("error") or "")[:200]
+        return fallback, {"available": True, "used": False, "error": err}, "LLM 형식화 실패로 로컬 규칙 결과를 사용했습니다."
+    allowed = set((FLOWI_WORKFLOW_FORMAT_SCHEMA.get("properties") or {}).keys())
+    shaped = {key: value for key, value in (out.get("obj") or {}).items() if key in allowed}
+    merged = {**fallback, **shaped}
+    if "examples" in shaped and "question_template" not in shaped:
+        merged["question_template"] = ""
+    workflow = flowi_workflow_catalog.normalize_workflow(merged, actor=actor, base=fallback)
+    return workflow, {"available": True, "used": True}, "연결된 LLM으로 workflow schema 형식만 맞췄습니다."
+
+
 @router.post("/flowi/workflows/draft")
 def flowi_workflows_draft(req: FlowiWorkflowDraftReq, _admin=Depends(require_admin)):
     prompt = (req.prompt or "").strip()
@@ -22810,16 +22876,18 @@ def flowi_workflows_draft(req: FlowiWorkflowDraftReq, _admin=Depends(require_adm
         existing = {**(existing or {}), **req.workflow}
     if not prompt and not existing:
         raise HTTPException(400, "prompt 또는 workflow가 필요합니다.")
-    workflow = flowi_workflow_catalog.draft_workflow(
+    actor = _admin.get("username") or "admin"
+    fallback = flowi_workflow_catalog.draft_workflow(
         prompt or str((existing or {}).get("title") or ""),
         base=existing,
-        actor=_admin.get("username") or "admin",
+        actor=actor,
     )
+    workflow, llm_meta, note = _flowi_format_workflow_with_connected_llm(prompt, fallback, actor=actor)
     return {
         "ok": True,
         "workflow": workflow,
-        "llm": {"available": llm_adapter.is_available(), "used": False},
-        "note": "로컬 규칙으로 workflow schema에 맞게 형식화했습니다.",
+        "llm": llm_meta,
+        "note": note,
     }
 
 
@@ -22836,6 +22904,22 @@ def flowi_workflows_save(req: FlowiWorkflowSaveReq, _admin=Depends(require_admin
         "action": workflow.get("action") or "",
     })
     return {"ok": True, "workflow": workflow}
+
+
+@router.post("/flowi/workflows/delete")
+def flowi_workflows_delete(req: FlowiWorkflowDeleteReq, _admin=Depends(require_admin)):
+    workflow_id = (req.workflow_id or "").strip()
+    if not workflow_id:
+        raise HTTPException(400, "workflow_id가 필요합니다.")
+    actor = _admin.get("username") or "admin"
+    workflow = flowi_workflow_catalog.disable_workflow(workflow_id, actor=actor)
+    if not workflow:
+        raise HTTPException(404, "workflow를 찾을 수 없습니다.")
+    _append_user_event(actor, "flowi_workflow_disable", {
+        "workflow_id": workflow.get("id") or "",
+        "title": workflow.get("title") or "",
+    })
+    return {"ok": True, "deleted": True, "workflow": workflow}
 
 
 @router.post("/flowi/workflows/merge-defaults")

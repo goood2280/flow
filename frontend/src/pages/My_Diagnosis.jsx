@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import dagre from "dagre";
-import { PageHeader, PageShell, Panel, Banner, Button, Field, Pill, Select, TabStrip, Textarea } from "../components/UXKit";
+import { PageHeader, PageShell, Panel, Banner, Button, Field, Input, Pill, Select, TabStrip, Textarea } from "../components/UXKit";
 import LlmTab from "../components/agent/LlmTab";
 import { postJson, putJson, sf } from "../lib/api";
 
@@ -3331,12 +3331,12 @@ function flowiWorkflowTemplatePreview(workflow) {
   return String(workflow?.question_template || (workflow?.examples || []).find((example) => String(example || "").includes("{")) || (workflow?.examples || [])[0] || workflow?.title || "").trim();
 }
 
-function flowiWorkflowFewShotItems(workflows) {
+function flowiWorkflowListItems(workflows) {
   return (Array.isArray(workflows) ? workflows : [])
-    .filter((workflow) => workflow?.enabled !== false)
     .map((workflow) => ({
       id: workflow.id || flowiWorkflowPromptPreview(workflow),
       title: workflow.title || workflow.id || "Flow-i workflow",
+      enabled: workflow.enabled !== false,
       prompt: flowiWorkflowPromptPreview(workflow),
       template: flowiWorkflowTemplatePreview(workflow),
       target: workflow.action || workflow.unit_ai || workflow.category || "",
@@ -3349,68 +3349,262 @@ function flowiWorkflowFewShotItems(workflows) {
       orchestration: Array.isArray(workflow.orchestration) && workflow.orchestration.length ? workflow.orchestration : (Array.isArray(workflow.steps) ? workflow.steps : []),
       resultType: workflow.result_contract?.type || "",
     }))
-    .filter((item) => item.prompt)
-    .sort((a, b) => b.priority - a.priority || a.title.localeCompare(b.title))
-    .slice(0, 8);
+    .sort((a, b) => (Number(b.enabled) - Number(a.enabled)) || b.priority - a.priority || a.title.localeCompare(b.title));
 }
 
-function HomeFlowiFewShotPanel() {
-  const [copiedPrompt, setCopiedPrompt] = useState("");
-  const [items, setItems] = useState([]);
+function flowiWorkflowLineList(value) {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
+function flowiWorkflowTokenList(value) {
+  return String(value || "")
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function flowiWorkflowEmptyForm() {
+  return {
+    id: "",
+    title: "",
+    enabled: true,
+    priority: "80",
+    category: "",
+    unitAi: "filebrowser_ai_sql",
+    action: "query_data",
+    questionTemplate: "",
+    examplesText: "",
+    triggerTermsText: "",
+    slotsText: "[]",
+    sourceRolesText: "",
+    orchestrationText: "",
+    resultType: "text",
+    resultDownload: false,
+  };
+}
+
+function flowiWorkflowFormFromWorkflow(workflow) {
+  const wf = workflow || {};
+  const orchestration = Array.isArray(wf.orchestration) && wf.orchestration.length ? wf.orchestration : (wf.steps || []);
+  return {
+    id: String(wf.id || ""),
+    title: String(wf.title || ""),
+    enabled: wf.enabled !== false,
+    priority: String(wf.priority ?? 80),
+    category: String(wf.category || ""),
+    unitAi: String(wf.unit_ai || "filebrowser_ai_sql"),
+    action: String(wf.action || "query_data"),
+    questionTemplate: String(wf.question_template || ""),
+    examplesText: flowiWorkflowLineList(wf.examples).join("\n"),
+    triggerTermsText: flowiWorkflowLineList(wf.trigger_terms).join(", "),
+    slotsText: JSON.stringify(Array.isArray(wf.slots) ? wf.slots : [], null, 2),
+    sourceRolesText: flowiWorkflowLineList(wf.source_roles).join(", "),
+    orchestrationText: flowiWorkflowLineList(orchestration).join("\n"),
+    resultType: String(wf.result_contract?.type || "text"),
+    resultDownload: !!wf.result_contract?.download,
+  };
+}
+
+function flowiWorkflowFromForm(form) {
+  const examples = flowiWorkflowLineList(String(form.examplesText || "").split("\n"));
+  const orchestration = flowiWorkflowLineList(String(form.orchestrationText || "").split("\n"));
+  let slots = [];
+  const slotsRaw = String(form.slotsText || "").trim();
+  if (slotsRaw) {
+    slots = JSON.parse(slotsRaw);
+    if (!Array.isArray(slots)) throw new Error("slots는 JSON 배열이어야 합니다.");
+  }
+  const questionTemplate = String(form.questionTemplate || "").trim();
+  return {
+    id: String(form.id || "").trim(),
+    title: String(form.title || "").trim(),
+    enabled: form.enabled !== false,
+    priority: Number(form.priority || 50),
+    category: String(form.category || "").trim(),
+    unit_ai: String(form.unitAi || "").trim(),
+    action: String(form.action || "").trim(),
+    examples: examples.length ? examples : (questionTemplate ? [questionTemplate] : []),
+    question_template: questionTemplate,
+    trigger_terms: flowiWorkflowTokenList(form.triggerTermsText),
+    slots,
+    source_roles: flowiWorkflowTokenList(form.sourceRolesText),
+    steps: orchestration,
+    orchestration,
+    result_contract: {
+      type: String(form.resultType || "text").trim() || "text",
+      download: !!form.resultDownload,
+    },
+  };
+}
+
+function HomeFlowiWorkflowManagerPanel() {
+  const [payload, setPayload] = useState(null);
+  const [form, setForm] = useState(flowiWorkflowEmptyForm());
   const [selectedId, setSelectedId] = useState("");
+  const [formatPrompt, setFormatPrompt] = useState("");
   const [loading, setLoading] = useState(true);
-  const copyPrompt = (prompt) => {
-    setCopiedPrompt(prompt);
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(prompt).catch(() => {});
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [llmMeta, setLlmMeta] = useState(null);
+  const workflows = payload?.workflows || [];
+  const items = useMemo(() => flowiWorkflowListItems(workflows), [workflows]);
+  const canEdit = !!payload?.can_edit;
+  const activeWorkflow = workflows.find((workflow) => workflow?.id === selectedId) || null;
+  const previewWorkflow = useMemo(() => {
+    try {
+      return flowiWorkflowFromForm(form);
+    } catch (_) {
+      return activeWorkflow || {};
     }
+  }, [form, activeWorkflow]);
+  const previewOrchestration = Array.isArray(previewWorkflow.orchestration) && previewWorkflow.orchestration.length
+    ? previewWorkflow.orchestration
+    : (previewWorkflow.steps || []);
+
+  const loadWorkflows = (preferredId = "") => {
+    setLoading(true);
+    setErr("");
+    return sf("/api/llm/flowi/workflows")
+      .then((nextPayload) => {
+        const rows = nextPayload?.workflows || [];
+        const nextId = preferredId || (selectedId && rows.some((row) => row.id === selectedId) ? selectedId : rows[0]?.id || "");
+        const nextWorkflow = rows.find((row) => row.id === nextId) || rows[0] || null;
+        setPayload(nextPayload || {});
+        setSelectedId(nextWorkflow?.id || "");
+        setForm(nextWorkflow ? flowiWorkflowFormFromWorkflow(nextWorkflow) : flowiWorkflowEmptyForm());
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
   };
 
-  useEffect(() => {
-    let alive = true;
-    sf("/api/llm/flowi/workflows")
-      .then((payload) => {
-        if (!alive) return;
-        setItems(flowiWorkflowFewShotItems(payload?.workflows || []));
-      })
-      .catch(() => {
-        if (alive) setItems([]);
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => { alive = false; };
-  }, []);
+  useEffect(() => { loadWorkflows(); }, []);
 
-  useEffect(() => {
-    if (!items.length) {
-      setSelectedId("");
+  const selectWorkflow = (workflow) => {
+    setErr("");
+    setMsg("");
+    setLlmMeta(null);
+    setSelectedId(workflow?.id || "");
+    setForm(flowiWorkflowFormFromWorkflow(workflow));
+  };
+
+  const startNew = () => {
+    setErr("");
+    setMsg("");
+    setLlmMeta(null);
+    setSelectedId("__new__");
+    setForm(flowiWorkflowEmptyForm());
+    setFormatPrompt("");
+  };
+
+  const updateForm = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  const buildWorkflowForSave = () => {
+    const workflow = flowiWorkflowFromForm(form);
+    if (!workflow.title) throw new Error("title을 입력하세요.");
+    if (!workflow.unit_ai) throw new Error("unit_ai를 입력하세요.");
+    if (!workflow.action) throw new Error("action을 입력하세요.");
+    return workflow;
+  };
+
+  const draftWithLlm = () => {
+    const prompt = formatPrompt.trim() || form.questionTemplate.trim() || form.examplesText.trim() || form.title.trim();
+    if (!prompt) {
+      setErr("형식을 맞출 입력 문장을 먼저 입력하세요.");
       return;
     }
-    if (!items.some((item) => item.id === selectedId)) setSelectedId(items[0].id);
-  }, [items, selectedId]);
+    let workflow = {};
+    try {
+      workflow = flowiWorkflowFromForm(form);
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    setBusy("draft");
+    setErr("");
+    setMsg("");
+    postJson("/api/llm/flowi/workflows/draft", {
+      prompt,
+      existing_id: form.id,
+      workflow,
+    }).then((nextPayload) => {
+      setForm(flowiWorkflowFormFromWorkflow(nextPayload?.workflow || {}));
+      setSelectedId(nextPayload?.workflow?.id || selectedId);
+      setLlmMeta(nextPayload?.llm || null);
+      setMsg(nextPayload?.note || "workflow 형식을 맞췄습니다.");
+    }).catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(""));
+  };
 
-  const activeItem = items.find((item) => item.id === selectedId) || items[0] || null;
+  const saveWorkflow = () => {
+    let workflow = {};
+    try {
+      workflow = buildWorkflowForSave();
+    } catch (e) {
+      setErr(e.message || String(e));
+      return;
+    }
+    setBusy("save");
+    setErr("");
+    setMsg("");
+    postJson("/api/llm/flowi/workflows", { workflow })
+      .then((nextPayload) => {
+        const saved = nextPayload?.workflow || {};
+        setMsg("Workflow 템플릿을 저장했습니다.");
+        return loadWorkflows(saved.id || "");
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(""));
+  };
+
+  const disableWorkflow = () => {
+    if (!form.id) {
+      setErr("저장된 workflow만 비활성화할 수 있습니다.");
+      return;
+    }
+    setBusy("delete");
+    setErr("");
+    setMsg("");
+    postJson("/api/llm/flowi/workflows/delete", { workflow_id: form.id })
+      .then((nextPayload) => {
+        const disabled = nextPayload?.workflow || {};
+        setMsg("Workflow 템플릿을 비활성화했습니다.");
+        return loadWorkflows(disabled.id || "");
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(""));
+  };
 
   return (
     <Panel
-      title="주요 few-shot 질문"
+      title="Workflow 템플릿 관리"
       subtitle={loading ? "loading" : `${items.length} workflows`}
-      right={copiedPrompt ? <Pill tone="ok">복사됨</Pill> : null}
+      right={<Button variant="ghost" onClick={startNew} disabled={!canEdit || !!busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>템플릿 추가</Button>}
     >
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, alignItems: "start" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, maxHeight: 760, overflow: "auto" }}>
+      <div style={{ display: "grid", gap: 8 }}>
+        {!canEdit ? <Banner tone="warn">admin 계정만 workflow 템플릿을 추가하거나 수정할 수 있습니다.</Banner> : null}
+        {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
+        {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
+        {llmMeta ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", fontSize: 12, color: "var(--text-secondary)" }}>
+            <Pill tone={llmMeta.used ? "ok" : "neutral"}>{llmMeta.used ? "연결 LLM 사용" : "로컬 형식화"}</Pill>
+            {llmMeta.error ? <span>{llmMeta.error}</span> : null}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10, alignItems: "start", marginTop: 10 }}>
+        <div style={{ display: "grid", gap: 8, maxHeight: 820, overflow: "auto" }}>
           {items.map((item) => {
-            const active = item.id === activeItem?.id;
+            const active = item.id === selectedId;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setSelectedId(item.id)}
+                onClick={() => selectWorkflow(workflows.find((workflow) => workflow?.id === item.id))}
                 style={{
                   display: "grid",
                   gap: 6,
-                  minHeight: 124,
+                  minHeight: 112,
                   textAlign: "left",
                   padding: "10px 11px",
                   border: `1px solid ${active ? "var(--brand, var(--text-primary))" : "var(--border)"}`,
@@ -3420,7 +3614,10 @@ function HomeFlowiFewShotPanel() {
                   cursor: "pointer",
                 }}
               >
-                <span style={{ fontSize: 12, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
+                <span style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                  <span style={{ fontSize: 12, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 auto" }}>{item.title}</span>
+                  <Pill tone={item.enabled ? "ok" : "neutral"}>{item.enabled ? "활성" : "비활성"}</Pill>
+                </span>
                 <span style={{ fontSize: 11, lineHeight: 1.45, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>{item.template}</span>
                 <span style={{ fontSize: 12, lineHeight: 1.45, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{item.prompt}</span>
                 <span style={{ alignSelf: "end", fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.target}</span>
@@ -3429,45 +3626,117 @@ function HomeFlowiFewShotPanel() {
           })}
           {!loading && !items.length ? (
             <div style={{ padding: 12, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 12 }}>
-              workflow seed 없음
+              workflow 템플릿 없음
             </div>
           ) : null}
         </div>
 
-        <div style={{ display: "grid", gap: 10, padding: 11, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", minHeight: 260 }}>
-          {activeItem ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 10, padding: 11, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)" }}>
+            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr auto", alignItems: "end" }}>
+              <Field label="LLM 형식 맞춤 입력">
+                <Textarea
+                  rows={3}
+                  value={formatPrompt}
+                  onChange={(e) => setFormatPrompt(e.target.value)}
+                  disabled={!canEdit || !!busy}
+                  placeholder="예: Inline 15.0 M2 trend를 차트로 보여주는 workflow"
+                />
+              </Field>
+              <Button onClick={draftWithLlm} disabled={!canEdit || !!busy} style={{ height: 36 }}>{busy === "draft" ? "형식화 중" : "LLM 형식 맞춤"}</Button>
+            </div>
+            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+              <Field label="title">
+                <Input value={form.title} onChange={(e) => updateForm("title", e.target.value)} disabled={!canEdit || !!busy} />
+              </Field>
+              <Field label="unit_ai">
+                <Input value={form.unitAi} onChange={(e) => updateForm("unitAi", e.target.value)} disabled={!canEdit || !!busy} />
+              </Field>
+              <Field label="action">
+                <Input value={form.action} onChange={(e) => updateForm("action", e.target.value)} disabled={!canEdit || !!busy} />
+              </Field>
+              <Field label="category">
+                <Input value={form.category} onChange={(e) => updateForm("category", e.target.value)} disabled={!canEdit || !!busy} />
+              </Field>
+              <Field label="priority">
+                <Input type="number" value={form.priority} onChange={(e) => updateForm("priority", e.target.value)} disabled={!canEdit || !!busy} />
+              </Field>
+              <Field label="result type">
+                <Select value={form.resultType} onChange={(e) => updateForm("resultType", e.target.value)} disabled={!canEdit || !!busy}>
+                  <option value="text">text</option>
+                  <option value="table">table</option>
+                  <option value="chart">chart</option>
+                  <option value="file">file</option>
+                </Select>
+              </Field>
+            </div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={form.enabled} onChange={(e) => updateForm("enabled", e.target.checked)} disabled={!canEdit || !!busy} />
+              활성 workflow로 사용
+            </label>
+            <Field label="질문 템플릿">
+              <Textarea rows={2} value={form.questionTemplate} onChange={(e) => updateForm("questionTemplate", e.target.value)} disabled={!canEdit || !!busy} />
+            </Field>
+            <Field label="examples">
+              <Textarea rows={3} value={form.examplesText} onChange={(e) => updateForm("examplesText", e.target.value)} disabled={!canEdit || !!busy} />
+            </Field>
+            <Field label="trigger_terms">
+              <Textarea rows={2} value={form.triggerTermsText} onChange={(e) => updateForm("triggerTermsText", e.target.value)} disabled={!canEdit || !!busy} />
+            </Field>
+            <Field label="source_roles">
+              <Input value={form.sourceRolesText} onChange={(e) => updateForm("sourceRolesText", e.target.value)} disabled={!canEdit || !!busy} />
+            </Field>
+            <Field label="오케스트레이션 진행">
+              <Textarea rows={4} value={form.orchestrationText} onChange={(e) => updateForm("orchestrationText", e.target.value)} disabled={!canEdit || !!busy} />
+            </Field>
+            <Field label="slots JSON">
+              <Textarea rows={6} value={form.slotsText} onChange={(e) => updateForm("slotsText", e.target.value)} disabled={!canEdit || !!busy} spellCheck={false} />
+            </Field>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={form.resultDownload} onChange={(e) => updateForm("resultDownload", e.target.checked)} disabled={!canEdit || !!busy} />
+              download 결과 계약
+            </label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <Button variant="ghost" onClick={disableWorkflow} disabled={!canEdit || !!busy || !form.id} style={{ color: "var(--danger)" }}>{busy === "delete" ? "처리 중" : "비활성화"}</Button>
+              <Button onClick={saveWorkflow} disabled={!canEdit || !!busy}>{busy === "save" ? "저장 중" : "저장"}</Button>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, padding: 11, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", minHeight: 220 }}>
+          {previewWorkflow?.title || previewWorkflow?.unit_ai ? (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <div style={{ minWidth: 0, flex: "1 1 260px" }}>
-                  <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{activeItem.title}</div>
-                  <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-secondary)" }}>{[activeItem.unitAi, activeItem.action, activeItem.resultType].filter(Boolean).join(" · ")}</div>
+                  <div style={{ fontSize: 13, fontWeight: 900, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{previewWorkflow.title || "새 workflow"}</div>
+                  <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-secondary)" }}>{[previewWorkflow.unit_ai, previewWorkflow.action, previewWorkflow.result_contract?.type].filter(Boolean).join(" · ")}</div>
                 </div>
-                <Button variant="ghost" onClick={() => copyPrompt(activeItem.prompt)} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>예시 복사</Button>
+                <Pill tone={previewWorkflow.enabled !== false ? "ok" : "neutral"}>{previewWorkflow.enabled !== false ? "활성" : "비활성"}</Pill>
               </div>
               <div style={{ display: "grid", gap: 5 }}>
                 <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>질문 템플릿</div>
-                <code style={{ display: "block", padding: 8, border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", background: "var(--bg-secondary)", fontSize: 12, lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{activeItem.template}</code>
+                <code style={{ display: "block", padding: 8, border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", background: "var(--bg-secondary)", fontSize: 12, lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{flowiWorkflowTemplatePreview(previewWorkflow)}</code>
               </div>
               <div style={{ display: "grid", gap: 5 }}>
                 <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>예시 질문</div>
-                <div style={{ fontSize: 12, color: "var(--text-primary)", lineHeight: 1.45, overflowWrap: "anywhere" }}>{activeItem.prompt}</div>
+                <div style={{ fontSize: 12, color: "var(--text-primary)", lineHeight: 1.45, overflowWrap: "anywhere" }}>{flowiWorkflowPromptPreview(previewWorkflow)}</div>
               </div>
               <div style={{ display: "grid", gap: 5 }}>
                 <div style={{ fontSize: 11, fontWeight: 900, color: "var(--text-secondary)" }}>오케스트레이션 진행</div>
                 <ol style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4, fontSize: 12, lineHeight: 1.5, color: "var(--text-primary)" }}>
-                  {activeItem.orchestration.map((step, idx) => <li key={`${idx}-${step}`} style={{ overflowWrap: "anywhere" }}>{step}</li>)}
+                  {previewOrchestration.map((step, idx) => <li key={`${idx}-${step}`} style={{ overflowWrap: "anywhere" }}>{step}</li>)}
                 </ol>
               </div>
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                {activeItem.slots.map((slot) => <Pill key={slot.name || slot.type} tone={slot.required ? "warn" : "neutral"}>{slot.name || slot.type}</Pill>)}
-                {activeItem.sourceRoles.map((role) => <Pill key={role} tone="neutral">{role}</Pill>)}
+                {(previewWorkflow.slots || []).map((slot) => <Pill key={slot.name || slot.type} tone={slot.required ? "warn" : "neutral"}>{slot.name || slot.type}</Pill>)}
+                {(previewWorkflow.source_roles || []).map((role) => <Pill key={role} tone="neutral">{role}</Pill>)}
               </div>
             </>
           ) : (
             <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)" }}>
-              workflow seed 없음
+              템플릿을 선택하거나 추가하세요.
             </div>
           )}
+          </div>
         </div>
       </div>
     </Panel>
@@ -3484,7 +3753,7 @@ function HomeFlowiPanel() {
         onChange={setActiveFlowiSection}
         items={FLOWI_SECTIONS}
       />
-      {activeFlowiSection === "workflows" ? <HomeFlowiFewShotPanel /> : <HomeFlowiRuntimePanel />}
+      {activeFlowiSection === "workflows" ? <HomeFlowiWorkflowManagerPanel /> : <HomeFlowiRuntimePanel />}
     </div>
   );
 }

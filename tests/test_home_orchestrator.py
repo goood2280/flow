@@ -206,6 +206,70 @@ def test_flowi_workflows_draft_and_save(monkeypatch, tmp_path):
     assert saved["workflow"]["id"] == draft["workflow"]["id"]
 
 
+def test_flowi_workflows_draft_uses_connected_llm_for_format_only(monkeypatch, tmp_path):
+    from routers import llm
+    from core import flowi_workflow_catalog as catalog
+
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+    monkeypatch.setattr(llm.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm.llm_adapter,
+        "complete_json",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "obj": {
+                "title": "Inline trend workflow",
+                "unit_ai": "dashboard_agent",
+                "action": "plot_item_trend",
+                "examples": ["{product} {item_id} trend 그려줘"],
+                "trigger_terms": ["trend", "차트"],
+                "slots": [
+                    {"name": "product", "type": "product", "required": False, "example": "PRODA"},
+                    {"name": "item_id", "type": "item", "required": True, "example": "15.0 M2"},
+                ],
+                "source_roles": ["split_base"],
+                "orchestration": ["slot을 확인한다.", "dashboard_agent chart draft를 만든다."],
+                "result_contract": {"type": "chart"},
+            },
+        },
+    )
+
+    draft = llm.flowi_workflows_draft(
+        llm.FlowiWorkflowDraftReq(prompt="Inline 15.0 M2 trend를 차트로 형식 맞춰줘"),
+        _admin={"username": "admin", "role": "admin"},
+    )
+
+    assert draft["ok"] is True
+    assert draft["llm"]["available"] is True
+    assert draft["llm"]["used"] is True
+    assert draft["workflow"]["title"] == "Inline trend workflow"
+    assert draft["workflow"]["unit_ai"] == "dashboard_agent"
+    assert draft["workflow"]["question_template"] == "{product} {item_id} trend 그려줘"
+
+
+def test_flowi_workflows_delete_disables_template_and_excludes_matching(monkeypatch, tmp_path):
+    from routers import llm
+    from core import flowi_workflow_catalog as catalog
+
+    monkeypatch.setattr(catalog, "RUNTIME_CATALOG_FILE", tmp_path / "flowi_workflows.json")
+    monkeypatch.setattr(catalog, "CHANGE_LOG_FILE", tmp_path / "flowi_workflows.changes.jsonl")
+    monkeypatch.setattr(llm, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    deleted = llm.flowi_workflows_delete(
+        llm.FlowiWorkflowDeleteReq(workflow_id="wf_split_table_root_lot"),
+        _admin={"username": "admin", "role": "admin"},
+    )
+    matches = catalog.match_workflows("A1001 스플릿테이블 보여줘", limit=5)
+    few_shots = catalog.workflow_few_shots(limit=50)
+
+    assert deleted["ok"] is True
+    assert deleted["deleted"] is True
+    assert deleted["workflow"]["enabled"] is False
+    assert all(row["id"] != "wf_split_table_root_lot" for row in matches)
+    assert all(row["workflow_id"] != "wf_split_table_root_lot" for row in few_shots)
+
+
 def test_dashboard_chart_knob_coloring_reuses_saved_chart_rows(monkeypatch, tmp_path):
     import polars as pl
     from routers import llm

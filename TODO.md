@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Codex) Flow-i Workflow 템플릿 관리 UI/API 전환
 - (Codex) Home Flow-i 질문/응답 plain text 렌더링 보정
 - (Codex) SplitTable CPU 4core/RAM 10GB and concurrent search guard
 - (Codex) flow-data 파일 버전 백업 보관 개수 5개 제한

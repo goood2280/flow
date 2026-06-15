@@ -418,6 +418,26 @@ def save_workflow(workflow: dict[str, Any], *, actor: str = "admin") -> dict[str
     return normalized
 
 
+def disable_workflow(workflow_id: str, *, actor: str = "admin") -> dict[str, Any] | None:
+    catalog = load_catalog(ensure=True)
+    existing = {str(row.get("id") or ""): row for row in catalog.get("workflows", []) if isinstance(row, dict)}
+    target_id = str(workflow_id or "").strip()
+    base = existing.get(target_id)
+    if not base:
+        return None
+    normalized = normalize_workflow({**base, "enabled": False}, actor=actor, base=base)
+    existing[normalized["id"]] = normalized
+    payload = _catalog_payload(list(existing.values()), created_at=str(catalog.get("created_at") or ""), updated_by=actor)
+    save_json(RUNTIME_CATALOG_FILE, payload, indent=2)
+    jsonl_append(CHANGE_LOG_FILE, {
+        "action": "disable_workflow",
+        "actor": actor,
+        "workflow_id": normalized["id"],
+        "title": normalized["title"],
+    })
+    return normalized
+
+
 def _infer_unit(prompt: str) -> tuple[str, str, str, list[str], list[str]]:
     text = prompt.casefold()
     if any(t in text for t in ("split", "스플릿", "knob", "노브")):
