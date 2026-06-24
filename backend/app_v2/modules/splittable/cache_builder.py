@@ -26,45 +26,76 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None):
     
     start_time = time.monotonic()
     try:
-        df = pl.read_parquet(product_path)
+        lf = pl.scan_parquet(product_path)
+        schema = lf.collect_schema()
+        columns = schema.names()
         
-        lot_col = next((c for c in df.columns if c.lower() == "lot_id"), None) or next((c for c in df.columns if "lot" in c.lower()), None)
-        wf_col = next((c for c in df.columns if c.lower() == "wafer_id"), None) or next((c for c in df.columns if "wafer" in c.lower()), None)
+        lot_col = next((c for c in columns if c.lower() == "lot_id"), None) or next((c for c in columns if "lot" in c.lower()), None)
+        wf_col = next((c for c in columns if c.lower() == "wafer_id"), None) or next((c for c in columns if "wafer" in c.lower()), None)
             
         if not lot_col or not wf_col:
             return False
             
-        if "root_lot_id" not in df.columns:
-            df = df.with_columns(pl.col(lot_col).str.split(".").list.first().alias("root_lot_id"))
+        if "root_lot_id" in columns:
+            roots_df = lf.select("root_lot_id").unique().collect()
+            unique_roots = roots_df["root_lot_id"].drop_nulls().to_list()
+        else:
+            roots_df = lf.select(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().alias("root_lot_id")).unique().collect()
+            unique_roots = roots_df["root_lot_id"].drop_nulls().to_list()
             
-        id_vars = ["root_lot_id", lot_col, wf_col]
-        value_vars = [c for c in df.columns if c not in id_vars]
+        import gc
+        CHUNK_SIZE = 5
+        partitions_built = 0
         
-        melted = df.unpivot(index=id_vars, on=value_vars, variable_name="parameter", value_name="value").drop_nulls("value")
-        
-        # Partition by root_lot_id and save individual pivoted parquets
-        partitions = melted.partition_by("root_lot_id", as_dict=True)
-        for root_id_tuple, part_df in partitions.items():
-            if not root_id_tuple: continue
+        for i in range(0, len(unique_roots), CHUNK_SIZE):
+            chunk_roots = unique_roots[i:i+CHUNK_SIZE]
             
-            root_id_str = str(root_id_tuple[0] if isinstance(root_id_tuple, tuple) else root_id_tuple)
-            if not root_id_str: continue
+            if "root_lot_id" in columns:
+                chunk_lf = lf.filter(pl.col("root_lot_id").is_in(chunk_roots))
+            else:
+                chunk_lf = lf.filter(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().is_in(chunk_roots))
+                chunk_lf = chunk_lf.with_columns(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().alias("root_lot_id"))
+                
+            chunk_df = chunk_lf.collect()
             
-            pivoted = part_df.pivot(
-                values="value",
-                index=["parameter"],
-                on=wf_col,
-                aggregate_function="first"
-            ).sort(["parameter"])
+            id_vars = ["root_lot_id", lot_col, wf_col]
+            value_vars = [c for c in columns if c not in id_vars]
+            if "root_lot_id" in value_vars:
+                value_vars.remove("root_lot_id")
+                
+            melted = chunk_df.unpivot(index=id_vars, on=value_vars, variable_name="parameter", value_name="value").drop_nulls("value")
             
-            safe_root = str(root_id_str).replace("/", "_").replace("\\", "_")
-            tmp_path = out_dir / f"{safe_root}.tmp.parquet"
-            final_path = out_dir / f"{safe_root}.parquet"
+            partitions = melted.partition_by("root_lot_id", as_dict=True)
+            for root_id_tuple, part_df in partitions.items():
+                if not root_id_tuple: continue
+                
+                root_id_str = str(root_id_tuple[0] if isinstance(root_id_tuple, tuple) else root_id_tuple)
+                if not root_id_str: continue
+                
+                pivoted = part_df.pivot(
+                    values="value",
+                    index=["parameter"],
+                    on=wf_col,
+                    aggregate_function="first"
+                ).sort(["parameter"])
+                
+                safe_root = str(root_id_str).replace("/", "_").replace("\\", "_")
+                tmp_path = out_dir / f"{safe_root}.tmp.parquet"
+                final_path = out_dir / f"{safe_root}.parquet"
+                
+                pivoted.write_parquet(tmp_path)
+                tmp_path.replace(final_path)
+                partitions_built += 1
+                
+            del chunk_df
+            del melted
+            del partitions
+            gc.collect()
             
-            pivoted.write_parquet(tmp_path)
-            tmp_path.replace(final_path)
+            # API 우선 처리를 위한 CPU 제어권 반환 및 메모리 정리 시간 부여
+            time.sleep(0.1)
             
-        logger.info("Built pivoted cache for %s (%d roots) in %.2fs", product, len(partitions), time.monotonic() - start_time)
+        logger.info("Built pivoted cache for %s (%d roots) in %.2fs", product, partitions_built, time.monotonic() - start_time)
         return True
     except Exception as e:
         logger.error("Failed to build pivot cache for %s: %s", product, e)

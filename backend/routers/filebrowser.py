@@ -490,9 +490,20 @@ def _single_file_folder_entries(
         raw_candidates = _fast_scandir_entries(folder, exts, root, _SINGLE_FILE_FOLDER_MAX_FILES)
         if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
             folder_resolved = folder.resolve()
+            
+            def _keep_cache_entry(e):
+                ep = Path(e.path)
+                if ep.is_dir(follow_symlinks=False):
+                    return True
+                if ep.parent.resolve() != folder_resolved:
+                    return True
+                if e.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE:
+                    return True
+                return False
+
             raw_candidates = [
                 (e, r) for e, r in raw_candidates
-                if e.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE and Path(e.path).parent.resolve() == folder_resolved
+                if _keep_cache_entry(e)
             ]
         candidates = sorted(raw_candidates, key=lambda x: x[1].lower())
     except Exception:

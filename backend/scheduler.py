@@ -46,13 +46,10 @@ def run_product_dedup_once(now: dt.datetime | None = None) -> dict:
             product_name = fp.stem.replace("ML_TABLE_", "")
             logger.info("Scheduler: Building pivoted cache for %s", product_name)
             build_pivoted_cache_for_product(product_name, db_root=db_root)
+            # 다른 워커(API 응답)가 스플릿 테이블 검색에 즉각 반응할 수 있도록
+            # 제품 단위 처리가 끝날 때마다 잠시 대기합니다.
+            time.sleep(0.5)
             
-    return {"changed": changed}
-    after = normalize_products(before)
-    changed = before != after
-    if changed:
-        cfg["products"] = after
-        save_json(_CONFIG_FILE, cfg, indent=2)
     stamp = now.isoformat(timespec="seconds")
     message = f"{stamp} cron=03:00 before={len(before)} after={len(after)} changed={str(changed).lower()}"
     logger.info(message)
