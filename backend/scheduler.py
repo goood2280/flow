@@ -10,6 +10,7 @@ import time
 from core.paths import PATHS
 from core.product_dedup import normalize_products
 from core.utils import append_text_line, load_json, save_json
+from app_v2.modules.splittable.cache_builder import build_pivoted_cache_for_product
 
 logger = logging.getLogger("flow.product_dedup_sched")
 
@@ -29,7 +30,24 @@ def run_product_dedup_once(now: dt.datetime | None = None) -> dict:
     cfg = load_json(_CONFIG_FILE, {})
     if not isinstance(cfg, dict):
         cfg = {}
+        
     before = list(cfg.get("products") or [])
+    after = normalize_products(before)
+    changed = before != after
+    
+    if changed:
+        cfg["products"] = after
+        save_json(_CONFIG_FILE, cfg, indent=2)
+
+    # v9.1: Build pre-pivoted SplitTable cache for fast instantaneous loading
+    db_root = PATHS.db_root if hasattr(PATHS, "db_root") else Path("data/db")
+    if db_root.exists():
+        for fp in db_root.glob("ML_TABLE_*.parquet"):
+            product_name = fp.stem.replace("ML_TABLE_", "")
+            logger.info("Scheduler: Building pivoted cache for %s", product_name)
+            build_pivoted_cache_for_product(product_name, db_root=db_root)
+            
+    return {"changed": changed}
     after = normalize_products(before)
     changed = before != after
     if changed:

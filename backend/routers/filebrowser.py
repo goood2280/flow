@@ -443,6 +443,32 @@ def _single_file_folder_path(root: Path, folder_name: str) -> Path:
     return direct
 
 
+def _fast_scandir_entries(folder: Path, exts: set[str], root: Path, limit: int) -> list[tuple[os.DirEntry, str]]:
+    entries = []
+    stack = [folder]
+    count = 0
+    while stack and count < limit:
+        current_dir = stack.pop()
+        try:
+            with os.scandir(current_dir) as it:
+                for entry in it:
+                    if count >= limit:
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        rel_path = "/".join(Path(entry.path).relative_to(root).parts)
+                        entries.append((entry, rel_path))
+                        stack.append(Path(entry.path))
+                        count += 1
+                    elif entry.is_file(follow_symlinks=False):
+                        ext = Path(entry.name).suffix.lower()
+                        if ext in exts:
+                            rel_path = "/".join(Path(entry.path).relative_to(root).parts)
+                            entries.append((entry, rel_path))
+                            count += 1
+        except OSError:
+            pass
+    return entries
+
 def _single_file_folder_entries(
     root: Path,
     source_root: str,
@@ -458,37 +484,38 @@ def _single_file_folder_entries(
     if not folder.is_dir():
         return []
     out: list[dict] = []
+    exts = _single_file_folder_extensions(folder_key)
+    
     try:
-        raw_candidates = [
-            fp for fp in folder.rglob("*")
-            if fp.is_file() and fp.suffix.lower() in _single_file_folder_extensions(folder_key)
-        ]
+        raw_candidates = _fast_scandir_entries(folder, exts, root, _SINGLE_FILE_FOLDER_MAX_FILES)
         if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
             folder_resolved = folder.resolve()
             raw_candidates = [
-                fp for fp in raw_candidates
-                if fp.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE and fp.parent.resolve() == folder_resolved
+                (e, r) for e, r in raw_candidates
+                if e.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE and Path(e.path).parent.resolve() == folder_resolved
             ]
-        candidates = sorted(raw_candidates, key=lambda p: str(p.relative_to(root)).lower())
+        candidates = sorted(raw_candidates, key=lambda x: x[1].lower())
     except Exception:
         candidates = []
-    for fp in candidates[:_SINGLE_FILE_FOLDER_MAX_FILES]:
+        
+    for entry, rel in candidates[:_SINGLE_FILE_FOLDER_MAX_FILES]:
         try:
-            stat = fp.stat()
-            rel = "/".join(fp.relative_to(root).parts)
+            stat = entry.stat()
+            fp = Path(entry.path)
         except Exception:
             continue
-        meta = _single_file_folder_meta(fp, folder_key)
+        is_dir = entry.is_dir(follow_symlinks=False)
+        meta = _single_file_folder_meta(fp, folder_key) if not is_dir else {"role": "directory", "description": "Folder", "order": 99}
         out.append({
             "name": rel,
             "path": rel,
-            "size": stat.st_size,
+            "size": 0 if is_dir else stat.st_size,
             "modified": stat.st_mtime,
-            "ext": fp.suffix.lower().lstrip("."),
-            "kind": "file",
+            "ext": "dir" if is_dir else Path(entry.name).suffix.lower().lstrip("."),
+            "kind": "dir" if is_dir else "file",
             "source": "cache" if folder_key == _SINGLE_FILE_STEP_CACHE_DIR else "single_file_dir",
             "source_root": source_root,
-            "source_path": str(fp),
+            "source_path": entry.path,
             "role": meta["role"],
             "description": meta["description"],
             "order": meta["order"],
@@ -5005,9 +5032,10 @@ def base_files(request: Request = None):
     if hasattr(PATHS, "cache_dir") and hasattr(PATHS, "db_cache_dir"):
         try:
             from core import lot_progress_cache as _lot_progress_cache
-            _lot_progress_cache.export_lot_progress_parquet()
+            import threading
+            threading.Thread(target=_lot_progress_cache.export_lot_progress_parquet, daemon=True).start()
         except Exception as e:
-            logger.warning("lot-progress parquet cache export skipped: %s", e)
+            logger.warning("lot-progress parquet cache export start failed: %s", e)
     _refresh_single_file_step_caches(base_root)
     if db_root != base_root:
         _refresh_single_file_step_caches(db_root)
@@ -5055,30 +5083,53 @@ def base_files(request: Request = None):
 
     _add_single_file_folder_entries(base_root, "base_root")
     if base_root.is_dir():
-        for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
-            try:
-                stat = f.stat()
-            except OSError:
-                continue
-            if f.is_file():
-                if not _visible_single_file(f):
-                    continue
-                ext = f.suffix.lower()
-                meta = _core_file_meta(f.name)
-                files.append({
-                    "name": f.name,
-                    "path": f.name,
-                    "size": stat.st_size,
-                    "modified": stat.st_mtime,
-                    "ext": ext.lstrip("."),
-                    "kind": "file",
-                    "source": "base_root",
-                    "role": meta["role"],
-                    "description": meta["description"],
-                    "order": meta["order"],
-                })
-            elif f.is_dir():
-                continue
+        try:
+            with os.scandir(base_root) as it:
+                for entry in sorted(it, key=lambda e: (not e.is_file(), e.name.lower())):
+                    if entry.is_file():
+                        fp = Path(entry.path)
+                        if not _visible_single_file(fp):
+                            continue
+                        ext = fp.suffix.lower()
+                        meta = _core_file_meta(entry.name)
+                        stat = entry.stat()
+                        files.append({
+                            "name": entry.name,
+                            "path": entry.name,
+                            "size": stat.st_size,
+                            "modified": stat.st_mtime,
+                            "ext": ext.lstrip("."),
+                            "kind": "file",
+                            "source": "base_root",
+                            "role": meta["role"],
+                            "description": meta["description"],
+                            "order": meta["order"],
+                        })
+                    elif entry.is_dir():
+                        dir_name = entry.name
+                        if dir_name.startswith(".") or dir_name.startswith("__"):
+                            continue
+                        dir_key = dir_name.lower()
+                        if dir_key not in seen_dir_paths:
+                            try:
+                                stat = entry.stat()
+                                dirs.append({
+                                    "name": dir_name,
+                                    "path": dir_name,
+                                    "size": 0,
+                                    "modified": stat.st_mtime,
+                                    "ext": "dir",
+                                    "kind": "dir",
+                                    "source": "base_root",
+                                    "role": "directory",
+                                    "description": "Folder",
+                                    "order": 99,
+                                })
+                                seen_dir_paths.add(dir_key)
+                            except OSError:
+                                pass
+        except OSError:
+            pass
     # v8.7.5: DB 루트에 있는 단일 CSV 는 "Base" 로 분류 (물리적 위치와 무관하게 의미적 Base).
     # v8.7.6: 단일 parquet 도 동일 — 폴더(hive/flat) 구조만 DB 섹션에 노출됨.
     # v8.7.7: 같은 파일명이 base_root 와 db_root 양쪽에 있으면 dedup. UI 에 소스 태그
@@ -5088,6 +5139,31 @@ def base_files(request: Request = None):
     seen_names = {f["name"].lower() for f in files if f.get("source") != "cache"}
     if db_root.is_dir() and db_root.resolve() != base_root.resolve():
         for f in sorted(db_root.iterdir()):
+            if f.is_dir():
+                dir_name = f.name
+                if dir_name.startswith(".") or dir_name.startswith("__"):
+                    continue
+                dir_key = dir_name.lower()
+                if dir_key not in seen_dir_paths:
+                    try:
+                        stat = f.stat()
+                        dirs.append({
+                            "name": dir_name,
+                            "path": dir_name,
+                            "size": 0,
+                            "modified": stat.st_mtime,
+                            "ext": "dir",
+                            "kind": "dir",
+                            "source": "db_root",
+                            "role": "directory",
+                            "description": "Folder",
+                            "order": 99,
+                        })
+                        seen_dir_paths.add(dir_key)
+                    except OSError:
+                        pass
+                continue
+
             if not f.is_file():
                 continue
             if not _visible_single_file(f):

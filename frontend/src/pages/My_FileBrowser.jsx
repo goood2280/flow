@@ -591,8 +591,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   // 상속 상태일 때는 내부에 점(·) 을 표시해 구분.
   const lightDot=(name)=>{const l=s3Light(name);return(
-    <span title={l.tip} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:16,height:16,padding:"0 4px",borderRadius:999,background:l.color,flexShrink:0,boxShadow:"0 0 4px "+l.color+"66",border:l.latestItemStale?"1px solid var(--bg-secondary)":(l.inherited?"1px dashed rgba(255,255,255,0.55)":"none"),color:"var(--bg-secondary)",fontSize:14,fontWeight:800,fontFamily:"monospace",lineHeight:1}}>
-      {l.directionArrow||"·"}
+    <span title={l.tip} style={{display:"inline-block",width:14,height:14,borderRadius:"50%",background:l.color,flexShrink:0,boxShadow:"0 0 5px "+l.color,border:l.latestItemStale?"2px solid var(--danger)":(l.inherited?"1px dashed rgba(255,255,255,0.6)":"1px solid rgba(0,0,0,0.1)"),marginTop:3,marginRight:6}}>
     </span>
   );};
   const lightFreshText=(name)=>{

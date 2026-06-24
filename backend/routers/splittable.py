@@ -43,6 +43,11 @@ from core.utils import (
     csv_response, csv_writer_bytes,
 )
 from core.splittable_sets_cache import invalidate as invalidate_splittable_sets_cache
+from app_v2.modules.splittable.rulebook_repository import RulebookRepository
+from app_v2.modules.splittable.rulebook_service import RulebookService
+
+rulebook_repo = RulebookRepository()
+rulebook_service = RulebookService(rulebook_repo)
 
 # v8.8.26: override CI 매칭 진단 — 실패 경로/스키마 mismatch 를 로그로 가시화.
 logger = logging.getLogger("flow.splittable")
@@ -4638,7 +4643,7 @@ def _clean_rulebook_filename(value: object, default: str) -> str:
 @router.get("/rulebook/schema")
 def get_rulebook_schema():
     """현재 역할→컬럼명 매핑 + 기본값 같이 반환. FE 에서 diff 표시 가능."""
-    return {"schema": _load_rulebook_schema(), "defaults": _DEFAULT_RULEBOOK_SCHEMA}
+    return {"schema": rulebook_repo.load_schema(), "defaults": rulebook_repo.get_default_schema()}
 
 
 class RulebookSchemaReq(BaseModel):
@@ -4654,20 +4659,20 @@ def save_rulebook_schema(
     _perm=Depends(require_page_manager("splittable")),
 ):
     me = current_user(request)
-    if req.kind not in _DEFAULT_RULEBOOK_SCHEMA:
+    if req.kind not in rulebook_repo.get_default_schema():
         raise HTTPException(400, f"unknown rulebook: {req.kind}")
-    cur = _load_rulebook_schema()
-    defm = _DEFAULT_RULEBOOK_SCHEMA[req.kind]
+    cur = rulebook_repo.load_schema()
+    defm = rulebook_repo.get_default_schema()[req.kind]
     new_map = {}
     for role, _dfl in defm.items():
         v = (req.mapping or {}).get(role, _dfl)
         if role == "file_name":
-            v = _clean_rulebook_filename(v, _dfl)
+            v = rulebook_repo.clean_rulebook_filename(v, _dfl)
         else:
             v = str(v or "").strip() or _dfl
         new_map[role] = v
     cur[req.kind] = new_map
-    _save_rulebook_schema(cur)
+    rulebook_repo.save_schema(cur)
     _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
                 "splittable:rulebook_schema_save",
                 detail=f"kind={req.kind} mapping={new_map}")
@@ -4755,20 +4760,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
 
     KNOB and VM item rows are product-common. Step/INLINE matching rows remain product-scoped.
     """
-    meta = _RULEBOOK_FILES.get(kind)
-    if not meta:
-        raise HTTPException(400, f"unknown rulebook: {kind}")
-    rows = _normalize_rulebook_rows(kind, _load_csv_rows(_rulebook_path(kind)))
-    if product and kind not in {"knob_ppid", "vm_matching"}:
-        allow_common = True
-        if kind in {"step_matching", "inline_matching"}:
-            p_col = _sch(kind).get("product_col", "product")
-            allow_common = not any(p_col in r or "product" in r for r in rows)
-        rows = [r for r in rows if _rulebook_row_matches_product(kind, r, product, allow_common=allow_common)]
-    return {
-        "kind": kind, "file": _rulebook_path(kind).name,
-        "columns": meta["cols"], "rows": rows, "count": len(rows),
-    }
+    return rulebook_service.get_rulebook(kind, product)
 
 
 class RulebookSaveReq(BaseModel):
@@ -4782,73 +4774,8 @@ class RulebookSaveReq(BaseModel):
 def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_page_manager("splittable"))):
     """Admin 또는 splittable page manager 전용. product 스코프면 해당 제품 행만 교체."""
     me = current_user(request)
-
-    meta = _RULEBOOK_FILES.get(req.kind)
-    if not meta:
-        raise HTTPException(400, f"unknown rulebook: {req.kind}")
-    fp = _rulebook_path(req.kind)
-    cols = meta["cols"]
-    req_cols = meta.get("required", [])
-    try:
-        cleaned, dedupe_rows = _matching_cache.dedupe_rows(
-            _normalize_rulebook_rows(req.kind, req.rows),
-            key_cols=cols,
-            required_cols=req_cols,
-            strict_required=True,
-        )
-    except ValueError as e:
-        raise HTTPException(400, f"validation failed: {e}")
-
-    product_scope = str(req.product or "").strip()
-    if req.kind in {"knob_ppid", "vm_matching"}:
-        product_scope = ""
-
-    # merge with existing if product-scoped.
-    if product_scope:
-        existing = _normalize_rulebook_rows(req.kind, _load_csv_rows(fp))
-        kept = [r for r in existing if not _rulebook_row_matches_product(req.kind, r, product_scope, allow_common=False)]
-        # product 컬럼 없는 공용 행은 유지, 요청 product 의 행만 교체.
-        for c in cleaned:
-            c["product"] = product_scope
-        final = kept + cleaned
-    else:
-        final = cleaned
-
-    try:
-        final, dedupe_rows_after = _matching_cache.dedupe_rows(
-            final,
-            key_cols=cols,
-            required_cols=req_cols,
-            strict_required=True,
-        )
-    except ValueError as e:
-        raise HTTPException(400, f"validation failed: {e}")
-
-    # ensure column order
-    import io as _io
-    buf = _io.StringIO()
-    w = csv_mod.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-    w.writeheader()
-    for r in final:
-        w.writerow({c: r.get(c, "") for c in cols})
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    fp.write_text(buf.getvalue(), encoding="utf-8", newline="")
-    cache_result = _matching_cache.refresh_matching_csv(fp)
-    if not cache_result.get("ok", False):
-        logger.warning("rulebook save cache refresh failed: %s", cache_result)
-    _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
-                "splittable:rulebook_save",
-                detail=f"kind={req.kind} product={product_scope} rows={len(final)}")
-    sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
-    return {
-        "ok": True,
-        "kind": req.kind,
-        "product": product_scope,
-        "saved_rows": len(final),
-        "deduped_rows": dedupe_rows + dedupe_rows_after,
-        "cache_rows": cache_result.get("rows"),
-        "s3_sync": sync_result,
-    }
+    username = req.username or (me.get("username") if isinstance(me, dict) else "")
+    return rulebook_service.save_rulebook(req.kind, req.rows, req.product, username)
 
 
 @router.get("/knob-meta")
@@ -8185,6 +8112,7 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         limit = max(1, int(limit or 500))
     except Exception:
         limit = 500
+        
     cache_key = (
         "main_table_candidates",
         _lot_lookup_cache_sig(product),
@@ -8204,6 +8132,27 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
     try:
         lookup_meta = {}
         if str(col or "").casefold() == "root_lot_id":
+            # v9.1: INSTANTANEOUS fallback via the new split_table cache directory!
+            from core.paths import PATHS
+            split_table_cache_dir = (PATHS.db_cache_dir if hasattr(PATHS, "db_cache_dir") else Path("data/cache")) / "split_table" / product
+            if split_table_cache_dir.exists():
+                cands = [fp.stem for fp in split_table_cache_dir.glob("*.parquet")]
+                if prefix.strip():
+                    cands = [c for c in cands if prefix.strip().upper() in c.upper()]
+                cands.sort()
+                cands = cands[:limit]
+                return finish({
+                    "col": "root_lot_id",
+                    "candidates": cands,
+                    "prefix": prefix,
+                    "root_scope": "",
+                    "match_mode": "split_table_cache_fast",
+                    "source": "split_table_cache",
+                    "fab_source": "",
+                    "lookup_cache": {},
+                    "strict": False,
+                })
+            
             lookup = _root_lot_lookup_cache_candidates(product, prefix=prefix, limit=limit)
             if lookup is not None:
                 lookup_meta = _lookup_cache_public_meta(lookup)
@@ -9195,6 +9144,203 @@ def related_issues_for_view(
 
 
 # ── View ──
+
+def _split_view_fast_path(
+    product: str,
+    root_lot_id: str,
+    wafer_ids: str,
+    prefix: str,
+    custom_name: str,
+    view_mode: str,
+    history_mode: str,
+    fab_lot_id: str,
+    custom_cols: str,
+    fast_cache_path: Path,
+    runtime_profile: dict,
+    started: float,
+    request: Request | None,
+    include_related: bool,
+    view_cache_key: tuple,
+) -> dict:
+    collect_started = time.perf_counter()
+    pivoted_df = pl.read_parquet(fast_cache_path)
+    
+    wf_raw = [c for c in pivoted_df.columns if c != "parameter"]
+    fab_row_df = pivoted_df.filter(pl.col("parameter") == "fab_lot_id")
+    wf2fab = {}
+    if not fab_row_df.is_empty():
+        row_dict = fab_row_df.to_dicts()[0]
+        for w in wf_raw:
+            f_val = row_dict.get(w)
+            if f_val is not None and str(f_val) not in ("None", "null"):
+                wf2fab[w] = str(f_val)
+                
+    forced_fab_scope_label = ""
+    fab_filter_for_join = fab_lot_id
+    if fab_lot_id.strip():
+        fab_scope = _fab_history_scope(product, root_lot_id=root_lot_id, fab_lot_id=fab_lot_id, limit=5000)
+        src_wafers = fab_scope.get("wafer_ids") or []
+        if src_wafers:
+            wafer_ids = _merge_wafer_scope(wafer_ids, src_wafers)
+            forced_fab_scope_label = fab_lot_id.strip()
+            
+    if forced_fab_scope_label:
+        wf2fab = {w: forced_fab_scope_label for w in dict.fromkeys(wf_raw) if w}
+        
+    wf_uniq = [w for w in dict.fromkeys(wf_raw) if w]
+    if wafer_ids:
+        w_allow = [x.strip() for x in wafer_ids.split(",") if x.strip()]
+        if w_allow:
+            wf_uniq = [w for w in wf_uniq if w in w_allow]
+            
+    def _wf_sort_key(w):
+        primary = wf2fab.get(w, "~")
+        try: return (primary, 0, int(w))
+        except:
+            s = str(w)
+            if s.upper().startswith("W"):
+                try: return (primary, 0, int(s[1:]))
+                except: pass
+            return (primary, 1, s)
+            
+    wf_sorted = sorted(wf_uniq, key=_wf_sort_key)
+    headers = [f"#{v}" for v in wf_sorted]
+    wafer_fab_list = [wf2fab.get(w, "") for w in wf_sorted]
+    
+    header_groups = []
+    cur = None; span = 0
+    for f in wafer_fab_list:
+        if f == cur: span += 1
+        else:
+            if span > 0: header_groups.append({"label": cur or "—", "span": span})
+            cur = f; span = 1
+    if span > 0: header_groups.append({"label": cur or "—", "span": span})
+    
+    all_data_cols = pivoted_df["parameter"].to_list()
+    tag_labels = _custom_tag_label_map(product)
+    for tag_col in tag_labels:
+        if tag_col not in all_data_cols:
+            all_data_cols.append(tag_col)
+    management_labels = _management_row_label_map(product)
+    if custom_name or custom_cols:
+        for mgmt_col in management_labels:
+            if mgmt_col not in all_data_cols:
+                all_data_cols.append(mgmt_col)
+                
+    sel = _select_columns(all_data_cols, custom_name, prefix, max_fallback=50, custom_cols=custom_cols)
+    if not custom_name and not custom_cols:
+        for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
+            for virt in _virtual_columns_for_prefix(product, raw_pref):
+                if virt not in sel: sel.append(virt)
+                
+    rename = _build_col_rename_map(sel, product)
+    rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+    rename.update({col: label for col, label in management_labels.items()})
+    selected = sorted(sel, key=lambda c: _natural_param_key(rename.get(c, c)))
+    runtime_profile["collect_ms"] = float(runtime_profile.get("collect_ms") or 0.0) + (time.perf_counter() - collect_started) * 1000.0
+
+    matrix_started = time.perf_counter()
+    plans = _load_plan_data(product).get("plans", {})
+    tag_values = _custom_tag_values_for_root(product, root_lot_id)
+    management_values = _management_row_values_for_root(product, root_lot_id)
+    
+    pivoted_dicts = pivoted_df.filter(pl.col("parameter").is_in(selected)).to_dicts()
+    param_data = {r["parameter"]: r for r in pivoted_dicts}
+    
+    rows = []
+    for col_name in selected:
+        is_tag_col = col_name in tag_labels
+        is_management_row = col_name in management_labels
+        r_dict = param_data.get(col_name, {})
+        
+        row_vals = [None] * len(wf_sorted)
+        plan_vals = [None] * len(wf_sorted)
+        
+        if is_tag_col:
+            for ci, wf_key in enumerate(wf_sorted):
+                row_vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+        elif is_management_row:
+            for ci, wf_key in enumerate(wf_sorted):
+                row_vals[ci] = management_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+        elif col_name in param_data:
+            for ci, wf_key in enumerate(wf_sorted):
+                row_vals[ci] = r_dict.get(wf_key)
+                ck = f"{root_lot_id}|{wf_key}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if pv is not None: plan_vals[ci] = pv
+        else:
+            for ci, wf_key in enumerate(wf_sorted):
+                ck = f"{root_lot_id}|{wf_key}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if pv is not None: plan_vals[ci] = pv
+                
+        col_upper = col_name.upper()
+        can_plan = (not is_tag_col and not is_management_row) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
+        _cells = {}
+        for ci, wf_key in enumerate(wf_sorted):
+            actual = row_vals[ci]
+            plan = plan_vals[ci]
+            actual_str = None if actual is None else str(actual)
+            if actual_str in ("None", "null"): actual_str = None
+            ck = f"{root_lot_id}|{wf_key}|{col_name}"
+            mismatch = False
+            if plan and actual_str and str(plan) != actual_str: mismatch = True
+            _cells[str(ci)] = {
+                "actual": actual_str, "plan": plan, "key": ck,
+                "can_plan": can_plan, "mismatch": mismatch,
+                "is_custom_tag": is_tag_col, "can_tag": is_tag_col,
+                "is_management_row": is_management_row, "can_management_edit": is_management_row
+            }
+        rows.append({"_param": col_name, "_display": rename.get(col_name, col_name), "_cells": _cells})
+
+    if view_mode == "diff":
+        rows = [r for r in rows if len(set(c.get("actual") for c in r["_cells"].values() if c.get("actual") is not None)) > 1]
+        
+    mismatches = []
+    for r in rows:
+        for ci, cell in r["_cells"].items():
+            if cell.get("mismatch"):
+                plan_info = plans.get(cell["key"], {})
+                mismatches.append({
+                    "param": r["_param"], "key": cell["key"],
+                    "plan": cell["plan"], "actual": cell["actual"],
+                    "plan_user": plan_info.get("user", ""),
+                    "plan_updated": plan_info.get("updated", ""),
+                })
+    runtime_profile["matrix_ms"] = float(runtime_profile.get("matrix_ms") or 0.0) + (time.perf_counter() - matrix_started) * 1000.0
+    _enqueue_plan_actual_mismatches(product, mismatches, actor="flow")
+    
+    available_fab_lots = sorted({str(v).strip() for v in wafer_fab_list if str(v or "").strip()}, key=lambda s: s.upper())
+    if not available_fab_lots:
+        hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
+        if hist_lots.get("candidates"): available_fab_lots = hist_lots["candidates"]
+
+    payload = {
+        "product": product, "lot_col": "root_lot_id", "wf_col": "wafer_id",
+        "headers": headers, "rows": rows,
+        "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
+        "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
+        "available_fab_lots": available_fab_lots,
+        "prefixes": _load_prefixes(), "precision": load_json(PRECISION_CFG, DEFAULT_PRECISION), "root_lot_id": root_lot_id,
+        "all_columns": all_data_cols, "selected_count": len(selected),
+        "prefix": prefix or (custom_name if custom_name else ""),
+        "history_mode": history_mode,
+        "plan_allowed_prefixes": PLAN_ALLOWED_PREFIXES,
+        "mismatch_count": len(mismatches),
+        "override": _resolve_override_meta_light(product),
+        "match_cache": _match_cache_response_meta(product),
+        "product_cache": _product_ram_cache_response_meta(product),
+        "lookup_cache": runtime_profile.get("_lookup_cache") or _split_view_lookup_cache_public(None, None),
+        "lot_warn": "",
+    }
+    _split_view_cache_put(view_cache_key, _split_view_cache_dep_signature(product, custom_name=custom_name, product_fp=_product_path(product)), payload)
+    return _attach_split_view_runtime_fields(
+        payload, request, include_related=include_related,
+        started=started, runtime_profile=runtime_profile,
+        payload_cache_hit=False, view_cache_key=view_cache_key
+    )
+
+
 @router.get("/view")
 def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
@@ -9252,6 +9398,19 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             view_cache_key=view_cache_key,
         )
     try:
+        if root_lot_id.strip() and not cache_first_enabled:
+            safe_root = str(root_lot_id).strip().replace("/", "_").replace("\\", "_")
+            fast_cache_dir = (PATHS.db_cache_dir if hasattr(PATHS, "db_cache_dir") else Path("data/cache")) / "split_table" / product
+            fast_cache_path = fast_cache_dir / f"{safe_root}.parquet"
+            if fast_cache_path.exists():
+                return _split_view_fast_path(
+                    product, root_lot_id, wafer_ids, prefix, custom_name, view_mode,
+                    _history_mode, fab_lot_id, custom_cols, fast_cache_path,
+                    runtime_profile, started, request, include_related, view_cache_key
+                )
+    except Exception as e:
+        logger.warning(f"Fast path failed: {e}")
+
         base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
             product,
             root_lot_id,

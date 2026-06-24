@@ -45,6 +45,7 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 - FileBrowser는 대형 파일을 sample-first로 열고, AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
+- Split Table은 조회 속도 최적화를 위해 원본 파케이 스캔을 우회하고 백그라운드에서 사전 피벗되는 전용 `split_table` 파케이 캐시의 Fast Path를 사용한다.
 - 세부 운영 상태, 가능한 작업, 100ms light endpoint 기준은 [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md)에 둔다.
 
 ## Current Version

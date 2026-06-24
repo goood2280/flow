@@ -1,0 +1,76 @@
+import polars as pl
+import os
+import time
+import logging
+from pathlib import Path
+from core.paths import PATHS
+
+logger = logging.getLogger(__name__)
+
+CACHE_DIR = PATHS.db_cache_dir / "split_table" if hasattr(PATHS, "db_cache_dir") else Path("data/cache/split_table")
+
+def build_pivoted_cache_for_product(product: str, db_root: Path = None):
+    """
+    Builds pre-pivoted Parquet caches for a specific product, partitioned by root_lot_id.
+    This ensures instantaneous loading in SplitTable.
+    """
+    if db_root is None:
+        db_root = PATHS.db_root if hasattr(PATHS, "db_root") else Path("data/db")
+        
+    product_path = db_root / f"ML_TABLE_{product}.parquet"
+    if not product_path.exists():
+        return False
+        
+    out_dir = CACHE_DIR / product
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    start_time = time.monotonic()
+    try:
+        df = pl.read_parquet(product_path)
+        
+        lot_col = next((c for c in df.columns if c.lower() == "lot_id"), None) or next((c for c in df.columns if "lot" in c.lower()), None)
+        wf_col = next((c for c in df.columns if c.lower() == "wafer_id"), None) or next((c for c in df.columns if "wafer" in c.lower()), None)
+            
+        if not lot_col or not wf_col:
+            return False
+            
+        if "root_lot_id" not in df.columns:
+            df = df.with_columns(pl.col(lot_col).str.split(".").list.first().alias("root_lot_id"))
+            
+        id_vars = ["root_lot_id", lot_col, wf_col]
+        value_vars = [c for c in df.columns if c not in id_vars]
+        
+        melted = df.unpivot(index=id_vars, on=value_vars, variable_name="parameter", value_name="value").drop_nulls("value")
+        
+        # Partition by root_lot_id and save individual pivoted parquets
+        partitions = melted.partition_by("root_lot_id", as_dict=True)
+        for root_id_tuple, part_df in partitions.items():
+            if not root_id_tuple: continue
+            
+            root_id_str = str(root_id_tuple[0] if isinstance(root_id_tuple, tuple) else root_id_tuple)
+            if not root_id_str: continue
+            
+            pivoted = part_df.pivot(
+                values="value",
+                index=["parameter"],
+                on=wf_col,
+                aggregate_function="first"
+            ).sort(["parameter"])
+            
+            safe_root = str(root_id_str).replace("/", "_").replace("\\", "_")
+            tmp_path = out_dir / f"{safe_root}.tmp.parquet"
+            final_path = out_dir / f"{safe_root}.parquet"
+            
+            pivoted.write_parquet(tmp_path)
+            tmp_path.replace(final_path)
+            
+        logger.info("Built pivoted cache for %s (%d roots) in %.2fs", product, len(partitions), time.monotonic() - start_time)
+        return True
+    except Exception as e:
+        logger.error("Failed to build pivot cache for %s: %s", product, e)
+        return False
+
+def get_pivoted_cache_path(product: str, root_lot_id: str) -> Path:
+    safe_root = str(root_lot_id).replace("/", "_").replace("\\", "_")
+    return CACHE_DIR / product / f"{safe_root}.parquet"
+
