@@ -225,6 +225,58 @@ def search_related_files(token: str, *, limit_per_file: int = 3) -> list[dict[st
     return out
 
 
+def _read_rows_any_root(filename: str) -> list[dict[str, str]]:
+    """db_root 우선, 없으면 base_root 에서 단일 CSV 를 읽는다."""
+    rows = _read_rows(filename)
+    if rows:
+        return rows
+    try:
+        path = PATHS.base_root / filename
+        if not path.is_file():
+            return []
+        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+            reader = _csv.DictReader(fh)
+            return [{_norm(k): _norm(v) for k, v in (row or {}).items() if k is not None} for row in reader]
+    except Exception:
+        return []
+
+
+def search_in_files(token: str, filenames: list[str], *, limit_per_file: int = 3) -> list[dict[str, Any]]:
+    """지정된 단일 파일(CSV)들에서 token 이 등장하는 행/열을 찾는다.
+
+    파일 설명문 카탈로그(flowi_file_docs)가 고른 파일들을 대상으로 쓴다.
+    parquet 등 CSV 가 아닌 파일은 건너뛴다 (FileBrowser AI SQL 경로 사용).
+    """
+    token_u = str(token or "").strip().upper()
+    if not token_u:
+        return []
+    boundary = re.compile(r"(?<![A-Z0-9_])" + re.escape(token_u) + r"(?![A-Z0-9_])")
+    out: list[dict[str, Any]] = []
+    for filename in filenames:
+        name = str(filename or "").strip()
+        if not name or not name.lower().endswith(".csv"):
+            continue
+        rows = _read_rows_any_root(name)
+        if not rows:
+            continue
+        hit_rows = 0
+        columns: list[str] = []
+        samples: list[dict[str, str]] = []
+        for r in rows:
+            hit_cols = [c for c, v in r.items() if v and boundary.search(str(v).upper())]
+            if not hit_cols:
+                continue
+            hit_rows += 1
+            for c in hit_cols:
+                if c not in columns:
+                    columns.append(c)
+            if len(samples) < limit_per_file:
+                samples.append(dict(r))
+        if hit_rows:
+            out.append({"file": name, "hit_rows": hit_rows, "columns": columns, "samples": samples})
+    return out
+
+
 def lookup_step_in_text(text: str, product: str = "", *, rows: list[dict[str, str]] | None = None) -> dict[str, Any] | None:
     """홈 에이전트 handle() 용. step 의도 + 매칭이 있을 때만 결과, 아니면 None."""
     result = lookup_step(text, product, rows=rows)

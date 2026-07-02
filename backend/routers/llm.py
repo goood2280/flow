@@ -21401,6 +21401,106 @@ def _handle_flowi_teach(prompt: str, *, username: str) -> dict[str, Any] | None:
     }
 
 
+_FILE_DOC_PREFIX_RE = re.compile(r"^\s*파일\s*설명(?:\s*등록)?\s*[:,]?\s*", re.IGNORECASE)
+_FILE_DOC_SEP_RE = re.compile(r"\s*(?:->|→|=|은\s|는\s|:)\s*")
+_SEARCH_INTENT_RE = re.compile(r"(찾아|어디|검색|무슨|뭐(?:야|지|인지)|알려|의미|설명해)", re.IGNORECASE)
+_TERM_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_\-.]{2,40}(?![A-Za-z0-9_])")
+
+
+def _handle_file_doc_teach(prompt: str, *, username: str) -> dict[str, Any] | None:
+    """파일 설명 등록 — "파일 설명: <파일명>은 <설명>". 전 유저 공유 카탈로그."""
+    text = str(prompt or "").strip()
+    m = _FILE_DOC_PREFIX_RE.match(text)
+    if not m:
+        return None
+    body = text[m.end():].strip()
+    parts = _FILE_DOC_SEP_RE.split(body, maxsplit=1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        return {
+            "handled": True, "intent": "file_doc_help", "feature": "fewshot",
+            "action": "file_doc_help",
+            "answer": "형식: \"파일 설명: <파일명>은 <설명>\". 예) 파일 설명: step_matching.csv는 step_id와 function_step 매핑표",
+        }
+    try:
+        from core import flowi_file_docs
+        entry = flowi_file_docs.set_doc(parts[0].strip().strip("'\""), parts[1].strip(), by=username)
+    except Exception:
+        entry = None
+    if not entry:
+        return {
+            "handled": True, "intent": "file_doc_error", "feature": "fewshot",
+            "action": "file_doc_error",
+            "answer": "파일 설명 저장에 실패했습니다. 파일명/설명 형식을 확인해주세요.",
+        }
+    return {
+        "handled": True, "intent": "file_doc_teach", "feature": "fewshot",
+        "action": "file_doc_teach", "file_doc": {"file": entry.get("file")},
+        "answer": f"파일 설명을 저장했습니다: {entry.get('file')} — {entry.get('description')}\n이제 이 설명과 관련된 질문에서 이 파일을 검색 대상으로 씁니다.",
+    }
+
+
+def _handle_file_doc_search(prompt: str, *, allowed_keys: set[str] | list[str],
+                            username: str) -> dict[str, Any] | None:
+    """파일 설명문 기반 최후 검색 — 다른 라우팅이 처리하지 못한 질문에서
+    설명 카탈로그로 대상 파일을 고르고 그 안에서 용어를 찾아 답한다.
+    못 찾으면 human-in-the-loop 안내(few-shot 티칭 또는 파일 설명 등록)를 준다."""
+    text = str(prompt or "").strip()
+    if not text or "filebrowser" not in {str(k).strip().lower() for k in allowed_keys}:
+        return None
+    if not _SEARCH_INTENT_RE.search(text):
+        return None
+    from core import fab_reference
+    tokens = fab_reference.extract_step_tokens(text)
+    if not tokens:
+        tokens = [t.group(0) for t in _TERM_TOKEN_RE.finditer(text.upper())]
+    if not tokens:
+        return None
+    token = tokens[0]
+    try:
+        from core import flowi_file_docs
+        docs = flowi_file_docs.match_files(text)
+    except Exception:
+        docs = []
+    hits: list[dict[str, Any]] = []
+    if docs:
+        try:
+            hits = fab_reference.search_in_files(token, [d.get("file") for d in docs])
+        except Exception:
+            hits = []
+    if hits:
+        lines = [f"'{token}' 검색 결과 (파일 설명 카탈로그 기반):"]
+        for h in hits[:4]:
+            lines.append(f"\n[{h['file']}] {h['hit_rows']}행 ({', '.join(h['columns'][:4])} 열)")
+            for s in h.get("samples") or []:
+                pairs = [f"{k}={v}" for k, v in list(s.items())[:5] if v]
+                lines.append("- " + ", ".join(pairs))
+        lines.append("\n수정이 필요하면 기타 메뉴의 Files에서 해당 파일을 열어 편집하세요.")
+        return {
+            "handled": True, "intent": "file_doc_search", "feature": "fewshot",
+            "action": "file_doc_search", "search_token": token,
+            "file_hits": [{k: h[k] for k in ("file", "hit_rows", "columns")} for h in hits],
+            "answer": "\n".join(lines),
+        }
+    # 검색 대상/결과 없음 — human-in-the-loop 안내.
+    guide = [
+        f"'{token}'에 대한 답을 아직 찾지 못했습니다.",
+    ]
+    if docs:
+        guide.append("설명이 등록된 파일(" + ", ".join(str(d.get("file")) for d in docs[:3]) + ")에서는 등장하지 않았습니다.")
+    else:
+        guide.append("관련 파일 설명이 아직 등록돼 있지 않습니다.")
+    guide.append(
+        "도와주실 수 있다면:\n"
+        f"- 답을 아시면 → \"기억해: {token}는 <답>\"\n"
+        "- 어느 파일에 있는지 아시면 → \"파일 설명: <파일명>은 <설명>\" 으로 등록해주세요. 다음부터 그 파일을 검색해 답합니다."
+    )
+    return {
+        "handled": True, "intent": "file_doc_search_miss", "feature": "fewshot",
+        "action": "file_doc_search_miss", "search_token": token,
+        "answer": "\n".join(guide),
+    }
+
+
 def _shared_skill_match(prompt: str) -> tuple[dict[str, Any] | None, float, list[dict[str, Any]]]:
     """공유 스킬 카탈로그에서 prompt 와 가장 잘 맞는 스킬을 찾는다."""
     lowered = str(prompt or "").strip().lower()
@@ -21453,11 +21553,18 @@ def _handle_shared_skill_request(prompt: str, *, username: str, max_rows: int,
     threshold = 0.5 if explicit else 1.0
     if wants_catalog or not best or score < threshold:
         if explicit and skills:
-            names = [
-                f"- {s.get('title') or s.get('key')} ({'SQL' if s.get('kind') == 'sql_workspace' else '체인'}"
-                + (f", 실행 {int(s.get('run_count') or 0)}회" if s.get("run_count") else "") + ")"
-                for s in skills[:12]
-            ]
+            allowed_lower = {str(k).strip().lower() for k in allowed_keys}
+            names = []
+            for s in skills[:12]:
+                req = {str(f).strip().lower() for f in (s.get("required_features") or []) if str(f).strip()}
+                if s.get("kind") == "sql_workspace":
+                    req.add("filebrowser")
+                lacking = sorted(req - allowed_lower)
+                names.append(
+                    f"- {s.get('title') or s.get('key')} ({'SQL' if s.get('kind') == 'sql_workspace' else '체인'}"
+                    + (f", 실행 {int(s.get('run_count') or 0)}회" if s.get("run_count") else "")
+                    + (f", 권한 필요: {', '.join(lacking)}" if lacking else "") + ")"
+                )
             return {
                 "handled": True,
                 "intent": "skill_catalog",
@@ -21468,13 +21575,20 @@ def _handle_shared_skill_request(prompt: str, *, username: str, max_rows: int,
         return None
     kind = str(best.get("kind") or "").strip()
     title = best.get("title") or best.get("key")
+    # 권한 게이트 — 스킬이 요구하는 기능 권한이 사용자에게 전부 있어야 실행.
+    # 권한이 다른 시스템(기능)에 스킬을 통해 우회 접근하는 것을 막는다.
+    required = {str(f).strip().lower() for f in (best.get("required_features") or []) if str(f).strip()}
     if kind == "sql_workspace":
-        if "filebrowser" not in set(allowed_keys):
-            return {
-                "handled": True, "intent": "skill_run_blocked", "feature": "skills",
-                "action": "skill_run_blocked", "skill_key": best.get("key"),
-                "answer": f"'{title}' 스킬은 FileBrowser 데이터 조회 권한이 필요합니다.",
-            }
+        required.add("filebrowser")
+    missing = sorted(required - {str(k).strip().lower() for k in allowed_keys})
+    if missing:
+        return {
+            "handled": True, "intent": "skill_run_blocked", "feature": "skills",
+            "action": "skill_run_blocked", "skill_key": best.get("key"),
+            "missing_features": missing,
+            "answer": f"'{title}' 스킬 실행에는 {', '.join(missing)} 권한이 필요합니다. 페이지 관리자에게 권한을 요청하세요.",
+        }
+    if kind == "sql_workspace":
         placeholders = best.get("placeholders") or {}
         if placeholders:
             names = ", ".join(sorted(str(k) for k in placeholders.keys()))
@@ -21635,8 +21749,8 @@ def _run_flowi_chat(
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
-    # Human-in-the-loop 티칭 — "기억해: X는 Y" / "잊어줘: X" 는 최우선 결정 신호.
-    teach_tool = _handle_flowi_teach(prompt, username=username)
+    # Human-in-the-loop 티칭 — "기억해: X는 Y" / "잊어줘: X" / "파일 설명: ..." 은 최우선 결정 신호.
+    teach_tool = _handle_flowi_teach(prompt, username=username) or _handle_file_doc_teach(prompt, username=username)
     if teach_tool:
         _finalize_flowi_tool(teach_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
         answer = teach_tool.get("answer") or "학습 요청을 처리했습니다."
@@ -22336,6 +22450,16 @@ def _run_flowi_chat(
             role=str(me.get("role") or "user"),
             agent_context=agent_context,
         )
+    _schema_search_empty = (
+        tool.get("intent") == "filebrowser_schema_search"
+        and not ((tool.get("table") or {}).get("rows") or [])
+    )
+    if not tool.get("handled") or _schema_search_empty:
+        # 파일 설명문 기반 최후 검색 + human-in-the-loop 안내 — 다른 라우팅이
+        # 처리하지 못했거나 schema 컬럼 검색이 빈손일 때(값 검색 질문) 받는다.
+        file_doc_tool = _handle_file_doc_search(prompt, allowed_keys=allowed_keys, username=username)
+        if file_doc_tool:
+            tool = file_doc_tool
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries

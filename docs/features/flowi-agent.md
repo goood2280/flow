@@ -164,9 +164,17 @@ Home Flow-i는 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`,
 - **관련 파일 횡단 검색**: 조회된 step_id/function_step이 `matching_cache.SUPPORTED_MATCHING_FILES`(vehicle_matching, ppid_knob, inline_* 등) 중 db_root에 존재하는 파일 어디에 쓰이는지 `fab_reference.search_related_files`로 찾아 파일/열/행수를 답에 붙인다. 수정은 Files 단일 파일 편집 경로를 안내한다 (채팅이 원본을 직접 수정하지 않음).
 - **Human-in-the-loop 학습**: 조회 실패 답변에 티칭 형식을 안내한다. 사용자가 `기억해: <용어>는 <답>`이라고 하면 `core/flowi_fewshots.py`(`data/flow-data/flowi_fewshots.json`, 전 유저 공유)에 저장되고, 이후 같은 용어 질문은 학습된 답으로 즉시 응답한다(가르친 사람/사용 횟수 표기). `잊어줘: <용어>`로 삭제. Home 답변 피드백에서 **싫어요 + 교정 코멘트**(`X -> Y` 또는 `정답은 Y`)를 남기면 같은 저장소에 교정으로 반영된다 (`home_agent.post_feedback`).
 
+### 파일 설명문 기반 검색 (file docs)
+
+`core/flowi_file_docs.py`(`data/flow-data/flowi_file_docs.json`, 전 유저 공유)는 Files 단일 파일별 설명문 카탈로그다. 사용자는 채팅에서 `파일 설명: <파일명>은 <설명>` 으로 등록한다. 검색성 질문(검색 의도 + 용어 토큰)이 다른 라우팅에서 처리되지 못했거나 schema 컬럼 검색이 빈손이면, Flow-i는 질문↔설명 토큰 매칭으로 대상 파일을 고르고 그 CSV 내용에서 용어를 찾아 파일/열/행 요약을 답한다 (`routers/llm.py _handle_file_doc_search`, filebrowser 권한 필요, 수정은 Files 편집 안내). 대상/결과가 없으면 human-in-the-loop 안내(`기억해:` 티칭 또는 `파일 설명:` 등록 요청)를 반환한다.
+
+두 학습 저장소(few-shot, 파일 설명)는 Admin 페이지의 **Flow-i 학습** 탭에서 조회/수정/삭제한다 (`/api/flowi-learning/fewshots*`, `/api/flowi-learning/file-docs*`, admin 전용).
+
 ### 공유 스킬 라우팅
 
 SQL 작업대에서 저장한 스킬(`data_root/skills/*.json`)은 `shared=true`면 모든 로그인 사용자가 조회/실행할 수 있고, `shared=false`(private)는 owner와 admin만 `/api/skills/list`에 보인다. 공유/비공유 전환은 `POST /api/skills/{key}/share`, 삭제는 `POST /api/skills/{key}/delete` (owner 또는 admin).
+
+스킬 실행은 **기능 권한을 통과해야 한다**: 스킬의 `required_features`(sql_workspace 스킬은 `filebrowser` 자동 포함)가 사용자 allowed feature 의 부분집합이 아니면 실행이 차단되고 필요한 권한을 안내한다. 스킬 카탈로그도 사용자가 부족한 권한을 `권한 필요:` 로 표시한다 — 권한이 다른 시스템에 스킬을 통해 우회 접근할 수 없다.
 
 Home Flow-i 채팅은 결정적 라우팅 초입에서 공유 스킬을 매칭한다 (`routers/llm.py _handle_shared_skill_request`):
 - "스킬" 언급 + 목록성 질문(목록/알려줘 등, 실행 동사 없음) → 공유 스킬 카탈로그 안내.

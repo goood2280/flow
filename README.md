@@ -61,15 +61,17 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 **2) 에이전틱 모드 (admin)** — 같은 화면의 "에이전틱 오케스트레이션" 체크박스로 `LLM 도구 선택(tool call)`과 `반복 실행 루프(ReAct)`를 켠다. env `FLOW_LLM_TOOL_CALL`/`FLOW_LLM_REACT_LOOP`가 설정된 서버에서는 env가 우선. 켜면 Home Flow-i가 LLM으로 도구를 골라 결과를 관찰하며 다단계 실행한다 (native tool_calls 미사용 — on-prem 서빙 호환).
 
 **3) 공유 스킬 (모든 유저)** — SQL 작업대에서 여러 SQL 셀을 스킬로 저장할 때 공유를 켜면 전 유저가 사용할 수 있다. Home 채팅에서:
-- `쓸 수 있는 스킬 알려줘` → 공유 스킬 카탈로그
+- `쓸 수 있는 스킬 알려줘` → 공유 스킬 카탈로그 (부족한 권한은 `권한 필요:` 표시)
 - `<스킬 제목> 스킬 실행해줘` → read-only 즉시 실행, 결과 행 미리보기
-비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다. 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다.
+실행은 스킬의 `required_features`가 사용자 기능 권한의 부분집합일 때만 허용된다 — **권한이 없는 시스템에 스킬로 우회 접근할 수 없다**. 비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다. 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다.
 
 **4) step 조회 + human-in-the-loop 학습 (모든 유저)** — Home 채팅에서:
 - `AA100100는 무슨 step이야` → step_matching/Vehicle_matching 기반 양방향 조회. 정확 일치가 없으면 suffix 변형(AB100000EC ↔ AB100000) 기준 유사 후보 제시.
 - `SD_EPI step_id 관련 파일 어디에 있어` → 룰북/매칭테이블(Files 단일 파일)을 횡단 검색해 어느 파일 어느 열에 쓰이는지 답한다. 수정은 Files 편집 화면으로.
 - 못 찾은 매핑은 `기억해: <용어>는 <답>`으로 가르치면 전 유저 공유 학습 데이터(`flowi_fewshots.json`)에 저장되고 다음부터 즉시 답한다. `잊어줘: <용어>`로 삭제.
 - 답이 틀렸으면 싫어요 + 코멘트(`X -> Y` 또는 `정답은 Y`)로 교정하면 같은 저장소에 반영된다.
+
+**5) 파일 설명문 카탈로그 (모든 유저 등록, Admin 관리)** — `파일 설명: ppid_knob.csv는 PPID 값을 knob으로 분류하는 규칙` 처럼 파일별 설명만 등록해두면, 이후 검색성 질문("PPID_08_0 어디에 있어?")에서 Flow-i가 설명과 질문을 대조해 대상 파일을 고르고 내용을 검색해 파일/열/행을 답한다. 설명이 없거나 못 찾으면 few-shot 티칭 또는 파일 설명 등록을 요청하는 human-in-the-loop 안내를 준다. 두 학습 저장소(few-shot, 파일 설명)는 **Admin → Flow-i 학습** 탭에서 조회/수정/삭제한다.
 
 ## Recent Changes (2026-07)
 
@@ -87,6 +89,7 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 | 에이전틱 | 에이전틱 오케스트레이션 admin 토글(`flowi_defaults.agentic`), GPT OSS 120B는 기존 `openai_compatible` 프리셋으로 연결 |
 | 스킬 | 공유/비공유 권한, share/delete API, Home 채팅에서 스킬 카탈로그/즉시 실행 |
 | 학습 | step_lookup 유사 후보 + 매칭 파일 횡단 관련 파일 검색, `기억해:`/`잊어줘:` human-in-the-loop few-shot, 싫어요+코멘트 교정 반영 |
+| 권한/카탈로그 | 스킬 실행 기능 권한 게이팅(`required_features`), `파일 설명:` 카탈로그 기반 값 검색 + HITL 안내, Admin "Flow-i 학습" 관리 탭 |
 
 ## Current Version
 

@@ -47,6 +47,8 @@ class SaveSkillRequest(BaseModel):
     cells: list[WorkspaceCell]
     placeholders: dict[str, Any] | None = None
     shared: bool = False
+    # 이 스킬 실행에 필요한 기능 권한 — 실행 시 사용자 allowed feature 와 대조.
+    required_features: list[str] | None = None
 
 
 def _require_user(request: Request) -> dict[str, Any]:
@@ -115,6 +117,10 @@ def save_skill(request: Request, body: SaveSkillRequest):
     if target.exists():
         raise HTTPException(status_code=409, detail=f"이미 존재하는 skill key: {key}")
 
+    required = [str(f).strip().lower() for f in (body.required_features or []) if str(f).strip()]
+    if "filebrowser" not in required:
+        # sql_workspace 스킬은 FileBrowser 데이터 조회가 기본 표면이다.
+        required.append("filebrowser")
     payload = {
         "key": key,
         "title": (body.title or key)[:120],
@@ -124,6 +130,7 @@ def save_skill(request: Request, body: SaveSkillRequest):
         "placeholders": body.placeholders or {},
         "owner": me.get("username") or "anonymous",
         "shared": bool(body.shared),
+        "required_features": required[:10],
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "run_count": 0,

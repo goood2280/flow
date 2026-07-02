@@ -318,7 +318,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["flowi_learning","Flow-i 학습"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -785,6 +785,8 @@ export default function My_Admin({user}){
       {/* Data Roots (admin only) — v8.3.0: soft-landing env abstraction */}
       {tab==="data_roots"&&isAdmin&&<DataRootsPanel/>}
 
+      {tab==="flowi_learning"&&isAdmin&&<FlowiLearningPanel/>}
+
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
 
@@ -928,6 +930,106 @@ function PageAdminsPanel({users}){
 
 // ── v8.8.14: Backup 주기 설정 + 1회 예약 ──
 // interval_hours 조절 + enabled 토글 + "이 시각에 1회 백업" 예약 (서버 점검 대비).
+// v9.x: Flow-i human-in-the-loop 학습 데이터(few-shot 용어 매핑, 파일 설명 카탈로그) 관리.
+function FlowiLearningPanel(){
+  const[fewshots,setFewshots]=useState([]);
+  const[fileDocs,setFileDocs]=useState([]);
+  const[fsDraft,setFsDraft]=useState({term:"",answer:""});
+  const[fdDraft,setFdDraft]=useState({file:"",description:""});
+  const[msg,setMsg]=useState("");
+  const load=()=>{
+    sf("/api/flowi-learning/fewshots").then(d=>setFewshots(d.items||[])).catch(e=>setMsg("로드 오류: "+e.message));
+    sf("/api/flowi-learning/file-docs").then(d=>setFileDocs(d.items||[])).catch(()=>{});
+  };
+  useEffect(()=>{load();},[]);
+  const saveFewshot=(term,answer)=>{
+    if(!term.trim()||!answer.trim()){toast.warn("용어와 답을 입력하세요.");return;}
+    sf("/api/flowi-learning/fewshots/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({term:term.trim(),answer:answer.trim()})})
+      .then(()=>{toast.ok("저장됨");setFsDraft({term:"",answer:""});load();}).catch(e=>toast.error(e.message||"저장 실패"));
+  };
+  const deleteFewshot=(term)=>{
+    if(!window.confirm(`'${term}' 학습 데이터를 삭제할까요?`))return;
+    sf("/api/flowi-learning/fewshots/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({term})})
+      .then(()=>{toast.ok("삭제됨");load();}).catch(e=>toast.error(e.message||"삭제 실패"));
+  };
+  const saveFileDoc=(file,description)=>{
+    if(!file.trim()||!description.trim()){toast.warn("파일명과 설명을 입력하세요.");return;}
+    sf("/api/flowi-learning/file-docs/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:file.trim(),description:description.trim()})})
+      .then(()=>{toast.ok("저장됨");setFdDraft({file:"",description:""});load();}).catch(e=>toast.error(e.message||"저장 실패"));
+  };
+  const deleteFileDoc=(file)=>{
+    if(!window.confirm(`'${file}' 파일 설명을 삭제할까요?`))return;
+    sf("/api/flowi-learning/file-docs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file})})
+      .then(()=>{toast.ok("삭제됨");load();}).catch(e=>toast.error(e.message||"삭제 실패"));
+  };
+  const th={textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"};
+  const td={padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:14,verticalAlign:"top"};
+  const inp={padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,boxSizing:"border-box"};
+  return(<div style={{display:"grid",gap:16}}>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>few-shot 용어 매핑</div>
+      <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>
+        홈 채팅 "기억해: &lt;용어&gt;는 &lt;답&gt;" 티칭과 싫어요+교정 코멘트로 쌓인 학습 데이터입니다. 같은 용어 질문에 조회보다 먼저 이 답을 씁니다.
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+        <input value={fsDraft.term} onChange={e=>setFsDraft(d=>({...d,term:e.target.value}))} placeholder="용어 (예: AB100000EC)" style={{...inp,width:220,fontFamily:"monospace"}}/>
+        <input value={fsDraft.answer} onChange={e=>setFsDraft(d=>({...d,answer:e.target.value}))} placeholder="답" style={{...inp,flex:1,minWidth:240}}/>
+        <Button variant="primary" onClick={()=>saveFewshot(fsDraft.term,fsDraft.answer)}>추가/수정</Button>
+      </div>
+      <div style={{overflow:"auto",maxHeight:360}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr>{["용어","답","가르친 사람","출처","사용","수정시각",""].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {fewshots.length===0&&<tr><td colSpan={7} style={{...td,textAlign:"center",color:"var(--text-secondary)"}}>학습 데이터 없음</td></tr>}
+            {fewshots.map(e=>(<tr key={e.term}>
+              <td style={{...td,fontFamily:"monospace",fontWeight:700}}>{e.term}</td>
+              <td style={td}>{e.answer}</td>
+              <td style={td}>{e.taught_by||"-"}</td>
+              <td style={td}>{e.source||"-"}</td>
+              <td style={td}>{e.uses||0}</td>
+              <td style={{...td,color:"var(--text-secondary)"}}>{String(e.updated_at||"").slice(0,16).replace("T"," ")}</td>
+              <td style={{...td,whiteSpace:"nowrap"}}>
+                <Button variant="ghost" onClick={()=>setFsDraft({term:e.term,answer:e.answer})}>수정</Button>
+                <Button variant="danger" onClick={()=>deleteFewshot(e.term)}>삭제</Button>
+              </td>
+            </tr>))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>파일 설명 카탈로그</div>
+      <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>
+        홈 채팅 "파일 설명: &lt;파일명&gt;은 &lt;설명&gt;" 으로 등록된 카탈로그입니다. Flow-i가 질문과 설명을 대조해 검색할 파일을 고릅니다.
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+        <input value={fdDraft.file} onChange={e=>setFdDraft(d=>({...d,file:e.target.value}))} placeholder="파일명 (예: step_matching.csv)" style={{...inp,width:260,fontFamily:"monospace"}}/>
+        <input value={fdDraft.description} onChange={e=>setFdDraft(d=>({...d,description:e.target.value}))} placeholder="설명 (무슨 데이터가 있는 파일인지)" style={{...inp,flex:1,minWidth:240}}/>
+        <Button variant="primary" onClick={()=>saveFileDoc(fdDraft.file,fdDraft.description)}>추가/수정</Button>
+      </div>
+      <div style={{overflow:"auto",maxHeight:360}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr>{["파일","설명","등록자","수정시각",""].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {fileDocs.length===0&&<tr><td colSpan={5} style={{...td,textAlign:"center",color:"var(--text-secondary)"}}>등록된 파일 설명 없음</td></tr>}
+            {fileDocs.map(e=>(<tr key={e.file}>
+              <td style={{...td,fontFamily:"monospace",fontWeight:700}}>{e.file}</td>
+              <td style={td}>{e.description}</td>
+              <td style={td}>{e.updated_by||"-"}</td>
+              <td style={{...td,color:"var(--text-secondary)"}}>{String(e.updated_at||"").slice(0,16).replace("T"," ")}</td>
+              <td style={{...td,whiteSpace:"nowrap"}}>
+                <Button variant="ghost" onClick={()=>setFdDraft({file:e.file,description:e.description})}>수정</Button>
+                <Button variant="danger" onClick={()=>deleteFileDoc(e.file)}>삭제</Button>
+              </td>
+            </tr>))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {msg&&<Banner tone="warn">{msg}</Banner>}
+  </div>);
+}
+
 function BackupSchedulePanel(){
   const [st,setSt]=useState(null);
   const [msg,setMsg]=useState("");

@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) 스킬 실행 기능 권한 게이팅(required_features) + 파일 설명문 카탈로그 기반 검색/HITL + Admin "Flow-i 학습" 관리 탭
 - (Claude) step_lookup 확장 — 유사 step_id 후보(suffix 정규화), 매칭 파일 횡단 관련 파일 검색, human-in-the-loop 티칭(기억해:/잊어줘:)과 피드백 교정 few-shot
 - (Claude) 공유 스킬 전사 사용 — shared/private 권한, share/delete API, Home Flow-i 채팅에서 스킬 카탈로그/즉시 실행(read-only) 라우팅
 - (Claude) 에이전틱 오케스트레이션 admin 토글 — flowi_defaults.agentic 설정으로 ReAct/tool-call 활성 (env 우선 유지), LLM 설정 UI 체크박스
