@@ -12,18 +12,55 @@ if str(ROOT / "backend") not in sys.path:
 from core import runtime_limits  # noqa: E402
 
 
-def test_small_profile_defaults_to_four_core_ten_gb_budget(monkeypatch):
+def test_small_profile_derives_budget_from_detected_host(monkeypatch):
+    gb = 1024 ** 3
     monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
     monkeypatch.delenv("FLOW_CPU_BUDGET_CORES", raising=False)
     monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_GB", raising=False)
     monkeypatch.delenv("FLOW_POLARS_MAX_THREADS", raising=False)
+    monkeypatch.delenv("FLOW_SYSTEM_MEMORY_TOTAL_GB", raising=False)
+    monkeypatch.delenv("FLOW_EFFECTIVE_MEMORY_TOTAL_GB", raising=False)
     monkeypatch.setattr(runtime_limits.os, "cpu_count", lambda: 5)
     monkeypatch.setattr(runtime_limits, "_cgroup_cpu_quota_cores", lambda: 0.0)
+    monkeypatch.setattr(runtime_limits, "_cgroup_memory_snapshot_bytes", lambda: {})
+    monkeypatch.setattr(
+        runtime_limits,
+        "_host_memory_snapshot_bytes",
+        lambda: {
+            "total_bytes": float(16 * gb),
+            "available_bytes": float(12 * gb),
+            "percent": 25.0,
+            "source": "psutil",
+        },
+    )
 
+    # 코어 5개 -> 예산 4 (1개는 OS/이벤트 루프 몫), 메모리 16GB -> 65% = 10.4GB.
     assert runtime_limits.effective_cpu_count() == 5
     assert runtime_limits.cpu_budget_cores() == 4.0
-    assert runtime_limits.process_memory_limit_gb() == 10.0
+    assert runtime_limits.process_memory_limit_gb() == 10.4
     assert runtime_limits._default_polars_threads() == "4"
+
+
+def test_small_profile_memory_falls_back_when_host_unknown(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_GB", raising=False)
+    monkeypatch.delenv("FLOW_SYSTEM_MEMORY_TOTAL_GB", raising=False)
+    monkeypatch.delenv("FLOW_EFFECTIVE_MEMORY_TOTAL_GB", raising=False)
+    monkeypatch.setattr(runtime_limits, "_cgroup_memory_snapshot_bytes", lambda: {})
+    monkeypatch.setattr(runtime_limits, "_host_memory_snapshot_bytes", lambda: {"total_bytes": 0.0})
+
+    assert runtime_limits.process_memory_limit_gb() == 10.0
+
+
+def test_explicit_env_overrides_auto_budget(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_CPU_BUDGET_CORES", "2")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "6")
+    monkeypatch.setattr(runtime_limits.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(runtime_limits, "_cgroup_cpu_quota_cores", lambda: 0.0)
+
+    assert runtime_limits.cpu_budget_cores() == 2.0
+    assert runtime_limits.process_memory_limit_gb() == 6.0
 
 
 def test_system_memory_snapshot_prefers_lower_cgroup_limit(monkeypatch):

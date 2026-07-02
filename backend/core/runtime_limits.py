@@ -1,8 +1,12 @@
 """Runtime resource defaults for small Flow deployments.
 
 The default resource profile is intentionally bounded for a shared Flow host.
-Flow should stay inside roughly 4 CPU cores and 10GB process RSS unless an
-operator explicitly opts into a larger profile.
+Budgets are derived from the detected host at startup — CPU budget is
+(cores - 1) and the process RSS limit is ~65% of total memory (cgroup limits
+and FLOW_SYSTEM_MEMORY_TOTAL_GB overrides honored) — so the same build adapts
+when the machine changes. Operators can still pin exact values with
+FLOW_CPU_BUDGET_CORES / FLOW_PROCESS_MEMORY_LIMIT_GB or opt into the `full`
+profile.
 
 These defaults should run before importing Polars, NumPy, or other native
 compute libraries.
@@ -17,7 +21,6 @@ import time
 
 _SMALL_PROFILES = {"", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
-_SMALL_CPU_BUDGET_CORES_DEFAULT = 4.0
 _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
@@ -90,24 +93,53 @@ def effective_cpu_count() -> float:
     return max(1.0, detected)
 
 
+def auto_cpu_budget_cores() -> float:
+    """Host-proportional CPU budget: leave one core for the OS/event loop.
+
+    Detected at runtime so the same build adapts when the host changes
+    (e.g. 4 cores -> budget 3, 8 cores -> budget 7, 2 cores -> budget 1)."""
+    return max(1.0, effective_cpu_count() - 1.0)
+
+
+def auto_process_memory_limit_gb() -> float:
+    """Host-proportional RSS limit: ~65% of detected total memory.
+
+    Falls back to the fixed small-profile default when total memory cannot
+    be detected. Detection honors cgroup limits and env overrides."""
+    total_bytes = 0.0
+    override = _memory_override_total_bytes()
+    if override:
+        total_bytes = float(override)
+    if not total_bytes:
+        limit = _cgroup_memory_snapshot_bytes()
+        total_bytes = float(limit.get("total_bytes") or 0.0) if limit else 0.0
+    if not total_bytes:
+        total_bytes = float(_host_memory_snapshot_bytes().get("total_bytes") or 0.0)
+    if total_bytes <= 0:
+        return _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT
+    total_gb = total_bytes / (1024 ** 3)
+    return max(2.0, round(total_gb * 0.65, 1))
+
+
 def cpu_budget_cores() -> float:
-    raw = os.environ.get("FLOW_CPU_BUDGET_CORES", str(_SMALL_CPU_BUDGET_CORES_DEFAULT) if is_small_profile() else "")
+    raw = os.environ.get("FLOW_CPU_BUDGET_CORES", "")
     try:
         value = float(raw)
     except Exception:
-        value = _SMALL_CPU_BUDGET_CORES_DEFAULT if is_small_profile() else effective_cpu_count()
+        value = auto_cpu_budget_cores() if is_small_profile() else effective_cpu_count()
+    if value <= 0:
+        value = auto_cpu_budget_cores() if is_small_profile() else effective_cpu_count()
     return max(1.0, min(value, effective_cpu_count()))
 
 
 def process_memory_limit_gb() -> float:
-    raw = os.environ.get(
-        "FLOW_PROCESS_MEMORY_LIMIT_GB",
-        str(_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT) if is_small_profile() else "0",
-    )
+    raw = os.environ.get("FLOW_PROCESS_MEMORY_LIMIT_GB", "")
+    if raw.strip() == "":
+        return auto_process_memory_limit_gb() if is_small_profile() else 0.0
     try:
         value = float(raw)
     except Exception:
-        value = _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT if is_small_profile() else 0.0
+        value = auto_process_memory_limit_gb() if is_small_profile() else 0.0
     return max(0.0, value)
 
 
@@ -448,10 +480,11 @@ def _default_polars_threads() -> str:
 def apply_runtime_limits() -> None:
     """Apply CPU/memory-conscious defaults unless deploy set explicit values."""
     os.environ.setdefault("FLOW_RESOURCE_PROFILE", "small")
-    os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(_SMALL_CPU_BUDGET_CORES_DEFAULT) if is_small_profile() else "")
+    # 호스트 크기를 읽어 비례 산출 — 환경이 바뀌어도 (코어/메모리 증감) 재배포 없이 맞춰진다.
+    os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(auto_cpu_budget_cores()) if is_small_profile() else "")
     os.environ.setdefault(
         "FLOW_PROCESS_MEMORY_LIMIT_GB",
-        str(_SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT) if is_small_profile() else "0",
+        str(auto_process_memory_limit_gb()) if is_small_profile() else "0",
     )
     os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_STRICT", "1" if is_small_profile() else "0")
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
