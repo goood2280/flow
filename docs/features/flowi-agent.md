@@ -157,6 +157,13 @@ Home Flow-i는 응답 생성 후 사용자별 prompt/answer와 공개 tool summa
 
 Home Flow-i는 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`, `ppid_knob.csv`가 schema catalog 또는 DB root single-file로 등록되어 있으면 read-only evidence로 사용할 수 있다. `step_id -> function_step/step_desc` 직접 조회와 `ppid_knob.csv feature_name -> function_step -> step_id` 확장은 `/api/llm/flowi/chat` 응답의 `tool.source_ids`, `tool.filters`, `tool.table`, `term_resolution`, `trace.api_calls`에 근거 파일과 필터를 남기며 원본 CSV를 수정하지 않는다.
 
+### Step lookup 확장 — 유사 후보, 관련 파일, human-in-the-loop 학습
+
+`step_lookup` unit은 정확 일치 외에 다음을 제공한다:
+- **유사 후보**: step 의도 질문에서 정확 일치가 없으면 step_id 모양 토큰(AA100000, A00000, AB100000EC 등)을 추출해 suffix 정규화(base) 일치 > 접두 일치 순으로 후보를 제시한다 (`fab_reference.suggest_similar_steps`). step 토큰만 있고 의도 키워드가 없으면 기존처럼 개입하지 않는다 (root lot 오염 방지).
+- **관련 파일 횡단 검색**: 조회된 step_id/function_step이 `matching_cache.SUPPORTED_MATCHING_FILES`(vehicle_matching, ppid_knob, inline_* 등) 중 db_root에 존재하는 파일 어디에 쓰이는지 `fab_reference.search_related_files`로 찾아 파일/열/행수를 답에 붙인다. 수정은 Files 단일 파일 편집 경로를 안내한다 (채팅이 원본을 직접 수정하지 않음).
+- **Human-in-the-loop 학습**: 조회 실패 답변에 티칭 형식을 안내한다. 사용자가 `기억해: <용어>는 <답>`이라고 하면 `core/flowi_fewshots.py`(`data/flow-data/flowi_fewshots.json`, 전 유저 공유)에 저장되고, 이후 같은 용어 질문은 학습된 답으로 즉시 응답한다(가르친 사람/사용 횟수 표기). `잊어줘: <용어>`로 삭제. Home 답변 피드백에서 **싫어요 + 교정 코멘트**(`X -> Y` 또는 `정답은 Y`)를 남기면 같은 저장소에 교정으로 반영된다 (`home_agent.post_feedback`).
+
 ### 공유 스킬 라우팅
 
 SQL 작업대에서 저장한 스킬(`data_root/skills/*.json`)은 `shared=true`면 모든 로그인 사용자가 조회/실행할 수 있고, `shared=false`(private)는 owner와 admin만 `/api/skills/list`에 보인다. 공유/비공유 전환은 `POST /api/skills/{key}/share`, 삭제는 `POST /api/skills/{key}/delete` (owner 또는 admin).

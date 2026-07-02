@@ -79,6 +79,33 @@ def test_lookup_step_no_data():
     assert out["reason"] == "no_data"
 
 
+# ── suggest_similar_steps / extract_step_tokens ──────────────────────────────
+def test_extract_step_tokens_shapes():
+    tokens = fab_reference.extract_step_tokens("AB100000EC 하고 A00000, AA100100 확인")
+    assert "AB100000EC" in tokens and "A00000" in tokens and "AA100100" in tokens
+    # root lot(짧은 숫자부)은 step 토큰이 아니다.
+    assert fab_reference.extract_step_tokens("A1000 조회") == []
+
+
+def test_suggest_similar_steps_suffix_base_match():
+    # AA100160 (suffix 없는 변형) → 같은 base 의 AA100160EC 를 후보로.
+    out = fab_reference.suggest_similar_steps("AA100160", rows=STEP_ROWS)
+    assert out and out[0]["step_id"] == "AA100160EC"
+
+
+def test_lookup_step_in_text_miss_with_intent_returns_similar():
+    got = fab_reference.lookup_step_in_text("AA100160는 무슨 step이야", rows=STEP_ROWS)
+    assert got is not None and got["found"] is False
+    assert got.get("token") == "AA100160"
+    assert any(m["step_id"] == "AA100160EC" for m in got.get("similar") or [])
+    assert "AA100160EC" in got["answer"]
+
+
+def test_lookup_step_in_text_token_without_intent_stays_none():
+    # step 토큰만 있고 의도 키워드 없음 → 기존처럼 개입하지 않음 (root lot 오염 방지).
+    assert fab_reference.lookup_step_in_text("ZZ999999 확인해줘", rows=STEP_ROWS) is None
+
+
 # ── classify_ppid_knob (pure) ─────────────────────────────────────────────────
 def test_classify_ppid_knob_eq_match():
     out = fab_reference.classify_ppid_knob("PPID_24_3", rows=PPID_ROWS)

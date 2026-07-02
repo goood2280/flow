@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -178,7 +179,33 @@ def post_feedback(request: Request, body: FeedbackRequest):
                 )
         except Exception:
             logger.debug("home feedback penalty update failed", exc_info=True)
-    return {"ok": True, "feedback": row}
+    # 싫어요 + 교정 코멘트 → few-shot 교정: 코멘트에 "X는 Y" / "X -> Y" / "정답은 Y"
+    # 형태가 있으면 학습 저장소에 반영해 다음부터 그 답을 쓴다.
+    correction = None
+    if rating in {"down", "correction"} and (body.note or "").strip():
+        try:
+            from core import fab_reference, flowi_fewshots
+            note = (body.note or "").strip()
+            m = re.match(r"^\s*(?P<term>[A-Za-z0-9_\-.]{2,120})\s*(?:->|→|=|은\s|는\s|:)\s*(?P<ans>.+)$", note)
+            if m:
+                correction = flowi_fewshots.teach(
+                    m.group("term"), m.group("ans").strip(),
+                    by=me.get("username") or "", source="feedback",
+                )
+            else:
+                ans_m = re.match(r"^\s*정답은?\s*[:]?\s*(?P<ans>.+)$", note)
+                tokens = fab_reference.extract_step_tokens(body.prompt or "")
+                if ans_m and tokens:
+                    correction = flowi_fewshots.teach(
+                        tokens[0], ans_m.group("ans").strip(),
+                        by=me.get("username") or "", source="feedback",
+                    )
+        except Exception:
+            logger.debug("feedback correction fewshot save failed", exc_info=True)
+    out = {"ok": True, "feedback": row}
+    if correction:
+        out["correction"] = {"term": correction.get("term"), "answer": correction.get("answer")}
+    return out
 
 
 @router.get("/feedback")

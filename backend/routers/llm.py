@@ -21338,6 +21338,69 @@ def _handle_explicit_splittable_view_fast_path(
     return tool if isinstance(tool, dict) and tool.get("handled") else None
 
 
+_TEACH_PREFIX_RE = re.compile(r"^\s*(기억해줘?|가르쳐줄게|외워줘?)\s*[:,]?\s*", re.IGNORECASE)
+_FORGET_PREFIX_RE = re.compile(r"^\s*(잊어줘?|삭제해줘?)\s*[:,]?\s*", re.IGNORECASE)
+_TEACH_SEP_RE = re.compile(r"\s*(?:->|→|=|은\s|는\s|:)\s*")
+
+
+def _handle_flowi_teach(prompt: str, *, username: str) -> dict[str, Any] | None:
+    """Human-in-the-loop 티칭 — "기억해: <용어>는 <답>" / "잊어줘: <용어>".
+
+    결정적 조회가 못 찾은 매핑을 사용자가 직접 가르치면 flowi_fewshots 에
+    저장하고, 이후 같은 용어 질문은 학습된 답으로 즉시 응답한다.
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return None
+    forget_m = _FORGET_PREFIX_RE.match(text)
+    if forget_m:
+        term = text[forget_m.end():].strip().strip("'\"")
+        if not term or len(term) > 120 or " " in term:
+            return None
+        try:
+            from core import flowi_fewshots
+            removed = flowi_fewshots.forget(term)
+        except Exception:
+            removed = False
+        return {
+            "handled": True, "intent": "fewshot_forget", "feature": "fewshot",
+            "action": "fewshot_forget",
+            "answer": (f"'{term.upper()}' 학습 데이터를 삭제했습니다." if removed
+                       else f"'{term.upper()}' 로 저장된 학습 데이터가 없습니다."),
+        }
+    teach_m = _TEACH_PREFIX_RE.match(text)
+    if not teach_m:
+        return None
+    body = text[teach_m.end():].strip()
+    parts = _TEACH_SEP_RE.split(body, maxsplit=1)
+    if len(parts) != 2:
+        return {
+            "handled": True, "intent": "fewshot_teach_help", "feature": "fewshot",
+            "action": "fewshot_teach_help",
+            "answer": "형식: \"기억해: <용어>는 <답>\" 또는 \"기억해: <용어> -> <답>\". 예) 기억해: AB100000EC는 VIA1_FORMATION_EC",
+        }
+    term = parts[0].strip().strip("'\"")
+    answer = parts[1].strip()
+    if not term or not answer or len(term) > 120:
+        return None
+    try:
+        from core import flowi_fewshots
+        entry = flowi_fewshots.teach(term, answer, by=username, source="teach")
+    except Exception:
+        entry = None
+    if not entry:
+        return {
+            "handled": True, "intent": "fewshot_teach_error", "feature": "fewshot",
+            "action": "fewshot_teach_error",
+            "answer": "학습 데이터 저장에 실패했습니다. 용어/답 형식을 확인해주세요.",
+        }
+    return {
+        "handled": True, "intent": "fewshot_teach", "feature": "fewshot",
+        "action": "fewshot_teach", "fewshot": {"term": entry.get("term")},
+        "answer": f"기억했습니다: {entry.get('term')} → {entry.get('answer')}\n다음부터 이 용어 질문에 바로 답합니다. 수정은 같은 형식으로 다시, 삭제는 \"잊어줘: {entry.get('term')}\".",
+    }
+
+
 def _shared_skill_match(prompt: str) -> tuple[dict[str, Any] | None, float, list[dict[str, Any]]]:
     """공유 스킬 카탈로그에서 prompt 와 가장 잘 맞는 스킬을 찾는다."""
     lowered = str(prompt or "").strip().lower()
@@ -21569,6 +21632,32 @@ def _run_flowi_chat(
                 username=username,
                 tool=fast_split_tool,
                 agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    # Human-in-the-loop 티칭 — "기억해: X는 Y" / "잊어줘: X" 는 최우선 결정 신호.
+    teach_tool = _handle_flowi_teach(prompt, username=username)
+    if teach_tool:
+        _finalize_flowi_tool(teach_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+        answer = teach_tool.get("answer") or "학습 요청을 처리했습니다."
+        _append_user_event(username, teach_tool.get("intent") or "fewshot_teach", _event_fields(
+            {"prompt": prompt, "intent": teach_tool.get("intent") or "", "feature": "fewshot", "answer": answer},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": teach_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source, client_run_id=client_run_id, username=username,
+                tool=teach_tool, agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 

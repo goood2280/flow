@@ -35,6 +35,8 @@ _KNOB_INTENT_RE = re.compile(
 )
 # ppid 토큰 후보 (PP_PRODA0_03, PPID_24_3 등) — 알려진 value 미스 시 폴백 추출.
 _PPID_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])P[A-Za-z]*ID?[A-Za-z0-9_]*\d[A-Za-z0-9_]*(?![A-Za-z0-9_])")
+# step_id 모양 토큰 (AA100000, A00000, AB100000EC 등) — 알려진 id 미스 시 폴백 추출.
+_STEP_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Z]{1,3}\d{5,6}[A-Z0-9]{0,4}(?![A-Za-z0-9_])")
 
 
 def _norm(value: Any) -> str:
@@ -144,6 +146,85 @@ def _answer_step_to_id(matches: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def extract_step_tokens(text: str) -> list[str]:
+    """text 에서 step_id 모양(대문자 1~3 + 숫자 5~6 + 선택적 suffix) 토큰을 추출."""
+    return list(dict.fromkeys(m.group(0).upper() for m in _STEP_TOKEN_RE.finditer(str(text or "").upper())))
+
+
+def _step_base(step_id: str) -> str:
+    """suffix 변형 정규화 — AB100000EC -> AB100000 (뒤 문자군 제거)."""
+    return re.sub(r"[A-Z]+$", "", str(step_id or "").upper())
+
+
+def suggest_similar_steps(token: str, product: str = "", *,
+                          rows: list[dict[str, str]] | None = None,
+                          limit: int = 10) -> list[dict[str, str]]:
+    """정확 일치가 없을 때 유사 step_id 후보 — suffix 정규화 일치 > 접두 일치 순."""
+    rows = _read_rows(STEP_MATCHING_FILE) if rows is None else rows
+    scope = _filter_product(rows, product)
+    token_u = str(token or "").upper()
+    token_base = _step_base(token_u)
+    ranked: list[tuple[int, dict[str, str]]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in scope:
+        sid = str(r.get("step_id") or "").upper()
+        if not sid:
+            continue
+        key = (r.get("product", ""), sid)
+        if key in seen:
+            continue
+        rank = 0
+        if token_base and _step_base(sid) == token_base:
+            rank = 2  # 같은 base — suffix 변형 관계
+        elif token_u and (sid.startswith(token_u) or token_u.startswith(sid)):
+            rank = 1  # 접두 관계
+        if rank:
+            seen.add(key)
+            ranked.append((rank, {"product": r.get("product", ""), "step_id": r.get("step_id", ""), "function_step": r.get("function_step", "")}))
+    ranked.sort(key=lambda x: (-x[0], x[1]["step_id"]))
+    return [m for _rank, m in ranked[:limit]]
+
+
+def search_related_files(token: str, *, limit_per_file: int = 3) -> list[dict[str, Any]]:
+    """db_root 의 알려진 매칭 CSV 들에서 token 이 등장하는 파일/열을 찾는다.
+
+    Files(단일 파일) 관리 대상인 룰북/매칭테이블 안에서 step_id 나 용어가 어디에
+    쓰이는지 횡단 검색해 준다. 결과는 파일별 {file, hit_rows, columns, samples}.
+    """
+    token_u = str(token or "").strip().upper()
+    if not token_u:
+        return []
+    try:
+        from core.matching_cache import SUPPORTED_MATCHING_FILES
+        filenames = sorted(SUPPORTED_MATCHING_FILES)
+    except Exception:
+        filenames = [STEP_MATCHING_FILE, PPID_KNOB_FILE]
+    boundary = re.compile(r"(?<![A-Z0-9_])" + re.escape(token_u) + r"(?![A-Z0-9_])")
+    out: list[dict[str, Any]] = []
+    for filename in filenames:
+        if not (PATHS.db_root / filename).is_file():
+            continue
+        rows = _read_rows(filename)
+        if not rows:
+            continue
+        hit_rows = 0
+        columns: list[str] = []
+        samples: list[dict[str, str]] = []
+        for r in rows:
+            hit_cols = [c for c, v in r.items() if v and boundary.search(str(v).upper())]
+            if not hit_cols:
+                continue
+            hit_rows += 1
+            for c in hit_cols:
+                if c not in columns:
+                    columns.append(c)
+            if len(samples) < limit_per_file:
+                samples.append(dict(r))
+        if hit_rows:
+            out.append({"file": filename, "hit_rows": hit_rows, "columns": columns, "samples": samples})
+    return out
+
+
 def lookup_step_in_text(text: str, product: str = "", *, rows: list[dict[str, str]] | None = None) -> dict[str, Any] | None:
     """홈 에이전트 handle() 용. step 의도 + 매칭이 있을 때만 결과, 아니면 None."""
     result = lookup_step(text, product, rows=rows)
@@ -155,9 +236,21 @@ def lookup_step_in_text(text: str, product: str = "", *, rows: list[dict[str, st
         return result
     if result.get("reason") == "no_data":
         return None
-    if _STEP_INTENT_RE.search(text or ""):
-        return {**result, "answer": "해당 step_id / function_step 을 step_matching.csv 에서 찾지 못했습니다."}
-    return None
+    # 미스 경로는 기존처럼 step 의도 키워드가 있을 때만 개입한다 — step_id 모양
+    # 토큰만으로 가로채면 root lot(AZ123456류) 질문을 오염시킬 수 있다.
+    if not _STEP_INTENT_RE.search(text or ""):
+        return None
+    step_tokens = extract_step_tokens(text)
+    # 정확 일치는 없지만 step 의도가 있음 — 유사 후보를 제시한다.
+    token = step_tokens[0] if step_tokens else ""
+    similar = suggest_similar_steps(token, product, rows=rows) if token else []
+    if similar:
+        lines = [f"'{token}' 정확 일치는 step_matching.csv 에 없습니다. 유사 step_id {len(similar)}건:"]
+        lines += [f"- {m['step_id']} ({m['product']}): {m['function_step']}" for m in similar[:6]]
+        answer = "\n".join(lines)
+    else:
+        answer = "해당 step_id / function_step 을 step_matching.csv 에서 찾지 못했습니다."
+    return {**result, "token": token, "similar": similar, "answer": answer}
 
 
 # ── PPID(value) -> knob(category) ─────────────────────────────────────────────
