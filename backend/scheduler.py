@@ -39,13 +39,23 @@ def run_product_dedup_once(now: dt.datetime | None = None) -> dict:
         cfg["products"] = after
         save_json(_CONFIG_FILE, cfg, indent=2)
 
-    # v9.1: Build pre-pivoted SplitTable cache for fast instantaneous loading
-    db_root = PATHS.db_root if hasattr(PATHS, "db_root") else Path("data/db")
-    if db_root.exists():
-        for fp in db_root.glob("ML_TABLE_*.parquet"):
-            product_name = fp.stem.replace("ML_TABLE_", "")
+    # v9.1: Build pre-pivoted SplitTable cache for fast instantaneous loading.
+    # Base 루트(ML_TABLE 기본 위치)와 DB 루트를 모두 스캔하고, 캐시 디렉터리는
+    # canonical ML_TABLE_* 이름으로 통일한다 (view fast path와 동일 규칙).
+    scan_roots = []
+    for attr in ("base_root", "db_root"):
+        root = getattr(PATHS, attr, None)
+        if root and root.exists() and root not in scan_roots:
+            scan_roots.append(root)
+    seen_products = set()
+    for root in scan_roots:
+        for fp in root.glob("ML_TABLE_*.parquet"):
+            product_name = fp.stem
+            if product_name.upper() in seen_products:
+                continue
+            seen_products.add(product_name.upper())
             logger.info("Scheduler: Building pivoted cache for %s", product_name)
-            build_pivoted_cache_for_product(product_name, db_root=db_root)
+            build_pivoted_cache_for_product(product_name, product_path=fp)
             # 다른 워커(API 응답)가 스플릿 테이블 검색에 즉각 반응할 수 있도록
             # 제품 단위 처리가 끝날 때마다 잠시 대기합니다.
             time.sleep(0.5)

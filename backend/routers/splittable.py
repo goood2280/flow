@@ -8935,6 +8935,69 @@ def _clear_split_view_cache() -> None:
         _VIEW_CACHE.clear()
 
 
+# ── Pre-pivoted root_lot cache: background build (single-flight per product) ──
+_PIVOT_BUILD_LOCK = threading.Lock()
+_PIVOT_BUILD_INPROGRESS: set[str] = set()
+_PIVOT_BUILD_LAST: dict[str, float] = {}
+_PIVOT_BUILD_COOLDOWN_SEC = 300.0
+
+
+def _pivot_cache_path(product: str, root_lot_id: str) -> Path:
+    from app_v2.modules.splittable.cache_builder import get_pivoted_cache_path
+    return get_pivoted_cache_path(product, root_lot_id)
+
+
+def _pivot_cache_build_state(product: str) -> str:
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
+    with _PIVOT_BUILD_LOCK:
+        if canonical in _PIVOT_BUILD_INPROGRESS:
+            return "building"
+        if _PIVOT_BUILD_LAST.get(canonical):
+            return "built"
+    return ""
+
+
+def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
+    """Rebuild the product's pre-pivoted root_lot cache in a daemon thread.
+    Single-flight per product with a cooldown so view-triggered rebuilds cannot
+    stampede; the daily 03:00 scheduler remains the full sweep."""
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
+    if not canonical:
+        return False
+    now = time.time()
+    with _PIVOT_BUILD_LOCK:
+        if canonical in _PIVOT_BUILD_INPROGRESS:
+            return False
+        if now - _PIVOT_BUILD_LAST.get(canonical, 0.0) < _PIVOT_BUILD_COOLDOWN_SEC:
+            return False
+        _PIVOT_BUILD_INPROGRESS.add(canonical)
+
+    try:
+        source_fp = _product_path(canonical)
+    except HTTPException:
+        source_fp = None
+
+    def _run():
+        ok = False
+        try:
+            from app_v2.modules.splittable.cache_builder import build_pivoted_cache_for_product
+            ok = bool(build_pivoted_cache_for_product(canonical, product_path=source_fp))
+        except Exception as exc:
+            logger.warning(f"pivot cache build failed for {canonical} ({reason}): {exc}")
+        finally:
+            with _PIVOT_BUILD_LOCK:
+                _PIVOT_BUILD_INPROGRESS.discard(canonical)
+                _PIVOT_BUILD_LAST[canonical] = time.time()
+        if ok:
+            # 새 pivot 파일은 view payload cache 의존 시그니처에 잡히지 않으므로
+            # 빌드 완료 시점에 명시적으로 비운다.
+            _clear_split_view_cache()
+
+    threading.Thread(target=_run, daemon=True, name=f"splittable-pivot-{canonical}").start()
+    logger.info(f"pivot cache build queued for {canonical} ({reason})")
+    return True
+
+
 def _split_view_cache_get(key: tuple, dep_signature: tuple) -> dict | None:
     with _VIEW_CACHE_LOCK:
         cached = _VIEW_CACHE.get(key)
@@ -9399,18 +9462,29 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         )
     try:
         if root_lot_id.strip() and not cache_first_enabled:
-            safe_root = str(root_lot_id).strip().replace("/", "_").replace("\\", "_")
-            fast_cache_dir = (PATHS.db_cache_dir if hasattr(PATHS, "db_cache_dir") else Path("data/cache")) / "split_table" / product
-            fast_cache_path = fast_cache_dir / f"{safe_root}.parquet"
+            fast_cache_path = _pivot_cache_path(product, root_lot_id.strip())
             if fast_cache_path.exists():
+                try:
+                    if fp and fast_cache_path.stat().st_mtime < fp.stat().st_mtime:
+                        # 원본 ML_TABLE 이 pivot cache 보다 최신 — 즉시성은 유지하고
+                        # 백그라운드 재빌드를 예약해 다음 조회부터 최신 데이터를 쓴다.
+                        _enqueue_pivot_cache_build(product, reason="stale_pivot")
+                except Exception:
+                    pass
                 return _split_view_fast_path(
                     product, root_lot_id, wafer_ids, prefix, custom_name, view_mode,
                     _history_mode, fab_lot_id, custom_cols, fast_cache_path,
                     runtime_profile, started, request, include_related, view_cache_key
                 )
+            # pivot cache miss — 이번 요청은 아래 일반 경로로 처리하고,
+            # 백그라운드에서 제품 전체 pivot cache 를 빌드해 다음 검색을 즉시화한다.
+            _enqueue_pivot_cache_build(product, reason="cache_miss")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"Fast path failed: {e}")
 
+    try:
         base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
             product,
             root_lot_id,
@@ -9802,6 +9876,45 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         raise
     except Exception as e:
         raise HTTPException(400, f"View error: {str(e)}")
+
+
+# ── Pre-pivoted cache: on-demand refresh ──
+class PivotRefreshReq(BaseModel):
+    product: str
+    username: str = ""
+
+
+@router.post("/cache/pivot/refresh")
+def refresh_pivot_cache(req: PivotRefreshReq, _perm=Depends(require_page_manager("splittable"))):
+    """수동 pivot cache 재빌드 트리거. 빌드는 백그라운드에서 돌고 완료 시
+    view payload cache 를 비워 다음 조회부터 최신 데이터가 보인다."""
+    queued = _enqueue_pivot_cache_build(req.product, reason="manual_refresh")
+    return {
+        "ok": True,
+        "queued": queued,
+        "state": _pivot_cache_build_state(req.product),
+    }
+
+
+@router.get("/cache/pivot/status")
+def pivot_cache_status(product: str = Query(...), username: str = Query("")):
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
+    cache_dir = _pivot_cache_path(canonical, "_probe").parent
+    files = 0
+    latest_mtime = 0.0
+    try:
+        if cache_dir.exists():
+            for fp_ in cache_dir.glob("*.parquet"):
+                files += 1
+                latest_mtime = max(latest_mtime, fp_.stat().st_mtime)
+    except Exception:
+        pass
+    return {
+        "product": canonical,
+        "state": _pivot_cache_build_state(canonical),
+        "files": files,
+        "last_built": datetime.datetime.fromtimestamp(latest_mtime).isoformat(timespec="seconds") if latest_mtime else None,
+    }
 
 
 # ── Plans ──

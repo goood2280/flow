@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) SplitTable view fast-path 컨트롤 플로우 회귀 수정(캐시 미스 시 null 반환) + pivot cache 미스/stale 백그라운드 재빌드 + canonical 캐시 디렉터리 통일 + 수동 refresh API
 - (Claude) S3 주기 동기화 전역 on/off — auto-sync 토글 API/UI, FLOW_DISABLE_S3_INGEST/FLOW_DISABLE_S3_SYNC env
 - (Codex) Flow-i Workflow 템플릿 관리 UI/API 전환
 - (Codex) Home Flow-i 질문/응답 plain text 렌더링 보정
