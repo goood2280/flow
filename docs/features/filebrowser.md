@@ -5,7 +5,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## Owns
 
 - DB root, root-level base/rulebook 파일 탐색
-- parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 파일/DB를 처음 열면 `meta_only=false`로 100행 샘플을 바로 보여준다. API의 `meta_only=true` schema-only 계약은 호환용으로 유지한다.
+- parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 DB 제품/root parquet을 처음 열면 2단계로 로드한다: ① `meta_only=true`로 스키마를 즉시 그리고("샘플 행 불러오는 중…" 표시), ② 100행 샘플을 백그라운드로 이어 받아 교체한다. SQL/SELECT/정렬/집계가 있는 조회와 페이지 이동은 기존처럼 단일 `meta_only=false` 요청이다. 응답 순서 꼬임은 요청 시퀀스 가드로 무시한다.
 - read-only SQL/filter/download preview
 - 빠른 화면 표시: DB/Parquet/cache preview와 SQL/컬럼 선택 결과는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
 - CSV 다운로드: 화면 100행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
@@ -202,7 +202,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 - 관리용 단일 CSV/JSON/YAML/MD는 기존처럼 전체 표시 경로를 유지한다. cache 파일, `ML_TABLE_*.parquet`, 일반 대형 parquet은 lazy/DuckDB 경로로 100행과 제한된 열만 반환한다.
 - 관리용 단일 CSV가 header보다 긴 row를 가져 `found more fields than defined` 형태로 스캔 실패하면 FileBrowser는 Python CSV fallback으로 header 범위까지만 복구한다. 초과 필드는 `extra_col_N` 같은 임시 컬럼으로 노출하거나 저장하지 않으며, 사용자가 그리드에서 명시적으로 열을 추가/삭제/이름 변경하면 EDM version diff는 `열 +N`, `열 -N`, 행/열 수 변화로 남긴다.
 - SQL 실행과 컬럼 선택도 표시 결과는 최대 100행이다. 사용자는 조건 적용 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
-- `/api/filebrowser/base-file-view`, `/api/filebrowser/view`, `/api/filebrowser/root-parquet-view`는 `meta_only=true`를 계속 지원한다. FileBrowser 화면의 첫 open은 `meta_only=false`이며 100행 샘플을 바로 요청한다. 응답에는 `meta_only`, `meta_cached`, `row_count_unknown`, `source_size`, `preview_capped`, `truncated_cols`, `requires_filter`, `query_block_reason`을 포함한다.
+- `/api/filebrowser/base-file-view`, `/api/filebrowser/view`, `/api/filebrowser/root-parquet-view`는 `meta_only=true`를 계속 지원한다. FileBrowser 화면의 첫 open은 `meta_only=true` 스키마 응답을 먼저 그리고 100행 샘플을 백그라운드 후속 요청으로 받는다(base 파일은 편집 상태 동기화 때문에 기존 단일 요청 유지). 응답에는 `meta_only`, `meta_cached`, `row_count_unknown`, `source_size`, `preview_capped`, `truncated_cols`, `requires_filter`, `query_block_reason`을 포함한다.
 - `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 `max_bytes <= 100MB`, `max_rows <= 500000`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_bytes`를 `max_bytes`로 보내고 `csv_download_max_rows`는 보조 제한으로 보낸다.
 - Home Flow-i chart raw data 다운로드(`/api/llm/flowi/chart-session/raw-data.csv`)도 같은 `csv_download_max_rows`, `csv_download_max_bytes`, wide-column guard를 사용한다. chart session에 실제 표시된 point/group row만 내보내며 원본 DB 파일을 직접 읽거나 수정하지 않는다.
 - `filebrowser_settings.json`은 `csv_download_max_bytes`, `sql_query_max_source_bytes`, `preview_max_columns`, `preview_max_rows`, `schema_column_page_size`를 가진다. 큰 source가 `sql_query_max_source_bytes`를 넘고 SQL filter나 selected columns가 없으면 `filter_required`로 차단한다.

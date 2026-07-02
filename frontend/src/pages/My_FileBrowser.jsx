@@ -466,6 +466,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);const[productsLoading,setProductsLoading]=useState(false);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
+  const[sampleLoading,setSampleLoading]=useState(false);const viewSeqRef=useRef(0);
   const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[mode,setMode]=useState("hive");
   const[selRootPq,setSelRootPq]=useState("");
   // v4.1: scope switcher — "DB" (hive-flat) or "Base" (single-file rulebook/wide parquet).
@@ -1375,29 +1376,62 @@ export default function My_FileBrowser({user,onNavigate}){
     return()=>{alive=false;clearTimeout(t);};
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
-  // 첫 클릭도 100행 샘플을 보여주고, SQL/SELECT는 같은 cap 안에서 조건 결과를 조회한다.
+  // 첫 클릭은 스키마(meta_only)를 즉시 그리고, 100행 샘플은 백그라운드로 이어서 채운다.
+  // SQL/SELECT/정렬/집계가 있으면 기존처럼 한 번에 조회한다.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
+    const seq=++viewSeqRef.current;
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
-    setPage(pageArg);
+    setPage(pageArg);setSampleLoading(false);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/view",params);
-    sf(url).then(d=>{setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+    const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
+    if(previewFirst){
+      sf(buildUrl(API+"/view",{...params,meta_only:true})).then(d=>{
+        if(seq!==viewSeqRef.current)return;
+        setSelectedCols([]);setData(d);setLoading(false);setSampleLoading(true);
+        sf(url).then(d2=>{
+          if(seq!==viewSeqRef.current)return;
+          setData(d2);setSampleLoading(false);
+        }).catch(e=>{
+          if(seq!==viewSeqRef.current)return;
+          setError(e.message);setSampleLoading(false);
+        });
+      }).catch(e=>{if(seq!==viewSeqRef.current)return;setError(e.message);setLoading(false);});
+      return;
+    }
+    sf(url).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current)return;setError(e.message);setLoading(false);});
   };
 
   const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
+    const seq=++viewSeqRef.current;
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
-    setPage(pageArg);
+    setPage(pageArg);setSampleLoading(false);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/root-parquet-view",params);
-    sf(url).then(d=>{setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+    const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
+    if(previewFirst){
+      sf(buildUrl(API+"/root-parquet-view",{...params,meta_only:true})).then(d=>{
+        if(seq!==viewSeqRef.current)return;
+        setSelectedCols([]);setData(d);setLoading(false);setSampleLoading(true);
+        sf(url).then(d2=>{
+          if(seq!==viewSeqRef.current)return;
+          setData(d2);setSampleLoading(false);
+        }).catch(e=>{
+          if(seq!==viewSeqRef.current)return;
+          setError(e.message);setSampleLoading(false);
+        });
+      }).catch(e=>{if(seq!==viewSeqRef.current)return;setError(e.message);setLoading(false);});
+      return;
+    }
+    sf(url).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current)return;setError(e.message);setLoading(false);});
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
@@ -2293,7 +2327,7 @@ export default function My_FileBrowser({user,onNavigate}){
               </span>}
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
-                    ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}</>
+                    ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}{sampleLoading&&<span style={{color:"var(--accent)",fontWeight:700}}> · 샘플 행 불러오는 중…</span>}</>
                     :<><span style={{color:"var(--accent)",fontWeight:700}}>{previewStatusLabel}</span> · 표시 {data.showing}행{!data.single_file_full_read&&data.preview_row_limit?<> / 최대 {data.preview_row_limit}행</>:null}{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | {data.total_rows?.toLocaleString()}행 × {data.total_cols}열
                        {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
                        {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
