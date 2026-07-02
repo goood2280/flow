@@ -61,6 +61,14 @@ _DB_ROOTS_CACHE: dict[str, tuple[float, list[Path]]] = {}
 _LOT_LOOKUP_CACHE_TTL_SEC = 60.0
 _LOT_LOOKUP_CACHE_MAX = 256
 _LOT_LOOKUP_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+# 위 캐시들은 접근 시에만 만료를 확인하므로, 다시 조회되지 않는 key 는 메모리에
+# 계속 남는다. 주기 sweep 으로 만료 항목을 정리한다.
+from core import cache_sweeper as _cache_sweeper
+_cache_sweeper.register_ttl_dict("splittable._RGLOB_CACHE", _RGLOB_CACHE, _DISCOVERY_CACHE_TTL_SEC, clock=time.monotonic)
+_cache_sweeper.register_ttl_dict("splittable._FIRST_DATA_FILE_CACHE", _FIRST_DATA_FILE_CACHE, _DISCOVERY_CACHE_TTL_SEC, clock=time.monotonic)
+_cache_sweeper.register_ttl_dict("splittable._DB_ROOTS_CACHE", _DB_ROOTS_CACHE, _DISCOVERY_CACHE_TTL_SEC, clock=time.monotonic)
+_cache_sweeper.register_ttl_dict("splittable._LOT_LOOKUP_CACHE", _LOT_LOOKUP_CACHE, _LOT_LOOKUP_CACHE_TTL_SEC, clock=time.monotonic)
 _CSV_ROWS_CACHE: dict[str, tuple[float, int, list[dict]]] = {}
 _SCHEMA_COLUMNS_CACHE: dict[str, tuple[float, int, list[str]]] = {}
 SPLITTABLE_VIEW_MAX_WAFERS = 3200

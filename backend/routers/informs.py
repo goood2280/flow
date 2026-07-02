@@ -106,6 +106,13 @@ _INFORMS_CACHE_ITEMS: list | None = None
 INFORM_DASHBOARD_CACHE_TTL = 60.0
 _INFORM_DASHBOARD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
+# 대시보드 캐시는 metric/groupby/필터 조합별 key 로 쌓이는데 만료 항목을 지우는
+# 코드가 없어 uptime 에 따라 무한히 커진다. 주기 sweep 으로 정리한다.
+from core import cache_sweeper as _cache_sweeper
+_cache_sweeper.register_ttl_dict("informs._INFORM_DASHBOARD_CACHE", _INFORM_DASHBOARD_CACHE, INFORM_DASHBOARD_CACHE_TTL)
+_cache_sweeper.register_ttl_dict("informs._SPLITTABLE_SNAPSHOT_CACHE", _SPLITTABLE_SNAPSHOT_CACHE,
+                                 SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC, lock=_SPLITTABLE_SNAPSHOT_LOCK)
+
 
 def _image_upload_ext(filename: str, content_type: str = "") -> str:
     ext = Path(filename or "").suffix.lower()
