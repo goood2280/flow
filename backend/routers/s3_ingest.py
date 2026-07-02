@@ -82,6 +82,23 @@ def _load_cfg() -> Dict[str, Any]:
     return load_json(CONFIG_FILE, {"items": []})
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auto_sync_settings(cfg: Dict[str, Any] | None = None) -> Dict[str, bool]:
+    """Global scheduler switches. FLOW_DISABLE_S3_INGEST=1 hard-disables periodic
+    runs on this server (dev vs prod); config toggles allow runtime on/off per
+    direction without a restart. Manual /run and /push stay available."""
+    cfg = cfg if cfg is not None else _load_cfg()
+    disabled_env = _env_flag("FLOW_DISABLE_S3_INGEST")
+    return {
+        "auto_download_enabled": (not disabled_env) and bool(cfg.get("auto_download_enabled", True)),
+        "auto_upload_enabled": (not disabled_env) and bool(cfg.get("auto_upload_enabled", True)),
+        "disabled_by_env": disabled_env,
+    }
+
+
 def _save_cfg(cfg):
     save_json(CONFIG_FILE, cfg, indent=2)
 
@@ -777,10 +794,16 @@ def _scheduler_loop():
     while True:
         try:
             cfg = _load_cfg()
+            auto = _auto_sync_settings(cfg)
             status = _load_status()
             now = time.time()
             for item in cfg.get("items", []):
                 if not item.get("enabled", True):
+                    continue
+                direction = _item_direction(item)
+                if direction == "upload" and not auto["auto_upload_enabled"]:
+                    continue
+                if direction == "download" and not auto["auto_download_enabled"]:
                     continue
                 st = _status_for_item(status, item)
                 due = _item_due_state(item, st, now)
@@ -826,6 +849,7 @@ def list_items(username: str = Query(""), _perm=Depends(require_page_manager("fi
         "items": out,
         "aws_available": shutil.which("aws") is not None,
         "db_base": str(_db_root()),
+        "auto_sync": _auto_sync_settings(cfg),
     }
 
 
@@ -1115,6 +1139,26 @@ def s3_health():
         "stale_6h": stale_6h,
         "message": " · ".join(msg_parts) or "—",
     }
+
+@router.get("/auto-sync")
+def get_auto_sync(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
+    return _auto_sync_settings()
+
+
+class AutoSyncReq(BaseModel):
+    auto_download_enabled: bool = True
+    auto_upload_enabled: bool = True
+    username: str = ""
+
+
+@router.post("/auto-sync/save")
+def save_auto_sync(req: AutoSyncReq, _perm=Depends(require_admin)):
+    cfg = _load_cfg()
+    cfg["auto_download_enabled"] = bool(req.auto_download_enabled)
+    cfg["auto_upload_enabled"] = bool(req.auto_upload_enabled)
+    _save_cfg(cfg)
+    return {"ok": True, "auto_sync": _auto_sync_settings(cfg)}
+
 
 class ScheduleReq(BaseModel):
     enabled: bool = False

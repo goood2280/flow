@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) S3 주기 동기화 전역 on/off — auto-sync 토글 API/UI, FLOW_DISABLE_S3_INGEST/FLOW_DISABLE_S3_SYNC env
 - (Codex) Flow-i Workflow 템플릿 관리 UI/API 전환
 - (Codex) Home Flow-i 질문/응답 plain text 렌더링 보정
 - (Codex) SplitTable CPU 4core/RAM 10GB and concurrent search guard

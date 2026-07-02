@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -46,6 +47,12 @@ DEFAULT_CONFIG = {
     "enabled": False,
     "profile": "",      # optional named AWS profile
 }
+
+
+def disabled_by_env() -> bool:
+    """FLOW_DISABLE_S3_SYNC=1 turns off all artifact uploads on this server
+    (e.g. the dev server when prod owns the shared bucket)."""
+    return os.environ.get("FLOW_DISABLE_S3_SYNC", "").strip().lower() in {"1", "true", "yes", "on"}
 
 SYNCABLE_DB_ROOT_FILES = {
     "matching_step.csv",
@@ -280,6 +287,10 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         "key": artifact["key"], "s3_key": key, "type": artifact["type"],
         "sha1": artifact.get("sha1", ""), "size": artifact.get("size", 0),
     }
+    if disabled_by_env():
+        # env disable is static per server — skip the status log to avoid
+        # appending a line on every save while permanently off.
+        entry["status"] = "disabled_env"; return entry
     if not cfg.get("enabled"):
         entry["status"] = "disabled"; _append_status(data_root, entry); return entry
     if not cfg.get("bucket"):
@@ -325,5 +336,5 @@ def sync_saved_path(data_root: Path, db_root: Path, path: Path) -> Dict[str, Any
         return {"ok": False, "status": "skipped", "reason": "not_syncable", "path": str(path)}
     cfg = load_config(data_root)
     result = sync_one(data_root, artifact, cfg)
-    result["ok"] = result.get("status") in {"uploaded", "queued", "disabled", "no_bucket"}
+    result["ok"] = result.get("status") in {"uploaded", "queued", "disabled", "disabled_env", "no_bucket"}
     return result

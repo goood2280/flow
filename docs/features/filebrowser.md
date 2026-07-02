@@ -40,6 +40,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - FileBrowser page manager는 `GET /api/s3ingest/items`, `GET /api/s3ingest/history`, `POST /api/s3ingest/run`으로 이미 등록된 S3 동기화 항목을 조회하고 수동 실행할 수 있다.
 - S3 항목 생성/수정/삭제, 스케줄 저장, AWS credential/profile 조회·저장·삭제는 global Admin 전용이다. 위임받은 FileBrowser manager에게는 `항목`/`이력` 탭만 보이고 `+ 추가`, `수정`, `삭제`, `AWS 설정`은 표시하지 않는다.
 - S3 항목 등록 저장 실패와 실행 실패는 `history.jsonl`에 `reason`, 원문 `output_tail`, 선택적 `ai_explanation`을 남긴다. LLM 연결이 활성화되어 있으면 FileBrowser 이력 탭의 `사유` 상세에서 한국어 원인/확인 항목을 함께 보여준다.
+- 주기 동기화 전역 on/off: `항목` 탭 상단 토글(Admin 전용, `GET /api/s3ingest/auto-sync`, `POST /api/s3ingest/auto-sync/save`)이 `config.json`의 `auto_download_enabled`/`auto_upload_enabled`를 저장하고, 스케줄러가 방향별로 주기 실행을 건너뛴다. 수동 `▶ 실행`/`push`는 영향받지 않는다. `FLOW_DISABLE_S3_INGEST=1` 환경변수는 해당 서버의 주기 실행 전체를 강제 종료 상태로 만들고(UI에 안내 표시), `FLOW_DISABLE_S3_SYNC=1`은 저장 시 artifact 업로드(`core/s3_sync.py`)를 서버 단위로 끈다(`s3_sync.status="disabled_env"`). 개발/양산 서버가 같은 버킷을 공유할 때 개발 서버에 두 env를 설정한다.
 
 ## Data And Cache
 

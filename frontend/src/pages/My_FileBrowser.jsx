@@ -753,6 +753,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const[s3Open,setS3Open]=useState(false);
   const[s3Items,setS3Items]=useState([]);
+  const[s3AutoSync,setS3AutoSync]=useState(null);
   const[s3Avail,setS3Avail]=useState({dbs:[],root_parquets:[]});
   const[s3Tab,setS3Tab]=useState("items"); // items | add | history
   const[s3Hist,setS3Hist]=useState([]);
@@ -990,7 +991,7 @@ export default function My_FileBrowser({user,onNavigate}){
   useEffect(()=>{
     if(!s3Open||!canRunS3Ingest)return;
     const un=encodeURIComponent(user?.username||"");
-    const loadItems=()=>sf("/api/s3ingest/items?username="+un).then(d=>{setS3Items(d.items||[]);setS3AwsOk(d.aws_available!==false);}).catch(()=>{});
+    const loadItems=()=>sf("/api/s3ingest/items?username="+un).then(d=>{setS3Items(d.items||[]);setS3AwsOk(d.aws_available!==false);setS3AutoSync(d.auto_sync||null);}).catch(()=>{});
     const loadAvail=()=>sf("/api/s3ingest/available?username="+un).then(d=>setS3Avail(d||{dbs:[],root_parquets:[]})).catch(()=>{});
     const loadHist=()=>sf("/api/s3ingest/history?username="+un+"&limit=100").then(d=>setS3Hist(d.entries||[])).catch(()=>{});
     const loadProfiles=()=>sf("/api/s3ingest/aws-config?username="+un).then(d=>setS3Profiles((d&&d.profiles)||[])).catch(()=>setS3Profiles([]));
@@ -1052,6 +1053,13 @@ export default function My_FileBrowser({user,onNavigate}){
       await sf("/api/s3ingest/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
       setS3Tick(x=>x+1);
     }catch(e){toast.error(e.message||"삭제 실패");}
+  };
+  const s3SaveAutoSync=async(next)=>{
+    if(!canManageS3Ingest){toast.warn("자동 동기화 설정 변경은 Admin 전용입니다.");return;}
+    try{
+      const d=await sf("/api/s3ingest/auto-sync/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",...next})});
+      setS3AutoSync(d.auto_sync||null);
+    }catch(e){toast.error(e.message||"자동 동기화 설정 저장 실패");}
   };
   const s3Run=async(id)=>{
     if(!canRunS3Ingest){toast.warn("FileBrowser manager 권한이 필요합니다.");return;}
@@ -2778,6 +2786,22 @@ export default function My_FileBrowser({user,onNavigate}){
               </div>}
               {/* ITEMS tab */}
               {s3Tab==="items"&&<>
+                {s3AutoSync&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",marginBottom:8,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",fontSize:14}}>
+                  <span style={{fontWeight:700,color:"var(--text-secondary)"}}>주기 동기화</span>
+                  {s3AutoSync.disabled_by_env?<span style={{color:FB_AMBER,fontWeight:700}}>환경변수(FLOW_DISABLE_S3_INGEST)로 이 서버의 주기 실행이 꺼져 있습니다 — 수동 실행만 가능</span>
+                  :<>
+                    {[{k:"auto_download_enabled",l:"⬇ 다운로드"},{k:"auto_upload_enabled",l:"⬆ 업로드"}].map(t=>{
+                      const on=!!s3AutoSync[t.k];
+                      return(<span key={t.k} onClick={()=>canManageS3Ingest&&s3SaveAutoSync({auto_download_enabled:!!s3AutoSync.auto_download_enabled,auto_upload_enabled:!!s3AutoSync.auto_upload_enabled,[t.k]:!on})}
+                        title={canManageS3Ingest?"클릭하여 전환":"Admin 전용"}
+                        style={{padding:"3px 10px",borderRadius:12,cursor:canManageS3Ingest?"pointer":"default",fontWeight:700,
+                          background:on?"#22c55e22":"#94a3b822",color:on?FB_OK.fg:FB_DISABLED,border:"1px solid "+(on?FB_OK.fg:"var(--border)")}}>
+                        {t.l} {on?"ON":"OFF"}
+                      </span>);
+                    })}
+                    <span style={{color:"var(--text-secondary)"}}>OFF 시 주기 실행만 멈추고 ▶ 수동 실행은 가능합니다. 서버별(개발/양산) 역할에 맞게 설정하세요.</span>
+                  </>}
+                </div>}
                 {s3Items.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>{canManageS3Ingest?<>설정된 S3 동기화 항목이 없습니다. <b>+ 추가</b> 를 클릭해 생성하세요.</>:"설정된 S3 동기화 항목이 없습니다. 항목 생성과 AWS 설정은 Admin이 관리합니다."}</div>
                 :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                   <thead><tr style={{background:"var(--bg-secondary)"}}>
