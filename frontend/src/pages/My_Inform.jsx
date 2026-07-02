@@ -10,7 +10,7 @@ import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import Loading from "../components/Loading";
 import { toast } from "../components/Toast";
-import { Button, Card, Chip, Pill, TableWrap, Tbl, statusPalette, chartPalette } from "../components/UXKit";
+import { Btn, Card, Chip, EmptyState, Input, Pill, Select, TabStrip, TableWrap, Tbl, Textarea, statusPalette, chartPalette } from "../components/UXKit";
 import SplitTableSnapshotView from "../components/SplitTableSnapshotView";
 
 const API = "/api/informs";
@@ -32,13 +32,6 @@ const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
 const INFO = statusPalette.info;
 const NEUTRAL = statusPalette.neutral;
-const INDIGO = { fg: chartPalette.series[0], bg: `${chartPalette.series[0]}22`, soft: `${chartPalette.series[0]}11`, border: `${chartPalette.series[0]}66` };
-const PURPLE = { fg: chartPalette.series[6], bg: `${chartPalette.series[6]}22`, soft: `${chartPalette.series[6]}11`, border: `${chartPalette.series[6]}33` };
-const GREEN = { fg: chartPalette.series[3], bg: `${chartPalette.series[3]}22`, soft: `${chartPalette.series[3]}11`, border: `${chartPalette.series[3]}33` };
-const SKY = { fg: chartPalette.series[7], bg: `${chartPalette.series[7]}22` };
-const TEAL = { fg: chartPalette.series[11], bg: `${chartPalette.series[11]}22` };
-const SLATE = { fg: "var(--text-secondary)", bg: "var(--bg-tertiary)" };
-const WHITE = "var(--bg-secondary)";
 const MODULE_SERIES = [chartPalette.series[0], chartPalette.series[2], chartPalette.series[11], chartPalette.series[8], chartPalette.series[6], chartPalette.series[12], chartPalette.series[3]];
 const INFORM_TABS = [
   ["inform", "인폼"],
@@ -351,6 +344,8 @@ function _entryLastUpdateForUi(entry) {
   return vals.filter(Boolean).sort().slice(-1)[0] || entry?.created_at || "";
 }
 
+// 아직 UXKit Input/Textarea/Select로 교체하지 못한 뒤쪽 섹션(위자드/메일/로그)이
+// 사용하는 임시 헬퍼. 교체가 끝나면 제거한다.
 function inputStyle(extra = {}) {
   return {
     width: "100%",
@@ -432,12 +427,12 @@ const MODULE_COLORS = {
   GATE: BAD.fg,
   STI: WARN.fg,
   PC: chartPalette.series[1],
-  MOL: GREEN.fg,
+  MOL: chartPalette.series[3],
   BEOL: INFO.fg,
-  ET: PURPLE.fg,
+  ET: chartPalette.series[6],
   EDS: chartPalette.series[2],
-  "S-D Epi": TEAL.fg,
-  Spacer: SKY.fg,
+  "S-D Epi": chartPalette.series[11],
+  Spacer: chartPalette.series[7],
   Well: chartPalette.series[10],
   MASK: NEUTRAL.fg,
   FAB: "rgba(51,65,85,0.95)",
@@ -447,29 +442,10 @@ const MODULE_COLORS = {
 const FALLBACK_PALETTE = MODULE_SERIES;
 
 function NewInformButton({ onClick }) {
-  const [hover, setHover] = useState(false);
   return (
-    <button type="button" onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      style={{
-        minWidth: 140,
-        padding: "8px 14px",
-        borderRadius: 8,
-        border: "none",
-        background: hover ? "rgba(234,88,12,0.95)" : "var(--accent)",
-        color: "#fff",
-        fontSize: 14,
-        fontWeight: 900,
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 7,
-        transition: "background 120ms, transform 120ms",
-        transform: hover ? "translateY(-1px)" : "none",
-        whiteSpace: "nowrap",
-      }}>
-      <span style={{ fontSize: 17, lineHeight: 1 }}>+</span> 신규 인폼 등록
-    </button>
+    <Btn variant="primary" type="button" onClick={onClick} style={{ minWidth: 140 }}>
+      + 신규 인폼 등록
+    </Btn>
   );
 }
 
@@ -544,7 +520,7 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
               }}
               onMouseEnter={e => e.currentTarget.style.background = "var(--accent-glow)"}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 8, background: o.type === "fab" ? INFO.bg : GREEN.bg, color: o.type === "fab" ? INFO.fg : GREEN.fg, fontFamily: "inherit", flexShrink: 0 }}>
+              <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 8, background: o.type === "fab" ? INFO.bg : OK.bg, color: o.type === "fab" ? INFO.fg : OK.fg, fontFamily: "inherit", flexShrink: 0 }}>
                 {o.type}
               </span>
               <span style={{ flex: 1 }}>{o.value}</span>
@@ -589,25 +565,13 @@ function CheckPill({ node }) {
     ? `확인 완료 · by ${node.checked_by||"?"} · ${(node.checked_at||"").replace("T"," ").slice(0,16)}`
     : "확인중 (미확인)";
   return (
-    <span title={title}
-      style={{
-        fontSize: 14, padding: "2px 8px", borderRadius: 6,
-        background: checked ? OK.bg : WARN.bg,
-        color: checked ? GREEN.fg : WARN.fg,
-        border: "1px solid " + (checked ? GREEN.fg + "33" : WARN.fg + "33"),
-        fontWeight: 700,
-      }}>{checked ? "✓ 확인완료" : "○ 확인중"}</span>
+    <Pill tone={checked ? "ok" : "warn"} size="md" title={title}>{checked ? "✓ 확인완료" : "○ 확인중"}</Pill>
   );
 }
 
 function AutoGenPill({ node }) {
   if (!node.auto_generated) return null;
-  return (
-    <span style={{
-      fontSize: 14, padding: "2px 8px", borderRadius: 6,
-      background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700,
-    }}>⚙ 자동</span>
-  );
+  return <Pill tone="info" size="md">⚙ 자동</Pill>;
 }
 
 function ImageGallery({ images }) {
@@ -674,10 +638,9 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
               <b style={{ color: "var(--text-primary)" }}>{set.name || "set"}</b>
               <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{set.source || "set"} · cols {set.columns_count || cols.length || 0} · rows {set.wafer_count || rows.length || 0}</span>
               {canEdit && onRemoveSet && (
-                <button type="button" onClick={() => onRemoveSet(set.id || `${set.name}-${idx}`)}
-                  style={{ marginLeft: "auto", border: "1px solid " + BAD.fg, background: "transparent", color: BAD.fg, borderRadius: 6, padding: "2px 7px", cursor: "pointer", fontWeight: 900 }}>
+                <Btn variant="danger" size="sm" type="button" onClick={() => onRemoveSet(set.id || `${set.name}-${idx}`)} style={{ marginLeft: "auto" }}>
                   x
-                </button>
+                </Btn>
               )}
             </div>
             {cols.length > 0 && rows.length > 0 && (
@@ -881,7 +844,7 @@ function ThreadNode({
             style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
               border: "1px solid " + (node.checked ? BAD.fg : OK.fg),
               background: node.checked ? "transparent" : OK.fg,
-              color: node.checked ? BAD.fg : WHITE, fontWeight: 700 }}>
+              color: node.checked ? BAD.fg : "#fff", fontWeight: 700 }}>
             {node.checked ? "↺ 미확인" : "✓ 확인"}
           </button>
           <button onClick={() => setReplyOpen(!replyOpen)} title="답글 달기 (module 은 부모 자동 상속)"
@@ -919,7 +882,7 @@ function ThreadNode({
               <span style={{ textDecoration: "line-through", opacity: 0.7 }}>{sc.old_value || "-"}</span>
               {" → "}
               <span style={{ color: OK.fg, fontWeight: 700 }}>{sc.new_value || "-"}</span>
-              {sc.applied && <span style={{ marginLeft: 8, fontSize: 14, color: GREEN.fg, fontWeight: 700 }}>APPLIED</span>}
+              {sc.applied && <span style={{ marginLeft: 8, fontSize: 14, color: OK.fg, fontWeight: 700 }}>APPLIED</span>}
             </div>
           </div>
         )}
@@ -991,7 +954,7 @@ function ThreadNode({
                   setReplyOpen(false);
                 });
               }}
-                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>등록</button>
+                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>등록</button>
               <button onClick={() => setReplyOpen(false)}
                 style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
             </div>
@@ -1023,7 +986,7 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
         <input type="date" value={val} onChange={e => setVal(e.target.value)}
           style={{ fontSize: 14, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }} />
         <button onClick={() => { onChange(val); setEditing(false); }}
-          style={{ fontSize: 14, padding: "2px 8px", borderRadius: 3, border: "none", background: "var(--accent)", color: WHITE, cursor: "pointer" }}>저장</button>
+          style={{ fontSize: 14, padding: "2px 8px", borderRadius: 3, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer" }}>저장</button>
         {deadline && <button onClick={() => { onChange(""); setEditing(false); }}
           style={{ fontSize: 14, padding: "2px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: BAD.fg, cursor: "pointer" }}>해제</button>}
         <button onClick={() => setEditing(false)}
@@ -1057,22 +1020,16 @@ function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineI
             👁️ 메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
           </summary>
           <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
-            <span style={{ padding: "3px 8px", borderRadius: 999, background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}55` }}>
-              본문 {formatBytes(preview.html_size_bytes)}
-            </span>
-            <span style={{ padding: "3px 8px", borderRadius: 999, background: GREEN.bg, color: "rgba(5,150,105,0.95)", border: "1px solid rgba(5,150,105,0.28)" }}>
-              자동 첨부 {formatBytes(preview.attachment_total_bytes)}
-            </span>
-            <span style={{ padding: "3px 8px", borderRadius: 999, background: WARN.bg, color: "rgba(180,83,9,0.95)", border: "1px solid rgba(180,83,9,0.28)" }}>
-              SplitTable xlsx {(preview.auto_attachments || []).length}개
-            </span>
+            <Pill tone="info" size="md">본문 {formatBytes(preview.html_size_bytes)}</Pill>
+            <Pill tone="ok" size="md">자동 첨부 {formatBytes(preview.attachment_total_bytes)}</Pill>
+            <Pill tone="warn" size="md">SplitTable xlsx {(preview.auto_attachments || []).length}개</Pill>
           </div>
-          <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
+          <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: "var(--bg-secondary)", color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
                dangerouslySetInnerHTML={{ __html: preview.html_body }} />
         </details>
       )}
       {preview?.html_over_limit && (
-        <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.fg}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
+        <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.line}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
           ⚠ 메일 본문 HTML 크기 {preview.html_size_kb}KB — 2MB 한도 초과. SplitTable 컬럼 수를 줄이거나 본문을 단축해야 발송 가능합니다.
         </div>
       )}
@@ -1088,16 +1045,16 @@ function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineI
             const on = attachments.includes(img.url);
             return <span key={img.url} onClick={() => onToggleAttach(img.url)} style={{
               padding: "4px 10px", borderRadius: 4, fontSize: 14,
-              background: on ? "rgba(16,185,129,0.15)" : "var(--bg-card)",
+              background: on ? OK.bg : "var(--bg-card)",
               color: on ? OK.fg : "var(--text-primary)",
-              border: "1px solid " + (on ? OK.fg : "var(--border)"),
+              border: "1px solid " + (on ? OK.line : "var(--border)"),
               cursor: "pointer",
             }}>{on ? "✔" : "＋"} {img.filename || img.url.split("/").pop()}</span>;
           })}
         </div>
       </div>}
       {preview?.auto_attachments?.length > 0 && (
-        <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: GREEN.soft, border: `1px solid ${OK.fg}` }}>
+        <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: OK.bg, border: `1px solid ${OK.line}` }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
           {preview.auto_attachments.map((a, i) => (
             <div key={i} style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
@@ -1247,8 +1204,6 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
     }).finally(() => { sendingRef.current = false; setSending(false); });
   };
 
-  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
-
   return (
     <Modal open onClose={onClose} width={1180} zIndex={9999}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -1257,7 +1212,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
         </div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{effectiveEmailCount}명</b> · Inform <code>{root.id}</code></div>
         {/* v8.8.1: 발송자 ID 자동 명시 제거. 제품 담당자 라인만 본문 상단에 삽입. */}
-        <div style={{ fontSize: 14, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.fg}`, color: "rgba(29,78,216,0.95)" }}>
+        <div style={{ fontSize: 14, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.line}`, color: INFO.fg }}>
           📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
         </div>
 
@@ -1266,8 +1221,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
             <span>📮 메일 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택 · {allGroupNames.length} 가용)</span></span>
             <span style={{ flex: 1 }} />
-            <button type="button" onClick={() => setShowMgr(true)}
-              style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>관리</button>
+            <Btn size="sm" type="button" onClick={() => setShowMgr(true)}>관리</Btn>
           </div>
           {allGroupNames.length === 0 && (
             <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: 6, border: "1px dashed var(--border)", borderRadius: 4 }}>
@@ -1284,7 +1238,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                   <span key={gname} onClick={() => toggleGroup(gname)} style={{
                     padding: "5px 12px", borderRadius: 999, fontSize: 14,
                     background: on ? "var(--accent)" : "var(--bg-card)",
-                    color: on ? WHITE : "var(--text-primary)",
+                    color: on ? "#fff" : "var(--text-primary)",
                     border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                     cursor: "pointer", fontWeight: 600,
                   }} title={isPublic ? "공용 메일 그룹" : "admin 모듈 그룹"}>
@@ -1308,21 +1262,20 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                 모든 로그인 유저가 공용으로 사용하는 메일 그룹 (inform / meeting 공용). 이름 + 이메일 콤마/세미콜론 구분으로 입력하면 바로 생성됩니다.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 6, marginBottom: 8 }}>
-                <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
-                  placeholder="그룹 이름" style={S} />
-                <input value={newGroupEmails} onChange={e => setNewGroupEmails(e.target.value)}
-                  placeholder="member1@x.com, member2@y.com" style={{ ...S, fontFamily: "monospace" }} />
+                <Input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+                  placeholder="그룹 이름" />
+                <Input value={newGroupEmails} onChange={e => setNewGroupEmails(e.target.value)}
+                  placeholder="member1@x.com, member2@y.com" style={{ fontFamily: "monospace" }} />
               </div>
               <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-                <button type="button" onClick={() => {
+                <Btn variant="primary" type="button" onClick={() => {
                   const nm = (newGroupName || "").trim();
                   if (!nm) { toast.warn("그룹 이름을 입력하세요"); return; }
                   const extras = (newGroupEmails || "").split(/[,\s;]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
                   postJson("/api/mail-groups/create", { name: nm, extra_emails: extras, members: [] })
                     .then(() => { setNewGroupName(""); setNewGroupEmails(""); reloadGroups(); toast.ok("그룹 생성됨"); })
                     .catch(e => toast.error(e.message));
-                }}
-                  style={{ padding: "6px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>+ 그룹 생성</button>
+                }}>+ 그룹 생성</Btn>
               </div>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>현재 공용 그룹 ({publicGroups.length})</div>
               <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
@@ -1346,8 +1299,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                 ))}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
-                <button type="button" onClick={() => setShowMgr(false)}
-                  style={{ padding: "6px 14px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>닫기</button>
+                <Btn type="button" onClick={() => setShowMgr(false)}>닫기</Btn>
               </div>
           </Modal>
         )}
@@ -1356,7 +1308,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14, fontWeight: 600 }}>
             <span>개별 유저 ({pickedUsers.length} 선택)</span>
-            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, width: 200 }} />
+            <Input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ width: 200 }} />
           </div>
           <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
             {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
@@ -1383,24 +1335,24 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
 
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>추가 이메일 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(콤마/공백/세미콜론 구분)</span></div>
-          <input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ ...S, fontFamily: "monospace", fontSize: 14 }} />
+          <Input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ width: "100%", fontFamily: "monospace" }} />
         </div>
 
         {/* v8.8.1: statusCode 등 백엔드 전용 필드는 UI 에서 제거 — admin 기본값으로 자동 주입됨. */}
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>제목</div>
-          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "비워두면 plan 적용 통보 제목 자동 생성"} style={S} />
+          <Input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "비워두면 plan 적용 통보 제목 자동 생성"} style={{ width: "100%" }} />
         </div>
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>본문 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(비워두면 인폼 note만 사용)</span></div>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 인폼 note를 그대로 사용합니다." style={{ ...S, resize: "vertical" }} />
+          <Textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 인폼 note를 그대로 사용합니다." style={{ width: "100%" }} />
           {preview?.owners_line && (
-            <div style={{ marginTop: 4, fontSize: 14, color: GREEN.fg, background: GREEN.soft, border: `1px solid ${GREEN.fg}`, borderRadius: 4, padding: "4px 8px" }}>
+            <div style={{ marginTop: 4, fontSize: 14, color: OK.fg, background: OK.bg, border: `1px solid ${OK.line}`, borderRadius: 4, padding: "4px 8px" }}>
               📌 자동 삽입: <b>제품담당자</b> : {preview.owners_line}
             </div>
           )}
           {preview?.auto_module_used && (preview.auto_module_recipients || []).length > 0 && (
-            <div style={{ marginTop: 4, fontSize: 14, color: INFO.fg, background: INFO.bg, border: `1px solid ${INFO.fg}55`, borderRadius: 4, padding: "4px 8px" }}>
+            <div style={{ marginTop: 4, fontSize: 14, color: INFO.fg, background: INFO.bg, border: `1px solid ${INFO.line}`, borderRadius: 4, padding: "4px 8px" }}>
               자동 수신: {(preview.auto_module_recipients || []).map(r => `${r.username} <${r.email}>`).join(", ")}
             </div>
           )}
@@ -1414,13 +1366,13 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           onToggleAttach={toggleAttach}
         />
 
-        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
-        {sending && <div style={{ padding: "6px 10px", background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Loading text="메일 전송 중..." size="sm" /></div>}
-        {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
+        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
+        {sending && <div style={{ padding: "6px 10px", background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Loading text="메일 전송 중..." size="sm" /></div>}
+        {sent && <div style={{ padding: "6px 10px", background: OK.bg, color: OK.fg, border: `1px solid ${OK.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: WHITE, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${effectiveEmailCount}명에게 전송`}</button>
-          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>닫기</button>
+          <Btn variant="primary" disabled={sending} onClick={doSend} style={{ cursor: sending ? "wait" : undefined }}>{sending ? "전송 중…" : `📧 ${effectiveEmailCount}명에게 전송`}</Btn>
+          <Btn variant="ghost" onClick={onClose}>닫기</Btn>
         </div>
     </Modal>
   );
@@ -1483,10 +1435,10 @@ function PlanSummaryCard({ thread }) {
   if (changes.length === 0) return null;
   return (
     <div style={{
-      background: WARN.bg, border: `1px solid ${WARN.fg}66`,
+      background: WARN.bg, border: `1px solid ${WARN.line}`,
       borderRadius: 8, padding: 10, marginBottom: 10,
     }}>
-      <div style={{ fontSize: 14, fontWeight: 700, color: "rgba(194,65,12,0.95)", marginBottom: 6 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: WARN.fg, marginBottom: 6 }}>
         ■ Split Table 변경 요약 ({changes.length}건)
       </div>
       {changes.map(x => {
@@ -1499,7 +1451,7 @@ function PlanSummaryCard({ thread }) {
             {sc.column && ": "}
             <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{sc.old_value || "-"}</span>
             {" → "}
-            <span style={{ color: GREEN.fg, fontWeight: 700 }}>{sc.new_value || "-"}</span>
+            <span style={{ color: OK.fg, fontWeight: 700 }}>{sc.new_value || "-"}</span>
           </div>
         );
       })}
@@ -1527,7 +1479,7 @@ function SplitNotesCard({ notes, root_lot_id }) {
     return (
       <div key={n.id} style={{ padding: "6px 10px", marginBottom: 4, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 6 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: WHITE }}>{label}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: "#fff" }}>{label}</span>
           <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
             {n.username} · {(n.created_at || "").replace("T", " ").slice(0, 16)}
           </span>
@@ -1537,17 +1489,17 @@ function SplitNotesCard({ notes, root_lot_id }) {
     );
   };
   return (
-    <div style={{ background: INFO.bg, border: `1px solid ${INFO.fg}66`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
-      <div style={{ fontSize: 14, fontWeight: 700, color: "rgba(29,78,216,0.95)", marginBottom: 6 }}>
+    <div style={{ background: INFO.bg, border: `1px solid ${INFO.line}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: INFO.fg, marginBottom: 6 }}>
         📝 SplitTable 노트 — root_lot_id <span style={{ fontFamily: "monospace" }}>{root_lot_id}</span> ({notes.length}건)
         <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
           wafer {wafers.length} · param {params.length} · lot {lots.length} · 전역 {pgs.length}
         </span>
       </div>
       {wafers.map(n => renderRow(n, "wafer", INFO.fg))}
-      {params.map(n => renderRow(n, "param", PURPLE.fg))}
+      {params.map(n => renderRow(n, "param", statusPalette.violet.fg))}
       {lots.map(n => renderRow(n, "lot", chartPalette.series[13]))}
-      {pgs.map(n => renderRow(n, "param_global", TEAL.fg))}
+      {pgs.map(n => renderRow(n, "param_global", chartPalette.series[11]))}
     </div>
   );
 }
@@ -3004,10 +2956,9 @@ export default function My_Inform({ user }) {
             모듈 표시 순서를 관리합니다.
           </div>
           {!modDraft && (
-            <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!canManageInform}
-              style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 700 }}>
+            <Btn variant="outline" onClick={() => setModDraft([...(constants.modules || [])])} disabled={!canManageInform}>
               모듈 순서 편집 ({(constants.modules || []).length})
-            </button>
+            </Btn>
           )}
           {modDraft && (
             <div>
@@ -3016,21 +2967,20 @@ export default function My_Inform({ user }) {
                   <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>
                     <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
                     <span style={{ flex: 1 }}>{m}</span>
-                    <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 6, cursor: "pointer" }}>↑</button>
-                    <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 6, cursor: "pointer" }}>↓</button>
-                    <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 14, border: `1px solid ${BAD.fg}`, background: "transparent", color: BAD.fg, borderRadius: 6, cursor: "pointer" }}>×</button>
+                    <Btn size="sm" onClick={() => moveMod(i, -1)}>↑</Btn>
+                    <Btn size="sm" onClick={() => moveMod(i, 1)}>↓</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))}>×</Btn>
                   </div>
                 ))}
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                <input value={modNewName} onChange={e => setModNewName(e.target.value)}
+                <Input value={modNewName} onChange={e => setModNewName(e.target.value)}
                   placeholder="새 모듈 이름"
-                  style={inputStyle({ flex: 1, minWidth: 120 })}
+                  style={{ flex: 1, minWidth: 120 }}
                   onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPendingMod(); } }} />
-                <button onClick={addPendingMod} title="모듈 추가"
-                  style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+</button>
-                <button onClick={saveModuleOrder} style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>저장</button>
-                <button onClick={() => { setModDraft(null); setModNewName(""); }} style={{ padding: "5px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
+                <Btn variant="outline" onClick={addPendingMod} title="모듈 추가">+</Btn>
+                <Btn variant="primary" onClick={saveModuleOrder}>저장</Btn>
+                <Btn variant="ghost" onClick={() => { setModDraft(null); setModNewName(""); }}>취소</Btn>
               </div>
             </div>
           )}
@@ -3590,8 +3540,8 @@ function AuditLogList({ rows, loading, onOpen }) {
   const typeMeta = {
     status_change: { label: "상태변경", icon: "●", color: WARN.fg },
     mail: { label: "메일", icon: "✉", color: INFO.fg },
-    comment: { label: "댓글", icon: "💬", color: PURPLE.fg },
-    edit: { label: "수정", icon: "✎", color: TEAL.fg },
+    comment: { label: "댓글", icon: "💬", color: chartPalette.series[6] },
+    edit: { label: "수정", icon: "✎", color: chartPalette.series[11] },
     create: { label: "생성", icon: "+", color: OK.fg },
     delete: { label: "삭제", icon: "x", color: BAD.fg },
   };
@@ -4173,7 +4123,7 @@ function InformCommentsPanel({ root, childrenByParent, constants, user, onReply,
           placeholder="댓글 입력"
           style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
         <button type="button" onClick={submit} disabled={!text.trim()}
-          style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 900, cursor: text.trim() ? "pointer" : "not-allowed", opacity: text.trim() ? 1 : 0.55, fontSize: 14 }}>
+          style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: text.trim() ? "pointer" : "not-allowed", opacity: text.trim() ? 1 : 0.55, fontSize: 14 }}>
           등록
         </button>
       </div>
@@ -4286,7 +4236,7 @@ function MailPreviewPanel({ root, onOpenMail }) {
             <span style={{ color: "var(--text-secondary)" }}>수신 {(preview?.resolved_recipients || []).length}명</span>
             <span style={{ color: "var(--text-secondary)" }}>본문 {preview?.html_size_kb ?? 0} kB</span>
           </div>
-          <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: WHITE, border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}
+          <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}
             dangerouslySetInnerHTML={{ __html: preview.html_body }} />
         </section>
       )}
@@ -5071,7 +5021,7 @@ function InformWizard({
                 <span style={{ color: "var(--text-secondary)" }}>본문 {mailSizeKb} kB</span>
                 {multiLotPreview && <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>미리보기 대상 {mailPreviewLot}</span>}
               </div>
-              <div style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: WHITE, color: "var(--text-primary)", display: "grid", gap: 10 }}>
+              <div style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", color: "var(--text-primary)", display: "grid", gap: 10 }}>
                 <div style={{ fontSize: 15, fontWeight: 900 }}>{mailSubject}</div>
                 {multiLotPreview && (
                   <div style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#f9fafb", color: "#4b5563", fontWeight: 800 }}>
