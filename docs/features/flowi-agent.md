@@ -147,13 +147,24 @@ Home Flow-i는 같은 feedback penalty profile을 읽어 자동 Unit AI 후보 �
 
 ### 반복 ReAct 루프 (선택, flag 기본 off)
 
-`FLOW_LLM_REACT_LOOP=1`이고 LLM planner(`FLOW_LLM_TOOL_CALL` + 연결된 LLM)도 활성이면 Home Flow-i는 단일 패스 plan 대신 **반복 ReAct 루프**로 동작한다. 루프는 `prompt -> semantic_layer(공유 resolver) -> [관찰 -> 다음 도구 1개 결정 -> 실행]* -> 결론` 순서로, 각 턴에서 `llm_adapter.complete_json`으로 "도구 1개 호출" 또는 "finalize"를 strict JSON으로 결정한다. native `tool_calls`는 쓰지 않아 GPT-OSS 120B급 on-prem 서빙과 호환된다. 무한 루프는 `FLOW_LLM_REACT_MAX_ITERS`(기본 6, [1,12] clamp) 상한 + 반복-액션 가드 + 무진전 가드 + `model_final`/`blocked`로 막는다. LLM이 실패해 한 step도 못 돌면 기존 alias/heuristic 단일 패스로 graceful degrade한다.
+에이전틱 모드는 env 외에 admin 설정으로도 켤 수 있다: LLM 설정 화면의 "에이전틱 오케스트레이션" 토글이 `admin_settings.json flowi_defaults.agentic.{tool_call_enabled,react_loop_enabled}`를 저장하고, `FLOW_LLM_TOOL_CALL`/`FLOW_LLM_REACT_LOOP` env가 명시된 서버에서는 env가 우선한다(`home_orchestrator._flag_enabled`).
+
+`FLOW_LLM_REACT_LOOP=1`(또는 admin 토글)이고 LLM planner(`FLOW_LLM_TOOL_CALL` 또는 admin 토글 + 연결된 LLM)도 활성이면 Home Flow-i는 단일 패스 plan 대신 **반복 ReAct 루프**로 동작한다. 루프는 `prompt -> semantic_layer(공유 resolver) -> [관찰 -> 다음 도구 1개 결정 -> 실행]* -> 결론` 순서로, 각 턴에서 `llm_adapter.complete_json`으로 "도구 1개 호출" 또는 "finalize"를 strict JSON으로 결정한다. native `tool_calls`는 쓰지 않아 GPT-OSS 120B급 on-prem 서빙과 호환된다. 무한 루프는 `FLOW_LLM_REACT_MAX_ITERS`(기본 6, [1,12] clamp) 상한 + 반복-액션 가드 + 무진전 가드 + `model_final`/`blocked`로 막는다. LLM이 실패해 한 step도 못 돌면 기존 alias/heuristic 단일 패스로 graceful degrade한다.
 
 react 실행의 snapshot은 기존 graph/`node_details` shape를 유지하면서 `iter:{i}:{tool}` 반복 노드 chain(`orchestrator -> iter:0 -> ... -> result_renderer`)과 additive 필드(`iterations`, `stop_reason`, `semantic_frame`)를 더한다. 공개에는 도구/상태/결과 요약/`reason`만 싣고 모델 내부 `thought`는 노출하지 않는다. flag off 기본값에서는 단일 패스 동작과 snapshot 계약이 그대로다. 구현은 `backend/core/home_orchestrator.py`의 `_run_react_loop`, `_decide_next_action`, `_compose_final_reply`다.
 
 Home Flow-i는 응답 생성 후 사용자별 prompt/answer와 공개 tool summary만 `FLOW_DATA_ROOT/home_agent_memory/conversation.jsonl`에 append한다. 다음 `/api/llm/flowi/chat` 요청은 frontend가 보낸 현재 세션 context와 서버 메모리의 최근 Q/A를 병합해 후속 질문 해석에 사용한다. `아까 내가 뭐 물어봤지?`처럼 이전 질문/답변을 묻는 prompt는 LLM 없이 메모리 기반 plain text 답변을 반환한다. 이 메모리에는 raw preview row dump, 내부 reasoning, source DB 원문을 저장하지 않는다.
 
 Home Flow-i는 `Vehicle_matching.csv`, `step_matching.csv`, `matching_step.csv`, `ppid_knob.csv`가 schema catalog 또는 DB root single-file로 등록되어 있으면 read-only evidence로 사용할 수 있다. `step_id -> function_step/step_desc` 직접 조회와 `ppid_knob.csv feature_name -> function_step -> step_id` 확장은 `/api/llm/flowi/chat` 응답의 `tool.source_ids`, `tool.filters`, `tool.table`, `term_resolution`, `trace.api_calls`에 근거 파일과 필터를 남기며 원본 CSV를 수정하지 않는다.
+
+### 공유 스킬 라우팅
+
+SQL 작업대에서 저장한 스킬(`data_root/skills/*.json`)은 `shared=true`면 모든 로그인 사용자가 조회/실행할 수 있고, `shared=false`(private)는 owner와 admin만 `/api/skills/list`에 보인다. 공유/비공유 전환은 `POST /api/skills/{key}/share`, 삭제는 `POST /api/skills/{key}/delete` (owner 또는 admin).
+
+Home Flow-i 채팅은 결정적 라우팅 초입에서 공유 스킬을 매칭한다 (`routers/llm.py _handle_shared_skill_request`):
+- "스킬" 언급 + 목록성 질문(목록/알려줘 등, 실행 동사 없음) → 공유 스킬 카탈로그 안내.
+- 스킬 제목이 프롬프트에 그대로 있거나 "스킬" 언급 + 토큰 과반 매칭 → `sql_workspace` 스킬은 read-only로 즉시 실행해 행 미리보기를 답하고 `run_count`를 올린다 (filebrowser 권한 필요, placeholder가 있으면 SQL 작업대 안내). `chain` 스킬은 단계 안내를 반환.
+- 매칭이 없으면 기존 라우팅을 그대로 탄다 (회귀 없음).
 
 ## Semantic Layer Tab
 

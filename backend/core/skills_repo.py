@@ -78,6 +78,33 @@ def list_skills() -> list[dict[str, Any]]:
     return out
 
 
+def visible_skills(viewer: str = "", is_admin: bool = False) -> list[dict[str, Any]]:
+    """공유 스킬은 전원, 비공유(private)는 owner 와 admin 만 조회."""
+    viewer = str(viewer or "").strip()
+    out: list[dict[str, Any]] = []
+    for d in list_skills():
+        if is_admin or bool(d.get("shared")) or (viewer and d.get("owner") == viewer):
+            out.append(d)
+    return out
+
+
+def shared_skills() -> list[dict[str, Any]]:
+    """모든 유저가 쓸 수 있는 공유 스킬만."""
+    return [d for d in list_skills() if bool(d.get("shared"))]
+
+
+def increment_run_count(key: str) -> None:
+    skill = get_skill(key)
+    if not skill:
+        return
+    try:
+        skill["run_count"] = int(skill.get("run_count") or 0) + 1
+        skill["last_run_at"] = _now()
+        _write_json(SKILLS_DIR / f"{skill['key']}.json", skill)
+    except Exception as e:
+        logger.debug("skill run_count update failed %s: %s", key, e)
+
+
 def get_skill(key: str) -> dict[str, Any] | None:
     if not _KEY_RE.match(key or ""):
         return None

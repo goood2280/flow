@@ -41,7 +41,9 @@ class MineRequest(BaseModel):
 @router.get("/list")
 def list_skills(request: Request):
     me = current_user(request)
-    return {"items": skills_repo.list_skills(), "is_admin": (me or {}).get("role") == "admin"}
+    is_admin = (me or {}).get("role") == "admin"
+    items = skills_repo.visible_skills(viewer=(me or {}).get("username") or "", is_admin=is_admin)
+    return {"items": items, "is_admin": is_admin}
 
 
 @router.get("/candidates")
@@ -74,6 +76,39 @@ def reject(request: Request, key: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"candidate not found: {key}")
     audit.record(request, action=f"skill:reject:{key}", tab="ai_hub")
+    return {"ok": True}
+
+
+def _require_owner_or_admin(request: Request, key: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    me = current_user(request)
+    if not me:
+        raise HTTPException(status_code=401, detail="auth required")
+    skill = skills_repo.get_skill(key)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"skill not found: {key}")
+    if me.get("role") != "admin" and skill.get("owner") != me.get("username"):
+        raise HTTPException(status_code=403, detail="owner or admin only")
+    return me, skill
+
+
+class ShareRequest(BaseModel):
+    shared: bool = True
+
+
+@router.post("/{key}/share")
+def set_shared(request: Request, key: str, body: ShareRequest):
+    _me, skill = _require_owner_or_admin(request, key)
+    skill["shared"] = bool(body.shared)
+    saved = skills_repo.save_skill(skill)
+    audit.record(request, action=f"skill:share:{key}", detail=f"shared={saved.get('shared')}", tab="ai_hub")
+    return {"ok": True, "skill": saved}
+
+
+@router.post("/{key}/delete")
+def delete_skill(request: Request, key: str):
+    _me, _skill = _require_owner_or_admin(request, key)
+    skills_repo.delete_skill(key)
+    audit.record(request, action=f"skill:delete:{key}", tab="ai_hub")
     return {"ok": True}
 
 

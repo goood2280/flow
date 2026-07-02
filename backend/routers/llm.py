@@ -21338,6 +21338,147 @@ def _handle_explicit_splittable_view_fast_path(
     return tool if isinstance(tool, dict) and tool.get("handled") else None
 
 
+def _shared_skill_match(prompt: str) -> tuple[dict[str, Any] | None, float, list[dict[str, Any]]]:
+    """공유 스킬 카탈로그에서 prompt 와 가장 잘 맞는 스킬을 찾는다."""
+    lowered = str(prompt or "").strip().lower()
+    try:
+        from core import skills_repo
+        skills = skills_repo.shared_skills()
+    except Exception:
+        return None, 0.0, []
+    if not skills or not lowered:
+        return None, 0.0, skills
+    prompt_tokens = {t for t in re.split(r"[\s,/()\[\]{}:;'\"]+", lowered) if len(t) >= 2}
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for skill in skills:
+        title = str(skill.get("title") or "").strip().lower()
+        key = str(skill.get("key") or "").strip().lower()
+        name_tokens = {t for t in re.split(r"[\s_\-,/]+", f"{title} {key}") if len(t) >= 2}
+        if not name_tokens:
+            continue
+        if title and title in lowered:
+            score = 1.0
+        else:
+            score = len(name_tokens & prompt_tokens) / max(1, len(name_tokens))
+        if score > best_score:
+            best, best_score = skill, score
+    return best, best_score, skills
+
+
+def _handle_shared_skill_request(prompt: str, *, username: str, max_rows: int,
+                                 allowed_keys: set[str] | list[str]) -> dict[str, Any] | None:
+    """공유 스킬 실행/안내 핸들러.
+
+    - "스킬" 언급 + 매칭 약함 → 공유 스킬 카탈로그 안내.
+    - 매칭 강함(제목 포함 또는 스킬 언급 + 토큰 과반) → sql_workspace 스킬은
+      read-only 로 즉시 실행해 결과 요약을 답하고, chain 스킬은 단계 안내.
+    - 매칭 없으면 None → 기존 라우팅 계속 (회귀 없음).
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return None
+    explicit = ("스킬" in text) or ("skill" in text.lower())
+    best, score, skills = _shared_skill_match(text)
+    # 카탈로그 우선 — "스킬 목록/알려줘"류 질문은 실행 동사가 없으면 목록을
+    # 보여준다 (이전 대화 문맥이 프롬프트를 실행으로 넓혀 해석하는 것 방지).
+    wants_catalog = (
+        explicit
+        and any(w in text for w in ("목록", "리스트", "카탈로그", "어떤", "뭐", "알려", "보여"))
+        and not any(w in text.lower() for w in ("실행", "돌려", "run"))
+    )
+    threshold = 0.5 if explicit else 1.0
+    if wants_catalog or not best or score < threshold:
+        if explicit and skills:
+            names = [
+                f"- {s.get('title') or s.get('key')} ({'SQL' if s.get('kind') == 'sql_workspace' else '체인'}"
+                + (f", 실행 {int(s.get('run_count') or 0)}회" if s.get("run_count") else "") + ")"
+                for s in skills[:12]
+            ]
+            return {
+                "handled": True,
+                "intent": "skill_catalog",
+                "feature": "skills",
+                "action": "skill_catalog",
+                "answer": "사용 가능한 공유 스킬입니다. \"<스킬 제목> 스킬 실행\" 형태로 입력하면 바로 실행합니다.\n" + "\n".join(names),
+            }
+        return None
+    kind = str(best.get("kind") or "").strip()
+    title = best.get("title") or best.get("key")
+    if kind == "sql_workspace":
+        if "filebrowser" not in set(allowed_keys):
+            return {
+                "handled": True, "intent": "skill_run_blocked", "feature": "skills",
+                "action": "skill_run_blocked", "skill_key": best.get("key"),
+                "answer": f"'{title}' 스킬은 FileBrowser 데이터 조회 권한이 필요합니다.",
+            }
+        placeholders = best.get("placeholders") or {}
+        if placeholders:
+            names = ", ".join(sorted(str(k) for k in placeholders.keys()))
+            return {
+                "handled": True, "intent": "skill_needs_input", "feature": "skills",
+                "action": "skill_needs_input", "skill_key": best.get("key"),
+                "answer": f"'{title}' 스킬은 입력값({names})이 필요합니다. 기타 메뉴의 SQL 작업대에서 값을 채워 실행해주세요.",
+            }
+        try:
+            from core import skills_repo
+            from core import sql_workspace as _sw_engine
+            cells = [dict(c) for c in (best.get("cells") or []) if isinstance(c, dict)]
+            if not cells:
+                return None
+            out = _sw_engine.run_workspace(cells, row_limit=max(20, min(200, int(max_rows or 12) * 10)))
+            result = out.get("result") or {}
+            columns = [str(c) for c in (result.get("columns") or [])]
+            rows = result.get("rows") or []
+            rowcount = int(result.get("rowcount") or len(rows))
+            preview_lines = []
+            if columns:
+                preview_lines.append(" | ".join(columns[:8]))
+            for row in rows[:10]:
+                if isinstance(row, dict):
+                    preview_lines.append(" | ".join(str(row.get(c, "")) for c in columns[:8]))
+                elif isinstance(row, (list, tuple)):
+                    preview_lines.append(" | ".join(str(v) for v in row[:8]))
+            skills_repo.increment_run_count(best.get("key") or "")
+            answer = (
+                f"공유 스킬 '{title}' 실행 결과 — {rowcount}행"
+                + (f" (미리보기 {min(10, len(rows))}행)" if rows else "")
+                + ("\n" + "\n".join(preview_lines) if preview_lines else "\n(결과 없음)")
+            )
+            return {
+                "handled": True, "intent": "skill_run", "feature": "skills",
+                "action": "skill_run", "skill_key": best.get("key"),
+                "skill_result": {"columns": columns, "rows": rows[:50], "rowcount": rowcount,
+                                 "elapsed_ms": out.get("elapsed_ms")},
+                "answer": answer,
+            }
+        except ValueError as e:
+            return {
+                "handled": True, "intent": "skill_run_error", "feature": "skills",
+                "action": "skill_run_error", "skill_key": best.get("key"),
+                "answer": f"'{title}' 스킬 실행이 거부되었습니다: {e}",
+            }
+        except Exception as e:
+            logger.warning("shared skill run failed key=%s: %s", best.get("key"), e)
+            return {
+                "handled": True, "intent": "skill_run_error", "feature": "skills",
+                "action": "skill_run_error", "skill_key": best.get("key"),
+                "answer": f"'{title}' 스킬 실행 중 오류가 발생했습니다: {str(e)[:200]}",
+            }
+    steps = best.get("steps") or []
+    step_lines = []
+    for i, step in enumerate(steps[:12], start=1):
+        if isinstance(step, dict):
+            step_lines.append(f"{i}. {step.get('action') or step.get('tool') or step}")
+        else:
+            step_lines.append(f"{i}. {step}")
+    return {
+        "handled": True, "intent": "skill_guide", "feature": "skills",
+        "action": "skill_guide", "skill_key": best.get("key"),
+        "answer": f"공유 스킬 '{title}'의 단계 안내입니다.\n" + ("\n".join(step_lines) if step_lines else "(등록된 단계 없음)"),
+    }
+
+
 def _run_flowi_chat(
     *,
     prompt: str,
@@ -21427,6 +21568,42 @@ def _run_flowi_chat(
                 client_run_id=client_run_id,
                 username=username,
                 tool=fast_split_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    # 공유 스킬 — "스킬" 언급 + 강한 매칭 또는 스킬 제목이 프롬프트에 그대로
+    # 들어 있으면 다른 라우팅보다 먼저 즉시 실행/안내한다 (결정적 신호).
+    skill_tool = _handle_shared_skill_request(prompt, username=username, max_rows=max_rows, allowed_keys=allowed_keys)
+    if skill_tool:
+        _finalize_flowi_tool(skill_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+        answer = skill_tool.get("answer") or "공유 스킬 요청을 처리했습니다."
+        _append_user_event(username, skill_tool.get("intent") or "skill_run", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": skill_tool.get("intent") or "",
+                "feature": "skills",
+                "skill_key": skill_tool.get("skill_key") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": skill_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=skill_tool,
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)

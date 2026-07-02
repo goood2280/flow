@@ -9,6 +9,8 @@
 
 ## Done
 
+- (Claude) 공유 스킬 전사 사용 — shared/private 권한, share/delete API, Home Flow-i 채팅에서 스킬 카탈로그/즉시 실행(read-only) 라우팅
+- (Claude) 에이전틱 오케스트레이션 admin 토글 — flowi_defaults.agentic 설정으로 ReAct/tool-call 활성 (env 우선 유지), LLM 설정 UI 체크박스
 - (Claude) 인폼 UI UXKit 통일 완료 — 1차(상단/목록/색 상수) + 2차(위자드/메일/로그 inputStyle 20곳→UXKit, 버튼 14곳, 헬퍼 제거)
 - (Claude) 회의관리 UI UXKit 통일 — 로컬 버튼/입력 스타일 46+41건 교체, 상세를 Panel 4단 구조로 단순화, 로컬 스타일 상수 15개 제거
 - (Claude) 리소스 한도 호스트 자동 산출(코어-1, 총메모리 65%) + 백그라운드 작업 사용자 요청 양보(core/request_priority) + plan 불일치 알람 지정 팀 수신(mismatch_alert_recipients)
