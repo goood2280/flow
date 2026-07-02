@@ -42,11 +42,51 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 - Flow-i Home은 자연어 요청을 기능별 unit action으로 라우팅하고, Agent 탭은 LangGraph/LangSmith-ready runtime 설계와 시멘틱 해석을 보여준다.
 - Agent 단위기능 AI 탭은 각 unit 실행 결과/이력과 LangGraph node detail에 feedback을 붙이고, LangGraph State I/O와 공유 state 설계를 실행 전후 trace 결과와 비교한다.
-- FileBrowser는 대형 파일을 sample-first로 열고, AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
+- FileBrowser는 DB 제품/root parquet 첫 클릭에 스키마를 즉시 그리고 100행 샘플을 백그라운드로 이어 받는 2단계 로드를 쓴다. AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
-- Split Table은 조회 속도 최적화를 위해 원본 파케이 스캔을 우회하고 백그라운드에서 사전 피벗되는 전용 `split_table` 파케이 캐시의 Fast Path를 사용한다.
+- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다.
+- CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`).
+- S3 주기 업로드/다운로드는 서버별로 켜고 끌 수 있다 — env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` 또는 FileBrowser S3 항목 탭의 방향별 토글(개발/양산 2서버가 같은 버킷을 쓸 때 개발 서버는 끔).
+- 회의관리/인폼 화면은 FileBrowser와 같은 UXKit 공통 컴포넌트로 통일돼 있다.
+- plan/actual 불일치 알람은 계획 작성자와 지정 팀(`source-config.mismatch_alert_recipients`)에게 간다.
 - 세부 운영 상태, 가능한 작업, 100ms light endpoint 기준은 [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md)에 둔다.
+
+## Flow-i 에이전틱 오케스트레이션 & 공유 스킬
+
+사내 GPT OSS 120B(OpenAI 호환 endpoint)로 Home 첫 화면의 수작업(파일 내부 항목 조회, SplitTable 확인 등)을 에이전틱하게 처리하는 흐름. 세부 계약은 [docs/features/flowi-agent.md](docs/features/flowi-agent.md).
+
+**1) LLM 연결 (admin)** — Agent 탭 LLM 설정에서 프리셋 "GPT OSS 120B (사내)"(`openai_compatible`) 선택 후 사내 endpoint URL과 토큰만 입력하고 연결 테스트. 내부 프로필이 연결되면 외부 dev AI(vertex/openai)는 자동 차단된다.
+
+**2) 에이전틱 모드 (admin)** — 같은 화면의 "에이전틱 오케스트레이션" 체크박스로 `LLM 도구 선택(tool call)`과 `반복 실행 루프(ReAct)`를 켠다. env `FLOW_LLM_TOOL_CALL`/`FLOW_LLM_REACT_LOOP`가 설정된 서버에서는 env가 우선. 켜면 Home Flow-i가 LLM으로 도구를 골라 결과를 관찰하며 다단계 실행한다 (native tool_calls 미사용 — on-prem 서빙 호환).
+
+**3) 공유 스킬 (모든 유저)** — SQL 작업대에서 여러 SQL 셀을 스킬로 저장할 때 공유를 켜면 전 유저가 사용할 수 있다. Home 채팅에서:
+- `쓸 수 있는 스킬 알려줘` → 공유 스킬 카탈로그
+- `<스킬 제목> 스킬 실행해줘` → read-only 즉시 실행, 결과 행 미리보기
+비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다. 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다.
+
+**4) step 조회 + human-in-the-loop 학습 (모든 유저)** — Home 채팅에서:
+- `AA100100는 무슨 step이야` → step_matching/Vehicle_matching 기반 양방향 조회. 정확 일치가 없으면 suffix 변형(AB100000EC ↔ AB100000) 기준 유사 후보 제시.
+- `SD_EPI step_id 관련 파일 어디에 있어` → 룰북/매칭테이블(Files 단일 파일)을 횡단 검색해 어느 파일 어느 열에 쓰이는지 답한다. 수정은 Files 편집 화면으로.
+- 못 찾은 매핑은 `기억해: <용어>는 <답>`으로 가르치면 전 유저 공유 학습 데이터(`flowi_fewshots.json`)에 저장되고 다음부터 즉시 답한다. `잊어줘: <용어>`로 삭제.
+- 답이 틀렸으면 싫어요 + 코멘트(`X -> Y` 또는 `정답은 Y`)로 교정하면 같은 저장소에 반영된다.
+
+## Recent Changes (2026-07)
+
+사내 이식 대비 안정화 + 에이전틱 확장 배치. 상세 계약은 각 feature 문서에 있다.
+
+| 영역 | 변경 |
+|---|---|
+| FileBrowser | 첫 클릭 2단계 로드(스키마 즉시 → 100행 샘플 백그라운드), 요청 시퀀스 가드 |
+| SplitTable | view fast-path 컨트롤 플로우 회귀 수정(캐시 미스 시 null 반환), pivot 캐시 canonical `ML_TABLE_*` 디렉터리 통일, 미스/stale 백그라운드 single-flight 재빌드 + `POST /api/splittable/cache/pivot/refresh` |
+| 리소스 | CPU/RAM 한도 호스트 자동 산출(코어-1, 총메모리 65%, cgroup 인식), 백그라운드 작업의 사용자 요청 양보(`core/request_priority`) |
+| 메모리 | lazy-eviction dict 캐시 주기 정리(`core/cache_sweeper`, 5분) — 장기 uptime 메모리 증가 완화 |
+| S3 | 주기 동기화 전역/방향별 on/off (env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` + UI 토글, `/api/s3ingest/auto-sync`) |
+| 알람 | plan/actual 불일치 알람 지정 팀 수신(`mismatch_alert_recipients`, SplitTable 설정 패널) |
+| UI | 회의관리/인폼 페이지 UXKit 통일 (로컬 인라인 스타일 제거, 로직 불변) |
+| 에이전틱 | 에이전틱 오케스트레이션 admin 토글(`flowi_defaults.agentic`), GPT OSS 120B는 기존 `openai_compatible` 프리셋으로 연결 |
+| 스킬 | 공유/비공유 권한, share/delete API, Home 채팅에서 스킬 카탈로그/즉시 실행 |
+| 학습 | step_lookup 유사 후보 + 매칭 파일 횡단 관련 파일 검색, `기억해:`/`잊어줘:` human-in-the-loop few-shot, 싫어요+코멘트 교정 반영 |
 
 ## Current Version
 
