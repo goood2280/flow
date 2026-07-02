@@ -95,6 +95,12 @@ FLOWI_DEFAULT_SETTINGS = {
         "admin_review_required": True,
         "custom_knowledge_append_only": True,
     },
+    # Home Flow-i 에이전틱 오케스트레이션 — env FLOW_LLM_TOOL_CALL /
+    # FLOW_LLM_REACT_LOOP 가 설정돼 있으면 env 가 우선한다.
+    "agentic": {
+        "tool_call_enabled": False,
+        "react_loop_enabled": False,
+    },
 }
 
 LLM_PROFILE_KEYS = (
@@ -311,6 +317,10 @@ def _flowi_default_settings(raw: Any = None) -> Dict[str, Any]:
     knowledge["admin_review_required"] = bool(knowledge.get("admin_review_required", True))
     knowledge["custom_knowledge_append_only"] = bool(knowledge.get("custom_knowledge_append_only", True))
     merged["engineer_knowledge"] = knowledge
+    agentic = merged.get("agentic") if isinstance(merged.get("agentic"), dict) else {}
+    agentic["tool_call_enabled"] = bool(agentic.get("tool_call_enabled", False))
+    agentic["react_loop_enabled"] = bool(agentic.get("react_loop_enabled", False))
+    merged["agentic"] = agentic
     return merged
 
 
@@ -1032,6 +1042,7 @@ class FlowiDefaultsReq(BaseModel):
     chart_defaults: Optional[Dict[str, Any]] = None
     feedback_policy: Optional[Dict[str, Any]] = None
     engineer_knowledge: Optional[Dict[str, Any]] = None
+    agentic: Optional[Dict[str, Any]] = None
 
 
 class SettingsSaveReq(BaseModel):

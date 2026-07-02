@@ -866,13 +866,34 @@ def _summarize_result(res: dict[str, Any]) -> str:
     return f"키: {', '.join(sorted(keys))[:200]}"
 
 
+def _agentic_settings_flag(name: str) -> bool:
+    """admin_settings.json flowi_defaults.agentic 의 토글 (env 미설정 시 사용)."""
+    try:
+        from core.utils import load_json
+        adm = load_json(PATHS.data_root / "admin_settings.json", {}) or {}
+        defaults = adm.get("flowi_defaults") if isinstance(adm.get("flowi_defaults"), dict) else {}
+        agentic = defaults.get("agentic") if isinstance(defaults.get("agentic"), dict) else {}
+        return bool(agentic.get(name))
+    except Exception:
+        return False
+
+
+def _flag_enabled(env_name: str, settings_key: str) -> bool:
+    """env 가 명시돼 있으면 env 우선, 아니면 admin 설정(flowi_defaults.agentic)."""
+    raw = str(os.environ.get(env_name, "")).strip()
+    if raw:
+        return raw.lower() in ("1", "true", "yes", "on")
+    return _agentic_settings_flag(settings_key)
+
+
 def _llm_planner_enabled() -> bool:
     """LLM planner 사용 여부.
 
-    환경변수 `FLOW_LLM_TOOL_CALL=1` 이고 llm_adapter 가 enabled 이어야 활성.
-    어느 쪽이든 비활성이면 휴리스틱 fallback. 회귀 위험 0 유지.
+    env `FLOW_LLM_TOOL_CALL` 이 명시돼 있으면 그 값을, 아니면 admin 설정
+    `flowi_defaults.agentic.tool_call_enabled` 를 따른다. llm_adapter 가
+    enabled 이어야 활성. 어느 쪽이든 비활성이면 휴리스틱 fallback.
     """
-    if str(os.environ.get(_LLM_ENV_FLAG, "")).strip() not in ("1", "true", "yes", "on"):
+    if not _flag_enabled(_LLM_ENV_FLAG, "tool_call_enabled"):
         return False
     try:
         from core import llm_adapter
@@ -884,11 +905,12 @@ def _llm_planner_enabled() -> bool:
 def _react_loop_enabled() -> bool:
     """반복 ReAct 루프 사용 여부.
 
-    `FLOW_LLM_REACT_LOOP=1` 이고 LLM planner(`FLOW_LLM_TOOL_CALL` + llm_adapter
-    available)도 활성일 때만 True. 어느 하나라도 꺼져 있으면 기존 단일 패스
-    경로로 graceful degrade 한다. 기본 off — 회귀 위험 0 유지.
+    env `FLOW_LLM_REACT_LOOP` 이 명시돼 있으면 그 값을, 아니면 admin 설정
+    `flowi_defaults.agentic.react_loop_enabled` 를 따른다. LLM planner도
+    활성일 때만 True. 어느 하나라도 꺼져 있으면 기존 단일 패스 경로로
+    graceful degrade 한다. 기본 off — 회귀 위험 0 유지.
     """
-    if str(os.environ.get(_REACT_ENV_FLAG, "")).strip() not in ("1", "true", "yes", "on"):
+    if not _flag_enabled(_REACT_ENV_FLAG, "react_loop_enabled"):
         return False
     return _llm_planner_enabled()
 

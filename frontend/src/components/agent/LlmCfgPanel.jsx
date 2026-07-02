@@ -17,6 +17,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   };
   const PROVIDERS=Object.keys(FALLBACK_LLM_DEFAULTS);
   const[cfg,setCfg]=useState(FALLBACK_LLM_DEFAULTS.generic);
+  const[agentic,setAgentic]=useState({tool_call_enabled:false,react_loop_enabled:false});
   const[profiles,setProfiles]=useState({});
   const[profileDefaults,setProfileDefaults]=useState({});
   const[presets,setPresets]=useState([]);
@@ -77,6 +78,8 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
       setProfileDefaults(defaults);
       setProfiles(nextProfiles);
       setCfg(active);
+      const ag=(d.flowi_defaults||{}).agentic||{};
+      setAgentic({tool_call_enabled:!!ag.tool_call_enabled,react_loop_enabled:!!ag.react_loop_enabled});
     }).catch(e=>setMsg("로드 오류: "+e.message));
   };
   useEffect(()=>{reload();},[readOnly]);
@@ -141,6 +144,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
         format:active.format||"openai",
         timeout_s:Number(active.timeout_s)||20,
       },
+      flowi_defaults:{agentic:{tool_call_enabled:!!agentic.tool_call_enabled,react_loop_enabled:!!agentic.react_loop_enabled}},
     })})).then(()=>{setMsg("저장됨");reload();}).catch(e=>setMsg("오류: "+e.message)).finally(()=>setBusy(false));
   };
   const test=()=>{
@@ -205,6 +209,18 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
       <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>
       LLM 기능 활성화
     </label>
+    <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",padding:"8px 10px",marginBottom:6,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
+      <span style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>에이전틱 오케스트레이션</span>
+      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14}}>
+        <input type="checkbox" checked={!!agentic.tool_call_enabled} onChange={e=>setAgentic(a=>({...a,tool_call_enabled:e.target.checked,react_loop_enabled:e.target.checked?a.react_loop_enabled:false}))}/>
+        LLM 도구 선택 (tool call)
+      </label>
+      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,opacity:agentic.tool_call_enabled?1:0.5}}>
+        <input type="checkbox" disabled={!agentic.tool_call_enabled} checked={!!agentic.react_loop_enabled} onChange={e=>setAgentic(a=>({...a,react_loop_enabled:e.target.checked}))}/>
+        반복 실행 루프 (ReAct)
+      </label>
+      <span style={{fontSize:13,color:"var(--text-secondary)"}}>홈 Flow-i가 LLM으로 도구를 고르고 결과를 보며 다단계로 실행합니다. 저장 후 적용. env FLOW_LLM_TOOL_CALL/FLOW_LLM_REACT_LOOP가 설정된 서버에서는 env가 우선합니다.</span>
+    </div>
     {presets.length>0&&(<div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10,marginBottom:4}}>
       <div>
         <div style={L}>프리셋</div>
