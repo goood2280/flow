@@ -344,24 +344,6 @@ function _entryLastUpdateForUi(entry) {
   return vals.filter(Boolean).sort().slice(-1)[0] || entry?.created_at || "";
 }
 
-// 아직 UXKit Input/Textarea/Select로 교체하지 못한 뒤쪽 섹션(위자드/메일/로그)이
-// 사용하는 임시 헬퍼. 교체가 끝나면 제거한다.
-function inputStyle(extra = {}) {
-  return {
-    width: "100%",
-    minWidth: 0,
-    boxSizing: "border-box",
-    padding: "7px 9px",
-    borderRadius: 8,
-    border: "1px solid var(--border)",
-    background: "var(--bg-primary)",
-    color: "var(--text-primary)",
-    fontSize: 14,
-    outline: "none",
-    ...extra,
-  };
-}
-
 const informConnectedPanel = { display: "flex", flexDirection: "column", gap: 0 };
 const informConnectedSection = { padding: "14px 0", borderBottom: "1px solid var(--border)" };
 const informConnectedSectionFirst = { ...informConnectedSection, paddingTop: 0 };
@@ -3330,15 +3312,13 @@ function ReasonOptionsPanel({ reasons, canEdit, onSave }) {
         {(draft || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>없음</span>}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <input value={newReason} onChange={e => setNewReason(e.target.value)}
+        <Input value={newReason} onChange={e => setNewReason(e.target.value)}
           disabled={!canEdit}
           placeholder="새 사유"
-          style={inputStyle({ flex: 1, minWidth: 120 })}
+          style={{ flex: 1, minWidth: 120 }}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addReason(); } }} />
-        <button type="button" disabled={!canEdit} onClick={addReason}
-          style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: canEdit ? "pointer" : "not-allowed" }}>+</button>
-        <button type="button" disabled={!canEdit} onClick={saveReasons}
-          style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: canEdit ? "pointer" : "not-allowed" }}>저장</button>
+        <Btn variant="outline" type="button" disabled={!canEdit} onClick={addReason}>+</Btn>
+        <Btn variant="primary" type="button" disabled={!canEdit} onClick={saveReasons}>저장</Btn>
       </div>
     </div>
   );
@@ -3465,14 +3445,14 @@ function CommonInformFilters({ tab, filters, setFilters, products, modules }) {
   if (tab === "matrix") {
     return (
       <div style={{ flex: "0 0 auto", position: "sticky", top: 0, zIndex: 20, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", gap: 8, alignItems: "center", boxShadow: "0 1px 0 rgba(15,23,42,0.04)" }}>
-        <input value={lotDraft} onChange={e => setLotDraft(e.target.value)}
+        <Input value={lotDraft} onChange={e => setLotDraft(e.target.value)}
           placeholder="랏 검색"
-          style={inputStyle({ width: 240, fontSize: 13, padding: "6px 8px", fontFamily: "monospace" })} />
+          style={{ width: 240, fontSize: 13, fontFamily: "monospace" }} />
         {filters.lot && <FilterChip label={`lot ${filters.lot}`} onRemove={() => { setLotDraft(""); update({ lot: "" }); }} />}
-        <button type="button" onClick={() => { setLotDraft(""); setFilters(f => ({ ...f, lot: "", products: [], modules: [], statuses: [] })); }} title="랏 검색 초기화"
-          style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800, fontSize: 14 }}>
+        <Btn variant="ghost" type="button" onClick={() => { setLotDraft(""); setFilters(f => ({ ...f, lot: "", products: [], modules: [], statuses: [] })); }} title="랏 검색 초기화"
+          style={{ marginLeft: "auto" }}>
           초기화
-        </button>
+        </Btn>
       </div>
     );
   }
@@ -3483,32 +3463,32 @@ function CommonInformFilters({ tab, filters, setFilters, products, modules }) {
   ];
   const showStatus = tab === "inform" || tab === "matrix";
   const showTypes = tab === "audit";
-  const pickerStyle = inputStyle({ width: 148, fontSize: 13, padding: "6px 8px" });
+  const pickerStyle = { width: 148, fontSize: 13 };
   return (
     <div style={{ flex: "0 0 auto", position: "sticky", top: 0, zIndex: 20, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxShadow: "0 1px 0 rgba(15,23,42,0.04)" }}>
-      <select value="" onChange={e => addToken("products", e.target.value)} style={pickerStyle}>
+      <Select value="" onChange={e => addToken("products", e.target.value)} style={pickerStyle}>
         <option value="">제품 추가</option>
         {(products || []).map(p => <option key={p} value={p}>{p}</option>)}
-      </select>
-      <select value="" onChange={e => addToken("modules", e.target.value)} style={pickerStyle}>
+      </Select>
+      <Select value="" onChange={e => addToken("modules", e.target.value)} style={pickerStyle}>
         <option value="">모듈 추가</option>
         {(modules || []).map(m => <option key={m} value={m}>{m}</option>)}
-      </select>
+      </Select>
       {showStatus && (
-        <select value="" onChange={e => addToken("statuses", e.target.value)} style={pickerStyle}>
+        <Select value="" onChange={e => addToken("statuses", e.target.value)} style={pickerStyle}>
           <option value="">상태 추가</option>
           {statusOptions.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-        </select>
+        </Select>
       )}
       {showTypes && (
-        <select value="" onChange={e => addToken("types", e.target.value)} style={pickerStyle}>
+        <Select value="" onChange={e => addToken("types", e.target.value)} style={pickerStyle}>
           <option value="">유형 추가</option>
           {AUDIT_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-        </select>
+        </Select>
       )}
-      <input value={lotDraft} onChange={e => setLotDraft(e.target.value)}
+      <Input value={lotDraft} onChange={e => setLotDraft(e.target.value)}
         placeholder="lot 검색"
-        style={inputStyle({ width: 180, fontSize: 13, padding: "6px 8px", fontFamily: "monospace" })} />
+        style={{ width: 180, fontSize: 13, fontFamily: "monospace" }} />
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
         {(filters.products || []).map(v => <FilterChip key={`p:${v}`} label={`제품 ${v}`} onRemove={() => removeToken("products", v)} />)}
         {(filters.modules || []).map(v => <FilterChip key={`m:${v}`} label={`모듈 ${v}`} onRemove={() => removeToken("modules", v)} />)}
@@ -3516,10 +3496,9 @@ function CommonInformFilters({ tab, filters, setFilters, products, modules }) {
         {(filters.types || []).map(v => <FilterChip key={`t:${v}`} label={`유형 ${(AUDIT_TYPES.find(x => x[0] === v) || [v, v])[1]}`} onRemove={() => removeToken("types", v)} />)}
         {filters.lot && <FilterChip label={`lot ${filters.lot}`} onRemove={() => { setLotDraft(""); update({ lot: "" }); }} />}
       </div>
-      <button type="button" onClick={reset} title="필터 초기화"
-        style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800, fontSize: 14 }}>
+      <Btn variant="ghost" type="button" onClick={reset} title="필터 초기화" style={{ marginLeft: "auto" }}>
         필터 초기화
-      </button>
+      </Btn>
     </div>
   );
 }
@@ -3679,13 +3658,13 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
   return (
     <div style={{ flex: 1, minHeight: 0, padding: 12, borderBottom: "1px solid var(--border)", display: "grid", gridTemplateRows: showControls ? "auto minmax(0,1fr)" : "minmax(0,1fr)", gap: 8, background: "var(--bg-primary)" }}>
       {showControls && <div style={{ display: "grid", gap: 7 }}>
-        <select value={filters.product || ""} onChange={e => setFilter("product", e.target.value)} style={inputStyle({ fontSize: 13, padding: "6px 8px" })}>
+        <Select value={filters.product || ""} onChange={e => setFilter("product", e.target.value)} style={{ fontSize: 13 }}>
           <option value="">제품 전체</option>
           {(productOptions || []).map(product => <option key={product} value={product}>{product}</option>)}
-        </select>
-        <input value={filters.search || ""} onChange={e => setFilter("search", e.target.value)}
+        </Select>
+        <Input value={filters.search || ""} onChange={e => setFilter("search", e.target.value)}
           placeholder="LOT_ID 검색"
-          style={inputStyle({ fontSize: 13, padding: "6px 8px", fontFamily: "monospace" })} />
+          style={{ fontSize: 13, fontFamily: "monospace" }} />
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
           {["registered", "mail_completed", "apply_confirmed"].map(state => {
             const meta = LOT_MATRIX_STATES[state];
@@ -4119,13 +4098,12 @@ function InformCommentsPanel({ root, childrenByParent, constants, user, onReply,
   return (
     <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-primary)", display: "grid", gap: 10 }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "start" }}>
-        <textarea value={text} onChange={e => setText(e.target.value)} rows={2}
+        <Textarea value={text} onChange={e => setText(e.target.value)} rows={2}
           placeholder="댓글 입력"
-          style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
-        <button type="button" onClick={submit} disabled={!text.trim()}
-          style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: text.trim() ? "pointer" : "not-allowed", opacity: text.trim() ? 1 : 0.55, fontSize: 14 }}>
+          style={{ fontFamily: "inherit" }} />
+        <Btn variant="primary" type="button" onClick={submit} disabled={!text.trim()}>
           등록
-        </button>
+        </Btn>
       </div>
       {comments.length === 0 && <div style={{ color: "var(--text-secondary)" }}>댓글이 없습니다.</div>}
       {comments.length > 0 && (
@@ -4150,9 +4128,9 @@ function InformMailHistoryPanel({ root, onOpenMail }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <div style={{ ...informConnectedSectionTitle, marginBottom: 0 }}>메일 이력</div>
           <span style={{ color: "var(--text-secondary)" }}>{history.length}건</span>
-          <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+          <Btn variant="outline" type="button" onClick={onOpenMail} style={{ marginLeft: "auto" }}>
             전송 창 열기
-          </button>
+          </Btn>
         </div>
         {history.length === 0 && <div style={{ color: "var(--text-secondary)" }}>발송 이력이 없습니다.</div>}
         {history.slice().reverse().map((m, i) => (
@@ -4207,7 +4185,7 @@ function MailPreviewPanel({ root, onOpenMail }) {
           <div style={{ ...informConnectedSectionTitle, marginBottom: 0 }}>수신자 미리보기</div>
           <span style={{ color: "var(--text-secondary)" }}>{(preview?.resolved_recipients || []).length}명</span>
           {savedTargets.length > 0 && <span style={{ color: "var(--text-secondary)" }}>저장 대상 {savedTargets.length}개</span>}
-          <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>전송 창 열기</button>
+          <Btn variant="outline" type="button" onClick={onOpenMail} style={{ marginLeft: "auto" }}>전송 창 열기</Btn>
         </div>
         {savedTargets.length > 0 && (
           <div style={{ marginBottom: 6, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.5 }}>
@@ -4222,11 +4200,11 @@ function MailPreviewPanel({ root, onOpenMail }) {
       <section style={{ ...informConnectedSection, display: "grid", gap: 8 }}>
         <label style={{ display: "grid", gap: 4 }}>
           <span style={{ fontWeight: 800 }}>제목</span>
-          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "자동 제목"} style={inputStyle()} />
+          <Input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "자동 제목"} />
         </label>
         <label style={{ display: "grid", gap: 4 }}>
           <span style={{ fontWeight: 800 }}>본문</span>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 자동 본문을 사용합니다." style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+          <Textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 자동 본문을 사용합니다." style={{ fontFamily: "inherit" }} />
         </label>
       </section>
       {preview?.html_body && (
@@ -4689,31 +4667,31 @@ function InformWizard({
           <div style={{ display: "grid", gap: 12 }}>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ fontWeight: 800 }}>product</span>
-              <select value={form.product} disabled={isReInform} onChange={e => {
+              <Select value={form.product} disabled={isReInform} onChange={e => {
                 setSelectedSetIds([]);
                 setEmbedCustomCols([]);
                 setEmbedCustomSearch("");
                 setAttachMode("sets");
                 setFabSearch("");
                 setForm(f => ({ ...f, product: e.target.value, lot_id: "", fab_lot_ids: [], attach_embed: false, embed: emptyEmbedTable() }));
-              }} style={inputStyle({ opacity: isReInform ? 0.75 : 1 })}>
+              }} style={{ opacity: isReInform ? 0.75 : 1 }}>
                 <option value="">-- product 선택 --</option>
                 {productOptions.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
+              </Select>
             </label>
             <section style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)", padding: 10, display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontWeight: 900 }}>LOT_ID 선택</span>
                   <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{selectedFabs.size} 선택</span>
-                  <button type="button" disabled={isReInform} onClick={() => {
+                  <Btn size="sm" type="button" disabled={isReInform} onClick={() => {
                     clearSplitAttachmentState({ clearSets: true, clearCols: true });
                     setForm(f => ({ ...f, lot_id: "", fab_lot_ids: [], attach_embed: false, embed: emptyEmbedTable() }));
                   }}
-                    style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 7, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: isReInform ? "not-allowed" : "pointer", fontWeight: 800, opacity: isReInform ? 0.55 : 1 }}>
+                    style={{ marginLeft: "auto" }}>
                     선택 해제
-                  </button>
+                  </Btn>
                 </div>
-                <input value={fabSearch} onChange={e => setFabSearch(e.target.value)} placeholder="LOT_ID 검색 (입력 즉시 필터)" style={inputStyle({ fontFamily: "monospace" })} disabled={!form.product || isReInform} />
+                <Input value={fabSearch} onChange={e => setFabSearch(e.target.value)} placeholder="LOT_ID 검색 (입력 즉시 필터)" style={{ fontFamily: "monospace" }} disabled={!form.product || isReInform} />
                 <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {!form.product && <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)" }}>product 선택 후 후보 표시</div>}
                   {form.product && visibleFabOptions.length === 0 && <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)" }}>LOT_ID 후보 없음</div>}
@@ -4748,14 +4726,14 @@ function InformWizard({
           <div style={{ display: "grid", gap: 12 }}>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ fontWeight: 800 }}>module</span>
-              <select value={form.module} disabled={isReInform} onChange={e => setForm(f => ({ ...f, module: e.target.value, reason: "PEMS" }))} style={inputStyle({ opacity: isReInform ? 0.75 : 1 })}>
+              <Select value={form.module} disabled={isReInform} onChange={e => setForm(f => ({ ...f, module: e.target.value, reason: "PEMS" }))} style={{ opacity: isReInform ? 0.75 : 1 }}>
                 <option value="">-- module --</option>
                 {(constants.modules || []).map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
+              </Select>
             </label>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ fontWeight: 800 }}>note</span>
-              <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} rows={11} style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+              <Textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} rows={11} style={{ fontFamily: "inherit" }} />
             </label>
           </div>
         )}
@@ -4802,22 +4780,20 @@ function InformWizard({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 900 }}>📋 첨부할 세트 선택</div>
                   <span style={{ color: "var(--text-secondary)" }}>{setsLoading ? "loading..." : `${setRows.length}개`}</span>
-                  <input value={setSearch} onChange={e => setSetSearch(e.target.value)} placeholder="세트 이름 검색"
-                    style={inputStyle({ marginLeft: "auto", width: 220, fontSize: 13, padding: "6px 8px" })} />
-                  <button type="button" onClick={() => {
+                  <Input value={setSearch} onChange={e => setSetSearch(e.target.value)} placeholder="세트 이름 검색"
+                    style={{ marginLeft: "auto", width: 220, fontSize: 13 }} />
+                  <Btn size="sm" type="button" onClick={() => {
                     setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
                     setSelectedSetIds((setRows || []).map(s => s.id));
-                  }}
-                    style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
+                  }}>
                     전체 선택
-                  </button>
-                  <button type="button" onClick={() => {
+                  </Btn>
+                  <Btn size="sm" type="button" onClick={() => {
                     setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
                     setSelectedSetIds([]);
-                  }}
-                    style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
+                  }}>
                     선택 해제
-                  </button>
+                  </Btn>
                 </div>
                 <div style={{ maxHeight: 340, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
                   {(setRows || [])
@@ -4834,10 +4810,9 @@ function InformWizard({
                           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{s.columns_count || 0} cols</span>
                           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{s.wafer_count || 0} rows</span>
                           <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{(s.updated_at || "").replace("T", " ").slice(0, 16) || s.source}</span>
-                          <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); setPreviewSet(s); }}
-                            style={{ padding: "4px 7px", borderRadius: 7, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
+                          <Btn size="sm" type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); setPreviewSet(s); }}>
                             미리보기
-                          </button>
+                          </Btn>
                         </label>
                       );
                     })}
@@ -4866,22 +4841,21 @@ function InformWizard({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <b>KNOB / CUSTOM 컬럼 직접 첨부</b>
                   <span style={{ color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</span>
-                  <button type="button" onClick={() => {
+                  <Btn size="sm" type="button" onClick={() => {
                     setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
                     setEmbedCustomCols(filteredCols);
                   }}
-                    style={{ marginLeft: "auto", padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
+                    style={{ marginLeft: "auto" }}>
                     전체 선택
-                  </button>
-                  <button type="button" onClick={() => {
+                  </Btn>
+                  <Btn size="sm" type="button" onClick={() => {
                     setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
                     setEmbedCustomCols([]);
-                  }}
-                    style={{ padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
+                  }}>
                     선택 해제
-                  </button>
+                  </Btn>
                 </div>
-                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="KNOB / CUSTOM 컬럼 검색" style={inputStyle()} />
+                <Input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="KNOB / CUSTOM 컬럼 검색" />
                 {embedCustomCols.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 70, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                     {embedCustomCols.map(c => (
@@ -4911,8 +4885,8 @@ function InformWizard({
                   <b>새 커스텀 세트 만들기</b>
                   <span style={{ color: "var(--text-secondary)" }}>만든 뒤 자동 선택</span>
                 </div>
-                <input value={newSetName} onChange={e => setNewSetName(e.target.value)} placeholder="세트 이름" style={inputStyle()} />
-                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="컬럼 검색" style={inputStyle()} />
+                <Input value={newSetName} onChange={e => setNewSetName(e.target.value)} placeholder="세트 이름" />
+                <Input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="컬럼 검색" />
                 {newSetCols.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 64, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                     {newSetCols.map(c => (
@@ -4936,18 +4910,18 @@ function InformWizard({
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ color: "var(--text-secondary)" }}>선택 {newSetCols.length}개</span>
-                  <button type="button" disabled={newSetSaving} onClick={saveNewSet}
-                    style={{ marginLeft: "auto", padding: "7px 12px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", cursor: newSetSaving ? "wait" : "pointer", fontWeight: 900, fontSize: 14 }}>
+                  <Btn variant="primary" type="button" disabled={newSetSaving} onClick={saveNewSet}
+                    style={{ marginLeft: "auto" }}>
                     {newSetSaving ? "저장 중..." : "세트 만들기"}
-                  </button>
+                  </Btn>
                 </div>
               </div>
             )}
-            <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
+            <Btn variant="outline" type="button" onClick={() => setSnapshotTick(x => x + 1)}
               disabled={attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching}
-              style={{ justifySelf: "start", padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching ? "not-allowed" : "pointer", opacity: attachMode !== "knob" || embedCustomCols.length === 0 || embedFetching ? 0.5 : 1, fontSize: 14 }}>
+              style={{ justifySelf: "start" }}>
               {embedFetching ? "미리보기 생성 중..." : "미리보기 생성"}
-            </button>
+            </Btn>
             {attachMode === "sets" && form.attach_embed && selectedSetRows.length > 0 && (
               <div style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontWeight: 800 }}>
                 실제 LOT snapshot 미리보기 · {hasLotSnapshotData(form.embed) ? embedSnapshotSummary(form.embed) : "데이터 없음"}
@@ -4987,8 +4961,8 @@ function InformWizard({
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontWeight: 800 }}>개인</span>
                     <span style={{ color: "var(--text-secondary)" }}>{pickedMailUsers.length} 선택</span>
-                    <input value={mailUserSearch} onChange={e => setMailUserSearch(e.target.value)} placeholder="유저/이메일 검색"
-                      style={inputStyle({ marginLeft: "auto", width: 190, fontSize: 13, padding: "5px 8px" })} />
+                    <Input value={mailUserSearch} onChange={e => setMailUserSearch(e.target.value)} placeholder="유저/이메일 검색"
+                      style={{ marginLeft: "auto", width: 190, fontSize: 13 }} />
                   </div>
                   <div style={{ height: 150, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                     {visibleMailRecipients.length === 0 && <div style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)" }}>유저 없음</div>}
@@ -5007,11 +4981,11 @@ function InformWizard({
                   </div>
                 </div>
               </div>
-              <input value={extraMailEmails} onChange={e => setExtraMailEmails(e.target.value)}
-                placeholder="추가 이메일 (콤마/공백/세미콜론 구분)" style={inputStyle({ fontFamily: "monospace" })} />
+              <Input value={extraMailEmails} onChange={e => setExtraMailEmails(e.target.value)}
+                placeholder="추가 이메일 (콤마/공백/세미콜론 구분)" style={{ fontFamily: "monospace" }} />
               <label style={{ display: "grid", gap: 5 }}>
                 <span style={{ fontWeight: 800 }}>제목</span>
-                <input value={mailDraft.subject || ""} onChange={e => setMailDraft(d => ({ ...d, subject: e.target.value }))} style={inputStyle()} />
+                <Input value={mailDraft.subject || ""} onChange={e => setMailDraft(d => ({ ...d, subject: e.target.value }))} />
               </label>
             </section>
             <section style={{ maxHeight: "64vh", overflowY: "auto", overflowX: "hidden", width: "100%", padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>

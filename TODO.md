@@ -9,7 +9,7 @@
 
 ## Done
 
-- (Claude) 인폼 UI UXKit 통일 1차 — 상단/목록/버튼·색상 상수 정리 (위자드/메일/로그 섹션 inputStyle 교체는 후속)
+- (Claude) 인폼 UI UXKit 통일 완료 — 1차(상단/목록/색 상수) + 2차(위자드/메일/로그 inputStyle 20곳→UXKit, 버튼 14곳, 헬퍼 제거)
 - (Claude) 회의관리 UI UXKit 통일 — 로컬 버튼/입력 스타일 46+41건 교체, 상세를 Panel 4단 구조로 단순화, 로컬 스타일 상수 15개 제거
 - (Claude) 리소스 한도 호스트 자동 산출(코어-1, 총메모리 65%) + 백그라운드 작업 사용자 요청 양보(core/request_priority) + plan 불일치 알람 지정 팀 수신(mismatch_alert_recipients)
 - (Claude) 장기 uptime 메모리 증가 완화 — core/cache_sweeper 주기 sweep 도입, informs 대시보드/스냅샷·splittable discovery/lookup 캐시 만료 정리
