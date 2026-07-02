@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) 리소스 한도 호스트 자동 산출(코어-1, 총메모리 65%) + 백그라운드 작업 사용자 요청 양보(core/request_priority) + plan 불일치 알람 지정 팀 수신(mismatch_alert_recipients)
 - (Claude) 장기 uptime 메모리 증가 완화 — core/cache_sweeper 주기 sweep 도입, informs 대시보드/스냅샷·splittable discovery/lookup 캐시 만료 정리
 - (Claude) FileBrowser 첫 클릭 2단계 로드 — 스키마(meta_only) 즉시 표시 후 100행 샘플 백그라운드 로드, 요청 시퀀스 가드
 - (Claude) SplitTable view fast-path 컨트롤 플로우 회귀 수정(캐시 미스 시 null 반환) + pivot cache 미스/stale 백그라운드 재빌드 + canonical 캐시 디렉터리 통일 + 수동 refresh API

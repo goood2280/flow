@@ -375,6 +375,8 @@ export default function My_SplitTable({user}){
   const[rootLotCacheBusy,setRootLotCacheBusy]=useState(false);
   const[rootLotCacheSaveBusy,setRootLotCacheSaveBusy]=useState(false);
   const[rootLotCacheDraft,setRootLotCacheDraft]=useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
+  const[mismatchRecipientsDraft,setMismatchRecipientsDraft]=useState("");
+  const[mismatchRecipientsSaveBusy,setMismatchRecipientsSaveBusy]=useState(false);
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
@@ -403,8 +405,19 @@ export default function My_SplitTable({user}){
     setEnabledSources(normalizeEnabledProducts(d.enabled));
     if(d.lot_overrides)setLotOverrides(normalizeOverrideConfig(d.lot_overrides));
     setRootLotCacheDraft(rootLotCacheDraftFromSettings(d.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
+    setMismatchRecipientsDraft((d.mismatch_alert_recipients||[]).join(", "));
     return d;
   }).catch(()=>({}));
+  const saveMismatchRecipients=()=>{
+    const recipients=mismatchRecipientsDraft.split(",").map(s=>s.trim()).filter(Boolean);
+    const enabledForSave=enabledSources?[...enabledSources]:(products||[]).filter(p=>p.source_type==="base_file").map(p=>p.name).filter(Boolean);
+    setMismatchRecipientsSaveBusy(true);
+    sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({enabled:enabledForSave,lot_overrides:lotOverrides||{},mismatch_alert_recipients:recipients})})
+      .then(()=>{toast.ok("불일치 알람 수신 팀 저장됨");return loadSourceConfig();})
+      .catch(e=>toast.error("불일치 알람 수신 팀 저장 실패: "+(e?.message||e)))
+      .finally(()=>setMismatchRecipientsSaveBusy(false));
+  };
   const reloadMlMatch=()=>{if(!selProd)return Promise.resolve();
     return sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
       .then(d=>setMlMatch(toMlMatch(d)))
@@ -497,6 +510,7 @@ export default function My_SplitTable({user}){
         setEnabledSources(enabled);
         if(srcRes.lot_overrides) setLotOverrides(normalizeOverrideConfig(srcRes.lot_overrides));
         setRootLotCacheDraft(rootLotCacheDraftFromSettings(srcRes.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
+        setMismatchRecipientsDraft((srcRes.mismatch_alert_recipients||[]).join(", "));
         // Set initial product to first visible source
         const visible=enabled?prods.filter(p=>enabled.has(p.name)):prods;
         if(visible.length)setSelProd(visible[0].name);else if(prods.length)setSelProd(prods[0].name);
@@ -1469,6 +1483,20 @@ export default function My_SplitTable({user}){
                   </button>
                 </div>
               </div>);})()}
+            <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>plan/actual 불일치 알람 수신 팀</div>
+                <span style={{fontSize:13,color:"var(--text-secondary)"}}>계획 작성자 외에 알람을 함께 받을 사용자 목록 (쉼표 구분)</span>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <input value={mismatchRecipientsDraft} onChange={e=>setMismatchRecipientsDraft(e.target.value)}
+                  placeholder="user1, user2" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                <button onClick={saveMismatchRecipients} disabled={mismatchRecipientsSaveBusy}
+                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:mismatchRecipientsSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
+                  {mismatchRecipientsSaveBusy?"저장 중":"저장"}
+                </button>
+              </div>
+            </div>
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>사용자 표시 대상</div>

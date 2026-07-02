@@ -4,6 +4,7 @@ import time
 import logging
 from pathlib import Path
 from core.paths import PATHS
+from core import request_priority
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,9 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             del partitions
             gc.collect()
 
-            # API 우선 처리를 위한 CPU 제어권 반환 및 메모리 정리 시간 부여
+            # API 우선 처리 — 사용자 요청이 진행 중이면 다음 청크를 미룬다.
             time.sleep(0.1)
+            request_priority.yield_to_users(max_wait_sec=20.0)
 
         logger.info("Built pivoted cache for %s (%d roots) in %.2fs", canonical, partitions_built, time.monotonic() - start_time)
         return True

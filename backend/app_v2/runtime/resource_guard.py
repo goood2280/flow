@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.runtime_limits import is_small_profile, process_cpu_snapshot, process_memory_high, process_memory_snapshot
+from core import request_priority as _request_priority
 
 
 DEFAULT_HEAVY_PREFIXES = (
@@ -171,6 +172,10 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        if path.startswith("/api/"):
+            # 백그라운드 작업(캐시 빌드, S3 주기 동기화)이 사용자 요청에 양보하도록
+            # 사용자 활동 시각을 남긴다.
+            _request_priority.note_api_request(path)
         if path.startswith("/api/") and self._is_light_request(request):
             return await call_next(request)
         if not path.startswith("/api/"):

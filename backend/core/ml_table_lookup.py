@@ -888,6 +888,9 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                     resource_skipped += len(candidates) - idx
                     last_skip_reason = guard_reason
                     break
+                # 사용자 요청이 진행 중이면 예열을 잠시 멈춰 API 응답을 우선한다.
+                from core import request_priority
+                request_priority.yield_to_users(max_wait_sec=10.0)
                 if _root_ram_cache_put(
                     fp,
                     root,

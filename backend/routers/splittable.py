@@ -1100,6 +1100,9 @@ def _refresh_product_ram_cache_products(products: list[str], force: bool = False
     max_bytes = _product_ram_cache_max_bytes()
     with _PRODUCT_RAM_CACHE_BUILD_LOCK:
         for raw_product in products:
+            # 사용자 요청이 진행 중이면 다음 제품 로드를 미룬다 (백그라운드 양보).
+            from core import request_priority
+            request_priority.yield_to_users(max_wait_sec=15.0)
             canonical = _canonical_mltable_product_name(raw_product, allow_bare=True) or str(raw_product or "").strip()
             result = {"product": canonical, "ok": False, "skipped": False, "row_count": 0}
             try:
@@ -1966,6 +1969,13 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
         data = _load_plan_data(product)
         plans = data.get("plans") if isinstance(data.get("plans"), dict) else {}
         alerts = data.get("mismatch_alerts") if isinstance(data.get("mismatch_alerts"), dict) else {}
+        # 지정 팀 수신자: 계획 작성자 외에 항상 함께 알람을 받는 사용자 목록.
+        team_recipients: list[str] = []
+        try:
+            _cfg = load_json(SOURCE_CFG, {}) or {}
+            team_recipients = [str(u or "").strip() for u in (_cfg.get("mismatch_alert_recipients") or []) if str(u or "").strip()]
+        except Exception:
+            team_recipients = []
         sent = 0
         for mm in mismatches[:100]:
             cell_key = str(mm.get("key") or mm.get("cell") or "")
@@ -1976,12 +1986,16 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
             if not _plan_actual_mismatch(plan, actual):
                 continue
             plan_info = plans.get(cell_key) if isinstance(plans.get(cell_key), dict) else {}
-            target = str(mm.get("plan_user") or plan_info.get("user") or "").strip()
-            if not target:
+            owner = str(mm.get("plan_user") or plan_info.get("user") or "").strip()
+            targets: list[str] = []
+            if owner:
+                targets.append(owner)
+            for name in team_recipients:
+                if name not in targets:
+                    targets.append(name)
+            if not targets:
                 continue
             alert_key = _plan_mismatch_alert_key(cell_key, plan, actual)
-            if alert_key in alerts:
-                continue
             root, wafer, column = _split_plan_cell_key(cell_key)
             payload = {
                 "product": product,
@@ -1993,26 +2007,31 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                 "actual": _clean_str(actual),
                 "plan_updated": plan_info.get("updated") or mm.get("plan_updated") or "",
             }
-            ok = emit_event(
-                "my_plan_actual_mismatch",
-                actor=actor or "flow",
-                target_user=target,
-                title="[plan/actual 불일치]",
-                body=(
-                    f"! {product}/{root}"
-                    + (f" WF{wafer}" if wafer else "")
-                    + f" {column}: [plan] {payload['plan']} → [actual] {payload['actual']}"
-                ),
-                payload=payload,
-            )
-            if not ok:
-                continue
-            alerts[alert_key] = {
-                "time": datetime.datetime.now().isoformat(),
-                "target_user": target,
-                **payload,
-            }
-            sent += 1
+            for target in targets:
+                # 작성자는 기존 key 형식 유지(중복 재알람 방지), 팀 수신자는 사용자별 key.
+                target_alert_key = alert_key if target == owner else f"{alert_key}|u:{target}"
+                if target_alert_key in alerts:
+                    continue
+                ok = emit_event(
+                    "my_plan_actual_mismatch",
+                    actor=actor or "flow",
+                    target_user=target,
+                    title="[plan/actual 불일치]",
+                    body=(
+                        f"! {product}/{root}"
+                        + (f" WF{wafer}" if wafer else "")
+                        + f" {column}: [plan] {payload['plan']} → [actual] {payload['actual']}"
+                    ),
+                    payload=payload,
+                )
+                if not ok:
+                    continue
+                alerts[target_alert_key] = {
+                    "time": datetime.datetime.now().isoformat(),
+                    "target_user": target,
+                    **payload,
+                }
+                sent += 1
         if sent:
             if len(alerts) > 2000:
                 for old_key in list(alerts.keys())[: len(alerts) - 2000]:
@@ -3677,6 +3696,7 @@ def get_source_config():
     cfg.setdefault("enabled", [])
     cfg.setdefault("lot_overrides", {})  # v8.4.4: product-scoped {root_col, fab_col, fab_source, ts_col, join_keys}
     cfg.setdefault("root_lot_cache", _ml_table_lookup.root_ram_cache_settings())
+    cfg.setdefault("mismatch_alert_recipients", [])
     # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
     _migrate_legacy_root_prefix(cfg)
     return cfg
@@ -3685,6 +3705,8 @@ class SourceConfigReq(BaseModel):
     enabled: List[str] = []
     lot_overrides: dict = {}  # v8.4.4
     root_lot_cache: dict | None = None
+    # plan/actual 불일치 알람을 계획 작성자 외에 추가로 받을 지정 팀/사용자 목록.
+    mismatch_alert_recipients: List[str] | None = None
 
 
 def _normalize_fab_source_path(v: str) -> str:
@@ -3760,6 +3782,13 @@ def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_manager(
         cur.setdefault("lot_overrides", {}).update(req.lot_overrides)
     if req.root_lot_cache is not None:
         cur["root_lot_cache"] = _normalize_root_lot_cache_settings(req.root_lot_cache)
+    if req.mismatch_alert_recipients is not None:
+        seen: list[str] = []
+        for name in req.mismatch_alert_recipients:
+            clean = str(name or "").strip()
+            if clean and clean not in seen:
+                seen.append(clean)
+        cur["mismatch_alert_recipients"] = seen[:50]
     # v8.8.21: legacy root:~~ 삭제.
     _migrate_legacy_root_prefix(cur)
     save_json(SOURCE_CFG, cur)

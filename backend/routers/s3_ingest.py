@@ -760,6 +760,7 @@ def _run_item_blocking(item_id: str):
 
 
 def _queue_worker_loop():
+    from core import request_priority
     while True:
         with _QUEUE_COND:
             while not _QUEUED:
@@ -768,6 +769,8 @@ def _queue_worker_loop():
             if item_id in _RUNNING:
                 continue
             _RUNNING[item_id] = {"thread": threading.current_thread(), "start": time.time()}
+        # 사용자 요청이 진행 중이면 주기 동기화 시작을 잠시 미룬다 (최대 60초).
+        request_priority.yield_to_users(max_wait_sec=60.0, quiet_for_sec=3.0)
         _run_item_blocking(item_id)
 
 
