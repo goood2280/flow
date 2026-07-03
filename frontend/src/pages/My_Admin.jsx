@@ -744,7 +744,7 @@ export default function My_Admin({user}){
         </div>
         {(sys.process_cpu_budget_cores||sys.memory_source)&&<div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginTop:-8,marginBottom:16,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
           <span>Flow CPU {Number(sys.process_cpu_cores||0).toFixed(2)} / {Number(sys.process_cpu_guard_cores||sys.process_cpu_budget_cores||0).toFixed(2)} cores{sys.process_cpu_over_limit?" · over":""}</span>
-          <span>MEM source {sys.memory_source||sys.system_memory_source||"-"}{sys.system_memory_raw_total_gb&&sys.system_memory_raw_total_gb!==sys.system_memory_total_gb?` · raw ${Number(sys.system_memory_raw_total_gb||0).toFixed(1)}GB`:""}</span>
+          <span>MEM source {sys.memory_source||sys.system_memory_source||"-"}{sys.system_memory_raw_total_gb&&sys.system_memory_raw_total_gb!==sys.system_memory_total_gb?` · raw ${Number(sys.system_memory_raw_total_gb||0).toFixed(1)}GB`:""}{Number(sys.system_memory_cache_reclaimable_gb||0)>0.05?` · cache ${Number(sys.system_memory_cache_reclaimable_gb||0).toFixed(1)}GB (회수가능, 사용량 제외)`:""}</span>
         </div>}
         <div style={{marginBottom:16}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:8}}>

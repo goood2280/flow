@@ -252,6 +252,38 @@ def _read_int_file(path: str) -> int:
     return value
 
 
+def _read_cgroup_stat_field(path: str, field: str) -> int:
+    """Read one `field value` line from a cgroup memory.stat file."""
+    try:
+        text = open(path, "r", encoding="utf-8").read()
+    except Exception:
+        return 0
+    m = re.search(rf"^{re.escape(field)}\s+(\d+)\s*$", text, flags=re.MULTILINE)
+    if not m:
+        return 0
+    try:
+        return int(m.group(1))
+    except Exception:
+        return 0
+
+
+def _cgroup_reclaimable_cache_bytes(source: str) -> int:
+    """Reclaimable page cache inside the cgroup.
+
+    cgroup `memory.current` / `memory.usage_in_bytes` count the file page cache,
+    which is reclaimable under pressure and does NOT cause OOM. Reading big
+    parquet files fills this cache up to the limit, so counting it as "used"
+    makes the app report ~100% memory even when real (anonymous) usage is low.
+    Subtracting the inactive file cache yields the working set — the same
+    quantity Kubernetes/cAdvisor report as container memory usage.
+    """
+    if source == "cgroup_v2":
+        return _read_cgroup_stat_field("/sys/fs/cgroup/memory.stat", "inactive_file")
+    if source == "cgroup_v1":
+        return _read_cgroup_stat_field("/sys/fs/cgroup/memory/memory.stat", "total_inactive_file")
+    return 0
+
+
 def _cgroup_memory_snapshot_bytes() -> dict[str, float | str]:
     total = _read_int_file("/sys/fs/cgroup/memory.max")
     used = _read_int_file("/sys/fs/cgroup/memory.current")
@@ -262,8 +294,17 @@ def _cgroup_memory_snapshot_bytes() -> dict[str, float | str]:
         source = "cgroup_v1" if total else ""
     if not total:
         return {}
-    used = max(0, min(int(total), int(used or 0)))
-    return {"total_bytes": float(total), "used_bytes": float(used), "source": source}
+    used_raw = max(0, min(int(total), int(used or 0)))
+    # 회수 가능한 파일 캐시를 빼서 실제 working set 을 쓴다 (캐시 팽창으로 100% 오표시 방지).
+    reclaimable = min(used_raw, max(0, _cgroup_reclaimable_cache_bytes(source)))
+    used_working = max(0, used_raw - reclaimable)
+    return {
+        "total_bytes": float(total),
+        "used_bytes": float(used_working),
+        "used_raw_bytes": float(used_raw),
+        "cache_reclaimable_bytes": float(reclaimable),
+        "source": source,
+    }
 
 
 def _memory_override_total_bytes() -> int:
@@ -318,12 +359,16 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
     raw_total_bytes = total_bytes
 
     limit = _cgroup_memory_snapshot_bytes()
+    cache_reclaimable_gb = (
+        float(limit.get("cache_reclaimable_bytes") or 0.0) / (1024 ** 3) if limit else 0.0
+    )
     override_total = _memory_override_total_bytes()
     if override_total:
         limit = {
             "total_bytes": float(override_total),
             "source": "env_override",
         }
+        cache_reclaimable_gb = 0.0
     if limit:
         limit_total = float(limit.get("total_bytes") or 0.0)
         if limit_total > 0 and (not total_bytes or limit_total < total_bytes):
@@ -364,6 +409,7 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
         "system_memory_low": low,
         "system_memory_source": source,
         "system_memory_raw_total_gb": round(raw_total_bytes / (1024 ** 3), 3) if raw_total_bytes else 0,
+        "system_memory_cache_reclaimable_gb": round(cache_reclaimable_gb, 3),
     }
 
 

@@ -96,6 +96,60 @@ def test_system_memory_snapshot_prefers_lower_cgroup_limit(monkeypatch):
     assert snap["system_memory_source"] == "cgroup_v2"
 
 
+def test_cgroup_used_excludes_reclaimable_file_cache(monkeypatch):
+    gb = 1024 ** 3
+    # cgroup v2: 한도 16GB, memory.current 15GB 이지만 그 중 13GB 는 회수 가능한
+    # 파일 캐시(inactive_file). 실제 working set 은 2GB 여야 한다.
+    int_files = {
+        "/sys/fs/cgroup/memory.max": 16 * gb,
+        "/sys/fs/cgroup/memory.current": 15 * gb,
+    }
+    monkeypatch.setattr(runtime_limits, "_read_int_file", lambda path: int(int_files.get(path, 0)))
+    monkeypatch.setattr(
+        runtime_limits,
+        "_read_cgroup_stat_field",
+        lambda path, field: 13 * gb if (path.endswith("memory.stat") and field == "inactive_file") else 0,
+    )
+
+    snap = runtime_limits._cgroup_memory_snapshot_bytes()
+
+    assert snap["source"] == "cgroup_v2"
+    assert snap["used_raw_bytes"] == float(15 * gb)
+    assert snap["cache_reclaimable_bytes"] == float(13 * gb)
+    # 캐시 제외 후 실제 사용 = 15 - 13 = 2GB.
+    assert snap["used_bytes"] == float(2 * gb)
+
+
+def test_system_memory_percent_reflects_working_set_not_cache(monkeypatch):
+    gb = 1024 ** 3
+    monkeypatch.delenv("FLOW_SYSTEM_MEMORY_TOTAL_GB", raising=False)
+    monkeypatch.delenv("FLOW_EFFECTIVE_MEMORY_TOTAL_GB", raising=False)
+    monkeypatch.setattr(
+        runtime_limits,
+        "_host_memory_snapshot_bytes",
+        lambda: {"total_bytes": float(64 * gb), "available_bytes": float(40 * gb), "percent": 37.5, "source": "psutil"},
+    )
+    # 한도 16GB, current 15.5GB(거의 꽉 참)인데 14GB 가 파일 캐시.
+    int_files = {
+        "/sys/fs/cgroup/memory.max": 16 * gb,
+        "/sys/fs/cgroup/memory.current": int(15.5 * gb),
+    }
+    monkeypatch.setattr(runtime_limits, "_read_int_file", lambda path: int(int_files.get(path, 0)))
+    monkeypatch.setattr(
+        runtime_limits,
+        "_read_cgroup_stat_field",
+        lambda path, field: 14 * gb if field == "inactive_file" else 0,
+    )
+
+    snap = runtime_limits.system_memory_snapshot()
+
+    # working set = 1.5GB / 16GB ≈ 9.4% — 캐시 팽창(≈97%)로 오표시되지 않는다.
+    assert snap["system_memory_source"] == "cgroup_v2"
+    assert snap["system_memory_percent"] < 15.0
+    assert snap["system_memory_cache_reclaimable_gb"] == 14.0
+    assert snap["system_memory_low"] is False
+
+
 def test_process_cpu_snapshot_flags_core_budget_overage(monkeypatch):
     with runtime_limits._PROCESS_CPU_LOCK:
         runtime_limits._PROCESS_CPU_LAST.update({"cpu_seconds": 0.0, "wall": 0.0})
