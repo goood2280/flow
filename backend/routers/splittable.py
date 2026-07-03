@@ -8239,7 +8239,12 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
             if root_col and root_col in schema_names:
                 lf = lf.filter(_join_key_expr(root_col) == root_scope.upper())
 
-        preview_only = not bool(root_scope) and str(col or "").casefold() != "root_lot_id"
+        # 빈 prefix 드롭다운(초기 root_lot_id 목록)은 미리보기 앞부분 N개면 충분하다.
+        # 전체 컬럼을 unique + sort 하면 큰 원천에서 수 초가 걸려 즉시 뜨지 않으므로,
+        # 앞부분만 샘플링해 즉시 응답한다. 사용자가 입력하면 _limited_unique_values 가
+        # prefix 로 원천 전체를 서버에서 필터링하므로 미리보기 밖 값도 검색된다.
+        # (root_scope 가 지정된 fab_lot_id 조회는 이미 좁혀진 집합이라 전체 스캔해도 빠르다.)
+        preview_only = not bool(root_scope)
         values = _limited_unique_values(lf, target, prefix=prefix, limit=limit,
                                         preview_only=preview_only)
         payload = {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
@@ -8464,6 +8469,9 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     lots_list: list = []
     fallback_used = False
     try:
+        # /lot-ids 는 렌더 가능한 root 의 authoritative 폴백 목록이라 완전성이 계약이다
+        # (검색은 /lot-candidates?prefix= 가 담당). 초기 목록 즉시성은 주 경로인
+        # _main_table_candidates 의 미리보기가 담당하므로 여기서는 전체 스캔을 유지한다.
         lots_list = _limited_unique_values(lf, lot_col, limit=limit, preview_only=False)
     except Exception as e:
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
