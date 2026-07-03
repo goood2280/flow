@@ -6,9 +6,38 @@ from pathlib import Path
 from core.paths import PATHS
 from core import request_priority
 
+try:  # runtime_limits is optional in some minimal contexts (e.g. isolated tests)
+    from core.runtime_limits import process_memory_high
+except Exception:  # pragma: no cover - defensive import
+    def process_memory_high(reserve_gb: float = 1.0) -> bool:  # type: ignore
+        return False
+
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = PATHS.db_cache_dir / "split_table" if hasattr(PATHS, "db_cache_dir") else Path("data/cache/split_table")
+
+# Background builds run in chunks so an interactive read (SplitTable load, file
+# view) always has spare RAM/CPU. When the process is already near its memory
+# budget we shrink the chunk and wait longer between chunks so the reserved UI
+# lane keeps working instead of tripping the memory guard.
+_CHUNK_SIZE_DEFAULT = 5
+_CHUNK_SIZE_UNDER_MEMORY_PRESSURE = 2
+
+
+def _int_env(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _chunk_size(memory_pressured: bool) -> int:
+    if memory_pressured:
+        return _int_env(
+            "FLOW_PIVOT_CACHE_CHUNK_SIZE_MIN", _CHUNK_SIZE_UNDER_MEMORY_PRESSURE, 1, 64
+        )
+    return _int_env("FLOW_PIVOT_CACHE_CHUNK_SIZE", _CHUNK_SIZE_DEFAULT, 1, 256)
 
 
 def canonical_product_dir(product: str) -> str:
@@ -61,11 +90,17 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             unique_roots = roots_df["root_lot_id"].drop_nulls().to_list()
 
         import gc
-        CHUNK_SIZE = 5
         partitions_built = 0
 
-        for i in range(0, len(unique_roots), CHUNK_SIZE):
-            chunk_roots = unique_roots[i:i+CHUNK_SIZE]
+        i = 0
+        total_roots = len(unique_roots)
+        while i < total_roots:
+            # 매 청크 전에 현재 메모리 여유를 확인해 청크 크기를 조절한다. 백그라운드
+            # 빌드가 메모리 보호 임계값을 건드려 기본 UI 작업을 막지 않도록 한다.
+            memory_pressured = process_memory_high()
+            chunk_size = _chunk_size(memory_pressured)
+            chunk_roots = unique_roots[i:i + chunk_size]
+            i += chunk_size
 
             if "root_lot_id" in columns:
                 chunk_lf = lf.filter(pl.col("root_lot_id").is_in(chunk_roots))
@@ -110,8 +145,13 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             gc.collect()
 
             # API 우선 처리 — 사용자 요청이 진행 중이면 다음 청크를 미룬다.
-            time.sleep(0.1)
-            request_priority.yield_to_users(max_wait_sec=20.0)
+            # 메모리가 빠듯하면 더 길게 쉬면서 RSS 가 내려갈 시간을 준다.
+            if memory_pressured:
+                time.sleep(0.5)
+                request_priority.yield_to_users(max_wait_sec=60.0)
+            else:
+                time.sleep(0.1)
+                request_priority.yield_to_users(max_wait_sec=20.0)
 
         logger.info("Built pivoted cache for %s (%d roots) in %.2fs", canonical, partitions_built, time.monotonic() - start_time)
         return True

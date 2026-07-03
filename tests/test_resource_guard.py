@@ -37,9 +37,11 @@ def test_flowi_verify_and_workflow_catalog_are_default_light_paths(monkeypatch):
     assert not resource_guard._matches("/api/llm/flowi/chat", paths)
 
 
-def test_splittable_view_cache_first_uses_heavy_middleware(monkeypatch):
+def test_splittable_view_bypasses_memory_guard_via_essential_lane(monkeypatch):
+    # 스플릿테이블 불러오기는 큰 백그라운드 작업으로 메모리가 높아도 항상 열려 있어야 한다.
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
     monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
     monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
     monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
     monkeypatch.setattr(
@@ -47,7 +49,15 @@ def test_splittable_view_cache_first_uses_heavy_middleware(monkeypatch):
         "process_memory_snapshot",
         lambda: {"process_rss_gb": 12.0, "process_memory_over_limit": True},
     )
-    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+    monkeypatch.setattr(
+        resource_guard,
+        "process_cpu_snapshot",
+        lambda guard_cores=None: {
+            "process_cpu_cores": 4.6,
+            "process_cpu_guard_cores": 4.0,
+            "process_cpu_over_limit": True,
+        },
+    )
 
     app = FastAPI()
     calls = {"plain": 0, "cache_first": 0}
@@ -66,16 +76,18 @@ def test_splittable_view_cache_first_uses_heavy_middleware(monkeypatch):
     plain = client.get("/api/splittable/view?product=ML_TABLE_PRODA&root_lot_id=A1000")
     cache_first = client.get("/api/splittable/view?product=ML_TABLE_PRODA&root_lot_id=A1000&cache_first=1")
 
-    assert plain.status_code == 503
-    assert plain.json()["error_code"] == "resource_memory_guard"
-    assert cache_first.status_code == 503
-    assert cache_first.json()["error_code"] == "resource_memory_guard"
-    assert calls == {"plain": 0, "cache_first": 0}
+    # 메모리/CPU 가드가 켜져 있어도 essential 레인으로 처리된다.
+    assert plain.status_code == 200
+    assert cache_first.status_code == 200
+    assert plain.headers["X-Flow-Heavy-Request-Group"] == "essential"
+    assert cache_first.headers["X-Flow-Heavy-Request-Group"] == "essential"
+    assert calls == {"plain": 1, "cache_first": 1}
 
 
-def test_splittable_lot_candidate_search_uses_heavy_middleware(monkeypatch):
+def test_splittable_lot_candidate_search_bypasses_memory_guard(monkeypatch):
     monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
     monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
     monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
     monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
     monkeypatch.setattr(
@@ -102,9 +114,84 @@ def test_splittable_lot_candidate_search_uses_heavy_middleware(monkeypatch):
 
     response = client.get("/api/splittable/lot-candidates?product=ML_TABLE_PRODA&col=root_lot_id")
 
-    assert response.status_code == 503
-    assert response.json()["error_code"] == "resource_memory_guard"
-    assert called is False
+    assert response.status_code == 200
+    assert response.headers["X-Flow-Heavy-Request-Group"] == "essential"
+    assert called is True
+
+
+def test_filebrowser_view_bypasses_memory_guard(monkeypatch):
+    monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 12.0, "process_memory_over_limit": True},
+    )
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+
+    @app.get("/api/filebrowser/view")
+    def filebrowser_view():
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    response = client.get("/api/filebrowser/view?path=/data/x.parquet")
+
+    assert response.status_code == 200
+    assert response.headers["X-Flow-Heavy-Request-Group"] == "essential"
+
+
+def test_essential_lane_serializes_within_reserved_concurrency(monkeypatch):
+    monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_ESSENTIAL_REQUEST_CONCURRENCY", "1")
+    monkeypatch.setenv("FLOW_ESSENTIAL_REQUEST_QUEUE_TIMEOUT_SEC", "3")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: False)
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    @app.get("/api/splittable/view")
+    def splittable_view():
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.2)
+        with lock:
+            active -= 1
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+
+    # 단일 이벤트 루프 공유(프로덕션과 동일 조건)로 예약 레인의 직렬화를 결정적으로 검증한다.
+    with TestClient(app) as client:
+        threads = [
+            threading.Thread(target=lambda: client.get("/api/splittable/view"), daemon=True)
+            for _ in range(3)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+    assert max_active == 1
+
+
+def test_essential_concurrency_scales_with_cores(monkeypatch):
+    monkeypatch.delenv("FLOW_ESSENTIAL_REQUEST_CONCURRENCY", raising=False)
+    monkeypatch.setattr(resource_guard, "effective_cpu_count", lambda: 2)
+    assert resource_guard._auto_essential_concurrency() == 1
+    monkeypatch.setattr(resource_guard, "effective_cpu_count", lambda: 5)
+    assert resource_guard._auto_essential_concurrency() == 2
+    monkeypatch.setattr(resource_guard, "effective_cpu_count", lambda: 12)
+    assert resource_guard._auto_essential_concurrency() == 3
 
 
 def test_flowi_verify_and_workflow_catalog_bypass_heavy_middleware(monkeypatch):
@@ -204,13 +291,17 @@ def test_small_profile_heavy_requests_are_sequential_by_default(monkeypatch):
         return {"ok": True}
 
     app.add_middleware(resource_guard.ResourceGuardMiddleware)
-    client = TestClient(app)
 
-    threads = [threading.Thread(target=lambda: client.get("/api/dashboard/slow"), daemon=True) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=3.0)
+    # 하나의 이벤트 루프를 공유하도록 컨텍스트 매니저로 TestClient 를 연다. 컨텍스트
+    # 없이 스레드마다 TestClient 를 호출하면 요청마다 별도 이벤트 루프/스레드가 떠서
+    # asyncio.Semaphore(단일 루프 전제) 의 _value 를 경합하게 되어, 프로덕션(단일 uvicorn
+    # 루프)과 무관하게 결과가 타이밍에 따라 흔들린다.
+    with TestClient(app) as client:
+        threads = [threading.Thread(target=lambda: client.get("/api/dashboard/slow"), daemon=True) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3.0)
 
     assert max_active == 1
 

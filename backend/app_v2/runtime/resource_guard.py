@@ -8,9 +8,30 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from core.runtime_limits import is_small_profile, process_cpu_snapshot, process_memory_high, process_memory_snapshot
+from core.runtime_limits import (
+    effective_cpu_count,
+    is_small_profile,
+    process_cpu_snapshot,
+    process_memory_high,
+    process_memory_snapshot,
+)
 from core import request_priority as _request_priority
 
+
+# 사용자가 매 순간 필요로 하는 상호작용 read(스플릿테이블 불러오기, 파일 보기)는
+# 큰 백그라운드 작업이 메모리/CPU를 점유해도 항상 열려 있어야 한다. 이 경로들은
+# 메모리/CPU 가드의 "거절" 대상에서 제외하고, 대신 작은 전용 동시성 예약 레인으로
+# 직렬화해 스스로 OOM 을 유발하지 않게 한다.
+DEFAULT_ESSENTIAL_PREFIXES = (
+    "/api/splittable/view",
+    "/api/splittable/lot-ids",
+    "/api/splittable/lot-candidates",
+    "/api/splittable/column-values",
+    "/api/splittable/cache/pivot/status",
+    "/api/filebrowser/view",
+    "/api/filebrowser/base-file-view",
+    "/api/filebrowser/root-parquet-view",
+)
 
 DEFAULT_HEAVY_PREFIXES = (
     "/api/filebrowser/view",
@@ -80,6 +101,34 @@ def _prefixes() -> tuple[str, ...]:
     return out or DEFAULT_HEAVY_PREFIXES
 
 
+def _essential_prefixes() -> tuple[str, ...]:
+    """Interactive-read prefixes that keep a reserved lane even under load.
+
+    Defaults cover SplitTable loading and file viewing. Operators can replace
+    the set with FLOW_ESSENTIAL_API_PREFIXES or append with
+    FLOW_ESSENTIAL_API_PREFIXES_EXTRA.
+    """
+    raw = os.environ.get("FLOW_ESSENTIAL_API_PREFIXES", "")
+    if raw.strip():
+        base = tuple(p.strip() for p in raw.split(",") if p.strip())
+    else:
+        base = DEFAULT_ESSENTIAL_PREFIXES
+    extra_raw = os.environ.get("FLOW_ESSENTIAL_API_PREFIXES_EXTRA", "")
+    extra = tuple(p.strip() for p in extra_raw.split(",") if p.strip())
+    return (base + extra) or DEFAULT_ESSENTIAL_PREFIXES
+
+
+def _auto_essential_concurrency() -> int:
+    """Reserve a minimum interactive lane sized to the host's spare cores.
+
+    Leaves compute for the OS/event loop and the heavy lane while still
+    guaranteeing at least one dedicated slot for basic UI work."""
+    cores = int(effective_cpu_count())
+    # cores<=2 -> 1, 3-5 -> 2, 6+ -> 3. Interactive reads mostly stream cached
+    # parquet, so a small reserve keeps the UI responsive without risking OOM.
+    return max(1, min(3, (cores - 1) // 2))
+
+
 def _light_paths() -> tuple[str, ...]:
     raw = os.environ.get("FLOW_LIGHT_API_PATHS", "")
     extra = tuple(p.strip() for p in raw.split(",") if p.strip())
@@ -118,16 +167,28 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
         self._flowi_queue_timeout = _float_env("FLOW_FLOWI_CHAT_QUEUE_TIMEOUT_SEC", 8.0, 1.0, 60.0)
+        # Essential interactive reads (SplitTable load, file view) get their own
+        # reserved lane, sized from the host's spare cores, that is never blocked
+        # by the memory/CPU guard.
+        self._essential_concurrency = _int_env(
+            "FLOW_ESSENTIAL_REQUEST_CONCURRENCY", _auto_essential_concurrency(), 1, 8
+        )
+        self._essential_queue_timeout = _float_env(
+            "FLOW_ESSENTIAL_REQUEST_QUEUE_TIMEOUT_SEC", 60.0, 1.0, 600.0
+        )
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
         self._guard_recheck_delay_sec = _float_env("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", 1.0, 0.0, 30.0)
         self._guard_retry_after_sec = _int_env("FLOW_RESOURCE_GUARD_RETRY_AFTER_SEC", 15, 1, 300)
         self._prefixes = _prefixes()
         self._light_paths = _light_paths()
         self._flowi_chat_paths = _flowi_chat_paths()
+        self._essential_prefixes = _essential_prefixes()
         self._semaphore = asyncio.Semaphore(self._concurrency)
         self._flowi_semaphore = asyncio.Semaphore(self._flowi_concurrency)
+        self._essential_semaphore = asyncio.Semaphore(self._essential_concurrency)
         self._active = 0
         self._flowi_active = 0
+        self._essential_active = 0
 
     def _is_light_request(self, request: Request) -> bool:
         path = request.url.path
@@ -136,6 +197,43 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         if path in META_ONLY_PATHS and _truthy(request.query_params.get("meta_only")):
             return True
         return False
+
+    def _is_essential_request(self, request: Request) -> bool:
+        return _matches(request.url.path, self._essential_prefixes)
+
+    async def _run_essential(self, request: Request, call_next):
+        """Serve an interactive read through the reserved lane.
+
+        Never rejected by the memory/CPU guard — only queued behind the small
+        reserved concurrency so a burst of clicks cannot exhaust RAM. Falls
+        back to a clear 429 only when the reserved lane itself stays saturated."""
+        try:
+            await asyncio.wait_for(
+                self._essential_semaphore.acquire(), timeout=self._essential_queue_timeout
+            )
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {
+                    "detail": "기본 화면 요청이 몰려 잠시 대기 중입니다. 잠시 후 다시 시도하세요.",
+                    "error_code": "resource_queue_timeout",
+                    "active_heavy_requests": self._essential_active,
+                    "heavy_request_concurrency": self._essential_concurrency,
+                    "heavy_request_group": "essential",
+                },
+                status_code=429,
+                headers={"Retry-After": "5"},
+            )
+        self._essential_active += 1
+        try:
+            response = await call_next(request)
+            response.headers.setdefault(
+                "X-Flow-Heavy-Request-Concurrency", str(self._essential_concurrency)
+            )
+            response.headers.setdefault("X-Flow-Heavy-Request-Group", "essential")
+            return response
+        finally:
+            self._essential_active = max(0, self._essential_active - 1)
+            self._essential_semaphore.release()
 
     def _cpu_guard_snapshot(self) -> dict:
         snap = process_cpu_snapshot()
@@ -180,6 +278,10 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if not path.startswith("/api/"):
             return await call_next(request)
+        # 스플릿테이블 불러오기·파일 보기 등 기본 UI 작업은 메모리 보호 대상에서
+        # 제외하고, 예약된 전용 레인으로 항상 처리한다.
+        if self._is_essential_request(request):
+            return await self._run_essential(request, call_next)
         is_flowi_chat = _matches(path, self._flowi_chat_paths)
         if is_flowi_chat:
             semaphore = self._flowi_semaphore
