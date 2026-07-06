@@ -4,7 +4,11 @@ import Modal from "../components/Modal";
 import { PageGearButton } from "../components/PageGear";
 import { toast } from "../components/Toast";
 import { authSrc, sf, dl } from "../lib/api";
-import { useUserRole } from "../lib/permissions";
+import { allowedSubTabs, useUserRole } from "../lib/permissions";
+
+// v9.1.x: 소탭 단위 권한 — 허용된 소탭(view/history)만 노출.
+const SPLITTABLE_TABS = [{k:"view",l:"View"},{k:"history",l:"History"}].filter(({k})=>allowedSubTabs("splittable").includes(k));
+const DEFAULT_SPLITTABLE_TAB = SPLITTABLE_TABS[0]?.k || "view";
 import { statusPalette, chartPalette } from "../components/UXKit";
 import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS } from "../components/SplitTableSnapshotView";
 const API="/api/splittable";
@@ -245,7 +249,7 @@ export default function My_SplitTable({user}){
   const[expandedNoteId,setExpandedNoteId]=useState("");
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
   const[noteSearch,setNoteSearch]=useState("");
-  const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);
+  const[tab,setTab]=useState(DEFAULT_SPLITTABLE_TAB);const[history,setHistory]=useState([]);
   const[histMode,setHistMode]=useState("lot_final");const[histFinal,setHistFinal]=useState({final:[],drift:[],drift_count:0,total_cells:0});
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
   const[showSettings,setShowSettings]=useState(false);const[settingsTab,setSettingsTab]=useState("basic");const[newPrefix,setNewPrefix]=useState("");
@@ -1935,7 +1939,7 @@ export default function My_SplitTable({user}){
         })()}
         <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
           {/* v8.4.3: Features 탭 제거 — ML_TABLE_PROD* 가 source 이므로 별도 features 뷰 불필요. */}
-          {[{k:"view",l:"View"},{k:"history",l:"History"}].map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistoryByMode(histMode);}} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
+          {SPLITTABLE_TABS.map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistoryByMode(histMode);}} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {["all","diff"].map(m=><span key={m} onClick={()=>setViewMode(m)} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:viewMode===m?"var(--accent-glow)":"transparent",color:viewMode===m?"var(--accent)":"var(--text-secondary)",fontWeight:viewMode===m?600:400}}>{m}</span>)}
           <span style={{width:1,height:16,background:"var(--border)"}}/>

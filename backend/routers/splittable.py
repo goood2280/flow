@@ -8981,6 +8981,9 @@ def _clear_split_view_cache() -> None:
 
 
 # ── Pre-pivoted root_lot cache: background build (single-flight per product) ──
+# v9.1.x: plan 저장 후 백그라운드 작업 스레드 핸들 — 테스트가 join 으로 완료를 기다린다.
+_PLAN_POST_SAVE_LAST_THREAD: threading.Thread | None = None
+
 _PIVOT_BUILD_LOCK = threading.Lock()
 _PIVOT_BUILD_INPROGRESS: set[str] = set()
 _PIVOT_BUILD_LAST: dict[str, float] = {}
@@ -9024,12 +9027,28 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
 
     def _run():
         ok = False
+        # v9.1.x: 공유 flow-data lease — 개발/운영 서버가 같은 product 를 동시에
+        # 빌드하지 않게 한다. lease 실패 = 다른 서버가 빌드 중 → 건너뛰고
+        # cooldown 후 재시도 (그 사이 빌드 완료본을 그대로 사용).
+        lease_name = f"splittable_pivot_{canonical}"
+        lease_held = False
         try:
+            from core import shared_lease as _shared_lease
+            lease_held = _shared_lease.try_acquire(lease_name, ttl_sec=1800.0)
+            if not lease_held:
+                logger.info(f"pivot cache build skipped for {canonical} — 다른 서버가 빌드 중 (holder={_shared_lease.holder(lease_name)})")
+                return
             from app_v2.modules.splittable.cache_builder import build_pivoted_cache_for_product
             ok = bool(build_pivoted_cache_for_product(canonical, product_path=source_fp))
         except Exception as exc:
             logger.warning(f"pivot cache build failed for {canonical} ({reason}): {exc}")
         finally:
+            if lease_held:
+                try:
+                    from core import shared_lease as _shared_lease
+                    _shared_lease.release(lease_name)
+                except Exception:
+                    pass
             with _PIVOT_BUILD_LOCK:
                 _PIVOT_BUILD_INPROGRESS.discard(canonical)
                 _PIVOT_BUILD_LAST[canonical] = time.time()
@@ -10012,60 +10031,75 @@ def save_plan(req: PlanReq, request: Request = None):
     data["history"] = data["history"][-1000:]
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
-    for ck, old, val in changed_entries:
-        _append_splittable_plan_knowledge(
-            product=req.product,
-            cell_key=ck,
-            old=old,
-            new=val,
-            actor=req.username,
-            changed_at=now,
-            conflicting=bool(old not in (None, "") and old != val),
-        )
-    save_mismatches = []
-    for ck, _old, val in changed_entries:
-        actual = _actual_value_for_plan_cell(req.product, ck)
-        if not _plan_actual_mismatch(val, actual):
-            continue
-        root, wafer, column = _split_plan_cell_key(ck)
-        save_mismatches.append({
-            "key": ck,
-            "plan": val,
-            "actual": actual,
-            "plan_user": req.username,
-            "plan_updated": now,
-            "root_lot_id": root,
-            "wafer_id": wafer,
-            "column": column,
-        })
-    _notify_plan_actual_mismatches_once(req.product, save_mismatches, actor="flow")
-    # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
-    try:
-        from core.notify import emit_event
-        for ck, old, val in changed_entries:
-            if old == val:
-                continue
-            target = original_owners.get(ck)
-            if not target or target == req.username:
-                continue
-            parts = (ck or "").split("|")
-            emit_event(
-                "my_plan_changed",
-                actor=req.username,
-                target_user=target,
-                title="[plan 변경]",
-                body=f"{req.username} 가 {req.product}/{parts[0] if parts else ''} plan 을 변경",
-                payload={
-                    "product": req.product,
-                    "cell": ck,
-                    "root_lot_id": req.root_lot_id or (parts[0] if parts else ""),
-                    "wafer_id": parts[1] if len(parts) > 1 else "",
-                    "column": parts[2] if len(parts) > 2 else "",
-                    "old": old, "new": val,
-                },
-            )
-    except Exception:
-        pass
+
+    # v9.1.x: plan 저장은 여기서 즉시 완료 — actual 대조(셀당 파케이 스캔)·knowledge
+    # 적재·알림은 백그라운드로 옮겨 저장 응답 지연을 없앤다 (가장 사용 빈도 높은 경로).
+    product = req.product
+    username = req.username
+    root_lot_id_req = req.root_lot_id
+
+    def _plan_post_save():
+        try:
+            for ck, old, val in changed_entries:
+                _append_splittable_plan_knowledge(
+                    product=product,
+                    cell_key=ck,
+                    old=old,
+                    new=val,
+                    actor=username,
+                    changed_at=now,
+                    conflicting=bool(old not in (None, "") and old != val),
+                )
+            save_mismatches = []
+            for ck, _old, val in changed_entries:
+                actual = _actual_value_for_plan_cell(product, ck)
+                if not _plan_actual_mismatch(val, actual):
+                    continue
+                root, wafer, column = _split_plan_cell_key(ck)
+                save_mismatches.append({
+                    "key": ck,
+                    "plan": val,
+                    "actual": actual,
+                    "plan_user": username,
+                    "plan_updated": now,
+                    "root_lot_id": root,
+                    "wafer_id": wafer,
+                    "column": column,
+                })
+            _notify_plan_actual_mismatches_once(product, save_mismatches, actor="flow")
+            # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
+            try:
+                from core.notify import emit_event
+                for ck, old, val in changed_entries:
+                    if old == val:
+                        continue
+                    target = original_owners.get(ck)
+                    if not target or target == username:
+                        continue
+                    parts = (ck or "").split("|")
+                    emit_event(
+                        "my_plan_changed",
+                        actor=username,
+                        target_user=target,
+                        title="[plan 변경]",
+                        body=f"{username} 가 {product}/{parts[0] if parts else ''} plan 을 변경",
+                        payload={
+                            "product": product,
+                            "cell": ck,
+                            "root_lot_id": root_lot_id_req or (parts[0] if parts else ""),
+                            "wafer_id": parts[1] if len(parts) > 1 else "",
+                            "column": parts[2] if len(parts) > 2 else "",
+                            "old": old, "new": val,
+                        },
+                    )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning(f"plan post-save background work failed for {product}: {exc}")
+
+    global _PLAN_POST_SAVE_LAST_THREAD
+    _PLAN_POST_SAVE_LAST_THREAD = threading.Thread(target=_plan_post_save, daemon=True, name="splittable-plan-postsave")
+    _PLAN_POST_SAVE_LAST_THREAD.start()
     # Plan saves stay in SplitTable history/notifications only; Inform snapshots
     # are attached explicitly from Inform so users do not get extra auto cards.
     _audit_user(req.username, "splittable:plan_save",
@@ -10105,16 +10139,29 @@ def delete_plan(req: PlanDeleteReq, request: Request = None):
             deleted.append((ck, old))
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
-    for ck, old in deleted:
-        _append_splittable_plan_knowledge(
-            product=req.product,
-            cell_key=ck,
-            old=old,
-            new=None,
-            actor=req.username,
-            changed_at=now,
-            conflicting=bool(old not in (None, "")),
-        )
+
+    # v9.1.x: knowledge 적재는 백그라운드 — 삭제 응답도 즉시 반환.
+    product = req.product
+    username = req.username
+
+    def _plan_delete_post():
+        try:
+            for ck, old in deleted:
+                _append_splittable_plan_knowledge(
+                    product=product,
+                    cell_key=ck,
+                    old=old,
+                    new=None,
+                    actor=username,
+                    changed_at=now,
+                    conflicting=bool(old not in (None, "")),
+                )
+        except Exception as exc:
+            logger.warning(f"plan delete post work failed for {product}: {exc}")
+
+    global _PLAN_POST_SAVE_LAST_THREAD
+    _PLAN_POST_SAVE_LAST_THREAD = threading.Thread(target=_plan_delete_post, daemon=True, name="splittable-plan-delpost")
+    _PLAN_POST_SAVE_LAST_THREAD.start()
     # SplitTable plan deletes stay in SplitTable history/notifications only.
     _audit_user(req.username, "splittable:plan_delete",
                 detail=f"product={req.product} deleted={len(deleted)}",

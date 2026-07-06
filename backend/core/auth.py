@@ -234,6 +234,68 @@ def canonical_page_id(page_id: str | None) -> str:
     return PAGE_ID_ALIASES.get(raw, raw)
 
 
+# v9.1.x: 소탭 단위 권한 — tabs CSV 토큰에 "tab:subtab" 지원.
+# bare "tab" 토큰은 해당 탭의 모든 소탭 허용(하위호환). 소탭이 없는 탭은 bare 토큰만 유효.
+TAB_SUBTABS = {
+    "filebrowser": ("db", "files"),
+    "splittable": ("view", "history"),
+    "inform": ("inform", "matrix", "audit"),
+    "diagnosis": ("home-flowi", "semantic", "unit-ai", "llm"),
+}
+
+
+def canonical_tab_token(token: str | None) -> str:
+    """"tab" 또는 "tab:subtab" 토큰을 canonical 형태로. 유효하지 않으면 ""."""
+    raw = str(token or "").strip().lower()
+    if not raw:
+        return ""
+    tab, _, sub = raw.partition(":")
+    tab = canonical_page_id(tab)
+    if not tab:
+        return ""
+    if not sub:
+        return tab
+    sub = sub.strip()
+    if sub in TAB_SUBTABS.get(tab, ()):  # 알 수 없는 소탭 토큰은 버림
+        return f"{tab}:{sub}"
+    return ""
+
+
+def parse_tab_tokens(raw: Any) -> tuple[list[str], dict[str, list[str]]]:
+    """tabs CSV/list → (main tab 목록, {tab: 허용 소탭 목록}).
+
+    bare 토큰이면 해당 탭의 전체 소탭. "tab:sub" 토큰만 있으면 그 소탭들만.
+    """
+    parts = raw if isinstance(raw, list) else str(raw or "").split(",")
+    tabs: list[str] = []
+    subs: dict[str, list[str]] = {}
+    bare: set[str] = set()
+    for part in parts:
+        token = canonical_tab_token(part)
+        if not token:
+            continue
+        tab, _, sub = token.partition(":")
+        if tab not in tabs:
+            tabs.append(tab)
+        if sub:
+            cur = subs.setdefault(tab, [])
+            if sub not in cur:
+                cur.append(sub)
+        else:
+            bare.add(tab)
+    for tab in tabs:
+        if tab in bare or tab not in TAB_SUBTABS:
+            subs[tab] = list(TAB_SUBTABS.get(tab, ()))
+    return tabs, subs
+
+
+def user_subtabs(user: dict) -> dict[str, list[str]]:
+    """유저의 {tab: 허용 소탭} 맵. admin 은 전체."""
+    if (user or {}).get("role") == "admin":
+        return {tab: list(subs) for tab, subs in TAB_SUBTABS.items()}
+    return parse_tab_tokens((user or {}).get("tabs", ""))[1]
+
+
 def _clean_usernames(raw: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -305,7 +367,8 @@ def _user_tabs(user: dict) -> list[str] | str:
     out: list[str] = []
     seen: set[str] = set()
     for part in parts:
-        tab = canonical_page_id(part)
+        # v9.1.x: "tab:subtab" 토큰 유지 — 유효하지 않은 토큰은 제거.
+        tab = canonical_tab_token(part)
         if tab and tab not in seen:
             seen.add(tab)
             out.append(tab)
@@ -360,6 +423,7 @@ def effective_permissions(user: dict) -> dict:
         "username": username,
         "role": role,
         "tabs": _user_tabs(user or {}),
+        "subtabs": user_subtabs(user or {}),
         "page_manager": manager_pages,
         "devguide": _devguide_allowed(username, role),
         "groups": _group_permissions(username, role),

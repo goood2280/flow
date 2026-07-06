@@ -92,10 +92,14 @@ def _auto_sync_settings(cfg: Dict[str, Any] | None = None) -> Dict[str, bool]:
     direction without a restart. Manual /run and /push stay available."""
     cfg = cfg if cfg is not None else _load_cfg()
     disabled_env = _env_flag("FLOW_DISABLE_S3_INGEST")
+    # v9.1.x: 관리자 전역 마스터 스위치(admin_settings.json) — 꺼지면 방향 무관 전체 중지.
+    from core.s3_sync import master_enabled as _s3_master_enabled
+    master = _s3_master_enabled()
     return {
-        "auto_download_enabled": (not disabled_env) and bool(cfg.get("auto_download_enabled", True)),
-        "auto_upload_enabled": (not disabled_env) and bool(cfg.get("auto_upload_enabled", True)),
+        "auto_download_enabled": master and (not disabled_env) and bool(cfg.get("auto_download_enabled", True)),
+        "auto_upload_enabled": master and (not disabled_env) and bool(cfg.get("auto_upload_enabled", True)),
         "disabled_by_env": disabled_env,
+        "master_enabled": master,
     }
 
 
@@ -796,6 +800,11 @@ def _schedule_run(item_id: str) -> bool:
 def _scheduler_loop():
     while True:
         try:
+            # v9.1.x: 공유 flow-data lease — 두 서버 중 lease 보유 서버만 주기 스케줄 실행.
+            from core import shared_lease as _shared_lease
+            if not _shared_lease.try_acquire("s3_ingest_scheduler", ttl_sec=90.0):
+                time.sleep(30)
+                continue
             cfg = _load_cfg()
             auto = _auto_sync_settings(cfg)
             status = _load_status()
@@ -1001,6 +1010,8 @@ def delete_item(req: IdReq, _perm=Depends(require_admin)):
 
 @router.post("/run")
 def run_manual(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
+    if not _auto_sync_settings().get("master_enabled", True):
+        raise HTTPException(409, "관리자 설정에서 S3 전체가 꺼져 있습니다 (S3 master switch off)")
     cfg = _load_cfg()
     if not any(x.get("id") == req.id for x in cfg.get("items", [])):
         raise HTTPException(404, "item not found")
@@ -1183,6 +1194,8 @@ def push_item(req: PushReq, _perm=Depends(require_page_manager("filebrowser"))):
     """v8.4.4 — 양방향 sync 의 local → S3 방향. 등록된 item 의 target s3 url 에
     local_path (db_root 기준) 를 업로드 (aws s3 cp/sync).
     """
+    if not _auto_sync_settings().get("master_enabled", True):
+        raise HTTPException(409, "관리자 설정에서 S3 전체가 꺼져 있습니다 (S3 master switch off)")
     cfg = _load_cfg()
     item = next((x for x in cfg.get("items", []) if x.get("id") == req.id), None)
     if not item: raise HTTPException(404, "item not found")

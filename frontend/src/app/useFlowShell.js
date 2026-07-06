@@ -140,9 +140,11 @@ function mergeSessionUser(storedUser, sessionUser) {
 }
 
 function toTabList(userTabs) {
-  if (Array.isArray(userTabs)) return userTabs;
-  if (typeof userTabs === "string") return userTabs.split(",");
-  return [];
+  // v9.1.x: "tab:subtab" 소탭 토큰은 main tab 접근을 부여한다.
+  const parts = Array.isArray(userTabs)
+    ? userTabs
+    : (typeof userTabs === "string" ? userTabs.split(",") : []);
+  return parts.map((t) => String(t || "").trim().split(":")[0]).filter(Boolean);
 }
 
 export function useFlowShell() {

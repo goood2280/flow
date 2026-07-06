@@ -4,6 +4,7 @@ import Modal from "../components/Modal";
 import { PageGearButton } from "../components/PageGear";
 import { toast } from "../components/Toast";
 import { dl, sf } from "../lib/api";
+import { allowedSubTabs } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/filebrowser";
 const PAGE_SIZE=100;
@@ -1120,7 +1121,10 @@ export default function My_FileBrowser({user,onNavigate}){
   const loadInitial = async () => {
     try {
       const sc = await sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true,icon:"🗄️"}]}));
-      const scopesPayload = sc.scopes || [];
+      // v9.1.x: 소탭 단위 권한 — 허용된 scope(DB→db, Files/Base→files)만 노출.
+      const fbAllowed = allowedSubTabs("filebrowser");
+      const SCOPE_SUBTAB = { DB: "db", Base: "files" };
+      const scopesPayload = (sc.scopes || []).filter((s) => fbAllowed.includes(SCOPE_SUBTAB[s?.key] || ""));
       setScopes(scopesPayload);
       let rootsAllMode = false;
       let rp = await sf(API+"/roots?fast=1");

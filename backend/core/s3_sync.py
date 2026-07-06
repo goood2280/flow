@@ -49,6 +49,24 @@ DEFAULT_CONFIG = {
 }
 
 
+def master_enabled() -> bool:
+    """v9.1.x: 관리자 S3 전역 마스터 스위치 — admin_settings.json `s3_master_enabled`.
+
+    공유 flow-data 의 admin_settings.json 에 저장되므로 두 서버에 함께 적용된다.
+    파일/키가 없으면 True (기존 동작 유지)."""
+    try:
+        from core.paths import PATHS
+        p = PATHS.data_root / "admin_settings.json"
+        if p.is_file():
+            data = json.loads(p.read_text("utf-8")) or {}
+            v = data.get("s3_master_enabled")
+            if v is not None:
+                return bool(v)
+    except Exception:
+        pass
+    return True
+
+
 def disabled_by_env() -> bool:
     """FLOW_DISABLE_S3_SYNC=1 turns off all artifact uploads on this server
     (e.g. the dev server when prod owns the shared bucket)."""
@@ -291,6 +309,9 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         # env disable is static per server — skip the status log to avoid
         # appending a line on every save while permanently off.
         entry["status"] = "disabled_env"; return entry
+    if not master_enabled():
+        # v9.1.x: 관리자 전역 스위치 꺼짐 — 저장마다 로그가 쌓이지 않게 status 기록 생략.
+        entry["status"] = "disabled_master"; return entry
     if not cfg.get("enabled"):
         entry["status"] = "disabled"; _append_status(data_root, entry); return entry
     if not cfg.get("bucket"):

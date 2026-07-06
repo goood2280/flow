@@ -25,7 +25,7 @@ from core.notify import (
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
 from routers.auth import read_users, write_users
-from core.auth import canonical_page_id, effective_permissions, get_page_admins, require_admin, current_user, verify_owner
+from core.auth import canonical_page_id, canonical_tab_token, effective_permissions, get_page_admins, require_admin, current_user, verify_owner
 from core.audit import record as _audit
 from core import s3_sync as _s3
 from core import root_profile
@@ -705,10 +705,16 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
 # ── Permissions ──
 @router.post("/set-tabs")
 def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
+    # v9.1.x: "tab" 또는 "tab:subtab" 토큰 허용 — 유효하지 않은 토큰은 제거.
+    tokens: list = []
+    for part in req.tabs:
+        token = canonical_tab_token(part)
+        if token and token not in tokens:
+            tokens.append(token)
     users = read_users()
     for u in users:
         if u["username"] == req.username:
-            u["tabs"] = ",".join(req.tabs)
+            u["tabs"] = ",".join(tokens)
             write_users(users)
             _audit(request, "admin:set-tabs", detail=f"user={req.username} tabs={u['tabs']}", tab="admin")
             return {"ok": True}
@@ -733,10 +739,13 @@ def get_user_tabs(request: Request, username: str = Query(...)):
                 tabs_list = ["filebrowser", "dashboard", "splittable",
                              "diagnosis", "inform", "meeting", "calendar"]
             else:
-                tabs_list = [t.strip() for t in raw.split(",") if t.strip() and t.strip() not in _ARCHIVED_TABS]
+                # v9.1.x: "tab:subtab" 토큰 유지 — archived 판정/신규탭 하위호환은 main tab 기준.
+                tabs_list = [t.strip() for t in raw.split(",")
+                             if t.strip() and t.strip().split(":")[0] not in _ARCHIVED_TABS]
+                main_tabs = {t.split(":")[0] for t in tabs_list}
                 # 기존 유저가 저장된 tabs 에 신규 탭을 갖고 있지 않으면 자동 추가 (하위호환).
                 for nt in _NEW_DEFAULT_TABS:
-                    if nt not in tabs_list:
+                    if nt not in main_tabs:
                         tabs_list.append(nt)
             return {"tabs": ",".join(tabs_list)}
     raise HTTPException(404)
@@ -1395,6 +1404,29 @@ def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require
     _audit(request, "admin:page-admins-set",
            detail=f"actor={current_user(request).get('username') or ''};page={page_id};before={before.get(page_id) or []};after={pa.get(page_id) or []}", tab="admin")
     return {"ok": True, "page_admins": pa}
+
+
+# ── v9.1.x: S3 전역 마스터 스위치 ─────────────────────────────────────
+class S3MasterReq(BaseModel):
+    enabled: bool = True
+
+
+@router.get("/s3-master")
+def s3_master_get(_admin=Depends(require_admin)):
+    """S3 전역 스위치 상태. admin_settings.json `s3_master_enabled` (기본 True)."""
+    from core.s3_sync import master_enabled
+    return {"enabled": master_enabled()}
+
+
+@router.post("/s3-master")
+def s3_master_set(req: S3MasterReq, request: Request, _admin=Depends(require_admin)):
+    """S3 전체 켜기/끄기 — 주기 스케줄·아티팩트 업로드·수동 run/push 모두 통제.
+    공유 flow-data 에 저장되므로 개발/운영 서버에 함께 적용된다."""
+    data = load_json(ADMIN_SETTINGS_FILE, {})
+    data["s3_master_enabled"] = bool(req.enabled)
+    save_json(ADMIN_SETTINGS_FILE, data)
+    _audit(request, "admin:s3-master", detail=f"enabled={bool(req.enabled)}", tab="admin")
+    return {"ok": True, "enabled": bool(req.enabled)}
 
 
 @router.get("/my-page-admin")

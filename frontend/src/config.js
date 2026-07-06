@@ -15,6 +15,14 @@ export const TABS = [
   {key:"admin",label:"관리자",icon:"⚙️",group:"system",adminOnly:true},
   {key:"devguide",label:"개발자 가이드",icon:"📖",group:"system",restrictedSetting:"devguide_allowed"},
 ];
+// v9.1.x: 소탭 단위 권한 — backend core/auth.py TAB_SUBTABS 와 동기 유지.
+// tabs 토큰: "tab"(전체 소탭) 또는 "tab:subtab".
+export const SUB_TABS = {
+  filebrowser: [{key:"db",label:"DB"},{key:"files",label:"Files"}],
+  splittable: [{key:"view",label:"View"},{key:"history",label:"History"}],
+  inform: [{key:"inform",label:"인폼"},{key:"matrix",label:"매트릭스"},{key:"audit",label:"로그"}],
+  diagnosis: [{key:"home-flowi",label:"Flow-i"},{key:"semantic",label:"Semantic layer"},{key:"unit-ai",label:"단위기능 AI"},{key:"llm",label:"LLM 설정"}],
+};
 export const FEATURE_MAP = {};
 // v9.0.3: planned 섹션에는 아직 비활성 기능만 남긴다.
 export const PLANNED_FEATURES = [];

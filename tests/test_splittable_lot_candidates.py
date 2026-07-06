@@ -527,6 +527,8 @@ def test_save_plan_does_not_auto_log_inform(tmp_path, monkeypatch):
         plans={"A1000|1|KNOB_GATE": "R2"},
     ))
 
+    if splittable._PLAN_POST_SAVE_LAST_THREAD is not None:
+        splittable._PLAN_POST_SAVE_LAST_THREAD.join(timeout=10)
     assert result == {"ok": True, "saved": 1, "rejected": []}
     saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
     assert saved["plans"]["A1000|1|KNOB_GATE"]["value"] == "R2"
@@ -546,6 +548,8 @@ def test_save_plan_uses_canonical_flow_data_plan_file(tmp_path, monkeypatch):
         plans={"A1000|1|KNOB_GATE": "R2"},
     ))
 
+    if splittable._PLAN_POST_SAVE_LAST_THREAD is not None:
+        splittable._PLAN_POST_SAVE_LAST_THREAD.join(timeout=10)
     assert result["saved"] == 1
     assert not (plan_dir / "PRODA.json").exists()
     saved = splittable._load_plan_data("ML_TABLE_PRODA")
@@ -579,6 +583,9 @@ def test_save_plan_notifies_owner_once_when_existing_actual_mismatches(tmp_path,
         plans={"A1000|1|KNOB_GATE": "R2"},
     ))
     assert result == {"ok": True, "saved": 1, "rejected": []}
+    # v9.1.x: mismatch 대조/알림은 백그라운드 — 완료를 기다린 뒤 검증.
+    if splittable._PLAN_POST_SAVE_LAST_THREAD is not None:
+        splittable._PLAN_POST_SAVE_LAST_THREAD.join(timeout=10)
     assert len(events) == 1
     assert events[0][0][0] == "my_plan_actual_mismatch"
     assert events[0][1]["target_user"] == "plan_owner"
@@ -594,6 +601,8 @@ def test_save_plan_notifies_owner_once_when_existing_actual_mismatches(tmp_path,
         username="plan_owner",
         plans={"A1000|1|KNOB_GATE": "R2"},
     ))
+    if splittable._PLAN_POST_SAVE_LAST_THREAD is not None:
+        splittable._PLAN_POST_SAVE_LAST_THREAD.join(timeout=10)
     assert len(events) == 1
 
 

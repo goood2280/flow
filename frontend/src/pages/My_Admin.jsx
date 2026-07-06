@@ -4,6 +4,7 @@ import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette
 import { toast } from "../components/Toast";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
+import { SUB_TABS } from "../config";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","inform","meeting","calendar","devguide"];
@@ -26,6 +27,32 @@ function _cleanTabs(v){
   const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
   const seen=new Set();
   return arr.map(s=>String(s||"").trim()).filter((s)=>s&&ALL_TABS.includes(s)&&!seen.has(s)&&seen.add(s));
+}
+// ── v9.1.x: 소탭 단위 권한 helpers ─────────────────────────────
+// tabs 토큰: "tab"(전체 소탭) | "tab:subtab". bare 토큰이 있으면 그 탭 전체 허용.
+function _mainTabChecked(tokens,t){return tokens.some(x=>x===t||String(x).startsWith(t+":"));}
+function _subTabChecked(tokens,t,s){return tokens.includes(t)||tokens.includes(t+":"+s);}
+function _tabTokensFor(tokens,t){return tokens.filter(x=>x===t||String(x).startsWith(t+":"));}
+function _toggleMainTab(tokens,t,on){
+  const rest=tokens.filter(x=>x!==t&&!String(x).startsWith(t+":"));
+  return on?[...rest,t]:rest;
+}
+function _toggleSubTab(tokens,t,s,on){
+  const subs=(SUB_TABS[t]||[]).map(x=>x.key);
+  // bare 토큰이면 먼저 전체 소탭 토큰으로 펼친다.
+  let cur=tokens.includes(t)?subs.slice():_tabTokensFor(tokens,t).map(x=>x.split(":")[1]).filter(Boolean);
+  cur=on?[...new Set([...cur,s])]:cur.filter(x=>x!==s);
+  const rest=tokens.filter(x=>x!==t&&!String(x).startsWith(t+":"));
+  if(!cur.length)return rest;                       // 소탭 0개 = 탭 권한 제거
+  if(subs.length&&cur.length===subs.length)return[...rest,t]; // 전체 = bare 토큰으로 압축
+  return[...rest,...cur.map(x=>t+":"+x)];
+}
+function _tabCellMark(tokens,t){
+  if(tokens.includes(t))return"O";
+  const subs=_tabTokensFor(tokens,t);
+  if(!subs.length)return"X";
+  const all=(SUB_TABS[t]||[]).length;
+  return all&&subs.length>=all?"O":"△";
 }
 function _splitBulkRow(line){
   return String(line||"").includes("\t")?String(line||"").split("\t"):String(line||"").split(",");
@@ -527,9 +554,9 @@ export default function My_Admin({user}){
               return(<tr key={i}>
                 <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,position:"sticky",left:0,background:"var(--bg-secondary)",zIndex:1}}>{u.username}</td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
-                {ALL_TABS.map(t=><td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-                  <span style={{fontSize:14,color:ut.includes(t)?"var(--ok,#22c55e)":"var(--bad,#ef4444)",fontWeight:700}}>{ut.includes(t)?"O":"X"}</span>
-                </td>)}
+                {ALL_TABS.map(t=>{const mark=_tabCellMark(ut,t);return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
+                  <span title={mark==="△"?_tabTokensFor(ut,t).join(", "):""} style={{fontSize:14,color:mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
+                </td>);})}
                 <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
                   <span onClick={()=>{setEditPerm(u.username);setPermTabs(ut);}} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14}}>편집</span>
                 </td>
@@ -539,7 +566,17 @@ export default function My_Admin({user}){
         {/* Edit single user permissions */}
         {editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:400}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>권한: {editPerm}</div>
-          {ALL_TABS.map(t=>(<label key={t} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}><input type="checkbox" checked={permTabs.includes(t)} onChange={e=>{if(e.target.checked)setPermTabs([...permTabs,t]);else setPermTabs(permTabs.filter(x=>x!==t));}}/>{t}</label>))}
+          {ALL_TABS.map(t=>(<div key={t}>
+            <label style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
+              <input type="checkbox" checked={_mainTabChecked(permTabs,t)} onChange={e=>setPermTabs(_toggleMainTab(permTabs,t,e.target.checked))}/>{t}
+            </label>
+            {/* v9.1.x: 소탭 단위 권한 */}
+            {SUB_TABS[t]&&_mainTabChecked(permTabs,t)&&<div style={{display:"flex",flexWrap:"wrap",gap:10,padding:"0 0 6px 24px"}}>
+              {SUB_TABS[t].map(s=>(<label key={s.key} style={{display:"flex",alignItems:"center",gap:5,fontSize:13,color:"var(--text-secondary)",cursor:"pointer"}}>
+                <input type="checkbox" checked={_subTabChecked(permTabs,t,s.key)} onChange={e=>setPermTabs(_toggleSubTab(permTabs,t,s.key,e.target.checked))}/>{s.label}
+              </label>))}
+            </div>}
+          </div>))}
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <Button variant="primary" onClick={savePerm} style={{padding:"8px 20px"}}>저장</Button>
             <Button variant="subtle" onClick={()=>{setEditPerm(null);}} style={{padding:"8px 16px"}}>취소</Button>
@@ -2117,7 +2154,16 @@ function ProductPanel(){
 function S3Panel(){
   const[cfg,setCfg]=useState({bucket:"",prefix:"flow/artifacts/",region:"ap-northeast-2",enabled:false,profile:""});
   const[boto,setBoto]=useState(false);const[arts,setArts]=useState([]);const[events,setEvents]=useState([]);const[msg,setMsg]=useState("");
+  // v9.1.x: S3 전역 마스터 스위치 — 주기 스케줄·업로드·수동 run/push 전체 통제 (dev/운영 공통).
+  const[master,setMaster]=useState(true);
+  const toggleMaster=()=>{
+    const next=!master;setMaster(next);
+    sf("/api/admin/s3-master",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:next})})
+      .then(()=>{setMsg(next?"S3 전체 켜짐":"S3 전체 꺼짐");setTimeout(()=>setMsg(""),2500);})
+      .catch(()=>{setMaster(!next);toast.error("S3 전역 스위치 저장 실패");});
+  };
   const load=()=>{
+    sf("/api/admin/s3-master").then(d=>setMaster(!!d.enabled)).catch(()=>{});
     sf("/api/catalog/s3/config").then(d=>{setCfg(d.config||cfg);setBoto(d.boto3_installed);});
     sf("/api/catalog/s3/artifacts").then(d=>setArts(d.artifacts||[]));
     sf("/api/catalog/s3/status?limit=30").then(d=>setEvents(d.events||[]));
@@ -2137,7 +2183,12 @@ function S3Panel(){
     <div style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",padding:14,marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>☁ S3 동기화 설정</div>
-        <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:boto?OK.bg:BAD.bg,color:boto?OK.fg:BAD.fg,fontWeight:700}}>{boto?"boto3 설치됨":"boto3 없음 (로그만 기록)"}</span>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,fontWeight:700,cursor:"pointer",padding:"2px 10px",borderRadius:10,background:master?OK.bg:BAD.bg,color:master?OK.fg:BAD.fg}}>
+            <input type="checkbox" checked={master} onChange={toggleMaster}/>{master?"S3 전체 ON":"S3 전체 OFF"}
+          </label>
+          <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:boto?OK.bg:BAD.bg,color:boto?OK.fg:BAD.fg,fontWeight:700}}>{boto?"boto3 설치됨":"boto3 없음 (로그만 기록)"}</span>
+        </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
         <div><div style={{fontSize:14,color:"var(--text-secondary)"}}>Bucket</div><input value={cfg.bucket} onChange={e=>setCfg({...cfg,bucket:e.target.value})} style={{...S,width:"100%"}} placeholder="my-bucket"/></div>

@@ -3,6 +3,16 @@ import dagre from "dagre";
 import { PageHeader, PageShell, Panel, Banner, Button, Field, Input, Pill, Select, TabStrip, Textarea } from "../components/UXKit";
 import LlmTab from "../components/agent/LlmTab";
 import { postJson, putJson, sf } from "../lib/api";
+import { allowedSubTabs } from "../lib/permissions";
+
+// v9.1.x: 소탭 단위 권한 — 허용된 소탭만 노출.
+const AGENT_TABS = [
+  { k: "home-flowi", l: "Flow-i" },
+  { k: "semantic", l: "Semantic layer" },
+  { k: "unit-ai", l: "단위기능 AI" },
+  { k: "llm", l: "LLM 설정" },
+].filter(({ k }) => allowedSubTabs("diagnosis").includes(k));
+const DEFAULT_AGENT_TAB = AGENT_TABS.some(({ k }) => k === "unit-ai") ? "unit-ai" : (AGENT_TABS[0]?.k || "unit-ai");
 
 const AGENT_UNIT_CATALOG_ENDPOINT = "/api/agent/catalog";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
@@ -3939,7 +3949,7 @@ function HomeFlowiRuntimePanel() {
 
 export default function My_Diagnosis({ user }) {
   const isAdminUser = user?.role === "admin";
-  const [activeTab, setActiveTab] = useState("unit-ai");
+  const [activeTab, setActiveTab] = useState(DEFAULT_AGENT_TAB);
 
   return (
     <div className="flow-connected-page flow-agent-page" style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
@@ -3950,12 +3960,7 @@ export default function My_Diagnosis({ user }) {
             <TabStrip
               active={activeTab}
               onChange={setActiveTab}
-              items={[
-                { k: "home-flowi", l: "Flow-i" },
-                { k: "semantic", l: "Semantic layer" },
-                { k: "unit-ai", l: "단위기능 AI" },
-                { k: "llm", l: "LLM 설정" },
-              ]}
+              items={AGENT_TABS}
             />
           </div>
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>

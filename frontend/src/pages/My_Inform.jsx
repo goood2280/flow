@@ -5,7 +5,7 @@
  */
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
-import { canManagePage } from "../lib/permissions";
+import { canAccessSubTab, canManagePage } from "../lib/permissions";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import Loading from "../components/Loading";
@@ -33,11 +33,14 @@ const BAD = statusPalette.bad;
 const INFO = statusPalette.info;
 const NEUTRAL = statusPalette.neutral;
 const MODULE_SERIES = [chartPalette.series[0], chartPalette.series[2], chartPalette.series[11], chartPalette.series[8], chartPalette.series[6], chartPalette.series[12], chartPalette.series[3]];
-const INFORM_TABS = [
+const INFORM_TABS_ALL = [
   ["inform", "인폼"],
   ["matrix", "매트릭스"],
   ["audit", "로그"],
 ];
+// v9.1.x: 소탭 단위 권한 — 허용된 소탭만 노출.
+const INFORM_TABS = INFORM_TABS_ALL.filter(([key]) => canAccessSubTab("inform", key));
+const DEFAULT_INFORM_TAB = INFORM_TABS[0]?.[0] || "inform";
 const DEFAULT_SHARED_FILTERS = {
   products: [],
   modules: [],
@@ -371,9 +374,9 @@ function parseCsvParam(params, key) {
 }
 
 function parseInformFiltersFromUrl() {
-  if (typeof window === "undefined") return { tab: "inform", filters: DEFAULT_SHARED_FILTERS };
+  if (typeof window === "undefined") return { tab: DEFAULT_INFORM_TAB, filters: DEFAULT_SHARED_FILTERS };
   const params = new URLSearchParams(window.location.search);
-  const tab = INFORM_TABS.some(([key]) => key === params.get("inform_tab")) ? params.get("inform_tab") : "inform";
+  const tab = INFORM_TABS.some(([key]) => key === params.get("inform_tab")) ? params.get("inform_tab") : DEFAULT_INFORM_TAB;
   return {
     tab,
     filters: {
@@ -1737,7 +1740,7 @@ export default function My_Inform({ user }) {
 
   const openRootForDetail = (root) => {
     if (!root) return;
-    setActiveTab("inform");
+    setActiveTab(DEFAULT_INFORM_TAB);
     setInformView("detail");
     setSelectedRootId(root.id);
     setDetailTab("body");
@@ -1755,7 +1758,7 @@ export default function My_Inform({ user }) {
   const openAuditRow = (row) => {
     const informId = String(row?.inform_id || row?.target_id || "").trim();
     if (!informId) return;
-    setActiveTab("inform");
+    setActiveTab(DEFAULT_INFORM_TAB);
     setInformView("detail");
     setSelectedRootId(informId);
     setDetailTab("body");
@@ -2731,7 +2734,7 @@ export default function My_Inform({ user }) {
       products: prod && prod !== "미지정" ? [prod] : [],
       lot: rootLot,
     }));
-    setActiveTab("inform");
+    setActiveTab(DEFAULT_INFORM_TAB);
     setInformView("list");
     setSelectedRootId("");
   };
@@ -2747,13 +2750,13 @@ export default function My_Inform({ user }) {
         modules: module ? [module] : f.modules,
         lot: rootLot,
       }));
-      setActiveTab("inform");
+      setActiveTab(DEFAULT_INFORM_TAB);
       setInformView("list");
       setSelectedRootId("");
       return;
     }
     const recent = (cell?.recent || []).find(r => String(r?.inform_id || "") === informId) || (cell?.recent || [])[0] || {};
-    setActiveTab("inform");
+    setActiveTab(DEFAULT_INFORM_TAB);
     setInformView("detail");
     setSelectedRootId(informId);
     setDetailTab("body");
