@@ -6,13 +6,18 @@ import { postJson, putJson, sf } from "../lib/api";
 import { allowedSubTabs } from "../lib/permissions";
 
 // v9.1.x: 소탭 단위 권한 — 허용된 소탭만 노출.
-const AGENT_TABS = [
+// localStorage(hol_user)는 로그인 후 채워지므로 렌더 시점에 평가한다 (모듈 상수 고정 금지).
+const AGENT_TABS_ALL = [
   { k: "home-flowi", l: "Flow-i" },
   { k: "semantic", l: "Semantic layer" },
   { k: "unit-ai", l: "단위기능 AI" },
   { k: "llm", l: "LLM 설정" },
-].filter(({ k }) => allowedSubTabs("diagnosis").includes(k));
-const DEFAULT_AGENT_TAB = AGENT_TABS.some(({ k }) => k === "unit-ai") ? "unit-ai" : (AGENT_TABS[0]?.k || "unit-ai");
+];
+const agentTabs = () => AGENT_TABS_ALL.filter(({ k }) => allowedSubTabs("diagnosis").includes(k));
+const defaultAgentTab = () => {
+  const tabs = agentTabs();
+  return tabs.some(({ k }) => k === "unit-ai") ? "unit-ai" : (tabs[0]?.k || "unit-ai");
+};
 
 const AGENT_UNIT_CATALOG_ENDPOINT = "/api/agent/catalog";
 const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
@@ -3949,7 +3954,8 @@ function HomeFlowiRuntimePanel() {
 
 export default function My_Diagnosis({ user }) {
   const isAdminUser = user?.role === "admin";
-  const [activeTab, setActiveTab] = useState(DEFAULT_AGENT_TAB);
+  const AGENT_TABS = agentTabs();
+  const [activeTab, setActiveTab] = useState(() => defaultAgentTab());
 
   return (
     <div className="flow-connected-page flow-agent-page" style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>

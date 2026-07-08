@@ -39,8 +39,9 @@ const INFORM_TABS_ALL = [
   ["audit", "로그"],
 ];
 // v9.1.x: 소탭 단위 권한 — 허용된 소탭만 노출.
-const INFORM_TABS = INFORM_TABS_ALL.filter(([key]) => canAccessSubTab("inform", key));
-const DEFAULT_INFORM_TAB = INFORM_TABS[0]?.[0] || "inform";
+// localStorage(hol_user)는 로그인 후 채워지므로 렌더/호출 시점에 평가한다 (모듈 상수 고정 금지).
+const informTabs = () => INFORM_TABS_ALL.filter(([key]) => canAccessSubTab("inform", key));
+const defaultInformTab = () => informTabs()[0]?.[0] || "inform";
 const DEFAULT_SHARED_FILTERS = {
   products: [],
   modules: [],
@@ -374,9 +375,9 @@ function parseCsvParam(params, key) {
 }
 
 function parseInformFiltersFromUrl() {
-  if (typeof window === "undefined") return { tab: DEFAULT_INFORM_TAB, filters: DEFAULT_SHARED_FILTERS };
+  if (typeof window === "undefined") return { tab: defaultInformTab(), filters: DEFAULT_SHARED_FILTERS };
   const params = new URLSearchParams(window.location.search);
-  const tab = INFORM_TABS.some(([key]) => key === params.get("inform_tab")) ? params.get("inform_tab") : DEFAULT_INFORM_TAB;
+  const tab = informTabs().some(([key]) => key === params.get("inform_tab")) ? params.get("inform_tab") : defaultInformTab();
   return {
     tab,
     filters: {
@@ -1740,7 +1741,7 @@ export default function My_Inform({ user }) {
 
   const openRootForDetail = (root) => {
     if (!root) return;
-    setActiveTab(DEFAULT_INFORM_TAB);
+    setActiveTab(defaultInformTab());
     setInformView("detail");
     setSelectedRootId(root.id);
     setDetailTab("body");
@@ -1758,7 +1759,7 @@ export default function My_Inform({ user }) {
   const openAuditRow = (row) => {
     const informId = String(row?.inform_id || row?.target_id || "").trim();
     if (!informId) return;
-    setActiveTab(DEFAULT_INFORM_TAB);
+    setActiveTab(defaultInformTab());
     setInformView("detail");
     setSelectedRootId(informId);
     setDetailTab("body");
@@ -2734,7 +2735,7 @@ export default function My_Inform({ user }) {
       products: prod && prod !== "미지정" ? [prod] : [],
       lot: rootLot,
     }));
-    setActiveTab(DEFAULT_INFORM_TAB);
+    setActiveTab(defaultInformTab());
     setInformView("list");
     setSelectedRootId("");
   };
@@ -2750,13 +2751,13 @@ export default function My_Inform({ user }) {
         modules: module ? [module] : f.modules,
         lot: rootLot,
       }));
-      setActiveTab(DEFAULT_INFORM_TAB);
+      setActiveTab(defaultInformTab());
       setInformView("list");
       setSelectedRootId("");
       return;
     }
     const recent = (cell?.recent || []).find(r => String(r?.inform_id || "") === informId) || (cell?.recent || [])[0] || {};
-    setActiveTab(DEFAULT_INFORM_TAB);
+    setActiveTab(defaultInformTab());
     setInformView("detail");
     setSelectedRootId(informId);
     setDetailTab("body");
@@ -2990,7 +2991,7 @@ export default function My_Inform({ user }) {
           <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activeTab}</span>
         </div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-          {INFORM_TABS.map(([key, label]) => (
+          {informTabs().map(([key, label]) => (
             <button key={key} type="button" onClick={() => setActiveTab(key)}
               style={{
                 minWidth: 82,

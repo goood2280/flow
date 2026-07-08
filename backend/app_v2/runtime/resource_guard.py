@@ -59,6 +59,9 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/vm-meta",
     "/api/splittable/inline-meta",
     "/api/splittable/precision",
+    # v9.1.x: _uniques.json 파일 프록시 — 파일 read 뿐이라 light. 메모리 가드 503 시
+    # 첫 화면 feature-select 카탈로그가 비는 회귀가 있어 명시적으로 통과시킨다.
+    "/api/splittable/uniques",
     "/api/splittable/notes",
     "/api/splittable/history",
     "/api/splittable/operational-history",
