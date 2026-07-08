@@ -61,8 +61,11 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - `Vehicle_matching.csv`는 `product`, `step_id`, `step_desc` 컬럼을 기본 계약으로 하며, 현재 선택 product에 직접 매칭되는 row만 대소문자 구분 없이 `step_desc`별 step 후보로 노출한다. `product` 셀은 `"PRODA, PRODB"`처럼 쉼표로 여러 제품을 적을 수 있고, 각 토큰 중 현재 product와 맞는 row만 사용한다. `ML_TABLE_` 접두와 `PRODUCT_A0`/`PRODA0` 같은 동일 제품 표기는 허용하지만, `PRODA` 선택이 `PRODA0`/`PRODA1`을 함께 끌어오지는 않는다.
 - `vm_matching.csv`는 `step_desc`, `item_id`만 기본 계약으로 둔다. SplitTable row 이름은 `VM_<step_desc>_<item_id>`이고, step 후보는 `vm_matching.csv`에 저장하지 않고 현재 product와 같은 `Vehicle_matching.csv` row에서 `step_desc`로 찾아 노출한다.
 - `inline_matching.csv`는 `product`, `step_id`, `item_id`를 기본 계약으로 둔다. SplitTable row 이름은 `INLINE_<item_id>`이며, 현재 product와 직접 매칭되는 row의 `step_id`/`item_id`만 노출한다.
-- `Split 체크 표시`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
-- SplitTable 탭에서 `Split 체크 표시`가 켜진 상태로 XLSX를 내려받으면 `항목 / 값 / Split / wafer` 열 구조의 split-check 형식으로 export한다.
+- 표시 형식은 3종이다: `기본`(모든 행/열 개별 칸), `Split 체크`(split 값을 S0/S1.. 행으로 분리해 어떤 ppid/split인지 표시), `병합`(행에서 왼쪽 칸과 같은 값이면 colSpan 으로 합쳐 표시, 읽기 전용 — 편집 중에는 기본 형식으로 렌더). 툴바와 톱니바퀴 기본 표시 설정의 같은 세그먼트 컨트롤로 전환한다.
+- `Split 체크`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
+- XLSX 다운로드는 현재 표시 형식을 그대로 따른다. `Split 체크`면 `항목 / 값 / Split / wafer` 열 구조(`display_mode=split_check`), `병합`이면 행 안에서 연속 동일 값 구간을 실제 셀 병합으로 export(`display_mode=merged`, 파일명 `_merged` suffix)한다.
+- 셀 선택은 뷰/편집 모드 모두에서 사각 영역으로 드래그 선택되며, `Ctrl+C` 복사는 브라우저 기본 동작(행 전체) 대신 선택한 사각 영역만 엑셀식 TSV(탭=열, 개행=행)로 클립보드에 넣는다.
+- Edit 모드에서 여러 셀을 선택하고 `Delete`/`Backspace`를 누르면 선택 범위의 plan을 일괄 삭제한다. 저장된 plan은 한 번의 `POST /api/splittable/plan/delete`(cell_keys 배열)로 지우고, 미저장 pending plan은 편집 상태에서 제거한다.
 - 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있다. 하단 적용 요약은 어떤 KNOB 변경이 어떤 `step_id` 수정으로 이어지는지 확인하기 위한 정보이므로 KNOB별 한 줄로 `step_desc`와 `step_id`만 표시하고 `item_id`는 별도 열로 노출하지 않는다. KNOB 적용공정 표시에서는 기본적으로 `operator=not_null` rule row를 제외하며, 같은 기본 설정에서 다시 포함할 수 있다. 룰북 파일명/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` / `inline_matching.csv` / `vm_matching.csv` 섹션에서 관리한다. 고급 설정 화면은 룰북 row 미리보기를 직접 나열하지 않는다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh, root lot RAM cache prefix/max/recent-search 유지)은 `splittable` page manager 이상만 쓴다.
 - Product RAM cache 상태 조회는 로그인 사용자에게 요약만 제공하고, source path/error 상세와 수동 refresh는 admin 또는 `splittable` page manager만 사용한다.

@@ -38,6 +38,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - 일반 사용자는 파일/제품 목록의 S3 신호등과 freshness 상태만 본다.
 - 파일/제품 목록의 신호등은 `GET /api/s3ingest/status-by-target?include_local=0` fast 응답으로 먼저 표시한다. 응답의 `local_freshness_included=false`는 로컬 파일 최신시각 재귀 scan을 생략했다는 뜻이며, 화면은 이후 idle/5분 주기로 `include_local=1`을 호출해 freshness 텍스트만 보강한다.
 - FileBrowser page manager는 `GET /api/s3ingest/items`, `GET /api/s3ingest/history`, `POST /api/s3ingest/run`으로 이미 등록된 S3 동기화 항목을 조회하고 수동 실행할 수 있다.
+- 실행 중/대기 중인 항목은 `■ 중지`(`POST /api/s3ingest/stop`)로 개별 중지한다. 전송은 `subprocess.Popen`으로 실행되어 핸들을 보관하므로, 중지 요청 시 실행 중이면 프로세스를 terminate하고 대기 중이면 큐에서 제거한다. 항목 설정은 그대로 유지되어 삭제/재등록 없이 다시 실행할 수 있다. 사용자 중지는 `status="cancelled"`로 기록되고 신호등 실패 집계에서 제외된다. 항목 삭제 없이 주기 동기화만 멈추려면 `⏸ 정지`/`재개`(`POST /api/s3ingest/set-enabled`, Admin 전용)로 `enabled` 플래그를 토글한다.
 - S3 항목 생성/수정/삭제, 스케줄 저장, AWS credential/profile 조회·저장·삭제는 global Admin 전용이다. 위임받은 FileBrowser manager에게는 `항목`/`이력` 탭만 보이고 `+ 추가`, `수정`, `삭제`, `AWS 설정`은 표시하지 않는다.
 - S3 항목 등록 저장 실패와 실행 실패는 `history.jsonl`에 `reason`, 원문 `output_tail`, 선택적 `ai_explanation`을 남긴다. LLM 연결이 활성화되어 있으면 FileBrowser 이력 탭의 `사유` 상세에서 한국어 원인/확인 항목을 함께 보여준다.
 - 주기 동기화 전역 on/off: `항목` 탭 상단 토글(Admin 전용, `GET /api/s3ingest/auto-sync`, `POST /api/s3ingest/auto-sync/save`)이 `config.json`의 `auto_download_enabled`/`auto_upload_enabled`를 저장하고, 스케줄러가 방향별로 주기 실행을 건너뛴다. 수동 `▶ 실행`/`push`는 영향받지 않는다. `FLOW_DISABLE_S3_INGEST=1` 환경변수는 해당 서버의 주기 실행 전체를 강제 종료 상태로 만들고(UI에 안내 표시), `FLOW_DISABLE_S3_SYNC=1`은 저장 시 artifact 업로드(`core/s3_sync.py`)를 서버 단위로 끈다(`s3_sync.status="disabled_env"`). 개발/양산 서버가 같은 버킷을 공유할 때 개발 서버에 두 env를 설정한다.
@@ -49,6 +50,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - 사전 피벗된 SplitTable 캐시는 `FLOW_DB_ROOT/cache/split_table/<product>/<root_lot_id>.parquet`에 행렬 형태로 저장되어 원본 탐색을 생략하고 0.1초 내외의 응답속도를 보장한다.
 - `select_cols`가 비어 있으면 identity 컬럼(`root_lot_id`, `lot_id`/`fab_lot_id`, `wafer_id`, `step_id`, `function_step`, time 후보)만 반환한다. `*`/전체 컬럼 요청은 차단하고, 없는 컬럼은 `code=unknown_column` 400으로 반환한다. 결과 row는 최대 25행이다.
 - canonical cache 파일은 일반 파일처럼 목록 진입, schema 확인, 100행 샘플 preview가 가능해야 한다. cache 폴더의 CSV/Parquet을 직접 열어도 작다는 이유로 전체 읽기 경로를 타지 않는다.
+- `Files`(운영 파일) 목록은 현재 폴더의 **바로 아래** 항목만 보여주고, 폴더를 클릭해 들어가면 그 안이 보인다. 하위 폴더(`cache/ml_table_lookup/...` 등)를 최상위에 평탄하게 나열하지 않는다. 최상위에 표시할 폴더는 톱니바퀴 `폴더 설정`의 "Files에 표시할 폴더"(`filebrowser_settings.json.hidden_db_dirs`, 기본 `cache`,`reformatter`)로 정하며, 목록에 적힌 폴더와 최상위 파일만 노출한다. `cache`는 항상 표시된다. DB 제품 루트/백업 폴더는 Base 목록에서 숨긴다.
+- 단일 파일 편집 저장(`POST /api/filebrowser/base-file/save`)은 파일을 원자적으로 쓴 뒤 즉시 응답한다. 파생 캐시 재생성(matching CSV의 DuckDB 캐시)과 S3 artifact sync는 백그라운드 스레드로 처리해 저장 응답 지연을 없앤다(응답 `s3_sync.status="pending_background"`, `cache_rows=null`). 버전 스냅샷은 동기로 남아 저장 직후 버전 목록에 반영된다.
 - 같은 canonical cache 파일은 Dashboard `+ 차트 추가` 데이터 소스 목록에서 `Cache/LOT latest`로도 노출된다. FileBrowser가 생성/갱신을 소유하고 Dashboard는 read-only `root_parquet` chart source로만 읽는다.
 
 ### LOT 진행 최신 캐시 파이프라인

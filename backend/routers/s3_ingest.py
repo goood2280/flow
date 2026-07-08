@@ -710,17 +710,33 @@ def _run_item_blocking(item_id: str):
     t0 = time.time()
     status = "error"; exit_code = -1; tail = ""
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=MAX_RUNTIME_SEC, env=_aws_cli_env())
-        out = (proc.stdout or "") + (proc.stderr or "")
+        # v9.1.x: Popen + 핸들 보관 — /stop 이 실행 중인 전송을 종료할 수 있게 한다.
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, env=_aws_cli_env())
+        with _RUNNING_LOCK:
+            slot = _RUNNING.get(item_id)
+            if isinstance(slot, dict):
+                slot["proc"] = proc
+        try:
+            out, _ = proc.communicate(timeout=MAX_RUNTIME_SEC)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+            out = (out or "") + f"\ntimeout after {MAX_RUNTIME_SEC}s"
         tail = out[-2000:] if out else ""
         exit_code = proc.returncode
         status = "ok" if proc.returncode == 0 else "error"
     except FileNotFoundError:
         tail = "aws CLI not installed on host (apt install awscli or pip install awscli)"
-    except subprocess.TimeoutExpired:
-        tail = f"timeout after {MAX_RUNTIME_SEC}s"
     except Exception as e:
         tail = f"exception: {str(e)[:1800]}"
+
+    with _RUNNING_LOCK:
+        slot = _RUNNING.get(item_id)
+        cancel_requested = bool(isinstance(slot, dict) and slot.get("cancel"))
+    if cancel_requested and status != "ok":
+        status = "cancelled"
+        tail = tail or "사용자 요청으로 중지됨"
 
     dur = int(time.time() - t0)
     reason = _s3_failure_reason(tail, exit_code) if status == "error" else ""
@@ -1023,6 +1039,62 @@ def run_manual(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
     return {"ok": True, "started": started, "queued": started}
 
 
+@router.post("/stop")
+def stop_item(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
+    """실행 중/대기 중인 항목을 개별 중지한다. 항목 설정은 그대로 유지된다."""
+    cfg = _load_cfg()
+    item = next((x for x in cfg.get("items", []) if x.get("id") == req.id), None)
+    if not item:
+        raise HTTPException(404, "item not found")
+    dequeued = False
+    terminating = False
+    with _QUEUE_COND:
+        if req.id in _QUEUED:
+            _QUEUED.remove(req.id)
+            dequeued = True
+        slot = _RUNNING.get(req.id)
+        proc = slot.get("proc") if isinstance(slot, dict) else None
+        if isinstance(slot, dict):
+            slot["cancel"] = True
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                terminating = True
+            except Exception:
+                pass
+    if dequeued:
+        direction = _item_direction(item)
+        _update_status(req.id, direction=direction,
+                       last_status="cancelled",
+                       last_end=_now_iso(),
+                       last_reason="실행 전 대기열에서 중지됨")
+        jsonl_append(HISTORY_FILE, {
+            "id": req.id, "target": item.get("target"), "kind": item.get("kind"),
+            "direction": direction, "status": "cancelled",
+            "reason": "실행 전 대기열에서 중지됨",
+        })
+        jsonl_trim(HISTORY_FILE, 500)
+    return {"ok": True, "dequeued": dequeued, "terminating": terminating}
+
+
+class SetEnabledReq(BaseModel):
+    username: str
+    id: str
+    enabled: bool
+
+
+@router.post("/set-enabled")
+def set_item_enabled(req: SetEnabledReq, _perm=Depends(require_admin)):
+    """삭제/재등록 없이 항목 주기 동기화를 일시정지(enabled=false)/재개한다."""
+    cfg = _load_cfg()
+    item = next((x for x in cfg.get("items", []) if x.get("id") == req.id), None)
+    if not item:
+        raise HTTPException(404, "item not found")
+    item["enabled"] = bool(req.enabled)
+    _save_cfg(cfg)
+    return {"ok": True, "id": req.id, "enabled": bool(req.enabled)}
+
+
 @router.get("/history")
 def get_history(
     username: str = Query(""),
@@ -1060,7 +1132,8 @@ def s3_health():
 
     # v8.7.5: pull(다운로드) / push(업로드) 방향별 최근 상태 분리 계산.
     def _compute_light(entries):
-        rec = entries[-10:]
+        # 사용자 수동 중지(cancelled)는 동기화 실패로 집계하지 않는다.
+        rec = [e for e in entries if (e.get("status") or "").lower() != "cancelled"][-10:]
         t = len(rec)
         f = sum(1 for e in rec if (e.get("status") or "").lower() not in ("ok", "success"))
         last5f = t >= 5 and all((e.get("status") or "").lower() not in ("ok", "success") for e in rec[-5:])
@@ -1099,7 +1172,7 @@ def s3_health():
         u_last = max(status_times["upload"], key=lambda x: x[0])[1]
 
     # 기존 호환성: 전체 기준 light.
-    recent = history[-10:]
+    recent = [e for e in history if (e.get("status") or "").lower() != "cancelled"][-10:]
     total = len(recent)
     fails = sum(1 for e in recent if (e.get("status") or "").lower() not in ("ok", "success"))
     last5_fail = total >= 5 and all(

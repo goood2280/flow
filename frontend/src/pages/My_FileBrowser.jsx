@@ -1070,6 +1070,21 @@ export default function My_FileBrowser({user,onNavigate}){
       setS3Tick(x=>x+1);
     }catch(e){toast.error(e.message||"실행 실패");}
   };
+  const s3Stop=async(id)=>{
+    if(!canRunS3Ingest){toast.warn("FileBrowser manager 권한이 필요합니다.");return;}
+    try{
+      await sf("/api/s3ingest/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
+      toast.info("중지 요청을 보냈습니다.");
+      setS3Tick(x=>x+1);
+    }catch(e){toast.error(e.message||"중지 실패");}
+  };
+  const s3SetEnabled=async(id,enabled)=>{
+    if(!canManageS3Ingest){toast.warn("S3 동기화 일시정지/재개는 Admin 전용입니다.");return;}
+    try{
+      await sf("/api/s3ingest/set-enabled",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id,enabled})});
+      setS3Tick(x=>x+1);
+    }catch(e){toast.error(e.message||"설정 실패");}
+  };
   const s3FmtETA=(item)=>{
     const iv=Number(item.interval_min||0);if(iv<=0)return"수동";
     if(item.due)return"지금 실행 예정";
@@ -1548,16 +1563,24 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseFileComplete = !!data&&(data.single_file_full_read||(data.total_rows||0)<= (data.showing||0));
   const basePathOf=(f)=>String(f?.path||f?.name||"").replace(/\\/g,"/");
   const baseAllItems = baseFiles || [];
+  // v9.1.x: 현재 폴더(baseDir)의 "바로 아래" 항목만 표시한다. 예전에는 최상위에서 모든
+  //   kind==="dir" 을 보여줘 cache/ml_table_lookup/... 같은 깊은 폴더가 평탄하게 노출됐다.
+  //   이제 depth(경로 세그먼트) 기준으로 즉시 하위 폴더/파일만 보여주고, 폴더를 클릭해
+  //   들어가야 그 안이 보인다.
+  const baseIsImmediateChild=(path)=>{
+    const p=String(path||"");
+    if(baseDir){
+      if(!p.startsWith(baseDir+"/"))return false;
+      return p.slice(baseDir.length+1).indexOf("/")===-1;
+    }
+    return p.indexOf("/")===-1;
+  };
   const baseItems = baseDir
     ? [
         {name:"상위 폴더",path:"__base_dir_up__",kind:"dir_up",ext:"dir",description:"상위 폴더로 이동"},
-        ...baseAllItems.filter(f => (f?.kind || "file").toLowerCase() !== "dir" && basePathOf(f).startsWith(baseDir+"/"))
+        ...baseAllItems.filter(f => baseIsImmediateChild(basePathOf(f)))
       ]
-    : baseAllItems.filter(f => {
-        const kind=(f?.kind || "file").toLowerCase();
-        if(kind==="dir")return true;
-        return !basePathOf(f).includes("/");
-      });
+    : baseAllItems.filter(f => baseIsImmediateChild(basePathOf(f)));
   const baseFileCount = baseItems.filter(f => {
     const kind=(f?.kind || "file").toLowerCase();
     return kind !== "dir" && kind !== "dir_up";
@@ -2705,8 +2728,9 @@ export default function My_FileBrowser({user,onNavigate}){
               </div>}
               {s3Tab==="folder"&&<div style={{maxWidth:520,display:"flex",flexDirection:"column",gap:10,fontSize:14}}>
                 <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                  Files로 노출할 DB 폴더
+                  Files에 표시할 폴더
                   <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={4} spellCheck={false} placeholder={"cache\nreformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                  <span style={{fontSize:12,fontWeight:400,color:"var(--text-secondary)",lineHeight:1.45}}>한 줄에 폴더 하나. 여기 적은 폴더와 최상위 파일만 Files 목록에 보입니다(기본: cache, reformatter). 하위 폴더는 해당 폴더를 클릭해 들어가면 보입니다. cache는 항상 표시됩니다.</span>
                 </label>
                 <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                   폴더 안 파일 버전 관리
@@ -2850,8 +2874,10 @@ export default function My_FileBrowser({user,onNavigate}){
                   <tbody>
                     {s3Items.map(it=>{
                       const st=it.status||{};const s=st.last_status||"never";
-                      const badge={ok:{c:FB_OK.fg,bg:"#22c55e22",t:"OK"},error:{c:FB_BAD.fg,bg:"#ef444422",t:"ERR"},running:{c:FB_AMBER,bg:"#f59e0b22",t:"RUN"},never:{c:FB_DISABLED,bg:"#94a3b822",t:"—"}}[s]||{c:FB_DISABLED,bg:"#94a3b822",t:s};
+                      const badge={ok:{c:FB_OK.fg,bg:"#22c55e22",t:"OK"},error:{c:FB_BAD.fg,bg:"#ef444422",t:"ERR"},running:{c:FB_AMBER,bg:"#f59e0b22",t:"RUN"},cancelled:{c:FB_AMBER,bg:"#94a3b822",t:"중지"},never:{c:FB_DISABLED,bg:"#94a3b822",t:"—"}}[s]||{c:FB_DISABLED,bg:"#94a3b822",t:s};
                       const isRunning=it.is_running||s==="running";
+                      const isBusy=isRunning||it.is_queued;
+                      const isPaused=it.enabled===false;
                       return(<tr key={it.id} style={{borderBottom:FB_GRID_LINE,opacity:it.enabled===false?0.5:1}}>
                         <td style={{padding:"6px 8px"}}><span style={{fontSize:14,padding:"2px 6px",borderRadius:3,background:badge.bg,color:badge.c,fontWeight:700,fontFamily:"monospace"}}>{badge.t}</span></td>
                         <td style={{padding:"6px 8px",fontFamily:"monospace",fontWeight:600}}>{it.target}</td>
@@ -2866,7 +2892,10 @@ export default function My_FileBrowser({user,onNavigate}){
                           {st.last_output_tail&&<span onClick={()=>setS3Detail({id:it.id,tail:st.last_output_tail,cmd:it.s3_url,exit:st.last_exit_code,reason:st.last_reason||st.last_output_tail,aiExplanation:st.last_ai_explanation,action:"run"})} style={{marginLeft:4,cursor:"pointer",color:"var(--accent)"}}>로그</span>}
                         </td>
                         <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
-                          <button disabled={isRunning} onClick={()=>s3Run(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:isRunning?FB_DISABLED:"var(--accent)",color:"#fff",fontSize:14,cursor:isRunning?"default":"pointer",marginRight:3}}>▶ 실행</button>
+                          {isBusy
+                            ?<button onClick={()=>s3Stop(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:FB_BAD.fg,color:"#fff",fontSize:14,cursor:"pointer",marginRight:3}} title="실행 중/대기 중인 전송을 즉시 중지">■ 중지</button>
+                            :<button onClick={()=>s3Run(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer",marginRight:3}}>▶ 실행</button>}
+                          {canManageS3Ingest&&<button onClick={()=>s3SetEnabled(it.id,isPaused)} style={{padding:"3px 8px",borderRadius:3,border:"1px solid "+(isPaused?FB_OK.fg:FB_AMBER),background:"transparent",color:isPaused?FB_OK.fg:FB_AMBER,fontSize:14,cursor:"pointer",marginRight:3}} title={isPaused?"주기 동기화 재개":"항목 삭제 없이 주기 동기화만 일시정지"}>{isPaused?"재개":"⏸ 정지"}</button>}
                           {canManageS3Ingest&&<button onClick={()=>{setS3Form({...it});setS3Tab("add");}} style={{padding:"3px 8px",borderRadius:3,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer",marginRight:3}}>수정</button>}
                           {canManageS3Ingest&&<button onClick={()=>s3Delete(it.id)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:14,cursor:"pointer"}}>✕</button>}
                         </td>
