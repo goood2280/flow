@@ -7,8 +7,10 @@ import { authSrc, sf, dl } from "../lib/api";
 import { allowedSubTabs, useUserRole } from "../lib/permissions";
 
 // v9.1.x: 소탭 단위 권한 — 허용된 소탭(view/history)만 노출.
-const SPLITTABLE_TABS = [{k:"view",l:"View"},{k:"history",l:"History"}].filter(({k})=>allowedSubTabs("splittable").includes(k));
-const DEFAULT_SPLITTABLE_TAB = SPLITTABLE_TABS[0]?.k || "view";
+// 주의: localStorage(hol_user)는 로그인 후에 채워지므로 모듈 로드 시점이 아니라
+// 렌더 시점에 평가해야 한다 (모듈 상수로 고정하면 로그인 전 평가 시 탭이 영구히 빈다).
+const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
+const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
 import { statusPalette, chartPalette } from "../components/UXKit";
 import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS } from "../components/SplitTableSnapshotView";
 const API="/api/splittable";
@@ -226,6 +228,8 @@ export default function My_SplitTable({user}){
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
   const[showSplitCheckView,setShowSplitCheckView]=useState(false);
+  // v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 colSpan 으로 병합해 표시 (읽기 전용).
+  const[showMergedView,setShowMergedView]=useState(false);
   const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
@@ -249,7 +253,8 @@ export default function My_SplitTable({user}){
   const[expandedNoteId,setExpandedNoteId]=useState("");
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
   const[noteSearch,setNoteSearch]=useState("");
-  const[tab,setTab]=useState(DEFAULT_SPLITTABLE_TAB);const[history,setHistory]=useState([]);
+  const SPLITTABLE_TABS=splittableTabs();
+  const[tab,setTab]=useState(()=>splittableTabs()[0]?.k||"view");const[history,setHistory]=useState([]);
   const[histMode,setHistMode]=useState("lot_final");const[histFinal,setHistFinal]=useState({final:[],drift:[],drift_count:0,total_cells:0});
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
   const[showSettings,setShowSettings]=useState(false);const[settingsTab,setSettingsTab]=useState("basic");const[newPrefix,setNewPrefix]=useState("");
@@ -361,6 +366,17 @@ export default function My_SplitTable({user}){
   const canManage = role.canManagePage("splittable");
   const lotRef=useRef(null);
   const lotSuggestSeqRef=useRef(0);
+  const fabSuggestSeqRef=useRef(0);
+  // v9.1.x: 후보 풀 — 서버 응답을 제품별로 누적해 두고, 키 입력 즉시 로컬 필터로
+  // 부분 결과를 먼저 보여준다 (서버 결과가 도착하면 갱신).
+  const lotPoolRef=useRef({key:"",values:[]});
+  const fabPoolRef=useRef({key:"",values:[]});
+  const poolValues=(ref,key)=>ref.current.key===key?ref.current.values:[];
+  const poolMerge=(ref,key,vals)=>{
+    if(ref.current.key!==key)ref.current={key,values:[]};
+    if(Array.isArray(vals)&&vals.length)ref.current.values=[...new Set([...ref.current.values,...vals])];
+    return ref.current.values;
+  };
   const splitTableRef=useRef(null);
   const settingsLotLinkRef=useRef(null);
   const scrollToSettingsLotLink=()=>settingsLotLinkRef.current?.scrollIntoView({behavior:"smooth",block:"start"});
@@ -542,10 +558,17 @@ export default function My_SplitTable({user}){
     let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+limit;
     if(prefix) url+="&prefix="+encodeURIComponent(prefix);
     setLotSuggestBusy(true);setLotSuggestMsg("");
+    // 키 입력 즉시: 누적 후보 풀을 로컬 필터해 부분 결과를 먼저 표시한다.
+    const pooled=poolValues(lotPoolRef,selProd);
+    if(pooled.length){
+      const local=prefix?pooled.filter(v=>v.toUpperCase().includes(prefix.toUpperCase())):pooled;
+      if(local.length){setLotSuggestions(local.slice(0,limit));setLotSuggestMsg("");}
+    }
     const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit,{signal:controller.signal})
       .then(d=>{
         if(!isCurrent())return;
         const lots=normalizeLotList(d.lot_ids||[]);
+        poolMerge(lotPoolRef,selProd,lots);
         setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
         setLotSuggestMsg(lots.length?"":"Lot 후보가 없습니다. DB 연결/제품 매칭을 확인하세요.");
       })
@@ -555,7 +578,7 @@ export default function My_SplitTable({user}){
       .then(d=>{
         if(!isCurrent())return;
         const candidates=normalizeLotList(d.candidates||[]);
-        if(candidates.length){setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
+        if(candidates.length){poolMerge(lotPoolRef,selProd,candidates);setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
         else fallbackLots();
       })
       .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();}),250);
@@ -763,7 +786,10 @@ export default function My_SplitTable({user}){
   //   (root_lot_id == lotId 인 row 의 fab_lot_id) 으로 매칭, 0건이면 starts_with → 전체 폴백.
   //   기존 'lotId.length===5' 분기는 시드 데이터에서 root/fab 앞 5자가 다른 케이스를 못 잡았음.
   useEffect(()=>{
+    const seq=++fabSuggestSeqRef.current;
     if(!selProd){setFabSuggestions([]);setFabSuggestBusy(false);setFabSuggestMsg("");return;}
+    const controller=new AbortController();
+    const isCurrent=()=>seq===fabSuggestSeqRef.current&&!controller.signal.aborted;
     const _r=(lotId||"").trim();
     const _f=(fabLotId||"").trim();
     const limit=candidateLimit(_f||_r);
@@ -771,12 +797,22 @@ export default function My_SplitTable({user}){
     if(_r) url+="&root_lot_id="+encodeURIComponent(_r);
     if(_f) url+="&prefix="+encodeURIComponent(_f);
     setFabSuggestBusy(true);setFabSuggestMsg("");
-    sf(url).then(d=>{
+    // 키 입력 즉시: 같은 product+root scope 의 누적 풀을 로컬 필터해 먼저 표시.
+    const poolKey=selProd+"|"+_r.toUpperCase();
+    const pooled=poolValues(fabPoolRef,poolKey);
+    if(pooled.length){
+      const local=_f?pooled.filter(v=>v.toUpperCase().includes(_f.toUpperCase())):pooled;
+      if(local.length){setFabSuggestions(local.slice(0,limit));setFabSuggestMsg("");}
+    }
+    const timer=setTimeout(()=>sf(url,{signal:controller.signal}).then(d=>{
+      if(!isCurrent())return;
       const rows=normalizeLotList(d.candidates||[]);
+      poolMerge(fabPoolRef,poolKey,rows);
       setFabSuggestions(rows);
       setFabSuggestMsg(rows.length?"":"Fab lot 후보가 없습니다. root_lot_id 범위 또는 DB 연결을 확인하세요.");
-    }).catch(e=>{setFabSuggestions([]);setFabSuggestMsg(e?.message||"Fab lot 후보 조회 실패");})
-      .finally(()=>setFabSuggestBusy(false));
+    }).catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;setFabSuggestions([]);setFabSuggestMsg(e?.message||"Fab lot 후보 조회 실패");})
+      .finally(()=>{if(isCurrent())setFabSuggestBusy(false);}),200);
+    return()=>{clearTimeout(timer);controller.abort();};
   },[selProd,lotId,fabLotId]);
   useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
   useEffect(()=>{if(!editing)clearCellSelection();},[editing]);
@@ -787,13 +823,22 @@ export default function My_SplitTable({user}){
     ||(isCustomMode&&customCols.some(isInlineVmSplitParam))
     ||(Array.isArray(data?.rows)&&data.rows.some(row=>isInlineVmSplitParam(row?._param)||isInlineVmSplitParam(row?._display)));
   const splitCheckViewActive=showSplitCheckView&&!splitCheckDisabled;
+  const mergedViewActive=showMergedView&&!splitCheckViewActive;
+  // 표시 형식 3종: cell(모든 칸 개별) / split(S0,S1.. 행 분리) / merged(좌측 동일값 병합).
+  const tableFormat=splitCheckViewActive?"split":(mergedViewActive?"merged":"cell");
+  const setTableFormat=(m)=>{
+    if(m==="split"){if(splitCheckDisabled)return;setShowMergedView(false);setShowSplitCheckView(true);return;}
+    setShowSplitCheckView(false);
+    setShowMergedView(m==="merged");
+  };
   const splitCheckToggleTitle=splitCheckDisabled
     ?"INLINE/VM 항목은 wafer별 Split 체크 표시 대상이 아닙니다"
     :"각 항목 값을 S0/S1 체크 행으로 펼쳐 wafer별 적용 위치를 봅니다";
-  const toggleSplitCheckView=(checked)=>{
-    if(splitCheckDisabled){setShowSplitCheckView(false);return;}
-    setShowSplitCheckView(checked);
-  };
+  const TABLE_FORMAT_OPTIONS=[
+    {k:"cell",l:"기본",t:"모든 행/열을 개별 칸으로 표시"},
+    {k:"split",l:"Split 체크",t:splitCheckToggleTitle,d:splitCheckDisabled},
+    {k:"merged",l:"병합",t:"행에서 왼쪽 값과 같은 칸을 하나로 병합해 표시 (읽기 전용)"},
+  ];
   useEffect(()=>{
     if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
   },[splitCheckDisabled,showSplitCheckView]);
@@ -1411,10 +1456,13 @@ export default function My_SplitTable({user}){
                   <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                   하단 적용 요약
                 </label>
-                <label title={splitCheckToggleTitle} style={{display:"flex",alignItems:"center",gap:8,cursor:splitCheckDisabled?"not-allowed":"pointer",color:splitCheckDisabled?"var(--text-muted)":"var(--text-primary)",opacity:splitCheckDisabled?0.55:1}}>
-                  <input type="checkbox" checked={splitCheckViewActive} disabled={splitCheckDisabled} onChange={e=>toggleSplitCheckView(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
-                  Split 체크 표시
-                </label>
+                <div style={{display:"flex",alignItems:"center",gap:6,color:"var(--text-primary)"}}>
+                  <span>표시 형식</span>
+                  {TABLE_FORMAT_OPTIONS.map(m=>(
+                    <span key={m.k} title={m.t} onClick={()=>{if(m.d)return;setTableFormat(m.k);}}
+                      style={{padding:"3px 9px",borderRadius:4,fontSize:13,cursor:m.d?"not-allowed":"pointer",opacity:m.d?0.55:1,background:tableFormat===m.k?"var(--accent-glow)":"var(--bg-hover)",color:tableFormat===m.k?"var(--accent)":"var(--text-secondary)",fontWeight:tableFormat===m.k?700:400,border:"1px solid "+(tableFormat===m.k?"var(--accent)":"var(--border)")}}>{m.l}</span>
+                  ))}
+                </div>
                 <div>표시 자리수, 데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
               </div>
             </div>
@@ -1951,10 +1999,12 @@ export default function My_SplitTable({user}){
             <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)}/>
             하단 적용 요약
           </label>
-          <label title={splitCheckToggleTitle} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:splitCheckDisabled?"var(--text-muted)":(splitCheckViewActive?"var(--accent)":"var(--text-secondary)"),cursor:splitCheckDisabled?"not-allowed":"pointer",padding:"2px 6px",opacity:splitCheckDisabled?0.55:1}}>
-            <input type="checkbox" checked={splitCheckViewActive} disabled={splitCheckDisabled} onChange={e=>toggleSplitCheckView(e.target.checked)}/>
-            Split 체크 표시
-          </label>
+          <span style={{width:1,height:16,background:"var(--border)"}}/>
+          <span style={{fontSize:14,color:"var(--text-secondary)"}}>표시</span>
+          {TABLE_FORMAT_OPTIONS.map(m=>(
+            <span key={m.k} title={m.t} onClick={()=>{if(m.d)return;setTableFormat(m.k);}}
+              style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:m.d?"not-allowed":"pointer",opacity:m.d?0.55:1,background:tableFormat===m.k?"var(--accent-glow)":"transparent",color:tableFormat===m.k?"var(--accent)":"var(--text-secondary)",fontWeight:tableFormat===m.k?600:400}}>{m.l}</span>
+          ))}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
             <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
@@ -1962,7 +2012,7 @@ export default function My_SplitTable({user}){
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":"";const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${splitCheckViewActive?"_split_check":""}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":"XLSX (fab_lot_id 병합)"}>⬇ XLSX</button>
+            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":"");const fmtSuffix=splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)")}>⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
@@ -1989,9 +2039,10 @@ export default function My_SplitTable({user}){
         const selectedCellStart=normalizedSelection?{rowIndex:normalizedSelection.startRow,colIndex:normalizedSelection.startCol}:null;
         const activeSelectionStart=selectedCellStart || (selectionAnchor?{rowIndex:selectionAnchor.rowIndex,colIndex:selectionAnchor.colIndex}:null);
         const isCellSelected=(ri,ci)=>!!(normalizedSelection&&ri>=normalizedSelection.startRow&&ri<=normalizedSelection.endRow&&ci>=normalizedSelection.startCol&&ci<=normalizedSelection.endCol);
-        const beginCellSelection=(e,ri,ci,canEdit)=>{
-          if(!editing) return;
-          if(!canEdit) return;
+        // v9.1.x: 셀 선택은 edit 모드에 한정하지 않는다 — 뷰 모드에서도 사각 영역을 잡아
+        //   엑셀처럼 그 영역만 복사(onCopy)할 수 있어야 한다. 편집 액션(더블클릭 입력,
+        //   Delete plan 삭제, paste)만 editing 으로 게이팅된다.
+        const beginCellSelection=(e,ri,ci)=>{
           if(e.button!==0)return;
           if(e.shiftKey&&selectionAnchor){
             const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
@@ -2004,15 +2055,13 @@ export default function My_SplitTable({user}){
           splitTableRef.current?.focus();
           setIsDraggingSelection(true);
         };
-        const updateCellSelection=(ri,ci,canEdit)=>{
-          if(!editing||!isDraggingSelection||!canEdit)return;
-          if(!selectionAnchor)return;
+        const updateCellSelection=(ri,ci)=>{
+          if(!isDraggingSelection||!selectionAnchor)return;
           const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
           setSelectedCellRange(nextRange);
           setActiveCell(null);
         };
-        const handleCellSelection=(e,ri,ci,canEdit)=>{
-          if(!editing||!canEdit)return;
+        const handleCellSelection=(e,ri,ci)=>{
           if(e.shiftKey&&selectionAnchor){
             const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
             setSelectedCellRange(nextRange);
@@ -2070,6 +2119,69 @@ export default function My_SplitTable({user}){
           if(Object.keys(nextTags).length)setPendingTags(p=>({...p,...nextTags}));
           if(Object.keys(nextManagement).length)setPendingManagement(p=>({...p,...nextManagement}));
         };
+        // v9.1.x: Edit 모드에서 멀티셀 선택 후 Delete/Backspace → 선택 범위의 plan 일괄 삭제.
+        //   미저장 pending plan 은 상태에서 제거하고, 저장된 plan 은 한 번의 /plan/delete 로 지운다.
+        const handleSplitKeyDown=(e)=>{
+          if(!editing||activeCell)return;
+          if(e.key!=="Delete"&&e.key!=="Backspace")return;
+          if(!normalizedSelection)return;
+          const target=e.target||{};
+          const tagName=String(target.tagName||"").toLowerCase();
+          if(tagName==="input"||tagName==="textarea"||tagName==="select"||target.isContentEditable)return;
+          const savedKeys=[];const pendingKeys=[];
+          for(let ri=normalizedSelection.startRow;ri<=normalizedSelection.endRow;ri++){
+            const rowData=displayRows[ri];if(!rowData||!rowData._cells)continue;
+            const cells=rowData._cells;
+            for(let ci=normalizedSelection.startCol;ci<=normalizedSelection.endCol;ci++){
+              const cell=cells[String(ci)];
+              if(!cell||!cell.key||cell.can_plan===false)continue;
+              if(Object.prototype.hasOwnProperty.call(pendingPlans,cell.key))pendingKeys.push(cell.key);
+              if(hasValue(cell.plan))savedKeys.push(cell.key);
+            }
+          }
+          if(!savedKeys.length&&!pendingKeys.length)return;
+          e.preventDefault();
+          if(pendingKeys.length)setPendingPlans(p=>{const n={...p};pendingKeys.forEach(k=>delete n[k]);return n;});
+          if(savedKeys.length){
+            sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:savedKeys,username:user?.username||""})})
+              .then(()=>{toast.ok(`plan ${savedKeys.length}건 삭제`);loadView();})
+              .catch(err=>toast.error(err.message||"plan 삭제 실패"));
+          }else if(pendingKeys.length){
+            toast.ok(`미저장 plan ${pendingKeys.length}건 제거`);
+          }
+        };
+        // v9.1.x: Ctrl+C — 브라우저 기본 복사는 행 전체 텍스트를 잡으므로, 선택한 사각
+        //   셀 영역만 엑셀처럼 TSV(탭=열, 개행=행)로 클립보드에 넣는다.
+        const handleSplitCopy=(e)=>{
+          if(!normalizedSelection)return;
+          const target=e.target||{};
+          const tagName=String(target.tagName||"").toLowerCase();
+          if(tagName==="input"||tagName==="textarea"||tagName==="select"||target.isContentEditable)return;
+          const lines=[];
+          for(let ri=normalizedSelection.startRow;ri<=normalizedSelection.endRow;ri++){
+            const rowData=displayRows[ri];const cells=rowData?._cells||{};
+            const cols=[];
+            for(let ci=normalizedSelection.startCol;ci<=normalizedSelection.endCol;ci++){
+              const cell=cells[String(ci)];let val="";
+              if(cell){
+                const pendingPlan=pendingValueFor(cell);
+                const pendingTag=pendingTagValueFor(cell);
+                const pendingMgmt=pendingManagementValueFor(cell);
+                const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
+                  :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
+                  :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
+                val=hasValue(raw)?String(formatCell(raw,rowData._param)??raw):"";
+              }
+              cols.push(val);
+            }
+            lines.push(cols.join("\t"));
+          }
+          e.preventDefault();
+          const tsv=lines.join("\n");
+          if(e.clipboardData)e.clipboardData.setData("text/plain",tsv);
+          else if(navigator.clipboard)navigator.clipboard.writeText(tsv).catch(()=>{});
+        };
         const lineageSummary = buildLineageSummary(displayRows);
         const headerGroupLabels = [...new Set((data.header_groups||[]).map(g=>String(g?.label||"").trim()).filter(Boolean))];
         const lotHeaderRoot = String(data.root_lot_id||lotId||"").trim();
@@ -2107,7 +2219,7 @@ export default function My_SplitTable({user}){
           },
           displayForValue:(raw,row)=>String(formatCell(raw,row._param) ?? raw),
         });
-        return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
+        return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:14,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
           <span style={{fontWeight:800,color:"rgba(59,130,246,0.95)",fontFamily:"monospace"}}>이슈추적 {data.related_issues.length}건</span>
@@ -2123,7 +2235,8 @@ export default function My_SplitTable({user}){
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid ${GRID_BORDER}; }
-          .splittable-grid td, .splittable-grid th, .splittable-grid td *, .splittable-grid th * { color: ${GRID_TEXT} !important; }`}</style>
+          .splittable-grid td, .splittable-grid th, .splittable-grid td *, .splittable-grid th * { color: ${GRID_TEXT} !important; }
+          .splittable-grid td.stm-cell { user-select: none; }`}</style>
         {splitCheckViewActive ? (
         <SplitTableSnapshotView
           stView={splitCheckStView}
@@ -2243,10 +2356,44 @@ export default function My_SplitTable({user}){
                     )}
                   </div>);})()}
               </td>);})()}
-              {data.headers?.map((_,ci)=>{
+              {(mergedViewActive&&!editing)?(()=>{
+                // v9.1.x: 병합 표시 — 왼쪽 칸과 같은 값이면 colSpan 으로 합쳐 한눈에 보이게 (읽기 전용).
+                const groups=[];let cur=null;
+                (data.headers||[]).forEach((_,ci)=>{
+                  const cell=cells[String(ci)];
+                  let paintVal=null;
+                  if(cell){
+                    const pendingPlan=pendingValueFor(cell);
+                    const pendingTag=pendingTagValueFor(cell);
+                    const pendingMgmt=pendingManagementValueFor(cell);
+                    const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
+                      :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
+                      :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                    paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
+                  }
+                  const key=hasValue(paintVal)?String(paintVal):"";
+                  if(cur&&cur.key===key){cur.span+=1;}
+                  else{cur={key,paintVal,span:1,start:ci};groups.push(cur);}
+                });
+                return groups.map(g=>{
+                  const disp=g.key?String(formatCell(g.paintVal,row._param)??g.paintVal):"";
+                  const bgStyle=g.key?getCellBg(g.paintVal,uniqMap,row._param):{};
+                  const wStart=String(data.headers[g.start]??"");
+                  const wEnd=String(data.headers[g.start+g.span-1]??"");
+                  return(<td key={g.start} colSpan={g.span}
+                    title={g.span>1?`${wStart}~${wEnd} · ${g.span}개 wafer 동일 값`:undefined}
+                    style={{background:"var(--bg-card)",color:"var(--text-primary)",...bgStyle,padding:"4px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,fontWeight:g.span>1?700:400}}>
+                    {disp}
+                  </td>);
+                });
+              })():data.headers?.map((_,ci)=>{
                 const cell=cells[String(ci)];const wid=String(data.headers[ci]??"").replace(/^#/,"");
                 const cellNoteCount=notesForCell(wid,row._param).length;
-                if(!cell)return(<td key={ci} style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-card)",position:"relative"}}>
+                if(!cell)return(<td key={ci} className="stm-cell"
+                  onMouseDown={(e)=>{beginCellSelection(e,ri,ci);}}
+                  onMouseEnter={(e)=>{if(e.buttons===1)updateCellSelection(ri,ci);}}
+                  onMouseUp={()=>setIsDraggingSelection(false)}
+                  style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-card)",position:"relative",outline:isCellSelected(ri,ci)?"2px solid rgba(59,130,246,0.9)":"none",outlineOffset:-1}}>
                   {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
                 const pendingPlan=pendingValueFor(cell);
@@ -2284,10 +2431,10 @@ export default function My_SplitTable({user}){
                   }
                   };
                 return(<td key={ci} className="stm-cell" style={style}
-                  onMouseDown={(e)=>{beginCellSelection(e,ri,ci,canEdit);}}
-                  onMouseEnter={(e)=>{if(e.buttons===1)updateCellSelection(ri,ci,canEdit);}}
+                  onMouseDown={(e)=>{beginCellSelection(e,ri,ci);}}
+                  onMouseEnter={(e)=>{if(e.buttons===1)updateCellSelection(ri,ci);}}
                   onMouseUp={()=>setIsDraggingSelection(false)}
-                  onClick={(e)=>{if(editing&&canEdit)handleCellSelection(e,ri,ci,canEdit);}}
+                  onClick={(e)=>{if(editing&&canEdit)handleCellSelection(e,ri,ci);}}
                   onDoubleClick={()=>{if(canEdit)openEdit();}}
                   onContextMenu={e=>{if(cell.plan){e.preventDefault();deletePlan(cell.key);}}}
                   title={isCustomTag

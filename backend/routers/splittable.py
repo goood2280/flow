@@ -8171,7 +8171,10 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         if str(col or "").casefold() == "root_lot_id":
             # v9.1: INSTANTANEOUS fallback via the new split_table cache directory!
             from core.paths import PATHS
-            split_table_cache_dir = (PATHS.db_cache_dir if hasattr(PATHS, "db_cache_dir") else Path("data/cache")) / "split_table" / product
+            from app_v2.modules.splittable.cache_builder import canonical_product_dir
+            # 캐시 디렉터리는 canonical ML_TABLE_* 대문자 이름으로 저장된다 — raw product
+            # 문자열로 찾으면 대소문자 구분 FS(운영 Linux)에서 조용히 빗나간다.
+            split_table_cache_dir = (PATHS.db_cache_dir if hasattr(PATHS, "db_cache_dir") else Path("data/cache")) / "split_table" / (canonical_product_dir(product) or str(product or ""))
             if split_table_cache_dir.exists():
                 cands = [fp.stem for fp in split_table_cache_dir.glob("*.parquet")]
                 if prefix.strip():
@@ -8202,7 +8205,9 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
                         "match_mode": "lookup_cache_roots",
                         "lookup_cache": lookup_meta,
                     })
-                if lookup.get("has_cache") and not lookup.get("source_stale"):
+                if lookup.get("has_cache") and not lookup.get("source_stale") and prefix.strip():
+                    # prefix 검색에서 fresh 캐시가 빈 결과면 그대로 신뢰한다
+                    # (여기서 raw 폴백하면 키 입력마다 원천 전체 스캔이 된다).
                     return finish({
                         "candidates": [],
                         "source_col": "root_lot_id",
@@ -8210,6 +8215,8 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
                         "match_mode": "lookup_cache_roots",
                         "lookup_cache": lookup_meta,
                     })
+                # 빈 prefix(초기 목록)인데 fresh 캐시가 비어 있으면 캐시가 잘못
+                # 빌드된 회귀일 수 있으므로 아래 bounded raw preview 로 재확인한다.
                 source_fp = lookup.get("source_fp")
                 if source_fp and _split_view_should_defer_raw_fallback(source_fp) and (
                     not lookup.get("has_cache") or lookup.get("source_stale")
@@ -10497,6 +10504,11 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         str(display_mode or "").strip().lower() == "split_check"
         and _split_check_export_supported(selected)
     )
+    # v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 셀 병합해 export (UI 병합 표시와 동일).
+    merged_mode = (
+        str(display_mode or "").strip().lower() == "merged"
+        and not split_check_mode
+    )
 
     def _xlsx_value_maps_for_col(col_name: str) -> tuple[dict[int, str], dict[int, str]]:
         actual_by_idx: dict[int, str] = {}
@@ -10635,9 +10647,18 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     else:
                         out[1 + idx] = sv or pv
                 rows.append(out)
+                if merged_mode and n_wafers > 1:
+                    row_no = len(rows)
+                    start = 0
+                    for j in range(1, n_wafers + 1):
+                        if j == n_wafers or str(out[1 + j]) != str(out[1 + start]):
+                            if j - start > 1:
+                                merges.append((row_no, 2 + start, row_no, 2 + j - 1))
+                            start = j
 
         data = build_workbook([{"title": product[:31], "rows": rows, "merges": merges}])
-        fname = f"{product}_{root_lot_id or 'all'}{'_split_check' if split_check_mode else ''}.xlsx"
+        fmt_suffix = "_split_check" if split_check_mode else ("_merged" if merged_mode else "")
+        fname = f"{product}_{root_lot_id or 'all'}{fmt_suffix}.xlsx"
         return StreamingResponse(
             iter([data]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -10889,6 +10910,43 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         red_side = Side(style="medium", color="ef4444")
         mismatch_border = Border(left=red_side, right=red_side,
                                  top=red_side, bottom=red_side)
+        if merged_mode:
+            # v9.1.x: 병합 표시 형식 — 왼쪽 칸과 같은 값이면 연속 구간을 셀 병합.
+            groups = []
+            for idx in range(len(wf_sorted)):
+                sv = actual_by_idx.get(idx, "")
+                pv = plan_by_idx.get(idx, "")
+                cell_val = sv or pv
+                if groups and cell_val == groups[-1]["val"]:
+                    groups[-1]["span"] += 1
+                else:
+                    groups.append({"val": cell_val, "sv": sv, "pv": pv, "start": idx, "span": 1})
+            for g in groups:
+                idx = g["start"]; sv = g["sv"]; pv = g["pv"]; cell_val = g["val"]
+                if not cell_val and g["span"] == 1:
+                    continue
+                is_plan_only = (not sv) and bool(pv)
+                is_mismatch = bool(sv) and bool(pv) and sv != pv
+                cell = ws.cell(row=rr, column=2 + idx, value=cell_val)
+                cell.alignment = center
+                cell.border = border
+                if should_color and cell_val and cell_val in uniq_map:
+                    bg, fg = CELL_PALETTE[uniq_map[cell_val] % len(CELL_PALETTE)]
+                    cell.fill = PatternFill("solid", fgColor=bg)
+                    cell.font = Font(color=fg, bold=True, italic=is_plan_only, size=11, name="Consolas")
+                elif is_plan_only:
+                    cell.fill = PatternFill("solid", fgColor="fef3c7")
+                    cell.font = Font(color="ea580c", bold=True, italic=True, name="Consolas")
+                if is_plan_only:
+                    cell.border = plan_border
+                    if cell_val and not str(cell_val).startswith("📌 "):
+                        cell.value = "📌 " + str(cell_val)
+                elif is_mismatch:
+                    cell.border = mismatch_border
+                if g["span"] > 1:
+                    ws.merge_cells(start_row=rr, start_column=2 + idx,
+                                   end_row=rr, end_column=2 + idx + g["span"] - 1)
+            continue
         for idx in sorted(set(list(actual_by_idx.keys()) + list(plan_by_idx.keys()))):
             sv = actual_by_idx.get(idx, "")
             pv = plan_by_idx.get(idx, "")
@@ -10939,7 +10997,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     buf.seek(0)
 
     from fastapi.responses import StreamingResponse
-    fname = f"{product}_{root_lot_id or 'all'}.xlsx"
+    fname = f"{product}_{root_lot_id or 'all'}{'_merged' if merged_mode else ''}.xlsx"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

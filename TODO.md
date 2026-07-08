@@ -9,6 +9,8 @@
 
 ## Done
 
+- (Claude) S3 항목별 중지/일시정지(Popen 핸들 보관 + /stop, /set-enabled) + SplitTable 리스트 회귀 수정(canonical 캐시 dir, /uniques light, 서브탭 권한 렌더시 평가) + lot 검색 점진적 후보 + 제3 표시형식(좌측 동일값 병합)과 형식별 XLSX
+- (Claude) FileBrowser Files 하위폴더 평탄화 제거(즉시 하위항목만 표시) + 표시 폴더 설정 + 단일파일 저장 파생캐시/S3 백그라운드화로 저장 ~18배 가속 + SplitTable 엑셀식 블록 복사(Ctrl+C)와 멀티셀 Delete plan 일괄 삭제
 - (Claude) 스킬 실행 기능 권한 게이팅(required_features) + 파일 설명문 카탈로그 기반 검색/HITL + Admin "Flow-i 학습" 관리 탭
 - (Claude) step_lookup 확장 — 유사 step_id 후보(suffix 정규화), 매칭 파일 횡단 관련 파일 검색, human-in-the-loop 티칭(기억해:/잊어줘:)과 피드백 교정 few-shot
 - (Claude) 공유 스킬 전사 사용 — shared/private 권한, share/delete API, Home Flow-i 채팅에서 스킬 카탈로그/즉시 실행(read-only) 라우팅

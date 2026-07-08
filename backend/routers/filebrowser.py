@@ -5120,6 +5120,10 @@ def base_files(request: Request = None):
                         dir_name = entry.name
                         if dir_name.startswith(".") or dir_name.startswith("__"):
                             continue
+                        # v9.1.x: Files 에는 설정된 폴더(single_file_folders = cache + hidden_db_dirs)만
+                        #   최상위 폴더로 노출한다. DB 제품 루트/백업 폴더 등은 Base 목록에서 숨긴다.
+                        if dir_name.casefold() not in single_file_folders:
+                            continue
                         dir_key = dir_name.lower()
                         if dir_key not in seen_dir_paths:
                             try:
@@ -5153,6 +5157,9 @@ def base_files(request: Request = None):
             if f.is_dir():
                 dir_name = f.name
                 if dir_name.startswith(".") or dir_name.startswith("__"):
+                    continue
+                # v9.1.x: 설정된 Files 노출 폴더만 최상위 폴더로 보여준다 (위 base_root 와 동일 규칙).
+                if dir_name.casefold() not in single_file_folders:
                     continue
                 dir_key = dir_name.lower()
                 if dir_key not in seen_dir_paths:
@@ -11196,14 +11203,28 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
         logger.warning("base-file/save version snapshot skipped file=%s: %s", fp, e)
 
     try:
-        cache_result = None
-        if _matching_cache.is_matching_file(fp):
-            cache_result = _matching_cache.refresh_matching_csv(fp)
-            if not cache_result.get("ok", False):
-                logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
-        sync_result = _filebrowser_s3_sync_for_saved_path(fp)
+        # v9.1.x: 저장 응답을 빠르게 — 파생 캐시 재생성(matching DuckDB, ~1s)과 S3 sync 는
+        #   파일 자체를 이미 원자적으로 썼으므로 백그라운드로 돌리고 즉시 응답한다.
+        import threading
+        actor = me.get("username") or ""
+
+        def _post_save_side_effects():
+            try:
+                if _matching_cache.is_matching_file(fp):
+                    cache_result = _matching_cache.refresh_matching_csv(fp)
+                    if not cache_result.get("ok", False):
+                        logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
+            except Exception as e:
+                logger.warning("filebrowser base-file/save cache refresh error file=%s: %s", fp, e)
+            try:
+                _filebrowser_s3_sync_for_saved_path(fp)
+            except Exception as e:
+                logger.warning("filebrowser base-file/save s3 sync error file=%s: %s", fp, e)
+
+        threading.Thread(target=_post_save_side_effects, daemon=True,
+                         name="fb-save-postprocess").start()
         jsonl_append(PATHS.activity_log, {
-            "username": me.get("username") or "",
+            "username": actor,
             "action": "filebrowser:base-file:save",
             "tab": "filebrowser",
             "detail": f"file={req.file} rows={len(data_rows)} cols={len(header)} version={(version_meta or {}).get('version', '')}",
@@ -11218,9 +11239,9 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             "rows": len(data_rows),
             "cols": len(header),
             "version": version_meta,
-            "cache_rows": (cache_result or {}).get("rows"),
+            "cache_rows": None,
             "step_cache_rows": None,
-            "s3_sync": sync_result,
+            "s3_sync": {"status": "pending_background"},
             "csv_validation": csv_validation,
             "dropped_generated_extra_columns": dropped_generated_extra_columns,
         }
