@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) 메모리 보호 소프트밴드 기본을 실제 호스트 여유 메모리 기준으로 변경 — Polars RSS 잔류 오탐으로 스플릿테이블 조회/다운로드·백그라운드 빌드가 거절되지 않음(하드캡 유지, STRICT=1 env로 엄격 모드 복원)
 - (Claude) FileBrowser DB preview 가속 — 최신 date 파티션 한정 500행 preview(SQL/선택/집계는 100행 유지), 과거 파티션 미방문 walk(iter_latest_partition_files), preview cache 서명 SWR 캐시, DuckDB inspect+query 단일 연결화, S3 신호등 로컬 freshness pruned walk + SWR(TTL 300s)
 - (Claude) S3 항목별 중지/일시정지(Popen 핸들 보관 + /stop, /set-enabled) + SplitTable 리스트 회귀 수정(canonical 캐시 dir, /uniques light, 서브탭 권한 렌더시 평가) + lot 검색 점진적 후보 + 제3 표시형식(좌측 동일값 병합)과 형식별 XLSX
 - (Claude) FileBrowser Files 하위폴더 평탄화 제거(즉시 하위항목만 표시) + 표시 폴더 설정 + 단일파일 저장 파생캐시/S3 백그라운드화로 저장 ~18배 가속 + SplitTable 엑셀식 블록 복사(Ctrl+C)와 멀티셀 Delete plan 일괄 삭제

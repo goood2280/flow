@@ -181,10 +181,49 @@ def test_process_memory_high_blocks_at_hard_process_limit(monkeypatch):
     assert runtime_limits.process_memory_high(reserve_gb=1.0) is True
 
 
-def test_small_profile_memory_guard_blocks_before_ten_gb_by_default(monkeypatch):
+def test_soft_band_passes_when_host_memory_is_actually_free(monkeypatch):
+    """소프트밴드(RSS 잔류)에서는 실제 호스트 여유 메모리를 본다 — 기본 정책.
+
+    Polars 스캔 후 RSS가 limit 근처에 남아 있어도 호스트 여유가 충분하면
+    사용자 조회/다운로드와 백그라운드 빌드를 거절하지 않는다.
+    """
     monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
     monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
     monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {
+            "process_rss_gb": 9.1,
+            "system_memory_total_gb": 128.0,
+            "system_memory_low": False,
+        },
+    )
+
+    assert runtime_limits.process_memory_high(reserve_gb=1.0) is False
+
+
+def test_soft_band_blocks_when_host_memory_is_genuinely_low(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {
+            "process_rss_gb": 9.1,
+            "system_memory_total_gb": 16.0,
+            "system_memory_low": True,
+        },
+    )
+
+    assert runtime_limits.process_memory_high(reserve_gb=1.0) is True
+
+
+def test_soft_band_blocks_when_strict_env_explicitly_set(monkeypatch):
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", "1")
     monkeypatch.setattr(
         runtime_limits,
         "process_memory_snapshot",
