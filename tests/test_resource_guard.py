@@ -145,6 +145,52 @@ def test_filebrowser_view_bypasses_memory_guard(monkeypatch):
     assert response.headers["X-Flow-Heavy-Request-Group"] == "essential"
 
 
+def test_root_scoped_splittable_download_bypasses_memory_guard(monkeypatch):
+    """root lot 단위 다운로드(≤25행)는 메모리 가드와 무관하게 항상 동작해야 한다.
+
+    root_lot_id 가 없는 제품 전체 다운로드는 기존 heavy 가드가 유지된다.
+    """
+    monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
+    monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 12.0, "process_memory_over_limit": True},
+    )
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    app = FastAPI()
+
+    @app.get("/api/splittable/download-csv")
+    def splittable_download_csv():
+        return {"ok": True}
+
+    @app.get("/api/splittable/download-xlsx")
+    def splittable_download_xlsx():
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    scoped_csv = client.get(
+        "/api/splittable/download-csv?product=ML_TABLE_PRODA&root_lot_id=A1000&prefix=KNOB"
+    )
+    scoped_xlsx = client.get(
+        "/api/splittable/download-xlsx?product=ML_TABLE_PRODA&root_lot_id=A1000&prefix=KNOB"
+    )
+    unscoped = client.get("/api/splittable/download-csv?product=ML_TABLE_PRODA&prefix=KNOB")
+
+    assert scoped_csv.status_code == 200
+    assert scoped_csv.headers["X-Flow-Heavy-Request-Group"] == "essential"
+    assert scoped_xlsx.status_code == 200
+    assert scoped_xlsx.headers["X-Flow-Heavy-Request-Group"] == "essential"
+    # 전체 다운로드는 메모리 부족 상황에서 기존대로 거절된다.
+    assert unscoped.status_code == 503
+    assert unscoped.json()["error_code"] == "resource_memory_guard"
+
+
 def test_essential_lane_serializes_within_reserved_concurrency(monkeypatch):
     monkeypatch.delenv("FLOW_ESSENTIAL_API_PREFIXES", raising=False)
     monkeypatch.setenv("FLOW_ESSENTIAL_REQUEST_CONCURRENCY", "1")
