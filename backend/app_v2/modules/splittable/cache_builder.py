@@ -51,10 +51,29 @@ def canonical_product_dir(product: str) -> str:
     return f"ML_TABLE_{raw}".upper() if raw else ""
 
 
+def _detect_col(columns, exact: str, contains: str = "") -> str | None:
+    """Case-insensitive column detection (source ML_TABLE uses UPPER_CASE names)."""
+    hit = next((c for c in columns if c.lower() == exact.lower()), None)
+    if hit is None and contains:
+        hit = next((c for c in columns if contains.lower() in c.lower()), None)
+    return hit
+
+
 def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_path: Path = None):
     """
-    Builds pre-pivoted Parquet caches for a specific product, partitioned by root_lot_id.
-    This ensures instantaneous loading in SplitTable.
+    Builds per-root Parquet caches for a specific product, one file per real
+    root_lot_id, for instantaneous loading in SplitTable.
+
+    v9.2: Stored in **native wide orientation** (wafer rows × parameter columns),
+    exactly like the source ML_TABLE, instead of transposed (parameter rows ×
+    wafer columns).  This lets the view fast-path use parquet **column
+    projection** to read only the requested prefix (KNOB_/FAB_/…) or the custom
+    columns — an index-speed read (~1-2ms) instead of loading a 3000-wide pivot.
+    It also preserves LOT_ID so the "latest lot" label resolves instead of "-".
+
+    The partition key is the **real** ROOT_LOT_ID (case-insensitive detection);
+    previously a lowercase-only check silently missed UPPERCASE ROOT_LOT_ID and
+    keyed files by a LOT_ID-prefix derivation, so fast-path lookups never hit.
     """
     canonical = canonical_product_dir(product)
     if not canonical:
@@ -76,18 +95,34 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
         schema = lf.collect_schema()
         columns = schema.names()
 
-        lot_col = next((c for c in columns if c.lower() == "lot_id"), None) or next((c for c in columns if "lot" in c.lower()), None)
-        wf_col = next((c for c in columns if c.lower() == "wafer_id"), None) or next((c for c in columns if "wafer" in c.lower()), None)
-
-        if not lot_col or not wf_col:
+        # Case-insensitive detection — source columns are UPPER_CASE.
+        root_col = _detect_col(columns, "root_lot_id")
+        lot_col = _detect_col(columns, "lot_id", contains="lot")
+        wf_col = _detect_col(columns, "wafer_id", contains="wafer")
+        if not wf_col:
             return False
 
-        if "root_lot_id" in columns:
-            roots_df = lf.select("root_lot_id").unique().collect()
-            unique_roots = roots_df["root_lot_id"].drop_nulls().to_list()
+        # Root key expression: prefer the authoritative ROOT_LOT_ID; only fall
+        # back to a LOT_ID-prefix derivation when no root column exists at all.
+        if root_col:
+            key_expr = pl.col(root_col).cast(pl.Utf8)
+        elif lot_col:
+            key_expr = pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first()
         else:
-            roots_df = lf.select(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().alias("root_lot_id")).unique().collect()
-            unique_roots = roots_df["root_lot_id"].drop_nulls().to_list()
+            return False
+
+        unique_roots = (
+            lf.select(key_expr.alias("__root")).unique().collect()["__root"]
+            .drop_nulls().to_list()
+        )
+
+        # Clear stale files so a legacy (transposed / wrong-key) cache never
+        # coexists with the new native-format files under the same directory.
+        for stale in out_dir.glob("*.parquet"):
+            try:
+                stale.unlink()
+            except Exception:
+                pass
 
         import gc
         partitions_built = 0
@@ -102,45 +137,32 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             chunk_roots = unique_roots[i:i + chunk_size]
             i += chunk_size
 
-            if "root_lot_id" in columns:
-                chunk_lf = lf.filter(pl.col("root_lot_id").is_in(chunk_roots))
-            else:
-                chunk_lf = lf.filter(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().is_in(chunk_roots))
-                chunk_lf = chunk_lf.with_columns(pl.col(lot_col).cast(pl.Utf8).str.split(".").list.first().alias("root_lot_id"))
+            chunk_lf = lf.filter(key_expr.is_in(chunk_roots))
+            # Guarantee a partition key column named "__root" even when the
+            # source has no root column (LOT_ID-derived fallback).
+            chunk_df = chunk_lf.with_columns(key_expr.alias("__root")).collect()
 
-            chunk_df = chunk_lf.collect()
-
-            id_vars = ["root_lot_id", lot_col, wf_col]
-            value_vars = [c for c in columns if c not in id_vars]
-            if "root_lot_id" in value_vars:
-                value_vars.remove("root_lot_id")
-
-            melted = chunk_df.unpivot(index=id_vars, on=value_vars, variable_name="parameter", value_name="value").drop_nulls("value")
-
-            partitions = melted.partition_by("root_lot_id", as_dict=True)
+            partitions = chunk_df.partition_by("__root", as_dict=True)
             for root_id_tuple, part_df in partitions.items():
-                if not root_id_tuple: continue
-
+                if not root_id_tuple:
+                    continue
                 root_id_str = str(root_id_tuple[0] if isinstance(root_id_tuple, tuple) else root_id_tuple)
-                if not root_id_str: continue
+                if not root_id_str:
+                    continue
 
-                pivoted = part_df.pivot(
-                    values="value",
-                    index=["parameter"],
-                    on=wf_col,
-                    aggregate_function="first"
-                ).sort(["parameter"])
+                # Store native wide form; drop the helper key column. No melt,
+                # no pivot — column projection at read time is the fast path.
+                out_df = part_df.drop("__root")
 
                 safe_root = str(root_id_str).replace("/", "_").replace("\\", "_")
                 tmp_path = out_dir / f"{safe_root}.tmp.parquet"
                 final_path = out_dir / f"{safe_root}.parquet"
 
-                pivoted.write_parquet(tmp_path)
+                out_df.write_parquet(tmp_path)
                 tmp_path.replace(final_path)
                 partitions_built += 1
 
             del chunk_df
-            del melted
             del partitions
             gc.collect()
 
