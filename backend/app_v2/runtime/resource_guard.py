@@ -82,6 +82,15 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/rulebook",
     "/api/splittable/cache/pivot",
     "/api/tracker/et-lot-cache/status",
+    # 단일 관리 파일(rulebook/matching CSV, ~수 MB) 저장·검증·롤백은 사용자
+    # 최우선 작업 — 파생 캐시/S3 sync 는 이미 백그라운드라 응답이 가볍다.
+    # 메모리 가드와 무관하게 항상 처리되도록 명시적으로 light 계약에 둔다.
+    "/api/filebrowser/base-file/save",
+    "/api/filebrowser/base-file-save",
+    "/api/filebrowser/base-file/text-save",
+    "/api/filebrowser/base-file/validate",
+    "/api/filebrowser/base-file/rollback",
+    "/api/filebrowser/settings",
     "/api/llm/flowi/verify",
     "/api/llm/flowi/workflows",
 )

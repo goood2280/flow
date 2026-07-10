@@ -145,6 +145,46 @@ def test_filebrowser_view_bypasses_memory_guard(monkeypatch):
     assert response.headers["X-Flow-Heavy-Request-Group"] == "essential"
 
 
+def test_base_file_save_paths_bypass_memory_guard(monkeypatch):
+    """단일 관리 파일(설정 CSV 등) 저장/검증/롤백은 메모리 가드와 무관하게 항상 처리된다.
+
+    heavy 목록에 없어서 통과하는 암묵 동작이 아니라 light 계약으로 고정한다.
+    """
+    monkeypatch.delenv("FLOW_LIGHT_API_PATHS", raising=False)
+    monkeypatch.delenv("FLOW_HEAVY_API_PREFIXES", raising=False)
+    monkeypatch.setenv("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", "0")
+    monkeypatch.setattr(resource_guard, "process_memory_high", lambda _reserve_gb: True)
+    monkeypatch.setattr(
+        resource_guard,
+        "process_memory_snapshot",
+        lambda: {"process_rss_gb": 12.0, "process_memory_over_limit": True},
+    )
+    monkeypatch.setattr(resource_guard, "process_cpu_snapshot", lambda guard_cores=None: _cpu_ok())
+
+    for path in (
+        "/api/filebrowser/base-file/save",
+        "/api/filebrowser/base-file/text-save",
+        "/api/filebrowser/base-file/validate",
+        "/api/filebrowser/base-file/rollback",
+    ):
+        assert resource_guard._matches(path, resource_guard._light_paths()), path
+
+    app = FastAPI()
+
+    @app.post("/api/filebrowser/base-file/save")
+    def base_file_save():
+        return {"ok": True}
+
+    app.add_middleware(resource_guard.ResourceGuardMiddleware)
+    client = TestClient(app)
+
+    response = client.post("/api/filebrowser/base-file/save", json={"file": "ppid_knob.csv"})
+
+    assert response.status_code == 200
+    # light 통과 — heavy/essential 레인 헤더가 붙지 않는다.
+    assert "X-Flow-Heavy-Request-Group" not in response.headers
+
+
 def test_root_scoped_splittable_download_bypasses_memory_guard(monkeypatch):
     """root lot 단위 다운로드(≤25행)는 메모리 가드와 무관하게 항상 동작해야 한다.
 

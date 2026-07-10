@@ -52,6 +52,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - `select_cols`가 비어 있으면 identity 컬럼(`root_lot_id`, `lot_id`/`fab_lot_id`, `wafer_id`, `step_id`, `function_step`, time 후보)만 반환한다. `*`/전체 컬럼 요청은 차단하고, 없는 컬럼은 `code=unknown_column` 400으로 반환한다. 결과 row는 최대 25행이다.
 - canonical cache 파일은 일반 파일처럼 목록 진입, schema 확인, 100행 샘플 preview가 가능해야 한다. cache 폴더의 CSV/Parquet을 직접 열어도 작다는 이유로 전체 읽기 경로를 타지 않는다.
 - `Files`(운영 파일) 목록은 현재 폴더의 **바로 아래** 항목만 보여주고, 폴더를 클릭해 들어가면 그 안이 보인다. 하위 폴더(`cache/ml_table_lookup/...` 등)를 최상위에 평탄하게 나열하지 않는다. 최상위에 표시할 폴더는 톱니바퀴 `폴더 설정`의 "Files에 표시할 폴더"(`filebrowser_settings.json.hidden_db_dirs`, 기본 `cache`,`reformatter`)로 정하며, 목록에 적힌 폴더와 최상위 파일만 노출한다. `cache`는 항상 표시된다. DB 제품 루트/백업 폴더는 Base 목록에서 숨긴다.
+- 단일 파일 저장·검증·롤백(`base-file/save`, `text-save`, `validate`, `rollback`)과 `settings` 저장은 resource guard의 light 계약에 명시되어 메모리/CPU 가드와 무관하게 항상 처리된다. 편집용 로드(`base-file-view`)는 essential 예약 레인이다.
 - 단일 파일 편집 저장(`POST /api/filebrowser/base-file/save`)은 파일을 원자적으로 쓴 뒤 즉시 응답한다. 파생 캐시 재생성(matching CSV의 DuckDB 캐시)과 S3 artifact sync는 백그라운드 스레드로 처리해 저장 응답 지연을 없앤다(응답 `s3_sync.status="pending_background"`, `cache_rows=null`). 버전 스냅샷은 동기로 남아 저장 직후 버전 목록에 반영된다.
 - 같은 canonical cache 파일은 Dashboard `+ 차트 추가` 데이터 소스 목록에서 `Cache/LOT latest`로도 노출된다. FileBrowser가 생성/갱신을 소유하고 Dashboard는 read-only `root_parquet` chart source로만 읽는다.
 

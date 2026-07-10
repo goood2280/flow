@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) 단일 관리 파일 저장/검증/롤백과 filebrowser settings 저장을 light 계약으로 명시 — 메모리 가드와 무관하게 항상 처리(회귀 테스트 고정)
 - (Claude) root lot 단위 SplitTable 다운로드(download-csv/xlsx + root_lot_id)를 essential 레인으로 보장 — 메모리 가드와 무관하게 항상 동작, 제품 전체 다운로드만 heavy 가드 유지
 - (Claude) 메모리 보호 소프트밴드 기본을 실제 호스트 여유 메모리 기준으로 변경 — Polars RSS 잔류 오탐으로 스플릿테이블 조회/다운로드·백그라운드 빌드가 거절되지 않음(하드캡 유지, STRICT=1 env로 엄격 모드 복원)
 - (Claude) FileBrowser DB preview 가속 — 최신 date 파티션 한정 500행 preview(SQL/선택/집계는 100행 유지), 과거 파티션 미방문 walk(iter_latest_partition_files), preview cache 서명 SWR 캐시, DuckDB inspect+query 단일 연결화, S3 신호등 로컬 freshness pruned walk + SWR(TTL 300s)
