@@ -8478,7 +8478,8 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     try:
         # /lot-ids 는 렌더 가능한 root 의 authoritative 폴백 목록이라 완전성이 계약이다
         # (검색은 /lot-candidates?prefix= 가 담당). 초기 목록 즉시성은 주 경로인
-        # _main_table_candidates 의 미리보기가 담당하므로 여기서는 전체 스캔을 유지한다.
+        # _main_table_candidates(Tier A split_table 캐시)와 FE 재폴링이 담당하므로
+        # 여기서는 전체 스캔을 유지한다. 이 경로는 lookup 캐시 미스에서만 도달한다.
         lots_list = _limited_unique_values(lf, lot_col, limit=limit, preview_only=False)
     except Exception as e:
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
@@ -8998,8 +8999,16 @@ _PIVOT_BUILD_COOLDOWN_SEC = 300.0
 
 
 def _pivot_cache_path(product: str, root_lot_id: str) -> Path:
-    from app_v2.modules.splittable.cache_builder import get_pivoted_cache_path
-    return get_pivoted_cache_path(product, root_lot_id)
+    # Resolve under the *active* base root (db_root) rather than a value frozen
+    # at import time. In production `_base_root()/cache/split_table` is identical
+    # to the builder's CACHE_DIR (db_cache_dir == db_root/cache); resolving it
+    # live keeps reader/writer consistent if the DB root is re-pointed at runtime
+    # (admin_settings takes effect without a restart) and lets tests that patch
+    # `_base_root` sandbox the pivot cache instead of reading the global one.
+    from app_v2.modules.splittable.cache_builder import canonical_product_dir
+    canonical = canonical_product_dir(product) or str(product or "").strip()
+    safe_root = str(root_lot_id).replace("/", "_").replace("\\", "_")
+    return _base_root() / "cache" / "split_table" / canonical / f"{safe_root}.parquet"
 
 
 def _pivot_cache_build_state(product: str) -> str:
@@ -9279,201 +9288,6 @@ def related_issues_for_view(
 
 # ── View ──
 
-def _split_view_fast_path(
-    product: str,
-    root_lot_id: str,
-    wafer_ids: str,
-    prefix: str,
-    custom_name: str,
-    view_mode: str,
-    history_mode: str,
-    fab_lot_id: str,
-    custom_cols: str,
-    fast_cache_path: Path,
-    runtime_profile: dict,
-    started: float,
-    request: Request | None,
-    include_related: bool,
-    view_cache_key: tuple,
-) -> dict:
-    collect_started = time.perf_counter()
-    pivoted_df = pl.read_parquet(fast_cache_path)
-    
-    wf_raw = [c for c in pivoted_df.columns if c != "parameter"]
-    fab_row_df = pivoted_df.filter(pl.col("parameter") == "fab_lot_id")
-    wf2fab = {}
-    if not fab_row_df.is_empty():
-        row_dict = fab_row_df.to_dicts()[0]
-        for w in wf_raw:
-            f_val = row_dict.get(w)
-            if f_val is not None and str(f_val) not in ("None", "null"):
-                wf2fab[w] = str(f_val)
-                
-    forced_fab_scope_label = ""
-    fab_filter_for_join = fab_lot_id
-    if fab_lot_id.strip():
-        fab_scope = _fab_history_scope(product, root_lot_id=root_lot_id, fab_lot_id=fab_lot_id, limit=5000)
-        src_wafers = fab_scope.get("wafer_ids") or []
-        if src_wafers:
-            wafer_ids = _merge_wafer_scope(wafer_ids, src_wafers)
-            forced_fab_scope_label = fab_lot_id.strip()
-            
-    if forced_fab_scope_label:
-        wf2fab = {w: forced_fab_scope_label for w in dict.fromkeys(wf_raw) if w}
-        
-    wf_uniq = [w for w in dict.fromkeys(wf_raw) if w]
-    if wafer_ids:
-        w_allow = [x.strip() for x in wafer_ids.split(",") if x.strip()]
-        if w_allow:
-            wf_uniq = [w for w in wf_uniq if w in w_allow]
-            
-    def _wf_sort_key(w):
-        primary = wf2fab.get(w, "~")
-        try: return (primary, 0, int(w))
-        except:
-            s = str(w)
-            if s.upper().startswith("W"):
-                try: return (primary, 0, int(s[1:]))
-                except: pass
-            return (primary, 1, s)
-            
-    wf_sorted = sorted(wf_uniq, key=_wf_sort_key)
-    headers = [f"#{v}" for v in wf_sorted]
-    wafer_fab_list = [wf2fab.get(w, "") for w in wf_sorted]
-    
-    header_groups = []
-    cur = None; span = 0
-    for f in wafer_fab_list:
-        if f == cur: span += 1
-        else:
-            if span > 0: header_groups.append({"label": cur or "—", "span": span})
-            cur = f; span = 1
-    if span > 0: header_groups.append({"label": cur or "—", "span": span})
-    
-    all_data_cols = pivoted_df["parameter"].to_list()
-    tag_labels = _custom_tag_label_map(product)
-    for tag_col in tag_labels:
-        if tag_col not in all_data_cols:
-            all_data_cols.append(tag_col)
-    management_labels = _management_row_label_map(product)
-    if custom_name or custom_cols:
-        for mgmt_col in management_labels:
-            if mgmt_col not in all_data_cols:
-                all_data_cols.append(mgmt_col)
-                
-    sel = _select_columns(all_data_cols, custom_name, prefix, max_fallback=50, custom_cols=custom_cols)
-    if not custom_name and not custom_cols:
-        for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
-            for virt in _virtual_columns_for_prefix(product, raw_pref):
-                if virt not in sel: sel.append(virt)
-                
-    rename = _build_col_rename_map(sel, product)
-    rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
-    rename.update({col: label for col, label in management_labels.items()})
-    selected = sorted(sel, key=lambda c: _natural_param_key(rename.get(c, c)))
-    runtime_profile["collect_ms"] = float(runtime_profile.get("collect_ms") or 0.0) + (time.perf_counter() - collect_started) * 1000.0
-
-    matrix_started = time.perf_counter()
-    plans = _load_plan_data(product).get("plans", {})
-    tag_values = _custom_tag_values_for_root(product, root_lot_id)
-    management_values = _management_row_values_for_root(product, root_lot_id)
-    
-    pivoted_dicts = pivoted_df.filter(pl.col("parameter").is_in(selected)).to_dicts()
-    param_data = {r["parameter"]: r for r in pivoted_dicts}
-    
-    rows = []
-    for col_name in selected:
-        is_tag_col = col_name in tag_labels
-        is_management_row = col_name in management_labels
-        r_dict = param_data.get(col_name, {})
-        
-        row_vals = [None] * len(wf_sorted)
-        plan_vals = [None] * len(wf_sorted)
-        
-        if is_tag_col:
-            for ci, wf_key in enumerate(wf_sorted):
-                row_vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
-        elif is_management_row:
-            for ci, wf_key in enumerate(wf_sorted):
-                row_vals[ci] = management_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
-        elif col_name in param_data:
-            for ci, wf_key in enumerate(wf_sorted):
-                row_vals[ci] = r_dict.get(wf_key)
-                ck = f"{root_lot_id}|{wf_key}|{col_name}"
-                pv = plans.get(ck, {}).get("value")
-                if pv is not None: plan_vals[ci] = pv
-        else:
-            for ci, wf_key in enumerate(wf_sorted):
-                ck = f"{root_lot_id}|{wf_key}|{col_name}"
-                pv = plans.get(ck, {}).get("value")
-                if pv is not None: plan_vals[ci] = pv
-                
-        col_upper = col_name.upper()
-        can_plan = (not is_tag_col and not is_management_row) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
-        _cells = {}
-        for ci, wf_key in enumerate(wf_sorted):
-            actual = row_vals[ci]
-            plan = plan_vals[ci]
-            actual_str = None if actual is None else str(actual)
-            if actual_str in ("None", "null"): actual_str = None
-            ck = f"{root_lot_id}|{wf_key}|{col_name}"
-            mismatch = False
-            if plan and actual_str and str(plan) != actual_str: mismatch = True
-            _cells[str(ci)] = {
-                "actual": actual_str, "plan": plan, "key": ck,
-                "can_plan": can_plan, "mismatch": mismatch,
-                "is_custom_tag": is_tag_col, "can_tag": is_tag_col,
-                "is_management_row": is_management_row, "can_management_edit": is_management_row
-            }
-        rows.append({"_param": col_name, "_display": rename.get(col_name, col_name), "_cells": _cells})
-
-    if view_mode == "diff":
-        rows = [r for r in rows if len(set(c.get("actual") for c in r["_cells"].values() if c.get("actual") is not None)) > 1]
-        
-    mismatches = []
-    for r in rows:
-        for ci, cell in r["_cells"].items():
-            if cell.get("mismatch"):
-                plan_info = plans.get(cell["key"], {})
-                mismatches.append({
-                    "param": r["_param"], "key": cell["key"],
-                    "plan": cell["plan"], "actual": cell["actual"],
-                    "plan_user": plan_info.get("user", ""),
-                    "plan_updated": plan_info.get("updated", ""),
-                })
-    runtime_profile["matrix_ms"] = float(runtime_profile.get("matrix_ms") or 0.0) + (time.perf_counter() - matrix_started) * 1000.0
-    _enqueue_plan_actual_mismatches(product, mismatches, actor="flow")
-    
-    available_fab_lots = sorted({str(v).strip() for v in wafer_fab_list if str(v or "").strip()}, key=lambda s: s.upper())
-    if not available_fab_lots:
-        hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
-        if hist_lots.get("candidates"): available_fab_lots = hist_lots["candidates"]
-
-    payload = {
-        "product": product, "lot_col": "root_lot_id", "wf_col": "wafer_id",
-        "headers": headers, "rows": rows,
-        "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
-        "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
-        "available_fab_lots": available_fab_lots,
-        "prefixes": _load_prefixes(), "precision": load_json(PRECISION_CFG, DEFAULT_PRECISION), "root_lot_id": root_lot_id,
-        "all_columns": all_data_cols, "selected_count": len(selected),
-        "prefix": prefix or (custom_name if custom_name else ""),
-        "history_mode": history_mode,
-        "plan_allowed_prefixes": PLAN_ALLOWED_PREFIXES,
-        "mismatch_count": len(mismatches),
-        "override": _resolve_override_meta_light(product),
-        "match_cache": _match_cache_response_meta(product),
-        "product_cache": _product_ram_cache_response_meta(product),
-        "lookup_cache": runtime_profile.get("_lookup_cache") or _split_view_lookup_cache_public(None, None),
-        "lot_warn": "",
-    }
-    _split_view_cache_put(view_cache_key, _split_view_cache_dep_signature(product, custom_name=custom_name, product_fp=_product_path(product)), payload)
-    return _attach_split_view_runtime_fields(
-        payload, request, include_related=include_related,
-        started=started, runtime_profile=runtime_profile,
-        payload_cache_hit=False, view_cache_key=view_cache_key
-    )
-
 
 @router.get("/view")
 def view_split(product: str = Query(...), root_lot_id: str = Query(""),
@@ -9531,6 +9345,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             payload_cache_hit=False,
             view_cache_key=view_cache_key,
         )
+    pivot_base_lf = None
     try:
         if root_lot_id.strip() and not cache_first_enabled:
             fast_cache_path = _pivot_cache_path(product, root_lot_id.strip())
@@ -9542,34 +9357,50 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         _enqueue_pivot_cache_build(product, reason="stale_pivot")
                 except Exception:
                     pass
-                return _split_view_fast_path(
-                    product, root_lot_id, wafer_ids, prefix, custom_name, view_mode,
-                    _history_mode, fab_lot_id, custom_cols, fast_cache_path,
-                    runtime_profile, started, request, include_related, view_cache_key
+                # v9.2: native-orientation per-root cache (wafer rows × param
+                # cols). Feed it straight into the normal renderer as base_lf so
+                # column projection (prefix/custom) stays index-fast AND the
+                # latest-lot join runs (lot_id/fab label). Legacy transposed
+                # files (a "parameter" column, no wafer_id) are skipped + rebuilt.
+                try:
+                    cache_names = pl.scan_parquet(str(fast_cache_path)).collect_schema().names()
+                except Exception:
+                    cache_names = []
+                is_legacy = ("parameter" in cache_names) and not any(
+                    c.lower() == "wafer_id" for c in cache_names
                 )
-            # pivot cache miss — 이번 요청은 아래 일반 경로로 처리하고,
-            # 백그라운드에서 제품 전체 pivot cache 를 빌드해 다음 검색을 즉시화한다.
-            _enqueue_pivot_cache_build(product, reason="cache_miss")
+                if is_legacy:
+                    _enqueue_pivot_cache_build(product, reason="legacy_pivot_format")
+                elif cache_names:
+                    pivot_base_lf = _cast_cats_lazy(_scan_parquet_compat(str(fast_cache_path)))
+                    runtime_profile["root_cache_hit"] = True
+            else:
+                # pivot cache miss — 이번 요청은 아래 일반 경로로 처리하고,
+                # 백그라운드에서 제품 전체 pivot cache 를 빌드해 다음 검색을 즉시화한다.
+                _enqueue_pivot_cache_build(product, reason="cache_miss")
     except HTTPException:
         raise
     except Exception as e:
         logger.warning(f"Fast path failed: {e}")
 
     try:
-        base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
-            product,
-            root_lot_id,
-            wafer_ids,
-            fp,
-            started=started,
-            runtime_profile=runtime_profile,
-            view_cache_key=view_cache_key,
-            prefix=prefix,
-            history_mode=_history_mode,
-            force_defer_raw_fallback=cache_first_enabled,
-        )
-        if deferred_payload is not None:
-            return deferred_payload
+        if pivot_base_lf is not None:
+            base_lf = pivot_base_lf
+        else:
+            base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
+                product,
+                root_lot_id,
+                wafer_ids,
+                fp,
+                started=started,
+                runtime_profile=runtime_profile,
+                view_cache_key=view_cache_key,
+                prefix=prefix,
+                history_mode=_history_mode,
+                force_defer_raw_fallback=cache_first_enabled,
+            )
+            if deferred_payload is not None:
+                return deferred_payload
         lf = _scan_product(
             product,
             root_lot_id=root_lot_id,

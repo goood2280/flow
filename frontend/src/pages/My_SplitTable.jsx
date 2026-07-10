@@ -574,15 +574,27 @@ export default function My_SplitTable({user}){
       })
       .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;setLotSuggestions([]);setLotSuggestMsg(e?.message||"Lot 후보 조회 실패");})
       .finally(()=>{if(isCurrent())setLotSuggestBusy(false);});
-    const timer=setTimeout(()=>sf(url,{signal:controller.signal})
+    let prepTimer=null;
+    const MAX_PREP_RETRY=6;
+    const fetchCandidates=(attempt)=>sf(url,{signal:controller.signal})
       .then(d=>{
         if(!isCurrent())return;
         const candidates=normalizeLotList(d.candidates||[]);
-        if(candidates.length){poolMerge(lotPoolRef,selProd,candidates);setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
-        else fallbackLots();
+        if(candidates.length){poolMerge(lotPoolRef,selProd,candidates);setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);return;}
+        // 후보가 비었는데 split_table/lookup 캐시가 백그라운드 빌드 중이면, 잠시 후
+        // 재조회해 완성된 root 목록을 집는다(그동안 /lot-ids 폴백으로 뭐라도 표시).
+        const lc=d.lookup_cache||{};
+        const preparing=lc.queued===true||lc.status==="queued"||lc.status==="running"||d.match_mode==="lookup_cache_preparing";
+        if(preparing&&attempt<MAX_PREP_RETRY){
+          if(attempt===0)fallbackLots();
+          prepTimer=setTimeout(()=>{if(isCurrent())fetchCandidates(attempt+1);},1500);
+          return;
+        }
+        fallbackLots();
       })
-      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();}),250);
-    return()=>{clearTimeout(timer);controller.abort();};
+      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();});
+    const timer=setTimeout(()=>fetchCandidates(0),250);
+    return()=>{clearTimeout(timer);if(prepTimer)clearTimeout(prepTimer);controller.abort();};
   },[selProd,lotId]);
   // v9.0.0: 제품 변경 시 lotId/fabLotId/waferIds 초기화 — 직전 제품의 lot 이 남아 잘못된 필터링 방지.
   //   (예: PRODA 의 A1000A.1_V1 이 PRODB 로 전환 후에도 fab_lot_id 칸에 남아 있으면 B0001 root 와 어긋나는 조합 생성).
