@@ -182,6 +182,45 @@ def prune_latest_partitions(files: Iterable[Path], max_files: int | None = None)
     return sorted(selected)
 
 
+def iter_latest_partition_files(prod_path: Path, suffix: str = ".parquet") -> list[Path]:
+    """List candidate files for the newest date partition without a full tree walk.
+
+    os.walk 중 형제 `date=YYYYMMDD` 디렉토리는 가장 최신 하나만 내려간다.
+    수천 개 과거 파티션 파일 목록화를 생략해 대형 DB 제품의 preview 첫 응답을
+    파티션 수와 무관하게 만든다. date 파티션이 아닌 폴더/파일은 그대로 순회하며,
+    최종 "최신" 판정은 기존 prune_latest_partitions 가 동일하게 수행한다.
+    """
+    suffix = str(suffix or ".parquet").lower()
+    out: list[Path] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(prod_path):
+            dated: list[tuple[object, str]] = []
+            plain: list[str] = []
+            for name in dirnames:
+                m = _HIVE_DATE_RE.search(name)
+                d = None
+                if m:
+                    raw = m.group(1).replace("-", "")
+                    if len(raw) == 8:
+                        try:
+                            d = datetime.strptime(raw, "%Y%m%d").date()
+                        except ValueError:
+                            d = None
+                if d is None:
+                    plain.append(name)
+                else:
+                    dated.append((d, name))
+            if dated:
+                latest = max(d for d, _n in dated)
+                dirnames[:] = plain + [n for d, n in dated if d == latest]
+            for name in filenames:
+                if name.lower().endswith(suffix):
+                    out.append(Path(dirpath) / name)
+    except OSError:
+        return []
+    return out
+
+
 def has_date_filter(sql: str | None) -> bool:
     """SQL 문자열에 date / time 필터가 있는지 대충 판정 — 있으면 prune 생략."""
     if not sql:

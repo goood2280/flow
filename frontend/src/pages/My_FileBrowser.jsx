@@ -8,6 +8,9 @@ import { allowedSubTabs } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/filebrowser";
 const PAGE_SIZE=100;
+// DB(hive) 제품 첫 프리뷰는 최신 date 파티션에서만 읽으므로 500행까지 요청한다.
+// SQL/컬럼 선택/정렬/집계가 있는 조회는 기존 100행(PAGE_SIZE) 계약 유지.
+const DB_PREVIEW_ROWS=500;
 const FB_OK = statusPalette.ok;
 const FB_WARN = statusPalette.warn;
 const FB_BAD = statusPalette.bad;
@@ -1395,7 +1398,7 @@ export default function My_FileBrowser({user,onNavigate}){
     return()=>{alive=false;clearTimeout(t);};
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
-  // 첫 클릭은 스키마(meta_only)를 즉시 그리고, 100행 샘플은 백그라운드로 이어서 채운다.
+  // 첫 클릭은 스키마(meta_only)를 즉시 그리고, 최신 파티션 500행 샘플은 백그라운드로 이어서 채운다.
   // SQL/SELECT/정렬/집계가 있으면 기존처럼 한 번에 조회한다.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
     const seq=++viewSeqRef.current;
@@ -1409,10 +1412,12 @@ export default function My_FileBrowser({user,onNavigate}){
     const url=buildUrl(API+"/view",params);
     const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
     if(previewFirst){
+      // 최신 date 파티션 한정 샘플 — 서버가 500행까지 허용하므로 넉넉히 요청.
+      const sampleUrl=buildUrl(API+"/view",{...params,rows:DB_PREVIEW_ROWS,page_size:DB_PREVIEW_ROWS,meta_only:false});
       sf(buildUrl(API+"/view",{...params,meta_only:true})).then(d=>{
         if(seq!==viewSeqRef.current)return;
         setSelectedCols([]);setData(d);setLoading(false);setSampleLoading(true);
-        sf(url).then(d2=>{
+        sf(sampleUrl).then(d2=>{
           if(seq!==viewSeqRef.current)return;
           setData(d2);setSampleLoading(false);
         }).catch(e=>{
