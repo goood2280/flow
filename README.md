@@ -42,7 +42,8 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 - Flow-i Home은 자연어 요청을 기능별 unit action으로 라우팅하고, Agent 탭은 LangGraph/LangSmith-ready runtime 설계와 시멘틱 해석을 보여준다.
 - Agent 단위기능 AI 탭은 각 unit 실행 결과/이력과 LangGraph node detail에 feedback을 붙이고, LangGraph State I/O와 공유 state 설계를 실행 전후 trace 결과와 비교한다.
-- FileBrowser는 DB 제품/root parquet 첫 클릭에 스키마를 즉시 그리고 100행 샘플을 백그라운드로 이어 받는 2단계 로드를 쓴다. AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
+- FileBrowser는 DB 제품/root parquet 첫 클릭에 스키마를 즉시 그리고 샘플 행을 백그라운드로 이어 받는 2단계 로드를 쓴다. DB(hive) 제품 기본 preview는 **최신 `date=` 파티션 한정 최대 500행**이며, 과거 파티션 폴더는 목록화하지 않는 pruned walk로 찾는다. SQL/컬럼 선택/집계 조회는 전체 파티션을 스캔하되 100행 preview 계약을 유지한다. AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
+- S3 신호등은 sync 상태 fast 응답을 먼저 그리고, 로컬 최신파일 freshness는 `date=` 파티션 pruned walk + stale-while-revalidate 캐시(TTL 5분)로 보강한다 — 대형 DB 타깃에서도 트리 전체 스캔이 응답을 막지 않는다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
 - Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다.
@@ -79,7 +80,8 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 | 영역 | 변경 |
 |---|---|
-| FileBrowser | 첫 클릭 2단계 로드(스키마 즉시 → 100행 샘플 백그라운드), 요청 시퀀스 가드 |
+| FileBrowser | 첫 클릭 2단계 로드(스키마 즉시 → 샘플 백그라운드) + DB 제품 preview를 최신 `date=` 파티션 한정 500행으로 확대(`DB_LATEST_PREVIEW_ROWS`), 과거 파티션 미방문 walk(`iter_latest_partition_files`), preview 캐시 서명 SWR 캐시(TTL 30초), DuckDB 연결/스키마 등록 요청당 1회(`duckdb_engine.open_source`) |
+| S3 신호등 | `status-by-target?include_local=1` 로컬 freshness를 `date=` 파티션 pruned walk + SWR 캐시(TTL 300초)로 고속화 — 대형 DB 타깃에서도 응답 비차단 |
 | SplitTable | view fast-path 컨트롤 플로우 회귀 수정(캐시 미스 시 null 반환), pivot 캐시 canonical `ML_TABLE_*` 디렉터리 통일, 미스/stale 백그라운드 single-flight 재빌드 + `POST /api/splittable/cache/pivot/refresh` |
 | 리소스 | CPU/RAM 한도 호스트 자동 산출(코어-1, 총메모리 65%, cgroup 인식), 백그라운드 작업의 사용자 요청 양보(`core/request_priority`) |
 | 메모리 | lazy-eviction dict 캐시 주기 정리(`core/cache_sweeper`, 5분) — 장기 uptime 메모리 증가 완화 |
