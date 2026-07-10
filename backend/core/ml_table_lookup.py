@@ -1497,19 +1497,41 @@ def _lookup_cache_partition_max_rows() -> int:
     )
 
 
-def _wait_for_lookup_cache_memory(fp: Path) -> None:
+def _wait_for_lookup_cache_memory(fp: Path) -> bool:
+    """메모리 여유가 생길 때까지 대기. 상한 초과 시 False — 이번 빌드는 건너뛴다.
+
+    상한 없이 돌면 지속적인 메모리 압박에서 워커 스레드가 영원히 잠들어
+    lookup 캐시가 재생성되지 않는다. 건너뛰어도 다음 enqueue 에서 재시도된다.
+    """
+    max_wait = _env_float(
+        "FLOW_ML_TABLE_LOOKUP_CACHE_MEMORY_MAX_WAIT_SECONDS", 1800.0, 0.0, 21600.0
+    )
+    waited = 0.0
     while process_memory_high():
+        if max_wait > 0 and waited >= max_wait:
+            with _BUILD_LOCK:
+                _BUILD_STATE["paused"] = False
+                _BUILD_STATE["pause_reason"] = "memory_wait_timeout"
+                _BUILD_STATE["resource_snapshot"] = {}
+            logger.warning(
+                "ML_TABLE lookup cache build skipped after %.0fs memory-guard wait source=%s",
+                waited, fp,
+            )
+            return False
         snapshot = process_memory_snapshot()
         with _BUILD_LOCK:
             _BUILD_STATE["paused"] = True
             _BUILD_STATE["pause_reason"] = "memory_high"
             _BUILD_STATE["resource_snapshot"] = snapshot
         logger.info("ML_TABLE lookup cache build paused by memory guard source=%s snapshot=%s", fp, snapshot)
-        time.sleep(_lookup_cache_memory_wait_seconds())
+        step = _lookup_cache_memory_wait_seconds()
+        time.sleep(step)
+        waited += max(step, 0.1)
     with _BUILD_LOCK:
         _BUILD_STATE["paused"] = False
         _BUILD_STATE["pause_reason"] = ""
         _BUILD_STATE["resource_snapshot"] = {}
+    return True
 
 
 def _sink_lookup_cache_partitions(lf: pl.LazyFrame, tmp_dir: Path) -> None:
@@ -1649,7 +1671,12 @@ def _worker_loop() -> None:
             _BUILD_STATE["last_error"] = ""
         try:
             if cache_status(fp).get("status") != "fresh":
-                _wait_for_lookup_cache_memory(fp)
+                if not _wait_for_lookup_cache_memory(fp):
+                    with _BUILD_LOCK:
+                        _BUILD_STATE["last_error"] = "memory_wait_timeout"
+                        _BUILD_STATE["last_source"] = str(fp.resolve())
+                        _BUILD_STATE["finished_at"] = _utc_now()
+                    continue
             build_lookup_cache(fp, force=False)
             with _BUILD_LOCK:
                 _BUILD_STATE["last_source"] = str(fp.resolve())

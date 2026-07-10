@@ -9,6 +9,7 @@
 
 ## Done
 
+- (Claude) LOT 진행 캐시 안정화 — fcntl lockfile(Windows 무효)을 shared_lease(TTL 탈취)로 교체, FAB 풀스캔에 파일 단위 사용자 양보+메모리 백오프, JSON compact dump, FLOW_DISABLE_LOT_PROGRESS_SCHEDULER 서버 스위치, ML_TABLE lookup 메모리 대기 무한 루프 상한(기본 30분 후 skip)
 - (Claude) 단일 관리 파일 저장/검증/롤백과 filebrowser settings 저장을 light 계약으로 명시 — 메모리 가드와 무관하게 항상 처리(회귀 테스트 고정)
 - (Claude) root lot 단위 SplitTable 다운로드(download-csv/xlsx + root_lot_id)를 essential 레인으로 보장 — 메모리 가드와 무관하게 항상 동작, 제품 전체 다운로드만 heavy 가드 유지
 - (Claude) 메모리 보호 소프트밴드 기본을 실제 호스트 여유 메모리 기준으로 변경 — Polars RSS 잔류 오탐으로 스플릿테이블 조회/다운로드·백그라운드 빌드가 거절되지 않음(하드캡 유지, STRICT=1 env로 엄격 모드 복원)
