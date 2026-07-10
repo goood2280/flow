@@ -47,7 +47,7 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
 - Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다.
-- CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`).
+- CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`). 메모리 보호 소프트밴드(RSS가 limit 근처)는 기본적으로 **실제 호스트 여유 메모리**를 기준으로 판단한다 — Polars RSS 잔류만으로 스플릿테이블 조회/다운로드나 백그라운드 빌드를 거절하지 않는다(하드캡 RSS≥limit는 유지, `FLOW_PROCESS_MEMORY_LIMIT_STRICT=1`로 엄격 모드 복원). 스플릿테이블 불러오기·파일 보기는 예약 레인(essential lane)으로 가드와 무관하게 항상 처리된다.
 - S3 주기 업로드/다운로드는 서버별로 켜고 끌 수 있다 — env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` 또는 FileBrowser S3 항목 탭의 방향별 토글(개발/양산 2서버가 같은 버킷을 쓸 때 개발 서버는 끔).
 - 회의관리/인폼 화면은 FileBrowser와 같은 UXKit 공통 컴포넌트로 통일돼 있다.
 - plan/actual 불일치 알람은 계획 작성자와 지정 팀(`source-config.mismatch_alert_recipients`)에게 간다.

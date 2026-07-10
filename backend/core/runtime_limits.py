@@ -501,13 +501,17 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
     rss_high = rss >= max(0.0, limit - max(0.0, reserve_gb))
     if not rss_high:
         return False
-    if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", is_small_profile()):
+    if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", False):
         return True
 
-    # The process limit is a soft default for small deployments. On internal
-    # hosts with much larger RAM, Python/Polars RSS can stay high after a scan
-    # even while the machine has ample free memory. Refuse new work only when
-    # the host/container memory is also genuinely tight.
+    # Soft band (limit - reserve <= rss < limit): Python/Polars RSS stays high
+    # after a big scan (allocator arena/mmap cache) even when the host has
+    # ample free memory, so RSS alone is a false signal here. Default on every
+    # profile is to refuse new work only when the host/container memory is
+    # genuinely tight — user queries/downloads keep working and background
+    # builders keep running instead of stalling on stale RSS. Operators can
+    # restore the old behavior with FLOW_PROCESS_MEMORY_LIMIT_STRICT=1.
+    # The hard cap (rss >= limit) above is unaffected.
     if float(snap.get("system_memory_total_gb") or 0.0) > 0:
         return bool(snap.get("system_memory_low"))
     return True
@@ -532,7 +536,8 @@ def apply_runtime_limits() -> None:
         "FLOW_PROCESS_MEMORY_LIMIT_GB",
         str(auto_process_memory_limit_gb()) if is_small_profile() else "0",
     )
-    os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_STRICT", "1" if is_small_profile() else "0")
+    # STRICT 기본값을 강제로 심지 않는다 — 소프트밴드는 기본적으로 실제 호스트
+    # 여유 메모리를 확인한다(위 process_memory_high). 명시적 env "1"만 엄격 모드.
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
     os.environ.setdefault("RAYON_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
     os.environ.setdefault("PYARROW_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
