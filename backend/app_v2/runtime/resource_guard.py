@@ -33,6 +33,14 @@ DEFAULT_ESSENTIAL_PREFIXES = (
     "/api/filebrowser/root-parquet-view",
 )
 
+# 스플릿테이블 다운로드는 현재 화면 단위(root lot 1개, wafer 최대 25행) 내보내기라
+# 메모리가 가볍다. root_lot_id 가 지정된 요청만 essential 레인으로 항상 보장하고,
+# root 범위가 없는 제품 전체 다운로드는 heavy 가드(실제 메모리 부족 시 거절)를 유지한다.
+ESSENTIAL_IF_ROOT_SCOPED_PATHS = (
+    "/api/splittable/download-csv",
+    "/api/splittable/download-xlsx",
+)
+
 DEFAULT_HEAVY_PREFIXES = (
     "/api/filebrowser/view",
     "/api/filebrowser/base-file-view",
@@ -210,7 +218,12 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         return False
 
     def _is_essential_request(self, request: Request) -> bool:
-        return _matches(request.url.path, self._essential_prefixes)
+        path = request.url.path
+        if _matches(path, self._essential_prefixes):
+            return True
+        if path in ESSENTIAL_IF_ROOT_SCOPED_PATHS:
+            return bool(str(request.query_params.get("root_lot_id") or "").strip())
+        return False
 
     async def _run_essential(self, request: Request, call_next):
         """Serve an interactive read through the reserved lane.
