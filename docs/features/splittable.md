@@ -64,6 +64,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - 표시 형식은 3종이다: `기본`(모든 행/열 개별 칸), `Split 체크`(split 값을 S0/S1.. 행으로 분리해 어떤 ppid/split인지 표시), `병합`(행에서 왼쪽 칸과 같은 값이면 colSpan 으로 합쳐 표시, 읽기 전용 — 편집 중에는 기본 형식으로 렌더). 툴바와 톱니바퀴 기본 표시 설정의 같은 세그먼트 컨트롤로 전환한다.
 - `Split 체크`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
 - XLSX 다운로드는 현재 표시 형식을 그대로 따른다. `Split 체크`면 `항목 / 값 / Split / wafer` 열 구조(`display_mode=split_check`), `병합`이면 행 안에서 연속 동일 값 구간을 실제 셀 병합으로 export(`display_mode=merged`, 파일명 `_merged` suffix)한다.
+- 피벗 캐시 재빌드는 기존 per-root parquet 을 지우지 않는다 — 빌드 중에도 조회는 이전 파일을 계속 서빙하고, root 단위 tmp→replace 원자 교체로만 갱신된다. 소스에서 사라진 root 의 stale 파일은 전체 빌드 성공 후에만 정리하며, 저장 포맷 세대가 바뀐 legacy 캐시(`.cache_format.json` 불일치)만 시작 시 일괄 제거한다. 빌드 실패 시 이전 캐시가 그대로 남아 다음 성공 빌드까지 서빙된다.
 - `root_lot_id`가 지정된 `download-csv`/`download-xlsx`(현재 화면 단위, wafer ≤25행)는 essential 레인으로 메모리 가드와 무관하게 항상 동작한다(`resource_guard.ESSENTIAL_IF_ROOT_SCOPED_PATHS`). root 범위가 없는 제품 전체 다운로드만 heavy 가드(실제 메모리 부족 시 거절) 대상이다.
 - 셀 선택은 뷰/편집 모드 모두에서 사각 영역으로 드래그 선택되며, `Ctrl+C` 복사는 브라우저 기본 동작(행 전체) 대신 선택한 사각 영역만 엑셀식 TSV(탭=열, 개행=행)로 클립보드에 넣는다.
 - Edit 모드에서 여러 셀을 선택하고 `Delete`/`Backspace`를 누르면 선택 범위의 plan을 일괄 삭제한다. 저장된 plan은 한 번의 `POST /api/splittable/plan/delete`(cell_keys 배열)로 지우고, 미저장 pending plan은 편집 상태에서 제거한다.

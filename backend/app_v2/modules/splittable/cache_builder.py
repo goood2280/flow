@@ -1,4 +1,5 @@
 import polars as pl
+import json
 import os
 import time
 import logging
@@ -22,6 +23,33 @@ CACHE_DIR = PATHS.db_cache_dir / "split_table" if hasattr(PATHS, "db_cache_dir")
 # lane keeps working instead of tripping the memory guard.
 _CHUNK_SIZE_DEFAULT = 5
 _CHUNK_SIZE_UNDER_MEMORY_PRESSURE = 2
+
+# per-root 파일의 저장 포맷 세대. 포맷이 바뀌면(legacy 전치형 등) 시작 시 일괄
+# 제거가 필요하지만, 같은 포맷의 재빌드는 기존 파일을 그대로 서빙하면서 root
+# 단위로 원자 교체한다 — 재빌드 중 캐시 미스(전체 스캔 폴백) 구간이 없다.
+_CACHE_FORMAT_VERSION = 2
+_CACHE_FORMAT_MARKER = ".cache_format.json"
+
+
+def _cache_format_matches(out_dir: Path) -> bool:
+    try:
+        meta = json.loads((out_dir / _CACHE_FORMAT_MARKER).read_text("utf-8"))
+        return int(meta.get("format") or 0) == _CACHE_FORMAT_VERSION
+    except Exception:
+        return False
+
+
+def _write_cache_format_marker(out_dir: Path) -> None:
+    try:
+        (out_dir / _CACHE_FORMAT_MARKER).write_text(
+            json.dumps({"format": _CACHE_FORMAT_VERSION}), "utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _safe_root_filename(root_id: str) -> str:
+    return f"{str(root_id).replace('/', '_').replace(chr(92), '_')}.parquet"
 
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
@@ -116,13 +144,17 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             .drop_nulls().to_list()
         )
 
-        # Clear stale files so a legacy (transposed / wrong-key) cache never
-        # coexists with the new native-format files under the same directory.
-        for stale in out_dir.glob("*.parquet"):
-            try:
-                stale.unlink()
-            except Exception:
-                pass
+        # 같은 포맷의 재빌드는 기존 per-root 파일을 지우지 않는다 — 빌드가 도는
+        # 동안 SplitTable 조회는 이전 파일을 계속 서빙하고, root 단위 tmp→replace
+        # 로만 새 데이터로 교체된다. 포맷 세대가 다른 legacy 캐시(전치형/잘못된
+        # 키)만 시작 시 일괄 제거해 신·구 포맷이 섞이지 않게 한다.
+        if not _cache_format_matches(out_dir):
+            for stale in out_dir.glob("*.parquet"):
+                try:
+                    stale.unlink()
+                except Exception:
+                    pass
+            _write_cache_format_marker(out_dir)
 
         import gc
         partitions_built = 0
@@ -174,6 +206,17 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
             else:
                 time.sleep(0.1)
                 request_priority.yield_to_users(max_wait_sec=20.0)
+
+        # 소스에서 사라진 root 의 stale 파일은 전체 빌드가 끝난 뒤에만 정리한다.
+        # 빌드 실패 시에는 이 지점에 도달하지 않으므로 이전 파일이 그대로 남아
+        # 다음 성공 빌드까지 계속 서빙된다.
+        expected = {_safe_root_filename(r) for r in unique_roots}
+        for stale in out_dir.glob("*.parquet"):
+            if stale.name not in expected:
+                try:
+                    stale.unlink()
+                except Exception:
+                    pass
 
         logger.info("Built pivoted cache for %s (%d roots) in %.2fs", canonical, partitions_built, time.monotonic() - start_time)
         return True

@@ -9,6 +9,8 @@
 
 ## Done
 
+- (Claude) 피벗 캐시 무중단 재빌드 — 재빌드 시작 시 일괄 삭제 제거, root 단위 원자 교체로 빌드 중에도 이전 캐시 서빙, 소스에서 사라진 root 파일은 빌드 완료 후 정리, 포맷 세대 마커(.cache_format.json)로 legacy만 일괄 제거
+- (Claude) 보류 중이던 SplitTable 피벗 캐시 개선(실제 ROOT_LOT_ID 키, native wide per-root 저장) 검증 후 main 반영
 - (Claude) LOT 진행 캐시 안정화 — fcntl lockfile(Windows 무효)을 shared_lease(TTL 탈취)로 교체, FAB 풀스캔에 파일 단위 사용자 양보+메모리 백오프, JSON compact dump, FLOW_DISABLE_LOT_PROGRESS_SCHEDULER 서버 스위치, ML_TABLE lookup 메모리 대기 무한 루프 상한(기본 30분 후 skip)
 - (Claude) 단일 관리 파일 저장/검증/롤백과 filebrowser settings 저장을 light 계약으로 명시 — 메모리 가드와 무관하게 항상 처리(회귀 테스트 고정)
 - (Claude) root lot 단위 SplitTable 다운로드(download-csv/xlsx + root_lot_id)를 essential 레인으로 보장 — 메모리 가드와 무관하게 항상 동작, 제품 전체 다운로드만 heavy 가드 유지
