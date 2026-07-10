@@ -78,6 +78,7 @@ def should_use_duckdb(
     sql: str = "",
     select_cols: str = "",
     threshold_bytes: int | None = None,
+    size_bytes: int | None = None,
 ) -> bool:
     mode = str(engine or "auto").strip().lower()
     if mode in {"polars", "off", "false", "0"}:
@@ -89,7 +90,7 @@ def should_use_duckdb(
     if mode != "auto":
         return False
     threshold = min_auto_bytes() if threshold_bytes is None else max(0, int(threshold_bytes))
-    if total_size(files) >= threshold:
+    if (total_size(files) if size_bytes is None else max(0, int(size_bytes))) >= threshold:
         return True
     return len(files) > 1 and bool((sql or "").strip() or (select_cols or "").strip())
 
@@ -246,6 +247,51 @@ def _schema_for_view(con, view_name: str) -> tuple[list[str], dict[str, str]]:
     return names, schema
 
 
+def open_source(files: list[Path]):
+    """Connect once and register `files` as the `_source` view.
+
+    Returns (con, all_columns, schema). The union/footer schema scan over the
+    file list happens exactly once here; callers reuse the connection for the
+    actual query and must close it (try/finally).
+    """
+    con = _connect()
+    try:
+        _register_view(con, "_source", files)
+        all_columns, schema = _schema_for_view(con, "_source")
+        return con, all_columns, schema
+    except Exception:
+        try:
+            con.close()
+        except Exception:
+            pass
+        raise
+
+
+def run_source_query(
+    con,
+    all_columns: list[str],
+    *,
+    where: str = "",
+    select_cols: list[str] | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    order_by: str = "",
+    descending: bool = False,
+) -> pl.DataFrame:
+    """Run the preview SELECT against a connection prepared by open_source."""
+    selected = [c for c in (select_cols or []) if c in all_columns]
+    select_sql = ", ".join(quote_ident(c) for c in selected) if selected else "*"
+    parts = [f"SELECT {select_sql} FROM {quote_ident('_source')}"]
+    if where and where.strip():
+        parts.append(f"WHERE ({normalize_filter_expr(where)})")
+    if order_by and order_by in all_columns:
+        direction = "DESC" if descending else "ASC"
+        parts.append(f"ORDER BY {quote_ident(order_by)} {direction} NULLS LAST")
+    parts.append(f"LIMIT {max(0, int(limit))}")
+    parts.append(f"OFFSET {max(0, int(offset))}")
+    return _fetch_polars(con.execute(" ".join(parts)))
+
+
 def query_files(
     files: list[Path],
     *,
@@ -256,21 +302,14 @@ def query_files(
     order_by: str = "",
     descending: bool = False,
 ) -> tuple[pl.DataFrame, list[str], dict[str, str]]:
-    con = _connect()
+    con, all_columns, schema = open_source(files)
     try:
-        _register_view(con, "_source", files)
-        all_columns, schema = _schema_for_view(con, "_source")
-        selected = [c for c in (select_cols or []) if c in all_columns]
-        select_sql = ", ".join(quote_ident(c) for c in selected) if selected else "*"
-        parts = [f"SELECT {select_sql} FROM {quote_ident('_source')}"]
-        if where and where.strip():
-            parts.append(f"WHERE ({normalize_filter_expr(where)})")
-        if order_by and order_by in all_columns:
-            direction = "DESC" if descending else "ASC"
-            parts.append(f"ORDER BY {quote_ident(order_by)} {direction} NULLS LAST")
-        parts.append(f"LIMIT {max(0, int(limit))}")
-        parts.append(f"OFFSET {max(0, int(offset))}")
-        df = _fetch_polars(con.execute(" ".join(parts)))
+        df = run_source_query(
+            con, all_columns,
+            where=where, select_cols=select_cols,
+            limit=limit, offset=offset,
+            order_by=order_by, descending=descending,
+        )
         return df, all_columns, schema
     finally:
         try:

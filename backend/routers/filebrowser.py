@@ -27,6 +27,7 @@ import re
 import copy
 import hashlib
 import tempfile
+import threading
 import time
 from pathlib import Path
 import sys
@@ -91,6 +92,9 @@ SINGLE_FILE_FOLDER_TEXT_EXTENSIONS = {".json", ".yaml", ".yml", ".md", ".txt"}
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 100
+# DB(hive) 제품의 기본 preview 는 최신 date 파티션에서만 읽으므로 더 많은 행을
+# 안전하게 보여줄 수 있다. SQL/컬럼 선택/집계가 있는 조회는 기존 100행 계약 유지.
+DB_LATEST_PREVIEW_ROWS = 500
 LATEST_PREVIEW_MAX_FILES = 4
 AI_SQL_DEFAULT_SAMPLE_ROWS = 20
 AI_SQL_MAX_SAMPLE_ROWS = 50
@@ -5701,9 +5705,10 @@ def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
     return page, page_size, page * page_size
 
 
-def _preview_page_args(rows: int = LATEST_PREVIEW_ROWS, page_size: int = LATEST_PREVIEW_ROWS) -> tuple[int, int, int]:
+def _preview_page_args(rows: int = LATEST_PREVIEW_ROWS, page_size: int = LATEST_PREVIEW_ROWS,
+                       cap: int = LATEST_PREVIEW_ROWS) -> tuple[int, int, int]:
     try:
-        capped = min(LATEST_PREVIEW_ROWS, max(1, int(page_size or rows or LATEST_PREVIEW_ROWS)))
+        capped = min(int(cap or LATEST_PREVIEW_ROWS), max(1, int(page_size or rows or LATEST_PREVIEW_ROWS)))
     except Exception:
         capped = LATEST_PREVIEW_ROWS
     return 0, capped, 0
@@ -5718,6 +5723,52 @@ def _mark_preview_capped(resp: dict) -> dict:
     resp["download_max_rows"] = MAX_CSV_DOWNLOAD_MAX_ROWS
     resp["download_max_bytes"] = MAX_CSV_DOWNLOAD_BYTES
     return resp
+
+
+_PRODUCT_STAT_TTL_SEC = 30.0
+_PRODUCT_STAT_CACHE: dict[str, tuple[float, dict | None]] = {}
+_PRODUCT_STAT_INFLIGHT: set[str] = set()
+_PRODUCT_STAT_LOCK = threading.Lock()
+
+
+def _refresh_product_stat(key: str, prod_dir: Path) -> None:
+    try:
+        stat = _fbcache.stat_for_db_product(prod_dir)
+        with _PRODUCT_STAT_LOCK:
+            _PRODUCT_STAT_CACHE[key] = (time.time(), dict(stat) if stat else None)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        with _PRODUCT_STAT_LOCK:
+            _PRODUCT_STAT_INFLIGHT.discard(key)
+
+
+def _stat_for_db_product_cached(prod_dir: Path | None) -> dict | None:
+    """stat_for_db_product 의 stale-while-revalidate 캐시.
+
+    전체 파티션 rglob 서명 계산은 대형 제품에서 요청당 수 초까지 걸린다.
+    TTL 안에서는 마지막 서명을 재사용하고, 만료돼도 이전 서명을 즉시 반환한 뒤
+    백그라운드 스레드로 갱신한다. 새로 내려온 파티션의 preview 반영은 최대
+    TTL(30초)+재계산 시간만큼 늦을 수 있다 — 신선도보다 클릭 응답을 우선한다.
+    """
+    if prod_dir is None:
+        return None
+    key = str(prod_dir)
+    now = time.time()
+    with _PRODUCT_STAT_LOCK:
+        entry = _PRODUCT_STAT_CACHE.get(key)
+        if entry is not None:
+            ts, stat = entry
+            if now - ts >= _PRODUCT_STAT_TTL_SEC and key not in _PRODUCT_STAT_INFLIGHT:
+                _PRODUCT_STAT_INFLIGHT.add(key)
+                threading.Thread(
+                    target=_refresh_product_stat, args=(key, prod_dir), daemon=True,
+                ).start()
+            return dict(stat) if stat else None
+    stat = _fbcache.stat_for_db_product(prod_dir)
+    with _PRODUCT_STAT_LOCK:
+        _PRODUCT_STAT_CACHE[key] = (time.time(), dict(stat) if stat else None)
+    return stat
 
 
 def _resolve_product_dir_fast(root: str, product: str) -> Path | None:
@@ -9294,32 +9345,41 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
                      settings: dict | None = None,
                      sort_spec: dict | None = None):
     """Apply the same preview contract through DuckDB for large read-only sources."""
-    all_columns, schema = duckdb_engine.inspect_files(files)
-    sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
-    normalized_sql = _validate_where_expression(sql, all_columns)
-    _guard_source_operation(
-        all_columns=all_columns,
-        sql=normalized_sql,
-        select_cols=select_cols,
-        source_size=duckdb_engine.total_size(files),
-        settings=settings,
-        operation="preview",
-    )
-    page_size = int(page_size or rows or 200)
-    page, page_size, offset = _page_args(page, page_size)
-    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
-    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
-    wafer_where = _duckdb_valid_wafer_where(all_columns)
-    user_where = _normalize_view_sql_filter(normalized_sql, all_columns, schema)
-    show_plus, _all_cols, _schema = duckdb_engine.query_files(
-        files,
-        where=_combine_where(user_where, wafer_where),
-        select_cols=sel,
-        limit=page_size + 1,
-        offset=offset,
-        order_by=active_sort.get("column") or "",
-        descending=_sort_descending(active_sort),
-    )
+    source_size = duckdb_engine.total_size(files)
+    # 연결/등록(=전체 parquet footer 스키마 스캔)은 한 번만 수행하고, 같은
+    # 연결로 preview SELECT 까지 실행한다. inspect + query 이중 register 제거.
+    con, all_columns, schema = duckdb_engine.open_source(files)
+    try:
+        sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, all_columns)
+        normalized_sql = _validate_where_expression(sql, all_columns)
+        _guard_source_operation(
+            all_columns=all_columns,
+            sql=normalized_sql,
+            select_cols=select_cols,
+            source_size=source_size,
+            settings=settings,
+            operation="preview",
+        )
+        page_size = int(page_size or rows or 200)
+        page, page_size, offset = _page_args(page, page_size)
+        sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
+        active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
+        wafer_where = _duckdb_valid_wafer_where(all_columns)
+        user_where = _normalize_view_sql_filter(normalized_sql, all_columns, schema)
+        show_plus = duckdb_engine.run_source_query(
+            con, all_columns,
+            where=_combine_where(user_where, wafer_where),
+            select_cols=sel,
+            limit=page_size + 1,
+            offset=offset,
+            order_by=active_sort.get("column") or "",
+            descending=_sort_descending(active_sort),
+        )
+    finally:
+        try:
+            con.close()
+        except Exception:  # noqa: BLE001
+            pass
     has_more = show_plus.height > page_size
     show = show_plus.head(page_size) if has_more else show_plus
     total = offset + show.height + (1 if has_more else 0)
@@ -9350,7 +9410,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
         "latest_preview": bool(latest_preview),
         "engine": "duckdb",
         "source_file_count": len(files),
-        "source_size": duckdb_engine.total_size(files),
+        "source_size": source_size,
         "total_rows_exact": False,
         "meta_cached": bool(cached_meta),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_where else None,
@@ -9968,7 +10028,17 @@ def view_product(root: str = Query(...), product: str = Query(...),
         sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
-        page, page_size, _offset = _preview_page_args(rows, page_size)
+        full_scan = (
+            all_partitions
+            or bool(sql and sql.strip())
+            or bool(select_cols and select_cols.strip())
+            or bool(aggregate_spec)
+            or has_date_filter(sql)
+        )
+        # 최신 date 파티션만 읽는 기본 preview 는 500행까지 허용.
+        # SQL/컬럼 선택/집계 조회는 기존 100행 preview 계약을 유지한다.
+        preview_cap = LATEST_PREVIEW_ROWS if full_scan else DB_LATEST_PREVIEW_ROWS
+        page, page_size, _offset = _preview_page_args(rows, page_size, cap=preview_cap)
         rows = page_size
 
         def _compute() -> dict:
@@ -9978,13 +10048,6 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 fast_meta = _fast_product_meta_response(root, product, cols, settings=settings, page=page, page_size=local_page_size)
                 if fast_meta is not None:
                     return _finalize_preview_response(fast_meta, settings)
-            full_scan = (
-                all_partitions
-                or bool(sql and sql.strip())
-                or bool(select_cols and select_cols.strip())
-                or bool(aggregate_spec)
-                or has_date_filter(sql)
-            )
             recent = None if full_scan else 30
             latest_preview = not full_scan and not meta_only
             source_files: list[Path] = []
@@ -9993,11 +10056,11 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 source_files = source_data_files(root=root, product=product)
                 source_size = duckdb_engine.total_size(source_files)
             if latest_preview:
-                local_rows = min(int(local_rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
-                local_page_size = min(int(local_page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
+                local_rows = min(int(local_rows or LATEST_PREVIEW_ROWS), DB_LATEST_PREVIEW_ROWS)
+                local_page_size = min(int(local_page_size or LATEST_PREVIEW_ROWS), DB_LATEST_PREVIEW_ROWS)
             if full_scan and not meta_only and not aggregate_spec and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
                 files = source_files
-                if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
+                if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols, size_bytes=source_size):
                     try:
                         return _finalize_preview_response(_run_view_duckdb(
                             files, sql, select_cols, local_rows,
@@ -10016,12 +10079,20 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 latest_only=latest_preview,
             )
             if lf is not None:
-                return _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, local_rows, meta_only=meta_only,
+                out = _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, local_rows, meta_only=meta_only,
                                                            page=page, page_size=local_page_size, preview_cols=cols,
                                                            latest_first=latest_preview, latest_preview=latest_preview,
                                                            source_size=source_size, settings=settings,
                                                            sort_spec=sort_spec,
                                                            aggregate_spec=aggregate_spec), settings)
+                if latest_preview:
+                    # 최신 파티션 preview 는 500행 상한을 응답에 그대로 알린다.
+                    limit = max(int(out.get("preview_row_limit") or 0), int(local_page_size))
+                    out["preview_row_limit"] = limit
+                    out["preview_capped"] = bool(
+                        out.get("truncated_cols") or int(out.get("showing") or 0) >= limit
+                    )
+                return out
             # Fallback — legacy DF 경로
             df = read_source(root=root, product=product)
             if meta_only:
@@ -10042,7 +10113,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
 
         if _fbcache.is_enabled(settings):
             prod_dir = _resolve_product_dir_fast(root, product)
-            source_stat = _fbcache.stat_for_db_product(prod_dir) if prod_dir is not None else None
+            source_stat = _stat_for_db_product_cached(prod_dir) if prod_dir is not None else None
             if source_stat is not None:
                 sql_str = sql if isinstance(sql, str) else ""
                 sc_str = select_cols if isinstance(select_cols, str) else ""

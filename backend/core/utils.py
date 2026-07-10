@@ -465,7 +465,19 @@ def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
         return None
 
     # v8.8.33: parquet_perf.scan_parquet_perf 로 통합 — hive + partition pruning.
-    pq_files = sorted(fp for prod_path in prod_paths for fp in prod_path.rglob("*.parquet"))
+    if latest_only:
+        # 최신 date= 파티션만 내려가는 walk — 과거 파티션 파일 목록화를 생략해
+        # 대형 제품 클릭 preview 가 파티션 수와 무관하게 빠르다.
+        try:
+            from core.parquet_perf import iter_latest_partition_files
+            pq_files = sorted(
+                fp for prod_path in prod_paths
+                for fp in iter_latest_partition_files(prod_path, ".parquet")
+            )
+        except Exception:
+            pq_files = sorted(fp for prod_path in prod_paths for fp in prod_path.rglob("*.parquet"))
+    else:
+        pq_files = sorted(fp for prod_path in prod_paths for fp in prod_path.rglob("*.parquet"))
     if pq_files:
         try:
             from core.parquet_perf import scan_parquet_perf

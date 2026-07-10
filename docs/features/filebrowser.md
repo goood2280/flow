@@ -5,9 +5,10 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## Owns
 
 - DB root, root-level base/rulebook 파일 탐색
-- parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 DB 제품/root parquet을 처음 열면 2단계로 로드한다: ① `meta_only=true`로 스키마를 즉시 그리고("샘플 행 불러오는 중…" 표시), ② 100행 샘플을 백그라운드로 이어 받아 교체한다. SQL/SELECT/정렬/집계가 있는 조회와 페이지 이동은 기존처럼 단일 `meta_only=false` 요청이다. 응답 순서 꼬임은 요청 시퀀스 가드로 무시한다.
+- parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 DB 제품/root parquet을 처음 열면 2단계로 로드한다: ① `meta_only=true`로 스키마를 즉시 그리고("샘플 행 불러오는 중…" 표시), ② 최신 date 파티션 한정 샘플(DB 제품은 500행)을 백그라운드로 이어 받아 교체한다. SQL/SELECT/정렬/집계가 있는 조회와 페이지 이동은 기존처럼 단일 `meta_only=false` 요청이다. 응답 순서 꼬임은 요청 시퀀스 가드로 무시한다.
 - read-only SQL/filter/download preview
-- 빠른 화면 표시: DB/Parquet/cache preview와 SQL/컬럼 선택 결과는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
+- 빠른 화면 표시: SQL/컬럼 선택/집계 결과와 단일 파일 preview는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. DB(hive) 제품의 기본 preview만 최신 date 파티션 한정으로 최대 500행(`DB_LATEST_PREVIEW_ROWS`)을 허용한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
+- DB 제품 preview 속도: 최신 파티션 샘플은 `iter_latest_partition_files`(과거 `date=` 형제 폴더 미방문 walk)로 파일을 찾고, preview cache 서명(`stat_for_db_product`)은 라우터의 stale-while-revalidate 캐시(TTL 30초, 백그라운드 갱신)를 거친다. 새 파티션 반영은 최대 30초+재계산 시간만큼 늦을 수 있다. DuckDB 조회는 연결/스키마 등록을 요청당 1회만 수행한다(`duckdb_engine.open_source`).
 - CSV 다운로드: 화면 100행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
 - 연결된 LLM을 통한 자연어 SQL 초안 작성. AI SQL은 read-only SQL filter, SQL문 안 `ORDER BY`, 별도 aggregate, 명시 요청된 선택 컬럼을 초안으로 만들고 화면에서 즉시 preview 조회까지 실행한다.
 - Agent 탭의 `filebrowser_ai_sql` unit은 FileBrowser AI SQL을 가져간 새 소유자가 아니라, `context_sample -> semantic_layer -> filter_draft -> column_draft -> merge -> preview_apply` 실행 흐름을 보여주는 wrapper다. SQL validation, source sampling, selected column 검증, preview 적용은 계속 FileBrowser helper와 read-only 계약을 재사용한다.
@@ -36,7 +37,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## S3 Sync Permissions
 
 - 일반 사용자는 파일/제품 목록의 S3 신호등과 freshness 상태만 본다.
-- 파일/제품 목록의 신호등은 `GET /api/s3ingest/status-by-target?include_local=0` fast 응답으로 먼저 표시한다. 응답의 `local_freshness_included=false`는 로컬 파일 최신시각 재귀 scan을 생략했다는 뜻이며, 화면은 이후 idle/5분 주기로 `include_local=1`을 호출해 freshness 텍스트만 보강한다.
+- 파일/제품 목록의 신호등은 `GET /api/s3ingest/status-by-target?include_local=0` fast 응답으로 먼저 표시한다. 응답의 `local_freshness_included=false`는 로컬 파일 최신시각 scan을 생략했다는 뜻이며, 화면은 이후 idle/5분 주기로 `include_local=1`을 호출해 freshness 텍스트만 보강한다. `include_local=1`의 로컬 scan은 hive `date=` 형제 폴더 중 최신 하나만 내려가는 pruned walk이고, 결과는 stale-while-revalidate 캐시(TTL 300초, 만료 시 이전 값 즉시 반환 + 백그라운드 재스캔)로 서빙되어 대형 DB 타깃에서도 응답을 막지 않는다.
 - FileBrowser page manager는 `GET /api/s3ingest/items`, `GET /api/s3ingest/history`, `POST /api/s3ingest/run`으로 이미 등록된 S3 동기화 항목을 조회하고 수동 실행할 수 있다.
 - 실행 중/대기 중인 항목은 `■ 중지`(`POST /api/s3ingest/stop`)로 개별 중지한다. 전송은 `subprocess.Popen`으로 실행되어 핸들을 보관하므로, 중지 요청 시 실행 중이면 프로세스를 terminate하고 대기 중이면 큐에서 제거한다. 항목 설정은 그대로 유지되어 삭제/재등록 없이 다시 실행할 수 있다. 사용자 중지는 `status="cancelled"`로 기록되고 신호등 실패 집계에서 제외된다. 항목 삭제 없이 주기 동기화만 멈추려면 `⏸ 정지`/`재개`(`POST /api/s3ingest/set-enabled`, Admin 전용)로 `enabled` 플래그를 토글한다.
 - S3 항목 생성/수정/삭제, 스케줄 저장, AWS credential/profile 조회·저장·삭제는 global Admin 전용이다. 위임받은 FileBrowser manager에게는 `항목`/`이력` 탭만 보이고 `+ 추가`, `수정`, `삭제`, `AWS 설정`은 표시하지 않는다.
@@ -201,7 +202,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 
 ## Preview, SQL, Download
 
-- DB product / root parquet / base parquet 화면 preview는 최대 100행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
+- DB product 기본 preview(필터/선택/집계 없음)는 최신 date 파티션 한정 최대 500행, 그 외 root parquet / base parquet / SQL·컬럼 선택 결과 preview는 최대 100행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다. 응답 `preview_row_limit`이 실제 상한을 알린다.
 - 관리용 단일 CSV/JSON/YAML/MD는 기존처럼 전체 표시 경로를 유지한다. cache 파일, `ML_TABLE_*.parquet`, 일반 대형 parquet은 lazy/DuckDB 경로로 100행과 제한된 열만 반환한다.
 - 관리용 단일 CSV가 header보다 긴 row를 가져 `found more fields than defined` 형태로 스캔 실패하면 FileBrowser는 Python CSV fallback으로 header 범위까지만 복구한다. 초과 필드는 `extra_col_N` 같은 임시 컬럼으로 노출하거나 저장하지 않으며, 사용자가 그리드에서 명시적으로 열을 추가/삭제/이름 변경하면 EDM version diff는 `열 +N`, `열 -N`, 행/열 수 변화로 남긴다.
 - SQL 실행과 컬럼 선택도 표시 결과는 최대 100행이다. 사용자는 조건 적용 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.

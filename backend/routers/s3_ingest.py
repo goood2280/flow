@@ -72,9 +72,11 @@ _QUEUE_COND = threading.Condition(_RUNNING_LOCK)
 _QUEUE_WORKER_STARTED = False
 _SCHED_STARTED = False
 _SCHED_LOCK = threading.Lock()
-_LOCAL_INFO_CACHE_TTL_SEC = 60.0
+_LOCAL_INFO_CACHE_TTL_SEC = 300.0
 _LOCAL_INFO_CACHE: Dict[tuple[str, str], Dict[str, Any]] = {}
 _LOCAL_INFO_CACHE_LOCK = threading.Lock()
+_LOCAL_INFO_REFRESHING: set[tuple[str, str]] = set()
+_HIVE_DATE_DIR_RE = re.compile(r"date=(\d{4}-?\d{2}-?\d{2})")
 
 
 # ═════════════════════ helpers ═════════════════════
@@ -377,18 +379,32 @@ def _latest_local_item_info(target: str) -> Dict[str, Any]:
             newest_ts = local.stat().st_mtime
             newest_path = local
         else:
-            for p in local.rglob("*"):
-                try:
-                    if not p.is_file():
+            # hive `date=YYYYMMDD` 형제 폴더는 최신 하나만 내려간다 — 대형 DB
+            # 타깃에서 수천 개 과거 파티션 stat 을 생략해 신호등 freshness 를
+            # 파티션 수와 무관하게 계산한다. (과거 파티션 파일만 늦게 갱신된
+            # 경우는 놓칠 수 있으나, 신선도 표시 목적에는 충분하다.)
+            for dirpath, dirnames, filenames in os.walk(local):
+                dated: list[tuple[str, str]] = []
+                plain: list[str] = []
+                for name in dirnames:
+                    m = _HIVE_DATE_DIR_RE.search(name)
+                    if m:
+                        dated.append((m.group(1).replace("-", ""), name))
+                    else:
+                        plain.append(name)
+                if dated:
+                    latest_key = max(k for k, _n in dated)
+                    dirnames[:] = plain + [n for k, n in dated if k == latest_key]
+                for name in filenames:
+                    if Path(name).suffix.lower() not in exts:
                         continue
-                    if p.suffix.lower() not in exts:
+                    try:
+                        mt = (Path(dirpath) / name).stat().st_mtime
+                    except OSError:
                         continue
-                    mt = p.stat().st_mtime
                     if mt > newest_ts:
                         newest_ts = mt
-                        newest_path = p
-                except Exception:
-                    continue
+                        newest_path = Path(dirpath) / name
 
         if newest_ts > 0 and newest_path is not None:
             age_h = max(0.0, (time.time() - newest_ts) / 3600.0)
@@ -405,7 +421,25 @@ def _latest_local_item_info(target: str) -> Dict[str, Any]:
         return info
 
 
+def _refresh_local_item_info(key: tuple[str, str], target: str) -> None:
+    try:
+        info = _latest_local_item_info(target)
+        with _LOCAL_INFO_CACHE_LOCK:
+            _LOCAL_INFO_CACHE[key] = {"ts": time.time(), "info": dict(info)}
+    except Exception:
+        pass
+    finally:
+        with _LOCAL_INFO_CACHE_LOCK:
+            _LOCAL_INFO_REFRESHING.discard(key)
+
+
 def _cached_latest_local_item_info(target: str) -> Dict[str, Any]:
+    """Stale-while-revalidate freshness lookup.
+
+    TTL 이 지나도 이전 값을 즉시 반환하고 백그라운드 스레드로 재스캔한다 —
+    status-by-target?include_local=1 응답이 로컬 트리 스캔을 기다리지 않는다.
+    최초 1회(캐시 없음)만 동기 스캔한다.
+    """
     try:
         root_key = str(_db_root().resolve())
     except Exception:
@@ -413,8 +447,16 @@ def _cached_latest_local_item_info(target: str) -> Dict[str, Any]:
     key = (root_key, str(target or ""))
     now = time.time()
     with _LOCAL_INFO_CACHE_LOCK:
-        entry = _LOCAL_INFO_CACHE.get(key) or {}
-        if now - float(entry.get("ts") or 0) < _LOCAL_INFO_CACHE_TTL_SEC:
+        entry = _LOCAL_INFO_CACHE.get(key)
+        if entry is not None:
+            if (
+                now - float(entry.get("ts") or 0) >= _LOCAL_INFO_CACHE_TTL_SEC
+                and key not in _LOCAL_INFO_REFRESHING
+            ):
+                _LOCAL_INFO_REFRESHING.add(key)
+                threading.Thread(
+                    target=_refresh_local_item_info, args=(key, target), daemon=True,
+                ).start()
             return dict(entry.get("info") or {})
     info = _latest_local_item_info(target)
     with _LOCAL_INFO_CACHE_LOCK:
