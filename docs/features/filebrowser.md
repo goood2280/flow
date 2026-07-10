@@ -134,7 +134,9 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 | 수동 갱신 | UI "수동 갱신" → `POST /api/filebrowser/cache/match/refresh` (`backend/routers/filebrowser.py:4529-4539`) → `_refresh_filebrowser_cache_target` → `refresh_lot_progress_cache(force=True)` |
 | 빌드 본체 | `refresh_lot_progress_cache` (라인 886–1083) |
 | JSON 중간 캐시 | `<flow-data>/cache/lot_progress/lot_wf_current.json` (`cache_file()`, 라인 59–60) |
-| 잠금 파일 | `<flow-data>/locks/lot_progress_cache.lock` (`refresh_lock_file()`, 라인 108–111) — 공유 data root 단일 실행 보장 |
+| 잠금 | `shared_lease` 기반 `<flow-data>/locks/lot_progress_cache_refresh.lock.json` (TTL 30분, 죽은 소유자 탈취) — Windows 포함 크로스 서버/프로세스 단일 실행 보장. 이전 fcntl lockfile 은 Windows 에서 무효였음 |
+| 스캔 양보 | refresh 는 parquet 파일 사이마다 `yield_to_users` + 메모리 부족 시 1초 백오프 — 사용자 요청과 경합하지 않음 |
+| 서버별 스케줄러 off | `FLOW_DISABLE_LOT_PROGRESS_SCHEDULER=1` — 2서버가 같은 data root 를 공유할 때 개발 서버의 주기 풀스캔을 끔 |
 | 갱신 로그 | `<flow-data>/logs/lot_progress_cache_refresh.jsonl` (`refresh_log_file()`, 라인 114–117) |
 | S3 업로드 | `filebrowser_settings.json.auto_s3_upload_on_save=true` 일 때 갱신 후 `s3_sync.sync_saved_path` 호출. 버킷/리전/프리픽스 등은 `<flow-data>/s3_sync.json` (`backend/core/s3_sync.py`) |
 | AWS key/config | FileBrowser AWS 설정 탭의 access key/secret/config는 `<flow-data>/s3_ingest/aws/credentials`와 `<flow-data>/s3_ingest/aws/config`에 저장하고, `aws` CLI 실행과 boto3 업로드가 이 파일을 읽는다. |

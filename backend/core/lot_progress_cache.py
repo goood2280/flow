@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -188,43 +189,39 @@ def _parse_iso_seconds(value: str) -> dt.datetime | None:
         return None
 
 
+# 크로스 서버/프로세스 refresh 단일 실행 보장은 shared_lease 로 한다.
+# 이전 fcntl.flock 방식은 Windows 에서 no-op(이중 실행 허용)이었고, 죽은
+# 소유자의 stale lock 을 회수하는 TTL 도 없었다. lease 는 TTL 만료 시 탈취된다.
+_REFRESH_LEASE_NAME = "lot_progress_cache_refresh"
+_REFRESH_LEASE_TTL_SEC = 1800.0
+
+
 def _try_acquire_refresh_lock():
-    fh = refresh_lock_file().open("a+", encoding="utf-8")
+    """Return (handle, owner). handle 이 None 이면 다른 프로세스/서버가 보유 중."""
     try:
-        import fcntl  # type: ignore
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            fh.seek(0)
-            payload = fh.read(1000)
-            fh.close()
-            return None, payload
-    except ImportError:
-        pass
-    fh.seek(0)
-    fh.truncate()
-    fh.write(json.dumps({
-        "pid": os.getpid(),
-        "host": socket.gethostname(),
-        "started_at": _now_iso(),
-    }, ensure_ascii=False))
-    fh.flush()
-    try:
-        os.fsync(fh.fileno())
-    except Exception:
-        pass
-    return fh, ""
+        from core import shared_lease
+    except Exception:  # noqa: BLE001 — lease 불가 시 단일 프로세스 가정으로 진행
+        return _REFRESH_LEASE_NAME, ""
+    if shared_lease.try_acquire(_REFRESH_LEASE_NAME, ttl_sec=_REFRESH_LEASE_TTL_SEC):
+        return _REFRESH_LEASE_NAME, ""
+    return None, shared_lease.holder(_REFRESH_LEASE_NAME)
 
 
-def _release_refresh_lock(fh) -> None:
+def _renew_refresh_lock() -> None:
     try:
-        import fcntl  # type: ignore
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    except Exception:
+        from core import shared_lease
+        shared_lease.renew(_REFRESH_LEASE_NAME, ttl_sec=_REFRESH_LEASE_TTL_SEC)
+    except Exception:  # noqa: BLE001
         pass
+
+
+def _release_refresh_lock(handle) -> None:
+    if handle is None:
+        return
     try:
-        fh.close()
-    except Exception:
+        from core import shared_lease
+        shared_lease.release(_REFRESH_LEASE_NAME)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -233,24 +230,32 @@ def _lock_state() -> dict:
     if _CACHE_RUNNING:
         return {"locked": True, "running": True, "path": str(fp), "owner": ""}
     owner = ""
-    locked = False
-    if fp.is_file():
-        try:
-            with fp.open("a+", encoding="utf-8") as fh:
-                fh.seek(0)
-                owner = fh.read(1000)
-                try:
-                    import fcntl  # type: ignore
-                    try:
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                    except BlockingIOError:
-                        locked = True
-                except ImportError:
-                    locked = False
-        except Exception:
-            locked = False
+    try:
+        from core import shared_lease
+        owner = shared_lease.holder(_REFRESH_LEASE_NAME)
+    except Exception:  # noqa: BLE001
+        owner = ""
+    locked = bool(owner)
     return {"locked": locked, "running": locked, "path": str(fp), "owner": owner}
+
+
+def _yield_scan_slice() -> None:
+    """FAB 풀 스캔이 사용자 요청/메모리와 경합하지 않도록 파일 사이에서 양보한다.
+
+    사용자 활동이 없으면 즉시 반환한다. 메모리가 실제로 부족하면 잠시 쉬며
+    사용자 요청이 먼저 처리될 시간을 준다.
+    """
+    try:
+        from core import request_priority
+        request_priority.yield_to_users(max_wait_sec=10.0)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.runtime_limits import process_memory_high
+        if process_memory_high():
+            time.sleep(1.0)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _freshness_state(last_success_at: str, *, running: bool = False, error: bool = False) -> str:
@@ -1141,8 +1146,10 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                 for product_dir in product_dirs:
                     # Product comes from the FAB DB product folder, not from a parquet column.
                     product = product_dir.name
+                    _renew_refresh_lock()
                     for parquet in product_dir.rglob("*.parquet"):
                         files_scanned += 1
+                        _yield_scan_slice()
                         try:
                             rows = _read_parquet_rows(parquet, column_mapping)
                             for raw in rows:
@@ -1224,7 +1231,9 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
             }
             _save_tracker_lot_status_cache(items, source="lot_progress_cache")
             tmp = cache_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            # compact dump — 수만 item 상태에서 indent=2 는 직렬화 문자열 크기와
+            # 피크 메모리를 2배 가까이 키운다. 사람이 읽는 파일이 아니므로 압축.
+            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
             tmp.replace(cache_path)
             try:
                 export_lot_progress_parquet(state)
@@ -1633,6 +1642,12 @@ def _scheduler_loop() -> None:
 def start_lot_progress_cache_scheduler() -> bool:
     global _CACHE_STARTED, _CACHE_THREAD
     if _CACHE_STARTED:
+        return False
+    # 개발/양산 2서버가 같은 data root 를 공유할 때, 주기 풀스캔을 한 서버에만
+    # 두기 위한 서버 단위 스위치. lease 가 이중 실행은 막지만 스캔 시도 자체를
+    # 끄고 싶은 서버(개발)는 이 env 를 설정한다.
+    if os.environ.get("FLOW_DISABLE_LOT_PROGRESS_SCHEDULER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.info("LOT progress cache scheduler disabled by FLOW_DISABLE_LOT_PROGRESS_SCHEDULER")
         return False
     _CACHE_STARTED = True
     _CACHE_THREAD = threading.Thread(target=_scheduler_loop, name="lot-progress-cache", daemon=True)
