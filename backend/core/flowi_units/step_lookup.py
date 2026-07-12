@@ -13,7 +13,10 @@ from core.flowi_units.base import BaseUnitAI, CodeRef, DataSourceRef
 
 def _step_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
     matches = result.get("matches") or []
-    columns = ["product", "step_id", "function_step"]
+    # Vehicle_matching.csv 병합 결과(vehicle/step_desc)가 있으면 열에 포함.
+    preferred = ["vehicle", "product", "step_id", "function_step", "step_desc"]
+    columns = [c for c in preferred
+               if any(m.get(c) for m in matches)] or ["product", "step_id", "function_step"]
     rows = [{c: m.get(c, "") for c in columns} for m in matches]
     return {
         "handled": True,
@@ -90,6 +93,9 @@ class StepLookupUnitAI(BaseUnitAI):
         if not result:
             return None
         payload = _step_tool_payload(result)
+        if not result.get("found"):
+            # miss 경로 — LLM 오케스트레이터가 있으면 다른 도구(진행 조회 등)에 양보 가능.
+            payload["low_confidence"] = True
         wants_files = any(w in text for w in ("파일", "관련", "어디", "찾아"))
         token = ""
         if result.get("found"):

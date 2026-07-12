@@ -21338,6 +21338,62 @@ def _handle_explicit_splittable_view_fast_path(
     return tool if isinstance(tool, dict) and tool.get("handled") else None
 
 
+def _flowi_split_nav_product_summary(product: str, max_rows: int) -> dict[str, Any] | None:
+    """split_nav 인라인 데이터 — product 만 알 때 ML_TABLE root lot 요약 표.
+
+    root lot 이 특정되면 split view 전체를 보여주지만, product 단독 요청은
+    조회 대상 root lot 목록(wafer 수 포함)을 즉시 보여줘 링크만 주지 않게 한다."""
+    files = _ml_files(product)
+    if not files:
+        return None
+    try:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        if not root_col:
+            return None
+        agg = [pl.len().alias("rows")]
+        if wafer_col:
+            agg.append(pl.col(wafer_col).n_unique().alias("wafers"))
+        df = (lf.group_by(root_col).agg(agg)
+                .sort(root_col)
+                .limit(max(1, min(int(max_rows or 12), 50)))
+                .collect())
+    except Exception:
+        logger.info("split_nav product summary failed", exc_info=True)
+        return None
+    rows = []
+    for r in df.to_dicts():
+        rows.append({
+            "root_lot_id": str(r.get(root_col) or ""),
+            "wafers": str(r.get("wafers") or ""),
+            "rows": str(r.get("rows") or ""),
+        })
+    if not rows:
+        return None
+    columns = [
+        {"key": "root_lot_id", "label": "ROOT LOT"},
+        {"key": "wafers", "label": "WAFERS"},
+        {"key": "rows", "label": "ROWS"},
+    ]
+    return {
+        "handled": True,
+        "intent": "split_nav",
+        "feature": "splittable",
+        "action": "query_splittable_view",
+        "answer": f"{product} ML_TABLE에서 root lot {len(rows)}건을 조회했습니다. root lot을 지정하면 스플릿 매트릭스를 바로 보여드립니다.",
+        "table": {
+            "kind": "split_nav_product_summary",
+            "title": f"{product} root lots",
+            "placement": "below",
+            "columns": columns,
+            "rows": rows,
+            "total": len(rows),
+        },
+    }
+
+
 _TEACH_PREFIX_RE = re.compile(r"^\s*(기억해줘?|가르쳐줄게|외워줘?)\s*[:,]?\s*", re.IGNORECASE)
 _FORGET_PREFIX_RE = re.compile(r"^\s*(잊어줘?|삭제해줘?)\s*[:,]?\s*", re.IGNORECASE)
 _TEACH_SEP_RE = re.compile(r"\s*(?:->|→|=|은\s|는\s|:)\s*")
@@ -21656,6 +21712,114 @@ def _handle_shared_skill_request(prompt: str, *, username: str, max_rows: int,
     }
 
 
+def _try_flowi_react_orchestration(
+    prompt: str,
+    *,
+    me: dict[str, Any],
+    allowed_keys: set[str],
+) -> tuple[dict[str, Any] | None, str]:
+    """LLM(GPT OSS/adapter) ReAct 오케스트레이션 — 홈 챗 경로.
+
+    home_orchestrator 의 반복 루프가 도구 카탈로그에서 필요한 기능을 골라
+    연쇄 실행한다 (최대 8턴, `_react_max_iters`). 모델이 ask_user 를 선택하면
+    clarification(질문 + 선택지)으로 반환해 사용자가 답하고 이어갈 수 있다
+    (human-in-the-loop). 비활성/LLM 실패 시 (None, 사유) → 기존 단일 패스
+    엔진으로 graceful degrade. 사유는 폴백 응답의 warnings 로 표면화된다.
+    """
+    try:
+        from core import home_orchestrator as _ho
+
+        if not _ho.react_available():
+            return None, "react_disabled"
+        out = _ho.orchestrate(prompt, user=me)
+    except Exception:
+        logger.info("flowi react orchestration failed", exc_info=True)
+        return None, "react_error"
+    if not isinstance(out, dict) or (out.get("meta") or {}).get("planner") != "react":
+        planner = str(((out.get("meta") or {}).get("planner")) if isinstance(out, dict) else "") or "unknown"
+        return None, f"llm_degraded:{planner}"
+    meta = out.get("meta") or {}
+    trace = out.get("trace") or []
+    react_info = {
+        "steps": len(trace),
+        "max_steps": 8,
+        "stop_reason": meta.get("stop_reason") or "",
+        "tools": [str(r.get("tool") or "") for r in trace if isinstance(r, dict)][:8],
+    }
+
+    # Human-in-the-loop: 모델이 사용자 확인을 요청 — 선택지는 self-contained
+    # 프롬프트로 만들어 클릭 시 원 질문 + 답변이 함께 재요청되게 한다.
+    ask = out.get("ask_user") or {}
+    if isinstance(ask, dict) and str(ask.get("question") or "").strip():
+        question = str(ask.get("question")).strip()
+        choices = [
+            {
+                "label": str(i + 1),
+                "title": str(c),
+                "submit_prompt": f"{prompt}\n(사용자 답변: {c})",
+            }
+            for i, c in enumerate(ask.get("choices") or [])
+            if str(c or "").strip()
+        ][:3]
+        return {
+            "handled": True,
+            "type": "answer",
+            "intent": "react_ask_user",
+            "feature": "home",
+            "unit_ai": "react_orchestrator",
+            "action": "ask_user",
+            "blocked": True,
+            "answer": question,
+            "clarification": {"question": question, "choices": choices},
+            "react": react_info,
+        }, ""
+
+    reply = str(out.get("reply") or "").strip()
+    # 마지막 성공 도구 결과의 표시용 payload(표/차트/네비게이션)를 인라인으로 전달.
+    merged: dict[str, Any] = {}
+    for call in reversed(out.get("tool_calls") or []):
+        if not isinstance(call, dict) or call.get("status") != "success":
+            continue
+        output = call.get("output") if isinstance(call.get("output"), dict) else {}
+        preview = output.get("preview") if isinstance(output.get("preview"), dict) else {}
+        if "table" not in output and preview.get("rows"):
+            # FileBrowser AI SQL 같은 unit runtime 결과 — preview rows 를 챗 인라인
+            # 표로 변환해 링크/요약만 남지 않게 한다.
+            prev_rows = [r for r in preview.get("rows") if isinstance(r, dict)][:50]
+            prev_cols = [str(c) for c in (preview.get("columns") or [])] or (
+                list(prev_rows[0].keys()) if prev_rows else [])
+            if prev_rows and prev_cols:
+                output = {**output, "table": {
+                    "kind": "react_runtime_preview",
+                    "title": "조회 결과 미리보기",
+                    "placement": "below",
+                    "columns": [{"key": c, "label": c.upper()} for c in prev_cols[:24]],
+                    "rows": prev_rows,
+                    "total": preview.get("total_rows") or len(prev_rows),
+                }}
+        if any(k in output for k in ("table", "split_view", "splittable_view",
+                                     "chart_result", "chart", "rows", "lot_list", "navigate")):
+            merged = output
+            break
+    if not reply and not merged:
+        return None, "react_empty"
+    tool: dict[str, Any] = {
+        "handled": True,
+        "type": "answer",
+        "intent": "react_orchestration",
+        "feature": str(merged.get("feature") or "home"),
+        "unit_ai": "react_orchestrator",
+        "action": "react_loop",
+        "answer": reply or str(merged.get("answer") or ""),
+        "react": react_info,
+    }
+    for key in ("table", "split_view", "splittable_view", "chart_result", "chart",
+                "rows", "lot_list", "navigate", "chart_session_id"):
+        if key in merged:
+            tool[key] = merged[key]
+    return tool, ""
+
+
 def _run_flowi_chat(
     *,
     prompt: str,
@@ -21715,6 +21879,69 @@ def _run_flowi_chat(
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    # "X 스플릿테이블 보여줘" — 결정적 네비게이션(split_nav)이 splittable fast-path 보다
+    # 우선. ML_TABLE 에서 product 를 자동 확인해 SplitTable 페이지를 딥링크로 연다.
+    if "splittable" in allowed_keys:
+        from core.flowi_units import try_dispatch as _nav_dispatch
+        nav_tool = _nav_dispatch(
+            prompt, product=product, max_rows=max_rows, allowed_keys=allowed_keys,
+            agent_context=agent_context, me=me, only=("split_nav",))
+        if nav_tool is not None:
+            # 네비게이션 링크만 주지 않고 실제 스플릿 데이터를 즉시 조회해 인라인으로
+            # 함께 반환한다 (탭 이동은 선택 버튼으로 유지, auto 이동 해제).
+            nav_product = str(nav_tool.get("product") or product or "")
+            nav_root = str(nav_tool.get("root_lot_id") or "")
+            if nav_product:
+                data_tool = None
+                try:
+                    if nav_root:
+                        data_tool = _flowi_query_splittable_view_tool(
+                            {"product": nav_product, "root_lot_ids": [nav_root],
+                             "fab_lot_ids": [], "wafer_ids": [], "max_rows": max_rows},
+                            nav_product, prompt, max_rows)
+                    if not (isinstance(data_tool, dict) and data_tool.get("handled")):
+                        data_tool = _flowi_split_nav_product_summary(nav_product, max_rows)
+                except Exception:
+                    logger.info("split_nav inline data fetch failed", exc_info=True)
+                    data_tool = None
+                has_data = isinstance(data_tool, dict) and data_tool.get("handled") and any(
+                    data_tool.get(k) for k in ("table", "split_view", "splittable_view", "rows"))
+                if has_data:
+                    navigate = dict(nav_tool.get("navigate") or {})
+                    navigate["auto"] = False
+                    data_tool["navigate"] = navigate
+                    data_tool["intent"] = "split_nav"
+                    data_tool["unit_ai"] = "split_nav"
+                    base_answer = str(data_tool.get("answer") or "").strip()
+                    data_tool["answer"] = (base_answer + "\n" if base_answer else "") + \
+                        "아래는 조회된 스플릿 데이터입니다. 전체 화면은 SplitTable 열기 버튼을 사용하세요."
+                    nav_tool = data_tool
+            _finalize_flowi_tool(nav_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+            answer = nav_tool.get("answer") or "SplitTable 을 엽니다."
+            _append_user_event(username, "split_nav", _event_fields(
+                {"prompt": prompt, "intent": "split_nav", "feature": "splittable", "answer": answer},
+                source=source,
+                client_run_id=client_run_id,
+            ))
+            result = {
+                "ok": True,
+                "active": True,
+                "user": username,
+                "answer": answer,
+                "tool": nav_tool,
+                "llm": {"available": llm_adapter.is_available(), "used": False, "skipped": "deterministic_tool_result"},
+                "allowed_features": sorted(allowed_keys),
+            }
+            if source:
+                result["agent_api"] = _agent_api_meta(
+                    source=source,
+                    client_run_id=client_run_id,
+                    username=username,
+                    tool=nav_tool,
+                    agent_context=agent_context,
+                )
+            return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     fast_split_tool = _handle_explicit_splittable_view_fast_path(prompt, product, max_rows, allowed_keys)
     if fast_split_tool:
@@ -22410,6 +22637,9 @@ def _run_flowi_chat(
     from core.flowi_units import try_dispatch as _try_unit_ai_dispatch
     meeting_allowed = ("meeting" in allowed_keys or "calendar" in allowed_keys)
     unit_only: list[str] = []
+    # split_nav 는 "X 스플릿테이블 보여줘" 네비게이션 — step/ppid 조회보다 먼저 본다.
+    if "splittable" in allowed_keys:
+        unit_only.append("split_nav")
     if "inform" in allowed_keys:
         unit_only.append("inform")
     if meeting_allowed:
@@ -22438,18 +22668,51 @@ def _run_flowi_chat(
         me=me,
         only=tuple(unit_only),
     )
+    if unit_tool is not None and unit_tool.get("low_confidence"):
+        # 결정적 유닛의 miss 응답 — 오케스트레이터가 있으면 다른 도구로 답할 기회를 준다.
+        try:
+            from core import home_orchestrator as _ho
+            if _ho.react_available():
+                unit_tool = None
+        except Exception:
+            pass
+    react_skip_reason = ""
     if unit_tool is not None:
         tool = unit_tool
     else:
-        tool = _handle_flowi_query(
-            prompt,
-            product,
-            max_rows=max_rows,
-            allowed_keys=allowed_keys,
-            username=username,
-            role=str(me.get("role") or "user"),
-            agent_context=agent_context,
-        )
+        # LLM(GPT OSS/adapter) ReAct 오케스트레이션 — 도구를 골라 연쇄 실행(최대 8턴),
+        # 필요 시 ask_user 로 human-in-the-loop 질문. 비활성/실패 시 기존 단일 패스로.
+        tool, react_skip_reason = _try_flowi_react_orchestration(prompt, me=me, allowed_keys=allowed_keys)
+        if tool is None:
+            tool = _handle_flowi_query(
+                prompt,
+                product,
+                max_rows=max_rows,
+                allowed_keys=allowed_keys,
+                username=username,
+                role=str(me.get("role") or "user"),
+                agent_context=agent_context,
+            )
+            # 가이드/링크성 폴백으로 답할 때는 왜 LLM 실행이 아닌지 표면화한다 —
+            # 사용자가 "왜 결과 대신 안내가 왔는지" 판단할 수 있게.
+            if react_skip_reason and (
+                str(tool.get("intent") or "").endswith("_guidance")
+                or str(tool.get("action") or "").startswith("open_")
+            ):
+                notes = {
+                    "react_disabled": "LLM 오케스트레이션(ReAct)이 꺼져 있어 기능 안내로 응답했습니다.",
+                    "react_error": "LLM 오케스트레이션 실행 중 오류가 발생해 기능 안내로 응답했습니다.",
+                    "react_empty": "LLM 오케스트레이션이 결과를 만들지 못해 기능 안내로 응답했습니다.",
+                }
+                note = notes.get(
+                    react_skip_reason,
+                    "LLM 호출이 실패해(planner 폴백) 기능 안내로 응답했습니다."
+                    if react_skip_reason.startswith("llm_degraded") else "",
+                )
+                if note:
+                    tool.setdefault("warnings", [])
+                    if isinstance(tool["warnings"], list):
+                        tool["warnings"].append(f"{note} (사유: {react_skip_reason})")
     _schema_search_empty = (
         tool.get("intent") == "filebrowser_schema_search"
         and not ((tool.get("table") or {}).get("rows") or [])

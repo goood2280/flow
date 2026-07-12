@@ -444,7 +444,7 @@ BULK_DEFAULT_USER_TABS = [
     "filebrowser", "dashboard", "splittable", "diagnosis",
     "inform", "meeting", "calendar",
 ]
-BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "devguide"])
+BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "devguide", "teg"])
 
 
 def _normalize_bulk_tabs_csv(raw: Any, fallback: Optional[List[str]] = None) -> str:

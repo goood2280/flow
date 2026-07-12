@@ -226,3 +226,67 @@ export function FlowPlotlyChart({
     </div>
   );
 }
+
+export function WipStackedBar({
+  bins = [],
+  splitValues = [],
+  height = 420,
+  dark = false,
+  unassignedLabel = "(미지정)",
+  xLabel = "STEP BIN",
+  yLabel = "WAFERS",
+}) {
+  const bg = dark ? "#111111" : "#ffffff";
+  const fg = dark ? "#e5e7eb" : "#111827";
+  const grid = dark ? "rgba(148,163,184,0.22)" : "rgba(15,23,42,0.12)";
+  const traces = useMemo(() => {
+    const labels = bins.map((b) => b.label);
+    let colorIdx = 0;
+    return splitValues.map((sv) => {
+      const isMissing = sv === unassignedLabel;
+      const color = isMissing ? MISSING_COLOR : SERIES[colorIdx++ % SERIES.length];
+      return {
+        type: "bar",
+        name: sv,
+        x: labels,
+        y: bins.map((b) => Number(b?.splits?.[sv] || 0)),
+        marker: { color, opacity: isMissing ? 0.55 : 0.92 },
+        hovertemplate: `%{x}<br>${sv}: %{y} wafers<extra></extra>`,
+      };
+    });
+  }, [bins, splitValues, unassignedLabel]);
+
+  if (!bins.length) {
+    return <div style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>표시할 WIP 데이터가 없습니다.</div>;
+  }
+  // bin 이 많아 bar 가 뭉개질 때는 컨테이너를 가로 스크롤로 전환 —
+  // bar 하나당 최소 폭을 보장하고, 그보다 넓은 화면에서는 100% 채운다.
+  const MIN_BAR_PX = 26;
+  const minInnerWidth = bins.length * MIN_BAR_PX + 160;
+  const manyBins = bins.length > 24;
+  return (
+    <div style={{ width: "100%", minHeight: Math.max(220, height), position: "relative", overflowX: "auto" }}>
+      <div style={{ minWidth: minInnerWidth, width: "100%" }}>
+        <Plot
+          data={traces}
+          layout={{
+            autosize: true,
+            height: Math.max(240, height),
+            barmode: "stack",
+            paper_bgcolor: bg,
+            plot_bgcolor: bg,
+            margin: { l: 64, r: 22, t: 16, b: manyBins ? 84 : 62 },
+            hovermode: "closest",
+            xaxis: { title: { text: xLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true, type: "category", tickangle: manyBins ? -45 : 0 },
+            yaxis: { title: { text: yLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true },
+            legend: { orientation: "h", y: -0.28, x: 0, font: { size: 11, color: fg } },
+            showlegend: true,
+          }}
+          config={{ responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
+          useResizeHandler
+          style={{ width: "100%", height: Math.max(240, height) }}
+        />
+      </div>
+    </div>
+  );
+}

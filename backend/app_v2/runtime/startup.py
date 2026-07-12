@@ -21,6 +21,7 @@ def start_background_services(logger) -> None:
         ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
+        ("valve alerts scheduler", "core.valve_alerts", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),
     )
     heavy_starters = (

@@ -7,10 +7,10 @@ import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 import { SUB_TABS } from "../config";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
-const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","inform","meeting","calendar","devguide"];
+const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","valve","inform","meeting","calendar","devguide"];
 const BULK_DEFAULT_TABS=["filebrowser","dashboard","splittable","diagnosis","inform","meeting","calendar"];
 const BULK_HEADER_KEYS=new Set(["name","username","email","role","tabs"]);
-const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","inform","meeting","calendar","tablemap","groups","messages","devguide","diagnosis"];
+const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","valve","inform","meeting","calendar","tablemap","groups","messages","devguide","diagnosis"];
 const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",dbmap:"tablemap"};
 function _canonicalPageId(v){
   const key=String(v||"").trim().toLowerCase();

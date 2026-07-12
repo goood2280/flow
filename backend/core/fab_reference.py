@@ -22,6 +22,8 @@ from core.paths import PATHS
 
 STEP_MATCHING_FILE = "step_matching.csv"
 PPID_KNOB_FILE = "ppid_knob.csv"
+# Valve 룰북 순환의 마스터 매칭테이블 (vehicle, product, step_id, step_desc)
+VEHICLE_MATCHING_FILE = "Vehicle_matching.csv"
 
 # knob/step 의도 키워드 — handle() 에서 무관한 질문 가로채기 방지용(질문형만 매칭).
 # step_id 토큰 자체가 있으면 의도 키워드 없이도 강한 신호로 처리한다.
@@ -85,38 +87,65 @@ def _filter_product(rows: list[dict[str, str]], product: str) -> list[dict[str, 
     return [r for r in rows if r.get("product", "").upper() == pu]
 
 
-def lookup_step(text: str, product: str = "", *, rows: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    """step_matching.csv 기준 step_id <-> function_step 조회.
+def lookup_step(text: str, product: str = "", *,
+                rows: list[dict[str, str]] | None = None,
+                vehicle_rows: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """step_matching.csv + Vehicle_matching.csv 기준 step 조회.
 
-    text 안의 알려진 step_id 가 있으면 그 function_step 을, 없고 function_step 이
-    있으면 해당 step_id 목록을 반환. product 옵션으로 범위 제한.
+    text 안의 알려진 step_id 가 있으면 그 function_step(flow 내부) 과
+    step_desc(vehicle matching) 를, 없고 이름(function_step/step_desc)이 있으면
+    해당 step_id 목록을 반환. product 옵션으로 범위 제한.
+
+    rows 를 명시 주입하면(hermetic 테스트) vehicle_rows 도 주입분만 사용한다.
     """
+    injected = rows is not None
     rows = _read_rows(STEP_MATCHING_FILE) if rows is None else rows
+    if vehicle_rows is None:
+        vehicle_rows = [] if injected else _read_rows(VEHICLE_MATCHING_FILE)
     scope = _filter_product(rows, product)
-    if not scope:
+    vscope = _filter_product(vehicle_rows, product)
+    if not scope and not vscope:
         return {"found": False, "reason": "no_data", "matches": [], "answer": ""}
-    step_ids = {r["step_id"] for r in scope if r.get("step_id")}
+    step_ids = ({r["step_id"] for r in scope if r.get("step_id")}
+                | {r["step_id"] for r in vscope if r.get("step_id")})
     func_steps = {r["function_step"] for r in scope if r.get("function_step")}
+    step_descs = {r["step_desc"] for r in vscope if r.get("step_desc")}
     id_hits = {h.upper() for h in _find_known_tokens(text, step_ids)}
-    fs_hits = {h.upper() for h in _find_known_tokens(text, func_steps)}
+    name_hits = {h.upper() for h in _find_known_tokens(text, func_steps | step_descs)}
 
     if id_hits:
-        matches: list[dict[str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        merged: dict[tuple[str, str], dict[str, str]] = {}
+
+        def _slot(r: dict[str, str]) -> dict[str, str]:
+            key = (r.get("product", ""), r.get("step_id", ""))
+            return merged.setdefault(key, {
+                "product": r.get("product", ""), "step_id": r.get("step_id", ""),
+                "function_step": "", "step_desc": "", "vehicle": "",
+            })
+
         for r in scope:
             if r.get("step_id", "").upper() in id_hits:
-                key = (r.get("product", ""), r.get("step_id", ""))
-                if key in seen:
-                    continue
-                seen.add(key)
-                matches.append({"product": r.get("product", ""), "step_id": r.get("step_id", ""), "function_step": r.get("function_step", "")})
+                _slot(r)["function_step"] = r.get("function_step", "")
+        for r in vscope:
+            if r.get("step_id", "").upper() in id_hits:
+                m = _slot(r)
+                m["step_desc"] = r.get("step_desc", "")
+                m["vehicle"] = r.get("vehicle", "")
+        matches = list(merged.values())
         return {"found": True, "direction": "id_to_step", "matches": matches, "answer": _answer_id_to_step(matches)}
 
-    if fs_hits:
+    if name_hits:
         matches = [
-            {"product": r.get("product", ""), "step_id": r.get("step_id", ""), "function_step": r.get("function_step", "")}
+            {"product": r.get("product", ""), "step_id": r.get("step_id", ""),
+             "function_step": r.get("function_step", ""), "step_desc": "", "vehicle": ""}
             for r in scope
-            if r.get("function_step", "").upper() in fs_hits and r.get("step_id")
+            if r.get("function_step", "").upper() in name_hits and r.get("step_id")
+        ]
+        matches += [
+            {"product": r.get("product", ""), "step_id": r.get("step_id", ""),
+             "function_step": "", "step_desc": r.get("step_desc", ""), "vehicle": r.get("vehicle", "")}
+            for r in vscope
+            if r.get("step_desc", "").upper() in name_hits and r.get("step_id")
         ]
         return {"found": True, "direction": "step_to_id", "matches": matches, "answer": _answer_step_to_id(matches)}
 
@@ -126,10 +155,13 @@ def lookup_step(text: str, product: str = "", *, rows: list[dict[str, str]] | No
 def _answer_id_to_step(matches: list[dict[str, str]]) -> str:
     if not matches:
         return ""
-    parts = [
-        f"{m['step_id']}는 {m['product'] + '의 ' if m.get('product') else ''}{m['function_step']} step입니다."
-        for m in matches
-    ]
+    parts = []
+    for m in matches:
+        names = " / ".join(dict.fromkeys(
+            x for x in (m.get("function_step"), m.get("step_desc")) if x))
+        vehicle = f" [vehicle: {m['vehicle']}]" if m.get("vehicle") else ""
+        parts.append(
+            f"{m['step_id']}는 {m['product'] + '의 ' if m.get('product') else ''}{names} step입니다.{vehicle}")
     return "\n".join(parts)
 
 
@@ -138,7 +170,8 @@ def _answer_step_to_id(matches: list[dict[str, str]]) -> str:
         return ""
     by_step: dict[str, dict[str, list[str]]] = {}
     for m in matches:
-        by_step.setdefault(m["function_step"], {}).setdefault(m.get("product", ""), []).append(m["step_id"])
+        name = m.get("function_step") or m.get("step_desc") or ""
+        by_step.setdefault(name, {}).setdefault(m.get("product", ""), []).append(m["step_id"])
     lines: list[str] = []
     for fstep, by_prod in by_step.items():
         segs = [f"{prod}: {', '.join(ids)}" if prod else ", ".join(ids) for prod, ids in by_prod.items()]
@@ -352,6 +385,98 @@ def _answer_ppid_unmatched(value: str, reason: str) -> str:
     if reason == "value_unset":
         return f"{value}: ppid_knob.csv 의 value 열이 비어 있어 분류 규칙이 아직 설정되지 않았습니다. (담당자가 ppid↔category 매핑을 채워야 합니다.)"
     return f"{value}에 매칭되는 knob 분류 규칙을 ppid_knob.csv 에서 찾지 못했습니다."
+
+
+# ── Split(feature) 규칙 나열 ──────────────────────────────────────────────────
+_RULE_INTENT_RE = re.compile(r"(규칙|룰\s|룰이|룰은|룰을|룰북|\brules?\b)", re.IGNORECASE)
+_SPLIT_CONTEXT_RE = re.compile(r"(split|스플릿|knob|노브|분류)", re.IGNORECASE)
+
+
+def _rule_sort_key(rule: dict[str, str]) -> tuple[int, float]:
+    order = _norm(rule.get("rule_order")).upper()
+    if order == "RO":
+        return (1, 0.0)
+    m = re.search(r"(\d+)", order)
+    return (0, float(m.group(1)) if m else 9e9)
+
+
+def list_feature_rules(name: str, *, rows: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """ppid_knob.csv 에서 Split(feature) 이름으로 규칙 목록을 나열.
+
+    이름은 feature_name 정확 일치 > function_step 정확 일치 > feature_name
+    부분 일치 순으로 해석. 규칙은 R1..Rn 순 + RO(rest-of) 마지막.
+    """
+    rows = _read_rows(PPID_KNOB_FILE) if rows is None else rows
+    if not rows:
+        return {"found": False, "reason": "no_data", "features": [], "rules": [], "answer": ""}
+    target = _norm(name).upper()
+    feature_names = list(dict.fromkeys(r.get("feature_name", "") for r in rows if r.get("feature_name")))
+
+    feats = [f for f in feature_names if f.upper() == target]
+    if not feats:
+        feats = list(dict.fromkeys(
+            r.get("feature_name", "") for r in rows
+            if _norm(r.get("function_step")).upper() == target and r.get("feature_name")))
+    if not feats and len(target) >= 2:
+        feats = [f for f in feature_names if target in f.upper()]
+    if not feats:
+        avail = ", ".join(feature_names[:12]) + (" …" if len(feature_names) > 12 else "")
+        return {"found": False, "reason": "no_match", "features": [], "rules": [],
+                "answer": (f"'{name}' Split 규칙을 ppid_knob.csv 에서 찾지 못했습니다.\n"
+                           f"등록된 Split(feature): {avail}")}
+
+    out_rules: list[dict[str, str]] = []
+    lines: list[str] = []
+    for feat in feats:
+        grp = sorted((r for r in rows if r.get("feature_name") == feat), key=_rule_sort_key)
+        # 파일의 완전 중복 행은 표시에서 제거 (룰 의미는 동일).
+        seen: set[tuple] = set()
+        grp = [r for r in grp
+               if (key := (r.get("rule_order"), r.get("operator"), r.get("value"),
+                           r.get("category"), r.get("function_step"))) not in seen
+               and not seen.add(key)]
+        lines.append(f"'{feat}' Split 규칙 ({len(grp)}건, ppid_knob.csv):")
+        for r in grp:
+            order = _norm(r.get("rule_order")).upper()
+            rule = {"feature_name": feat, "rule_order": r.get("rule_order", ""),
+                    "operator": r.get("operator", ""), "value": r.get("value", ""),
+                    "category": r.get("category", ""), "function_step": r.get("function_step", "")}
+            out_rules.append(rule)
+            fs = f" ({rule['function_step']})" if rule["function_step"] else ""
+            if order == "RO":
+                cat = rule["category"] or "raw ppid 유지 (미분류 → 알람 대상)"
+                lines.append(f"- RO: 나머지 → {cat}{fs}")
+            else:
+                lines.append(f"- {rule['rule_order']}: {rule['operator'] or 'eq'} "
+                             f"{rule['value']} → {rule['category']}{fs}")
+    return {"found": True, "features": feats, "rules": out_rules, "answer": "\n".join(lines)}
+
+
+def list_rules_in_text(text: str, product: str = "", *, rows: list[dict[str, str]] | None = None) -> dict[str, Any] | None:
+    """홈 에이전트 handle() 용. 규칙 의도 + Split 이름이 있을 때만 결과, 아니면 None."""
+    rows = _read_rows(PPID_KNOB_FILE) if rows is None else rows
+    if not rows:
+        return None
+    text = str(text or "")
+    if not _RULE_INTENT_RE.search(text):
+        return None
+    known = {r.get("feature_name", "") for r in rows if r.get("feature_name")}
+    known |= {r.get("function_step", "") for r in rows if r.get("function_step")}
+    hits = _find_known_tokens(text, known)
+    if hits:
+        return list_feature_rules(hits[0], rows=rows)
+    # 알려진 이름이 없으면 '<이름> (split) 규칙' 패턴에서 후보 추출 —
+    # split/knob 맥락이 있을 때만 개입한다 (일반 '규칙' 질문 오염 방지).
+    if not _SPLIT_CONTEXT_RE.search(text):
+        return None
+    m = re.search(
+        r"([A-Za-z0-9_.\-]{2,40}(?:\s+[A-Za-z0-9_.\-]{1,40})?)\s*(?:의)?\s*(?:split|스플릿)?\s*(?:규칙|룰|rule)",
+        text, re.IGNORECASE)
+    candidate = m.group(1).strip() if m else ""
+    candidate = re.sub(r"(?i)\b(split|스플릿)\b\s*$", "", candidate).strip()
+    if not candidate:
+        return None
+    return list_feature_rules(candidate, rows=rows)
 
 
 def classify_ppid_in_text(text: str, product: str = "", *, rows: list[dict[str, str]] | None = None) -> dict[str, Any] | None:

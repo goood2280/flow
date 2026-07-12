@@ -28,7 +28,9 @@ logger = logging.getLogger("flow.matching_cache")
 
 _CACHE_DB = ".matching_cache.duckdb"
 _CACHE_META = "__matching_cache_meta"
-_LOCK = threading.Lock()
+# RLock 필수 — read_matching_csv 가 _LOCK 을 잡은 채 캐시 미스 시
+# refresh_matching_csv(동일 _LOCK 획득)를 호출한다. 일반 Lock 이면 self-deadlock.
+_LOCK = threading.RLock()
 
 # 운영에서 실제로 쓰이는 매칭 파일들 + 과거/레거시 혼재 파일
 SUPPORTED_MATCHING_FILES = {

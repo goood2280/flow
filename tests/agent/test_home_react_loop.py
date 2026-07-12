@@ -52,6 +52,8 @@ def _ok_exec(tool, step_input, **_kwargs):
 
 def test_react_loop_disabled_by_default(monkeypatch):
     monkeypatch.delenv(home_orchestrator._REACT_ENV_FLAG, raising=False)
+    # 운영 설정과 무관하게 "플래그 off ⇒ 비활성" 계약만 검증 (hermetic).
+    monkeypatch.setattr(home_orchestrator, "_agentic_settings_flag", lambda _name: False)
     assert home_orchestrator._react_loop_enabled() is False
 
 
@@ -69,16 +71,17 @@ def test_react_loop_enabled_when_flag_and_planner(monkeypatch):
 
 
 def test_react_max_iters_default_and_clamp(monkeypatch):
+    # 기본/상한 8 — 오케스트레이션 턴을 최대 8에서 끊는 운영 정책.
     monkeypatch.delenv(home_orchestrator._REACT_MAX_ITERS_ENV, raising=False)
-    assert home_orchestrator._react_max_iters() == home_orchestrator._MAX_ITERATIONS
+    assert home_orchestrator._react_max_iters() == 8
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "3")
     assert home_orchestrator._react_max_iters() == 3
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "99")
-    assert home_orchestrator._react_max_iters() == 6
+    assert home_orchestrator._react_max_iters() == 8
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "0")
     assert home_orchestrator._react_max_iters() == 1
     monkeypatch.setenv(home_orchestrator._REACT_MAX_ITERS_ENV, "garbage")
-    assert home_orchestrator._react_max_iters() == home_orchestrator._MAX_ITERATIONS
+    assert home_orchestrator._react_max_iters() == 8
 
 
 def test_react_deadline_default_and_clamp(monkeypatch):

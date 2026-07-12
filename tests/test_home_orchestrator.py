@@ -1304,7 +1304,7 @@ def test_flowi_chat_explicit_splittable_view_uses_fast_path(monkeypatch, tmp_pat
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"splittable"})
     monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
-    monkeypatch.setattr(flowi_units, "try_dispatch", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")))
+    monkeypatch.setattr(flowi_units, "try_dispatch", lambda *_args, **_kwargs: None)  # 유닛 사양 → legacy 경로 검증
     monkeypatch.setattr(llm_router, "_handle_flowi_query", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("generic router should not run")))
     monkeypatch.setattr(
         home_orchestrator,
@@ -1352,7 +1352,7 @@ def test_flowi_chat_explicit_splittable_view_asks_product_when_missing(monkeypat
     monkeypatch.setattr(
         flowi_units,
         "try_dispatch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+        lambda *_args, **_kwargs: None,  # 유닛(split_nav 포함) 사양 → legacy 경로 검증
     )
     monkeypatch.setattr(
         llm_router,
@@ -1400,7 +1400,7 @@ def test_flowi_chat_product_followup_resumes_pending_splittable_view(monkeypatch
     monkeypatch.setattr(
         flowi_units,
         "try_dispatch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+        lambda *_args, **_kwargs: None,  # 유닛(split_nav 포함) 사양 → legacy 경로 검증
     )
     monkeypatch.setattr(
         llm_router,
@@ -1471,7 +1471,7 @@ def test_flowi_chat_product_followup_keeps_bare_alpha_splittable_prompt(monkeypa
     monkeypatch.setattr(
         flowi_units,
         "try_dispatch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+        lambda *_args, **_kwargs: None,  # 유닛(split_nav 포함) 사양 → legacy 경로 검증
     )
     monkeypatch.setattr(
         llm_router,
@@ -1540,7 +1540,7 @@ def test_flowi_chat_explicit_splittable_view_preempts_measurement_lookup(monkeyp
     monkeypatch.setattr(
         flowi_units,
         "try_dispatch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+        lambda *_args, **_kwargs: None,  # 유닛(split_nav 포함) 사양 → legacy 경로 검증
     )
     monkeypatch.setattr(
         llm_router,
@@ -1606,7 +1606,7 @@ def test_flowi_chat_product_name_fab_lot_splittable_prompt_uses_view(monkeypatch
     monkeypatch.setattr(
         flowi_units,
         "try_dispatch",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unit dispatcher should not run")),
+        lambda *_args, **_kwargs: None,  # 유닛(split_nav 포함) 사양 → legacy 경로 검증
     )
     monkeypatch.setattr(
         llm_router,

@@ -131,6 +131,7 @@ def test_filebrowser_ai_sql_graph_shape_and_catalog(monkeypatch):
         "dashboard_agent",
         "step_lookup",
         "ppid_knob",
+        "split_nav",
     ]
 
 

@@ -534,12 +534,43 @@ export default function My_SplitTable({user}){
         // Set initial product to first visible source
         const visible=enabled?prods.filter(p=>enabled.has(p.name)):prods;
         if(visible.length)setSelProd(visible[0].name);else if(prods.length)setSelProd(prods[0].name);
+        // flow-i 딥링크 (?product=PRODA&root=A1006) — 제품/root lot 프리필.
+        const dl=deepLinkRef.current;
+        if(dl&&dl.prod){
+          const pu=dl.prod.toUpperCase();
+          const target=prods.find(p=>{const n=String(p.name||"").toUpperCase();return n===pu||n===`ML_TABLE_${pu}`||n.endsWith(`_${pu}`);});
+          if(target)setSelProd(target.name);
+        }
+        if(dl&&dl.root)setLotId(dl.root);
         setPrefixes(prefRes.prefixes||[]);
       });
     reloadCustoms();
     loadUniques();
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
   },[]);
+  // v9.2.x: flow-i 딥링크 — URL query(product/root) 를 1회 소비해 자동 검색까지 수행.
+  const deepLinkRef=useRef(null);
+  if(deepLinkRef.current===null){
+    let dl=false;
+    try{
+      const qs=new URLSearchParams(window.location.search||"");
+      const root=(qs.get("root")||"").trim();
+      const prod=(qs.get("product")||"").trim();
+      if(root||prod)dl={root,prod,searched:false};
+    }catch(_){/* noop */}
+    deepLinkRef.current=dl;
+  }
+  useEffect(()=>{
+    const dl=deepLinkRef.current;
+    if(!dl||dl.searched||!selProd)return;
+    if(dl.prod){
+      const pu=dl.prod.toUpperCase();const su=String(selProd).toUpperCase();
+      if(su!==pu&&su!==`ML_TABLE_${pu}`&&!su.endsWith(`_${pu}`))return; // 제품 프리필 대기
+    }
+    if(dl.root&&lotId!==dl.root)return; // root 프리필 대기
+    dl.searched=true;
+    if(dl.root)loadView();
+  },[selProd,lotId]);
   const visibleProducts=enabledSources&&enabledSources.size>0?products.filter(p=>enabledSources.has(p.name)):enabledSources?[]:products;
   const normalizeLotList=(values)=>[...new Set((values||[]).map(v=>String(v||"").trim()).filter(Boolean))];
   // When enabledSources or products change, ensure selProd is in visible list
