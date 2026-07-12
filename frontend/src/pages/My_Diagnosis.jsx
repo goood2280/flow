@@ -32,8 +32,9 @@ const SEMANTIC_SECTIONS = [
   { k: "review", l: "검토 이력" },
 ];
 const FLOWI_SECTIONS = [
+  { k: "runtime", l: "실행 이력 (스토리)" },
+  { k: "tools", l: "연결 기능" },
   { k: "workflows", l: "Workflow 템플릿" },
-  { k: "runtime", l: "Runtime trace" },
 ];
 
 function agentUnitGraphEndpoint(unitKey) {
@@ -948,11 +949,17 @@ function FileBrowserAiSqlUnitPanel() {
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
           <div style={{ display: "grid", gap: 8 }}>
-            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
-            {trace.length && Object.keys(stateDesign).length ? (
+            {trace.length ? (
+              <JsonBlock value={stateValue} maxHeight={520} />
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                질문을 실행하거나 이력을 선택하면 실제 state 값이 표시됩니다.
+              </div>
+            )}
+            {Object.keys(stateDesign).length ? (
               <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
                 <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
-                  state_design
+                  state_design (스키마 설계)
                 </summary>
                 <JsonBlock value={stateDesign} maxHeight={220} />
               </details>
@@ -983,28 +990,33 @@ function FileBrowserAiSqlUnitPanel() {
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
-                  <JsonBlock
-                    value={{
-                      persona: selectedNode.persona || "",
-                      prompt: {
-                        mode: selectedPromptMode,
-                        system: selectedPromptSystem,
-                      },
-                      answer_attach_rule: selectedNode.answer_attach_rule || "",
-                    }}
-                    maxHeight={selectedPromptSystem ? 220 : 140}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
-                  <JsonBlock
-                    value={{
-                      reads: selectedStateIo.reads || selectedNode.reads || [],
-                      writes: selectedStateIo.writes || selectedNode.writes || [],
-                    }}
-                    maxHeight={150}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
-                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 설계 (persona · state I/O)</summary>
+                    <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                      <JsonBlock
+                        value={{
+                          persona: selectedNode.persona || "",
+                          prompt: {
+                            mode: selectedPromptMode,
+                            system: selectedPromptSystem,
+                          },
+                          answer_attach_rule: selectedNode.answer_attach_rule || "",
+                        }}
+                        maxHeight={selectedPromptSystem ? 220 : 140}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                      <JsonBlock
+                        value={{
+                          reads: selectedStateIo.reads || selectedNode.reads || [],
+                          writes: selectedStateIo.writes || selectedNode.writes || [],
+                        }}
+                        maxHeight={150}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                      <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                    </div>
+                  </details>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
                   <JsonBlock
                     value={selectedTraceNode ? {
@@ -1089,10 +1101,10 @@ function FileBrowserAiSqlUnitPanel() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>debug request</summary>
               <JsonBlock value={debugRequest} maxHeight={110} />
-            </div>
+            </details>
             <Button variant="primary" onClick={run} disabled={!canRun || busy}>
               {busy ? "실행 중" : "실행"}
             </Button>
@@ -1408,11 +1420,17 @@ function InformRegistrationUnitPanel() {
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
           <div style={{ display: "grid", gap: 8 }}>
-            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
-            {trace.length && Object.keys(stateDesign).length ? (
+            {trace.length ? (
+              <JsonBlock value={stateValue} maxHeight={520} />
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                질문을 실행하거나 이력을 선택하면 실제 state 값이 표시됩니다.
+              </div>
+            )}
+            {Object.keys(stateDesign).length ? (
               <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
                 <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
-                  state_design
+                  state_design (스키마 설계)
                 </summary>
                 <JsonBlock value={stateDesign} maxHeight={220} />
               </details>
@@ -1443,28 +1461,33 @@ function InformRegistrationUnitPanel() {
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
-                  <JsonBlock
-                    value={{
-                      persona: selectedNode.persona || "",
-                      prompt: {
-                        mode: selectedPromptMode,
-                        system: selectedPromptSystem,
-                      },
-                      answer_attach_rule: selectedNode.answer_attach_rule || "",
-                    }}
-                    maxHeight={selectedPromptSystem ? 220 : 140}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
-                  <JsonBlock
-                    value={{
-                      reads: selectedStateIo.reads || selectedNode.reads || [],
-                      writes: selectedStateIo.writes || selectedNode.writes || [],
-                    }}
-                    maxHeight={150}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
-                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 설계 (persona · state I/O)</summary>
+                    <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                      <JsonBlock
+                        value={{
+                          persona: selectedNode.persona || "",
+                          prompt: {
+                            mode: selectedPromptMode,
+                            system: selectedPromptSystem,
+                          },
+                          answer_attach_rule: selectedNode.answer_attach_rule || "",
+                        }}
+                        maxHeight={selectedPromptSystem ? 220 : 140}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                      <JsonBlock
+                        value={{
+                          reads: selectedStateIo.reads || selectedNode.reads || [],
+                          writes: selectedStateIo.writes || selectedNode.writes || [],
+                        }}
+                        maxHeight={150}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                      <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                    </div>
+                  </details>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
                   <JsonBlock
                     value={selectedTraceNode ? {
@@ -1509,10 +1532,10 @@ function InformRegistrationUnitPanel() {
                 style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
               />
             </Field>
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>debug request</summary>
               <JsonBlock value={debugRequest} maxHeight={120} />
-            </div>
+            </details>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Button variant="primary" onClick={() => runAction("continue")} disabled={!canContinue || busy}>
                 {busy ? "실행 중" : "실행"}
@@ -1837,11 +1860,17 @@ function ChangeManagementUnitPanel() {
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={stateSubtitle}>
           <div style={{ display: "grid", gap: 8 }}>
-            <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
-            {trace.length && Object.keys(stateDesign).length ? (
+            {trace.length ? (
+              <JsonBlock value={stateValue} maxHeight={520} />
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                질문을 실행하거나 이력을 선택하면 실제 state 값이 표시됩니다.
+              </div>
+            )}
+            {Object.keys(stateDesign).length ? (
               <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
                 <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
-                  state_design
+                  state_design (스키마 설계)
                 </summary>
                 <JsonBlock value={stateDesign} maxHeight={220} />
               </details>
@@ -1872,28 +1901,33 @@ function ChangeManagementUnitPanel() {
                   {(selectedTraceNode?.warnings || []).length ? (
                     <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner>
                   ) : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
-                  <JsonBlock
-                    value={{
-                      persona: selectedNode.persona || "",
-                      prompt: {
-                        mode: selectedPromptMode,
-                        system: selectedPromptSystem,
-                      },
-                      answer_attach_rule: selectedNode.answer_attach_rule || "",
-                    }}
-                    maxHeight={selectedPromptSystem ? 220 : 140}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
-                  <JsonBlock
-                    value={{
-                      reads: selectedStateIo.reads || selectedNode.reads || [],
-                      writes: selectedStateIo.writes || selectedNode.writes || [],
-                    }}
-                    maxHeight={150}
-                  />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
-                  <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                  <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 설계 (persona · state I/O)</summary>
+                    <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                      <JsonBlock
+                        value={{
+                          persona: selectedNode.persona || "",
+                          prompt: {
+                            mode: selectedPromptMode,
+                            system: selectedPromptSystem,
+                          },
+                          answer_attach_rule: selectedNode.answer_attach_rule || "",
+                        }}
+                        maxHeight={selectedPromptSystem ? 220 : 140}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                      <JsonBlock
+                        value={{
+                          reads: selectedStateIo.reads || selectedNode.reads || [],
+                          writes: selectedStateIo.writes || selectedNode.writes || [],
+                        }}
+                        maxHeight={150}
+                      />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>공유 state</div>
+                      <JsonBlock value={selectedNode.shared_state || []} maxHeight={120} />
+                    </div>
+                  </details>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
                   <JsonBlock
                     value={selectedTraceNode ? {
@@ -1948,10 +1982,10 @@ function ChangeManagementUnitPanel() {
                 />
               </Field>
             </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>debug request</summary>
               <JsonBlock value={debugRequest} maxHeight={120} />
-            </div>
+            </details>
             <Button variant="primary" onClick={run} disabled={!canRun || busy}>
               {busy ? "실행 중" : "실행"}
             </Button>
@@ -2247,7 +2281,23 @@ function DashboardAgentUnitPanel() {
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={selectedTraceNode ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}` : ""}>
-          <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+          <div style={{ display: "grid", gap: 8 }}>
+            {trace.length ? (
+              <JsonBlock value={stateValue} maxHeight={520} />
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                질문을 실행하거나 이력을 선택하면 실제 state 값이 표시됩니다.
+              </div>
+            )}
+            {Object.keys(activeGraph?.state_design || {}).length ? (
+              <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
+                  state_design (스키마 설계)
+                </summary>
+                <JsonBlock value={activeGraph?.state_design || {}} maxHeight={220} />
+              </details>
+            ) : null}
+          </div>
         </Panel>
 
         <Panel title="LangGraph" subtitle={trace.length ? `${trace.length}/${graphNodes.length} nodes · click to inspect` : ""}>
@@ -2269,10 +2319,15 @@ function DashboardAgentUnitPanel() {
                     fallback={selectedNode}
                   />
                   {(selectedTraceNode?.warnings || []).length ? <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner> : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
-                  <JsonBlock value={{ persona: selectedNode.persona || "", prompt: { mode: selectedPromptMode, system: selectedPromptSystem }, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={selectedPromptSystem ? 220 : 140} />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
-                  <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                  <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 설계 (persona · state I/O)</summary>
+                    <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                      <JsonBlock value={{ persona: selectedNode.persona || "", prompt: { mode: selectedPromptMode, system: selectedPromptSystem }, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={selectedPromptSystem ? 220 : 140} />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                      <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                    </div>
+                  </details>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
                   <JsonBlock value={selectedTraceNode ? { status: selectedTraceNode.status, input_summary: selectedTraceNode.input_summary || {}, output: selectedNodeOutput || {}, duration_ms: selectedTraceNode.duration_ms || 0 } : { status: selectedNode.status || "pending" }} maxHeight={230} />
                 </>
@@ -2294,8 +2349,10 @@ function DashboardAgentUnitPanel() {
             <Field label="sample_rows">
               <Textarea value={rowsText} onChange={(e) => setRowsText(e.target.value)} rows={5} />
             </Field>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
-            <JsonBlock value={debugRequest} maxHeight={130} />
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>debug request</summary>
+              <JsonBlock value={debugRequest} maxHeight={130} />
+            </details>
             <Button variant="primary" onClick={run} disabled={!prompt.trim() || busy}>{busy ? "실행 중" : "실행"}</Button>
             {result?.chart_result ? (
               <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
@@ -2535,7 +2592,23 @@ function DeterministicLookupUnitPanel({ unitKey, title, defaultPrompt }) {
 
       <div className="flow-agent-unit-grid">
         <Panel title="State" subtitle={selectedTraceNode ? `up to ${selectedTraceNode.label || selectedTraceNode.node_id}` : ""}>
-          <JsonBlock value={stateValue} maxHeight={trace.length ? 520 : 620} />
+          <div style={{ display: "grid", gap: 8 }}>
+            {trace.length ? (
+              <JsonBlock value={stateValue} maxHeight={520} />
+            ) : (
+              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                질문을 실행하거나 이력을 선택하면 실제 state 값이 표시됩니다.
+              </div>
+            )}
+            {Object.keys(activeGraph?.state_design || {}).length ? (
+              <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                <summary style={{ padding: "6px 8px", fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", background: "var(--bg-tertiary)" }}>
+                  state_design (스키마 설계)
+                </summary>
+                <JsonBlock value={activeGraph?.state_design || {}} maxHeight={220} />
+              </details>
+            ) : null}
+          </div>
         </Panel>
 
         <Panel title="LangGraph" subtitle={trace.length ? `${trace.length}/${graphNodes.length} nodes · click to inspect` : ""}>
@@ -2552,10 +2625,15 @@ function DeterministicLookupUnitPanel({ unitKey, title, defaultPrompt }) {
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{selectedNode.node_id}</span>
                   <NodeFeedbackInline feedback={feedback} nodeId={selectedNode.node_id} runId={result?.run_id || ""} fallback={selectedNode} />
                   {(selectedTraceNode?.warnings || []).length ? <Banner tone="warn">{(selectedTraceNode.warnings || []).join(" / ")}</Banner> : null}
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
-                  <JsonBlock value={{ persona: selectedNode.persona || "", prompt: selectedNode.prompt || {}, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={140} />
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
-                  <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                  <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 설계 (persona · state I/O)</summary>
+                    <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>Persona</div>
+                      <JsonBlock value={{ persona: selectedNode.persona || "", prompt: selectedNode.prompt || {}, answer_attach_rule: selectedNode.answer_attach_rule || "" }} maxHeight={140} />
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>State I/O</div>
+                      <JsonBlock value={{ reads: selectedStateIo.reads || [], writes: selectedStateIo.writes || [] }} maxHeight={150} />
+                    </div>
+                  </details>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>실행 결과</div>
                   <JsonBlock value={selectedTraceNode ? { status: selectedTraceNode.status, input_summary: selectedTraceNode.input_summary || {}, output: selectedNodeOutput || {}, duration_ms: selectedTraceNode.duration_ms || 0 } : { status: selectedNode.status || "pending" }} maxHeight={230} />
                 </>
@@ -2579,8 +2657,10 @@ function DeterministicLookupUnitPanel({ unitKey, title, defaultPrompt }) {
                 style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
               />
             </Field>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>debug request</div>
-            <JsonBlock value={{ prompt: prompt.trim(), product: product.trim() }} maxHeight={100} />
+            <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>debug request</summary>
+              <JsonBlock value={{ prompt: prompt.trim(), product: product.trim() }} maxHeight={100} />
+            </details>
             <Button variant="primary" onClick={run} disabled={!prompt.trim() || busy}>{busy ? "실행 중" : "실행"}</Button>
             {result ? (
               <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10, display: "grid", gap: 6 }}>
@@ -3758,8 +3838,191 @@ function HomeFlowiWorkflowManagerPanel() {
   );
 }
 
+// ── 동작 개요 · 용어 사전 ─────────────────────────────────────────────────────
+const AGENT_PIPELINE_STEPS = [
+  { n: "①", t: "질문 입력", d: "홈 챗(/api/llm/flowi/chat)으로 질문이 들어옵니다." },
+  { n: "②", t: "결정적 단위기능", d: "Step ID 매칭·PPID Knob 분류·SplitTable 열기가 LLM 없이 CSV/parquet를 조회해 즉답합니다. 확신이 없으면 다음 단계로 넘깁니다." },
+  { n: "③", t: "ReAct 오케스트레이터 (LLM)", d: "LLM이 매 턴 연결 기능(도구) 하나를 골라 실행하고, 결과를 보고 다음 행동을 결정합니다 (최대 8턴). 정보가 부족하면 ask_user로 되묻습니다." },
+  { n: "④", t: "폴백", d: "LLM을 쓸 수 없을 때만 기능 안내(가이드)로 응답하며, 응답 warnings에 사유가 표시됩니다." },
+];
+const AGENT_GLOSSARY = [
+  ["용어해석 (Semantic layer)", "질문 속 단어를 데이터 용어로 변환하는 단계. 예: '스텝'→step_id 컬럼, 'PRODA'→product 값. 별칭 사전·스키마 카탈로그를 사용합니다."],
+  ["단위기능 AI (Unit AI)", "LLM 없이 규칙/CSV/parquet 조회로 즉답하는 결정적 기능. 홈 챗에서 실제 실행되는 것은 step_lookup, ppid_knob, split_nav 3개입니다."],
+  ["ReAct 턴 (step)", "오케스트레이터가 도구 1개를 고르고 실행하는 1회 반복. 반복행동/무진전/시간초과 가드가 있습니다."],
+  ["도구 (tool)", "오케스트레이터가 고를 수 있는 연결 기능 — 단위기능 AI + function-call. '연결 기능' 섹션에서 전체 목록을 확인하세요."],
+  ["function-call", "'Lot 현재 Step 조회'처럼 인자를 받아 데이터를 직접 조회하는 작은 함수형 도구. ReAct 루프에서만 실제 실행됩니다."],
+  ["ask_user", "정보가 부족할 때 모델이 사용자에게 되묻는 human-in-the-loop 행동. 챗에 선택지 버튼으로 표시됩니다."],
+  ["planner", "실행 계획의 주체. react=LLM 루프, heuristic/alias=키워드 매칭 폴백(LLM 불가 시)."],
+  ["State / LangGraph", "단위기능 AI 콘솔에서 시험 실행할 때의 내부 상태와 노드 그래프. 홈 챗 경로와는 별개의 시험 화면입니다."],
+];
+
+function AgentOverviewPanel() {
+  return (
+    <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "8px 12px", marginBottom: 10 }}>
+      <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
+        동작 개요 · 용어 설명 <span style={{ fontWeight: 400, fontSize: 11, color: "var(--text-secondary)" }}>— 질문이 처리되는 순서와 이 페이지의 용어</span>
+      </summary>
+      <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+        <div style={{ display: "grid", gap: 6 }}>
+          {AGENT_PIPELINE_STEPS.map((s) => (
+            <div key={s.n} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12 }}>
+              <span style={{ fontWeight: 800, color: "var(--brand, var(--text-primary))" }}>{s.n}</span>
+              <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{s.t}</span>
+              <span style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>{s.d}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "grid", gap: 5 }}>
+          {AGENT_GLOSSARY.map(([term, desc]) => (
+            <div key={term} style={{ display: "grid", gridTemplateColumns: "180px minmax(0,1fr)", gap: 8, fontSize: 12 }}>
+              <span style={{ fontWeight: 700 }}>{term}</span>
+              <span style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>{desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+// ── 실행 스토리라인: 질문 → 용어해석 → 턴별 도구 실행 → 결론 ─────────────────
+const STORY_KIND_LABELS = { unit_ai: "단위기능", function: "함수 도구" };
+const STORY_PLANNER_LABELS = {
+  react: "LLM ReAct 루프",
+  heuristic: "키워드 매칭 (LLM 미사용)",
+  alias: "별칭 매칭 (LLM 미사용)",
+  llm: "LLM 단일 계획",
+  home_memory: "대화 메모리",
+};
+
+function RunStoryline({ run }) {
+  if (!run) return null;
+  const trace = Array.isArray(run.trace) ? run.trace : [];
+  const semanticOut = run?.node_details?.semantic_layer?.output_summary || {};
+  const signals = semanticOut.signals && typeof semanticOut.signals === "object" ? semanticOut.signals : {};
+  const planner = String(run?.node_details?.orchestrator?.output_summary?.planner || "");
+  const reply = String(run?.reply || "").trim();
+  const toolMeta = run?.tool || {};
+  const sectionTitle = (no, label) => (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <span style={{ fontSize: 11, fontWeight: 800, color: "var(--brand, var(--text-primary))" }}>{no}</span>
+      <span style={{ fontSize: 12, fontWeight: 800 }}>{label}</span>
+    </div>
+  );
+  return (
+    <div style={{ display: "grid", gap: 10, marginBottom: 10, border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "10px 12px" }}>
+      <div style={{ display: "grid", gap: 4 }}>
+        {sectionTitle("1", "질문")}
+        <div style={{ fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{run.resolved_prompt || run.prompt || "(empty)"}</div>
+      </div>
+      <div style={{ display: "grid", gap: 4 }}>
+        {sectionTitle("2", "용어해석")}
+        {Object.keys(signals).length ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(signals).map(([k, v]) => (
+              <Pill key={k} tone="neutral">{k} {typeof v === "number" ? v.toFixed(1) : String(v)}</Pill>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>키워드 신호 없음 — LLM이 직접 도구를 선택합니다.</div>
+        )}
+      </div>
+      <div style={{ display: "grid", gap: 6 }}>
+        {sectionTitle("3", `실행${planner ? ` — ${STORY_PLANNER_LABELS[planner] || planner}` : ""}${trace.length ? ` · ${trace.length}턴` : ""}`)}
+        {trace.length ? trace.map((row, idx) => {
+          const ok = row?.ok !== false && row?.status !== "failed";
+          return (
+            <div key={`${idx}-${row?.tool || ""}`} style={{ display: "grid", gap: 3, borderLeft: `3px solid ${ok ? "var(--ok, #3a9)" : "var(--danger, #c55)"}`, paddingLeft: 8 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+                <span style={{ fontWeight: 700 }}>턴 {idx + 1}</span>
+                <span>{row?.title || row?.tool || "?"}</span>
+                <Pill tone={ok ? "ok" : "bad"}>{row?.status || (ok ? "success" : "failed")}</Pill>
+                <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                  {STORY_KIND_LABELS[row?.kind] || row?.kind || ""}{Number.isFinite(row?.ms) ? ` · ${row.ms} ms` : ""}
+                </span>
+              </div>
+              {row?.reason ? (
+                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>선택 근거: {row.reason}</div>
+              ) : null}
+              {row?.result_preview ? (
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>결과: {String(row.result_preview).slice(0, 200)}</div>
+              ) : null}
+            </div>
+          );
+        }) : (
+          <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>도구 실행 없음 (즉답 또는 계획 실패).</div>
+        )}
+      </div>
+      <div style={{ display: "grid", gap: 4 }}>
+        {sectionTitle("4", "결론")}
+        <div style={{ fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5 }}>{reply || "(응답 없음)"}</div>
+        {(toolMeta.intent || toolMeta.feature) ? (
+          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+            intent={toolMeta.intent || "-"} · feature={toolMeta.feature || "-"}{toolMeta.action ? ` · action=${toolMeta.action}` : ""}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ── 연결 기능(도구) 카탈로그 ─────────────────────────────────────────────────
+function HomeFlowiToolsPanel() {
+  const [tools, setTools] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    sf("/api/agent/home-flowi/tools")
+      .then((payload) => setTools(Array.isArray(payload?.tools) ? payload.tools : []))
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const units = tools.filter((t) => t.kind === "unit_ai");
+  const funcs = tools.filter((t) => t.kind !== "unit_ai");
+  const toolRow = (t) => (
+    <div key={`${t.kind}-${t.name}`} style={{ display: "grid", gap: 3, padding: "8px 9px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 800 }}>{t.title || t.name}</span>
+        <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{t.name}</code>
+        <Pill tone={t.enabled ? "ok" : "neutral"}>{t.enabled ? "사용 가능" : "비활성"}</Pill>
+      </div>
+      {t.description ? (
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{t.description}</div>
+      ) : null}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {(t.tags || []).slice(0, 8).map((tag) => (
+          <span key={tag} style={{ fontSize: 10, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-secondary)" }}>{tag}</span>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        홈 Flow-i 오케스트레이터가 질문에 따라 골라 실행할 수 있는 연결 기능 목록입니다.
+        단위기능 AI는 결정적(LLM 무관) 즉답, 함수 도구는 ReAct 루프에서 인자를 채워 실행됩니다.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, alignItems: "start" }}>
+        <Panel title="단위기능 AI" subtitle={loading ? "loading" : `${units.length} tools`}>
+          <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", maxHeight: 560, overflow: "auto" }}>
+            {units.map(toolRow)}
+          </div>
+        </Panel>
+        <Panel title="함수 도구 (function-call)" subtitle={loading ? "loading" : `${funcs.length} tools`}>
+          <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", maxHeight: 560, overflow: "auto" }}>
+            {funcs.map(toolRow)}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 function HomeFlowiPanel() {
-  const [activeFlowiSection, setActiveFlowiSection] = useState("workflows");
+  const [activeFlowiSection, setActiveFlowiSection] = useState("runtime");
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -3768,7 +4031,9 @@ function HomeFlowiPanel() {
         onChange={setActiveFlowiSection}
         items={FLOWI_SECTIONS}
       />
-      {activeFlowiSection === "workflows" ? <HomeFlowiWorkflowManagerPanel /> : <HomeFlowiRuntimePanel />}
+      {activeFlowiSection === "workflows"
+        ? <HomeFlowiWorkflowManagerPanel />
+        : (activeFlowiSection === "tools" ? <HomeFlowiToolsPanel /> : <HomeFlowiRuntimePanel />)}
     </div>
   );
 }
@@ -3833,7 +4098,6 @@ function HomeFlowiRuntimePanel() {
   const preview = detail?.preview && typeof detail.preview === "object" ? detail.preview : {};
   const promptText = run?.resolved_prompt || run?.prompt || "";
   const inputPromptText = run?.input_prompt || "";
-  const actionSummary = Array.isArray(run?.action_log?.summary) ? run.action_log.summary.filter(Boolean).slice(0, 4) : [];
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -3888,26 +4152,26 @@ function HomeFlowiRuntimePanel() {
         </Panel>
 
         <Panel
-          title="Flow-i Runtime"
-          subtitle={run ? `${run.source || "home"} · ${run.run_id}` : (runLoading ? "loading" : "default graph")}
+          title="실행 스토리"
+          subtitle={run ? `${run.source || "home"} · ${run.run_id}` : (runLoading ? "loading" : "실행을 선택하세요")}
           right={<Pill tone={toneForStatus(run?.status)}>{run?.status || "ready"}</Pill>}
         >
-          {promptText ? (
-            <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }} title={promptText}>
-              {promptText}
+          {run ? <RunStoryline run={run} /> : (
+            <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+              왼쪽에서 실행 기록을 선택하면 질문 → 용어해석 → 턴별 도구 실행 → 결론 순서로 표시됩니다.
             </div>
-          ) : null}
+          )}
           {inputPromptText && inputPromptText !== promptText ? (
             <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
               input: {inputPromptText}
             </div>
           ) : null}
-          {actionSummary.length ? (
-            <div style={{ marginBottom: 8, display: "grid", gap: 3, fontSize: 11, color: "var(--text-secondary)" }}>
-              {actionSummary.map((line, idx) => <div key={`${idx}-${line}`} style={{ overflowWrap: "anywhere" }}>{line}</div>)}
+          <details style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", padding: "6px 8px" }}>
+            <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>노드 그래프 보기</summary>
+            <div style={{ marginTop: 8 }}>
+              <RuntimeGraph graph={activeGraph} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
             </div>
-          ) : null}
-          <RuntimeGraph graph={activeGraph} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+          </details>
         </Panel>
 
         <Panel
@@ -3970,6 +4234,7 @@ export default function My_Diagnosis({ user }) {
             />
           </div>
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>
+            <AgentOverviewPanel />
             {activeTab === "home-flowi"
               ? <HomeFlowiPanel />
               : (activeTab === "semantic" ? <SemanticLayerPanel /> : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />))}

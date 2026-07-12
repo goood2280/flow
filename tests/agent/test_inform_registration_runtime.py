@@ -114,6 +114,7 @@ def test_inform_registration_graph_shape_and_catalog(monkeypatch):
         "dashboard_agent",
         "step_lookup",
         "ppid_knob",
+        "split_nav",
     ]
 
     status = agent.agent_reset_status()

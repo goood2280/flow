@@ -7,6 +7,7 @@ from core.flowi_units.dashboard_agent import DashboardAgentUnitAI
 from core.flowi_units.filebrowser import FileBrowserAiSqlUnitAI
 from core.flowi_units.inform_registration import InformRegistrationUnitAI
 from core.flowi_units.ppid_knob import PpidKnobUnitAI
+from core.flowi_units.split_nav import SplitNavUnitAI
 from core.flowi_units.step_lookup import StepLookupUnitAI
 
 _UNIT_AI_CLASSES = (
@@ -16,6 +17,7 @@ _UNIT_AI_CLASSES = (
     DashboardAgentUnitAI,
     StepLookupUnitAI,
     PpidKnobUnitAI,
+    SplitNavUnitAI,
 )
 
 UNIT_AIS: dict[str, UnitAI] = {cls.KEY: cls() for cls in _UNIT_AI_CLASSES}

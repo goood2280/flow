@@ -215,6 +215,9 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
         setResult(enriched);
         setMessages(prev=>[...prev,{id:`a-${Date.now()}`,role:"assistant",answer:enriched?.answer||"",prompt:q,result:enriched,intent:enriched?.tool?.intent||"",ts:new Date().toISOString()}]);
         setPrompt("");
+        // 유닛이 auto navigate 를 지정한 경우 ("X 스플릿테이블 보여줘") — 답 표시 후 바로 이동.
+        const nav=enriched?.tool?.navigate;
+        if(nav?.auto&&nav?.tab)setTimeout(()=>flowiNavigate(nav),600);
       }).catch(e=>{
         const timedOut=e?.name==="AbortError";
         const msg=timedOut
@@ -597,6 +600,14 @@ function flowiResultSummary(tool,result){
   return result?.answer?"Flowi 응답":"Flowi 결과";
 }
 
+// tool.navigate={tab,search,auto} — 백엔드 유닛이 준 딥링크로 탭을 연다 (query 유지).
+function flowiNavigate(navigate){
+  const tab=String(navigate?.tab||"").trim();
+  if(!tab)return;
+  try{window.dispatchEvent(new CustomEvent("flow:navigate",{detail:{tab,search:String(navigate?.search||"")}}));}
+  catch(_){/* noop */}
+}
+
 function flowiResultActions(tool,table,chartResult,onNavigate){
   const items=[];
   const canNav=typeof onNavigate==="function";
@@ -605,7 +616,9 @@ function flowiResultActions(tool,table,chartResult,onNavigate){
   const rawDownload=tool?.raw_data_download&&typeof tool.raw_data_download==="object"?tool.raw_data_download:null;
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||rawDownload?.chart_session_id||"";
   const addNav=(key,label,title)=>{if(canNav&&!items.some(x=>x.key===`nav-${key}`))items.push({key:`nav-${key}`,label,title,onClick:()=>onNavigate(key)});};
-  if(feature==="splittable"||kind.includes("split")||kind.includes("knob"))addNav("splittable","전체화면 SplitTable","SplitTable 화면에서 전체 결과 보기");
+  const navigate=tool?.navigate&&typeof tool.navigate==="object"?tool.navigate:null;
+  if(navigate?.tab)items.push({key:`nav-deep-${navigate.tab}`,label:navigate.label||"SplitTable 열기",title:`${navigate.tab} 화면 열기${navigate.search?` (${navigate.search})`:""}`,onClick:()=>flowiNavigate(navigate)});
+  if(!navigate&&(feature==="splittable"||kind.includes("split")||kind.includes("knob")))addNav("splittable","전체화면 SplitTable","SplitTable 화면에서 전체 결과 보기");
   if(rawDownload?.url)items.push({key:"chart-raw-csv",label:"Raw CSV",title:`Chart raw data CSV 다운로드 · ${rawDownload.row_count??"-"}행`,onClick:()=>flowiDownloadChartRaw(rawDownload)});
   else if(chartSessionId)items.push({key:"chart-raw-csv",label:"Raw CSV",title:"직전 chart session raw data를 CSV로 내려받기",onClick:()=>flowiDownloadChartRaw({chart_session_id:chartSessionId})});
   if(feature==="dashboard"||chartResult||tool?.chart)addNav("dashboard","차트 페이지","Dashboard 화면에서 차트 보기");

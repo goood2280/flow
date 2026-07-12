@@ -30,7 +30,9 @@ _PROD_SHARED = Path("/config/work/sharedworkspace")
 _DEFAULT_BACKUP_ROOT = _PROD_SHARED
 
 # 제외 규칙 — 파생 parquet/cache/tmp/파이썬 캐시.  logs/uploads 는 **포함**.
-_EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules"}
+_EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules",
+                      # 로컬 데모용 공유 S3 버킷 (Valve↔flow 교환 데이터 — 사용자 기록 아님)
+                      "s3_bucket"}
 _EXCLUDE_GLOBS = ("*.pyc", "*.parquet")
 
 # v8.8.3: 기본 보관 개수 14 → 5, 상한도 5 로 축소 (디스크 보호).

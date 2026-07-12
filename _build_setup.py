@@ -69,6 +69,9 @@ EXCLUDE_PARTS = {
     '__pycache__', 'node_modules', 'dist', '.git', 'reports',
     # 사용자 데이터 디렉토리 — 빌드 시 번들에서 제외 (런타임엔 _write 가드도 있음)
     'data', 'flow-data', 'Fab', 'Base', 'DB', 'wafer_maps',
+    # 퇴역 코드 보관소 — INCLUDE_DIRS 밖(루트 archive/)이 기본이지만, 포함 디렉토리
+    # 안에 reference/backup 폴더를 만들어 옮겨도 번들에 새지 않게 이중 방어.
+    'archive', 'reference', 'backup',
 }
 
 

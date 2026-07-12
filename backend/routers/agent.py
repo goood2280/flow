@@ -1214,6 +1214,20 @@ def home_flowi_runtime_graph(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/home-flowi/tools")
+def home_flowi_tools(request: Request) -> dict[str, Any]:
+    """홈 Flow-i ReAct 오케스트레이터가 고를 수 있는 연결 기능(도구) 카탈로그.
+
+    unit_ai + function-call 통합 목록 (tool_registry 읽기 전용)."""
+    current_user(request)
+    try:
+        from core import tool_registry
+        tools = tool_registry.list_tools(include_stats=False)
+    except Exception:
+        tools = []
+    return {"ok": True, "tools": tools}
+
+
 @router.get("/home-flowi/runtime/runs")
 def home_flowi_runtime_runs(request: Request, limit: int = 20) -> dict[str, Any]:
     current_user(request)

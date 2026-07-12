@@ -214,6 +214,10 @@ CANONICAL_PAGE_IDS = (
     "diagnosis",
     "knowledge",
     "agent",
+    # v9.2.x: Valve 파이프라인 알람 판정 페이지.
+    "valve",
+    # v9.3.x: TEG 위치 조회 (WF MAP) 페이지.
+    "teg",
 )
 PAGE_ID_ALIASES = {
     "informs": "inform",

@@ -9,6 +9,8 @@ export const TABS = [
   {key:"splittable",label:"스플릿 테이블",icon:"🗂️",group:"data",defaultTab:true},
   {key:"diagnosis",label:"에이전트",icon:"🤖",group:"tool",defaultTab:true},
   {key:"tracker",label:"이슈 추적",icon:"📋",group:"tool"},
+  {key:"valve",label:"매칭알람",icon:"🚨",group:"tool"},
+  {key:"teg",label:"TEG 위치 조회",icon:"📐",group:"tool"},
   {key:"inform",label:"인폼 로그",icon:"📢",group:"tool"},
   {key:"meeting",label:"회의관리",icon:"🗓",group:"tool"},
   {key:"calendar",label:"변경점 관리",icon:"📅",group:"tool"},

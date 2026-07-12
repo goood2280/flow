@@ -76,6 +76,11 @@ SYNCABLE_DB_ROOT_FILES = {
     "matching_step.csv",
     "step_matching.csv",
     "knob_ppid.csv",
+    # 실제 knob 룰북 파일명 (knob_ppid.csv 는 legacy alias) — Valve 알람 판정 반영분 동기화
+    "ppid_knob.csv",
+    # Valve vehicle_matching 마스터 (vehicle,product,step_id,step_desc)
+    "Vehicle_matching.csv",
+    "vehicle_matching.csv",
     "inline_matching.csv",
     "vm_matching.csv",
     "mask.csv",
@@ -184,10 +189,16 @@ def list_artifacts(data_root: Path, db_root: Path) -> List[Dict[str, Any]]:
             })
     # matching / rulebook (current db_root direct files)
     if db_root.exists():
+        seen_root_files: set = set()
         for name in sorted(SYNCABLE_DB_ROOT_FILES):
             fp = db_root / name
             if not fp.exists() or not fp.is_file():
                 continue
+            # Windows 는 대소문자 무시 — 케이스 변형 alias 로 인한 중복 업로드 방지
+            resolved = str(fp.resolve()).casefold()
+            if resolved in seen_root_files:
+                continue
+            seen_root_files.add(resolved)
             out.append({
                 "type": "matching", "product": "",
                 "path": str(fp), "key": f"matching/{fp.name}",
@@ -313,12 +324,14 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         # v9.1.x: 관리자 전역 스위치 꺼짐 — 저장마다 로그가 쌓이지 않게 status 기록 생략.
         entry["status"] = "disabled_master"; return entry
     if not cfg.get("enabled"):
-        entry["status"] = "disabled"; _append_status(data_root, entry); return entry
+        entry["status"] = "disabled"
+        return _finish_with_store_fallback(data_root, artifact, entry)
     if not cfg.get("bucket"):
-        entry["status"] = "no_bucket"; _append_status(data_root, entry); return entry
+        entry["status"] = "no_bucket"
+        return _finish_with_store_fallback(data_root, artifact, entry)
     if not _HAS_BOTO:
         entry["status"] = "queued"; entry["note"] = "boto3 not installed — logged only"
-        _append_status(data_root, entry); return entry
+        return _finish_with_store_fallback(data_root, artifact, entry)
     try:
         session_kwargs, profile_conf = _aws_credentials.boto3_session_kwargs(data_root, cfg.get("profile"))
         region = cfg.get("region") or profile_conf.get("region")
@@ -336,6 +349,27 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         entry["status"] = "error"
         entry["error"] = str(e)[:300]
         logger.warning(f"S3 upload failed {key}: {e}")
+        return _finish_with_store_fallback(data_root, artifact, entry)
+    _append_status(data_root, entry)
+    return entry
+
+
+def _finish_with_store_fallback(data_root: Path, artifact: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    """s3_sync 가 업로드하지 못한 matching 아티팩트를 매칭알람 저장소로 즉시 push.
+
+    룰북/매칭테이블은 변경점이 생기면 바로 올라가야 하므로 (파일탐색기·SplitTable·
+    매칭알람 판정 등 어떤 저장 경로든), s3_sync 비활성/미설정/실패 환경에서
+    valve_alerts 의 전송 설정(local_root 또는 자체 S3)으로 폴백한다.
+    disabled_env / disabled_master (명시적 전체 차단) 는 폴백하지 않는다.
+    """
+    if artifact.get("type") == "matching":
+        try:
+            from core import valve_alerts as _va
+            pushed = _va.store_push_artifact(Path(artifact["path"]), artifact["key"])
+            if pushed:
+                entry["store_push"] = pushed
+        except Exception as e:
+            entry["store_push"] = f"error: {str(e)[:150]}"
     _append_status(data_root, entry)
     return entry
 

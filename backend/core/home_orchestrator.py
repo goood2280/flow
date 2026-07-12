@@ -916,13 +916,21 @@ def _react_loop_enabled() -> bool:
 
 
 def _react_max_iters() -> int:
-    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 6] clamp."""
+    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 8] clamp.
+
+    기본 8 — 오케스트레이션이 기능을 뽑아 쓰되 턴이 길게 늘어지지 않도록
+    최대 8턴에서 끊는다 (운영 정책)."""
     raw = str(os.environ.get(_REACT_MAX_ITERS_ENV, "")).strip()
     try:
-        value = int(raw) if raw else _MAX_ITERATIONS
+        value = int(raw) if raw else 8
     except (TypeError, ValueError):
-        value = _MAX_ITERATIONS
-    return max(1, min(6, value))
+        value = 8
+    return max(1, min(8, value))
+
+
+def react_available() -> bool:
+    """홈 챗 경로에서 ReAct 오케스트레이션을 쓸 수 있는지 (LLM + 플래그)."""
+    return _react_loop_enabled()
 
 
 def _react_deadline_seconds() -> int:
@@ -1160,10 +1168,14 @@ def _decide_next_action(
     obs_text = json.dumps(observations, ensure_ascii=False)[:2500] if observations else "(없음)"
     system = (
         "You are Flow-i's home agent controller running a ReAct loop. "
-        "Each turn you either call exactly ONE tool from the catalog or finalize "
-        "with an answer. Use only tools that appear in the catalog. Base decisions "
-        "on the user goal, the resolved semantic terms, and prior observations. "
+        "Each turn you either call exactly ONE tool from the catalog, ask the USER "
+        "one clarifying question (action=ask_user), or finalize with an answer. "
+        "Use only tools that appear in the catalog. Base decisions on the user goal, "
+        "the resolved semantic terms, and prior observations. Use ask_user ONLY when "
+        "a required input is missing or ambiguous and no tool can resolve it — "
+        "human-in-the-loop is for decisions only the user can make. "
         "Prefer to finalize as soon as the observations answer the goal. "
+        "Never invent data that is not present in observations. "
         "Respond with strict JSON only."
     )
     user_prompt = (
@@ -1175,9 +1187,11 @@ def _decide_next_action(
         "# 출력 형식 (JSON, 다른 텍스트 금지)\n"
         "{\n"
         '  "thought": "<한 줄 추론>",\n'
-        '  "action": "call_tool | final",\n'
+        '  "action": "call_tool | ask_user | final",\n'
         '  "tool": "<카탈로그 name, action=call_tool 일 때만>",\n'
         '  "input": {"prompt": "<단일 도구용 자연어>", "product": "<선택>", "max_rows": 12},\n'
+        '  "question": "<action=ask_user 일 때 사용자에게 물을 한 문장>",\n'
+        '  "choices": ["<선택지1>", "<선택지2>"],\n'
         '  "reason": "<왜 이 선택인지 한 줄>",\n'
         '  "answer": "<action=final 일 때 최종 답변>"\n'
         "}"
@@ -1186,7 +1200,7 @@ def _decide_next_action(
         user_prompt,
         system=system,
         schema={
-            "keys": ["thought", "action", "tool", "input", "reason", "answer"],
+            "keys": ["thought", "action", "tool", "input", "question", "choices", "reason", "answer"],
             "required": ["action"],
         },
         timeout=max(1, min(int(timeout_s or _REACT_DECISION_TIMEOUT_S), _REACT_DECISION_TIMEOUT_S)),
@@ -1197,6 +1211,17 @@ def _decide_next_action(
     obj = out.get("obj") or {}
     action = str(obj.get("action") or "").strip().lower()
     reason = _short_text(obj.get("reason"), 200)
+    if action == "ask_user":
+        # Human-in-the-loop: 필요한 입력이 없거나 모호할 때 사용자에게 한 번 질문.
+        question = _short_text(obj.get("question"), 300)
+        if not question:
+            return {"action": "final", "answer": _short_text(obj.get("answer"), 4000),
+                    "reason": reason or "empty ask_user question"}
+        choices = [
+            _short_text(c, 120) for c in (obj.get("choices") or [])
+            if isinstance(c, (str, int, float)) and _short_text(c, 120)
+        ][:3]
+        return {"action": "ask_user", "question": question, "choices": choices, "reason": reason}
     if action == "call_tool":
         name = str(obj.get("tool") or "").strip()
         tool = tool_by_name.get(name)
@@ -1345,10 +1370,14 @@ def _execute_step(
     request: Any | None = None,
     user: dict[str, Any] | None = None,
     agent_context: dict[str, Any] | None = None,
+    allow_function_exec: bool = False,
 ) -> dict[str, Any]:
     """단일 step 실행. step_input 은 input_schema 기준 dict.
 
-    일부 unit_ai 는 전용 runtime 으로 실행하고, function-call 은 stub 으로 남긴다.
+    일부 unit_ai 는 전용 runtime 으로 실행한다. function-call 도구는
+    ReAct 루프(allow_function_exec=True)에서만 실제 실행하고, 휴리스틱
+    단일 패스 경로에서는 기존대로 stub 으로 남긴다 (LLM 없는 환경/테스트에서
+    무거운 실행·전역 상태 오염 방지).
     """
     name = tool.get("name") or ""
     kind = tool.get("kind") or ""
@@ -1364,6 +1393,9 @@ def _execute_step(
     try:
         if kind == "unit_ai":
             if name == "filebrowser_ai_sql":
+                step_input = _prefill_filebrowser_source(
+                    step_input, str(step_input.get("prompt") or ""))
+                out["input"] = step_input
                 missing = _missing_filebrowser_source_slots(step_input)
                 if missing:
                     out.update({
@@ -1549,8 +1581,36 @@ def _execute_step(
                 out["ok"] = False
                 out["result_preview"] = "unit_ai 가 prompt 를 처리하지 않음 (handled=False)"
         elif kind == "function":
-            out["ok"] = False
-            out["result_preview"] = "function-call 은 /api/llm/flowi/chat 경로에서 호출됩니다 (현재는 trace stub)."
+            if not allow_function_exec:
+                out["result_preview"] = "function-call 은 ReAct 루프에서만 실제 실행됩니다 (단일 패스는 stub)."
+                return _finish_exec_out(out, t0)
+            # function-call 도구 실제 실행 — Flow-i 단일 패스 엔진에 위임한다.
+            # 오케스트레이터(LLM)가 만든 '단일 도구용 자연어' prompt 를 그대로 넘겨
+            # 함수 추론 + 인자 추출 + 실행 로직을 재사용한다 (중복 구현 없음).
+            from routers.llm import _allowed_flowi_feature_keys, _handle_flowi_query
+            q = str(step_input.get("prompt") or step_input.get("natural_language") or "").strip()
+            if not q:
+                out["result_preview"] = "빈 함수 입력 prompt"
+            else:
+                res = _handle_flowi_query(
+                    q,
+                    str(step_input.get("product") or ""),
+                    max_rows=max(4, min(24, int(step_input.get("max_rows") or 12))),
+                    allowed_keys=(_allowed_flowi_feature_keys(user) if user else None),
+                    username=str((user or {}).get("username") or "flowi"),
+                    role=str((user or {}).get("role") or "user"),
+                    agent_context=agent_context,
+                )
+                res = res if isinstance(res, dict) else {}
+                handled = bool(res.get("handled"))
+                blocked = bool(res.get("blocked"))
+                out["ok"] = handled and not blocked
+                out["blocked"] = blocked
+                out["status"] = "blocked" if blocked else ("success" if out["ok"] else "failed")
+                out["result"] = res
+                out["public_result"] = res
+                out["result_preview"] = _short_text(
+                    res.get("answer") or res.get("intent") or "", 400)
         else:
             out["ok"] = False
             out["result_preview"] = f"unknown kind: {kind}"
@@ -1574,6 +1634,60 @@ def _missing_filebrowser_source_slots(step_input: dict[str, Any]) -> list[str]:
     if not (has_db_target or has_file_target or has_inline_context):
         missing.extend(["root/product", "file"])
     return missing
+
+
+def _prefill_filebrowser_source(step_input: dict[str, Any], prompt: str) -> dict[str, Any]:
+    """root/product 가 비어 있으면 prompt 토큰으로 FileBrowser DB 대상을 추정한다.
+
+    planner(LLM)가 source slot 을 채우지 못해도 'PRODA에서 IOFF 높은 wafer' 같은
+    질문이 즉시 실행되도록: product 는 roots 의 product 목록과 대소문자 무시 매칭,
+    root 는 도메인 키워드(INLINE/VM/ET) 우선, 기본 FAB 계열. 추정 실패 시 원본
+    유지(기존 needs_input 흐름으로 되묻기)."""
+    if str(step_input.get("file") or "").strip():
+        return step_input
+    root = str(step_input.get("root") or "").strip()
+    product = str(step_input.get("product") or "").strip()
+    if root and product:
+        return step_input
+    try:
+        from routers import filebrowser as fb
+        roots = [str(r.get("name") or "") for r in (fb.list_roots().get("roots") or []) if r.get("name")]
+    except Exception:
+        return step_input
+    if not roots:
+        return step_input
+    text = f"{prompt} {step_input.get('natural_language') or ''}"
+    toks = {t.upper() for t in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{1,29}", text)}
+    if not product:
+        try:
+            for rname in roots:
+                for p in (fb.list_products(root=rname).get("products") or []):
+                    pname = str((p.get("name") if isinstance(p, dict) else p) or "")
+                    if pname and pname.upper() in toks:
+                        product = pname
+                        break
+                if product:
+                    break
+        except Exception:
+            return step_input
+    if not product:
+        return step_input
+    if not root:
+        def _pick(suffix: str) -> str:
+            return next((r for r in roots if r.upper().endswith(suffix)), "")
+        if "INLINE" in toks:
+            root = _pick("INLINE")
+        elif "VM" in toks:
+            root = _pick("VM")
+        elif "ET" in toks:
+            root = _pick("ET")
+        if not root:
+            root = _pick("FAB") or roots[0]
+    out = dict(step_input)
+    out["root"] = root
+    out["product"] = product
+    out.setdefault("scope", "db_product")
+    return out
 
 
 def _warnings_from_filebrowser_runtime(result: dict[str, Any]) -> list[str]:
@@ -2152,6 +2266,7 @@ def _run_react_loop(
     accumulated: dict[str, Any] = {}
     seen_signatures: set[str] = set()
     model_answer = ""
+    ask_user: dict[str, Any] | None = None
     stop_reason = "max_steps"
     no_progress_streak = 0
     started = time.monotonic()
@@ -2184,6 +2299,15 @@ def _run_react_loop(
             yield {"kind": "decision", "index": index, "action": "final",
                    "tool": "", "reason": decision.get("reason", "")}
             break
+        if decision.get("action") == "ask_user":
+            # Human-in-the-loop — 사용자 답변이 있어야 진행 가능. 루프를 끊고
+            # 질문을 그대로 반환한다 (홈 챗 UI 가 선택지 버튼으로 렌더).
+            ask_user = {"question": decision.get("question") or "",
+                        "choices": list(decision.get("choices") or [])}
+            stop_reason = "ask_user"
+            yield {"kind": "decision", "index": index, "action": "ask_user",
+                   "tool": "", "reason": decision.get("reason", "")}
+            break
 
         tool_def = decision.get("tool") or {}
         tool_name = decision.get("tool_name") or str(tool_def.get("name") or "")
@@ -2208,7 +2332,8 @@ def _run_react_loop(
                 "reason": decision.get("reason", ""), "source": "react"}
         yield {"kind": "step_start", "index": index, "tool": tool_name,
                "tool_def": tool_def, "input": merged_input}
-        exec_out = _execute_step(tool_def, merged_input, request=request, user=user, agent_context=parent_context)
+        exec_out = _execute_step(tool_def, merged_input, request=request, user=user,
+                                 agent_context=parent_context, allow_function_exec=True)
         trace_row = _make_trace_row(step, exec_out)
         tool_call = _make_tool_call(step, exec_out)
         trace.append(trace_row)
@@ -2238,19 +2363,24 @@ def _run_react_loop(
                 break
 
     remaining_s = max(1, int(deadline - time.monotonic()))
-    reply = _compose_final_reply(
-        prompt,
-        trace,
-        model_answer,
-        semantic_summary,
-        timeout_s=max(1, min(_REACT_DECISION_TIMEOUT_S, remaining_s)),
-    )
+    if ask_user:
+        # 질문 자체가 응답 — LLM compose 생략.
+        reply = ask_user.get("question") or ""
+    else:
+        reply = _compose_final_reply(
+            prompt,
+            trace,
+            model_answer,
+            semantic_summary,
+            timeout_s=max(1, min(_REACT_DECISION_TIMEOUT_S, remaining_s)),
+        )
     yield {
         "kind": "final",
         "trace": trace,
         "tool_calls": tool_calls,
         "reply": reply,
         "stop_reason": stop_reason,
+        "ask_user": ask_user,
     }
 
 
@@ -2311,6 +2441,7 @@ def orchestrate(
                     "semantic_summary": semantic_summary,
                 },
                 "reply": react_out.get("reply") or "",
+                "ask_user": react_out.get("ask_user"),
                 "picked_count": len(react_trace),
             }, prompt=prompt, user=user)
 

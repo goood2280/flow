@@ -11,6 +11,7 @@ _UNIT_ALIASES = {
 _FEATURE_ALLOWED_UNIT_KEYS = {
     "step_lookup": {"filebrowser", "splittable", "dashboard"},
     "ppid_knob": {"filebrowser", "splittable"},
+    "split_nav": {"splittable"},
 }
 
 

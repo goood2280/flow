@@ -32,6 +32,27 @@ def _ppid_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rules_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
+    rules = result.get("rules") or []
+    columns = ["feature_name", "rule_order", "operator", "value", "category", "function_step"]
+    rows = [{c: r.get(c, "") for c in columns} for r in rules]
+    return {
+        "handled": True,
+        "type": "answer",
+        "intent": "ppid_knob",
+        "feature": "ppid_knob",
+        "unit_ai": "ppid_knob",
+        "action": "list_split_rules",
+        "answer": result.get("answer") or "",
+        "table": (
+            {"kind": "ppid_knob_rules", "title": "Split 규칙 (ppid_knob.csv)",
+             "columns": columns, "rows": rows, "total": len(rows)}
+            if rows
+            else {}
+        ),
+    }
+
+
 class PpidKnobUnitAI(BaseUnitAI):
     KEY = "ppid_knob"
     TITLE = "PPID Knob 분류"
@@ -86,8 +107,20 @@ class PpidKnobUnitAI(BaseUnitAI):
     ) -> Optional[dict[str, Any]]:
         from core import fab_reference
 
+        text = str(prompt or "")
         product = str((slots or {}).get("product") or "")
-        result = fab_reference.classify_ppid_in_text(str(prompt or ""), product)
+        # ① Split 규칙 나열 ("ABC Split 규칙이 어떻게 돼") — 룰북 그대로 나열.
+        rules_result = fab_reference.list_rules_in_text(text, product)
+        if rules_result is not None:
+            payload = _rules_tool_payload(rules_result)
+            if not rules_result.get("found"):
+                payload["low_confidence"] = True
+            return payload
+        # ② ppid(value) 분류 ("XXX ppid 는 어떤 split 으로 분류돼")
+        result = fab_reference.classify_ppid_in_text(text, product)
         if not result:
             return None
-        return _ppid_tool_payload(result)
+        payload = _ppid_tool_payload(result)
+        if not result.get("found"):
+            payload["low_confidence"] = True
+        return payload

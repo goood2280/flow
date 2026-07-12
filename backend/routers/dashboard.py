@@ -2631,6 +2631,159 @@ def fab_progress(
     )
 
 
+_WIP_SPLIT_PREFIXES = ("KNOB_", "MASK_", "FAB_")
+
+
+def _wip_split_ml_table_path(product: str) -> Path | None:
+    for fp in sorted(Path(PATHS.db_root).glob("ML_TABLE_*.parquet")):
+        if fp.stem[len("ML_TABLE_"):].upper() == str(product or "").upper():
+            return fp
+    return None
+
+
+@router.get("/wip-split")
+def wip_split_summary(
+    request: Request,
+    product: str = Query(""),
+    bin_size: int = Query(100),
+    split_col: str = Query(""),
+):
+    """WIP × Split 대시보드 데이터 — latest cache 기준 현재 step 물량과 split 비중.
+
+    lot_progress latest cache(lot_wf_current.parquet, wafer 단위 현재 step)를
+    product 로 필터하고, step_id 의 마지막 6자리 숫자를 bin_size 간격으로 묶은 뒤
+    ML_TABLE 의 split 열(KNOB_/MASK_/FAB_)을 (root_lot, wafer) 로 조인해
+    bin 별 wafer 수와 split 값 분포를 반환한다."""
+    _require_dashboard_section(request, "charts")
+    from core import lot_progress_cache
+
+    cache_fp = lot_progress_cache.cache_parquet_file()
+    if not Path(cache_fp).exists():
+        try:
+            lot_progress_cache.load_lot_progress_cache()
+        except Exception:
+            pass
+    if not Path(cache_fp).exists():
+        raise HTTPException(404, "lot progress latest cache가 없습니다. 진행 캐시를 먼저 갱신하세요.")
+
+    try:
+        cur = pl.read_parquet(cache_fp)
+    except Exception as e:
+        raise HTTPException(500, f"latest cache 읽기 실패: {e}")
+    if cur.is_empty():
+        raise HTTPException(404, "latest cache가 비어 있습니다.")
+
+    products = sorted({str(p) for p in cur.get_column("product").unique().to_list() if str(p or "").strip()})
+    product = str(product or "").strip().upper() or (products[0] if products else "")
+    if product not in products:
+        raise HTTPException(400, f"product '{product}' 가 latest cache에 없습니다. 선택 가능: {products}")
+
+    try:
+        bin_size = max(1, min(100000, int(bin_size or 100)))
+    except Exception:
+        bin_size = 100
+
+    cur = cur.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase() == product)
+    cur = cur.with_columns(
+        pl.col("step_id").cast(_STR, strict=False).str.extract(r"(\d{6})\s*$", 1)
+          .cast(pl.Int64, strict=False).alias("_step_num"))
+    cur = cur.with_columns(((pl.col("_step_num") // bin_size) * bin_size).alias("_bin"))
+
+    # ML_TABLE split 조인 — (root_lot_id, wafer_id) 키. lot_id 는 child lot 재편성
+    # 때문에 조인 키로 쓰지 않는다.
+    split_cols: list[str] = []
+    ml_fp = _wip_split_ml_table_path(product)
+    split_join_ok = False
+    if ml_fp is not None:
+        try:
+            ml_schema = pl.scan_parquet(ml_fp).collect_schema().names()
+            split_cols = [c for c in ml_schema if str(c).upper().startswith(_WIP_SPLIT_PREFIXES)]
+        except Exception:
+            split_cols = []
+    if split_col and split_col not in split_cols:
+        split_col = ""
+    if not split_col:
+        split_col = next((c for c in split_cols if c.upper().startswith("KNOB_")), split_cols[0] if split_cols else "")
+
+    UNASSIGNED = "(미지정)"
+    if ml_fp is not None and split_col:
+        try:
+            ml = (pl.scan_parquet(ml_fp)
+                    .select(["ROOT_LOT_ID", "WAFER_ID", split_col])
+                    .with_columns([
+                        pl.col("ROOT_LOT_ID").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
+                        pl.col("WAFER_ID").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
+                        pl.col(split_col).cast(_STR, strict=False).alias("_split"),
+                    ])
+                    .select(["_root", "_wf", "_split"])
+                    .unique(subset=["_root", "_wf"], keep="first")
+                    .collect())
+            cur = (cur.with_columns([
+                        pl.col("root_lot_id").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
+                        pl.col("wafer_id").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
+                    ])
+                    .join(ml, on=["_root", "_wf"], how="left"))
+            split_join_ok = True
+        except Exception:
+            logger.warning("wip-split ML_TABLE join failed", exc_info=True)
+    if "_split" not in cur.columns:
+        cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_split"))
+    cur = cur.with_columns(pl.col("_split").fill_null(UNASSIGNED).alias("_split"))
+
+    agg = (cur.group_by(["_bin", "_split"]).agg(pl.len().alias("wafers"))
+              .sort(["_bin", "_split"]))
+    total_by_split: dict[str, int] = {}
+    bins_map: dict[Any, dict[str, Any]] = {}
+    for row in agg.to_dicts():
+        b = row.get("_bin")
+        sv = str(row.get("_split") or UNASSIGNED)
+        n = int(row.get("wafers") or 0)
+        key = -1 if b is None else int(b)
+        slot = bins_map.setdefault(key, {"bin": key, "splits": {}, "total": 0})
+        slot["splits"][sv] = slot["splits"].get(sv, 0) + n
+        slot["total"] += n
+        total_by_split[sv] = total_by_split.get(sv, 0) + n
+
+    # split 값 순서: 물량 많은 순, (미지정) 은 항상 마지막.
+    split_values = sorted((v for v in total_by_split if v != UNASSIGNED),
+                          key=lambda v: -total_by_split[v])
+    if UNASSIGNED in total_by_split:
+        split_values.append(UNASSIGNED)
+
+    bins = []
+    for key in sorted(bins_map):
+        slot = bins_map[key]
+        label = "미해석" if key < 0 else (
+            str(key) if bin_size <= 1 else f"{key}~{key + bin_size - 1}")
+        bins.append({
+            "bin": key,
+            "label": label,
+            "total": slot["total"],
+            "splits": {v: int(slot["splits"].get(v, 0)) for v in split_values if slot["splits"].get(v)},
+        })
+
+    status = {}
+    try:
+        status = lot_progress_cache.cache_status() or {}
+    except Exception:
+        pass
+    matched = int(cur.filter(pl.col("_split") != UNASSIGNED).height) if split_join_ok else 0
+    return {
+        "ok": True,
+        "product": product,
+        "products": products,
+        "generated_at": status.get("generated_at") or "",
+        "bin_size": bin_size,
+        "split_col": split_col,
+        "split_cols": split_cols,
+        "split_values": split_values,
+        "total_wafers": int(cur.height),
+        "matched_wafers": matched,
+        "unassigned_label": UNASSIGNED,
+        "bins": bins,
+    }
+
+
 @router.get("/summary")
 def dashboard_summary(request: Request, product: str = Query("")):
     _require_dashboard_section(request, "progress")

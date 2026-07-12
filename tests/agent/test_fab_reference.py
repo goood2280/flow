@@ -41,7 +41,8 @@ def test_lookup_step_id_to_function_step():
     out = fab_reference.lookup_step("AA100090는 무슨 step이야", rows=STEP_ROWS)
     assert out["found"] is True
     assert out["direction"] == "id_to_step"
-    assert out["matches"] == [{"product": "PRODA", "step_id": "AA100090", "function_step": "SD_EPI"}]
+    assert out["matches"] == [{"product": "PRODA", "step_id": "AA100090", "function_step": "SD_EPI",
+                               "step_desc": "", "vehicle": ""}]
     assert "SD_EPI" in out["answer"]
 
 
@@ -49,7 +50,8 @@ def test_lookup_step_id_with_suffix_to_function_step():
     out = fab_reference.lookup_step("AA100160EC는 무슨 step이야", rows=STEP_ROWS)
     assert out["found"] is True
     assert out["direction"] == "id_to_step"
-    assert out["matches"] == [{"product": "PRODA", "step_id": "AA100160EC", "function_step": "VIA1_FORMATION_EC"}]
+    assert out["matches"] == [{"product": "PRODA", "step_id": "AA100160EC", "function_step": "VIA1_FORMATION_EC",
+                               "step_desc": "", "vehicle": ""}]
     assert "VIA1_FORMATION_EC" in out["answer"]
 
 
