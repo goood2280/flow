@@ -13,35 +13,43 @@ const sf = (url, o) => apiSf(url, o);
 const BAD = statusPalette.bad;
 
 /* ═══ WIP × Split 현황 (latest cache 기반) ═══ */
-const WIP_BIN_CHOICES = [10, 20, 50, 100, 200, 500, 1000];
+const WIP_BIN_CHOICES = [1000, 10000, 100000];
+// X축 기준 — step_id 숫자 구간 / step_desc 앞머리 숫자(예: FAB_1.0 STI → 1.0).
+const AXIS_CHOICES = [
+  { value: "step_id", label: "step_id 구간" },
+  { value: "step_desc", label: "step_desc (앞 숫자)" },
+];
 
 function WipSplitPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [product, setProduct] = useState("");
-  const [binSize, setBinSize] = useState(100);
-  const [binInput, setBinInput] = useState("100");
+  const [binSize, setBinSize] = useState(1000);
+  const [binInput, setBinInput] = useState("1000");
   const [splitCol, setSplitCol] = useState("");
+  const [axis, setAxis] = useState("step_id");
   const dark = typeof document !== "undefined" && (document.documentElement.classList.contains("dark") || localStorage.getItem("hol_dark") === "true");
 
-  const fetchData = (p, b, s) => {
+  const fetchData = (p, b, s, a) => {
     setLoading(true);
     setErr("");
     const q = new URLSearchParams();
     if (p) q.set("product", p);
-    q.set("bin_size", String(b || 100));
+    q.set("bin_size", String(b || 1000));
     if (s) q.set("split_col", s);
+    q.set("axis", a || "step_id");
     sf(`${API}/wip-split?${q.toString()}`)
       .then((d) => {
         setData(d);
         setProduct(d.product || "");
         setSplitCol(d.split_col || "");
+        if (d.axis) setAxis(d.axis);
       })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { fetchData("", binSize, ""); }, []);
+  useEffect(() => { fetchData("", binSize, "", axis); }, []);
 
   // 자유 입력 bin 간격 적용 — 1~100000 정수로 보정, 같은 값 재입력은 무시.
   const applyBin = (val) => {
@@ -50,7 +58,7 @@ function WipSplitPanel() {
     setBinInput(String(b));
     if (b === binSize) return;
     setBinSize(b);
-    fetchData(product, b, splitCol);
+    fetchData(product, b, splitCol, axis);
   };
 
   const bins = data?.bins || [];
@@ -80,11 +88,17 @@ function WipSplitPanel() {
       <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap", padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)" }}>
         <label style={{ display: "grid", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>
           PRODUCT
-          <select style={selStyle} value={product} onChange={(e) => fetchData(e.target.value, binSize, "")}>
+          <select style={selStyle} value={product} onChange={(e) => fetchData(e.target.value, binSize, "", axis)}>
             {(data?.products || (product ? [product] : [])).map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </label>
         <label style={{ display: "grid", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>
+          X축 기준
+          <select style={selStyle} value={axis} onChange={(e) => { setAxis(e.target.value); fetchData(product, binSize, splitCol, e.target.value); }}>
+            {AXIS_CHOICES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 12, color: "var(--text-secondary)", opacity: axis === "step_id" ? 1 : 0.45 }}>
           STEP BIN 간격 — 직접 입력 (step_id 숫자 6자리 기준)
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <input
@@ -93,6 +107,7 @@ function WipSplitPanel() {
               max={100000}
               step={5}
               value={binInput}
+              disabled={axis !== "step_id"}
               onChange={(e) => setBinInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") applyBin(binInput); }}
               onBlur={() => applyBin(binInput)}
@@ -103,6 +118,7 @@ function WipSplitPanel() {
                 <button
                   key={b}
                   type="button"
+                  disabled={axis !== "step_id"}
                   onClick={() => applyBin(b)}
                   style={{
                     padding: "4px 8px",
@@ -121,7 +137,7 @@ function WipSplitPanel() {
         </label>
         <label style={{ display: "grid", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>
           SPLIT 기준 열 (SplitTable)
-          <select style={selStyle} value={splitCol} onChange={(e) => fetchData(product, binSize, e.target.value)}>
+          <select style={selStyle} value={splitCol} onChange={(e) => fetchData(product, binSize, e.target.value, axis)}>
             {Object.entries(groupedSplitCols).map(([g, cols]) => cols.length ? (
               <optgroup key={g} label={g}>
                 {cols.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -129,7 +145,7 @@ function WipSplitPanel() {
             ) : null)}
           </select>
         </label>
-        <Button variant="subtle" onClick={() => fetchData(product, binSize, splitCol)} disabled={loading}>{loading ? "조회 중..." : "새로고침"}</Button>
+        <Button variant="subtle" onClick={() => fetchData(product, binSize, splitCol, axis)} disabled={loading}>{loading ? "조회 중..." : "새로고침"}</Button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12, color: "var(--text-secondary)" }}>
           <Pill tone="ok">wafer {grandTotal}</Pill>
           <Pill tone={data?.matched_wafers ? "ok" : "neutral"}>split 매칭 {data?.matched_wafers ?? 0}</Pill>
@@ -143,7 +159,7 @@ function WipSplitPanel() {
         </div>
         {loading && !data ? <Loading /> : (
           <WipStackedBar bins={bins} splitValues={splitValues} dark={dark} unassignedLabel={unassigned} height={430}
-            xLabel={`STEP BIN (간격 ${data?.bin_size ?? binSize})`} yLabel="WAFERS" />
+            xLabel={axis === "step_desc" ? "STEP_DESC 앞 숫자" : `STEP BIN (간격 ${data?.bin_size ?? binSize})`} yLabel="WAFERS" />
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(260px, 1fr)", gap: 12, alignItems: "start" }}>
@@ -152,7 +168,7 @@ function WipSplitPanel() {
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>STEP BIN</th>
+                <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>{axis === "step_desc" ? "STEP_DESC 앞 숫자" : "STEP BIN"}</th>
                 <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>WAFERS</th>
                 {splitValues.map((sv) => (
                   <th key={sv} style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{sv}</th>

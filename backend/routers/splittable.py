@@ -6155,7 +6155,13 @@ def _latest_cache_product_values(product: str) -> set[str]:
     return values
 
 
-def _latest_lot_step_cache_lf(product: str = ""):
+def _latest_lot_step_cache_lf(product: str = "", root_lot_id: str = ""):
+    # Per-root fast path (SplitTable pivot-cache 방식): root 검색이면 해당 root
+    # 파티션만 읽는다. 파티션이 stale/miss 면 monolithic 풀스캔으로 폴백.
+    if str(root_lot_id or "").strip():
+        part_lf = _latest_lot_index_partition_lf(product, root_lot_id)
+        if part_lf is not None:
+            return part_lf
     fp = _latest_lot_step_cache_path()
     if not fp.is_file():
         return None
@@ -6171,6 +6177,200 @@ def _latest_lot_step_cache_lf(product: str = ""):
         if values:
             lf = lf.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase().is_in(sorted(values)))
     return lf
+
+
+# ── Per-root latest-lot cache partitions (additive SWR layer) ────────────────
+# The canonical latest-lot cache (lot_progress_latest_lot_by_root_wafer.parquet)
+# is a single monolithic file, so every root-scoped lookup (the fab identity
+# join in _scan_product, fab-lot snapshots, history scope) re-scanned the whole
+# file with a cast+upper filter that defeats parquet predicate pushdown — the
+# same failure mode the fab_lot_index fixed for the raw FAB source. This layer
+# mirrors the SplitTable pivot / fab_lot_index pattern: the monolithic file is
+# re-partitioned by normalized root key in the background and a root search
+# reads only its own partition. Purely additive — on any miss/stale/error the
+# caller falls back to the monolithic scan while a rebuild is enqueued.
+_LATEST_IDX_ROOT_COL = "__latest_idx_root"
+_LATEST_IDX_DIR_NAME = "lot_progress_latest_by_root"
+_LATEST_IDX_META_FILE = "_meta.json"
+_LATEST_IDX_BUILD_LOCK = threading.Lock()
+_LATEST_IDX_BUILD_STATE: dict = {"inprogress": False, "last": 0.0}
+_LATEST_IDX_BUILD_COOLDOWN_SEC = 60.0
+_LATEST_IDX_FRESH_TTL_SEC = 2.0
+_LATEST_IDX_FRESH_LOCK = threading.Lock()
+_LATEST_IDX_FRESH_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _latest_lot_index_enabled() -> bool:
+    return _env_bool("FLOW_SPLITTABLE_LATEST_LOT_INDEX", True)
+
+
+def _latest_lot_index_dir() -> Path:
+    return _latest_lot_step_cache_path().parent / _LATEST_IDX_DIR_NAME
+
+
+def _latest_lot_index_meta_path() -> Path:
+    return _latest_lot_index_dir() / _LATEST_IDX_META_FILE
+
+
+def _latest_lot_index_source_sig() -> list:
+    """(path, mtime, size) of the monolithic file — the partition staleness key."""
+    return list(_path_cache_sig(_latest_lot_step_cache_path()))
+
+
+def _latest_lot_index_fresh() -> bool:
+    """True → 파티션 세트가 현재 monolithic 파일과 정확히 일치.
+
+    stale/miss 면 백그라운드 재빌드를 예약하고 False 를 반환한다 (호출측은
+    monolithic 폴백 — 오늘과 동일한 경로라 정확성 저하 없음). 판정은 짧은 TTL
+    로 캐시해 요청마다 meta 재읽기/재-stat 을 피한다."""
+    if not _latest_lot_index_enabled():
+        return False
+    now = time.monotonic()
+    with _LATEST_IDX_FRESH_LOCK:
+        cached = _LATEST_IDX_FRESH_CACHE.get("v")
+        if cached is not None and now - cached[0] < _LATEST_IDX_FRESH_TTL_SEC:
+            return cached[1]
+    fresh = False
+    try:
+        meta = load_json(_latest_lot_index_meta_path(), {}) or {}
+        fresh = bool(meta) and meta.get("source_sig") == _latest_lot_index_source_sig()
+    except Exception:
+        fresh = False
+    if not fresh and _latest_lot_step_cache_path().is_file():
+        _enqueue_latest_lot_index_build(reason="stale")
+    with _LATEST_IDX_FRESH_LOCK:
+        _LATEST_IDX_FRESH_CACHE["v"] = (now, fresh)
+    return fresh
+
+
+def _latest_lot_index_partition_lf(product: str, root_lot_id: str):
+    """Return the one-root LazyFrame from the partitioned latest-lot cache, or
+    None to signal fallback to the monolithic scan."""
+    root = str(root_lot_id or "").strip().upper()
+    if not root or not _latest_lot_index_fresh():
+        return None
+    try:
+        part = _latest_lot_index_dir() / f"{_LATEST_IDX_ROOT_COL}={root}"
+        if not part.is_dir():
+            # 파티션 세트가 fresh 인데 이 root 파티션이 없다 → monolithic 에도
+            # 이 root 는 없다. 풀스캔 폴백은 같은 결과를 느리게 낼 뿐이므로
+            # 빈 프레임으로 즉시 응답한다. 단, 특수문자 root 는 파티션 디렉터리명
+            # 인코딩이 다를 수 있으므로 단정하지 않고 monolithic 폴백.
+            if _re.fullmatch(r"[A-Z0-9_\-.]+", root):
+                return _empty_latest_lot_step_frame().lazy()
+            return None
+        files = sorted(part.glob("*.parquet"))
+        if not files:
+            return None
+        lf = _scan_parquet_compat([str(p) for p in files])
+        names = lf.collect_schema().names()
+        if _LATEST_IDX_ROOT_COL in names:
+            lf = lf.drop(_LATEST_IDX_ROOT_COL)
+        lf = _cast_cats_lazy(lf)
+        if product and "product" in names:
+            values = _latest_cache_product_values(product)
+            if values:
+                lf = lf.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase().is_in(sorted(values)))
+        return lf
+    except Exception:
+        logger.debug("latest_lot_index scan failed root=%s", root, exc_info=True)
+        return None
+
+
+def _build_latest_lot_index() -> bool:
+    """Re-partition the monolithic latest-lot cache by normalized root key."""
+    src = _latest_lot_step_cache_path()
+    if not src.is_file():
+        return False
+    # 빌드 전 시그니처를 캡처 — 빌드 도중 monolithic 이 재기록되면 다음 조회의
+    # freshness 체크가 mismatch 를 감지해 재빌드한다.
+    source_sig = _latest_lot_index_source_sig()
+    lf = _scan_parquet_compat(str(src))
+    try:
+        names = lf.collect_schema().names()
+    except Exception:
+        return False
+    if "root_lot_id" not in names:
+        return False
+    lf = (
+        lf.with_columns(_join_key_expr("root_lot_id").alias(_LATEST_IDX_ROOT_COL))
+        .filter(pl.col(_LATEST_IDX_ROOT_COL).is_not_null() & (pl.col(_LATEST_IDX_ROOT_COL) != ""))
+    )
+    idx_dir = _latest_lot_index_dir()
+    tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sink_target = pl.PartitionBy(
+            tmp_dir, key=_LATEST_IDX_ROOT_COL, include_key=True,
+            approximate_bytes_per_file="auto",
+        )
+        lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+    except Exception:
+        df = lf.collect()
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(tmp_dir, partition_by=_LATEST_IDX_ROOT_COL)
+    if idx_dir.exists():
+        shutil.rmtree(idx_dir, ignore_errors=True)
+    tmp_dir.replace(idx_dir)
+    meta = {
+        "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "source": str(src),
+        "source_sig": source_sig,
+    }
+    try:
+        save_json(_latest_lot_index_meta_path(), meta)
+    except Exception:
+        logger.debug("latest_lot_index meta write failed", exc_info=True)
+    with _LATEST_IDX_FRESH_LOCK:
+        _LATEST_IDX_FRESH_CACHE.clear()
+    return True
+
+
+def _enqueue_latest_lot_index_build(reason: str = "") -> bool:
+    """Single-flight, cooldown-guarded background rebuild of the root partitions."""
+    if not _latest_lot_index_enabled():
+        return False
+    now = time.time()
+    with _LATEST_IDX_BUILD_LOCK:
+        if _LATEST_IDX_BUILD_STATE.get("inprogress"):
+            return False
+        if now - float(_LATEST_IDX_BUILD_STATE.get("last") or 0.0) < _LATEST_IDX_BUILD_COOLDOWN_SEC:
+            return False
+        _LATEST_IDX_BUILD_STATE["inprogress"] = True
+
+    def _run():
+        lease_name = "splittable_latest_lot_index"
+        lease_held = False
+        try:
+            try:
+                from core import shared_lease as _shared_lease
+                lease_held = _shared_lease.try_acquire(lease_name, ttl_sec=600.0)
+                if not lease_held:
+                    logger.info("latest_lot_index build skipped — 다른 서버가 빌드 중")
+                    return
+            except Exception:
+                lease_held = False  # lease infra optional; proceed without it
+            _build_latest_lot_index()
+        except Exception as exc:
+            logger.warning("latest_lot_index build failed (%s): %s", reason, exc)
+        finally:
+            if lease_held:
+                try:
+                    from core import shared_lease as _shared_lease
+                    _shared_lease.release(lease_name)
+                except Exception:
+                    pass
+            with _LATEST_IDX_BUILD_LOCK:
+                _LATEST_IDX_BUILD_STATE["inprogress"] = False
+                _LATEST_IDX_BUILD_STATE["last"] = time.time()
+
+    threading.Thread(target=_run, daemon=True, name="splittable-latestidx").start()
+    logger.info("latest_lot_index build queued (%s)", reason)
+    return True
 
 
 def _filter_latest_lot_step_cache(lf, *, root_lot_id: str = "", fab_lot_id: str = "",
@@ -6215,7 +6415,7 @@ def _latest_lot_step_cache_source(product: str, current: dict | None = None) -> 
 
 def _fab_history_scope_from_latest_cache(product: str, root_lot_id: str = "", fab_lot_id: str = "",
                                          prefix: str = "", limit: int = 500) -> dict | None:
-    cache_lf = _latest_lot_step_cache_lf(product)
+    cache_lf = _latest_lot_step_cache_lf(product, root_lot_id=root_lot_id)
     if cache_lf is None:
         return None
     source = _latest_lot_step_cache_source(product)
@@ -6295,7 +6495,7 @@ def _fab_lot_snapshot_from_latest_cache(product: str, root_lot_id: str, wafer_id
     root = str(root_lot_id or "").strip()
     if not root:
         return ""
-    cache_lf = _latest_lot_step_cache_lf(product)
+    cache_lf = _latest_lot_step_cache_lf(product, root_lot_id=root)
     if cache_lf is None:
         return ""
     try:
@@ -6417,6 +6617,10 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
         pass
     df.write_parquet(tmp)
     tmp.replace(fp)
+    # monolithic 파일이 새로 쓰였으므로 per-root 파티션을 백그라운드에서 재빌드.
+    # (lot_progress 스케줄러가 같은 파일을 재기록하는 경우는 reader 의 freshness
+    # 체크가 mismatch 를 감지해 알아서 재빌드한다.)
+    _enqueue_latest_lot_index_build(reason="export")
     result = {
         "ok": True,
         "path": str(fp),
@@ -6428,6 +6632,67 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
     if update_state:
         _mark_match_cache_refreshed(result)
     return result
+
+
+# status 의 parquet 파생 수치(전체/제품별 row 수, product 목록, max update_time)는
+# monolithic 파일 시그니처가 같으면 불변이다. /view 가 캐시 미스마다 이 함수를
+# 호출해 monolithic 파일을 4회 full-collect 하던 것이 검색 지연의 고정비용이었다
+# — (sig, product) 키로 메모이즈해 파일이 재기록될 때만 재계산한다.
+_LATEST_STATUS_STATS_LOCK = threading.Lock()
+_LATEST_STATUS_STATS_CACHE: dict[str, tuple[tuple, dict]] = {}
+_LATEST_STATUS_STATS_MAX = 64
+
+
+def _latest_lot_step_cache_parquet_stats(product: str, fp: Path) -> dict:
+    key = str(product or "").strip().upper()
+    sig = _path_cache_sig(fp)
+    with _LATEST_STATUS_STATS_LOCK:
+        cached = _LATEST_STATUS_STATS_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return dict(cached[1])
+    lf = _latest_lot_step_cache_lf("")
+    if lf is None:
+        raise RuntimeError("latest cache is not readable")
+    names = lf.collect_schema().names()
+    total_df = lf.select(pl.len().alias("row_count")).collect()
+    row_count = int(total_df.item(0, 0) or 0)
+    products: list[str] = []
+    if "product" in names:
+        prod_df = (
+            lf.select(pl.col("product").cast(_STR, strict=False).alias("product"))
+            .filter(pl.col("product").is_not_null() & (pl.col("product") != ""))
+            .unique()
+            .sort("product")
+            .head(500)
+            .collect()
+        )
+        products = [str(v) for v in prod_df["product"].to_list() if str(v or "").strip()]
+    product_row_count = row_count
+    if str(product or "").strip():
+        product_row_count = 0
+        if "product" in names:
+            product_lf = _latest_lot_step_cache_lf(product)
+            if product_lf is not None:
+                product_row_count = int(product_lf.select(pl.len().alias("row_count")).collect().item(0, 0) or 0)
+    updated_at = ""
+    if "update_time" in names:
+        try:
+            value = lf.select(pl.col("update_time").cast(_STR, strict=False).max().alias("updated_at")).collect().item(0, 0)
+            if value:
+                updated_at = str(value)
+        except Exception:
+            pass
+    stats = {
+        "row_count": row_count,
+        "product_row_count": product_row_count,
+        "products": products,
+        "updated_at": updated_at,
+    }
+    with _LATEST_STATUS_STATS_LOCK:
+        _LATEST_STATUS_STATS_CACHE[key] = (sig, dict(stats))
+        while len(_LATEST_STATUS_STATS_CACHE) > _LATEST_STATUS_STATS_MAX:
+            _LATEST_STATUS_STATS_CACHE.pop(next(iter(_LATEST_STATUS_STATS_CACHE)))
+    return stats
 
 
 def _latest_lot_step_cache_status(product: str = "") -> dict:
@@ -6451,38 +6716,8 @@ def _latest_lot_step_cache_status(product: str = "") -> dict:
     if not fp.is_file():
         return base
     try:
-        lf = _latest_lot_step_cache_lf("")
-        if lf is None:
-            return {**base, "ok": False, "error": "latest cache is not readable"}
-        names = lf.collect_schema().names()
-        total_df = lf.select(pl.len().alias("row_count")).collect()
-        row_count = int(total_df.item(0, 0) or 0)
-        products: list[str] = []
-        if "product" in names:
-            prod_df = (
-                lf.select(pl.col("product").cast(_STR, strict=False).alias("product"))
-                .filter(pl.col("product").is_not_null() & (pl.col("product") != ""))
-                .unique()
-                .sort("product")
-                .head(500)
-                .collect()
-            )
-            products = [str(v) for v in prod_df["product"].to_list() if str(v or "").strip()]
-        product_row_count = row_count
-        if str(product or "").strip():
-            product_row_count = 0
-            if "product" in names:
-                product_lf = _latest_lot_step_cache_lf(product)
-                if product_lf is not None:
-                    product_row_count = int(product_lf.select(pl.len().alias("row_count")).collect().item(0, 0) or 0)
-        updated_at = base["updated_at"]
-        if "update_time" in names:
-            try:
-                value = lf.select(pl.col("update_time").cast(_STR, strict=False).max().alias("updated_at")).collect().item(0, 0)
-                if value:
-                    updated_at = str(value)
-            except Exception:
-                pass
+        stats = _latest_lot_step_cache_parquet_stats(product, fp)
+        updated_at = stats.get("updated_at") or base["updated_at"]
         if not updated_at:
             try:
                 updated_at = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
@@ -6490,9 +6725,9 @@ def _latest_lot_step_cache_status(product: str = "") -> dict:
                 updated_at = ""
         return {
             **base,
-            "row_count": row_count,
-            "product_row_count": product_row_count,
-            "products": products,
+            "row_count": int(stats.get("row_count") or 0),
+            "product_row_count": int(stats.get("product_row_count") or 0),
+            "products": list(stats.get("products") or []),
             "updated_at": updated_at,
             "latest_updated_at": updated_at,
         }
@@ -6587,7 +6822,7 @@ def _latest_lot_progress_projection(product: str, main_names_list: list[str],
                                     root_lot_id: str = "", fab_lot_id: str = "",
                                     wafer_ids: str = "") -> dict | None:
     """Use the canonical LOT progress cache as SplitTable's lot identity source."""
-    cache_lf = _latest_lot_step_cache_lf(product)
+    cache_lf = _latest_lot_step_cache_lf(product, root_lot_id=root_lot_id)
     if cache_lf is None:
         return None
     main_names = set(main_names_list)

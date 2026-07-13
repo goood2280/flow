@@ -321,8 +321,13 @@ def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch
     df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
 
     assert out["rows"] == 1
-    assert out["paths"] == [str(cache.filebrowser_cache_parquet_file())]
-    assert not cache.cache_parquet_file().exists()
+    # 대시보드 wip-split 이 읽는 lot_wf_current.parquet 도 함께 export 된다.
+    assert out["paths"] == [
+        str(cache.filebrowser_cache_parquet_file()),
+        str(cache.cache_parquet_file()),
+    ]
+    assert cache.cache_parquet_file().exists()
+    assert pl.read_parquet(cache.cache_parquet_file()).to_dicts() == df.to_dicts()
     assert df.columns == [
         "product", "root_lot_id", "wafer_id", "lot_id",
         "step_id", "function_step", "tkout_time", "update_time",

@@ -1661,6 +1661,44 @@ def build_latest_lot_by_root_wafer(
     }
 
 
+_LATEST_LOT_CACHE_REFRESH_LOCK = threading.Lock()
+_LATEST_LOT_CACHE_LAST_BUILD_MONO = 0.0
+
+
+def _latest_lot_cache_refresh_throttle_sec() -> float:
+    return _env_float("FLOW_ML_TABLE_LATEST_LOT_REFRESH_THROTTLE_SEC", 600.0, 0.0, 86400.0)
+
+
+def refresh_latest_lot_cache_after_build(fp: Path | None = None, *, force: bool = False) -> dict[str, Any]:
+    """lookup 캐시 빌드 완료 훅 — 카노니컬 latest-lot 캐시를 메모리 안전하게 재생성.
+
+    버스트 빌드(여러 ML_TABLE 이 연달아 빌드)에서 매번 전체를 재생성하지 않도록
+    throttle 하고, 다른 스레드가 재생성 중이면 스킵한다. lookup 캐시가 방금
+    빌드됐으므로 여기서는 소스 재빌드 없이 파티션만 순회한다.
+    """
+    global _LATEST_LOT_CACHE_LAST_BUILD_MONO
+    if not _LATEST_LOT_CACHE_REFRESH_LOCK.acquire(blocking=False):
+        return {"ok": True, "skipped": True, "reason": "another_refresh_running"}
+    try:
+        throttle = _latest_lot_cache_refresh_throttle_sec()
+        now = time.monotonic()
+        if (
+            not force
+            and throttle > 0
+            and _LATEST_LOT_CACHE_LAST_BUILD_MONO
+            and (now - _LATEST_LOT_CACHE_LAST_BUILD_MONO) < throttle
+        ):
+            return {"ok": True, "skipped": True, "reason": "throttled"}
+        result = build_latest_lot_by_root_wafer()
+        _LATEST_LOT_CACHE_LAST_BUILD_MONO = time.monotonic()
+        return result
+    except Exception as exc:
+        logger.warning("latest-lot 캐시 재생성 실패: %s", exc, exc_info=True)
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+    finally:
+        _LATEST_LOT_CACHE_REFRESH_LOCK.release()
+
+
 def _lookup_cache_memory_wait_seconds() -> float:
     return _env_float("FLOW_ML_TABLE_LOOKUP_CACHE_MEMORY_WAIT_SECONDS", LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT, 0.0, 300.0)
 
