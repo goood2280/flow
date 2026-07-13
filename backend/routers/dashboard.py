@@ -2645,15 +2645,22 @@ def _wip_split_ml_table_path(product: str) -> Path | None:
 def wip_split_summary(
     request: Request,
     product: str = Query(""),
-    bin_size: int = Query(100),
+    bin_size: int = Query(1000),
     split_col: str = Query(""),
+    axis: str = Query("step_id"),
 ):
     """WIP × Split 대시보드 데이터 — latest cache 기준 현재 step 물량과 split 비중.
 
     lot_progress latest cache(lot_wf_current.parquet, wafer 단위 현재 step)를
-    product 로 필터하고, step_id 의 마지막 6자리 숫자를 bin_size 간격으로 묶은 뒤
-    ML_TABLE 의 split 열(KNOB_/MASK_/FAB_)을 (root_lot, wafer) 로 조인해
-    bin 별 wafer 수와 split 값 분포를 반환한다."""
+    product(=vehicle, FAB DB 제품 폴더명) 로 필터한 뒤 ML_TABLE 의 split 열
+    (KNOB_/MASK_/FAB_)을 (root_lot, wafer) 로 조인해 구간별 wafer 수와
+    split 값 분포를 반환한다.
+
+    axis:
+      - step_id (기본): step_id 마지막 6자리 숫자를 bin_size 간격으로 binning.
+      - step_desc: latest cache 의 step_id 를 Vehicle_matching.csv 로 매핑한
+        step_desc 의 앞머리 숫자로 그룹 (예: "FAB_1.0 STI" → "1.0").
+        존재하는 숫자 그룹을 전부 나열하며 구간으로 묶지 않는다."""
     _require_dashboard_section(request, "charts")
     from core import lot_progress_cache
 
@@ -2663,6 +2670,11 @@ def wip_split_summary(
             lot_progress_cache.load_lot_progress_cache()
         except Exception:
             pass
+    if not Path(cache_fp).exists():
+        # 구버전 캐시 export 는 filebrowser 용 parquet 만 썼다 — 스키마가 같으므로 폴백.
+        fb_fp = lot_progress_cache.filebrowser_cache_parquet_file()
+        if Path(fb_fp).exists():
+            cache_fp = fb_fp
     if not Path(cache_fp).exists():
         raise HTTPException(404, "lot progress latest cache가 없습니다. 진행 캐시를 먼저 갱신하세요.")
 
@@ -2679,15 +2691,46 @@ def wip_split_summary(
         raise HTTPException(400, f"product '{product}' 가 latest cache에 없습니다. 선택 가능: {products}")
 
     try:
-        bin_size = max(1, min(100000, int(bin_size or 100)))
+        bin_size = max(1, min(100000, int(bin_size or 1000)))
     except Exception:
-        bin_size = 100
+        bin_size = 1000
+    axis = str(axis or "step_id").strip().lower()
+    if axis not in ("step_id", "step_desc"):
+        axis = "step_id"
 
     cur = cur.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase() == product)
-    cur = cur.with_columns(
-        pl.col("step_id").cast(_STR, strict=False).str.extract(r"(\d{6})\s*$", 1)
-          .cast(pl.Int64, strict=False).alias("_step_num"))
-    cur = cur.with_columns(((pl.col("_step_num") // bin_size) * bin_size).alias("_bin"))
+    if axis == "step_id":
+        cur = cur.with_columns(
+            pl.col("step_id").cast(_STR, strict=False).str.extract(r"(\d{6})\s*$", 1)
+              .cast(pl.Int64, strict=False).alias("_step_num"))
+        cur = cur.with_columns(((pl.col("_step_num") // bin_size) * bin_size).alias("_bin"))
+    else:
+        # step_desc 는 조회 시점의 Vehicle_matching.csv(step matching CSV)로
+        # latest cache 의 step_id 를 매핑해 얻는다 — CSV 를 고치면 캐시 재빌드
+        # 없이 바로 반영된다. CSV 에 없는 step 은 캐시에 저장된 function_step
+        # (갱신 시점 매핑) 으로 폴백.
+        step_by_product, step_by_id = lot_progress_cache.load_step_matching()
+        sid_list = [s for s in cur.get_column("step_id").cast(_STR, strict=False).unique().to_list() if s]
+        desc_map: dict[str, str] = {}
+        for sid in sid_list:
+            sk = str(sid).strip().upper()
+            desc = step_by_product.get((product, sk)) or step_by_id.get(sk) or ""
+            if str(desc).strip():
+                desc_map[sid] = str(desc).strip()
+        cur = cur.with_columns(pl.col("step_id").cast(_STR, strict=False).alias("_sid"))
+        if desc_map:
+            map_df = pl.DataFrame({"_sid": list(desc_map.keys()), "_vm_desc": list(desc_map.values())})
+            cur = cur.join(map_df, on="_sid", how="left")
+        else:
+            cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_vm_desc"))
+        if "function_step" in cur.columns:
+            fallback_expr = pl.col("function_step").cast(_STR, strict=False)
+        else:
+            fallback_expr = pl.lit(None, dtype=pl.Utf8)
+        # step_desc 앞머리 숫자로 그룹 — "FAB_1.0 STI" / "1.0 STI" 모두 "1.0".
+        cur = cur.with_columns(
+            pl.coalesce([pl.col("_vm_desc"), fallback_expr]).str.strip_chars()
+              .str.extract(r"(\d+(?:\.\d+)?)", 1).alias("_bin_label"))
 
     # ML_TABLE split 조인 — (root_lot_id, wafer_id) 키. lot_id 는 child lot 재편성
     # 때문에 조인 키로 쓰지 않는다.
@@ -2730,16 +2773,27 @@ def wip_split_summary(
         cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_split"))
     cur = cur.with_columns(pl.col("_split").fill_null(UNASSIGNED).alias("_split"))
 
-    agg = (cur.group_by(["_bin", "_split"]).agg(pl.len().alias("wafers"))
-              .sort(["_bin", "_split"]))
+    UNPARSED = "미해석"
+    group_cols = ["_bin", "_split"] if axis == "step_id" else ["_bin_label", "_split"]
+    agg = cur.group_by(group_cols).agg(pl.len().alias("wafers"))
     total_by_split: dict[str, int] = {}
     bins_map: dict[Any, dict[str, Any]] = {}
     for row in agg.to_dicts():
-        b = row.get("_bin")
         sv = str(row.get("_split") or UNASSIGNED)
         n = int(row.get("wafers") or 0)
-        key = -1 if b is None else int(b)
-        slot = bins_map.setdefault(key, {"bin": key, "splits": {}, "total": 0})
+        if axis == "step_id":
+            b = row.get("_bin")
+            key = -1 if b is None else int(b)
+            # 기존 정렬 유지: bin 값 오름차순 (미해석 -1 이 맨 앞).
+            sort_key = (0, float(key))
+        else:
+            key = str(row.get("_bin_label") or "").strip() or UNPARSED
+            try:
+                # 앞머리 숫자순 정렬, 숫자를 못 뽑은 wafer(미해석)는 맨 뒤.
+                sort_key = (0, float(key))
+            except Exception:
+                sort_key = (1, 0.0)
+        slot = bins_map.setdefault(key, {"bin": key, "sort": sort_key, "splits": {}, "total": 0})
         slot["splits"][sv] = slot["splits"].get(sv, 0) + n
         slot["total"] += n
         total_by_split[sv] = total_by_split.get(sv, 0) + n
@@ -2751,10 +2805,13 @@ def wip_split_summary(
         split_values.append(UNASSIGNED)
 
     bins = []
-    for key in sorted(bins_map):
+    for key in sorted(bins_map, key=lambda k: bins_map[k]["sort"]):
         slot = bins_map[key]
-        label = "미해석" if key < 0 else (
-            str(key) if bin_size <= 1 else f"{key}~{key + bin_size - 1}")
+        if axis == "step_id":
+            label = UNPARSED if key < 0 else (
+                str(key) if bin_size <= 1 else f"{key}~{key + bin_size - 1}")
+        else:
+            label = str(key)
         bins.append({
             "bin": key,
             "label": label,
@@ -2774,6 +2831,7 @@ def wip_split_summary(
         "products": products,
         "generated_at": status.get("generated_at") or "",
         "bin_size": bin_size,
+        "axis": axis,
         "split_col": split_col,
         "split_cols": split_cols,
         "split_values": split_values,

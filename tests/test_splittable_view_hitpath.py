@@ -78,10 +78,15 @@ def test_hit_path_skips_cache_status_and_audit_is_async(tmp_path, monkeypatch):
     assert "lookup_cache" in hit  # 저장된 lookup_cache 를 그대로 서빙
 
     # --- 3) 전역 시그니처 stat 이 TTL 로 캐시되는지 (반복 HIT 시 재-stat 안 함) ---
+    # 백그라운드 데몬(latest-lot 파티션 빌드 등)도 _path_cache_sig 를 쓰므로
+    # 요청 스레드에서 발생한 stat 만 계수한다 — 이 테스트의 계약은 HIT "요청 경로".
+    import threading as _th
+    main_ident = _th.get_ident()
     stat_paths = []
     orig_sig = splittable._path_cache_sig
     def _tracking_sig(p):
-        stat_paths.append(str(p))
+        if _th.get_ident() == main_ident:
+            stat_paths.append(str(p))
         return orig_sig(p)
     monkeypatch.setattr(splittable, "_path_cache_sig", _tracking_sig)
     stat_paths.clear()

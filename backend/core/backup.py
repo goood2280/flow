@@ -185,6 +185,21 @@ def _cleanup_backups(dest_root: Path, keep: int) -> int:
     return removed
 
 
+def _yield_backup_slice() -> None:
+    """zip 생성이 사용자 요청/메모리와 경합하지 않도록 파일 사이에서 양보한다."""
+    try:
+        from core import request_priority
+        request_priority.yield_to_users(max_wait_sec=10.0)
+    except Exception:
+        pass
+    try:
+        from core.runtime_limits import process_memory_high
+        if process_memory_high():
+            time.sleep(1.0)
+    except Exception:
+        pass
+
+
 def run_backup(reason: str = "manual", cleanup: bool = True) -> dict:
     """설정된 소스들을 zip 으로 백업. 성공/실패 state 를 _last_backup 에 기록."""
     with _state_lock:
@@ -199,6 +214,7 @@ def run_backup(reason: str = "manual", cleanup: bool = True) -> dict:
             zpath = dest_root / zname
 
             total = 0
+            files_since_yield = 0
             with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
                 for (src, prefix) in sources:
                     for fp in _iter_files(src):
@@ -212,6 +228,10 @@ def run_backup(reason: str = "manual", cleanup: bool = True) -> dict:
                             total += fp.stat().st_size
                         except Exception as e:
                             logger.warning(f"backup skip {fp}: {e}")
+                        files_since_yield += 1
+                        if files_since_yield >= 200:
+                            files_since_yield = 0
+                            _yield_backup_slice()
 
             if cleanup:
                 keep = get_settings()["keep"]
@@ -344,6 +364,83 @@ def restore_backup(ref: str, restore_db_root_files: bool = False) -> dict:
 _scheduler_started = False
 _scheduler_stop = threading.Event()
 
+# ── Idle gating (v8.8.x) ──────────────────────────────────────────────────────
+# 백업 zip 생성이 캐시 빌드(lot_progress FAB 풀스캔, SplitTable pivot/fab index)
+# 와 동시에 돌면 메모리 피크가 겹쳐 프로세스가 죽을 수 있다. 주기 백업은 긴급한
+# 작업이 아니므로 "가장 여유로울 때" 로 미룬다: 사용자 활동 없음 + 메모리 여유
+# + 캐시 빌드 lease 없음 상태를 기다렸다가 실행한다. max-wait 초과 시에는
+# 강제로 실행해 백업 자체는 반드시 보장한다.
+_IDLE_POLL_SEC = 60.0
+_IDLE_MAX_WAIT_HOURS_DEFAULT = 4.0
+_BUSY_LEASE_PREFIXES = ("lot_progress", "splittable_")
+
+
+def _idle_max_wait_sec() -> float:
+    try:
+        hours = float(os.environ.get("FLOW_BACKUP_IDLE_MAX_WAIT_HOURS", "") or _IDLE_MAX_WAIT_HOURS_DEFAULT)
+    except Exception:
+        hours = _IDLE_MAX_WAIT_HOURS_DEFAULT
+    return max(0.0, min(24.0, hours)) * 3600.0
+
+
+def _cache_build_leases_active() -> List[str]:
+    """유효한 캐시 빌드 lease 이름 목록 (lot_progress refresh, splittable pivot/fabidx 등)."""
+    try:
+        from core import shared_lease
+        locks_dir = PATHS.data_root / "locks"
+        if not locks_dir.is_dir():
+            return []
+        names: List[str] = []
+        for fp in locks_dir.glob("*.lock.json"):
+            name = fp.name[: -len(".lock.json")]
+            if not name.startswith(_BUSY_LEASE_PREFIXES):
+                continue
+            if shared_lease.holder(name):
+                names.append(name)
+        return names
+    except Exception:
+        return []
+
+
+def _system_busy() -> tuple:
+    """(busy, reason). 백업을 미뤄야 하는 상태인지 판단한다."""
+    try:
+        from core import request_priority
+        if request_priority.users_active(quiet_for_sec=60.0):
+            return True, "recent user activity"
+    except Exception:
+        pass
+    try:
+        from core.runtime_limits import process_memory_high
+        if process_memory_high():
+            return True, "process memory high"
+    except Exception:
+        pass
+    active = _cache_build_leases_active()
+    if active:
+        return True, "cache build running: " + ", ".join(sorted(active)[:3])
+    return False, ""
+
+
+def _wait_until_idle(max_wait_sec: Optional[float] = None) -> bool:
+    """시스템이 한가해질 때까지 대기. True=idle 도달, False=타임아웃/중지(그래도 진행)."""
+    if max_wait_sec is None:
+        max_wait_sec = _idle_max_wait_sec()
+    deadline = time.monotonic() + max(0.0, float(max_wait_sec))
+    logged = False
+    while not _scheduler_stop.is_set():
+        busy, reason = _system_busy()
+        if not busy:
+            return True
+        if time.monotonic() >= deadline:
+            logger.info(f"backup idle-wait timed out ({reason}) — running anyway")
+            return False
+        if not logged:
+            logger.info(f"backup deferred until idle: {reason}")
+            logged = True
+        _scheduler_stop.wait(min(_IDLE_POLL_SEC, max(1.0, deadline - time.monotonic())))
+    return False
+
 
 def _check_and_run_one_off() -> bool:
     """v8.8.14: admin_settings.backup.scheduled_at 이 현재 시각 이전이면 1회 백업 실행하고
@@ -380,8 +477,9 @@ def _check_and_run_one_off() -> bool:
 
 
 def _scheduler_loop():
-    # 서버 기동 직후 짧은 지연 후 최초 1회.
-    time.sleep(30)
+    # 서버 기동 직후에는 캐시 워밍/lot_progress 풀스캔이 몰리므로 백업은 idle
+    # 시점까지 미룬다 (이전: 30초 후 즉시 실행 → 캐시 빌드와 메모리 피크가 겹침).
+    _scheduler_stop.wait(120)
     first = True
     while not _scheduler_stop.is_set():
         try:
@@ -392,6 +490,9 @@ def _scheduler_loop():
                 time.sleep(600)
                 continue
             if first:
+                _wait_until_idle()
+                if _scheduler_stop.is_set():
+                    break
                 run_backup(reason="startup")
                 first = False
             # 주기 대기 (60초 단위 폴링 — 설정 변경 + scheduled_at one-off 신속 반영)
@@ -409,7 +510,10 @@ def _scheduler_loop():
                 if new_iv < remain:
                     remain = new_iv
             if not _scheduler_stop.is_set() and get_settings()["enabled"]:
-                run_backup(reason="scheduled")
+                # 주기 백업도 시스템이 한가할 때 실행 (max-wait 초과 시 강제 진행).
+                _wait_until_idle()
+                if not _scheduler_stop.is_set():
+                    run_backup(reason="scheduled")
         except Exception as e:
             logger.warning(f"backup scheduler loop error: {e}")
             time.sleep(120)

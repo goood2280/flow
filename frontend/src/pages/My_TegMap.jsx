@@ -645,11 +645,9 @@ export default function My_TegMap({ user }) {
     return TEG_COLORS[(i >= 0 ? i : 0) % TEG_COLORS.length];
   }, [tegNames]);
 
-  const toggleTeg = (name) => setSelectedTegs(prev => {
-    const next = new Set(prev);
-    if (next.has(name)) next.delete(name); else next.add(name);
-    return next;
-  });
+  // TEG 는 리스트에서 하나씩 선택해서 본다 (다중 표시는 마커가 겹쳐 혼잡).
+  const selectTeg = (name) => setSelectedTegs(new Set(name ? [name] : []));
+  const selectedTeg = selectedTegs.size ? [...selectedTegs][0] : "";
 
   const onShotClick = (s0) => {
     setSelectedShot(prev => (prev && prev.x === s0.x && prev.y === s0.y) ? null : s0);
@@ -708,30 +706,43 @@ export default function My_TegMap({ user }) {
               shot 클릭 → 확대 뷰·TEG radius 계산. 실선 원 = wafer {fmt(geo?.wafer_radius_mm, 0)}mm,
               점선 원 = 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm. 표시 방식은 우하단 ⚙️ 에서 변경합니다.
             </div>
-            <WaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
-              selectedShot={selectedShot} onShotClick={onShotClick} imgUrl={imgUrl} />
-            {/* TEG 선택 legend */}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-              {tegNames.length === 0 && (
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                  Teg_location 파일에 이 vehicle 의 TEG 가 없습니다.
-                </span>
-              )}
-              {tegNames.map(n => {
-                const on = selectedTegs.has(n);
-                return (
-                  <button key={n} onClick={() => toggleTeg(n)}
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer",
-                      border: `1px solid ${on ? tegColor(n) : "var(--line)"}`, borderRadius: 12,
-                      background: on ? "var(--panel)" : "transparent", color: "var(--text)",
-                      padding: "3px 10px", fontSize: 12, opacity: on ? 1 : 0.5,
-                    }}>
-                    <span style={{ width: 10, height: 10, background: tegColor(n), borderRadius: 2, display: "inline-block" }} />
-                    {n}
-                  </button>
-                );
-              })}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <WaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
+                selectedShot={selectedShot} onShotClick={onShotClick} imgUrl={imgUrl} />
+              {/* TEG 목록 — 하나씩 선택해서 표시 */}
+              <div style={{ minWidth: 170, maxWidth: 240 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>
+                  TEG 목록 ({tegNames.length})
+                </div>
+                {tegNames.length === 0 && (
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                    Teg_location 파일에 이 vehicle 의 TEG 가 없습니다.
+                  </span>
+                )}
+                <div style={{
+                  display: "flex", flexDirection: "column", gap: 2,
+                  maxHeight: 640 - 24, overflowY: "auto",
+                  border: tegNames.length ? "1px solid var(--line)" : "none", borderRadius: 6,
+                }}>
+                  {tegNames.map(n => {
+                    const t = (data.tegs || []).find(x => x.teg === n) || {};
+                    const on = selectedTeg === n;
+                    return (
+                      <button key={n} onClick={() => selectTeg(n)} title={`ebeam (${fmt(t.ebeam_x)}, ${fmt(t.ebeam_y)}) mm`}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+                          border: "none", borderLeft: `3px solid ${on ? tegColor(n) : "transparent"}`,
+                          background: on ? "var(--panel)" : "transparent", color: "var(--text)",
+                          padding: "6px 10px", fontSize: 13, textAlign: "left",
+                          fontWeight: on ? 700 : 400, opacity: on ? 1 : 0.75,
+                        }}>
+                        <span style={{ width: 10, height: 10, background: tegColor(n), borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </Card>
 

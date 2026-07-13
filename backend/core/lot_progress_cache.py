@@ -700,7 +700,8 @@ def export_lot_progress_parquet(state: dict | None = None) -> dict:
         if not isinstance(state, dict):
             state = load_lot_progress_cache()
     rows = _lot_progress_parquet_rows(state or {})
-    paths = [filebrowser_cache_parquet_file()]
+    # 대시보드 wip-split 이 읽는 lot_wf_current.parquet 도 같은 내용으로 export 한다.
+    paths = [filebrowser_cache_parquet_file(), cache_parquet_file()]
     written: list[str] = []
     for target in paths:
         _write_lot_progress_parquet(target, rows)
@@ -831,11 +832,83 @@ def _fill_missing_progress_columns(row: dict, column_mapping: dict | None = None
     return out
 
 
+# FAB parquet 스트리밍 배치 크기 (row). 너무 크면 메모리 스파이크, 너무 작으면
+# 오버헤드 — row-group 하나 정도인 6.4만 행이 무난. env 로 조절 가능.
+def _fab_read_batch_rows() -> int:
+    try:
+        v = int(os.environ.get("FLOW_LOT_PROGRESS_READ_BATCH_ROWS", "") or 64000)
+    except Exception:
+        v = 64000
+    return max(1000, min(1_000_000, v))
+
+
+_FAB_READ_BATCH_ROWS = _fab_read_batch_rows()
+
+
+def _ml_table_root_lot_ids() -> set[str]:
+    """ML_TABLE_*.parquet 들의 root_lot_id(정규화) 합집합.
+
+    lot_progress(LOT_WF 현재위치) 캐시를 **ML_TABLE 에 실제 존재하는 root** 로만
+    한정하기 위한 화이트리스트. FAB DB 전체(ML_TABLE 밖 root 포함)를 메모리에
+    올리던 것을 이 집합에 드는 root 로만 좁혀 refresh 피크 메모리를 줄인다.
+
+    root_lot_id 컬럼만 lazy scan → unique 로 읽으므로 값 컬럼은 만지지 않는다.
+    ML_TABLE 을 하나도 못 찾거나 실패하면 빈 set → 호출측이 필터를 생략(안전한
+    전량 스캔 폴백)한다.
+    """
+    roots: set[str] = set()
+    try:
+        import polars as pl  # type: ignore
+    except Exception:
+        return roots
+    try:
+        from core import ml_table_lookup as _mlt
+        files = _mlt._discover_ml_table_files()
+    except Exception as exc:
+        logger.warning("ML_TABLE 파일 탐색 실패 (lot_progress root 화이트리스트): %s", exc)
+        return roots
+    for fp in files:
+        try:
+            schema = pl.read_parquet_schema(str(fp))
+            names = list(schema.keys()) if hasattr(schema, "keys") else list(schema)
+            col = next((c for c in names if str(c).strip().lower() == "root_lot_id"), None)
+            if not col:
+                continue
+            values = (
+                pl.scan_parquet(str(fp))
+                .select(pl.col(col).cast(pl.Utf8))
+                .unique()
+                .collect()
+                .to_series()
+                .to_list()
+            )
+            for v in values:
+                key = _norm_key(v)
+                if key:
+                    roots.add(key)
+        except Exception as exc:
+            logger.warning("ML_TABLE root_lot_id 수집 실패 %s: %s", fp, exc)
+    return roots
+
+
 def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterable[dict]:
     mapping = normalize_lot_progress_column_mapping(column_mapping)
     columns = _available_fab_progress_columns(path, mapping)
     if not columns:
         return
+    # row-group 단위 스트리밍 — FAB parquet 전체를 한 번에 메모리에 올리지 않는다
+    # (대용량 FAB 파일에서 refresh 가 OOM 되던 주원인). pyarrow iter_batches 로
+    # batch 씩만 메모리에 두고 소비 후 즉시 해제.
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+        pf = pq.ParquetFile(str(path))
+        for batch in pf.iter_batches(batch_size=_FAB_READ_BATCH_ROWS, columns=columns):
+            for row in batch.to_pylist():
+                yield _fill_missing_progress_columns(row, mapping)
+            del batch
+        return
+    except Exception:
+        pass
     try:
         import polars as pl  # type: ignore
         df = pl.read_parquet(str(path), columns=columns)
@@ -848,14 +921,6 @@ def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterab
         import pandas as pd  # type: ignore
         df = pd.read_parquet(str(path), columns=columns)
         for row in df.to_dict(orient="records"):
-            yield _fill_missing_progress_columns(row, mapping)
-        return
-    except Exception:
-        pass
-    try:
-        import pyarrow.parquet as pq  # type: ignore
-        table = pq.read_table(str(path), columns=columns)
-        for row in table.to_pylist():
             yield _fill_missing_progress_columns(row, mapping)
     except Exception as exc:
         logger.warning("FAB parquet read failed: %s (%s)", path, exc)
@@ -1131,7 +1196,14 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
             latest: dict[tuple[str, str], dict] = {}
             files_scanned = 0
             rows_seen = 0
+            rows_kept = 0
             errors: list[str] = []
+            # ML_TABLE 에 실제 존재하는 root_lot_id 만 유지 — FAB DB 전체를 메모리에
+            # 올리던 것을 좁혀 refresh OOM 을 막는다. 집합이 비면(ML_TABLE 미발견)
+            # 필터를 끄고 기존 전량 스캔으로 폴백한다.
+            allowed_roots = _ml_table_root_lot_ids()
+            if allowed_roots:
+                logger.info("lot_progress refresh: ML_TABLE root %d 개로 스코프 한정", len(allowed_roots))
 
             if not fab_roots:
                 tried = ", ".join(_fab_root_names_for_error(source_root_hint))
