@@ -1484,6 +1484,183 @@ def _normalize_root_expr(root_col: str) -> pl.Expr:
     return pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
 
 
+# ── latest-lot-by-root/wafer 캐시: root_lot_id 파티션 배치 순회(메모리 안전) ──
+# 카노니컬 파일 `lot_progress_latest_lot_by_root_wafer.parquet` 의 스키마(splittable
+# LATEST_LOT_STEP_CACHE_COLUMNS 와 동일)를 그대로 따른다.
+LATEST_LOT_BY_ROOT_WAFER_COLUMNS = [
+    "product", "root_lot_id", "wafer_id", "lot_id",
+    "step_id", "function_step", "tkout_time", "update_time",
+]
+
+_LATEST_LOT_TIME_COL_CANDIDATES = (
+    "tkout_time", "update_time", "time", "tkin_time",
+    "timestamp", "datetime", "date",
+)
+
+
+def _latest_lot_root_batch_size() -> int:
+    """한 번에 스캔할 root_lot_id 파티션 수. 작을수록 피크 메모리↓(대신 느려짐)."""
+    return _env_int("FLOW_ML_TABLE_LATEST_LOT_ROOT_BATCH", 200, 1, 5000)
+
+
+def _collect_low_memory(lf: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        from core.parquet_perf import collect_streaming
+        return collect_streaming(lf)
+    except Exception:
+        return lf.collect()
+
+
+def _latest_lot_rows_for_root_batch(
+    cache_dir: Path,
+    roots: list[str],
+    product_label: str,
+    cols: dict[str, str],
+) -> pl.DataFrame | None:
+    """root 배치의 파티션만 스캔해 (root_lot_id, wafer_id) 당 최신 lot 한 행을 반환."""
+    files: list[Path] = []
+    for root in roots:
+        files.extend(_partition_files(cache_dir, root))
+    if not files:
+        return None
+    lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
+    try:
+        names = lf.collect_schema().names()
+    except Exception:
+        return None
+    lot_col = cols.get("lot") or ""
+    if "root_lot_id" not in names or not lot_col or lot_col not in names:
+        return None
+    wafer_col = cols.get("wafer") or ""
+    step_col = cols.get("step") or ""
+    func_col = cols.get("func") or ""
+    time_col = cols.get("time") or ""
+    has_time = bool(time_col and time_col in names)
+    sel = [
+        pl.col("root_lot_id").cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("root_lot_id"),
+        (pl.col(wafer_col).cast(_STR, strict=False).str.strip_chars() if wafer_col and wafer_col in names else pl.lit("")).alias("wafer_id"),
+        pl.col(lot_col).cast(_STR, strict=False).str.strip_chars().alias("lot_id"),
+        (pl.col(step_col).cast(_STR, strict=False) if step_col and step_col in names else pl.lit("")).alias("step_id"),
+        (pl.col(func_col).cast(_STR, strict=False) if func_col and func_col in names else pl.lit("")).alias("function_step"),
+        (pl.col(time_col).cast(_STR, strict=False) if has_time else pl.lit("")).alias("tkout_time"),
+    ]
+    q = lf.select(sel).filter(
+        pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != "")
+        & pl.col("lot_id").is_not_null() & (pl.col("lot_id") != "")
+    )
+    # 시간 컬럼이 있으면 최신 tkout 기준, 없으면 lot_id 사전순 최대를 '최신'으로 본다.
+    order_key = "tkout_time" if has_time else "lot_id"
+    # group 이 (root_lot_id, wafer_id) 라 그룹당 행수가 작다 → 전역 정렬보다 메모리 안전.
+    q = q.group_by(["root_lot_id", "wafer_id"]).agg([
+        pl.col("lot_id").sort_by(order_key, nulls_last=True).last().alias("lot_id"),
+        pl.col("step_id").sort_by(order_key, nulls_last=True).last().alias("step_id"),
+        pl.col("function_step").sort_by(order_key, nulls_last=True).last().alias("function_step"),
+        pl.col("tkout_time").sort_by(order_key, nulls_last=True).last().alias("tkout_time"),
+    ])
+    try:
+        df = _collect_low_memory(q)
+    except Exception as exc:
+        logger.warning("latest-lot batch collect 실패 dir=%s roots=%d: %s", cache_dir, len(roots), exc)
+        return None
+    if df.is_empty():
+        return None
+    return df.with_columns(pl.lit(product_label).alias("product"))
+
+
+def build_latest_lot_by_root_wafer(
+    *, files: list[Path] | None = None, force_source_build: bool = False
+) -> dict[str, Any]:
+    """root_lot_id 파티션을 배치로 순회해 latest-lot-by-root/wafer 캐시를 만든다.
+
+    기존 방식은 ML_TABLE 전체를 한 번에 메모리로 로드해 root 별 최신 lot 을 뽑느라
+    큰 제품에서 OOM 이 났다. lookup 캐시는 이미 root_lot_id 로 hive 파티셔닝돼
+    있으므로, 파티션을 작은 root 배치로만 스캔하고 (root_lot_id, wafer_id) 당 최신
+    lot_id 한 행만 남긴다. 피크 메모리는 ML_TABLE 전체가 아니라 한 배치(수백 root)
+    뿐이고, 누적되는 것은 결과 크기(root+wafer 당 1행)뿐이다.
+    """
+    started = time.monotonic()
+    cache_updated_at = _utc_now()
+    sources = [Path(f) for f in files] if files else _discover_ml_table_files()
+    batch = _latest_lot_root_batch_size()
+    frames: list[pl.DataFrame] = []
+    processed: list[str] = []
+    skipped: list[dict[str, Any]] = []
+    total_roots = 0
+    for raw_fp in sources:
+        fp = Path(raw_fp)
+        status = cache_status(fp)
+        if not status.get("has_cache") or (force_source_build and status.get("source_stale")):
+            try:
+                build_lookup_cache(fp, force=bool(force_source_build))
+            except Exception as exc:
+                skipped.append({"source": str(fp), "reason": f"lookup_build_failed: {type(exc).__name__}: {exc}"})
+                continue
+        cdir = cache_dir_for(fp)
+        roots = _root_lot_ids_from_cache_dir(cdir)
+        if not roots:
+            skipped.append({"source": str(fp), "reason": "no_partitions"})
+            continue
+        first_files = _partition_files(cdir, roots[0])
+        if not first_files:
+            skipped.append({"source": str(fp), "reason": "empty_partition"})
+            continue
+        try:
+            names = pl.scan_parquet([str(p) for p in first_files], hive_partitioning=True).collect_schema().names()
+        except Exception as exc:
+            skipped.append({"source": str(fp), "reason": f"schema_failed: {type(exc).__name__}"})
+            continue
+        cols = {
+            "wafer": _ci_col(names, "wafer_id", "wf_id", "wafer"),
+            "lot": _ci_col(names, "lot_id", "fab_lot_id", "lot"),
+            "step": _ci_col(names, "step_id", "step"),
+            "func": _ci_col(names, "function_step", "func_step"),
+            "time": _ci_col(names, *_LATEST_LOT_TIME_COL_CANDIDATES),
+        }
+        if not cols["lot"]:
+            skipped.append({"source": str(fp), "reason": "missing_lot_id"})
+            continue
+        product_label = fp.stem
+        for i in range(0, len(roots), batch):
+            if process_memory_high():
+                _wait_for_lookup_cache_memory(fp)
+            df = _latest_lot_rows_for_root_batch(cdir, roots[i:i + batch], product_label, cols)
+            if df is not None and not df.is_empty():
+                frames.append(df)
+        processed.append(str(fp))
+        total_roots += len(roots)
+    out_fp = _latest_lot_by_root_wafer_path()
+    out_fp.parent.mkdir(parents=True, exist_ok=True)
+    if frames:
+        combined = pl.concat(frames, how="diagonal_relaxed").with_columns(
+            pl.lit(cache_updated_at).alias("update_time")
+        )
+        combined = (
+            combined.sort("tkout_time", descending=True, nulls_last=True)
+            .unique(subset=["product", "root_lot_id", "wafer_id"], keep="first", maintain_order=True)
+            .sort(["product", "root_lot_id", "wafer_id"])
+            .select(LATEST_LOT_BY_ROOT_WAFER_COLUMNS)
+        )
+    else:
+        combined = pl.DataFrame({c: [] for c in LATEST_LOT_BY_ROOT_WAFER_COLUMNS})
+    tmp = out_fp.with_suffix(out_fp.suffix + ".tmp")
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    combined.write_parquet(tmp)
+    tmp.replace(out_fp)
+    return {
+        "ok": True,
+        "path": str(out_fp),
+        "row_count": int(combined.height),
+        "sources": processed,
+        "skipped": skipped,
+        "root_lot_id_count": total_roots,
+        "cache_updated_at": cache_updated_at,
+        "build_seconds": round(time.monotonic() - started, 3),
+    }
+
+
 def _lookup_cache_memory_wait_seconds() -> float:
     return _env_float("FLOW_ML_TABLE_LOOKUP_CACHE_MEMORY_WAIT_SECONDS", LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT, 0.0, 300.0)
 
@@ -1651,6 +1828,24 @@ def build_lookup_cache(fp: Path, *, force: bool = False) -> dict[str, Any]:
         _release_build_lock(lock_fd, lock_fp)
 
 
+_BUILD_COMPLETE_HOOKS: list = []
+
+
+def register_build_complete_hook(fn) -> None:
+    """lookup 캐시 빌드 완료 시 호출할 콜백 등록 (예: SplitTable view payload
+    캐시 무효화). 순환 import 를 피하려고 소비 모듈(splittable router)이 등록한다."""
+    if callable(fn) and fn not in _BUILD_COMPLETE_HOOKS:
+        _BUILD_COMPLETE_HOOKS.append(fn)
+
+
+def _run_build_complete_hooks(fp: Path) -> None:
+    for fn in list(_BUILD_COMPLETE_HOOKS):
+        try:
+            fn(fp)
+        except Exception:
+            logger.debug("ml_table_lookup build-complete hook failed", exc_info=True)
+
+
 def _worker_loop() -> None:
     while True:
         with _BUILD_LOCK:
@@ -1681,6 +1876,9 @@ def _worker_loop() -> None:
             with _BUILD_LOCK:
                 _BUILD_STATE["last_source"] = str(fp.resolve())
                 _BUILD_STATE["finished_at"] = _utc_now()
+            # 빌드 완료 → 소비 캐시(SplitTable view payload) 무효화 훅 실행.
+            # 이렇게 해야 stale 파티션으로 렌더한 payload 가 fresh 데이터로 수렴.
+            _run_build_complete_hooks(fp)
         except Exception as exc:
             logger.warning("ML_TABLE lookup cache build failed source=%s: %s", fp, exc, exc_info=True)
             with _BUILD_LOCK:
@@ -1770,8 +1968,17 @@ def _read_partition(cache_dir: Path, root_lot_id: str, selected_cols: list[str],
     return df.to_dicts(), total, limited
 
 
-def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "") -> tuple[pl.LazyFrame | None, dict[str, Any]]:
-    """Return a LazyFrame for a cached root partition, or None when unavailable."""
+def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allow_stale: bool = False) -> tuple[pl.LazyFrame | None, dict[str, Any]]:
+    """Return a LazyFrame for a cached root partition, or None when unavailable.
+
+    allow_stale=True (SplitTable view fast-path): 소스 ML_TABLE 이 갱신돼 cache 가
+    stale 여도 해당 root 의 hive 파티션이 있으면 **즉시 그 파티션을 서빙**하고
+    백그라운드 재빌드만 예약한다. 이렇게 하면 데이터 갱신 직후(가장 흔한 stale
+    구간)마다 모든 검색이 소스 전체를 재스캔(5~10초)하던 것을 파티션 인덱스 읽기
+    (~수십 ms)로 바꾼다. 서빙 데이터는 최대 한 갱신 주기만큼 과거일 수 있으나,
+    pivot 캐시·view payload 캐시와 동일한 stale-while-revalidate 철학이며, 빌드
+    완료 시 view payload 캐시가 무효화돼 다음 조회부터 fresh 로 수렴한다.
+    """
     fp = Path(fp).resolve()
     root = str(root_lot_id or "").strip().upper()
     status = cache_status(fp)
@@ -1782,8 +1989,11 @@ def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "") -> tupl
         _ensure_lookup_cache_ready_for_root_ram(fp, status)
         return None, status
     if status.get("source_stale"):
-        _ensure_lookup_cache_ready_for_root_ram(fp, status)
-        return None, status
+        if not allow_stale:
+            _ensure_lookup_cache_ready_for_root_ram(fp, status)
+            return None, status
+        # stale-while-revalidate: 파티션을 서빙하면서 백그라운드 재빌드 예약.
+        enqueue_build(fp)
     files = _partition_files(cache_dir_for(fp), root)
     if not files:
         return None, status

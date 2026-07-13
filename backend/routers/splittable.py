@@ -14,7 +14,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
       `<db_root>/_uniques.json` unchanged, for frontend feature-select
     autocomplete catalog.
 """
-import json, datetime, io, csv as csv_mod, hashlib, logging, time, threading, os, gc
+import json, datetime, io, csv as csv_mod, hashlib, logging, time, threading, os, gc, shutil
 from pathlib import Path
 import sys
 from collections import OrderedDict, deque
@@ -8356,7 +8356,22 @@ def _scan_product(
         if not fab_source and not _global_fab_source_paths("", include_all=include_all):
             return _strip_non_authoritative_fab_fields(lf, product)
 
-        fab_lf, fab_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
+        # Fast layer: read only the searched root's FAB partition from the
+        # precomputed per-root index, bounding the latest-lot pick to O(one root)
+        # instead of scanning the whole FAB source. Additive — a miss returns None
+        # and we fall back to the full scan below while a build is scheduled.
+        fab_lf = None
+        fab_sources: list = []
+        if str(root_lot_id or "").strip():
+            fab_lf = _fab_lot_index_scan_root(
+                product, root_lot_id, fab_source=fab_source, include_all=include_all)
+            if fab_lf is not None:
+                fab_sources = ["<fab_lot_index>"]
+        if fab_lf is None:
+            if str(root_lot_id or "").strip():
+                _enqueue_fab_lot_index_build(
+                    product, fab_source, include_all=include_all, reason="scan_miss")
+            fab_lf, fab_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
         if fab_lf is None:
             logger.warning("_scan_product: FAB source scan 실패 (product=%s fab_source=%s sources=%s)",
                            product, fab_source, fab_sources)
@@ -9050,6 +9065,14 @@ def _clear_split_view_cache() -> None:
         _VIEW_GLOBAL_SIG_CACHE.clear()
 
 
+# lookup 캐시(hive 파티션) 재빌드가 끝나면 view payload 캐시를 비운다 — stale
+# 파티션으로 렌더해 캐시된 payload 를 fresh 데이터로 재계산시키기 위함.
+try:
+    _ml_table_lookup.register_build_complete_hook(lambda _fp: _clear_split_view_cache())
+except Exception:
+    logger.debug("ml_table_lookup build-complete hook 등록 실패", exc_info=True)
+
+
 # ── Pre-pivoted root_lot cache: background build (single-flight per product) ──
 # v9.1.x: plan 저장 후 백그라운드 작업 스레드 핸들 — 테스트가 join 으로 완료를 기다린다.
 _PLAN_POST_SAVE_LAST_THREAD: threading.Thread | None = None
@@ -9137,6 +9160,273 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
 
     threading.Thread(target=_run, daemon=True, name=f"splittable-pivot-{canonical}").start()
     logger.info(f"pivot cache build queued for {canonical} ({reason})")
+    return True
+
+
+# ── Per-root FAB latest-lot index (additive fast layer for the fab join) ──────
+# Profiling (5000-root / 20M-row FAB sandbox) pinned the dominant SplitTable
+# cost to a single collect() in the fab override join: picking the latest FAB
+# lot per (root_lot_id, wafer_id) scanned the WHOLE FAB source on every search.
+# Two things defeat parquet pruning there: the source is not partitioned by root,
+# and the root filter is wrapped in _join_key_expr (cast+upper), so predicate
+# pushdown cannot use row-group stats. That collect was ~2.5s and grew with FAB
+# size — it fired even on pivot-cache hits whenever the lot_progress projection
+# cache did not cover the searched root.
+#
+# This layer precomputes, in the background, the global FAB source re-partitioned
+# by a normalized root key. A search reads only the one root's partition (a few
+# hundred rows) and the EXISTING align/scope/latest-pick/join logic then runs
+# unchanged on that tiny frame. Purely additive: on any miss / staleness / error
+# it returns None and the caller falls back to the original full-scan path while
+# a (re)build is scheduled. Does not touch the SWR/signature/scan_root_lot_cache
+# paths. Measured per-root read: ~13–40ms vs ~2130ms full-scan (~50–160x).
+_FAB_IDX_ROOT_COL = "__fab_idx_root"
+_FAB_IDX_META_FILE = "_meta.json"
+_FAB_IDX_BUILD_LOCK = threading.Lock()
+_FAB_IDX_BUILD_INPROGRESS: set[str] = set()
+_FAB_IDX_BUILD_LAST: dict[str, float] = {}
+_FAB_IDX_BUILD_COOLDOWN_SEC = 120.0
+# throttle the (potentially directory-walking) staleness check off the hot path
+_FAB_IDX_REVALIDATE_TTL_SEC = 30.0
+_FAB_IDX_REVALIDATE_LAST: dict[str, float] = {}
+
+
+def _fab_lot_index_enabled() -> bool:
+    return _env_bool("FLOW_SPLITTABLE_FAB_LOT_INDEX", True)
+
+
+def _fab_lot_index_dir(product: str) -> Path:
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    return _base_root() / "cache" / "fab_lot_index" / canonical
+
+
+def _fab_lot_index_meta_path(product: str) -> Path:
+    return _fab_lot_index_dir(product) / _FAB_IDX_META_FILE
+
+
+def _fab_source_signature(fab_source: str, include_all: bool) -> list:
+    """(path, mtime, size) for every FAB source file — the index staleness key."""
+    sig: list = []
+    db_base = _db_base()
+    for source in _global_fab_source_paths(fab_source, include_all=include_all):
+        base = db_base / source
+        try:
+            if base.is_file():
+                st = base.stat()
+                sig.append([str(base), int(st.st_mtime), int(st.st_size)])
+                continue
+            for p in sorted(base.rglob("*")):
+                if p.is_file() and p.suffix.lower() in (".parquet", ".csv"):
+                    st = p.stat()
+                    sig.append([str(p), int(st.st_mtime), int(st.st_size)])
+        except Exception:
+            continue
+    return sig
+
+
+def _fab_lot_index_read_meta(product: str) -> dict:
+    try:
+        return load_json(_fab_lot_index_meta_path(product), {}) or {}
+    except Exception:
+        return {}
+
+
+def _fab_lot_index_partition_dir(product: str, root_lot_id: str) -> Path | None:
+    root = str(root_lot_id or "").strip().upper()
+    if not root:
+        return None
+    part = _fab_lot_index_dir(product) / f"{_FAB_IDX_ROOT_COL}={root}"
+    return part if part.is_dir() else None
+
+
+def _fab_lot_index_maybe_revalidate(product: str, fab_source: str, include_all: bool) -> None:
+    """Throttled, off-hot-path freshness check. Spawns a daemon that compares the
+    live FAB source signature with the built index and enqueues a rebuild on drift
+    (or when the index is missing). Keeps the directory walk out of the search."""
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
+    if not canonical:
+        return
+    now = time.time()
+    with _FAB_IDX_BUILD_LOCK:
+        if now - _FAB_IDX_REVALIDATE_LAST.get(canonical, 0.0) < _FAB_IDX_REVALIDATE_TTL_SEC:
+            return
+        _FAB_IDX_REVALIDATE_LAST[canonical] = now
+
+    def _check():
+        try:
+            meta = _fab_lot_index_read_meta(product)
+            live = _fab_source_signature(fab_source, include_all)
+            built = meta.get("source_sig")
+            if not meta or built != live:
+                _enqueue_fab_lot_index_build(
+                    product, fab_source, include_all=include_all,
+                    reason="missing" if not meta else "stale",
+                )
+        except Exception:
+            logger.debug("fab_lot_index revalidate failed product=%s", product, exc_info=True)
+
+    threading.Thread(target=_check, daemon=True,
+                     name=f"splittable-fabidx-chk-{canonical}").start()
+
+
+def _fab_lot_index_scan_root(product: str, root_lot_id: str,
+                             fab_source: str = "", include_all: bool = False):
+    """Return a LazyFrame of the FAB source rows for one root (schema identical to
+    _scan_global_fab_sources), or None to signal fallback to the full scan."""
+    if not _fab_lot_index_enabled():
+        return None
+    root = str(root_lot_id or "").strip()
+    if not root:
+        return None
+    try:
+        # Serve-immediately; freshness is chased in the background (SWR-style).
+        _fab_lot_index_maybe_revalidate(product, fab_source, include_all)
+        part = _fab_lot_index_partition_dir(product, root)
+        if part is None:
+            return None
+        files = sorted(part.glob("*.parquet"))
+        if not files:
+            return None
+        lf = _scan_parquet_compat([str(p) for p in files])
+        names = lf.collect_schema().names()
+        if _FAB_IDX_ROOT_COL in names:
+            lf = lf.drop(_FAB_IDX_ROOT_COL)
+        return _cast_cats_lazy(lf)
+    except Exception:
+        logger.debug("fab_lot_index scan failed product=%s root=%s", product, root, exc_info=True)
+        return None
+
+
+def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bool:
+    """Build a per-root FAB lot index: the latest FAB row per (root, wafer),
+    partitioned by a normalized root key.
+
+    Storing the *reduced* latest-per-(root,wafer) frame (rather than every raw
+    FAB row) keeps the index tiny — a few rows per root instead of thousands —
+    which makes the build I/O an order of magnitude cheaper (shorter cold window
+    after a data refresh) and per-root reads near-instant. The reduction is by
+    (root, wafer) keyed on the FAB timestamp, so it is equivalent to the fab
+    join's own latest-pick for any join key ⊆ {root_lot_id, wafer_id} (the
+    default identity join): reducing by (root,wafer)-latest and then re-picking
+    latest per join key yields the same rows because the timestamp order is
+    preserved. The downstream sort+unique in _scan_product still runs and stays
+    correct on the tiny frame."""
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    if not canonical:
+        return False
+    fab_lf, used_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
+    if fab_lf is None:
+        return False
+    try:
+        fab_names = fab_lf.collect_schema().names()
+    except Exception:
+        return False
+    root_col = _ci_resolve_in("root_lot_id", fab_names) or _pick_first_present_ci(("root_lot_id",), fab_names)
+    if not root_col:
+        return False
+    wf_col = _ci_resolve_in("wafer_id", fab_names) or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
+    ts_col = _pick_ts_col(fab_names)
+    idx_dir = _fab_lot_index_dir(product)
+    tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
+    lf = (
+        fab_lf
+        .with_columns(_join_key_expr(root_col).alias(_FAB_IDX_ROOT_COL))
+        .filter(pl.col(_FAB_IDX_ROOT_COL).is_not_null() & (pl.col(_FAB_IDX_ROOT_COL) != ""))
+    )
+    # Reduce to the latest row per (root, wafer). Keep every FAB column so the
+    # read path is a drop-in replacement for _scan_global_fab_sources output.
+    reduce_subset = [_FAB_IDX_ROOT_COL] + ([wf_col] if wf_col else [])
+    try:
+        if ts_col and ts_col in fab_names:
+            lf = lf.sort(ts_col, descending=True, nulls_last=True).unique(
+                subset=reduce_subset, keep="first", maintain_order=True)
+        else:
+            lf = lf.unique(subset=reduce_subset, keep="last")
+    except Exception:
+        # If reduction is not expressible, fall back to storing raw per-root rows
+        # (still correct — the fab join reduces at read time).
+        logger.debug("fab_lot_index reduction skipped product=%s", product, exc_info=True)
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sink_target = pl.PartitionBy(
+            tmp_dir, key=_FAB_IDX_ROOT_COL, include_key=True,
+            approximate_bytes_per_file="auto",
+        )
+        lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+    except Exception:
+        # Older polars / sink edge cases — fall back to an eager partitioned write.
+        df = lf.collect()
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(tmp_dir, partition_by=_FAB_IDX_ROOT_COL)
+    if idx_dir.exists():
+        shutil.rmtree(idx_dir, ignore_errors=True)
+    tmp_dir.replace(idx_dir)
+    meta = {
+        "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "sources": used_sources,
+        "root_col": root_col,
+        "source_sig": _fab_source_signature(fab_source, include_all),
+    }
+    try:
+        save_json(_fab_lot_index_meta_path(product), meta)
+    except Exception:
+        logger.debug("fab_lot_index meta write failed product=%s", product, exc_info=True)
+    return True
+
+
+def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
+                                 include_all: bool = False, reason: str = "") -> bool:
+    """Single-flight, cooldown-guarded background (re)build of the fab lot index."""
+    if not _fab_lot_index_enabled():
+        return False
+    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
+    if not canonical:
+        return False
+    now = time.time()
+    with _FAB_IDX_BUILD_LOCK:
+        if canonical in _FAB_IDX_BUILD_INPROGRESS:
+            return False
+        if now - _FAB_IDX_BUILD_LAST.get(canonical, 0.0) < _FAB_IDX_BUILD_COOLDOWN_SEC:
+            return False
+        _FAB_IDX_BUILD_INPROGRESS.add(canonical)
+
+    def _run():
+        ok = False
+        lease_name = f"splittable_fabidx_{canonical}"
+        lease_held = False
+        try:
+            try:
+                from core import shared_lease as _shared_lease
+                lease_held = _shared_lease.try_acquire(lease_name, ttl_sec=1800.0)
+                if not lease_held:
+                    logger.info(f"fab_lot_index build skipped for {canonical} — 다른 서버가 빌드 중")
+                    return
+            except Exception:
+                lease_held = False  # lease infra optional; proceed without it
+            ok = bool(_build_fab_lot_index(canonical, fab_source, include_all))
+        except Exception as exc:
+            logger.warning(f"fab_lot_index build failed for {canonical} ({reason}): {exc}")
+        finally:
+            if lease_held:
+                try:
+                    from core import shared_lease as _shared_lease
+                    _shared_lease.release(lease_name)
+                except Exception:
+                    pass
+            with _FAB_IDX_BUILD_LOCK:
+                _FAB_IDX_BUILD_INPROGRESS.discard(canonical)
+                _FAB_IDX_BUILD_LAST[canonical] = time.time()
+        if ok:
+            # New fab labels are not captured by the view payload cache signature;
+            # clear it so the next search recomputes with fresh joined lot ids.
+            _clear_split_view_cache()
+
+    threading.Thread(target=_run, daemon=True, name=f"splittable-fabidx-{canonical}").start()
+    logger.info(f"fab_lot_index build queued for {canonical} ({reason})")
     return True
 
 
@@ -9353,12 +9643,16 @@ def _split_view_large_root_cache_or_defer(
         return None, None
     status = _ml_table_lookup.cache_status(fp)
     runtime_profile["root_cache_status"] = status.get("status") or ""
-    if not status.get("has_cache") or status.get("source_stale"):
+    if not status.get("has_cache"):
         queued = _ml_table_lookup.enqueue_build(fp)
         runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, queued)
         runtime_profile["root_cache_hit"] = False
         return None, None
-    lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids)
+    # 소스가 갱신돼 cache 가 stale 여도, 해당 root 의 hive 파티션이 있으면 즉시
+    # 서빙하고 백그라운드 재빌드만 예약한다(allow_stale). 데이터 갱신 직후마다
+    # 소스 전체를 재스캔(5~10초)하던 것을 파티션 인덱스 읽기로 대체 — 이 stale
+    # 구간이 SplitTable 검색이 캐시가 있어도 느리던 주원인이었다.
+    lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids, allow_stale=True)
     runtime_profile["root_cache_status"] = status.get("status") or ""
     runtime_profile["root_cache_hit"] = lf is not None
     runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, {})

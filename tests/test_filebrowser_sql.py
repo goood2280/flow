@@ -330,6 +330,49 @@ def test_ml_table_lookup_uses_stale_cache_while_rebuild_is_queued(monkeypatch, t
     assert enqueued == [fp.resolve()]
 
 
+def test_scan_root_lot_cache_serves_stale_partition_when_allow_stale(monkeypatch, tmp_path):
+    """SplitTable view fast-path: 소스가 stale 여도 allow_stale=True 면 파티션을
+    즉시 서빙(전체 재스캔 회피)하고 백그라운드 재빌드를 예약한다. 기본값(False)은
+    이전대로 None 을 반환해 호출측이 다른 폴백을 타게 한다."""
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame({"root_lot_id": ["R1000"], "wafer_id": ["1"], "KNOB_A": ["ON"]}).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    # 소스 갱신 → cache stale.
+    pl.DataFrame({"root_lot_id": ["R1000", "R2000"], "wafer_id": ["1", "1"], "KNOB_A": ["NEW", "OFF"]}).write_parquet(fp)
+    enqueued = []
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda path: enqueued.append(path) or {"ok": True, "status": "queued"})
+
+    # 기본(allow_stale=False): stale 이면 서빙 거부.
+    lf_default, status_default = ml_table_lookup.scan_root_lot_cache(fp, "R1000")
+    assert lf_default is None
+    assert status_default["source_stale"] is True
+
+    # allow_stale=True: 이전(stale) 파티션 데이터를 즉시 서빙 + 재빌드 예약.
+    lf_stale, status_stale = ml_table_lookup.scan_root_lot_cache(fp, "R1000", allow_stale=True)
+    assert lf_stale is not None
+    assert status_stale["source_stale"] is True
+    df = lf_stale.collect()
+    assert df["KNOB_A"].to_list() == ["ON"]  # 새 소스의 "NEW" 가 아니라 이전 파티션 값
+    assert fp.resolve() in enqueued
+
+
+def test_scan_root_lot_cache_runs_build_complete_hook(monkeypatch, tmp_path):
+    """lookup 빌드 완료 훅이 실행돼 소비 캐시(view payload)를 무효화할 수 있다."""
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODY.parquet"
+    pl.DataFrame({"root_lot_id": ["R1"], "wafer_id": ["1"], "KNOB_A": ["ON"]}).write_parquet(fp)
+    fired = []
+    ml_table_lookup.register_build_complete_hook(lambda p: fired.append(p))
+    try:
+        ml_table_lookup._run_build_complete_hooks(fp)
+    finally:
+        ml_table_lookup._BUILD_COMPLETE_HOOKS.clear()
+    assert fired == [fp]
+
+
 def test_db_cache_builds_et_step_seq_point_summary(monkeypatch, tmp_path):
     from core import db_cache
 
