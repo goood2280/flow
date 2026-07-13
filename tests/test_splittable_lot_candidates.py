@@ -2609,7 +2609,16 @@ def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monk
     monkeypatch.setattr(splittable, "_custom_tags_path", lambda: tmp_path / "flow-data" / "splittable" / "custom_tags.json")
     monkeypatch.setattr(splittable, "_management_rows_path", lambda: tmp_path / "flow-data" / "splittable" / "management_rows.json")
     monkeypatch.setattr(splittable, "_plan_alias_paths", lambda raw_product: [tmp_path / "flow-data" / "splittable" / f"{raw_product}.json"])
+    # 이 테스트는 view-payload SWR 만 검증한다. pivot 캐시 miss 시 도는 백그라운드
+    # 빌드는 완료 시 _clear_split_view_cache() 로 뷰 캐시를 통째로 비우므로(무관한
+    # 기존 동작), 테스트 요청과 경합해 캐시 엔트리를 지운다 — no-op 로 격리한다.
+    monkeypatch.setattr(splittable, "_enqueue_pivot_cache_build", lambda *a, **k: False)
+    _reset_product_ram_cache(monkeypatch)
     splittable._clear_split_view_cache()
+    splittable._VIEW_REVALIDATE_LAST.clear()
+    splittable._VIEW_REVALIDATE_INFLIGHT.clear()
+    # 초기 clear 이후, 다른 테스트의 백그라운드 스레드가 뷰 캐시를 비우지 못하게 억제.
+    monkeypatch.setattr(splittable, "_clear_split_view_cache", lambda: None)
 
     result = splittable.view_split(
         product=product,
@@ -2648,11 +2657,18 @@ def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monk
     assert cached_result["header_groups"] == result["header_groups"]
     assert result["view_cache"]["payload_cache_hit"] is False
     assert cached_result["view_cache"]["payload_cache_hit"] is True
+    assert cached_result["view_cache"]["stale"] is False
     assert "total_ms" in cached_result["runtime_profile"]
 
+    # stale-while-revalidate: 최신 lot 캐시(파생 soft dep)만 바뀌면 소스 ML_TABLE 은
+    # 그대로이므로(신규 lot 아님) 요청은 stale 캐시를 즉시 서빙하고 — 원본 스캔을
+    # 동기 실행하지 않는다 — 백그라운드에서만 재계산해 다음 조회를 최신화한다.
+    # 시그니처 TTL 캐시(≤1s) 때문에 write 직후 즉시 감지되지 않을 수 있으므로 넉넉히 대기.
+    splittable._VIEW_GLOBAL_SIG_CACHE.clear()
     time.sleep(0.02)
     write_latest("FVC01_NEW")
-    refreshed_result = splittable.view_split(
+    splittable._VIEW_GLOBAL_SIG_CACHE.clear()
+    stale_result = splittable.view_split(
         product=product,
         root_lot_id="RVC01",
         wafer_ids="",
@@ -2663,8 +2679,35 @@ def test_view_cache_reuses_payload_until_lot_latest_cache_changes(tmp_path, monk
         fab_lot_id="",
         custom_cols="",
     )
-    assert scan_calls == 1
+    # 동기 응답은 캐시된 이전 라벨을 즉시 반환한다 — 이 응답 객체가 FVC01_OLD 인 것
+    # 자체가 동기 재계산 없이 stale 캐시로 서빙됐다는 증거다.
+    assert stale_result["view_cache"]["payload_cache_hit"] is True
+    assert stale_result["view_cache"]["stale"] is True
+    assert stale_result["header_groups"] == [{"label": "FVC01_OLD", "span": 2}]
+
+    # 백그라운드 재검증이 캐시를 최신 라벨로 치유 — 완료까지 폴링(원본 스캔 1회).
+    deadline = time.monotonic() + 5.0
+    refreshed_result = stale_result
+    while time.monotonic() < deadline:
+        splittable._VIEW_GLOBAL_SIG_CACHE.clear()
+        refreshed_result = splittable.view_split(
+            product=product,
+            root_lot_id="RVC01",
+            wafer_ids="",
+            prefix="KNOB",
+            custom_name="",
+            view_mode="all",
+            history_mode="all",
+            fab_lot_id="",
+            custom_cols="",
+        )
+        if (refreshed_result["view_cache"]["stale"] is False
+                and refreshed_result["header_groups"] == [{"label": "FVC01_NEW", "span": 2}]):
+            break
+        time.sleep(0.05)
+    assert scan_calls >= 1
     assert refreshed_result["header_groups"] == [{"label": "FVC01_NEW", "span": 2}]
+    assert refreshed_result["view_cache"]["stale"] is False
 
 
 def test_view_cache_invalidates_when_plan_file_changes(tmp_path, monkeypatch):
