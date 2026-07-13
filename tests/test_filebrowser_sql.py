@@ -2229,6 +2229,42 @@ def test_product_click_preview_uses_limited_recent_scan(monkeypatch):
     assert result["data"][0]["lot_id"] == "new"
 
 
+def test_product_click_preview_falls_back_to_prior_dates_when_latest_empty(monkeypatch):
+    calls = []
+
+    def fake_lazy_read_source(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("latest_only"):
+            # 최신 date 파티션이 빈 parquet 만 남긴 경우
+            return pl.DataFrame(schema={"lot_id": pl.Utf8, "time": pl.Utf8}).lazy()
+        return pl.DataFrame({
+            "lot_id": ["old", "new"],
+            "time": ["2024-04-20T12:00:00", "2024-04-23T12:00:00"],
+        }).lazy()
+
+    monkeypatch.setattr(utils, "lazy_read_source", fake_lazy_read_source)
+
+    result = filebrowser.view_product(
+        root="ROOT",
+        product="PROD",
+        sql="",
+        rows=200,
+        select_cols="",
+        meta_only=False,
+        all_partitions=False,
+        page=0,
+        page_size=200,
+    )
+
+    assert calls[0]["latest_only"] is True
+    assert calls[-1]["latest_only"] is False
+    assert calls[-1]["recent_days"] is None
+    assert calls[-1]["max_files"] == filebrowser.DB_PREVIEW_FALLBACK_MAX_FILES
+    assert result["latest_preview"] is True
+    assert result["latest_partition_empty"] is True
+    assert result["data"][0]["lot_id"] == "new"
+
+
 def test_column_select_runs_full_scan_without_recent_preview(monkeypatch):
     calls = []
 

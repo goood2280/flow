@@ -96,6 +96,9 @@ LATEST_PREVIEW_ROWS = 100
 # 안전하게 보여줄 수 있다. SQL/컬럼 선택/집계가 있는 조회는 기존 100행 계약 유지.
 DB_LATEST_PREVIEW_ROWS = 500
 LATEST_PREVIEW_MAX_FILES = 4
+# 최신 date 파티션이 비어 있을 때(빈 parquet 등) 이전 날짜 파일로 확대해
+# 500행 샘플을 채우는 fallback 스캔의 파일 수 상한.
+DB_PREVIEW_FALLBACK_MAX_FILES = 16
 AI_SQL_DEFAULT_SAMPLE_ROWS = 20
 AI_SQL_MAX_SAMPLE_ROWS = 50
 AI_SQL_PROFILE_VALUE_LIMIT = 3
@@ -10085,6 +10088,26 @@ def view_product(root: str = Query(...), product: str = Query(...),
                                                            source_size=source_size, settings=settings,
                                                            sort_spec=sort_spec,
                                                            aggregate_spec=aggregate_spec), settings)
+                if latest_preview and page == 0 and not out.get("data"):
+                    # 최신 date 파티션이 비어 있으면(빈 parquet, wafer 필터로 전부
+                    # 탈락 등) 이전 날짜 파일들로 확대 스캔해 500행 샘플을 채운다.
+                    # latest_first 정렬이 최근 날짜 행부터 보여준다.
+                    fb_lf = lazy_read_source(
+                        root=root, product=product,
+                        recent_days=None, max_files=DB_PREVIEW_FALLBACK_MAX_FILES,
+                        latest_only=False,
+                    )
+                    if fb_lf is not None:
+                        fb_out = _finalize_preview_response(_run_view_lazy(
+                            fb_lf, sql, select_cols, local_rows, meta_only=meta_only,
+                            page=page, page_size=local_page_size, preview_cols=cols,
+                            latest_first=True, latest_preview=True,
+                            source_size=source_size, settings=settings,
+                            sort_spec=sort_spec,
+                            aggregate_spec=aggregate_spec), settings)
+                        if fb_out.get("data"):
+                            fb_out["latest_partition_empty"] = True
+                            out = fb_out
                 if latest_preview:
                     # 최신 파티션 preview 는 500행 상한을 응답에 그대로 알린다.
                     limit = max(int(out.get("preview_row_limit") or 0), int(local_page_size))
