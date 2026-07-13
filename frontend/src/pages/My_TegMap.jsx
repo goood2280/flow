@@ -31,6 +31,11 @@ function fmt(v, d = 2) {
   return Number(v).toFixed(d);
 }
 
+/* 좌표 단위 — 내부 계산은 mm 기준, 표시만 변환. 기본값은 um(마이크로미터). */
+const UNIT_FACTOR = { mm: 1, um: 1000 };
+const UNIT_LABEL = { mm: "mm", um: "µm" };
+const UNIT_DECIMALS = { mm: 3, um: 1 };
+
 function _token() {
   try { return JSON.parse(localStorage.getItem("hol_user") || "{}").token || ""; }
   catch (_) { return ""; }
@@ -300,7 +305,8 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, img
       const s = SIZE / (2 * (R + pad));
       return {
         toX: (mm) => SIZE / 2 + mm * s,
-        toY: (mm) => SIZE / 2 - mm * s,
+        // chip_y 작은 값이 위에 오도록 y축 reverse (WF MAP 관례) — mm 이 클수록 아래.
+        toY: (mm) => SIZE / 2 + mm * s,
         shotW: geo.shot_w_mm * s,
         shotH: geo.shot_h_mm * s,
         waferR: R * s,
@@ -314,7 +320,8 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, img
     const s = SIZE / Math.max(x1 - x0, y1 - y0);
     return {
       toX: (x) => (x - x0) * s,
-      toY: (y) => SIZE - (y - y0) * s,
+      // chip_y 작은 값이 위에 (y축 reverse).
+      toY: (y) => (y - y0) * s,
       shotW: geo.pitch_x * s,
       shotH: geo.pitch_y * s,
       waferR: 0, edgeR: 0, mmScale: 1,
@@ -367,7 +374,7 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, img
             {/* 칩 격자 — shot 센터 기준 대칭 블록 */}
             {cellsInfo && cellsInfo.cells.map(c => (
               <rect key={c.i}
-                x={toX(s0.mm_x + c.x)} y={toY(s0.mm_y + c.y + c.h)}
+                x={toX(s0.mm_x + c.x)} y={toY(s0.mm_y + c.y)}
                 width={c.w * mmScale} height={c.h * mmScale}
                 fill="rgba(47,158,99,0.10)" stroke="#2f9e63" strokeWidth="0.4"
                 opacity="0.8" pointerEvents="none" />
@@ -376,7 +383,7 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, img
             {mmMode && tegList.map(t => {
               const ax = s0.mm_x + t.ebeam_x, ay = s0.mm_y + t.ebeam_y;
               return (
-                <rect key={t.teg} x={toX(ax)} y={toY(ay + t.teg_h)}
+                <rect key={t.teg} x={toX(ax)} y={toY(ay)}
                   width={Math.max(1.5, t.teg_w * mmScale)} height={Math.max(1.5, t.teg_h * mmScale)}
                   fill={tegColor(t.teg)} opacity="0.9" pointerEvents="none" />
               );
@@ -402,7 +409,8 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const w = W * s, h = H * s;
   const ox = (SIZE - w) / 2, oy = (SIZE - h) / 2;
   const toX = (mm) => ox + (mm + W / 2) * s;         // shot 센터 기준 mm
-  const toY = (mm) => oy + h - (mm + H / 2) * s;
+  // chip_y 작은 값이 위에 (y축 reverse) — WaferMap 과 동일 방향.
+  const toY = (mm) => oy + (mm + H / 2) * s;
   const tegList = data.tegs.filter(t => selectedTegs.has(t.teg));
   const cellsInfo = display.mode === "grid" ? chipCells(display, W, H) : null;
   const showImage = display.mode === "image" && imgUrl;
@@ -422,7 +430,7 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
       {/* 칩 격자 — 칩 사각형 + 번호 */}
       {cellsInfo && cellsInfo.cells.map(c => (
         <g key={c.i}>
-          <rect x={toX(c.x)} y={toY(c.y + c.h)} width={c.w * s} height={c.h * s}
+          <rect x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
             fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth="0.8" opacity="0.85" />
           <text x={toX(c.x + c.w / 2)} y={toY(c.y + c.h / 2)} fontSize="10" fill="#2f9e63"
             textAnchor="middle" dominantBaseline="middle" opacity="0.85">{c.i + 1}</text>
@@ -430,7 +438,7 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
       ))}
       {/* TEG 직사각형 (좌하단 = ebeam_x/y) */}
       {tegList.map(t => {
-        const x = toX(t.ebeam_x), y = toY(t.ebeam_y + t.teg_h);
+        const x = toX(t.ebeam_x), y = toY(t.ebeam_y);   // 반전 후 rect 상단 = 작은 mm(ebeam 좌하단)
         return (
           <g key={t.teg}>
             <rect x={x} y={y} width={t.teg_w * s} height={t.teg_h * s} fill={tegColor(t.teg)} opacity="0.75" />
@@ -461,9 +469,12 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
 }
 
 /* ── 선택 shot 의 TEG 좌하단 실좌표·radius 표 ── */
-function RadiusPanel({ data, shot, selectedTegs }) {
+function RadiusPanel({ data, shot, selectedTegs, unit = "um" }) {
   const geo = data.geometry;
-  if (!shot) return <div style={{ fontSize: 12, color: "var(--muted)" }}>wafer map 에서 shot 을 클릭하면 TEG 좌하단의 실좌표(mm)와 원점 radius 를 계산합니다.</div>;
+  const f = UNIT_FACTOR[unit] || 1;
+  const ul = UNIT_LABEL[unit] || "mm";
+  const dec = UNIT_DECIMALS[unit] ?? 3;
+  if (!shot) return <div style={{ fontSize: 12, color: "var(--muted)" }}>wafer map 에서 shot 을 클릭하면 TEG 좌하단의 실좌표({ul})와 원점 radius 를 계산합니다.</div>;
   if (geo.fit !== "radius") return <div style={{ fontSize: 12, color: "var(--muted)" }}>Chip_Radius fit 불가 — radius 계산 불가.</div>;
   const rows = data.tegs.filter(t => selectedTegs.has(t.teg)).map(t => {
     const ax = shot.mm_x + t.ebeam_x, ay = shot.mm_y + t.ebeam_y;
@@ -474,22 +485,22 @@ function RadiusPanel({ data, shot, selectedTegs }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
-        shot ({shot.x}, {shot.y}) — 센터 ({fmt(shot.mm_x)}, {fmt(shot.mm_y)}) mm · 센터 radius {fmt(shot.radius)} mm
+        shot ({shot.x}, {shot.y}) — 센터 ({fmt(shot.mm_x * f, dec)}, {fmt(shot.mm_y * f, dec)}) {ul} · 센터 radius {fmt(shot.radius * f, dec)} {ul}
       </div>
       <table style={{ borderCollapse: "collapse" }}>
         <thead><tr>
           <th style={{ ...cell, textAlign: "left", color: "var(--muted)" }}>TEG</th>
-          <th style={{ ...cell, color: "var(--muted)" }}>좌하단 X (mm)</th>
-          <th style={{ ...cell, color: "var(--muted)" }}>좌하단 Y (mm)</th>
-          <th style={{ ...cell, color: "var(--muted)" }}>원점 radius (mm)</th>
+          <th style={{ ...cell, color: "var(--muted)" }}>좌하단 X ({ul})</th>
+          <th style={{ ...cell, color: "var(--muted)" }}>좌하단 Y ({ul})</th>
+          <th style={{ ...cell, color: "var(--muted)" }}>원점 radius ({ul})</th>
         </tr></thead>
         <tbody>
           {rows.map(r => (
             <tr key={r.teg}>
               <td style={{ ...cell, textAlign: "left", fontWeight: 600 }}>{r.teg}</td>
-              <td style={cell}>{fmt(r.ax, 3)}</td>
-              <td style={cell}>{fmt(r.ay, 3)}</td>
-              <td style={{ ...cell, fontWeight: 700 }}>{fmt(r.radius, 3)}</td>
+              <td style={cell}>{fmt(r.ax * f, dec)}</td>
+              <td style={cell}>{fmt(r.ay * f, dec)}</td>
+              <td style={{ ...cell, fontWeight: 700 }}>{fmt(r.radius * f, dec)}</td>
             </tr>
           ))}
         </tbody>
@@ -499,10 +510,13 @@ function RadiusPanel({ data, shot, selectedTegs }) {
 }
 
 /* ── 특정 TEG 의 shot 별 radius 전체 표 (백엔드 계산) ── */
-function TegRadiusTable({ vehicle, tegNames }) {
+function TegRadiusTable({ vehicle, tegNames, unit = "um" }) {
   const [teg, setTeg] = useState("");
   const [rows, setRows] = useState(null);
   const [open, setOpen] = useState(false);
+  const f = UNIT_FACTOR[unit] || 1;
+  const ul = UNIT_LABEL[unit] || "mm";
+  const dec = UNIT_DECIMALS[unit] ?? 3;
 
   useEffect(() => { setRows(null); setTeg(""); }, [vehicle]);
 
@@ -534,25 +548,25 @@ function TegRadiusTable({ vehicle, tegNames }) {
           {rows && (
             <>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
-                min {fmt(rows[0]?.radius, 3)} mm · max {fmt(rows[rows.length - 1]?.radius, 3)} mm · {rows.length} shots (radius 오름차순)
+                min {fmt(rows[0]?.radius * f, dec)} {ul} · max {fmt(rows[rows.length - 1]?.radius * f, dec)} {ul} · {rows.length} shots (radius 오름차순)
               </div>
               <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid var(--line)", borderRadius: 4 }}>
                 <table style={{ borderCollapse: "collapse", width: "100%" }}>
                   <thead><tr>
                     <th style={{ ...cell, color: "var(--muted)" }}>shot x</th>
                     <th style={{ ...cell, color: "var(--muted)" }}>shot y</th>
-                    <th style={{ ...cell, color: "var(--muted)" }}>좌하단 X</th>
-                    <th style={{ ...cell, color: "var(--muted)" }}>좌하단 Y</th>
-                    <th style={{ ...cell, color: "var(--muted)" }}>radius (mm)</th>
+                    <th style={{ ...cell, color: "var(--muted)" }}>좌하단 X ({ul})</th>
+                    <th style={{ ...cell, color: "var(--muted)" }}>좌하단 Y ({ul})</th>
+                    <th style={{ ...cell, color: "var(--muted)" }}>radius ({ul})</th>
                   </tr></thead>
                   <tbody>
                     {rows.map((r, i) => (
                       <tr key={i}>
                         <td style={cell}>{r.shot_x}</td>
                         <td style={cell}>{r.shot_y}</td>
-                        <td style={cell}>{fmt(r.abs_x, 3)}</td>
-                        <td style={cell}>{fmt(r.abs_y, 3)}</td>
-                        <td style={{ ...cell, fontWeight: 600 }}>{fmt(r.radius, 3)}</td>
+                        <td style={cell}>{fmt(r.abs_x * f, dec)}</td>
+                        <td style={cell}>{fmt(r.abs_y * f, dec)}</td>
+                        <td style={{ ...cell, fontWeight: 600 }}>{fmt(r.radius * f, dec)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -574,6 +588,7 @@ export default function My_TegMap({ user }) {
   const [selectedTegs, setSelectedTegs] = useState(new Set());
   const [selectedShot, setSelectedShot] = useState(null);
   const [imgUrl, setImgUrl] = useState(null);
+  const [coordUnit, setCoordUnit] = useState("um");   // 좌표 단위 기본값: µm
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
 
@@ -596,8 +611,9 @@ export default function My_TegMap({ user }) {
       const r = await sf(`${API}/map?vehicle=${encodeURIComponent(vehicle)}`);
       setData(r);
       setSelectedShot(null);
-      // 기본: 모든 TEG 표시
-      setSelectedTegs(new Set((r.tegs || []).map(t => t.teg)));
+      // 기본: 첫 번째 TEG 하나만 선택 (전체 동시 표시는 마커가 겹쳐 혼잡).
+      const firstTeg = (r.tegs || [])[0];
+      setSelectedTegs(new Set(firstTeg ? [firstTeg.teg] : []));
     } catch (e) {
       setData(null);
       setErr(String(e.message || e));
@@ -651,6 +667,10 @@ export default function My_TegMap({ user }) {
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <Select value={vehicle} onChange={e => setVehicle(e.target.value)} style={{ minWidth: 150 }}>
               {(vehicles || []).map(v => <option key={v} value={v}>{v}</option>)}
+            </Select>
+            <Select value={coordUnit} onChange={e => setCoordUnit(e.target.value)} style={{ minWidth: 80 }} title="좌표 단위">
+              <option value="um">µm</option>
+              <option value="mm">mm</option>
             </Select>
             <Button onClick={loadMap}>새로고침</Button>
           </div>
@@ -721,9 +741,9 @@ export default function My_TegMap({ user }) {
               <ShotZoom data={data} selectedTegs={selectedTegs} tegColor={tegColor} imgUrl={imgUrl} />
             </Card>
             <Card title="TEG 좌하단 실좌표 · 원점 radius">
-              <RadiusPanel data={data} shot={selectedShot} selectedTegs={selectedTegs} />
+              <RadiusPanel data={data} shot={selectedShot} selectedTegs={selectedTegs} unit={coordUnit} />
             </Card>
-            <TegRadiusTable vehicle={vehicle} tegNames={tegNames} />
+            <TegRadiusTable vehicle={vehicle} tegNames={tegNames} unit={coordUnit} />
           </div>
         </div>
       )}
