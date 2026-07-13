@@ -197,9 +197,28 @@ _MATCH_CACHE_JOB_STATE: dict = {
 _PLAN_RISK_CACHE: dict[tuple[str, bool], dict] = {}
 _PLAN_RISK_CACHE_LOCK = threading.Lock()
 _PLAN_RISK_CACHE_MAX = 64
-_VIEW_CACHE: OrderedDict[tuple, tuple[tuple, dict]] = OrderedDict()
+# 엔트리 = (hard_sig, soft_sig, payload). hard_sig 는 즉시 무효화 대상(소스 ML_TABLE
+# = 신규 lot 신호 + 사용자 편집 입력), soft_sig 는 백그라운드 스케줄러가 주기적으로
+# 재기록하는 파생 캐시 — soft 만 바뀌면 stale-while-revalidate 로 즉시 서빙한다.
+_VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX = 128
+# stale hit → 백그라운드 재검증 (single-flight + 쿨다운). TLS.force 는 재검증
+# 스레드가 view_split 을 재진입할 때 캐시 서빙을 건너뛰고 강제 재계산하게 하는 플래그.
+_VIEW_REVALIDATE_TLS = threading.local()
+_VIEW_REVALIDATE_LOCK = threading.Lock()
+_VIEW_REVALIDATE_INFLIGHT: set[tuple] = set()
+_VIEW_REVALIDATE_LAST: dict[tuple, float] = {}
+_VIEW_REVALIDATE_COOLDOWN_SEC = 20.0
+# HIT 경로 최적화: 의존 시그니처의 stat 중 product-독립 전역 파일(config/rulebook =
+# hard, lot_progress 파생 = soft)만 짧은 TTL 로 캐시한다. 동시 다수 사용자가 매
+# 요청마다 동일 전역 파일을 재-stat 하던 공유드라이브 부하를 제거. per-product 파일
+# (소스 ML_TABLE/plan/tag/management/custom)은 항상 fresh stat 하므로 사용자 편집·
+# 신규 lot 은 지연 없이 즉시 감지된다. 전역 config/rulebook admin 변경과 soft 파생
+# 변경만 최대 TTL(≤1s) 지연 — 각각 체감 없음 / SWR 이 흡수.
+_VIEW_GLOBAL_SIG_CACHE: dict = {}
+_VIEW_GLOBAL_SIG_LOCK = threading.Lock()
+_VIEW_GLOBAL_SIG_TTL = 1.0
 _VIEW_RAW_FALLBACK_MAX_MB_DEFAULT = 16.0
 _MISMATCH_NOTIFY_LOCK = threading.Lock()
 _MISMATCH_NOTIFY_WAKE = threading.Event()
@@ -8905,7 +8924,7 @@ def _split_view_cache_key(product: str, root_lot_id: str, wafer_ids: str, prefix
     )
 
 
-def _split_view_cache_stats(hit: bool, key: tuple | None = None) -> dict:
+def _split_view_cache_stats(hit: bool, key: tuple | None = None, *, stale: bool = False) -> dict:
     key_hash = ""
     if key is not None:
         try:
@@ -8918,6 +8937,8 @@ def _split_view_cache_stats(hit: bool, key: tuple | None = None) -> dict:
     return {
         "hit": bool(hit),
         "payload_cache_hit": bool(hit),
+        # stale=True → 캐시로 즉시 응답했고 백그라운드 재검증이 예약됨(SWR).
+        "stale": bool(stale),
         "entries": size,
         "max_entries": _VIEW_CACHE_MAX,
         "key": key_hash,
@@ -8945,47 +8966,88 @@ def _split_view_finish_payload(
     runtime_profile: dict | None,
     payload_cache_hit: bool,
     view_cache_key: tuple | None,
+    view_stale: bool = False,
 ) -> dict:
     out = dict(payload)
     out["runtime_profile"] = _split_view_runtime_profile(started, runtime_profile, payload_cache_hit=payload_cache_hit)
-    out["view_cache"] = _split_view_cache_stats(payload_cache_hit, view_cache_key)
+    out["view_cache"] = _split_view_cache_stats(payload_cache_hit, view_cache_key, stale=view_stale)
     return out
 
 
-def _split_view_cache_dep_signature(product: str, custom_name: str = "", product_fp: Path | None = None) -> tuple:
-    paths: list[Path] = [
-        product_fp or _product_path(product),
-        SOURCE_CFG,
-        PREFIX_CFG,
-        PRECISION_CFG,
-        RULEBOOK_SCHEMA_FILE,
+def _view_global_stat_sig() -> tuple:
+    """product-독립 전역 파일들의 stat 시그니처를 (global_hard, global_soft) 로 반환.
+
+    짧은 TTL 로 캐시 — 동시 다수 사용자가 매 요청 같은 전역 파일(config/rulebook/
+    lot_progress 파생)을 재-stat 하던 공유드라이브 부하를 없앤다. 전역 hard(config/
+    rulebook) 변경은 admin 행위라 ≤TTL 지연 허용, soft(lot_progress 파생) 변경은
+    어차피 SWR 이 흡수하므로 지연 무해.
+    """
+    now = time.monotonic()
+    with _VIEW_GLOBAL_SIG_LOCK:
+        cached = _VIEW_GLOBAL_SIG_CACHE.get("v")
+        if cached is not None and (now - cached[0]) < _VIEW_GLOBAL_SIG_TTL:
+            return cached[1]
+    hard_paths: list[Path] = [SOURCE_CFG, PREFIX_CFG, PRECISION_CFG, RULEBOOK_SCHEMA_FILE]
+    for kind in _RULEBOOK_FILES:
+        try:
+            hard_paths.append(_rulebook_path(kind))
+        except Exception:
+            pass
+    global_hard = tuple(_path_cache_sig(path) for path in hard_paths)
+    soft_paths: list[Path] = [
         MATCH_CACHE_STATE_FILE,
         _latest_lot_step_cache_path(),
         PATHS.cache_dir / "lot_progress" / "lot_wf_current.json",
         PATHS.cache_dir / "lot_progress" / "lot_wf_current.parquet",
+    ]
+    global_soft = tuple(_path_cache_sig(path) for path in soft_paths)
+    val = (global_hard, global_soft)
+    with _VIEW_GLOBAL_SIG_LOCK:
+        _VIEW_GLOBAL_SIG_CACHE["v"] = (now, val)
+    return val
+
+
+def _split_view_cache_dep_signature(product: str, custom_name: str = "", product_fp: Path | None = None) -> tuple:
+    """View payload 캐시의 2-tier 의존 시그니처 (hard_sig, soft_sig) 반환.
+
+    hard_sig — 즉시 무효화 대상. 소스 ML_TABLE(신규 lot 신호) + 사용자가 직접
+      편집하는 입력(prefix/precision/rulebook/custom tag/management/plan/custom).
+      per-product 편집 파일은 항상 fresh stat 하므로 편집·신규 lot 이 지연 없이 반영.
+    soft_sig — 백그라운드 스케줄러가 주기적으로 재기록하는 파생 캐시(lot_progress
+      최신 lot, match cache, product RAM cache). soft 만 달라졌을 때는 stale-while-
+      revalidate 로 캐시를 즉시 서빙하고 백그라운드에서 갱신. (이전에는 이것들이
+      hard 와 묶여 lot_progress 재기록마다 모든 검색이 캐시 miss → 풀 재계산.)
+
+    HIT 경로 stat 비용 절감: product-독립 전역 파일은 _view_global_stat_sig 로 짧은
+    TTL 캐시해 동시 요청 폭주 시 재-stat 를 제거한다.
+    """
+    # per-product/사용자편집 파일 — 항상 fresh stat (즉시 무효화 보장).
+    fresh_paths: list[Path] = [
+        product_fp or _product_path(product),
         _custom_tags_path(),
         _management_rows_path(),
     ]
-    paths.extend(_plan_alias_paths(product))
-    for kind in _RULEBOOK_FILES:
-        try:
-            paths.append(_rulebook_path(kind))
-        except Exception:
-            pass
+    fresh_paths.extend(_plan_alias_paths(product))
     if str(custom_name or "").strip():
         try:
             custom_fp, _clean_name = _custom_file_path_for_name(custom_name)
-            paths.append(custom_fp)
+            fresh_paths.append(custom_fp)
         except HTTPException:
             pass
-    sig = [_path_cache_sig(path) for path in paths]
-    sig.append(_product_ram_cache_view_signature(product))
-    return tuple(sig)
+    per_product_hard = tuple(_path_cache_sig(path) for path in fresh_paths)
+    global_hard, global_soft = _view_global_stat_sig()
+    hard_sig = (per_product_hard, global_hard)
+    soft_sig = global_soft + (_product_ram_cache_view_signature(product),)
+    return (hard_sig, soft_sig)
 
 
 def _clear_split_view_cache() -> None:
     with _VIEW_CACHE_LOCK:
         _VIEW_CACHE.clear()
+    # 전역 시그니처 TTL 캐시도 함께 비운다 — 캐시 재빌드/명시적 무효화가 TTL(≤1s)
+    # 지연 없이 즉시 반영되도록.
+    with _VIEW_GLOBAL_SIG_LOCK:
+        _VIEW_GLOBAL_SIG_CACHE.clear()
 
 
 # ── Pre-pivoted root_lot cache: background build (single-flight per product) ──
@@ -9078,30 +9140,74 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
     return True
 
 
-def _split_view_cache_get(key: tuple, dep_signature: tuple) -> dict | None:
+def _split_view_cache_get(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple[str, dict | None]:
+    """(freshness, payload) 반환. freshness ∈ {"miss","fresh","stale"}.
+
+    - hard_sig 불일치(신규 lot / 사용자 편집) → ("miss", None) + 엔트리 폐기.
+    - soft_sig 까지 일치 → ("fresh", payload).
+    - soft_sig 만 불일치(백그라운드 파생 캐시 재기록) → ("stale", payload) —
+      즉시 서빙하고 호출측이 백그라운드 재검증을 예약한다.
+    """
     with _VIEW_CACHE_LOCK:
         cached = _VIEW_CACHE.get(key)
         if not cached:
-            return None
-        cached_sig, payload = cached
-        if cached_sig != dep_signature:
+            return "miss", None
+        cached_hard, cached_soft, payload = cached
+        if cached_hard != hard_sig:
             _VIEW_CACHE.pop(key, None)
-            return None
+            return "miss", None
         _VIEW_CACHE.move_to_end(key)
-        return dict(payload)
+        if cached_soft == soft_sig:
+            return "fresh", dict(payload)
+        return "stale", dict(payload)
 
 
-def _split_view_cache_put(key: tuple, dep_signature: tuple, payload: dict) -> None:
+def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload: dict) -> None:
     stored = dict(payload)
     stored.pop("related_issues", None)
     stored.pop("runtime_profile", None)
     stored.pop("view_cache", None)
-    stored.pop("lookup_cache", None)
+    # v: lookup_cache 는 그대로 저장한다 — HIT 경로에서 _attach 가 매번
+    # _ml_table_lookup.cache_status(meta 읽기 + partition dir glob) 를 재계산하던
+    # 비용을 없앤다. 저장 시점의 배지값이 약간 stale 할 수 있으나, 캐시가 렌더된
+    # 상태에서 빌드 진행 배지는 행동 가치가 없으므로 허용.
     with _VIEW_CACHE_LOCK:
-        _VIEW_CACHE[key] = (dep_signature, stored)
+        _VIEW_CACHE[key] = (hard_sig, soft_sig, stored)
         _VIEW_CACHE.move_to_end(key)
         while len(_VIEW_CACHE) > _VIEW_CACHE_MAX:
             _VIEW_CACHE.popitem(last=False)
+
+
+def _enqueue_view_revalidate(view_cache_key: tuple, params: dict) -> bool:
+    """Stale hit 시 백그라운드에서 view payload 를 재계산해 최신 lot 라벨로 갱신.
+
+    key 단위 single-flight + 쿨다운 — lot_progress 스케줄러가 파생 캐시를 자주
+    재기록해도 같은 검색을 반복 재계산하지 않는다. 사용자 요청은 이미 stale 캐시로
+    즉시 응답했으므로 이 갱신은 다음 조회를 fresh 로 만드는 용도다."""
+    now = time.time()
+    with _VIEW_REVALIDATE_LOCK:
+        if view_cache_key in _VIEW_REVALIDATE_INFLIGHT:
+            return False
+        if now - _VIEW_REVALIDATE_LAST.get(view_cache_key, 0.0) < _VIEW_REVALIDATE_COOLDOWN_SEC:
+            return False
+        _VIEW_REVALIDATE_INFLIGHT.add(view_cache_key)
+
+    def _run():
+        try:
+            _VIEW_REVALIDATE_TLS.force = True
+            # request=None + force → view_split 이 캐시 서빙/감사로그/알림을 건너뛰고
+            # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
+            view_split(request=None, **params)
+        except Exception as exc:
+            logger.debug("view revalidate 실패 (product=%s): %s", params.get("product"), exc)
+        finally:
+            _VIEW_REVALIDATE_TLS.force = False
+            with _VIEW_REVALIDATE_LOCK:
+                _VIEW_REVALIDATE_INFLIGHT.discard(view_cache_key)
+                _VIEW_REVALIDATE_LAST[view_cache_key] = time.time()
+
+    threading.Thread(target=_run, daemon=True, name="splittable-view-revalidate").start()
+    return True
 
 
 def _split_view_request_user(request: Request | None) -> tuple[str, str]:
@@ -9112,6 +9218,50 @@ def _split_view_request_user(request: Request | None) -> tuple[str, str]:
         return me.get("username") or "", me.get("role") or "user"
     except Exception:
         return "", "admin"
+
+
+# 비동기 감사 로그: /view 는 요청마다 감사 로그를 남기는데, jsonl_append 는 공유
+# 드라이브 파일 락 + open/write 라 동시 요청을 직렬화한다. 큐에 쌓고 단일 데몬
+# 스레드가 비워 요청 지연 경로에서 제거한다(감사 유실 없이).
+_AUDIT_QUEUE: deque = deque()
+_AUDIT_QUEUE_WAKE = threading.Event()
+_AUDIT_QUEUE_MAX = 10000
+_AUDIT_WORKER_STARTED = False
+_AUDIT_WORKER_LOCK = threading.Lock()
+
+
+def _audit_worker_loop() -> None:
+    while True:
+        _AUDIT_QUEUE_WAKE.wait(timeout=5.0)
+        _AUDIT_QUEUE_WAKE.clear()
+        while _AUDIT_QUEUE:
+            try:
+                username, action, detail, tab = _AUDIT_QUEUE.popleft()
+            except IndexError:
+                break
+            try:
+                _audit_user(username, action, detail=detail, tab=tab)
+            except Exception:
+                pass
+
+
+def _ensure_audit_worker() -> None:
+    global _AUDIT_WORKER_STARTED
+    if _AUDIT_WORKER_STARTED:
+        return
+    with _AUDIT_WORKER_LOCK:
+        if _AUDIT_WORKER_STARTED:
+            return
+        threading.Thread(target=_audit_worker_loop, daemon=True, name="splittable-audit").start()
+        _AUDIT_WORKER_STARTED = True
+
+
+def _audit_enqueue(username: str, action: str, detail: str = "", tab: str = "") -> None:
+    if len(_AUDIT_QUEUE) >= _AUDIT_QUEUE_MAX:
+        return  # 과부하 시 드롭 — 요청 지연보다 우선.
+    _ensure_audit_worker()
+    _AUDIT_QUEUE.append((username, action, detail, tab))
+    _AUDIT_QUEUE_WAKE.set()
 
 
 def _audit_split_view_search(
@@ -9134,7 +9284,7 @@ def _audit_split_view_search(
         f"wafer_ids={str(wafer_ids or '').strip()} "
         f"prefix={str(prefix or '').strip()}"
     )
-    _audit_user(username, "splittable:view_search", detail=detail, tab="splittable")
+    _audit_enqueue(username, "splittable:view_search", detail=detail, tab="splittable")
 
 
 def _split_view_lookup_cache_public(status: dict | None, queued: dict | None = None) -> dict:
@@ -9238,6 +9388,7 @@ def _attach_split_view_runtime_fields(
     runtime_profile: dict | None = None,
     payload_cache_hit: bool = False,
     view_cache_key: tuple | None = None,
+    view_stale: bool = False,
 ) -> dict:
     out = dict(payload)
     if "lookup_cache" not in out:
@@ -9268,6 +9419,7 @@ def _attach_split_view_runtime_fields(
             runtime_profile=runtime_profile,
             payload_cache_hit=payload_cache_hit,
             view_cache_key=view_cache_key,
+            view_stale=view_stale,
         )
     return out
 
@@ -9315,25 +9467,41 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     if _history_mode not in ("all", "final", "lot_all"):
         raise HTTPException(400, "history_mode must be one of: all, final, lot_all")
     cache_first_enabled = _truthy_value(cache_first)
-    _audit_split_view_search(request, product, root_lot_id, fab_lot_id, wafer_ids, prefix)
+    # 백그라운드 stale-revalidate 스레드의 재진입이면 캐시 서빙/감사로그를 건너뛰고
+    # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
+    force_recompute = bool(getattr(_VIEW_REVALIDATE_TLS, "force", False))
+    if not force_recompute:
+        _audit_split_view_search(request, product, root_lot_id, fab_lot_id, wafer_ids, prefix)
     _lot_warn = ""
     fp = _product_path(product)
     view_cache_key = _split_view_cache_key(
         product, root_lot_id, wafer_ids, prefix, custom_name,
         view_mode, _history_mode, fab_lot_id, custom_cols,
     )
-    view_cache_sig = _split_view_cache_dep_signature(product, custom_name=custom_name, product_fp=fp)
-    cached_view = _split_view_cache_get(view_cache_key, view_cache_sig)
-    if cached_view is not None:
-        return _attach_split_view_runtime_fields(
-            cached_view,
-            request,
-            include_related=include_related,
-            started=started,
-            runtime_profile=runtime_profile,
-            payload_cache_hit=True,
-            view_cache_key=view_cache_key,
-        )
+    view_hard_sig, view_soft_sig = _split_view_cache_dep_signature(
+        product, custom_name=custom_name, product_fp=fp)
+    if not force_recompute:
+        freshness, cached_view = _split_view_cache_get(view_cache_key, view_hard_sig, view_soft_sig)
+        if cached_view is not None:
+            # 신규 lot 없음(hard 일치) → fresh/stale 모두 캐시 즉시 서빙. soft 만
+            # 달라진 stale 이면 백그라운드에서 최신 lot 라벨로 재검증을 예약한다.
+            if freshness == "stale":
+                _enqueue_view_revalidate(view_cache_key, {
+                    "product": product, "root_lot_id": root_lot_id, "wafer_ids": wafer_ids,
+                    "prefix": prefix, "custom_name": custom_name, "view_mode": view_mode,
+                    "history_mode": history_mode, "fab_lot_id": fab_lot_id,
+                    "custom_cols": custom_cols,
+                })
+            return _attach_split_view_runtime_fields(
+                cached_view,
+                request,
+                include_related=include_related,
+                started=started,
+                runtime_profile=runtime_profile,
+                payload_cache_hit=True,
+                view_cache_key=view_cache_key,
+                view_stale=(freshness == "stale"),
+            )
     if not root_lot_id.strip() and not fab_lot_id.strip():
         return _split_view_finish_payload(
             {"product": product, "lot_col": "root_lot_id", "wf_col": "wafer_id",
@@ -9730,7 +9898,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         "plan_updated": plan_info.get("updated", ""),
                     })
         runtime_profile["matrix_ms"] = float(runtime_profile.get("matrix_ms") or 0.0) + (time.perf_counter() - matrix_started) * 1000.0
-        _enqueue_plan_actual_mismatches(product, mismatches, actor="flow")
+        if not force_recompute:
+            # 백그라운드 재검증은 동일 데이터를 재계산하는 것이므로 알림을 중복 발송하지 않는다.
+            _enqueue_plan_actual_mismatches(product, mismatches, actor="flow")
 
         overlay_started = time.perf_counter()
         # v8.8.5: view 응답에 오버라이드 resolve 결과 동봉 — FE 상단 배지에 "어디서 읽어왔는지" 바로 표시.
@@ -9764,7 +9934,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "lookup_cache": runtime_profile.get("_lookup_cache") or _split_view_lookup_cache_public(None, None),
             "lot_warn": _lot_warn,
         }
-        _split_view_cache_put(view_cache_key, view_cache_sig, payload)
+        _split_view_cache_put(view_cache_key, view_hard_sig, view_soft_sig, payload)
         return _attach_split_view_runtime_fields(
             payload,
             request,
