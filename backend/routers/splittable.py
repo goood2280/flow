@@ -3789,7 +3789,8 @@ def _normalize_root_lot_cache_settings(raw: dict | None) -> dict:
     return {
         "prefixes": prefixes,
         "prefix_limit": _num("prefix_limit", 5000),
-        "searched_limit": _num("searched_limit", 50),
+        "searched_limit": _num("searched_limit", 1000),
+        "target_roots": _num("target_roots", 1000),
     }
 
 

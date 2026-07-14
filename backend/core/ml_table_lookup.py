@@ -88,7 +88,12 @@ ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT = 100
 ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT = 100
 ROOT_RAM_CACHE_PREFIXES_DEFAULT = ("AZ",)
 ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT = 5000
-ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 50
+# searched roots 는 "한번이라도 검색된 root" 로 무조건 최우선 포함이므로 target 만큼
+# 넉넉히 허용한다(실사용 검색 수는 훨씬 작다). target_roots 가 최종 상한 역할.
+ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 1000
+# 상시 메모리에 유지할 총 root(knob 수준) 개수 목표. searched 를 최우선으로 채우고
+# 남는 자리를 latest cache 기준 tkout_time 최근 변경 AZ-prefix root 로 채운다.
+ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT = 1000
 ROOT_RAM_CACHE_ROOTS_MAX = 50000
 ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
 ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
@@ -273,6 +278,22 @@ def _root_ram_cache_searched_limit() -> int:
     )
 
 
+def _root_ram_cache_target_roots() -> int:
+    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_TARGET_ROOTS" in os.environ:
+        return _env_int(
+            "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_TARGET_ROOTS",
+            ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT,
+            0,
+            ROOT_RAM_CACHE_ROOTS_MAX,
+        )
+    return _bounded_int(
+        _root_ram_settings().get("target_roots"),
+        ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT,
+        0,
+        ROOT_RAM_CACHE_ROOTS_MAX,
+    )
+
+
 def root_ram_cache_settings() -> dict[str, Any]:
     return {
         "prefixes": _root_ram_cache_prefixes(),
@@ -280,6 +301,7 @@ def root_ram_cache_settings() -> dict[str, Any]:
         "searched_limit": _root_ram_cache_searched_limit(),
         "recent_roots": _root_ram_cache_recent_limit(),
         "frequent_roots": _root_ram_cache_frequent_limit(),
+        "target_roots": _root_ram_cache_target_roots(),
     }
 
 
@@ -607,11 +629,12 @@ def _latest_lot_by_root_wafer_path() -> Path:
     return PATHS.db_cache_dir / LATEST_LOT_BY_ROOT_WAFER_FILE
 
 
-def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int) -> list[str]:
+def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, prefixes: list[str] | None = None) -> list[str]:
     cache_fp = _latest_lot_by_root_wafer_path()
     if limit <= 0 or not cache_fp.is_file():
         return []
     keys = _product_match_keys(fp)
+    norm_prefixes = [str(p or "").strip().upper() for p in (prefixes or []) if str(p or "").strip()]
     try:
         lf = pl.scan_parquet(str(cache_fp))
         cols = lf.collect_schema().names()
@@ -625,6 +648,12 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int) -> list[str]:
     q = lf
     if product_col and keys:
         q = q.filter(pl.col(product_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(keys)))
+    if norm_prefixes:
+        root_norm = pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
+        prefix_expr = root_norm.str.starts_with(norm_prefixes[0])
+        for pfx in norm_prefixes[1:]:
+            prefix_expr = prefix_expr | root_norm.str.starts_with(pfx)
+        q = q.filter(prefix_expr)
     q = q.select([
         pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("root_lot_id"),
         (
@@ -641,9 +670,10 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int) -> list[str]:
     return [str(v or "").strip().upper() for v in rows["root_lot_id"].to_list() if str(v or "").strip()]
 
 
-def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int) -> list[str]:
+def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, prefixes: list[str] | None = None) -> list[str]:
     if limit <= 0:
         return []
+    norm_prefixes = [str(p or "").strip().upper() for p in (prefixes or []) if str(p or "").strip()]
     out: list[str] = []
     seen: set[str] = set()
 
@@ -651,10 +681,12 @@ def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int) -> list[str]:
         root = str(root_lot_id or "").strip().upper()
         if not root or root in seen or len(out) >= limit:
             return
+        if norm_prefixes and not any(root.startswith(pfx) for pfx in norm_prefixes):
+            return
         seen.add(root)
         out.append(root)
 
-    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit):
+    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit, prefixes=norm_prefixes or None):
         add(root)
     if len(out) >= limit:
         return out
@@ -755,10 +787,22 @@ def _prefix_root_lot_ids_from_lookup_cache(fp: Path, prefixes: list[str], limit:
 def _root_ram_cache_candidates(
     *,
     prefixes: list[str],
+    searched_roots: list[str],
+    latest_prefix_roots: list[str],
     prefix_roots: list[str],
     latest_roots: list[str],
-    searched_roots: list[str],
+    target: int = 0,
 ) -> list[dict[str, Any]]:
+    """상시 메모리 캐시에 올릴 root 후보를 **포함 우선순위 순서**로 만든다.
+
+    우선순위(사용자 요구):
+      ① searched — 한번이라도 검색된 root 는 무조건 최우선 포함.
+      ② latest_prefix — latest cache 기준 tkout_time 최근 변경 AZ-prefix root.
+      ③ prefix — lookup 파티션 디렉터리의 AZ-prefix root (latest cache 부재 시 폴백).
+      ④ latest — prefix 무관 최근 변경 root (남는 자리 채움).
+    target(>0)이면 그 개수로 상한(≈1000). searched 가 target 을 채우면 나머지 소스는
+    자연히 잘려 searched 가 항상 살아남는다.
+    """
     candidates: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def add(root_lot_id: str, source: str) -> None:
@@ -780,17 +824,19 @@ def _root_ram_cache_candidates(
         if source not in sources:
             sources.append(source)
 
+    for root in searched_roots:
+        add(root, "searched")
+    for root in latest_prefix_roots:
+        add(root, "latest")
     for root in prefix_roots:
         add(root, "prefix")
     for root in latest_roots:
         add(root, "latest")
-    for root in searched_roots:
-        add(root, "searched")
 
     rows = list(candidates.values())
-    prefix_rows = [row for row in rows if row.get("cache_group") == "prefix"]
-    other_rows = [row for row in rows if row.get("cache_group") != "prefix"]
-    return [*prefix_rows, *other_rows]
+    if target and target > 0:
+        rows = rows[:target]
+    return rows
 
 
 def _discover_ml_table_files() -> list[Path]:
@@ -856,6 +902,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
     prefix_limit = int(settings["prefix_limit"])
     recent_limit = int(settings["recent_roots"])
     searched_limit = int(settings["searched_limit"])
+    target_roots = int(settings["target_roots"])
     rows: list[dict[str, Any]] = []
     with _ROOT_RAM_REFRESH_LOCK:
         for fp in files:
@@ -873,14 +920,23 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 continue
             roots: list[str] = []
             seen: set[str] = set()
-            prefix_roots = _prefix_root_lot_ids_from_lookup_cache(fp, prefixes, prefix_limit)
-            latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
+            # ① searched: 한번이라도 검색된 root — 무조건 최우선 포함.
             searched_roots = _searched_root_lot_ids(fp, searched_limit)
+            # ② latest cache 기준 tkout_time 최근 변경 AZ-prefix root — 나머지 자리 채움.
+            latest_prefix_roots = _recent_root_lot_ids_from_latest_cache(
+                fp, target_roots or recent_limit, prefixes=prefixes
+            )
+            # ③ lookup 파티션 디렉터리의 AZ root (latest cache 부재 시 폴백).
+            prefix_roots = _prefix_root_lot_ids_from_lookup_cache(fp, prefixes, prefix_limit)
+            # ④ prefix 무관 최근 변경 root (그래도 자리가 남으면).
+            latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
             candidates = _root_ram_cache_candidates(
                 prefixes=prefixes,
+                searched_roots=searched_roots,
+                latest_prefix_roots=latest_prefix_roots,
                 prefix_roots=prefix_roots,
                 latest_roots=latest_roots,
-                searched_roots=searched_roots,
+                target=target_roots,
             )
             for candidate in candidates:
                 root = str(candidate.get("root_lot_id") or "").strip().upper()
@@ -937,7 +993,9 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 "prefix_target_roots": prefix_target_roots,
                 "other_target_roots": other_target_roots,
                 "latest_roots": len(latest_roots),
+                "latest_prefix_roots": len(latest_prefix_roots),
                 "searched_roots": len(searched_roots),
+                "target_roots_cap": target_roots,
                 "resource_skipped_roots": resource_skipped,
                 "last_skip_reason": last_skip_reason,
                 "cache_status": status.get("status") or "",
@@ -963,6 +1021,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         "recent_roots": recent_limit,
         "searched_roots": searched_limit,
         "frequent_roots": searched_limit,
+        "target_roots": target_roots,
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3),
         "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
         "status": root_ram_cache_status(include_detail=False),
@@ -999,6 +1058,7 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         "searched_roots": settings["searched_limit"],
         "recent_roots": settings["recent_roots"],
         "frequent_roots": settings["searched_limit"],
+        "target_roots": settings["target_roots"],
         "interval_minutes": root_ram_cache_refresh_minutes(),
         "scheduler_started": _ROOT_RAM_STARTED,
         "last_refresh_at": status.get("last_refresh_at") or "",
@@ -1509,221 +1569,6 @@ def _ci_col(columns: list[str], *names: str) -> str:
 
 def _normalize_root_expr(root_col: str) -> pl.Expr:
     return pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
-
-
-# ── latest-lot-by-root/wafer 캐시: root_lot_id 파티션 배치 순회(메모리 안전) ──
-# 카노니컬 파일 `lot_progress_latest_lot_by_root_wafer.parquet` 의 스키마(splittable
-# LATEST_LOT_STEP_CACHE_COLUMNS 와 동일)를 그대로 따른다.
-LATEST_LOT_BY_ROOT_WAFER_COLUMNS = [
-    "product", "root_lot_id", "wafer_id", "lot_id",
-    "step_id", "function_step", "tkout_time", "update_time",
-]
-
-_LATEST_LOT_TIME_COL_CANDIDATES = (
-    "tkout_time", "update_time", "time", "tkin_time",
-    "timestamp", "datetime", "date",
-)
-
-
-def _latest_lot_root_batch_size() -> int:
-    """한 번에 스캔할 root_lot_id 파티션 수. 작을수록 피크 메모리↓(대신 느려짐)."""
-    return _env_int("FLOW_ML_TABLE_LATEST_LOT_ROOT_BATCH", 200, 1, 5000)
-
-
-def _collect_low_memory(lf: pl.LazyFrame) -> pl.DataFrame:
-    try:
-        from core.parquet_perf import collect_streaming
-        return collect_streaming(lf)
-    except Exception:
-        return lf.collect()
-
-
-def _latest_lot_rows_for_root_batch(
-    cache_dir: Path,
-    roots: list[str],
-    product_label: str,
-    cols: dict[str, str],
-) -> pl.DataFrame | None:
-    """root 배치의 파티션만 스캔해 (root_lot_id, wafer_id) 당 최신 lot 한 행을 반환."""
-    files: list[Path] = []
-    for root in roots:
-        files.extend(_partition_files(cache_dir, root))
-    if not files:
-        return None
-    lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
-    try:
-        names = lf.collect_schema().names()
-    except Exception:
-        return None
-    lot_col = cols.get("lot") or ""
-    if "root_lot_id" not in names or not lot_col or lot_col not in names:
-        return None
-    wafer_col = cols.get("wafer") or ""
-    step_col = cols.get("step") or ""
-    func_col = cols.get("func") or ""
-    time_col = cols.get("time") or ""
-    has_time = bool(time_col and time_col in names)
-    sel = [
-        pl.col("root_lot_id").cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("root_lot_id"),
-        (pl.col(wafer_col).cast(_STR, strict=False).str.strip_chars() if wafer_col and wafer_col in names else pl.lit("")).alias("wafer_id"),
-        pl.col(lot_col).cast(_STR, strict=False).str.strip_chars().alias("lot_id"),
-        (pl.col(step_col).cast(_STR, strict=False) if step_col and step_col in names else pl.lit("")).alias("step_id"),
-        (pl.col(func_col).cast(_STR, strict=False) if func_col and func_col in names else pl.lit("")).alias("function_step"),
-        (pl.col(time_col).cast(_STR, strict=False) if has_time else pl.lit("")).alias("tkout_time"),
-    ]
-    q = lf.select(sel).filter(
-        pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != "")
-        & pl.col("lot_id").is_not_null() & (pl.col("lot_id") != "")
-    )
-    # 시간 컬럼이 있으면 최신 tkout 기준, 없으면 lot_id 사전순 최대를 '최신'으로 본다.
-    order_key = "tkout_time" if has_time else "lot_id"
-    # group 이 (root_lot_id, wafer_id) 라 그룹당 행수가 작다 → 전역 정렬보다 메모리 안전.
-    q = q.group_by(["root_lot_id", "wafer_id"]).agg([
-        pl.col("lot_id").sort_by(order_key, nulls_last=True).last().alias("lot_id"),
-        pl.col("step_id").sort_by(order_key, nulls_last=True).last().alias("step_id"),
-        pl.col("function_step").sort_by(order_key, nulls_last=True).last().alias("function_step"),
-        pl.col("tkout_time").sort_by(order_key, nulls_last=True).last().alias("tkout_time"),
-    ])
-    try:
-        df = _collect_low_memory(q)
-    except Exception as exc:
-        logger.warning("latest-lot batch collect 실패 dir=%s roots=%d: %s", cache_dir, len(roots), exc)
-        return None
-    if df.is_empty():
-        return None
-    return df.with_columns(pl.lit(product_label).alias("product"))
-
-
-def build_latest_lot_by_root_wafer(
-    *, files: list[Path] | None = None, force_source_build: bool = False
-) -> dict[str, Any]:
-    """root_lot_id 파티션을 배치로 순회해 latest-lot-by-root/wafer 캐시를 만든다.
-
-    기존 방식은 ML_TABLE 전체를 한 번에 메모리로 로드해 root 별 최신 lot 을 뽑느라
-    큰 제품에서 OOM 이 났다. lookup 캐시는 이미 root_lot_id 로 hive 파티셔닝돼
-    있으므로, 파티션을 작은 root 배치로만 스캔하고 (root_lot_id, wafer_id) 당 최신
-    lot_id 한 행만 남긴다. 피크 메모리는 ML_TABLE 전체가 아니라 한 배치(수백 root)
-    뿐이고, 누적되는 것은 결과 크기(root+wafer 당 1행)뿐이다.
-    """
-    started = time.monotonic()
-    cache_updated_at = _utc_now()
-    sources = [Path(f) for f in files] if files else _discover_ml_table_files()
-    batch = _latest_lot_root_batch_size()
-    frames: list[pl.DataFrame] = []
-    processed: list[str] = []
-    skipped: list[dict[str, Any]] = []
-    total_roots = 0
-    for raw_fp in sources:
-        fp = Path(raw_fp)
-        status = cache_status(fp)
-        if not status.get("has_cache") or (force_source_build and status.get("source_stale")):
-            try:
-                build_lookup_cache(fp, force=bool(force_source_build))
-            except Exception as exc:
-                skipped.append({"source": str(fp), "reason": f"lookup_build_failed: {type(exc).__name__}: {exc}"})
-                continue
-        cdir = cache_dir_for(fp)
-        roots = _root_lot_ids_from_cache_dir(cdir)
-        if not roots:
-            skipped.append({"source": str(fp), "reason": "no_partitions"})
-            continue
-        first_files = _partition_files(cdir, roots[0])
-        if not first_files:
-            skipped.append({"source": str(fp), "reason": "empty_partition"})
-            continue
-        try:
-            names = pl.scan_parquet([str(p) for p in first_files], hive_partitioning=True).collect_schema().names()
-        except Exception as exc:
-            skipped.append({"source": str(fp), "reason": f"schema_failed: {type(exc).__name__}"})
-            continue
-        cols = {
-            "wafer": _ci_col(names, "wafer_id", "wf_id", "wafer"),
-            "lot": _ci_col(names, "lot_id", "fab_lot_id", "lot"),
-            "step": _ci_col(names, "step_id", "step"),
-            "func": _ci_col(names, "function_step", "func_step"),
-            "time": _ci_col(names, *_LATEST_LOT_TIME_COL_CANDIDATES),
-        }
-        if not cols["lot"]:
-            skipped.append({"source": str(fp), "reason": "missing_lot_id"})
-            continue
-        product_label = fp.stem
-        for i in range(0, len(roots), batch):
-            if process_memory_high():
-                _wait_for_lookup_cache_memory(fp)
-            df = _latest_lot_rows_for_root_batch(cdir, roots[i:i + batch], product_label, cols)
-            if df is not None and not df.is_empty():
-                frames.append(df)
-        processed.append(str(fp))
-        total_roots += len(roots)
-    out_fp = _latest_lot_by_root_wafer_path()
-    out_fp.parent.mkdir(parents=True, exist_ok=True)
-    if frames:
-        combined = pl.concat(frames, how="diagonal_relaxed").with_columns(
-            pl.lit(cache_updated_at).alias("update_time")
-        )
-        combined = (
-            combined.sort("tkout_time", descending=True, nulls_last=True)
-            .unique(subset=["product", "root_lot_id", "wafer_id"], keep="first", maintain_order=True)
-            .sort(["product", "root_lot_id", "wafer_id"])
-            .select(LATEST_LOT_BY_ROOT_WAFER_COLUMNS)
-        )
-    else:
-        combined = pl.DataFrame({c: [] for c in LATEST_LOT_BY_ROOT_WAFER_COLUMNS})
-    tmp = out_fp.with_suffix(out_fp.suffix + ".tmp")
-    try:
-        tmp.unlink(missing_ok=True)
-    except Exception:
-        pass
-    combined.write_parquet(tmp)
-    tmp.replace(out_fp)
-    return {
-        "ok": True,
-        "path": str(out_fp),
-        "row_count": int(combined.height),
-        "sources": processed,
-        "skipped": skipped,
-        "root_lot_id_count": total_roots,
-        "cache_updated_at": cache_updated_at,
-        "build_seconds": round(time.monotonic() - started, 3),
-    }
-
-
-_LATEST_LOT_CACHE_REFRESH_LOCK = threading.Lock()
-_LATEST_LOT_CACHE_LAST_BUILD_MONO = 0.0
-
-
-def _latest_lot_cache_refresh_throttle_sec() -> float:
-    return _env_float("FLOW_ML_TABLE_LATEST_LOT_REFRESH_THROTTLE_SEC", 600.0, 0.0, 86400.0)
-
-
-def refresh_latest_lot_cache_after_build(fp: Path | None = None, *, force: bool = False) -> dict[str, Any]:
-    """lookup 캐시 빌드 완료 훅 — 카노니컬 latest-lot 캐시를 메모리 안전하게 재생성.
-
-    버스트 빌드(여러 ML_TABLE 이 연달아 빌드)에서 매번 전체를 재생성하지 않도록
-    throttle 하고, 다른 스레드가 재생성 중이면 스킵한다. lookup 캐시가 방금
-    빌드됐으므로 여기서는 소스 재빌드 없이 파티션만 순회한다.
-    """
-    global _LATEST_LOT_CACHE_LAST_BUILD_MONO
-    if not _LATEST_LOT_CACHE_REFRESH_LOCK.acquire(blocking=False):
-        return {"ok": True, "skipped": True, "reason": "another_refresh_running"}
-    try:
-        throttle = _latest_lot_cache_refresh_throttle_sec()
-        now = time.monotonic()
-        if (
-            not force
-            and throttle > 0
-            and _LATEST_LOT_CACHE_LAST_BUILD_MONO
-            and (now - _LATEST_LOT_CACHE_LAST_BUILD_MONO) < throttle
-        ):
-            return {"ok": True, "skipped": True, "reason": "throttled"}
-        result = build_latest_lot_by_root_wafer()
-        _LATEST_LOT_CACHE_LAST_BUILD_MONO = time.monotonic()
-        return result
-    except Exception as exc:
-        logger.warning("latest-lot 캐시 재생성 실패: %s", exc, exc_info=True)
-        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
-    finally:
-        _LATEST_LOT_CACHE_REFRESH_LOCK.release()
 
 
 def _lookup_cache_memory_wait_seconds() -> float:
