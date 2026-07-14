@@ -25,6 +25,7 @@ from core.runtime_limits import (
     cpu_budget_cores,
     process_cpu_snapshot,
     process_memory_high,
+    process_memory_limit_gb,
     process_memory_snapshot,
 )
 
@@ -317,7 +318,11 @@ def _root_ram_cache_resource_guard_reason() -> tuple[str, dict[str, Any]]:
     snap = _root_ram_cache_resource_snapshot()
     reason = ""
     try:
-        if bool(snap.get("process_memory_over_limit")) or process_memory_high():
+        # process_memory_over_limit(=rss>=limit) 는 RSS-only false signal 이라
+        # 회수 가능한 mmap/arena 로 부풀어도 상시 참이 돼 RAM 캐시 적재를 영구
+        # 차단했다. 실제 호스트 메모리 압박을 반영하는 process_memory_high 만 본다
+        # (RAM 캐시는 자체 max_bytes eviction 으로 상한이 이미 보장됨).
+        if process_memory_high():
             reason = "process_memory_high"
     except Exception:
         pass
@@ -332,8 +337,30 @@ def _root_ram_cache_resource_guard_reason() -> tuple[str, dict[str, Any]]:
     return reason, snap
 
 
+def _root_ram_cache_auto_max_gb() -> float:
+    """Host-adaptive RAM-cache budget for recent/frequent/prefix root frames.
+
+    Small hosts must not hand the whole machine to the cache, but on the
+    operator's 10GB dev box (and 12~16GB prod) the fixed 3GB default left most
+    of the process RSS budget unused. Scale to ~40% of the process RSS limit,
+    clamped to [3GB, 8GB]. Env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB still
+    pins an exact value.
+    """
+    try:
+        limit_gb = float(process_memory_limit_gb() or 0.0)
+    except Exception:
+        limit_gb = 0.0
+    if limit_gb <= 0:
+        return ROOT_RAM_CACHE_MAX_GB_DEFAULT
+    scaled = round(limit_gb * 0.40, 1)
+    return max(ROOT_RAM_CACHE_MAX_GB_DEFAULT, min(8.0, scaled))
+
+
 def _root_ram_cache_max_bytes() -> int:
-    gb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", ROOT_RAM_CACHE_MAX_GB_DEFAULT, 0.0, 64.0)
+    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB" in os.environ:
+        gb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", ROOT_RAM_CACHE_MAX_GB_DEFAULT, 0.0, 64.0)
+    else:
+        gb = _root_ram_cache_auto_max_gb()
     return int(gb * 1024 * 1024 * 1024)
 
 
