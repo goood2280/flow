@@ -17,7 +17,6 @@ import 위치(working directory)에 따라 `Could not import module 'app'` 또�
   - python -m uvicorn app:app           ✓ (flow 가 cwd)
   - 과거 명령 `uvicorn app:app --app-dir backend` 도 그대로 동작 (backend/app.py 가 자체적으로 동작).
 """
-import os
 import sys
 import types
 from pathlib import Path
@@ -98,22 +97,28 @@ try:
 except Exception:
     pass
 
-# Working directory 와 무관하게 backend/app.py 를 import.
-# 우선 `from backend.app import app` 시도, 실패 시 cwd 변경 후 fallback.
-try:
-    # backend 가 패키지가 아닐 수 있으므로 (no __init__.py) 직접 모듈 로드.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_flow_backend_app", _BACKEND / "app.py")
-    if spec is None or spec.loader is None:
-        raise ImportError("Cannot locate backend/app.py spec")
-    _mod = importlib.util.module_from_spec(spec)
-    sys.modules["_flow_backend_app"] = _mod
-    spec.loader.exec_module(_mod)
-    app = _mod.app
-except Exception as e:
-    # 마지막 수단: cwd 를 backend 로 옮긴 뒤 재시도 (uvicorn --app-dir 동등 효과)
-    os.chdir(str(_BACKEND))
-    sys.path.insert(0, str(_BACKEND))
-    from app import app  # type: ignore
+# Working directory 와 무관하게 backend/app.py 를 "절대 파일 경로" 로 직접 로드한다.
+#
+# ⚠️ 순환 import 주의:
+#   이 파일 자체가 top-level `app` 모듈이다. uvicorn 이 `app:app` 을 import 하는 동안
+#   sys.modules["app"] 에는 "아직 초기화가 끝나지 않은" 이 shim 이 들어 있다.
+#   따라서 여기서 `import app` / `from app import app` 를 하면 부분 초기화된 자기 자신을
+#   다시 import 하게 되어
+#       cannot import name 'app' from partially initialized module 'app'
+#   순환 import 에러가 난다. (과거 fallback 코드가 바로 이 함정에 빠졌었다.)
+#
+#   backend/app.py 는 _BACKEND 절대경로로 로드하므로 cwd 와 무관하게 안전하며,
+#   backend/app.py 가 자체적으로 sys.path(_APP_ROOT/_BACKEND_ROOT) 를 세팅하기 때문에
+#   cwd 를 바꾸는 fallback 도 필요 없다. 로드가 실패하면 원인(진짜 에러)을 그대로 전파한다.
+import importlib.util
+
+_backend_app_py = _BACKEND / "app.py"
+_spec = importlib.util.spec_from_file_location("_flow_backend_app", _backend_app_py)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Cannot locate backend/app.py spec: {_backend_app_py}")
+_mod = importlib.util.module_from_spec(_spec)
+sys.modules["_flow_backend_app"] = _mod
+_spec.loader.exec_module(_mod)
+app = _mod.app
 
 __all__ = ["app"]
