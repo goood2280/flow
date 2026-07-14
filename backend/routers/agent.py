@@ -1218,14 +1218,33 @@ def home_flowi_runtime_graph(request: Request) -> dict[str, Any]:
 def home_flowi_tools(request: Request) -> dict[str, Any]:
     """홈 Flow-i ReAct 오케스트레이터가 고를 수 있는 연결 기능(도구) 카탈로그.
 
-    unit_ai + function-call 통합 목록 (tool_registry 읽기 전용)."""
+    unit_ai + function-call 통합 목록 (tool_registry 읽기 전용).
+    v9.2.x: `agentic` 상태를 함께 반환 — 기능 카탈로그 UI가 function-call 도구의
+    실제 실행 가능 여부(ReAct on/off, LLM 연결)를 정직하게 배지로 표시하기 위함."""
     current_user(request)
     try:
         from core import tool_registry
         tools = tool_registry.list_tools(include_stats=False)
     except Exception:
         tools = []
-    return {"ok": True, "tools": tools}
+    agentic = {
+        "tool_call_enabled": False,
+        "react_enabled": False,
+        "llm_available": False,
+        "llm_provider": "",
+        "llm_model": "",
+    }
+    try:
+        from core import llm_adapter
+        agentic["tool_call_enabled"] = bool(home_orchestrator._llm_planner_enabled())
+        agentic["react_enabled"] = bool(home_orchestrator.react_available())
+        agentic["llm_available"] = bool(llm_adapter.is_available())
+        llm_cfg = llm_adapter.get_config()
+        agentic["llm_provider"] = str(llm_cfg.get("provider") or "")
+        agentic["llm_model"] = str(llm_cfg.get("model") or "")
+    except Exception:
+        pass
+    return {"ok": True, "tools": tools, "agentic": agentic}
 
 
 @router.get("/home-flowi/runtime/runs")

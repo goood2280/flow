@@ -2,6 +2,8 @@
 
 Agent semantic layer는 사용자의 자연어 목표와 Flow의 실제 DB/API/unit runtime 사이에 있는 해석층이다. 이 문서는 구현자가 Agent가 어떤 semantic source를 읽고, 어떤 API로 관리하며, 어떤 경우에 write를 금지해야 하는지 확인하는 기준이다.
 
+편집 UI는 v9.2.x부터 관리 페이지 `Flow-i 학습 > 용어사전 (Semantic layer)` 섹션이다 (`frontend/src/components/agent/SemanticLayerPanel.jsx`). API 계약과 권한 게이트는 이 문서 그대로다.
+
 ## Position
 
 Agent의 기본 흐름은 아래처럼 본다.

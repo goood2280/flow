@@ -8,7 +8,7 @@
 
 - Agent는 자연어 목표를 semantic layer로 정규화하고 unit-agent graph 실행 상태를 SSE로 보여준다.
 - `goal -> semantic_layer -> task_planner -> unit_agents -> conclusion` 흐름이 한 화면에서 보여야 한다.
-- LLM 연결 탭은 Agent에 유지하되, LLM은 최종 문장 정리 보조에만 사용한다.
+- v9.2.x 재편(2026-07): Agent 탭 = `기능 카탈로그` / `실행 추적` / `Workflow 템플릿`. LLM 설정과 Semantic layer 편집기는 관리 페이지로 이관했다 (`LLM 설정` 탭, `Flow-i 학습 > 용어사전`).
 - Diagnosis 단독 화면은 현재 우선순위가 아니다. 제거하지는 않고 비중만 낮춘다.
 
 ## Source Of Truth

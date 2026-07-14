@@ -23,7 +23,8 @@ export const SUB_TABS = {
   filebrowser: [{key:"db",label:"DB"},{key:"files",label:"Files"}],
   splittable: [{key:"view",label:"View"},{key:"history",label:"History"}],
   inform: [{key:"inform",label:"인폼"},{key:"matrix",label:"매트릭스"},{key:"audit",label:"로그"}],
-  diagnosis: [{key:"home-flowi",label:"Flow-i"},{key:"semantic",label:"Semantic layer"},{key:"unit-ai",label:"단위기능 AI"},{key:"llm",label:"LLM 설정"}],
+  // v9.2.x: 에이전트 탭 재편 — semantic/llm 은 관리 탭으로 이관, home-flowi/unit-ai 는 catalog/runtime 으로 흡수.
+  diagnosis: [{key:"catalog",label:"기능 카탈로그"},{key:"runtime",label:"실행 추적"},{key:"workflows",label:"Workflow 템플릿"}],
 };
 export const FEATURE_MAP = {};
 // v9.0.3: planned 섹션에는 아직 비활성 기능만 남긴다.

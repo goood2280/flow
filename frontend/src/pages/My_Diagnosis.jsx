@@ -1,41 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import dagre from "dagre";
 import { PageHeader, PageShell, Panel, Banner, Button, Field, Input, Pill, Select, TabStrip, Textarea } from "../components/UXKit";
-import LlmTab from "../components/agent/LlmTab";
-import { postJson, putJson, sf } from "../lib/api";
+import JsonBlock from "../components/agent/JsonBlock";
+import { postJson, sf } from "../lib/api";
 import { allowedSubTabs } from "../lib/permissions";
 
 // v9.1.x: 소탭 단위 권한 — 허용된 소탭만 노출.
 // localStorage(hol_user)는 로그인 후 채워지므로 렌더 시점에 평가한다 (모듈 상수 고정 금지).
+// v9.2.x: 에이전트 탭 전면 재편 — 기능 카탈로그(도구+단위기능 콘솔) / 실행 추적(질문별
+// 오케스트레이션 스토리) / Workflow 템플릿. Semantic layer 편집기와 LLM 설정은 관리 탭으로 이관.
 const AGENT_TABS_ALL = [
-  { k: "home-flowi", l: "Flow-i" },
-  { k: "semantic", l: "Semantic layer" },
-  { k: "unit-ai", l: "단위기능 AI" },
-  { k: "llm", l: "LLM 설정" },
+  { k: "catalog", l: "기능 카탈로그" },
+  { k: "runtime", l: "실행 추적" },
+  { k: "workflows", l: "Workflow 템플릿" },
 ];
 const agentTabs = () => AGENT_TABS_ALL.filter(({ k }) => allowedSubTabs("diagnosis").includes(k));
 const defaultAgentTab = () => {
   const tabs = agentTabs();
-  return tabs.some(({ k }) => k === "unit-ai") ? "unit-ai" : (tabs[0]?.k || "unit-ai");
+  return tabs.some(({ k }) => k === "catalog") ? "catalog" : (tabs[0]?.k || "catalog");
 };
 
 const AGENT_UNIT_CATALOG_ENDPOINT = "/api/agent/catalog";
-const SEMANTIC_LEXICON_ENDPOINT = "/api/agent/semantic/lexicon";
-const SEMANTIC_SOURCES_ENDPOINT = "/api/agent/semantic/sources";
-const SEMANTIC_MEASUREMENTS_ENDPOINT = "/api/agent/semantic/measurements";
-const SEMANTIC_PROPOSALS_ENDPOINT = "/api/agent/semantic/proposals?status=pending&limit=100";
 const EMPTY_GRAPH = { nodes: [], edges: [], state_design: {} };
-const SEMANTIC_SECTIONS = [
-  { k: "lexicon", l: "Lexicon 관리" },
-  { k: "sources", l: "Sources 관리" },
-  { k: "measurements", l: "Measurements 관리" },
-  { k: "review", l: "검토 이력" },
-];
-const FLOWI_SECTIONS = [
-  { k: "runtime", l: "실행 이력 (스토리)" },
-  { k: "tools", l: "연결 기능" },
-  { k: "workflows", l: "Workflow 템플릿" },
-];
 
 function agentUnitGraphEndpoint(unitKey) {
   return `/api/agent/unit/${encodeURIComponent(unitKey)}/graph`;
@@ -111,33 +97,6 @@ function historyActorLabel(item) {
 
 function historyTimestampLabel(item) {
   return formatHistoryTimestamp(item?.timestamp || item?.created_at || item?.updated_at || "");
-}
-
-function JsonBlock({ value, maxHeight = 160 }) {
-  return (
-    <pre style={{
-      margin: 0,
-      maxHeight,
-      overflow: "auto",
-      padding: 8,
-      border: "1px solid var(--border)",
-      background: "var(--bg-primary)",
-      color: "var(--text-secondary)",
-      fontSize: 12,
-      lineHeight: 1.45,
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-    }}>
-      {JSON.stringify(value ?? {}, null, 2)}
-    </pre>
-  );
-}
-
-function semanticSectionSummary(section, counts) {
-  if (section === "sources") return `${counts.sourceCount || 0} sources`;
-  if (section === "measurements") return `${counts.measurementCount || 0} terms`;
-  if (section === "review") return `${counts.proposalCount || 0} pending · ${counts.changeCount || 0} changes`;
-  return `${counts.aliasCount || 0} alias · ${counts.intentCount || 0} intent`;
 }
 
 function RuntimeGraph({ graph, selectedId, onSelect }) {
@@ -374,36 +333,6 @@ function buildAccumulatedState(result, request, upToIdx, graph = result?.graph |
     if (key) state[key] = row.output;
   }
   return state;
-}
-
-function parseJsonObject(text, label) {
-  let parsed = {};
-  try {
-    parsed = JSON.parse(text || "{}");
-  } catch (e) {
-    throw new Error(`${label} JSON 파싱 실패: ${e.message || String(e)}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} JSON은 object여야 합니다.`);
-  }
-  return parsed;
-}
-
-function listFromValue(value) {
-  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
-  if (typeof value === "string") return value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
-  if (value && typeof value === "object" && Array.isArray(value.aliases)) return listFromValue(value.aliases);
-  return [];
-}
-
-function aliasPayloadFromValue(value) {
-  const payload = { aliases: listFromValue(value) };
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (value.semantic_class !== undefined) payload.semantic_class = String(value.semantic_class || "");
-    if (value.normalization !== undefined) payload.normalization = value.normalization;
-    if (value.value_domain !== undefined) payload.value_domain = value.value_domain;
-  }
-  return payload;
 }
 
 function useAgentFeedbackProfile(unitKey) {
@@ -2693,670 +2622,6 @@ function PpidKnobUnitPanel() {
   return <DeterministicLookupUnitPanel unitKey="ppid_knob" title="PPID Knob 분류" defaultPrompt="PPID_08_0는 어떤 knob으로 분류돼" />;
 }
 
-function SemanticLayerPanel() {
-  const [payload, setPayload] = useState(null);
-  const [sourceCatalog, setSourceCatalog] = useState({ sources: {}, disk: {}, deleted_ids: [], roles: {}, docs_base: "docs/semantic" });
-  const [measurementCatalog, setMeasurementCatalog] = useState({ terms: [], path: "", change_log_path: "" });
-  const [aliasJson, setAliasJson] = useState("{}");
-  const [intentJson, setIntentJson] = useState("{}");
-  const [sourceJson, setSourceJson] = useState("{}");
-  const [measurementJson, setMeasurementJson] = useState("{}");
-  const [sourceNaturalText, setSourceNaturalText] = useState("");
-  const [measurementNaturalText, setMeasurementNaturalText] = useState("");
-  const [draftText, setDraftText] = useState("");
-  const [draft, setDraft] = useState(null);
-  const [proposalCanonicals, setProposalCanonicals] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [activeSection, setActiveSection] = useState("lexicon");
-  const [err, setErr] = useState("");
-  const [msg, setMsg] = useState("");
-
-  const syncPayload = (next) => {
-    setPayload(next || null);
-    setAliasJson(JSON.stringify(next?.alias_group_entries?.disk || next?.alias_groups?.disk || {}, null, 2));
-    setIntentJson(JSON.stringify(next?.intent_hints?.disk || {}, null, 2));
-  };
-
-  const load = () => {
-    setLoading(true);
-    setErr("");
-    return Promise.all([
-      sf(SEMANTIC_LEXICON_ENDPOINT),
-      sf(SEMANTIC_SOURCES_ENDPOINT).catch(() => ({ sources: {}, roles: {}, docs_base: "docs/semantic" })),
-      sf(SEMANTIC_MEASUREMENTS_ENDPOINT).catch(() => ({ terms: [], path: "", change_log_path: "" })),
-      sf(SEMANTIC_PROPOSALS_ENDPOINT).catch(() => ({ proposals: [] })),
-    ]).then(([lexiconPayload, sourcesPayload, measurementsPayload, proposalsPayload]) => {
-      setSourceCatalog({
-        sources: sourcesPayload?.sources || {},
-        disk: sourcesPayload?.disk || {},
-        deleted_ids: sourcesPayload?.deleted_ids || [],
-        roles: sourcesPayload?.roles || {},
-        docs_base: sourcesPayload?.docs_base || "docs/semantic",
-        path: sourcesPayload?.path || "",
-        change_log_path: sourcesPayload?.change_log_path || "",
-      });
-      const sourceRows = Object.values(sourcesPayload?.sources || {});
-      setSourceJson(JSON.stringify(Object.fromEntries(sourceRows.map((source) => [source.id || source.source_id, source])), null, 2));
-      const terms = measurementsPayload?.terms || measurementsPayload?.catalog?.terms || [];
-      setMeasurementCatalog({
-        terms,
-        path: measurementsPayload?.path || measurementsPayload?.catalog?.path || "",
-        change_log_path: measurementsPayload?.change_log_path || measurementsPayload?.catalog?.change_log_path || "",
-      });
-      setMeasurementJson(JSON.stringify(Object.fromEntries((terms || []).map((term) => [term.id, term])), null, 2));
-      syncPayload({
-        ...lexiconPayload,
-        proposals: proposalsPayload?.proposals || lexiconPayload?.proposals || [],
-      });
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const saveAliasJson = () => {
-    let next = {};
-    try {
-      next = parseJsonObject(aliasJson, "alias_groups");
-    } catch (e) {
-      setErr(e.message || String(e));
-      return;
-    }
-    const current = payload?.alias_group_entries?.disk || payload?.alias_groups?.disk || {};
-    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    Promise.all([
-      ...deletions.map((key) => sf(`/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`, { method: "DELETE" })),
-      ...Object.entries(next).map(([key, value]) => putJson(
-        `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
-        aliasPayloadFromValue(value)
-      )),
-    ]).then(() => {
-      setMsg("alias_groups 저장 완료");
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const saveIntentJson = () => {
-    let next = {};
-    try {
-      next = parseJsonObject(intentJson, "intent_hints");
-    } catch (e) {
-      setErr(e.message || String(e));
-      return;
-    }
-    const current = payload?.intent_hints?.disk || {};
-    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    Promise.all([
-      ...deletions.map((key) => sf(`/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`, { method: "DELETE" })),
-      ...Object.entries(next).map(([key, value]) => putJson(
-        `/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`,
-        { required_canonicals: listFromValue(value) }
-      )),
-    ]).then(() => {
-      setMsg("intent_hints 저장 완료");
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const saveSourceJson = () => {
-    let next = {};
-    try {
-      next = parseJsonObject(sourceJson, "source_catalog");
-    } catch (e) {
-      setErr(e.message || String(e));
-      return;
-    }
-    const current = sourceCatalog?.disk || {};
-    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    Promise.all([
-      ...deletions.map((key) => sf(`/api/agent/semantic/sources/${encodeURIComponent(key)}`, { method: "DELETE" })),
-      ...Object.entries(next).map(([key, value]) => putJson(
-        `/api/agent/semantic/sources/${encodeURIComponent(key)}`,
-        { source: { ...(value || {}), id: key } }
-      )),
-    ]).then(() => {
-      setMsg("source catalog 저장 완료");
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const saveSourceNatural = () => {
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    postJson("/api/agent/semantic/draft", { text: sourceNaturalText })
-      .then((out) => {
-        const draftPayload = out?.draft || {};
-        const entries = draftPayload.source_catalog || {};
-        setDraft(draftPayload);
-        if (!Object.keys(entries).length) {
-          throw new Error("source catalog 초안을 만들 수 없습니다. id/title/path/role/docs_path 중 일부를 포함해 주세요.");
-        }
-        return Promise.all(Object.entries(entries).map(([key, value]) => putJson(
-          `/api/agent/semantic/sources/${encodeURIComponent(key)}`,
-          { source: { ...(value || {}), id: key } }
-        )));
-      })
-      .then(() => {
-        setSourceNaturalText("");
-        setMsg("source 자연어 저장 완료");
-        return load();
-      })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const editSourceEntry = (source) => {
-    const id = source?.id || source?.source_id || "";
-    if (!id) return;
-    let next = {};
-    try {
-      next = parseJsonObject(sourceJson, "source_catalog");
-    } catch {
-      const sources = sourceCatalog?.sources || {};
-      next = Array.isArray(sources) ? Object.fromEntries(sources.map((row) => [row.id || row.source_id, row])) : { ...sources };
-    }
-    next[id] = source;
-    setSourceJson(JSON.stringify(next, null, 2));
-    setMsg(`${id} source를 JSON 편집기에 올렸습니다.`);
-  };
-
-  const deleteSourceEntry = (source) => {
-    const id = source?.id || source?.source_id || "";
-    if (!id) return;
-    if (typeof window !== "undefined" && !window.confirm(`${id} source를 삭제할까요?`)) return;
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    sf(`/api/agent/semantic/sources/${encodeURIComponent(id)}`, { method: "DELETE" })
-      .then(() => {
-        setMsg(`${id} source 삭제 완료`);
-        return load();
-      })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const addSourceTemplate = () => {
-    try {
-      const next = parseJsonObject(sourceJson, "source_catalog");
-      let idx = 1;
-      let id = "source_custom";
-      while (Object.prototype.hasOwnProperty.call(next, id)) {
-        idx += 1;
-        id = `source_custom_${idx}`;
-      }
-      next[id] = {
-        id,
-        title: "Custom source",
-        role: "source_search",
-        roles: ["source_search"],
-        path_patterns: ["FLOW_DB_ROOT/<path>"],
-        fallback_path_patterns: [],
-        owner: "",
-        write_policy: "Agent read-only. Update source data through owner feature APIs.",
-        docs_path: `docs/semantic/${id}.md`,
-        related_question_ids: [],
-        related_unit_keys: [],
-        columns: [],
-        search_terms: [],
-        base_confidence: 0.42,
-      };
-      setSourceJson(JSON.stringify(next, null, 2));
-    } catch (e) {
-      setErr(e.message || String(e));
-    }
-  };
-
-  const saveMeasurementJson = () => {
-    let next = {};
-    try {
-      next = parseJsonObject(measurementJson, "measurement_terms");
-    } catch (e) {
-      setErr(e.message || String(e));
-      return;
-    }
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    const current = Object.fromEntries((measurementCatalog?.terms || []).map((term) => [term.id, term]));
-    const deletions = Object.keys(current).filter((key) => !Object.prototype.hasOwnProperty.call(next, key));
-    Promise.all([
-      ...deletions.map((key) => sf(`/api/agent/semantic/measurements/${encodeURIComponent(key)}`, { method: "DELETE" })),
-      ...Object.entries(next).map(([key, value]) => putJson(
-        `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
-        { term: { ...(value || {}), id: key } }
-      )),
-    ]).then(() => {
-      setMsg("measurement terms 저장 완료");
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const saveMeasurementNatural = () => {
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    postJson("/api/agent/semantic/draft", { text: measurementNaturalText })
-      .then((out) => {
-        const draftPayload = out?.draft || {};
-        const entries = draftPayload.measurement_terms || {};
-        setDraft(draftPayload);
-        if (!Object.keys(entries).length) {
-          throw new Error("measurement term 초안을 만들 수 없습니다. term/source_type/item_id 중 일부를 포함해 주세요.");
-        }
-        return Promise.all(Object.entries(entries).map(([key, value]) => putJson(
-          `/api/agent/semantic/measurements/${encodeURIComponent(key)}`,
-          { term: { ...(value || {}), id: key } }
-        )));
-      })
-      .then(() => {
-        setMeasurementNaturalText("");
-        setMsg("measurement 자연어 저장 완료");
-        return load();
-      })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const editMeasurementEntry = (term) => {
-    const id = term?.id || "";
-    if (!id) return;
-    let next = {};
-    try {
-      next = parseJsonObject(measurementJson, "measurement_terms");
-    } catch {
-      next = Object.fromEntries((measurementCatalog?.terms || []).map((row) => [row.id, row]));
-    }
-    next[id] = term;
-    setMeasurementJson(JSON.stringify(next, null, 2));
-    setMsg(`${id} measurement를 JSON 편집기에 올렸습니다.`);
-  };
-
-  const deleteMeasurementEntry = (term) => {
-    const id = term?.id || "";
-    if (!id) return;
-    if (typeof window !== "undefined" && !window.confirm(`${term?.term || id} measurement를 삭제할까요?`)) return;
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    sf(`/api/agent/semantic/measurements/${encodeURIComponent(id)}`, { method: "DELETE" })
-      .then(() => {
-        setMsg(`${term?.term || id} measurement 삭제 완료`);
-        return load();
-      })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const addMeasurementTemplate = () => {
-    try {
-      const next = parseJsonObject(measurementJson, "measurement_terms");
-      let idx = 1;
-      let id = "measure_custom";
-      while (Object.prototype.hasOwnProperty.call(next, id)) {
-        idx += 1;
-        id = `measure_custom_${idx}`;
-      }
-      next[id] = {
-        id,
-        term: "Custom measurement",
-        aliases: ["Custom measurement"],
-        source_type: "INLINE",
-        product: "",
-        step_id: "",
-        item_id: "",
-        value_column: "",
-        default_agg: "avg",
-        target: null,
-        spec_low: null,
-        spec_high: null,
-        evidence: [],
-      };
-      setMeasurementJson(JSON.stringify(next, null, 2));
-    } catch (e) {
-      setErr(e.message || String(e));
-    }
-  };
-
-  const makeDraft = () => {
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    postJson("/api/agent/semantic/draft", { text: draftText })
-      .then((out) => setDraft(out?.draft || null))
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const applyDraft = () => {
-    const aliasGroups = draft?.alias_groups || {};
-    const intentHints = draft?.intent_hints || {};
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    Promise.all([
-      ...Object.entries(aliasGroups).map(([key, value]) => putJson(
-        `/api/agent/semantic/alias-groups/${encodeURIComponent(key)}`,
-        aliasPayloadFromValue(value)
-      )),
-      ...Object.entries(intentHints).map(([key, value]) => putJson(
-        `/api/agent/semantic/intent-hints/${encodeURIComponent(key)}`,
-        { required_canonicals: listFromValue(value) }
-      )),
-    ]).then(() => {
-      setMsg("semantic draft 저장 완료");
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const decideProposal = (proposal, decision) => {
-    const id = proposal?.id || "";
-    if (!id) return;
-    const canonical = proposalCanonicals[id] ?? proposal?.canonical_match ?? (proposal?.category === "new_canonical" ? proposal?.term : "");
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    postJson(`/api/agent/semantic/proposals/${encodeURIComponent(id)}/decision`, {
-      decision,
-      canonical,
-    }).then(() => {
-      setMsg(`proposal ${decision === "approve" ? "승인" : "거절"} 완료`);
-      return load();
-    }).catch((e) => setErr(e.message || String(e)))
-      .finally(() => setBusy(false));
-  };
-
-  const proposals = payload?.proposals || [];
-  const changes = payload?.changes || [];
-  const sourceRows = useMemo(() => {
-    const sources = sourceCatalog?.sources || {};
-    return Array.isArray(sources) ? sources : Object.values(sources);
-  }, [sourceCatalog]);
-  const canApplyDraft = draft && (Object.keys(draft.alias_groups || {}).length || Object.keys(draft.intent_hints || {}).length);
-  const semanticCounts = {
-    aliasCount: Object.keys(payload?.alias_group_entries?.disk || payload?.alias_groups?.disk || {}).length,
-    intentCount: Object.keys(payload?.intent_hints?.disk || {}).length,
-    sourceCount: sourceRows.length,
-    measurementCount: measurementCatalog.terms.length,
-    proposalCount: proposals.length,
-    changeCount: changes.length,
-  };
-  const semanticSectionItems = SEMANTIC_SECTIONS.map((section) => {
-    if (section.k === "lexicon") return { ...section, badge: semanticCounts.aliasCount + semanticCounts.intentCount };
-    if (section.k === "sources") return { ...section, badge: semanticCounts.sourceCount };
-    if (section.k === "measurements") return { ...section, badge: semanticCounts.measurementCount };
-    return { ...section, badge: semanticCounts.proposalCount };
-  });
-
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {err ? <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner> : null}
-      {msg ? <Banner tone="ok" onClose={() => setMsg("")}>{msg}</Banner> : null}
-
-      <TabStrip
-        active={activeSection}
-        onChange={setActiveSection}
-        items={semanticSectionItems}
-        right={<Pill tone="neutral">{semanticSectionSummary(activeSection, semanticCounts)}</Pill>}
-      />
-
-      {activeSection === "lexicon" ? (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(0, 1.05fr)", gap: 10, alignItems: "start" }}>
-        <Panel
-          title="Lexicon"
-          subtitle={loading ? "loading" : "disk overrides"}
-          right={<Button variant="ghost" onClick={load} disabled={loading || busy} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>새로고침</Button>}
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <Field label="alias_groups">
-              <Textarea value={aliasJson} onChange={(e) => setAliasJson(e.target.value)} rows={12} />
-            </Field>
-            <Button variant="primary" onClick={saveAliasJson} disabled={busy}>alias 저장</Button>
-            <Field label="intent_hints">
-              <Textarea value={intentJson} onChange={(e) => setIntentJson(e.target.value)} rows={8} />
-            </Field>
-            <Button variant="primary" onClick={saveIntentJson} disabled={busy}>intent 저장</Button>
-          </div>
-        </Panel>
-
-        <Panel title="Effective view" subtitle="merged">
-          <div style={{ display: "grid", gap: 8 }}>
-            <JsonBlock
-              value={{
-                alias_groups: payload?.alias_groups?.effective || {},
-                alias_group_entries: payload?.alias_group_entries?.effective || {},
-                intent_hints: payload?.intent_hints?.effective || {},
-              }}
-              maxHeight={360}
-            />
-            <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <strong style={{ fontSize: 12 }}>Draft</strong>
-                {draft?.source ? <Pill tone="neutral">{draft.source}</Pill> : null}
-              </div>
-              <div style={{ display: "grid", gap: 8 }}>
-                <Textarea
-                  value={draftText}
-                  onChange={(e) => setDraftText(e.target.value)}
-                  rows={4}
-                  placeholder='{"alias_groups":{"ioff":["IOFF","누설전류"]}}'
-                />
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Button variant="primary" onClick={makeDraft} disabled={!draftText.trim() || busy}>초안 생성</Button>
-                  <Button variant="primary" onClick={applyDraft} disabled={!canApplyDraft || busy}>초안 저장</Button>
-                </div>
-                <JsonBlock value={draft || {}} maxHeight={220} />
-              </div>
-            </div>
-          </div>
-        </Panel>
-      </div>
-      ) : null}
-
-      {activeSection === "sources" ? (
-      <Panel title="Source catalog" subtitle={`${sourceRows.length} sources`}>
-        <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
-          <Field label="source 자연어">
-            <Textarea
-              value={sourceNaturalText}
-              onChange={(e) => setSourceNaturalText(e.target.value)}
-              rows={3}
-              placeholder="id=custom_inline; title=Custom Inline source; role=inline_db; path=FLOW_DB_ROOT/custom_inline.parquet; columns=product,step_id; search_terms=inline,trend"
-            />
-          </Field>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Button variant="primary" onClick={saveSourceNatural} disabled={!sourceNaturalText.trim() || busy}>source 자연어 저장</Button>
-          </div>
-          <Field label="source_catalog">
-            <Textarea value={sourceJson} onChange={(e) => setSourceJson(e.target.value)} rows={10} />
-          </Field>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Button variant="primary" onClick={saveSourceJson} disabled={busy}>source 저장</Button>
-            <Button variant="ghost" onClick={addSourceTemplate} disabled={busy}>source 추가</Button>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-            path {sourceCatalog.path || "-"} · change log {sourceCatalog.change_log_path || "-"}
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8 }}>
-          {sourceRows.map((source) => {
-            const id = source?.id || source?.source_id || "";
-            const docsPath = source?.docs_path || `${sourceCatalog?.docs_base || "docs/semantic"}/${id}.md`;
-            return (
-              <div key={id || source?.title} style={{ display: "grid", gap: 6, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  <strong style={{ fontSize: 13 }}>{source?.title || id}</strong>
-                  <Pill tone="neutral">{source?.role || "source"}</Pill>
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
-                    {docsPath ? (
-                      <a href={docsPath} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--brand, var(--text-primary))" }}>
-                        docs
-                      </a>
-                    ) : null}
-                    <Button variant="ghost" onClick={() => editSourceEntry(source)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>수정</Button>
-                    <Button variant="ghost" onClick={() => deleteSourceEntry(source)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>삭제</Button>
-                  </div>
-                </div>
-                <div style={{ display: "grid", gap: 4 }}>
-                  {(source?.path_patterns || []).map((pattern) => (
-                    <code key={pattern} style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pattern}</code>
-                  ))}
-                  {(source?.fallback_path_patterns || []).map((pattern) => (
-                    <code key={pattern} style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>fallback {pattern}</code>
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-                  <strong style={{ color: "var(--text-primary)" }}>owner</strong> {source?.owner || "-"}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-                  <strong style={{ color: "var(--text-primary)" }}>write</strong> {source?.write_policy || "-"}
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {(source?.related_question_ids || []).map((qid) => <Pill key={qid} tone="neutral">{qid}</Pill>)}
-                </div>
-              </div>
-            );
-          })}
-          {!sourceRows.length ? (
-            <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-              source catalog 없음
-            </div>
-          ) : null}
-        </div>
-      </Panel>
-      ) : null}
-
-      {activeSection === "measurements" ? (
-      <Panel title="Measurement terms" subtitle={`${measurementCatalog.terms.length} semantic measurement aliases`}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.9fr) minmax(0, 1.1fr)", gap: 10, alignItems: "start" }}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <Field label="measurement 자연어">
-              <Textarea
-                value={measurementNaturalText}
-                onChange={(e) => setMeasurementNaturalText(e.target.value)}
-                rows={3}
-                placeholder="term=CA BCD; source_type=INLINE; product=PRODA; step_id=AA100001; item_id=CA_BCD; target=10; spec_low=8; spec_high=12; aliases=CA BCD,CABCD"
-              />
-            </Field>
-            <Button variant="primary" onClick={saveMeasurementNatural} disabled={!measurementNaturalText.trim() || busy}>measurement 자연어 저장</Button>
-            <Field label="measurement_terms">
-              <Textarea value={measurementJson} onChange={(e) => setMeasurementJson(e.target.value)} rows={14} />
-            </Field>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Button variant="primary" onClick={saveMeasurementJson} disabled={busy}>measurement 저장</Button>
-              <Button variant="ghost" onClick={addMeasurementTemplate} disabled={busy}>measurement 추가</Button>
-              <Button variant="ghost" onClick={() => postJson("/api/agent/semantic/measurements/merge-defaults", {}).then(load).catch((e) => setErr(e.message || String(e)))} disabled={busy}>기본 병합</Button>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-              path {measurementCatalog.path || "-"} · evidence/change log {measurementCatalog.change_log_path || "-"}
-            </div>
-          </div>
-          <div style={{ display: "grid", gap: 8 }}>
-            {(measurementCatalog.terms || []).slice(0, 12).map((term) => (
-              <div key={term.id} style={{ display: "grid", gap: 5, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                  <strong style={{ fontSize: 13 }}>{term.term}</strong>
-                  <Pill tone="neutral">{term.source_type}</Pill>
-                  {term.product ? <Pill tone="neutral">{term.product}</Pill> : null}
-                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)" }}>{term.updated_at || ""}</span>
-                  <Button variant="ghost" onClick={() => editMeasurementEntry(term)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>수정</Button>
-                  <Button variant="ghost" onClick={() => deleteMeasurementEntry(term)} disabled={busy} style={{ fontSize: 11, padding: "2px 7px", height: 24 }}>삭제</Button>
-                </div>
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
-                  item_id {term.item_id || "-"} · step_id {term.step_id || "-"} · agg {term.default_agg || "-"} · target {term.target ?? "-"} · spec {term.spec_low ?? "-"} ~ {term.spec_high ?? "-"}
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {(term.aliases || []).slice(0, 6).map((alias) => <Pill key={alias} tone="neutral">{alias}</Pill>)}
-                </div>
-                {(term.evidence || []).length ? (
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                    근거 {(term.evidence || []).slice(0, 2).map((ev) => ev.label || ev.source || ev.type).filter(Boolean).join(" · ")}
-                  </div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </div>
-      </Panel>
-      ) : null}
-
-      {activeSection === "review" ? (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 10, alignItems: "start" }}>
-        <Panel title="Proposals" subtitle={`${proposals.length} pending`}>
-          <div style={{ display: "grid", gap: 6, maxHeight: 420, overflow: "auto" }}>
-            {proposals.length ? proposals.map((proposal) => {
-              const id = proposal.id || `${proposal.term}:${proposal.created_at}`;
-              const canonical = proposalCanonicals[id] ?? proposal.canonical_match ?? (proposal.category === "new_canonical" ? proposal.term : "");
-              return (
-                <div key={id} style={{ display: "grid", gap: 6, padding: 9, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong style={{ fontSize: 13 }}>{proposal.term || "(empty)"}</strong>
-                    <Pill tone={proposal.category === "conflict" ? "warn" : "neutral"}>{proposal.category || "proposal"}</Pill>
-                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{proposal.confidence ?? ""}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                    {proposal.rationale || ""} {proposal.origin?.kind ? `· ${proposal.origin.kind}` : ""}
-                  </div>
-                  <input
-                    value={canonical || ""}
-                    onChange={(e) => setProposalCanonicals((prev) => ({ ...prev, [id]: e.target.value }))}
-                    placeholder="canonical"
-                    style={{ width: "100%", padding: "7px 9px", border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 4 }}
-                  />
-                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <Button variant="ghost" onClick={() => decideProposal(proposal, "reject")} disabled={busy} style={{ fontSize: 12, padding: "4px 10px", height: 28 }}>거절</Button>
-                    <Button variant="primary" onClick={() => decideProposal(proposal, "approve")} disabled={busy} style={{ fontSize: 12, padding: "4px 10px", height: 28 }}>승인</Button>
-                  </div>
-                </div>
-              );
-            }) : (
-              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                pending proposal 없음
-              </div>
-            )}
-          </div>
-        </Panel>
-
-        <Panel title="Changes" subtitle={`${changes.length} rows`}>
-          <div style={{ display: "grid", gap: 6, maxHeight: 420, overflow: "auto" }}>
-            {changes.length ? changes.map((change, idx) => (
-              <div key={`${change.scope}:${change.key}:${idx}`} style={{ display: "grid", gap: 4, padding: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                  <Pill tone="neutral">{change.scope || "change"}</Pill>
-                  <strong style={{ fontSize: 12 }}>{change.key || ""}</strong>
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>{change.by || ""}</div>
-                <JsonBlock value={{ before: change.before || [], after: change.after || [] }} maxHeight={120} />
-              </div>
-            )) : (
-              <div style={{ padding: 12, fontSize: 12, color: "var(--text-secondary)", border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-                change 없음
-              </div>
-            )}
-          </div>
-        </Panel>
-      </div>
-      ) : null}
-    </div>
-  );
-}
-
 const UNIT_PANEL_RENDERERS = {
   filebrowser_ai_sql: FileBrowserAiSqlUnitPanel,
   inform_registration: InformRegistrationUnitPanel,
@@ -3375,37 +2640,127 @@ const UNIT_PANEL_FALLBACK_ITEMS = [
   { k: "ppid_knob", l: "PPID Knob 분류" },
 ];
 
-function UnitAiPanel() {
-  const [activeUnit, setActiveUnit] = useState("filebrowser_ai_sql");
-  const [catalogUnits, setCatalogUnits] = useState([]);
-  const items = useMemo(() => {
-    const catalogItems = (catalogUnits || [])
-      .filter((unit) => UNIT_PANEL_RENDERERS[unit?.key])
-      .map((unit) => ({ k: unit.key, l: unit.title || unit.key }));
-    return catalogItems.length ? catalogItems : UNIT_PANEL_FALLBACK_ITEMS;
-  }, [catalogUnits]);
-  const ActivePanel = UNIT_PANEL_RENDERERS[activeUnit] || FileBrowserAiSqlUnitPanel;
+// ── 기능 카탈로그: 오케스트레이터가 골라 쓰는 모든 기능 + 단위기능 시험 콘솔 ──
+// v9.2.x: 기존 "연결 기능"(HomeFlowiToolsPanel)과 "단위기능 AI"(UnitAiPanel) 탭을 흡수.
+function CapabilityCatalogPanel() {
+  const [tools, setTools] = useState([]);
+  const [agentic, setAgentic] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [selectedUnit, setSelectedUnit] = useState("");
 
   useEffect(() => {
-    sf(AGENT_UNIT_CATALOG_ENDPOINT)
-      .then((payload) => setCatalogUnits(payload?.units || []))
-      .catch(() => setCatalogUnits([]));
+    sf("/api/agent/home-flowi/tools")
+      .then((payload) => {
+        setTools(Array.isArray(payload?.tools) ? payload.tools : []);
+        setAgentic(payload?.agentic || null);
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    if (!items.find((item) => item.k === activeUnit)) {
-      setActiveUnit(items[0]?.k || "filebrowser_ai_sql");
-    }
-  }, [items, activeUnit]);
+  const units = tools.filter((t) => t.kind === "unit_ai");
+  const funcs = tools.filter((t) => t.kind !== "unit_ai");
+  const reactOn = !!agentic?.react_enabled;
+  const ActiveConsole = UNIT_PANEL_RENDERERS[selectedUnit] || null;
+  const activeUnitTitle =
+    units.find((t) => t.name === selectedUnit)?.title
+    || UNIT_PANEL_FALLBACK_ITEMS.find((item) => item.k === selectedUnit)?.l
+    || selectedUnit;
+
+  const statusPill = (t) => {
+    if (t.enabled === false) return <Pill tone="neutral">비활성</Pill>;
+    if (t.kind === "unit_ai") return <Pill tone="ok">즉시 실행</Pill>;
+    return reactOn ? <Pill tone="ok">ReAct 실행</Pill> : <Pill tone="warn">ReAct 꺼짐 — 대기</Pill>;
+  };
+
+  const toolCard = (t) => {
+    const hasConsole = t.kind === "unit_ai" && !!UNIT_PANEL_RENDERERS[t.name];
+    const active = selectedUnit === t.name;
+    const firstExample = (t.examples || [])[0];
+    const exampleText = typeof firstExample === "string" ? firstExample : String(firstExample?.prompt || "");
+    const body = (
+      <>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 800 }}>{t.title || t.name}</span>
+          {statusPill(t)}
+        </div>
+        <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{t.name}</code>
+        {t.description ? (
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{t.description}</div>
+        ) : null}
+        {exampleText ? (
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>예: {exampleText}</div>
+        ) : null}
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {(t.tags || []).slice(0, 6).map((tag) => (
+            <span key={tag} style={{ fontSize: 10, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-secondary)" }}>{tag}</span>
+          ))}
+          {hasConsole ? <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--brand, var(--text-primary))" }}>{active ? "콘솔 닫기" : "콘솔 열기"}</span> : null}
+        </div>
+      </>
+    );
+    const cardStyle = {
+      display: "grid",
+      gap: 5,
+      alignContent: "start",
+      padding: "9px 10px",
+      textAlign: "left",
+      border: `1px solid ${active ? "var(--brand, var(--text-primary))" : "var(--border)"}`,
+      borderRadius: 6,
+      background: active ? "var(--bg-tertiary)" : "var(--bg-primary)",
+      color: "var(--text-primary)",
+    };
+    if (!hasConsole) return <div key={`${t.kind}-${t.name}`} style={cardStyle}>{body}</div>;
+    return (
+      <button
+        key={`${t.kind}-${t.name}`}
+        type="button"
+        onClick={() => setSelectedUnit(active ? "" : t.name)}
+        style={{ ...cardStyle, cursor: "pointer" }}
+      >
+        {body}
+      </button>
+    );
+  };
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      <TabStrip
-        active={activeUnit}
-        onChange={setActiveUnit}
-        items={items}
-      />
-      <ActivePanel />
+      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <Pill tone={agentic?.llm_available ? "ok" : "warn"}>LLM {agentic?.llm_available ? "연결됨" : "미연결"}</Pill>
+        <Pill tone={agentic?.tool_call_enabled ? "ok" : "neutral"}>도구선택 planner {agentic?.tool_call_enabled ? "on" : "off"}</Pill>
+        <Pill tone={reactOn ? "ok" : "warn"}>ReAct 루프 {reactOn ? "on" : "off"}</Pill>
+        {agentic?.llm_model ? (
+          <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{agentic.llm_provider} · {agentic.llm_model}</span>
+        ) : null}
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)" }}>LLM · agentic 설정 변경은 관리 → LLM 설정</span>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        홈 Flow-i 오케스트레이터가 질문에 따라 골라 실행하는 기능 목록입니다.
+        단위기능 AI는 결정적(LLM 무관) 즉답이며 카드를 누르면 아래에 시험 콘솔이 열립니다.
+        함수 도구는 ReAct 루프에서 LLM이 인자를 채워 실행합니다.
+      </div>
+      <Panel title="단위기능 AI" subtitle={loading ? "loading" : `${units.length} tools`}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+          {units.map(toolCard)}
+          {!loading && !units.length ? UNIT_PANEL_FALLBACK_ITEMS.map((item) => toolCard({ kind: "unit_ai", name: item.k, title: item.l, enabled: true })) : null}
+        </div>
+      </Panel>
+      {ActiveConsole ? (
+        <Panel
+          title={`단위기능 콘솔 — ${activeUnitTitle}`}
+          subtitle="그래프 · 시험 실행 · 질문 이력"
+          right={<Button variant="ghost" onClick={() => setSelectedUnit("")} style={{ fontSize: 11, padding: "2px 8px", height: 24 }}>닫기</Button>}
+        >
+          <ActiveConsole />
+        </Panel>
+      ) : null}
+      <Panel title="함수 도구 (function-call)" subtitle={loading ? "loading" : `${funcs.length} tools`}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+          {funcs.map(toolCard)}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -3849,11 +3204,11 @@ const AGENT_GLOSSARY = [
   ["용어해석 (Semantic layer)", "질문 속 단어를 데이터 용어로 변환하는 단계. 예: '스텝'→step_id 컬럼, 'PRODA'→product 값. 별칭 사전·스키마 카탈로그를 사용합니다."],
   ["단위기능 AI (Unit AI)", "LLM 없이 규칙/CSV/parquet 조회로 즉답하는 결정적 기능. 홈 챗에서 실제 실행되는 것은 step_lookup, ppid_knob, split_nav 3개입니다."],
   ["ReAct 턴 (step)", "오케스트레이터가 도구 1개를 고르고 실행하는 1회 반복. 반복행동/무진전/시간초과 가드가 있습니다."],
-  ["도구 (tool)", "오케스트레이터가 고를 수 있는 연결 기능 — 단위기능 AI + function-call. '연결 기능' 섹션에서 전체 목록을 확인하세요."],
+  ["도구 (tool)", "오케스트레이터가 고를 수 있는 연결 기능 — 단위기능 AI + function-call. '기능 카탈로그' 탭에서 전체 목록을 확인하세요."],
   ["function-call", "'Lot 현재 Step 조회'처럼 인자를 받아 데이터를 직접 조회하는 작은 함수형 도구. ReAct 루프에서만 실제 실행됩니다."],
   ["ask_user", "정보가 부족할 때 모델이 사용자에게 되묻는 human-in-the-loop 행동. 챗에 선택지 버튼으로 표시됩니다."],
   ["planner", "실행 계획의 주체. react=LLM 루프, heuristic/alias=키워드 매칭 폴백(LLM 불가 시)."],
-  ["State / LangGraph", "단위기능 AI 콘솔에서 시험 실행할 때의 내부 상태와 노드 그래프. 홈 챗 경로와는 별개의 시험 화면입니다."],
+  ["State / LangGraph", "기능 카탈로그의 단위기능 콘솔에서 시험 실행할 때의 내부 상태와 노드 그래프. 홈 챗 경로와는 별개의 시험 화면입니다."],
 ];
 
 function AgentOverviewPanel() {
@@ -3962,78 +3317,6 @@ function RunStoryline({ run }) {
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-// ── 연결 기능(도구) 카탈로그 ─────────────────────────────────────────────────
-function HomeFlowiToolsPanel() {
-  const [tools, setTools] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    sf("/api/agent/home-flowi/tools")
-      .then((payload) => setTools(Array.isArray(payload?.tools) ? payload.tools : []))
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const units = tools.filter((t) => t.kind === "unit_ai");
-  const funcs = tools.filter((t) => t.kind !== "unit_ai");
-  const toolRow = (t) => (
-    <div key={`${t.kind}-${t.name}`} style={{ display: "grid", gap: 3, padding: "8px 9px", borderBottom: "1px solid var(--border)" }}>
-      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, fontWeight: 800 }}>{t.title || t.name}</span>
-        <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{t.name}</code>
-        <Pill tone={t.enabled ? "ok" : "neutral"}>{t.enabled ? "사용 가능" : "비활성"}</Pill>
-      </div>
-      {t.description ? (
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{t.description}</div>
-      ) : null}
-      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-        {(t.tags || []).slice(0, 8).map((tag) => (
-          <span key={tag} style={{ fontSize: 10, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-secondary)" }}>{tag}</span>
-        ))}
-      </div>
-    </div>
-  );
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
-      <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-        홈 Flow-i 오케스트레이터가 질문에 따라 골라 실행할 수 있는 연결 기능 목록입니다.
-        단위기능 AI는 결정적(LLM 무관) 즉답, 함수 도구는 ReAct 루프에서 인자를 채워 실행됩니다.
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, alignItems: "start" }}>
-        <Panel title="단위기능 AI" subtitle={loading ? "loading" : `${units.length} tools`}>
-          <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", maxHeight: 560, overflow: "auto" }}>
-            {units.map(toolRow)}
-          </div>
-        </Panel>
-        <Panel title="함수 도구 (function-call)" subtitle={loading ? "loading" : `${funcs.length} tools`}>
-          <div style={{ border: "1px solid var(--border)", background: "var(--bg-primary)", maxHeight: 560, overflow: "auto" }}>
-            {funcs.map(toolRow)}
-          </div>
-        </Panel>
-      </div>
-    </div>
-  );
-}
-
-function HomeFlowiPanel() {
-  const [activeFlowiSection, setActiveFlowiSection] = useState("runtime");
-
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      <TabStrip
-        active={activeFlowiSection}
-        onChange={setActiveFlowiSection}
-        items={FLOWI_SECTIONS}
-      />
-      {activeFlowiSection === "workflows"
-        ? <HomeFlowiWorkflowManagerPanel />
-        : (activeFlowiSection === "tools" ? <HomeFlowiToolsPanel /> : <HomeFlowiRuntimePanel />)}
     </div>
   );
 }
@@ -4216,15 +3499,14 @@ function HomeFlowiRuntimePanel() {
   );
 }
 
-export default function My_Diagnosis({ user }) {
-  const isAdminUser = user?.role === "admin";
+export default function My_Diagnosis() {
   const AGENT_TABS = agentTabs();
   const [activeTab, setActiveTab] = useState(() => defaultAgentTab());
 
   return (
     <div className="flow-connected-page flow-agent-page" style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       <PageShell style={{ minHeight: "calc(100vh - 52px)", display: "flex", flexDirection: "column" }}>
-        <PageHeader title="에이전트" subtitle="단위기능 AI 실행과 LLM 연결" />
+        <PageHeader title="에이전트" subtitle="기능 카탈로그와 질문별 오케스트레이션 추적" />
         <div className="flow-agent-shell">
           <div className="flow-agent-tabs">
             <TabStrip
@@ -4235,9 +3517,9 @@ export default function My_Diagnosis({ user }) {
           </div>
           <div className="flow-agent-surface" style={{ overflow: "auto" }}>
             <AgentOverviewPanel />
-            {activeTab === "home-flowi"
-              ? <HomeFlowiPanel />
-              : (activeTab === "semantic" ? <SemanticLayerPanel /> : (activeTab === "unit-ai" ? <UnitAiPanel /> : <LlmTab isAdmin={isAdminUser} />))}
+            {activeTab === "runtime"
+              ? <HomeFlowiRuntimePanel />
+              : (activeTab === "workflows" ? <HomeFlowiWorkflowManagerPanel /> : <CapabilityCatalogPanel />)}
           </div>
         </div>
       </PageShell>

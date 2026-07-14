@@ -261,7 +261,8 @@ check("GET /api/skills/list", status, 200)
 status, _ = _req("GET", "/api/skills/candidates", token=TOKEN)
 check("GET /api/skills/candidates", status, 200)
 
-status, body = _req("POST", "/api/home-agent/orchestrate", {"prompt": "lot SQL JOIN"}, token=TOKEN)
+# agentic(ReAct) 활성 시 LLM planning 호출로 10s 를 넘길 수 있어 이 스텝만 60s.
+status, body = _req("POST", "/api/home-agent/orchestrate", {"prompt": "lot SQL JOIN"}, token=TOKEN, timeout=60)
 trace_len = len((body or {}).get("trace") or []) if isinstance(body, dict) else 0
 check("POST /api/home-agent/orchestrate", status, 200, f"trace={trace_len}")
 

@@ -197,17 +197,27 @@ def test_home_flowi_clarification_renders_plain_choice_reply():
     assert "showDiagnostics&&<FlowiDiagnosticsDetails" in ui
 
 
-def test_agent_page_exposes_unit_ai_and_llm_settings():
+def test_agent_page_exposes_catalog_and_runtime_trace():
+    # v9.2.x 재편: 에이전트 탭 = 기능 카탈로그 / 실행 추적 / Workflow 템플릿.
+    # Semantic layer 편집기와 LLM 설정은 관리 탭(Flow-i 학습 / LLM 설정)으로 이관.
     ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
     css = (ROOT / "frontend" / "src" / "global.css").read_text(encoding="utf-8")
     uxkit = (ROOT / "frontend" / "src" / "components" / "UXKit.jsx").read_text(encoding="utf-8")
     assert "에이전트" in ui
+    assert "기능 카탈로그" in ui
+    assert "실행 추적" in ui
+    assert "Workflow 템플릿" in ui
+    assert "CapabilityCatalogPanel" in ui
+    assert "HomeFlowiRuntimePanel" in ui
+    assert "RunStoryline" in ui
+    assert "/api/agent/home-flowi/tools" in ui
+    assert "/api/agent/home-flowi/runtime/runs" in ui
+    assert "ReAct 루프" in ui
     assert "단위기능 AI" in ui
     assert "FileBrowser AI SQL" in ui
     assert "Inform 등록 도우미" in ui
     assert "Step ID 매칭" in ui
     assert "PPID Knob 분류" in ui
-    assert "Flow-i" in ui
     assert "FLOWI_FEW_SHOT_QUESTIONS" not in ui
     assert "/api/llm/flowi/workflows" in ui
     assert "/api/llm/flowi/workflows/draft" in ui
@@ -218,12 +228,8 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "Workflow 템플릿 관리" in ui
     assert "템플릿 추가" in ui
     assert "LLM 형식 맞춤" in ui
-    assert "FLOWI_SECTIONS" in ui
-    assert "activeFlowiSection" in ui
     assert "질문 템플릿" in ui
     assert "오케스트레이션 진행" in ui
-    assert "Semantic layer" in ui
-    assert "LLM 설정" in ui
     assert "질문 이력" in ui
     assert "State" in ui
     assert "LangGraph" in ui
@@ -231,35 +237,7 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert "/api/agent/catalog" in ui
     assert "/api/agent/unit/${encodeURIComponent(unitKey)}/run" in ui
     assert 'agentUnitHistoryEndpoint("dashboard_agent")' in ui
-    assert "/api/agent/semantic/lexicon" in ui
-    assert "/api/agent/semantic/sources" in ui
-    assert "/api/agent/semantic/measurements" in ui
-    assert "Source catalog" in ui
     assert "쨌" not in ui
-    assert "SEMANTIC_SECTIONS" in ui
-    assert "activeSection" in ui
-    assert "semanticSectionSummary" in ui
-    assert "Lexicon 관리" in ui
-    assert "Sources 관리" in ui
-    assert "Measurements 관리" in ui
-    assert "검토 이력" in ui
-    assert "source_catalog" in ui
-    assert "source 저장" in ui
-    assert "source 추가" in ui
-    assert "source 자연어 저장" in ui
-    assert "editSourceEntry" in ui
-    assert "deleteSourceEntry" in ui
-    assert "const current = sourceCatalog?.disk || {};" in ui
-    assert "disk: sourcesPayload?.disk || {}" in ui
-    assert "deleted_ids: sourcesPayload?.deleted_ids || []" in ui
-    assert "Measurement terms" in ui
-    assert "measurement 추가" in ui
-    assert "measurement 자연어 저장" in ui
-    assert "editMeasurementEntry" in ui
-    assert "deleteMeasurementEntry" in ui
-    assert 'method: "DELETE"' in ui
-    assert "measurement_terms" in ui
-    assert "related_question_ids" in ui
     assert "active Agent unit route" in ui
     assert "Inform graph fetch 진단" in ui
     assert "Human review" in ui
@@ -277,8 +255,56 @@ def test_agent_page_exposes_unit_ai_and_llm_settings():
     assert 'cursor: "pointer", userSelect: "none",\n                  whiteSpace: "nowrap",' in uxkit
     assert ".flow-agent-unit-grid" in css
     assert "repeat(auto-fit" in css
-    assert "LlmTab" in ui
+    # 이관 확인 — 에이전트 페이지에는 semantic 편집기/LLM 설정이 남아 있으면 안 된다.
+    assert "/api/agent/semantic/lexicon" not in ui
+    assert "SemanticLayerPanel" not in ui
+    assert "LlmTab" not in ui
     assert "/api/agent/runtime" not in ui
+
+
+def test_semantic_layer_panel_moved_to_shared_component():
+    ui = (ROOT / "frontend" / "src" / "components" / "agent" / "SemanticLayerPanel.jsx").read_text(encoding="utf-8")
+    assert "/api/agent/semantic/lexicon" in ui
+    assert "/api/agent/semantic/sources" in ui
+    assert "/api/agent/semantic/measurements" in ui
+    assert "SEMANTIC_SECTIONS" in ui
+    assert "semanticSectionSummary" in ui
+    assert "Lexicon 관리" in ui
+    assert "Sources 관리" in ui
+    assert "Measurements 관리" in ui
+    assert "검토 이력" in ui
+    assert "Source catalog" in ui
+    assert "source_catalog" in ui
+    assert "source 저장" in ui
+    assert "source 추가" in ui
+    assert "source 자연어 저장" in ui
+    assert "editSourceEntry" in ui
+    assert "deleteSourceEntry" in ui
+    assert "const current = sourceCatalog?.disk || {};" in ui
+    assert "disk: sourcesPayload?.disk || {}" in ui
+    assert "deleted_ids: sourcesPayload?.deleted_ids || []" in ui
+    assert "Measurement terms" in ui
+    assert "measurement 추가" in ui
+    assert "measurement 자연어 저장" in ui
+    assert "editMeasurementEntry" in ui
+    assert "deleteMeasurementEntry" in ui
+    assert 'method: "DELETE"' in ui
+    assert "measurement_terms" in ui
+    assert "related_question_ids" in ui
+    assert "쨌" not in ui
+
+
+def test_admin_page_hosts_flowi_learning_semantic_and_llm_settings():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Admin.jsx").read_text(encoding="utf-8")
+    assert 'import SemanticLayerPanel from "../components/agent/SemanticLayerPanel"' in ui
+    assert 'import LlmTab from "../components/agent/LlmTab"' in ui
+    assert "FLOWI_LEARNING_SECTIONS" in ui
+    assert "용어사전 (Semantic layer)" in ui
+    assert "few-shot 용어" in ui
+    assert "파일 설명" in ui
+    assert '["llm_cfg","LLM 설정"]' in ui
+    assert '{tab==="llm_cfg"&&isAdmin&&<LlmTab isAdmin={isAdmin}/>}' in ui
+    assert "쨌" not in ui
 
 
 def test_common_loading_component_shows_progress_cues():
