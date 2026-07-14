@@ -1,4 +1,4 @@
-"""core/llm_adapter.py v8.7.7 — 사내 LLM API 선택적 어댑터 (infrastructure only).
+"""core/llm_adapter.py v8.7.8 — 사내 LLM API 선택적 어댑터 (infrastructure only).
 
 핵심 정책:
   - LLM 은 100% 옵션.  설정이 없거나 연결 실패해도 앱은 정상 동작.
@@ -1087,15 +1087,21 @@ def complete(prompt: str, *, system: Optional[str] = None,
             reason = str(_LLM_HEALTH.get("last_error") or "recent llm failure")
         return {"ok": False, "text": "", "error": ("llm circuit breaker open: " + reason)[:240],
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm circuit breaker open")}
-    fmt = cfg.get("format") or "openai"
-    url = _openai_chat_url(cfg.get("api_url") or "", fmt)
-    if not url:
-        return {"ok": False, "text": "", "error": "llm api_url missing",
-                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm api_url missing")}
-    body = _build_request_body(cfg, prompt, system)
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    to = int(timeout or cfg.get("timeout_s") or 20)
-    hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
+    try:
+        fmt = cfg.get("format") or "openai"
+        url = _openai_chat_url(cfg.get("api_url") or "", fmt)
+        if not url:
+            return {"ok": False, "text": "", "error": "llm api_url missing",
+                    "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm api_url missing")}
+        body = _build_request_body(cfg, prompt, system)
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        to = int(timeout or cfg.get("timeout_s") or 20)
+        hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
+    except Exception as prep_exc:
+        prep_error = _redact_error_text(prep_exc)
+        logger.warning("llm request preparation error: %s", prep_error)
+        return {"ok": False, "text": "", "error": f"llm request preparation failed: {prep_error}",
+                "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm request preparation failed")}
     if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
         _mark_llm_unhealthy("google adc token unavailable")
         return {"ok": False, "text": "", "error": "google adc token unavailable",
@@ -1177,14 +1183,4 @@ def complete_json(prompt: str, *, system: Optional[str] = None,
             return {"ok": False, "obj": {}, "text": "", "error": last_error, "attempts": attempt + 1}
         raw_text = str(out.get("text") or "")
         obj, parse_error = _parse_json_object(raw_text, required=required, keys=keys)
-        if obj is not None:
-            return {
-                "ok": True,
-                "obj": obj,
-                "text": raw_text,
-                "error": "",
-                "attempts": attempt + 1,
-                "repaired": attempt > 0,
-            }
-        last_error = parse_error
-    return {"ok": False, "obj": {}, "text": raw_text, "error": last_error or "json schema validation failed", "attempts": attempts}
+        if obj is n

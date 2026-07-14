@@ -161,6 +161,34 @@ def test_legacy_cfg_migration(teg_env, tmp_path, monkeypatch):
     assert (teg_env / "teg_location" / "teg_map.json").is_file()
 
 
+def test_duplicate_teg_auto_numbering(teg_env):
+    """동명 TEG 가 2 개 이상이면 _1, _2, … 접미사가 자동으로 붙는다."""
+    kx, ky, cx, cy = 20.0, 15.0, 5.0, 6.0
+    lines = ["Mask,chip_x_adj,chip_y_adj,Chip_Radius"]
+    for x in range(1, 10):
+        for y in range(1, 12):
+            r = math.hypot((x - cx) * kx, (y - cy) * ky)
+            if r <= 155.0:
+                lines.append(f"VH_T,{x},{y},{r:.4f}")
+    (teg_env / "Chip_Radius.csv").write_text("\n".join(lines), encoding="utf-8")
+    # 동명 TEG 3 개 + 고유 TEG 1 개
+    (teg_env / "Teg_location.csv").write_text(
+        "vehicle,teg,ebeam_x,ebeam_y\n"
+        "VH_T,TEG_A,-5.0,-3.0\n"
+        "VH_T,TEG_A,2.0,4.0\n"
+        "VH_T,TEG_A,6.0,1.0\n"
+        "VH_T,TEG_B,0.5,0.5\n",
+        encoding="utf-8")
+    payload = teg_map.map_payload("VH_T")
+    names = [t["teg"] for t in payload["tegs"]]
+    assert names == ["TEG_A_1", "TEG_A_2", "TEG_A_3", "TEG_B"]
+    # 넘버링된 이름으로 radius 조회 가능
+    tab = teg_map.teg_radius_table("VH_T", "TEG_A_1")
+    assert tab["teg"] == "TEG_A_1"
+    rads = [r["radius"] for r in tab["rows"]]
+    assert rads == sorted(rads)
+
+
 def test_image_save_and_delete(teg_env):
     png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
     name = teg_map.save_image("VH_T", png, ".png")
