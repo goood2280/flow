@@ -1,4 +1,4 @@
-"""routers/llm.py v8.7.7 — 선택적 사내 LLM 어댑터 노출.
+"""routers/llm.py v8.7.8 — 선택적 사내 LLM 어댑터 노출.
 
 - GET  /api/llm/status     is_available + redacted config (모든 유저 조회 가능 — UI 가시성용)
 - POST /api/llm/test       admin 전용.  prompt 1건 실행해 연결 확인.
@@ -23046,40 +23046,56 @@ def explain_error(req: ErrorExplainReq, request: Request):
     current_user(request)
     raw_error = _clip_error_text(req.raw_error or req.body or "", 4000)
     fallback = _fallback_error_explanation(req, raw_error)
-    available = llm_adapter.is_available()
-    if not available:
-        return {
-            "ok": True,
-            "llm": {"available": False, "used": False},
-            "explanation": fallback,
-            "message": raw_error,
-        }
+    try:
+        available = llm_adapter.is_available()
+        if not available:
+            return {
+                "ok": True,
+                "llm": {"available": False, "used": False},
+                "explanation": fallback,
+                "message": raw_error,
+            }
+        if not llm_adapter.should_attempt_llm():
+            return {
+                "ok": True,
+                "llm": {"available": True, "used": False, "skipped": "circuit_breaker_open"},
+                "explanation": fallback,
+                "message": raw_error,
+            }
 
-    out = llm_adapter.complete_json(
-        _build_error_explain_prompt(req, raw_error),
-        system=(
-            "You explain Flow app errors for Korean end users. "
-            "Return only JSON with summary, where, cause, how_to_fix. "
-            "Do not reveal secrets. Do not invent internal stack details."
-        ),
-        schema=ERROR_EXPLAIN_SCHEMA,
-        timeout=8,
-        max_retries=1,
-    )
-    if not out.get("ok"):
+        out = llm_adapter.complete_json(
+            _build_error_explain_prompt(req, raw_error),
+            system=(
+                "You explain Flow app errors for Korean end users. "
+                "Return only JSON with summary, where, cause, how_to_fix. "
+                "Do not reveal secrets. Do not invent internal stack details."
+            ),
+            schema=ERROR_EXPLAIN_SCHEMA,
+            timeout=8,
+            max_retries=1,
+        )
+        if not out.get("ok"):
+            return {
+                "ok": True,
+                "llm": {"available": True, "used": False, "error": str(out.get("error") or "")[:200]},
+                "explanation": fallback,
+                "message": raw_error,
+            }
+        explanation = _clean_error_explanation(out.get("obj") or {}, fallback, raw_error)
         return {
             "ok": True,
-            "llm": {"available": True, "used": False, "error": str(out.get("error") or "")[:200]},
+            "llm": {"available": True, "used": True},
+            "explanation": explanation,
+            "message": _format_error_explanation_message(explanation),
+        }
+    except Exception:
+        logger.warning("explain_error unexpected error", exc_info=True)
+        return {
+            "ok": True,
+            "llm": {"available": False, "used": False, "error": "internal_error"},
             "explanation": fallback,
             "message": raw_error,
         }
-    explanation = _clean_error_explanation(out.get("obj") or {}, fallback, raw_error)
-    return {
-        "ok": True,
-        "llm": {"available": True, "used": True},
-        "explanation": explanation,
-        "message": _format_error_explanation_message(explanation),
-    }
 
 
 @router.get("/status")
@@ -23092,7 +23108,15 @@ def status(request: Request):
         local_tools.insert(0, "lot_knobs")
     if "dashboard" in allowed_keys:
         local_tools.append("dashboard_scatter_plan")
-    cfg = llm_adapter.get_config(redact=True)
+    try:
+        cfg = llm_adapter.get_config(redact=True)
+        llm_available = llm_adapter.is_available()
+        has_token = llm_adapter.has_admin_token()
+    except Exception:
+        logger.warning("llm status config read failed", exc_info=True)
+        cfg = {}
+        llm_available = False
+        has_token = False
     persona = _flowi_persona_config()
     flowi = {
         "requires_token": False,
@@ -23107,7 +23131,7 @@ def status(request: Request):
     }
     if is_admin:
         flowi.update({
-            "admin_token_configured": llm_adapter.has_admin_token(),
+            "admin_token_configured": has_token,
             "local_tools": local_tools,
             "policy": FLOWI_READ_ONLY_POLICY,
             "workflow_guide": FLOWI_BASE_WORKFLOW_GUIDE,
@@ -23120,7 +23144,7 @@ def status(request: Request):
             },
         })
     return {
-        "available": llm_adapter.is_available(),
+        "available": llm_available,
         "config": cfg,
         "flowi": flowi,
     }
@@ -23348,7 +23372,14 @@ def flowi_verify(req: FlowiVerifyReq, request: Request):
     cached_at = float(_FLOWI_VERIFY_CACHE.get("at") or 0.0)
     if cached and not force and (now - cached_at) < _flowi_verify_ttl_s():
         return {**cached, "cached": True}
-    result = _flowi_run_verify_probe()
+    try:
+        result = _flowi_run_verify_probe()
+    except Exception:
+        logger.warning("flowi_verify unexpected error", exc_info=True)
+        result = {
+            "ok": False, "status": "error", "message": "연결 확인 중 내부 오류 발생",
+            "error": "internal_error", "elapsed_ms": int((time.monotonic() - now) * 1000),
+        }
     _FLOWI_VERIFY_CACHE["result"] = result
     _FLOWI_VERIFY_CACHE["at"] = time.monotonic()
     return {**result, "cached": False}
@@ -23904,14 +23935,24 @@ def flowi_admin_update(req: FlowiAdminUpdateReq, _admin=Depends(require_admin)):
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
-    result = _run_flowi_chat(
-        prompt=req.prompt,
-        product=req.product,
-        max_rows=req.max_rows,
-        me=me,
-        agent_context=req.context,
-    )
-    return _flowi_home_response_for_role(result, me)
+    try:
+        result = _run_flowi_chat(
+            prompt=req.prompt,
+            product=req.product,
+            max_rows=req.max_rows,
+            me=me,
+            agent_context=req.context,
+        )
+        return _flowi_home_response_for_role(result, me)
+    except Exception:
+        logger.warning("flowi_chat unexpected error", exc_info=True)
+        return {
+            "ok": True,
+            "type": "answer",
+            "intent": "error_fallback",
+            "answer": "내부 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            "llm": {"available": False, "used": False, "error": "internal_error"},
+        }
 
 
 @router.post("/flowi/agent/chat")
@@ -23922,15 +23963,25 @@ def flowi_agent_chat(req: FlowiAgentChatReq, request: Request):
     only identify the calling AI and correlate its run id for audit/debugging.
     """
     me = current_user(request)
-    return _run_flowi_chat(
-        prompt=req.prompt,
-        product=req.product,
-        max_rows=req.max_rows,
-        me=me,
-        source_ai=req.source_ai,
-        client_run_id=req.client_run_id,
-        agent_context=req.context,
-    )
+    try:
+        return _run_flowi_chat(
+            prompt=req.prompt,
+            product=req.product,
+            max_rows=req.max_rows,
+            me=me,
+            source_ai=req.source_ai,
+            client_run_id=req.client_run_id,
+            agent_context=req.context,
+        )
+    except Exception:
+        logger.warning("flowi_agent_chat unexpected error", exc_info=True)
+        return {
+            "ok": True,
+            "type": "answer",
+            "intent": "error_fallback",
+            "answer": "내부 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            "llm": {"available": False, "used": False, "error": "internal_error"},
+        }
 
 
 # --- Flow-i EDM proposals -------------------------------------------------
@@ -24056,53 +24107,4 @@ def flowi_edm_execute(req: FlowiEdmExecuteReq, request: Request):
         }
     proposal = stored.get("proposal") if isinstance(stored.get("proposal"), dict) else {}
     action_type = str(proposal.get("action_type") or "")
-    payload = proposal.get("payload") if isinstance(proposal.get("payload"), dict) else {}
-    if action_type in {"rollback_file", "edit_file"} and not _flowi_edm_can_write(me):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
-
-    from routers import filebrowser as fb
-
-    if action_type == "rollback_file":
-        result = fb.rollback_base_file(
-            fb.BaseFileRollbackReq(
-                file=str(payload.get("file") or ""),
-                version=str(payload.get("version") or ""),
-                username=me.get("username") or "user",
-                note=str(payload.get("note") or "Flow-i EDM rollback"),
-            ),
-            request,
-        )
-    elif action_type == "edit_file":
-        result = fb.save_base_text_file(
-            fb.BaseTextFileSaveReq(
-                file=str(payload.get("file") or ""),
-                text=str(payload.get("text") or ""),
-                username=me.get("username") or "user",
-                note=str(payload.get("note") or "Flow-i EDM text edit"),
-            ),
-            request,
-        )
-    elif action_type == "save_schema_snapshot":
-        schema = payload.get("schema") if isinstance(payload.get("schema"), dict) else {}
-        result = fb.save_schema_snapshot(
-            fb.SchemaSnapshotReq(
-                source_type=str(schema.get("source_type") or ""),
-                root=str(schema.get("root") or ""),
-                product=str(schema.get("product") or ""),
-                file=str(schema.get("file") or ""),
-                columns=list(schema.get("columns") or []),
-                total_rows=schema.get("total_rows"),
-                username=me.get("username") or "user",
-                note=str(payload.get("note") or "Flow-i schema snapshot"),
-            ),
-            request,
-        )
-    else:
-        raise HTTPException(400, f"unsupported EDM action: {action_type}")
-
-    stored["executed"] = True
-    stored["executed_at"] = datetime.now(timezone.utc).isoformat()
-    stored["executed_by"] = me.get("username") or "user"
-    stored["result"] = result
-    save_json(fp, stored, indent=2)
-    return {"ok": True, "proposal_id": req.proposal_id, "action_type": action_type, "result": result}
+    payload = proposal.get("pay

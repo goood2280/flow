@@ -3,7 +3,9 @@
      Chip_Radius = shot 센터 ↔ wafer 원점 거리(mm) → shot 크기(mm)·wafer 중심을 최소자승으로 산출.
    - Teg_location(vehicle,teg,ebeam_x,ebeam_y = shot 센터 기준 TEG 좌하단) 을 겹쳐
      여러 TEG 를 wafer 전체 / shot 확대 뷰로 동시 표시. wafer 원(150mm)과 최외곽선(147mm) 함께 표시.
-   - shot 클릭 → 해당 shot 에서 각 TEG 좌하단의 실좌표(mm)·원점 radius 표시.
+   - TEG 다중 선택: 체크박스로 여러 TEG 를 동시에 선택/비교 가능. 전체/해제 버튼 제공.
+   - 동명 TEG 자동 넘버링: 백엔드에서 같은 이름이 2 개 이상이면 _1, _2, … 접미사를 자동 부여.
+   - shot 클릭 → 해당 shot 에서 선택된 TEG 들의 좌하단 실좌표(mm)·원점 radius 표시.
    - vehicle 별 shot 표시 방식(⚙️ 설정): 기본 | 그림(teg_location/ 업로드 이미지) |
      칩 격자(cols×rows, 칩 크기·칩 사이 간격 mm, shot 센터 기준 좌우/상하 대칭 배치).
    - 설정 json·그림 파일은 파일탐색기 위치(DB root)의 teg_location/ 폴더에 저장.
@@ -645,9 +647,14 @@ export default function My_TegMap({ user }) {
     return TEG_COLORS[(i >= 0 ? i : 0) % TEG_COLORS.length];
   }, [tegNames]);
 
-  // TEG 는 리스트에서 하나씩 선택해서 본다 (다중 표시는 마커가 겹쳐 혼잡).
-  const selectTeg = (name) => setSelectedTegs(new Set(name ? [name] : []));
-  const selectedTeg = selectedTegs.size ? [...selectedTegs][0] : "";
+  // TEG 다중 선택 — 클릭으로 on/off 토글, 전체/해제 버튼.
+  const toggleTeg = (name) => setSelectedTegs(prev => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
+  const selectAllTegs = () => setSelectedTegs(new Set(tegNames));
+  const deselectAllTegs = () => setSelectedTegs(new Set());
 
   const onShotClick = (s0) => {
     setSelectedShot(prev => (prev && prev.x === s0.x && prev.y === s0.y) ? null : s0);
@@ -709,10 +716,22 @@ export default function My_TegMap({ user }) {
             <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
               <WaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
                 selectedShot={selectedShot} onShotClick={onShotClick} imgUrl={imgUrl} />
-              {/* TEG 목록 — 하나씩 선택해서 표시 */}
+              {/* TEG 목록 — 다중 선택 가능 */}
               <div style={{ minWidth: 170, maxWidth: 240 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>
-                  TEG 목록 ({tegNames.length})
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
+                    TEG 목록 ({selectedTegs.size}/{tegNames.length})
+                  </span>
+                  {tegNames.length > 1 && (
+                    <div style={{ display: "flex", gap: 2 }}>
+                      <button onClick={selectAllTegs}
+                        style={{ fontSize: 11, color: "var(--accent, #5a8cff)", background: "none",
+                          border: "none", cursor: "pointer", padding: "2px 5px", textDecoration: "underline" }}>전체</button>
+                      <button onClick={deselectAllTegs}
+                        style={{ fontSize: 11, color: "var(--muted)", background: "none",
+                          border: "none", cursor: "pointer", padding: "2px 5px", textDecoration: "underline" }}>해제</button>
+                    </div>
+                  )}
                 </div>
                 {tegNames.length === 0 && (
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -726,17 +745,23 @@ export default function My_TegMap({ user }) {
                 }}>
                   {tegNames.map(n => {
                     const t = (data.tegs || []).find(x => x.teg === n) || {};
-                    const on = selectedTeg === n;
+                    const on = selectedTegs.has(n);
                     return (
-                      <button key={n} onClick={() => selectTeg(n)} title={`ebeam (${fmt(t.ebeam_x)}, ${fmt(t.ebeam_y)}) mm`}
+                      <button key={n} onClick={() => toggleTeg(n)} title={`ebeam (${fmt(t.ebeam_x)}, ${fmt(t.ebeam_y)}) mm`}
                         style={{
-                          display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+                          display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
                           border: "none", borderLeft: `3px solid ${on ? tegColor(n) : "transparent"}`,
                           background: on ? "var(--panel)" : "transparent", color: "var(--text)",
-                          padding: "6px 10px", fontSize: 13, textAlign: "left",
-                          fontWeight: on ? 700 : 400, opacity: on ? 1 : 0.75,
+                          padding: "5px 8px", fontSize: 13, textAlign: "left",
+                          fontWeight: on ? 700 : 400, opacity: on ? 1 : 0.65,
                         }}>
-                        <span style={{ width: 10, height: 10, background: tegColor(n), borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
+                        <span style={{
+                          width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+                          border: on ? "none" : "1.5px solid var(--muted)",
+                          background: on ? tegColor(n) : "transparent",
+                          display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10, color: "#fff", lineHeight: 1,
+                        }}>{on ? "✓" : ""}</span>
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n}</span>
                       </button>
                     );

@@ -482,6 +482,17 @@ def map_payload(vehicle: str) -> dict:
                 "teg_w": tw,
                 "teg_h": th,
             })
+        # ── 동명 TEG 자동 넘버링: 같은 이름이 2 개 이상이면 _1, _2, … 접미사 ──
+        from collections import Counter
+        name_counts = Counter(t["teg"] for t in tegs)
+        dup_names = {n for n, c in name_counts.items() if c > 1}
+        if dup_names:
+            counters: dict[str, int] = {}
+            for t in tegs:
+                orig = t["teg"]
+                if orig in dup_names:
+                    counters[orig] = counters.get(orig, 0) + 1
+                    t["teg"] = f"{orig}_{counters[orig]}"
 
     vcfg = cfg["vehicles"].get(veh) or dict(DEFAULT_VEHICLE_CFG)
     has_image = bool(vcfg.get("image")) and (teg_dir() / Path(vcfg["image"]).name).is_file()
