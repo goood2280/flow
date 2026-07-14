@@ -99,22 +99,27 @@ def test_system_memory_snapshot_prefers_lower_cgroup_limit(monkeypatch):
 def test_cgroup_used_excludes_reclaimable_file_cache(monkeypatch):
     gb = 1024 ** 3
     # cgroup v2: 한도 16GB, memory.current 15GB 이지만 그 중 13GB 는 회수 가능한
-    # 파일 캐시(inactive_file). 실제 working set 은 2GB 여야 한다.
+    # 파일 캐시(inactive_file 10GB + active_file 3GB). 실제 anonymous 메모리는 2GB.
     int_files = {
         "/sys/fs/cgroup/memory.max": 16 * gb,
         "/sys/fs/cgroup/memory.current": 15 * gb,
+    }
+    stat_fields = {
+        ("inactive_file", "/sys/fs/cgroup/memory.stat"): 10 * gb,
+        ("active_file", "/sys/fs/cgroup/memory.stat"): 3 * gb,
     }
     monkeypatch.setattr(runtime_limits, "_read_int_file", lambda path: int(int_files.get(path, 0)))
     monkeypatch.setattr(
         runtime_limits,
         "_read_cgroup_stat_field",
-        lambda path, field: 13 * gb if (path.endswith("memory.stat") and field == "inactive_file") else 0,
+        lambda path, field: stat_fields.get((field, path), 0),
     )
 
     snap = runtime_limits._cgroup_memory_snapshot_bytes()
 
     assert snap["source"] == "cgroup_v2"
     assert snap["used_raw_bytes"] == float(15 * gb)
+    # active_file(3GB) + inactive_file(10GB) = 13GB 전체가 회수 가능.
     assert snap["cache_reclaimable_bytes"] == float(13 * gb)
     # 캐시 제외 후 실제 사용 = 15 - 13 = 2GB.
     assert snap["used_bytes"] == float(2 * gb)
@@ -129,16 +134,20 @@ def test_system_memory_percent_reflects_working_set_not_cache(monkeypatch):
         "_host_memory_snapshot_bytes",
         lambda: {"total_bytes": float(64 * gb), "available_bytes": float(40 * gb), "percent": 37.5, "source": "psutil"},
     )
-    # 한도 16GB, current 15.5GB(거의 꽉 참)인데 14GB 가 파일 캐시.
+    # 한도 16GB, current 15.5GB(거의 꽉 참)인데 14GB 가 파일 캐시(active 6 + inactive 8).
     int_files = {
         "/sys/fs/cgroup/memory.max": 16 * gb,
         "/sys/fs/cgroup/memory.current": int(15.5 * gb),
+    }
+    stat_fields = {
+        ("inactive_file", "/sys/fs/cgroup/memory.stat"): 8 * gb,
+        ("active_file", "/sys/fs/cgroup/memory.stat"): 6 * gb,
     }
     monkeypatch.setattr(runtime_limits, "_read_int_file", lambda path: int(int_files.get(path, 0)))
     monkeypatch.setattr(
         runtime_limits,
         "_read_cgroup_stat_field",
-        lambda path, field: 14 * gb if field == "inactive_file" else 0,
+        lambda path, field: stat_fields.get((field, path), 0),
     )
 
     snap = runtime_limits.system_memory_snapshot()
@@ -259,3 +268,114 @@ def test_soft_band_blocks_when_strict_env_explicitly_set(monkeypatch):
     )
 
     assert runtime_limits.process_memory_high(reserve_gb=1.0) is True
+
+
+def test_read_smaps_rollup_returns_pss_and_uss(monkeypatch, tmp_path):
+    """PSS/USS 를 /proc/self/smaps_rollup 에서 파싱한다."""
+    content = """00400000-7fffffff ---p 00000000 00:00 0  [rollup]
+Rss:              512000 kB
+Pss:              256000 kB
+Shared_Clean:     100000 kB
+Shared_Dirty:      50000 kB
+Private_Clean:    150000 kB
+Private_Dirty:     62000 kB
+"""
+    fake_path = tmp_path / "smaps_rollup"
+    fake_path.write_text(content)
+    orig_open = open
+
+    def fake_open(path, *a, **kw):
+        if str(path) == "/proc/self/smaps_rollup":
+            return orig_open(str(fake_path), *a, **kw)
+        return orig_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    result = runtime_limits._read_smaps_rollup()
+
+    assert result["pss_kb"] == 256000
+    # USS = Private_Clean + Private_Dirty = 150000 + 62000 = 212000
+    assert result["uss_kb"] == 212000
+
+
+def test_process_memory_snapshot_includes_pss_uss(monkeypatch):
+    """process_memory_snapshot 이 PSS/USS 를 포함하고 effective 를 PSS 로 정한다."""
+    monkeypatch.setattr(
+        runtime_limits,
+        "_read_smaps_rollup",
+        lambda: {"pss_kb": 2048 * 1024, "uss_kb": 1536 * 1024},  # PSS 2GB, USS 1.5GB
+    )
+    monkeypatch.setattr(runtime_limits, "_read_proc_status_kb", lambda field: {
+        "VmRSS": 3 * 1024 * 1024,  # RSS 3GB
+        "VmSize": 8 * 1024 * 1024,
+    }.get(field, 0))
+    monkeypatch.setattr(runtime_limits, "system_memory_snapshot", lambda **kw: {
+        "system_memory_total_gb": 16.0,
+        "system_memory_available_gb": 10.0,
+        "system_memory_percent": 37.5,
+        "system_memory_low": False,
+        "system_memory_source": "test",
+        "system_memory_raw_total_gb": 16.0,
+        "system_memory_cache_reclaimable_gb": 0.0,
+        "system_memory_min_available_gb": 2.0,
+        "system_memory_guard_percent": 95.0,
+    })
+    monkeypatch.setattr(runtime_limits, "process_memory_limit_gb", lambda: 10.0)
+    # psutil import 실패 시 /proc/self/status 폴백 사용
+    monkeypatch.setitem(__import__("sys").modules, "psutil", None)
+
+    snap = runtime_limits.process_memory_snapshot()
+
+    assert snap["process_rss_gb"] == 3.0
+    assert snap["process_pss_gb"] == 2.0
+    assert snap["process_uss_gb"] == 1.5
+    # effective = PSS (가용하므로)
+    assert snap["process_memory_effective_gb"] == 2.0
+    # limit_percent 는 effective(2GB) / limit(10GB) = 20%
+    assert snap["process_memory_limit_percent"] == 20.0
+
+
+def test_process_memory_high_prefers_effective_over_rss(monkeypatch):
+    """process_memory_high 가 RSS 대신 PSS 기반 effective 를 사용한다."""
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
+    # RSS 가 한도를 넘지만 PSS(effective)는 한도 아래 — 부풀려진 RSS 로 차단하면 안 된다.
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {
+            "process_rss_gb": 10.5,
+            "process_memory_effective_gb": 6.0,
+            "system_memory_total_gb": 128.0,
+            "system_memory_low": False,
+        },
+    )
+
+    assert runtime_limits.process_memory_high(reserve_gb=1.0) is False
+
+
+def test_cgroup_active_file_also_subtracted(monkeypatch):
+    """active_file 도 캐시로 차감되어야 한다 — parquet 스캔 후 과대 표시 방지."""
+    gb = 1024 ** 3
+    int_files = {
+        "/sys/fs/cgroup/memory.max": 16 * gb,
+        "/sys/fs/cgroup/memory.current": 14 * gb,
+    }
+    stat_fields = {
+        ("inactive_file", "/sys/fs/cgroup/memory.stat"): 4 * gb,
+        ("active_file", "/sys/fs/cgroup/memory.stat"): 6 * gb,
+    }
+    monkeypatch.setattr(runtime_limits, "_read_int_file", lambda path: int(int_files.get(path, 0)))
+    monkeypatch.setattr(
+        runtime_limits,
+        "_read_cgroup_stat_field",
+        lambda path, field: stat_fields.get((field, path), 0),
+    )
+
+    snap = runtime_limits._cgroup_memory_snapshot_bytes()
+
+    # 전체 파일 캐시 10GB = inactive 4 + active 6
+    assert snap["cache_reclaimable_bytes"] == float(10 * gb)
+    # anonymous 메모리 = 14 - 10 = 4GB
+    assert snap["used_bytes"] == float(4 * gb)
+

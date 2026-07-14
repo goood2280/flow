@@ -2,7 +2,7 @@
 
 The default resource profile is intentionally bounded for a shared Flow host.
 Budgets are derived from the detected host at startup — CPU budget is
-(cores - 1) and the process RSS limit is ~80% of total memory (cgroup limits
+(cores - 1) and the process memory limit is ~80% of total memory (cgroup limits
 and FLOW_SYSTEM_MEMORY_TOTAL_GB overrides honored) — so the same build adapts
 when the machine changes. Operators can still pin exact values with
 FLOW_CPU_BUDGET_CORES / FLOW_PROCESS_MEMORY_LIMIT_GB, retune the fraction with
@@ -11,6 +11,12 @@ FLOW_PROCESS_MEMORY_LIMIT_FRACTION, or opt into the `full` profile.
 Note: above the limit the guard consults real host/container memory pressure
 (not RSS alone) unless FLOW_PROCESS_MEMORY_LIMIT_STRICT=1, because Python/Polars
 keep reclaimable arenas and mmap'd file pages resident in RSS.
+
+v9.2.1: process memory now reports PSS (Proportional Set Size) and USS
+(Unique Set Size) alongside RSS via /proc/self/smaps_rollup. The memory
+guard uses the most accurate available metric (PSS > USS > RSS) to avoid
+false OOM signals from inflated RSS. Cgroup file cache subtraction now
+includes both active_file and inactive_file for more accurate reporting.
 
 These defaults should run before importing Polars, NumPy, or other native
 compute libraries.
@@ -297,13 +303,21 @@ def _cgroup_reclaimable_cache_bytes(source: str) -> int:
     which is reclaimable under pressure and does NOT cause OOM. Reading big
     parquet files fills this cache up to the limit, so counting it as "used"
     makes the app report ~100% memory even when real (anonymous) usage is low.
-    Subtracting the inactive file cache yields the working set — the same
-    quantity Kubernetes/cAdvisor report as container memory usage.
+    Both active_file and inactive_file are reclaimable under memory pressure.
+    Previous versions only subtracted inactive_file (matching Kubernetes
+    working_set), but this still over-reported on parquet-heavy workloads
+    where active_file grew large.  We now subtract the full file cache
+    (active + inactive) for the display value, while keeping the raw value
+    available for comparison with Kubernetes metrics.
     """
     if source == "cgroup_v2":
-        return _read_cgroup_stat_field("/sys/fs/cgroup/memory.stat", "inactive_file")
+        inactive = _read_cgroup_stat_field("/sys/fs/cgroup/memory.stat", "inactive_file")
+        active = _read_cgroup_stat_field("/sys/fs/cgroup/memory.stat", "active_file")
+        return inactive + active
     if source == "cgroup_v1":
-        return _read_cgroup_stat_field("/sys/fs/cgroup/memory/memory.stat", "total_inactive_file")
+        inactive = _read_cgroup_stat_field("/sys/fs/cgroup/memory/memory.stat", "total_inactive_file")
+        active = _read_cgroup_stat_field("/sys/fs/cgroup/memory/memory.stat", "total_active_file")
+        return inactive + active
     return 0
 
 
@@ -318,7 +332,8 @@ def _cgroup_memory_snapshot_bytes() -> dict[str, float | str]:
     if not total:
         return {}
     used_raw = max(0, min(int(total), int(used or 0)))
-    # 회수 가능한 파일 캐시를 빼서 실제 working set 을 쓴다 (캐시 팽창으로 100% 오표시 방지).
+    # 회수 가능한 전체 파일 캐시(active + inactive)를 빼서 실제 anonymous 메모리만 남긴다.
+    # parquet 스캔 후 active_file 이 크게 잡혀 memory_used 가 부풀려지는 문제 해결.
     reclaimable = min(used_raw, max(0, _cgroup_reclaimable_cache_bytes(source)))
     used_working = max(0, used_raw - reclaimable)
     return {
@@ -436,8 +451,46 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
     }
 
 
+def _read_smaps_rollup() -> dict[str, float]:
+    """Read PSS and Private (USS) from /proc/self/smaps_rollup.
+
+    PSS (Proportional Set Size) divides shared pages proportionally among
+    all processes mapping them, giving a fairer picture than RSS.
+    USS (Unique Set Size / Private) counts only pages exclusive to this
+    process — the memory that would be freed if the process exited.
+
+    Returns {"pss_kb": ..., "uss_kb": ...}. Both 0 on non-Linux / failure.
+    """
+    pss_kb = 0
+    uss_kb = 0
+    try:
+        text = open("/proc/self/smaps_rollup", "r", encoding="utf-8").read()
+        m_pss = re.search(r"^Pss:\s+(\d+)\s+kB", text, flags=re.MULTILINE)
+        if m_pss:
+            pss_kb = int(m_pss.group(1))
+        # Private = Private_Clean + Private_Dirty (= USS).
+        priv_clean = 0
+        priv_dirty = 0
+        m_pc = re.search(r"^Private_Clean:\s+(\d+)\s+kB", text, flags=re.MULTILINE)
+        m_pd = re.search(r"^Private_Dirty:\s+(\d+)\s+kB", text, flags=re.MULTILINE)
+        if m_pc:
+            priv_clean = int(m_pc.group(1))
+        if m_pd:
+            priv_dirty = int(m_pd.group(1))
+        uss_kb = priv_clean + priv_dirty
+    except Exception:
+        pass
+    return {"pss_kb": pss_kb, "uss_kb": uss_kb}
+
+
 def process_memory_snapshot() -> dict:
-    """Current process memory, with no psutil dependency."""
+    """Current process memory with RSS, PSS, and USS.
+
+    RSS (Resident Set Size) includes shared libraries and memory-mapped files
+    and is typically inflated.  PSS divides shared pages proportionally; USS
+    counts only private pages.  On Linux ≥4.14 PSS/USS are read from
+    /proc/self/smaps_rollup; on other platforms they fall back to 0.
+    """
     rss_gb = 0.0
     vms_gb = 0.0
     try:
@@ -451,14 +504,26 @@ def process_memory_snapshot() -> dict:
         vms_kb = _read_proc_status_kb("VmSize")
         rss_gb = float(rss_kb) / (1024 ** 2) if rss_kb else 0.0
         vms_gb = float(vms_kb) / (1024 ** 2) if vms_kb else 0.0
+
+    # PSS / USS — more accurate than RSS for process-level memory.
+    smaps = _read_smaps_rollup()
+    pss_gb = float(smaps.get("pss_kb") or 0) / (1024 ** 2) if smaps.get("pss_kb") else 0.0
+    uss_gb = float(smaps.get("uss_kb") or 0) / (1024 ** 2) if smaps.get("uss_kb") else 0.0
+
+    # 대표 프로세스 메모리 = PSS (가용하면) > USS > RSS 순으로 정확도가 높다.
+    effective_gb = pss_gb if pss_gb > 0 else (uss_gb if uss_gb > 0 else rss_gb)
+
     limit_gb = process_memory_limit_gb()
-    pct = (rss_gb / limit_gb * 100.0) if limit_gb > 0 else 0.0
+    pct = (effective_gb / limit_gb * 100.0) if limit_gb > 0 else 0.0
     out = {
         "process_rss_gb": round(rss_gb, 3),
+        "process_pss_gb": round(pss_gb, 3),
+        "process_uss_gb": round(uss_gb, 3),
+        "process_memory_effective_gb": round(effective_gb, 3),
         "process_vms_gb": round(vms_gb, 3),
         "process_memory_limit_gb": round(limit_gb, 3),
         "process_memory_limit_percent": round(pct, 1),
-        "process_memory_over_limit": bool(limit_gb > 0 and rss_gb >= limit_gb),
+        "process_memory_over_limit": bool(limit_gb > 0 and effective_gb >= limit_gb),
     }
     out.update(system_memory_snapshot())
     return out
@@ -518,7 +583,9 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
     if limit <= 0:
         return False
     snap = process_memory_snapshot()
-    rss = float(snap.get("process_rss_gb") or 0.0)
+    # PSS/USS 가 가용하면 더 정확한 effective 값 사용, 없으면 RSS 폴백.
+    effective = float(snap.get("process_memory_effective_gb") or 0.0)
+    rss = effective if effective > 0 else float(snap.get("process_rss_gb") or 0.0)
 
     # Below the soft floor (limit - reserve): always plenty of headroom.
     soft_floor = max(0.0, limit - max(0.0, reserve_gb))
@@ -580,3 +647,4 @@ def apply_runtime_limits() -> None:
     ):
         flow_name = f"FLOW_{name}"
         os.environ.setdefault(name, os.environ.get(flow_name, "1"))
+

@@ -783,6 +783,19 @@ export default function My_Admin({user}){
           <span>Flow CPU {Number(sys.process_cpu_cores||0).toFixed(2)} / {Number(sys.process_cpu_guard_cores||sys.process_cpu_budget_cores||0).toFixed(2)} cores{sys.process_cpu_over_limit?" · over":""}</span>
           <span>MEM source {sys.memory_source||sys.system_memory_source||"-"}{sys.system_memory_raw_total_gb&&sys.system_memory_raw_total_gb!==sys.system_memory_total_gb?` · raw ${Number(sys.system_memory_raw_total_gb||0).toFixed(1)}GB`:""}{Number(sys.system_memory_cache_reclaimable_gb||0)>0.05?` · cache ${Number(sys.system_memory_cache_reclaimable_gb||0).toFixed(1)}GB (회수가능, 사용량 제외)`:""}</span>
         </div>}
+        {/* v9.2.1: 프로세스 메모리 상세 — RSS/PSS/USS 구분 표시 */}
+        {(sys.process_rss_gb>0)&&<div style={{background:"var(--bg-card)",borderRadius:8,border:"1px solid var(--border)",padding:"10px 14px",marginTop:-8,marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:6}}>프로세스 메모리 (Flow 서버)</div>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap",fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)"}}>
+            {sys.process_uss_gb>0&&<span title="USS (Unique Set Size): 이 프로세스만의 전용 메모리. 프로세스 종료 시 실제 해제되는 양.">USS <b style={{color:"var(--text-primary)"}}>{Number(sys.process_uss_gb).toFixed(2)}</b>GB</span>}
+            {sys.process_pss_gb>0&&<span title="PSS (Proportional Set Size): 공유 라이브러리를 프로세스 수로 나눠 계산. 실제 사용량에 가장 가까운 지표.">PSS <b style={{color:"var(--text-primary)"}}>{Number(sys.process_pss_gb).toFixed(2)}</b>GB</span>}
+            <span title="RSS (Resident Set Size): 공유 라이브러리 + mmap 파일 캐시 포함. 실제보다 크게 표시됨.">RSS <b style={{color:sys.process_pss_gb>0?"var(--text-secondary)":"var(--text-primary)"}}>{Number(sys.process_rss_gb).toFixed(2)}</b>GB{sys.process_pss_gb>0?" (참고)":""}</span>
+            {sys.process_memory_limit_gb>0&&<span>limit {Number(sys.process_memory_limit_gb).toFixed(1)}GB ({Number(sys.process_memory_limit_percent||0).toFixed(0)}%)</span>}
+          </div>
+          {sys.process_pss_gb>0&&sys.process_rss_gb>0&&(sys.process_rss_gb-sys.process_pss_gb)>0.05&&<div style={{fontSize:12,color:"var(--text-secondary)",marginTop:4}}>
+            RSS와 PSS 차이 {(sys.process_rss_gb-sys.process_pss_gb).toFixed(2)}GB = 공유 라이브러리·mmap 파일 중복 계상분
+          </div>}
+        </div>}
         <div style={{marginBottom:16}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:8}}>
             <div style={{fontSize:14,fontWeight:700}}>리소스 차트</div>
@@ -2793,28 +2806,4 @@ function BaseCsvPanel(){
                 <td style={{padding:"2px 4px",borderLeft:"1px solid var(--border)",whiteSpace:"nowrap"}}>
                   <span onClick={()=>moveRow(ri,-1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↑</span>
                   <span onClick={()=>moveRow(ri,+1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↓</span>
-                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"#ef4444",padding:"0 4px"}}>✕</span>
-                </td>
-              </tr>
-            ))}
-            {rows.length===0&&<tr><td colSpan={columns.length+2} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>데이터 없음. 아래 '+행 추가' 로 시작하세요.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
-        <button onClick={addRow} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,cursor:"pointer"}}>+ 행 추가</button>
-        <button onClick={save} disabled={saving} style={{padding:"7px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:14,cursor:saving?"wait":"pointer"}}>{saving?"저장 중...":"저장"}</button>
-        {msg&&<span style={{fontSize:14,color:msg.startsWith("저장")?"#22c55e":"#ef4444"}}>{msg}</span>}
-      </div>
-
-      <div style={{marginTop:14,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
-        • 컬럼 뒤 <b style={{color:"var(--accent)"}}>*</b> 는 unique key. 중복 시 저장 거부.<br/>
-        • step_matching/Vehicle_matching: product + step_desc 로 해당 제품의 step_id 를 찾습니다.<br/>
-        • knob_ppid: (feature_name, function_step, rule_order, ppid, operator, category, use) — 앞 3개 복합 unique. use ∈ Y/N/0/1.<br/>
-        • inline_matching: (product, step_id, item_id), vm_matching: (step_desc, item_id) — VM step_id 는 Vehicle_matching 에서 가져옵니다.<br/>
-        • 저장 시 UTF-8 BOM 포함 CSV 로 덮어씁니다 (Excel 호환). SplitTable KNOB 메타는 자동 재조회.
-      </div>
-    </div>
-  );
-}
+                  <span onClick={(
