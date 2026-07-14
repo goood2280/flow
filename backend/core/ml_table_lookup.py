@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,13 +87,15 @@ ROOT_RAM_CACHE_REFRESH_MINUTES_MIN = 5
 ROOT_RAM_CACHE_REFRESH_MINUTES_MAX = 240
 ROOT_RAM_CACHE_RECENT_ROOTS_DEFAULT = 100
 ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT = 100
-ROOT_RAM_CACHE_PREFIXES_DEFAULT = ("AZ",)
-ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT = 5000
+# 캐싱 대상 step 선정: 톱니바퀴 설정(step_ids)으로 지정한 step 을 지난(통과한=tkout)
+# lot 을 latest cache 에서 tkout_time 최신순으로 채운다. 비면 step 필터 없이
+# searched+recent 만 유지. (기존 AZ prefix 기준을 step_id 기준으로 대체.)
+ROOT_RAM_CACHE_STEP_IDS_DEFAULT: tuple[str, ...] = ()
 # searched roots 는 "한번이라도 검색된 root" 로 무조건 최우선 포함이므로 target 만큼
 # 넉넉히 허용한다(실사용 검색 수는 훨씬 작다). target_roots 가 최종 상한 역할.
 ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 1000
 # 상시 메모리에 유지할 총 root(knob 수준) 개수 목표. searched 를 최우선으로 채우고
-# 남는 자리를 latest cache 기준 tkout_time 최근 변경 AZ-prefix root 로 채운다.
+# 남는 자리를 latest cache 기준 지정 step 통과 lot(tkout_time 최신순)으로 채운다.
 ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT = 1000
 ROOT_RAM_CACHE_ROOTS_MAX = 50000
 ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
@@ -197,7 +200,8 @@ def _root_ram_settings() -> dict[str, Any]:
     return settings if isinstance(settings, dict) else {}
 
 
-def _normalize_prefixes(raw: Any) -> list[str]:
+def _normalize_str_list(raw: Any) -> list[str]:
+    """콤마/개행 구분 문자열 또는 리스트를 upper-cased, 중복 제거 리스트로."""
     if isinstance(raw, str):
         parts = raw.replace("\n", ",").split(",")
     elif isinstance(raw, (list, tuple, set)):
@@ -207,11 +211,11 @@ def _normalize_prefixes(raw: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for item in parts:
-        prefix = str(item or "").strip().upper()
-        if not prefix or prefix in seen:
+        value = str(item or "").strip().upper()
+        if not value or value in seen:
             continue
-        seen.add(prefix)
-        out.append(prefix)
+        seen.add(value)
+        out.append(value)
     return out
 
 
@@ -236,28 +240,17 @@ def _root_ram_cache_frequent_limit() -> int:
     return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_FREQUENT_ROOTS", ROOT_RAM_CACHE_FREQUENT_ROOTS_DEFAULT, 0, ROOT_RAM_CACHE_ROOTS_MAX)
 
 
-def _root_ram_cache_prefixes() -> list[str]:
-    raw = os.environ.get("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIXES")
+def _root_ram_cache_step_ids() -> list[str]:
+    """메모리 캐싱 대상 step_id 목록. env(콤마) 우선, 없으면 톱니바퀴 설정.
+
+    이 step 들을 지난(통과=tkout) lot 을 latest cache 에서 tkout_time 최신순으로
+    캐싱한다. 비면 step 필터 없이 searched+recent 만 유지한다.
+    """
+    raw = os.environ.get("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_STEP_IDS")
     if raw is None:
-        raw = _root_ram_settings().get("prefixes")
-    prefixes = _normalize_prefixes(raw)
-    return prefixes or list(ROOT_RAM_CACHE_PREFIXES_DEFAULT)
-
-
-def _root_ram_cache_prefix_limit() -> int:
-    if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS" in os.environ:
-        return _env_int(
-            "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_PREFIX_ROOTS",
-            ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
-            0,
-            ROOT_RAM_CACHE_ROOTS_MAX,
-        )
-    return _bounded_int(
-        _root_ram_settings().get("prefix_limit"),
-        ROOT_RAM_CACHE_PREFIX_ROOTS_DEFAULT,
-        0,
-        ROOT_RAM_CACHE_ROOTS_MAX,
-    )
+        raw = _root_ram_settings().get("step_ids")
+    step_ids = _normalize_str_list(raw)
+    return step_ids or list(ROOT_RAM_CACHE_STEP_IDS_DEFAULT)
 
 
 def _root_ram_cache_searched_limit() -> int:
@@ -294,10 +287,20 @@ def _root_ram_cache_target_roots() -> int:
     )
 
 
+def _root_ram_cache_load_workers() -> int:
+    """상시 캐시 예열의 병렬 파티션-로드 워커 수.
+
+    파티션 parquet 읽기는 I/O 바운드라 동시 로드로 예열 시간이 코어 수에 비례해
+    준다. cpu_budget 기준으로 잡되 과도한 스레드 폭주를 막게 1~8 로 클램프.
+    env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS 로 강제 가능(1=순차).
+    """
+    default = max(1, min(8, int(round(_root_ram_cache_cpu_budget_cores()))))
+    return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS", default, 1, 32)
+
+
 def root_ram_cache_settings() -> dict[str, Any]:
     return {
-        "prefixes": _root_ram_cache_prefixes(),
-        "prefix_limit": _root_ram_cache_prefix_limit(),
+        "step_ids": _root_ram_cache_step_ids(),
         "searched_limit": _root_ram_cache_searched_limit(),
         "recent_roots": _root_ram_cache_recent_limit(),
         "frequent_roots": _root_ram_cache_frequent_limit(),
@@ -526,18 +529,6 @@ def _load_root_ram_cache_frame(files: list[Path]) -> pl.DataFrame:
     return pl.scan_parquet([str(p) for p in files], hive_partitioning=True).collect()
 
 
-def _root_matches_prefix(root_lot_id: str, prefixes: list[str]) -> bool:
-    root = str(root_lot_id or "").strip().upper()
-    if not root:
-        return False
-    normalized = [str(prefix or "").strip().upper() for prefix in prefixes or [] if str(prefix or "").strip()]
-    return any(root.startswith(prefix) for prefix in normalized)
-
-
-def _root_ram_cache_group(root_lot_id: str, prefixes: list[str]) -> str:
-    return "prefix" if _root_matches_prefix(root_lot_id, prefixes) else "other"
-
-
 def _root_ram_cache_update_metadata(
     fp: Path,
     root_lot_id: str,
@@ -560,35 +551,33 @@ def _root_ram_cache_update_metadata(
             entry["cache_sources"] = sources
 
 
-def _root_ram_cache_put(
+def _root_ram_cache_store_frame(
     fp: Path,
     root_lot_id: str,
+    df: pl.DataFrame,
     files: list[Path],
     status: dict[str, Any],
     *,
     cache_group: str = "",
     cache_sources: list[str] | None = None,
 ) -> pl.LazyFrame | None:
-    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0 or not files:
-        return None
-    guard_reason, _snap = _root_ram_cache_resource_guard_reason()
-    if guard_reason:
+    """이미 로드된 DataFrame 을 RAM 캐시에 저장(락+eviction). 병렬 예열이 프레임을
+    먼저 병렬로 읽어온 뒤, 우선순위 순서대로 이 함수로 삽입해 eviction 결정성을
+    유지한다."""
+    if df is None:
         return None
     root = str(root_lot_id or "").strip().upper()
     key = _root_cache_key(fp, root)
     source_key = _root_ram_source_key(status)
     part_sig = _partition_sig(files)
-    try:
-        df = _load_root_ram_cache_frame(files)
-    except Exception as exc:
-        logger.debug("ML_TABLE root RAM cache load failed source=%s root=%s: %s", fp, root, exc)
-        return None
     estimated_bytes = _estimated_df_bytes(df)
     max_bytes = _root_ram_cache_max_bytes()
     if max_bytes and estimated_bytes > max_bytes:
         return None
     now = time.time()
-    group = cache_group or _root_ram_cache_group(root, _root_ram_cache_prefixes())
+    # 그룹은 후보 선정 소스에서 넘어온 값(step/other)을 그대로 쓴다. 사용자 검색으로
+    # 즉석 적재되는 등 소스가 없으면 "other".
+    group = cache_group or "other"
     sources = [str(source or "").strip() for source in (cache_sources or []) if str(source or "").strip()]
     with _ROOT_RAM_CACHE_LOCK:
         _evict_root_ram_locked(reserve_bytes=estimated_bytes, keep_keys={key})
@@ -613,6 +602,31 @@ def _root_ram_cache_put(
     return df.lazy()
 
 
+def _root_ram_cache_put(
+    fp: Path,
+    root_lot_id: str,
+    files: list[Path],
+    status: dict[str, Any],
+    *,
+    cache_group: str = "",
+    cache_sources: list[str] | None = None,
+) -> pl.LazyFrame | None:
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0 or not files:
+        return None
+    guard_reason, _snap = _root_ram_cache_resource_guard_reason()
+    if guard_reason:
+        return None
+    root = str(root_lot_id or "").strip().upper()
+    try:
+        df = _load_root_ram_cache_frame(files)
+    except Exception as exc:
+        logger.debug("ML_TABLE root RAM cache load failed source=%s root=%s: %s", fp, root, exc)
+        return None
+    return _root_ram_cache_store_frame(
+        fp, root, df, files, status, cache_group=cache_group, cache_sources=cache_sources,
+    )
+
+
 def _product_match_keys(fp: Path) -> set[str]:
     stem = Path(fp).stem.strip().upper()
     keys = {stem}
@@ -629,12 +643,12 @@ def _latest_lot_by_root_wafer_path() -> Path:
     return PATHS.db_cache_dir / LATEST_LOT_BY_ROOT_WAFER_FILE
 
 
-def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, prefixes: list[str] | None = None) -> list[str]:
+def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, step_ids: list[str] | None = None) -> list[str]:
     cache_fp = _latest_lot_by_root_wafer_path()
     if limit <= 0 or not cache_fp.is_file():
         return []
     keys = _product_match_keys(fp)
-    norm_prefixes = [str(p or "").strip().upper() for p in (prefixes or []) if str(p or "").strip()]
+    norm_steps = [str(s or "").strip().upper() for s in (step_ids or []) if str(s or "").strip()]
     try:
         lf = pl.scan_parquet(str(cache_fp))
         cols = lf.collect_schema().names()
@@ -644,16 +658,17 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, prefixes: 
     if not root_col:
         return []
     product_col = _ci_col(cols, "product", "process_id", "PRODUCT", "PROCESS_ID")
-    time_col = _ci_col(cols, "update_time", "tkout_time", "tkin_time", "time", "timestamp", "datetime")
+    time_col = _ci_col(cols, "tkout_time", "update_time", "tkin_time", "time", "timestamp", "datetime")
+    step_col = _ci_col(cols, "step_id", "STEP_ID", "step")
     q = lf
     if product_col and keys:
         q = q.filter(pl.col(product_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(keys)))
-    if norm_prefixes:
-        root_norm = pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
-        prefix_expr = root_norm.str.starts_with(norm_prefixes[0])
-        for pfx in norm_prefixes[1:]:
-            prefix_expr = prefix_expr | root_norm.str.starts_with(pfx)
-        q = q.filter(prefix_expr)
+    # step_ids 지정 시: 해당 step 을 지난(latest 행의 step_id 가 그 step) lot 만.
+    # step 컬럼이 없으면 필터를 걸 수 없으므로 빈 결과(잘못된 전량 통과 방지).
+    if norm_steps:
+        if not step_col:
+            return []
+        q = q.filter(pl.col(step_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().is_in(sorted(set(norm_steps))))
     q = q.select([
         pl.col(root_col).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("root_lot_id"),
         (
@@ -670,10 +685,10 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, prefixes: 
     return [str(v or "").strip().upper() for v in rows["root_lot_id"].to_list() if str(v or "").strip()]
 
 
-def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, prefixes: list[str] | None = None) -> list[str]:
+def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, step_ids: list[str] | None = None) -> list[str]:
     if limit <= 0:
         return []
-    norm_prefixes = [str(p or "").strip().upper() for p in (prefixes or []) if str(p or "").strip()]
+    norm_steps = [str(s or "").strip().upper() for s in (step_ids or []) if str(s or "").strip()]
     out: list[str] = []
     seen: set[str] = set()
 
@@ -681,12 +696,10 @@ def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, prefixes: li
         root = str(root_lot_id or "").strip().upper()
         if not root or root in seen or len(out) >= limit:
             return
-        if norm_prefixes and not any(root.startswith(pfx) for pfx in norm_prefixes):
-            return
         seen.add(root)
         out.append(root)
 
-    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit, prefixes=norm_prefixes or None):
+    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit, step_ids=norm_steps or None):
         add(root)
     if len(out) >= limit:
         return out
@@ -696,11 +709,14 @@ def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, prefixes: li
     except Exception:
         return out
     keys = _product_match_keys(fp)
+    step_set = set(norm_steps)
     rows = [row for row in (state.get("items") or []) if isinstance(row, dict)]
     rows.sort(key=_row_time_text, reverse=True)
     for row in rows:
         product = str(row.get("product") or row.get("process_id") or "").strip().upper()
         if keys and product and product not in keys:
+            continue
+        if step_set and str(row.get("step_id") or "").strip().upper() not in step_set:
             continue
         add(str(row.get("root_lot_id") or ""))
         if len(out) >= limit:
@@ -756,40 +772,10 @@ def _searched_root_lot_ids(fp: Path, limit: int) -> list[str]:
     return out
 
 
-def _prefix_root_lot_ids_from_lookup_cache(fp: Path, prefixes: list[str], limit: int) -> list[str]:
-    prefixes = [str(p or "").strip().upper() for p in prefixes or [] if str(p or "").strip()]
-    if not prefixes or limit <= 0:
-        return []
-    cache_dir = cache_dir_for(fp)
-    try:
-        children = sorted(cache_dir.iterdir(), key=lambda p: p.name.upper())
-    except Exception:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    marker = "root_lot_id="
-    for child in children:
-        name = child.name
-        if not child.is_dir() or not name.startswith(marker):
-            continue
-        root = name[len(marker):].strip().upper()
-        if not root or root in seen:
-            continue
-        if not _root_matches_prefix(root, prefixes):
-            continue
-        seen.add(root)
-        out.append(root)
-        if len(out) >= limit:
-            break
-    return out
-
-
 def _root_ram_cache_candidates(
     *,
-    prefixes: list[str],
     searched_roots: list[str],
-    latest_prefix_roots: list[str],
-    prefix_roots: list[str],
+    step_roots: list[str],
     latest_roots: list[str],
     target: int = 0,
 ) -> list[dict[str, Any]]:
@@ -797,11 +783,11 @@ def _root_ram_cache_candidates(
 
     우선순위(사용자 요구):
       ① searched — 한번이라도 검색된 root 는 무조건 최우선 포함.
-      ② latest_prefix — latest cache 기준 tkout_time 최근 변경 AZ-prefix root.
-      ③ prefix — lookup 파티션 디렉터리의 AZ-prefix root (latest cache 부재 시 폴백).
-      ④ latest — prefix 무관 최근 변경 root (남는 자리 채움).
+      ② step   — 지정 step_id 를 지난(통과=tkout) lot 중 latest cache tkout_time 최신순.
+      ③ latest — step 무관 최근 변경 root (step 미설정 시/남는 자리 채움).
     target(>0)이면 그 개수로 상한(≈1000). searched 가 target 을 채우면 나머지 소스는
     자연히 잘려 searched 가 항상 살아남는다.
+    cache_group: step 소스로 들어온 root 는 "step", 그 외 "other".
     """
     candidates: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
@@ -809,7 +795,7 @@ def _root_ram_cache_candidates(
         root = str(root_lot_id or "").strip().upper()
         if not root:
             return
-        group = _root_ram_cache_group(root, prefixes)
+        group = "step" if source == "step" else "other"
         current = candidates.get(root)
         if current is None:
             candidates[root] = {
@@ -818,7 +804,7 @@ def _root_ram_cache_candidates(
                 "cache_sources": [source],
             }
             return
-        if group == "prefix":
+        if group == "step":
             current["cache_group"] = group
         sources = current.setdefault("cache_sources", [])
         if source not in sources:
@@ -826,10 +812,8 @@ def _root_ram_cache_candidates(
 
     for root in searched_roots:
         add(root, "searched")
-    for root in latest_prefix_roots:
-        add(root, "latest")
-    for root in prefix_roots:
-        add(root, "prefix")
+    for root in step_roots:
+        add(root, "step")
     for root in latest_roots:
         add(root, "latest")
 
@@ -898,8 +882,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
     else:
         files = _discover_ml_table_files()
     settings = root_ram_cache_settings()
-    prefixes = settings["prefixes"]
-    prefix_limit = int(settings["prefix_limit"])
+    step_ids = settings["step_ids"]
     recent_limit = int(settings["recent_roots"])
     searched_limit = int(settings["searched_limit"])
     target_roots = int(settings["target_roots"])
@@ -922,19 +905,15 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             seen: set[str] = set()
             # ① searched: 한번이라도 검색된 root — 무조건 최우선 포함.
             searched_roots = _searched_root_lot_ids(fp, searched_limit)
-            # ② latest cache 기준 tkout_time 최근 변경 AZ-prefix root — 나머지 자리 채움.
-            latest_prefix_roots = _recent_root_lot_ids_from_latest_cache(
-                fp, target_roots or recent_limit, prefixes=prefixes
-            )
-            # ③ lookup 파티션 디렉터리의 AZ root (latest cache 부재 시 폴백).
-            prefix_roots = _prefix_root_lot_ids_from_lookup_cache(fp, prefixes, prefix_limit)
-            # ④ prefix 무관 최근 변경 root (그래도 자리가 남으면).
+            # ② 지정 step_id 를 지난(통과=tkout) lot — latest cache tkout_time 최신순.
+            step_roots = _recent_root_lot_ids_from_latest_cache(
+                fp, target_roots or recent_limit, step_ids=step_ids
+            ) if step_ids else []
+            # ③ step 무관 최근 변경 root (step 미설정/남는 자리 채움).
             latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
             candidates = _root_ram_cache_candidates(
-                prefixes=prefixes,
                 searched_roots=searched_roots,
-                latest_prefix_roots=latest_prefix_roots,
-                prefix_roots=prefix_roots,
+                step_roots=step_roots,
                 latest_roots=latest_roots,
                 target=target_roots,
             )
@@ -943,13 +922,15 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 if root and root not in seen:
                     seen.add(root)
                     roots.append(root)
-            prefix_target_roots = len([row for row in candidates if row.get("cache_group") == "prefix"])
-            other_target_roots = len(candidates) - prefix_target_roots
+            step_target_roots = len([row for row in candidates if row.get("cache_group") == "step"])
+            other_target_roots = len(candidates) - step_target_roots
             cached = 0
             missing = 0
             resource_skipped = 0
             last_skip_reason = ""
-            for idx, candidate in enumerate(candidates):
+            # Phase 0: 이미 캐시된 것/파티션 없는 것을 걸러 로드 대상만 추린다.
+            to_load: list[tuple[dict[str, Any], str, list[Path]]] = []
+            for candidate in candidates:
                 root = str(candidate.get("root_lot_id") or "").strip().upper()
                 cache_group = str(candidate.get("cache_group") or "")
                 cache_sources = [str(source) for source in (candidate.get("cache_sources") or [])]
@@ -959,41 +940,75 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                     continue
                 if not force and _root_ram_cache_get(fp, root, part_files, status) is not None:
                     _root_ram_cache_update_metadata(
-                        fp,
-                        root,
-                        cache_group=cache_group,
-                        cache_sources=cache_sources,
+                        fp, root, cache_group=cache_group, cache_sources=cache_sources,
                     )
                     cached += 1
                     continue
-                guard_reason, _snap = _root_ram_cache_resource_guard_reason()
-                if guard_reason:
-                    resource_skipped += len(candidates) - idx
-                    last_skip_reason = guard_reason
-                    break
+                to_load.append((candidate, root, part_files))
+            guard_reason, _snap = _root_ram_cache_resource_guard_reason()
+            if guard_reason and to_load:
+                resource_skipped += len(to_load)
+                last_skip_reason = guard_reason
+                to_load = []
+            if to_load:
                 # 사용자 요청이 진행 중이면 예열을 잠시 멈춰 API 응답을 우선한다.
                 from core import request_priority
                 request_priority.yield_to_users(max_wait_sec=10.0)
-                if _root_ram_cache_put(
-                    fp,
-                    root,
-                    part_files,
-                    status,
-                    cache_group=cache_group,
-                    cache_sources=cache_sources,
-                ) is not None:
-                    cached += 1
+                # Phase 1: 파티션 parquet 을 병렬로 읽는다(I/O 바운드) — cpu 코어에
+                # 비례해 예열 시간 단축. Phase 2: 우선순위(candidate) 순서대로
+                # 순차 삽입해 eviction/우선순위 결정성을 유지한다.
+                workers = _root_ram_cache_load_workers()
+                loaded: dict[str, pl.DataFrame] = {}
+
+                def _safe_load(files: list[Path]) -> pl.DataFrame | None:
+                    try:
+                        return _load_root_ram_cache_frame(files)
+                    except Exception as exc:
+                        logger.debug("root RAM warm load 실패 source=%s: %s", fp, exc)
+                        return None
+
+                if workers > 1 and len(to_load) > 1:
+                    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="root-ram-warm") as ex:
+                        futs = {ex.submit(_safe_load, files): root for (_c, root, files) in to_load}
+                        for fut in as_completed(futs):
+                            df = fut.result()
+                            if df is not None:
+                                loaded[futs[fut]] = df
+                else:
+                    for (_c, root, files) in to_load:
+                        df = _safe_load(files)
+                        if df is not None:
+                            loaded[root] = df
+                for candidate, root, part_files in to_load:
+                    df = loaded.get(root)
+                    if df is None:
+                        continue
+                    # 로드 중 메모리 압박이 올라갔을 수 있으니 삽입 직전 재확인.
+                    gr, _snap2 = _root_ram_cache_resource_guard_reason()
+                    if gr:
+                        resource_skipped += 1
+                        last_skip_reason = gr
+                        continue
+                    if _root_ram_cache_store_frame(
+                        fp,
+                        root,
+                        df,
+                        part_files,
+                        status,
+                        cache_group=str(candidate.get("cache_group") or ""),
+                        cache_sources=[str(s) for s in (candidate.get("cache_sources") or [])],
+                    ) is not None:
+                        cached += 1
             rows.append({
                 "file": Path(fp).name,
                 "ok": True,
                 "target_roots": len(roots),
                 "cached_roots": cached,
                 "missing_roots": missing,
-                "prefix_roots": len(prefix_roots),
-                "prefix_target_roots": prefix_target_roots,
+                "step_roots": len(step_roots),
+                "step_target_roots": step_target_roots,
                 "other_target_roots": other_target_roots,
                 "latest_roots": len(latest_roots),
-                "latest_prefix_roots": len(latest_prefix_roots),
                 "searched_roots": len(searched_roots),
                 "target_roots_cap": target_roots,
                 "resource_skipped_roots": resource_skipped,
@@ -1016,8 +1031,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         "enabled": True,
         "products": rows,
         "interval_minutes": root_ram_cache_refresh_minutes(),
-        "prefixes": prefixes,
-        "prefix_roots": prefix_limit,
+        "step_ids": step_ids,
         "recent_roots": recent_limit,
         "searched_roots": searched_limit,
         "frequent_roots": searched_limit,
@@ -1043,18 +1057,18 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
         status = dict(_ROOT_RAM_STATUS)
     total_bytes = sum(int(entry.get("estimated_bytes") or 0) for _, entry in entries)
     settings = root_ram_cache_settings()
-    entry_groups = [_root_ram_cache_group(key[1], settings["prefixes"]) for key, _entry in entries]
+    entry_groups = [str(entry.get("cache_group") or "other") for _key, entry in entries]
     out = {
         "enabled": root_ram_cache_available(),
         "hit_roots": len(entries),
-        "prefix_hit_roots": len([group for group in entry_groups if group == "prefix"]),
-        "other_hit_roots": len([group for group in entry_groups if group != "prefix"]),
+        "step_hit_roots": len([group for group in entry_groups if group == "step"]),
+        "other_hit_roots": len([group for group in entry_groups if group != "step"]),
         "estimated_mb": round(total_bytes / (1024 * 1024), 3),
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
         "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
         "polars_threads": os.environ.get("POLARS_MAX_THREADS") or os.environ.get("FLOW_POLARS_MAX_THREADS") or "",
-        "prefixes": settings["prefixes"],
-        "prefix_roots": settings["prefix_limit"],
+        "warm_load_workers": _root_ram_cache_load_workers(),
+        "step_ids": settings["step_ids"],
         "searched_roots": settings["searched_limit"],
         "recent_roots": settings["recent_roots"],
         "frequent_roots": settings["searched_limit"],
@@ -1077,7 +1091,7 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
                 "estimated_mb": round(float(entry.get("estimated_bytes") or 0) / (1024 * 1024), 3),
                 "loaded_at": entry.get("loaded_at") or "",
                 "access_count": int(entry.get("access_count") or 0),
-                "cache_group": _root_ram_cache_group(key[1], settings["prefixes"]),
+                "cache_group": str(entry.get("cache_group") or "other"),
                 "cache_sources": list(entry.get("cache_sources") or []),
             }
             for key, entry in entries
@@ -1878,7 +1892,7 @@ def _read_partition(cache_dir: Path, root_lot_id: str, selected_cols: list[str],
     return df.to_dicts(), total, limited
 
 
-def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allow_stale: bool = False) -> tuple[pl.LazyFrame | None, dict[str, Any]]:
+def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allow_stale: bool = False, profile: dict[str, Any] | None = None) -> tuple[pl.LazyFrame | None, dict[str, Any]]:
     """Return a LazyFrame for a cached root partition, or None when unavailable.
 
     allow_stale=True (SplitTable view fast-path): 소스 ML_TABLE 이 갱신돼 cache 가
@@ -1907,11 +1921,21 @@ def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allo
     files = _partition_files(cache_dir_for(fp), root)
     if not files:
         return None, status
+    # data_source 를 profile 에 기록해 호출측이 RAM 히트 / 첫 적재 / 디스크 스캔을
+    # 구분해 타이밍 breakdown 에 표시할 수 있게 한다.
+    _t0 = time.perf_counter()
     lf = _root_ram_cache_get(fp, root, files, status)
+    data_source = "ram" if lf is not None else ""
     if lf is None:
         lf = _root_ram_cache_put(fp, root, files, status)
+        if lf is not None:
+            data_source = "ram_load"
     if lf is None:
         lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
+        data_source = "disk"
+    if profile is not None:
+        profile["root_data_source"] = data_source
+        profile["root_scan_ms"] = round((time.perf_counter() - _t0) * 1000.0, 3)
     return _filter_wafer_lf(lf, wafer_ids), status
 
 
