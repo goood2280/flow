@@ -2805,5 +2805,28 @@ function BaseCsvPanel(){
                 ))}
                 <td style={{padding:"2px 4px",borderLeft:"1px solid var(--border)",whiteSpace:"nowrap"}}>
                   <span onClick={()=>moveRow(ri,-1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↑</span>
-                  <span onClick={()=>moveRow(ri,+1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↓</span>
-                  <span onClick={(
+                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"#ef4444",padding:"0 4px"}}>✕</span>
+                </td>
+              </tr>
+            ))}
+            {rows.length===0&&<tr><td colSpan={columns.length+2} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>데이터 없음. 아래 '+행 추가' 로 시작하세요.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
+        <button onClick={addRow} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,cursor:"pointer"}}>+ 행 추가</button>
+        <button onClick={save} disabled={saving} style={{padding:"7px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:14,cursor:saving?"wait":"pointer"}}>{saving?"저장 중...":"저장"}</button>
+        {msg&&<span style={{fontSize:14,color:msg.startsWith("저장")?"#22c55e":"#ef4444"}}>{msg}</span>}
+      </div>
+
+      <div style={{marginTop:14,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
+        • 컬럼 뒤 <b style={{color:"var(--accent)"}}>*</b> 는 unique key. 중복 시 저장 거부.<br/>
+        • step_matching/Vehicle_matching: product + step_desc 로 해당 제품의 step_id 를 찾습니다.<br/>
+        • knob_ppid: (feature_name, function_step, rule_order, ppid, operator, category, use) — 앞 3개 복합 unique. use ∈ Y/N/0/1.<br/>
+        • inline_matching: (product, step_id, item_id), vm_matching: (step_desc, item_id) — VM step_id 는 Vehicle_matching 에서 가져옵니다.<br/>
+        • 저장 시 UTF-8 BOM 포함 CSV 로 덮어씁니다 (Excel 호환). SplitTable KNOB 메타는 자동 재조회.
+      </div>
+    </div>
+  );
+}

@@ -1183,4 +1183,14 @@ def complete_json(prompt: str, *, system: Optional[str] = None,
             return {"ok": False, "obj": {}, "text": "", "error": last_error, "attempts": attempt + 1}
         raw_text = str(out.get("text") or "")
         obj, parse_error = _parse_json_object(raw_text, required=required, keys=keys)
-        if obj is n
+        if obj is not None:
+            return {
+                "ok": True,
+                "obj": obj,
+                "text": raw_text,
+                "error": "",
+                "attempts": attempt + 1,
+                "repaired": attempt > 0,
+            }
+        last_error = parse_error
+    return {"ok": False, "obj": {}, "text": raw_text, "error": last_error or "json schema validation failed", "attempts": attempts}

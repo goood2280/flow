@@ -501,4 +501,3 @@ def start_background() -> None:
     _bg_thread = threading.Thread(target=_bg_loop, name="sysmon-bg", daemon=True)
     _bg_thread.start()
     logger.info("[sysmon] background loop started")
- 

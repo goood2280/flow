@@ -640,6 +640,8 @@ def draft_doc_metadata(body: str, *, doc_id: str = "", tags: list[str] | None = 
         return {"ok": False, "error": "body required"}
     if not llm_adapter.is_available():
         return {"ok": False, "error": "llm not configured or disabled"}
+    if not llm_adapter.should_attempt_llm():
+        return {"ok": False, "error": "llm circuit breaker open (recent failure)"}
     existing = list_docs(limit=200)
     existing_ids = {str(d.get("doc_id") or "").strip() for d in existing if d.get("doc_id")}
     prompt = _build_doc_metadata_prompt(body_text, doc_id, tags or [], existing)
@@ -1209,6 +1211,8 @@ def generate_ai_ontology(*, max_docs: int = 80) -> dict[str, Any]:
         return {"ok": False, "error": "no wiki docs to classify", "ontology": {"nodes": [], "edges": []}, "sample_docs": 0}
     if not llm_adapter.is_available():
         return {"ok": False, "error": "llm not configured or disabled", "ontology": {"nodes": [], "edges": []}, "sample_docs": len(docs)}
+    if not llm_adapter.should_attempt_llm():
+        return {"ok": False, "error": "llm circuit breaker open (recent failure)", "ontology": {"nodes": [], "edges": []}, "sample_docs": len(docs)}
     prompt = _build_ontology_prompt(docs)
     sys_prompt = (
         "You output a single JSON object. No code fences, no commentary. "

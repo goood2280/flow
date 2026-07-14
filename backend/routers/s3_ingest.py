@@ -254,6 +254,8 @@ def _explain_s3_failure(*, action: str, item_id: str, target: str, kind: str,
     try:
         if not llm_adapter.is_available():
             return None
+        if not llm_adapter.should_attempt_llm():
+            return None
         prompt = {
             "surface": "FileBrowser S3",
             "action": action,
