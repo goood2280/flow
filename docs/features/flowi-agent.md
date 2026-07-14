@@ -1,11 +1,14 @@
 # Flow-i Agent
 
-Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 관리하는 화면이다.
+Agent 탭은 오케스트레이터가 쓸 수 있는 기능 카탈로그와 질문별 오케스트레이션 실행 추적을 보여주는 화면이다.
+
+v9.2.x 재편: 상위 탭은 `기능 카탈로그`(도구 목록 + 단위기능 시험 콘솔), `실행 추적`(질문 → 용어해석 → 턴별 도구 실행 → 결론 스토리), `Workflow 템플릿` 3개다. Semantic layer 편집기는 관리 페이지 `Flow-i 학습 > 용어사전`으로, LLM 설정은 관리 페이지 `LLM 설정` 탭으로 이관했다 (API 계약은 그대로).
 
 ## Owns
 
 - `frontend/src/pages/My_Diagnosis.jsx`의 Agent 화면 shell
-- `Flow-i`, `Semantic layer`, `단위기능 AI`, `LLM 설정` 탭 구성
+- `기능 카탈로그`, `실행 추적`, `Workflow 템플릿` 탭 구성
+- `GET /api/agent/home-flowi/tools` — 도구 카탈로그 + `agentic` 상태(tool_call/react/LLM 연결)
 - LLM 연결 시 공통 API 에러를 사용자용 설명으로 바꾸는 보조 endpoint:
   - `POST /api/llm/error/explain`
 - Agent scoped endpoint:
@@ -77,9 +80,9 @@ Agent 탭은 단위기능 AI 실행 흐름을 확인하고 LLM 연결 상태를 
 
 `merge` 결과는 FileBrowser와 같은 표시 SQL인 `display_sql`/`sql`과 내부 실행용 `where_sql`, `selected_columns`, 호환 `sort`를 함께 노출한다. 정렬 의도는 `display_sql`의 `ORDER BY`에 들어간다. 화면의 결과 SQL 박스는 편집 가능하며 `적용`은 LLM을 다시 호출하지 않고 FileBrowser의 read-only preview endpoint를 재사용해 같은 대상에 SQL만 다시 적용한다.
 
-Agent 화면의 단위기능 AI 탭은 상단 전체 폭에 FileBrowser AI SQL 질문 이력을 두고, 각 이력에는 작성자와 실행 시각을 함께 표시한다. 하단은 `State` / `LangGraph + Node IO` / `Test prompt` 3칸으로 나눈다. 이력을 클릭하면 answer, SQL, warning, trace/action log 요약을 먼저 보여주고, `재현` 버튼을 눌렀을 때만 prompt와 대상 DB/product 또는 단일 파일을 채운다. `debug request`에서 실제 `/runtime/run` payload를 확인할 수 있다.
+기능 카탈로그에서 단위기능 카드를 누르면 열리는 단위기능 콘솔은 상단 전체 폭에 FileBrowser AI SQL 질문 이력을 두고, 각 이력에는 작성자와 실행 시각을 함께 표시한다. 하단은 `State` / `LangGraph + Node IO` / `Test prompt` 3칸으로 나눈다. 이력을 클릭하면 answer, SQL, warning, trace/action log 요약을 먼저 보여주고, `재현` 버튼을 눌렀을 때만 prompt와 대상 DB/product 또는 단일 파일을 채운다. `debug request`에서 실제 `/runtime/run` payload를 확인할 수 있다.
 
-단위기능 AI 탭은 실행 전에도 runtime graph endpoint의 `state_design`과 노드별 `persona`/`state_io`/공유 state/cache prompt 설계를 보여준다. 실행 후에는 같은 Node IO 패널에서 정적 설계와 실제 trace input/output, warning, duration을 함께 비교한다.
+단위기능 콘솔은 실행 전에도 runtime graph endpoint의 `state_design`과 노드별 `persona`/`state_io`/공유 state/cache prompt 설계를 보여준다. 실행 후에는 같은 Node IO 패널에서 정적 설계와 실제 trace input/output, warning, duration을 함께 비교한다.
 
 `preview_apply` 노드는 read-only preview를 검증하지만 runtime trace와 질문 이력에는 preview row 전체를 싣지 않는다. Agent 화면의 preview table은 SQL `적용`을 사용자가 누른 뒤 FileBrowser preview endpoint를 다시 호출한 결과에서만 표시한다.
 
@@ -135,11 +138,13 @@ SQL/JOIN 차트 요청은 별도 “Home SQL JOIN Dashboard” 단위기능이 �
 - `dashboard_draft`는 직접 chart spec을 만들지 않고 `dashboard_agent`를 sub-runtime으로 호출한다. 결과 `chart_result.config.source_evidence`에는 source ids, relation ids, join keys, SQL summary, FileBrowser/Dashboard sub-trace가 남는다.
 - Dashboard Agent가 축 컬럼 누락/빈 값으로 `needs_input`을 반환하면 parent unit도 `blocked`로 끝나며 사용자에게 축 값을 다시 묻는다.
 
-## Home Flow-i Runtime Tab
+## 실행 추적 탭 (Home Flow-i Runtime)
 
-Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `Flow-i` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어 `프롬프트 입력 → 용어해석 → 오케스트레이터 → 단위기능 AI MCP 후보 → 결과 정리` 그래프로 보여준다.
+Home Flow-i 응답은 기존 `/api/llm/flowi/chat` 결과를 유지하면서 `run_id`와 공개 runtime graph snapshot을 남긴다. Agent의 `실행 추적` 탭은 `data/flow-data/home_agent_runs/*.json`에 저장된 최근 실행을 읽어, run을 선택하면 `질문 → 용어해석 → 턴별 도구 실행(선택 근거·결과 요약 포함) → 결론` 스토리라인(`RunStoryline`)으로 보여준다. 노드 그래프와 node detail은 접이식으로 유지한다.
 
-`Flow-i` 탭 내부는 Semantic layer 탭과 같이 하위 탭으로 나눈다. `Workflow 템플릿`은 `/api/llm/flowi/workflows`의 workflow catalog를 관리하는 화면이며, admin은 템플릿을 추가/수정하고 비활성화할 수 있다. 연결된 LLM은 사용자가 입력한 자연어와 현재 초안을 workflow schema 형식으로 맞추는 데만 사용하며, LLM이 없거나 실패하면 로컬 formatter로 fallback한다. 비활성화된 템플릿은 Home Flow-i few-shot/matching 후보에서 제외한다. `Runtime trace`는 기존 최근 실행 목록, runtime graph, node detail을 보여준다.
+`Workflow 템플릿`은 상위 탭으로, `/api/llm/flowi/workflows`의 workflow catalog를 관리하는 화면이다. admin은 템플릿을 추가/수정하고 비활성화할 수 있다. 연결된 LLM은 사용자가 입력한 자연어와 현재 초안을 workflow schema 형식으로 맞추는 데만 사용하며, LLM이 없거나 실패하면 로컬 formatter로 fallback한다. 비활성화된 템플릿은 Home Flow-i few-shot/matching 후보에서 제외한다.
+
+`기능 카탈로그` 탭은 `GET /api/agent/home-flowi/tools`의 unit_ai + function-call 통합 목록을 카드로 보여주고, 응답의 `agentic` 상태(`tool_call_enabled`, `react_enabled`, `llm_available`, provider/model)로 각 function-call 도구의 실제 실행 가능 여부를 배지로 정직하게 표시한다 (`ReAct 실행` / `ReAct 꺼짐 — 대기`). 단위기능 카드는 클릭하면 아래에 시험 콘솔(State / LangGraph / Test prompt / 질문 이력)이 열린다.
 
 Snapshot에는 원본 DB row 전체나 내부 추론 원문을 저장하지 않는다. preview rows는 Home 화면 표시 수준으로 제한하고, node detail은 input/output 요약, warning, action log만 포함한다.
 
@@ -181,9 +186,11 @@ Home Flow-i 채팅은 결정적 라우팅 초입에서 공유 스킬을 매칭�
 - 스킬 제목이 프롬프트에 그대로 있거나 "스킬" 언급 + 토큰 과반 매칭 → `sql_workspace` 스킬은 read-only로 즉시 실행해 행 미리보기를 답하고 `run_count`를 올린다 (filebrowser 권한 필요, placeholder가 있으면 SQL 작업대 안내). `chain` 스킬은 단계 안내를 반환.
 - 매칭이 없으면 기존 라우팅을 그대로 탄다 (회귀 없음).
 
-## Semantic Layer Tab
+## Semantic Layer 편집기 (관리 > Flow-i 학습 > 용어사전)
 
-`Semantic layer` 탭은 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 내부 관리는 `Lexicon 관리`, `Sources 관리`, `Measurements 관리`, `검토 이력` 하위 탭으로 나누어 한 번에 한 영역의 JSON 편집기, 자연어 등록, 카드 목록, proposal/change queue만 노출한다. 사용자는 JSON 편집으로 alias group, intent hint, Source Catalog, Measurement terms를 저장/추가/삭제할 수 있고, Source Catalog와 Measurement terms는 자연어 입력으로 초안을 만든 뒤 즉시 저장할 수 있다. 등록된 Source docs와 Measurement term 카드는 개별 수정/삭제 액션을 제공하며, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
+v9.2.x부터 Semantic layer 편집기는 관리 페이지 `Flow-i 학습` 탭의 `용어사전 (Semantic layer)` 하위 섹션에서 제공한다. UI 컴포넌트는 `frontend/src/components/agent/SemanticLayerPanel.jsx`로 추출했으며, API 계약(`/api/agent/semantic/*`)과 권한 게이트는 그대로다.
+
+편집기는 공유 semantic JSON 사전의 disk override와 effective merge view를 분리해 보여준다. 내부 관리는 `Lexicon 관리`, `Sources 관리`, `Measurements 관리`, `검토 이력` 하위 탭으로 나누어 한 번에 한 영역의 JSON 편집기, 자연어 등록, 카드 목록, proposal/change queue만 노출한다. 사용자는 JSON 편집으로 alias group, intent hint, Source Catalog, Measurement terms를 저장/추가/삭제할 수 있고, Source Catalog와 Measurement terms는 자연어 입력으로 초안을 만든 뒤 즉시 저장할 수 있다. 등록된 Source docs와 Measurement term 카드는 개별 수정/삭제 액션을 제공하며, meeting/inform/tracker/activity log에서 쌓인 pending proposal을 approve/reject할 수 있다.
 
 자연어 등록은 `/api/agent/semantic/draft`에서 alias/intent/source_catalog/measurement_terms JSON 초안을 생성한다. draft endpoint 자체는 read-only이며, 실제 저장은 사용자가 `초안 저장`, Source/Measurement 자연어 저장, 또는 JSON 저장 버튼을 눌렀을 때만 semantic write API로 이뤄진다. write/decision API는 admin 또는 `agent`/`diagnosis`/`knowledge` page manager만 허용하고, 조회와 draft 생성은 로그인 사용자에게 허용한다.
 
@@ -206,8 +213,10 @@ LLM이 꺼져 있거나 설명 생성이 실패하면 기존 원문 에러 메�
 | Layer | Path |
 |---|---|
 | Frontend page | `frontend/src/pages/My_Diagnosis.jsx` |
+| Semantic layer 편집기 (관리 탭에서 렌더) | `frontend/src/components/agent/SemanticLayerPanel.jsx` |
+| 관리 페이지 (Flow-i 학습 / LLM 설정 host) | `frontend/src/pages/My_Admin.jsx` |
 | Common API error formatting | `frontend/src/lib/api.js` |
-| LLM settings panel | `frontend/src/components/agent/LlmTab.jsx` |
+| LLM settings panel (관리 탭에서 렌더) | `frontend/src/components/agent/LlmTab.jsx` |
 | Agent router | `backend/routers/agent.py` |
 | Shared Agent runtime helpers | `backend/app_v2/modules/agent_runtime/` |
 | LLM status/error explain router | `backend/routers/llm.py` |

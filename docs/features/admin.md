@@ -6,6 +6,8 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 
 - user/group/permission 관리
 - data root, S3, mail, LLM, backup, monitor 설정
+- `LLM 설정` 탭 — LLM 연결 상태/프로필/에이전틱 토글 UI host (v9.2.x에서 Agent 탭에서 이관, 컴포넌트는 `frontend/src/components/agent/LlmTab.jsx`)
+- `Flow-i 학습` 탭 — 하위 섹션 3개: `용어사전 (Semantic layer)`(`frontend/src/components/agent/SemanticLayerPanel.jsx`, `/api/agent/semantic/*`), `few-shot 용어`, `파일 설명`(`/api/flowi-learning/*`)
 - Base CSV 편집기와 product YAML 관리
 - 관리자 공지와 운영 설정
 

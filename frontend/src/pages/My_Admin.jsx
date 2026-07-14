@@ -5,6 +5,9 @@ import { toast } from "../components/Toast";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 import { SUB_TABS } from "../config";
+// v9.2.x: 에이전트 탭 재편 — Semantic layer 편집기와 LLM 설정을 관리 탭으로 이관.
+import SemanticLayerPanel from "../components/agent/SemanticLayerPanel";
+import LlmTab from "../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","valve","inform","meeting","calendar","devguide"];
@@ -345,7 +348,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["flowi_learning","Flow-i 학습"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -837,6 +840,9 @@ export default function My_Admin({user}){
 
       {tab==="flowi_learning"&&isAdmin&&<FlowiLearningPanel/>}
 
+      {/* v9.2.x: LLM 연결/설정 — 에이전트 탭에서 이관 (admin only) */}
+      {tab==="llm_cfg"&&isAdmin&&<LlmTab isAdmin={isAdmin}/>}
+
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
 
@@ -981,7 +987,16 @@ function PageAdminsPanel({users}){
 // ── v8.8.14: Backup 주기 설정 + 1회 예약 ──
 // interval_hours 조절 + enabled 토글 + "이 시각에 1회 백업" 예약 (서버 점검 대비).
 // v9.x: Flow-i human-in-the-loop 학습 데이터(few-shot 용어 매핑, 파일 설명 카탈로그) 관리.
+// v9.2.x: Semantic layer 편집기(용어사전)를 에이전트 탭에서 이관해 하위 섹션으로 통합.
+//   저장소는 서로 다름 — semantic: FLOW_DATA_ROOT/semantic/* (/api/agent/semantic/*),
+//   few-shot/파일설명: flowi_fewshots.json / flowi_file_docs.json (/api/flowi-learning/*).
+const FLOWI_LEARNING_SECTIONS=[
+  {k:"semantic",l:"용어사전 (Semantic layer)"},
+  {k:"fewshot",l:"few-shot 용어"},
+  {k:"filedocs",l:"파일 설명"},
+];
 function FlowiLearningPanel(){
+  const[section,setSection]=useState("semantic");
   const[fewshots,setFewshots]=useState([]);
   const[fileDocs,setFileDocs]=useState([]);
   const[fsDraft,setFsDraft]=useState({term:"",answer:""});
@@ -1016,7 +1031,9 @@ function FlowiLearningPanel(){
   const td={padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:14,verticalAlign:"top"};
   const inp={padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,boxSizing:"border-box"};
   return(<div style={{display:"grid",gap:16}}>
-    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+    <TabStrip active={section} onChange={setSection} items={FLOWI_LEARNING_SECTIONS}/>
+    {section==="semantic"&&<SemanticLayerPanel/>}
+    {section==="fewshot"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>few-shot 용어 매핑</div>
       <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>
         홈 채팅 "기억해: &lt;용어&gt;는 &lt;답&gt;" 티칭과 싫어요+교정 코멘트로 쌓인 학습 데이터입니다. 같은 용어 질문에 조회보다 먼저 이 답을 씁니다.
@@ -1046,8 +1063,8 @@ function FlowiLearningPanel(){
           </tbody>
         </table>
       </div>
-    </div>
-    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+    </div>}
+    {section==="filedocs"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>파일 설명 카탈로그</div>
       <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>
         홈 채팅 "파일 설명: &lt;파일명&gt;은 &lt;설명&gt;" 으로 등록된 카탈로그입니다. Flow-i가 질문과 설명을 대조해 검색할 파일을 고릅니다.
@@ -1075,7 +1092,7 @@ function FlowiLearningPanel(){
           </tbody>
         </table>
       </div>
-    </div>
+    </div>}
     {msg&&<Banner tone="warn">{msg}</Banner>}
   </div>);
 }

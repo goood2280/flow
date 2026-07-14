@@ -7,7 +7,12 @@
 
 ## Next
 
+- (Claude) 에이전트 탭 재편 후속 — diagnosis 소탭 권한 토큰 마이그레이션 안내: 기존 `diagnosis:home-flowi|semantic|unit-ai|llm` 토큰은 새 키(`catalog|runtime|workflows`)와 불일치. bare `diagnosis` 토큰/admin은 영향 없음. 소탭 단위로 제한된 계정이 있으면 관리 > 권한에서 재부여 필요.
+- (Claude) ReAct 함수 도구 실행 결과 품질 — `query_lot_current_step_from_progress_cache` 등 일부 함수 도구가 route_flowi_feature 안내 문구를 결과로 반환(도구는 success인데 실데이터 아님). 함수 실행 경로에서 실제 조회 결과가 result_preview로 잡히는지 점검.
+
 ## Done
+
+- (Claude) 에이전트 탭 전면 재편 — 상위 탭 `기능 카탈로그`(도구 카드 + agentic 상태 배지 + 단위기능 시험 콘솔) / `실행 추적`(질문→용어해석→턴별 도구 실행→결론 스토리) / `Workflow 템플릿`. Semantic layer 편집기는 관리 > Flow-i 학습 > 용어사전으로(SemanticLayerPanel.jsx 추출), LLM 설정은 관리 > LLM 설정으로 이관. `/api/agent/home-flowi/tools`에 additive `agentic` 상태 추가. ReAct 루프 활성 상태 end-to-end 검증(함수 도구 3턴 실행 + ask_user 확인).
 
 - (Claude) 피벗 캐시 무중단 재빌드 — 재빌드 시작 시 일괄 삭제 제거, root 단위 원자 교체로 빌드 중에도 이전 캐시 서빙, 소스에서 사라진 root 파일은 빌드 완료 후 정리, 포맷 세대 마커(.cache_format.json)로 legacy만 일괄 제거
 - (Claude) 보류 중이던 SplitTable 피벗 캐시 개선(실제 ROOT_LOT_ID 키, native wide per-root 저장) 검증 후 main 반영
