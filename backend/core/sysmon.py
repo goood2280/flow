@@ -1,4 +1,4 @@
-"""core/sysmon.py v8.8.18 — 크로스플랫폼 시스템 모니터 + 유휴 부하 정책.
+"""core/sysmon.py v9.2.1 — 크로스플랫폼 시스템 모니터 + 유휴 부하 정책.
 
 psutil 로 CPU / Memory / Disk 사용량을 5분 주기로 수집해 resource_log 에 append.
 최근 6시간 동안 CPU / Memory 가 **한 번도 85% 이상 찍지 않았으면** 5~10분
@@ -501,3 +501,4 @@ def start_background() -> None:
     _bg_thread = threading.Thread(target=_bg_loop, name="sysmon-bg", daemon=True)
     _bg_thread.start()
     logger.info("[sysmon] background loop started")
+ 
