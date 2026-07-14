@@ -169,6 +169,9 @@ def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeyp
     }).write_parquet(fp)
     ml_table_lookup.build_lookup_cache(fp, force=True)
     monkeypatch.setattr(ml_table_lookup, "resolve_ml_table_file", lambda **_kwargs: fp)
+    # latest cache(카노니컬 parquet / lot_progress)는 이 테스트의 관심사가 아니므로
+    # 격리한다 — searched 우선순위와 prefix 그룹핑만 검증.
+    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", lambda *_a, **_k: [])
     ml_table_lookup.record_root_access(fp, "AZ1000")
     time.sleep(0.01)
     ml_table_lookup.record_root_access(fp, "AZ2000")
@@ -183,7 +186,8 @@ def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeyp
     assert product["prefix_roots"] == 0
     assert product["prefix_target_roots"] == 2
     assert product["other_target_roots"] == 1
-    assert [row["root_lot_id"] for row in roots[:2]] == ["AZ2000", "AZ1000"]
+    # 우선순위 ① searched(무조건 최우선 포함) → 최근 검색순으로 앞에 온다.
+    assert [row["root_lot_id"] for row in roots] == ["B1000", "AZ2000", "AZ1000"]
     assert {row["root_lot_id"]: row["cache_group"] for row in roots} == {
         "AZ1000": "prefix",
         "AZ2000": "prefix",
@@ -1196,7 +1200,7 @@ def test_root_lot_ram_cache_refresh_uses_recent_and_frequent_roots(tmp_path, mon
     }).write_parquet(fp)
     ml_table_lookup.build_lookup_cache(fp, force=True)
     monkeypatch.setattr(ml_table_lookup, "resolve_ml_table_file", lambda **_kwargs: fp)
-    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", lambda _fp, _limit: ["A1000"])
+    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", lambda _fp, _limit, **_kw: ["A1000"])
     ml_table_lookup._record_root_access(fp, "A2000")
     ml_table_lookup._record_root_access(fp, "A2000")
 
