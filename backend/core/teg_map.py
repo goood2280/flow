@@ -64,17 +64,24 @@ DEFAULT_CFG = {
     # 파일탐색기 Files(DB root) 기준 상대경로 또는 절대경로
     "layout_file": "Chip_Radius.csv",
     "teg_file": "Teg_location.csv",
-    # ebeam_x/y → mm 환산 배율 (um 단위 파일이면 0.001)
-    "ebeam_scale": 1.0,
+    # ebeam_x/y → mm 환산 배율. 기본 = ebeam 파일이 µm 단위(0.001).
+    # Chip_Radius 는 mm 단위 전제 (배율 없음). ebeam 이 mm 단위 파일이면 1.0 으로.
+    "ebeam_scale": 0.001,
     "wafer_radius_mm": 150.0,
     # wafer 최외곽선 (edge exclusion) — WF MAP 에 점선으로 함께 표시
     "wafer_edge_mm": 147.0,
-    # TEG 기본 사이즈 (mm) — Teg_location 에 teg_w/teg_h 없을 때 사용
-    "teg_default_w": 2.0,
-    "teg_default_h": 2.0,
+    # TEG 기본 사이즈 (mm 저장, UI 는 µm 입력) — Teg_location 에 teg_w/teg_h 없을 때 사용.
+    # 기본 3000×100 µm.
+    "teg_default_w": 3.0,
+    "teg_default_h": 0.1,
     # vehicle 별 shot 표시 설정: {vehicle: DEFAULT_VEHICLE_CFG 형태}
     "vehicles": {},
+    # 설정 스키마 버전 — v2: teg 기본 3000×100µm, ebeam 기본 µm 배율(0.001)
+    "cfg_version": 2,
 }
+
+# 구 기본값 — cfg_version<2 파일이 이 값 그대로면 새 기본값으로 1회 이관.
+_OLD_DEFAULTS = {"ebeam_scale": 1.0, "teg_default_w": 2.0, "teg_default_h": 2.0}
 
 _LOCK = threading.RLock()
 
@@ -169,6 +176,7 @@ def load_cfg() -> dict:
                     logger.warning(f"teg_map 설정 저장 실패({path}): {e}")
         if not isinstance(cfg, dict):
             cfg = {}
+        cfg = _migrate_cfg_v2(cfg, path)
     out = dict(DEFAULT_CFG)
     for k in ("layout_file", "teg_file"):
         if isinstance(cfg.get(k), str):
@@ -176,8 +184,8 @@ def load_cfg() -> dict:
     for k, lo, hi in (("ebeam_scale", 1e-9, 1e9),
                       ("wafer_radius_mm", 10.0, 1000.0),
                       ("wafer_edge_mm", 0.0, 1000.0),
-                      ("teg_default_w", 0.01, 1000.0),
-                      ("teg_default_h", 0.01, 1000.0)):
+                      ("teg_default_w", 0.001, 1000.0),
+                      ("teg_default_h", 0.001, 1000.0)):
         try:
             v = float(cfg.get(k, DEFAULT_CFG[k]))
             if lo <= v <= hi and math.isfinite(v):
@@ -186,6 +194,36 @@ def load_cfg() -> dict:
             pass
     out["vehicles"] = _clean_vehicles(cfg.get("vehicles"))
     return out
+
+
+def _migrate_cfg_v2(cfg: dict, path: Path) -> dict:
+    """1회성 이관 — 구버전(cfg_version<2) 파일이 예전 하드코드 기본값을 그대로
+    들고 있으면 새 기본값(teg 3000×100µm, ebeam µm 배율 0.001)으로 바꾼다.
+    버전 마커를 기록해 이후 사용자가 같은 값을 의도적으로 저장해도 덮어쓰지 않는다."""
+    if not isinstance(cfg, dict) or not cfg:
+        return cfg
+    try:
+        version = int(cfg.get("cfg_version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version >= 2:
+        return cfg
+    def _f(key):
+        try:
+            return float(cfg.get(key))
+        except (TypeError, ValueError):
+            return None
+    if _f("teg_default_w") == _OLD_DEFAULTS["teg_default_w"] and _f("teg_default_h") == _OLD_DEFAULTS["teg_default_h"]:
+        cfg["teg_default_w"] = DEFAULT_CFG["teg_default_w"]
+        cfg["teg_default_h"] = DEFAULT_CFG["teg_default_h"]
+    if _f("ebeam_scale") == _OLD_DEFAULTS["ebeam_scale"]:
+        cfg["ebeam_scale"] = DEFAULT_CFG["ebeam_scale"]
+    cfg["cfg_version"] = 2
+    try:
+        save_json(path, cfg)
+    except Exception as e:
+        logger.warning(f"teg_map 설정 이관 저장 실패({path}): {e}")
+    return cfg
 
 
 def save_cfg(patch: dict) -> dict:
@@ -203,8 +241,8 @@ def save_cfg(patch: dict) -> dict:
             ("ebeam_scale", 1e-9, 1e9, "ebeam_scale 은 0 보다 커야 합니다"),
             ("wafer_radius_mm", 10.0, 1000.0, "wafer_radius_mm 범위(10~1000)를 벗어났습니다"),
             ("wafer_edge_mm", 0.0, 1000.0, "wafer_edge_mm 범위(0~1000)를 벗어났습니다"),
-            ("teg_default_w", 0.01, 1000.0, "teg_default_w 범위(0.01~1000)를 벗어났습니다"),
-            ("teg_default_h", 0.01, 1000.0, "teg_default_h 범위(0.01~1000)를 벗어났습니다"),
+            ("teg_default_w", 0.001, 1000.0, "teg_default_w 범위(0.001~1000mm)를 벗어났습니다"),
+            ("teg_default_h", 0.001, 1000.0, "teg_default_h 범위(0.001~1000mm)를 벗어났습니다"),
         ):
             if k in patch:
                 v = float(patch[k])
@@ -377,6 +415,11 @@ def load_tegs():
     hc = _find_col(df, "teg_h", "height")
     out["teg_w"] = pd.to_numeric(df[wc], errors="coerce") if wc else float("nan")
     out["teg_h"] = pd.to_numeric(df[hc], errors="coerce") if hc else float("nan")
+    # flat_zone: h(기본, TEG 수평) | v(TEG 세움 — 가로가 높이가 됨, w/h 스왑)
+    fz = _find_col(df, "flat_zone", "flatzone")
+    out["flat_zone"] = (
+        df[fz].astype(str).str.strip().str.lower() if fz else "h"
+    )
     out = out.dropna(subset=["ebeam_x", "ebeam_y"])
     return out, path
 
@@ -475,12 +518,18 @@ def map_payload(vehicle: str) -> dict:
             # teg_w/teg_h 없으면 설정의 TEG 기본 사이즈로 채움
             tw = float(row["teg_w"]) * scale if row["teg_w"] == row["teg_w"] else float(cfg["teg_default_w"])
             th = float(row["teg_h"]) * scale if row["teg_h"] == row["teg_h"] else float(cfg["teg_default_h"])
+            # flat_zone=v → TEG 를 세워서 배치: 가로가 높이가 된다 (w/h 스왑).
+            fz = str(row.get("flat_zone") or "h").strip().lower()
+            fz = "v" if fz == "v" else "h"
+            if fz == "v":
+                tw, th = th, tw
             tegs.append({
                 "teg": row["teg"],
                 "ebeam_x": float(row["ebeam_x"]) * scale,
                 "ebeam_y": float(row["ebeam_y"]) * scale,
                 "teg_w": tw,
                 "teg_h": th,
+                "flat_zone": fz,
             })
         # ── 동명 TEG 자동 넘버링: 같은 이름이 2 개 이상이면 _1, _2, … 접미사 ──
         from collections import Counter

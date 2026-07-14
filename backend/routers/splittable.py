@@ -26,7 +26,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
     sys.path[:] = [p for p in sys.path if p != _raw]
     sys.path.insert(0, _raw)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from typing import Any, List
 import polars as pl
@@ -10042,7 +10042,51 @@ def related_issues_for_view(
 # ── View ──
 
 
+try:
+    import orjson as _orjson
+except ImportError:
+    _orjson = None
+
+
+def _view_orjson_response(payload):
+    """/view 전용 직렬화 우회. FastAPI 기본 경로는 dict 반환 시 jsonable_encoder 를
+    payload 전체에 재귀 적용하는데, KNOB 처럼 행×웨이퍼 셀이 많은 응답(수만 셀)에서
+    이 인코딩만 수 초가 걸린다. Response 객체를 직접 반환하면 그 경로를 건너뛴다.
+    orjson 미설치·직렬화 실패 시 dict 를 그대로 돌려 기본 경로로 폴백한다."""
+    if _orjson is None or not isinstance(payload, dict):
+        return payload
+    try:
+        body = _orjson.dumps(
+            payload,
+            default=str,
+            option=_orjson.OPT_SERIALIZE_NUMPY | _orjson.OPT_NON_STR_KEYS,
+        )
+    except Exception:
+        return payload
+    return Response(content=body, media_type="application/json")
+
+
 @router.get("/view")
+def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
+                    wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
+                    custom_name: str = Query(""), view_mode: str = Query("all"),
+                    history_mode: str = Query("all"),
+                    fab_lot_id: str = Query(""),
+                    custom_cols: str = Query(""),
+                    include_related: bool = Query(False),
+                    cache_first: bool = Query(False),
+                    request: Request = None):
+    # HTTP 진입점 — view_split 은 내부 호출자(재검증 스레드/informs embed/테스트)가
+    # dict 를 기대하므로 그대로 두고, 라우트에서만 orjson 직렬화로 감싼다.
+    return _view_orjson_response(view_split(
+        product=product, root_lot_id=root_lot_id, wafer_ids=wafer_ids,
+        prefix=prefix, custom_name=custom_name, view_mode=view_mode,
+        history_mode=history_mode, fab_lot_id=fab_lot_id,
+        custom_cols=custom_cols, include_related=include_related,
+        cache_first=cache_first, request=request,
+    ))
+
+
 def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
                custom_name: str = Query(""), view_mode: str = Query("all"),
