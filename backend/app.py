@@ -130,6 +130,15 @@ logger.info(f"  data_root = {PATHS.data_root}")
 logger.info(f"  db_root   = {PATHS.db_root}")
 
 start_background_services(logger)
+try:
+    from core import llm_adapter
+    if llm_adapter.is_available():
+        cfg = llm_adapter.get_config(redact=True)
+        logger.info(f"LLM available: provider={cfg.get('provider')}, model={cfg.get('model')}")
+    else:
+        logger.info("LLM not configured — AI-assisted features disabled (app runs normally without LLM)")
+except Exception as exc:
+    logger.info(f"LLM status check skipped: {exc}")
 
 
 def _allowed_methods_for_path(path: str, method: str) -> set[str]:

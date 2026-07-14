@@ -1969,6 +1969,9 @@ def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
             return fallback, llm_info
         if not llm_info["available"]:
             return fallback, llm_info
+        if not llm_adapter.should_attempt_llm():
+            llm_info["skipped"] = "circuit_breaker_open"
+            return fallback, llm_info
         context = _workspace_ask_context_text(summary) if is_workspace else _meeting_ask_context_text(summary)
         if not context:
             return fallback, llm_info

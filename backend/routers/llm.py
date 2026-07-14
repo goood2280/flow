@@ -24107,4 +24107,53 @@ def flowi_edm_execute(req: FlowiEdmExecuteReq, request: Request):
         }
     proposal = stored.get("proposal") if isinstance(stored.get("proposal"), dict) else {}
     action_type = str(proposal.get("action_type") or "")
-    payload = proposal.get("pay
+    payload = proposal.get("payload") if isinstance(proposal.get("payload"), dict) else {}
+    if action_type in {"rollback_file", "edit_file"} and not _flowi_edm_can_write(me):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+
+    from routers import filebrowser as fb
+
+    if action_type == "rollback_file":
+        result = fb.rollback_base_file(
+            fb.BaseFileRollbackReq(
+                file=str(payload.get("file") or ""),
+                version=str(payload.get("version") or ""),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i EDM rollback"),
+            ),
+            request,
+        )
+    elif action_type == "edit_file":
+        result = fb.save_base_text_file(
+            fb.BaseTextFileSaveReq(
+                file=str(payload.get("file") or ""),
+                text=str(payload.get("text") or ""),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i EDM text edit"),
+            ),
+            request,
+        )
+    elif action_type == "save_schema_snapshot":
+        schema = payload.get("schema") if isinstance(payload.get("schema"), dict) else {}
+        result = fb.save_schema_snapshot(
+            fb.SchemaSnapshotReq(
+                source_type=str(schema.get("source_type") or ""),
+                root=str(schema.get("root") or ""),
+                product=str(schema.get("product") or ""),
+                file=str(schema.get("file") or ""),
+                columns=list(schema.get("columns") or []),
+                total_rows=schema.get("total_rows"),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i schema snapshot"),
+            ),
+            request,
+        )
+    else:
+        raise HTTPException(400, f"unsupported EDM action: {action_type}")
+
+    stored["executed"] = True
+    stored["executed_at"] = datetime.now(timezone.utc).isoformat()
+    stored["executed_by"] = me.get("username") or "user"
+    stored["result"] = result
+    save_json(fp, stored, indent=2)
+    return {"ok": True, "proposal_id": req.proposal_id, "action_type": action_type, "result": result}

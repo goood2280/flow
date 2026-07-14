@@ -161,7 +161,7 @@ def _build_markdown(target: str, group_events: list[dict[str, Any]]) -> tuple[st
     )
     try:
         from core import llm_adapter
-        if not llm_adapter.is_available():
+        if not llm_adapter.is_available() or not llm_adapter.should_attempt_llm():
             return fallback_title, fallback_body
         system = (
             "You are Flow-i's wiki drafter. Summarize related Knowledge events into a Korean "
