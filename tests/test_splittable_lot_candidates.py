@@ -68,18 +68,19 @@ def test_root_lot_ram_cache_settings_read_splittable_source_config(tmp_path, mon
     cfg = tmp_path / "source_config.json"
     cfg.write_text(json.dumps({
         "root_lot_cache": {
-            "prefixes": ["AZ", "B9", "AZ"],
-            "prefix_limit": 25,
+            "step_ids": ["S100", "s200", "S100"],
             "searched_limit": 7,
+            "target_roots": 800,
         },
     }), encoding="utf-8")
     monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
 
     settings = ml_table_lookup.root_ram_cache_settings()
 
-    assert settings["prefixes"] == ["AZ", "B9"]
-    assert settings["prefix_limit"] == 25
+    assert settings["step_ids"] == ["S100", "S200"]
     assert settings["searched_limit"] == 7
+    assert settings["target_roots"] == 800
+    assert "prefixes" not in settings
 
 
 def test_root_lot_ram_cache_settings_cap_at_50000(tmp_path, monkeypatch):
@@ -87,27 +88,28 @@ def test_root_lot_ram_cache_settings_cap_at_50000(tmp_path, monkeypatch):
     cfg = tmp_path / "source_config.json"
     cfg.write_text(json.dumps({
         "root_lot_cache": {
-            "prefixes": ["AZ"],
-            "prefix_limit": 60000,
+            "step_ids": ["S100"],
             "searched_limit": 70000,
+            "target_roots": 70000,
         },
     }), encoding="utf-8")
     monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
 
     settings = ml_table_lookup.root_ram_cache_settings()
     normalized = splittable._normalize_root_lot_cache_settings({
-        "prefixes": ["AZ"],
-        "prefix_limit": 60000,
+        "step_ids": ["S100"],
         "searched_limit": 70000,
+        "target_roots": 70000,
     })
 
-    assert settings["prefix_limit"] == 50000
     assert settings["searched_limit"] == 50000
-    assert normalized["prefix_limit"] == 50000
+    assert settings["target_roots"] == 50000
+    assert normalized["step_ids"] == ["S100"]
     assert normalized["searched_limit"] == 50000
+    assert normalized["target_roots"] == 50000
 
 
-def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monkeypatch):
+def test_root_lot_ram_cache_refresh_uses_step_and_recent_search(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
 
     class DummyPaths:
@@ -120,13 +122,14 @@ def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monk
     cfg = tmp_path / "source_config.json"
     cfg.write_text(json.dumps({
         "root_lot_cache": {
-            "prefixes": ["AZ"],
-            "prefix_limit": 10,
+            "step_ids": ["S100"],
             "searched_limit": 1,
         },
     }), encoding="utf-8")
     monkeypatch.setattr(ml_table_lookup, "ROOT_RAM_CACHE_SETTINGS_FILE", cfg)
     monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", "1")
+    # step 무관 latest fallback 을 끈다 — step 통과 lot 과 searched 만 검증.
+    monkeypatch.setenv("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_RECENT_ROOTS", "0")
 
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
@@ -135,25 +138,35 @@ def test_root_lot_ram_cache_refresh_uses_prefix_and_recent_search(tmp_path, monk
         "KNOB_A": ["R1", "R2", "R3"],
     }).write_parquet(fp)
     ml_table_lookup.build_lookup_cache(fp, force=True)
+    # latest cache: AZ1000 은 step S100 통과, C1000 은 S200 → step 필터에서 제외.
+    latest_dir = DummyPaths.db_cache_dir
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        "product": ["PRODA", "PRODA", "PRODA"],
+        "root_lot_id": ["AZ1000", "B1000", "C1000"],
+        "wafer_id": ["1", "1", "1"],
+        "lot_id": ["AZ1000", "B1000", "C1000"],
+        "step_id": ["S100", "S200", "S200"],
+        "tkout_time": ["2026-07-14 03:00", "2026-07-14 02:00", "2026-07-14 01:00"],
+    }).write_parquet(latest_dir / "lot_progress_latest_lot_by_root_wafer.parquet")
     ml_table_lookup.record_root_access(fp, "B1000")
 
     result = ml_table_lookup.refresh_root_lot_ram_cache(product="ML_TABLE_PRODA", force=True)
     roots = {row["root_lot_id"] for row in ml_table_lookup.root_ram_cache_status(include_detail=True)["roots"]}
 
-    assert result["products"][0]["prefix_roots"] == 1
+    assert result["products"][0]["step_roots"] == 1
     assert result["products"][0]["searched_roots"] == 1
     assert {"AZ1000", "B1000"} <= roots
     assert "C1000" not in roots
 
 
-def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeypatch):
+def test_root_lot_ram_cache_refresh_groups_step_before_other(tmp_path, monkeypatch):
     _reset_product_ram_cache(monkeypatch)
     monkeypatch.setattr(ml_table_lookup, "_cache_root", lambda: tmp_path / "lookup_cache")
     cfg = tmp_path / "source_config.json"
     cfg.write_text(json.dumps({
         "root_lot_cache": {
-            "prefixes": ["AZ"],
-            "prefix_limit": 0,
+            "step_ids": ["S100"],
             "searched_limit": 3,
         },
     }), encoding="utf-8")
@@ -163,18 +176,20 @@ def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeyp
 
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
-        "root_lot_id": ["B1000", "AZ2000", "AZ1000"],
+        "root_lot_id": ["B1000", "S2000", "S1000"],
         "wafer_id": ["1", "1", "1"],
         "KNOB_A": ["R1", "R2", "R3"],
     }).write_parquet(fp)
     ml_table_lookup.build_lookup_cache(fp, force=True)
     monkeypatch.setattr(ml_table_lookup, "resolve_ml_table_file", lambda **_kwargs: fp)
-    # latest cache(카노니컬 parquet / lot_progress)는 이 테스트의 관심사가 아니므로
-    # 격리한다 — searched 우선순위와 prefix 그룹핑만 검증.
-    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", lambda *_a, **_k: [])
-    ml_table_lookup.record_root_access(fp, "AZ1000")
+
+    # step 통과 lot 소스를 격리해 후보 조립/그룹핑만 검증(S2000, S1000 이 step 통과).
+    def fake_latest(_fp, _limit, *, step_ids=None):
+        return ["S2000", "S1000"] if step_ids else []
+    monkeypatch.setattr(ml_table_lookup, "_recent_root_lot_ids_from_latest_cache", fake_latest)
+    ml_table_lookup.record_root_access(fp, "S1000")
     time.sleep(0.01)
-    ml_table_lookup.record_root_access(fp, "AZ2000")
+    ml_table_lookup.record_root_access(fp, "S2000")
     time.sleep(0.01)
     ml_table_lookup.record_root_access(fp, "B1000")
 
@@ -183,14 +198,14 @@ def test_root_lot_ram_cache_refresh_groups_prefix_before_other(tmp_path, monkeyp
     status = ml_table_lookup.root_ram_cache_status(fp, include_detail=True)
     roots = status["roots"]
 
-    assert product["prefix_roots"] == 0
-    assert product["prefix_target_roots"] == 2
+    assert product["step_roots"] == 2
+    assert product["step_target_roots"] == 2
     assert product["other_target_roots"] == 1
     # 우선순위 ① searched(무조건 최우선 포함) → 최근 검색순으로 앞에 온다.
-    assert [row["root_lot_id"] for row in roots] == ["B1000", "AZ2000", "AZ1000"]
+    assert [row["root_lot_id"] for row in roots] == ["B1000", "S2000", "S1000"]
     assert {row["root_lot_id"]: row["cache_group"] for row in roots} == {
-        "AZ1000": "prefix",
-        "AZ2000": "prefix",
+        "S1000": "step",
+        "S2000": "step",
         "B1000": "other",
     }
 

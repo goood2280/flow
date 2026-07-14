@@ -40,16 +40,16 @@ const COLOR_PREFIXES=["KNOB","MASK"];
 const CANDIDATE_PREVIEW_LIMIT=50;
 const CANDIDATE_SEARCH_LIMIT=120;
 const ROOT_LOT_CACHE_LIMIT_MAX=50000;
-const ROOT_LOT_CACHE_DEFAULT={prefixes:["AZ"],prefix_limit:5000,searched_limit:50};
+const ROOT_LOT_CACHE_DEFAULT={step_ids:[],searched_limit:1000,target_roots:1000};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
 const normalizeRootLotCacheSettings=(raw={})=>{
   const src=raw&&typeof raw==="object"?raw:{};
-  const prefixRaw=Array.isArray(src.prefixes)?src.prefixes:String(src.prefixes||"").split(",");
-  const prefixes=[];const seen=new Set();
-  prefixRaw.forEach(item=>{
+  const stepRaw=Array.isArray(src.step_ids)?src.step_ids:String(src.step_ids||"").split(",");
+  const step_ids=[];const seen=new Set();
+  stepRaw.forEach(item=>{
     const p=String(item||"").trim().toUpperCase();
     if(!p||seen.has(p))return;
-    seen.add(p);prefixes.push(p);
+    seen.add(p);step_ids.push(p);
   });
   const num=(key, fallback)=>{
     const n=Number(src[key]);
@@ -57,19 +57,19 @@ const normalizeRootLotCacheSettings=(raw={})=>{
     return Math.max(0,Math.min(ROOT_LOT_CACHE_LIMIT_MAX,Math.floor(n)));
   };
   return {
-    prefixes:prefixes.length?prefixes:[...ROOT_LOT_CACHE_DEFAULT.prefixes],
-    prefix_limit:num("prefix_limit",ROOT_LOT_CACHE_DEFAULT.prefix_limit),
+    step_ids,
     searched_limit:num("searched_limit",ROOT_LOT_CACHE_DEFAULT.searched_limit),
+    target_roots:num("target_roots",ROOT_LOT_CACHE_DEFAULT.target_roots),
   };
 };
 const rootLotCacheDraftFromSettings=(raw={})=>{
   const s=normalizeRootLotCacheSettings(raw);
-  return {...s,prefixText:s.prefixes.join(", ")};
+  return {...s,stepText:s.step_ids.join(", ")};
 };
 const settingsFromRootLotCacheDraft=(draft={})=>normalizeRootLotCacheSettings({
-  prefixes:String(draft.prefixText||"").split(","),
-  prefix_limit:draft.prefix_limit,
+  step_ids:String(draft.stepText||"").split(","),
   searched_limit:draft.searched_limit,
+  target_roots:draft.target_roots,
 });
 const isInlineVmSplitParam=(value)=>{
   const v=String(value||"").trim().toUpperCase();
@@ -1553,21 +1553,21 @@ export default function My_SplitTable({user}){
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>Root lot RAM cache</div>
                   <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    cached {rc.hit_roots||0} roots (prefix {rc.prefix_hit_roots||0} / other {rc.other_hit_roots||0}) · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB · CPU {Number(rc.cpu_budget_cores||0).toFixed(1)} cores
+                    cached {rc.hit_roots||0} roots (step {rc.step_hit_roots||0} / other {rc.other_hit_roots||0}) · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB · CPU {Number(rc.cpu_budget_cores||0).toFixed(1)} cores
                   </span>
                   <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    prefix {(settings.prefixes||[]).join(",")||"-"} · max {settings.prefix_limit||0} · searched {settings.searched_limit||0}
+                    step {(settings.step_ids||[]).join(",")||"-"} · target {settings.target_roots||0} · searched {settings.searched_limit||0}
                   </span>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,alignItems:"center"}}>
-                  <input value={rootLotCacheDraft.prefixText||""} onChange={e=>setRootLotCacheDraft(d=>({...d,prefixText:e.target.value}))}
-                    placeholder="AZ, A9" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.prefix_limit}
-                    onChange={e=>setRootLotCacheDraft(d=>({...d,prefix_limit:e.target.value}))}
-                    title="prefix 대상 최대 캐싱 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                  <input value={rootLotCacheDraft.stepText||""} onChange={e=>setRootLotCacheDraft(d=>({...d,stepText:e.target.value}))}
+                    placeholder="step_id (예: 6000, 7200)" title="이 step 들을 지난(통과=tkout) lot 을 tkout_time 최신순으로 메모리 캐싱" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.target_roots}
+                    onChange={e=>setRootLotCacheDraft(d=>({...d,target_roots:e.target.value}))}
+                    title="상시 메모리에 유지할 총 root 개수 목표 (약 1000)" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
                   <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.searched_limit}
                     onChange={e=>setRootLotCacheDraft(d=>({...d,searched_limit:e.target.value}))}
-                    title="prefix가 안 맞아도 유지할 최근 검색 root lot 개수" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
+                    title="검색된 root lot 을 유지할 최대 개수(무조건 최우선 포함)" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
                   <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}
                     style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:rootLotCacheSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
                     {rootLotCacheSaveBusy?"저장 중":"설정 저장"}

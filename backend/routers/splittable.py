@@ -805,6 +805,7 @@ def _scan_product_base_lookup_cache(
     if ram_lf is not None:
         if runtime_profile is not None:
             runtime_profile["product_cache_hit"] = True
+            runtime_profile["root_data_source"] = "product_ram"
         try:
             lot_col, wf_col = _detect_lot_wafer(ram_lf, product)
             return _filter_lot_wafer(ram_lf, lot_col, wf_col, root_lot_id, wafer_ids)
@@ -814,7 +815,7 @@ def _scan_product_base_lookup_cache(
     try:
         if fp.suffix.lower() != ".parquet":
             return None
-        lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root_lot_id, wafer_ids=wafer_ids)
+        lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root_lot_id, wafer_ids=wafer_ids, profile=runtime_profile)
         if runtime_profile is not None:
             runtime_profile["root_cache_status"] = status.get("status") or ""
             runtime_profile["root_cache_hit"] = lf is not None
@@ -3761,23 +3762,21 @@ def _migrate_legacy_root_prefix(cfg: dict) -> dict:
 
 def _normalize_root_lot_cache_settings(raw: dict | None) -> dict:
     data = raw if isinstance(raw, dict) else {}
-    prefixes_raw = data.get("prefixes")
-    if isinstance(prefixes_raw, str):
-        prefix_parts = prefixes_raw.replace("\n", ",").split(",")
-    elif isinstance(prefixes_raw, (list, tuple, set)):
-        prefix_parts = list(prefixes_raw)
+    step_raw = data.get("step_ids")
+    if isinstance(step_raw, str):
+        step_parts = step_raw.replace("\n", ",").split(",")
+    elif isinstance(step_raw, (list, tuple, set)):
+        step_parts = list(step_raw)
     else:
-        prefix_parts = []
-    prefixes = []
+        step_parts = []
+    step_ids = []
     seen = set()
-    for item in prefix_parts:
-        prefix = str(item or "").strip().upper()
-        if not prefix or prefix in seen:
+    for item in step_parts:
+        step = str(item or "").strip().upper()
+        if not step or step in seen:
             continue
-        seen.add(prefix)
-        prefixes.append(prefix)
-    if not prefixes:
-        prefixes = ["AZ"]
+        seen.add(step)
+        step_ids.append(step)
 
     def _num(key: str, default: int) -> int:
         try:
@@ -3787,8 +3786,7 @@ def _normalize_root_lot_cache_settings(raw: dict | None) -> dict:
         return max(0, min(ROOT_LOT_CACHE_LIMIT_MAX, value))
 
     return {
-        "prefixes": prefixes,
-        "prefix_limit": _num("prefix_limit", 5000),
+        "step_ids": step_ids,
         "searched_limit": _num("searched_limit", 1000),
         "target_roots": _num("target_roots", 1000),
     }
@@ -7491,11 +7489,15 @@ def root_lot_ram_cache_status(request: Request, product: str = Query("")):
             source_fp = _product_path(product)
         except Exception:
             source_fp = None
-    return {
+    out = {
         "ok": True,
         "settings": _ml_table_lookup.root_ram_cache_settings(),
         "cache": _ml_table_lookup.root_ram_cache_status(source_fp, include_detail=include_detail),
     }
+    # 관리자에게만 최근 검색 타이밍 breakdown 을 노출한다.
+    if include_detail:
+        out["recent_searches"] = recent_search_timings(limit=30)
+    return out
 
 
 @router.post("/root-lot-cache/refresh")
@@ -9196,13 +9198,36 @@ def _split_view_cache_stats(hit: bool, key: tuple | None = None, *, stale: bool 
     }
 
 
+def _split_view_data_source_label(src: dict, *, payload_cache_hit: bool) -> str:
+    """검색이 실제로 어느 계층에서 데이터를 얻었는지 한 단어로 분류.
+
+    payload_cache: 응답 전체 캐시 히트(가장 빠름) · pivot_cache: per-root pivot 캐시 ·
+    product_ram/ram: 메모리 캐시 히트 · ram_load: 첫 검색으로 파티션을 메모리 적재 ·
+    disk: 파티션 parquet 디스크 스캔(첫 검색) · raw/fallback: 캐시 없이 원본 경로.
+    """
+    if payload_cache_hit:
+        return "payload_cache"
+    ds = str(src.get("root_data_source") or "").strip()
+    if ds:
+        return ds
+    if src.get("product_cache_hit"):
+        return "product_ram"
+    if src.get("root_cache_hit"):
+        return "root_cache"
+    return "raw"
+
+
 def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *, payload_cache_hit: bool) -> dict:
     src = runtime_profile or {}
+    data_source = _split_view_data_source_label(src, payload_cache_hit=payload_cache_hit)
     return {
         "total_ms": round((time.perf_counter() - started) * 1000.0, 3),
         "root_cache_hit": bool(src.get("root_cache_hit")),
         "product_cache_hit": bool(src.get("product_cache_hit")),
         "payload_cache_hit": bool(payload_cache_hit),
+        "data_source": data_source,
+        "scan_ms": round(float(src.get("scan_ms") or 0.0), 3),
+        "root_scan_ms": round(float(src.get("root_scan_ms") or 0.0), 3),
         "collect_ms": round(float(src.get("collect_ms") or 0.0), 3),
         "matrix_ms": round(float(src.get("matrix_ms") or 0.0), 3),
         "overlay_ms": round(float(src.get("overlay_ms") or 0.0), 3),
@@ -9220,9 +9245,55 @@ def _split_view_finish_payload(
     view_stale: bool = False,
 ) -> dict:
     out = dict(payload)
-    out["runtime_profile"] = _split_view_runtime_profile(started, runtime_profile, payload_cache_hit=payload_cache_hit)
+    rp = _split_view_runtime_profile(started, runtime_profile, payload_cache_hit=payload_cache_hit)
+    out["runtime_profile"] = rp
     out["view_cache"] = _split_view_cache_stats(payload_cache_hit, view_cache_key, stale=view_stale)
+    _record_search_timing(out, rp)
     return out
+
+
+# ── SplitTable 검색 타이밍 로그 (관리자 breakdown 용) ──────────────────────────
+# 최근 검색들의 단계별 소요시간을 링버퍼에 보관해 관리자 화면에서 "메모리 캐시
+# 히트일 때 속도 / 첫 검색(DB 조회) 시 단계별 breakdown" 을 보여준다.
+_SEARCH_TIMING_LOG_MAX = 50
+_SEARCH_TIMING_LOG: deque = deque(maxlen=_SEARCH_TIMING_LOG_MAX)
+_SEARCH_TIMING_LOCK = threading.Lock()
+
+
+def _record_search_timing(payload: dict, rp: dict) -> None:
+    try:
+        root = str(payload.get("root_lot_id") or "").strip()
+        if not root:
+            return
+        rows = payload.get("rows")
+        row_count = len(rows) if isinstance(rows, list) else 0
+        entry = {
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "product": str(payload.get("product") or ""),
+            "root_lot_id": root,
+            "data_source": rp.get("data_source") or "",
+            "total_ms": rp.get("total_ms") or 0.0,
+            "scan_ms": rp.get("scan_ms") or 0.0,
+            "root_scan_ms": rp.get("root_scan_ms") or 0.0,
+            "collect_ms": rp.get("collect_ms") or 0.0,
+            "matrix_ms": rp.get("matrix_ms") or 0.0,
+            "overlay_ms": rp.get("overlay_ms") or 0.0,
+            "root_cache_hit": bool(rp.get("root_cache_hit")),
+            "payload_cache_hit": bool(rp.get("payload_cache_hit")),
+            "row_count": row_count,
+            "cache_status": rp.get("root_cache_status") or "",
+        }
+        with _SEARCH_TIMING_LOCK:
+            _SEARCH_TIMING_LOG.append(entry)
+    except Exception:
+        pass
+
+
+def recent_search_timings(limit: int = 50) -> list[dict]:
+    with _SEARCH_TIMING_LOCK:
+        items = list(_SEARCH_TIMING_LOG)
+    items.reverse()
+    return items[:max(1, int(limit or 50))]
 
 
 def _view_global_stat_sig() -> tuple:
@@ -9888,7 +9959,7 @@ def _split_view_large_root_cache_or_defer(
     # 서빙하고 백그라운드 재빌드만 예약한다(allow_stale). 데이터 갱신 직후마다
     # 소스 전체를 재스캔(5~10초)하던 것을 파티션 인덱스 읽기로 대체 — 이 stale
     # 구간이 SplitTable 검색이 캐시가 있어도 느리던 주원인이었다.
-    lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids, allow_stale=True)
+    lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root, wafer_ids=wafer_ids, allow_stale=True, profile=runtime_profile)
     runtime_profile["root_cache_status"] = status.get("status") or ""
     runtime_profile["root_cache_hit"] = lf is not None
     runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, {})
@@ -9988,10 +10059,12 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     runtime_profile = {
         "root_cache_hit": False,
         "product_cache_hit": False,
+        "scan_ms": 0.0,
         "collect_ms": 0.0,
         "matrix_ms": 0.0,
         "overlay_ms": 0.0,
         "root_cache_status": "",
+        "root_data_source": "",
     }
     _history_mode = (history_mode or "all").strip().lower() or "all"
     if _history_mode not in ("all", "final", "lot_all"):
@@ -10084,7 +10157,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     try:
         if pivot_base_lf is not None:
             base_lf = pivot_base_lf
+            runtime_profile["root_data_source"] = "pivot_cache"
         else:
+            _scan_started = time.perf_counter()
             base_lf, deferred_payload = _split_view_large_root_cache_or_defer(
                 product,
                 root_lot_id,
@@ -10097,8 +10172,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 history_mode=_history_mode,
                 force_defer_raw_fallback=cache_first_enabled,
             )
+            runtime_profile["scan_ms"] = float(runtime_profile.get("scan_ms") or 0.0) + (time.perf_counter() - _scan_started) * 1000.0
             if deferred_payload is not None:
                 return deferred_payload
+        _scanprod_started = time.perf_counter()
         lf = _scan_product(
             product,
             root_lot_id=root_lot_id,
@@ -10107,6 +10184,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             base_lf=base_lf,
             runtime_profile=runtime_profile,
         )
+        # _scan_product 은 base_lf(파티션/RAM) + latest-lot/fab override join 을
+        # lazy 로 구성한다(실제 실행은 뒤 collect). 여기서는 그 구성 시간을 scan_ms 에
+        # 합산 — DB-first 경로에서 join 준비 비용을 breakdown 에 노출한다.
+        runtime_profile["scan_ms"] = float(runtime_profile.get("scan_ms") or 0.0) + (time.perf_counter() - _scanprod_started) * 1000.0
         lot_col, wf_col = _detect_lot_wafer(lf, product)
         # v8.4.4/v8.8.3: fab_lot_col — 매뉴얼 override > 자동 추론 > "fab_lot_id".
         fab_lot_col = "fab_lot_id"
