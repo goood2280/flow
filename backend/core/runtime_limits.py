@@ -2,11 +2,15 @@
 
 The default resource profile is intentionally bounded for a shared Flow host.
 Budgets are derived from the detected host at startup — CPU budget is
-(cores - 1) and the process RSS limit is ~65% of total memory (cgroup limits
+(cores - 1) and the process RSS limit is ~80% of total memory (cgroup limits
 and FLOW_SYSTEM_MEMORY_TOTAL_GB overrides honored) — so the same build adapts
 when the machine changes. Operators can still pin exact values with
-FLOW_CPU_BUDGET_CORES / FLOW_PROCESS_MEMORY_LIMIT_GB or opt into the `full`
-profile.
+FLOW_CPU_BUDGET_CORES / FLOW_PROCESS_MEMORY_LIMIT_GB, retune the fraction with
+FLOW_PROCESS_MEMORY_LIMIT_FRACTION, or opt into the `full` profile.
+
+Note: above the limit the guard consults real host/container memory pressure
+(not RSS alone) unless FLOW_PROCESS_MEMORY_LIMIT_STRICT=1, because Python/Polars
+keep reclaimable arenas and mmap'd file pages resident in RSS.
 
 These defaults should run before importing Polars, NumPy, or other native
 compute libraries.
@@ -22,6 +26,11 @@ import time
 _SMALL_PROFILES = {"", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
 _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
+# RSS 상한 = 총 메모리 × 이 비율. Python/Polars 는 큰 스캔 후에도 allocator arena·
+# mmap 파일 캐시로 RSS 가 높게 유지돼(특히 Windows/비-cgroup 환경에선 회수 가능한
+# 파일 캐시까지 RSS 로 계상됨) 0.65 는 10GB 급 호스트에서 상시 상한 초과를 유발했다.
+# 0.80 으로 올려 10GB→8.0 / 12GB→9.6 / 16GB→12.8 처럼 환경별로 여유 있게 잡는다.
+_PROCESS_MEMORY_LIMIT_FRACTION_DEFAULT = 0.80
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
 _PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
@@ -101,11 +110,25 @@ def auto_cpu_budget_cores() -> float:
     return max(1.0, effective_cpu_count() - 1.0)
 
 
+def process_memory_limit_fraction() -> float:
+    """Fraction of total memory used as the process RSS soft limit.
+
+    Default 0.80 (env FLOW_PROCESS_MEMORY_LIMIT_FRACTION). Clamped to a sane
+    band so a mis-set value cannot starve the host or disable the guard."""
+    return _env_float(
+        "FLOW_PROCESS_MEMORY_LIMIT_FRACTION",
+        _PROCESS_MEMORY_LIMIT_FRACTION_DEFAULT,
+        0.3,
+        0.95,
+    )
+
+
 def auto_process_memory_limit_gb() -> float:
-    """Host-proportional RSS limit: ~65% of detected total memory.
+    """Host-proportional RSS limit: ~80% of detected total memory.
 
     Falls back to the fixed small-profile default when total memory cannot
-    be detected. Detection honors cgroup limits and env overrides."""
+    be detected. Detection honors cgroup limits and env overrides. The
+    fraction is tunable via FLOW_PROCESS_MEMORY_LIMIT_FRACTION."""
     total_bytes = 0.0
     override = _memory_override_total_bytes()
     if override:
@@ -118,7 +141,7 @@ def auto_process_memory_limit_gb() -> float:
     if total_bytes <= 0:
         return _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT
     total_gb = total_bytes / (1024 ** 3)
-    return max(2.0, round(total_gb * 0.65, 1))
+    return max(2.0, round(total_gb * process_memory_limit_fraction(), 1))
 
 
 def cpu_budget_cores() -> float:
@@ -496,25 +519,30 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
         return False
     snap = process_memory_snapshot()
     rss = float(snap.get("process_rss_gb") or 0.0)
-    if rss >= limit:
-        return True
-    rss_high = rss >= max(0.0, limit - max(0.0, reserve_gb))
-    if not rss_high:
+
+    # Below the soft floor (limit - reserve): always plenty of headroom.
+    soft_floor = max(0.0, limit - max(0.0, reserve_gb))
+    if rss < soft_floor:
         return False
+
     if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", False):
+        # Legacy behavior: RSS alone gates — any RSS in or above the soft band
+        # (rss >= limit - reserve, already true here) blocks new work.
         return True
 
-    # Soft band (limit - reserve <= rss < limit): Python/Polars RSS stays high
-    # after a big scan (allocator arena/mmap cache) even when the host has
-    # ample free memory, so RSS alone is a false signal here. Default on every
-    # profile is to refuse new work only when the host/container memory is
-    # genuinely tight — user queries/downloads keep working and background
-    # builders keep running instead of stalling on stale RSS. Operators can
-    # restore the old behavior with FLOW_PROCESS_MEMORY_LIMIT_STRICT=1.
-    # The hard cap (rss >= limit) above is unaffected.
+    # Non-strict default (every profile): once RSS is near/over the limit it is
+    # an UNRELIABLE OOM signal — Python/Polars keep allocator arenas and mmap'd
+    # parquet pages resident (on Windows / non-cgroup hosts the reclaimable file
+    # cache is counted in RSS too), so a high-but-reclaimable RSS would otherwise
+    # trip the guard *permanently*. That death spiral is what starved the
+    # ML_TABLE / lookup / RAM cache builders and made every heavy read 503.
+    # Gate on the real host/container memory pressure — the true OOM predictor —
+    # instead of RSS. Refuse new work only when memory is genuinely tight.
+    # Restore the old RSS-only cap with FLOW_PROCESS_MEMORY_LIMIT_STRICT=1.
     if float(snap.get("system_memory_total_gb") or 0.0) > 0:
         return bool(snap.get("system_memory_low"))
-    return True
+    # No host memory signal available: fall back to the hard RSS cap.
+    return bool(rss >= limit)
 
 
 def _default_polars_threads() -> str:

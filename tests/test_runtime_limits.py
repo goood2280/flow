@@ -34,10 +34,10 @@ def test_small_profile_derives_budget_from_detected_host(monkeypatch):
         },
     )
 
-    # 코어 5개 -> 예산 4 (1개는 OS/이벤트 루프 몫), 메모리 16GB -> 65% = 10.4GB.
+    # 코어 5개 -> 예산 4 (1개는 OS/이벤트 루프 몫), 메모리 16GB -> 80% = 12.8GB.
     assert runtime_limits.effective_cpu_count() == 5
     assert runtime_limits.cpu_budget_cores() == 4.0
-    assert runtime_limits.process_memory_limit_gb() == 10.4
+    assert runtime_limits.process_memory_limit_gb() == 12.8
     assert runtime_limits._default_polars_threads() == "4"
 
 
@@ -166,7 +166,14 @@ def test_process_cpu_snapshot_flags_core_budget_overage(monkeypatch):
     assert snap["process_cpu_over_limit"] is True
 
 
-def test_process_memory_high_blocks_at_hard_process_limit(monkeypatch):
+def test_over_limit_does_not_block_when_host_memory_is_free(monkeypatch):
+    """RSS가 하드 한도를 넘어도 호스트 여유가 충분하면 거절하지 않는다 — 핵심 수정.
+
+    Python/Polars 는 회수 가능한 arena/mmap 페이지로 RSS 가 한도 위에 상주하므로
+    RSS 단독은 신뢰할 수 없는 OOM 신호다. 실제 호스트/컨테이너 압박(system_memory_low)
+    만 본다. 예전엔 rss>=limit 에서 무조건 True 라 캐시 빌드/조회가 영구 차단(503)됐다.
+    """
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
     monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
     monkeypatch.setattr(
         runtime_limits,
@@ -174,6 +181,23 @@ def test_process_memory_high_blocks_at_hard_process_limit(monkeypatch):
         lambda: {
             "process_rss_gb": 10.01,
             "system_memory_total_gb": 128.0,
+            "system_memory_low": False,
+        },
+    )
+
+    assert runtime_limits.process_memory_high(reserve_gb=1.0) is False
+
+
+def test_over_limit_blocks_when_no_host_memory_signal(monkeypatch):
+    """호스트 메모리 신호가 없으면 하드 RSS 한도로 안전하게 폴백한다."""
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_STRICT", raising=False)
+    monkeypatch.setenv("FLOW_PROCESS_MEMORY_LIMIT_GB", "10")
+    monkeypatch.setattr(
+        runtime_limits,
+        "process_memory_snapshot",
+        lambda: {
+            "process_rss_gb": 10.01,
+            "system_memory_total_gb": 0.0,
             "system_memory_low": False,
         },
     )
