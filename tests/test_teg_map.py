@@ -70,6 +70,8 @@ def teg_env(tmp_path, monkeypatch):
 
 def test_map_payload_and_radius(teg_env):
     kx, ky, cx, cy = _write_demo_files(teg_env)
+    # 데모 파일의 ebeam 값은 mm 단위 — 기본 배율(µm, 0.001)이 아니라 1.0 을 명시.
+    teg_map.save_cfg({"ebeam_scale": 1.0})
     payload = teg_map.map_payload("VH_T")
     geo = payload["geometry"]
     assert geo["fit"] == "radius"
@@ -77,9 +79,9 @@ def test_map_payload_and_radius(teg_env):
     assert geo["ky"] == pytest.approx(ky, abs=1e-4)
     assert geo["wafer_edge_mm"] == pytest.approx(147.0)
     assert payload["tegs"][0]["teg"] == "TEG_A"
-    # teg_w/teg_h 열 없음 → TEG 기본 사이즈로 채움
-    assert payload["tegs"][0]["teg_w"] == pytest.approx(2.0)
-    assert payload["tegs"][0]["teg_h"] == pytest.approx(2.0)
+    # teg_w/teg_h 열 없음 → TEG 기본 사이즈로 채움 (기본 3000×100µm = 3.0×0.1mm)
+    assert payload["tegs"][0]["teg_w"] == pytest.approx(3.0)
+    assert payload["tegs"][0]["teg_h"] == pytest.approx(0.1)
     assert payload["display"]["mode"] == "none"
 
     # shot (5,6) = wafer 중심 → TEG_A 좌하단 radius = hypot(-5,-3)
@@ -93,9 +95,35 @@ def test_map_payload_and_radius(teg_env):
 
 def test_teg_size_from_file_overrides_default(teg_env):
     _write_demo_files(teg_env, with_teg_size=True)
+    # 데모 파일의 teg_w/teg_h 는 mm 단위 — 배율 1.0 명시.
+    teg_map.save_cfg({"ebeam_scale": 1.0})
     payload = teg_map.map_payload("VH_T")
     assert payload["tegs"][0]["teg_w"] == pytest.approx(2.5)
     assert payload["tegs"][0]["teg_h"] == pytest.approx(1.5)
+
+
+def test_flat_zone_v_swaps_teg_size(teg_env):
+    _write_demo_files(teg_env)
+    # flat_zone: h=수평(기본), v=세움 — 가로가 높이가 된다 (w/h 스왑).
+    (teg_env / "Teg_location.csv").write_text(
+        "vehicle,teg,ebeam_x,ebeam_y,teg_w,teg_h,flat_zone\n"
+        "VH_T,TEG_H,-5.0,-3.0,2.5,1.5,h\n"
+        "VH_T,TEG_V,2.0,4.0,2.5,1.5,v\n"
+        "VH_T,TEG_D,1.0,1.0,2.5,1.5,\n",
+        encoding="utf-8")
+    teg_map.save_cfg({"ebeam_scale": 1.0})
+    payload = teg_map.map_payload("VH_T")
+    by_name = {t["teg"]: t for t in payload["tegs"]}
+    assert by_name["TEG_H"]["teg_w"] == pytest.approx(2.5)
+    assert by_name["TEG_H"]["teg_h"] == pytest.approx(1.5)
+    assert by_name["TEG_H"]["flat_zone"] == "h"
+    # v → 스왑
+    assert by_name["TEG_V"]["teg_w"] == pytest.approx(1.5)
+    assert by_name["TEG_V"]["teg_h"] == pytest.approx(2.5)
+    assert by_name["TEG_V"]["flat_zone"] == "v"
+    # 빈 값 → 기본 h
+    assert by_name["TEG_D"]["flat_zone"] == "h"
+    assert by_name["TEG_D"]["teg_w"] == pytest.approx(2.5)
 
 
 def test_map_payload_missing(teg_env):

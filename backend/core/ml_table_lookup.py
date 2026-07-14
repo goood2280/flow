@@ -28,6 +28,7 @@ from core.runtime_limits import (
     process_memory_high,
     process_memory_limit_gb,
     process_memory_snapshot,
+    system_memory_snapshot,
 )
 
 logger = logging.getLogger("flow.ml_table_lookup")
@@ -362,23 +363,56 @@ def _root_ram_cache_resource_guard_reason() -> tuple[str, dict[str, Any]]:
     return reason, snap
 
 
-def _root_ram_cache_auto_max_gb() -> float:
-    """Host-adaptive RAM-cache budget for recent/frequent/prefix root frames.
+ROOT_RAM_CACHE_AUTO_MIN_GB = 2.0
+ROOT_RAM_CACHE_AUTO_MAX_GB = 4.0
+_ROOT_RAM_AUTO_GB_TTL_SEC = 5.0
+_ROOT_RAM_AUTO_GB_LOCK = threading.Lock()
+_ROOT_RAM_AUTO_GB_CACHE: dict[str, tuple[float, float]] = {}
 
-    Small hosts must not hand the whole machine to the cache, but on the
-    operator's 10GB dev box (and 12~16GB prod) the fixed 3GB default left most
-    of the process RSS budget unused. Scale to ~40% of the process RSS limit,
-    clamped to [3GB, 8GB]. Env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB still
-    pins an exact value.
+
+def _root_ram_cache_auto_max_gb() -> float:
+    """현재 호스트 메모리 상황 기반 동적 예산 — [2GB, 4GB].
+
+    10GB급 호스트에서 고정 40%-of-limit 예산(3.2GB+)이 상주 RSS 를 밀어올려
+    메모리 가드 503(대시보드 등 heavy 경로 거절)을 유발했다. 예산을
+    `(현재 가용 + 캐시가 이미 점유한 양 - 가드 하한) × 0.4` 로 계산해
+    [2, 4]GB 로 클램프한다. 캐시 보유분을 되더해 "캐시가 가용치를 깎아 자기
+    예산을 줄이는" 피드백 루프를 상쇄 — 예산은 호스트의 다른 소비자가 얼마나
+    쓰는지에만 반응한다. 5s TTL 메모이즈로 snapshot 비용/값 요동을 제한.
+    Env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB 는 여전히 정확한 값을 고정.
     """
+    now = time.monotonic()
+    with _ROOT_RAM_AUTO_GB_LOCK:
+        cached = _ROOT_RAM_AUTO_GB_CACHE.get("v")
+        if cached is not None and now - cached[0] < _ROOT_RAM_AUTO_GB_TTL_SEC:
+            return cached[1]
+    lo, hi = ROOT_RAM_CACHE_AUTO_MIN_GB, ROOT_RAM_CACHE_AUTO_MAX_GB
+    budget = lo
     try:
-        limit_gb = float(process_memory_limit_gb() or 0.0)
+        snap = system_memory_snapshot()
+        avail_gb = float(snap.get("system_memory_available_gb") or 0.0)
+        min_avail_gb = float(snap.get("system_memory_min_available_gb") or 2.0)
+        total_gb = float(snap.get("system_memory_total_gb") or 0.0)
     except Exception:
-        limit_gb = 0.0
-    if limit_gb <= 0:
-        return ROOT_RAM_CACHE_MAX_GB_DEFAULT
-    scaled = round(limit_gb * 0.40, 1)
-    return max(ROOT_RAM_CACHE_MAX_GB_DEFAULT, min(8.0, scaled))
+        avail_gb = 0.0
+        min_avail_gb = 2.0
+        total_gb = 0.0
+    if total_gb > 0 and avail_gb > 0:
+        with _ROOT_RAM_CACHE_LOCK:
+            held_gb = _root_ram_total_bytes_locked() / (1024.0 ** 3)
+        slack_gb = max(0.0, (avail_gb + held_gb) - min_avail_gb)
+        budget = max(lo, min(hi, round(slack_gb * 0.4, 2)))
+    else:
+        # 호스트 메모리를 알 수 없으면 프로세스 한도 기반 폴백 (같은 밴드로 클램프).
+        try:
+            limit_gb = float(process_memory_limit_gb() or 0.0)
+        except Exception:
+            limit_gb = 0.0
+        if limit_gb > 0:
+            budget = max(lo, min(hi, round(limit_gb * 0.40, 1)))
+    with _ROOT_RAM_AUTO_GB_LOCK:
+        _ROOT_RAM_AUTO_GB_CACHE["v"] = (now, budget)
+    return budget
 
 
 def _root_ram_cache_max_bytes() -> int:

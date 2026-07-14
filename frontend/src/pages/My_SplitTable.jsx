@@ -225,6 +225,33 @@ export default function My_SplitTable({user}){
   const[prefixes,setPrefixes]=useState([]);const[selPrefixes,setSelPrefixes]=useState(["KNOB"]);
   const[customs,setCustoms]=useState([]);const[selCustom,setSelCustom]=useState("");const[isCustomMode,setIsCustomMode]=useState(false);
   const[viewMode,setViewMode]=useState("all");
+  // v9.2.x: 대형 결과(예: KNOB 1000행) 첫 페인트 <1s 보장 — 행을 점진 렌더.
+  //   초기 ROW_RENDER_INITIAL 행만 그리고, 하단 sentinel 이 보이면 CHUNK 씩 확장.
+  //   전체를 한 커밋에 그리면 1000행×25웨이퍼 기준 메인스레드가 2초+ 블로킹된다.
+  const ROW_RENDER_INITIAL=200, ROW_RENDER_CHUNK=300;
+  const[rowRenderLimit,setRowRenderLimit]=useState(ROW_RENDER_INITIAL);
+  const renderMoreRef=useRef(null);
+  useEffect(()=>{
+    const el=renderMoreRef.current;
+    if(!el)return;
+    const grow=()=>setRowRenderLimit(l=>l+ROW_RENDER_CHUNK);
+    const io=new IntersectionObserver(es=>{es.forEach(en=>{if(en.isIntersecting)grow();});},{rootMargin:"600px"});
+    io.observe(el);
+    // IO 콜백이 억제되는 임베디드/스로틀 환경 폴백 — 스크롤로 sentinel 에 근접하면 확장.
+    let scroller=el.parentElement;
+    while(scroller&&scroller.scrollHeight<=scroller.clientHeight+50)scroller=scroller.parentElement;
+    const target=scroller||window;
+    let last=0;
+    const onScroll=()=>{
+      const now=Date.now();
+      if(now-last<150)return;
+      last=now;
+      const r=el.getBoundingClientRect();
+      if(r.top<window.innerHeight+600)grow();
+    };
+    target.addEventListener("scroll",onScroll,{passive:true});
+    return()=>{io.disconnect();target.removeEventListener("scroll",onScroll);};
+  });
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
   const[showSplitCheckView,setShowSplitCheckView]=useState(false);
@@ -232,6 +259,8 @@ export default function My_SplitTable({user}){
   const[showMergedView,setShowMergedView]=useState(false);
   const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
+  // 새 검색 결과/표시 모드 변경 시 점진 렌더 한도를 초기화.
+  useEffect(()=>{setRowRenderLimit(ROW_RENDER_INITIAL);},[data,viewMode]);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
   const[showConfirm,setShowConfirm]=useState(false);
   // dbl-click inline edit: {cellKey, value, suggestions, param}
@@ -2075,7 +2104,8 @@ export default function My_SplitTable({user}){
           ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
         const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
-        const displayRows=viewRows;
+        // 점진 렌더: 한도까지만 그린다. slice(0,N) 이므로 행 인덱스(선택/paste)는 그대로 유효.
+        const displayRows=rowRenderLimit<viewRows.length?viewRows.slice(0,rowRenderLimit):viewRows;
         const normalizedSelection=selectedCellRange
           ? normalizeCellRange(selectedCellRange.startRow,selectedCellRange.startCol,selectedCellRange.endRow,selectedCellRange.endCol)
           : null;
@@ -2299,7 +2329,7 @@ export default function My_SplitTable({user}){
               <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontFamily:"monospace",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
                 {rootRowLabel}
               </th>
-              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{lotN===0&&<span style={{marginLeft:8,fontSize:14,fontWeight:600,color:"var(--accent)"}}>+ LOT 노트 ({drawerRoot})</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {displayRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
+              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{lotN===0&&<span style={{marginLeft:8,fontSize:14,fontWeight:600,color:"var(--accent)"}}>+ LOT 노트 ({drawerRoot})</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
               <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontFamily:"monospace",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0
@@ -2499,6 +2529,11 @@ export default function My_SplitTable({user}){
                   <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
                 </td>);})}
             </tr>);})}
+            {displayRows.length<viewRows.length&&<tr ref={renderMoreRef}>
+              <td colSpan={1+(data.headers?.length||0)} style={{padding:"10px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-secondary)"}}>
+                {displayRows.length} / {viewRows.length} 행 표시 — 스크롤하면 자동으로 더 표시됩니다
+              </td>
+            </tr>}
             <tr>
               <td onClick={promptCreateCustomTag} title="TAG 열 추가"
                 style={{padding:"7px 10px",fontWeight:800,fontSize:14,color:"rgba(37,99,235,0.95)",borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"rgba(59,130,246,0.08)",position:"sticky",left:0,zIndex:2,whiteSpace:"nowrap",cursor:"pointer",fontFamily:"monospace"}}>
