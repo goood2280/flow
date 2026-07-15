@@ -30,6 +30,15 @@ _CHUNK_SIZE_UNDER_MEMORY_PRESSURE = 2
 _CACHE_FORMAT_VERSION = 2
 _CACHE_FORMAT_MARKER = ".cache_format.json"
 
+# 증분 재빌드용 per-root 내용 지문. 소스 ML_TABLE 이 갱신돼도 대부분의 root 는
+# 내용이 그대로다 — 지문이 같은 root 는 collect/write 를 통째로 건너뛰어
+# "root 몇 개 갱신 = 전체 재빌드(수 분)" 를 "변경 root 만(수 초)" 로 줄인다.
+# 지문은 한 번의 스트리밍 스캔으로 계산하며, 파일이 없거나 스키마/해시 계산이
+# 실패하면 None 을 반환해 기존 전체 재빌드로 폴백한다.
+_ROOT_FINGERPRINT_FILE = ".root_fingerprints.json"
+# 해시 합이 Int64 를 넘지 않도록 32bit 소수로 접는다 (root 당 수만 행이어도 여유).
+_FINGERPRINT_FOLD_PRIME = 4294967291
+
 
 def _cache_format_matches(out_dir: Path) -> bool:
     try:
@@ -50,6 +59,50 @@ def _write_cache_format_marker(out_dir: Path) -> None:
 
 def _safe_root_filename(root_id: str) -> str:
     return f"{str(root_id).replace('/', '_').replace(chr(92), '_')}.parquet"
+
+
+def _compute_root_fingerprints(lf, key_expr) -> dict | None:
+    """Per-root (row_count, folded row-hash sum) in one streaming pass."""
+    try:
+        df = (
+            lf.with_columns(key_expr.alias("__root"))
+            .with_columns(
+                (pl.struct(pl.all().exclude("__root")).hash(seed=0)
+                 % _FINGERPRINT_FOLD_PRIME).cast(pl.Int64).alias("__h")
+            )
+            .group_by("__root")
+            .agg(pl.len().alias("n"), pl.col("__h").sum().alias("h"))
+            .collect()
+        )
+        return {
+            str(root): [int(n), int(h or 0)]
+            for root, n, h in df.iter_rows()
+            if root is not None
+        }
+    except Exception as e:
+        logger.warning("root fingerprint 계산 실패 — 전체 재빌드로 폴백: %s", e)
+        return None
+
+
+def _load_root_fingerprints(out_dir: Path) -> dict | None:
+    try:
+        data = json.loads((out_dir / _ROOT_FINGERPRINT_FILE).read_text("utf-8"))
+        if int(data.get("format") or 0) != _CACHE_FORMAT_VERSION:
+            return None
+        roots = data.get("roots")
+        return roots if isinstance(roots, dict) else None
+    except Exception:
+        return None
+
+
+def _save_root_fingerprints(out_dir: Path, fingerprints: dict) -> None:
+    try:
+        (out_dir / _ROOT_FINGERPRINT_FILE).write_text(
+            json.dumps({"format": _CACHE_FORMAT_VERSION, "roots": fingerprints}),
+            "utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
@@ -139,11 +192,6 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
         else:
             return False
 
-        unique_roots = (
-            lf.select(key_expr.alias("__root")).unique().collect()["__root"]
-            .drop_nulls().to_list()
-        )
-
         # 같은 포맷의 재빌드는 기존 per-root 파일을 지우지 않는다 — 빌드가 도는
         # 동안 SplitTable 조회는 이전 파일을 계속 서빙하고, root 단위 tmp→replace
         # 로만 새 데이터로 교체된다. 포맷 세대가 다른 legacy 캐시(전치형/잘못된
@@ -156,17 +204,35 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
                     pass
             _write_cache_format_marker(out_dir)
 
+        # 증분 재빌드: per-root 지문이 이전 빌드와 같고 파일도 살아 있으면 그
+        # root 는 건너뛴다. 지문 계산 실패(None)면 전체 재빌드.
+        fingerprints = _compute_root_fingerprints(lf, key_expr)
+        if fingerprints is not None:
+            unique_roots = list(fingerprints.keys())
+            previous = _load_root_fingerprints(out_dir) or {}
+            build_roots = [
+                r for r in unique_roots
+                if previous.get(r) != fingerprints[r]
+                or not (out_dir / _safe_root_filename(r)).exists()
+            ]
+        else:
+            unique_roots = (
+                lf.select(key_expr.alias("__root")).unique().collect()["__root"]
+                .drop_nulls().to_list()
+            )
+            build_roots = list(unique_roots)
+
         import gc
         partitions_built = 0
 
         i = 0
-        total_roots = len(unique_roots)
+        total_roots = len(build_roots)
         while i < total_roots:
             # 매 청크 전에 현재 메모리 여유를 확인해 청크 크기를 조절한다. 백그라운드
             # 빌드가 메모리 보호 임계값을 건드려 기본 UI 작업을 막지 않도록 한다.
             memory_pressured = process_memory_high()
             chunk_size = _chunk_size(memory_pressured)
-            chunk_roots = unique_roots[i:i + chunk_size]
+            chunk_roots = build_roots[i:i + chunk_size]
             i += chunk_size
 
             chunk_lf = lf.filter(key_expr.is_in(chunk_roots))
@@ -218,7 +284,14 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
                 except Exception:
                     pass
 
-        logger.info("Built pivoted cache for %s (%d roots) in %.2fs", canonical, partitions_built, time.monotonic() - start_time)
+        # 성공적으로 끝난 빌드만 지문을 기록한다 — 중간 실패 시 이전 지문이
+        # 남아 다음 빌드가 변경 root 를 다시 잡는다.
+        if fingerprints is not None:
+            _save_root_fingerprints(out_dir, fingerprints)
+
+        logger.info("Built pivoted cache for %s (%d/%d roots, %d unchanged skipped) in %.2fs",
+                    canonical, partitions_built, len(unique_roots),
+                    len(unique_roots) - len(build_roots), time.monotonic() - start_time)
         return True
     except Exception as e:
         logger.error("Failed to build pivot cache for %s: %s", canonical, e)

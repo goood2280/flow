@@ -5445,14 +5445,27 @@ def _first_data_file_ci(root: Path, suffixes: tuple[str, ...]) -> Path | None:
     return None
 
 
-def _scan_fab_source_raw(fab_source: str):
-    """Scan a fab_source without applying the long-format compatibility adapter."""
+def _canon_file_key(path) -> str:
+    """Normalized path string for cross-source file identity (sig ↔ scan)."""
+    try:
+        return str(Path(path).resolve()).casefold()
+    except Exception:
+        return str(path).casefold()
+
+
+def _scan_fab_source_raw(fab_source: str, only_files: set[str] | None = None):
+    """Scan a fab_source without applying the long-format compatibility adapter.
+
+    only_files: 증분 fab_lot_index 빌드용 — `_canon_file_key` 로 정규화한 경로
+    집합에 든 파일만 스캔한다 (None = 전체)."""
     fp, fab_source = _resolve_fab_source_target(fab_source)
     if not fp:
         return None
     try:
         if fp.is_dir():
             parquets = _rglob_files_ci(fp, (".parquet",))
+            if only_files is not None:
+                parquets = [p for p in parquets if _canon_file_key(p) in only_files]
             if not parquets:
                 return None
             # v8.8.5: 사내 `PRODA/date=YYYYMMDD/part_*.parquet` hive 레이아웃 대응.
@@ -5464,6 +5477,8 @@ def _scan_fab_source_raw(fab_source: str):
             except TypeError:
                 # polars 구버전 — 파라미터 미지원 시 폴백 (경로 기반 파티션 컬럼 없음).
                 return _cast_cats_lazy(_scan_parquet_compat([str(p) for p in parquets]))
+        if only_files is not None and _canon_file_key(fp) not in only_files:
+            return None
         if fp.suffix.lower() == ".csv":
             return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
         return _cast_cats_lazy(_scan_parquet_compat(str(fp)))
@@ -5471,7 +5486,7 @@ def _scan_fab_source_raw(fab_source: str):
         return None
 
 
-def _scan_fab_source(fab_source: str):
+def _scan_fab_source(fab_source: str, only_files: set[str] | None = None):
     """v8.8.0: fab_source 가 가리키는 DB 경로를 LazyFrame 으로 스캔.
     - "FAB/PRODA" / "1.RAWDATA_DB/PRODA" 같은 디렉토리면 그 아래 모든 *.parquet 을 union 으로 스캔.
     - 단일 .parquet/.csv 파일이면 그 파일을 스캔.
@@ -5479,7 +5494,7 @@ def _scan_fab_source(fab_source: str):
       저장된 값이 있어도 무시 → 호출측이 _auto_derive_fab_source 로 자동 매칭하도록 None 반환.
     실패 시 None 반환 (조용히 폴백).
     """
-    lf_raw = _scan_fab_source_raw(fab_source)
+    lf_raw = _scan_fab_source_raw(fab_source, only_files=only_files)
     if lf_raw is None:
         return None
     # FAB canonical adapter:
@@ -5582,12 +5597,14 @@ def _global_fab_source_paths(preferred_source: str = "", include_all: bool = Tru
     return out
 
 
-def _scan_global_fab_sources(preferred_source: str = "", include_all: bool = True):
-    """Scan all FAB DB product folders as one LazyFrame for matching."""
+def _scan_global_fab_sources(preferred_source: str = "", include_all: bool = True,
+                             only_files: set[str] | None = None):
+    """Scan all FAB DB product folders as one LazyFrame for matching.
+    only_files: 증분 fab_lot_index 빌드용 파일 부분집합 (None = 전체)."""
     frames = []
     used_sources: list[str] = []
     for source in _global_fab_source_paths(preferred_source, include_all=include_all):
-        lf = _scan_fab_source(source)
+        lf = _scan_fab_source(source, only_files=only_files)
         if lf is None:
             continue
         frames.append(lf)
@@ -9620,6 +9637,22 @@ def _fab_lot_index_scan_root(product: str, root_lot_id: str,
         return None
 
 
+def _fab_source_sig_delta(old_sig, new_sig) -> set[str] | None:
+    """ADDED file keys between two source signatures, or None when any file was
+    removed/rewritten (→ 전체 재빌드 필요)."""
+    try:
+        old_map = {_canon_file_key(p): (int(m), int(s)) for p, m, s in (old_sig or [])}
+        new_map = {_canon_file_key(p): (int(m), int(s)) for p, m, s in (new_sig or [])}
+    except Exception:
+        return None
+    if not old_map:
+        return None
+    for key, sig in old_map.items():
+        if new_map.get(key) != sig:
+            return None
+    return {k for k in new_map if k not in old_map}
+
+
 def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bool:
     """Build a per-root FAB lot index: the latest FAB row per (root, wafer),
     partitioned by a normalized root key.
@@ -9633,10 +9666,30 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
     default identity join): reducing by (root,wafer)-latest and then re-picking
     latest per join key yields the same rows because the timestamp order is
     preserved. The downstream sort+unique in _scan_product still runs and stays
-    correct on the tiny frame."""
+    correct on the tiny frame.
+
+    FAB 원천은 보통 새 date 파티션 파일이 추가되는 append 형이다 — 기존 파일이
+    그대로고 파일만 늘었으면 새 파일만 스캔해 기존 인덱스와 (root,wafer)-latest
+    로 병합하고 영향받은 root 파티션만 교체한다(수 초). 파일이 지워졌거나
+    재기록됐으면 전체 재빌드로 폴백한다."""
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
     if not canonical:
         return False
+    live_sig = _fab_source_signature(fab_source, include_all)
+    old_meta = _fab_lot_index_read_meta(canonical)
+    if old_meta.get("source_sig") and _fab_lot_index_dir(canonical).is_dir():
+        added = _fab_source_sig_delta(old_meta.get("source_sig"), live_sig)
+        if added is not None:
+            if not added:
+                return True  # 파일 변화 없음 — 인덱스가 이미 최신
+            if _build_fab_lot_index_incremental(
+                    canonical, fab_source, include_all, added, live_sig, old_meta):
+                return True
+            logger.info("fab_lot_index incremental 실패 — 전체 재빌드 (product=%s)", canonical)
+    return _build_fab_lot_index_full(canonical, fab_source, include_all)
+
+
+def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) -> bool:
     fab_lf, used_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
     if fab_lf is None:
         return False
@@ -9699,6 +9752,123 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
     except Exception:
         logger.debug("fab_lot_index meta write failed product=%s", product, exc_info=True)
     return True
+
+
+def _build_fab_lot_index_incremental(product: str, fab_source: str, include_all: bool,
+                                     added_files: set[str], live_sig: list,
+                                     old_meta: dict) -> bool:
+    """Merge newly added FAB files into the existing index; rewrite only the
+    affected root partitions. False → caller falls back to the full rebuild.
+
+    타이 규칙: 같은 (root,wafer) 에 동일 timestamp 행이 기존 인덱스와 새 파일
+    양쪽에 있으면 기존 행을 유지한다 — 전체 재빌드의 stable sort 에서 경로
+    정렬상 앞서는(=기존) 파일이 이기는 것과 일치한다."""
+    try:
+        idx_dir = _fab_lot_index_dir(product)
+        fab_lf, used_sources = _scan_global_fab_sources(
+            fab_source, include_all=include_all, only_files=added_files)
+        if fab_lf is None:
+            # 추가 파일이 이 product 의 소스 범위 밖(다른 소스 폴더)일 수 있다 —
+            # 인덱스 내용 불변이므로 시그니처만 갱신한다.
+            meta = dict(old_meta)
+            meta["built_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            meta["source_sig"] = live_sig
+            save_json(_fab_lot_index_meta_path(product), meta)
+            return True
+        fab_names = fab_lf.collect_schema().names()
+        root_col = _ci_resolve_in("root_lot_id", fab_names) or _pick_first_present_ci(("root_lot_id",), fab_names)
+        if not root_col:
+            return False
+        wf_col = _ci_resolve_in("wafer_id", fab_names) or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
+        ts_col = _pick_ts_col(fab_names)
+        new_lf = (
+            fab_lf
+            .with_columns(_join_key_expr(root_col).alias(_FAB_IDX_ROOT_COL))
+            .filter(pl.col(_FAB_IDX_ROOT_COL).is_not_null() & (pl.col(_FAB_IDX_ROOT_COL) != ""))
+        )
+        reduce_subset = [_FAB_IDX_ROOT_COL] + ([wf_col] if wf_col else [])
+        if ts_col and ts_col in fab_names:
+            new_lf = new_lf.sort(ts_col, descending=True, nulls_last=True).unique(
+                subset=reduce_subset, keep="first", maintain_order=True)
+        else:
+            new_lf = new_lf.unique(subset=reduce_subset, keep="last")
+        new_df = new_lf.collect()
+        roots = sorted({str(v) for v in new_df[_FAB_IDX_ROOT_COL].to_list() if str(v or "").strip()})
+        if not roots:
+            meta = dict(old_meta)
+            meta["built_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            meta["source_sig"] = live_sig
+            save_json(_fab_lot_index_meta_path(product), meta)
+            return True
+        # 리터럴 디렉터리명으로 안전하게 교체 가능한 root 만 증분 처리한다
+        # (특수문자는 hive 인코딩과 어긋날 수 있음 → 전체 재빌드).
+        if any(not _re.fullmatch(r"[A-Z0-9_\-.]+", r) for r in roots):
+            return False
+
+        frames = []
+        for root in roots:
+            part = idx_dir / f"{_FAB_IDX_ROOT_COL}={root}"
+            if part.is_dir():
+                files = sorted(part.glob("*.parquet"))
+                if files:
+                    frames.append(_scan_parquet_compat([str(p) for p in files]))
+        frames.append(new_df.lazy())  # 기존 인덱스 행이 앞 — 타이에서 기존 우선
+        merged = pl.concat(frames, how="diagonal_relaxed") if len(frames) > 1 else frames[0]
+        merged_names = merged.collect_schema().names()
+        merged_wf = _ci_resolve_in("wafer_id", merged_names) or _pick_first_present_ci(("wafer_id", "wafer"), merged_names)
+        merged_subset = [_FAB_IDX_ROOT_COL] + ([merged_wf] if merged_wf else [])
+        merged_ts = _pick_ts_col(merged_names)
+        if merged_ts and merged_ts in merged_names:
+            merged = merged.sort(merged_ts, descending=True, nulls_last=True).unique(
+                subset=merged_subset, keep="first", maintain_order=True)
+        else:
+            merged = merged.unique(subset=merged_subset, keep="last")
+
+        staging = idx_dir.with_name(idx_dir.name + ".delta")
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            try:
+                sink_target = pl.PartitionBy(
+                    staging, key=_FAB_IDX_ROOT_COL, include_key=True,
+                    approximate_bytes_per_file="auto",
+                )
+                merged.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+            except Exception:
+                merged_df = merged.collect()
+                shutil.rmtree(staging, ignore_errors=True)
+                staging.mkdir(parents=True, exist_ok=True)
+                if merged_df.height:
+                    merged_df.write_parquet(staging, partition_by=_FAB_IDX_ROOT_COL)
+            written = {p.name for p in staging.iterdir() if p.is_dir()}
+            expected = {f"{_FAB_IDX_ROOT_COL}={r}" for r in roots}
+            if written != expected:
+                return False
+            for child in sorted(staging.iterdir()):
+                if not child.is_dir():
+                    continue
+                target = idx_dir / child.name
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                child.replace(target)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        sources = list(dict.fromkeys(list(old_meta.get("sources") or []) + list(used_sources)))
+        meta = {
+            "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "sources": sources,
+            "root_col": old_meta.get("root_col") or root_col,
+            "source_sig": live_sig,
+        }
+        save_json(_fab_lot_index_meta_path(product), meta)
+        logger.info("fab_lot_index incremental merge: %d file(s) → %d root(s) (product=%s)",
+                    len(added_files), len(roots), product)
+        return True
+    except Exception:
+        logger.debug("fab_lot_index incremental build failed product=%s", product, exc_info=True)
+        return False
 
 
 def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
