@@ -10252,6 +10252,51 @@ def _view_orjson_response(payload):
     return Response(content=body, media_type="application/json")
 
 
+def _compact_view_rows(rows: list, n_cols: int) -> list:
+    """HTTP 전송용 슬림 셀 포맷 (cells_format v2).
+
+    레거시 `_cells` 는 셀마다 행-상수 플래그와 파생 가능한 key 를 반복 포함해
+    payload 대부분이 중복 메타였다 (KNOB 2000행×25웨이퍼 ≈ 10.9MB). v2 행은
+    actual 배열(a) + sparse plan(p) + sparse mismatch(m) + 행-상수 플래그만
+    담는다. FE(My_SplitTable expandViewRows)가 수신 직후 레거시 `_cells` 로
+    복원하므로 화면/편집 동작은 동일하다. 셀 key 는 FE 가
+    `root_lot_id|wafer_keys[ci]|_param` 으로 재조립한다 — 서버의 셀 생성
+    f-string 과 정확히 일치해야 plan 저장 키가 어긋나지 않는다."""
+    compact = []
+    for r in rows:
+        cells = r.get("_cells") or {}
+        vals = [None] * n_cols
+        plans_sparse = {}
+        mism = []
+        for ci_str, cell in cells.items():
+            try:
+                ci = int(ci_str)
+            except Exception:
+                continue
+            if not (0 <= ci < n_cols):
+                continue
+            vals[ci] = cell.get("actual")
+            pv = cell.get("plan")
+            if pv is not None:
+                plans_sparse[ci_str] = pv
+            if cell.get("mismatch"):
+                mism.append(ci)
+        row_c = {"_param": r.get("_param"), "_display": r.get("_display"), "a": vals}
+        if plans_sparse:
+            row_c["p"] = plans_sparse
+        if mism:
+            row_c["m"] = mism
+        first = next(iter(cells.values()), {})
+        if first.get("can_plan"):
+            row_c["can_plan"] = True
+        if first.get("is_custom_tag"):
+            row_c["tag"] = True
+        if first.get("is_management_row"):
+            row_c["mgmt"] = True
+        compact.append(row_c)
+    return compact
+
+
 @router.get("/view")
 def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
                     wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
@@ -10263,14 +10308,21 @@ def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
                     cache_first: bool = Query(False),
                     request: Request = None):
     # HTTP 진입점 — view_split 은 내부 호출자(재검증 스레드/informs embed/테스트)가
-    # dict 를 기대하므로 그대로 두고, 라우트에서만 orjson 직렬화로 감싼다.
-    return _view_orjson_response(view_split(
+    # 레거시 rows(dict) 를 기대하므로 그대로 두고, 라우트에서만 슬림 셀 포맷으로
+    # 바꿔치기해 orjson 직렬화한다. rows_compact 는 payload 빌드 시 1회 계산되어
+    # view cache 에 같이 저장되므로 HIT 경로 추가 비용은 없다.
+    payload = view_split(
         product=product, root_lot_id=root_lot_id, wafer_ids=wafer_ids,
         prefix=prefix, custom_name=custom_name, view_mode=view_mode,
         history_mode=history_mode, fab_lot_id=fab_lot_id,
         custom_cols=custom_cols, include_related=include_related,
         cache_first=cache_first, request=request,
-    ))
+    )
+    compact = payload.pop("rows_compact", None)
+    if compact is not None:
+        payload["rows"] = compact
+        payload["cells_format"] = "v2"
+    return _view_orjson_response(payload)
 
 
 def view_split(product: str = Query(...), root_lot_id: str = Query(""),
@@ -10760,6 +10812,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         payload = {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
+            "rows_compact": _compact_view_rows(rows, len(wf_sorted)),
+            "wafer_keys": [f"{k}" for k in wf_sorted],
             "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
             "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "available_fab_lots": available_fab_lots,

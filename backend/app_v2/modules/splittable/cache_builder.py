@@ -210,11 +210,25 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
         if fingerprints is not None:
             unique_roots = list(fingerprints.keys())
             previous = _load_root_fingerprints(out_dir) or {}
-            build_roots = [
-                r for r in unique_roots
-                if previous.get(r) != fingerprints[r]
-                or not (out_dir / _safe_root_filename(r)).exists()
-            ]
+            # 지문 기록 이후에 다시 기록된 per-root 파일은 빌더 외부에서 쓰인
+            # 것이다(테스트 픽스처/수동 조작 등) — 지문이 같아도 재빌드해서
+            # self-heal 한다. 전체 재빌드 시절에는 매 빌드가 모든 파일을 덮어써
+            # 자연 치유됐던 속성을 증분에서도 유지한다.
+            try:
+                fingerprints_mtime = (out_dir / _ROOT_FINGERPRINT_FILE).stat().st_mtime
+            except OSError:
+                fingerprints_mtime = None
+
+            def _root_needs_build(r: str) -> bool:
+                if previous.get(r) != fingerprints[r]:
+                    return True
+                try:
+                    st = (out_dir / _safe_root_filename(r)).stat()
+                except OSError:
+                    return True
+                return fingerprints_mtime is not None and st.st_mtime > fingerprints_mtime + 1.0
+
+            build_roots = [r for r in unique_roots if _root_needs_build(r)]
         else:
             unique_roots = (
                 lf.select(key_expr.alias("__root")).unique().collect()["__root"]

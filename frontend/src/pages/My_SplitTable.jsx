@@ -157,6 +157,41 @@ const knobRuleBadgeStyle=(highlight=false)=>({
     : {background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.35)",color:"rgba(59,130,246,0.95)"})
 });
 const hasRuleMatchValue=(v)=>v!=null&&v!==""&&v!=="None"&&v!=="null";
+// /view 슬림 셀 포맷(cells_format v2) 디코더 — 서버는 행당 actual 배열(a) +
+// sparse plan(p)/mismatch(m) + 행-상수 플래그만 보낸다(전송량 ~10x 감소).
+// 수신 직후 기존 _cells 형태로 복원해 이후 로직(선택/paste/plan 편집)은 그대로
+// 동작한다. 셀 key 조립 규칙(root|wafer_key|param)은 서버 _compact_view_rows
+// 와 계약이므로 함께 바꿔야 한다.
+const expandViewRows=(d)=>{
+  if(!d||d.cells_format!=="v2"||!Array.isArray(d.rows))return d;
+  const wfKeys=Array.isArray(d.wafer_keys)?d.wafer_keys:[];
+  const root=d.root_lot_id??"";
+  const rows=d.rows.map(r=>{
+    const vals=Array.isArray(r?.a)?r.a:[];
+    const plans=r?.p||{};
+    const mism=new Set(Array.isArray(r?.m)?r.m:[]);
+    const canPlan=!!r?.can_plan,isTag=!!r?.tag,isMgmt=!!r?.mgmt;
+    const cells={};
+    for(let ci=0;ci<vals.length;ci++){
+      const key=String(ci);
+      cells[key]={
+        actual:vals[ci]??null,
+        plan:plans[key]??null,
+        key:`${root}|${wfKeys[ci]??ci}|${r._param}`,
+        can_plan:canPlan,
+        mismatch:mism.has(ci),
+        is_custom_tag:isTag,
+        can_tag:isTag,
+        is_management_row:isMgmt,
+        can_management_edit:isMgmt,
+      };
+    }
+    return {_param:r._param,_display:r._display,_cells:cells};
+  });
+  const out={...d,rows};
+  delete out.cells_format;delete out.wafer_keys;
+  return out;
+};
 const normalizeKnobRuleValue=(value)=>String(value??"").trim().toLowerCase();
 const waferFromCellKey=(key)=>{
   const parts=String(key||"").split("|");
@@ -981,7 +1016,8 @@ export default function My_SplitTable({user}){
     ensureSessionForSearch().then(()=>{
       loadingStarted=true;setLoading(true);
       return sf(url);
-    }).then(d=>{
+    }).then(raw=>{
+      const d=expandViewRows(raw);
       setData(d);
       if(d.product_cache)setProductCacheStatus(prev=>prev?{...prev,products:[{...d.product_cache,product:selProd}]}:{products:[{...d.product_cache,product:selProd}]});
       if(d.precision)setPrecision(d.precision);
