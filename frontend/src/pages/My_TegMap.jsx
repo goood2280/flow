@@ -437,7 +437,9 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nea
   );
 }
 
-/* ── shot 확대 SVG — 한 shot 안 TEG 위치·그림·칩 격자 ── */
+/* ── shot 확대 SVG — 한 shot 안 TEG 위치·그림·칩 격자 ──
+   v9.3.x: 마우스 휠(확대/축소) + 드래그(패닝) + 리셋 버튼 지원.
+   핀치 줌은 pointer 이벤트 기반으로 터치 디바이스에서도 동작.       ── */
 function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const SIZE = 380;
   const geo = data.geometry;
@@ -450,64 +452,167 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
   const w = W * s, h = H * s;
   const ox = (SIZE - w) / 2, oy = (SIZE - h) / 2;
-  const toX = (mm) => ox + (mm + W / 2) * s;         // shot 센터 기준 mm
-  // chip_y 작은 값이 위에 (y축 reverse) — WaferMap 과 동일 방향.
+  const toX = (mm) => ox + (mm + W / 2) * s;
   const toY = (mm) => oy + (mm + H / 2) * s;
   const tegList = data.tegs.filter(t => selectedTegs.has(t.teg));
   const cellsInfo = display.mode === "grid" ? chipCells(display, W, H) : null;
   const showImage = display.mode === "image" && imgUrl;
 
+  // ── zoom / pan 상태 ──
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const svgRef = useRef(null);
+  const dragRef = useRef(null);           // { startX, startY, panX0, panY0 } | null
+  const pinchRef = useRef(null);          // { dist0, zoom0 } | null
+  const pointersRef = useRef(new Map());  // pointerId → { x, y }
+
+  const ZOOM_MIN = 1, ZOOM_MAX = 12, ZOOM_STEP = 1.15;
+
+  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
+
+  // 마우스 휠 → 줌 (커서 중심)
+  const onWheel = useCallback((e) => {
+    e.preventDefault();
+    const rect = svgRef.current.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    setZoom(prev => {
+      const next = e.deltaY < 0
+        ? Math.min(ZOOM_MAX, prev * ZOOM_STEP)
+        : Math.max(ZOOM_MIN, prev / ZOOM_STEP);
+      const ratio = 1 - next / prev;
+      setPan(p => ({ x: p.x + (mx - p.x) * ratio, y: p.y + (my - p.y) * ratio }));
+      return next;
+    });
+  }, []);
+
+  // 핀치 거리 계산
+  const pinchDist = (pts) => {
+    const arr = [...pts.values()];
+    if (arr.length < 2) return 0;
+    const dx = arr[0].x - arr[1].x, dy = arr[0].y - arr[1].y;
+    return Math.hypot(dx, dy);
+  };
+
+  const onPointerDown = useCallback((e) => {
+    svgRef.current?.setPointerCapture(e.pointerId);
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2) {
+      // 핀치 시작
+      pinchRef.current = { dist0: pinchDist(pointersRef.current), zoom0: zoom };
+      dragRef.current = null;
+    } else if (pointersRef.current.size === 1) {
+      dragRef.current = { startX: e.clientX, startY: e.clientY, panX0: pan.x, panY0: pan.y };
+    }
+  }, [zoom, pan]);
+
+  const onPointerMove = useCallback((e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2 && pinchRef.current) {
+      // 핀치 줌
+      const d = pinchDist(pointersRef.current);
+      if (pinchRef.current.dist0 > 0) {
+        const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchRef.current.zoom0 * (d / pinchRef.current.dist0)));
+        setZoom(next);
+      }
+    } else if (dragRef.current && pointersRef.current.size === 1) {
+      // 팬
+      const dx = e.clientX - dragRef.current.startX, dy = e.clientY - dragRef.current.startY;
+      setPan({ x: dragRef.current.panX0 + dx, y: dragRef.current.panY0 + dy });
+    }
+  }, []);
+
+  const onPointerUp = useCallback((e) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 0) dragRef.current = null;
+  }, []);
+
+  // 휠 이벤트는 passive:false 필요 → ref 방식으로 등록
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onWheel]);
+
+  const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
+
   return (
-    <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-      style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6 }}>
-      {showImage && (
-        <image href={imgUrl} x={ox} y={oy} width={w} height={h}
-          preserveAspectRatio="none" opacity="0.9" />
-      )}
-      <rect x={ox} y={oy} width={w} height={h} fill={showImage ? "none" : "rgba(128,128,128,0.05)"}
-        stroke="var(--muted)" strokeWidth="1" />
-      {/* shot 센터 십자 */}
-      <line x1={toX(0) - 5} y1={toY(0)} x2={toX(0) + 5} y2={toY(0)} stroke="var(--muted)" strokeWidth="0.8" />
-      <line x1={toX(0)} y1={toY(0) - 5} x2={toX(0)} y2={toY(0) + 5} stroke="var(--muted)" strokeWidth="0.8" />
-      {/* 칩 격자 — 칩 사각형 + 번호 */}
-      {cellsInfo && cellsInfo.cells.map(c => (
-        <g key={c.i}>
-          <rect x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
-            fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth="0.8" opacity="0.85" />
-          <text x={toX(c.x + c.w / 2)} y={toY(c.y + c.h / 2)} fontSize="10" fill="#2f9e63"
-            textAnchor="middle" dominantBaseline="middle" opacity="0.85">{c.i + 1}</text>
-        </g>
-      ))}
-      {/* TEG 직사각형 — 점(ebeam_x/y) = 좌하단 기준, 사각형은 점에서 위로 그린다 */}
-      {tegList.map(t => {
-        const x = toX(t.ebeam_x), yBottom = toY(t.ebeam_y);
-        const wpx = t.teg_w * s, hpx = t.teg_h * s;
-        return (
-          <g key={t.teg}>
-            <rect x={x} y={yBottom - hpx} width={wpx} height={hpx} fill={tegColor(t.teg)} opacity="0.75" />
-            <circle cx={x} cy={yBottom} r="2.4" fill={tegColor(t.teg)} stroke="var(--panel)" strokeWidth="0.8" />
-            <text x={x + wpx + 4} y={yBottom - hpx / 2} fontSize="11" fill="var(--text)" dominantBaseline="middle">
-              {t.teg}
+    <div style={{ position: "relative", display: "inline-block" }}>
+      <svg ref={svgRef} width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
+        style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6,
+                 cursor: isZoomed ? "grab" : "zoom-in", touchAction: "none", userSelect: "none" }}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+          {showImage && (
+            <image href={imgUrl} x={ox} y={oy} width={w} height={h}
+              preserveAspectRatio="none" opacity="0.9" />
+          )}
+          <rect x={ox} y={oy} width={w} height={h} fill={showImage ? "none" : "rgba(128,128,128,0.05)"}
+            stroke="var(--muted)" strokeWidth={1 / zoom} />
+          {/* shot 센터 십자 */}
+          <line x1={toX(0) - 5 / zoom} y1={toY(0)} x2={toX(0) + 5 / zoom} y2={toY(0)} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+          <line x1={toX(0)} y1={toY(0) - 5 / zoom} x2={toX(0)} y2={toY(0) + 5 / zoom} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+          {/* 칩 격자 */}
+          {cellsInfo && cellsInfo.cells.map(c => (
+            <g key={c.i}>
+              <rect x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
+                fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth={0.8 / zoom} opacity="0.85" />
+              <text x={toX(c.x + c.w / 2)} y={toY(c.y + c.h / 2)} fontSize={10 / zoom} fill="#2f9e63"
+                textAnchor="middle" dominantBaseline="middle" opacity="0.85">{c.i + 1}</text>
+            </g>
+          ))}
+          {/* TEG 직사각형 */}
+          {tegList.map(t => {
+            const x = toX(t.ebeam_x), yBottom = toY(t.ebeam_y);
+            const wpx = t.teg_w * s, hpx = t.teg_h * s;
+            return (
+              <g key={t.teg}>
+                <rect x={x} y={yBottom - hpx} width={wpx} height={hpx} fill={tegColor(t.teg)} opacity="0.75" />
+                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={tegColor(t.teg)} stroke="var(--panel)" strokeWidth={0.8 / zoom} />
+                <text x={x + wpx + 4 / zoom} y={yBottom - hpx / 2} fontSize={11 / zoom} fill="var(--text)" dominantBaseline="middle">
+                  {t.teg}
+                </text>
+              </g>
+            );
+          })}
+          {/* 치수 라벨 */}
+          <text x={SIZE / 2} y={oy + h + 16 / zoom} fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle">
+            {fmt(W)} mm
+          </text>
+          <text x={ox - 8 / zoom} y={SIZE / 2} fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle"
+            transform={`rotate(-90 ${ox - 8 / zoom} ${SIZE / 2})`}>
+            {fmt(H)} mm
+          </text>
+          {cellsInfo && (
+            <text x={ox + 4 / zoom} y={oy - 6 / zoom} fontSize={11 / zoom} fill="#2f9e63">
+              칩 {cellsInfo.cols}×{cellsInfo.rows} = {cellsInfo.cols * cellsInfo.rows}개
+              {display.chip_w > 0 ? ` · 칩 ${fmt(cellsInfo.cw)}×${fmt(cellsInfo.ch)} mm` : ""}
+              {(display.gap_x > 0 || display.gap_y > 0) ? ` · 간격 ${fmt(display.gap_x * 1000, 0)}×${fmt(display.gap_y * 1000, 0)} µm` : ""}
             </text>
-          </g>
-        );
-      })}
-      {/* 치수 라벨 */}
-      <text x={SIZE / 2} y={oy + h + 16} fontSize="11" fill="var(--muted)" textAnchor="middle">
-        {fmt(W)} mm
-      </text>
-      <text x={ox - 8} y={SIZE / 2} fontSize="11" fill="var(--muted)" textAnchor="middle"
-        transform={`rotate(-90 ${ox - 8} ${SIZE / 2})`}>
-        {fmt(H)} mm
-      </text>
-      {cellsInfo && (
-        <text x={ox + 4} y={oy - 6} fontSize="11" fill="#2f9e63">
-          칩 {cellsInfo.cols}×{cellsInfo.rows} = {cellsInfo.cols * cellsInfo.rows}개
-          {display.chip_w > 0 ? ` · 칩 ${fmt(cellsInfo.cw)}×${fmt(cellsInfo.ch)} mm` : ""}
-          {(display.gap_x > 0 || display.gap_y > 0) ? ` · 간격 ${fmt(display.gap_x * 1000, 0)}×${fmt(display.gap_y * 1000, 0)} µm` : ""}
-        </text>
+          )}
+        </g>
+      </svg>
+      {/* 줌 리셋 버튼 — 줌/패닝 상태일 때만 표시 */}
+      {isZoomed && (
+        <button onClick={resetView} title="보기 초기화"
+          style={{ position: "absolute", top: 6, right: 6, width: 28, height: 28,
+                   display: "flex", alignItems: "center", justifyContent: "center",
+                   background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 4,
+                   cursor: "pointer", fontSize: 14, color: "var(--muted)", opacity: 0.85 }}>
+          ↺
+        </button>
       )}
-    </svg>
+      {/* 줌 배율 표시 */}
+      {zoom > 1.05 && (
+        <span style={{ position: "absolute", bottom: 6, right: 6, fontSize: 11,
+                       color: "var(--muted)", background: "var(--panel)", padding: "1px 5px",
+                       borderRadius: 3, border: "1px solid var(--line)", opacity: 0.8 }}>
+          ×{zoom.toFixed(1)}
+        </span>
+      )}
+    </div>
   );
 }
 

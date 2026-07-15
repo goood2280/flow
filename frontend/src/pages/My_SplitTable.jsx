@@ -219,6 +219,7 @@ export default function My_SplitTable({user}){
   const[lotId,setLotId]=useState("");const[waferIds,setWaferIds]=useState("");
   const[lotSuggestions,setLotSuggestions]=useState([]);const[showLotDrop,setShowLotDrop]=useState(false);const[lotFilter,setLotFilter]=useState("");
   const[lotSuggestBusy,setLotSuggestBusy]=useState(false);const[lotSuggestMsg,setLotSuggestMsg]=useState("");
+  const[lotPoolVer,setLotPoolVer]=useState(0); // v9.3.x: 풀 로드 완료 시 증가 → 필터 useEffect 재실행 트리거
   // v8.4.3: fab_lot_id 검색도 지원 — root_lot_id 대체 키로 사용 가능.
   const[fabLotId,setFabLotId]=useState("");const[fabSuggestions,setFabSuggestions]=useState([]);const[showFabDrop,setShowFabDrop]=useState(false);
   const[fabSuggestBusy,setFabSuggestBusy]=useState(false);const[fabSuggestMsg,setFabSuggestMsg]=useState("");
@@ -608,54 +609,76 @@ export default function My_SplitTable({user}){
       if(visibleProducts.length)setSelProd(visibleProducts[0].name);
     }
   },[enabledSources,products]);
+  // v9.3.x: 제품 선택 시 root lot id 전체 목록을 한 번만 서버에서 받아 lotPoolRef 에
+  //   캐시한다(최대 ROOT_LOT_CACHE_LIMIT_MAX). 이후 사용자 키 입력은 로컬 필터만으로
+  //   즉시 반영돼 429/대기 없이 후보를 보여준다. 서버 재요청은 제품 변경 시에만 발생.
+  const lotPoolLoadedRef=useRef("");            // 풀이 완성된 제품명 (중복 요청 방지)
+  const lotPoolControllerRef=useRef(null);      // 진행 중 AbortController
   useEffect(()=>{
-    const seq=++lotSuggestSeqRef.current;
-    if(!selProd){setLotSuggestions([]);setLotSuggestBusy(false);setLotSuggestMsg("");return;}
-    const controller=new AbortController();
-    const isCurrent=()=>seq===lotSuggestSeqRef.current&&!controller.signal.aborted;
-    const prefix=(lotId||"").trim();
-    const limit=candidateLimit(prefix);
-    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+limit;
-    if(prefix) url+="&prefix="+encodeURIComponent(prefix);
-    setLotSuggestBusy(true);setLotSuggestMsg("");
-    // 키 입력 즉시: 누적 후보 풀을 로컬 필터해 부분 결과를 먼저 표시한다.
-    const pooled=poolValues(lotPoolRef,selProd);
-    if(pooled.length){
-      const local=prefix?pooled.filter(v=>v.toUpperCase().includes(prefix.toUpperCase())):pooled;
-      if(local.length){setLotSuggestions(local.slice(0,limit));setLotSuggestMsg("");}
-    }
-    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit,{signal:controller.signal})
-      .then(d=>{
-        if(!isCurrent())return;
-        const lots=normalizeLotList(d.lot_ids||[]);
-        poolMerge(lotPoolRef,selProd,lots);
-        setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
-        setLotSuggestMsg(lots.length?"":"Lot 후보가 없습니다. DB 연결/제품 매칭을 확인하세요.");
-      })
-      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;setLotSuggestions([]);setLotSuggestMsg(e?.message||"Lot 후보 조회 실패");})
-      .finally(()=>{if(isCurrent())setLotSuggestBusy(false);});
+    if(!selProd){lotPoolRef.current={key:"",values:[]};lotPoolLoadedRef.current="";return;}
+    if(lotPoolLoadedRef.current===selProd)return; // 이미 이 제품의 풀이 완성됨
+    // 이전 제품 로드 중이면 취소
+    if(lotPoolControllerRef.current)lotPoolControllerRef.current.abort();
+    const ctrl=new AbortController();lotPoolControllerRef.current=ctrl;
+    lotPoolRef.current={key:selProd,values:[]};  // 풀 초기화
+    const url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+ROOT_LOT_CACHE_LIMIT_MAX;
     let prepTimer=null;
     const MAX_PREP_RETRY=6;
-    const fetchCandidates=(attempt)=>sf(url,{signal:controller.signal})
+    const fetchAll=(attempt)=>sf(url,{signal:ctrl.signal})
       .then(d=>{
-        if(!isCurrent())return;
+        if(ctrl.signal.aborted)return;
         const candidates=normalizeLotList(d.candidates||[]);
-        if(candidates.length){poolMerge(lotPoolRef,selProd,candidates);setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);return;}
-        // 후보가 비었는데 split_table/lookup 캐시가 백그라운드 빌드 중이면, 잠시 후
-        // 재조회해 완성된 root 목록을 집는다(그동안 /lot-ids 폴백으로 뭐라도 표시).
+        if(candidates.length){
+          poolMerge(lotPoolRef,selProd,candidates);
+          lotPoolLoadedRef.current=selProd;
+          lotPoolControllerRef.current=null;
+          setLotPoolVer(v=>v+1);
+          return;
+        }
         const lc=d.lookup_cache||{};
         const preparing=lc.queued===true||lc.status==="queued"||lc.status==="running"||d.match_mode==="lookup_cache_preparing";
         if(preparing&&attempt<MAX_PREP_RETRY){
-          if(attempt===0)fallbackLots();
-          prepTimer=setTimeout(()=>{if(isCurrent())fetchCandidates(attempt+1);},1500);
+          if(attempt===0){
+            // 빌드 중이면 lot-ids 폴백으로 일부라도 먼저 채운다
+            sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+ROOT_LOT_CACHE_LIMIT_MAX,{signal:ctrl.signal})
+              .then(fb=>{if(!ctrl.signal.aborted){poolMerge(lotPoolRef,selProd,normalizeLotList(fb.lot_ids||[]));setLotPoolVer(v=>v+1);}})
+              .catch(()=>{});
+          }
+          prepTimer=setTimeout(()=>{if(!ctrl.signal.aborted)fetchAll(attempt+1);},1500);
           return;
         }
-        fallbackLots();
+        // 최종 폴백
+        sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+ROOT_LOT_CACHE_LIMIT_MAX,{signal:ctrl.signal})
+          .then(fb=>{
+            if(ctrl.signal.aborted)return;
+            poolMerge(lotPoolRef,selProd,normalizeLotList(fb.lot_ids||[]));
+            lotPoolLoadedRef.current=selProd;
+            lotPoolControllerRef.current=null;
+            setLotPoolVer(v=>v+1);
+          }).catch(()=>{});
       })
-      .catch(e=>{if(!isCurrent()||e?.name==="AbortError")return;fallbackLots();});
-    const timer=setTimeout(()=>fetchCandidates(0),250);
-    return()=>{clearTimeout(timer);if(prepTimer)clearTimeout(prepTimer);controller.abort();};
-  },[selProd,lotId]);
+      .catch(e=>{if(e?.name==="AbortError")return;});
+    fetchAll(0);
+    return()=>{ctrl.abort();if(prepTimer)clearTimeout(prepTimer);};
+  },[selProd]);
+  // v9.3.x: 키 입력 → 로컬 풀 즉시 필터. 서버 재요청 없음.
+  useEffect(()=>{
+    const seq=++lotSuggestSeqRef.current;
+    if(!selProd){setLotSuggestions([]);setLotSuggestBusy(false);setLotSuggestMsg("");return;}
+    const prefix=(lotId||"").trim();
+    const limit=candidateLimit(prefix);
+    const pooled=poolValues(lotPoolRef,selProd);
+    // 풀이 비어 있으면 아직 로딩 중 — 로딩 표시만 하고, 풀 완성 후 re-render 시 자동 갱신.
+    if(!pooled.length){
+      setLotSuggestBusy(true);setLotSuggestMsg("");
+      setLotSuggestions([]);
+      return;
+    }
+    setLotSuggestBusy(false);
+    const local=prefix?pooled.filter(v=>v.toUpperCase().includes(prefix.toUpperCase())):pooled;
+    setLotSuggestions(local.slice(0,limit));
+    setLotSuggestMsg(local.length?"":"Lot 후보가 없습니다.");
+  },[selProd,lotId,lotPoolVer]);
   // v9.0.0: 제품 변경 시 lotId/fabLotId/waferIds 초기화 — 직전 제품의 lot 이 남아 잘못된 필터링 방지.
   //   (예: PRODA 의 A1000A.1_V1 이 PRODB 로 전환 후에도 fab_lot_id 칸에 남아 있으면 B0001 root 와 어긋나는 조합 생성).
   const _prevProd = useRef(selProd);
