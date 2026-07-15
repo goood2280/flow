@@ -61,24 +61,42 @@ def _safe_root_filename(root_id: str) -> str:
     return f"{str(root_id).replace('/', '_').replace(chr(92), '_')}.parquet"
 
 
-def _compute_root_fingerprints(lf, key_expr) -> dict | None:
-    """Per-root (row_count, folded row-hash sum) in one streaming pass."""
+def _compute_root_fingerprints(lf, key_expr, anchor_cols: list | None = None) -> dict | None:
+    """Per-root (row_count, folded row-hash sum).
+
+    ML_TABLE 은 행은 적고 컬럼이 수천 개인 wide 형이라, 전체 struct 해시는
+    테이블 전체를 한 번에 메모리에 올린다(압축 19MB 파일에서 피크 1.3GB 실측).
+    컬럼을 배치로 나눠 배치별 per-root 해시 합을 구하고 합산한다 — 피크가
+    (배치 폭 × 행 수)로 제한된다. 각 배치 struct 에 anchor(wafer 키 등)를
+    포함해 행 정렬이 배치 간에 뒤바뀌는 변경도 지문에 잡히게 한다.
+    배치 폭이 바뀌면 지문값이 달라져 1회 전체 재빌드된다 (정확성 영향 없음)."""
+    batch_width = _int_env("FLOW_PIVOT_FINGERPRINT_COL_BATCH", 200, 20, 10000)
+    # 호출측 컬럼 감지가 같은 컬럼을 중복 전달할 수 있다(root_col == lot_col 등)
+    # — 중복 select 는 polars 에러이므로 반드시 dedupe.
+    anchors = list(dict.fromkeys(c for c in (anchor_cols or []) if c))
     try:
-        df = (
-            lf.with_columns(key_expr.alias("__root"))
-            .with_columns(
-                (pl.struct(pl.all().exclude("__root")).hash(seed=0)
-                 % _FINGERPRINT_FOLD_PRIME).cast(pl.Int64).alias("__h")
+        names = lf.collect_schema().names()
+        value_cols = [c for c in names if c not in anchors]
+        totals: dict[str, list[int]] = {}
+        for start in range(0, len(value_cols), batch_width):
+            batch = value_cols[start:start + batch_width]
+            df = (
+                lf.select(batch + anchors)
+                .with_columns(key_expr.alias("__root"))
+                .with_columns(
+                    (pl.struct(pl.all().exclude("__root")).hash(seed=0)
+                     % _FINGERPRINT_FOLD_PRIME).cast(pl.Int64).alias("__h")
+                )
+                .group_by("__root")
+                .agg(pl.len().alias("n"), pl.col("__h").sum().alias("h"))
+                .collect()
             )
-            .group_by("__root")
-            .agg(pl.len().alias("n"), pl.col("__h").sum().alias("h"))
-            .collect()
-        )
-        return {
-            str(root): [int(n), int(h or 0)]
-            for root, n, h in df.iter_rows()
-            if root is not None
-        }
+            for root, n, h in df.iter_rows():
+                if root is None:
+                    continue
+                slot = totals.setdefault(str(root), [int(n), 0])
+                slot[1] = (slot[1] + int(h or 0)) % (1 << 62)
+        return totals
     except Exception as e:
         logger.warning("root fingerprint 계산 실패 — 전체 재빌드로 폴백: %s", e)
         return None
@@ -206,7 +224,15 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
 
         # 증분 재빌드: per-root 지문이 이전 빌드와 같고 파일도 살아 있으면 그
         # root 는 건너뛴다. 지문 계산 실패(None)면 전체 재빌드.
-        fingerprints = _compute_root_fingerprints(lf, key_expr)
+        # wide ML_TABLE 의 지문 패스는 일시적으로 수백 MB 를 쓸 수 있으므로,
+        # 이미 메모리 압박이면 생략하고 메모리 안전한 청크 전체 재빌드로 간다.
+        if process_memory_high():
+            logger.info("root fingerprint 생략 (메모리 압박) — 청크 전체 재빌드: %s", canonical)
+            fingerprints = None
+        else:
+            fingerprints = _compute_root_fingerprints(
+                lf, key_expr,
+                anchor_cols=[c for c in (root_col, lot_col, wf_col) if c])
         if fingerprints is not None:
             unique_roots = list(fingerprints.keys())
             previous = _load_root_fingerprints(out_dir) or {}

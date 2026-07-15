@@ -9689,31 +9689,29 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
     return _build_fab_lot_index_full(canonical, fab_source, include_all)
 
 
-def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) -> bool:
-    fab_lf, used_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
-    if fab_lf is None:
-        return False
+def _fab_latest_reduce_lf(fab_lf):
+    """(reduced_lf, root_col) — 정규화 root 키 부여 + (root,wafer)-latest 축소.
+
+    Reduce to the latest row per (root, wafer). Keep every FAB column so the
+    read path is a drop-in replacement for _scan_global_fab_sources output.
+    이미 _FAB_IDX_ROOT_COL 이 있는 프레임(파티션/병합 재축소)에도 그대로 동작."""
     try:
-        fab_names = fab_lf.collect_schema().names()
+        names = fab_lf.collect_schema().names()
     except Exception:
-        return False
-    root_col = _ci_resolve_in("root_lot_id", fab_names) or _pick_first_present_ci(("root_lot_id",), fab_names)
+        return None, ""
+    root_col = _ci_resolve_in("root_lot_id", names) or _pick_first_present_ci(("root_lot_id",), names)
     if not root_col:
-        return False
-    wf_col = _ci_resolve_in("wafer_id", fab_names) or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
-    ts_col = _pick_ts_col(fab_names)
-    idx_dir = _fab_lot_index_dir(product)
-    tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
+        return None, ""
+    wf_col = _ci_resolve_in("wafer_id", names) or _pick_first_present_ci(("wafer_id", "wafer"), names)
+    ts_col = _pick_ts_col(names)
     lf = (
         fab_lf
         .with_columns(_join_key_expr(root_col).alias(_FAB_IDX_ROOT_COL))
         .filter(pl.col(_FAB_IDX_ROOT_COL).is_not_null() & (pl.col(_FAB_IDX_ROOT_COL) != ""))
     )
-    # Reduce to the latest row per (root, wafer). Keep every FAB column so the
-    # read path is a drop-in replacement for _scan_global_fab_sources output.
     reduce_subset = [_FAB_IDX_ROOT_COL] + ([wf_col] if wf_col else [])
     try:
-        if ts_col and ts_col in fab_names:
+        if ts_col and ts_col in names:
             lf = lf.sort(ts_col, descending=True, nulls_last=True).unique(
                 subset=reduce_subset, keep="first", maintain_order=True)
         else:
@@ -9721,7 +9719,33 @@ def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) 
     except Exception:
         # If reduction is not expressible, fall back to storing raw per-root rows
         # (still correct — the fab join reduces at read time).
-        logger.debug("fab_lot_index reduction skipped product=%s", product, exc_info=True)
+        logger.debug("fab_lot_index reduction skipped", exc_info=True)
+    return lf, root_col
+
+
+def _fab_index_build_batch_rows() -> int:
+    # 1M rows ≈ 배치당 피크 수백 MB (실측 1.35M rows ≈ 536MB) — 총 FAB 크기와
+    # 무관하게 전체 재빌드 피크를 상한한다.
+    try:
+        rows = float(os.environ.get("FLOW_SPLITTABLE_FAB_INDEX_BUILD_BATCH_ROWS", "") or 1_000_000)
+    except Exception:
+        rows = 1_000_000.0
+    return int(max(100_000.0, min(100_000_000.0, rows)))
+
+
+def _parquet_row_count(path: str) -> int | None:
+    """Row count from the parquet footer only (no data read)."""
+    try:
+        if not str(path).lower().endswith(".parquet"):
+            return None
+        return int(pl.scan_parquet(str(path)).select(pl.len()).collect().item(0, 0))
+    except Exception:
+        return None
+
+
+def _write_fab_index_partitions(product: str, lf) -> None:
+    idx_dir = _fab_lot_index_dir(product)
+    tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -9737,15 +9761,76 @@ def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) 
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(tmp_dir, partition_by=_FAB_IDX_ROOT_COL)
+        if df.height:
+            df.write_parquet(tmp_dir, partition_by=_FAB_IDX_ROOT_COL)
     if idx_dir.exists():
         shutil.rmtree(idx_dir, ignore_errors=True)
     tmp_dir.replace(idx_dir)
+
+
+def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) -> bool:
+    """전체 재빌드 — FAB 파일을 row 수 기준 배치로 나눠 배치별로 latest
+    축소 후 병합한다. (root,wafer)-latest 는 결합법칙이 성립하므로 결과는 단일
+    패스 전역 sort 와 동일하고(동률 ts 는 앞선 파일 우선 — stable sort 와 일치),
+    피크 메모리가 FAB 전체 크기가 아니라 배치 크기에 비례한다. row 수는
+    parquet footer 만 읽어 세므로(데이터 미접근) 배치 산정은 저렴하고, 축소
+    결과는 root×wafer 로 상한되는 작은 프레임이라 누적 병합 비용도 미미하다."""
+    live_sig = _fab_source_signature(fab_source, include_all)
+    batch_rows = _fab_index_build_batch_rows()
+    batches: list[list[str] | None] = []
+    cur: list[str] = []
+    cur_rows = 0
+    for path, _mtime, _size in live_sig:
+        n = _parquet_row_count(path)
+        cur.append(path)
+        # row 수를 모르는 파일(CSV 등)은 보수적으로 배치를 끊는다.
+        cur_rows += n if n is not None else batch_rows
+        if cur_rows >= batch_rows:
+            batches.append(cur)
+            cur, cur_rows = [], 0
+    if cur:
+        batches.append(cur)
+    if not batches:
+        # 시그니처가 파일을 못 찾는 엣지 소스 — 필터 없는 전체 스캔 1배치.
+        batches = [None]
+
+    acc_df = None
+    used_all: list[str] = []
+    root_col_meta = ""
+    for batch in batches:
+        only = {_canon_file_key(p) for p in batch} if batch is not None else None
+        fab_lf, used = _scan_global_fab_sources(fab_source, include_all=include_all,
+                                                only_files=only)
+        if fab_lf is None:
+            continue
+        reduced, root_col = _fab_latest_reduce_lf(fab_lf)
+        if reduced is None:
+            continue
+        root_col_meta = root_col_meta or root_col
+        try:
+            batch_df = reduced.collect()
+        except Exception as e:
+            logger.warning("fab_lot_index 배치 축소 실패 (product=%s) %s: %s",
+                           product, type(e).__name__, e)
+            return False
+        used_all.extend(u for u in used if u not in used_all)
+        if acc_df is None:
+            acc_df = batch_df
+        else:
+            # 누적(앞선 파일)을 앞에 두어 동률 ts 에서 앞선 파일이 이긴다.
+            merged, _ = _fab_latest_reduce_lf(
+                pl.concat([acc_df.lazy(), batch_df.lazy()], how="diagonal_relaxed"))
+            if merged is None:
+                return False
+            acc_df = merged.collect()
+    if acc_df is None or not root_col_meta:
+        return False
+    _write_fab_index_partitions(product, acc_df.lazy())
     meta = {
         "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "sources": used_sources,
-        "root_col": root_col,
-        "source_sig": _fab_source_signature(fab_source, include_all),
+        "sources": used_all,
+        "root_col": root_col_meta,
+        "source_sig": live_sig,
     }
     try:
         save_json(_fab_lot_index_meta_path(product), meta)
@@ -9775,23 +9860,9 @@ def _build_fab_lot_index_incremental(product: str, fab_source: str, include_all:
             meta["source_sig"] = live_sig
             save_json(_fab_lot_index_meta_path(product), meta)
             return True
-        fab_names = fab_lf.collect_schema().names()
-        root_col = _ci_resolve_in("root_lot_id", fab_names) or _pick_first_present_ci(("root_lot_id",), fab_names)
-        if not root_col:
+        new_lf, root_col = _fab_latest_reduce_lf(fab_lf)
+        if new_lf is None:
             return False
-        wf_col = _ci_resolve_in("wafer_id", fab_names) or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
-        ts_col = _pick_ts_col(fab_names)
-        new_lf = (
-            fab_lf
-            .with_columns(_join_key_expr(root_col).alias(_FAB_IDX_ROOT_COL))
-            .filter(pl.col(_FAB_IDX_ROOT_COL).is_not_null() & (pl.col(_FAB_IDX_ROOT_COL) != ""))
-        )
-        reduce_subset = [_FAB_IDX_ROOT_COL] + ([wf_col] if wf_col else [])
-        if ts_col and ts_col in fab_names:
-            new_lf = new_lf.sort(ts_col, descending=True, nulls_last=True).unique(
-                subset=reduce_subset, keep="first", maintain_order=True)
-        else:
-            new_lf = new_lf.unique(subset=reduce_subset, keep="last")
         new_df = new_lf.collect()
         roots = sorted({str(v) for v in new_df[_FAB_IDX_ROOT_COL].to_list() if str(v or "").strip()})
         if not roots:
@@ -9824,16 +9895,10 @@ def _build_fab_lot_index_incremental(product: str, fab_source: str, include_all:
                 if files:
                     frames.append(_scan_parquet_compat([str(p) for p in files]))
         frames.append(new_df.lazy())  # 기존 인덱스 행이 앞 — 타이에서 기존 우선
-        merged = pl.concat(frames, how="diagonal_relaxed") if len(frames) > 1 else frames[0]
-        merged_names = merged.collect_schema().names()
-        merged_wf = _ci_resolve_in("wafer_id", merged_names) or _pick_first_present_ci(("wafer_id", "wafer"), merged_names)
-        merged_subset = [_FAB_IDX_ROOT_COL] + ([merged_wf] if merged_wf else [])
-        merged_ts = _pick_ts_col(merged_names)
-        if merged_ts and merged_ts in merged_names:
-            merged = merged.sort(merged_ts, descending=True, nulls_last=True).unique(
-                subset=merged_subset, keep="first", maintain_order=True)
-        else:
-            merged = merged.unique(subset=merged_subset, keep="last")
+        merged_input = pl.concat(frames, how="diagonal_relaxed") if len(frames) > 1 else frames[0]
+        merged, _ = _fab_latest_reduce_lf(merged_input)
+        if merged is None:
+            return False
 
         staging = idx_dir.with_name(idx_dir.name + ".delta")
         if staging.exists():
