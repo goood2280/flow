@@ -99,7 +99,7 @@ ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 1000
 # 남는 자리를 latest cache 기준 지정 step 통과 lot(tkout_time 최신순)으로 채운다.
 ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT = 1000
 ROOT_RAM_CACHE_ROOTS_MAX = 50000
-ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 512.0
+ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 768.0
 ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
 ROOT_RAM_CACHE_RESOURCE_CHECK_SEC = 1.0
 ROOT_RAM_CACHE_SETTINGS_FILE = PATHS.data_root / "splittable" / "source_config.json"
@@ -364,21 +364,23 @@ def _root_ram_cache_resource_guard_reason() -> tuple[str, dict[str, Any]]:
 
 
 ROOT_RAM_CACHE_AUTO_MIN_GB = 2.0
-ROOT_RAM_CACHE_AUTO_MAX_GB = 4.0
+ROOT_RAM_CACHE_AUTO_MAX_GB = 6.0
 _ROOT_RAM_AUTO_GB_TTL_SEC = 5.0
 _ROOT_RAM_AUTO_GB_LOCK = threading.Lock()
 _ROOT_RAM_AUTO_GB_CACHE: dict[str, tuple[float, float]] = {}
 
 
 def _root_ram_cache_auto_max_gb() -> float:
-    """현재 호스트 메모리 상황 기반 동적 예산 — [2GB, 4GB].
+    """현재 호스트 메모리 상황 기반 동적 예산 — [2GB, 6GB].
 
-    10GB급 호스트에서 고정 40%-of-limit 예산(3.2GB+)이 상주 RSS 를 밀어올려
+    10GB급 호스트에서 고정 40%-of-limit 예산이 상주 RSS 를 밀어올려
     메모리 가드 503(대시보드 등 heavy 경로 거절)을 유발했다. 예산을
     `(현재 가용 + 캐시가 이미 점유한 양 - 가드 하한) × 0.4` 로 계산해
-    [2, 4]GB 로 클램프한다. 캐시 보유분을 되더해 "캐시가 가용치를 깎아 자기
+    [2, 6]GB 로 클램프한다. 캐시 보유분을 되더해 "캐시가 가용치를 깎아 자기
     예산을 줄이는" 피드백 루프를 상쇄 — 예산은 호스트의 다른 소비자가 얼마나
     쓰는지에만 반응한다. 5s TTL 메모이즈로 snapshot 비용/값 요동을 제한.
+    20GB 급 호스트에서는 가용 여유가 크므로 최대 6GB 까지 허용해 캐시 히트율을
+    높이고 I/O 경합을 줄인다.
     Env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB 는 여전히 정확한 값을 고정.
     """
     now = time.monotonic()
@@ -510,6 +512,26 @@ def clear_root_ram_cache() -> None:
             "products": [],
         })
         _ROOT_RAM_RESOURCE_STATE.update({"checked_epoch": 0.0, "reason": "", "snapshot": {}})
+
+
+def evict_root_ram_cache_entry(source_path: str, root_lot_id: str) -> dict[str, Any]:
+    """개별 root lot 캐시 항목 제거 — 관리자 페이지에서 선택 삭제용."""
+    root = str(root_lot_id or "").strip().upper()
+    sp = str(source_path or "").strip()
+    removed = False
+    with _ROOT_RAM_CACHE_LOCK:
+        # source_path + root_lot_id 조합으로 정확 매칭, 또는 source_path 비어있으면 root만으로 매칭
+        keys_to_remove = []
+        for key in list(_ROOT_RAM_CACHE.keys()):
+            if sp and key[0] != sp:
+                continue
+            if key[1].upper() == root:
+                keys_to_remove.append(key)
+        for key in keys_to_remove:
+            _ROOT_RAM_CACHE.pop(key, None)
+            _ROOT_RAM_ACCESS.pop(key, None)
+            removed = True
+    return {"ok": True, "removed": removed, "root_lot_id": root, "removed_count": len(keys_to_remove)}
 
 
 def _record_root_access(fp: Path, root_lot_id: str) -> None:

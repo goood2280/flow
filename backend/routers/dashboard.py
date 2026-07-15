@@ -2685,9 +2685,16 @@ def wip_split_summary(
     if cur.is_empty():
         raise HTTPException(404, "latest cache가 비어 있습니다.")
 
-    products = sorted({str(p) for p in cur.get_column("product").unique().to_list() if str(p or "").strip()})
-    product = str(product or "").strip().upper() or (products[0] if products else "")
-    if product not in products:
+    # product 대소문자 무관 매칭 — cache 와 사용자 입력의 케이스가 달라도 연결.
+    _raw_products = sorted({str(p) for p in cur.get_column("product").unique().to_list() if str(p or "").strip()})
+    _product_upper_map = {p.upper(): p for p in _raw_products}  # UPPER → 원본
+    products = list(_raw_products)  # 응답용 원본 목록
+    _pq = str(product or "").strip().upper()
+    if not _pq:
+        product = products[0] if products else ""
+    elif _pq in _product_upper_map:
+        product = _product_upper_map[_pq]  # 원본 케이스로 복원
+    else:
         raise HTTPException(400, f"product '{product}' 가 latest cache에 없습니다. 선택 가능: {products}")
 
     try:
@@ -2698,7 +2705,7 @@ def wip_split_summary(
     if axis not in ("step_id", "step_desc"):
         axis = "step_id"
 
-    cur = cur.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase() == product)
+    cur = cur.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase() == str(product).upper())
     if axis == "step_id":
         cur = cur.with_columns(
             pl.col("step_id").cast(_STR, strict=False).str.extract(r"(\d{6})\s*$", 1)

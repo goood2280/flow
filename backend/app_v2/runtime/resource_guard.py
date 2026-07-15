@@ -149,12 +149,15 @@ def _essential_prefixes() -> tuple[str, ...]:
 def _auto_essential_concurrency() -> int:
     """Reserve a minimum interactive lane sized to the host's spare cores.
 
-    Leaves compute for the OS/event loop and the heavy lane while still
-    guaranteeing at least one dedicated slot for basic UI work."""
+    Essential reads (SplitTable view, file viewer) are mostly I/O-bound
+    (streaming cached parquet), so they can share cores without saturating
+    CPU.  The previous formula ``(cores-1)//2`` gave only 2 slots on a
+    5-core host, causing frequent 429s when a user opened several tabs.
+    ``(cores+1)//2`` keeps at least one core free for the OS/event loop
+    while giving enough slots to handle a small burst of UI reads:
+    cores  1→1  2→1  3→2  4→2  5→3  6→3  7→4  8→4"""
     cores = int(effective_cpu_count())
-    # cores<=2 -> 1, 3-5 -> 2, 6+ -> 3. Interactive reads mostly stream cached
-    # parquet, so a small reserve keeps the UI responsive without risking OOM.
-    return max(1, min(3, (cores - 1) // 2))
+    return max(1, min(4, (cores + 1) // 2))
 
 
 def _light_paths() -> tuple[str, ...]:
@@ -188,9 +191,14 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        # Metadata/list requests stay light; heavy scans run sequentially by
-        # default on the bounded profile. Operators can still raise this via env.
-        default_concurrency = 1 if is_small_profile() else 3
+        # Metadata/list requests stay light; heavy scans are serialised on tiny
+        # hosts but get 2 slots once the host has ≥5 cores.
+        # cores  ≤4 → 1  5-6 → 2  7+ → 3.  Override with env var if needed.
+        default_concurrency = (
+            max(1, min(3, (int(effective_cpu_count()) - 1) // 2))
+            if is_small_profile()
+            else 3
+        )
         self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
@@ -202,7 +210,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             "FLOW_ESSENTIAL_REQUEST_CONCURRENCY", _auto_essential_concurrency(), 1, 8
         )
         self._essential_queue_timeout = _float_env(
-            "FLOW_ESSENTIAL_REQUEST_QUEUE_TIMEOUT_SEC", 60.0, 1.0, 600.0
+            "FLOW_ESSENTIAL_REQUEST_QUEUE_TIMEOUT_SEC", 90.0, 1.0, 600.0
         )
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
         self._guard_recheck_delay_sec = _float_env("FLOW_RESOURCE_GUARD_RECHECK_DELAY_SEC", 1.0, 0.0, 30.0)

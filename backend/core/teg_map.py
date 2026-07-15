@@ -458,6 +458,75 @@ def fit_geometry(xs, ys, rs) -> dict | None:
     return {"cx": cx, "cy": cy, "kx": kx, "ky": ky}
 
 
+def fit_geometry_diagnosed(xs, ys, rs) -> tuple[dict | None, dict]:
+    """fit + Chip_Radius 이상치 진단.
+
+    잘못 입력된 radius(오타/단위 실수)는 최소자승 해를 조용히 왜곡하거나
+    아예 해를 못 찾게 만든다. 전략:
+      1) 전체 fit 성공 → 잔차(|측정 r − fit r|, mm)가 큰 점을 잔차순으로
+         제거·재fit (최대 20%, 남는 점 ≥6). 임계 = max(2mm, 6×중앙잔차).
+      2) 전체 fit 실패 → leave-one-out 으로 단일 오염 행 탐지 (≤200샷).
+    반환: (geo|None, diag) — diag = {used, dropped:[{x,y,r,residual_mm}],
+    max_residual_mm, note}. dropped 는 UI 에 "의심 행"으로 노출한다."""
+    pts = [(float(x), float(y), float(r)) for x, y, r in zip(xs, ys, rs)
+           if all(math.isfinite(float(v)) for v in (x, y, r))]
+    diag: dict[str, Any] = {"used": len(pts), "dropped": [], "max_residual_mm": 0.0, "note": ""}
+
+    def _residuals(geo, sub):
+        out = []
+        for x, y, r in sub:
+            rf = math.hypot((x - geo["cx"]) * geo["kx"], (y - geo["cy"]) * geo["ky"])
+            out.append(abs(r - rf))
+        return out
+
+    def _fit(sub):
+        return fit_geometry([p[0] for p in sub], [p[1] for p in sub], [p[2] for p in sub])
+
+    cur = list(pts)
+    geo = _fit(cur)
+    if geo is None:
+        # 단일 오염 행이 해 자체를 깨는 경우 — leave-one-out 시도.
+        if 7 <= len(cur) <= 200:
+            for i in range(len(cur)):
+                trial = cur[:i] + cur[i + 1:]
+                g = _fit(trial)
+                if g is not None:
+                    x, y, r = cur[i]
+                    rf = math.hypot((x - g["cx"]) * g["kx"], (y - g["cy"]) * g["ky"])
+                    diag["dropped"].append({"x": x, "y": y, "r": r, "residual_mm": round(abs(r - rf), 3)})
+                    diag["used"] = len(trial)
+                    diag["note"] = "leave-one-out 으로 오염 행 1개 제외 후 fit 성공"
+                    resid = _residuals(g, trial)
+                    diag["max_residual_mm"] = round(max(resid), 3) if resid else 0.0
+                    return g, diag
+        diag["note"] = "fit 불가 — 샷 6개 미만이거나 radius 오염이 2행 이상일 수 있음"
+        return None, diag
+
+    # 성공 → 잔차 큰 점을 반복 제거 (최대 20%).
+    max_drop = max(0, min(len(cur) - 6, int(len(cur) * 0.2)))
+    for _ in range(max_drop):
+        resid = _residuals(geo, cur)
+        med = sorted(resid)[len(resid) // 2]
+        threshold = max(2.0, 6.0 * med)
+        worst_i = max(range(len(resid)), key=lambda i: resid[i])
+        if resid[worst_i] <= threshold:
+            break
+        x, y, r = cur.pop(worst_i)
+        diag["dropped"].append({"x": x, "y": y, "r": r, "residual_mm": round(resid[worst_i], 3)})
+        g = _fit(cur)
+        if g is None:  # 제거가 오히려 해를 깨면 되돌림
+            cur.append((x, y, r))
+            diag["dropped"].pop()
+            break
+        geo = g
+    resid = _residuals(geo, cur)
+    diag["used"] = len(cur)
+    diag["max_residual_mm"] = round(max(resid), 3) if resid else 0.0
+    if diag["dropped"]:
+        diag["note"] = f"Chip_Radius 이상치 {len(diag['dropped'])}개 제외 후 fit"
+    return geo, diag
+
+
 def _grid_pitch(vals) -> float:
     """정렬된 unique 좌표값의 양수 diff 중앙값 (Auto Report _wfmap_shot_pitch)."""
     import numpy as np
@@ -492,7 +561,7 @@ def map_payload(vehicle: str) -> dict:
     ys = grp["y"].tolist()
     rs = grp["r"].tolist()
 
-    geo = fit_geometry(xs, ys, rs)
+    geo, fit_diag = fit_geometry_diagnosed(xs, ys, rs)
     pitch_x = _grid_pitch(xs)
     pitch_y = _grid_pitch(ys)
 
@@ -558,6 +627,11 @@ def map_payload(vehicle: str) -> dict:
             "pitch_y": pitch_y,
             "wafer_radius_mm": float(cfg["wafer_radius_mm"]),
             "wafer_edge_mm": float(cfg["wafer_edge_mm"]),
+            # Chip_Radius 오입력 진단 — 이상치로 제외된 행과 fit 잔차를 UI 에 노출.
+            "fit_used": fit_diag.get("used", 0),
+            "fit_dropped": fit_diag.get("dropped", []),
+            "fit_max_residual_mm": fit_diag.get("max_residual_mm", 0.0),
+            "fit_note": fit_diag.get("note", ""),
         },
         "shots": shots,
         "tegs": tegs,

@@ -7505,6 +7505,17 @@ def refresh_root_lot_ram_cache_now(req: RootLotRamCacheRefreshReq, _perm=Depends
     return _ml_table_lookup.refresh_root_lot_ram_cache(product=req.product or "", force=bool(req.force))
 
 
+class RootLotRamCacheEvictReq(BaseModel):
+    source_path: str = ""
+    root_lot_id: str = ""
+
+
+@router.post("/root-lot-cache/evict")
+def evict_root_lot_ram_cache_entry(req: RootLotRamCacheEvictReq, _perm=Depends(require_page_manager("splittable"))):
+    """관리자: 개별 root lot 캐시 항목 제거."""
+    return _ml_table_lookup.evict_root_ram_cache_entry(source_path=req.source_path, root_lot_id=req.root_lot_id)
+
+
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
     """v8.8.5: view / ml-table-match 양쪽에서 공용. 현재 product 에 대해 적용된 오버라이드 설정 요약.
 

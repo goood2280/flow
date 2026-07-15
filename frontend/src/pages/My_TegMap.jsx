@@ -305,7 +305,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
 /* ── wafer 전체 SVG — shot 사각형 + wafer 원/최외곽선 + TEG 마커.
    그림/칩 격자는 shot 확대 뷰에서만 표시. shot 색: 선택 TEG 전체가 최외곽(147mm)
    안에 온전히 들어오면 초록, 하나라도 라인에 걸치거나 밖이면 빨강. ── */
-function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick }) {
+function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nearestShot }) {
   const SIZE = 640;
   const geo = data.geometry;
   const mmMode = geo.fit === "radius";
@@ -343,7 +343,8 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick }) {
   const tegList = data.tegs.filter(t => selectedTegs.has(t.teg));
 
   // shot 별 최외곽(147mm) 판정 — 선택 TEG 사각형의 네 꼭짓점 중 하나라도
-  // edge 원 밖이면 "걸림"(빨강), 전부 안이면 초록. TEG 미선택/geometry 불가면 중립.
+  // edge 원 밖이면 "걸림"(빨강), 전부 안이면 초록. TEG 미선택 시엔 shot 영역
+  // 자체로 판정: 전부 안=연파랑, 걸치거나 밖=연노랑.
   const edgeMm = mmMode ? (geo.wafer_edge_mm || 0) : 0;
   const shotEdgeCrossed = (s0) => {
     if (!edgeMm || !tegList.length) return null;
@@ -354,6 +355,12 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick }) {
       if (maxD > edgeMm) return true;
     }
     return false;
+  };
+  // shot 사각형(센터 ± W/2, ± H/2)의 가장 먼 꼭짓점이 edge 밖인가
+  const shotSelfCrossed = (s0) => {
+    if (!edgeMm) return null;
+    const maxD = Math.hypot(Math.abs(s0.mm_x) + geo.shot_w_mm / 2, Math.abs(s0.mm_y) + geo.shot_h_mm / 2);
+    return maxD > edgeMm;
   };
 
   return (
@@ -377,13 +384,24 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick }) {
         const key = `${s0.x},${s0.y}`;
         const isSel = selectedShot && selectedShot.x === s0.x && selectedShot.y === s0.y;
         const crossed = mmMode ? shotEdgeCrossed(s0) : null;
-        const passFill = crossed === null
-          ? "rgba(128,128,128,0.06)"
-          : crossed ? "rgba(224,82,82,0.30)" : "rgba(47,158,99,0.22)";
-        const passStroke = crossed === null ? "var(--line)" : crossed ? "#e05252" : "#2f9e63";
+        const selfCrossed = mmMode && crossed === null ? shotSelfCrossed(s0) : null;
+        const passFill = crossed !== null
+          ? (crossed ? "rgba(224,82,82,0.30)" : "rgba(47,158,99,0.22)")
+          : selfCrossed !== null
+            ? (selfCrossed ? "rgba(250,204,21,0.28)" : "rgba(96,165,250,0.20)")
+            : "rgba(128,128,128,0.06)";
+        const passStroke = crossed !== null
+          ? (crossed ? "#e05252" : "#2f9e63")
+          : selfCrossed !== null
+            ? (selfCrossed ? "#c78a1e" : "#3e7bd6")
+            : "var(--line)";
         const title = mmMode
           ? `shot (${s0.x}, ${s0.y})\n센터: (${fmt(s0.mm_x)}, ${fmt(s0.mm_y)}) mm\nradius: ${fmt(s0.radius)} mm`
-            + (crossed === null ? "" : crossed ? `\n⚠ TEG 가 최외곽 ${fmt(edgeMm, 0)}mm 라인에 걸림` : `\n✓ TEG 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
+            + (crossed !== null
+              ? (crossed ? `\n⚠ TEG 가 최외곽 ${fmt(edgeMm, 0)}mm 라인에 걸림` : `\n✓ TEG 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
+              : selfCrossed !== null
+                ? (selfCrossed ? `\nshot 영역이 최외곽 ${fmt(edgeMm, 0)}mm 에 걸치거나 밖` : `\nshot 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
+                : "")
           : `shot (${s0.x}, ${s0.y})`;
         return (
           <g key={key} onClick={() => onShotClick(s0)} style={{ cursor: "pointer" }}>
@@ -405,6 +423,16 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick }) {
           </g>
         );
       })}
+      {/* 가장 가까운 샷 센터 = 빨간 점 — 실center에서 가장 가까운 shot 표시 */}
+      {mmMode && nearestShot && (() => {
+        const nx = toX(nearestShot.mm_x), ny = toY(nearestShot.mm_y);
+        return (
+          <g pointerEvents="none">
+            <circle cx={nx} cy={ny} r="5" fill="#e05252" stroke="#fff" strokeWidth="1.2" opacity="0.92" />
+            <title>가장 가까운 샷: ({nearestShot.x}, {nearestShot.y}) — radius {fmt(nearestShot.radius)} mm</title>
+          </g>
+        );
+      })()}
     </svg>
   );
 }
@@ -666,7 +694,9 @@ export default function My_TegMap({ user }) {
                     shot {fmt(geo.shot_w_mm, 2)}×{fmt(geo.shot_h_mm, 2)} mm
                   </Pill>
                 ) : (
-                  <Pill tone="warn">Chip_Radius fit 불가 — 격자 좌표로만 표시</Pill>
+                  <Pill tone="warn" title={geo?.fit_note || ""}>
+                    Chip_Radius fit 불가 — 격자 좌표로만 표시{geo?.fit_note ? ` (${geo.fit_note})` : ""}
+                  </Pill>
                 )}
                 <Pill tone="neutral">
                   {display.mode === "grid" ? `칩 격자 ${display.cols}×${display.rows}` :
@@ -677,36 +707,58 @@ export default function My_TegMap({ user }) {
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
               shot 클릭 → 확대 뷰. 실선 원 = wafer {fmt(geo?.wafer_radius_mm, 0)}mm,
               점선 원 = 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm.
-              <span style={{ color: "#2f9e63", fontWeight: 700 }}> ■ 초록</span> = 선택 TEG 전체가 최외곽 안,
-              <span style={{ color: "#e05252", fontWeight: 700 }}> ■ 빨강</span> = TEG 가 최외곽 라인에 걸림.
+              TEG 선택 시: <span style={{ color: "#2f9e63", fontWeight: 700 }}>■ 초록</span> = TEG 전체가 최외곽 안,
+              <span style={{ color: "#e05252", fontWeight: 700 }}> ■ 빨강</span> = TEG 가 걸림.
+              미선택 시: <span style={{ color: "#3e7bd6", fontWeight: 700 }}>■ 연파랑</span> = shot 전체가 안,
+              <span style={{ color: "#c78a1e", fontWeight: 700 }}> ■ 연노랑</span> = shot 이 걸치거나 밖.
               격자/그림은 shot 확대에서만 표시됩니다.
             </div>
+            {/* 가장 가까운 샷 센터 — WaferMap 빨간 점 표시 + 실center 차이 계산용 */}
+            {(() => {
+              const withR = geo?.fit === "radius"
+                ? (data.shots || []).filter(s0 => typeof s0.radius === "number")
+                : [];
+              // eslint-disable-next-line react-hooks/rules-of-hooks
+              const _nearestShot = withR.length
+                ? withR.reduce((a, b) => (a.radius <= b.radius ? a : b))
+                : null;
+              return (
             <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
               <WaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
-                selectedShot={selectedShot} onShotClick={onShotClick} />
+                selectedShot={selectedShot} onShotClick={onShotClick}
+                nearestShot={_nearestShot} />
               {/* TEG 목록 — 다중 선택 가능 */}
               <div style={{ minWidth: 170, maxWidth: 240 }}>
-                {/* Chip_Radius 계산 정보 — shot 크기 + 최소 radius shot 의 실center 오프셋(µm) */}
-                {geo?.fit === "radius" && (() => {
-                  const withR = (data.shots || []).filter(s0 => typeof s0.radius === "number");
-                  const minShot = withR.length
-                    ? withR.reduce((a, b) => (a.radius <= b.radius ? a : b))
-                    : null;
-                  return (
+                {/* Chip_Radius 계산 정보 — shot 크기 + 가장 가까운 shot 실center 델타(µm) */}
+                {geo?.fit === "radius" && (
                     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 12, lineHeight: 1.7 }}>
                       <div style={{ fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>Chip_Radius 계산 정보</div>
                       <div>shot 크기: <b>{fmt(geo.shot_w_mm, 3)} × {fmt(geo.shot_h_mm, 3)} mm</b></div>
-                      {minShot && (
+                      {_nearestShot && (
                         <>
-                          <div>최소 radius shot: <b>({minShot.x}, {minShot.y})</b></div>
-                          <div title="Chip_Radius 가 가장 작은 shot 센터와 wafer 실제 중심의 차이">
-                            실center 차이: <b>Δx {fmt(minShot.mm_x * 1000, 1)} · Δy {fmt(minShot.mm_y * 1000, 1)} µm</b>
+                          <div>가장 가까운 샷: <b style={{ color: "#e05252" }}>({_nearestShot.x}, {_nearestShot.y})</b>
+                            <span style={{ color: "var(--muted)", marginLeft: 4 }}>(빨간 점)</span></div>
+                          <div title="실center(wafer 중심)에서 가장 가까운 샷 센터로 이동하는 Δx, Δy. x 우측↑, y 위↑ 양수.">
+                            실center 차이: <b>Δx {fmt(_nearestShot.mm_x * 1000, 1)} · Δy {fmt(-_nearestShot.mm_y * 1000, 1)} µm</b>
                           </div>
                         </>
                       )}
+                      <div title="fit 에 사용한 샷 수와 측정 radius − fit radius 최대 잔차">
+                        fit: <b>{geo.fit_used}개 샷</b> · 잔차 max <b>{fmt(geo.fit_max_residual_mm, 3)} mm</b>
+                      </div>
+                      {(geo.fit_dropped || []).length > 0 && (
+                        <div style={{ color: "#e05252", marginTop: 2 }}
+                          title={"측정 Chip_Radius 가 fit 대비 크게 벗어나 자동 제외된 행 — 원본 CSV 값 확인 필요\n"
+                            + (geo.fit_dropped || []).map(d0 =>
+                              `(${d0.x}, ${d0.y}) r=${fmt(d0.r, 1)} (잔차 ${fmt(d0.residual_mm, 1)}mm)`).join("\n")}>
+                          ⚠ 잘못된 샷이 있는 것 같습니다 — {(geo.fit_dropped || []).slice(0, 4).map(d0 =>
+                            `(${d0.x}, ${d0.y})`).join(", ")}
+                          {(geo.fit_dropped || []).length > 4 ? ` 외 ${(geo.fit_dropped || []).length - 4}개` : ""}
+                          {" "}(Chip_Radius 값 확인 필요)
+                        </div>
+                      )}
                     </div>
-                  );
-                })()}
+                )}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
                     TEG 목록 ({selectedTegs.size}/{tegNames.length})
@@ -758,6 +810,8 @@ export default function My_TegMap({ user }) {
                 </div>
               </div>
             </div>
+              );
+            })()}
           </Card>
 
           {/* 우: shot 확대 + radius */}

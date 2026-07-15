@@ -1297,6 +1297,36 @@ function ActivityDashboardPanel(){
         {rows.length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>최근 검색 타이밍이 없습니다 (SplitTable에서 root_lot_id로 검색하면 기록됩니다)</div>}
       </div>
       <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>ms 단위 · <b>메모리HIT</b>=RAM 캐시 즉시응답, <b>디스크(첫검색)</b>/<b>메모리적재</b>=첫 조회로 파티션 parquet 읽음. scan=캐시/조인 준비, collect=피벗 수집, matrix=셀 매트릭스 구성.</div>
+      {/* RAM 캐시 개별 항목 목록 + 삭제 관리 */}
+      {_arr(splitCache?.cache?.roots).length > 0 && (<>
+        <div style={{fontSize:14,fontWeight:700,marginTop:16,marginBottom:8}}>RAM 캐시 항목 ({_arr(splitCache?.cache?.roots).length}개)</div>
+        <div style={{maxHeight:280,overflowY:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+            <thead><tr>{["vehicle","root_lot_id","사유","MB","rows","조회수","적재시각",""].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+            <tbody>{_arr(splitCache?.cache?.roots).map((r,i)=>{
+              const groupLabel={"step":"step기반","searched":"검색됨","recent":"최근tkout","frequent":"자주조회","warmup":"워밍업"};
+              const groupColor={"step":"#3e7bd6","searched":"#22c55e","recent":"#c78a1e","frequent":"#8a5fd0","warmup":"var(--text-secondary)"};
+              const grp=r.cache_group||"other";
+              // source_path 에서 vehicle(product) 이름 추출 — 경로의 마지막 폴더 or 파일명
+              const sp=r.source_path||"";
+              const veh=sp.split(/[/\\]/).filter(Boolean).pop()||sp;
+              return(<tr key={i}>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:13}} title={sp}>{veh}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--accent)",fontWeight:600}}>{r.root_lot_id||""}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:groupColor[grp]||"var(--text-secondary)",fontWeight:600}}>{groupLabel[grp]||grp}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{Number(r.estimated_mb||0).toFixed(1)}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)"}}>{r.row_count||0}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)"}}>{r.access_count||0}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.loaded_at||"").replace("T"," ").slice(0,19)}</td>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)"}}>
+                  <button onClick={async()=>{try{await postJson("/api/splittable/root-lot-cache/evict",{source_path:r.source_path,root_lot_id:r.root_lot_id});toast.ok(r.root_lot_id+" 캐시 제거됨");reload();}catch(e){toast.error(String(e.message||e));}}}
+                    style={{fontSize:12,padding:"2px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:BAD.fg,cursor:"pointer"}} title="이 항목을 RAM 캐시에서 제거">삭제</button>
+                </td>
+              </tr>);
+            })}</tbody>
+          </table>
+        </div>
+      </>)}
     </div>);})()}
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>최근 이벤트 (50건)</div>

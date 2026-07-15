@@ -102,6 +102,32 @@ def test_teg_size_from_file_overrides_default(teg_env):
     assert payload["tegs"][0]["teg_h"] == pytest.approx(1.5)
 
 
+def test_fit_diagnosed_clean_data_no_drop():
+    xs, ys, rs = _synthetic_layout()
+    geo, diag = teg_map.fit_geometry_diagnosed(xs, ys, rs)
+    assert geo is not None
+    assert diag["dropped"] == []
+    assert diag["max_residual_mm"] == pytest.approx(0.0, abs=1e-6)
+    assert geo["kx"] == pytest.approx(24.0, abs=1e-6)
+
+
+def test_fit_diagnosed_drops_corrupted_radius():
+    xs, ys, rs = _synthetic_layout()
+    rs = list(rs)
+    # 한 행의 Chip_Radius 를 10배 오입력 — 최소자승 해를 왜곡하는 시나리오
+    bad_i = 7
+    rs[bad_i] = rs[bad_i] * 10.0
+    geo, diag = teg_map.fit_geometry_diagnosed(xs, ys, rs)
+    assert geo is not None
+    # 오염 행이 제외되고 fit 파라미터는 참값으로 복원
+    assert len(diag["dropped"]) >= 1
+    dropped_pts = {(d["x"], d["y"]) for d in diag["dropped"]}
+    assert (xs[bad_i], ys[bad_i]) in dropped_pts
+    assert geo["kx"] == pytest.approx(24.0, abs=1e-3)
+    assert geo["ky"] == pytest.approx(18.0, abs=1e-3)
+    assert diag["max_residual_mm"] < 0.5
+
+
 def test_flat_zone_v_swaps_teg_size(teg_env):
     _write_demo_files(teg_env)
     # flat_zone: h=수평(기본), v=세움 — 가로가 높이가 된다 (w/h 스왑).
