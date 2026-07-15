@@ -9804,6 +9804,17 @@ def _build_fab_lot_index_incremental(product: str, fab_source: str, include_all:
         # (특수문자는 hive 인코딩과 어긋날 수 있음 → 전체 재빌드).
         if any(not _re.fullmatch(r"[A-Z0-9_\-.]+", r) for r in roots):
             return False
+        # 새 파일이 기존 root 대부분을 건드리면 per-root 병합(파티션별 읽기+
+        # 교체)이 한 번의 전체 sort 보다 비싸다 — 실측상 30% 를 넘으면 전체
+        # 재빌드가 더 빠르므로 폴백한다.
+        try:
+            existing = sum(1 for p in idx_dir.iterdir() if p.is_dir())
+        except Exception:
+            existing = 0
+        if existing and len(roots) > max(16, int(existing * 0.3)):
+            logger.info("fab_lot_index incremental 포기 — 영향 root %d/%d (product=%s)",
+                        len(roots), existing, product)
+            return False
 
         frames = []
         for root in roots:
