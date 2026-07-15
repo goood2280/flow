@@ -23,6 +23,7 @@ def start_background_services(logger) -> None:
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("valve alerts scheduler", "core.valve_alerts", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),
+        ("splittable fab lot index revalidator", "routers.splittable", "start_fab_lot_index_revalidator"),
     )
     heavy_starters = (
         ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
