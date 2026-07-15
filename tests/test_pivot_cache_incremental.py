@@ -60,3 +60,23 @@ def test_incremental_rebuild_skips_unchanged_roots(tmp_path, monkeypatch):
     assert cache_builder.build_pivoted_cache_for_product("ML_TABLE_INC", product_path=src)
     assert not r2.exists()
     assert r1.is_file()
+
+
+def test_externally_overwritten_root_file_is_healed(tmp_path, monkeypatch):
+    """지문이 같아도 빌더 외부에서 재기록된 per-root 파일은 재빌드(self-heal)."""
+    monkeypatch.setattr(cache_builder, "CACHE_DIR", tmp_path / "split_table")
+    src = tmp_path / "ML_TABLE_HEAL.parquet"
+    _source_df().write_parquet(src)
+    assert cache_builder.build_pivoted_cache_for_product("ML_TABLE_HEAL", product_path=src)
+    out_dir = tmp_path / "split_table" / "ML_TABLE_HEAL"
+    r1 = out_dir / "R1.parquet"
+
+    # 외부 오염 (테스트 픽스처/수동 조작 시나리오)
+    time.sleep(1.1)  # self-heal 판정은 지문 파일 mtime + 1s 여유 기준
+    pl.DataFrame({"root_lot_id": ["R1"], "wafer_id": [1], "KNOB_GATE": ["X"]}).write_parquet(r1)
+    assert "KNOB_GATE" in pl.read_parquet(r1).columns
+
+    assert cache_builder.build_pivoted_cache_for_product("ML_TABLE_HEAL", product_path=src)
+    healed = pl.read_parquet(r1)
+    assert "KNOB_GATE" not in healed.columns
+    assert healed["KNOB_A"].to_list() == ["ON", "ON"]
