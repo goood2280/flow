@@ -35,6 +35,7 @@ from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
 from core.auth import current_user, is_page_manager, require_page_manager
 from core.domain import classify_process_area
+from core import latest_lot_partitions as _latest_lot_partitions
 from core import matching_cache as _matching_cache
 from core import ml_table_lookup as _ml_table_lookup
 from core import s3_sync as _s3
@@ -6178,19 +6179,20 @@ def _latest_lot_step_cache_lf(product: str = "", root_lot_id: str = ""):
     return lf
 
 
-# ── Per-root latest-lot cache partitions (additive SWR layer) ────────────────
+# ── Per-root latest-lot cache partitions ─────────────────────────────────────
 # The canonical latest-lot cache (lot_progress_latest_lot_by_root_wafer.parquet)
 # is a single monolithic file, so every root-scoped lookup (the fab identity
 # join in _scan_product, fab-lot snapshots, history scope) re-scanned the whole
-# file with a cast+upper filter that defeats parquet predicate pushdown — the
-# same failure mode the fab_lot_index fixed for the raw FAB source. This layer
-# mirrors the SplitTable pivot / fab_lot_index pattern: the monolithic file is
-# re-partitioned by normalized root key in the background and a root search
-# reads only its own partition. Purely additive — on any miss/stale/error the
-# caller falls back to the monolithic scan while a rebuild is enqueued.
-_LATEST_IDX_ROOT_COL = "__latest_idx_root"
-_LATEST_IDX_DIR_NAME = "lot_progress_latest_by_root"
-_LATEST_IDX_META_FILE = "_meta.json"
+# file with a cast+upper filter that defeats parquet predicate pushdown. The
+# per-root partition layout is owned by core.latest_lot_partitions and is
+# written by BOTH monolithic exporters at write time, so a root search normally
+# reads a fresh partition directly. The freshness check + enqueue below remain
+# as self-heal only (crash mid-write, files produced by older code): on any
+# miss/stale/error the caller falls back to the monolithic scan while a
+# rebuild is scheduled.
+_LATEST_IDX_ROOT_COL = _latest_lot_partitions.ROOT_KEY_COL
+_LATEST_IDX_DIR_NAME = _latest_lot_partitions.PARTITION_DIR_NAME
+_LATEST_IDX_META_FILE = _latest_lot_partitions.META_FILE
 _LATEST_IDX_BUILD_LOCK = threading.Lock()
 _LATEST_IDX_BUILD_STATE: dict = {"inprogress": False, "last": 0.0}
 _LATEST_IDX_BUILD_COOLDOWN_SEC = 60.0
@@ -6204,16 +6206,16 @@ def _latest_lot_index_enabled() -> bool:
 
 
 def _latest_lot_index_dir() -> Path:
-    return _latest_lot_step_cache_path().parent / _LATEST_IDX_DIR_NAME
+    return _latest_lot_partitions.partitions_dir(_latest_lot_step_cache_path())
 
 
 def _latest_lot_index_meta_path() -> Path:
-    return _latest_lot_index_dir() / _LATEST_IDX_META_FILE
+    return _latest_lot_partitions.meta_path(_latest_lot_step_cache_path())
 
 
 def _latest_lot_index_source_sig() -> list:
     """(path, mtime, size) of the monolithic file — the partition staleness key."""
-    return list(_path_cache_sig(_latest_lot_step_cache_path()))
+    return _latest_lot_partitions.source_signature(_latest_lot_step_cache_path())
 
 
 def _latest_lot_index_fresh() -> bool:
@@ -6221,12 +6223,16 @@ def _latest_lot_index_fresh() -> bool:
 
     stale/miss 면 백그라운드 재빌드를 예약하고 False 를 반환한다 (호출측은
     monolithic 폴백 — 오늘과 동일한 경로라 정확성 저하 없음). 판정은 짧은 TTL
-    로 캐시해 요청마다 meta 재읽기/재-stat 을 피한다."""
+    로 캐시해 요청마다 meta 재읽기/재-stat 을 피한다. TTL 캐시는 monolithic
+    경로를 키로 쓴다 — DB 루트가 런타임에 재지정되면(관리자 설정/테스트 sandbox)
+    이전 루트의 fresh 판정이 새 루트로 새어 빈 파티션 응답을 내면 안 된다."""
     if not _latest_lot_index_enabled():
         return False
+    mono_fp = _latest_lot_step_cache_path()
+    cache_key = str(mono_fp)
     now = time.monotonic()
     with _LATEST_IDX_FRESH_LOCK:
-        cached = _LATEST_IDX_FRESH_CACHE.get("v")
+        cached = _LATEST_IDX_FRESH_CACHE.get(cache_key)
         if cached is not None and now - cached[0] < _LATEST_IDX_FRESH_TTL_SEC:
             return cached[1]
     fresh = False
@@ -6235,10 +6241,12 @@ def _latest_lot_index_fresh() -> bool:
         fresh = bool(meta) and meta.get("source_sig") == _latest_lot_index_source_sig()
     except Exception:
         fresh = False
-    if not fresh and _latest_lot_step_cache_path().is_file():
+    if not fresh and mono_fp.is_file():
         _enqueue_latest_lot_index_build(reason="stale")
     with _LATEST_IDX_FRESH_LOCK:
-        _LATEST_IDX_FRESH_CACHE["v"] = (now, fresh)
+        _LATEST_IDX_FRESH_CACHE[cache_key] = (now, fresh)
+        while len(_LATEST_IDX_FRESH_CACHE) > 8:
+            _LATEST_IDX_FRESH_CACHE.pop(next(iter(_LATEST_IDX_FRESH_CACHE)))
     return fresh
 
 
@@ -6276,61 +6284,21 @@ def _latest_lot_index_partition_lf(product: str, root_lot_id: str):
         return None
 
 
-def _build_latest_lot_index() -> bool:
+def _build_latest_lot_index(reason: str = "reader_self_heal") -> bool:
     """Re-partition the monolithic latest-lot cache by normalized root key."""
-    src = _latest_lot_step_cache_path()
-    if not src.is_file():
-        return False
-    # 빌드 전 시그니처를 캡처 — 빌드 도중 monolithic 이 재기록되면 다음 조회의
-    # freshness 체크가 mismatch 를 감지해 재빌드한다.
-    source_sig = _latest_lot_index_source_sig()
-    lf = _scan_parquet_compat(str(src))
-    try:
-        names = lf.collect_schema().names()
-    except Exception:
-        return False
-    if "root_lot_id" not in names:
-        return False
-    lf = (
-        lf.with_columns(_join_key_expr("root_lot_id").alias(_LATEST_IDX_ROOT_COL))
-        .filter(pl.col(_LATEST_IDX_ROOT_COL).is_not_null() & (pl.col(_LATEST_IDX_ROOT_COL) != ""))
-    )
-    idx_dir = _latest_lot_index_dir()
-    tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        sink_target = pl.PartitionBy(
-            tmp_dir, key=_LATEST_IDX_ROOT_COL, include_key=True,
-            approximate_bytes_per_file="auto",
-        )
-        lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
-    except Exception:
-        df = lf.collect()
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(tmp_dir, partition_by=_LATEST_IDX_ROOT_COL)
-    if idx_dir.exists():
-        shutil.rmtree(idx_dir, ignore_errors=True)
-    tmp_dir.replace(idx_dir)
-    meta = {
-        "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "source": str(src),
-        "source_sig": source_sig,
-    }
-    try:
-        save_json(_latest_lot_index_meta_path(), meta)
-    except Exception:
-        logger.debug("latest_lot_index meta write failed", exc_info=True)
-    with _LATEST_IDX_FRESH_LOCK:
-        _LATEST_IDX_FRESH_CACHE.clear()
-    return True
+    ok = _latest_lot_partitions.sync_partitions(
+        _latest_lot_step_cache_path(), reason=reason)
+    if ok:
+        with _LATEST_IDX_FRESH_LOCK:
+            _LATEST_IDX_FRESH_CACHE.clear()
+    return ok
 
 
 def _enqueue_latest_lot_index_build(reason: str = "") -> bool:
-    """Single-flight, cooldown-guarded background rebuild of the root partitions."""
+    """Single-flight, cooldown-guarded background rebuild of the root partitions.
+
+    Self-heal only — the exporters write the partitions synchronously, so this
+    fires just for crash-truncated layouts or files written by older code."""
     if not _latest_lot_index_enabled():
         return False
     now = time.time()
@@ -6342,27 +6310,11 @@ def _enqueue_latest_lot_index_build(reason: str = "") -> bool:
         _LATEST_IDX_BUILD_STATE["inprogress"] = True
 
     def _run():
-        lease_name = "splittable_latest_lot_index"
-        lease_held = False
         try:
-            try:
-                from core import shared_lease as _shared_lease
-                lease_held = _shared_lease.try_acquire(lease_name, ttl_sec=600.0)
-                if not lease_held:
-                    logger.info("latest_lot_index build skipped — 다른 서버가 빌드 중")
-                    return
-            except Exception:
-                lease_held = False  # lease infra optional; proceed without it
-            _build_latest_lot_index()
+            _build_latest_lot_index(reason=reason or "reader_self_heal")
         except Exception as exc:
             logger.warning("latest_lot_index build failed (%s): %s", reason, exc)
         finally:
-            if lease_held:
-                try:
-                    from core import shared_lease as _shared_lease
-                    _shared_lease.release(lease_name)
-                except Exception:
-                    pass
             with _LATEST_IDX_BUILD_LOCK:
                 _LATEST_IDX_BUILD_STATE["inprogress"] = False
                 _LATEST_IDX_BUILD_STATE["last"] = time.time()
@@ -6616,10 +6568,16 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
         pass
     df.write_parquet(tmp)
     tmp.replace(fp)
-    # monolithic 파일이 새로 쓰였으므로 per-root 파티션을 백그라운드에서 재빌드.
-    # (lot_progress 스케줄러가 같은 파일을 재기록하는 경우는 reader 의 freshness
-    # 체크가 mismatch 를 감지해 알아서 재빌드한다.)
-    _enqueue_latest_lot_index_build(reason="export")
+    # per-root 파티션을 같은 쓰기 시점에 동기화 — df 가 손에 있으므로 read-back
+    # 없이 즉시 파티션이 fresh 가 된다. 실패해도 reader 의 monolithic 폴백 +
+    # self-heal 재빌드가 있으므로 export 는 성공으로 처리한다.
+    try:
+        _latest_lot_partitions.sync_partitions(fp, df=df, reason="match_cache_export")
+    except Exception as e:
+        logger.warning("latest-lot per-root partition sync failed %s: %s",
+                       type(e).__name__, e)
+    with _LATEST_IDX_FRESH_LOCK:
+        _LATEST_IDX_FRESH_CACHE.clear()
     result = {
         "ok": True,
         "path": str(fp),
@@ -9504,9 +9462,12 @@ _FAB_IDX_BUILD_LOCK = threading.Lock()
 _FAB_IDX_BUILD_INPROGRESS: set[str] = set()
 _FAB_IDX_BUILD_LAST: dict[str, float] = {}
 _FAB_IDX_BUILD_COOLDOWN_SEC = 120.0
-# throttle the (potentially directory-walking) staleness check off the hot path
-_FAB_IDX_REVALIDATE_TTL_SEC = 30.0
-_FAB_IDX_REVALIDATE_LAST: dict[str, float] = {}
+# central revalidator (startup service) — keeps every built index in line with
+# the FAB sources without any staleness work on the search hot path
+_FAB_IDX_SWEEP_THREAD_LOCK = threading.Lock()
+_FAB_IDX_SWEEP_THREAD: threading.Thread | None = None
+_FAB_IDX_SWEEP_WAKE = threading.Event()
+_FAB_IDX_SWEEP_FIRST_DELAY_SEC = 10.0
 
 
 def _fab_lot_index_enabled() -> bool:
@@ -9557,48 +9518,92 @@ def _fab_lot_index_partition_dir(product: str, root_lot_id: str) -> Path | None:
     return part if part.is_dir() else None
 
 
-def _fab_lot_index_maybe_revalidate(product: str, fab_source: str, include_all: bool) -> None:
-    """Throttled, off-hot-path freshness check. Spawns a daemon that compares the
-    live FAB source signature with the built index and enqueues a rebuild on drift
-    (or when the index is missing). Keeps the directory walk out of the search."""
-    canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
-    if not canonical:
-        return
-    now = time.time()
-    with _FAB_IDX_BUILD_LOCK:
-        if now - _FAB_IDX_REVALIDATE_LAST.get(canonical, 0.0) < _FAB_IDX_REVALIDATE_TTL_SEC:
-            return
-        _FAB_IDX_REVALIDATE_LAST[canonical] = now
+def _fab_lot_index_sweep_interval_sec() -> float:
+    try:
+        value = float(os.environ.get("FLOW_SPLITTABLE_FAB_LOT_INDEX_SWEEP_SEC", "") or 60.0)
+    except Exception:
+        value = 60.0
+    return max(10.0, min(3600.0, value))
 
-    def _check():
+
+def _fab_lot_index_sweep_once() -> None:
+    """Compare every built index against the live FAB source signature and
+    enqueue rebuilds on drift. One signature walk is shared by all products
+    that resolve to the same (fab_source, include_all) source set."""
+    try:
+        base = _base_root() / "cache" / "fab_lot_index"
+        product_dirs = [p for p in base.iterdir() if p.is_dir()]
+    except Exception:
+        return
+    include_all = _foreground_global_fab_scan_enabled()
+    sig_memo: dict[tuple, list] = {}
+    for pdir in product_dirs:
+        product = pdir.name
         try:
+            ml_product, _ov, fab_source = _current_fab_override(product)
+            if not ml_product:
+                continue
+            key = (fab_source, include_all)
+            if key not in sig_memo:
+                sig_memo[key] = _fab_source_signature(fab_source, include_all)
             meta = _fab_lot_index_read_meta(product)
-            live = _fab_source_signature(fab_source, include_all)
-            built = meta.get("source_sig")
-            if not meta or built != live:
+            if not meta or meta.get("source_sig") != sig_memo[key]:
                 _enqueue_fab_lot_index_build(
                     product, fab_source, include_all=include_all,
-                    reason="missing" if not meta else "stale",
+                    reason="sweep_missing_meta" if not meta else "sweep_stale",
                 )
         except Exception:
-            logger.debug("fab_lot_index revalidate failed product=%s", product, exc_info=True)
+            logger.debug("fab_lot_index sweep failed product=%s", product, exc_info=True)
 
-    threading.Thread(target=_check, daemon=True,
-                     name=f"splittable-fabidx-chk-{canonical}").start()
+
+def _fab_lot_index_sweep_loop() -> None:
+    _FAB_IDX_SWEEP_WAKE.wait(_FAB_IDX_SWEEP_FIRST_DELAY_SEC)
+    while True:
+        _FAB_IDX_SWEEP_WAKE.clear()
+        try:
+            if _fab_lot_index_enabled():
+                _fab_lot_index_sweep_once()
+        except Exception:
+            logger.debug("fab_lot_index sweep tick failed", exc_info=True)
+        _FAB_IDX_SWEEP_WAKE.wait(_fab_lot_index_sweep_interval_sec())
+
+
+def start_fab_lot_index_revalidator() -> bool:
+    """Startup service: keep built fab lot indexes fresh via a periodic sweep.
+    notify_fab_sources_changed() wakes the sweep immediately (e.g. S3 ingest)."""
+    global _FAB_IDX_SWEEP_THREAD
+    if not _fab_lot_index_enabled():
+        return False
+    with _FAB_IDX_SWEEP_THREAD_LOCK:
+        if _FAB_IDX_SWEEP_THREAD is not None and _FAB_IDX_SWEEP_THREAD.is_alive():
+            return False
+        _FAB_IDX_SWEEP_THREAD = threading.Thread(
+            target=_fab_lot_index_sweep_loop, daemon=True,
+            name="splittable-fabidx-sweep")
+        _FAB_IDX_SWEEP_THREAD.start()
+    logger.info("fab_lot_index revalidator started (interval=%ss)",
+                _fab_lot_index_sweep_interval_sec())
+    return True
+
+
+def notify_fab_sources_changed(reason: str = "") -> None:
+    """Wake the fab lot index sweep now (called after a FAB source ingest)."""
+    logger.info("fab sources changed (%s) — fab_lot_index sweep waked", reason or "-")
+    _FAB_IDX_SWEEP_WAKE.set()
 
 
 def _fab_lot_index_scan_root(product: str, root_lot_id: str,
                              fab_source: str = "", include_all: bool = False):
     """Return a LazyFrame of the FAB source rows for one root (schema identical to
-    _scan_global_fab_sources), or None to signal fallback to the full scan."""
+    _scan_global_fab_sources), or None to signal fallback to the full scan.
+    Serve-immediately: freshness is maintained by the central revalidator sweep,
+    so the search hot path does no staleness work at all."""
     if not _fab_lot_index_enabled():
         return None
     root = str(root_lot_id or "").strip()
     if not root:
         return None
     try:
-        # Serve-immediately; freshness is chased in the background (SWR-style).
-        _fab_lot_index_maybe_revalidate(product, fab_source, include_all)
         part = _fab_lot_index_partition_dir(product, root)
         if part is None:
             return None

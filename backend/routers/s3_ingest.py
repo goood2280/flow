@@ -804,6 +804,14 @@ def _run_item_blocking(item_id: str):
                    last_reason=reason,
                    last_ai_explanation=ai_explanation,
                    last_duration_sec=dur)
+    if status == "ok" and direction == "download":
+        # 새 FAB 원천이 내려왔을 수 있다 — SplitTable fab_lot_index 스윕을 즉시
+        # 깨워 다음 주기(기본 60s)를 기다리지 않고 재검증한다.
+        try:
+            from routers import splittable as _splittable
+            _splittable.notify_fab_sources_changed(reason=f"s3_ingest:{item_id}")
+        except Exception:
+            pass
     entry = {
         "id": item_id, "target": item.get("target"), "kind": item.get("kind"),
         "direction": (item.get("direction") or "download").lower(),

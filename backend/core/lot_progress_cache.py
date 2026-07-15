@@ -671,18 +671,20 @@ def _lot_progress_parquet_rows(state: dict) -> list[dict]:
     return rows
 
 
-def _write_lot_progress_parquet(target: Path, rows: list[dict]) -> None:
+def _lot_progress_parquet_frame(rows: list[dict]):
     import polars as pl  # type: ignore
 
     columns = [
         "product", "root_lot_id", "wafer_id", "lot_id",
         "step_id", "function_step", "tkout_time", "update_time",
     ]
-    target.parent.mkdir(parents=True, exist_ok=True)
     if rows:
-        df = pl.DataFrame(rows).select(columns)
-    else:
-        df = pl.DataFrame({col: [] for col in columns})
+        return pl.DataFrame(rows).select(columns)
+    return pl.DataFrame({col: [] for col in columns})
+
+
+def _write_lot_progress_parquet(target: Path, df) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     df.write_parquet(tmp)
     tmp.replace(target)
@@ -700,12 +702,23 @@ def export_lot_progress_parquet(state: dict | None = None) -> dict:
         if not isinstance(state, dict):
             state = load_lot_progress_cache()
     rows = _lot_progress_parquet_rows(state or {})
+    df = _lot_progress_parquet_frame(rows)
     # 대시보드 wip-split 이 읽는 lot_wf_current.parquet 도 같은 내용으로 export 한다.
-    paths = [filebrowser_cache_parquet_file(), cache_parquet_file()]
+    monolithic_fp = filebrowser_cache_parquet_file()
+    paths = [monolithic_fp, cache_parquet_file()]
     written: list[str] = []
     for target in paths:
-        _write_lot_progress_parquet(target, rows)
+        _write_lot_progress_parquet(target, df)
         written.append(str(target))
+    # SplitTable root 검색이 읽는 per-root 파티션을 같은 쓰기 시점에 동기화한다.
+    # 내용이 같은 재-export 는 meta 갱신만으로 끝나고, 실패해도 monolithic 폴백이
+    # 있으므로 export 자체는 성공으로 처리한다.
+    try:
+        from core.latest_lot_partitions import sync_partitions
+        sync_partitions(monolithic_fp, df=df, reason="lot_progress_export")
+    except Exception as e:
+        logger.warning("lot_progress per-root partition sync failed %s: %s",
+                       type(e).__name__, e)
     return {"ok": True, "rows": len(rows), "paths": written}
 
 
