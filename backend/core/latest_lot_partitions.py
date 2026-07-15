@@ -15,15 +15,16 @@ itself means readers normally never see a stale partition set; the reader-side
 signature check in routers.splittable remains only as self-heal for crashes
 mid-write or files produced by older code.
 
-Repeated exports of identical content (e.g. the filebrowser /base-files
-background export) short-circuit on a content signature: only the meta's
-source signature is refreshed, the ~per-root files are not rewritten.
+Rewrites are incremental: a per-root content signature (volatile columns
+excluded) is kept in the meta, and only roots whose content actually changed
+are rewritten — a re-export with no lot movement (e.g. the filebrowser
+/base-files background export) refreshes just the meta, and a normal refresh
+touches only the handful of roots that moved.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -59,16 +60,48 @@ def source_signature(monolithic_fp: Path) -> list:
         return [str(fp), 0.0, 0]
 
 
-def _content_signature(df) -> str:
-    """Order-independent row-content hash of the frame (schema + values)."""
+# 해시 합이 Int64 를 넘지 않도록 32bit 소수로 접는다 (root 당 수만 행이어도 여유).
+_SIG_FOLD_PRIME = 4294967291
+# per-root 지문에서 제외하는 휘발성 컬럼. update_time 은 export 마다
+# generated_at 으로 통째로 바뀌지만 파티션 경로로는 어떤 소비자도 읽지 않는다
+# (fab join override/history scope/snapshot 은 root/lot/wafer/step/tkout 만 사용;
+# max update_time 배지는 monolithic 을 읽는다). 지문에 포함하면 모든 refresh 가
+# "전 root 변경" 이 되어 증분이 무력화된다. 파티션에 update_time 소비자를
+# 추가한다면 이 목록에서 빼야 한다.
+_SIG_VOLATILE_COLS = ("update_time",)
+
+
+def _keyed_lazy(df):
+    import polars as pl
+
+    return (
+        df.lazy()
+        .with_columns(_root_key_expr().alias(ROOT_KEY_COL))
+        .filter(pl.col(ROOT_KEY_COL).is_not_null() & (pl.col(ROOT_KEY_COL) != ""))
+    )
+
+
+def _root_signatures(df) -> dict | None:
+    """Per-root (row_count, folded row-hash sum), excluding volatile columns."""
+    import polars as pl
+
     try:
-        hashes = sorted(df.hash_rows(seed=0).to_list())
-        digest = hashlib.sha1()
-        for value in hashes:
-            digest.update(int(value).to_bytes(8, "little"))
-        return f"{len(hashes)}:{','.join(df.columns)}:{digest.hexdigest()}"
+        exclude = [ROOT_KEY_COL] + [c for c in _SIG_VOLATILE_COLS if c in df.columns]
+        agg = (
+            _keyed_lazy(df)
+            .with_columns(
+                (pl.struct(pl.all().exclude(exclude)).hash(seed=0)
+                 % _SIG_FOLD_PRIME).cast(pl.Int64).alias("__h")
+            )
+            .group_by(ROOT_KEY_COL)
+            .agg(pl.len().alias("n"), pl.col("__h").sum().alias("h"))
+            .collect()
+        )
+        return {str(r): [int(n), int(h or 0)] for r, n, h in agg.iter_rows()}
     except Exception:
-        return ""
+        logger.warning("latest_lot_partitions: root signature 계산 실패 — 전체 재작성으로 폴백",
+                       exc_info=True)
+        return None
 
 
 def _root_key_expr():
@@ -128,36 +161,98 @@ def sync_partitions(monolithic_fp: Path, df=None, reason: str = "") -> bool:
 
 
 def _sync_partitions_locked(fp: Path, df, reason: str) -> bool:
-    import polars as pl
-
     idx_dir = partitions_dir(fp)
-    source_sig = source_signature(fp)
-    content_sig = _content_signature(df)
     meta_fp = meta_path(fp)
     old_meta = load_json(meta_fp, {}) or {}
+    root_sigs = _root_signatures(df)
     meta = {
         "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source": str(fp),
-        "source_sig": source_sig,
-        "content_sig": content_sig,
+        "source_sig": source_signature(fp),
+        "root_sigs": root_sigs,
         "reason": reason,
     }
 
-    # Same content re-exported (mtime churn only) → the partition files are
-    # already correct; refresh the staleness key without rewriting them.
-    if (
-        content_sig
-        and old_meta.get("content_sig") == content_sig
-        and idx_dir.is_dir()
-    ):
-        save_json(meta_fp, meta)
+    old_sigs = old_meta.get("root_sigs")
+    if root_sigs is not None and isinstance(old_sigs, dict) and idx_dir.is_dir():
+        applied = _apply_incremental(idx_dir, df, old_sigs, root_sigs)
+        if applied:
+            save_json(meta_fp, meta)
+            return True
+
+    _rewrite_all_partitions(idx_dir, df)
+    save_json(meta_fp, meta)
+    return True
+
+
+def _partition_dir_name(root: str) -> str:
+    return f"{ROOT_KEY_COL}={root}"
+
+
+def _apply_incremental(idx_dir: Path, df, old_sigs: dict, new_sigs: dict) -> bool:
+    """Rewrite only roots whose content changed; False → caller full-rewrites.
+
+    Removal is by literal directory name — hive-encoded names of special-char
+    roots cannot be mapped back safely, so any unmappable removal falls back to
+    the full rewrite instead of leaving a stale partition behind.
+    """
+    import polars as pl
+
+    changed = [
+        r for r in new_sigs
+        if old_sigs.get(r) != new_sigs[r]
+        or not (idx_dir / _partition_dir_name(r)).is_dir()
+    ]
+    removed = [r for r in old_sigs if r not in new_sigs]
+    for root in removed:
+        victim = idx_dir / _partition_dir_name(root)
+        if not victim.is_dir():
+            return False
+    for root in removed:
+        shutil.rmtree(idx_dir / _partition_dir_name(root), ignore_errors=True)
+    if not changed:
         return True
 
-    lf = (
-        df.lazy()
-        .with_columns(_root_key_expr().alias(ROOT_KEY_COL))
-        .filter(pl.col(ROOT_KEY_COL).is_not_null() & (pl.col(ROOT_KEY_COL) != ""))
-    )
+    staging = idx_dir.with_name(idx_dir.name + ".delta")
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    lf = _keyed_lazy(df).filter(pl.col(ROOT_KEY_COL).is_in(changed))
+    try:
+        sink_target = pl.PartitionBy(
+            staging, key=ROOT_KEY_COL, include_key=True,
+            approximate_bytes_per_file="auto",
+        )
+        lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+    except Exception:
+        part_df = lf.collect()
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        if part_df.height:
+            part_df.write_parquet(staging, partition_by=ROOT_KEY_COL)
+    try:
+        written = {p.name for p in staging.iterdir() if p.is_dir()}
+        expected = {_partition_dir_name(r) for r in changed}
+        if written != expected:
+            # hive 인코딩으로 디렉터리명이 리터럴과 다르면 root 단위 교체가
+            # 어긋난다 — 전체 재작성으로 폴백.
+            return False
+        for child in sorted(staging.iterdir()):
+            if not child.is_dir():
+                continue
+            target = idx_dir / child.name
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            child.replace(target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return True
+
+
+def _rewrite_all_partitions(idx_dir: Path, df) -> None:
+    import polars as pl
+
+    lf = _keyed_lazy(df)
     tmp_dir = idx_dir.with_name(idx_dir.name + ".tmp")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -179,5 +274,3 @@ def _sync_partitions_locked(fp: Path, df, reason: str) -> bool:
     if idx_dir.exists():
         shutil.rmtree(idx_dir, ignore_errors=True)
     tmp_dir.replace(idx_dir)
-    save_json(meta_fp, meta)
-    return True

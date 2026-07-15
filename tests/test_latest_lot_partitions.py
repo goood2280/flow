@@ -88,6 +88,43 @@ def test_sync_partitions_short_circuits_on_same_content(tmp_path):
     assert set(fresh["lot_id"].to_list()) == {"F999"}
 
 
+def test_sync_partitions_incremental_rewrites_only_changed_roots(tmp_path):
+    fp = tmp_path / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
+    df = _sample_df()
+    _write_monolithic(fp, df)
+    assert latest_lot_partitions.sync_partitions(fp, df=df) is True
+    idx = latest_lot_partitions.partitions_dir(fp)
+    r100_file = next((idx / "__latest_idx_root=R100").glob("*.parquet"))
+    r200_file = next((idx / "__latest_idx_root=R200").glob("*.parquet"))
+    r100_mtime, r200_mtime = r100_file.stat().st_mtime_ns, r200_file.stat().st_mtime_ns
+
+    # update_time 만 바뀐 재-export → 어떤 파티션도 재작성하지 않는다
+    time.sleep(0.02)
+    bumped = df.with_columns(pl.lit("2026-07-02T00:00:00").alias("update_time"))
+    _write_monolithic(fp, bumped)
+    assert latest_lot_partitions.sync_partitions(fp, df=bumped) is True
+    assert r100_file.stat().st_mtime_ns == r100_mtime
+    assert r200_file.stat().st_mtime_ns == r200_mtime
+
+    # R200 의 lot 만 이동 → R200 파티션만 재작성
+    time.sleep(0.02)
+    moved = bumped.with_columns(
+        pl.when(pl.col("root_lot_id") == "R200")
+        .then(pl.lit("F201")).otherwise(pl.col("lot_id")).alias("lot_id"))
+    _write_monolithic(fp, moved)
+    assert latest_lot_partitions.sync_partitions(fp, df=moved) is True
+    assert r100_file.stat().st_mtime_ns == r100_mtime, "unchanged root must not be rewritten"
+    new_r200 = pl.read_parquet(next((idx / "__latest_idx_root=R200").glob("*.parquet")))
+    assert new_r200["lot_id"].to_list() == ["F201"]
+
+    # root 가 사라지면 해당 파티션 디렉터리 제거
+    dropped = moved.filter(pl.col("root_lot_id").str.to_uppercase() != "R200")
+    _write_monolithic(fp, dropped)
+    assert latest_lot_partitions.sync_partitions(fp, df=dropped) is True
+    assert not (idx / "__latest_idx_root=R200").exists()
+    assert (idx / "__latest_idx_root=R100").is_dir()
+
+
 def test_export_lot_progress_parquet_writes_partitions(tmp_path, monkeypatch):
     mono_fp = tmp_path / "Fab" / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
     copy_fp = tmp_path / "flow-data" / "cache" / "lot_progress" / "lot_wf_current.parquet"
