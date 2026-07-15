@@ -79,6 +79,31 @@ def test_compact_view_rows_roundtrip_matches_legacy(tmp_path, monkeypatch):
     assert plan_cells and plan_cells[0]["mismatch"] is True
 
 
+def test_view_cache_evicts_by_byte_budget(monkeypatch):
+    """항목 수(128)보다 먼저 바이트 예산이 차면 LRU 방출한다."""
+    monkeypatch.setenv("FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "64")
+    splittable._clear_split_view_cache()
+    # 셀 40k개 ≈ 40k×450B ≈ 18MB 추정치 → 64MB 예산에 3개까지
+    def big_payload(tag):
+        cells = {str(i): {"actual": tag, "plan": None} for i in range(20)}
+        return {"rows": [{"_param": f"P{r}", "_cells": dict(cells)} for r in range(2000)]}
+    for i in range(5):
+        key = ("prod", f"root{i}")
+        splittable._split_view_cache_put(key, ("h",), ("s",), big_payload(str(i)))
+    with splittable._VIEW_CACHE_LOCK:
+        kept = list(splittable._VIEW_CACHE.keys())
+        total = splittable._VIEW_CACHE_BYTES
+    assert len(kept) < 5, "바이트 예산으로 오래된 항목이 방출돼야 한다"
+    assert ("prod", "root4") in kept, "가장 최근 항목은 유지"
+    assert total <= 64 * 1024 * 1024
+    # hard_sig 불일치 pop 시 총계도 감소
+    freshness, _ = splittable._split_view_cache_get(kept[0], ("DIFFERENT",), ("s",))
+    assert freshness == "miss"
+    with splittable._VIEW_CACHE_LOCK:
+        assert splittable._VIEW_CACHE_BYTES < total
+    splittable._clear_split_view_cache()
+
+
 def test_http_wrapper_swaps_rows_with_compact(tmp_path, monkeypatch):
     product = "ML_TABLE_COMPACT2"
     pl.DataFrame({

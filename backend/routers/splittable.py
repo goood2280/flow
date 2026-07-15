@@ -198,12 +198,37 @@ _MATCH_CACHE_JOB_STATE: dict = {
 _PLAN_RISK_CACHE: dict[tuple[str, bool], dict] = {}
 _PLAN_RISK_CACHE_LOCK = threading.Lock()
 _PLAN_RISK_CACHE_MAX = 64
-# 엔트리 = (hard_sig, soft_sig, payload). hard_sig 는 즉시 무효화 대상(소스 ML_TABLE
-# = 신규 lot 신호 + 사용자 편집 입력), soft_sig 는 백그라운드 스케줄러가 주기적으로
-# 재기록하는 파생 캐시 — soft 만 바뀌면 stale-while-revalidate 로 즉시 서빙한다.
-_VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict]] = OrderedDict()
+# 엔트리 = (hard_sig, soft_sig, payload, approx_bytes). hard_sig 는 즉시 무효화
+# 대상(소스 ML_TABLE = 신규 lot 신호 + 사용자 편집 입력), soft_sig 는 백그라운드
+# 스케줄러가 주기적으로 재기록하는 파생 캐시 — soft 만 바뀌면
+# stale-while-revalidate 로 즉시 서빙한다.
+# 항목 수와 별도로 바이트 예산을 둔다 — wide KNOB payload 는 개당 ~22MB
+# (실측 441B/셀)라 128개 상한만으로는 수 GB 까지 자랄 수 있다.
+_VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict, int]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX = 128
+_VIEW_CACHE_BYTES = 0  # 현재 보유 추정치 (lock 하에서만 갱신)
+_VIEW_CACHE_CELL_COST = 450  # 레거시 _cells 셀당 파이썬 객체 비용 (실측 441B)
+
+
+def _view_cache_max_bytes() -> int:
+    try:
+        mb = float(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "") or 512.0)
+    except Exception:
+        mb = 512.0
+    return int(max(64.0, min(4096.0, mb)) * 1024 * 1024)
+
+
+def _estimate_view_payload_bytes(payload: dict) -> int:
+    cells = 0
+    for r in (payload.get("rows") or []):
+        c = r.get("_cells")
+        if isinstance(c, dict):
+            cells += len(c)
+    approx = 8192 + cells * _VIEW_CACHE_CELL_COST
+    if payload.get("rows_compact") is not None:
+        approx += cells * 40 + 4096
+    return approx
 # stale hit → 백그라운드 재검증 (single-flight + 쿨다운). TLS.force 는 재검증
 # 스레드가 view_split 을 재진입할 때 캐시 서빙을 건너뛰고 강제 재계산하게 하는 플래그.
 _VIEW_REVALIDATE_TLS = threading.local()
@@ -9350,8 +9375,10 @@ def _split_view_cache_dep_signature(product: str, custom_name: str = "", product
 
 
 def _clear_split_view_cache() -> None:
+    global _VIEW_CACHE_BYTES
     with _VIEW_CACHE_LOCK:
         _VIEW_CACHE.clear()
+        _VIEW_CACHE_BYTES = 0
     # 전역 시그니처 TTL 캐시도 함께 비운다 — 캐시 재빌드/명시적 무효화가 TTL(≤1s)
     # 지연 없이 즉시 반영되도록.
     with _VIEW_GLOBAL_SIG_LOCK:
@@ -9433,7 +9460,8 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
                 logger.info(f"pivot cache build skipped for {canonical} — 다른 서버가 빌드 중 (holder={_shared_lease.holder(lease_name)})")
                 return
             from app_v2.modules.splittable.cache_builder import build_pivoted_cache_for_product
-            ok = bool(build_pivoted_cache_for_product(canonical, product_path=source_fp))
+            with _HEAVY_BUILD_SEMAPHORE:
+                ok = bool(build_pivoted_cache_for_product(canonical, product_path=source_fp))
         except Exception as exc:
             logger.warning(f"pivot cache build failed for {canonical} ({reason}): {exc}")
         finally:
@@ -9476,6 +9504,21 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
 _FAB_IDX_ROOT_COL = "__fab_idx_root"
 _FAB_IDX_META_FILE = "_meta.json"
 _FAB_IDX_BUILD_LOCK = threading.Lock()
+
+
+def _heavy_build_concurrency() -> int:
+    try:
+        n = int(os.environ.get("FLOW_SPLITTABLE_HEAVY_BUILD_CONCURRENCY", "") or 1)
+    except Exception:
+        n = 1
+    return max(1, min(8, n))
+
+
+# 무거운 백그라운드 빌드(제품 pivot, fab index)는 전역 직렬화한다 — 스윕/뷰가
+# 여러 product 를 동시에 enqueue 해도 빌드 피크(각 수백 MB)가 겹쳐 쌓이지
+# 않게 한다. 배치/청크 단위 메모리 가드와 함께 12~20GB 호스트에서 총 상한을
+# "빌드 1개 피크" 로 유지하는 장치.
+_HEAVY_BUILD_SEMAPHORE = threading.Semaphore(_heavy_build_concurrency())
 _FAB_IDX_BUILD_INPROGRESS: set[str] = set()
 _FAB_IDX_BUILD_LAST: dict[str, float] = {}
 _FAB_IDX_BUILD_COOLDOWN_SEC = 120.0
@@ -9823,6 +9866,17 @@ def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) 
             if merged is None:
                 return False
             acc_df = merged.collect()
+        if len(batches) > 1:
+            # 배치 사이에 사용자 요청/메모리 회복에 양보 — 빌드가 길어도
+            # interactive 검색과 RSS 안정에 영향을 주지 않게 한다.
+            try:
+                from core.runtime_limits import process_memory_high as _pmh
+                from core import request_priority as _rp
+                if _pmh():
+                    time.sleep(0.5)
+                _rp.yield_to_users(max_wait_sec=20.0)
+            except Exception:
+                pass
     if acc_df is None or not root_col_meta:
         return False
     _write_fab_index_partitions(product, acc_df.lazy())
@@ -9976,7 +10030,8 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
                     return
             except Exception:
                 lease_held = False  # lease infra optional; proceed without it
-            ok = bool(_build_fab_lot_index(canonical, fab_source, include_all))
+            with _HEAVY_BUILD_SEMAPHORE:
+                ok = bool(_build_fab_lot_index(canonical, fab_source, include_all))
         except Exception as exc:
             logger.warning(f"fab_lot_index build failed for {canonical} ({reason}): {exc}")
         finally:
@@ -10007,13 +10062,15 @@ def _split_view_cache_get(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple
     - soft_sig 만 불일치(백그라운드 파생 캐시 재기록) → ("stale", payload) —
       즉시 서빙하고 호출측이 백그라운드 재검증을 예약한다.
     """
+    global _VIEW_CACHE_BYTES
     with _VIEW_CACHE_LOCK:
         cached = _VIEW_CACHE.get(key)
         if not cached:
             return "miss", None
-        cached_hard, cached_soft, payload = cached
+        cached_hard, cached_soft, payload, approx_bytes = cached
         if cached_hard != hard_sig:
             _VIEW_CACHE.pop(key, None)
+            _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - approx_bytes)
             return "miss", None
         _VIEW_CACHE.move_to_end(key)
         if cached_soft == soft_sig:
@@ -10030,11 +10087,22 @@ def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload:
     # _ml_table_lookup.cache_status(meta 읽기 + partition dir glob) 를 재계산하던
     # 비용을 없앤다. 저장 시점의 배지값이 약간 stale 할 수 있으나, 캐시가 렌더된
     # 상태에서 빌드 진행 배지는 행동 가치가 없으므로 허용.
+    global _VIEW_CACHE_BYTES
+    approx_bytes = _estimate_view_payload_bytes(stored)
+    budget = _view_cache_max_bytes()
     with _VIEW_CACHE_LOCK:
-        _VIEW_CACHE[key] = (hard_sig, soft_sig, stored)
-        _VIEW_CACHE.move_to_end(key)
-        while len(_VIEW_CACHE) > _VIEW_CACHE_MAX:
-            _VIEW_CACHE.popitem(last=False)
+        old = _VIEW_CACHE.pop(key, None)
+        if old is not None:
+            _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - old[3])
+        _VIEW_CACHE[key] = (hard_sig, soft_sig, stored, approx_bytes)
+        _VIEW_CACHE_BYTES += approx_bytes
+        while _VIEW_CACHE and (
+            len(_VIEW_CACHE) > _VIEW_CACHE_MAX or _VIEW_CACHE_BYTES > budget
+        ):
+            if len(_VIEW_CACHE) == 1:
+                break  # 방금 넣은 항목은 예산 초과라도 유지 (miss 반복 방지)
+            _, evicted = _VIEW_CACHE.popitem(last=False)
+            _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - evicted[3])
 
 
 def _enqueue_view_revalidate(view_cache_key: tuple, params: dict) -> bool:
