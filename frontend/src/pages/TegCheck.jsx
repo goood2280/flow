@@ -147,7 +147,7 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
 }
 
 /* ── TEG 대조 섹션 — flat 선택 + 🟢/🔴/⚪ 대조표 + 맵 표시 ── */
-function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
+function TegSection({ res, onFlatChange }) {
   const teg = res.teg;
   const { summary } = teg;
   const bad = teg.rows.filter(r => r.status === "mismatch");
@@ -157,7 +157,7 @@ function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
   const fullCols = [
     { key: "st", label: "", width: 30, render: r => STATUS_ICON[r.status] || "" },
     { key: "name", label: "module_name" },
-    { key: "orig", label: "원본 (x,y)", render: r => `(${r.x},${r.y})` },
+    { key: "orig", label: "Mapfile (x,y)", render: r => `(${r.x},${r.y})` },
     { key: "calc_x", label: "EbeamX", align: "right" },
     { key: "calc_y", label: "EbeamY", align: "right" },
     { key: "ref", label: "정답지 (x,y)", render: r =>
@@ -173,8 +173,6 @@ function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
     { key: "ref_y", label: "정답 Y", align: "right", render: r => fmtN(r.ref_y) },
     { key: "dy", label: "ΔY", align: "right", render: r => fmtN(r.dy) },
   ];
-
-  const map = res.maps[Math.min(mapIdx, res.maps.length - 1)];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -246,20 +244,6 @@ function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
         )}
       </div>
 
-      {res.maps.length > 0 && (
-        <div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>계산 좌표 맵 표시 (범위 안만)</span>
-            {res.maps.length > 1 && (
-              <Select value={mapIdx} onChange={e => setMapIdx(Number(e.target.value))}>
-                {res.maps.map((m, i) => <option key={i} value={i}>{m.name}</option>)}
-              </Select>
-            )}
-          </div>
-          <WfSvg map={map} px={14} showLabels
-            tegHl={teg.rows.map(r => ({ x: r.calc_x, y: r.calc_y, label: r.name }))} />
-        </div>
-      )}
     </div>
   );
 }
@@ -270,7 +254,6 @@ export default function TegCheck({ vehicle }) {
   const [busy, setBusy] = useState(false);
   const [flat, setFlat] = useState(null);          // null = 자동 감지
   const [selPattern, setSelPattern] = useState(null);
-  const [mapIdx, setMapIdx] = useState(0);
   const [px, setPx] = useState(10);                // 작은 맵 셀 크기(px)
   const [mapSel, setMapSel] = useState({});        // {패턴 index: 맵 index 재지정}
 
@@ -281,7 +264,7 @@ export default function TegCheck({ vehicle }) {
     try {
       const r = await postJson(API + "/inspect", { vehicle: vehicle || "", text, flat: useFlat });
       setRes(r);
-      if (flatOverride === undefined) { setSelPattern(null); setMapIdx(0); setMapSel({}); }
+      if (flatOverride === undefined) { setSelPattern(null); setMapSel({}); }
     } catch (e) { toast.error(String(e.message || e)); }
     finally { setBusy(false); }
   };
@@ -379,8 +362,7 @@ export default function TegCheck({ vehicle }) {
             {!res.teg.rows.length ? (
               <EmptyState icon="⚠" title="#teg-map 에서 module 행을 찾지 못했습니다" />
             ) : (
-              <TegSection res={res} onFlatChange={onFlatChange}
-                mapIdx={mapIdx} setMapIdx={setMapIdx} />
+              <TegSection res={res} onFlatChange={onFlatChange} />
             )}
           </Card>
         </>
