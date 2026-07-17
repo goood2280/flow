@@ -271,7 +271,7 @@ export default function TegCheck({ vehicle }) {
   const [flat, setFlat] = useState(null);          // null = 자동 감지
   const [selPattern, setSelPattern] = useState(null);
   const [mapIdx, setMapIdx] = useState(0);
-  const [px, setPx] = useState(5);                 // 작은 맵 셀 크기(px)
+  const [px, setPx] = useState(10);                // 작은 맵 셀 크기(px)
   const [mapSel, setMapSel] = useState({});        // {패턴 index: 맵 index 재지정}
 
   const run = async (flatOverride) => {
@@ -310,7 +310,7 @@ export default function TegCheck({ vehicle }) {
             {busy ? "검사 중…" : "검사"}
           </Button>
           <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>맵 크기</span>
-          <input type="range" min="2" max="10" step="1" value={px}
+          <input type="range" min="2" max="30" step="1" value={px}
             onChange={e => setPx(Number(e.target.value))} style={{ width: 110 }} />
         </div>
       </Card>
@@ -352,7 +352,7 @@ export default function TegCheck({ vehicle }) {
                 </div>
               }>
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-                <WfSvg map={selMap} px={16} showLabels
+                <WfSvg map={selMap} px={Math.max(16, px)} showLabels
                   sitesHl={selPat.points.map(pt => ({ x: pt.x, y: pt.y, label: pt.pt }))} />
                 <div style={{ minWidth: 240, flex: "1 1 240px" }}>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>

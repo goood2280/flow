@@ -271,21 +271,21 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
       <div style={sect}>TEG Mapfile 체크 — 오프셋</div>
       <div style={row}>
         <span style={lab}>기본 오프셋 Horizontal</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
         <input style={num} type="number" step="any" disabled={dis} value={chk.h_dx}
           onChange={e => setC({ h_dx: e.target.value })} />
-        <span style={{ color: "var(--muted)" }}>,</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>y'</span>
         <input style={num} type="number" step="any" disabled={dis} value={chk.h_dy}
           onChange={e => setC({ h_dy: e.target.value })} />
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>(x', y')</span>
       </div>
       <div style={row}>
         <span style={lab}>기본 오프셋 Vertical(R)</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
         <input style={num} type="number" step="any" disabled={dis} value={chk.v_dx}
           onChange={e => setC({ v_dx: e.target.value })} />
-        <span style={{ color: "var(--muted)" }}>,</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>y'</span>
         <input style={num} type="number" step="any" disabled={dis} value={chk.v_dy}
           onChange={e => setC({ v_dy: e.target.value })} />
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>(x', y')</span>
       </div>
       <div style={row}>
         <span style={lab}>Vertical(R) 회전 offset</span>
@@ -312,8 +312,10 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           <input style={{ ...inputStyle, minWidth: 110, width: 130 }} disabled={dis}
             placeholder="TEG(module) 이름" value={m.name}
             onChange={e => setMod(i, { name: e.target.value })} />
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
           <input style={num} type="number" step="any" disabled={dis} value={m.dx}
             title="x 오프셋" onChange={e => setMod(i, { dx: e.target.value })} />
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>y'</span>
           <input style={num} type="number" step="any" disabled={dis} value={m.dy}
             title="y 오프셋" onChange={e => setMod(i, { dy: e.target.value })} />
           <input style={{ ...inputStyle, flex: 1, minWidth: 90 }} disabled={dis}
