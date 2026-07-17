@@ -60,6 +60,15 @@ DEFAULT_VEHICLE_CFG = {
     "image": "",        # teg_location/ 폴더 안 그림 파일명
 }
 
+# TEG Mapfile 체크(core/teg_check) 설정 — flat 별 기본 오프셋·v_R 회전 offset·모듈(TEG)별 오프셋.
+# flat 키는 저장값 기준 "h"/"v_R" (UI 표기는 Horizontal / Vertical(R)).
+CHECK_FLATS = ("h", "v_R")
+DEFAULT_CHECK_CFG = {
+    "v_r_offset": 10.0,                              # v_R 변환: (x, y) → (y, -x + offset)
+    "flat_offsets": {"h": [0.0, 0.0], "v_R": [0.0, 0.0]},   # flat 별 기본 (dx, dy)
+    "modules": [],   # [{"flat": "h"|"v_R", "name": str, "dx": float, "dy": float, "note": str}]
+}
+
 DEFAULT_CFG = {
     # 파일탐색기 Files(DB root) 기준 상대경로 또는 절대경로
     "layout_file": "Chip_Radius.csv",
@@ -76,6 +85,8 @@ DEFAULT_CFG = {
     "teg_default_h": 0.1,
     # vehicle 별 shot 표시 설정: {vehicle: DEFAULT_VEHICLE_CFG 형태}
     "vehicles": {},
+    # TEG Mapfile 체크 설정 (DEFAULT_CHECK_CFG 형태)
+    "check": DEFAULT_CHECK_CFG,
     # 설정 스키마 버전 — v2: teg 기본 3000×100µm, ebeam 기본 µm 배율(0.001)
     "cfg_version": 2,
 }
@@ -118,6 +129,53 @@ def _clean_vehicle_cfg(raw: Any) -> dict | None:
     # 파일명만 허용 (경로 이탈 방지)
     if img and img == Path(img).name and Path(img).suffix.lower() in IMAGE_EXTS:
         out["image"] = img
+    return out
+
+
+def _clean_check(raw: Any) -> dict:
+    """TEG Mapfile 체크 설정 정리 — 잘못된 항목은 조용히 버리고 기본값으로."""
+    out = {
+        "v_r_offset": DEFAULT_CHECK_CFG["v_r_offset"],
+        "flat_offsets": {f: [0.0, 0.0] for f in CHECK_FLATS},
+        "modules": [],
+    }
+    if not isinstance(raw, dict):
+        return out
+    try:
+        v = float(raw.get("v_r_offset", out["v_r_offset"]))
+        if math.isfinite(v):
+            out["v_r_offset"] = v
+    except (TypeError, ValueError):
+        pass
+    fo = raw.get("flat_offsets")
+    if isinstance(fo, dict):
+        for f in CHECK_FLATS:
+            pair = fo.get(f)
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                try:
+                    dx, dy = float(pair[0]), float(pair[1])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(dx) and math.isfinite(dy):
+                    out["flat_offsets"][f] = [dx, dy]
+    mods = raw.get("modules")
+    if isinstance(mods, list):
+        for m in mods[:200]:
+            if not isinstance(m, dict):
+                continue
+            flat = str(m.get("flat", "h")).strip()
+            name = str(m.get("name", "")).strip()
+            if flat not in CHECK_FLATS or not name:
+                continue
+            try:
+                dx = float(m.get("dx", 0) or 0)
+                dy = float(m.get("dy", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(dx) and math.isfinite(dy)):
+                continue
+            out["modules"].append({"flat": flat, "name": name, "dx": dx, "dy": dy,
+                                   "note": str(m.get("note", "") or "").strip()})
     return out
 
 
@@ -193,6 +251,7 @@ def load_cfg() -> dict:
         except (TypeError, ValueError):
             pass
     out["vehicles"] = _clean_vehicles(cfg.get("vehicles"))
+    out["check"] = _clean_check(cfg.get("check"))
     return out
 
 
@@ -261,6 +320,8 @@ def save_cfg(patch: dict) -> dict:
                 if cleaned is not None:
                     merged[key] = cleaned
             cur["vehicles"] = merged
+        if "check" in patch:
+            cur["check"] = _clean_check(patch["check"])
         path = _cfg_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         save_json(path, cur)

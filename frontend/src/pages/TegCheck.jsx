@@ -1,8 +1,9 @@
-/* TegCheck.jsx — TEG 설비값 검사 (TEG 위치 조회 페이지의 "설비값 검사" 탭).
+/* TegCheck.jsx — TEG Mapfile 체크 (TEG 위치 조회 페이지의 "TEG Mapfile 체크" 탭).
    설비에서 복사한 레시피 원문을 백엔드(/api/teg-map/inspect)로 보내
    ① 전체 Pattern 의 site 좌표를 작은 WF MAP 카드로 한번에 표시 (클릭 → 확대),
-   ② #teg-map 의 module 좌표를 flat 변환(v_R = 반시계 90° 회전 원복) 후
+   ② #teg-map 의 module 좌표를 flat 변환(Vertical(R) = 반시계 90° 회전 원복) 후
       정답지(TEG 위치 조회의 Teg_location raw ebeam 값)와 대조해 🟢/🔴/⚪ 로 표시.
+   오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
 import { useMemo, useState } from "react";
 import { postJson } from "../lib/api";
@@ -18,6 +19,7 @@ const MAX_CELLS = 400000;    // 렌더 상한 (w*h)
 const GRID_LINE_MAX = 6000;  // 이 이상이면 격자선 생략
 
 const STATUS_ICON = { match: "🟢", mismatch: "🔴", missing: "⚪", noref: "—" };
+const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)" };
 
 function classify(ch) {
   if (ch === "-" || ch === "." || ch === " " || ch === undefined) return "empty";
@@ -189,7 +191,9 @@ function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         {res.flat.detected
-          ? <Pill tone="ok" title={res.flat.why}>Flat 자동 감지: {res.flat.detected}</Pill>
+          ? <Pill tone="ok" title={res.flat.why}>
+              Flat 자동 감지: {FLAT_LABELS[res.flat.detected] || res.flat.detected}
+            </Pill>
           : <span style={{ fontSize: 12, color: "var(--muted)" }}>
               꼬리표에서 H_PCHK / V_PCHK 를 찾지 못해 수동 선택입니다.
             </span>}
@@ -198,18 +202,17 @@ function TegSection({ res, onFlatChange, mapIdx, setMapIdx }) {
                                   fontSize: 13, cursor: "pointer" }}>
             <input type="radio" name="teg-check-flat" checked={flatUsed === f}
               onChange={() => onFlatChange(f)} />
-            {f}
+            {FLAT_LABELS[f]}
           </label>
         ))}
         {flatUsed === "v_R" && (
-          <Pill tone="neutral" title="v_R = 설비의 반시계 90° 회전 세팅을 원복: (x, y) → (y, -x + offset)">
+          <Pill tone="neutral" title="Vertical(R) = 설비의 반시계 90° 회전 세팅을 원복: (x, y) → (y, -x + offset)">
             {res.v_r_note}
           </Pill>
         )}
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          {res.offset.known
-            ? `${res.vehicle} / ${flatUsed} 오프셋: x'=${res.offset.dx}, y'=${res.offset.dy}`
-            : `'${res.vehicle || "(제품명 없음)"}' 는 PCHK_OFFSETS 미등록 — 기본 오프셋 (0, 0)`}
+        <span style={{ fontSize: 12, color: "var(--muted)" }}
+          title="⚙️ 설정 > TEG Mapfile 체크 — 오프셋 에서 편집">
+          기본 오프셋 ({FLAT_LABELS[flatUsed]}): x'={res.offset.dx}, y'={res.offset.dy}
         </span>
       </div>
 
@@ -293,7 +296,7 @@ export default function TegCheck({ vehicle }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Card title="설비 원문 입력"
+      <Card title="Mapfile 원문 입력"
         right={<Pill tone={vehicle ? "ok" : "warn"}>{vehicle || "vehicle 미선택"}</Pill>}>
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
           설비 화면의 레시피 원문(#wafer-map / &lt;SITES&gt; / #teg-map 포함)을 그대로 붙여넣고
@@ -372,7 +375,7 @@ export default function TegCheck({ vehicle }) {
             </Card>
           )}
 
-          <Card title="TEG 설비값 대조 — 정답지(TEG 위치 조회)">
+          <Card title="TEG Mapfile 대조 — 정답지(TEG 위치 조회)">
             {!res.teg.rows.length ? (
               <EmptyState icon="⚠" title="#teg-map 에서 module 행을 찾지 못했습니다" />
             ) : (
