@@ -207,10 +207,11 @@ def transform(name: str, x: float, y: float, flat: str, dx: float, dy: float,
 
 
 # ────────────────────────────────────────── 정답지 (Teg_location raw 값)
-def load_ref(vehicle: str) -> tuple[dict[str, list[tuple[float, float]]] | None, str, str]:
-    """Teg_location 의 raw ebeam 값 → ({teg: [(x, y), ...]}, 경로, 오류문).
+def load_ref(vehicle: str) -> tuple[dict[str, list[dict]] | None, str, str]:
+    """Teg_location 의 raw ebeam 값 → ({teg: [{x, y, w, h}, ...]}, 경로, 오류문).
 
     설비 원문의 좌표는 배율 적용 전 값이므로 raw ebeam_x/ebeam_y 와 직접 비교한다.
+    w/h 는 TEG 실물 크기(mm) — 배율·기본값·flat_zone(v=w/h 스왑) 적용 (map_payload 와 동일).
     동명 TEG 가 여러 행이면 모두 후보로 두고 가장 가까운 행과 대조한다.
     """
     tdf, path = _tm.load_tegs()
@@ -219,30 +220,97 @@ def load_ref(vehicle: str) -> tuple[dict[str, list[tuple[float, float]]] | None,
     sub = tdf[tdf["vehicle"] == str(vehicle).strip()]
     if sub.empty:
         return None, str(path), f"Teg_location 에 vehicle '{vehicle}' 이(가) 없습니다"
-    ref: dict[str, list[tuple[float, float]]] = {}
+    cfg = _tm.load_cfg()
+    scale = float(cfg["ebeam_scale"])
+    ref: dict[str, list[dict]] = {}
     for _, row in sub.iterrows():
+        tw = float(row["teg_w"]) * scale if row["teg_w"] == row["teg_w"] else float(cfg["teg_default_w"])
+        th = float(row["teg_h"]) * scale if row["teg_h"] == row["teg_h"] else float(cfg["teg_default_h"])
+        fz = str(row.get("flat_zone") or "h").strip().lower()
+        if fz == "v":
+            tw, th = th, tw
         ref.setdefault(str(row["teg"]), []).append(
-            (float(row["ebeam_x"]), float(row["ebeam_y"])))
+            {"x": float(row["ebeam_x"]), "y": float(row["ebeam_y"]), "w": tw, "h": th})
     return ref, str(path), ""
 
 
-def _compare(ref: dict[str, list[tuple[float, float]]] | None,
-             name: str, x: float, y: float) -> dict:
-    """계산 좌표 ↔ 정답지 대조 → {status, ref_x, ref_y, dx, dy}.
+def _compare(ref: dict[str, list[dict]] | None, name: str, x: float, y: float) -> dict:
+    """계산 좌표 ↔ 정답지 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h}.
 
     status: match | mismatch | missing(정답지에 이름 없음) | noref(정답지 자체 없음)
-    동명 후보가 여러 개면 가장 가까운 행 기준.
+    동명 후보가 여러 개면 가장 가까운 행 기준. ref_w/ref_h 는 TEG 크기(mm).
     """
     if ref is None:
-        return {"status": "noref", "ref_x": None, "ref_y": None, "dx": None, "dy": None}
+        return {"status": "noref", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
+                "ref_w": None, "ref_h": None}
     cands = ref.get(name)
     if not cands:
-        return {"status": "missing", "ref_x": None, "ref_y": None, "dx": None, "dy": None}
-    cx, cy = min(cands, key=lambda c: abs(c[0] - x) + abs(c[1] - y))
-    same = abs(cx - x) < TOL and abs(cy - y) < TOL
+        return {"status": "missing", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
+                "ref_w": None, "ref_h": None}
+    c = min(cands, key=lambda c0: abs(c0["x"] - x) + abs(c0["y"] - y))
+    same = abs(c["x"] - x) < TOL and abs(c["y"] - y) < TOL
     return {"status": "match" if same else "mismatch",
-            "ref_x": _num(cx), "ref_y": _num(cy),
-            "dx": _num(x - cx), "dy": _num(y - cy)}
+            "ref_x": _num(c["x"]), "ref_y": _num(c["y"]),
+            "dx": _num(x - c["x"]), "dy": _num(y - c["y"]),
+            "ref_w": c["w"], "ref_h": c["h"]}
+
+
+# ────────────────────────────────────────── shot 칩 격자 겹침 검사
+def _chip_cells(display: dict, W: float, H: float) -> list[dict]:
+    """shot 센터 기준 칩 셀 배치(mm) — 프론트 chipCells 와 동일 (좌표 = 칩 좌하단)."""
+    cols = max(1, int(display.get("cols") or 1))
+    rows = max(1, int(display.get("rows") or 1))
+    gx = max(0.0, float(display.get("gap_x") or 0))
+    gy = max(0.0, float(display.get("gap_y") or 0))
+    cw = float(display.get("chip_w") or 0)
+    ch = float(display.get("chip_h") or 0)
+    if cw <= 0:
+        cw = max((W - (cols - 1) * gx) / cols, 0.001)
+    if ch <= 0:
+        ch = max((H - (rows - 1) * gy) / rows, 0.001)
+    bw = cols * cw + (cols - 1) * gx
+    bh = rows * ch + (rows - 1) * gy
+    x0, y0 = -bw / 2, -bh / 2
+    return [{"x": x0 + c * (cw + gx), "y": y0 + r * (ch + gy), "w": cw, "h": ch}
+            for r in range(rows) for c in range(cols)]
+
+
+def _overlaps_chip(cells: list[dict], x0: float, y0: float, w: float, h: float,
+                   eps: float = 1e-9) -> bool:
+    """TEG 사각형이 칩 셀 위에 겹치는가 — TEG 는 칩 사이(스크라이브)에 있어야 정상.
+
+    TEG 앵커 = 좌하단, shot 확대 뷰 표시 기준으로 y 는 앵커에서 위(-h)로 뻗는다:
+    TEG 범위 x [x0, x0+w], y [y0-h, y0]. 경계가 정확히 맞닿는 것은 겹침으로 안 봄.
+    """
+    tx1, ty0 = x0 + w, y0 - h
+    for c in cells:
+        if (x0 < c["x"] + c["w"] - eps and tx1 > c["x"] + eps
+                and ty0 < c["y"] + c["h"] - eps and y0 > c["y"] + eps):
+            return True
+    return False
+
+
+def _shot_info(vehicle: str) -> dict:
+    """shot 크기·칩 격자 정보 — 확대 뷰 렌더·칩 겹침 검사용.
+
+    checked=True 는 '칩 격자 모드 + shot 크기 fit 성공'일 때만.
+    """
+    out = {"available": False, "checked": False}
+    try:
+        p = _tm.map_payload(vehicle)
+    except Exception:
+        return out
+    geo = p.get("geometry") or {}
+    if geo.get("fit") != "radius":
+        return out
+    W, H = float(geo["shot_w_mm"]), float(geo["shot_h_mm"])
+    display = p.get("display") or {}
+    out.update({"available": True, "shot_w_mm": W, "shot_h_mm": H,
+                "mode": display.get("mode", "none"), "cells": []})
+    if display.get("mode") == "grid":
+        out["cells"] = _chip_cells(display, W, H)
+        out["checked"] = True
+    return out
 
 
 # ────────────────────────────────────────── 검사 payload
@@ -258,7 +326,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None) -> dict:
     used = flat if flat in FLATS else (detected or "h")
 
     # ⚙️ 설정의 TEG Mapfile 체크 섹션 — v_R 회전 offset, flat 기본 오프셋, 모듈별 오프셋
-    chk = _tm.load_cfg()["check"]
+    cfg = _tm.load_cfg()
+    chk = cfg["check"]
     v_r_offset = float(chk["v_r_offset"])
     dx, dy = (float(v) for v in chk["flat_offsets"].get(used, [0.0, 0.0]))
     rules = {(m["flat"], m["name"]): (m["dx"], m["dy"], m.get("note", ""))
@@ -266,16 +335,31 @@ def inspect(vehicle: str, text: str, flat: str | None = None) -> dict:
 
     ref, ref_path, ref_err = load_ref(veh) if veh else (None, "", "제품명(vehicle)이 비어 있습니다")
 
+    # shot 크기·칩 격자 — 칩 겹침 검사(TEG 는 칩 사이 스크라이브에 있어야 정상)
+    scale = float(cfg["ebeam_scale"])
+    shot = _shot_info(veh) if veh else {"available": False, "checked": False}
+
     rows = []
-    summary = {"match": 0, "mismatch": 0, "missing": 0, "total": len(tegs)}
+    summary = {"match": 0, "mismatch": 0, "missing": 0, "total": len(tegs), "chip_overlap": 0}
     for t in tegs:
         nx, ny = transform(t["name"], t["x"], t["y"], used, dx, dy, v_r_offset, rules)
         cmp_ = _compare(ref, t["name"], nx, ny)
         if cmp_["status"] in summary:
             summary[cmp_["status"]] += 1
         rule = rules.get((used, t["name"]))
+        # 설비 계산값의 실좌표(mm) + TEG 크기(mm) — 정답지에 없으면 기본 크기
+        mm_x, mm_y = nx * scale, ny * scale
+        tw = cmp_["ref_w"] if cmp_["ref_w"] is not None else float(cfg["teg_default_w"])
+        th = cmp_["ref_h"] if cmp_["ref_h"] is not None else float(cfg["teg_default_h"])
+        overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th)
+                   if shot.get("checked") else None)
+        if overlap:
+            summary["chip_overlap"] += 1
         rows.append({
             **t, "calc_x": _num(nx), "calc_y": _num(ny), **cmp_,
+            "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
+            "teg_w": round(tw, 4), "teg_h": round(th, 4),
+            "chip_overlap": overlap,
             "rule_note": (rule[2] or f"모듈 오프셋 ({_num(rule[0])}, {_num(rule[1])})") if rule else "",
         })
 
@@ -288,6 +372,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None) -> dict:
         "offset": {"dx": _num(dx), "dy": _num(dy)},
         "v_r_offset": _num(v_r_offset),
         "v_r_note": f"PCHK V x offset {_num(v_r_offset)}",
+        "shot": shot,
         "teg": {
             "rows": rows,
             "summary": summary,

@@ -146,6 +146,56 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
   );
 }
 
+/* ── shot 확대 뷰 — 칩 격자 + 계산 좌표 기준 TEG 배치.
+   TEG 는 칩 사이(스크라이브)에 있어야 정상 — 칩 위에 겹치면 빨간색. ── */
+function ShotView({ shot, rows }) {
+  const SIZE = 380;
+  const W = shot.shot_w_mm, H = shot.shot_h_mm;
+  const pad = 0.12;
+  const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
+  const w = W * s, h = H * s;
+  const ox = (SIZE - w) / 2, oy = (SIZE - h) / 2;
+  const toX = (mm) => ox + (mm + W / 2) * s;
+  const toY = (mm) => oy + (mm + H / 2) * s;
+  const cells = shot.cells || [];
+  return (
+    <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
+      style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6 }}>
+      <rect x={ox} y={oy} width={w} height={h} fill="rgba(128,128,128,0.05)"
+        stroke="var(--muted)" strokeWidth="1" />
+      {/* shot 센터 십자 */}
+      <line x1={toX(0) - 5} y1={toY(0)} x2={toX(0) + 5} y2={toY(0)} stroke="var(--muted)" strokeWidth="0.8" />
+      <line x1={toX(0)} y1={toY(0) - 5} x2={toX(0)} y2={toY(0) + 5} stroke="var(--muted)" strokeWidth="0.8" />
+      {/* 칩 격자 */}
+      {cells.map((c, i) => (
+        <rect key={i} x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
+          fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth="0.8" opacity="0.85" />
+      ))}
+      {/* TEG — 계산 좌표(mm) 기준, 칩 겹침은 빨간색 */}
+      {rows.map((t, i) => {
+        const color = t.chip_overlap ? "#dc2626" : "#2563eb";
+        const x = toX(t.mm_x), yBottom = toY(t.mm_y);
+        const wpx = Math.max(1.5, t.teg_w * s), hpx = Math.max(1.5, t.teg_h * s);
+        return (
+          <g key={i}>
+            <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
+              fill={color} opacity={t.chip_overlap ? 0.9 : 0.75} />
+            <circle cx={x} cy={yBottom} r="2.4" fill={color} stroke="var(--panel)" strokeWidth="0.8" />
+            <text x={x + wpx + 4} y={yBottom - hpx / 2} fontSize="11"
+              fill={t.chip_overlap ? "#dc2626" : "var(--text)"}
+              fontWeight={t.chip_overlap ? 700 : 400} dominantBaseline="middle">
+              {t.name}{t.chip_overlap ? " ⚠" : ""}
+            </text>
+          </g>
+        );
+      })}
+      <text x={SIZE / 2} y={oy + h + 16} fontSize="11" fill="var(--muted)" textAnchor="middle">
+        {fmtN(Math.round(W * 100) / 100)} mm
+      </text>
+    </svg>
+  );
+}
+
 /* ── TEG 대조 섹션 — flat 선택 + 🟢/🔴/⚪ 대조표 + 맵 표시 ── */
 function TegSection({ res, onFlatChange }) {
   const teg = res.teg;
@@ -162,8 +212,13 @@ function TegSection({ res, onFlatChange }) {
     { key: "calc_y", label: "EbeamY", align: "right" },
     { key: "ref", label: "정답지 (x,y)", render: r =>
         r.status === "missing" ? "없음" : r.status === "noref" ? "-" : `(${r.ref_x},${r.ref_y})` },
+    ...(res.shot?.checked ? [{
+      key: "chip", label: "칩 겹침", render: r => r.chip_overlap
+        ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 겹침</span> : "",
+    }] : []),
     { key: "note", label: "비고", render: r => r.rule_note || "" },
   ];
+  const overlapRowStyle = (r) => (r.chip_overlap ? { background: "rgba(224,82,82,0.10)" } : {});
   const badCols = [
     { key: "name", label: "module_name" },
     { key: "calc_x", label: "계산 X", align: "right" },
@@ -219,6 +274,11 @@ function TegSection({ res, onFlatChange }) {
           <Pill tone="ok">🟢 일치 {summary.match}</Pill>
           <Pill tone={summary.mismatch ? "danger" : "neutral"}>🔴 불일치 {summary.mismatch}</Pill>
           <Pill tone="neutral">⚪ 정답지 미등록 {summary.missing}</Pill>
+          {res.shot?.checked && (
+            <Pill tone={summary.chip_overlap ? "danger" : "ok"}>
+              ⚠ 칩 겹침 {summary.chip_overlap}
+            </Pill>
+          )}
         </div>
       )}
 
@@ -240,10 +300,33 @@ function TegSection({ res, onFlatChange }) {
           {showAll ? "▾" : "▸"} 전체 {teg.rows.length}건
         </button>
         {(showAll || (teg.ref_ok && !bad.length)) && (
-          <DataTable columns={fullCols} rows={teg.rows} maxHeight={320} />
+          <DataTable columns={fullCols} rows={teg.rows} maxHeight={320}
+            rowStyle={overlapRowStyle} />
         )}
       </div>
 
+      {/* shot 확대 — 칩 격자 위 TEG 배치 (계산 좌표 기준) */}
+      {res.shot?.available && (
+        <div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+            shot 확대 — {fmtN(res.shot.shot_w_mm)}×{fmtN(res.shot.shot_h_mm)} mm, 계산 좌표(EbeamX/Y × 배율) 기준.
+            {res.shot.checked ? (
+              <> TEG 는 칩 사이(스크라이브)에 있어야 정상 —
+                <span style={{ color: "#dc2626", fontWeight: 700 }}> 칩 위에 겹치면 빨간색</span>.
+              </>
+            ) : (
+              <> ⚙️ 설정에서 이 vehicle 의 shot 표시 방식을 "칩 격자"로 지정하면 칩 겹침을 검사합니다.</>
+            )}
+          </div>
+          {res.shot.checked && summary.chip_overlap > 0 && (
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger, #e05252)", marginBottom: 6 }}>
+              ⚠ 칩 위에 걸친 TEG {summary.chip_overlap}건 — {
+                teg.rows.filter(r => r.chip_overlap).map(r => r.name).join(", ")}
+            </div>
+          )}
+          <ShotView shot={res.shot} rows={teg.rows} />
+        </div>
+      )}
     </div>
   );
 }

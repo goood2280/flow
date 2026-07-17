@@ -87,7 +87,8 @@ def test_inspect_compares_raw_ebeam(teg_env):
     res = teg_check.inspect("VH_T", SAMPLE)
     assert res["flat"]["used"] == "h"
     assert res["teg"]["ref_ok"] is True
-    assert res["teg"]["summary"] == {"match": 1, "mismatch": 1, "missing": 0, "total": 2}
+    assert res["teg"]["summary"] == {"match": 1, "mismatch": 1, "missing": 0,
+                                     "total": 2, "chip_overlap": 0}
     rows = {r["name"]: r for r in res["teg"]["rows"]}
     assert rows["TEG_A"]["status"] == "match"
     assert rows["TEG_B"]["status"] == "mismatch"
@@ -110,6 +111,47 @@ def test_inspect_without_ref(teg_env):
     res = teg_check.inspect("VH_T", SAMPLE)   # Teg_location 파일 자체가 없음
     assert res["teg"]["ref_ok"] is False
     assert all(r["status"] == "noref" for r in res["teg"]["rows"])
+
+
+def _write_layout(root, kx=20.0, ky=15.0, cx=5.0, cy=6.0):
+    import math
+    lines = ["Mask,chip_x_adj,chip_y_adj,Chip_Radius"]
+    for x in range(1, 10):
+        for y in range(1, 12):
+            r = math.hypot((x - cx) * kx, (y - cy) * ky)
+            if r <= 155.0:
+                lines.append(f"VH_T,{x},{y},{r:.4f}")
+    (root / "Chip_Radius.csv").write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_inspect_chip_overlap(teg_env):
+    """칩 격자 모드에서 TEG(크기 포함)가 칩 위에 겹치면 chip_overlap=True."""
+    _write_layout(teg_env)   # shot 20×15 mm
+    (teg_env / "Teg_location.csv").write_text(
+        "vehicle,teg,ebeam_x,ebeam_y\n"
+        "VH_T,TEG_OK,0,0\n"      # 가로 스크라이브(칩 사이) — 정상
+        "VH_T,TEG_BAD,1,3\n",    # 칩 위 — 겹침
+        encoding="utf-8")
+    # 데모 파일은 mm 단위 + 칩 2×2 (9×6mm, 간격 1mm) → 칩 블록 19×13, 중앙 가로띠 y∈[-0.5,0.5]
+    teg_map.save_cfg({
+        "ebeam_scale": 1.0,
+        "vehicles": {"VH_T": {"mode": "grid", "cols": 2, "rows": 2,
+                              "chip_w": 9.0, "chip_h": 6.0, "gap_x": 1.0, "gap_y": 1.0}},
+    })
+    text = "#teg-map\nmodule m1 (0, 0) ! TEG_OK, H_PCHK\nmodule m2 (1, 3) ! TEG_BAD\n# end"
+    res = teg_check.inspect("VH_T", text)
+    assert res["shot"]["available"] and res["shot"]["checked"]
+    assert len(res["shot"]["cells"]) == 4
+    rows = {r["name"]: r for r in res["teg"]["rows"]}
+    assert rows["TEG_OK"]["chip_overlap"] is False    # 기본 3.0×0.1mm — 칩 사이 띠 안
+    assert rows["TEG_BAD"]["chip_overlap"] is True    # (1,3) 은 우상단 칩(0.5~9.5, 0.5~6.5) 위
+    assert res["teg"]["summary"]["chip_overlap"] == 1
+
+    # 칩 격자 모드가 아니면 검사 안 함 (chip_overlap=None)
+    teg_map.save_cfg({"vehicles": {"VH_T": {"mode": "none"}}})
+    res2 = teg_check.inspect("VH_T", text)
+    assert res2["shot"]["checked"] is False
+    assert all(r["chip_overlap"] is None for r in res2["teg"]["rows"])
 
 
 def test_inspect_uses_check_config(teg_env):
