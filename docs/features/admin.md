@@ -36,7 +36,9 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - 운영 설정은 사용자 기능과 섞지 않는다.
 - 변경 전후 진단과 rollback 후보를 보여준다.
 - root/path 변경은 `docs/SOFT_LANDING_INTERNAL.md`와 preflight 기준을 따른다.
-- Page manager 위임 키는 canonical page id만 저장한다: `filebrowser`, `dashboard`, `splittable`, `tracker`, `inform`, `meeting`, `calendar`, `tablemap`, `groups`, `messages`, `devguide`, `diagnosis`.
+- Page manager 위임 키는 canonical page id만 저장한다: `filebrowser`, `dashboard`, `splittable`, `tracker`, `inform`, `meeting`, `calendar`, `tablemap`, `groups`, `messages`, `diagnosis`.
+- DevGuide 는 global admin 전용이다 — 페이지 위임/`devguide_user` 목록으로 열 수 없다 (v9.3.x 에서 `devguide_user` 폐기).
+- 소탭 권한 카탈로그(`TAB_SUBTABS` ↔ 프론트 `SUB_TABS`)는 반드시 동기 유지한다. 어긋나면 admin 이 저장한 `tab:subtab` 토큰이 조용히 버려진다.
 - Legacy alias는 읽을 때만 흡수한다: `informs -> inform`, `meetings -> meeting`, `dbmap -> tablemap`.
 - Shared 설정, catalog, rulebook, cache, credential, wiki/schema write는 global admin 또는 해당 page manager 이상만 허용한다.
 - 비밀번호 reset/bulk-create API 응답과 audit log에는 임시/기본 비밀번호를 남기지 않는다.

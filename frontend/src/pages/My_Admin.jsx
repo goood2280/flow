@@ -4,16 +4,17 @@ import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette
 import { toast } from "../components/Toast";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
-import { SUB_TABS } from "../config";
+import { SUB_TABS, TABS } from "../config";
 // v9.2.x: 에이전트 탭 재편 — Semantic layer 편집기와 LLM 설정을 관리 탭으로 이관.
 import SemanticLayerPanel from "../components/agent/SemanticLayerPanel";
 import LlmTab from "../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
-const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","valve","inform","meeting","calendar","devguide"];
+// v9.3.x: devguide 는 admin 전용 — 유저 탭 권한 목록에서 제외.
+const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","valve","inform","meeting","calendar","teg","ettime"];
 const BULK_DEFAULT_TABS=["filebrowser","dashboard","splittable","diagnosis","inform","meeting","calendar"];
 const BULK_HEADER_KEYS=new Set(["name","username","email","role","tabs"]);
-const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","valve","inform","meeting","calendar","tablemap","groups","messages","devguide","diagnosis"];
+const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","valve","inform","meeting","calendar","tablemap","groups","messages","diagnosis"];
 const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",dbmap:"tablemap"};
 function _canonicalPageId(v){
   const key=String(v||"").trim().toLowerCase();
@@ -30,6 +31,21 @@ function _cleanTabs(v){
   const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
   const seen=new Set();
   return arr.map(s=>String(s||"").trim()).filter((s)=>s&&ALL_TABS.includes(s)&&!seen.has(s)&&seen.add(s));
+}
+// ── 탭/소탭 표시 이름 — 사이드바·각 페이지의 실제 탭 이름과 동일하게 노출 ──
+// 권한 화면에서 raw key(filebrowser 등) 대신 실제 화면 이름(파일탐색기 등)을 보여준다.
+// 사이드바 TABS 에 없는 위임 전용 페이지(tablemap/groups/messages)도 같은 이름 규칙으로.
+const TAB_LABELS={tablemap:"테이블 맵",groups:"그룹",messages:"문의함",...Object.fromEntries(TABS.map(t=>[t.key,t.label]))};
+const SUB_TAB_LABELS=Object.fromEntries(Object.entries(SUB_TABS).map(([t,subs])=>[t,Object.fromEntries(subs.map(s=>[s.key,s.label]))]));
+function _tabLabel(key){return TAB_LABELS[key]||key;}
+function _tabTokenLabel(token){
+  const [t,s]=String(token||"").split(":");
+  const tl=_tabLabel(t);
+  return s?`${tl}·${SUB_TAB_LABELS[t]?.[s]||s}`:tl;
+}
+function _tabTokensLabel(v){
+  const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
+  return arr.map(x=>String(x||"").trim()).filter(Boolean).map(_tabTokenLabel).join(", ");
 }
 // ── v9.1.x: 소탭 단위 권한 helpers ─────────────────────────────
 // tabs 토큰: "tab"(전체 소탭) | "tab:subtab". bare 토큰이 있으면 그 탭 전체 허용.
@@ -112,8 +128,9 @@ function _entries(v){return Object.entries(_obj(v));}
 function _effectivePermissionText(u){
   const eff=_obj(u?.effective_permissions);
   const role=eff.role||u?.role||"user";
-  const tabs=eff.tabs==="__all__"?"all":_arr(eff.tabs).join(",")||u?.tabs||"default";
-  const pages=_arr(eff.page_manager).join(",")||"-";
+  const rawTabs=_arr(eff.tabs).length?_arr(eff.tabs):(u?.tabs||"");
+  const tabs=eff.tabs==="__all__"?"all":_tabTokensLabel(rawTabs)||"default";
+  const pages=_arr(eff.page_manager).map(_tabLabel).join(", ")||"-";
   const groups=_obj(eff.groups);
   const owner=_arr(groups.owner).length;
   const member=_arr(groups.member).length;
@@ -237,6 +254,7 @@ export default function My_Admin({user}){
   const isAdmin=user?.role==="admin";
   const[users,setUsers]=useState([]);const[logs,setLogs]=useState([]);const[notifs,setNotifs]=useState([]);
   const[tab,setTab]=useState("notifs");const[dlHistory,setDlHistory]=useState([]);
+  const[dlFilter,setDlFilter]=useState({q:"",source:""});
   const[sys,setSys]=useState({});const[resLog,setResLog]=useState([]);const[farmStatus,setFarmStatus]=useState({});
   const[resWindow,setResWindow]=useState("24h");
   const[loadBusy,setLoadBusy]=useState(false);
@@ -355,19 +373,26 @@ export default function My_Admin({user}){
   const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin?String(_arr(users).length):undefined}));
   const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
   const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
+  // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
+  const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET Index 다운로드",tone:"info"},reformatize_test:{label:"ET Index 테스트",tone:"warn"}};
   const combinedDownloads=[
-    ..._arr(dlHistory).map((d)=>({
-      timestamp:d.timestamp||"",
-      source:"파일 다운로드",
-      sourceTone:"accent",
-      username:d.username||"-",
-      target:d.product||"-",
-      detail:d.sql||"-",
-      aux:d.select_cols||"all",
-      rows:d.rows?.toLocaleString?.()||d.rows||"-",
-      size:d.size_mb?`${d.size_mb}MB`:"-",
-    })),
-  ].sort((a,b)=>String(b.timestamp||"").localeCompare(String(a.timestamp||"")));
+    ..._arr(dlHistory).map((d)=>{
+      const src=DL_SOURCES[d.source]||DL_SOURCES.filebrowser;
+      return{
+        timestamp:d.timestamp||"",
+        source:src.label,
+        sourceTone:src.tone,
+        username:d.username||"-",
+        target:d.product||"-",
+        detail:d.sql||"-",
+        aux:d.select_cols||"all",
+        rows:d.rows?.toLocaleString?.()||d.rows||"-",
+        size:d.size_mb?`${d.size_mb}MB`:"-",
+      };
+    }),
+  ].sort((a,b)=>String(b.timestamp||"").localeCompare(String(a.timestamp||"")))
+   .filter(d=>(!dlFilter.source||d.source===dlFilter.source)
+     &&(!dlFilter.q||`${d.username} ${d.target} ${d.detail}`.toLowerCase().includes(dlFilter.q.toLowerCase())));
   const resourceChartHours=resWindow==="7d"?168:24;
   const bulkDefaultTabs=_cleanTabs(bulkUsersDefaultTabs);
   const bulkParsed=useMemo(()=>_parseBulkUsers(bulkUsersText,bulkDefaultTabs),[bulkUsersText,bulkDefaultTabs.join(",")]);
@@ -423,7 +448,7 @@ export default function My_Admin({user}){
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{u.username}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.role}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}><Pill tone={u.status==="approved"?"ok":"warn"}>{u.status}</Pill></td>
-              <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{u.tabs||"default"}</td>
+              <td title={u.tabs||""} style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{u.tabs==="__all__"?"__all__":_tabTokensLabel(u.tabs)||"default"}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   {u.status==="pending"&&<>
@@ -549,7 +574,7 @@ export default function My_Admin({user}){
             <thead><tr>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",position:"sticky",left:0,zIndex:1}}>사용자</th>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",minWidth:340}}>실제 적용 권한</th>
-              {ALL_TABS.map(t=><th key={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{t}</th>)}
+              {ALL_TABS.map(t=><th key={t} title={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{_tabLabel(t)}</th>)}
               <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}></th>
             </tr></thead>
             <tbody>{_arr(users).filter(u=>u?.role!=="admin"&&u?.status==="approved").map((u,i)=>{
@@ -558,7 +583,7 @@ export default function My_Admin({user}){
                 <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,position:"sticky",left:0,background:"var(--bg-secondary)",zIndex:1}}>{u.username}</td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
                 {ALL_TABS.map(t=>{const mark=_tabCellMark(ut,t);return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-                  <span title={mark==="△"?_tabTokensFor(ut,t).join(", "):""} style={{fontSize:14,color:mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
+                  <span title={mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):""} style={{fontSize:14,color:mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
                 </td>);})}
                 <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
                   <span onClick={()=>{setEditPerm(u.username);setPermTabs(ut);}} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14}}>편집</span>
@@ -570,8 +595,8 @@ export default function My_Admin({user}){
         {editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:400}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>권한: {editPerm}</div>
           {ALL_TABS.map(t=>(<div key={t}>
-            <label style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
-              <input type="checkbox" checked={_mainTabChecked(permTabs,t)} onChange={e=>setPermTabs(_toggleMainTab(permTabs,t,e.target.checked))}/>{t}
+            <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
+              <input type="checkbox" checked={_mainTabChecked(permTabs,t)} onChange={e=>setPermTabs(_toggleMainTab(permTabs,t,e.target.checked))}/>{_tabLabel(t)}
             </label>
             {/* v9.1.x: 소탭 단위 권한 */}
             {SUB_TABS[t]&&_mainTabChecked(permTabs,t)&&<div style={{display:"flex",flexWrap:"wrap",gap:10,padding:"0 0 6px 24px"}}>
@@ -731,8 +756,22 @@ export default function My_Admin({user}){
         </div>
       </div>}
 
-      {/* Downloads */}
-      {tab==="downloads"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
+      {/* Downloads — v9.1.x: 구분(파일 다운로드/리포마타이즈) + 사용자·대상 검색 필터 */}
+      {tab==="downloads"&&<div>
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+          <select value={dlFilter.source} onChange={e=>setDlFilter(f=>({...f,source:e.target.value}))}
+            style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
+            <option value="">전체 구분</option>
+            <option value="파일 다운로드">파일 다운로드</option>
+            <option value="ET Index 다운로드">ET Index 다운로드</option>
+            <option value="ET Index 테스트">ET Index 테스트</option>
+          </select>
+          <input value={dlFilter.q} onChange={e=>setDlFilter(f=>({...f,q:e.target.value}))}
+            placeholder="사용자·대상·상세 검색"
+            style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,minWidth:220}}/>
+          <span style={{fontSize:13,color:"var(--text-secondary)"}}>{combinedDownloads.length.toLocaleString()}건</span>
+        </div>
+        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
           <thead><tr>{["시간","구분","사용자","대상","상세","컬럼","행","크기"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
           <tbody>
@@ -749,7 +788,7 @@ export default function My_Admin({user}){
               <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{d.rows}</td>
               <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{d.size}</td>
             </tr>)}
-          </tbody></table></div>}
+          </tbody></table></div></div>}
 
       {/* Monitor (admin only) — v8.8.27: BE psutil 필드명에 맞춰 재매핑.
            구 FE: sys.cpu_pct/mem_pct/disk_pct/mem_used/mem_total/disk_used/disk_total
@@ -866,7 +905,8 @@ const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],
   ["tracker","이슈 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
   ["tablemap","테이블 맵"],
-  ["groups","그룹"],["messages","문의함"],["devguide","DevGuide"],["diagnosis","에이전트"],
+  // v9.3.x: devguide 는 admin 전용 — 페이지 위임 대상에서 제외.
+  ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],
 ];
 const PAGE_PRESETS=[
   {key:"read",label:"조회만",pages:[]},
@@ -876,15 +916,11 @@ const PAGE_PRESETS=[
 
 function PageAdminsPanel({users}){
   const [pa,setPa]=useState({});
-  const [devguideUsers,setDevguideUsers]=useState([]);
   const [msg,setMsg]=useState("");
   const [busy,setBusy]=useState(false);
   const reload=()=>{
-    Promise.all([sf("/api/admin/page-admins"), sf("/api/admin/settings")])
-      .then(([paResp, settingsResp])=>{
-        setPa(paResp.page_admins||{});
-        setDevguideUsers(Array.isArray(settingsResp?.devguide_user) ? settingsResp.devguide_user : []);
-      })
+    sf("/api/admin/page-admins")
+      .then((paResp)=>{setPa(paResp.page_admins||{});})
       .catch(e=>setMsg("로드 오류: "+e.message));
   };
   useEffect(()=>{reload();},[]);
@@ -918,15 +954,6 @@ function PageAdminsPanel({users}){
       return sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:key,usernames:next[key]||[]})});
     }))
       .then(()=>{setPa(next);setMsg("✔ "+username+" "+preset.label+" 적용");setBusy(false);setTimeout(()=>setMsg(""),2000);})
-      .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
-  };
-  const toggleDevguide=(username)=>{
-    const cur=new Set(devguideUsers||[]);
-    if(cur.has(username))cur.delete(username);else cur.add(username);
-    const next=Array.from(cur).sort();
-    setBusy(true);setMsg("");
-    sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dashboard_refresh_minutes:10,dashboard_bg_refresh_minutes:10,devguide_user:next})})
-      .then(()=>{setDevguideUsers(next);setMsg("✔ devguide_user 저장");setBusy(false);setTimeout(()=>setMsg(""),2000);})
       .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
   };
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,overflow:"auto"}}>
@@ -967,20 +994,6 @@ function PageAdminsPanel({users}){
         </tr>);
       })}</tbody>
     </table>
-    <div style={{marginTop:16,paddingTop:16,borderTop:"1px solid var(--border)"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-        <div style={{fontSize:14,fontWeight:700}}>DevGuide 접근 허용</div>
-        <div style={{fontSize:14,color:"var(--text-secondary)"}}>admin_settings.devguide_user 목록. 체크된 일반 계정만 DevGuide 사이드바에 노출됩니다.</div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))",gap:8}}>
-        {approved.filter(u=>!isFullAdmin(u)).map(u=>(
-          <label key={u.username} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14,cursor:busy?"default":"pointer"}}>
-            <input type="checkbox" checked={devguideUsers.includes(u.username)} disabled={busy} onChange={()=>toggleDevguide(u.username)}/>
-            <span>{userLabel(u)}</span>
-          </label>
-        ))}
-      </div>
-    </div>
   </div>);
 }
 

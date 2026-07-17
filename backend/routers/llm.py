@@ -925,14 +925,8 @@ def _tabs_for_user(username: str, role: str) -> set[str] | str:
 
 
 def _devguide_allowed(username: str, role: str, tabs: set[str] | str) -> bool:
-    if role == "admin" or tabs == "__all__":
-        return True
-    if "devguide" not in tabs:
-        return False
-    devguide_users = (_admin_settings().get("devguide_user") or [])
-    if not isinstance(devguide_users, list):
-        return False
-    return username in {str(u).strip() for u in devguide_users if str(u).strip()}
+    # v9.3.x: DevGuide 는 global admin 전용 (devguide_user 위임 목록 폐기).
+    return role == "admin"
 
 
 def _allowed_flowi_feature_keys(me: dict) -> set[str]:

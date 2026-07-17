@@ -42,10 +42,9 @@ FastAPI startup
 | `backend/app.py` | FastAPI app assembly, runtime hook, static serving |
 | `backend/routers/*.py` | HTTP request/response, auth/admin gate, service 호출 |
 | `backend/core/*.py` | paths, roots, auth, backup, notify, mail, source/domain helper |
-| `backend/app_v2/runtime` | auth middleware, router loading, startup scheduler/seed |
+| `backend/app_v2/runtime` | auth middleware, resource guard, router loading, startup scheduler/seed |
 | `backend/app_v2/shared` | `JsonFileStore`, `Result`, source adapter, internal API contract |
-| `backend/app_v2/modules` | tracker, meetings, informs 등 점진 이관된 업무 로직 |
-| `backend/app_v2/orchestrator` | 향후 내부 API/agent 연결용 JSON task/action 계약 |
+| `backend/app_v2/modules` | tracker, meetings, informs, splittable, agent_runtime, semantic_* 등 점진 이관된 업무 로직 |
 
 목표 구조:
 

@@ -11,11 +11,14 @@ export const TABS = [
   {key:"tracker",label:"이슈 추적",icon:"📋",group:"tool"},
   {key:"valve",label:"매칭알람",icon:"🚨",group:"tool"},
   {key:"teg",label:"TEG 위치 조회",icon:"📐",group:"tool"},
+  {key:"ettime",label:"ET 측정시간",icon:"⏱️",group:"tool"},
   {key:"inform",label:"인폼 로그",icon:"📢",group:"tool"},
+  {key:"reformatize",label:"ET Index 다운로드",icon:"🧮",group:"tool"},
   {key:"meeting",label:"회의관리",icon:"🗓",group:"tool"},
   {key:"calendar",label:"변경점 관리",icon:"📅",group:"tool"},
   {key:"admin",label:"관리자",icon:"⚙️",group:"system",adminOnly:true},
-  {key:"devguide",label:"개발자 가이드",icon:"📖",group:"system",restrictedSetting:"devguide_allowed"},
+  // v9.3.x: DevGuide 는 global admin 전용 (devguide_user 위임 폐기).
+  {key:"devguide",label:"개발자 가이드",icon:"📖",group:"system",adminOnly:true,strictAdmin:true},
 ];
 // v9.1.x: 소탭 단위 권한 — backend core/auth.py TAB_SUBTABS 와 동기 유지.
 // tabs 토큰: "tab"(전체 소탭) 또는 "tab:subtab".

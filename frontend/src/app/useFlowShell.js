@@ -154,7 +154,6 @@ export function useFlowShell() {
   const [notifs, setNotifs] = useState([]);
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
-  const [sidebarPolicy, setSidebarPolicy] = useState({ devguide_allowed: false });
   const [authReady, setAuthReady] = useState(false);
 
   const handleLogout = useCallback(() => {
@@ -175,15 +174,13 @@ export function useFlowShell() {
       if (userTabs === "__all__") return true;
       const tabConfig = TABS.find((item) => item.key === tabKey);
       if (tabConfig?.adminOnly && !isAdmin(user)) {
-        if (tabKey === "admin" || !isPageAdmin(user, tabKey)) return false;
+        // strictAdmin: page-admin 위임으로도 노출 불가 (devguide 등).
+        if (tabConfig?.strictAdmin || tabKey === "admin" || !isPageAdmin(user, tabKey)) return false;
         return true;
-      }
-      if (tabConfig?.restrictedSetting && !isAdmin(user) && !sidebarPolicy[tabConfig.restrictedSetting]) {
-        return false;
       }
       return toTabList(userTabs).includes(tabKey);
     },
-    [sidebarPolicy, user, userTabs],
+    [user, userTabs],
   );
 
   useIdleLogout(handleLogout);
@@ -294,16 +291,6 @@ export function useFlowShell() {
       window.removeEventListener("popstate", onPopState);
     };
   }, [canAccess, user]);
-
-  useEffect(() => {
-    if (!user) {
-      setSidebarPolicy({ devguide_allowed: false });
-      return;
-    }
-    sf("/api/admin/settings")
-      .then((data) => setSidebarPolicy({ devguide_allowed: !!data?.devguide_allowed }))
-      .catch(() => setSidebarPolicy({ devguide_allowed: false }));
-  }, [user]);
 
   useEffect(() => {
     if (!user) return;
