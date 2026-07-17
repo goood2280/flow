@@ -6,10 +6,11 @@
   2) #teg-map 의 module 좌표가 flat 변환 후 TEG 위치 조회의 정답지
      (Teg_location 파일의 raw ebeam_x/ebeam_y — ebeam_scale 적용 전 값)와 일치하는지
 
-flat 변환:
+flat 변환 (UI 표기: h=Horizontal, v_R=Vertical(R)):
   · h    — 그대로
-  · v_R  — 설비에 반시계 90° 회전으로 세팅된 값을 원복: (x, y) → (y, -x + V_R_OFFSET)
-이후 제품(vehicle)별 PCHK 오프셋, 모듈별 보정(MODULE_RULES)을 더한다.
+  · v_R  — 설비에 반시계 90° 회전으로 세팅된 값을 원복: (x, y) → (y, -x + v_r_offset)
+이후 flat 별 기본 오프셋, 모듈(TEG)별 오프셋을 더한다.
+오프셋들은 teg_map.json 의 `check` 섹션에 저장 — ⚙️ 설정에서 편집.
 
 원문 형식 (Streamlit PoC 'Wafer Map 검사기 v17' 파서 포팅):
   · 각 줄 앞의 "행번호 " 프리픽스는 제거 (행번호 없는 원문도 허용)
@@ -26,24 +27,11 @@ from typing import Any
 
 from core import teg_map as _tm
 
-# ────────────────────────────────────────── 변환 규칙 (PoC v17 과 동일)
-V_R_OFFSET = 10          # v_R 변환: (x, y) → (y, -x + OFFSET)
-V_R_NOTE = f"PCHK V x offset {V_R_OFFSET}"
-
-# 제품별 PCHK 오프셋: {vehicle: {flat: (dx, dy)}} — 미등록 제품은 기본값 (0, 0)
-PCHK_OFFSETS: dict[str, dict[str, tuple[float, float]]] = {
-    # "ABC1234": {"h": (0, 0), "v_R": (0, 0)},
-}
-DEFAULT_PCHK_OFFSET: dict[str, tuple[float, float]] = {"h": (0, 0), "v_R": (0, 0)}
-
-# 모듈별 추가 보정: (flat, module_name) → (dx, dy, 참고문)
-MODULE_RULES: dict[tuple[str, str], tuple[float, float, str]] = {
-    ("h", "AAA"): (-400, 0, "AAA offset x 400"),
-    ("v_R", "BBB"): (0, -400, "BBB offset x 400"),
-}
-
+# ────────────────────────────────────────── 변환 규칙
+# v_R 회전 offset·flat 별 기본 오프셋·모듈(TEG)별 오프셋은 teg_map.json 의
+# `check` 섹션(teg_map.DEFAULT_CHECK_CFG)에 저장하고 ⚙️ 설정에서 편집한다.
 FLAT_MARKERS = {"H_PCHK": "h", "V_PCHK": "v_R"}   # '!' 뒤 꼬리표 → flat
-FLATS = ("h", "v_R")
+FLATS = ("h", "v_R")                              # 저장 키 (UI: Horizontal / Vertical(R))
 TOL = 1e-6                                        # 좌표 비교 허용오차
 
 # ────────────────────────────────────────── 파서
@@ -197,21 +185,18 @@ def detect_flat(tegs: list[dict]) -> tuple[str | None, str | None]:
     return None, None
 
 
-def get_offset(vehicle: str, flat: str) -> tuple[tuple[float, float], bool]:
-    """제품명 → flat 별 PCHK 오프셋. 미등록 제품이면 (기본값, False)."""
-    table = PCHK_OFFSETS.get(vehicle)
-    if table is None:
-        return DEFAULT_PCHK_OFFSET.get(flat, (0, 0)), False
-    return table.get(flat, (0, 0)), True
+def transform(name: str, x: float, y: float, flat: str, dx: float, dy: float,
+              v_r_offset: float = 0.0,
+              rules: dict[tuple[str, str], tuple[float, float, str]] | None = None,
+              ) -> tuple[float, float]:
+    """flat 변환(v_R = 반시계 90° 회전 원복) → flat 기본 오프셋 → 모듈별 보정.
 
-
-def transform(name: str, x: float, y: float, flat: str,
-              dx: float, dy: float) -> tuple[float, float]:
-    """flat 변환(v_R = 반시계 90° 회전 원복) → PCHK 오프셋 → 모듈별 보정."""
+    rules: {(flat, module_name): (dx, dy, note)} — ⚙️ 설정의 모듈별 오프셋.
+    """
     if flat == "v_R":
-        x, y = y, -x + V_R_OFFSET
+        x, y = y, -x + v_r_offset
     x, y = x + dx, y + dy
-    rule = MODULE_RULES.get((flat, name))
+    rule = (rules or {}).get((flat, name))
     if rule:
         return x + rule[0], y + rule[1]
     return x, y
@@ -267,21 +252,27 @@ def inspect(vehicle: str, text: str, flat: str | None = None) -> dict:
 
     detected, why = detect_flat(tegs)
     used = flat if flat in FLATS else (detected or "h")
-    (dx, dy), known = get_offset(veh, used)
+
+    # ⚙️ 설정의 TEG Mapfile 체크 섹션 — v_R 회전 offset, flat 기본 오프셋, 모듈별 오프셋
+    chk = _tm.load_cfg()["check"]
+    v_r_offset = float(chk["v_r_offset"])
+    dx, dy = (float(v) for v in chk["flat_offsets"].get(used, [0.0, 0.0]))
+    rules = {(m["flat"], m["name"]): (m["dx"], m["dy"], m.get("note", ""))
+             for m in chk["modules"]}
 
     ref, ref_path, ref_err = load_ref(veh) if veh else (None, "", "제품명(vehicle)이 비어 있습니다")
 
     rows = []
     summary = {"match": 0, "mismatch": 0, "missing": 0, "total": len(tegs)}
     for t in tegs:
-        nx, ny = transform(t["name"], t["x"], t["y"], used, dx, dy)
+        nx, ny = transform(t["name"], t["x"], t["y"], used, dx, dy, v_r_offset, rules)
         cmp_ = _compare(ref, t["name"], nx, ny)
         if cmp_["status"] in summary:
             summary[cmp_["status"]] += 1
-        rule = MODULE_RULES.get((used, t["name"]))
+        rule = rules.get((used, t["name"]))
         rows.append({
             **t, "calc_x": _num(nx), "calc_y": _num(ny), **cmp_,
-            "rule_note": rule[2] if rule else "",
+            "rule_note": (rule[2] or f"모듈 오프셋 ({_num(rule[0])}, {_num(rule[1])})") if rule else "",
         })
 
     return {
@@ -290,9 +281,9 @@ def inspect(vehicle: str, text: str, flat: str | None = None) -> dict:
         "maps": maps,
         "patterns": patterns,
         "flat": {"detected": detected, "why": why, "used": used},
-        "offset": {"dx": _num(dx), "dy": _num(dy), "known": known},
-        "v_r_offset": V_R_OFFSET,
-        "v_r_note": V_R_NOTE,
+        "offset": {"dx": _num(dx), "dy": _num(dy)},
+        "v_r_offset": _num(v_r_offset),
+        "v_r_note": f"PCHK V x offset {_num(v_r_offset)}",
         "teg": {
             "rows": rows,
             "summary": summary,

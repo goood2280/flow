@@ -64,6 +64,7 @@ class ConfigReq(BaseModel):
     teg_default_w: float | None = None
     teg_default_h: float | None = None
     vehicles: dict | None = None
+    check: dict | None = None   # TEG Mapfile 체크 — flat 기본/모듈별 오프셋, v_R 회전 offset
 
 
 @router.put("/config")

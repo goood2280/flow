@@ -93,6 +93,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
   const [info, setInfo] = useState(null);
   const [cfg, setCfg] = useState(null);
   const [vcfg, setVcfg] = useState(null);   // 현재 vehicle 표시 설정
+  const [chk, setChk] = useState(null);     // TEG Mapfile 체크 오프셋 설정
   const [saving, setSaving] = useState(false);
   const fileRef = useRef(null);
 
@@ -114,6 +115,15 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         gap_x_um: Math.round((Number(v0.gap_x) || 0) * 1000),
         gap_y_um: Math.round((Number(v0.gap_y) || 0) * 1000),
       });
+      // TEG Mapfile 체크 오프셋 — 편집 편의를 위해 평탄화
+      const c0 = r.config.check || {};
+      const fo = c0.flat_offsets || {};
+      setChk({
+        v_r_offset: c0.v_r_offset ?? 10,
+        h_dx: (fo.h || [0, 0])[0], h_dy: (fo.h || [0, 0])[1],
+        v_dx: (fo.v_R || [0, 0])[0], v_dy: (fo.v_R || [0, 0])[1],
+        modules: (c0.modules || []).map(m => ({ ...m })),
+      });
     } catch (e) { toast.error(String(e.message || e)); }
   }, [vehicle]);
   useEffect(() => { load(); }, [load]);
@@ -131,6 +141,24 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         teg_default_w: (Number(cfg.teg_default_w_um) || 3000) / 1000,
         teg_default_h: (Number(cfg.teg_default_h_um) || 100) / 1000,
       };
+      if (chk) {
+        patch.check = {
+          v_r_offset: Number(chk.v_r_offset) || 0,
+          flat_offsets: {
+            h: [Number(chk.h_dx) || 0, Number(chk.h_dy) || 0],
+            v_R: [Number(chk.v_dx) || 0, Number(chk.v_dy) || 0],
+          },
+          modules: (chk.modules || [])
+            .filter(m => String(m.name || "").trim())
+            .map(m => ({
+              flat: m.flat === "v_R" ? "v_R" : "h",
+              name: String(m.name).trim(),
+              dx: Number(m.dx) || 0,
+              dy: Number(m.dy) || 0,
+              note: String(m.note || "").trim(),
+            })),
+        };
+      }
       if (vehicle && vcfg) {
         const { gap_x_um, gap_y_um, ...vrest } = vcfg;
         patch.vehicles = {
@@ -176,10 +204,20 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
     } catch (err) { toast.error(String(err.message || err)); }
   };
 
-  if (!cfg || !vcfg) return <div style={{ color: "var(--muted)" }}>불러오는 중…</div>;
+  if (!cfg || !vcfg || !chk) return <div style={{ color: "var(--muted)" }}>불러오는 중…</div>;
 
   const set = (patch) => setCfg(prev => ({ ...prev, ...patch }));
   const setV = (patch) => setVcfg(prev => ({ ...prev, ...patch }));
+  const setC = (patch) => setChk(prev => ({ ...prev, ...patch }));
+  const setMod = (i, patch) => setChk(prev => ({
+    ...prev, modules: prev.modules.map((m, j) => (j === i ? { ...m, ...patch } : m)),
+  }));
+  const addMod = () => setChk(prev => ({
+    ...prev, modules: [...prev.modules, { flat: "h", name: "", dx: 0, dy: 0, note: "" }],
+  }));
+  const delMod = (i) => setChk(prev => ({
+    ...prev, modules: prev.modules.filter((_, j) => j !== i),
+  }));
   const row = { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 8 };
   const lab = { fontSize: 12, color: "var(--muted)", minWidth: 120 };
   const num = { ...inputStyle, minWidth: 64, width: 72 };
@@ -228,6 +266,65 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         <input style={num} type="number" step="any" min="1" disabled={dis} value={cfg.teg_default_h_um}
           onChange={e => set({ teg_default_h_um: e.target.value })} />
         <span style={{ fontSize: 11, color: "var(--muted)" }}>기본 3000×100 µm</span>
+      </div>
+
+      <div style={sect}>TEG Mapfile 체크 — 오프셋</div>
+      <div style={row}>
+        <span style={lab}>기본 오프셋 Horizontal</span>
+        <input style={num} type="number" step="any" disabled={dis} value={chk.h_dx}
+          onChange={e => setC({ h_dx: e.target.value })} />
+        <span style={{ color: "var(--muted)" }}>,</span>
+        <input style={num} type="number" step="any" disabled={dis} value={chk.h_dy}
+          onChange={e => setC({ h_dy: e.target.value })} />
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>(x', y')</span>
+      </div>
+      <div style={row}>
+        <span style={lab}>기본 오프셋 Vertical(R)</span>
+        <input style={num} type="number" step="any" disabled={dis} value={chk.v_dx}
+          onChange={e => setC({ v_dx: e.target.value })} />
+        <span style={{ color: "var(--muted)" }}>,</span>
+        <input style={num} type="number" step="any" disabled={dis} value={chk.v_dy}
+          onChange={e => setC({ v_dy: e.target.value })} />
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>(x', y')</span>
+      </div>
+      <div style={row}>
+        <span style={lab}>Vertical(R) 회전 offset</span>
+        <input style={num} type="number" step="any" disabled={dis} value={chk.v_r_offset}
+          onChange={e => setC({ v_r_offset: e.target.value })} />
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>회전 원복: (x, y) → (y, -x + offset)</span>
+      </div>
+      <div style={{ ...row, marginBottom: 4 }}>
+        <span style={lab}>TEG(module)별 오프셋</span>
+        <Button disabled={dis} onClick={addMod}>+ 추가</Button>
+      </div>
+      {chk.modules.length === 0 && (
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
+          등록된 TEG별 오프셋이 없습니다. 특정 TEG(module)에만 추가 보정이 필요하면 추가하세요.
+        </div>
+      )}
+      {chk.modules.map((m, i) => (
+        <div key={i} style={{ ...row, marginBottom: 6 }}>
+          <select style={{ ...inputStyle, minWidth: 96 }} disabled={dis} value={m.flat}
+            onChange={e => setMod(i, { flat: e.target.value })}>
+            <option value="h">Horizontal</option>
+            <option value="v_R">Vertical(R)</option>
+          </select>
+          <input style={{ ...inputStyle, minWidth: 110, width: 130 }} disabled={dis}
+            placeholder="TEG(module) 이름" value={m.name}
+            onChange={e => setMod(i, { name: e.target.value })} />
+          <input style={num} type="number" step="any" disabled={dis} value={m.dx}
+            title="x 오프셋" onChange={e => setMod(i, { dx: e.target.value })} />
+          <input style={num} type="number" step="any" disabled={dis} value={m.dy}
+            title="y 오프셋" onChange={e => setMod(i, { dy: e.target.value })} />
+          <input style={{ ...inputStyle, flex: 1, minWidth: 90 }} disabled={dis}
+            placeholder="비고" value={m.note || ""}
+            onChange={e => setMod(i, { note: e.target.value })} />
+          <Button disabled={dis} onClick={() => delMod(i)}>삭제</Button>
+        </div>
+      ))}
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
+        적용 순서: flat 변환(Vertical(R) 회전 원복) → 기본 오프셋 → TEG별 오프셋.
+        이름이 비어 있는 행은 저장 시 제외됩니다.
       </div>
 
       <div style={sect}>shot 표시 방식 — {vehicle || "(vehicle 선택)"}</div>
@@ -694,7 +791,7 @@ export default function My_TegMap({ user }) {
   const [selectedTegs, setSelectedTegs] = useState(new Set());
   const [selectedShot, setSelectedShot] = useState(null);
   const [imgUrl, setImgUrl] = useState(null);
-  const [view, setView] = useState("map");   // map=위치 조회 | check=설비값 검사
+  const [view, setView] = useState("map");   // map=위치 조회 | check=TEG Mapfile 체크
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
 
@@ -783,7 +880,7 @@ export default function My_TegMap({ user }) {
       />
 
       <TabStrip active={view} onChange={setView}
-        items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "설비값 검사" }]} />
+        items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "TEG Mapfile 체크" }]} />
 
       {view === "check" && <TegCheck vehicle={vehicle} />}
 
