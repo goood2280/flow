@@ -444,7 +444,8 @@ BULK_DEFAULT_USER_TABS = [
     "filebrowser", "dashboard", "splittable", "diagnosis",
     "inform", "meeting", "calendar",
 ]
-BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "devguide", "teg"])
+# v9.3.x: devguide 는 admin 전용 — 유저 탭으로 부여 불가.
+BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "teg", "ettime"])
 
 
 def _normalize_bulk_tabs_csv(raw: Any, fallback: Optional[List[str]] = None) -> str:
@@ -943,10 +944,8 @@ def get_settings(request: Request):
         },
     }
     adm = _load_admin_settings()
-    devguide_users = adm.get("devguide_user") or []
-    if not isinstance(devguide_users, list):
-        devguide_users = []
-    merged["devguide_allowed"] = me.get("role") == "admin" or me.get("username") in devguide_users
+    # v9.3.x: DevGuide 는 admin 전용 (devguide_user 위임 목록 폐기).
+    merged["devguide_allowed"] = me.get("role") == "admin"
     # v8.7.0: backup 설정 admin 에게 노출.
     if me.get("role") == "admin":
         try:
@@ -975,7 +974,6 @@ def get_settings(request: Request):
             merged["llm_profile_defaults"] = {}
         merged["flowi_defaults"] = _flowi_default_settings(adm.get("flowi_defaults") or {})
         merged["flowi_persona"] = adm.get("flowi_persona") if isinstance(adm.get("flowi_persona"), dict) else {}
-        merged["devguide_user"] = [str(u).strip() for u in devguide_users if str(u).strip()]
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
         try:
@@ -1068,7 +1066,6 @@ class SettingsSaveReq(BaseModel):
     llm: Optional[LLMCfgReq] = None
     flowi_defaults: Optional[FlowiDefaultsReq] = None
     flowi_persona: Optional[Dict[str, Any]] = None
-    devguide_user: Optional[List[str]] = None
 
 
 @router.post("/settings/save")
@@ -1086,7 +1083,6 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     llm_in = data.pop("llm", None)
     flowi_defaults_in = data.pop("flowi_defaults", None)
     flowi_persona_in = data.pop("flowi_persona", None)
-    devguide_in = data.pop("devguide_user", None)
     # Clamp to sane bounds: dashboard 1..240 minutes, LOT progress cache 1..1440 minutes.
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
@@ -1294,14 +1290,8 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         }
         _save_admin_settings(current)
 
-    if devguide_in is not None:
-        current = _load_admin_settings()
-        approved = {u["username"] for u in read_users() if u.get("status") == "approved"}
-        current["devguide_user"] = sorted({str(u).strip() for u in (devguide_in or []) if str(u).strip() in approved})
-        _save_admin_settings(current)
-
     _audit(request, "admin:settings-save",
-           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} flowi_persona={'yes' if flowi_persona_in is not None else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} flowi_persona={'yes' if flowi_persona_in is not None else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 

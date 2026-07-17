@@ -218,6 +218,10 @@ CANONICAL_PAGE_IDS = (
     "valve",
     # v9.3.x: TEG 위치 조회 (WF MAP) 페이지.
     "teg",
+    # ET 측정시간 (root lot × step_id × PGM(pt) 소요시간) 페이지.
+    "ettime",
+    # ET Index 다운로드 (vehicle reformatter REAL/ADDP index 추출) 페이지.
+    "reformatize",
 )
 PAGE_ID_ALIASES = {
     "informs": "inform",
@@ -240,11 +244,17 @@ def canonical_page_id(page_id: str | None) -> str:
 
 # v9.1.x: 소탭 단위 권한 — tabs CSV 토큰에 "tab:subtab" 지원.
 # bare "tab" 토큰은 해당 탭의 모든 소탭 허용(하위호환). 소탭이 없는 탭은 bare 토큰만 유효.
+# 프론트 config.js SUB_TABS 와 반드시 동기 유지 — 어긋나면 admin 이 저장한 토큰이 조용히 버려진다.
 TAB_SUBTABS = {
     "filebrowser": ("db", "files"),
     "splittable": ("view", "history"),
     "inform": ("inform", "matrix", "audit"),
-    "diagnosis": ("home-flowi", "semantic", "unit-ai", "llm"),
+    # v9.2.x 에이전트 탭 재편: home-flowi/unit-ai → catalog/runtime, semantic/llm 은 관리 탭으로 이관.
+    "diagnosis": ("catalog", "runtime", "workflows"),
+}
+# 재편 이전에 저장된 소탭 토큰을 새 키로 흡수. 관리 탭으로 이관된 소탭(semantic/llm)은 버린다.
+SUBTAB_ALIASES = {
+    "diagnosis": {"home-flowi": "catalog", "unit-ai": "runtime"},
 }
 
 
@@ -260,6 +270,7 @@ def canonical_tab_token(token: str | None) -> str:
     if not sub:
         return tab
     sub = sub.strip()
+    sub = SUBTAB_ALIASES.get(tab, {}).get(sub, sub)
     if sub in TAB_SUBTABS.get(tab, ()):  # 알 수 없는 소탭 토큰은 버림
         return f"{tab}:{sub}"
     return ""
@@ -380,15 +391,8 @@ def _user_tabs(user: dict) -> list[str] | str:
 
 
 def _devguide_allowed(username: str, role: str) -> bool:
-    if role == "admin":
-        return True
-    try:
-        p = PATHS.data_root / "admin_settings.json"
-        data = json.loads(p.read_text("utf-8")) if p.is_file() else {}
-        users = data.get("devguide_user") if isinstance(data, dict) else []
-        return username in _clean_usernames(users)
-    except Exception:
-        return False
+    # v9.3.x: DevGuide 는 global admin 전용 (devguide_user 위임 목록 폐기).
+    return role == "admin"
 
 
 def _group_permissions(username: str, role: str) -> dict:

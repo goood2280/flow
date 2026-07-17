@@ -206,16 +206,58 @@ _PLAN_RISK_CACHE_MAX = 64
 # (실측 441B/셀)라 128개 상한만으로는 수 GB 까지 자랄 수 있다.
 _VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict, int]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
-_VIEW_CACHE_MAX = 128
+_VIEW_CACHE_MAX_ENTRIES_DEFAULT = 512
 _VIEW_CACHE_BYTES = 0  # 현재 보유 추정치 (lock 하에서만 갱신)
 _VIEW_CACHE_CELL_COST = 450  # 레거시 _cells 셀당 파이썬 객체 비용 (실측 441B)
+_VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
+_VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
+_VIEW_CACHE_AUTO_MB_TTL = 60.0
+
+
+def _view_cache_max_entries() -> int:
+    try:
+        n = int(float(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_ENTRIES", "")
+                      or _VIEW_CACHE_MAX_ENTRIES_DEFAULT))
+    except Exception:
+        n = _VIEW_CACHE_MAX_ENTRIES_DEFAULT
+    return max(8, min(4096, n))
+
+
+def _view_cache_auto_max_mb() -> float:
+    """호스트 메모리 비례 기본 예산 — 총량의 15%를 [512MB, 3GB]로 클램프.
+
+    20GB급 호스트는 ~3GB 까지 검색결과(payload)를 상주시켜 재계산 빈도를 낮추고,
+    작은 호스트는 기존 512MB 를 유지한다. 항목 수와 별개로 바이트 예산이 상한을
+    지배하며, wide KNOB payload(개당 ~22MB)도 이 예산 안에서 LRU 로 밀려난다.
+    60s TTL 메모이즈로 snapshot 비용을 제한."""
+    global _VIEW_CACHE_AUTO_MB_CACHE
+    now = time.monotonic()
+    with _VIEW_CACHE_AUTO_MB_LOCK:
+        cached = _VIEW_CACHE_AUTO_MB_CACHE
+        if cached is not None and now - cached[0] < _VIEW_CACHE_AUTO_MB_TTL:
+            return cached[1]
+    mb = 512.0
+    try:
+        from core.runtime_limits import system_memory_snapshot
+        total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
+        if total_gb > 0:
+            mb = max(512.0, min(3072.0, total_gb * 1024.0 * 0.15))
+    except Exception:
+        mb = 512.0
+    with _VIEW_CACHE_AUTO_MB_LOCK:
+        _VIEW_CACHE_AUTO_MB_CACHE = (now, mb)
+    return mb
 
 
 def _view_cache_max_bytes() -> int:
-    try:
-        mb = float(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "") or 512.0)
-    except Exception:
-        mb = 512.0
+    raw = str(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "") or "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+        except Exception:
+            mb = _view_cache_auto_max_mb()
+    else:
+        mb = _view_cache_auto_max_mb()
     return int(max(64.0, min(4096.0, mb)) * 1024 * 1024)
 
 
@@ -229,13 +271,26 @@ def _estimate_view_payload_bytes(payload: dict) -> int:
     if payload.get("rows_compact") is not None:
         approx += cells * 40 + 4096
     return approx
-# stale hit → 백그라운드 재검증 (single-flight + 쿨다운). TLS.force 는 재검증
-# 스레드가 view_split 을 재진입할 때 캐시 서빙을 건너뛰고 강제 재계산하게 하는 플래그.
+# stale hit → 백그라운드 재검증. 전역 단일 워커 + 병합 큐 — 예전 thread-per-key
+# 즉시 실행은 lot_progress 재기록 직후 검색마다 풀 재계산 스레드를 띄워, 5코어의
+# 전역 polars 풀을 사용자 검색과 나눠 쓰는 CPU 경쟁(연속 검색 지연)을 만들었다.
+# soft dep(최신 lot/fab 라벨)의 신선도는 쿨다운(기본 3h) 간격 갱신으로 충분하고,
+# 신규 lot/사용자 편집은 hard_sig 가 요청 내 동기 반영하므로 정확성과 무관하다.
+# TLS.force 는 재검증 워커가 view_split 을 재진입할 때 캐시 서빙을 건너뛰고 강제
+# 재계산하게 하는 플래그.
 _VIEW_REVALIDATE_TLS = threading.local()
 _VIEW_REVALIDATE_LOCK = threading.Lock()
 _VIEW_REVALIDATE_INFLIGHT: set[tuple] = set()
 _VIEW_REVALIDATE_LAST: dict[tuple, float] = {}
-_VIEW_REVALIDATE_COOLDOWN_SEC = 20.0
+_VIEW_REVALIDATE_PENDING: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
+_VIEW_REVALIDATE_WAKE = threading.Event()
+_VIEW_REVALIDATE_THREAD: threading.Thread | None = None
+_VIEW_REVALIDATE_LAST_ENQUEUE_TS = 0.0
+_VIEW_REVALIDATE_PENDING_MAX = 16
+_VIEW_REVALIDATE_LAST_MAX = 512
+_VIEW_REVALIDATE_COOLDOWN_SEC_DEFAULT = 3 * 3600.0
+_VIEW_REVALIDATE_DELAY_SEC_DEFAULT = 30.0
+_VIEW_REVALIDATE_BURST_QUIET_SEC = 3.0
 # HIT 경로 최적화: 의존 시그니처의 stat 중 product-독립 전역 파일(config/rulebook =
 # hard, lot_progress 파생 = soft)만 짧은 TTL 로 캐시한다. 동시 다수 사용자가 매
 # 요청마다 동일 전역 파일을 재-stat 하던 공유드라이브 부하를 제거. per-product 파일
@@ -9204,7 +9259,7 @@ def _split_view_cache_stats(hit: bool, key: tuple | None = None, *, stale: bool 
         # stale=True → 캐시로 즉시 응답했고 백그라운드 재검증이 예약됨(SWR).
         "stale": bool(stale),
         "entries": size,
-        "max_entries": _VIEW_CACHE_MAX,
+        "max_entries": _view_cache_max_entries(),
         "key": key_hash,
     }
 
@@ -9383,6 +9438,10 @@ def _clear_split_view_cache() -> None:
     # 지연 없이 즉시 반영되도록.
     with _VIEW_GLOBAL_SIG_LOCK:
         _VIEW_GLOBAL_SIG_CACHE.clear()
+    # 대기 중이던 재검증도 함께 버린다 — 대상 엔트리가 방금 전부 비워졌으므로
+    # 재계산해도 다음 stale hit 때 다시 등록될 뿐인 낭비다.
+    with _VIEW_REVALIDATE_LOCK:
+        _VIEW_REVALIDATE_PENDING.clear()
 
 
 # lookup 캐시(hive 파티션) 재빌드가 끝나면 view payload 캐시를 비운다 — stale
@@ -9460,6 +9519,11 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
                 logger.info(f"pivot cache build skipped for {canonical} — 다른 서버가 빌드 중 (holder={_shared_lease.holder(lease_name)})")
                 return
             from app_v2.modules.splittable.cache_builder import build_pivoted_cache_for_product
+            # 사용자 검색이 진행 중이면 빌드 시작을 미룬다 — 검색 collect 와 전역
+            # polars 풀을 두고 경쟁하지 않도록 (빌더 내부 배치 사이 yield 와 별개로
+            # 시작 시점 자체를 한 번 양보).
+            from core import request_priority as _rp
+            _rp.yield_to_users(max_wait_sec=60.0)
             with _HEAVY_BUILD_SEMAPHORE:
                 ok = bool(build_pivoted_cache_for_product(canonical, product_path=source_fp))
         except Exception as exc:
@@ -10030,6 +10094,9 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
                     return
             except Exception:
                 lease_held = False  # lease infra optional; proceed without it
+            # 사용자 검색이 진행 중이면 빌드 시작을 미룬다 (pivot 빌드와 동일한 이유).
+            from core import request_priority as _rp
+            _rp.yield_to_users(max_wait_sec=60.0)
             with _HEAVY_BUILD_SEMAPHORE:
                 ok = bool(_build_fab_lot_index(canonical, fab_source, include_all))
         except Exception as exc:
@@ -10097,7 +10164,7 @@ def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload:
         _VIEW_CACHE[key] = (hard_sig, soft_sig, stored, approx_bytes)
         _VIEW_CACHE_BYTES += approx_bytes
         while _VIEW_CACHE and (
-            len(_VIEW_CACHE) > _VIEW_CACHE_MAX or _VIEW_CACHE_BYTES > budget
+            len(_VIEW_CACHE) > _view_cache_max_entries() or _VIEW_CACHE_BYTES > budget
         ):
             if len(_VIEW_CACHE) == 1:
                 break  # 방금 넣은 항목은 예산 초과라도 유지 (miss 반복 방지)
@@ -10105,35 +10172,111 @@ def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload:
             _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - evicted[3])
 
 
+def _view_revalidate_cooldown_sec() -> float:
+    try:
+        v = float(os.environ.get("FLOW_SPLITTABLE_VIEW_REVALIDATE_COOLDOWN_SEC", "")
+                  or _VIEW_REVALIDATE_COOLDOWN_SEC_DEFAULT)
+    except Exception:
+        v = _VIEW_REVALIDATE_COOLDOWN_SEC_DEFAULT
+    return max(0.0, min(86400.0, v))
+
+
+def _view_revalidate_delay_sec() -> float:
+    try:
+        v = float(os.environ.get("FLOW_SPLITTABLE_VIEW_REVALIDATE_DELAY_SEC", "")
+                  or _VIEW_REVALIDATE_DELAY_SEC_DEFAULT)
+    except Exception:
+        v = _VIEW_REVALIDATE_DELAY_SEC_DEFAULT
+    return max(0.0, min(600.0, v))
+
+
+def _view_revalidate_worker_loop() -> None:
+    """전역 재검증 워커 — 큐를 한 건씩, 사용자에게 양보하며 처리한다.
+
+    동시 재계산은 항상 최대 1건: 20명이 몰려도 백그라운드가 polars 풀에서
+    점유하는 collect 는 하나뿐이라 사용자 검색의 CPU 경쟁이 상수로 묶인다."""
+    from core import request_priority
+    while True:
+        _VIEW_REVALIDATE_WAKE.wait(timeout=60.0)
+        while True:
+            now = time.time()
+            key = None
+            params: dict = {}
+            wait_hint = 0.0
+            with _VIEW_REVALIDATE_LOCK:
+                if not _VIEW_REVALIDATE_PENDING:
+                    _VIEW_REVALIDATE_WAKE.clear()
+                    break
+                head_key, (enq_ts, head_params) = next(iter(_VIEW_REVALIDATE_PENDING.items()))
+                age = now - enq_ts
+                burst_quiet = now - _VIEW_REVALIDATE_LAST_ENQUEUE_TS
+                # 디바운스: 새 stale 검색이 계속 들어오는 동안(burst)은 처리를 미루고,
+                # 잠잠해지면 처리한다. 상시 트래픽에서도 head 가 delay 이상 기다리면
+                # 진행을 보장해 워커가 굶지 않는다.
+                if burst_quiet >= _VIEW_REVALIDATE_BURST_QUIET_SEC or age >= _view_revalidate_delay_sec():
+                    _VIEW_REVALIDATE_PENDING.pop(head_key, None)
+                    _VIEW_REVALIDATE_INFLIGHT.add(head_key)
+                    key = head_key
+                    params = head_params
+                else:
+                    wait_hint = min(5.0, max(0.5, _VIEW_REVALIDATE_BURST_QUIET_SEC - burst_quiet))
+            if key is None:
+                time.sleep(wait_hint)
+                continue
+            try:
+                # 사용자 HTTP 요청이 진행 중이면 재계산 시작을 미룬다 (max_wait 로
+                # 상시 트래픽에서도 진행 보장).
+                request_priority.yield_to_users(max_wait_sec=120.0, quiet_for_sec=3.0)
+                _VIEW_REVALIDATE_TLS.force = True
+                # request=None + force → view_split 이 캐시 서빙/감사로그/알림을 건너뛰고
+                # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
+                view_split(request=None, **params)
+            except Exception as exc:
+                logger.debug("view revalidate 실패 (product=%s): %s", params.get("product"), exc)
+            finally:
+                _VIEW_REVALIDATE_TLS.force = False
+                with _VIEW_REVALIDATE_LOCK:
+                    _VIEW_REVALIDATE_INFLIGHT.discard(key)
+                    _VIEW_REVALIDATE_LAST[key] = time.time()
+                    if len(_VIEW_REVALIDATE_LAST) > _VIEW_REVALIDATE_LAST_MAX:
+                        overflow = len(_VIEW_REVALIDATE_LAST) - _VIEW_REVALIDATE_LAST_MAX
+                        for old_key in sorted(_VIEW_REVALIDATE_LAST, key=_VIEW_REVALIDATE_LAST.get)[:overflow]:
+                            _VIEW_REVALIDATE_LAST.pop(old_key, None)
+
+
+def _ensure_view_revalidate_worker_locked() -> None:
+    global _VIEW_REVALIDATE_THREAD
+    t = _VIEW_REVALIDATE_THREAD
+    if t is not None and t.is_alive():
+        return
+    t = threading.Thread(target=_view_revalidate_worker_loop, daemon=True,
+                         name="splittable-view-revalidate")
+    _VIEW_REVALIDATE_THREAD = t
+    t.start()
+
+
 def _enqueue_view_revalidate(view_cache_key: tuple, params: dict) -> bool:
     """Stale hit 시 백그라운드에서 view payload 를 재계산해 최신 lot 라벨로 갱신.
 
-    key 단위 single-flight + 쿨다운 — lot_progress 스케줄러가 파생 캐시를 자주
-    재기록해도 같은 검색을 반복 재계산하지 않는다. 사용자 요청은 이미 stale 캐시로
-    즉시 응답했으므로 이 갱신은 다음 조회를 fresh 로 만드는 용도다."""
+    key 단위 병합(중복 제거) + 쿨다운(기본 3h) — lot_progress 스케줄러가 파생
+    캐시를 자주 재기록해도 같은 검색을 반복 재계산하지 않는다. 사용자 요청은 이미
+    stale 캐시로 즉시 응답했으므로 이 갱신은 다음 조회를 fresh 로 만드는 용도다.
+    실행은 전역 단일 워커가 담당한다 (_view_revalidate_worker_loop)."""
+    global _VIEW_REVALIDATE_LAST_ENQUEUE_TS
     now = time.time()
     with _VIEW_REVALIDATE_LOCK:
-        if view_cache_key in _VIEW_REVALIDATE_INFLIGHT:
+        if view_cache_key in _VIEW_REVALIDATE_INFLIGHT or view_cache_key in _VIEW_REVALIDATE_PENDING:
             return False
-        if now - _VIEW_REVALIDATE_LAST.get(view_cache_key, 0.0) < _VIEW_REVALIDATE_COOLDOWN_SEC:
+        if now - _VIEW_REVALIDATE_LAST.get(view_cache_key, 0.0) < _view_revalidate_cooldown_sec():
             return False
-        _VIEW_REVALIDATE_INFLIGHT.add(view_cache_key)
-
-    def _run():
-        try:
-            _VIEW_REVALIDATE_TLS.force = True
-            # request=None + force → view_split 이 캐시 서빙/감사로그/알림을 건너뛰고
-            # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
-            view_split(request=None, **params)
-        except Exception as exc:
-            logger.debug("view revalidate 실패 (product=%s): %s", params.get("product"), exc)
-        finally:
-            _VIEW_REVALIDATE_TLS.force = False
-            with _VIEW_REVALIDATE_LOCK:
-                _VIEW_REVALIDATE_INFLIGHT.discard(view_cache_key)
-                _VIEW_REVALIDATE_LAST[view_cache_key] = time.time()
-
-    threading.Thread(target=_run, daemon=True, name="splittable-view-revalidate").start()
+        _VIEW_REVALIDATE_PENDING[view_cache_key] = (now, dict(params))
+        _VIEW_REVALIDATE_LAST_ENQUEUE_TS = now
+        while len(_VIEW_REVALIDATE_PENDING) > _VIEW_REVALIDATE_PENDING_MAX:
+            # 큐 상한 초과 — 가장 오래된 항목을 버린다. 버려진 검색은 다음 stale hit
+            # 때 다시 등록되므로 유실이 아니라 지연일 뿐이다.
+            _VIEW_REVALIDATE_PENDING.popitem(last=False)
+        _ensure_view_revalidate_worker_locked()
+    _VIEW_REVALIDATE_WAKE.set()
     return True
 
 

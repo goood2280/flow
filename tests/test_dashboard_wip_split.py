@@ -66,16 +66,67 @@ def test_wip_split_axis_step_desc_maps_step_id_via_vehicle_matching(monkeypatch,
         ("PRODA", "AA101000"): "FAB_1.0 STI",
         ("PRODA", "AA102500"): "1.0 CMP",
         ("PRODA", "AA205000"): "2.5 GATE",
-        # AA309999 는 CSV 에 없음 → 미해석.
+        # AA309999 는 CSV 에 없음 → 같은 prefix(AA) 중 step 번호가 가장
+        # 가까운 AA205000("2.5 GATE") 로 근사 매칭 (미해석 아님).
     }
     _setup_cache(monkeypatch, tmp_path, rows, step_matching=(by_product, {}))
     out = dashboard.wip_split_summary(None, product="PRODA", bin_size=1000, split_col="", axis="step_desc")
     assert out["axis"] == "step_desc"
     bins = {b["label"]: b["total"] for b in out["bins"]}
     # "FAB_1.0 STI" 와 "1.0 CMP" 는 같은 1.0 그룹으로 묶이고, 존재하는 숫자가 전부 나온다.
-    assert bins == {"1.0": 2, "2.5": 1, "미해석": 1}
-    # 앞머리 숫자순 정렬, 매핑 안 되는 wafer(미해석)는 맨 뒤.
-    assert [b["label"] for b in out["bins"]] == ["1.0", "2.5", "미해석"]
+    assert bins == {"1.0": 2, "2.5": 2}
+    # 앞머리 숫자순 정렬.
+    assert [b["label"] for b in out["bins"]] == ["1.0", "2.5"]
+
+
+_NEAR_MATCHING = {
+    ("PRODA", "AA101000"): "FAB_1.0 STI",
+    ("PRODA", "AA102500"): "1.0 CMP",
+    ("PRODA", "AA205000"): "2.5 GATE",
+}
+
+
+def _near_rows(step_id, function_step=None):
+    return [
+        {"product": "PRODA", "root_lot_id": "A1", "wafer_id": "1", "lot_id": "A1.1",
+         "step_id": "AA101000", "function_step": None, "tkout_time": "", "update_time": ""},
+        {"product": "PRODA", "root_lot_id": "A9", "wafer_id": "1", "lot_id": "A9.1",
+         "step_id": step_id, "function_step": function_step, "tkout_time": "", "update_time": ""},
+    ]
+
+
+def test_wip_split_step_desc_nearest_same_prefix(monkeypatch, tmp_path):
+    # CSV 에 없는 step_id 는 같은 영문 prefix 중 step 번호가 가장 가까운 항목으로.
+    # AA103000 → |103000-102500| < |103000-101000| → "1.0 CMP" 그룹.
+    _setup_cache(monkeypatch, tmp_path, _near_rows("AA103000"), step_matching=(_NEAR_MATCHING, {}))
+    out = dashboard.wip_split_summary(None, product="PRODA", bin_size=1000, split_col="", axis="step_desc")
+    bins = {b["label"]: b["total"] for b in out["bins"]}
+    assert bins == {"1.0": 2}
+
+
+def test_wip_split_step_desc_nearest_requires_same_two_letter_prefix(monkeypatch, tmp_path):
+    # prefix 가 두 글자면 같은 prefix 하고만 매칭 — ZZ 후보가 없으면 미해석 유지.
+    _setup_cache(monkeypatch, tmp_path, _near_rows("ZZ103000"), step_matching=(_NEAR_MATCHING, {}))
+    out = dashboard.wip_split_summary(None, product="PRODA", bin_size=1000, split_col="", axis="step_desc")
+    bins = {b["label"]: b["total"] for b in out["bins"]}
+    assert bins == {"1.0": 1, "미해석": 1}
+
+
+def test_wip_split_step_desc_non_two_letter_prefix_goes_to_max_group(monkeypatch, tmp_path):
+    # prefix 가 두 글자가 아니면(1글자/3글자 등) 앞머리 숫자가 가장 큰 그룹으로.
+    _setup_cache(monkeypatch, tmp_path, _near_rows("X103000"), step_matching=(_NEAR_MATCHING, {}))
+    out = dashboard.wip_split_summary(None, product="PRODA", bin_size=1000, split_col="", axis="step_desc")
+    bins = {b["label"]: b["total"] for b in out["bins"]}
+    assert bins == {"1.0": 1, "2.5": 1}
+
+
+def test_wip_split_step_desc_function_step_beats_nearest(monkeypatch, tmp_path):
+    # 캐시 function_step 이 살아 있으면 근사 매칭보다 우선한다.
+    _setup_cache(monkeypatch, tmp_path, _near_rows("AA103000", function_step="7.7 METAL"),
+                 step_matching=(_NEAR_MATCHING, {}))
+    out = dashboard.wip_split_summary(None, product="PRODA", bin_size=1000, split_col="", axis="step_desc")
+    bins = {b["label"]: b["total"] for b in out["bins"]}
+    assert bins == {"1.0": 1, "7.7": 1}
 
 
 def test_wip_split_axis_step_desc_falls_back_to_cached_function_step(monkeypatch, tmp_path):

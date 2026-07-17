@@ -2641,6 +2641,56 @@ def _wip_split_ml_table_path(product: str) -> Path | None:
     return None
 
 
+# step_id = 영문 prefix + 숫자 (예: "CC942300" → ("CC", 942300)).
+_WIP_SPLIT_STEP_KEY_RE = re.compile(r"^([A-Za-z]*)(\d+)$")
+
+
+def _wip_split_step_desc_candidates(
+    step_by_product: dict[tuple[str, str], str],
+    step_by_id: dict[str, str],
+    product: str,
+) -> list[tuple[str, int, str]]:
+    """Vehicle_matching 항목을 근사 매칭 후보 (영문 prefix, step 번호, step_desc) 로 파싱.
+
+    같은 step_id 가 전역/제품별에 모두 있으면 제품별 desc 가 우선한다."""
+    merged: dict[str, str] = dict(step_by_id)
+    pu = str(product or "").strip().upper()
+    for (p, sk), desc in step_by_product.items():
+        if str(p) == pu:
+            merged[sk] = desc
+    out: list[tuple[str, int, str]] = []
+    for sk, desc in merged.items():
+        m = _WIP_SPLIT_STEP_KEY_RE.match(str(sk or "").strip())
+        if m and str(desc or "").strip():
+            out.append((m.group(1).upper(), int(m.group(2)), str(desc).strip()))
+    return out
+
+
+def _wip_split_nearest_step_desc(step_id: str, candidates: list[tuple[str, int, str]]) -> str:
+    """Vehicle_matching 에 없는 step_id 를 step 번호로 근사 매칭한 step_desc.
+
+    - 영문 prefix 가 두 글자면: 같은 prefix 후보 중 step 번호가 가장 가까운
+      항목의 desc (다른 prefix 와는 매칭하지 않는다 → 후보 없으면 미해석 유지).
+    - 그 외 prefix 는: desc 앞머리 숫자가 가장 큰 후보의 desc 그룹으로 귀속."""
+    m = _WIP_SPLIT_STEP_KEY_RE.match(str(step_id or "").strip())
+    if not m or not candidates:
+        return ""
+    prefix, num = m.group(1).upper(), int(m.group(2))
+    if len(prefix) == 2:
+        same = [c for c in candidates if c[0] == prefix]
+        if not same:
+            return ""
+        return min(same, key=lambda c: (abs(c[1] - num), c[1]))[2]
+    best: tuple[float, str] | None = None
+    for _, _, desc in candidates:
+        mm = re.search(r"\d+(?:\.\d+)?", desc)
+        if mm:
+            val = float(mm.group(0))
+            if best is None or val > best[0]:
+                best = (val, desc)
+    return best[1] if best else ""
+
+
 @router.get("/wip-split")
 def wip_split_summary(
     request: Request,
@@ -2660,7 +2710,10 @@ def wip_split_summary(
       - step_id (기본): step_id 마지막 6자리 숫자를 bin_size 간격으로 binning.
       - step_desc: latest cache 의 step_id 를 Vehicle_matching.csv 로 매핑한
         step_desc 의 앞머리 숫자로 그룹 (예: "FAB_1.0 STI" → "1.0").
-        존재하는 숫자 그룹을 전부 나열하며 구간으로 묶지 않는다."""
+        존재하는 숫자 그룹을 전부 나열하며 구간으로 묶지 않는다.
+        CSV/function_step 어디에도 못 푼 step 은 근사 매칭: 영문 prefix 가
+        두 글자면 같은 prefix 중 step 번호가 가장 가까운 항목으로, 그 외
+        prefix 는 앞머리 숫자가 가장 큰 그룹으로 귀속 (미해석 축소)."""
     _require_dashboard_section(request, "charts")
     from core import lot_progress_cache
 
@@ -2715,7 +2768,8 @@ def wip_split_summary(
         # step_desc 는 조회 시점의 Vehicle_matching.csv(step matching CSV)로
         # latest cache 의 step_id 를 매핑해 얻는다 — CSV 를 고치면 캐시 재빌드
         # 없이 바로 반영된다. CSV 에 없는 step 은 캐시에 저장된 function_step
-        # (갱신 시점 매핑) 으로 폴백.
+        # (갱신 시점 매핑) 으로 폴백하고, 그래도 못 푼 step 은 step 번호가
+        # 가장 가까운 Vehicle_matching 항목으로 근사 매칭해 미해석을 줄인다.
         step_by_product, step_by_id = lot_progress_cache.load_step_matching()
         sid_list = [s for s in cur.get_column("step_id").cast(_STR, strict=False).unique().to_list() if s]
         desc_map: dict[str, str] = {}
@@ -2724,20 +2778,38 @@ def wip_split_summary(
             desc = step_by_product.get((product, sk)) or step_by_id.get(sk) or ""
             if str(desc).strip():
                 desc_map[sid] = str(desc).strip()
+        near_map: dict[str, str] = {}
+        missing_sids = [sid for sid in sid_list if sid not in desc_map]
+        if missing_sids:
+            near_candidates = _wip_split_step_desc_candidates(step_by_product, step_by_id, product)
+            for sid in missing_sids:
+                near = _wip_split_nearest_step_desc(sid, near_candidates)
+                if near:
+                    near_map[sid] = near
         cur = cur.with_columns(pl.col("step_id").cast(_STR, strict=False).alias("_sid"))
         if desc_map:
             map_df = pl.DataFrame({"_sid": list(desc_map.keys()), "_vm_desc": list(desc_map.values())})
             cur = cur.join(map_df, on="_sid", how="left")
         else:
             cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_vm_desc"))
+        if near_map:
+            near_df = pl.DataFrame({"_sid": list(near_map.keys()), "_vm_near": list(near_map.values())})
+            cur = cur.join(near_df, on="_sid", how="left")
+        else:
+            cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_vm_near"))
         if "function_step" in cur.columns:
             fallback_expr = pl.col("function_step").cast(_STR, strict=False)
         else:
             fallback_expr = pl.lit(None, dtype=pl.Utf8)
         # step_desc 앞머리 숫자로 그룹 — "FAB_1.0 STI" / "1.0 STI" 모두 "1.0".
+        # 정확 매핑(CSV/function_step)에서 숫자를 못 뽑은 wafer 만 근사 매칭 사용.
+        def _lead_num(expr):
+            return expr.str.strip_chars().str.extract(r"(\d+(?:\.\d+)?)", 1)
         cur = cur.with_columns(
-            pl.coalesce([pl.col("_vm_desc"), fallback_expr]).str.strip_chars()
-              .str.extract(r"(\d+(?:\.\d+)?)", 1).alias("_bin_label"))
+            pl.coalesce([
+                _lead_num(pl.coalesce([pl.col("_vm_desc"), fallback_expr])),
+                _lead_num(pl.col("_vm_near")),
+            ]).alias("_bin_label"))
 
     # ML_TABLE split 조인 — (root_lot_id, wafer_id) 키. lot_id 는 child lot 재편성
     # 때문에 조인 키로 쓰지 않는다.
