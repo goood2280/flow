@@ -337,7 +337,7 @@ export default function TegCheck({ vehicle }) {
   const [busy, setBusy] = useState(false);
   const [flat, setFlat] = useState(null);          // null = 자동 감지
   const [selPattern, setSelPattern] = useState(null);
-  const [px, setPx] = useState(10);                // 작은 맵 셀 크기(px)
+  const [px, setPx] = useState(21);                // 작은 맵 셀 크기(px) — 최대(30)의 70%
   const [mapSel, setMapSel] = useState({});        // {패턴 index: 맵 index 재지정}
 
   const run = async (flatOverride) => {
