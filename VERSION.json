@@ -1,7 +1,21 @@
 {
-  "version": "9.1.0",
+  "version": "9.2.0",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.2.0",
+      "date": "2026-07-17",
+      "title": "ET Index 다운로드 · ET 측정시간 — auto report reformatter/PGM(pt) 흐름 이식",
+      "tag": "feat",
+      "changes": [
+        "**ET Index 다운로드 페이지 신설 (업무 탭)** — DB ET raw 를 shot 단위로 pivot 후 `data_root/reformatter/<vehicle>_reformatter.csv` (auto report 형식: REAL abs/scale → ADDP 수식, ADDP→ADDP 재귀 고정점 해소) 로 index 컬럼을 계산. `core/vehicle_reformatter.py` + `routers/reformatize.py`, 제품↔vehicle CSV 정확/부분 일치 매칭, 파일 시그니처 기반 결과 캐시. 페이지 ⚙️ 톱니에서 한 번에 조회할 행 수·다운로드 최대 행 설정(`reformatize_settings.json`).",
+        "**관리자 ADDP 수식 테스트** — vehicle CSV 반영 전에 새 ADDP ITEM(alias)+ADDP Form 을 실제 ET 데이터로 검증하는 admin 전용 패널(`/api/reformatize/test`·`/test/download`·`/formula-help`, require_admin). 기존 index alias + raw ITEMID 참조, auto report 호환 함수(LOG/log10·power·rmax/rmin·wafer 단위 std/avg) 지원, 결과 CSV 추출 가능.",
+        "**다운로드 이력 구분 강화 (관리자 탭)** — downloads.jsonl 에 source 필드(reformatize / reformatize_test) 기록, 관리자 > 다운로드 탭에서 구분 Pill(파일 다운로드 / ET Index 다운로드 / ET Index 테스트) + 사용자·대상·상세 검색 필터로 누가 무엇을 받았는지 즉시 확인.",
+        "**ET 측정시간 페이지 신설 (업무 탭)** — root lot 별 step_id × PGM(pt) 측정 소요시간(tkout−tkin) 집계. auto report f_et_test 구조/PGM(pt) 라벨 규칙 기준, flow 샘플 DB 컬럼명 fallback 흡수 (`routers/et_time.py`).",
+        "**에이전트 소탭 권한 재편** — diagnosis 소탭을 catalog/runtime/workflows 로 재편, 구 토큰(home-flowi/unit-ai) alias 흡수. splittable/dashboard 후속 개선 포함.",
+        "**신규 pytest** — `test_vehicle_reformatter`(6) + `test_et_time` PASS."
+      ]
+    },
     {
       "version": "9.1.0",
       "date": "2026-05-23",
