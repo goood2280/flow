@@ -50,15 +50,19 @@ def _num(s: Any) -> float | int:
 
 
 def strip_line_numbers(text: str) -> list[str]:
-    """"행번호 내용" 프리픽스 제거. 행번호 형식이 하나도 없으면 원문 그대로 사용."""
-    out = []
-    for line in text.splitlines():
-        m = NUMBERED_RE.match(line)
-        if m:
-            out.append(m.group(2).rstrip())
-    if not out:
-        return [line.rstrip() for line in text.splitlines()]
-    return out
+    """"행번호 내용" 프리픽스 제거.
+
+    설비 복사본은 모든 줄에 행번호가 붙는다. 행번호 없는 원문에서는 site 행
+    ("1 5 4")만 행번호 형식으로 오인될 수 있으므로, 비어 있지 않은 줄의
+    80% 이상이 행번호 형식일 때만 제거하고 아니면 원문 그대로 쓴다.
+    """
+    lines = str(text or "").splitlines()
+    nonempty = [ln for ln in lines if ln.strip()]
+    n_match = sum(1 for ln in nonempty if NUMBERED_RE.match(ln))
+    if nonempty and n_match >= max(1, int(len(nonempty) * 0.8)):
+        return [NUMBERED_RE.match(ln).group(2).rstrip()
+                for ln in lines if NUMBERED_RE.match(ln)]
+    return [ln.rstrip() for ln in lines]
 
 
 def _section(lines: list[str], tag: str, stop: tuple[str, ...] = ("#",)) -> list[str]:
