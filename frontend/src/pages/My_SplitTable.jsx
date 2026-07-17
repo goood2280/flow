@@ -2085,7 +2085,7 @@ export default function My_SplitTable({user}){
         {(data?.match_cache||mlMatch.match_cache||data?.override||mlMatch.override) && (()=>{const cache=(data?.match_cache?.hit?data.match_cache:(mlMatch.match_cache?.hit?mlMatch.match_cache:null));
           if(cache){
             const title=`cache_path: ${cache.path||"(없음)"}\nsource: ${cache.source||"lot_progress_latest_cache"}\nfab_col: ${cache.fab_col||"lot_id"} · ts_col: ${cache.ts_col||"(없음)"}\njoin_keys: [${(cache.join_keys||[]).join(", ")}]\nbuilt_at: ${cache.built_at||"(없음)"}\nrows: ${cache.row_count||0}`;
-            return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(59,130,246,0.12)",color:"rgba(37,99,235,0.95)",border:"1px solid rgba(59,130,246,0.65)",fontFamily:"monospace",cursor:"help"}}>
+            return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--info-50)",color:"var(--info)",border:"1px solid var(--info-line)",fontFamily:"monospace",cursor:"help"}}>
               💾 LOT 최신 캐시 · {cache.fab_col||"lot_id"}@{cache.ts_col||"tkout_time"}
             </span>;
           }
@@ -2102,21 +2102,21 @@ export default function My_SplitTable({user}){
             ].filter(Boolean).join("");
             return <span title={detail}
               onClick={()=>toast.error(detail)}
-              style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"rgba(239,68,68,0.95)",border:"1px solid #ef4444",cursor:"help"}}>⚠ FAB 연동 꺼짐 (상세)</span>;
+              style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--danger-50)",color:"var(--danger)",border:"1px solid var(--danger-line)",cursor:"help"}}>⚠ FAB 연동 꺼짐 (상세)</span>;
           }
           if(!ov.enabled){
             if(!mlMatch.effective_fab_source) return null;
-            return <span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(245,158,11,0.12)",color:"rgba(245,158,11,0.95)",border:"1px solid rgba(245,158,11,0.45)",fontFamily:"monospace"}}>
+            return <span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--warn-50)",color:"var(--warn)",border:"1px solid var(--warn-line)",fontFamily:"monospace"}}>
               🔗 {mlMatch.effective_fab_source} (확인 필요)
             </span>;
           }
           const sfx=ov.manual_override?"매뉴얼":"자동";
           const title=`fab_source: ${ov.fab_source}\nfab_col: ${ov.fab_col} · ts_col: ${ov.ts_col||"(없음)"}\njoin_keys: [${(ov.join_keys||[]).join(", ")}]\nscanned: ${ov.scanned_count}파일 / ${ov.row_count}행\nsample: ${(ov.sample_fab_values||[]).join(", ")||"(없음)"}`;
-          return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",border:"1px solid #22c55e",fontFamily:"monospace",cursor:"help"}}>
+          return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--ok-50)",color:"var(--ok)",border:"1px solid var(--ok-line)",fontFamily:"monospace",cursor:"help"}}>
             🔗 {ov.fab_source} · {ov.fab_col}@{ov.ts_col||"last"} ({sfx})
           </span>;
         })()}
-        <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
+        <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",minWidth:0,justifyContent:"flex-end"}}>
           {/* v8.4.3: Features 탭 제거 — ML_TABLE_PROD* 가 source 이므로 별도 features 뷰 불필요. */}
           {SPLITTABLE_TABS.map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistoryByMode(histMode);}} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
@@ -2138,12 +2138,12 @@ export default function My_SplitTable({user}){
           ))}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
+            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
             <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":"");const fmtSuffix=splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)")}>⬇ XLSX</button>
+            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":"");const fmtSuffix=splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--ok-line)",background:"transparent",color:"var(--ok)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)")}>⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>

@@ -220,7 +220,7 @@ export function StatusDot({ tone = "ok", title }) {
 // items: [{k, l, badge?}], active: string, onChange: fn
 export function TabStrip({ items = [], active, onChange, right = null }) {
   return (
-    <div style={{ display: "flex", gap: 4, alignItems: "center", borderBottom: `1px solid ${c.border}` }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, rowGap: 2, alignItems: "center", borderBottom: `1px solid ${c.border}` }}>
       {items.map(({ k, l, badge }) => {
         const isA = active === k;
         return (

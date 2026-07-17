@@ -35,7 +35,8 @@ from core.utils import (
 )
 from core.vehicle_reformatter import (
     FORMULA_HELP, PIVOT_KEY_COLS, PIVOT_META_COLS, apply_addp_rows,
-    find_vehicle_csv, load_vehicle_table, reformatize,
+    find_vehicle_csv, formula_refs, load_vehicle_table, reformatize,
+    rowwise_function_help,
 )
 
 logger = logging.getLogger("flow.reformatize")
@@ -161,6 +162,42 @@ def products(_user=Depends(current_user)):
     return {"products": out, "vehicle_dir": str(VEHICLE_DIR)}
 
 
+@router.get("/items")
+def list_items(product: str = Query(...), _user=Depends(current_user)):
+    """제품 vehicle CSV 의 REAL/ADDP 항목 목록 — index 선택 UI 용.
+
+    REAL 은 raw ITEMID·abs·scale factor, ADDP 는 ADDP Form 과 참조 컬럼을 함께 반환.
+    데이터를 읽지 않고 규칙 CSV 만 파싱하므로 가볍다.
+    """
+    csv_fp = find_vehicle_csv(VEHICLE_DIR, product)
+    if csv_fp is None:
+        raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
+    table = load_vehicle_table(csv_fp)
+    items = [{
+        "alias": r["alias"],
+        "category": r["category"],
+        "itemid": r["itemid"],
+        "abs": r["absolute"],
+        "scale": r["scale"],
+        "addp_form": r["addp_form"],
+        "refs": formula_refs(r["addp_form"]) if r["category"] == "addp" else [],
+        "unit": r["unit"],
+        "speclow": r["speclow"], "spechigh": r["spechigh"], "target": r["target"],
+        "report_order": r["report_order"],
+    } for r in table]
+    items.sort(key=lambda x: (x["report_order"] if x["report_order"] is not None else 9999, x["alias"]))
+    return {"product": product, "vehicle_csv": csv_fp.name, "items": items}
+
+
+def _select_aliases(out_cols: list[str], wanted: list[str]) -> list[str]:
+    """out_cols(key+meta+alias 순서)에서 key/meta 는 유지하고 alias 는 wanted 만 남긴다."""
+    fixed = set(PIVOT_KEY_COLS) | set(PIVOT_META_COLS)
+    want = {str(a).strip() for a in wanted if str(a).strip()}
+    if not want:
+        return out_cols
+    return [c for c in out_cols if c in fixed or c in want]
+
+
 @router.get("/settings")
 def settings_get(_user=Depends(current_user)):
     return _settings()
@@ -187,21 +224,27 @@ class RunReq(BaseModel):
     offset: int = 0
     limit: int = 0          # 0 → settings.page_rows
     lot_filter: str = ""
+    items: list[str] = []   # 선택된 index alias — 비우면 전체
 
 
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
     wide_full, out_cols, errors, vehicle_csv, table = _compute(req.product)
+    out_cols = _select_aliases(out_cols, req.items)
     wide = _apply_lot_filter(wide_full.select(out_cols), req.lot_filter)
     cfg = _settings()
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
     page = wide.slice(offset, limit)
     index_cols = [r["alias"] for r in table if r["alias"] in wide.columns]
+    # spec: 헤더 클릭 시 "이 index 가 어떻게 계산됐는지" 를 보여주기 위한 규칙 상세.
     spec = {r["alias"]: {"unit": r["unit"], "speclow": r["speclow"],
                          "spechigh": r["spechigh"], "target": r["target"],
-                         "category": r["category"]}
+                         "category": r["category"],
+                         "itemid": r["itemid"], "abs": r["absolute"], "scale": r["scale"],
+                         "addp_form": r["addp_form"],
+                         "refs": formula_refs(r["addp_form"]) if r["category"] == "addp" else []}
             for r in table if r["alias"] in wide.columns}
     return {
         "product": req.product,
@@ -220,8 +263,10 @@ def run(req: RunReq, _user=Depends(current_user)):
 
 @router.get("/download")
 def download(product: str = Query(...), lot_filter: str = Query(""),
-             user=Depends(current_user)):
+             items: str = Query(""), user=Depends(current_user)):
     wide_full, out_cols, _errors, vehicle_csv, _table = _compute(product)
+    wanted = [s.strip() for s in items.split(",") if s.strip()]
+    out_cols = _select_aliases(out_cols, wanted)
     wide = _apply_lot_filter(wide_full.select(out_cols), lot_filter)
     cfg = _settings()
     if wide.height > cfg["max_download_rows"]:
@@ -234,7 +279,7 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
         "product": product,
         "sql": (f"lot_filter={lot_filter}" if lot_filter else ""),
         "rows": wide.height, "cols": wide.width,
-        "select_cols": vehicle_csv,
+        "select_cols": vehicle_csv + (" | " + ",".join(wanted) if wanted else " | all"),
         "size_mb": round(len(csv_bytes) / 1e6, 2),
     })
     return csv_response(csv_bytes, f"{safe_filename(product)}_reformatize")
@@ -294,8 +339,13 @@ def _run_test(product: str, items: list[TestItem], lot_filter: str):
 
 @router.get("/formula-help")
 def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
-    """수식 작성 도움말: 함수 목록 + (제품 지정 시) 참조 가능한 컬럼."""
-    out = {"functions": FORMULA_HELP, "columns": {}}
+    """수식 작성 도움말: 함수 목록 + 매뉴얼(row 단위) 함수 + (제품 지정 시) 참조 컬럼."""
+    out = {
+        "functions": FORMULA_HELP,
+        "manual_functions": rowwise_function_help(),
+        "manual_file": str(PATHS.data_root / "reformatter" / "manual_functions.py"),
+        "columns": {},
+    }
     if product:
         wide_full, out_cols, _e, vehicle_csv, table = _compute(product)
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
@@ -316,11 +366,17 @@ def test_run(req: TestReq, _admin=Depends(require_admin)):
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
     page = out.slice(offset, limit)
+    spec = {str(i.alias).strip(): {"category": "addp", "addp_form": i.addp_form,
+                                   "refs": formula_refs(i.addp_form),
+                                   "unit": "", "speclow": None, "spechigh": None, "target": None,
+                                   "itemid": "", "abs": False, "scale": 1.0}
+            for i in req.items if str(i.alias or "").strip()}
     return {
         "product": req.product,
         "vehicle_csv": vehicle_csv,
         "columns": list(page.columns),
         "test_columns": test_aliases,
+        "spec": spec,
         "rows": serialize_rows(page.to_dicts()),
         "offset": offset,
         "limit": limit,

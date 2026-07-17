@@ -2685,16 +2685,16 @@ function CapabilityCatalogPanel() {
           <span style={{ fontSize: 12, fontWeight: 800 }}>{t.title || t.name}</span>
           {statusPill(t)}
         </div>
-        <code style={{ fontSize: 11, color: "var(--text-secondary)" }}>{t.name}</code>
+        <code style={{ fontSize: 11, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>{t.name}</code>
         {t.description ? (
-          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{t.description}</div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, overflowWrap: "anywhere" }}>{t.description}</div>
         ) : null}
         {exampleText ? (
           <div style={{ fontSize: 11, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>예: {exampleText}</div>
         ) : null}
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {(t.tags || []).slice(0, 6).map((tag) => (
-            <span key={tag} style={{ fontSize: 10, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-secondary)" }}>{tag}</span>
+            <span key={tag} style={{ fontSize: 11, padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-secondary)" }}>{tag}</span>
           ))}
           {hasConsole ? <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--brand, var(--text-primary))" }}>{active ? "콘솔 닫기" : "콘솔 열기"}</span> : null}
         </div>
@@ -2702,6 +2702,9 @@ function CapabilityCatalogPanel() {
     );
     const cardStyle = {
       display: "grid",
+      gridTemplateColumns: "minmax(0, 1fr)",
+      minWidth: 0,
+      whiteSpace: "normal",
       gap: 5,
       alignContent: "start",
       padding: "9px 10px",

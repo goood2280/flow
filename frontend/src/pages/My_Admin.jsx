@@ -2248,7 +2248,7 @@ function ProductPanel(){
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <span style={{fontSize:14,fontWeight:700,fontFamily:"monospace"}}>{sel}.yaml</span>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            {msg&&<span style={{fontSize:14,fontFamily:"monospace",color:msg.startsWith("⚠")?"#ef4444":"#10b981"}}>{msg}</span>}
+            {msg&&<span style={{fontSize:14,fontFamily:"monospace",color:msg.startsWith("⚠")?"var(--danger)":"var(--ok)"}}>{msg}</span>}
             <button onClick={save} style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
           </div>
         </div>
@@ -2462,7 +2462,7 @@ function AdminNotices({user}){
             <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",flex:1}}>{n.title||"(제목 없음)"}</span>
             <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{(n.created_at||"").replace("T"," ").slice(0,16)}</span>
             <span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>👁 {n.read_count||0}/{n.total_recipients||"?"}</span>
-            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"#ef4444",fontSize:14}}>🗑</span>
+            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"var(--danger)",fontSize:14}}>🗑</span>
           </div>
           {n.body&&<div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5,whiteSpace:"pre-wrap",paddingLeft:2}}>{n.body}</div>}
           <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:4}}>by {n.author}</div>
@@ -2536,7 +2536,7 @@ function AWSPanel({user}){
           <span style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>AWS 설정</span>
           <span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:10,fontFamily:"monospace"}}>{data.credentials_path}</span>
         </div>
-        {msg&&<span style={{fontSize:14,color:msg.startsWith("오류")?"#ef4444":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
+        {msg&&<span style={{fontSize:14,color:msg.startsWith("오류")?"var(--danger)":"var(--ok)",fontFamily:"monospace"}}>{msg}</span>}
       </div>
 
       {!data.aws_available&&<div style={{padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.3)",marginBottom:12,fontSize:14,color:"#fbbf24"}}>⚠ aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</div>}
@@ -2588,7 +2588,7 @@ function AWSPanel({user}){
 
       <div style={{display:"flex",gap:8,marginTop:18}}>
         <button onClick={save} style={{padding:"9px 22px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>저장</button>
-        {form&&form.profile!=="default"&&<button onClick={delProfile} style={{padding:"9px 16px",borderRadius:5,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:14,cursor:"pointer"}}>프로파일 삭제</button>}
+        {form&&form.profile!=="default"&&<button onClick={delProfile} style={{padding:"9px 16px",borderRadius:5,border:"1px solid var(--danger)",background:"transparent",color:"var(--danger)",fontSize:14,cursor:"pointer"}}>프로파일 삭제</button>}
         <div style={{flex:1}}/>
         <button onClick={load} style={{padding:"9px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>↻ 새로고침</button>
       </div>
@@ -2726,7 +2726,7 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
             <div style={{fontSize:16,fontWeight:700}}>{cur.name}</div>
             <div style={{flex:1,fontSize:14,color:"var(--text-secondary)"}}>owner: {cur.owner} · id: {cur.id}</div>
-            {canEdit&&<button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:14,cursor:"pointer"}}>그룹 삭제</button>}
+            {canEdit&&<button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid var(--danger)",background:"transparent",color:"var(--danger)",fontSize:14,cursor:"pointer"}}>그룹 삭제</button>}
           </div>
 
           {/* 설명 */}
@@ -2738,7 +2738,7 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
                   placeholder="이 그룹의 목적을 간단히 설명하세요."
                   style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,resize:"vertical"}}/>
                 <button onClick={()=>saveDesc(cur.id,editDesc)}
-                  style={{padding:"6px 12px",borderRadius:4,border:"none",background:editDescSaved?"#10b981":"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer",whiteSpace:"nowrap"}}>
+                  style={{padding:"6px 12px",borderRadius:4,border:"none",background:editDescSaved?"var(--ok)":"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer",whiteSpace:"nowrap"}}>
                   {editDescSaved?"저장됨":"저장"}
                 </button>
               </div>
@@ -2756,7 +2756,7 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
               return(
                 <span key={m} title={m} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:14,display:"inline-flex",alignItems:"center",gap:6}}>
                   {userLabel(u)}
-                  {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
+                  {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
                 </span>
               );
             })}
@@ -2789,7 +2789,7 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
                     const next=(cur.extra_emails||[]).filter(x=>x!==e);
                     sf("/api/groups/update?id="+encodeURIComponent(cur.id),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extra_emails:next})})
                       .then(load).catch(err=>setMsg(err.message));
-                  }} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
+                  }} style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
                 </span>
               ))}
               {(cur.extra_emails||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>외부 수신자 없음</span>}
@@ -2903,7 +2903,7 @@ function BaseCsvPanel(){
                 ))}
                 <td style={{padding:"2px 4px",borderLeft:"1px solid var(--border)",whiteSpace:"nowrap"}}>
                   <span onClick={()=>moveRow(ri,-1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↑</span>
-                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"#ef4444",padding:"0 4px"}}>✕</span>
+                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"var(--danger)",padding:"0 4px"}}>✕</span>
                 </td>
               </tr>
             ))}
@@ -2915,7 +2915,7 @@ function BaseCsvPanel(){
       <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
         <button onClick={addRow} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,cursor:"pointer"}}>+ 행 추가</button>
         <button onClick={save} disabled={saving} style={{padding:"7px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:14,cursor:saving?"wait":"pointer"}}>{saving?"저장 중...":"저장"}</button>
-        {msg&&<span style={{fontSize:14,color:msg.startsWith("저장")?"#22c55e":"#ef4444"}}>{msg}</span>}
+        {msg&&<span style={{fontSize:14,color:msg.startsWith("저장")?"var(--ok)":"var(--danger)"}}>{msg}</span>}
       </div>
 
       <div style={{marginTop:14,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>

@@ -79,7 +79,7 @@ export default function AwsPanel({ user, compact = false }) {
           <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>AWS 설정 (멀티 프로파일)</span>
           <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: 10, fontFamily: "monospace" }}>{data.credentials_path}</span>
         </div>
-        {msg && <span style={{ fontSize: 14, color: msg.startsWith("오류") ? "#ef4444" : "#22c55e", fontFamily: "monospace" }}>{msg}</span>}
+        {msg && <span style={{ fontSize: 14, color: msg.startsWith("오류") ? "var(--danger)" : "var(--ok)", fontFamily: "monospace" }}>{msg}</span>}
       </div>
 
       {!data.aws_available && <div style={{ padding: "8px 12px", borderRadius: 6, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", marginBottom: 12, fontSize: 14, color: "#fbbf24" }}>⚠ aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</div>}
@@ -131,7 +131,7 @@ export default function AwsPanel({ user, compact = false }) {
 
       <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
         <button onClick={save} style={{ padding: "9px 22px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>저장</button>
-        {form && form.profile !== "default" && <button onClick={delProfile} style={{ padding: "9px 16px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" }}>프로파일 삭제</button>}
+        {form && form.profile !== "default" && <button onClick={delProfile} style={{ padding: "9px 16px", borderRadius: 5, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", fontSize: 14, cursor: "pointer" }}>프로파일 삭제</button>}
         <div style={{ flex: 1 }} />
         <button onClick={load} style={{ padding: "9px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>↻ 새로고침</button>
       </div>
