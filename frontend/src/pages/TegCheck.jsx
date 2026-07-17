@@ -207,10 +207,10 @@ function TegSection({ res, onFlatChange }) {
   const fullCols = [
     { key: "st", label: "", width: 30, render: r => STATUS_ICON[r.status] || "" },
     { key: "name", label: "module_name" },
-    { key: "orig", label: "Mapfile (x,y)", render: r => `(${r.x},${r.y})` },
-    { key: "calc_x", label: "EbeamX", align: "right" },
-    { key: "calc_y", label: "EbeamY", align: "right" },
-    { key: "ref", label: "정답지 (x,y)", render: r =>
+    { key: "orig", label: "Mapfile 원본 (x,y)", render: r => `(${r.x},${r.y})` },
+    { key: "calc_x", label: "Mapfile X", align: "right" },
+    { key: "calc_y", label: "Mapfile Y", align: "right" },
+    { key: "ref", label: "Ebeam (x,y)", render: r =>
         r.status === "missing" ? "없음" : r.status === "noref" ? "-" : `(${r.ref_x},${r.ref_y})` },
     ...(res.shot?.checked ? [{
       key: "chip", label: "칩 겹침", render: r => r.chip_overlap
@@ -221,11 +221,11 @@ function TegSection({ res, onFlatChange }) {
   const overlapRowStyle = (r) => (r.chip_overlap ? { background: "rgba(224,82,82,0.10)" } : {});
   const badCols = [
     { key: "name", label: "module_name" },
-    { key: "calc_x", label: "계산 X", align: "right" },
-    { key: "ref_x", label: "정답 X", align: "right", render: r => fmtN(r.ref_x) },
+    { key: "calc_x", label: "Mapfile X", align: "right" },
+    { key: "ref_x", label: "EbeamX", align: "right", render: r => fmtN(r.ref_x) },
     { key: "dx", label: "ΔX", align: "right", render: r => fmtN(r.dx) },
-    { key: "calc_y", label: "계산 Y", align: "right" },
-    { key: "ref_y", label: "정답 Y", align: "right", render: r => fmtN(r.ref_y) },
+    { key: "calc_y", label: "Mapfile Y", align: "right" },
+    { key: "ref_y", label: "EbeamY", align: "right", render: r => fmtN(r.ref_y) },
     { key: "dy", label: "ΔY", align: "right", render: r => fmtN(r.dy) },
   ];
 
