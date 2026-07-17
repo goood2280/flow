@@ -1,7 +1,21 @@
 {
-  "version": "9.2.0",
+  "version": "9.3.0",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.3.0",
+      "date": "2026-07-18",
+      "title": "ET Index 다운로드 — 항목 선택·규칙 상세·MA_Window/매뉴얼 함수",
+      "tag": "feat",
+      "changes": [
+        "**Index 항목 선택** — `GET /api/reformatize/items` 가 vehicle CSV 의 REAL(raw ITEMID·abs·scale factor)/ADDP(ADDP Form·참조 컬럼)·REPORT ORDER 목록 반환. 페이지에서 기본 무선택 상태로 원하는 항목만 골라 조회/CSV 다운로드 (출력 컬럼 필터 — 재계산 없음). [REPORT ORDER 전체] 버튼은 auto report 와 동일하게 REPORT ORDER 값이 있는 항목만 일괄 선택 (빈 항목 = 판정용, 리포트 제외).",
+        "**Index 규칙 상세 표시** — run/test 응답 spec 에 addp_form·itemid·abs·scale·refs 포함. 결과 테이블 index 헤더 클릭 → 규칙 정보 바 (REAL: raw ITEMID × scale factor, ADDP: form 원문 + 참조 chip — chip 클릭으로 ADDP→REAL 체인 추적).",
+        "**MA_Window·매뉴얼 함수 (관리자 수식 테스트)** — auto report `MA_Window`(log10 변환 → 2차식 fitting → spec margin, compliance 클립, 볼록/오목 예외) 를 행 단위 내장: MA_Window(폭)/MA_OVL_INDEX/MA_WINDOW_MIN. `data_root/reformatter/manual_functions.py` 의 공개 파이썬 함수도 mtime 감지 자동 로딩으로 수식에서 즉시 호출 (재시작 불필요). 해당 함수 사용 시 map_elements 행 단위 평가로 자동 전환.",
+        "**샘플 연결** — `data/_gen_vehicle_et.py` 가 auto report raw ITEMID(ET_VTH_N 등) 기반 VEHICLE_A/B ET 데이터 생성, auto report vehicle CSV 이식 (MAWIN/MA_Window 행 포함) — 제품 선택→index 추출이 auto report 규칙 그대로 end-to-end 동작.",
+        "**UI 폴리시** — 알림/문의 배지 크기·TabStrip 줄바꿈 등 디자인 감사 후속 정리.",
+        "**pytest** — `test_vehicle_reformatter` 9건 (MA_Window 볼록/오목 수치 검증, manual 훅 로딩·행 단위 평가 포함) PASS."
+      ]
+    },
     {
       "version": "9.2.0",
       "date": "2026-07-17",
