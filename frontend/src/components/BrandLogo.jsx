@@ -115,7 +115,7 @@ export function FlowWordmark({ size = "home", strong = false, onClick }) {
         ...(strong ? { transform: "scale(1.03)", filter: "brightness(1.1)" } : {}),
       }}
     >
-      flow<span style={{ color: "#1e293b" }}>.</span>
+      flow<span style={{ color: "var(--ink, #1e293b)" }}>.</span>
     </span>
   );
 }

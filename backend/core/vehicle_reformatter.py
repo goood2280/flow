@@ -16,6 +16,7 @@ ADDP → ADDP 재귀 참조는 auto report 처럼 고정점 반복으로 해소�
 from __future__ import annotations
 
 import ast
+import importlib.util
 import logging
 import math
 import re
@@ -24,6 +25,7 @@ from typing import Any, Dict, List
 
 import polars as pl
 
+from core.paths import PATHS
 from core.reformatter import _ALLOWED_AST_NODES, _SAFE_FUNCS, _bool_value, _sanitize_expr_name
 
 logger = logging.getLogger("flow.vehicle_reformatter")
@@ -73,13 +75,12 @@ def _vehicle_funcs(group_keys: list[str]) -> dict:
     return funcs
 
 
-def _eval_vehicle_expr(expr: str, env: dict[str, Any], group_keys: list[str]):
-    funcs = _vehicle_funcs(group_keys)
+def _compile_expr(expr: str, names: set[str], funcs: dict[str, Any]):
+    """AST 화이트리스트 검증 후 code object 반환 (임의 코드 실행 차단)."""
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         raise ValueError(f"수식 문법 오류: {e}") from e
-    names = set(env.keys())
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_AST_NODES):
             raise ValueError(f"지원하지 않는 구문: {type(node).__name__}")
@@ -90,8 +91,189 @@ def _eval_vehicle_expr(expr: str, env: dict[str, Any], group_keys: list[str]):
             if not isinstance(node.func, ast.Name) or node.func.id not in funcs:
                 fn = getattr(getattr(node, "func", None), "id", "?")
                 raise ValueError(f"지원하지 않는 함수: {fn}")
-    code = compile(tree, "<vehicle-addp-expr>", "eval")
+    return compile(tree, "<vehicle-addp-expr>", "eval")
+
+
+def _eval_vehicle_expr(expr: str, env: dict[str, Any], group_keys: list[str]):
+    funcs = _vehicle_funcs(group_keys)
+    code = _compile_expr(expr, set(env.keys()), funcs)
     return eval(code, {"__builtins__": {}}, {**funcs, **env})  # noqa: S307
+
+
+# ── row 단위 매뉴얼 함수 — auto report MA_Window 내장 + manual_functions.py 훅 ──
+# 관리자가 data_root/reformatter/manual_functions.py 에 파이썬 함수를 정의하면
+# ADDP Form 에서 함수명으로 바로 호출 가능 (mtime 변경 감지로 저장 즉시 반영).
+# 이 함수들은 polars Expr 로 표현할 수 없어 행 단위(map_elements)로 평가된다.
+def _to_float(v):
+    try:
+        if v is None or v == "":
+            return None
+        out = float(v)
+        return out if math.isfinite(out) else None
+    except Exception:
+        return None
+
+
+def _poly2_fit(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
+    """최소자승 y = a2*x^2 + a1*x + a0 (정규방정식, numpy 불필요)."""
+    n = len(xs)
+    sx = sum(xs); sx2 = sum(x * x for x in xs)
+    sx3 = sum(x ** 3 for x in xs); sx4 = sum(x ** 4 for x in xs)
+    sy = sum(ys); sxy = sum(x * y for x, y in zip(xs, ys))
+    sx2y = sum(x * x * y for x, y in zip(xs, ys))
+    m = [[sx4, sx3, sx2, sx2y], [sx3, sx2, sx, sxy], [sx2, sx, n, sy]]
+    for i in range(3):
+        piv = max(range(i, 3), key=lambda r: abs(m[r][i]))
+        m[i], m[piv] = m[piv], m[i]
+        if abs(m[i][i]) < 1e-12:
+            raise ValueError("singular fit")
+        fac = m[i][i]
+        for j in range(4):
+            m[i][j] /= fac
+        for k in range(3):
+            if k != i:
+                f = m[k][i]
+                for j in range(4):
+                    m[k][j] -= f * m[i][j]
+    return m[0][3], m[1][3], m[2][3]   # a2, a1, a0
+
+
+def _ma_window_calc(*args) -> dict[str, float | None]:
+    """auto report My_Function.MA_Window 의 행 단위 이식.
+
+    사용: MA_Window([x1..xN], y1..yN, spec, compliance=10)
+      - y 는 log10(y + 1e-14) 변환 후 2차식 fitting
+      - spec 은 log10(spec) 레벨과의 교점(margin) 계산
+    반환 dict: minus_margin / plus_margin / ovl_index / window / new
+    """
+    xs = None
+    scalars: list[float | None] = []
+    for a in args:
+        if isinstance(a, (list, tuple)):
+            xs = [_to_float(v) for v in a]
+        else:
+            scalars.append(_to_float(a))
+    if not xs or any(v is None for v in xs):
+        raise ValueError("MA_Window 는 첫 인자로 x 좌표 리스트가 필요합니다 (예: [0,1,2])")
+    n = len(xs)
+    if len(scalars) < n + 1:
+        raise ValueError(f"MA_Window 인자 부족 — y {n}개 + spec (+compliance) 필요")
+    ys_raw = scalars[:n]
+    spec = scalars[n]
+    compliance = abs(scalars[n + 1]) if len(scalars) > n + 1 and scalars[n + 1] is not None else 10.0
+    if spec is None or spec <= 0 or any(v is None for v in ys_raw):
+        return {"minus_margin": None, "plus_margin": None, "ovl_index": None, "window": None, "new": None}
+    spec_log = math.log10(spec)
+    ys = [math.log10(v + 1e-14) for v in ys_raw]
+    try:
+        a2, a1, a0 = _poly2_fit(xs, ys)
+    except Exception:
+        return {"minus_margin": None, "plus_margin": None, "ovl_index": None, "window": None, "new": None}
+    disc = a1 * a1 - 4 * a2 * (a0 - spec_log)
+    if abs(a2) < 1e-12:
+        plus = minus = None
+    elif disc >= 0:
+        s = math.sqrt(disc)
+        plus = (-a1 + s) / (2 * a2)
+        minus = (-a1 - s) / (2 * a2)
+        plus = min(plus, compliance)
+        minus = max(minus, -compliance)
+    elif a2 > 0:
+        plus = minus = 0.0            # 볼록·교점 없음
+    else:
+        plus, minus = compliance, -compliance   # 오목 예외
+    if a2 <= 0 and abs(a2) >= 1e-12:
+        plus, minus = compliance, -compliance
+    if plus is None or minus is None:
+        return {"minus_margin": None, "plus_margin": None, "ovl_index": None, "window": None, "new": None}
+    return {
+        "minus_margin": minus,
+        "plus_margin": plus,
+        "ovl_index": -0.5 * (plus + minus),
+        "window": plus - minus,
+        "new": min(abs(plus), abs(minus)),
+    }
+
+
+def _f_ma_window(*args):
+    """MA_Window(...) → window 폭 (plus_margin - minus_margin). auto report 의 '' 컬럼."""
+    return _ma_window_calc(*args)["window"]
+
+
+def _f_ma_ovl_index(*args):
+    """MA_OVL_INDEX(...) → 최적 중심 보정치 (-0.5*(plus+minus)). auto report 의 ovl_index."""
+    return _ma_window_calc(*args)["ovl_index"]
+
+
+def _f_ma_window_min(*args):
+    """MA_WINDOW_MIN(...) → min(|plus|,|minus|). auto report 의 'new' window."""
+    return _ma_window_calc(*args)["new"]
+
+
+_BUILTIN_ROWWISE = {
+    "MA_Window": _f_ma_window,
+    "MA_OVL_INDEX": _f_ma_ovl_index,
+    "MA_WINDOW_MIN": _f_ma_window_min,
+}
+
+_MANUAL_FILE = PATHS.data_root / "reformatter" / "manual_functions.py"
+_MANUAL_CACHE: dict[str, Any] = {"sig": (), "funcs": {}}
+
+
+def manual_functions() -> dict[str, Any]:
+    """manual_functions.py 의 공개 함수들 (mtime 변경 시 자동 재로딩)."""
+    try:
+        st = _MANUAL_FILE.stat()
+        sig = (str(_MANUAL_FILE), st.st_mtime, st.st_size)
+    except OSError:
+        sig = None
+    if _MANUAL_CACHE["sig"] == sig:
+        return _MANUAL_CACHE["funcs"]
+    funcs: dict[str, Any] = {}
+    if sig is not None:
+        try:
+            spec = importlib.util.spec_from_file_location("flow_vehicle_manual", str(_MANUAL_FILE))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            for name in dir(mod):
+                if name.startswith("_"):
+                    continue
+                fn = getattr(mod, name)
+                if callable(fn) and getattr(fn, "__module__", "") == "flow_vehicle_manual":
+                    funcs[name] = fn
+        except Exception as e:
+            logger.warning("manual_functions.py 로딩 실패: %s", e)
+    _MANUAL_CACHE["sig"] = sig
+    _MANUAL_CACHE["funcs"] = funcs
+    return funcs
+
+
+def rowwise_functions() -> dict[str, Any]:
+    return {**_BUILTIN_ROWWISE, **manual_functions()}
+
+
+def rowwise_function_help() -> list[dict[str, str]]:
+    """수식 도움말용 — 내장 MA_* + manual_functions.py 함수 목록."""
+    out = [
+        {"name": "MA_Window([x...], y1..yN, spec, compliance)", "desc": "2차식 fitting window 폭 (auto report MA_Window). y 는 log10 변환 후 spec 교점 margin", "kind": "builtin"},
+        {"name": "MA_OVL_INDEX([x...], y1..yN, spec, compliance)", "desc": "fitting 최적 중심 보정치 (-0.5*(plus+minus))", "kind": "builtin"},
+        {"name": "MA_WINDOW_MIN([x...], y1..yN, spec, compliance)", "desc": "min(|plus_margin|, |minus_margin|)", "kind": "builtin"},
+    ]
+    for name, fn in manual_functions().items():
+        doc = (fn.__doc__ or "").strip().splitlines()
+        out.append({"name": f"{name}(...)", "desc": doc[0] if doc else "manual_functions.py 정의 함수", "kind": "manual"})
+    return out
+
+
+def _scalar_where(cond, a, b):
+    return a if cond else b
+
+
+def _rowwise_scalar_funcs() -> dict[str, Any]:
+    """row 단위 평가에서 쓰는 스칼라 함수 세트 — Expr 전용(std/avg/where)은 스칼라 대체/제외."""
+    funcs = {k: v for k, v in _SAFE_FUNCS.items() if k not in ("manual", "where")}
+    funcs.update({"log10": _f_log10, "LOG": _f_log10, "power": _f_power, "where": _scalar_where})
+    return funcs
 
 
 FORMULA_HELP = [
@@ -220,6 +402,11 @@ def _normalize_form(addp_form: str) -> tuple[str, dict[str, str], list[str]]:
     return expr, token_map, refs
 
 
+def formula_refs(addp_form: str) -> list[str]:
+    """ADDP Form 이 `{이름}` 으로 참조하는 컬럼 목록 (표시/문서화용)."""
+    return _normalize_form(addp_form)[2]
+
+
 def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
                 item_col: str = "item_id", value_col: str = "value",
                 ) -> tuple[pl.DataFrame, list[str], list[str]]:
@@ -304,20 +491,43 @@ def apply_addp_rows(wide: pl.DataFrame, rows: List[Dict[str, Any]]) -> tuple[pl.
                 continue
             if any(r not in wide.columns for r in refs):
                 continue  # 참조 컬럼이 아직 없음 → 다음 패스에서 재시도
-            env = {
-                token: pl.col(colname).cast(pl.Float64, strict=False)
-                for token, colname in token_map.items()
-            }
+            rowwise = rowwise_functions()
+            used_rowwise = [n for n in rowwise if re.search(rf"\b{re.escape(n)}\s*\(", expr_norm)]
             try:
-                out = _eval_vehicle_expr(expr_norm, env, group_keys)
+                if used_rowwise:
+                    # MA_Window / manual 함수 — polars Expr 불가, 행 단위 평가.
+                    funcs_row = {**_rowwise_scalar_funcs(), **rowwise}
+                    code = _compile_expr(expr_norm, set(token_map.keys()), funcs_row)
+                    needed = {t: c for t, c in token_map.items()}
+                    struct_cols = sorted(set(needed.values()))
+
+                    def _row_eval(rec: dict, _code=code, _needed=needed, _funcs=funcs_row):
+                        env = {t: _to_float(rec.get(c)) for t, c in _needed.items()}
+                        try:
+                            out = eval(_code, {"__builtins__": {}}, {**_funcs, **env})  # noqa: S307
+                            return None if out is None else float(out)
+                        except Exception:
+                            return None
+
+                    if struct_cols:
+                        out_expr = pl.struct(struct_cols).map_elements(_row_eval, return_dtype=pl.Float64)
+                    else:
+                        out_expr = pl.lit(_row_eval({}), dtype=pl.Float64)
+                    wide = wide.with_columns(out_expr.alias(alias))
+                else:
+                    env = {
+                        token: pl.col(colname).cast(pl.Float64, strict=False)
+                        for token, colname in token_map.items()
+                    }
+                    out = _eval_vehicle_expr(expr_norm, env, group_keys)
+                    out_expr = out if isinstance(out, pl.Expr) else pl.lit(out, dtype=pl.Float64)
+                    wide = wide.with_columns(out_expr.cast(pl.Float64, strict=False).alias(alias))
             except Exception as e:
                 errors.append(f"ADDP '{alias}': 수식 오류 — {e}")
                 wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(alias))
                 pending.remove(row)
                 progressed = True
                 continue
-            out_expr = out if isinstance(out, pl.Expr) else pl.lit(out, dtype=pl.Float64)
-            wide = wide.with_columns(out_expr.cast(pl.Float64, strict=False).alias(alias))
             pending.remove(row)
             progressed = True
         if not progressed:

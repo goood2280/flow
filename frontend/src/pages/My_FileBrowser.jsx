@@ -2346,9 +2346,9 @@ export default function My_FileBrowser({user,onNavigate}){
               {mode==="hive" && selRoot && (()=>{
                 const name=(selRoot||"").toUpperCase();
                 let label="",bg="",fg="";
-                if(name.endsWith("_FAB")||name.endsWith(".RAWDATA_DB_FAB")){label="FAB";bg="#3b82f622";fg="#1d4ed8";}
-                else if(name.endsWith("_INLINE")){label="INLINE";bg="#10b98122";fg="#047857";}
-                else if(name.endsWith("_ET")){label="ET";bg="#ec489922";fg="#be185d";}
+                if(name.endsWith("_FAB")||name.endsWith(".RAWDATA_DB_FAB")){label="FAB";bg="var(--info-50)";fg="var(--info)";}
+                else if(name.endsWith("_INLINE")){label="INLINE";bg="var(--ok-50)";fg="var(--ok)";}
+                else if(name.endsWith("_ET")){label="ET";bg="var(--pink-50)";fg="var(--pink)";}
                 if(!label) return null;
                 return <span title={`datalake 소스: ${label} (${selRoot})`}
                   style={{fontSize:14,fontWeight:700,fontFamily:"monospace",padding:"3px 10px",borderRadius:4,background:bg,color:fg,letterSpacing:0.5}}>{label}</span>;

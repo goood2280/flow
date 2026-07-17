@@ -56,14 +56,80 @@ function dlPost(url, body, filename) {
   });
 }
 
+/* 헤더 클릭 시 표시되는 index 규칙 상세 — 어떤 ADDP form 인지, 무엇을 참조했는지. */
+function RuleInfoBar({ alias, rule, onSelect, onClose }) {
+  if (!rule) return null;
+  const isAddp = rule.category === "addp";
+  const chip = (name) => (
+    <span key={name} onClick={() => onSelect && onSelect(name)}
+      title={onSelect ? "클릭하면 이 컬럼의 규칙 보기" : name}
+      style={{ cursor: onSelect ? "pointer" : "default", fontFamily: "monospace", fontSize: 12, padding: "1px 7px", borderRadius: 999, border: "1px solid var(--accent)", color: "var(--accent)", marginRight: 4, display: "inline-block" }}>
+      {"{" + name + "}"}
+    </span>
+  );
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 12px", marginBottom: 8, borderRadius: 8, border: "1px solid var(--accent)", background: "var(--accent-glow)", fontSize: 13 }}>
+      <Pill tone={isAddp ? "warn" : "accent"}>{isAddp ? "ADDP" : "REAL"}</Pill>
+      <b style={{ fontFamily: "monospace" }}>{alias}</b>
+      {isAddp ? (
+        <>
+          <span style={{ color: "var(--text-secondary)" }}>ADDP Form:</span>
+          <code style={{ fontFamily: "monospace", background: "var(--bg-primary)", padding: "2px 8px", borderRadius: 5, border: "1px solid var(--border)" }}>{rule.addp_form || "-"}</code>
+          {(rule.refs || []).length > 0 && (
+            <span style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--text-secondary)" }}>참조:</span>
+              {(rule.refs || []).map(r => chip(r))}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <span style={{ color: "var(--text-secondary)" }}>raw ITEMID:</span>
+          <code style={{ fontFamily: "monospace", background: "var(--bg-primary)", padding: "2px 8px", borderRadius: 5, border: "1px solid var(--border)" }}>{rule.itemid || "-"}</code>
+          <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+            {rule.abs ? "abs " : ""}× {rule.scale ?? 1}
+          </span>
+        </>
+      )}
+      {(rule.unit || rule.speclow != null || rule.spechigh != null) && (
+        <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          {rule.unit ? `[${rule.unit}] ` : ""}spec {rule.speclow ?? "-"} ~ {rule.spechigh ?? "-"}{rule.target != null ? ` (target ${rule.target})` : ""}
+        </span>
+      )}
+      <span onClick={onClose} style={{ marginLeft: "auto", cursor: "pointer", color: "var(--text-secondary)", padding: "0 4px" }}>✕</span>
+    </div>
+  );
+}
+
 function ResultTable({ result, highlight }) {
   const hi = useMemo(() => new Set(highlight || []), [highlight]);
+  const spec = result.spec || {};
+  const [selRule, setSelRule] = useState("");
+  const clickable = (c) => hi.has(c) && spec[c];
   return (
-    <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", overflow: "auto", maxHeight: "calc(100vh - 300px)" }}>
+    <>
+      <RuleInfoBar alias={selRule} rule={spec[selRule]} onClose={() => setSelRule("")}
+        onSelect={(name) => { if (spec[name]) setSelRule(name); }} />
+      <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", overflow: "auto", maxHeight: "calc(100vh - 300px)" }}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead><tr>
           {(result.columns || []).map(c => (
-            <th key={c} style={{ ...head, color: hi.has(c) ? "var(--accent)" : head.color }} title={c}>{c}</th>
+            <th key={c}
+              onClick={() => { if (clickable(c)) setSelRule(prev => prev === c ? "" : c); }}
+              style={{
+                ...head,
+                color: hi.has(c) ? "var(--accent)" : head.color,
+                cursor: clickable(c) ? "pointer" : "default",
+                textDecoration: clickable(c) ? "underline dotted" : "none",
+                background: selRule === c ? "var(--accent-glow)" : head.background,
+              }}
+              title={clickable(c)
+                ? (spec[c].category === "addp"
+                    ? `ADDP: ${spec[c].addp_form || ""} — 클릭하여 상세`
+                    : `REAL: ${spec[c].itemid || ""}${spec[c].abs ? " abs" : ""} ×${spec[c].scale ?? 1} — 클릭하여 상세`)
+                : c}>
+              {c}
+            </th>
           ))}
         </tr></thead>
         <tbody>
@@ -81,6 +147,86 @@ function ResultTable({ result, highlight }) {
           ))}
         </tbody>
       </table>
+      </div>
+    </>
+  );
+}
+
+/* Index 항목 선택 패널 — vehicle CSV 의 REAL/ADDP 목록에서 뽑을 index 를 고른다.
+   REAL 은 raw ITEMID·abs·scale factor, ADDP 는 ADDP Form·참조 컬럼을 함께 표시.
+   기본 선택은 없음 — 몇 개만 고르거나 [REPORT ORDER 전체] 로 리포트 대상만 일괄 선택.
+   (auto report 와 동일: REPORT ORDER 가 있는 항목만 리포트 item, 빈 항목은 판정용) */
+function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
+  const [open, setOpen] = useState(true);
+  if (!items.length) return null;
+  const nSel = items.filter(it => selected.has(it.alias)).length;
+  const reportItems = items.filter(it => it.report_order !== null && it.report_order !== undefined);
+  const mono = { fontFamily: "monospace", fontSize: 12 };
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, background: "var(--bg-secondary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
+        <span style={{ fontSize: 14, fontWeight: 800 }}>📋 Index 항목 선택</span>
+        <Pill tone={nSel === 0 ? "warn" : "accent"}>{nSel} / {items.length}</Pill>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+          {nSel === 0 ? "뽑을 항목을 선택하세요 — REPORT ORDER 전체 버튼으로 리포트 대상만 일괄 선택 가능" : "REAL 은 raw × scale factor, ADDP 는 수식·참조 확인"}
+        </span>
+        <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲ 접기" : "▼ 펼치기"}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Button variant="primary" onClick={() => onSelectSet(reportItems.map(it => it.alias))}
+              title="auto report 와 동일 — REPORT ORDER 값이 있는 항목 전체 (리포트 대상 item)">
+              REPORT ORDER 전체 ({reportItems.length})
+            </Button>
+            <Button onClick={() => onSelectSet(items.map(it => it.alias))}>전체 선택</Button>
+            <Button onClick={() => onSelectSet([])}>전체 해제</Button>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+              R.ORD 빈 항목은 리포트 제외(판정용) — 필요하면 개별 선택
+            </span>
+          </div>
+          <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead><tr>
+                {["", "구분", "ITEM (alias)", "R.ORD", "계산 상세", "단위/spec"].map((h, i) => (
+                  <th key={i} style={{ ...head, whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {items.map(it => (
+                  <tr key={it.alias} onClick={() => onToggle(it.alias)}
+                    style={{ cursor: "pointer", background: selected.has(it.alias) ? "transparent" : "var(--bg-primary)", opacity: selected.has(it.alias) ? 1 : 0.55 }}>
+                    <td style={{ ...cell, width: 30 }}>
+                      <input type="checkbox" readOnly checked={selected.has(it.alias)} style={{ accentColor: "var(--accent)" }} />
+                    </td>
+                    <td style={cell}><Pill tone={it.category === "addp" ? "warn" : "accent"}>{it.category === "addp" ? "ADDP" : "REAL"}</Pill></td>
+                    <td style={{ ...cell, ...mono, fontWeight: 700, color: "var(--accent)" }}>{it.alias}</td>
+                    <td style={{ ...cell, ...mono, color: it.report_order != null ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                      {it.report_order != null ? it.report_order : "-"}
+                    </td>
+                    <td style={{ ...cell, ...mono, whiteSpace: "normal", wordBreak: "break-all" }}>
+                      {it.category === "addp" ? (
+                        <>
+                          <span>{it.addp_form}</span>
+                          {(it.refs || []).length > 0 && (
+                            <span style={{ color: "var(--text-secondary)" }}>{"  ← 참조: " + it.refs.join(", ")}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span>{it.itemid}{it.abs ? " → abs" : ""} × <b>{it.scale ?? 1}</b><span style={{ color: "var(--text-secondary)" }}> (scale factor)</span></span>
+                      )}
+                    </td>
+                    <td style={{ ...cell, ...mono, color: "var(--text-secondary)" }}>
+                      {(it.unit ? `[${it.unit}] ` : "") + (it.speclow != null || it.spechigh != null ? `${it.speclow ?? "-"}~${it.spechigh ?? "-"}` : "")}
+                      {it.target != null ? ` (t ${it.target})` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -193,6 +339,28 @@ function AddpTestPanel({ product, lotFilter, pageRows }) {
                   </tbody>
                 </table>
               </details>
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer" }}>
+                  🔧 매뉴얼 함수 — MA_Window 등 row 단위 ({(help.manual_functions || []).length})
+                </summary>
+                <div style={{ margin: "4px 0" }}>
+                  auto report 의 MA_Window 계열은 내장, 새 함수는{" "}
+                  <code style={{ fontFamily: "monospace", background: "var(--bg-primary)", padding: "1px 6px", borderRadius: 4 }}>{help.manual_file || "reformatter/manual_functions.py"}</code>
+                  {" "}에 파이썬 함수로 정의하면 저장 즉시 수식에서 호출 가능합니다 (예: <code style={{ fontFamily: "monospace" }}>my_index({"{VTH_N}"}, {"{VTH_P}"})</code>).
+                </div>
+                <table style={{ borderCollapse: "collapse", marginTop: 4 }}>
+                  <tbody>
+                    {(help.manual_functions || []).map(f => (
+                      <tr key={f.name}>
+                        <td style={{ padding: "2px 10px 2px 0", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                          {f.kind === "manual" ? "📄 " : ""}{f.name}
+                        </td>
+                        <td style={{ padding: "2px 0" }}>{f.desc}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
             </div>
           )}
 
@@ -236,6 +404,8 @@ export default function My_Reformatize({ user }) {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [dlBusy, setDlBusy] = useState(false);
+  const [itemList, setItemList] = useState([]);          // vehicle CSV 의 REAL/ADDP 항목
+  const [selItems, setSelItems] = useState(new Set());   // 선택된 alias (기본 전체)
 
   useEffect(() => {
     sf(API + "/products").then(d => {
@@ -248,10 +418,23 @@ export default function My_Reformatize({ user }) {
 
   const selected = products.find(p => p.product === product);
 
+  // 제품 변경 시 vehicle CSV 의 REAL/ADDP 항목 목록 로드 — 기본 선택 없음 (직접 고르거나 REPORT ORDER 전체).
+  useEffect(() => {
+    setItemList([]); setSelItems(new Set());
+    if (!product || !selected?.vehicle_csv) return;
+    sf(API + "/items?product=" + encodeURIComponent(product))
+      .then(d => setItemList(d.items || []))
+      .catch(() => {});
+  }, [product, selected?.vehicle_csv]);
+
+  const allSelected = itemList.length > 0 && selItems.size === itemList.length;
+  const selArray = () => (allSelected ? [] : [...selItems]);   // 전체 선택이면 서버 기본(전체) 사용
+
   const run = (nextOffset = 0) => {
     if (!product) { toast.warn("제품을 선택하세요"); return; }
+    if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     setBusy(true);
-    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, lot_filter: lotFilter })
+    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, lot_filter: lotFilter, items: selArray() })
       .then(d => { setResult(d); setOffset(d.offset || 0); })
       .catch(e => toast.error(e.message || "조회 실패"))
       .finally(() => setBusy(false));
@@ -259,8 +442,9 @@ export default function My_Reformatize({ user }) {
 
   const download = () => {
     if (!product) return;
+    if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     setDlBusy(true);
-    dl(API + "/download" + qs({ product, lot_filter: lotFilter }), `${product}_reformatize.csv`)
+    dl(API + "/download" + qs({ product, lot_filter: lotFilter, items: selArray().join(",") }), `${product}_reformatize.csv`)
       .then(() => toast.ok("다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
       .catch(e => toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
@@ -308,6 +492,14 @@ export default function My_Reformatize({ user }) {
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "조회"}</Button>
         <Button disabled={dlBusy || !product || !selected?.vehicle_csv} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ CSV 다운로드"}</Button>
       </div>
+
+      {/* Index 항목 선택 — REAL(scale factor)/ADDP(form·참조) 확인 후 뽑을 항목 선택 */}
+      <ItemSelectPanel
+        items={itemList}
+        selected={selItems}
+        onToggle={(alias) => setSelItems(prev => { const s = new Set(prev); s.has(alias) ? s.delete(alias) : s.add(alias); return s; })}
+        onSelectSet={(aliases) => setSelItems(new Set(aliases))}
+      />
 
       {/* 관리자 전용 ADDP 수식 테스트 */}
       {isAdmin && product && selected?.vehicle_csv && (

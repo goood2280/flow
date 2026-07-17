@@ -289,9 +289,9 @@ function ContactButton({ user }) {
     <div onClick={() => setOpen(true)} style={{ cursor: "pointer", position: "relative" }} title="문의">
       <span style={{ fontSize: 14 }}>✉️</span>
       {unread > 0 && <span style={{
-        position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
-        background: "var(--info)", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14,
-        display: "flex", alignItems: "center", justifyContent: "center", padding: "0 2px"
+        position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, lineHeight: 1,
+        background: "var(--info)", color: "#fff", borderRadius: 999, minWidth: 14, height: 14,
+        display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px"
       }}>{unread > 99 ? "99+" : unread}</span>}
     </div>
     {open && <div style={{
@@ -472,9 +472,9 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
         <span style={{ fontSize: 14 }}>🔔</span>
-        {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
-          background: "var(--danger)", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14, display: "flex",
-          alignItems: "center", justifyContent: "center", padding: "0 2px" }}>
+        {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, lineHeight: 1,
+          background: "var(--danger)", color: "#fff", borderRadius: 999, minWidth: 14, height: 14, display: "flex",
+          alignItems: "center", justifyContent: "center", padding: "0 3px" }}>
           {notifs.length > 99 ? "99+" : notifs.length}
         </span>}
       </div>

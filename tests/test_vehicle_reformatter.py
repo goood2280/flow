@@ -13,7 +13,9 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+import core.vehicle_reformatter as vr  # noqa: E402
 from core.vehicle_reformatter import (  # noqa: E402
+    _f_ma_ovl_index, _f_ma_window, _f_ma_window_min,
     apply_addp_rows, find_vehicle_csv, load_vehicle_table, reformatize,
 )
 
@@ -125,6 +127,49 @@ def test_apply_addp_rows_test_items_and_autoreport_funcs(vehicle_csv: Path):
     assert row1["T_BAD"] is None
     assert any("T_BAD" in e for e in errors)
     assert not any(a in e for a in ("T_RAW", "T_LOG", "T_POW", "T_CHAIN") for e in errors)
+
+
+def test_ma_window_convex_fit():
+    """볼록 2차식: log10(y) = x^2 - 1, spec=1(log 0) → margin ±1, window 2."""
+    args = ([-1, 0, 1], 1.0, 0.1, 1.0, 1.0, 10)
+    assert _f_ma_window(*args) == pytest.approx(2.0, abs=1e-6)
+    assert _f_ma_ovl_index(*args) == pytest.approx(0.0, abs=1e-6)
+    assert _f_ma_window_min(*args) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_ma_window_concave_uses_compliance():
+    """오목 2차식(a2<0)은 auto report 예외처리대로 ±compliance."""
+    # log10(y) = -(x^2) - 0.5 → 오목
+    ys = [10 ** (-(x * x) - 0.5) for x in (-1, 0, 1)]
+    assert _f_ma_window([-1, 0, 1], *ys, 1.0, 7) == pytest.approx(14.0, abs=1e-6)
+
+
+def test_manual_functions_hook_and_rowwise_eval(tmp_path, monkeypatch, vehicle_csv: Path):
+    """manual_functions.py 훅 함수 + 내장 MA_Window 를 ADDP form 에서 행 단위 호출."""
+    hook = tmp_path / "manual_functions.py"
+    hook.write_text(
+        "def my_ratio(a, b):\n"
+        "    \"\"\"a/b test manual fn\"\"\"\n"
+        "    return None if not b else a / b\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(vr, "_MANUAL_FILE", hook)
+    monkeypatch.setitem(vr._MANUAL_CACHE, "sig", ())
+
+    table = load_vehicle_table(vehicle_csv)
+    wide, _out_cols, _errors = reformatize(_long_df(), table)
+    wide2, errors = apply_addp_rows(wide, [
+        {"alias": "T_MANUAL", "addp_form": "my_ratio({IDSAT_IDX}, {VTH_IDX})"},
+        {"alias": "T_MIXED", "addp_form": "abs(my_ratio({VTH_IDX}, {IDSAT_IDX})) * 2"},
+    ])
+    assert errors == []
+    row1 = wide2.filter(pl.col("shot_x") == "1").to_dicts()[0]
+    # shot1: VTH_IDX=0.4, IDSAT_IDX=3.0
+    assert row1["T_MANUAL"] == pytest.approx(3.0 / 0.4)
+    assert row1["T_MIXED"] == pytest.approx((0.4 / 3.0) * 2)
+    # help 목록에 파일 함수가 노출된다
+    names = [h["name"] for h in vr.rowwise_function_help()]
+    assert any(n.startswith("my_ratio") for n in names)
 
 
 def test_apply_addp_rows_group_std_avg():

@@ -3,7 +3,8 @@ import { useState } from "react";
 const mono = "'JetBrains Mono',monospace";
 
 function Code({ children }) {
-  return <pre style={{ background:"#111", borderRadius:8, padding:"14px 18px", border:"1px solid var(--border,#333)", overflow:"auto", fontFamily:mono, fontSize:14, lineHeight:1.8, color:"#e5e5e5", whiteSpace:"pre", margin:"12px 0" }}>{children}</pre>;
+  // 코드 블록은 라이트/다크 공통으로 어두운 터미널 톤 고정 (Home 콘솔과 동일한 결).
+  return <pre style={{ background:"#171717", borderRadius:8, padding:"14px 18px", border:"1px solid #333", overflow:"auto", fontFamily:mono, fontSize:14, lineHeight:1.8, color:"#e5e5e5", whiteSpace:"pre", margin:"12px 0" }}>{children}</pre>;
 }
 
 function H2({ children, id }) {
@@ -11,10 +12,15 @@ function H2({ children, id }) {
 }
 
 function ApiRow({ method, path, desc }) {
-  const c = {GET:"#22c55e",POST:"#f97316",DELETE:"#ef4444"};
+  const c = {
+    GET:{ fg:"var(--ok)", bg:"var(--ok-50)" },
+    POST:{ fg:"var(--brand)", bg:"var(--brand-50)" },
+    DELETE:{ fg:"var(--danger)", bg:"var(--danger-50)" },
+  };
+  const tone = c[method] || { fg:"var(--text-secondary)", bg:"var(--bg-tertiary)" };
   return (
     <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid var(--border,#222)", fontSize:14 }}>
-      <span style={{ fontFamily:mono, fontSize:14, fontWeight:700, padding:"2px 8px", borderRadius:4, minWidth:44, textAlign:"center", background:(c[method]||"#666")+"22", color:c[method]||"#666" }}>{method}</span>
+      <span style={{ fontFamily:mono, fontSize:14, fontWeight:700, padding:"2px 8px", borderRadius:4, minWidth:44, textAlign:"center", background:tone.bg, color:tone.fg }}>{method}</span>
       <span style={{ fontFamily:mono, color:"var(--text-primary)", minWidth:300 }}>{path}</span>
       <span style={{ color:"var(--text-secondary)" }}>{desc}</span>
     </div>
