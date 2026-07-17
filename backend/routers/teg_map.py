@@ -9,6 +9,7 @@ DB root 의 teg_location/ 폴더에 저장.
   PUT    /api/teg-map/config              설정 저장 (파일 경로/배율/TEG 기본크기/vehicle 표시)
   GET    /api/teg-map/vehicles            layout 의 vehicle 목록
   GET    /api/teg-map/map?vehicle=        WF MAP payload (geometry+shots+tegs+표시설정)
+  POST   /api/teg-map/inspect             설비 원문 검사 (파싱+flat 변환+Teg_location 대조)
   GET    /api/teg-map/radius?vehicle=&teg= TEG 좌하단 shot 별 radius 표
   GET    /api/teg-map/image?vehicle=      vehicle 그림 파일
   POST   /api/teg-map/image?vehicle=      vehicle 그림 업로드 (multipart `file`)
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from core import teg_check as _tc
 from core import teg_map as _tm
 from core.auth import current_user, require_page_manager
 
@@ -88,6 +90,19 @@ def wf_map(vehicle: str = Query(...), _user=Depends(current_user)):
         raise HTTPException(404, str(e))
     except LookupError as e:
         raise HTTPException(404, str(e))
+
+
+class InspectReq(BaseModel):
+    vehicle: str = ""
+    text: str
+    flat: str | None = None   # "h" | "v_R" | None(자동 감지, 기본 h)
+
+
+@router.post("/inspect")
+def inspect(req: InspectReq, _user=Depends(current_user)):
+    if not req.text.strip():
+        raise HTTPException(400, "원문(text)이 비어 있습니다")
+    return _tc.inspect(req.vehicle, req.text, req.flat)
 
 
 @router.get("/radius")

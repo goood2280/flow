@@ -15,7 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sf, putJson } from "../lib/api";
 import { toast } from "../components/Toast";
 import PageGear from "../components/PageGear";
-import { Button, Card, EmptyState, PageHeader, Pill, Select } from "../components/UXKit";
+import { Button, Card, EmptyState, PageHeader, Pill, Select, TabStrip } from "../components/UXKit";
+import TegCheck from "./TegCheck";
 
 const API = "/api/teg-map";
 
@@ -693,6 +694,7 @@ export default function My_TegMap({ user }) {
   const [selectedTegs, setSelectedTegs] = useState(new Set());
   const [selectedShot, setSelectedShot] = useState(null);
   const [imgUrl, setImgUrl] = useState(null);
+  const [view, setView] = useState("map");   // map=위치 조회 | check=설비값 검사
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
 
@@ -780,6 +782,12 @@ export default function My_TegMap({ user }) {
         }
       />
 
+      <TabStrip active={view} onChange={setView}
+        items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "설비값 검사" }]} />
+
+      {view === "check" && <TegCheck vehicle={vehicle} />}
+
+      {view === "map" && <>
       {vehicles && vehicles.length === 0 && (
         <EmptyState icon="📐" title="chip layout 파일이 없습니다"
           hint="파일탐색기 Files 위치(DB root)에 Mask/chip_x_adj/chip_y_adj/Chip_Radius 열이 있는 파일을 넣고, ⚙️ 설정에서 파일명을 지정하세요" />
@@ -928,6 +936,7 @@ export default function My_TegMap({ user }) {
           </div>
         </div>
       )}
+      </>}
 
       <PageGear title="TEG 위치 조회 설정" canEdit={canEdit} position="bottom-right">
         <GearSettings vehicle={vehicle} canEdit={canEdit}
