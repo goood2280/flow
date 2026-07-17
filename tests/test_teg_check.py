@@ -33,6 +33,11 @@ def test_strip_line_numbers_and_fallback():
     # 행번호 없는 원문은 그대로 사용
     assert teg_check.strip_line_numbers("#teg-map\nmodule a (1, 2)") == [
         "#teg-map", "module a (1, 2)"]
+    # 행번호 없는 원문에 site 행("1 5 4")이 섞여도 행번호로 오인하지 않는다
+    raw = "<SITES>\nPattern, P1\n1 5 4\n2 4 3\n# end"
+    assert teg_check.strip_line_numbers(raw) == raw.splitlines()
+    sites = teg_check.parse_sites(teg_check.strip_line_numbers(raw))
+    assert sites[0]["points"] == [{"pt": 1, "x": 5, "y": 4}, {"pt": 2, "x": 4, "y": 3}]
 
 
 def test_parse_sample():
