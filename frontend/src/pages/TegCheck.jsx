@@ -5,7 +5,7 @@
       정답지(TEG 위치 조회의 Teg_location raw ebeam 값)와 대조해 🟢/🔴/⚪ 로 표시.
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../lib/api";
 import { toast } from "../components/Toast";
 import { Button, Card, DataTable, EmptyState, Pill, Select, Textarea } from "../components/UXKit";
@@ -147,7 +147,8 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
 }
 
 /* ── shot 확대 뷰 — 칩 격자 + 계산 좌표 기준 TEG 배치.
-   TEG 는 칩 사이(스크라이브)에 있어야 정상 — 칩 위에 겹치면 빨간색. ── */
+   TEG 는 칩 사이(스크라이브)에 있어야 정상 — 칩 위에 겹치면 빨간색.
+   마우스 휠(확대/축소) + 드래그(패닝) + 핀치 줌 + 리셋 버튼 (위치 조회 ShotZoom 과 동일). ── */
 function ShotView({ shot, rows }) {
   const SIZE = 380;
   const W = shot.shot_w_mm, H = shot.shot_h_mm;
@@ -158,41 +159,135 @@ function ShotView({ shot, rows }) {
   const toX = (mm) => ox + (mm + W / 2) * s;
   const toY = (mm) => oy + (mm + H / 2) * s;
   const cells = shot.cells || [];
+
+  // ── zoom / pan 상태 ──
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const svgRef = useRef(null);
+  const dragRef = useRef(null);           // { startX, startY, panX0, panY0 } | null
+  const pinchRef = useRef(null);          // { dist0, zoom0 } | null
+  const pointersRef = useRef(new Map());  // pointerId → { x, y }
+
+  const ZOOM_MIN = 1, ZOOM_MAX = 12, ZOOM_STEP = 1.15;
+  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
+
+  // 마우스 휠 → 줌 (커서 중심)
+  const onWheel = useCallback((e) => {
+    e.preventDefault();
+    const rect = svgRef.current.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    setZoom(prev => {
+      const next = e.deltaY < 0
+        ? Math.min(ZOOM_MAX, prev * ZOOM_STEP)
+        : Math.max(ZOOM_MIN, prev / ZOOM_STEP);
+      const ratio = 1 - next / prev;
+      setPan(p => ({ x: p.x + (mx - p.x) * ratio, y: p.y + (my - p.y) * ratio }));
+      return next;
+    });
+  }, []);
+
+  const pinchDist = (pts) => {
+    const arr = [...pts.values()];
+    if (arr.length < 2) return 0;
+    return Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y);
+  };
+  const onPointerDown = useCallback((e) => {
+    svgRef.current?.setPointerCapture(e.pointerId);
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2) {
+      pinchRef.current = { dist0: pinchDist(pointersRef.current), zoom0: zoom };
+      dragRef.current = null;
+    } else if (pointersRef.current.size === 1) {
+      dragRef.current = { startX: e.clientX, startY: e.clientY, panX0: pan.x, panY0: pan.y };
+    }
+  }, [zoom, pan]);
+  const onPointerMove = useCallback((e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2 && pinchRef.current) {
+      const d = pinchDist(pointersRef.current);
+      if (pinchRef.current.dist0 > 0) {
+        setZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchRef.current.zoom0 * (d / pinchRef.current.dist0))));
+      }
+    } else if (dragRef.current && pointersRef.current.size === 1) {
+      setPan({ x: dragRef.current.panX0 + (e.clientX - dragRef.current.startX),
+               y: dragRef.current.panY0 + (e.clientY - dragRef.current.startY) });
+    }
+  }, []);
+  const onPointerUp = useCallback((e) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 0) dragRef.current = null;
+  }, []);
+
+  // 휠 이벤트는 passive:false 필요 → ref 방식으로 등록
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onWheel]);
+
+  const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
+
   return (
-    <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-      style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6 }}>
-      <rect x={ox} y={oy} width={w} height={h} fill="rgba(128,128,128,0.05)"
-        stroke="var(--muted)" strokeWidth="1" />
-      {/* shot 센터 십자 */}
-      <line x1={toX(0) - 5} y1={toY(0)} x2={toX(0) + 5} y2={toY(0)} stroke="var(--muted)" strokeWidth="0.8" />
-      <line x1={toX(0)} y1={toY(0) - 5} x2={toX(0)} y2={toY(0) + 5} stroke="var(--muted)" strokeWidth="0.8" />
-      {/* 칩 격자 */}
-      {cells.map((c, i) => (
-        <rect key={i} x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
-          fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth="0.8" opacity="0.85" />
-      ))}
-      {/* TEG — 계산 좌표(mm) 기준, 칩 겹침은 빨간색 */}
-      {rows.map((t, i) => {
-        const color = t.chip_overlap ? "#dc2626" : "#2563eb";
-        const x = toX(t.mm_x), yBottom = toY(t.mm_y);
-        const wpx = Math.max(1.5, t.teg_w * s), hpx = Math.max(1.5, t.teg_h * s);
-        return (
-          <g key={i}>
-            <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
-              fill={color} opacity={t.chip_overlap ? 0.9 : 0.75} />
-            <circle cx={x} cy={yBottom} r="2.4" fill={color} stroke="var(--panel)" strokeWidth="0.8" />
-            <text x={x + wpx + 4} y={yBottom - hpx / 2} fontSize="11"
-              fill={t.chip_overlap ? "#dc2626" : "var(--text)"}
-              fontWeight={t.chip_overlap ? 700 : 400} dominantBaseline="middle">
-              {t.name}{t.chip_overlap ? " ⚠" : ""}
-            </text>
-          </g>
-        );
-      })}
-      <text x={SIZE / 2} y={oy + h + 16} fontSize="11" fill="var(--muted)" textAnchor="middle">
-        {fmtN(Math.round(W * 100) / 100)} mm
-      </text>
-    </svg>
+    <div style={{ position: "relative", display: "inline-block" }}>
+      <svg ref={svgRef} width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
+        style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6,
+                 cursor: isZoomed ? "grab" : "zoom-in", touchAction: "none", userSelect: "none" }}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+          <rect x={ox} y={oy} width={w} height={h} fill="rgba(128,128,128,0.05)"
+            stroke="var(--muted)" strokeWidth={1 / zoom} />
+          {/* shot 센터 십자 */}
+          <line x1={toX(0) - 5 / zoom} y1={toY(0)} x2={toX(0) + 5 / zoom} y2={toY(0)} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+          <line x1={toX(0)} y1={toY(0) - 5 / zoom} x2={toX(0)} y2={toY(0) + 5 / zoom} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+          {/* 칩 격자 */}
+          {cells.map((c, i) => (
+            <rect key={i} x={toX(c.x)} y={toY(c.y)} width={c.w * s} height={c.h * s}
+              fill="rgba(47,158,99,0.08)" stroke="#2f9e63" strokeWidth={0.8 / zoom} opacity="0.85" />
+          ))}
+          {/* TEG — 계산 좌표(mm) 기준, 칩 겹침은 빨간색 */}
+          {rows.map((t, i) => {
+            const color = t.chip_overlap ? "#dc2626" : "#2563eb";
+            const x = toX(t.mm_x), yBottom = toY(t.mm_y);
+            const wpx = Math.max(1.5 / zoom, t.teg_w * s), hpx = Math.max(1.5 / zoom, t.teg_h * s);
+            return (
+              <g key={i}>
+                <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
+                  fill={color} opacity={t.chip_overlap ? 0.9 : 0.75} />
+                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={color} stroke="var(--panel)" strokeWidth={0.8 / zoom} />
+                <text x={x + wpx + 4 / zoom} y={yBottom - hpx / 2} fontSize={11 / zoom}
+                  fill={t.chip_overlap ? "#dc2626" : "var(--text)"}
+                  fontWeight={t.chip_overlap ? 700 : 400} dominantBaseline="middle">
+                  {t.name}{t.chip_overlap ? " ⚠" : ""}
+                </text>
+              </g>
+            );
+          })}
+          <text x={SIZE / 2} y={oy + h + 16 / zoom} fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle">
+            {fmtN(Math.round(W * 100) / 100)} mm
+          </text>
+        </g>
+      </svg>
+      {/* 줌 리셋 버튼 — 줌/패닝 상태일 때만 표시 */}
+      {isZoomed && (
+        <button onClick={resetView} title="보기 초기화"
+          style={{ position: "absolute", top: 6, right: 6, width: 28, height: 28,
+                   display: "flex", alignItems: "center", justifyContent: "center",
+                   background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 4,
+                   cursor: "pointer", fontSize: 14, color: "var(--muted)", opacity: 0.85 }}>
+          ↺
+        </button>
+      )}
+      {zoom > 1.05 && (
+        <span style={{ position: "absolute", bottom: 6, right: 6, fontSize: 11,
+                       color: "var(--muted)", background: "var(--panel)", padding: "1px 5px",
+                       borderRadius: 3, border: "1px solid var(--line)", opacity: 0.8 }}>
+          ×{zoom.toFixed(1)}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -441,7 +536,7 @@ export default function TegCheck({ vehicle }) {
             </Card>
           )}
 
-          <Card title="TEG Mapfile 대조 — 정답지(TEG 위치 조회)">
+          <Card title="TEG Mapfile 대조 결과">
             {!res.teg.rows.length ? (
               <EmptyState icon="⚠" title="#teg-map 에서 module 행을 찾지 못했습니다" />
             ) : (
