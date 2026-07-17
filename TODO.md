@@ -12,7 +12,7 @@
 
 ## Done
 
-- (Claude) TEG 위치 조회에 `TEG Mapfile 체크` 탭 추가 — 설비 레시피 원문(#wafer-map/<SITES>/#teg-map) 파싱(core/teg_check.py, POST /api/teg-map/inspect), 전체 Pattern 을 작은 WF MAP 카드로 동시 표시(클릭 확대·패턴별 맵 재지정), #teg-map 좌표를 flat 변환(Vertical(R)=반시계 90° 회전 원복 + 오프셋) 후 Teg_location raw ebeam 정답지와 🟢/🔴/⚪ 대조. 오프셋(flat 별 기본·TEG별 추가/수정/삭제·회전 offset)은 ⚙️ 설정의 teg_map.json `check` 섹션에서 편집
+- (Claude) TEG 위치 조회에 `TEG Mapfile 체크` 탭 추가 — 설비 레시피 원문(#wafer-map/<SITES>/#teg-map) 파싱(core/teg_check.py, POST /api/teg-map/inspect), 전체 Pattern 을 작은 WF MAP 카드로 동시 표시(클릭 확대·패턴별 맵 재지정), #teg-map 좌표를 flat 변환(Vertical(R)=반시계 90° 회전 원복 + 오프셋) 후 Teg_location raw ebeam 정답지와 🟢/🔴/⚪ 대조. 오프셋(flat 별 기본·TEG별 추가/수정/삭제·회전 offset)은 ⚙️ 설정의 teg_map.json `check` 섹션에서 편집. shot 표시 방식이 칩 격자인 vehicle 은 TEG 크기 고려 칩 겹침 검사 + shot 확대 뷰(겹침 빨간색) 표시
 - (Claude) 에이전트 탭 전면 재편 — 상위 탭 `기능 카탈로그`(도구 카드 + agentic 상태 배지 + 단위기능 시험 콘솔) / `실행 추적`(질문→용어해석→턴별 도구 실행→결론 스토리) / `Workflow 템플릿`. Semantic layer 편집기는 관리 > Flow-i 학습 > 용어사전으로(SemanticLayerPanel.jsx 추출), LLM 설정은 관리 > LLM 설정으로 이관. `/api/agent/home-flowi/tools`에 additive `agentic` 상태 추가. ReAct 루프 활성 상태 end-to-end 검증(함수 도구 3턴 실행 + ask_user 확인).
 
 - (Claude) 피벗 캐시 무중단 재빌드 — 재빌드 시작 시 일괄 삭제 제거, root 단위 원자 교체로 빌드 중에도 이전 캐시 서빙, 소스에서 사라진 root 파일은 빌드 완료 후 정리, 포맷 세대 마커(.cache_format.json)로 legacy만 일괄 제거
