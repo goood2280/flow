@@ -51,8 +51,12 @@ _REACT_ENV_FLAG = "FLOW_LLM_REACT_LOOP"
 _MAX_ITERATIONS = 4
 _REACT_MAX_ITERS_ENV = "FLOW_LLM_REACT_MAX_ITERS"
 _REACT_DEADLINE_ENV = "FLOW_LLM_REACT_DEADLINE_SECONDS"
+_REACT_ADMIN_MAX_ITERS_ENV = "FLOW_LLM_REACT_ADMIN_MAX_ITERS"
+_REACT_ADMIN_DEADLINE_ENV = "FLOW_LLM_REACT_ADMIN_DEADLINE_SECONDS"
 _REACT_DECISION_TIMEOUT_S = 8
-_REACT_DEFAULT_DEADLINE_S = 75
+_REACT_DEFAULT_DEADLINE_S = 90
+_REACT_ADMIN_DEFAULT_DEADLINE_S = 300
+_REACT_ADMIN_DEFAULT_MAX_ITERS = 16
 HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
 _RUN_ID_PREFIX = "home_flowi"
 _MAX_SNAPSHOT_RUNS = 120
@@ -915,11 +919,23 @@ def _react_loop_enabled() -> bool:
     return _llm_planner_enabled()
 
 
-def _react_max_iters() -> int:
-    """반복 루프 상한. env `FLOW_LLM_REACT_MAX_ITERS` override, [1, 8] clamp.
+def _user_role(user: dict[str, Any] | None) -> str:
+    return "admin" if str((user or {}).get("role") or "") == "admin" else "user"
 
-    기본 8 — 오케스트레이션이 기능을 뽑아 쓰되 턴이 길게 늘어지지 않도록
-    최대 8턴에서 끊는다 (운영 정책)."""
+
+def _react_max_iters(role: str = "user") -> int:
+    """반복 루프 상한. 일반 유저는 env `FLOW_LLM_REACT_MAX_ITERS` override,
+    [1, 8] clamp (기본 8 — 턴이 길게 늘어지지 않도록 끊는 운영 정책).
+
+    admin 은 RCA 류 다단계 분석을 위해 더 긴 루프를 허용한다 —
+    env `FLOW_LLM_REACT_ADMIN_MAX_ITERS` override, [1, 24] clamp, 기본 16."""
+    if role == "admin":
+        raw = str(os.environ.get(_REACT_ADMIN_MAX_ITERS_ENV, "")).strip()
+        try:
+            value = int(raw) if raw else _REACT_ADMIN_DEFAULT_MAX_ITERS
+        except (TypeError, ValueError):
+            value = _REACT_ADMIN_DEFAULT_MAX_ITERS
+        return max(1, min(24, value))
     raw = str(os.environ.get(_REACT_MAX_ITERS_ENV, "")).strip()
     try:
         value = int(raw) if raw else 8
@@ -933,14 +949,23 @@ def react_available() -> bool:
     return _react_loop_enabled()
 
 
-def _react_deadline_seconds() -> int:
-    """End-to-end ReAct budget. Keeps optional loops inside the Home UI time target."""
+def _react_deadline_seconds(role: str = "user") -> int:
+    """End-to-end ReAct budget. 일반 유저는 75~120초 밴드(기본 90초)로 Home UI
+    응답 목표를 지키고, admin 은 긴 분석 루프를 위해 최대 10분까지 허용한다
+    (env `FLOW_LLM_REACT_ADMIN_DEADLINE_SECONDS`, 기본 300초)."""
+    if role == "admin":
+        raw = str(os.environ.get(_REACT_ADMIN_DEADLINE_ENV, "")).strip()
+        try:
+            value = int(raw) if raw else _REACT_ADMIN_DEFAULT_DEADLINE_S
+        except (TypeError, ValueError):
+            value = _REACT_ADMIN_DEFAULT_DEADLINE_S
+        return max(15, min(600, value))
     raw = str(os.environ.get(_REACT_DEADLINE_ENV, "")).strip()
     try:
         value = int(raw) if raw else _REACT_DEFAULT_DEADLINE_S
     except (TypeError, ValueError):
         value = _REACT_DEFAULT_DEADLINE_S
-    return max(15, min(110, value))
+    return max(15, min(120, value))
 
 
 def _semantic_frame_for_prompt(prompt: str) -> dict[str, Any]:
@@ -1060,13 +1085,22 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
         return None
     enabled_tools = [t for t in tools if t.get("enabled")]
     tools_text = _format_tool_catalog(enabled_tools)
+    # 단일 지식 레이어 — 도구 선택 자체를 지식 기반으로 (카드가 담당 유닛/근거 파일을 안다).
+    try:
+        from core import knowledge_cards as _knowledge_cards
+        knowledge_text = _knowledge_cards.prompt_block(prompt)
+    except Exception:
+        knowledge_text = ""
+    knowledge_section = f"# 도메인 지식 카드\n{knowledge_text}\n\n" if knowledge_text else ""
 
     system = (
         "You are Flow-i's home agent planner. Pick the minimum set of tools from "
-        "the catalog to satisfy the user's request. Respond with strict JSON only."
+        "the catalog to satisfy the user's request. Respond with strict JSON only. "
+        "If a knowledge card names a responsible unit (담당 유닛), prefer that tool."
     )
     user_prompt = (
         f"# 사용자 요청\n{prompt}\n\n"
+        f"{knowledge_section}"
         f"# 사용 가능한 도구 카탈로그\n{tools_text}\n\n"
         "# 출력 형식 (JSON, 다른 텍스트 금지)\n"
         "{\n"
@@ -1363,6 +1397,103 @@ def _tool_from_tool_calls(tool_calls: Any) -> dict[str, Any]:
     return {}
 
 
+# ── Flow-i 기능 권한 (유저 tabs → feature key) ───────────────────────────────
+# unit_ai 실행에 필요한 feature key (any-of). llm.py 단일 패스의 unit_only
+# 게이트와 같은 기준 — 여기 없는 unit 은 게이트하지 않는다.
+_UNIT_FEATURE_KEYS: dict[str, tuple[str, ...]] = {
+    "filebrowser_ai_sql": ("filebrowser",),
+    "inform_registration": ("inform",),
+    "change_management": ("calendar", "meeting"),
+    "dashboard_agent": ("dashboard",),
+    "home_sql_join_dashboard": ("dashboard",),
+    "split_nav": ("splittable",),
+    "step_lookup": ("filebrowser", "splittable", "dashboard"),
+    "ppid_knob": ("filebrowser", "splittable"),
+}
+
+
+def _allowed_feature_keys_for_user(user: dict[str, Any] | None) -> set[str] | None:
+    """유저의 flow-i feature 허용 키 집합. None = 필터 생략.
+
+    admin 은 전체 허용(None). username 이 없는 내부 호출/hermetic 테스트도
+    None — 권한 판단이 불가능한 곳에서 기능을 오차단하지 않는다."""
+    if not user or not str(user.get("username") or "").strip():
+        return None
+    if str(user.get("role") or "") == "admin":
+        return None
+    try:
+        from routers.llm import _allowed_flowi_feature_keys
+        keys = _allowed_flowi_feature_keys(user)
+    except Exception:
+        return None
+    return set(keys) if isinstance(keys, (set, list, tuple)) else None
+
+
+def _unit_allowed(name: str, allowed: set[str] | None) -> bool:
+    if allowed is None:
+        return True
+    required = _UNIT_FEATURE_KEYS.get(str(name or ""))
+    if not required:
+        return True
+    return bool(set(required) & allowed)
+
+
+def _filter_tools_for_user(tools: list[dict[str, Any]], user: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """tabs 권한이 없는 기능의 도구를 카탈로그에서 제외 — planner 가 보지 못하게.
+
+    실행 시점 가드(_execute_step)와 이중 방어. function 도구는 feature 매핑이
+    있는 것만 게이트하고, 범용(라우터/안내) 도구는 남긴다."""
+    allowed = _allowed_feature_keys_for_user(user)
+    if allowed is None:
+        return tools
+    feature_for_function = None
+    try:
+        from routers.llm import _flowi_feature_for_function as feature_for_function
+    except Exception:
+        pass
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        kind = str(tool.get("kind") or "")
+        name = str(tool.get("name") or "")
+        if kind == "unit_ai":
+            if _unit_allowed(name, allowed):
+                out.append(tool)
+            continue
+        if kind == "function" and feature_for_function is not None:
+            try:
+                feature = str(feature_for_function(name) or "")
+            except Exception:
+                feature = ""
+            if feature and feature not in allowed:
+                continue
+        out.append(tool)
+    return out
+
+
+# 단일 패스 엔진(_handle_flowi_query)이 의도 재라우팅에 실패했을 때 떨어지는
+# 범용 안내(route/open) 액션들 — 실데이터가 아니므로 ReAct 진전으로 치지 않는다.
+_GENERIC_GUIDANCE_ACTIONS = {
+    "route_flowi_feature",
+    "open_dashboard",
+    "open_filebrowser",
+    "open_splittable",
+    "open_inform",
+    "open_meeting",
+}
+
+
+def _function_result_is_guidance(res: dict[str, Any], requested_name: str = "") -> bool:
+    """function 도구 결과가 실데이터가 아닌 기능 안내(폴백)인지 판정.
+
+    ReAct 가 라우터 자체(route_flowi_feature 등)를 고른 경우에는 안내가 곧
+    정답이므로 폴백으로 치지 않는다."""
+    if str(requested_name or "") in _GENERIC_GUIDANCE_ACTIONS:
+        return False
+    action = str(res.get("action") or "")
+    intent = str(res.get("intent") or "")
+    return action in _GENERIC_GUIDANCE_ACTIONS or intent.endswith("_guidance")
+
+
 def _execute_step(
     tool: dict[str, Any],
     step_input: dict[str, Any],
@@ -1392,6 +1523,23 @@ def _execute_step(
     }
     try:
         if kind == "unit_ai":
+            # 실행 시점 권한 가드 — 카탈로그 필터를 우회한 경로(휴리스틱/alias/직접
+            # 호출)에서도 tabs 권한 없는 기능은 실행하지 않는다.
+            if not _unit_allowed(name, _allowed_feature_keys_for_user(user)):
+                out.update({
+                    "ok": False,
+                    "blocked": True,
+                    "status": "blocked",
+                    "warnings": [f"'{name}' 기능 권한 없음"],
+                    "result_preview": f"권한 차단: '{name}' 은 현재 계정 탭 권한에 없는 기능입니다.",
+                    "result": {
+                        "handled": True,
+                        "blocked": True,
+                        "intent": "permission_denied",
+                        "answer": "현재 계정에는 이 기능 권한이 없어 실행할 수 없습니다. 관리자에게 해당 탭 권한을 요청하세요.",
+                    },
+                })
+                return _finish_exec_out(out, t0)
             if name == "filebrowser_ai_sql":
                 step_input = _prefill_filebrowser_source(
                     step_input, str(step_input.get("prompt") or ""))
@@ -1604,13 +1752,26 @@ def _execute_step(
                 res = res if isinstance(res, dict) else {}
                 handled = bool(res.get("handled"))
                 blocked = bool(res.get("blocked"))
-                out["ok"] = handled and not blocked
+                guidance = handled and _function_result_is_guidance(res, requested_name=name)
+                out["ok"] = handled and not blocked and not guidance
                 out["blocked"] = blocked
-                out["status"] = "blocked" if blocked else ("success" if out["ok"] else "failed")
+                out["status"] = "blocked" if blocked else (
+                    "guidance_fallback" if guidance else ("success" if out["ok"] else "failed"))
                 out["result"] = res
                 out["public_result"] = res
-                out["result_preview"] = _short_text(
-                    res.get("answer") or res.get("intent") or "", 400)
+                if guidance:
+                    # 함수가 실제 실행되지 못하고 기능 안내로 폴백 — 실데이터 아님.
+                    # 진전으로 치지 않고, decision LLM 이 인자를 보강해 재시도하도록
+                    # 무엇이 빠졌는지 preview 로 알린다.
+                    out["warnings"] = [f"함수 '{name}' 실행이 기능 안내(route)로 폴백됨 — 실데이터 아님"]
+                    out["result_preview"] = (
+                        f"[guidance_fallback] '{name}' 가 실행되지 못하고 안내 문구만 반환됨. "
+                        "lot/wafer/제품 식별자를 원문 그대로 포함한 단일 문장으로 입력을 바꿔 재시도 필요. "
+                        "안내 원문: " + _short_text(res.get("answer") or "", 200)
+                    )
+                else:
+                    out["result_preview"] = _short_text(
+                        res.get("answer") or res.get("intent") or "", 400)
         else:
             out["ok"] = False
             out["result_preview"] = f"unknown kind: {kind}"
@@ -1978,6 +2139,17 @@ def _summarize_home_sql_join_dashboard_runtime_result(result: dict[str, Any]) ->
 def _plan_from_heuristic(prompt: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """휴리스틱 keyword 매칭 → step list. orchestrate fallback 용."""
     picks, meta = _pick_tools(prompt, top_k=top_k)
+    # 지식 카드가 담당 유닛을 지목하면 해당 도구 점수를 올려 지식 기반 선택을 반영.
+    try:
+        from core import knowledge_cards as _knowledge_cards
+        hinted = set(_knowledge_cards.unit_hints(prompt))
+    except Exception:
+        hinted = set()
+    if hinted:
+        for p in picks:
+            if str((p.get("tool") or {}).get("name") or "") in hinted:
+                p["score"] = float(p.get("score") or 0.0) + 2.0
+        picks.sort(key=lambda p: -float(p.get("score") or 0.0))
     plan: list[dict[str, Any]] = []
     for p in picks:
         plan.append({
@@ -2270,7 +2442,7 @@ def _run_react_loop(
     stop_reason = "max_steps"
     no_progress_streak = 0
     started = time.monotonic()
-    deadline = started + _react_deadline_seconds()
+    deadline = started + _react_deadline_seconds(_user_role(user))
 
     yield {"kind": "loop_start", "max_steps": max_steps}
 
@@ -2411,7 +2583,7 @@ def orchestrate(
             "picked_count": 0,
         }, prompt=prompt, user=user)
 
-    tools = tool_registry.list_tools(include_stats=False)
+    tools = _filter_tools_for_user(tool_registry.list_tools(include_stats=False), user)
 
     if _react_loop_enabled():
         semantic_summary = _semantic_frame_summary(_semantic_frame_for_prompt(prompt))
@@ -2422,7 +2594,7 @@ def orchestrate(
             semantic_summary=semantic_summary,
             user=user,
             request=request,
-            max_steps=_react_max_iters(),
+            max_steps=_react_max_iters(_user_role(user)),
         ):
             if event.get("kind") == "final":
                 react_out = event
@@ -2550,7 +2722,7 @@ def _orchestrate_stream_react(
         semantic_summary=semantic_summary,
         user=user,
         request=request,
-        max_steps=_react_max_iters(),
+        max_steps=_react_max_iters(_user_role(user)),
     ):
         kind = event.get("kind")
         if kind == "step_start":
@@ -2650,7 +2822,7 @@ def orchestrate_stream(
         "status": "단위AI 기능 탐색중",
         "graph": build_home_runtime_graph(statuses={"prompt_input": "running"}),
     }
-    tools = tool_registry.list_tools(include_stats=False)
+    tools = _filter_tools_for_user(tool_registry.list_tools(include_stats=False), user)
     if _react_loop_enabled():
         yield from _orchestrate_stream_react(prompt, tools, user, request, run_id)
         return

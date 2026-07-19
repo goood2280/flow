@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core import agent_feedback, agent_feedback_penalties, audit, home_orchestrator, tool_registry
+from core import agent_feedback, agent_feedback_penalties, audit, flowi_gate, home_orchestrator, tool_registry
 from core.auth import current_user
 
 logger = logging.getLogger("flow.home_agent")
@@ -52,6 +52,17 @@ class AliasRequest(BaseModel):
     note: str | None = ""
 
 
+def _denied_reply(me: dict) -> dict[str, Any]:
+    payload = flowi_gate.denied_payload(me)
+    return {"ok": True, "prompt": "", "trace": [], "reply": payload["answer"],
+            "meta": {"planner": "gate", "blocked": "flowi_access_denied"}}
+
+
+def _busy_reply(busy: "flowi_gate.FlowiBusy") -> dict[str, Any]:
+    return {"ok": True, "prompt": "", "trace": [], "reply": busy.message,
+            "meta": {"planner": "gate", "blocked": "flowi_busy", "busy": dict(busy.info)}}
+
+
 @router.post("/orchestrate")
 def orchestrate(request: Request, body: OrchestrateRequest):
     me = current_user(request)
@@ -59,13 +70,19 @@ def orchestrate(request: Request, body: OrchestrateRequest):
         raise HTTPException(status_code=401, detail="auth required")
     if not (body.prompt or "").strip():
         raise HTTPException(status_code=400, detail="prompt 가 비어 있습니다")
+    if not flowi_gate.access_allowed(me):
+        return _denied_reply(me)
 
-    out = home_orchestrator.orchestrate(
-        body.prompt,
-        user=me,
-        top_k=max(1, min(10, int(body.top_k or 2))),
-        request=request,
-    )
+    try:
+        with flowi_gate.slot(username=me.get("username") or "", role=me.get("role") or "user"):
+            out = home_orchestrator.orchestrate(
+                body.prompt,
+                user=me,
+                top_k=max(1, min(10, int(body.top_k or 2))),
+                request=request,
+            )
+    except flowi_gate.FlowiBusy as busy:
+        return _busy_reply(busy)
     audit.record(
         request,
         action="home_agent:orchestrate",
@@ -96,14 +113,20 @@ def orchestrate_stream(
     def event_stream():
         last_picked = 0
         last_planner = ""
+        if not flowi_gate.access_allowed(me):
+            yield _sse_pack("reply", {"type": "reply", **_denied_reply(me)})
+            return
         try:
-            for chunk in home_orchestrator.orchestrate_stream(prompt, user=me, top_k=top_k, request=request):
-                etype = str(chunk.get("type") or "message")
-                if etype == "reply":
-                    last_picked = int(chunk.get("picked_count") or len(chunk.get("trace") or []))
-                if etype == "plan":
-                    last_planner = str((chunk.get("meta") or {}).get("planner") or "")
-                yield _sse_pack(etype, chunk)
+            with flowi_gate.slot(username=me.get("username") or "", role=me.get("role") or "user"):
+                for chunk in home_orchestrator.orchestrate_stream(prompt, user=me, top_k=top_k, request=request):
+                    etype = str(chunk.get("type") or "message")
+                    if etype == "reply":
+                        last_picked = int(chunk.get("picked_count") or len(chunk.get("trace") or []))
+                    if etype == "plan":
+                        last_planner = str((chunk.get("meta") or {}).get("planner") or "")
+                    yield _sse_pack(etype, chunk)
+        except flowi_gate.FlowiBusy as busy:
+            yield _sse_pack("reply", {"type": "reply", **_busy_reply(busy)})
         except Exception as e:
             logger.exception("orchestrate_stream failed")
             yield _sse_pack("reply", {"type": "reply", "ok": False, "error": str(e), "trace": []})

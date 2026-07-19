@@ -91,7 +91,7 @@ export default function AwsPanel({ user, compact = false }) {
           <span key={p.profile + "_" + i} onClick={() => setSelIdx(i)} style={{ padding: "5px 12px", borderRadius: 5, fontSize: 14, cursor: "pointer", fontWeight: selIdx === i ? 700 : 500, background: selIdx === i ? "var(--accent-glow)" : "var(--bg-primary)", color: selIdx === i ? "var(--accent)" : "var(--text-secondary)", border: "1px solid " + (selIdx === i ? "var(--accent)" : "var(--border)"), fontFamily: "monospace" }}>{p.profile}</span>
         ))}
         <span style={{ color: "var(--border)" }}>|</span>
-        <input value={newProfile} onChange={e => setNewProfile(e.target.value)} onKeyDown={e => e.key === "Enter" && addProfile()} placeholder="새 프로파일 이름" style={{ ...S, width: 160, fontSize: 14, padding: "5px 8px" }} />
+        <input value={newProfile} onChange={e => setNewProfile(e.target.value)} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;addProfile();}}} placeholder="새 프로파일 이름" style={{ ...S, width: 160, fontSize: 14, padding: "5px 8px" }} />
         <button onClick={addProfile} style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer" }}>+ 추가</button>
       </div>
 

@@ -2963,7 +2963,7 @@ export default function My_Inform({ user }) {
                 <Input value={modNewName} onChange={e => setModNewName(e.target.value)}
                   placeholder="새 모듈 이름"
                   style={{ flex: 1, minWidth: 120 }}
-                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPendingMod(); } }} />
+                  onKeyDown={e => { if (e.key === "Enter") { if(e.nativeEvent?.isComposing||e.keyCode===229)return; e.preventDefault(); addPendingMod(); } }} />
                 <Btn variant="outline" onClick={addPendingMod} title="모듈 추가">+</Btn>
                 <Btn variant="primary" onClick={saveModuleOrder}>저장</Btn>
                 <Btn variant="ghost" onClick={() => { setModDraft(null); setModNewName(""); }}>취소</Btn>
@@ -3320,7 +3320,7 @@ function ReasonOptionsPanel({ reasons, canEdit, onSave }) {
           disabled={!canEdit}
           placeholder="새 사유"
           style={{ flex: 1, minWidth: 120 }}
-          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addReason(); } }} />
+          onKeyDown={e => { if (e.key === "Enter") { if(e.nativeEvent?.isComposing||e.keyCode===229)return; e.preventDefault(); addReason(); } }} />
         <Btn variant="outline" type="button" disabled={!canEdit} onClick={addReason}>+</Btn>
         <Btn variant="primary" type="button" disabled={!canEdit} onClick={saveReasons}>저장</Btn>
       </div>

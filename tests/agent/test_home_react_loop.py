@@ -90,7 +90,33 @@ def test_react_deadline_default_and_clamp(monkeypatch):
     monkeypatch.setenv(home_orchestrator._REACT_DEADLINE_ENV, "12")
     assert home_orchestrator._react_deadline_seconds() == 15
     monkeypatch.setenv(home_orchestrator._REACT_DEADLINE_ENV, "999")
-    assert home_orchestrator._react_deadline_seconds() == 110
+    assert home_orchestrator._react_deadline_seconds() == 120
+
+
+def test_react_admin_budget_longer_than_user(monkeypatch):
+    # admin 은 별도 env/기본값 — 유저 예산과 독립이며 더 길다.
+    monkeypatch.delenv(home_orchestrator._REACT_MAX_ITERS_ENV, raising=False)
+    monkeypatch.delenv(home_orchestrator._REACT_DEADLINE_ENV, raising=False)
+    monkeypatch.delenv(home_orchestrator._REACT_ADMIN_MAX_ITERS_ENV, raising=False)
+    monkeypatch.delenv(home_orchestrator._REACT_ADMIN_DEADLINE_ENV, raising=False)
+    assert home_orchestrator._react_max_iters("admin") == home_orchestrator._REACT_ADMIN_DEFAULT_MAX_ITERS
+    assert home_orchestrator._react_deadline_seconds("admin") == home_orchestrator._REACT_ADMIN_DEFAULT_DEADLINE_S
+    assert home_orchestrator._react_max_iters("admin") > home_orchestrator._react_max_iters("user")
+    assert home_orchestrator._react_deadline_seconds("admin") > home_orchestrator._react_deadline_seconds("user")
+    monkeypatch.setenv(home_orchestrator._REACT_ADMIN_MAX_ITERS_ENV, "99")
+    assert home_orchestrator._react_max_iters("admin") == 24
+    monkeypatch.setenv(home_orchestrator._REACT_ADMIN_DEADLINE_ENV, "9999")
+    assert home_orchestrator._react_deadline_seconds("admin") == 600
+    # admin env 는 유저 예산에 영향을 주지 않는다.
+    assert home_orchestrator._react_max_iters() == 8
+    assert home_orchestrator._react_deadline_seconds() == home_orchestrator._REACT_DEFAULT_DEADLINE_S
+
+
+def test_user_role_helper():
+    assert home_orchestrator._user_role({"role": "admin"}) == "admin"
+    assert home_orchestrator._user_role({"role": "user"}) == "user"
+    assert home_orchestrator._user_role({}) == "user"
+    assert home_orchestrator._user_role(None) == "user"
 
 
 # --- C1: semantic frame 헬퍼 -----------------------------------------------
@@ -373,7 +399,7 @@ def _wire_react(monkeypatch, tool, decisions):
     monkeypatch.setattr(home_memory, "is_memory_recall_prompt", lambda _p: False)
     monkeypatch.setattr(home_orchestrator.tool_registry, "list_tools", lambda include_stats=False: [tool])
     monkeypatch.setattr(home_orchestrator, "_react_loop_enabled", lambda: True)
-    monkeypatch.setattr(home_orchestrator, "_react_max_iters", lambda: 6)
+    monkeypatch.setattr(home_orchestrator, "_react_max_iters", lambda role="user": 6)
     monkeypatch.setattr(home_orchestrator, "_semantic_frame_for_prompt", lambda _p: {"alias_hits": []})
     monkeypatch.setattr(home_orchestrator, "_decide_next_action", _scripted(decisions))
     monkeypatch.setattr(home_orchestrator, "_execute_step", _ok_exec)
@@ -417,7 +443,7 @@ def test_orchestrate_falls_back_to_heuristic_when_llm_errors(monkeypatch):
     monkeypatch.setattr(home_memory, "is_memory_recall_prompt", lambda _p: False)
     monkeypatch.setattr(home_orchestrator.tool_registry, "list_tools", lambda include_stats=False: [t])
     monkeypatch.setattr(home_orchestrator, "_react_loop_enabled", lambda: True)
-    monkeypatch.setattr(home_orchestrator, "_react_max_iters", lambda: 6)
+    monkeypatch.setattr(home_orchestrator, "_react_max_iters", lambda role="user": 6)
     monkeypatch.setattr(home_orchestrator, "_semantic_frame_for_prompt", lambda _p: {})
     monkeypatch.setattr(home_orchestrator, "_decide_next_action", lambda **k: None)  # llm_error, empty trace
     monkeypatch.setattr(home_orchestrator, "_plan_from_alias", lambda _p, _t: None)
@@ -541,3 +567,62 @@ def test_stream_semantic_event_carries_frame_when_react(monkeypatch):
     assert "semantic" in sem_event
     assert sem_event["semantic"]["alias_hits"] == ["product"]
     assert sem_event["semantic"]["resolved_columns"] == ["IOFF"]
+
+
+# --- 함수 도구 guidance 폴백 감지 -------------------------------------------
+
+def _wire_function_exec(monkeypatch, result):
+    from routers import llm as llm_router
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: None)
+    monkeypatch.setattr(llm_router, "_handle_flowi_query", lambda *_a, **_k: result)
+
+
+def test_execute_step_marks_guidance_fallback_as_no_progress(monkeypatch):
+    # 함수 도구가 실행되지 못하고 route_flowi_feature 안내로 폴백하면
+    # ok=False + status=guidance_fallback — 루프가 가짜 성공으로 착각하지 않는다.
+    _wire_function_exec(monkeypatch, {
+        "handled": True,
+        "action": "route_flowi_feature",
+        "intent": "feature_guidance",
+        "answer": "FileBrowser 페이지에서 확인하세요",
+    })
+    tool = _tool("query_lot_current_step_from_progress_cache")
+    out = home_orchestrator._execute_step(
+        tool, {"prompt": "A1001 현재 step 알려줘"},
+        user={"username": "t", "role": "user"}, allow_function_exec=True)
+    assert out["ok"] is False
+    assert out["status"] == "guidance_fallback"
+    assert "guidance_fallback" in out["result_preview"]
+    assert out["warnings"]
+
+
+def test_execute_step_guidance_is_ok_when_router_tool_requested(monkeypatch):
+    # 라우터 도구 자체를 고른 경우에는 안내가 곧 정답 — 폴백으로 치지 않는다.
+    _wire_function_exec(monkeypatch, {
+        "handled": True,
+        "action": "route_flowi_feature",
+        "intent": "feature_guidance",
+        "answer": "SplitTable 페이지로 이동하세요",
+    })
+    tool = _tool("route_flowi_feature")
+    out = home_orchestrator._execute_step(
+        tool, {"prompt": "스플릿 어디서 봐"},
+        user={"username": "t", "role": "user"}, allow_function_exec=True)
+    assert out["ok"] is True
+    assert out["status"] == "success"
+
+
+def test_execute_step_real_function_result_stays_success(monkeypatch):
+    _wire_function_exec(monkeypatch, {
+        "handled": True,
+        "action": "query_lot_current_step_from_progress_cache",
+        "intent": "lot_current_step_lookup",
+        "answer": "A1001 #03 현재 step은 step_id=AA100090 입니다.",
+    })
+    tool = _tool("query_lot_current_step_from_progress_cache")
+    out = home_orchestrator._execute_step(
+        tool, {"prompt": "A1001 현재 step 알려줘"},
+        user={"username": "t", "role": "user"}, allow_function_exec=True)
+    assert out["ok"] is True
+    assert out["status"] == "success"
+    assert "AA100090" in out["result_preview"]

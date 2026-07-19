@@ -599,7 +599,7 @@ export default function My_Knowledge({user,embedded=false}){
 
       {tab==="search"&&<div>
         <div style={{display:"flex",gap:8,marginBottom:14}}>
-          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} onKeyDown={e=>e.key==="Enter"&&runSearch()} placeholder="wiki/event 검색어"
+          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;runSearch();}}} placeholder="wiki/event 검색어"
             style={{...inputStyle(),maxWidth:520}}/>
           <button onClick={runSearch} style={btn(false)}>검색</button>
         </div>

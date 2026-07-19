@@ -243,7 +243,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
     const x=Number(n?.x),y=Number(n?.y);
     return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;
   };
-  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(autoNodeMap[n.id]||savedPos(n)||{x:100,y:100});
+  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(savedPos(n)||autoNodeMap[n.id]||{x:100,y:100});
   const safeColor=(value,fallback)=>{
     const s=String(value||"").trim();
     return /^#[0-9a-fA-F]{6}$/.test(s)?s:fallback;
@@ -846,6 +846,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                               if(nxt){nxt.focus();nxt.select?.();}
                             },nr>=(form.rows||[]).length?10:0);
                           } else if(e.key==="Enter"){
+                            if(e.nativeEvent?.isComposing||e.keyCode===229)return;
                             e.preventDefault();
                             if(i+1>=(form.rows||[]).length){addRow();}
                             setTimeout(()=>{

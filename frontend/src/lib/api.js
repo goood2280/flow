@@ -136,13 +136,22 @@ async function _explainApiError(url, opts, status, body, rawMessage) {
 
 async function _throwApiError(url, opts, status, body, fallback) {
   const rawMessage = _formatApiError(status, body, fallback);
-  const explained = await _explainApiError(url, opts, status, body, rawMessage);
-  const err = new Error((explained && explained.message) || rawMessage);
+  // v9.3.x: LLM 설명을 동기 대기하지 않고 즉시 에러를 throw.
+  // 설명은 백그라운드로 받아 err.explainPromise 에 첨부.
+  const err = new Error(rawMessage);
   err.status = status;
   err.body = body;
   err.rawMessage = rawMessage;
-  err.explanation = explained ? explained.explanation : null;
-  err.llm = explained ? explained.llm : null;
+  err.explanation = null;
+  err.llm = null;
+  err.explainPromise = _explainApiError(url, opts, status, body, rawMessage).then(explained => {
+    if (explained && explained.message) {
+      err.explanation = explained.explanation || null;
+      err.llm = explained.llm || null;
+      err.message = explained.message;
+    }
+    return explained;
+  }).catch(() => null);
   throw err;
 }
 

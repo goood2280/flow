@@ -230,7 +230,7 @@ export default function SplitTableSnapshotView({
   maxHeight = 620,
 }) {
   const st = stView || embed?.st_view;
-  if (!st || !Array.isArray(st.headers) || !Array.isArray(st.rows)) return footer || null;
+  const stValid = st && Array.isArray(st?.headers) && Array.isArray(st?.rows);
 
   const effectiveSource = source ?? embed?.source ?? "";
   const effectiveNote = note ?? embed?.note ?? "";
@@ -246,9 +246,9 @@ export default function SplitTableSnapshotView({
     sf(`/api/splittable/knob-meta${metaQs}`).then(d => setKnobMeta(d.features || {})).catch(() => setKnobMeta({}));
   }, [effectiveProduct]);
 
-  const headers = st.headers || [];
-  const rawPrefixColumns = Array.isArray(st.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
-  const splitCheckMode = String(st.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || "") === "split_check" && rawPrefixColumns.length >= 3;
+  const headers = st?.headers || [];
+  const rawPrefixColumns = Array.isArray(st?.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
+  const splitCheckMode = String(st?.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || "") === "split_check" && rawPrefixColumns.length >= 3;
   const firstColWidth = 288;
   const dataColWidth = 115;
   const prefixColumns = splitCheckMode ? rawPrefixColumns : [];
@@ -256,12 +256,12 @@ export default function SplitTableSnapshotView({
   while (prefixColWidths.length < (splitCheckMode ? prefixColumns.length : 1)) prefixColWidths.push(100);
   const prefixTotalWidth = prefixColWidths.reduce((sum, value) => sum + value, 0);
   const stickyLeft = (idx) => prefixColWidths.slice(0, idx).reduce((sum, value) => sum + value, 0);
-  const headerGroups = splitTableHeaderGroups(st);
-  const rootLotId = String(st.root_lot_id || "").trim();
+  const headerGroups = splitTableHeaderGroups(st || {});
+  const rootLotId = String(st?.root_lot_id || "").trim();
   const groupLotValues = [...new Set(headerGroups.map(g => String(g?.label || "").trim()).filter(Boolean))];
-  const lotIdLabel = groupLotValues.join(", ") || String(st.lot_id_label || "").trim();
+  const lotIdLabel = groupLotValues.join(", ") || String(st?.lot_id_label || "").trim();
   const hasLotContext = !!(rootLotId || lotIdLabel);
-  const rowLabels = st.row_labels || {};
+  const rowLabels = st?.row_labels || {};
   const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
   const lotRowLabel = rowLabels.lot_id || "lot_id";
   const paramRowLabel = rowLabels.parameter || "항목";
@@ -273,27 +273,27 @@ export default function SplitTableSnapshotView({
   const waferTop = rootHeaderHeight + lotHeaderHeight;
   const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
   const lineageSummary = useMemo(
-    () => buildLineageSummary(st.rows, knobMeta),
-    [st.rows, knobMeta],
+    () => buildLineageSummary(st?.rows || [], knobMeta),
+    [st?.rows, knobMeta],
   );
   const rowSpans = useMemo(() => {
-    if (!splitCheckMode) return st.rows.map(() => 1);
-    return st.rows.map((row, idx) => {
+    if (!splitCheckMode) return (st?.rows || []).map(() => 1);
+    return (st?.rows || []).map((row, idx) => {
       const param = String(row?._param || "").trim();
       if (!param) return 1;
-      const prev = idx > 0 ? String(st.rows[idx - 1]?._param || "").trim() : "";
+      const prev = idx > 0 ? String((st?.rows || [])[idx - 1]?._param || "").trim() : "";
       if (prev === param) return 0;
       let span = 1;
-      for (let i = idx + 1; i < st.rows.length; i += 1) {
-        if (String(st.rows[i]?._param || "").trim() !== param) break;
+      for (let i = idx + 1; i < (st?.rows || []).length; i += 1) {
+        if (String((st?.rows || [])[i]?._param || "").trim() !== param) break;
         span += 1;
       }
       return span;
     });
-  }, [splitCheckMode, st.rows]);
+  }, [splitCheckMode, st?.rows]);
   const uniq = useMemo(() => {
     const out = {};
-    for (const r of st.rows) {
+    for (const r of (st?.rows || [])) {
       const pn = String(r._param || "").toUpperCase();
       if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) continue;
       const seen = {};
@@ -307,7 +307,10 @@ export default function SplitTableSnapshotView({
       out[pn] = seen;
     }
     return out;
-  }, [st.rows]);
+  }, [st?.rows]);
+
+  // v9.3.x: early return을 훅 아래로 이동 (Rules-of-Hooks 준수)
+  if (!stValid) return footer || null;
 
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", maxWidth: "100%" };
   const scrollerStyle = { maxHeight, overflow: "auto", border: "1px solid #555", borderRadius: 0, background: "var(--bg-card)" };

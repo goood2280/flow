@@ -1612,14 +1612,14 @@ export default function My_Tracker({ user }) {
                   <div style={{ display: "flex", gap: 6, marginTop: 8, paddingLeft: 12 }}>
                     <input value={replyDrafts[i] || ""} onChange={e => setReplyDrafts(m => ({ ...m, [i]: e.target.value }))} placeholder="대댓글 입력..."
                       style={{ flex: 1, padding: "6px 9px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }}
-                      onKeyDown={e => e.key === "Enter" && addReply(i)} />
+                      onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;addReply(i);}}} />
                     <button onClick={() => addReply(i)} style={{ padding: "6px 11px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>답글</button>
                   </div>
                 </div>))}
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <input value={comment} onChange={e => setComment(e.target.value)} placeholder="댓글 입력..."
                   style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }}
-                  onKeyDown={e => e.key === "Enter" && addComment()} />
+                  onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;addComment();}}} />
                 <button onClick={addComment} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>전송</button>
               </div>
             </section>
@@ -1943,7 +1943,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>LOT_WF 현재 위치 파일</div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
         <input value={lotProgressFilter} onChange={e => setLotProgressFilter(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") loadLotProgressTable(e.currentTarget.value); }}
+          onKeyDown={e => { if (e.key === "Enter") {if(e.nativeEvent?.isComposing||e.keyCode===229)return; loadLotProgressTable(e.currentTarget.value);} }}
           placeholder="lot_id 또는 root_lot_id prefix"
           style={{ flex: 1, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
         <button onClick={() => loadLotProgressTable(lotProgressFilter)} disabled={lotProgressBusy}

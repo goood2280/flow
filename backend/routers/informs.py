@@ -5613,7 +5613,12 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
 
     v8.8.27: 메일 폭탄 방지 rate limit 검사 추가 (인폼 쿨다운·인폼 버스트·유저 글로벌 버스트).
     """
-    me = current_user(request)
+    return _send_inform_mail_core(inform_id, req, current_user(request), request=request)
+
+
+def _send_inform_mail_core(inform_id: str, req: SendMailReq, me: dict, request: Request = None):
+    """send_mail 본체 — Flow-i 채팅 confirm 경로에서 request 없이 me 를 직접 전달해 호출한다.
+    권한(작성자/admin)·rate limit·수신자 확정·dry-run 동작은 endpoint 와 동일."""
     cfg = _load_mail_cfg()
     if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
         raise HTTPException(400, "메일 API 가 설정되지 않았습니다. Admin > 메일 API 에서 활성화하세요.")

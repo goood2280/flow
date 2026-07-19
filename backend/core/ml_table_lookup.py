@@ -103,6 +103,8 @@ ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 768.0
 ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
 ROOT_RAM_CACHE_RESOURCE_CHECK_SEC = 1.0
 ROOT_RAM_CACHE_SETTINGS_FILE = PATHS.data_root / "splittable" / "source_config.json"
+# 우선 lot 등록 파일 — RAM 캐시 예열 시 최우선으로 적재할 lot 목록.
+_RAM_CACHE_PRIORITY_FILE = PATHS.data_root / "splittable" / "ram_cache_priority_lots.json"
 _ROOT_RAM_CACHE_LOCK = threading.RLock()
 _ROOT_RAM_CACHE: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _ROOT_RAM_ACCESS: dict[tuple[str, str], dict[str, Any]] = {}
@@ -116,6 +118,12 @@ _ROOT_RAM_STOP = threading.Event()
 _ROOT_RAM_THREAD: threading.Thread | None = None
 _ROOT_RAM_STARTED = False
 _ROOT_RAM_REFRESH_LOCK = threading.Lock()
+# step/latest 후보 갱신 주기 — 매 사이클이 아닌 N번째 사이클에만 step/latest 후보를
+# 다시 계산한다. priority/searched 는 매 사이클 즉시 반영.
+_ROOT_RAM_STEP_LATEST_REFRESH_EVERY = 3  # 예: 30분 간격이면 90분마다 step/latest 갱신
+_ROOT_RAM_REFRESH_COUNTER = 0
+_ROOT_RAM_LAST_STEP_ROOTS: dict[str, list[str]] = {}   # file.name → 마지막 step_roots
+_ROOT_RAM_LAST_LATEST_ROOTS: dict[str, list[str]] = {}  # file.name → 마지막 latest_roots
 _ROOT_RAM_RESOURCE_STATE: dict[str, Any] = {
     "checked_epoch": 0.0,
     "reason": "",
@@ -201,6 +209,31 @@ def _root_ram_settings() -> dict[str, Any]:
     return settings if isinstance(settings, dict) else {}
 
 
+def _root_ram_cache_product_budget(product_token: str) -> int:
+    """source_config.json 최상위 `ram_cache_product_budgets` 에서 제품별
+    max_roots 를 읽는다. 키는 제품 캐시 관리 페이지가 저장한 제품명
+    (예: "ML_TABLE_PRODA"). bare 이름("PRODA")도 허용. 미설정이면 0."""
+    try:
+        raw = json.loads(ROOT_RAM_CACHE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    budgets = raw.get("ram_cache_product_budgets") if isinstance(raw, dict) else None
+    if not isinstance(budgets, dict):
+        return 0
+    token = str(product_token or "").strip().upper()
+    bare = token[len("ML_TABLE_"):] if token.startswith("ML_TABLE_") else token
+    for key, val in budgets.items():
+        key_upper = str(key).strip().upper()
+        key_bare = key_upper[len("ML_TABLE_"):] if key_upper.startswith("ML_TABLE_") else key_upper
+        if key_upper == token or (bare and key_bare == bare):
+            max_roots = val.get("max_roots") if isinstance(val, dict) else val
+            try:
+                return max(0, min(ROOT_RAM_CACHE_ROOTS_MAX, int(max_roots)))
+            except Exception:
+                return 0
+    return 0
+
+
 def _normalize_str_list(raw: Any) -> list[str]:
     """콤마/개행 구분 문자열 또는 리스트를 upper-cased, 중복 제거 리스트로."""
     if isinstance(raw, str):
@@ -217,6 +250,38 @@ def _normalize_str_list(raw: Any) -> list[str]:
             continue
         seen.add(value)
         out.append(value)
+    return out
+
+
+def _load_priority_root_lot_ids(product: str) -> list[str]:
+    """우선 lot 등록 파일에서 product 에 해당하는 root_lot_id 목록을 반환한다."""
+    try:
+        raw = json.loads(_RAM_CACHE_PRIORITY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    # product key 매칭: 대소문자 무시
+    product_upper = str(product or "").strip().upper()
+    lots = None
+    for key, val in raw.items():
+        if str(key).strip().upper() == product_upper and isinstance(val, list):
+            lots = val
+            break
+    if not lots:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in lots:
+        if not isinstance(entry, dict):
+            continue
+        # cache_enabled=False 인 항목은 목록에 유지하되 캐싱에서 제외
+        if not entry.get("cache_enabled", True):
+            continue
+        root = str(entry.get("root_lot_id") or "").strip().upper()
+        if root and root not in seen:
+            seen.add(root)
+            out.append(root)
     return out
 
 
@@ -830,6 +895,7 @@ def _searched_root_lot_ids(fp: Path, limit: int) -> list[str]:
 
 def _root_ram_cache_candidates(
     *,
+    priority_roots: list[str] | None = None,  # 우선 lot 등록 페이지에서 등록된 root
     searched_roots: list[str],
     step_roots: list[str],
     latest_roots: list[str],
@@ -838,12 +904,13 @@ def _root_ram_cache_candidates(
     """상시 메모리 캐시에 올릴 root 후보를 **포함 우선순위 순서**로 만든다.
 
     우선순위(사용자 요구):
+      ⓪ priority — 우선 lot 등록 페이지에서 등록한 root (무조건 최우선).
       ① searched — 한번이라도 검색된 root 는 무조건 최우선 포함.
       ② step   — 지정 step_id 를 지난(통과=tkout) lot 중 latest cache tkout_time 최신순.
       ③ latest — step 무관 최근 변경 root (step 미설정 시/남는 자리 채움).
-    target(>0)이면 그 개수로 상한(≈1000). searched 가 target 을 채우면 나머지 소스는
-    자연히 잘려 searched 가 항상 살아남는다.
-    cache_group: step 소스로 들어온 root 는 "step", 그 외 "other".
+    target(>0)이면 그 개수로 상한(≈1000). priority+searched 가 target 을 채우면
+    나머지 소스는 자연히 잘려 priority·searched 가 항상 살아남는다.
+    cache_group: priority 소스 = "priority", step 소스 = "step", 그 외 "other".
     """
     candidates: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
@@ -851,7 +918,12 @@ def _root_ram_cache_candidates(
         root = str(root_lot_id or "").strip().upper()
         if not root:
             return
-        group = "step" if source == "step" else "other"
+        if source == "priority":
+            group = "priority"
+        elif source == "step":
+            group = "step"
+        else:
+            group = "other"
         current = candidates.get(root)
         if current is None:
             candidates[root] = {
@@ -860,12 +932,18 @@ def _root_ram_cache_candidates(
                 "cache_sources": [source],
             }
             return
-        if group == "step":
-            current["cache_group"] = group
+        # priority > step > other 순서로 그룹 승격
+        if group == "priority":
+            current["cache_group"] = "priority"
+        elif group == "step" and current["cache_group"] != "priority":
+            current["cache_group"] = "step"
         sources = current.setdefault("cache_sources", [])
         if source not in sources:
             sources.append(source)
 
+    # ⓪ 우선 lot 등록 root — 최우선 포함
+    for root in (priority_roots or []):
+        add(root, "priority")
     for root in searched_roots:
         add(root, "searched")
     for root in step_roots:
@@ -959,27 +1037,43 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 continue
             roots: list[str] = []
             seen: set[str] = set()
-            # ① searched: 한번이라도 검색된 root — 무조건 최우선 포함.
+            _file_key = Path(fp).name
+            # ⓪ priority: 우선 lot 등록 페이지에서 등록된 root — 최우선, 매 사이클 갱신.
+            _product_token = _safe_product_token(Path(fp).stem)
+            priority_roots = _load_priority_root_lot_ids(_product_token)
+            # 제품별 예산(max_roots)이 설정돼 있으면 이 파일에 한해 전역 target 을 덮어쓴다.
+            product_budget = _root_ram_cache_product_budget(_product_token)
+            file_target_roots = product_budget if product_budget > 0 else target_roots
+            # ① searched: 한번이라도 검색된 root — 무조건 최우선, 매 사이클 갱신.
             searched_roots = _searched_root_lot_ids(fp, searched_limit)
-            # ② 지정 step_id 를 지난(통과=tkout) lot — latest cache tkout_time 최신순.
-            step_roots = _recent_root_lot_ids_from_latest_cache(
-                fp, target_roots or recent_limit, step_ids=step_ids
-            ) if step_ids else []
-            # ③ step 무관 최근 변경 root (step 미설정/남는 자리 채움).
-            latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
+            # ② step/latest 후보 — 빈 공간 채우기용이므로 매 사이클 계산하지 않고
+            #    N번째 사이클에만 갱신한다. 이전 값이 있으면 재사용.
+            _refresh_step_latest = force or (_ROOT_RAM_REFRESH_COUNTER % _ROOT_RAM_STEP_LATEST_REFRESH_EVERY == 0)
+            if _refresh_step_latest:
+                step_roots = _recent_root_lot_ids_from_latest_cache(
+                    fp, file_target_roots or recent_limit, step_ids=step_ids
+                ) if step_ids else []
+                latest_roots = _recent_root_lot_ids_from_latest_cache(fp, recent_limit)
+                _ROOT_RAM_LAST_STEP_ROOTS[_file_key] = step_roots
+                _ROOT_RAM_LAST_LATEST_ROOTS[_file_key] = latest_roots
+            else:
+                step_roots = _ROOT_RAM_LAST_STEP_ROOTS.get(_file_key, [])
+                latest_roots = _ROOT_RAM_LAST_LATEST_ROOTS.get(_file_key, [])
             candidates = _root_ram_cache_candidates(
+                priority_roots=priority_roots,
                 searched_roots=searched_roots,
                 step_roots=step_roots,
                 latest_roots=latest_roots,
-                target=target_roots,
+                target=file_target_roots,
             )
             for candidate in candidates:
                 root = str(candidate.get("root_lot_id") or "").strip().upper()
                 if root and root not in seen:
                     seen.add(root)
                     roots.append(root)
+            priority_target_roots = len([row for row in candidates if row.get("cache_group") == "priority"])
             step_target_roots = len([row for row in candidates if row.get("cache_group") == "step"])
-            other_target_roots = len(candidates) - step_target_roots
+            other_target_roots = len(candidates) - step_target_roots - priority_target_roots
             cached = 0
             missing = 0
             resource_skipped = 0
@@ -1061,6 +1155,8 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 "target_roots": len(roots),
                 "cached_roots": cached,
                 "missing_roots": missing,
+                "priority_roots": len(priority_roots),
+                "priority_target_roots": priority_target_roots,
                 "step_roots": len(step_roots),
                 "step_target_roots": step_target_roots,
                 "other_target_roots": other_target_roots,
@@ -1117,8 +1213,9 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
     out = {
         "enabled": root_ram_cache_available(),
         "hit_roots": len(entries),
+        "priority_hit_roots": len([g for g in entry_groups if g == "priority"]),
         "step_hit_roots": len([group for group in entry_groups if group == "step"]),
-        "other_hit_roots": len([group for group in entry_groups if group != "step"]),
+        "other_hit_roots": len([group for group in entry_groups if group not in ("step", "priority")]),
         "estimated_mb": round(total_bytes / (1024 * 1024), 3),
         "max_gb": round(_root_ram_cache_max_bytes() / (1024 ** 3), 3) if _root_ram_cache_max_bytes() else 0,
         "cpu_budget_cores": round(_root_ram_cache_cpu_budget_cores(), 3),
@@ -1177,6 +1274,7 @@ def _filter_wafer_lf(lf: pl.LazyFrame, wafer_ids: str = "") -> pl.LazyFrame:
 
 
 def _root_ram_cache_loop() -> None:
+    global _ROOT_RAM_REFRESH_COUNTER
     while not _ROOT_RAM_STOP.is_set():
         try:
             refresh_root_lot_ram_cache(force=False)
@@ -1184,6 +1282,7 @@ def _root_ram_cache_loop() -> None:
             logger.warning("ML_TABLE root RAM cache scheduler tick failed: %s", exc)
             with _ROOT_RAM_CACHE_LOCK:
                 _ROOT_RAM_STATUS["last_error"] = f"{type(exc).__name__}: {exc}"
+        _ROOT_RAM_REFRESH_COUNTER += 1
         wait_s = max(60.0, root_ram_cache_refresh_minutes() * 60.0)
         while wait_s > 0 and not _ROOT_RAM_STOP.is_set():
             step = min(wait_s, 60.0)

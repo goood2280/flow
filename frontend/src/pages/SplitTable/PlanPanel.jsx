@@ -16,7 +16,7 @@ export function ActiveCellModal({ activeCell, colValCache, setActiveCell, setPen
           value={activeCell.value}
           onChange={(e) => setActiveCell((c) => ({ ...c, value: e.target.value }))}
           onKeyDown={(e) => {
-            if (e.key === "Enter") commit(activeCell.value);
+            if (e.key === "Enter") {if(e.nativeEvent?.isComposing||e.keyCode===229)return; commit(activeCell.value);}
             else if (e.key === "Escape") setActiveCell(null);
           }}
           list={`cv-${activeCell.key}`}

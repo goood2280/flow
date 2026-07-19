@@ -11,7 +11,8 @@ import LlmTab from "../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 // v9.3.x: devguide 는 admin 전용 — 유저 탭 권한 목록에서 제외.
-const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","tracker","valve","inform","meeting","calendar","teg","ettime"];
+// v9.4.x: flowi — Flow-i 채팅 사용 권한 (홈 채팅 + home agent orchestrate 게이트).
+const ALL_TABS=["flowi","filebrowser","dashboard","splittable","ramcache","diagnosis","tracker","valve","inform","meeting","calendar","teg","ettime"];
 const BULK_DEFAULT_TABS=["filebrowser","dashboard","splittable","diagnosis","inform","meeting","calendar"];
 const BULK_HEADER_KEYS=new Set(["name","username","email","role","tabs"]);
 const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","valve","inform","meeting","calendar","tablemap","groups","messages","diagnosis"];
@@ -35,7 +36,7 @@ function _cleanTabs(v){
 // ── 탭/소탭 표시 이름 — 사이드바·각 페이지의 실제 탭 이름과 동일하게 노출 ──
 // 권한 화면에서 raw key(filebrowser 등) 대신 실제 화면 이름(파일탐색기 등)을 보여준다.
 // 사이드바 TABS 에 없는 위임 전용 페이지(tablemap/groups/messages)도 같은 이름 규칙으로.
-const TAB_LABELS={tablemap:"테이블 맵",groups:"그룹",messages:"문의함",...Object.fromEntries(TABS.map(t=>[t.key,t.label]))};
+const TAB_LABELS={tablemap:"테이블 맵",groups:"그룹",messages:"문의함",flowi:"Flow-i",...Object.fromEntries(TABS.map(t=>[t.key,t.label]))};
 const SUB_TAB_LABELS=Object.fromEntries(Object.entries(SUB_TABS).map(([t,subs])=>[t,Object.fromEntries(subs.map(s=>[s.key,s.label]))]));
 function _tabLabel(key){return TAB_LABELS[key]||key;}
 function _tabTokenLabel(token){
@@ -618,7 +619,7 @@ export default function My_Admin({user}){
           <div style={{fontSize:14,fontWeight:600,color:"var(--accent)",marginBottom:6}}>관리자 문의</div>
           <div style={{display:"flex",gap:8}}>
             <input value={inquiry} onChange={e=>setInquiry(e.target.value)} placeholder="관리자에게 보낼 메시지를 입력하세요..."
-              onKeyDown={e=>{if(e.key==="Enter")sendInquiry();}}
+              onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;sendInquiry();}}}
               style={{flex:1,padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,outline:"none"}}/>
             <Button variant="primary" onClick={sendInquiry} disabled={!inquiry.trim()} style={{padding:"8px 16px",fontSize:14}}>전송</Button>
           </div>
@@ -1705,7 +1706,7 @@ function NameInlineEdit({u,onSave}){
   }
   return(<span>
     <input autoFocus value={val} onChange={e=>setVal(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter"){safeSave(val.trim());setEdit(false);}else if(e.key==="Escape"){setVal(u?.name||"");setEdit(false);}}}
+      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;safeSave(val.trim());setEdit(false);}else if(e.key==="Escape"){setVal(u?.name||"");setEdit(false);}}}
       placeholder="이름"
       style={{padding:"3px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minWidth:140}}/>
     <span onClick={()=>{safeSave(val.trim());setEdit(false);}} style={{marginLeft:6,cursor:"pointer",color:OK.fg,fontSize:14}}>✔</span>
@@ -2058,7 +2059,7 @@ function CategoryPanel(){
     </div>
     <div style={{display:"flex",gap:8,marginBottom:14,alignItems:"center"}}>
       <input type="color" value={newColor} onChange={e=>setNewColor(e.target.value)} style={{width:40,height:36,padding:0,border:"1px solid var(--border)",borderRadius:6,cursor:"pointer",background:"transparent"}} title="카테고리 색상"/>
-      <input value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="새 카테고리 이름" onKeyDown={e=>e.key==="Enter"&&add()} style={{...S,flex:1}}/>
+      <input value={newCat} onChange={e=>setNewCat(e.target.value)} placeholder="새 카테고리 이름" onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;add();}}} style={{...S,flex:1}}/>
       <button onClick={add} disabled={!newCat.trim()} style={{padding:"8px 16px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:"pointer",opacity:newCat.trim()?1:0.5}}>+ 추가</button>
     </div>
     <div style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden"}}>
@@ -2067,7 +2068,7 @@ function CategoryPanel(){
         <span style={{fontSize:14,color:"var(--text-secondary)",minWidth:22,fontFamily:"monospace"}}>{(i+1).toString().padStart(2,"0")}</span>
         <input type="color" value={c.color||"#64748b"} onChange={e=>setColor(i,e.target.value)} style={{width:26,height:26,padding:0,border:"1px solid var(--border)",borderRadius:4,cursor:"pointer",background:"transparent",flexShrink:0}} title="클릭하여 색상 선택"/>
         {editIdx===i
-          ?<input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveEdit()} onBlur={saveEdit} style={{...S,flex:1,padding:"4px 8px",fontSize:14}}/>
+          ?<input autoFocus value={editVal} onChange={e=>setEditVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;saveEdit();}}} onBlur={saveEdit} style={{...S,flex:1,padding:"4px 8px",fontSize:14}}/>
           :<span style={{flex:1,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",gap:6}} onClick={()=>startEdit(i)}><span style={{width:8,height:8,borderRadius:"50%",background:c.color||"#64748b",flexShrink:0}}/>{c.name}</span>}
         <span style={{fontSize:14,color:n>0?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace",padding:"1px 6px",borderRadius:10,background:n>0?"var(--accent-glow)":"transparent",minWidth:28,textAlign:"center"}}>{n}</span>
         <span onClick={()=>move(i,-1)} style={{cursor:i===0?"not-allowed":"pointer",opacity:i===0?0.3:0.8,fontSize:14,color:"var(--text-secondary)",padding:"2px 4px"}}>▲</span>
@@ -2416,7 +2417,7 @@ function AdminInbox({user}){
         </div>
         <div style={{padding:"10px 14px",borderTop:"1px solid var(--border)"}}>
           <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
-            <textarea value={reply} onChange={e=>setReply(e.target.value)} disabled={sending} onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")sendReply();}} placeholder={`${sel} 에게 답장 (Cmd/Ctrl+Enter 전송)`} rows={2} style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
+            <textarea value={reply} onChange={e=>setReply(e.target.value)} disabled={sending} onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;sendReply();}}} placeholder={`${sel} 에게 답장 (Cmd/Ctrl+Enter 전송)`} rows={2} style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
             <button onClick={sendReply} disabled={sending||!reply.trim()} style={{padding:"8px 18px",borderRadius:6,border:"none",background:sending||!reply.trim()?SILVER:"var(--accent)",color:WHITE,fontSize:14,fontWeight:700,cursor:sending||!reply.trim()?"default":"pointer",flexShrink:0,alignSelf:"stretch"}}>{sending?"…":"답장"}</button>
           </div>
         </div>
@@ -2548,7 +2549,7 @@ function AWSPanel({user}){
           <span key={p.profile+"_"+i} onClick={()=>setSelIdx(i)} style={{padding:"5px 12px",borderRadius:5,fontSize:14,cursor:"pointer",fontWeight:selIdx===i?700:500,background:selIdx===i?"var(--accent-glow)":"var(--bg-primary)",color:selIdx===i?"var(--accent)":"var(--text-secondary)",border:"1px solid "+(selIdx===i?"var(--accent)":"var(--border)"),fontFamily:"monospace"}}>{p.profile}</span>
         ))}
         <span style={{color:"var(--border)"}}>|</span>
-        <input value={newProfile} onChange={e=>setNewProfile(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addProfile()} placeholder="새 프로파일 이름" style={{...S,width:160,fontSize:14,padding:"5px 8px"}}/>
+        <input value={newProfile} onChange={e=>setNewProfile(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;addProfile();}}} placeholder="새 프로파일 이름" style={{...S,width:160,fontSize:14,padding:"5px 8px"}}/>
         <button onClick={addProfile} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>+ 추가</button>
       </div>
 
@@ -2617,7 +2618,7 @@ function ExtraEmailAdd({current,onSave}){
   };
   return (<div style={{display:"flex",gap:6}}>
     <input value={v} onChange={e=>setV(e.target.value)} placeholder="외부 이메일 추가 (e.g. vendor@company.co.kr)"
-      onKeyDown={e=>{if(e.key==="Enter")submit();}}
+      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}}
       style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
     <button onClick={submit} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>추가</button>
   </div>);
@@ -2694,10 +2695,10 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
         <div style={{fontSize:14,fontWeight:600,marginBottom:10}}>그룹 목록 ({groups.length})</div>
         <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:10}}>
           <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="새 그룹 이름"
-            onKeyDown={e=>{if(e.key==="Enter")create();}}
+            onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;create();}}}
             style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
           <input value={newDesc} onChange={e=>setNewDesc(e.target.value)} placeholder="설명 (선택)"
-            onKeyDown={e=>{if(e.key==="Enter")create();}}
+            onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;create();}}}
             style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
           <button onClick={create} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>생성</button>
         </div>

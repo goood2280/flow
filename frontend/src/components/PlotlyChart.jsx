@@ -151,6 +151,22 @@ export function FlowPlotlyChart({
         });
       }
     }
+    for (const [specKey, specName] of [["spec_high", "spec high"], ["spec_low", "spec low"]]) {
+      const specRows = points
+        .map((point) => ({ x: numberOrValue(pointX(point)), y: numberOrNull(point?.[specKey]) }))
+        .filter((row) => row.y != null);
+      if (specRows.length) {
+        plotTraces.push({
+          type: "scatter",
+          mode: "lines",
+          name: specName,
+          x: specRows.map((row) => row.x),
+          y: specRows.map((row) => row.y),
+          hovertemplate: `${specName}: %{y}<extra></extra>`,
+          line: { color: "#ef4444", width: 1.6, shape: "hv", dash: "dot" },
+        });
+      }
+    }
     return {
       traces: plotTraces,
       legendCounts: entries.map(([name, rows]) => ({ name, count: rows.length })),

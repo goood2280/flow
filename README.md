@@ -46,7 +46,10 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 - S3 신호등은 sync 상태 fast 응답을 먼저 그리고, 로컬 최신파일 freshness는 `date=` 파티션 pruned walk + stale-while-revalidate 캐시(TTL 5분)로 보강한다 — 대형 DB 타깃에서도 트리 전체 스캔이 응답을 막지 않는다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
-- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다.
+- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다. view revalidate는 단일 워커 + 3h 쿨다운으로 직렬화되어 사용자 조회와 CPU를 경쟁하지 않으며, 조회/RAM 예열 워커 수는 `query_workers` 설정(0=자동)으로 제어한다.
+- RAM 캐시 관리는 데이터 그룹의 독립 탭이다(SplitTable 설정 모달에서 승격) — 전 제품 캐시 현황, 우선 lot, 예산을 한 화면에서 편집한다.
+- ET Index 다운로드(업무 탭)는 DB ET raw를 shot 단위 pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식) 규칙으로 index를 계산한다 — 항목 선택 다운로드, index 규칙 상세, 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수 지원. ET 측정시간(업무 탭)은 root lot별 step_id × PGM(pt) 측정 소요시간을 집계한다.
+- Flow-i 채팅/에이전트 실행은 tabs 토큰 `flowi` 권한이 필요하고, `core/flowi_gate`가 동시 실행 상한과 서버 부하 admission으로 운용을 보호한다(admin 우회). ReAct 도구 카탈로그는 유저 권한으로 필터되고 실행 시점에도 unit 가드가 걸린다.
 - CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`). 메모리 보호 소프트밴드(RSS가 limit 근처)는 기본적으로 **실제 호스트 여유 메모리**를 기준으로 판단한다 — Polars RSS 잔류만으로 스플릿테이블 조회/다운로드나 백그라운드 빌드를 거절하지 않는다(하드캡 RSS≥limit는 유지, `FLOW_PROCESS_MEMORY_LIMIT_STRICT=1`로 엄격 모드 복원). 스플릿테이블 불러오기·파일 보기는 예약 레인(essential lane)으로 가드와 무관하게 항상 처리된다.
 - S3 주기 업로드/다운로드는 서버별로 켜고 끌 수 있다 — env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` 또는 FileBrowser S3 항목 탭의 방향별 토글(개발/양산 2서버가 같은 버킷을 쓸 때 개발 서버는 끔).
 - 회의관리/인폼 화면은 FileBrowser와 같은 UXKit 공통 컴포넌트로 통일돼 있다.
@@ -61,10 +64,10 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 **2) 에이전틱 모드 (admin)** — 같은 화면의 "에이전틱 오케스트레이션" 체크박스로 `LLM 도구 선택(tool call)`과 `반복 실행 루프(ReAct)`를 켠다. env `FLOW_LLM_TOOL_CALL`/`FLOW_LLM_REACT_LOOP`가 설정된 서버에서는 env가 우선. 켜면 Home Flow-i가 LLM으로 도구를 골라 결과를 관찰하며 다단계 실행한다 (native tool_calls 미사용 — on-prem 서빙 호환).
 
-**3) 공유 스킬 (모든 유저)** — SQL 작업대에서 여러 SQL 셀을 스킬로 저장할 때 공유를 켜면 전 유저가 사용할 수 있다. Home 채팅에서:
+**3) 공유 스킬 (모든 유저)** — 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다(SQL 작업대 탭은 에이전트 탭 재편에서 제거됨). Home 채팅에서:
 - `쓸 수 있는 스킬 알려줘` → 공유 스킬 카탈로그 (부족한 권한은 `권한 필요:` 표시)
 - `<스킬 제목> 스킬 실행해줘` → read-only 즉시 실행, 결과 행 미리보기
-실행은 스킬의 `required_features`가 사용자 기능 권한의 부분집합일 때만 허용된다 — **권한이 없는 시스템에 스킬로 우회 접근할 수 없다**. 비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다. 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다.
+실행은 스킬의 `required_features`가 사용자 기능 권한의 부분집합일 때만 허용된다 — **권한이 없는 시스템에 스킬로 우회 접근할 수 없다**. 비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다.
 
 **4) step 조회 + human-in-the-loop 학습 (모든 유저)** — Home 채팅에서:
 - `AA100100는 무슨 step이야` → step_matching/Vehicle_matching 기반 양방향 조회. 정확 일치가 없으면 suffix 변형(AB100000EC ↔ AB100000) 기준 유사 후보 제시.
@@ -74,24 +77,23 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 **5) 파일 설명문 카탈로그 (모든 유저 등록, Admin 관리)** — `파일 설명: ppid_knob.csv는 PPID 값을 knob으로 분류하는 규칙` 처럼 파일별 설명만 등록해두면, 이후 검색성 질문("PPID_08_0 어디에 있어?")에서 Flow-i가 설명과 질문을 대조해 대상 파일을 고르고 내용을 검색해 파일/열/행을 답한다. 설명이 없거나 못 찾으면 few-shot 티칭 또는 파일 설명 등록을 요청하는 human-in-the-loop 안내를 준다. 두 학습 저장소(few-shot, 파일 설명)는 **Admin → Flow-i 학습** 탭에서 조회/수정/삭제한다.
 
-## Recent Changes (2026-07)
+**6) 지식 레이어 (지식 카드)** — Flow-i가 답변에 쓰는 도메인 지식을 카드 단위(`core/knowledge_cards.py`)로 관리한다. 우선순위는 local > seed > generated > adapter — 사내에서 채운 local 카드가 항상 이기고, 시드 카드 번들(`core/knowledge_seed_cards/`, setup.py 포함)은 일반 공정용어와 제품별 공정구간 채움 틀을 제공한다. 사내 반입 후 제품 실명/ET 항목/공정구간은 "지식 채움" 인터뷰로 채운다. 계약은 [docs/features/knowledge-layer.md](docs/features/knowledge-layer.md).
 
-사내 이식 대비 안정화 + 에이전틱 확장 배치. 상세 계약은 각 feature 문서에 있다.
+## Recent Changes (2026-07, v9.2~v9.4)
+
+auto report reformatter 이식(ET Index) → Flow-i 지식 레이어/운용 게이트 → 캐시 워커 정리 순의 배치. 상세는 [VERSION.json](VERSION.json) release notes와 각 feature 문서에 있다.
 
 | 영역 | 변경 |
 |---|---|
-| FileBrowser | 첫 클릭 2단계 로드(스키마 즉시 → 샘플 백그라운드) + DB 제품 preview를 최신 `date=` 파티션 한정 500행으로 확대(`DB_LATEST_PREVIEW_ROWS`), 과거 파티션 미방문 walk(`iter_latest_partition_files`), preview 캐시 서명 SWR 캐시(TTL 30초), DuckDB 연결/스키마 등록 요청당 1회(`duckdb_engine.open_source`) |
-| S3 신호등 | `status-by-target?include_local=1` 로컬 freshness를 `date=` 파티션 pruned walk + SWR 캐시(TTL 300초)로 고속화 — 대형 DB 타깃에서도 응답 비차단 |
-| SplitTable | view fast-path 컨트롤 플로우 회귀 수정(캐시 미스 시 null 반환), pivot 캐시 canonical `ML_TABLE_*` 디렉터리 통일, 미스/stale 백그라운드 single-flight 재빌드 + `POST /api/splittable/cache/pivot/refresh` |
-| 리소스 | CPU/RAM 한도 호스트 자동 산출(코어-1, 총메모리 65%, cgroup 인식), 백그라운드 작업의 사용자 요청 양보(`core/request_priority`) |
-| 메모리 | lazy-eviction dict 캐시 주기 정리(`core/cache_sweeper`, 5분) — 장기 uptime 메모리 증가 완화 |
-| S3 | 주기 동기화 전역/방향별 on/off (env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` + UI 토글, `/api/s3ingest/auto-sync`) |
-| 알람 | plan/actual 불일치 알람 지정 팀 수신(`mismatch_alert_recipients`, SplitTable 설정 패널) |
-| UI | 회의관리/인폼 페이지 UXKit 통일 (로컬 인라인 스타일 제거, 로직 불변) |
-| 에이전틱 | 에이전틱 오케스트레이션 admin 토글(`flowi_defaults.agentic`), GPT OSS 120B는 기존 `openai_compatible` 프리셋으로 연결 |
-| 스킬 | 공유/비공유 권한, share/delete API, Home 채팅에서 스킬 카탈로그/즉시 실행 |
-| 학습 | step_lookup 유사 후보 + 매칭 파일 횡단 관련 파일 검색, `기억해:`/`잊어줘:` human-in-the-loop few-shot, 싫어요+코멘트 교정 반영 |
-| 권한/카탈로그 | 스킬 실행 기능 권한 게이팅(`required_features`), `파일 설명:` 카탈로그 기반 값 검색 + HITL 안내, Admin "Flow-i 학습" 관리 탭 |
+| ET Index 다운로드 (v9.2~9.3) | 업무 탭 신설 — DB ET raw shot pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식, 재귀 고정점) index 계산. 항목 선택 다운로드(REPORT ORDER 일괄 선택), index 규칙 상세 바(ADDP→REAL 체인 추적), 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수(`manual_functions.py` mtime 자동 로딩), downloads.jsonl source 구분 |
+| ET 측정시간 (v9.2) | 업무 탭 신설 — root lot별 step_id × PGM(pt) 측정 소요시간(tkout−tkin) 집계 |
+| 지식 레이어 (v9.4) | 지식 카드 `core/knowledge_cards.py` + 시드 번들(local > seed > generated > adapter), 공정용어·제품별 공정구간 채움틀 카드, "지식 채움" 인터뷰 증거 보강 |
+| Flow-i 운용 (v9.4) | tabs 토큰 `flowi` 권한 신설, `core/flowi_gate` 동시 실행 상한 + 서버 부하 admission(admin 우회), ReAct 도구 카탈로그 유저 권한 필터 + 실행 시점 unit 가드 |
+| ReAct 품질 (v9.4) | 역할별 예산(유저 90/120초, admin 300/600초·16~24턴), guidance 폴백 관측(status=guidance_fallback) — decision LLM 피드백 |
+| Flow-i 단위기능 (v9.4) | ET/INLINE 차트 집계 확장(median/avg/p90/p10/max·shot 단위), WF map spec-out 파서·좌표 폴백(chip_x_adj > chip_x_pos > shot_x) |
+| SplitTable (v9.4) | view revalidate 단일 워커 + 3h 쿨다운(사용자 조회와 CPU 경쟁 해소), `query_workers` 설정(0=자동/1~N 고정) |
+| RAM 캐시 (v9.4) | 데이터 그룹 독립 탭 승격 — 전 제품 캐시 현황·우선 lot·예산 편집 |
+| 정리 (v9.4) | 2026-07 종합 감사 후속 데드코드 8파일 제거 (splittable notes 계열, internal_api_contract, matching/ml_heuristics, 미사용 컴포넌트 3종) |
 
 ## Current Version
 

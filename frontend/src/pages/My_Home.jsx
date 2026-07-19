@@ -281,7 +281,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
             placeholder=""
             aria-label="Flowi prompt"
             rows={5}
-            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();ask();}}}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){if(e.nativeEvent?.isComposing||e.keyCode===229)return;e.preventDefault();ask();}}}
             style={{width:"100%",minWidth:0,padding:isAdmin?"10px 12px 48px":"10px 12px",borderRadius:8,border:"1px solid #525252",background:"#3a3a3a",color:"#f5f5f5",fontSize:14,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box",display:"block"}}/>
           {isAdmin&&<div title="현재 연결 모델과 남은 대화 context 추정치" style={{position:"absolute",right:10,bottom:8,display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",maxWidth:"calc(100% - 20px)",pointerEvents:"none",fontFamily:"'JetBrains Mono',monospace"}}>
             <span style={{minWidth:0,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:modelLabel?HOME_UI.textSoft:HOME_UI.textDim,border:`1px solid ${HOME_UI.borderStrong}`,background:"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
@@ -1161,7 +1161,7 @@ function FlowiArgumentChoices({data,basePrompt,onChoice}){
           </div>
           <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace"}}>{data.message||"또는 직접 입력해 주세요"}</div>
           <div style={{display:"flex",gap:6,minWidth:0,alignItems:"stretch"}}>
-            <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();submit(f.field,free[f.field]||"");}}} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
+            <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;e.preventDefault();submit(f.field,free[f.field]||"");}}} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
             <button type="button" onClick={()=>submit(f.field,free[f.field]||"")} style={{border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",color:"#f97316",fontSize:14,fontWeight:900,padding:"8px 12px",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>보내기</button>
           </div>
         </div>;
@@ -1191,7 +1191,7 @@ function FlowiMissingFreetext({fields,basePrompt,onChoice}){
           <div style={{display:"flex",gap:6,minWidth:0,alignItems:"stretch"}}>
             <input value={values[key]||""}
               onChange={e=>setValues(v=>({...v,[key]:e.target.value}))}
-              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();submit(item);}else if(e.key==="Escape"){e.preventDefault();setValues(v=>({...v,[key]:""}));}}}
+              onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;e.preventDefault();submit(item);}else if(e.key==="Escape"){e.preventDefault();setValues(v=>({...v,[key]:""}));}}}
               placeholder={item.placeholder||"내용을 입력해 주세요"}
               autoFocus={items.length===1}
               style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
@@ -1399,6 +1399,9 @@ function FlowiWaferMapResult({data}){
   const sx=(v)=>pad+(Number(v)-minX)/rx*(W-pad*2);
   const sy=(v)=>H-pad-(Number(v)-minY)/ry*(H-pad*2);
   const color=(v)=>{const f=(Number(v)-minV)/rv;const r=Math.round(59+190*f),g=Math.round(130-70*f),b=Math.round(246-200*f);return `rgb(${r},${g},${b})`;};
+  const specMode=data.mode==="spec_out";
+  const outN=pts.filter(p=>p.out).length;
+  const fillFor=(p)=>specMode?(p.out?"#ef4444":"#6b7280"):color(p.value);
   const cx=W/2,cy=H/2,rad=Math.min(W,H)/2-pad*.7;
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
@@ -1409,14 +1412,18 @@ function FlowiWaferMapResult({data}){
       <circle cx={cx} cy={cy} r={rad} fill="#0f172a" stroke="#334155" strokeWidth="1.5"/>
       <line x1={cx-rad} x2={cx+rad} y1={cy} y2={cy} stroke="#334155" strokeDasharray="4,4"/>
       <line x1={cx} x2={cx} y1={cy-rad} y2={cy+rad} stroke="#334155" strokeDasharray="4,4"/>
-      {pts.map((p,i)=><circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="5" fill={color(p.value)} opacity=".88" stroke="#111827" strokeWidth=".7">
-        <title>{`${p.label||`shot(${p.x},${p.y})`}\n${data.value_label||"value"}=${p.value}\nmean=${p.mean??"-"}\nn=${p.n??"-"}\nlot_count=${p.lot_count??"-"}\nwafer_count=${p.wafer_count??"-"}`}</title>
+      {pts.map((p,i)=><circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="5" fill={fillFor(p)} opacity=".88" stroke="#111827" strokeWidth=".7">
+        <title>{`${p.label||`shot(${p.x},${p.y})`}\n${data.value_label||"value"}=${p.value}${specMode?`\nspec=${p.out?"OUT":"in"}`:""}\nmean=${p.mean??"-"}\nn=${p.n??"-"}\nlot_count=${p.lot_count??"-"}\nwafer_count=${p.wafer_count??"-"}`}</title>
       </circle>)}
     </svg>
     <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.source||"source"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.value_label||"median"}</span>
-      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>range {minV.toFixed(3)}~{maxV.toFixed(3)}</span>
+      {specMode?<>
+        <span style={{border:"1px solid #7f1d1d",borderRadius:999,padding:"2px 7px",color:"#ef4444"}}>spec {data.spec&&data.spec.label?data.spec.label:""} · out {outN}/{pts.length}</span>
+        <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}><span style={{color:"#ef4444"}}>●</span> out / <span style={{color:"#6b7280"}}>●</span> in</span>
+      </>:<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>range {minV.toFixed(3)}~{maxV.toFixed(3)}</span>}
+      {data.coord_basis?<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.coord_basis}</span>:null}
     </div>
   </div>);
 }
@@ -1582,7 +1589,7 @@ function FlowiFeedback({result,tool,prompt,isAdmin=false}){
       <button type="button" onClick={()=>{setTags(["correct"]);send("up");}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>정확함</button>
       <button type="button" onClick={()=>{setOpen(true);setRating("down");if(!tags.length)setTags(["output_issue"]);}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
       <button type="button" onClick={()=>setOpen(!open)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>{open?"접기":"상세"}</button>
-      <input value={note} onChange={e=>setNote(e.target.value)} onFocus={()=>setOpen(true)} onKeyDown={e=>{if(e.key==="Enter")send(rating||"neutral");}} placeholder="짧은 개선 의견"
+      <input value={note} onChange={e=>setNote(e.target.value)} onFocus={()=>setOpen(true)} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;send(rating||"neutral");}}} placeholder="짧은 개선 의견"
         style={{flex:"1 1 190px",minWidth:170,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:14,outline:"none"}}/>
       <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>저장</button>
       {msg&&<span style={{fontSize:14,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
@@ -1773,7 +1780,7 @@ function UserContact({user}){
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontFamily:"monospace"}}>💬 관리자에게 문의</div>
     <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
       <textarea data-testid="contact-user-input" value={text} onChange={e=>setText(e.target.value)} disabled={sending}
-        onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")send();}}
+        onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;send();}}}
         placeholder="버그 리포트 / 기능 요청 / 권한 요청 등 (Cmd/Ctrl + Enter 전송)" rows={3}
         style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
       <button data-testid="contact-user-send" onClick={send} disabled={sending||!text.trim()}
@@ -1869,7 +1876,7 @@ function AdminContactInbox({user}){
         <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}>
           <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
             <textarea value={reply} onChange={e=>setReply(e.target.value)} disabled={sending}
-              onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")send();}}
+              onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;send();}}}
               placeholder={`${sel} 에게 답장 (Cmd/Ctrl+Enter 전송)`} rows={2}
               style={{flex:1,padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
             <button onClick={send} disabled={sending||!reply.trim()}

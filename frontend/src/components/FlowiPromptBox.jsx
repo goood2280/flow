@@ -286,7 +286,7 @@ export default function FlowiPromptBox({
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {
-            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") submit(event);
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {if(event.nativeEvent?.isComposing||event.keyCode===229)return; submit(event);}
           }}
           rows={1}
           spellCheck={false}

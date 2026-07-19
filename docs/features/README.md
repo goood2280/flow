@@ -19,6 +19,7 @@
 | Agent | [flowi-agent.md](flowi-agent.md) | `frontend/src/pages/My_Diagnosis.jsx`, `frontend/src/components/agent/LlmTab.jsx`, `backend/routers/agent.py` |
 | Dashboard Agent source orchestration | [home_sql_join_dashboard.md](home_sql_join_dashboard.md) | `backend/core/flowi_units/home_sql_join_dashboard_runtime.py`, `backend/core/flowi_units/dashboard_agent_runtime.py` |
 | Agent Semantic Layer | [agent-semantic-layer.md](agent-semantic-layer.md) | `backend/routers/agent.py`, `backend/app_v2/modules/semantic_lexicon/`, `backend/app_v2/modules/semantic_learning/` |
+| Knowledge Layer (지식 카드) | [knowledge-layer.md](knowledge-layer.md) | `backend/core/knowledge_cards.py`, `backend/core/knowledge_seed_cards/` |
 
 ## Update Rule
 
