@@ -2191,7 +2191,7 @@ export default function My_FileBrowser({user,onNavigate}){
           <input value={sql} onChange={e=>setSqlFromInput(e.target.value)} placeholder="예: SELECT lot_id, wafer_id WHERE product LIKE '%ABC%' ORDER BY tkout_time DESC"
             disabled={mode==="base"&&isBaseEditing}
             style={{flex:1,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
-            onKeyDown={e=>e.key==="Enter"&&applySql()}/>
+            onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;applySql();}}}/>
           <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
           <button onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}} disabled={!data||mode==="base"&&isBaseEditing}

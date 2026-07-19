@@ -95,7 +95,7 @@ export default function My_EtTime() {
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>Root Lot ID</div>
             <Input list="ettime-lots" value={rootLot}
               onChange={e => setRootLot(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") search(); }}
+              onKeyDown={e => { if (e.key === "Enter") {if(e.nativeEvent?.isComposing||e.keyCode===229)return; search();} }}
               placeholder="예: A0001" style={{ width: 200 }} />
             <datalist id="ettime-lots">
               {lotOptions.map((c, i) => {

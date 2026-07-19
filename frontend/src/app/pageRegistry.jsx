@@ -4,6 +4,7 @@ export const PAGE_MAP = {
   home: lazy(() => import("../pages/My_Home")),
   filebrowser: lazy(() => import("../pages/My_FileBrowser")),
   splittable: lazy(() => import("../pages/My_SplitTable")),
+  ramcache: lazy(() => import("../pages/My_RamCache")),
   dashboard: lazy(() => import("../pages/My_Dashboard")),
   diagnosis: lazy(() => import("../pages/My_Diagnosis")),
   tracker: lazy(() => import("../pages/My_Tracker")),

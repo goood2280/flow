@@ -224,7 +224,7 @@ function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=fals
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
     <div style={{fontSize:14,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
     <input autoFocus value={activeCell.value} onChange={e=>onValueChange&&onValueChange(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter")commit(activeCell.value);else if(e.key==="Escape")onClose&&onClose();}}
+      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;commit(activeCell.value);}else if(e.key==="Escape")onClose&&onClose();}}
       list={`cv-${activeCell.key}`}
       placeholder="값 입력 또는 아래 리스트 선택"
       style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>
@@ -462,6 +462,10 @@ export default function My_SplitTable({user}){
   const[rootLotCacheDraft,setRootLotCacheDraft]=useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
   const[mismatchRecipientsDraft,setMismatchRecipientsDraft]=useState("");
   const[mismatchRecipientsSaveBusy,setMismatchRecipientsSaveBusy]=useState(false);
+  // 쿼리 병렬 워커 수 설정
+  const[queryWorkersStatus,setQueryWorkersStatus]=useState(null);
+  const[queryWorkersDraft,setQueryWorkersDraft]=useState(3);
+  const[queryWorkersSaveBusy,setQueryWorkersSaveBusy]=useState(false);
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
@@ -502,6 +506,17 @@ export default function My_SplitTable({user}){
       .then(()=>{toast.ok("불일치 알람 수신 팀 저장됨");return loadSourceConfig();})
       .catch(e=>toast.error("불일치 알람 수신 팀 저장 실패: "+(e?.message||e)))
       .finally(()=>setMismatchRecipientsSaveBusy(false));
+  };
+  const loadQueryWorkers=()=>sf(API+"/query-workers")
+    .then(d=>{setQueryWorkersStatus(d);setQueryWorkersDraft(d.effective||3);})
+    .catch(()=>{});
+  const saveQueryWorkers=()=>{
+    setQueryWorkersSaveBusy(true);
+    sf(API+"/query-workers/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({query_workers:queryWorkersDraft})})
+      .then(d=>{setQueryWorkersStatus(d);setQueryWorkersDraft(d.configured||0);toast.ok("쿼리 워커 수 저장됨 (effective: "+d.effective+")");})
+      .catch(e=>toast.error("쿼리 워커 수 저장 실패: "+(e?.message||e)))
+      .finally(()=>setQueryWorkersSaveBusy(false));
   };
   const reloadMlMatch=()=>{if(!selProd)return Promise.resolve();
     return sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
@@ -612,6 +627,7 @@ export default function My_SplitTable({user}){
     reloadCustoms();
     loadUniques();
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
+    loadQueryWorkers();
   },[]);
   // v9.2.x: flow-i 딥링크 — URL query(product/root) 를 1회 소비해 자동 검색까지 수행.
   const deepLinkRef=useRef(null);
@@ -1473,7 +1489,7 @@ export default function My_SplitTable({user}){
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>ROOT LOT ID</div>
         <input value={lotId} onChange={e=>{setLotId(e.target.value);setFabLotId("");setLotFilter(e.target.value);setShowLotDrop(true);}}
           onFocus={()=>setShowLotDrop(true)} placeholder="입력 또는 선택"
-          style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
+          style={{...S,width:"100%"}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;setShowLotDrop(false);doSearch();}}}/>
         {showLotDrop&&(filteredLots.length>0||lotSuggestBusy||lotSuggestMsg)&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
           {lotSuggestBusy&&<div style={{padding:"7px 10px",fontSize:14,color:"var(--text-secondary)"}}>Lot 후보 조회 중...</div>}
           {!lotSuggestBusy&&filteredLots.length===0&&lotSuggestMsg&&<div style={{padding:"7px 10px",fontSize:14,color:BAD.fg,lineHeight:1.4}}>{lotSuggestMsg}</div>}
@@ -1487,7 +1503,7 @@ export default function My_SplitTable({user}){
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>LOT ID</div>
         <input value={fabLotId} onChange={e=>{setFabLotId(e.target.value);setShowFabDrop(true);}}
           onFocus={()=>setShowFabDrop(true)} onBlur={()=>setTimeout(()=>setShowFabDrop(false),150)}
-          placeholder="fab_lot_id 입력" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowFabDrop(false),doSearch())}/>
+          placeholder="fab_lot_id 입력" style={{...S,width:"100%"}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;setShowFabDrop(false);doSearch();}}}/>
         {showFabDrop&&(fabSuggestions.length>0||fabSuggestBusy||fabSuggestMsg)&&
           <div style={{maxHeight:160,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
             {fabSuggestBusy&&<div style={{padding:"7px 10px",fontSize:14,color:"var(--text-secondary)"}}>Fab lot 후보 조회 중...</div>}
@@ -1498,7 +1514,7 @@ export default function My_SplitTable({user}){
           </div>}
       </div>
       <div style={{padding:"4px 12px"}}><div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>WAFER ID</div>
-        <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="예: 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&doSearch()}/></div>
+        <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="예: 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;doSearch();}}}/></div>
       <div style={{padding:"6px 12px"}}>
         <button onClick={doSearch} title="검색"
           style={{width:"100%",padding:"7px 0",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer",opacity:1}}>
@@ -1570,6 +1586,7 @@ export default function My_SplitTable({user}){
           <div style={{display:"flex",gap:4,marginBottom:12,borderBottom:"1px solid var(--border)"}}>
             <span onClick={()=>setSettingsTab("basic")} style={{padding:"5px 10px",fontSize:14,cursor:"pointer",fontWeight:settingsTab==="basic"?700:500,borderBottom:settingsTab==="basic"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="basic"?"var(--accent)":"var(--text-secondary)"}}>기본</span>
             <span onClick={()=>setSettingsTab("advanced")} style={{padding:"5px 10px",fontSize:14,cursor:"pointer",fontWeight:settingsTab==="advanced"?700:500,borderBottom:settingsTab==="advanced"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="advanced"?"var(--accent)":"var(--text-secondary)"}}>고급</span>
+            {/* v9.3.x: 캐시 관리는 데이터 > 캐시 관리 탭(My_RamCache)으로 승격 — 여기서 제거 */}
           </div>
           {settingsTab==="basic"&&<div style={{display:"grid",gap:10,marginBottom:10}}>
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
@@ -1680,6 +1697,36 @@ export default function My_SplitTable({user}){
                 </button>
               </div>
             </div>
+            {/* 쿼리 병렬 코어 수 설정 */}
+            <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>쿼리 병렬 코어 수</div>
+                {queryWorkersStatus&&<span style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                  현재 {queryWorkersStatus.effective}코어 · CPU {queryWorkersStatus.cpu_count}코어
+                </span>}
+              </div>
+              <div style={{fontSize:13,color:"var(--text-secondary)",lineHeight:1.5}}>
+                SplitTable 조회 시 사용할 CPU 코어 수. 숫자가 높으면 단일 조회는 빠르지만, 동시 사용자가 많으면 서버가 느려집니다. 기본 3코어 권장.
+                {queryWorkersStatus?.essential_concurrency&&<span> (동시 조회 상한: {queryWorkersStatus.essential_concurrency}건)</span>}
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <select value={queryWorkersDraft}
+                  onChange={e=>setQueryWorkersDraft(Number(e.target.value))}
+                  style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>
+                  {[1,2,3,4].filter(n=>n<=(queryWorkersStatus?.cpu_count||4)).map(n=>(
+                    <option key={n} value={n}>{n}코어{n===3?" (권장)":n===1?" (절약)":""}</option>
+                  ))}
+                </select>
+                <button onClick={saveQueryWorkers} disabled={queryWorkersSaveBusy}
+                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:queryWorkersSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
+                  {queryWorkersSaveBusy?"저장 중":"저장"}
+                </button>
+                <button onClick={loadQueryWorkers}
+                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                  새로고침
+                </button>
+              </div>
+            </div>
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>사용자 표시 대상</div>
@@ -1704,7 +1751,7 @@ export default function My_SplitTable({user}){
             <span style={{fontFamily:"monospace"}}>{p}</span><span onClick={()=>removePrefix(p)} style={{color:"rgba(239,68,68,0.95)",cursor:"pointer",fontSize:14}}>✕</span>
           </div>)}
           <div style={{display:"flex",gap:4,marginTop:6}}>
-            <input value={newPrefix} onChange={e=>setNewPrefix(e.target.value)} placeholder="새 그룹명" style={{...S,flex:1,fontSize:14}} onKeyDown={e=>e.key==="Enter"&&addPrefix()}/>
+            <input value={newPrefix} onChange={e=>setNewPrefix(e.target.value)} placeholder="새 그룹명" style={{...S,flex:1,fontSize:14}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;addPrefix();}}}/>
             <button onClick={addPrefix} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,cursor:"pointer"}}>+</button>
           </div>
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>표시 자리수</div>
@@ -1986,7 +2033,7 @@ export default function My_SplitTable({user}){
                           <span style={{fontSize:14,color:"var(--text-secondary)"}}>파일명</span>
                           <input value={rbFileDrafts[kind] ?? fileName}
                             onChange={e=>setRbFileDrafts(m=>({...m,[kind]:e.target.value}))}
-                            onKeyDown={e=>{if(e.key==="Enter")saveRulebookFileName(kind);}}
+                            onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;saveRulebookFileName(kind);}}}
                             style={{width:190,padding:"3px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
                           <button onClick={()=>saveRulebookFileName(kind)}
                             title={`${kind} 파일명 매칭 저장`}

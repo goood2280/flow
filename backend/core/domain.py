@@ -358,8 +358,8 @@ _AREA_RULES = [
     (r"(?:" + _B + r"M(\d+)" + _BE + r"|METAL[_ ]?(\d+)|BEOL[_\- ]?M(\d+))", "__BEOL__"),
     # PC-specific patterns that should beat the Gate rule (dummy gate is a PC-module step)
     (r"DUMMY.?GATE|NS.?RELEASE|NANOSHEET.?REL",                    "PC"),
-    # Gate — HKMG (high-K metal gate)
-    (_tok("HKMG") + r"|" + _tok("HK") + r"|METAL.?GATE|POLY[_ ]?GATE|" + _tok("GATE"), "Gate"),
+    # Gate — HKMG (high-K metal gate) / RMG (replacement metal gate — 사내 통칭)
+    (_tok("HKMG") + r"|" + _tok("HK") + r"|" + _tok("RMG") + r"|REPLACEMENT.?GATE|METAL.?GATE|POLY[_ ]?GATE|" + _tok("GATE"), "Gate"),
     # Spacer
     (_tok("SPACER") + r"|" + _tok("SPCR"),                         "Spacer"),
     # PC — poly / photo-defined patterning / resist / develop

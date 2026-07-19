@@ -268,7 +268,7 @@ export default function My_Calendar({ user }) {
                   <option key={m.meeting_id} value={m.meeting_id}>{m.color ? "● " : "🗓 "}{m.meeting_title || m.meeting_id} ({m.count})</option>
                 ))}
               </select>
-              <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === "Enter" && runSearch()}
+              <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;runSearch();}}}
                 placeholder="검색…"
                 style={{ width: 180, padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }} />
               <Button variant="ghost" onClick={runSearch}>검색</Button>

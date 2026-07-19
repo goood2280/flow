@@ -203,7 +203,7 @@ export default function My_Login({ onLogin }) {
           {/* v8.8.27: register 모드면 NAME 을 맨 위에 배치 — 이름·아이디·비번 순으로 수집. */}
           {mode === "register" && <>
             <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>NAME</div>
-            <input value={nm} onChange={e => setNm(e.target.value)} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => e.key === "Enter" && submit()} autoComplete="name" placeholder="이름" />
+            <input value={nm} onChange={e => setNm(e.target.value)} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="name" placeholder="이름" />
           </>}
 
           <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>
@@ -215,14 +215,14 @@ export default function My_Login({ onLogin }) {
             style={inputStyle}
             onFocus={onF}
             onBlur={onB}
-            onKeyDown={e => e.key === "Enter" && submit()}
+            onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}}
             autoComplete="username"
             placeholder={mode === "register" ? "knox id" : mode === "reset" ? "knox id" : ""}
           />
 
           {(mode === "login" || mode === "register") && <>
             <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>PASSWORD</div>
-            <input value={p} onChange={e => setP(e.target.value)} type="password" style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => e.key === "Enter" && submit()} autoComplete="current-password" />
+            <input value={p} onChange={e => setP(e.target.value)} type="password" style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="current-password" />
           </>}
 
           <button onClick={submit} disabled={loading}

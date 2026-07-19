@@ -3791,6 +3791,115 @@ def get_uniques():
 # ── Source visibility config (admin) ──
 SOURCE_CFG = PLAN_DIR / "source_config.json"
 
+
+# ── 쿼리 병렬 워커 수 관리 ──────────────────────────────────────────
+# query_workers = 0 이면 자동(호스트 CPU 비례), 1-N 이면 고정.
+# Polars thread pool(POLARS_MAX_THREADS) + DuckDB threads(FLOW_DUCKDB_THREADS) +
+# RAM 캐시 예열 워커(FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS) 세 축을 한 번에 제어.
+
+def _normalize_query_workers(value: Any) -> int:
+    """0(자동) 또는 1~max_cpu 로 클램프."""
+    try:
+        n = int(value)
+    except Exception:
+        return 0
+    if n <= 0:
+        return 0
+    from core.runtime_limits import effective_cpu_count
+    max_cpu = max(1, int(effective_cpu_count()))
+    return max(1, min(n, max_cpu))
+
+
+def _apply_query_workers(workers: int) -> None:
+    """런타임 환경 변수에 워커 수를 반영한다. 0 이면 자동값 복원."""
+    from core.runtime_limits import effective_cpu_count, auto_cpu_budget_cores
+    if workers <= 0:
+        # 자동 — 기존 런타임 산출 로직 복원
+        cores = int(effective_cpu_count())
+        budget = int(auto_cpu_budget_cores())
+        auto_threads = str(max(1, min(budget, max(1, cores - 1))))
+        os.environ["POLARS_MAX_THREADS"] = auto_threads
+        os.environ["RAYON_NUM_THREADS"] = auto_threads
+        os.environ["PYARROW_NUM_THREADS"] = auto_threads
+        os.environ.pop("FLOW_DUCKDB_THREADS", None)
+        os.environ.pop("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS", None)
+    else:
+        w = str(workers)
+        os.environ["POLARS_MAX_THREADS"] = w
+        os.environ["RAYON_NUM_THREADS"] = w
+        os.environ["PYARROW_NUM_THREADS"] = w
+        os.environ["FLOW_DUCKDB_THREADS"] = w
+        os.environ["FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS"] = w
+    # Polars 는 프로세스 수명 동안 thread pool 크기를 최초 1회만 설정하므로
+    # 환경 변수 변경이 이미 생성된 pool 에는 반영되지 않는다. DuckDB 는 커넥션 단위이므로
+    # 다음 쿼리부터 반영. RAM 캐시 예열은 env 를 매번 읽으므로 즉시 반영.
+    try:
+        pl.threadpool_size()  # Polars 가 이미 pool 을 만들었는지 확인만
+    except Exception:
+        pass
+
+
+def _current_query_workers() -> int:
+    """source_config.json 에서 query_workers 값을 읽는다. 없으면 0(자동)."""
+    try:
+        cfg = load_json(SOURCE_CFG, {})
+        return _normalize_query_workers(cfg.get("query_workers", 0))
+    except Exception:
+        return 0
+
+
+def _current_query_workers_status() -> dict:
+    """현재 쿼리 병렬화 상태를 반환."""
+    from core.runtime_limits import effective_cpu_count, auto_cpu_budget_cores
+    configured = _current_query_workers()
+    cpu_count = int(effective_cpu_count())
+    budget = int(auto_cpu_budget_cores())
+    auto_threads = max(1, min(budget, max(1, cpu_count - 1)))
+    effective = configured if configured > 0 else auto_threads
+    # essential 세마포어 동시성 — 동시에 몇 명이 조회할 수 있는지
+    essential_concurrency = int(os.environ.get(
+        "FLOW_ESSENTIAL_REQUEST_CONCURRENCY", "0")) or None
+    return {
+        "configured": configured,
+        "effective": effective,
+        "auto_value": auto_threads,
+        "cpu_count": cpu_count,
+        "cpu_budget": budget,
+        "polars_threads": os.environ.get("POLARS_MAX_THREADS", ""),
+        "duckdb_threads": os.environ.get("FLOW_DUCKDB_THREADS", ""),
+        "ram_cache_workers": os.environ.get("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS", ""),
+        "essential_concurrency": essential_concurrency,
+    }
+
+
+@router.get("/query-workers")
+def get_query_workers():
+    """현재 쿼리 병렬 워커 설정과 상태를 반환."""
+    return _current_query_workers_status()
+
+
+@router.post("/query-workers/save")
+def save_query_workers(req: dict, _perm=Depends(require_page_manager("splittable"))):
+    """쿼리 병렬 워커 수를 저장하고 즉시 반영."""
+    raw = req.get("query_workers", 0)
+    workers = _normalize_query_workers(raw)
+    cur = load_json(SOURCE_CFG, {"enabled": [], "lot_overrides": {}})
+    cur["query_workers"] = workers
+    save_json(SOURCE_CFG, cur)
+    _apply_query_workers(workers)
+    return _current_query_workers_status()
+
+
+# 서버 시작 시 저장된 query_workers 설정을 반영.
+# 첫 기동 시(미설정) 기본값 3 — 5코어 서버에서 2명 동시 조회에도 안정적으로 동작.
+try:
+    _saved_qw = _current_query_workers()
+    if _saved_qw <= 0:
+        _saved_qw = 3  # 기본값: 3코어
+    _apply_query_workers(_saved_qw)
+except Exception:
+    pass
+
 @router.get("/source-config")
 def get_source_config():
     cfg = load_json(SOURCE_CFG, {"enabled": []})
@@ -3798,6 +3907,7 @@ def get_source_config():
     cfg.setdefault("lot_overrides", {})  # v8.4.4: product-scoped {root_col, fab_col, fab_source, ts_col, join_keys}
     cfg.setdefault("root_lot_cache", _ml_table_lookup.root_ram_cache_settings())
     cfg.setdefault("mismatch_alert_recipients", [])
+    cfg.setdefault("query_workers", 0)  # 0 = 자동(호스트 CPU 비례)
     # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
     _migrate_legacy_root_prefix(cfg)
     return cfg
@@ -3808,6 +3918,8 @@ class SourceConfigReq(BaseModel):
     root_lot_cache: dict | None = None
     # plan/actual 불일치 알람을 계획 작성자 외에 추가로 받을 지정 팀/사용자 목록.
     mismatch_alert_recipients: List[str] | None = None
+    # 쿼리 병렬 워커 수 (Polars/DuckDB/RAM 캐시 예열). 0 = 자동(호스트 CPU 비례).
+    query_workers: int | None = None
 
 
 def _normalize_fab_source_path(v: str) -> str:
@@ -3888,6 +4000,9 @@ def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_manager(
             if clean and clean not in seen:
                 seen.append(clean)
         cur["mismatch_alert_recipients"] = seen[:50]
+    if req.query_workers is not None:
+        cur["query_workers"] = _normalize_query_workers(req.query_workers)
+        _apply_query_workers(cur["query_workers"])
     # v8.8.21: legacy root:~~ 삭제.
     _migrate_legacy_root_prefix(cur)
     save_json(SOURCE_CFG, cur)
@@ -3924,10 +4039,10 @@ def _load_csv_rows(fp: Path) -> list[dict]:
             rows = []
             for row in reader:
                 clean = {}
-                for key, value in (row or {}).items():
-                    if key is None:
+                for col_key, value in (row or {}).items():
+                    if col_key is None:
                         continue
-                    clean[str(key).lstrip("\ufeff").strip()] = value
+                    clean[str(col_key).lstrip("\ufeff").strip()] = value
                 rows.append(clean)
         _CSV_ROWS_CACHE[key] = (st.st_mtime, st.st_size, [dict(row) for row in rows])
         return rows
@@ -7569,6 +7684,485 @@ class RootLotRamCacheEvictReq(BaseModel):
 def evict_root_lot_ram_cache_entry(req: RootLotRamCacheEvictReq, _perm=Depends(require_page_manager("splittable"))):
     """관리자: 개별 root lot 캐시 항목 제거."""
     return _ml_table_lookup.evict_root_ram_cache_entry(source_path=req.source_path, root_lot_id=req.root_lot_id)
+
+
+# ── RAM Cache 우선 Lot 등록 / 전체 목록 / 제품별 예산 ──────────────────
+_RAM_CACHE_PRIORITY_FILE = PLAN_DIR / "ram_cache_priority_lots.json"
+
+
+def _load_priority_lots_file() -> dict:
+    """우선 lot 등록 JSON 전체를 읽는다. 파일 없으면 빈 dict."""
+    try:
+        return load_json(_RAM_CACHE_PRIORITY_FILE, {})
+    except Exception:
+        return {}
+
+
+def _save_priority_lots_file(data: dict) -> None:
+    save_json(_RAM_CACHE_PRIORITY_FILE, data)
+
+
+@router.get("/ram-cache/priority-lots")
+def get_ram_cache_priority_lots(product: str = Query("")):
+    """우선 lot 등록 목록 조회."""
+    product = str(product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    data = _load_priority_lots_file()
+    # 대소문자 무시 매칭
+    product_upper = product.upper()
+    lots = []
+    for key, val in data.items():
+        if str(key).strip().upper() == product_upper and isinstance(val, list):
+            lots = val
+            break
+    # legacy note → comment 하위호환 (comment 빈 항목만)
+    for entry in lots:
+        if isinstance(entry, dict) and not entry.get("comment") and entry.get("note"):
+            entry["comment"] = entry["note"]
+    return {"ok": True, "product": product, "lots": lots}
+
+
+class RamCachePriorityLotItem(BaseModel):
+    lot_id: str
+    purpose: str = ""
+    note: str = ""      # legacy — comment 로 대체, 하위호환 위해 유지
+    comment: str = ""   # 엔지니어 코멘트 (랏 운영 관리용)
+    cache_enabled: bool = True  # False = 목록에 유지하되 캐싱에서 제외
+
+
+class RamCachePriorityLotsSaveReq(BaseModel):
+    product: str
+    lots: List[RamCachePriorityLotItem] = []
+
+
+@router.post("/ram-cache/priority-lots/save")
+def save_ram_cache_priority_lots(
+    req: RamCachePriorityLotsSaveReq,
+    request: Request,
+    _perm=Depends(require_page_manager("splittable")),
+):
+    """우선 lot 등록 목록 저장 (product 전체 교체)."""
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    me = current_user(request)
+    user_id = str(me.get("user_id") or me.get("name") or "unknown") if isinstance(me, dict) else "unknown"
+    now_iso = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    entries: list[dict] = []
+    for item in req.lots:
+        lot_id = str(item.lot_id or "").strip().upper()
+        if not lot_id:
+            continue
+        root_lot_id = lot_id[:5].upper()
+        entries.append({
+            "lot_id": lot_id,
+            "root_lot_id": root_lot_id,
+            "purpose": str(item.purpose or "").strip(),
+            "note": str(item.note or "").strip(),
+            "comment": str(item.comment or "").strip(),
+            "cache_enabled": bool(item.cache_enabled),
+            "created_at": now_iso,
+            "created_by": user_id,
+        })
+    data = _load_priority_lots_file()
+    data[product] = entries
+    _save_priority_lots_file(data)
+    return {"ok": True, "product": product, "lots": entries}
+
+
+@router.get("/ram-cache/contents")
+def get_ram_cache_contents(product: str = Query("")):
+    """현재 RAM 캐시에 올라간 root lot 전체 목록 (전체 목록 서브탭용)."""
+    product = str(product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    # 소스 파일 해석
+    source_fp = None
+    try:
+        source_fp = _product_path(product)
+    except Exception:
+        pass
+    source_path = str(Path(source_fp).resolve()) if source_fp else ""
+    # 우선 lot 등록 root 목록 로드 (is_priority 판정용)
+    priority_data = _load_priority_lots_file()
+    priority_roots: set[str] = set()
+    product_upper = product.upper()
+    for key, val in priority_data.items():
+        if str(key).strip().upper() == product_upper and isinstance(val, list):
+            for entry in val:
+                if isinstance(entry, dict):
+                    root = str(entry.get("root_lot_id") or "").strip().upper()
+                    if root:
+                        priority_roots.add(root)
+            break
+    # RAM 캐시 OrderedDict 에서 항목 수집
+    with _ml_table_lookup._ROOT_RAM_CACHE_LOCK:
+        entries = []
+        product_bytes = 0
+        total_bytes = 0
+        for key, entry in _ml_table_lookup._ROOT_RAM_CACHE.items():
+            eb = int(entry.get("estimated_bytes") or 0)
+            total_bytes += eb
+            if source_path and key[0] != source_path:
+                continue
+            product_bytes += eb
+            root_lot_id = str(entry.get("root_lot_id") or key[1] or "").strip().upper()
+            entries.append({
+                "root_lot_id": root_lot_id,
+                "row_count": int(entry.get("row_count") or 0),
+                "estimated_mb": round(float(eb) / (1024 * 1024), 3),
+                "loaded_at": entry.get("loaded_at") or "",
+                "access_count": int(entry.get("access_count") or 0),
+                "cache_group": str(entry.get("cache_group") or "other"),
+                "cache_sources": list(entry.get("cache_sources") or []),
+                "is_priority": root_lot_id in priority_roots,
+            })
+    max_bytes = _ml_table_lookup._root_ram_cache_max_bytes()
+    return {
+        "ok": True, "product": product, "entries": entries,
+        "product_mb": round(product_bytes / (1024 * 1024), 1),
+        "total_mb": round(total_bytes / (1024 * 1024), 1),
+        "max_mb": round(max_bytes / (1024 * 1024), 1) if max_bytes else 0,
+        "total_roots": len(entries),
+    }
+
+
+@router.get("/ram-cache/overview")
+def get_ram_cache_overview():
+    """제품별 RAM 캐시 현황 요약 — 캐시 관리 페이지 상단 제품별 분해용.
+
+    RAM 캐시 키(소스 경로)를 제품명으로 되돌려 제품 단위로 집계한다.
+    캐시에 아직 안 올라간 제품도 /products 목록 기준으로 0 값으로 포함한다."""
+    # 제품 목록 (source 파일 경로 → 제품명 매핑 준비)
+    known: dict[str, str] = {}  # resolved source path → product name
+    product_rows: dict[str, dict] = {}
+    try:
+        for p in list_products().get("products", []):
+            name = str(p.get("name") or "")
+            if not name:
+                continue
+            product_rows.setdefault(name, {
+                "product": name, "roots": 0, "mb": 0.0,
+                "priority_total": 0, "priority_cached": 0,
+            })
+            try:
+                fp = _product_path(name)
+                if fp:
+                    known[str(Path(fp).resolve())] = name
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 우선 lot 등록 현황 (제품별 등록 수)
+    priority_data = _load_priority_lots_file()
+    priority_roots_by_product: dict[str, set[str]] = {}
+    for key, val in priority_data.items():
+        if not isinstance(val, list):
+            continue
+        prod_name = str(key).strip()
+        roots = {
+            str(e.get("root_lot_id") or "").strip().upper()
+            for e in val if isinstance(e, dict) and e.get("cache_enabled", True)
+        }
+        roots.discard("")
+        priority_roots_by_product[prod_name] = roots
+        row = product_rows.setdefault(prod_name, {
+            "product": prod_name, "roots": 0, "mb": 0.0,
+            "priority_total": 0, "priority_cached": 0,
+        })
+        row["priority_total"] = len(roots)
+    # RAM 캐시 집계
+    total_bytes = 0
+    with _ml_table_lookup._ROOT_RAM_CACHE_LOCK:
+        for key, entry in _ml_table_lookup._ROOT_RAM_CACHE.items():
+            eb = int(entry.get("estimated_bytes") or 0)
+            total_bytes += eb
+            source_path = str(key[0] or "")
+            prod_name = known.get(source_path)
+            if not prod_name:
+                # 미등록 소스 — 파일 stem 으로 제품명 유추
+                stem = Path(source_path).stem if source_path else ""
+                prod_name = _canonical_mltable_product_name(stem, allow_bare=True) or (stem or "(unknown)")
+            row = product_rows.setdefault(prod_name, {
+                "product": prod_name, "roots": 0, "mb": 0.0,
+                "priority_total": 0, "priority_cached": 0,
+            })
+            row["roots"] += 1
+            row["mb"] += eb / (1024 * 1024)
+            root_lot_id = str(entry.get("root_lot_id") or key[1] or "").strip().upper()
+            if root_lot_id in priority_roots_by_product.get(prod_name, set()):
+                row["priority_cached"] += 1
+    # 제품별 예산 병합
+    cfg = load_json(SOURCE_CFG, {})
+    budgets = cfg.get("ram_cache_product_budgets") or {}
+    default_max_roots = int(_ml_table_lookup._root_ram_cache_target_roots())
+    for prod_name, row in product_rows.items():
+        b = budgets.get(prod_name) if isinstance(budgets, dict) else None
+        max_roots = None
+        if isinstance(b, dict):
+            try:
+                max_roots = int(b.get("max_roots"))
+            except Exception:
+                max_roots = None
+        row["max_roots"] = max_roots if max_roots else default_max_roots
+        row["max_roots_custom"] = bool(max_roots)
+        row["mb"] = round(row["mb"], 1)
+    max_bytes = _ml_table_lookup._root_ram_cache_max_bytes()
+    products = sorted(product_rows.values(), key=lambda r: (-r["mb"], r["product"]))
+    return {
+        "ok": True,
+        "products": products,
+        "total_mb": round(total_bytes / (1024 * 1024), 1),
+        "max_mb": round(max_bytes / (1024 * 1024), 1) if max_bytes else 0,
+        "default_max_roots": default_max_roots,
+    }
+
+
+@router.get("/ram-cache/lot-status")
+def get_ram_cache_lot_status(product: str = Query("")):
+    """주요 lot 의 현재 위치(최신 step) — 캐시 관리 페이지 주요 Lot 표의
+    step_id/step_desc 자동 컬럼용. 등록된 lot 의 root 별로 latest-lot 캐시에서
+    tkout_time 최신 행을 뽑는다."""
+    product = str(product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    data = _load_priority_lots_file()
+    product_upper = product.upper()
+    roots: list[str] = []
+    for key, val in data.items():
+        if str(key).strip().upper() == product_upper and isinstance(val, list):
+            for entry in val:
+                if isinstance(entry, dict):
+                    root = str(entry.get("root_lot_id") or "").strip().upper()
+                    if root and root not in roots:
+                        roots.append(root)
+            break
+    # Vehicle_matching step_id → step_desc 맵 (main step 목록이기도 하다)
+    step_desc_map: dict[str, str] = {}
+    # 근사 매칭용: 영문 프리픽스별 (숫자, step_id, desc) 목록 — 정확 매칭이 없으면
+    # 같은 프리픽스에서 step_id 보다 작은 것 중 가장 가까운 main step 의 desc 를 쓴다.
+    prefix_steps: dict[str, list[tuple[int, str, str]]] = {}
+    _STEP_SPLIT_RE = _re.compile(r"^([A-Z]+)(\d+)")
+    try:
+        from core import fab_reference
+        vm_rows = fab_reference._read_rows(fab_reference.VEHICLE_MATCHING_FILE)
+        bare = product_upper[len("ML_TABLE_"):] if product_upper.startswith("ML_TABLE_") else product_upper
+        scoped = [r for r in vm_rows if str(r.get("product") or "").upper() in (product_upper, bare)] or vm_rows
+        for r in scoped:
+            sid = str(r.get("step_id") or "").strip().upper()
+            desc = str(r.get("step_desc") or "").strip()
+            if sid and desc and sid not in step_desc_map:
+                step_desc_map[sid] = desc
+                m = _STEP_SPLIT_RE.match(sid)
+                if m:
+                    prefix_steps.setdefault(m.group(1), []).append((int(m.group(2)), sid, desc))
+        for steps in prefix_steps.values():
+            steps.sort()
+    except Exception:
+        pass
+
+    def _resolve_step_desc(step_id: str) -> tuple[str, bool]:
+        """(desc, approx). 정확 매칭 우선, 없으면 같은 영문 프리픽스에서
+        step_id 보다 작은 main step 중 가장 가까운 것의 desc (approx=True)."""
+        sid = str(step_id or "").strip().upper()
+        if not sid:
+            return "", False
+        exact = step_desc_map.get(sid)
+        if exact:
+            return exact, False
+        m = _STEP_SPLIT_RE.match(sid)
+        if not m:
+            return "", False
+        prefix, num = m.group(1), int(m.group(2))
+        best = None
+        for cand_num, _cand_sid, cand_desc in prefix_steps.get(prefix, []):
+            if cand_num <= num:
+                best = cand_desc
+            else:
+                break
+        return (best or ""), bool(best)
+    statuses: dict[str, dict] = {}
+    for root in roots:
+        status = {"step_id": "", "step_desc": "", "step_desc_approx": False,
+                  "fab_lot_id": "", "tkout_time": "", "wafer_count": 0}
+        try:
+            lf = _latest_lot_step_cache_lf(product, root_lot_id=root)
+            if lf is not None:
+                names = lf.collect_schema().names()
+                want = [c for c in ("root_lot_id", "lot_id", "step_id", "function_step", "tkout_time") if c in names]
+                df = (
+                    lf.filter(pl.col("root_lot_id").cast(_STR, strict=False).str.to_uppercase() == root)
+                    .select(want)
+                    .collect()
+                )
+                if df.height:
+                    status["wafer_count"] = int(df.height)
+                    if "tkout_time" in df.columns:
+                        df = df.sort("tkout_time", descending=True, nulls_last=True)
+                    top = df.row(0, named=True)
+                    step_id = str(top.get("step_id") or "").strip()
+                    status["step_id"] = step_id
+                    status["fab_lot_id"] = str(top.get("lot_id") or "").strip()
+                    tk = top.get("tkout_time")
+                    status["tkout_time"] = str(tk) if tk is not None else ""
+                    # step_desc 는 vehicle_matching 기준: 정확 매칭 → 같은 영문
+                    # 프리픽스의 이전 main step 근사 → (둘 다 없으면) function_step.
+                    desc, approx = _resolve_step_desc(step_id)
+                    if not desc:
+                        desc = str(top.get("function_step") or "").strip()
+                        approx = False
+                    status["step_desc"] = desc
+                    status["step_desc_approx"] = approx
+        except Exception as e:
+            logger.warning("ram-cache lot-status failed for %s/%s: %s", product, root, e)
+        statuses[root] = status
+    # 참고 헤더용: 이 제품에서 가장 최근 진행된 main step (vehicle_matching 에
+    # 등재된 step 중 tkout_time 최신). 정확 매칭이 없으면 최신 행의 근사 desc.
+    latest_main: dict = {}
+    try:
+        lf = _latest_lot_step_cache_lf(product)
+        if lf is not None:
+            names = lf.collect_schema().names()
+            want = [c for c in ("root_lot_id", "lot_id", "step_id", "function_step", "tkout_time") if c in names]
+            lf2 = lf.select(want)
+            if "tkout_time" in want:
+                lf2 = lf2.sort("tkout_time", descending=True, nulls_last=True)
+            df = lf2.head(2000).collect()
+            fallback = None
+            for row in df.iter_rows(named=True):
+                sid = str(row.get("step_id") or "").strip().upper()
+                if not sid:
+                    continue
+                entry = {
+                    "step_id": sid,
+                    "root_lot_id": str(row.get("root_lot_id") or "").strip(),
+                    "fab_lot_id": str(row.get("lot_id") or "").strip(),
+                    "tkout_time": str(row.get("tkout_time") or ""),
+                }
+                if sid in step_desc_map:
+                    latest_main = {**entry, "step_desc": step_desc_map[sid], "approx": False}
+                    break
+                if fallback is None:
+                    desc, approx = _resolve_step_desc(sid)
+                    if desc:
+                        fallback = {**entry, "step_desc": desc, "approx": approx}
+            if not latest_main and fallback:
+                latest_main = fallback
+    except Exception as e:
+        logger.warning("ram-cache lot-status latest_main failed for %s: %s", product, e)
+    return {"ok": True, "product": product, "statuses": statuses, "latest_main_step": latest_main}
+
+
+@router.get("/ram-cache/knob-allocation")
+def get_ram_cache_knob_allocation(product: str = Query(""), lot_id: str = Query("")):
+    """lot 의 KNOB 할당 비율 — 각 KNOB 항목에서 split 값별 wafer 수/%.
+    SplitTable /view (payload 캐시 활용) 를 내부 호출해 계산한다."""
+    product = str(product or "").strip()
+    root = str(lot_id or "").strip().upper()[:5]
+    if not product or not root:
+        raise HTTPException(400, "product and lot_id are required")
+    try:
+        view = view_split(
+            product=product, root_lot_id=root, wafer_ids="", prefix="KNOB",
+            custom_name="", view_mode="all", history_mode="all", fab_lot_id="",
+            custom_cols="", include_related=False, cache_first=True, request=None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"view load failed: {e}")
+    wafer_keys = view.get("wafer_keys") or []
+    total_wafers = len(wafer_keys)
+    out_rows = []
+    for r in view.get("rows") or []:
+        cells = r.get("_cells") or {}
+        first = next(iter(cells.values()), {})
+        if first.get("is_custom_tag") or first.get("is_management_row"):
+            continue
+        tally: dict[str, int] = {}
+        for cell in cells.values():
+            v = cell.get("actual")
+            if v is None or str(v).strip() == "":
+                continue
+            sv = str(v).strip()
+            tally[sv] = tally.get(sv, 0) + 1
+        if not tally:
+            continue
+        assigned = sum(tally.values())
+        values = [
+            {"value": val, "count": cnt, "pct": round(cnt / assigned * 100, 1)}
+            for val, cnt in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+        ][:15]
+        out_rows.append({
+            "param": r.get("_param") or "",
+            "display": r.get("_display") or r.get("_param") or "",
+            "assigned": assigned,
+            "unassigned": max(0, total_wafers - assigned),
+            "split_count": len(tally),
+            "values": values,
+        })
+        if len(out_rows) >= 500:
+            break
+    # split(값 2개 이상) 행 우선, 그 안에서 이름 순
+    out_rows.sort(key=lambda row: (0 if row["split_count"] >= 2 else 1, _natural_param_key(row["param"])))
+    return {
+        "ok": True, "product": product, "root_lot_id": root,
+        "total_wafers": total_wafers, "rows": out_rows,
+        "split_rows": sum(1 for row in out_rows if row["split_count"] >= 2),
+    }
+
+
+@router.get("/ram-cache/product-budgets")
+def get_ram_cache_product_budgets():
+    """제품별 RAM 캐시 예산(max_roots) 조회."""
+    cfg = load_json(SOURCE_CFG, {})
+    budgets = cfg.get("ram_cache_product_budgets") or {}
+    # 각 product 의 max_roots 값을 dict 형태로 반환
+    products: dict[str, dict] = {}
+    if isinstance(budgets, dict):
+        for prod_key, prod_val in budgets.items():
+            if isinstance(prod_val, dict):
+                products[prod_key] = {"max_roots": int(prod_val.get("max_roots") or 1000)}
+            else:
+                try:
+                    products[prod_key] = {"max_roots": int(prod_val)}
+                except Exception:
+                    products[prod_key] = {"max_roots": 1000}
+    default_max_roots = int(
+        _ml_table_lookup._root_ram_cache_target_roots()
+    )
+    return {
+        "ok": True,
+        "products": products,
+        "default_max_roots": default_max_roots,
+    }
+
+
+class RamCacheProductBudgetSaveReq(BaseModel):
+    product: str
+    max_roots: int = 1000
+
+
+@router.post("/ram-cache/product-budgets/save")
+def save_ram_cache_product_budget(
+    req: RamCacheProductBudgetSaveReq,
+    _perm=Depends(require_page_manager("splittable")),
+):
+    """제품별 RAM 캐시 예산(max_roots) 저장. source_config.json 의
+    ram_cache_product_budgets 아래에 기록한다."""
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    max_roots = max(0, min(ROOT_LOT_CACHE_LIMIT_MAX, int(req.max_roots or 1000)))
+    cfg = load_json(SOURCE_CFG, {})
+    budgets = cfg.setdefault("ram_cache_product_budgets", {})
+    if not isinstance(budgets, dict):
+        budgets = {}
+        cfg["ram_cache_product_budgets"] = budgets
+    budgets[product] = {"max_roots": max_roots}
+    save_json(SOURCE_CFG, cfg)
+    return {"ok": True, "product": product, "max_roots": max_roots}
 
 
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:

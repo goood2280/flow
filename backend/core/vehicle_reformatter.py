@@ -36,6 +36,8 @@ PIVOT_KEY_COLS = [
     "step_id", "step_seq", "flat", "flat_zone", "shot_x", "shot_y",
 ]
 # key 는 아니지만 결과에 같이 실어줄 메타 (shot 그룹 내 first)
+# total_site_cnt 는 출력 컬럼에서 제외 — PGM(pt) 라벨이 site 수 정보를 담고 있고,
+# 필터는 raw(long) 단계(routers/reformatize._apply_filters)에서 적용되므로 무관.
 PIVOT_META_COLS = ["tkin_time", "tkout_time", "eqp_id", "chamber_id", "pgm"]
 
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")

@@ -125,7 +125,7 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
 
 const NAV_GROUPS = [
   { id: "home", label: "홈", keys: ["home"], direct: true },
-  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable"] },
+  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "ramcache"] },
   { id: "work", label: "업무", keys: ["inform", "meeting", "calendar", "tracker", "valve", "teg", "ettime", "reformatize"] },
   { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
   { id: "admin", label: "관리", keys: ["admin", "devguide"] },
@@ -323,7 +323,7 @@ function ContactButton({ user }) {
               </div>))}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              <input value={msg} onChange={e => setMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") send(); }} placeholder="관리자에게 보낼 메시지…" style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+              <input value={msg} onChange={e => setMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return; send();} }} placeholder="관리자에게 보낼 메시지…" style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
               <button onClick={send} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>전송</button>
             </div>
           </div>}
@@ -358,7 +358,7 @@ function ContactButton({ user }) {
                 </div>))}
               </div>
               {selThreadUser && <div style={{ display: "flex", gap: 6 }}>
-                <input value={replyMsg} onChange={e => setReplyMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") reply(); }} placeholder={`${selThreadUser} 에게 답장…`} style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+                <input value={replyMsg} onChange={e => setReplyMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return; reply();} }} placeholder={`${selThreadUser} 에게 답장…`} style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
                 <button onClick={reply} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>답장</button>
               </div>}
             </div>
@@ -545,7 +545,7 @@ function PwModal({ user, onClose }) {
       <input value={oldPw} onChange={e=>setOldPw(e.target.value)} placeholder="현재 비밀번호" type="password"
         style={{...S,marginBottom:10}} />
       <input value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="새 비밀번호" type="password"
-        style={{...S,marginBottom:12}} onKeyDown={e=>e.key==="Enter"&&submit()} />
+        style={{...S,marginBottom:12}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} />
       <button onClick={submit} style={{width:"100%",padding:10,borderRadius:6,border:"none",
         background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>변경</button>
       {msg && <div style={{marginTop:8,fontSize:14,textAlign:"center",

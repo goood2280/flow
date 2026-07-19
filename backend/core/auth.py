@@ -222,8 +222,12 @@ CANONICAL_PAGE_IDS = (
     "ettime",
     # ET Index 다운로드 (vehicle reformatter REAL/ADDP index 추출) 페이지.
     "reformatize",
+    # Flow-i 채팅 사용 권한 — 홈 채팅 + home agent orchestrate 진입 게이트.
+    "flowi",
 )
 PAGE_ID_ALIASES = {
+    "flow-i": "flowi",
+    "flow_i": "flowi",
     "informs": "inform",
     "informlog": "inform",
     "meetings": "meeting",

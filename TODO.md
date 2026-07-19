@@ -8,9 +8,14 @@
 ## Next
 
 - (Claude) 에이전트 탭 재편 후속 — diagnosis 소탭 권한 토큰 마이그레이션 안내: 기존 `diagnosis:home-flowi|semantic|unit-ai|llm` 토큰은 새 키(`catalog|runtime|workflows`)와 불일치. bare `diagnosis` 토큰/admin은 영향 없음. 소탭 단위로 제한된 계정이 있으면 관리 > 권한에서 재부여 필요.
-- (Claude) ReAct 함수 도구 실행 결과 품질 — `query_lot_current_step_from_progress_cache` 등 일부 함수 도구가 route_flowi_feature 안내 문구를 결과로 반환(도구는 success인데 실데이터 아님). 함수 실행 경로에서 실제 조회 결과가 result_preview로 잡히는지 점검.
+- (Claude) commonality(wafer 그룹 비교) 엔진 — "A1001 #3,4,5 vs #6,7,8 왜 갈리나" 류 bimodal RCA용. 그룹 A/B wafer 를 받아 ML_TABLE KNOB_*/MASK_*/INLINE_*/VM_* + FAB eqp 이력 + ET 를 스캔해 두 그룹을 가르는 feature 를 랭킹하는 결정적 단위기능 → ReAct 도구 등록.
 
 ## Done
+
+- (Claude) Flow-i 운용 게이트 + 권한화 — ① tabs 토큰 `flowi` 신설(auth CANONICAL_PAGE_IDS, 관리자 권한 UI 체크박스 "Flow-i") — 없으면 채팅이 권한 안내로 응답. ② core/flowi_gate: 동시 실행 상한(기본 2, FLOW_FLOWI_MAX_CONCURRENCY)+짧은 대기(6초) 후 "지금 사용이 많다" 안내, 서버 바쁘면(CPU admit 기본 budget-2 코어, 메모리 여유 부족) 실행을 정중히 미룸 — admin 은 admission 우회. 진입점 4곳(flowi/chat, flowi/agent/chat, home-agent orchestrate+stream) 배선. ③ 기능 권한 강제 — ReAct 도구 카탈로그를 유저 tabs 로 필터(_filter_tools_for_user)+실행 시점 unit 가드(_unit_allowed), 단일 패스 unit_only 의 filebrowser 무조건 추가 구멍 수정. E2E: 권한무 계정 flowi_access_denied, 권한유 계정 정상 실행+타 기능 permission_denied, step_lookup 직접 호출 회귀 없음, 권한 매트릭스 UI "Flow-i" 컬럼 확인.
+- (Claude) ReAct 함수 도구 guidance 폴백 교정 — 함수 도구가 route_flowi_feature/open_* 안내 문구로 폴백하면 ok=False + status=guidance_fallback 으로 관측(무엇이 빠졌는지 result_preview 로 decision LLM 에 피드백, 라우터 도구 자체를 고른 경우는 정상 처리). 원인은 데이터 부재가 아니라 함수 실행 경로가 단일 패스 재라우팅에 위임되며 키워드/함수선택 게이트 불일치 시 안내로 빠지던 것.
+- (Claude) ReAct 역할별 예산 — 유저 deadline 기본 90초/clamp 120초(FLOW_LLM_REACT_DEADLINE_SECONDS), admin 은 별도 env(FLOW_LLM_REACT_ADMIN_DEADLINE_SECONDS 기본 300초/최대 600초, FLOW_LLM_REACT_ADMIN_MAX_ITERS 기본 16턴/최대 24턴)로 긴 분석 루프 허용.
+- (Claude) 지식 카드 — `process-terms`(etch/depo/litho 등 일반 공정용어, active 시드 번들) + `todo-process-stage`(제품별 step_id 구간 ↔ PC/RMG/MOL/BEOL 채움 틀) 추가. "지식 채움 수행" 환경 증거에 Vehicle_matching step_desc 샘플과 domain.classify_process_area 기반 제품별 구간 자동 추정 포함(evidence 2800자). domain.py Gate 룰에 RMG/REPLACEMENT GATE 토큰 추가.
 
 - (Claude) TEG 위치 조회에 `TEG Mapfile 체크` 탭 추가 — 설비 레시피 원문(#wafer-map/<SITES>/#teg-map) 파싱(core/teg_check.py, POST /api/teg-map/inspect), 전체 Pattern 을 작은 WF MAP 카드로 동시 표시(클릭 확대·패턴별 맵 재지정), #teg-map 좌표를 flat 변환(Vertical(R)=반시계 90° 회전 원복 + 오프셋) 후 Teg_location raw ebeam 정답지와 🟢/🔴/⚪ 대조. 오프셋(flat 별 기본·TEG별 추가/수정/삭제·회전 offset)은 ⚙️ 설정의 teg_map.json `check` 섹션에서 편집. shot 표시 방식이 칩 격자인 vehicle 은 TEG 크기 고려 칩 겹침 검사 + shot 확대 뷰(겹침 빨간색) 표시
 - (Claude) 에이전트 탭 전면 재편 — 상위 탭 `기능 카탈로그`(도구 카드 + agentic 상태 배지 + 단위기능 시험 콘솔) / `실행 추적`(질문→용어해석→턴별 도구 실행→결론 스토리) / `Workflow 템플릿`. Semantic layer 편집기는 관리 > Flow-i 학습 > 용어사전으로(SemanticLayerPanel.jsx 추출), LLM 설정은 관리 > LLM 설정으로 이관. `/api/agent/home-flowi/tools`에 additive `agentic` 상태 추가. ReAct 루프 활성 상태 end-to-end 검증(함수 도구 3턴 실행 + ask_user 확인).

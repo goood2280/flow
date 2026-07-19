@@ -1,7 +1,23 @@
 {
-  "version": "9.3.0",
+  "version": "9.4.0",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.4.0",
+      "date": "2026-07-19",
+      "title": "Flow-i 지식 레이어·운용 게이트 — 권한화 + SplitTable 캐시 워커 정리",
+      "tag": "feat",
+      "changes": [
+        "**지식 레이어 (지식 카드)** — `core/knowledge_cards.py` + 시드 카드 번들(`core/knowledge_seed_cards/`, setup.py 포함). 카드 우선순위 local > seed > generated > adapter. 일반 공정용어(process-terms)·제품별 공정구간 채움틀(todo-process-stage) 카드로 Flow-i 인터뷰/답변 품질 보강 — \"지식 채움 수행\" 환경 증거에 Vehicle_matching step_desc 샘플과 `domain.classify_process_area` 기반 제품별 구간 자동 추정 포함. 계약 문서 `docs/features/knowledge-layer.md`.",
+        "**Flow-i 운용 게이트 + 권한화** — tabs 토큰 `flowi` 신설(관리자 권한 UI \"Flow-i\" 체크박스, 없으면 채팅이 권한 안내로 응답). `core/flowi_gate`: 동시 실행 상한(기본 2, `FLOW_FLOWI_MAX_CONCURRENCY`) + 짧은 대기(6초) 후 사용 많음 안내, 서버 바쁘면(CPU/메모리 admission) 실행을 정중히 미룸 — admin 은 admission 우회, 진입점 4곳(flowi/chat, agent/chat, home-agent orchestrate+stream) 배선. ReAct 도구 카탈로그를 유저 tabs 로 필터(_filter_tools_for_user) + 실행 시점 unit 가드 — 권한 없는 시스템에 Flow-i 로 우회 접근 불가.",
+        "**ReAct 루프 품질** — 역할별 예산: 유저 deadline 기본 90초/최대 120초(`FLOW_LLM_REACT_DEADLINE_SECONDS`), admin 은 별도 env 로 기본 300초/최대 600초·16~24턴 긴 분석 루프 허용. 함수 도구가 라우팅 안내 문구로 폴백하면 ok=False·status=guidance_fallback 으로 관측해 decision LLM 에 무엇이 빠졌는지 피드백.",
+        "**Flow-i 단위기능** — ET/INLINE 차트 집계 확장(median/avg/p90/p10/max·shot 단위 파서/expr/SQL), WF map 핸들러 spec-out 파서·게이트·좌표 폴백(chip_x_adj > chip_x_pos > shot_x) 정리.",
+        "**SplitTable 캐시 워커 정리** — view revalidate 를 단일 워커 + 3h 쿨다운으로 직렬화해 사용자 조회와의 CPU 경쟁 해소. `query_workers` 설정(0=자동/1~N 고정, `GET/POST /api/splittable/query-workers`)으로 조회·RAM 예열 워커 축을 한 번에 제어.",
+        "**RAM 캐시 관리 탭 신설** — SplitTable 설정 모달 안에 있던 캐시 관리를 데이터 그룹 독립 탭으로 승격. 전 제품 현황(제품별 분해)·우선 lot·예산 편집을 한 화면에서.",
+        "**데드코드 감축 (2026-07 종합 감사 후속)** — 미사용 8파일 제거: splittable notes_repository/notes_service, shared internal_api_contract, core matching/ml_heuristics, FlowInformStandardScreen/S3StatusLight/My_SqlWorkspace (SQL 작업대 탭은 이전 재편에서 이미 제거, 파일 정리).",
+        "**신규 pytest** — test_flowi_gate(권한·admission), test_knowledge_cards, test_flowi_chart_agg, test_flowi_wafer_map, test_reformatize_filters PASS."
+      ]
+    },
     {
       "version": "9.3.0",
       "date": "2026-07-18",

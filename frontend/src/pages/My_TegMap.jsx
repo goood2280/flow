@@ -543,11 +543,9 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nea
 function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const SIZE = 380;
   const geo = data.geometry;
-  if (geo.fit !== "radius") {
-    return <EmptyState icon="⚠" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
-  }
   const display = data.display || { mode: "none" };
-  const W = geo.shot_w_mm, H = geo.shot_h_mm;
+  const W = geo.fit === "radius" ? geo.shot_w_mm : 1;
+  const H = geo.fit === "radius" ? geo.shot_h_mm : 1;
   const pad = 0.12;
   const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
   const w = W * s, h = H * s;
@@ -636,6 +634,11 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   }, [onWheel]);
 
   const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
+
+  // v9.3.x: early return을 훅 아래로 이동 (Rules-of-Hooks 준수)
+  if (geo.fit !== "radius") {
+    return <EmptyState icon="⚠" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
+  }
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>

@@ -38,6 +38,7 @@ from core import semiconductor_knowledge as semi_knowledge
 from core import dashboard_join as dashboard_charting
 from core import knowledge_impact
 from core import knowledge_vault as kv
+from core import flowi_gate
 from core import flowi_multisource
 from core import home_memory
 from core import agent_feedback_penalties
@@ -673,9 +674,9 @@ def _flowi_chart_defaults() -> dict[str, Any]:
                 scatter[key] = max(lo, min(hi, int(scatter.get(key) or fallback)))
             except Exception:
                 scatter[key] = fallback
-    if scatter.get("inline_agg") not in {"avg", "median"}:
+    if scatter.get("inline_agg") not in _CHART_AGG_VALUES:
         scatter["inline_agg"] = "avg"
-    if scatter.get("et_agg") not in {"avg", "median"}:
+    if scatter.get("et_agg") not in _CHART_AGG_VALUES:
         scatter["et_agg"] = "median"
     defaults["scatter"] = scatter
     return defaults
@@ -705,6 +706,7 @@ _FLOWI_DATA_REGISTER_MARKER = "FLOWI_DATA_REGISTER"
 _FLOWI_SPLITTABLE_NOTE_MARKER = "FLOWI_SPLITTABLE_NOTE"
 _FLOWI_SPLITTABLE_PLAN_MARKER = "FLOWI_SPLITTABLE_PLAN"
 _FLOWI_INFORM_CONFIRM_MARKER = "FLOWI_INFORM_CONFIRM"
+_FLOWI_INFORM_MAIL_MARKER = "FLOWI_INFORM_MAIL"
 _FLOWI_INFORM_WALKTHROUGH_MARKER = "FLOWI_INFORM_WALKTHROUGH"
 _FLOWI_FILE_EXTS = {".parquet", ".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 _FLOWI_TEXT_FILE_EXTS = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
@@ -4205,6 +4207,27 @@ def attach_term_knowledge(prompt: str, tool: dict[str, Any]) -> dict[str, Any]:
                 "term": term,
                 "source": "knowledge_term",
             })
+    # 단일 지식 레이어(knowledge_cards) — 시드/생성/로컬/어댑터 카드를 같은
+    # retrieved_knowledge 로 합치고, 답변 출처(knowledge_sources)를 tool 에 남긴다.
+    try:
+        from core import knowledge_cards as _knowledge_cards
+        matched_cards = _knowledge_cards.resolve(prompt)
+        for card in matched_cards:
+            body_line = re.sub(r"\s+", " ", str(card.get("body") or "")).strip()
+            additions.append({
+                "id": f"card:{card.get('term')}",
+                "doc_id": f"card:{card.get('path') or card.get('term')}",
+                "kind": f"knowledge_card_{card.get('origin') or 'seed'}",
+                "title": str(card.get("term") or ""),
+                "summary": body_line[:200],
+                "term": str(card.get("matched") or card.get("term") or ""),
+                "source": "knowledge_cards",
+            })
+        card_sources = _knowledge_cards.knowledge_sources(matched_cards)
+        if card_sources and not tool.get("knowledge_sources"):
+            tool["knowledge_sources"] = card_sources[:6]
+    except Exception as exc:
+        logger.debug("knowledge_cards attach failed: %s", exc)
     if additions:
         tool["retrieved_knowledge"] = _merge_retrieved_knowledge(tool.get("retrieved_knowledge"), additions)
     return tool
@@ -4555,13 +4578,23 @@ def _flowi_dashboard_sql_from_config(cfg: dict[str, Any]) -> str:
             where.append("product = :product")
         if lots:
             where.append("root_lot_id IN (:lots)")
+        where_sql = f"WHERE {' AND '.join(where)} " if where else ""
+        agg = _text(cfg.get("aggregation")) or "avg"
+        y_sql = {
+            "avg": "AVG(value)", "median": "MEDIAN(value)", "max": "MAX(value)",
+            "p90": "QUANTILE_CONT(value, 0.9)", "p10": "QUANTILE_CONT(value, 0.1)",
+        }.get(agg)
+        if agg == "shot" or y_sql is None:
+            return (
+                "SELECT root_lot_id, wafer_id, tkout_time, value AS y "
+                "FROM INLINE " + where_sql + "ORDER BY tkout_time"
+            )
         return (
-            "SELECT root_lot_id, wafer_id, tkout_time, AVG(value) AS y "
-            "FROM INLINE "
-            + (f"WHERE {' AND '.join(where)} " if where else "")
+            f"SELECT root_lot_id, wafer_id, tkout_time, {y_sql} AS y "
+            "FROM INLINE " + where_sql
             + "GROUP BY root_lot_id, wafer_id, tkout_time"
         )
-    if source_type == "ET":
+    if source_type in ("ET", "VM"):
         where = ["item_id = :item_id"] if metric else []
         if product:
             where.append("product = :product")
@@ -4569,10 +4602,21 @@ def _flowi_dashboard_sql_from_config(cfg: dict[str, Any]) -> str:
             where.append("step_id = :step_id")
         if lots:
             where.append("root_lot_id IN (:lots)")
+        where_sql = f"WHERE {' AND '.join(where)} " if where else ""
+        agg = _text(cfg.get("aggregation")) or ("avg" if source_type == "VM" else "median")
+        y_sql = {
+            "median": "MEDIAN(value)", "avg": "AVG(value)", "max": "MAX(value)",
+            "p90": "QUANTILE_CONT(value, 0.9)", "p10": "QUANTILE_CONT(value, 0.1)",
+        }.get(agg)
+        if agg == "shot" or y_sql is None:
+            # shot = 집계 없이 전체 측정 point
+            return (
+                f"SELECT product, root_lot_id, wafer_id, tkout_time, value AS y "
+                f"FROM {source_type} " + where_sql + "ORDER BY tkout_time"
+            )
         return (
-            "SELECT product, root_lot_id, wafer_id, tkout_time, MEDIAN(value) AS y "
-            "FROM ET "
-            + (f"WHERE {' AND '.join(where)} " if where else "")
+            f"SELECT product, root_lot_id, wafer_id, tkout_time, {y_sql} AS y "
+            f"FROM {source_type} " + where_sql
             + "GROUP BY product, root_lot_id, wafer_id, tkout_time"
         )
     return ""
@@ -5448,6 +5492,8 @@ def _handle_dashboard_chart_context_followup(
     routed_prompt = " ".join(str(p).strip() for p in parts if str(p or "").strip())
     if source_type == "ET":
         out = _handle_et_trend_chart(routed_prompt, product_hint, max_rows)
+    elif source_type == "VM":
+        out = _handle_vm_trend_chart(routed_prompt, product_hint, max_rows)
     else:
         out = _handle_inline_trend_chart(routed_prompt, product_hint, max_rows)
     if not out.get("handled"):
@@ -5813,30 +5859,6 @@ def _first_metric_in_text(text: str) -> str:
     return ""
 
 
-def _inline_et_metric_pair(prompt: str, metrics: list[dict[str, Any]]) -> tuple[str, str]:
-    text = str(prompt or "")
-    up = _upper(text)
-    inline_metric = ""
-    et_metric = ""
-    inline_pos = up.find("INLINE")
-    et_pos = up.find("ET")
-    if inline_pos >= 0:
-        inline_end = et_pos if et_pos > inline_pos else len(text)
-        inline_metric = _first_metric_in_text(text[inline_pos:inline_end])
-    if et_pos >= 0:
-        et_end = inline_pos if inline_pos > et_pos else len(text)
-        et_metric = _first_metric_in_text(text[et_pos:et_end])
-    ordered = [str(m.get("metric") or "").strip() for m in metrics if str(m.get("metric") or "").strip()]
-    if not inline_metric and ordered:
-        inline_metric = ordered[0]
-    if not et_metric:
-        for item in ordered:
-            if item != inline_metric:
-                et_metric = item
-                break
-    return inline_metric, et_metric
-
-
 def _root_key_expr(root_col: str):
     return (
         pl.col(root_col)
@@ -5893,7 +5915,7 @@ def _flowi_metric_lf(
     agg_name: str | None = None,
 ) -> dict[str, Any]:
     kind_u = _upper(kind)
-    files = _inline_files(product) if kind_u == "INLINE" else _et_files(product)
+    files = _flowi_source_files(kind_u, product)  # ET/INLINE/VM 등 소스별 파일 (VM→ET 오독 방지)
     if not files:
         return {"ok": False, "error": f"{kind_u} parquet 파일을 찾지 못했습니다.", "files": []}
     lf = _scan_parquet(files)
@@ -5964,8 +5986,8 @@ def _flowi_metric_lf(
         group_cols.extend(["shot_x", "shot_y"])
     exprs.append(pl.col(value_col).cast(pl.Float64, strict=False).alias("_metric_value"))
     scoped = lf.select(exprs).drop_nulls(subset=["_metric_value"])
-    agg_name = agg_name if agg_name in {"avg", "median"} else ("avg" if kind_u == "INLINE" else "median")
-    agg = pl.col("_metric_value").mean().alias(value_alias) if agg_name == "avg" else pl.col("_metric_value").median().alias(value_alias)
+    agg_name = agg_name if agg_name in _CHART_AGG_VALUES else _flowi_source_default_agg(kind_u)
+    agg = _flowi_agg_polars_expr(agg_name, "_metric_value").alias(value_alias)
     grouped = scoped.group_by(group_cols).agg([
         agg,
         pl.len().alias(f"{value_alias}_n"),
@@ -6558,7 +6580,8 @@ def _duck_metric_subquery(
         select_exprs.append(f"{_duck_cast_str(alias, shot_y_col)} AS shot_y")
         group_cols.extend(["shot_x", "shot_y"])
     select_exprs.append(f"TRY_CAST({_duck_col(alias, value_col)} AS DOUBLE) AS _metric_value")
-    agg_sql = "AVG(_metric_value)" if agg_name == "avg" else "MEDIAN(_metric_value)"
+    agg_name = agg_name if agg_name in _CHART_AGG_VALUES else _flowi_source_default_agg(kind)
+    agg_sql = _flowi_agg_duck_sql(agg_name, "_metric_value")
     group_sql = ", ".join(group_cols)
     sql = f"""
         SELECT {group_sql},
@@ -6674,31 +6697,36 @@ def _duck_knob_subquery(product: str, lots: list[str], prompt: str, xy_metrics: 
 def _try_metric_scatter_duckdb(prompt: str, product: str, metrics: list[dict[str, Any]], lots: list[str], operations: list[str]) -> dict[str, Any]:
     if not duckdb_engine.is_available():
         return {"ok": False, "error": "duckdb unavailable", "fallback": True}
-    sources = _source_terms(prompt)
-    if not {"INLINE", "ET"}.issubset(sources):
-        return {"ok": False, "error": "현재 실제 scatter 실행은 INLINE + ET 조합부터 지원합니다.", "fallback": True}
-    inline_metric, et_metric = _inline_et_metric_pair(prompt, metrics)
+    pair = _flowi_scatter_source_pair(prompt)
+    if pair is None:
+        return {"ok": False, "error": "scatter/corr 는 INLINE/ET/VM 중 2개 소스 조합이 필요합니다.", "fallback": True}
+    name_x, name_y = pair
+    inline_metric, et_metric = _flowi_source_metric_pair(prompt, metrics, name_x, name_y)
     if not inline_metric or not et_metric:
-        return {"ok": False, "error": "INLINE/ET metric 2개가 필요합니다.", "fallback": True}
+        return {"ok": False, "error": f"{name_x}/{name_y} metric 2개가 필요합니다.", "fallback": True}
     chart_defaults = _flowi_chart_defaults()
     scatter_defaults = chart_defaults.get("scatter") or FLOWI_CHART_DEFAULTS["scatter"]
-    inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in {"avg", "median"} else "avg"
-    et_agg = scatter_defaults.get("et_agg") if scatter_defaults.get("et_agg") in {"avg", "median"} else "median"
+    inline_agg = _flowi_scatter_slot_agg(name_x, scatter_defaults)
+    et_agg = _flowi_scatter_slot_agg(name_y, scatter_defaults)
+    # 프롬프트가 집계를 명시하면 y 슬롯(주로 ET/VM)에 적용. x 슬롯은 소스 기본 유지.
+    _prompt_agg = _flowi_chart_agg_from_prompt(prompt, default="")
+    if _prompt_agg in _CHART_AGG_VALUES:
+        et_agg = _prompt_agg
     try:
         point_limit = max(50, min(5000, int(scatter_defaults.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
     except Exception:
         point_limit = FLOWI_CHART_POINT_LIMIT
     include_shot = _explicit_shot_grain(prompt)
-    inline_files = _inline_files(product)
-    et_files = _et_files(product)
+    inline_files = _flowi_source_files(name_x, product)
+    et_files = _flowi_source_files(name_y, product)
     inline = _duck_metric_subquery(
-        view="inline_src", files=inline_files, kind="INLINE", product=product, lots=lots,
+        view="inline_src", files=inline_files, kind=name_x, product=product, lots=lots,
         metric=inline_metric, value_alias="inline_value", include_shot=include_shot, agg_name=inline_agg,
     )
     if not inline.get("ok"):
         return inline
     et = _duck_metric_subquery(
-        view="et_src", files=et_files, kind="ET", product=product, lots=lots,
+        view="et_src", files=et_files, kind=name_y, product=product, lots=lots,
         metric=et_metric, value_alias="et_value", include_shot=include_shot, agg_name=et_agg,
     )
     if not et.get("ok"):
@@ -6813,11 +6841,11 @@ def _try_metric_scatter_duckdb(prompt: str, product: str, metrics: list[dict[str
     return {
         "ok": True,
         "kind": "dashboard_scatter",
-        "title": f"INLINE {inline_metric} vs ET {et_metric}",
+        "title": f"{name_x} {inline_metric} vs {name_y} {et_metric}",
         "points": points,
         "total": len(points),
-        "x_label": f"INLINE {inline_metric} {inline_agg}",
-        "y_label": f"ET {et_metric} {et_agg}",
+        "x_label": f"{name_x} {inline_metric} {_flowi_agg_label(inline_agg)}",
+        "y_label": f"{name_y} {et_metric} {_flowi_agg_label(et_agg)}",
         "join_cols": join_cols,
         "join_how": join_how.lower(),
         "corr": round(corr, 6) if corr is not None else None,
@@ -6825,8 +6853,8 @@ def _try_metric_scatter_duckdb(prompt: str, product: str, metrics: list[dict[str
         "color_by": (knob.get("display_name") if knob else "") or "",
         "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
         "filters": {"excluded_values": knob.get("excluded_values") or []} if knob else {},
-        "sources": source_meta,
-        "aggregations": {"INLINE": inline_agg, "ET": et_agg},
+        "sources": {**source_meta, "x_source": name_x, "y_source": name_y},
+        "aggregations": {name_x: inline_agg, name_y: et_agg},
         "render_preset": {**scatter_defaults, "grain": "shot" if include_shot else "wafer_agg"},
     }
 
@@ -6864,12 +6892,13 @@ def _linear_fit(xs: list[float], ys: list[float]) -> dict[str, Any]:
 
 
 def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]], lots: list[str], operations: list[str]) -> dict[str, Any]:
-    sources = _source_terms(prompt)
-    if not {"INLINE", "ET"}.issubset(sources):
-        return {"ok": False, "error": "현재 실제 scatter 실행은 INLINE + ET 조합부터 지원합니다."}
-    inline_metric, et_metric = _inline_et_metric_pair(prompt, metrics)
+    pair = _flowi_scatter_source_pair(prompt)
+    if pair is None:
+        return {"ok": False, "error": "scatter/corr 는 INLINE/ET/VM 중 2개 소스 조합이 필요합니다."}
+    name_x, name_y = pair
+    inline_metric, et_metric = _flowi_source_metric_pair(prompt, metrics, name_x, name_y)
     if not inline_metric or not et_metric:
-        return {"ok": False, "error": "INLINE/ET metric 2개가 필요합니다."}
+        return {"ok": False, "error": f"{name_x}/{name_y} metric 2개가 필요합니다."}
     duckdb_result = _try_metric_scatter_duckdb(prompt, product, metrics, lots, operations)
     if duckdb_result.get("ok"):
         return duckdb_result
@@ -6877,17 +6906,20 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
         logger.warning("flowi duckdb scatter fallback: %s", duckdb_result.get("error"))
     chart_defaults = _flowi_chart_defaults()
     scatter_defaults = chart_defaults.get("scatter") or FLOWI_CHART_DEFAULTS["scatter"]
-    inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in {"avg", "median"} else "avg"
-    et_agg = scatter_defaults.get("et_agg") if scatter_defaults.get("et_agg") in {"avg", "median"} else "median"
+    inline_agg = _flowi_scatter_slot_agg(name_x, scatter_defaults)
+    et_agg = _flowi_scatter_slot_agg(name_y, scatter_defaults)
+    _prompt_agg = _flowi_chart_agg_from_prompt(prompt, default="")
+    if _prompt_agg in _CHART_AGG_VALUES:
+        et_agg = _prompt_agg
     try:
         point_limit = max(50, min(5000, int(scatter_defaults.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
     except Exception:
         point_limit = FLOWI_CHART_POINT_LIMIT
     include_shot = _explicit_shot_grain(prompt)
-    inline = _flowi_metric_lf("INLINE", product, lots, inline_metric, "inline_value", include_shot=include_shot, agg_name=inline_agg)
+    inline = _flowi_metric_lf(name_x, product, lots, inline_metric, "inline_value", include_shot=include_shot, agg_name=inline_agg)
     if not inline.get("ok"):
         return inline
-    et = _flowi_metric_lf("ET", product, lots, et_metric, "et_value", include_shot=include_shot, agg_name=et_agg)
+    et = _flowi_metric_lf(name_y, product, lots, et_metric, "et_value", include_shot=include_shot, agg_name=et_agg)
     if not et.get("ok"):
         return et
     join_cols = _flowi_join_cols(inline.get("group_cols") or [], et.get("group_cols") or [])
@@ -6989,11 +7021,11 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
     return {
         "ok": True,
         "kind": "dashboard_scatter",
-        "title": f"INLINE {inline_metric} vs ET {et_metric}",
+        "title": f"{name_x} {inline_metric} vs {name_y} {et_metric}",
         "points": points,
         "total": len(points),
-        "x_label": f"INLINE {inline_metric} {inline_agg}",
-        "y_label": f"ET {et_metric} {et_agg}",
+        "x_label": f"{name_x} {inline_metric} {_flowi_agg_label(inline_agg)}",
+        "y_label": f"{name_y} {et_metric} {_flowi_agg_label(et_agg)}",
         "join_cols": join_cols,
         "join_how": join_how,
         "corr": round(corr, 6) if corr is not None else None,
@@ -7001,8 +7033,8 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
         "color_by": (knob.get("display_name") if knob else "") or "",
         "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
         "filters": {"excluded_values": knob.get("excluded_values") or []} if knob else {},
-        "sources": source_meta,
-        "aggregations": {"INLINE": inline_agg, "ET": et_agg},
+        "sources": {**source_meta, "x_source": name_x, "y_source": name_y},
+        "aggregations": {name_x: inline_agg, name_y: et_agg},
         "render_preset": {**scatter_defaults, "grain": "shot" if include_shot else "wafer_agg"},
     }
 
@@ -7446,15 +7478,147 @@ def _flowi_explicit_chart_draw_intent(prompt: str) -> bool:
     ))
 
 
-def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+# ── 차트 집계(agg) 확장 — median 기본 + P90/P10/max/avg + shot(전체 미집계) ──────
+# ET 는 median 기본, "shot 으로" 요청 시 집계 없이 전체 측정 point. INLINE 은 avg 기본.
+_ET_AGG_CHOICES = ("median", "avg", "p90", "p10", "max", "shot")
+# scatter/trend 의 wafer 집계 검증 집합 (shot 은 grain 분기라 여기 미포함).
+_CHART_AGG_VALUES = {"avg", "median", "p90", "p10", "max"}
+
+
+def _flowi_agg_duck_sql(agg_name: str, col: str = "_metric_value") -> str:
+    """agg 이름 → DuckDB 집계 SQL 조각 (scatter duckdb 경로용)."""
+    return {
+        "avg": f"AVG({col})",
+        "median": f"MEDIAN({col})",
+        "max": f"MAX({col})",
+        "p90": f"QUANTILE_CONT({col}, 0.9)",
+        "p10": f"QUANTILE_CONT({col}, 0.1)",
+    }.get(agg_name, f"MEDIAN({col})")
+
+
+def _flowi_chart_agg_from_prompt(prompt: str, *, default: str = "median") -> str:
+    """차트 y 집계 방법을 프롬프트에서 뽑는다. 반환: median/avg/p90/p10/max/shot."""
     text = str(prompt or "")
-    if not _et_trend_should_handle(text):
+    low = text.lower()
+    if re.search(r"(?<![a-z0-9_])shots?(?![a-z0-9_])", low) or "샷" in text or any(
+        t in text for t in ("전체 측정", "모든 point", "모든 포인트", "다 찍어", "전부 찍어")
+    ):
+        return "shot"
+    if re.search(r"(?<![a-z0-9_])p\s*90(?![0-9])", low) or "90분위" in text or "상위10" in text or "상위 10" in text:
+        return "p90"
+    if re.search(r"(?<![a-z0-9_])p\s*10(?![0-9])", low) or "10분위" in text or "하위10" in text or "하위 10" in text:
+        return "p10"
+    if re.search(r"(?<![a-z])max(?![a-z])", low) or "최대" in text or "최댓값" in text:
+        return "max"
+    if any(t in low or t in text for t in ("avg", "average", "mean", "평균")):
+        return "avg"
+    if any(t in low or t in text for t in ("median", "중앙값")):
+        return "median"
+    return default  # 명시 없으면 호출자 기본값 그대로 (scatter 는 "" 로 미명시 감지)
+
+
+def _flowi_agg_polars_expr(agg_name: str, col: str = "metric_value") -> "pl.Expr":
+    """agg 이름 → polars 집계 expr (group_by.agg 컨텍스트용). shot 은 별도 분기라 여기 없음."""
+    c = pl.col(col).cast(pl.Float64, strict=False)
+    if agg_name == "avg":
+        return c.mean()
+    if agg_name == "max":
+        return c.max()
+    if agg_name == "p90":
+        return c.quantile(0.9, interpolation="linear")
+    if agg_name == "p10":
+        return c.quantile(0.1, interpolation="linear")
+    return c.median()
+
+
+def _flowi_agg_label(agg_name: str) -> str:
+    return {"median": "median", "avg": "avg", "max": "max",
+            "p90": "P90", "p10": "P10", "shot": "shot(all)"}.get(agg_name, "median")
+
+
+# ── 멀티소스 scatter/corr — ET/INLINE/VM 임의 2소스 쌍 ────────────────────────
+# VM 은 wafer 단위(shot 없음). 여러 값이면 avg 기본. INLINE 도 avg, ET 는 median.
+_SCATTER_SOURCES = ("INLINE", "ET", "VM")  # x/y 슬롯 배정 우선순위(낮은 인덱스가 x)
+
+
+def _flowi_source_default_agg(source: str) -> str:
+    return "median" if _upper(source) == "ET" else "avg"  # VM/INLINE=avg, ET=median
+
+
+def _flowi_scatter_slot_agg(source: str, scatter_defaults: dict[str, Any]) -> str:
+    """슬롯 소스의 기본 집계 — 관리자 scatter 설정(INLINE/ET 키)이 있으면 그것, 없으면 소스 기본."""
+    if source == "INLINE" and scatter_defaults.get("inline_agg") in _CHART_AGG_VALUES:
+        return scatter_defaults["inline_agg"]
+    if source == "ET" and scatter_defaults.get("et_agg") in _CHART_AGG_VALUES:
+        return scatter_defaults["et_agg"]
+    return _flowi_source_default_agg(source)
+
+
+def _flowi_scatter_source_pair(prompt: str) -> tuple[str, str] | None:
+    """프롬프트의 소스 중 metric-scatter 가능한 2개를 우선순위 순서(x,y)로. 2개 미만이면 None."""
+    present = _source_terms(prompt) & set(_SCATTER_SOURCES)
+    ordered = [s for s in _SCATTER_SOURCES if s in present]
+    if len(ordered) < 2:
+        return None
+    return ordered[0], ordered[1]
+
+
+def _flowi_source_token_in_text(text: str, source: str) -> int:
+    """소스 이름 토큰의 프롬프트 내 위치(없으면 -1). metric pair slicing 용."""
+    up = _upper(text)
+    if source == "INLINE":
+        pos = up.find("INLINE")
+        return pos if pos >= 0 else (text.find("인라인"))
+    m = re.search(r"\b" + re.escape(source) + r"\b", up)
+    return m.start() if m else -1
+
+
+def _flowi_source_metric_pair(prompt: str, metrics: list[dict[str, Any]], name_x: str, name_y: str) -> tuple[str, str]:
+    """소스-무관 metric 쌍 추출 — 각 소스 토큰 뒤 구간에서 첫 metric. fallback=ordered metrics."""
+    text = str(prompt or "")
+    px = _flowi_source_token_in_text(text, name_x)
+    py = _flowi_source_token_in_text(text, name_y)
+    metric_x = metric_y = ""
+    if px >= 0:
+        end = py if py > px else len(text)
+        metric_x = _first_metric_in_text(text[px:end])
+    if py >= 0:
+        end = px if px > py else len(text)
+        metric_y = _first_metric_in_text(text[py:end])
+    ordered = [str(m.get("metric") or "").strip() for m in metrics if str(m.get("metric") or "").strip()]
+    if not metric_x and ordered:
+        metric_x = ordered[0]
+    if not metric_y:
+        for item in ordered:
+            if item != metric_x:
+                metric_y = item
+                break
+    return metric_x, metric_y
+
+
+def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _et_trend_should_handle(str(prompt or "")):
         return {"handled": False}
+    return _flowi_source_trend_chart(prompt, product, max_rows, source="ET", default_agg="median")
+
+
+def _handle_vm_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not (_contains_chart_intent(text) and _is_trend_chart_request(text) and "VM" in _source_terms(text)):
+        return {"handled": False}
+    return _flowi_source_trend_chart(prompt, product, max_rows, source="VM", default_agg="avg")
+
+
+def _flowi_source_trend_chart(prompt: str, product: str, max_rows: int, *, source: str = "ET", default_agg: str = "median") -> dict[str, Any]:
+    """소스(ET/VM 등)별 tkout_time x축 trend scatter — agg 확장·knob 색상 공용 코어."""
+    text = str(prompt or "")
+    src = _upper(source)
+    src_low = src.lower()
     product_hint = _product_hint(text, product)
-    files = _et_files(product_hint)
+    files = _flowi_source_files(src, product_hint)
     if not files:
         label = f"{product_hint} " if product_hint else ""
-        return {"handled": True, "intent": "dashboard_et_trend", "answer": f"{label}ET parquet을 찾지 못했습니다.", "feature": "dashboard"}
+        return {"handled": True, "intent": f"dashboard_{src_low}_trend", "answer": f"{label}{src} parquet을 찾지 못했습니다.", "feature": "dashboard"}
     et_lf = _scan_parquet(files)
     cols = _schema_names(et_lf)
     product_col = _ci_col(cols, "product", "PRODUCT")
@@ -7470,12 +7634,12 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     if not (item_col and value_col and time_col):
         return {
             "handled": True,
-            "intent": "dashboard_et_trend",
-            "answer": "ET Trend에는 item_id/value/tkout_time 컬럼이 필요합니다.",
+            "intent": f"dashboard_{src_low}_trend",
+            "answer": f"{src} Trend에는 item_id/value/tkout_time 컬럼이 필요합니다.",
             "feature": "dashboard",
             "table": {
-                "kind": "dashboard_et_trend_error",
-                "title": "Missing ET columns",
+                "kind": f"dashboard_{src_low}_trend_error",
+                "title": f"Missing {src} columns",
                 "placement": "below",
                 "columns": _table_columns(["message", "columns"]),
                 "rows": [{"message": "missing item_id/value/tkout_time", "columns": ", ".join(cols[:80])}],
@@ -7485,12 +7649,12 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     if not lot_wf_col and not (root_col and wafer_col):
         return {
             "handled": True,
-            "intent": "dashboard_et_trend",
-            "answer": "ET Trend scatter에는 lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.",
+            "intent": f"dashboard_{src_low}_trend",
+            "answer": f"{src} Trend scatter에는 lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.",
             "feature": "dashboard",
             "table": {
-                "kind": "dashboard_et_trend_error",
-                "title": "Missing ET grain columns",
+                "kind": f"dashboard_{src_low}_trend_error",
+                "title": f"Missing {src} grain columns",
                 "placement": "below",
                 "columns": _table_columns(["message", "columns"]),
                 "rows": [{"message": "missing lot_wf or root_lot_id/wafer_id", "columns": ", ".join(cols[:80])}],
@@ -7501,12 +7665,12 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     if not metric:
         return {
             "handled": True,
-            "intent": "dashboard_et_trend_needs_context",
+            "intent": f"dashboard_{src_low}_trend_needs_context",
             "action": "collect_required_fields",
-            "answer": "Trend로 그릴 ET item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+            "answer": f"Trend로 그릴 {src} item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
             "missing": ["item_id"],
             "feature": "dashboard",
-            "table": {"kind": "et_item_candidates", "title": "ET item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
+            "table": {"kind": f"{src_low}_item_candidates", "title": f"{src} item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
         }
 
     step_ids = [s for s in _step_tokens(text) if _is_step_id_token(s)]
@@ -7519,12 +7683,12 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         if not step_col:
             return {
                 "handled": True,
-                "intent": "dashboard_et_trend_needs_context",
+                "intent": f"dashboard_{src_low}_trend_needs_context",
                 "action": "collect_required_fields",
-                "answer": "ET Trend에서 step_id 조건을 적용하려면 step_id 컬럼이 필요합니다.",
+                "answer": f"{src} Trend에서 step_id 조건을 적용하려면 step_id 컬럼이 필요합니다.",
                 "missing": ["step_id_column"],
                 "feature": "dashboard",
-                "table": {"kind": "dashboard_et_trend_error", "title": "Missing ET step column", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing step_id", "columns": ", ".join(cols[:80])}], "total": 1},
+                "table": {"kind": f"dashboard_{src_low}_trend_error", "title": f"Missing {src} step column", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing step_id", "columns": ", ".join(cols[:80])}], "total": 1},
             }
         filters.append(pl.col(step_col).cast(_STR, strict=False).str.to_uppercase().is_in([_upper(s) for s in step_ids]))
     if lots:
@@ -7557,15 +7721,15 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         if len(unique_products) > 1:
             return {
                 "handled": True,
-                "intent": "dashboard_et_trend_needs_context",
+                "intent": f"dashboard_{src_low}_trend_needs_context",
                 "action": "collect_required_fields",
-                "answer": f"{metric} ET Trend 후보 product가 {len(unique_products)}개입니다. product를 하나 지정해 주세요.",
+                "answer": f"{metric} {src} Trend 후보 product가 {len(unique_products)}개입니다. product를 하나 지정해 주세요.",
                 "missing": ["product"],
                 "feature": "dashboard",
                 "pending_prompt": text,
                 "table": {
-                    "kind": "et_product_candidates",
-                    "title": "ET Trend product candidates",
+                    "kind": f"{src_low}_product_candidates",
+                    "title": f"{src} Trend product candidates",
                     "placement": "below",
                     "columns": _table_columns(["product", "rows", "root_lot_count", "wafer_count"]),
                     "rows": [{"product": r.get(product_col) or "", "rows": r.get("rows") or 0, "root_lot_count": r.get("root_lot_count") or 0, "wafer_count": r.get("wafer_count") or 0} for r in product_rows],
@@ -7613,18 +7777,29 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     except Exception:
         scatter_cfg = FLOWI_CHART_DEFAULTS["scatter"]
         point_limit = FLOWI_CHART_POINT_LIMIT
+    agg_name = _flowi_chart_agg_from_prompt(text, default=default_agg)
+    shot_mode = agg_name == "shot"
     group_cols = ["product", "tkout_time", "lot_wf", "root_lot_id", "lot_id", "wafer_id", "step_id"]
     try:
-        grouped = (
+        selected = (
             scoped_lf.select(exprs)
             .drop_nulls(subset=["tkout_time", "metric_value", "lot_wf"])
-            .group_by(group_cols)
-            .agg([
+        )
+        if shot_mode:
+            # 집계 없이 전체 측정 shot 을 point 로 — median/mean/n 은 point 자체값으로 채워 표 호환.
+            grouped = selected.with_columns([
+                pl.col("metric_value").alias("y_value"),
+                pl.col("metric_value").alias("median"),
+                pl.col("metric_value").alias("mean"),
+                pl.lit(1).alias("n"),
+            ])
+        else:
+            grouped = selected.group_by(group_cols).agg([
                 pl.col("metric_value").median().alias("median"),
                 pl.col("metric_value").mean().alias("mean"),
                 pl.len().alias("n"),
+                _flowi_agg_polars_expr(agg_name, "metric_value").alias("y_value"),
             ])
-        )
         knob = None
         knob_join_cols: list[str] = []
         needs_knob = _chart_context_color_intent(text)
@@ -7644,7 +7819,7 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
                         })
                     return {
                         "handled": True,
-                        "intent": "dashboard_et_trend_color_needs_value",
+                        "intent": f"dashboard_{src_low}_trend_color_needs_value",
                         "action": "collect_required_fields",
                         "answer": "제외할 KNOB 값을 하나 지정해 주세요.",
                         "missing": ["knob_value"],
@@ -7663,8 +7838,8 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
                         )
         df = grouped.sort("tkout_time").limit(point_limit).collect()
     except Exception as e:
-        logger.warning("flowi ET trend failed: %s", e)
-        return {"handled": True, "intent": "dashboard_et_trend", "answer": f"ET trend query 실패: {e}", "feature": "dashboard"}
+        logger.warning("flowi %s trend failed: %s", src, e)
+        return {"handled": True, "intent": f"dashboard_{src_low}_trend", "answer": f"{src} trend query 실패: {e}", "feature": "dashboard"}
 
     rows = df.to_dicts()
     points = []
@@ -7672,7 +7847,7 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     missing_color_count = 0
     knob_color_ready = bool(knob and knob.get("ok") and knob_join_cols)
     for idx, row in enumerate(rows):
-        y = _round4(row.get("median"))
+        y = _round4(row.get("y_value"))
         if y is None:
             continue
         color_value = _text(row.get("color_value"))
@@ -7687,7 +7862,7 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
             "x_label": _text(row.get("tkout_time")),
             "tkout_time": _text(row.get("tkout_time")),
             "y": y,
-            "median": y,
+            "median": _round4(row.get("median")),
             "mean": _round4(row.get("mean")),
             "n": int(row.get("n") or 0),
             "product": row.get("product") or product_hint,
@@ -7705,33 +7880,40 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     color_values = [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
     if knob_color_ready and missing_color_count:
         color_values.append({"value": "missing", "count": missing_color_count, "color": "gray"})
-    y_label = f"ET {metric} median"
+    agg_label = _flowi_agg_label(agg_name)
+    y_label = f"{src} {metric} {agg_label}"
     step_label = f" step_id={', '.join(step_ids)}" if step_ids else ""
+    if shot_mode:
+        basis = f"{src}는 측정 shot 전체(집계 없음) 기준입니다."
+    else:
+        basis = f"{src}는 lot_wf별 {agg_label}(value) 기준입니다."
+    other_aggs = [a for a in ("median", "avg", "p90", "p10", "max") if a != agg_name][:3]
     answer = (
-        f"{product_hint or 'ET'} {metric} ET Trend를 tkout_time x축 scatter로 그렸습니다. "
-        f"ET는 lot_wf별 median(value) 기준입니다. 표시 point={len(points)}, item match={', '.join(item_matches or [metric])}{step_label}."
+        f"{product_hint or src} {metric} {src} Trend를 tkout_time x축 scatter로 그렸습니다. "
+        f"{basis} 표시 point={len(points)}, item match={', '.join(item_matches or [metric])}{step_label}. "
+        f"다른 집계로 보려면: {', '.join(_flowi_agg_label(a) for a in other_aggs)}, shot(전체)."
     )
     if knob_color_ready:
         answer += f" {knob.get('display_name') or 'KNOB'} 기준으로 색상을 입혔고 KNOB가 없는 point는 회색으로 표시합니다."
     if fit:
         answer += f" 1차식 fitting line과 R²={fit.get('r2')}를 포함했습니다."
     if not points:
-        answer = f"{product_hint or 'ET'} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
+        answer = f"{product_hint or src} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
     cols_out = ["tkout_time", "product", "step_id", "lot_wf", "root_lot_id", "lot_id", "wafer_id", "median", "mean", "n", "color_value"]
     config_overrides = {
         "chart_type": "scatter",
-        "source_type": "ET",
+        "source_type": src,
         "product": product_hint,
         "x_col": "tkout_time",
         "y_col": "value",
-        "y_expr": "median(value)",
+        "y_expr": "value (shot, no agg)" if shot_mode else f"{agg_name}(value)",
         "item_id": (item_matches or [metric])[0],
         "metric": metric,
         "step_id": step_ids[0] if step_ids else "",
         "lots": lots,
-        "grain": "lot_wf",
-        "aggregation": "median",
-        "group_by": "lot_wf",
+        "grain": "shot" if shot_mode else "lot_wf",
+        "aggregation": agg_name,
+        "group_by": "shot" if shot_mode else "lot_wf",
         "x_label": "tkout_time",
         "y_label": y_label,
         "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
@@ -7743,20 +7925,20 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         "ok": True,
         "kind": "dashboard_scatter",
         "chart_type": "scatter",
-        "title": f"{product_hint} ET {metric} Trend".strip(),
+        "title": f"{product_hint} {src} {metric} Trend".strip(),
         "points": points,
         "total": len(points),
         "x_label": "tkout_time",
         "y_label": y_label,
         "metric": metric,
-        "source_type": "ET",
+        "source_type": src,
         "x_col": "tkout_time",
         "y_col": "value",
         "item_id": (item_matches or [metric])[0],
         "step_id": step_ids[0] if step_ids else "",
-        "grain": "lot_wf",
-        "aggregation": "median",
-        "aggregations": {"ET": "median"},
+        "grain": "shot" if shot_mode else "lot_wf",
+        "aggregation": agg_name,
+        "aggregations": {src: agg_name},
         "lot_wf_rule": "root_lot_id + '_' + wafer_id" if root_col and wafer_col else "lot_wf",
         "join_cols": knob_join_cols if knob_color_ready else [],
         "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
@@ -7768,30 +7950,30 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         "config_overrides": config_overrides,
         "render_preset": config_overrides["render_preset"],
         "sources": {
-            "db": "1.RAWDATA_DB_ET",
+            "db": f"1.RAWDATA_DB_{src}",
             "files": [str(p) for p in files[:24]],
             "sql": _flowi_dashboard_sql_from_config(config_overrides),
-            "et_file_count": len(files),
-            "et_items": item_matches or [metric],
+            f"{src_low}_file_count": len(files),
+            f"{src_low}_items": item_matches or [metric],
             "lot_wf": config_overrides["group_by"],
             "knob_column": knob.get("knob_col") if knob_color_ready else "",
         },
     }
     return {
         "handled": True,
-        "intent": "dashboard_et_trend_chart",
-        "action": "query_et_trend_scatter_chart",
+        "intent": f"dashboard_{src_low}_trend_chart",
+        "action": f"query_{src_low}_trend_scatter_chart",
         "answer": answer,
         "feature": "dashboard",
         "chart_type": "scatter",
         "config": config_overrides,
         "chart_config": config_overrides,
-        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "ET", "grain": "lot_wf", "aggregation": "median", "step_id": step_ids[0] if step_ids else ""},
+        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": src, "grain": "shot" if shot_mode else "lot_wf", "aggregation": agg_name, "step_id": step_ids[0] if step_ids else ""},
         "chart_result": chart_result,
-        "table": {"kind": "dashboard_et_trend", "title": f"{metric} ET Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+        "table": {"kind": f"dashboard_{src_low}_trend", "title": f"{metric} {src} Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
         "term_resolution": [
-            {"token": metric, "meaning": "ET item", "wiki_refs": ["schema:ET.item_id"], "query_filter": f"item_id={metric}", "status": "resolved"},
-            {"token": "Trend", "meaning": "tkout_time x축 scatter", "wiki_refs": ["schema:ET.tkout_time"], "query_filter": "x=tkout_time; y=median(value)", "status": "resolved"},
+            {"token": metric, "meaning": f"{src} item", "wiki_refs": [f"schema:{src}.item_id"], "query_filter": f"item_id={metric}", "status": "resolved"},
+            {"token": "Trend", "meaning": "tkout_time x축 scatter", "wiki_refs": [f"schema:{src}.tkout_time"], "query_filter": f"x=tkout_time; y={'value(shot)' if shot_mode else agg_name + '(value)'}", "status": "resolved"},
         ],
     }
 
@@ -7825,10 +8007,58 @@ def _is_wafer_map_chart_request(prompt: str) -> bool:
     low = text.lower()
     if any(t in low or t in text for t in ("tablemap", "table map", "테이블맵", "테이블 맵", "relation", "관계")):
         return False
+    if any(t in low for t in ("heatmap", "heat map", "히트맵", "treemap", "트리맵", "roadmap", "매핑", "mapping")):
+        return False
     has_map = any(t in low or t in text for t in ("wf map", "wafer map", "웨이퍼맵", "맵", "map"))
     if not has_map or any(t in low or t in text for t in ("비슷", "similar", "유사", "닮")):
         return False
     return _contains_chart_intent(text) or any(t in low or t in text for t in ("보여", "표시", "view"))
+
+
+def _parse_spec_bounds(prompt: str) -> dict[str, Any] | None:
+    """spec out map 요청의 spec 경계 파싱.
+
+    반환: {"low": float|None, "high": float|None, "label": str} — spec 언급이 없으면 None.
+    spec out 요청인데 숫자를 못 찾으면 low/high 모두 None 인 dict 를 반환한다(되물음용).
+    """
+    text = str(prompt or "")
+    low_txt = text.lower()
+    wants_spec_out = any(t in low_txt for t in ("spec out", "specout", "스펙 아웃", "스펙아웃"))
+    if not wants_spec_out and "spec" not in low_txt and "스펙" not in text:
+        return None
+    num = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    low_v: float | None = None
+    high_v: float | None = None
+    m = re.search(rf"(?:usl|spec\s*high|상한)\s*[:=]?\s*({num})", low_txt)
+    if m:
+        high_v = float(m.group(1))
+    m = re.search(rf"(?:lsl|spec\s*low|하한)\s*[:=]?\s*({num})", low_txt)
+    if m:
+        low_v = float(m.group(1))
+    if low_v is None and high_v is None:
+        m = re.search(rf"(?:spec|스펙)\s*[:=]?\s*({num})\s*~\s*({num})", low_txt)
+        if m:
+            a, b = float(m.group(1)), float(m.group(2))
+            low_v, high_v = min(a, b), max(a, b)
+    if low_v is None and high_v is None:
+        m = re.search(rf"(?:spec|스펙)\s*[:=]?\s*({num})\s*(이상|이하|초과|미만)?", text, re.IGNORECASE)
+        if m:
+            v = float(m.group(1))
+            direction = str(m.group(2) or "")
+            if direction in ("이상", "초과"):
+                low_v = v
+            elif direction in ("이하", "미만"):
+                high_v = v
+            else:
+                high_v = v  # 방향이 없으면 상한(USL)으로 가정
+    if low_v is None and high_v is None:
+        return {"low": None, "high": None, "label": ""} if wants_spec_out else None
+    parts = []
+    if low_v is not None:
+        parts.append(f"low {low_v:g}")
+    if high_v is not None:
+        parts.append(f"high {high_v:g}")
+    return {"low": low_v, "high": high_v, "label": " / ".join(parts)}
 
 
 def _metric_map_source_order(prompt: str, product: str = "") -> list[tuple[str, list[Path]]]:
@@ -7993,6 +8223,16 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             "missing": ["product"],
             "feature": "dashboard",
         }
+    spec = _parse_spec_bounds(text)
+    if spec and spec.get("low") is None and spec.get("high") is None:
+        return {
+            "handled": True,
+            "intent": "dashboard_wafer_map_needs_context",
+            "action": "collect_required_fields",
+            "answer": "spec out map을 그리려면 spec 값이 필요합니다. 예: `PRODA IOFF spec 0.5 이하 spec out map 그려줘` (USL/LSL, `spec 0.2~0.5` 범위도 지원)",
+            "missing": ["spec"],
+            "feature": "dashboard",
+        }
     lots = _lot_tokens(text)
     aliases = _product_aliases(product_hint)
     item_candidates: list[str] = []
@@ -8010,9 +8250,28 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
             item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
             value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+            x_adj_col = _ci_col(cols, "chip_x_adj", "CHIP_X_ADJ")
+            y_adj_col = _ci_col(cols, "chip_y_adj", "CHIP_Y_ADJ")
+            x_pos_col = _ci_col(cols, "chip_x_pos", "CHIP_X_POS")
+            y_pos_col = _ci_col(cols, "chip_y_pos", "CHIP_Y_POS")
             shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "x", "X")
             shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "y", "Y")
-            if not (item_col and value_col and shot_x_col and shot_y_col):
+            flat_col = _ci_col(cols, "flat_zone", "FLAT_ZONE")
+            coord_note = ""
+            if x_adj_col and y_adj_col:
+                cx_col, cy_col = x_adj_col, y_adj_col
+                coord_basis = "chip_x_adj/chip_y_adj"
+            elif x_pos_col and y_pos_col:
+                cx_col, cy_col = x_pos_col, y_pos_col
+                coord_basis = "chip_x_pos/chip_y_pos"
+                if flat_col:
+                    coord_note = " flat_zone(notch 반시계 회전각, 0=horizontal/90=vertical) 회전 보정으로 horizontal notch 기준으로 변환해 그렸습니다."
+                else:
+                    coord_note = " flat_zone 컬럼이 없어 회전 보정 없이 pos 좌표 그대로 그렸습니다 — TEG vertical 항목은 왜곡될 수 있습니다."
+            else:
+                cx_col, cy_col = shot_x_col, shot_y_col
+                coord_basis = "shot_x/shot_y"
+            if not (item_col and value_col and cx_col and cy_col):
                 if source == "INLINE" and item_col and value_col and _ci_col(cols, "subitem_id", "SUBITEM_ID"):
                     inline_needs_coord_map = True
                     if not item_candidates:
@@ -8031,10 +8290,20 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
             for expr in filters:
                 lf = lf.filter(expr)
+            x_expr = pl.col(cx_col).cast(pl.Float64, strict=False)
+            y_expr = pl.col(cy_col).cast(pl.Float64, strict=False)
+            if coord_basis == "chip_x_pos/chip_y_pos" and flat_col:
+                # flat_zone = notch 반시계 회전각 → -각도 회전으로 horizontal notch(=Chip_Radius.csv의 adj) 기준 정규화.
+                # 90° 배수만 처리. 회전 부호는 사내 실데이터(Chip_Radius 매칭)로 1회 검증 필요.
+                rot = (((pl.col(flat_col).cast(pl.Float64, strict=False).fill_null(0.0) / 90.0).round(0).cast(pl.Int64) % 4) + 4) % 4
+                x_expr, y_expr = (
+                    pl.when(rot == 1).then(y_expr).when(rot == 2).then(-x_expr).when(rot == 3).then(-y_expr).otherwise(x_expr),
+                    pl.when(rot == 1).then(-x_expr).when(rot == 2).then(-y_expr).when(rot == 3).then(x_expr).otherwise(y_expr),
+                )
             df = (
                 lf.select([
-                    pl.col(shot_x_col).cast(pl.Float64, strict=False).alias("shot_x"),
-                    pl.col(shot_y_col).cast(pl.Float64, strict=False).alias("shot_y"),
+                    x_expr.alias("shot_x"),
+                    y_expr.alias("shot_y"),
                     pl.col(value_col).cast(pl.Float64, strict=False).alias("value"),
                     pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else pl.lit("").alias("root_lot_id"),
                     pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
@@ -8056,40 +8325,62 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             logger.warning("flowi wafer map chart failed source=%s: %s", source, e)
             continue
         rows = df.to_dicts()
+        s_low = spec.get("low") if spec else None
+        s_high = spec.get("high") if spec else None
+        out_n = 0
         points = []
         for row in rows:
-            points.append({
+            val = _round4(row.get("value"))
+            point = {
                 "x": _round4(row.get("shot_x")),
                 "y": _round4(row.get("shot_y")),
-                "value": _round4(row.get("value")),
+                "value": val,
                 "mean": _round4(row.get("mean")),
                 "n": int(row.get("n") or 0),
                 "lot_count": int(row.get("lot_count") or 0),
                 "wafer_count": int(row.get("wafer_count") or 0),
                 "label": f"shot({row.get('shot_x')},{row.get('shot_y')})",
-            })
+            }
+            if spec:
+                is_out = bool(val is not None and (
+                    (s_high is not None and val > s_high) or (s_low is not None and val < s_low)
+                ))
+                point["out"] = is_out
+                row["out"] = "OUT" if is_out else ""
+                out_n += 1 if is_out else 0
+            points.append(point)
         if not points:
             continue
-        answer = (
-            f"{product_hint} {source} {metric}을 shot_x/shot_y 기준 median으로 집계해 WF map을 그렸습니다. "
-            f"points={len(points)}, item match={', '.join(item_matches or [metric])}."
-        )
-        cols_out = ["shot_x", "shot_y", "value", "mean", "n", "lot_count", "wafer_count"]
+        x_label, _, y_label = coord_basis.partition("/")
+        if spec:
+            answer = (
+                f"{product_hint} {source} {metric} spec({spec['label']}) 기준 spec out map을 그렸습니다. "
+                f"shot median 기준 out {out_n}/{len(points)} — 빨간색=spec out, 회색=in spec. 좌표={coord_basis}.{coord_note}"
+            )
+        else:
+            answer = (
+                f"{product_hint} {source} {metric}을 {coord_basis} 기준 median으로 집계해 WF map을 그렸습니다. "
+                f"points={len(points)}, item match={', '.join(item_matches or [metric])}.{coord_note}"
+            )
+        cols_out = ["shot_x", "shot_y", "value", "mean", "n", "lot_count", "wafer_count"] + (["out"] if spec else [])
         return {
             "handled": True,
             "intent": "dashboard_wafer_map_chart",
             "action": "query_metric_wafer_map",
             "answer": answer,
             "feature": "dashboard",
-            "slots": {"product": product_hint, "metric": metric, "source": source, "lots": lots},
+            "slots": {"product": product_hint, "metric": metric, "source": source, "lots": lots, **({"spec": spec} if spec else {})},
             "chart_result": {
                 "ok": True,
                 "kind": "dashboard_wafer_map",
-                "title": f"{product_hint} {source} {metric} WF Map",
+                "title": f"{product_hint} {source} {metric} " + ("Spec Out Map" if spec else "WF Map"),
                 "points": points,
                 "total": len(points),
-                "x_label": "shot_x",
-                "y_label": "shot_y",
+                "mode": "spec_out" if spec else "value",
+                **({"spec": spec, "out_n": out_n} if spec else {}),
+                "x_label": x_label or "shot_x",
+                "y_label": y_label or "shot_y",
+                "coord_basis": coord_basis,
                 "value_label": f"{metric} median",
                 "metric": metric,
                 "source": source,
@@ -8122,6 +8413,12 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     text = str(prompt or "")
     if not (_contains_chart_intent(text) and _is_trend_chart_request(text)):
         return {"handled": False}
+    # 명시적으로 다른 소스(VM/ET/FAB)만 지정한 trend 는 INLINE 데이터로 처리하지 않는다
+    # (INLINE parquet 을 읽어 헛도는 오처리 방지). ET 는 전용 _handle_et_trend_chart 가,
+    # VM 은 아직 전용 trend 핸들러가 없어 소스 매칭 실패 안내로 흐르게 둔다.
+    _src = _source_terms(text)
+    if "INLINE" not in _src and _src & {"VM", "ET", "FAB"}:
+        return {"handled": False}
     product_hint = _product_hint(text, product)
     if not product_hint:
         return {
@@ -8149,6 +8446,8 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     shot_id_col = _ci_col(cols, "subitem_id", "SUBITEM_ID", "shot_id", "SHOT_ID")
     shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "die_x", "DIE_X")
     shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "die_y", "DIE_Y")
+    spec_high_col = _ci_col(cols, "spec_high", "spec_hi", "usl", "spec_max", "spec_upper", "upper_spec")
+    spec_low_col = _ci_col(cols, "spec_low", "spec_lo", "lsl", "spec_min", "spec_lower", "lower_spec")
     if not item_col or not value_col or not time_col:
         return {
             "handled": True,
@@ -8270,7 +8569,14 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
                 pl.col(shot_y_col).cast(_STR, strict=False).alias("shot_y"),
             ])
             grain_cols.extend(["shot_x", "shot_y"])
+    if spec_high_col:
+        exprs.append(pl.col(spec_high_col).cast(pl.Float64, strict=False).alias("spec_high"))
+    if spec_low_col:
+        exprs.append(pl.col(spec_low_col).cast(pl.Float64, strict=False).alias("spec_low"))
     lot_wf_rule = "derived_from_root_lot_id_wafer_id" if root_col and wafer_col else ("source_lot_wf" if lot_wf_col else "unavailable")
+    # INLINE 은 avg 기본. shot 은 grain(include_shot)으로 처리하므로 집계는 단일값 avg 로.
+    agg_name = _flowi_chart_agg_from_prompt(text, default="avg")
+    y_agg = "avg" if agg_name == "shot" else agg_name
     try:
         scatter_cfg = (_flowi_chart_defaults().get("scatter") or FLOWI_CHART_DEFAULTS["scatter"])
         point_limit = max(20, min(5000, int(scatter_cfg.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
@@ -8286,6 +8592,9 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
                 pl.col("metric_value").mean().alias("avg"),
                 pl.col("metric_value").median().alias("median"),
                 pl.len().alias("n"),
+                _flowi_agg_polars_expr(y_agg, "metric_value").alias("y_value"),
+                *([pl.col("spec_high").drop_nulls().first().alias("spec_high")] if spec_high_col else []),
+                *([pl.col("spec_low").drop_nulls().first().alias("spec_low")] if spec_low_col else []),
             ])
         )
         knob = None
@@ -8305,7 +8614,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     color_counts: dict[str, int] = {}
     knob_color_ready = bool(knob and knob.get("ok") and knob_join_cols)
     for idx, row in enumerate(rows):
-        y = _round4(row.get("avg"))
+        y = _round4(row.get("y_value"))
         if y is None:
             continue
         color_value = _text(row.get("color_value"))
@@ -8316,7 +8625,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "x_label": _text(row.get("tkout_time")),
             "tkout_time": _text(row.get("tkout_time")),
             "y": y,
-            "avg": y,
+            "avg": _round4(row.get("avg")),
             "median": _round4(row.get("median")),
             "n": int(row.get("n") or 0),
             "lot_wf": row.get("lot_wf") or "",
@@ -8328,18 +8637,31 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
             "color_value": color_value,
             "label": row.get("shot_id") or row.get("lot_wf") or "",
+            **({"spec_high": _round4(row.get("spec_high"))} if spec_high_col else {}),
+            **({"spec_low": _round4(row.get("spec_low"))} if spec_low_col else {}),
         })
     fit_requested = _chart_fit_intent(text)
     fit = _chart_fit_from_rows(points) if fit_requested else {}
+    agg_meta = "shot" if include_shot else y_agg
+    agg_disp = "shot(all)" if include_shot else _flowi_agg_label(y_agg)
+    other_aggs = [a for a in ("avg", "median", "p90", "max") if a != y_agg][:3]
     answer = (
         f"{product_hint} {metric} INLINE Trend를 tkout_time x축 scatter로 그렸습니다. "
-        + ("INLINE은 shot 단위 value를 시간별로 표시했습니다. " if include_shot else "INLINE은 lot_wf별 avg(value)를 시간별로 집계했습니다. ")
-        + f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}."
+        + ("INLINE은 shot 단위 value를 시간별로 표시했습니다. " if include_shot
+           else f"INLINE은 lot_wf별 {agg_disp}(value)를 시간별로 집계했습니다. ")
+        + f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}. "
+        + f"다른 집계로 보려면: {', '.join(_flowi_agg_label(a) for a in other_aggs)}, shot(전체)."
     )
     if knob_color_ready:
         answer += " KNOB가 없는 point는 회색으로 표시합니다."
     if fit:
         answer += f" 1차식 fitting line과 R²={fit.get('r2')}를 포함했습니다."
+    spec_overlay = bool(
+        (spec_high_col or spec_low_col)
+        and any(p.get("spec_high") is not None or p.get("spec_low") is not None for p in points)
+    )
+    if spec_overlay:
+        answer += " INLINE spec(high/low)을 빨간 계단식 라인으로 함께 표시했습니다 — spec은 wafer마다 달라질 수 있습니다."
     if not points:
         answer = f"{product_hint} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
     cols_out = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id", "shot_id", "shot_x", "shot_y", "avg", "median", "n", "color_value"]
@@ -8348,14 +8670,15 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         "source_type": "INLINE",
         "x_col": "tkout_time",
         "y_col": "value",
+        "y_expr": "value (shot, no agg)" if include_shot else f"{y_agg}(value)",
         "item_id": (item_matches or [metric])[0],
         "metric": metric,
         "lots": lots,
         "grain": "shot" if include_shot else "lot_wf",
-        "aggregation": "avg",
+        "aggregation": agg_meta,
         "group_by": "shot" if include_shot else "lot_wf",
         "x_label": "tkout_time",
-        "y_label": f"{metric} avg",
+        "y_label": f"{metric} {agg_disp}",
         "color_missing": "gray" if knob_color_ready else "",
         "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
         "fit": "linear" if fit_requested else "none",
@@ -8370,22 +8693,23 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         "chart_type": "scatter",
         "config": config_overrides,
         "chart_config": config_overrides,
-        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "INLINE", "grain": "shot" if include_shot else "lot_wf", "aggregation": "avg"},
+        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "INLINE", "grain": "shot" if include_shot else "lot_wf", "aggregation": agg_meta},
         "chart_result": {
             "ok": True,
             "kind": "dashboard_scatter",
             "title": f"{product_hint} {metric} Trend",
             "points": points,
             "total": len(points),
+            "spec_overlay": spec_overlay,
             "x_label": "tkout_time",
-            "y_label": f"{metric} avg",
+            "y_label": f"{metric} {agg_disp}",
             "metric": metric,
             "source_type": "INLINE",
             "x_col": "tkout_time",
             "item_id": (item_matches or [metric])[0],
             "grain": "shot" if include_shot else "lot_wf",
-            "aggregation": "avg",
-            "aggregations": {"INLINE": "avg"},
+            "aggregation": agg_meta,
+            "aggregations": {"INLINE": agg_meta},
             "lot_wf_rule": lot_wf_rule,
             "join_cols": knob_join_cols if knob_color_ready else [],
             "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
@@ -8634,8 +8958,11 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         return {"handled": False}
     chart_defaults = _flowi_chart_defaults()
     scatter_defaults = chart_defaults.get("scatter") or FLOWI_CHART_DEFAULTS["scatter"]
-    inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in {"avg", "median"} else "avg"
-    et_agg = scatter_defaults.get("et_agg") if scatter_defaults.get("et_agg") in {"avg", "median"} else "median"
+    inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in _CHART_AGG_VALUES else "avg"
+    et_agg = scatter_defaults.get("et_agg") if scatter_defaults.get("et_agg") in _CHART_AGG_VALUES else "median"
+    _prompt_agg = _flowi_chart_agg_from_prompt(prompt, default="")
+    if _prompt_agg in _CHART_AGG_VALUES:
+        et_agg = _prompt_agg
     sources = _source_terms(prompt)
     metrics = _metric_alias_hits(prompt)
     operations = _chart_operations(prompt)
@@ -11466,6 +11793,12 @@ def _flowi_plan_value_from_tail(tail: str) -> str:
         val = m.group(1).strip(" .,:;")
         if _upper(val) not in {"PLAN", "SAVE", "SET", "KNOB", "WF", "WAFER"}:
             return val[:80]
+    # "plan PPID_03_3_S1 넣어줘" — 값이 plan 키워드 뒤에 오는 어순도 지원.
+    m = re.search(r"(?:plan|플랜|계획)\s*(?:은|는|을|를|으로|로|:|=)?\s*([A-Za-z0-9_.-]{2,60})", text, flags=re.I)
+    if m:
+        val = m.group(1).strip(" .,:;")
+        if _upper(val) not in {"PLAN", "SAVE", "SET", "KNOB", "WF", "WAFER"}:
+            return val[:80]
     text = re.sub(r"^(?:은|는|에|으로|로|:|=|-)\s*", "", text)
     m = re.search(r"([A-Za-z0-9_.-]{1,60})", text)
     if not m:
@@ -11507,7 +11840,9 @@ def _flowi_parse_splittable_plan_assignments(prompt: str) -> tuple[list[dict[str
     invalid_wafers: list[str] = []
     used: set[str] = set()
     range_pat = re.compile(
-        r"(?P<wf>#\s*\d{1,4}\s*(?:~|-|–|—|to)\s*#?\s*\d{1,4}|#\s*\d{1,4}|\b(?:WF|WAFER)\s*\d{1,4}\b|웨이퍼\s*\d{1,4})"
+        r"(?P<wf>#\s*\d{1,4}\s*(?:~|-|–|—|to)\s*#?\s*\d{1,4}|#\s*\d{1,4}"
+        r"|\b(?:WF|WAFER)\s*\d{1,4}\s*(?:~|-|–|—|to)\s*#?\s*\d{1,4}|\b(?:WF|WAFER)\s*\d{1,4}\b"
+        r"|웨이퍼\s*\d{1,4}\s*(?:~|-|–|—)\s*\d{1,4}|웨이퍼\s*\d{1,4})"
         r"(?P<tail>.{0,80}?)(?=,|그리고|나머지|$)",
         flags=re.I | re.S,
     )
@@ -16737,6 +17072,32 @@ def _flowi_splittable_custom_cols_from_prompt(
     return matches, custom_filter
 
 
+def _flowi_saved_custom_name_from_prompt(prompt: str) -> str:
+    """프롬프트가 SplitTable 페이지에 저장된 custom SET 이름을 지목하면 그 이름을 반환.
+
+    오탐 방지: 이름이 프롬프트에 그대로 등장하고, (이름이 4자 이상이거나
+    프롬프트에 custom/커스텀 언급이 있을 때)만 매칭. 여러 개면 가장 긴 이름 우선.
+    """
+    text = str(prompt or "")
+    up = _upper(text)
+    mentions_custom = "CUSTOM" in up or "커스텀" in text
+    try:
+        from routers import splittable as splittable_router
+        customs = (splittable_router.list_customs() or {}).get("customs") or []
+    except Exception:
+        return ""
+    best = ""
+    for c in customs:
+        name = str((c or {}).get("name") or "").strip()
+        if len(name) < 2 or name.upper() not in up:
+            continue
+        if len(name) < 4 and not mentions_custom:
+            continue
+        if len(name) > len(best):
+            best = name
+    return best
+
+
 def _flowi_splittable_view_to_inline(
     view: dict[str, Any],
     *,
@@ -16859,6 +17220,10 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
     prefixes = _flowi_splittable_prefixes_from_args(args, prompt)
     prefix_filter = ",".join(prefixes)
     custom_cols, custom_filter = _flowi_splittable_custom_cols_from_prompt(product_for_view, args, prompt, prefixes)
+    saved_custom_name = _flowi_saved_custom_name_from_prompt(prompt)
+    if saved_custom_name:
+        # 저장된 custom SET 이 지목되면 ad-hoc 컬럼 추론보다 우선한다.
+        custom_cols, custom_filter = [], ""
     custom_cols_param = ",".join(custom_cols)
     started = time.monotonic()
     try:
@@ -16868,7 +17233,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             root_lot_id=root,
             wafer_ids=wafer_ids,
             prefix=prefix_filter,
-            custom_name="",
+            custom_name=saved_custom_name,
             view_mode="all",
             history_mode="all",
             fab_lot_id=fab,
@@ -16899,6 +17264,11 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             f"{product_for_view} {view.get('root_lot_id') or root or fab} "
             f"{custom_filter} ad-hoc CUSTOM SET 기준으로 {len(split_view.get('rows') or [])}개 row를 조회했습니다."
         )
+    if saved_custom_name:
+        answer = (
+            f"{product_for_view} {view.get('root_lot_id') or root or fab} "
+            f"저장된 CUSTOM SET '{saved_custom_name}' 기준으로 {len(split_view.get('rows') or [])}개 row를 조회했습니다."
+        )
     if not (split_view.get("rows") or []):
         answer = view.get("msg") or "SplitTable 화면 기준으로 표시할 split row를 찾지 못했습니다."
     if view.get("lot_warn"):
@@ -16920,6 +17290,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             "prefix": prefix_filter,
             "custom_set_filter": custom_filter if custom_cols else "",
             "custom_cols": custom_cols,
+            "custom_name": saved_custom_name,
             "source": "splittable.view",
         },
         "splittable_view": view,
@@ -17253,7 +17624,8 @@ def _handle_metric_at_step(prompt: str, product: str, max_rows: int) -> dict[str
         if df.height == 0:
             continue
         group_cols = ["source_type", "product", "root_lot_id", "wafer_id", "step_id", "metric"]
-        agg_expr = pl.col("value").mean().alias("value") if agg == "avg" else pl.col("value").median().alias("value")
+        # _flowi_metric_agg 가 뽑은 max/p90/p10 등이 median 으로 뭉개지지 않게 공용 헬퍼로.
+        agg_expr = _flowi_agg_polars_expr(agg if agg in _CHART_AGG_VALUES else "median", "value").alias("value")
         try:
             got = df.lazy().group_by(group_cols).agg([agg_expr, pl.len().alias("count")]).collect()
             rows.extend(got.to_dicts())
@@ -18064,13 +18436,35 @@ def _flowi_confirm_inform_draft(draft_id: str, confirm: bool, me: dict[str, Any]
         }
     records = _flowi_create_inform_records_from_entries(state, me)
     cols_out = ["id", "module", "lot_id", "root_lot_id"]
+    mail_confirm_payload = {"inform_ids": [r["id"] for r in records], "confirm": True}
+    mail_cancel_payload = {"inform_ids": [], "confirm": False}
     return {
         "handled": True,
         "intent": "inform_log_registered",
         "action": "confirm_inform_draft",
-        "answer": f"인폼 {len(records)}건을 등록했습니다.",
+        "answer": f"인폼 {len(records)}건을 등록했습니다. 메일 발송은 아래에서 별도 확인한 경우에만 진행합니다.",
         "feature": "inform",
         "created_records": records,
+        "clarification": {
+            "question": "등록한 인폼을 모듈 담당자에게 메일로도 보낼까요? (발송 전 마지막 확인입니다)",
+            "choices": [
+                {
+                    "id": "skip_inform_mail",
+                    "label": "1",
+                    "title": "보내지 않음",
+                    "recommended": True,
+                    "description": "메일 없이 인폼 등록만 유지합니다.",
+                    "prompt": f"{_FLOWI_INFORM_MAIL_MARKER} {json.dumps(mail_cancel_payload, ensure_ascii=False)}",
+                },
+                {
+                    "id": "send_inform_mail",
+                    "label": "2",
+                    "title": "메일 발송",
+                    "description": f"{len(records)}건 인폼을 모듈 담당자 수신자에게 발송합니다.",
+                    "prompt": f"{_FLOWI_INFORM_MAIL_MARKER} {json.dumps(mail_confirm_payload, ensure_ascii=False)}",
+                },
+            ],
+        } if records else {},
         "table": {"kind": "inform_log_registered", "title": "Registered inform logs", "placement": "below", "columns": _table_columns(cols_out), "rows": records, "total": len(records)},
     }
 
@@ -18087,6 +18481,70 @@ def _extract_flowi_inform_confirm(prompt: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else {"_parse_error": "invalid JSON"}
 
 
+def _extract_flowi_inform_mail_confirm(prompt: str) -> dict[str, Any] | None:
+    text = str(prompt or "").strip()
+    if not text.startswith(_FLOWI_INFORM_MAIL_MARKER + " ") and text != _FLOWI_INFORM_MAIL_MARKER:
+        return None
+    raw = text[len(_FLOWI_INFORM_MAIL_MARKER):].strip()
+    try:
+        # 클릭 흐름에서 마커 뒤에 추가 텍스트가 붙을 수 있어 앞쪽 JSON 만 파싱한다.
+        data, _ = json.JSONDecoder().raw_decode(raw)
+    except Exception:
+        return {"_parse_error": "invalid JSON"}
+    return data if isinstance(data, dict) else {"_parse_error": "invalid JSON"}
+
+
+def _flowi_send_inform_mail_confirmed(payload: dict[str, Any], me: dict[str, Any]) -> dict[str, Any]:
+    """메일 confirm 토큰을 받은 뒤에만 실행되는 인폼 메일 발송. 토큰 없이 호출되는 경로는 없다."""
+    if not bool(payload.get("confirm")):
+        return {
+            "handled": True,
+            "intent": "inform_mail_cancelled",
+            "action": "cancel_inform_mail",
+            "answer": "메일 발송을 취소했습니다. 보낸 메일은 없습니다.",
+            "feature": "inform",
+        }
+    ids = [str(x).strip() for x in (payload.get("inform_ids") or []) if str(x or "").strip()]
+    if not ids:
+        return {
+            "handled": True,
+            "intent": "inform_mail_confirm_blocked",
+            "blocked": True,
+            "answer": "발송할 인폼 id가 없습니다.",
+            "feature": "inform",
+        }
+    from routers import informs as informs_router
+    sent, errors = [], []
+    for iid in ids[:10]:
+        try:
+            res = informs_router._send_inform_mail_core(iid, informs_router.SendMailReq(), me)
+            sent.append({
+                "id": iid,
+                "to": ", ".join(res.get("to") or []),
+                "subject": res.get("subject") or "",
+                "dry_run": "dry-run" if res.get("dry_run") else "",
+            })
+        except HTTPException as e:
+            errors.append({"id": iid, "error": str(e.detail)})
+        except Exception as e:
+            errors.append({"id": iid, "error": str(e)})
+    parts = []
+    if sent:
+        parts.append(f"인폼 메일 {len(sent)}건을 발송했습니다" + (" (dry-run 구성 검증)" if all(s.get("dry_run") for s in sent) else "") + ".")
+    if errors:
+        parts.append(f"{len(errors)}건은 보내지 못했습니다: " + "; ".join(f"{e['id']}: {e['error']}" for e in errors[:3]))
+    rows = sent + [{"id": e["id"], "to": "", "subject": e["error"], "dry_run": "error"} for e in errors]
+    return {
+        "handled": True,
+        "intent": "inform_mail_sent" if sent else "inform_mail_failed",
+        "action": "send_inform_mail",
+        "answer": " ".join(parts) or "발송 결과가 없습니다.",
+        "feature": "inform",
+        "mail_results": {"sent": sent, "errors": errors},
+        "table": {"kind": "inform_mail_result", "title": "Inform mail result", "placement": "below", "columns": _table_columns(["id", "to", "subject", "dry_run"]), "rows": rows, "total": len(rows)},
+    }
+
+
 def _handle_flowi_register_inform_log(prompt: str, product: str, max_rows: int, me: dict[str, Any], allowed_keys: set[str] | None = None) -> dict[str, Any]:
     if _flowi_inform_summary_intent(prompt):
         return {"handled": False}
@@ -18095,6 +18553,11 @@ def _handle_flowi_register_inform_log(prompt: str, product: str, max_rows: int, 
         if payload.get("_parse_error"):
             return {"handled": True, "intent": "inform_log_confirm_failed", "blocked": True, "answer": "인폼 확인 payload를 읽지 못했습니다.", "feature": "inform"}
         return _flowi_confirm_inform_draft(str(payload.get("draft_id") or ""), bool(payload.get("confirm")), me)
+    mail_payload = _extract_flowi_inform_mail_confirm(prompt)
+    if mail_payload is not None:
+        if mail_payload.get("_parse_error"):
+            return {"handled": True, "intent": "inform_mail_confirm_failed", "blocked": True, "answer": "메일 확인 payload를 읽지 못했습니다.", "feature": "inform"}
+        return _flowi_send_inform_mail_confirmed(mail_payload, me)
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
     if ((preview.get("selected_function") or {}).get("name") != "register_inform_log"):
         return {"handled": False}
@@ -19084,7 +19547,11 @@ def _handle_flowi_query_core(
     defer_diagnosis_for_source_chart = (
         (allowed_keys is None or "dashboard" in allowed_keys)
         and _contains_chart_intent(prompt)
-        and (bool(_source_terms(prompt)) or (_et_trend_should_handle(prompt) and _flowi_explicit_chart_draw_intent(prompt)))
+        and (
+            bool(_source_terms(prompt))
+            or (_et_trend_should_handle(prompt) and _flowi_explicit_chart_draw_intent(prompt))
+            or _is_wafer_map_chart_request(prompt)
+        )
     )
     if (allowed_keys is None or "diagnosis" in allowed_keys) and not defer_diagnosis_for_source_chart:
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
@@ -19119,12 +19586,18 @@ def _handle_flowi_query_core(
         knob_ratio_chart_out = _handle_knob_ratio_chart(prompt, product, max_rows)
         if knob_ratio_chart_out.get("handled"):
             return _augment_dashboard_tool(knob_ratio_chart_out, prompt, product=product, username=username)
+        wafer_map_out = _handle_wafer_map_chart(prompt, product, max_rows)
+        if wafer_map_out.get("handled"):
+            return _augment_dashboard_tool(wafer_map_out, prompt, product=product, username=username)
         box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
         if box_chart_out.get("handled"):
             return _augment_dashboard_tool(box_chart_out, prompt, product=product, username=username)
         et_trend_chart_out = _handle_et_trend_chart(prompt, product, max_rows)
         if et_trend_chart_out.get("handled"):
             return _augment_dashboard_tool(et_trend_chart_out, prompt, product=product, username=username)
+        vm_trend_chart_out = _handle_vm_trend_chart(prompt, product, max_rows)
+        if vm_trend_chart_out.get("handled"):
+            return _augment_dashboard_tool(vm_trend_chart_out, prompt, product=product, username=username)
         trend_chart_out = _handle_inline_trend_chart(prompt, product, max_rows)
         if trend_chart_out.get("handled"):
             return _augment_dashboard_tool(trend_chart_out, prompt, product=product, username=username)
@@ -21405,7 +21878,9 @@ def _handle_flowi_teach(prompt: str, *, username: str) -> dict[str, Any] | None:
     forget_m = _FORGET_PREFIX_RE.match(text)
     if forget_m:
         term = text[forget_m.end():].strip().strip("'\"")
-        if not term or len(term) > 120 or " " in term:
+        # teach 는 공백 포함 term("겔징 테이블")을 허용하므로 forget 도 허용해야
+        # 가르친 것을 지울 수 있다 (비대칭 방지). 문장형 오입력은 길이로 거른다.
+        if not term or len(term) > 120:
             return None
         try:
             from core import flowi_fewshots
@@ -21487,6 +21962,137 @@ def _handle_file_doc_teach(prompt: str, *, username: str) -> dict[str, Any] | No
         "action": "file_doc_teach", "file_doc": {"file": entry.get("file")},
         "answer": f"파일 설명을 저장했습니다: {entry.get('file')} — {entry.get('description')}\n이제 이 설명과 관련된 질문에서 이 파일을 검색 대상으로 씁니다.",
     }
+
+
+_KCARD_FILL_RE = re.compile(r"^\s*지식\s*(?:카드\s*)?채움(?:\s*수행)?\s*$", re.IGNORECASE)
+_KCARD_STATUS_RE = re.compile(r"^\s*지식\s*(?:카드\s*)?(?:현황|상태)\s*$", re.IGNORECASE)
+_KCARD_SHOW_RE = re.compile(r"^\s*지식\s*보기\s*[:：]\s*(.+)$", re.IGNORECASE)
+_KCARD_APPROVE_RE = re.compile(r"^\s*지식\s*승인\s*[:：]\s*(.+)$", re.IGNORECASE)
+_KCARD_REJECT_RE = re.compile(r"^\s*지식\s*반려\s*[:：]\s*(.+)$", re.IGNORECASE)
+_KCARD_QUESTIONS_RE = re.compile(r"^\s*지식\s*질문\s*$", re.IGNORECASE)
+_KCARD_ANSWER_RE = re.compile(r"^\s*지식\s*답변\s*[:：]\s*(.+)$", re.IGNORECASE | re.DOTALL)
+
+
+def _kcard_questions_lines(questions: dict[str, list[str]]) -> list[str]:
+    lines: list[str] = []
+    for term, qs in questions.items():
+        for q in qs[:3]:
+            lines.append(f"- [{term}] {q}")
+    if lines:
+        lines.append('답변: "지식 답변: <term> <답변 내용>" 형식으로 알려주시면 카드에 병합됩니다.')
+    return lines
+
+
+def _handle_knowledge_card_admin(prompt: str, *, me: dict[str, Any]) -> dict[str, Any] | None:
+    """지식 카드 관리 명령 — 관리자가 flow-i 채팅에서 지식 레이어를 운영한다.
+
+    "지식 채움 수행": todo 카드를 연결 LLM(GPT OSS 등)으로 초안(draft) 작성.
+    "지식 현황" / "지식 보기: <term>" / "지식 승인: <term>" / "지식 반려: <term>".
+    draft 는 승인 전까지 조회/프롬프트에 노출되지 않는다 (HITL).
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return None
+    fill_m = _KCARD_FILL_RE.match(text)
+    status_m = _KCARD_STATUS_RE.match(text)
+    show_m = _KCARD_SHOW_RE.match(text)
+    approve_m = _KCARD_APPROVE_RE.match(text)
+    reject_m = _KCARD_REJECT_RE.match(text)
+    questions_m = _KCARD_QUESTIONS_RE.match(text)
+    answer_m = _KCARD_ANSWER_RE.match(text)
+    if not (fill_m or status_m or show_m or approve_m or reject_m or questions_m or answer_m):
+        return None
+    base = {"handled": True, "feature": "knowledge_cards", "unit_ai": "knowledge_cards"}
+    if (me.get("role") or "user") != "admin":
+        return {**base, "intent": "knowledge_card_blocked", "action": "blocked", "blocked": True,
+                "answer": "지식 카드 관리는 관리자 전용입니다."}
+    from core import knowledge_cards
+
+    if status_m:
+        summary = knowledge_cards.status_summary()
+        pending_qs = knowledge_cards.pending_fill_questions()
+        n_qs = sum(len(v) for v in pending_qs.values())
+        lines = [
+            f"지식 카드 현황 — 상태별: {summary['counts']}, 출처별: {summary['origins']}",
+            f"채움 대기(todo): {', '.join(summary['todo']) or '(없음)'}",
+            f"승인 대기(draft): {', '.join(summary['draft']) or '(없음)'}",
+        ]
+        if n_qs:
+            lines.append(f'답변 대기 질문 {n_qs}건 — "지식 질문" 으로 확인하세요.')
+        if summary["todo"]:
+            lines.append('"지식 채움 수행" 으로 연결된 AI가 환경을 조사해 todo 카드 초안을 작성합니다.')
+        if summary["draft"]:
+            lines.append('"지식 보기: <term>" 으로 초안 확인, "지식 승인: <term>" / "지식 반려: <term>" 으로 처리하세요.')
+        return {**base, "intent": "knowledge_card_status", "action": "knowledge_card_status",
+                "answer": "\n".join(lines), "knowledge_status": summary}
+    if questions_m:
+        pending_qs = knowledge_cards.pending_fill_questions()
+        q_lines = _kcard_questions_lines(pending_qs)
+        return {**base, "intent": "knowledge_card_questions", "action": "knowledge_card_questions",
+                "answer": ("채움에 필요한 질문입니다.\n" + "\n".join(q_lines)) if q_lines
+                          else "답변 대기 중인 질문이 없습니다.",
+                "knowledge_questions": pending_qs}
+    if answer_m:
+        result = knowledge_cards.answer_fill_question(
+            answer_m.group(1).strip(), by=str(me.get("username") or "admin"))
+        if not result:
+            pending_qs = knowledge_cards.pending_fill_questions()
+            terms = ", ".join(sorted(pending_qs) or [c["term"] for c in knowledge_cards.cards_by_status("draft")])
+            return {**base, "intent": "knowledge_card_answer", "action": "knowledge_card_answer",
+                    "answer": ("형식: \"지식 답변: <term> <답변 내용>\". "
+                               + (f"대상 카드: {terms}" if terms else "답변 대기 카드가 없습니다."))}
+        rest = result.get("remaining_questions") or []
+        lines = [f"'{result['term']}' 카드에 답변을 병합했습니다 (상태: {result.get('status')})."]
+        if rest:
+            lines.append(f"이 카드의 남은 질문 {len(rest)}건: {rest[0]}")
+        elif result.get("status") == "draft":
+            lines.append(f'질문이 모두 해소되면 "지식 승인: {result["term"]}" 으로 활성화하세요.')
+        return {**base, "intent": "knowledge_card_answer", "action": "knowledge_card_answer",
+                "answer": "\n".join(lines)}
+    if show_m:
+        card = knowledge_cards.find_card(show_m.group(1).strip())
+        if not card:
+            return {**base, "intent": "knowledge_card_show", "action": "knowledge_card_show",
+                    "answer": f"'{show_m.group(1).strip()}' 카드를 찾지 못했습니다."}
+        header = (f"[{card.get('status')}] {card['term']} ({card.get('kind') or 'concept'}, "
+                  f"origin={card.get('origin')})")
+        return {**base, "intent": "knowledge_card_show", "action": "knowledge_card_show",
+                "answer": header + "\n" + str(card.get("body") or "(본문 없음)")}
+    if approve_m:
+        term = approve_m.group(1).strip()
+        saved = knowledge_cards.set_status(term, "active", by=str(me.get("username") or "admin"))
+        return {**base, "intent": "knowledge_card_approve", "action": "knowledge_card_approve",
+                "answer": (f"'{term}' 카드를 활성화했습니다 — 이제 flow-i 조회/프롬프트에 사용됩니다."
+                           if saved else f"'{term}' 카드를 찾지 못했습니다.")}
+    if reject_m:
+        term = reject_m.group(1).strip()
+        removed = knowledge_cards.forget_card(term)
+        return {**base, "intent": "knowledge_card_reject", "action": "knowledge_card_reject",
+                "answer": (f"'{term}' 초안을 삭제했습니다. (시드 todo 틀은 유지되어 다시 채울 수 있습니다)"
+                           if removed else f"'{term}' 로컬 카드가 없습니다.")}
+    # 채움 수행 — todo 카드를 연결 LLM 으로 초안 작성 (draft 저장, 승인 전 미노출).
+    result = knowledge_cards.fill_todo_cards()
+    if not result.get("ok"):
+        return {**base, "intent": "knowledge_card_fill", "action": "knowledge_card_fill",
+                "answer": "LLM 이 연결되어 있지 않아 지식 채움을 수행하지 못했습니다. 관리 > 진단에서 LLM 연결을 확인해 주세요."}
+    filled = result.get("filled") or []
+    failed = result.get("failed") or []
+    questions = result.get("questions") or {}
+    lines = [f"지식 채움 완료 — 환경(파일/컬럼)을 조사해 초안 {len(filled)}건 작성"
+             + (f", 실패 {len(failed)}건({', '.join(failed)})" if failed else "")
+             + f", 남은 todo {result.get('remaining_todo', 0)}건."]
+    for term in filled:
+        n_q = len(questions.get(term) or [])
+        lines.append(f"- {term} → draft 저장" + (f" (추가 질문 {n_q}건)" if n_q else ""))
+    q_lines = _kcard_questions_lines(questions)
+    if q_lines:
+        lines.append("")
+        lines.append("데이터로 확인하지 못해 여쭤봅니다:")
+        lines.extend(q_lines)
+    if filled:
+        lines.append('"지식 보기: <term>" 으로 초안 확인, "지식 승인: <term>" 으로 활성화. (승인 전에는 미사용)')
+    return {**base, "intent": "knowledge_card_fill", "action": "knowledge_card_fill",
+            "answer": "\n".join(lines), "knowledge_fill": result}
 
 
 def _handle_file_doc_search(prompt: str, *, allowed_keys: set[str] | list[str],
@@ -21715,7 +22321,7 @@ def _try_flowi_react_orchestration(
     """LLM(GPT OSS/adapter) ReAct 오케스트레이션 — 홈 챗 경로.
 
     home_orchestrator 의 반복 루프가 도구 카탈로그에서 필요한 기능을 골라
-    연쇄 실행한다 (최대 8턴, `_react_max_iters`). 모델이 ask_user 를 선택하면
+    연쇄 실행한다 (유저 최대 8턴/admin 연장, `_react_max_iters`). 모델이 ask_user 를 선택하면
     clarification(질문 + 선택지)으로 반환해 사용자가 답하고 이어갈 수 있다
     (human-in-the-loop). 비활성/LLM 실패 시 (None, 사유) → 기존 단일 패스
     엔진으로 graceful degrade. 사유는 폴백 응답의 warnings 로 표면화된다.
@@ -21876,7 +22482,14 @@ def _run_flowi_chat(
 
     # "X 스플릿테이블 보여줘" — 결정적 네비게이션(split_nav)이 splittable fast-path 보다
     # 우선. ML_TABLE 에서 product 를 자동 확인해 SplitTable 페이지를 딥링크로 연다.
-    if "splittable" in allowed_keys:
+    # 단, confirm 마커 프롬프트(plan/note/inform 확인 토큰)는 전용 핸들러가 처리해야
+    # 하므로 fast-path 가 가로채면 안 된다.
+    _confirm_marker_prompt = str(prompt or "").lstrip().startswith((
+        _FLOWI_SPLITTABLE_PLAN_MARKER, _FLOWI_SPLITTABLE_NOTE_MARKER,
+        _FLOWI_INFORM_CONFIRM_MARKER, _FLOWI_INFORM_MAIL_MARKER,
+        _FLOWI_INFORM_WALKTHROUGH_MARKER, _FLOWI_DATA_REGISTER_MARKER,
+    ))
+    if "splittable" in allowed_keys and not _confirm_marker_prompt:
         from core.flowi_units import try_dispatch as _nav_dispatch
         nav_tool = _nav_dispatch(
             prompt, product=product, max_rows=max_rows, allowed_keys=allowed_keys,
@@ -21970,8 +22583,13 @@ def _run_flowi_chat(
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
-    # Human-in-the-loop 티칭 — "기억해: X는 Y" / "잊어줘: X" / "파일 설명: ..." 은 최우선 결정 신호.
-    teach_tool = _handle_flowi_teach(prompt, username=username) or _handle_file_doc_teach(prompt, username=username)
+    # Human-in-the-loop 티칭 — "기억해: X는 Y" / "잊어줘: X" / "파일 설명: ..." / 지식 카드
+    # 관리 명령("지식 채움 수행" 등, 관리자 전용)은 최우선 결정 신호.
+    teach_tool = (
+        _handle_flowi_teach(prompt, username=username)
+        or _handle_file_doc_teach(prompt, username=username)
+        or _handle_knowledge_card_admin(prompt, me=me)
+    )
     if teach_tool:
         _finalize_flowi_tool(teach_tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
         answer = teach_tool.get("answer") or "학습 요청을 처리했습니다."
@@ -22216,6 +22834,39 @@ def _run_flowi_chat(
                     agent_context=agent_context,
             )
             return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    # 인폼 메일 confirm 마커는 LLM function 라우팅(compose/walkthrough)보다 먼저
+    # 결정적으로 처리한다 — 마커 프롬프트가 LLM 에 넘어가면 오라우팅된다.
+    _inform_mail_payload = _extract_flowi_inform_mail_confirm(prompt)
+    if _inform_mail_payload is not None and "inform" in allowed_keys:
+        if _inform_mail_payload.get("_parse_error"):
+            inform_mail_tool = {"handled": True, "intent": "inform_mail_confirm_failed", "blocked": True, "answer": "메일 확인 payload를 읽지 못했습니다.", "feature": "inform"}
+        else:
+            inform_mail_tool = _flowi_send_inform_mail_confirmed(_inform_mail_payload, me)
+        answer = inform_mail_tool.get("answer") or "인폼 메일 확인을 처리했습니다."
+        _append_user_event(username, "inform_mail_confirm", _event_fields(
+            {"prompt": prompt, "intent": inform_mail_tool.get("intent") or "", "answer": answer},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": inform_mail_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(inform_mail_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=inform_mail_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     walkthrough_tool = _handle_flowi_inform_walkthrough_chat(prompt, product, max_rows, me, agent_context=agent_context, allowed_keys=allowed_keys)
     if walkthrough_tool.get("handled"):
@@ -22652,7 +23303,16 @@ def _run_flowi_chat(
         unit_only.append("tablemap")
     if "diagnosis" in allowed_keys:
         unit_only.append("diagnosis")
-    unit_only.append("filebrowser")
+    # v9.4.x: filebrowser 도 권한 게이트 — 탭 권한 없는 유저의 파일 preview 우회 차단.
+    if "filebrowser" in allowed_keys:
+        unit_only.append("filebrowser")
+    # 지식 기반 기능 선택 — 지식 카드의 answered_by 힌트가 지목한 유닛을 앞으로.
+    # 카드 매칭이 없으면 순서는 그대로다 (안정 정렬).
+    try:
+        from core import knowledge_cards as _knowledge_cards
+        unit_only = _knowledge_cards.reorder_units(prompt, unit_only)
+    except Exception:
+        pass
     unit_tool = _try_unit_ai_dispatch(
         prompt,
         product=product,
@@ -22674,8 +23334,8 @@ def _run_flowi_chat(
     if unit_tool is not None:
         tool = unit_tool
     else:
-        # LLM(GPT OSS/adapter) ReAct 오케스트레이션 — 도구를 골라 연쇄 실행(최대 8턴),
-        # 필요 시 ask_user 로 human-in-the-loop 질문. 비활성/실패 시 기존 단일 패스로.
+        # LLM(GPT OSS/adapter) ReAct 오케스트레이션 — 도구를 골라 연쇄 실행(유저 최대
+        # 8턴, admin 은 연장). 필요 시 ask_user 로 human-in-the-loop 질문. 비활성/실패 시 기존 단일 패스로.
         tool, react_skip_reason = _try_flowi_react_orchestration(prompt, me=me, allowed_keys=allowed_keys)
         if tool is None:
             tool = _handle_flowi_query(
@@ -22731,6 +23391,13 @@ def _run_flowi_chat(
     user_ctx = _profile_context(username)
     feature_ctx = _feature_context(prompt, allowed_keys=allowed_keys)
     agent_ctx = _json_excerpt(agent_context) if agent_context else ""
+    # 단일 지식 레이어 — LLM(GPT OSS 등) 폴백 프롬프트에 넣을 컴팩트 지식 블록.
+    try:
+        from core import knowledge_cards as _knowledge_cards
+        knowledge_line = _knowledge_cards.prompt_block(prompt)
+        knowledge_line = (knowledge_line + "\n\n") if knowledge_line else ""
+    except Exception:
+        knowledge_line = ""
 
     skip_llm_polish = _flowi_should_skip_llm_polish(tool)
     if skip_llm_polish:
@@ -22771,6 +23438,7 @@ def _run_flowi_chat(
                 f"{FLOWI_PLAIN_TEXT_OUTPUT_RULE}\n\n"
                 f"{source_line}"
                 f"{context_line}"
+                f"{knowledge_line}"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
                 f"단위기능 진입점:\n{feature_ctx}\n\n"
                 f"사용자: {prompt}"
@@ -23929,15 +24597,22 @@ def flowi_admin_update(req: FlowiAdminUpdateReq, _admin=Depends(require_admin)):
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
+    if not flowi_gate.access_allowed(me):
+        return flowi_gate.denied_payload(me)
     try:
-        result = _run_flowi_chat(
-            prompt=req.prompt,
-            product=req.product,
-            max_rows=req.max_rows,
-            me=me,
-            agent_context=req.context,
-        )
+        with flowi_gate.slot(username=me.get("username") or "", role=me.get("role") or "user"):
+            result = _run_flowi_chat(
+                prompt=req.prompt,
+                product=req.product,
+                max_rows=req.max_rows,
+                me=me,
+                agent_context=req.context,
+            )
         return _flowi_home_response_for_role(result, me)
+    except flowi_gate.FlowiBusy as busy:
+        return flowi_gate.busy_payload(busy)
+    except HTTPException:
+        raise
     except Exception:
         logger.warning("flowi_chat unexpected error", exc_info=True)
         return {
@@ -23957,16 +24632,23 @@ def flowi_agent_chat(req: FlowiAgentChatReq, request: Request):
     only identify the calling AI and correlate its run id for audit/debugging.
     """
     me = current_user(request)
+    if not flowi_gate.access_allowed(me):
+        return flowi_gate.denied_payload(me)
     try:
-        return _run_flowi_chat(
-            prompt=req.prompt,
-            product=req.product,
-            max_rows=req.max_rows,
-            me=me,
-            source_ai=req.source_ai,
-            client_run_id=req.client_run_id,
-            agent_context=req.context,
-        )
+        with flowi_gate.slot(username=me.get("username") or "", role=me.get("role") or "user"):
+            return _run_flowi_chat(
+                prompt=req.prompt,
+                product=req.product,
+                max_rows=req.max_rows,
+                me=me,
+                source_ai=req.source_ai,
+                client_run_id=req.client_run_id,
+                agent_context=req.context,
+            )
+    except flowi_gate.FlowiBusy as busy:
+        return flowi_gate.busy_payload(busy)
+    except HTTPException:
+        raise
     except Exception:
         logger.warning("flowi_agent_chat unexpected error", exc_info=True)
         return {

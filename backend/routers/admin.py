@@ -284,9 +284,11 @@ def _flowi_default_settings(raw: Any = None) -> Dict[str, Any]:
     if scatter.get("grain") not in {"wafer_agg", "shot", "die", "map"}:
         scatter["grain"] = "wafer_agg"
     scatter["max_points"] = _int_between(scatter.get("max_points"), 500, 50, 5000)
-    if scatter.get("inline_agg") not in {"avg", "median"}:
+    # 차트 집계 확장: avg/median 외 p90/p10/max 도 기본값으로 저장 허용 (llm._CHART_AGG_VALUES 와 동일).
+    _chart_aggs = {"avg", "median", "p90", "p10", "max"}
+    if scatter.get("inline_agg") not in _chart_aggs:
         scatter["inline_agg"] = "avg"
-    if scatter.get("et_agg") not in {"avg", "median"}:
+    if scatter.get("et_agg") not in _chart_aggs:
         scatter["et_agg"] = "median"
     charts["scatter"] = scatter
     line = charts.get("line") if isinstance(charts.get("line"), dict) else {}

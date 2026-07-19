@@ -16,6 +16,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 import threading
@@ -51,12 +52,16 @@ DEFAULT_SETTINGS = {"page_rows": 500, "max_download_rows": 100_000}
 PAGE_ROWS_MAX = 5_000
 DOWNLOAD_ROWS_MAX = 1_000_000
 
-# 제품별 pivot+index 결과 캐시 — (product, 파일 시그니처) 가 같으면 재사용.
+# pivot+index 결과 캐시 — (product, 필터 조합) 별로 (sig 일치 시) 재사용.
 # 값: (sig, wide_full_df, out_cols, rule_errors, vehicle_csv_name, vehicle_table)
 # wide_full 은 raw item 컬럼을 포함 — 관리자 수식 테스트가 참조.
-_CACHE: dict[str, tuple] = {}
+_CACHE: dict[tuple, tuple] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_MAX = 4
+_CACHE_MAX = 8
+
+# raw(long) ET df 캐시 — 필터 조합이 바뀔 때마다 파일을 다시 읽지 않도록 제품별 보관.
+_RAW_CACHE: dict[str, tuple] = {}
+_RAW_CACHE_MAX = 2
 
 
 def _settings() -> dict:
@@ -97,24 +102,47 @@ def _product_sig(product: str) -> tuple:
     return tuple(sig)
 
 
-def _compute(product: str) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict]]:
-    """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블). 캐시 사용."""
+def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
+    """제품의 raw(long) ET df — 파일 시그니처가 같으면 캐시 재사용."""
+    with _CACHE_LOCK:
+        hit = _RAW_CACHE.get(product)
+        if hit and hit[0] == sig:
+            return hit[1]
+    df = read_source("flat", _et_root().name, product, "", max_files=None)
+    with _CACHE_LOCK:
+        if len(_RAW_CACHE) >= _RAW_CACHE_MAX:
+            _RAW_CACHE.pop(next(iter(_RAW_CACHE)), None)
+        _RAW_CACHE[product] = (sig, df)
+    return df
+
+
+def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict]]:
+    """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블).
+
+    필터는 raw(long) ET 데이터에 먼저 적용한 뒤 reformatize 한다 — ADDP 의
+    그룹 통계(std/avg)도 필터된 모집단 기준으로 계산된다.
+    결과는 (product, 필터 조합) 단위로 캐시 (파일 시그니처 일치 시 재사용).
+    """
     csv_fp = find_vehicle_csv(VEHICLE_DIR, product)
     if csv_fp is None:
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다 "
                                  f"({VEHICLE_DIR} 안에 <vehicle>_reformatter.csv 를 두세요)")
     st = csv_fp.stat()
     sig = _product_sig(product) + ((str(csv_fp), st.st_mtime, st.st_size),)
+    key = (product, _filters_key(f))
     with _CACHE_LOCK:
-        hit = _CACHE.get(product)
+        hit = _CACHE.get(key)
         if hit and hit[0] == sig:
             return hit[1], hit[2], hit[3], hit[4], hit[5]
     table = load_vehicle_table(csv_fp)
     if not table:
         raise HTTPException(400, f"{csv_fp.name}: 유효한 REAL/ADDP 행이 없습니다")
-    df = read_source("flat", _et_root().name, product, "", max_files=None)
+    df = _load_raw(product, sig)
     if df.height == 0:
         raise HTTPException(400, f"'{product}' ET 데이터가 비어 있습니다")
+    df = _apply_filters(df, f)
+    if df.height == 0:
+        raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
     try:
         wide, out_cols, errors = reformatize(df, table)
     except ValueError as e:
@@ -122,20 +150,115 @@ def _compute(product: str) -> tuple[pl.DataFrame, list[str], list[str], str, lis
     with _CACHE_LOCK:
         if len(_CACHE) >= _CACHE_MAX:
             _CACHE.pop(next(iter(_CACHE)), None)
-        _CACHE[product] = (sig, wide, out_cols, errors, csv_fp.name, table)
+        _CACHE[key] = (sig, wide, out_cols, errors, csv_fp.name, table)
     return wide, out_cols, errors, csv_fp.name, table
 
 
-def _apply_lot_filter(df: pl.DataFrame, lot_filter: str) -> pl.DataFrame:
-    needle = str(lot_filter or "").strip()
-    if not needle:
+# ── 조회/다운로드 필터 ───────────────────────────────────────────────
+# 필터는 raw(long) ET 데이터에 적용된 뒤 reformatize 로 넘어간다 —
+# total_site_cnt 처럼 raw 에만 있는 컬럼도 그대로 필터 가능하다.
+class Filters(BaseModel):
+    lot_filter: str = ""        # root_lot_id 포함 검색 (쉼표 = OR)
+    step_filter: str = ""       # step_id 포함 검색 (쉼표 = OR)
+    wafer_filter: str = ""      # wafer_id 포함 검색 (쉼표 = OR)
+    site_cnt_filter: str = ""   # total_site_cnt 정확 일치 (쉼표 = OR)
+    days: int = 0               # tkout_time 최신값 기준 최근 N일 — 지정 시 date_from/to 무시
+    date_from: str = ""         # YYYY-MM-DD, tkout_time ≥ 해당일 00:00
+    date_to: str = ""           # YYYY-MM-DD, tkout_time < 익일 00:00 (해당일 포함)
+
+
+def _filters_key(f: Filters) -> tuple:
+    """캐시 키용 정규화 필터 튜플 — 같은 조합이면 같은 캐시 엔트리."""
+    return (f.lot_filter.strip().upper(), f.step_filter.strip().upper(),
+            f.wafer_filter.strip().upper(), f.site_cnt_filter.strip(),
+            max(0, int(f.days or 0)), f.date_from.strip(), f.date_to.strip())
+
+
+def _has_filter(f: Filters) -> bool:
+    return bool(f.lot_filter.strip() or f.step_filter.strip() or f.wafer_filter.strip()
+                or f.site_cnt_filter.strip() or f.days > 0
+                or f.date_from.strip() or f.date_to.strip())
+
+
+def _filter_desc(f: Filters) -> str:
+    parts = []
+    if f.days > 0:
+        parts.append(f"days={f.days}")
+    elif f.date_from.strip() or f.date_to.strip():
+        parts.append(f"tkout={f.date_from.strip() or '…'}~{f.date_to.strip() or '…'}")
+    for k, v in (("lot", f.lot_filter), ("step", f.step_filter),
+                 ("wafer", f.wafer_filter), ("site_cnt", f.site_cnt_filter)):
+        if v.strip():
+            parts.append(f"{k}={v.strip()}")
+    return ", ".join(parts)
+
+
+def _contains_any(df: pl.DataFrame, col: str, spec: str,
+                  fallback_cols: tuple[str, ...] = ()) -> pl.DataFrame:
+    vals = [v.strip().upper() for v in str(spec or "").split(",") if v.strip()]
+    if not vals:
         return df
-    for col in ("root_lot_id", "lot_id"):
-        if col in df.columns:
-            return df.filter(
-                pl.col(col).cast(pl.Utf8, strict=False)
-                .str.to_uppercase().str.contains(needle.upper(), literal=True)
-            )
+    use = next((c for c in (col, *fallback_cols) if c in df.columns), None)
+    if use is None:
+        raise HTTPException(400, f"'{col}' 컬럼이 데이터에 없어 필터를 적용할 수 없습니다")
+    base = pl.col(use).cast(pl.Utf8, strict=False).str.to_uppercase()
+    expr = base.str.contains(vals[0], literal=True)
+    for v in vals[1:]:
+        expr = expr | base.str.contains(v, literal=True)
+    return df.filter(expr)
+
+
+def _site_cnt_filter(df: pl.DataFrame, spec: str) -> pl.DataFrame:
+    vals = [v.strip() for v in str(spec or "").split(",") if v.strip()]
+    if not vals:
+        return df
+    if "total_site_cnt" not in df.columns:
+        raise HTTPException(400, "total_site_cnt 컬럼이 데이터에 없어 필터를 적용할 수 없습니다")
+    try:
+        nums = [int(float(v)) for v in vals]
+    except ValueError:
+        raise HTTPException(400, f"total_site_cnt 필터는 숫자만 허용됩니다: {spec}")
+    return df.filter(pl.col("total_site_cnt").cast(pl.Int64, strict=False).is_in(nums))
+
+
+def _tkout_filter(df: pl.DataFrame, days: int, date_from: str, date_to: str) -> pl.DataFrame:
+    days = max(0, int(days or 0))
+    date_from = str(date_from or "").strip()
+    date_to = str(date_to or "").strip()
+    if not days and not date_from and not date_to:
+        return df
+    if "tkout_time" not in df.columns:
+        raise HTTPException(400, "tkout_time 컬럼이 데이터에 없어 기간 필터를 적용할 수 없습니다")
+    dtype = df.schema["tkout_time"]
+    ts = (pl.col("tkout_time").str.to_datetime(strict=False) if dtype == pl.Utf8
+          else pl.col("tkout_time").cast(pl.Datetime("us"), strict=False))
+    if days:
+        anchor = df.select(ts.max().alias("m")).item()
+        if anchor is None:
+            raise HTTPException(400, "tkout_time 값을 날짜로 해석할 수 없습니다")
+        return df.filter(ts >= anchor - dt.timedelta(days=days))
+
+    def _parse(name: str, s: str) -> dt.datetime:
+        try:
+            return dt.datetime.combine(dt.date.fromisoformat(s), dt.time.min)
+        except ValueError:
+            raise HTTPException(400, f"{name} 은 YYYY-MM-DD 형식이어야 합니다: {s}")
+
+    cond = None
+    if date_from:
+        cond = ts >= _parse("date_from", date_from)
+    if date_to:
+        c2 = ts < _parse("date_to", date_to) + dt.timedelta(days=1)
+        cond = c2 if cond is None else (cond & c2)
+    return df.filter(cond)
+
+
+def _apply_filters(df: pl.DataFrame, f: Filters) -> pl.DataFrame:
+    df = _tkout_filter(df, f.days, f.date_from, f.date_to)
+    df = _contains_any(df, "root_lot_id", f.lot_filter, fallback_cols=("lot_id",))
+    df = _contains_any(df, "step_id", f.step_filter)
+    df = _contains_any(df, "wafer_id", f.wafer_filter)
+    df = _site_cnt_filter(df, f.site_cnt_filter)
     return df
 
 
@@ -219,20 +342,19 @@ def settings_save(req: SettingsReq, user=Depends(current_user)):
     return {"ok": True, **_settings()}
 
 
-class RunReq(BaseModel):
+class RunReq(Filters):
     product: str
     offset: int = 0
     limit: int = 0          # 0 → settings.page_rows
-    lot_filter: str = ""
     items: list[str] = []   # 선택된 index alias — 비우면 전체
 
 
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
-    wide_full, out_cols, errors, vehicle_csv, table = _compute(req.product)
+    wide_full, out_cols, errors, vehicle_csv, table = _compute(req.product, req)
     out_cols = _select_aliases(out_cols, req.items)
-    wide = _apply_lot_filter(wide_full.select(out_cols), req.lot_filter)
+    wide = wide_full.select(out_cols)
     cfg = _settings()
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
@@ -263,21 +385,31 @@ def run(req: RunReq, _user=Depends(current_user)):
 
 @router.get("/download")
 def download(product: str = Query(...), lot_filter: str = Query(""),
+             step_filter: str = Query(""), wafer_filter: str = Query(""),
+             site_cnt_filter: str = Query(""), days: int = Query(0),
+             date_from: str = Query(""), date_to: str = Query(""),
              items: str = Query(""), user=Depends(current_user)):
-    wide_full, out_cols, _errors, vehicle_csv, _table = _compute(product)
+    f = Filters(lot_filter=lot_filter, step_filter=step_filter, wafer_filter=wafer_filter,
+                site_cnt_filter=site_cnt_filter, days=days, date_from=date_from, date_to=date_to)
+    if not _has_filter(f):
+        raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
+                                 "기간(tkout_time)·root_lot_id·step_id·wafer_id·total_site_cnt "
+                                 "중 하나 이상을 지정하세요")
+    wide_full, out_cols, _errors, vehicle_csv, _table = _compute(product, f)
     wanted = [s.strip() for s in items.split(",") if s.strip()]
     out_cols = _select_aliases(out_cols, wanted)
-    wide = _apply_lot_filter(wide_full.select(out_cols), lot_filter)
+    wide = wide_full.select(out_cols)
     cfg = _settings()
     if wide.height > cfg["max_download_rows"]:
-        raise HTTPException(400, f"다운로드는 최대 {cfg['max_download_rows']:,}행까지 허용됩니다. "
-                                 f"lot 필터를 걸거나 톱니바퀴 설정에서 상한을 조정하세요.")
+        raise HTTPException(400, f"결과 {wide.height:,}행이 다운로드 최대 {cfg['max_download_rows']:,}행을 "
+                                 f"초과합니다. 기간·lot 등 필터를 조정해 행을 줄이거나 "
+                                 f"톱니바퀴 설정에서 상한을 올리세요.")
     csv_bytes = wide.write_csv().encode("utf-8")
     jsonl_append(DL_LOG, {
         "source": "reformatize",
         "username": user.get("username", ""),
         "product": product,
-        "sql": (f"lot_filter={lot_filter}" if lot_filter else ""),
+        "sql": _filter_desc(f),
         "rows": wide.height, "cols": wide.width,
         "select_cols": vehicle_csv + (" | " + ",".join(wanted) if wanted else " | all"),
         "size_mb": round(len(csv_bytes) / 1e6, 2),
@@ -294,17 +426,16 @@ class TestItem(BaseModel):
     addp_form: str
 
 
-class TestReq(BaseModel):
+class TestReq(Filters):
     product: str
     items: list[TestItem]
-    lot_filter: str = ""
     offset: int = 0
     limit: int = 0
 
 
-def _run_test(product: str, items: list[TestItem], lot_filter: str):
-    """base wide + 테스트 ADDP 적용 → (결과 df[key+meta+참조+테스트], 테스트 alias, 에러)."""
-    wide_full, out_cols, _base_errors, vehicle_csv, _table = _compute(product)
+def _run_test(product: str, items: list[TestItem], f: Filters):
+    """필터된 base wide + 테스트 ADDP 적용 → (결과 df[key+meta+참조+테스트], 테스트 alias, 에러)."""
+    wide_full, out_cols, _base_errors, vehicle_csv, _table = _compute(product, f)
     rows = []
     seen_alias: set[str] = set()
     for it in items:
@@ -333,7 +464,7 @@ def _run_test(product: str, items: list[TestItem], lot_filter: str):
         if c in wide.columns and c not in seen:
             cols.append(c)
             seen.add(c)
-    out = _apply_lot_filter(wide.select(cols), lot_filter)
+    out = wide.select(cols)
     return out, test_aliases, errors, vehicle_csv
 
 
@@ -347,7 +478,7 @@ def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
         "columns": {},
     }
     if product:
-        wide_full, out_cols, _e, vehicle_csv, table = _compute(product)
+        wide_full, out_cols, _e, vehicle_csv, table = _compute(product, Filters())
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
         keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
         metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]
@@ -361,7 +492,7 @@ def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
 @router.post("/test")
 def test_run(req: TestReq, _admin=Depends(require_admin)):
     t0 = time.monotonic()
-    out, test_aliases, errors, vehicle_csv = _run_test(req.product, req.items, req.lot_filter)
+    out, test_aliases, errors, vehicle_csv = _run_test(req.product, req.items, req)
     cfg = _settings()
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
@@ -388,17 +519,22 @@ def test_run(req: TestReq, _admin=Depends(require_admin)):
 
 @router.post("/test/download")
 def test_download(req: TestReq, admin=Depends(require_admin)):
-    out, test_aliases, _errors, vehicle_csv = _run_test(req.product, req.items, req.lot_filter)
+    if not _has_filter(req):
+        raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
+                                 "기간(tkout_time)·root_lot_id·step_id·wafer_id·total_site_cnt "
+                                 "중 하나 이상을 지정하세요")
+    out, test_aliases, _errors, vehicle_csv = _run_test(req.product, req.items, req)
     cfg = _settings()
     if out.height > cfg["max_download_rows"]:
-        raise HTTPException(400, f"다운로드는 최대 {cfg['max_download_rows']:,}행까지 허용됩니다. "
-                                 f"lot 필터를 걸거나 톱니바퀴 설정에서 상한을 조정하세요.")
+        raise HTTPException(400, f"결과 {out.height:,}행이 다운로드 최대 {cfg['max_download_rows']:,}행을 "
+                                 f"초과합니다. 기간·lot 등 필터를 조정해 행을 줄이거나 "
+                                 f"톱니바퀴 설정에서 상한을 올리세요.")
     csv_bytes = out.write_csv().encode("utf-8")
     jsonl_append(DL_LOG, {
         "source": "reformatize_test",
         "username": admin.get("username", ""),
         "product": req.product,
-        "sql": (f"lot_filter={req.lot_filter}" if req.lot_filter else ""),
+        "sql": _filter_desc(req),
         "rows": out.height, "cols": out.width,
         "select_cols": ", ".join(f"{i.alias}={i.addp_form}" for i in req.items if str(i.alias or "").strip()),
         "size_mb": round(len(csv_bytes) / 1e6, 2),

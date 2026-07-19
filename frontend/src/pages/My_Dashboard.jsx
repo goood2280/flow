@@ -109,7 +109,7 @@ function WipSplitPanel() {
               value={binInput}
               disabled={axis !== "step_id"}
               onChange={(e) => setBinInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") applyBin(binInput); }}
+              onKeyDown={(e) => { if (e.key === "Enter") {if(e.nativeEvent?.isComposing||e.keyCode===229)return; applyBin(binInput);} }}
               onBlur={() => applyBin(binInput)}
               style={{ ...selStyle, width: 92 }}
             />

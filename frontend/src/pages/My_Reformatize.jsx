@@ -15,6 +15,31 @@ import { Banner, Button, EmptyState, PageHeader, Pill } from "../components/UXKi
 
 const API = "/api/reformatize";
 
+/* 조회/다운로드 필터 — 서버 Filters 모델과 1:1.
+   days(최근 N일)와 date_from/to(기간)는 상호 배타 — 한쪽 입력 시 다른 쪽을 비운다. */
+const EMPTY_FILTERS = {
+  lot_filter: "", step_filter: "", wafer_filter: "", site_cnt_filter: "",
+  days: "", date_from: "", date_to: "",
+};
+
+function filterBody(filters) {
+  return {
+    lot_filter: filters.lot_filter.trim(),
+    step_filter: filters.step_filter.trim(),
+    wafer_filter: filters.wafer_filter.trim(),
+    site_cnt_filter: filters.site_cnt_filter.trim(),
+    days: Number(filters.days) || 0,
+    date_from: filters.date_from,
+    date_to: filters.date_to,
+  };
+}
+
+function hasAnyFilter(filters) {
+  const f = filterBody(filters);
+  return Boolean(f.lot_filter || f.step_filter || f.wafer_filter || f.site_cnt_filter
+    || f.days > 0 || f.date_from || f.date_to);
+}
+
 const cell = { padding: "5px 10px", borderBottom: "1px solid var(--border)", fontSize: 13, whiteSpace: "nowrap" };
 const head = {
   ...cell, position: "sticky", top: 0, background: "var(--bg-tertiary)",
@@ -231,8 +256,8 @@ function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
   );
 }
 
-/* 관리자 전용 ADDP 수식 테스트 패널 */
-function AddpTestPanel({ product, lotFilter, pageRows }) {
+/* 관리자 전용 ADDP 수식 테스트 패널 — 필터는 상단 조회 조건(filters)을 그대로 따른다 */
+function AddpTestPanel({ product, filters, pageRows }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([{ alias: "", addp_form: "" }]);
   const [help, setHelp] = useState(null);
@@ -262,7 +287,7 @@ function AddpTestPanel({ product, lotFilter, pageRows }) {
   const run = (nextOffset = 0) => {
     if (!validItems.length) { toast.warn("alias 와 ADDP Form 을 입력하세요"); return; }
     setBusy(true);
-    postJson(API + "/test", { product, items: validItems, lot_filter: lotFilter, offset: nextOffset, limit: pageRows })
+    postJson(API + "/test", { product, items: validItems, ...filterBody(filters), offset: nextOffset, limit: pageRows })
       .then(d => { setResult(d); setOffset(d.offset || 0); })
       .catch(e => toast.error(e.message || "테스트 실패"))
       .finally(() => setBusy(false));
@@ -270,8 +295,9 @@ function AddpTestPanel({ product, lotFilter, pageRows }) {
 
   const download = () => {
     if (!validItems.length) { toast.warn("alias 와 ADDP Form 을 입력하세요"); return; }
+    if (!hasAnyFilter(filters)) { toast.warn("다운로드는 필터가 필요합니다 — 상단 조회 조건에서 기간·lot 등 필터를 지정하세요"); return; }
     setDlBusy(true);
-    dlPost(API + "/test/download", { product, items: validItems, lot_filter: lotFilter }, `${product}_addp_test.csv`)
+    dlPost(API + "/test/download", { product, items: validItems, ...filterBody(filters) }, `${product}_addp_test.csv`)
       .then(() => toast.ok("테스트 CSV 다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
       .catch(e => toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
@@ -313,7 +339,7 @@ function AddpTestPanel({ product, lotFilter, pageRows }) {
             <Button onClick={() => setItems(list => [...list, { alias: "", addp_form: "" }])}>＋ 항목 추가</Button>
             <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "테스트 실행"}</Button>
             <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ 테스트 CSV"}</Button>
-            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>lot 필터·행 수 설정은 상단 조회 조건을 따릅니다</span>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>필터(기간·lot·step 등)·행 수 설정은 상단 조회 조건을 따릅니다</span>
           </div>
 
           {/* 도움말: 참조 가능한 컬럼 + 함수 */}
@@ -397,7 +423,7 @@ export default function My_Reformatize({ user }) {
   const isAdmin = user?.role === "admin";
   const [products, setProducts] = useState([]);
   const [product, setProduct] = useState("");
-  const [lotFilter, setLotFilter] = useState("");
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [settings, setSettings] = useState({ page_rows: 500, max_download_rows: 100000 });
   const [gearForm, setGearForm] = useState(null);
   const [result, setResult] = useState(null);
@@ -430,11 +456,18 @@ export default function My_Reformatize({ user }) {
   const allSelected = itemList.length > 0 && selItems.size === itemList.length;
   const selArray = () => (allSelected ? [] : [...selItems]);   // 전체 선택이면 서버 기본(전체) 사용
 
+  const setF = (patch) => setFilters(f => ({ ...f, ...patch }));
+  const onFilterEnter = (e) => {
+    if (e.key !== "Enter") return;
+    if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
+    run(0);
+  };
+
   const run = (nextOffset = 0) => {
     if (!product) { toast.warn("제품을 선택하세요"); return; }
     if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     setBusy(true);
-    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, lot_filter: lotFilter, items: selArray() })
+    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, ...filterBody(filters), items: selArray() })
       .then(d => { setResult(d); setOffset(d.offset || 0); })
       .catch(e => toast.error(e.message || "조회 실패"))
       .finally(() => setBusy(false));
@@ -443,8 +476,12 @@ export default function My_Reformatize({ user }) {
   const download = () => {
     if (!product) return;
     if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
+    if (!hasAnyFilter(filters)) {
+      toast.warn("필터 없이 전체 다운로드는 허용되지 않습니다 — 기간(tkout_time)·root_lot_id·step_id 등 필터를 지정해 행 수를 줄이세요");
+      return;
+    }
     setDlBusy(true);
-    dl(API + "/download" + qs({ product, lot_filter: lotFilter, items: selArray().join(",") }), `${product}_reformatize.csv`)
+    dl(API + "/download" + qs({ product, ...filterBody(filters), items: selArray().join(",") }), `${product}_reformatize.csv`)
       .then(() => toast.ok("다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
       .catch(e => toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
@@ -486,11 +523,50 @@ export default function My_Reformatize({ user }) {
         {selected && (selected.vehicle_csv
           ? <Pill tone="ok" title="적용되는 reformatter 규칙 파일">{selected.vehicle_csv}</Pill>
           : <Pill tone="warn" title="data_root/reformatter/ 에 <vehicle>_reformatter.csv 를 추가하세요">규칙 CSV 없음</Pill>)}
-        <input value={lotFilter} onChange={e => setLotFilter(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") run(0); }}
-          placeholder="lot 필터 (root_lot_id 포함 검색)" style={{ ...inputStyle, minWidth: 220 }} />
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "조회"}</Button>
-        <Button disabled={dlBusy || !product || !selected?.vehicle_csv} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ CSV 다운로드"}</Button>
+        <Button disabled={dlBusy || !product || !selected?.vehicle_csv} onClick={download}
+          title={hasAnyFilter(filters) ? "필터 적용 결과를 CSV 로 다운로드" : "다운로드는 필터가 하나 이상 필요합니다"}>
+          {dlBusy ? "다운로드 중…" : "⬇ CSV 다운로드"}
+        </Button>
+        {!hasAnyFilter(filters) && (
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            ⬇ 다운로드는 필터(기간·lot 등)를 하나 이상 지정해야 합니다
+          </span>
+        )}
+      </div>
+
+      {/* 필터 — tkout_time 기간 + root_lot_id/step_id/wafer_id/total_site_cnt.
+          최근 N일과 시작~종료일은 상호 배타 (한쪽 입력 시 다른 쪽 초기화). */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>필터</span>
+        <input type="number" min={1} value={filters.days}
+          onChange={e => setF({ days: e.target.value, date_from: "", date_to: "" })}
+          onKeyDown={onFilterEnter}
+          placeholder="최근 N일" title="데이터 최신 tkout_time 기준 최근 N일 (기간 지정과 동시 사용 불가)"
+          style={{ ...inputStyle, width: 90 }} />
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>또는</span>
+        <input type="date" value={filters.date_from}
+          onChange={e => setF({ date_from: e.target.value, days: "" })}
+          title="tkout_time 시작일 (포함)" style={inputStyle} />
+        <span style={{ color: "var(--text-secondary)" }}>~</span>
+        <input type="date" value={filters.date_to}
+          onChange={e => setF({ date_to: e.target.value, days: "" })}
+          title="tkout_time 종료일 (포함)" style={inputStyle} />
+        <input value={filters.lot_filter} onChange={e => setF({ lot_filter: e.target.value })}
+          onKeyDown={onFilterEnter}
+          placeholder="root_lot_id (쉼표=OR, 포함)" style={{ ...inputStyle, minWidth: 190 }} />
+        <input value={filters.step_filter} onChange={e => setF({ step_filter: e.target.value })}
+          onKeyDown={onFilterEnter}
+          placeholder="step_id (쉼표=OR, 포함)" style={{ ...inputStyle, minWidth: 160 }} />
+        <input value={filters.wafer_filter} onChange={e => setF({ wafer_filter: e.target.value })}
+          onKeyDown={onFilterEnter}
+          placeholder="wafer_id (쉼표=OR, 포함)" style={{ ...inputStyle, width: 160 }} />
+        <input value={filters.site_cnt_filter} onChange={e => setF({ site_cnt_filter: e.target.value })}
+          onKeyDown={onFilterEnter}
+          placeholder="total_site_cnt (쉼표=OR, 일치)" style={{ ...inputStyle, width: 180 }} />
+        {hasAnyFilter(filters) && (
+          <Button onClick={() => setFilters(EMPTY_FILTERS)}>필터 초기화</Button>
+        )}
       </div>
 
       {/* Index 항목 선택 — REAL(scale factor)/ADDP(form·참조) 확인 후 뽑을 항목 선택 */}
@@ -503,7 +579,7 @@ export default function My_Reformatize({ user }) {
 
       {/* 관리자 전용 ADDP 수식 테스트 */}
       {isAdmin && product && selected?.vehicle_csv && (
-        <AddpTestPanel product={product} lotFilter={lotFilter} pageRows={settings.page_rows} />
+        <AddpTestPanel product={product} filters={filters} pageRows={settings.page_rows} />
       )}
 
       {/* 규칙 에러 */}
@@ -555,7 +631,7 @@ export default function My_Reformatize({ user }) {
               value={(gearForm || settings).max_download_rows}
               onChange={e => setGearForm({ ...(gearForm || settings), max_download_rows: e.target.value })}
               style={{ ...inputStyle, width: "100%" }} />
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>초과 시 lot 필터를 걸어 행을 줄여야 다운로드됩니다 (100~1,000,000)</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>초과 시 기간·lot 등 필터를 조정해 행을 줄여야 다운로드됩니다 (100~1,000,000)</div>
           </div>
           <Button variant="primary" onClick={saveSettings}>저장</Button>
         </div>
