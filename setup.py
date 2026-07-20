@@ -59,7 +59,7 @@ except Exception:
 
 VERSION = "9.4.2"
 CODENAME = "flow"
-VERSION_META = {"version": "9.4.2", "codename": "flow", "release_notes": [{"version": "9.4.2", "date": "2026-07-20", "title": "Worker Dispatch — 개발서버 워커 분산 번들 반영", "tag": "feature", "changes": ["무거운 파일 산출 작업(SplitTable pivot 캐시, fab lot index, ML_TABLE lookup)을 개발서버 워커로 오프로드 — 파일 큐({data_root}/worker/) + heartbeat, stale 시 로컬 실행 자동 폴백 (FLOW_SERVER_ROLE=api|worker).", "backend/core/worker_dispatch.py·worker_tasks.py, scripts/worker_watchdog.py, docs/WORKER_DISPATCH.md 번들 추가.", "추출 대상이 아니던 루트 package.json/package-lock.json 데드 블롭 제거."]}, {"version": "9.4.1", "date": "2026-07-20", "title": "TEG Mapfile 조회 — ebeam 절대좌표 원복 로직 정리", "tag": "fix", "changes": ["Mapfile 좌표를 PCHK 기준 상대좌표로 명확화 — h는 H_PCHK, v_R은 시계 90° 회전 후 V_PCHK 절대좌표를 더해 ebeam 절대좌표를 복원해 정답지와 비교.", "H_PCHK/V_PCHK 미검출 시 H_PRBCHK/V_PRBCHK 폴백으로 flat 자동 판정.", "module 이름 'MAIN' 제외, 꼬리표 첫 토큰이 비어 있으면 module 뒤 이름으로 파싱."]}, {"version": "9.4.0", "date": "", "title": "Flow app 운영 개선 통합 요약", "tag": "rollup", "changes": ["SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.", "사용자 데이터와 DB/runtime root는 setup.py 번들에 포함하지 않고 외부 FLOW_DATA_ROOT/FLOW_DB_ROOT 또는 로컬 ignored root에 보존.", "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인."]}]}
+VERSION_META = {"version": "9.4.2", "codename": "flow", "release_notes": [{"version": "9.4.2", "date": "", "title": "Flow app 운영 개선 통합 요약", "tag": "rollup", "changes": ["SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.", "사용자 데이터와 DB/runtime root는 setup.py 번들에 포함하지 않고 외부 FLOW_DATA_ROOT/FLOW_DB_ROOT 또는 로컬 ignored root에 보존.", "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인."]}]}
 
 
 def _version_time_label() -> str:
