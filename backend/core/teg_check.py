@@ -521,6 +521,33 @@ def resolve_ref_teg_extended(t: dict, ref: dict[str, list[dict]] | None,
     return None, None, None
 
 
+_SPLIT_SUFFIX_RE = re.compile(r"^(.+)_(\d+)$")
+
+
+def resolve_ref_teg_split(t: dict, ref: dict[str, list[dict]] | None,
+                           tc_to_teg: dict[str, str] | None,
+                           ) -> tuple[str | None, str | None, str | None]:
+    """분할 TEG 재매칭 — 이름 뒤의 _1, _2 등 분할 번호를 제거하고 base name 으로 매칭.
+
+    TEG 위치 조회에서 동명 TEG 가 여러 행이면 _1, _2, … 접미사가 자동 부여된다.
+    이 접미사를 제거한 원래 이름으로 정답지의 teg/top_cell 완전 일치를 시도한다.
+    같은 base name 의 정답지에 여러 후보가 있으면 _compare 가 가장 가까운 것을 대조.
+    """
+    if not ref:
+        return None, None, None
+    tc_to_teg = tc_to_teg or {}
+    for tok in _name_tokens(t):
+        m = _SPLIT_SUFFIX_RE.match(tok)
+        if m:
+            base = m.group(1)
+            if base in ref:
+                return base, "teg", tok
+            teg = tc_to_teg.get(base)
+            if teg is not None:
+                return teg, "top_cell", tok
+    return None, None, None
+
+
 def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
              x: float, y: float, extended: bool = False) -> dict:
     """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h, ref_seq}.
@@ -723,6 +750,10 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok = resolve_ref_teg_extended(t, ref, tc_to_teg)
             extended = ref_teg is not None
+        # 분할 TEG 재매칭 — _1, _2 등 접미사 제거 후 base name 으로 정답지 검색
+        if ref_teg is None and ref is not None:
+            ref_teg, msrc, mtok = resolve_ref_teg_split(t, ref, tc_to_teg)
+            # 같은 TEG 의 분할이므로 위치 비교 정상 수행 (extended 아님)
         cmp_ = _compare(ref, ref_teg, nx, ny, extended=extended)
         if cmp_["status"] in summary:
             summary[cmp_["status"]] += 1
@@ -731,6 +762,9 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         mm_x, mm_y = nx * scale, ny * scale
         tw = cmp_["ref_w"] if cmp_["ref_w"] is not None else float(cfg["teg_default_w"])
         th = cmp_["ref_h"] if cmp_["ref_h"] is not None else float(cfg["teg_default_h"])
+        # flat_used 가 v_R 이면 Vertical TEG — 기본 크기 사용 시 가로/세로 swap
+        if cmp_["ref_w"] is None and used_t == "v_R":
+            tw, th = th, tw
         overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th)
                    if shot.get("checked") else None)
         if overlap:

@@ -651,7 +651,7 @@ def load_tegs():
     out["teg_h"] = pd.to_numeric(df[hc], errors="coerce") if hc else float("nan")
     # direction(=flat_zone): H/Horizontal → h(기본, 가로) | V/Vertical → v(세로로 세움).
     # v 는 TEG 패턴을 세워 그린다 — 좌하단 좌표는 유지하고 가로/세로(w/h)만 스왑.
-    dc = _find_col(df, "direction", "flat_zone", "flatzone")
+    dc = _find_col(df, "direction", "flat_zone", "flatzone", "flat")
     if dc:
         raw = df[dc].fillna("").astype(str).str.strip().str.lower()
         out["flat_zone"] = raw.apply(lambda v: "v" if v.startswith("v") else "h")
