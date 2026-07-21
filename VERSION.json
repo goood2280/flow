@@ -1,7 +1,17 @@
 {
-  "version": "9.5.3",
+  "version": "9.5.4",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.4",
+      "date": "2026-07-21",
+      "title": "TEG Mapfile 체크 — Shot 확대에 확인필요 표시 · 확인필요 목록 die 격자 결과",
+      "tag": "teg",
+      "changes": [
+        "Shot 확대 배치도: 🟡 확인필요(△, 주황) 항목도 🔴 불일치(✕, 빨강)·⚪ 미등록(○, 파랑)과 함께 status 별 색·아이콘으로 구분 표시.",
+        "확인필요 목록에 칩 격자(die) 검사 컬럼 추가 — die 밖이면 'die 밖 (문제없음)', die 안이면 'die 내 (확인필요)'. 헤더에 die 밖/내 요약, die 겹침 행은 빨간 테두리·⚠ 강조."
+      ]
+    },
     {
       "version": "9.5.3",
       "date": "2026-07-21",
