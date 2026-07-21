@@ -2140,6 +2140,82 @@ def _actual_value_for_plan_cell(product: str, cell_key: str) -> str:
         return ""
 
 
+def _product_mismatch_group_members(product: str) -> list[str]:
+    """제품명과 이름이 같은(대소문자 무시) 관리자 그룹의 멤버 목록.
+
+    SplitTable 제품은 ML_TABLE_<PROD> 형태라 prefix 를 뗀 이름도 같이 매칭한다.
+    """
+    raw = str(product or "").strip()
+    if not raw:
+        return []
+    names = {raw.lower()}
+    if raw.upper().startswith("ML_TABLE_"):
+        tail = raw[len("ML_TABLE_"):].strip()
+        if tail:
+            names.add(tail.lower())
+    try:
+        from routers.groups import _load as _load_groups
+        members: list[str] = []
+        for g in _load_groups():
+            if not isinstance(g, dict):
+                continue
+            if str(g.get("name") or "").strip().lower() not in names:
+                continue
+            for m in g.get("members") or []:
+                username = str(m or "").strip()
+                if username and username not in members:
+                    members.append(username)
+        return members
+    except Exception:
+        return []
+
+
+def _send_plan_mismatch_mail(product: str, items: list[dict], targets: list[str], actor: str = "flow") -> None:
+    """plan/actual 불일치 확인 요청 메일 — 비밀번호 찾기 메일과 같은 방식(from_addr 발신, HTML 본문)."""
+    if not items or not targets:
+        return
+    try:
+        import html as _html
+        from core.mail import load_mail_cfg, send_mail
+        try:
+            sender = (load_mail_cfg().get("from_addr") or "").strip()
+        except Exception:
+            sender = ""
+        rows = []
+        for it in items[:50]:
+            where = _html.escape(str(it.get("root") or ""))
+            wafer = str(it.get("wafer") or "").strip()
+            if wafer:
+                where += f" WF{_html.escape(wafer)}"
+            when = str(it.get("updated") or "").strip()[:16].replace("T", " ")
+            rows.append(
+                "<li style='margin:2px 0'>"
+                f"<b>{where}</b> · {_html.escape(str(it.get('column') or ''))} — "
+                f"<b>{_html.escape(str(it.get('owner') or ''))}</b> 님이 plan "
+                f"<b>{_html.escape(str(it.get('plan') or ''))}</b> 적용"
+                + (f" ({_html.escape(when)})" if when else "")
+                + f" → 실제로는 <b>{_html.escape(str(it.get('actual') or ''))}</b> 로 진행됨"
+                "</li>"
+            )
+        content = (
+            "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
+            f"<p><b>{_html.escape(str(product))}</b> SplitTable 에서 계획(plan)과 실제 진행이 다른 항목이 확인되었습니다.</p>"
+            f"<ul style='padding-left:18px'>{''.join(rows)}</ul>"
+            "<p>실제 진행 내용이 맞는지 확인해 주세요.</p>"
+            "<p style='color:#666;font-size:12px'>본 메일은 동일 불일치 건에 대해 1회만 발송됩니다.</p>"
+            "</div>"
+        )
+        send_mail(
+            sender_username=sender or (actor or "flow"),
+            receiver_usernames=list(targets),
+            extra_emails=[],
+            title=f"[flow] plan/actual 불일치 확인 요청 - {product}",
+            content=content,
+        )
+    except Exception:
+        logger.debug("mismatch mail send failed product=%s", product, exc_info=True)
+
+
 def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], actor: str = "flow") -> int:
     if not mismatches:
         return 0
@@ -2148,14 +2224,17 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
         data = _load_plan_data(product)
         plans = data.get("plans") if isinstance(data.get("plans"), dict) else {}
         alerts = data.get("mismatch_alerts") if isinstance(data.get("mismatch_alerts"), dict) else {}
-        # 지정 팀 수신자: 계획 작성자 외에 항상 함께 알람을 받는 사용자 목록.
-        team_recipients: list[str] = []
+        mail_enabled = False
         try:
             _cfg = load_json(SOURCE_CFG, {}) or {}
-            team_recipients = [str(u or "").strip() for u in (_cfg.get("mismatch_alert_recipients") or []) if str(u or "").strip()]
+            mail_enabled = bool(_cfg.get("mismatch_mail_enabled"))
         except Exception:
-            team_recipients = []
+            mail_enabled = False
+        # 수신 대상 = 계획 작성자 + 제품명과 동일한 이름의 그룹 멤버.
+        group_recipients = _product_mismatch_group_members(product)
         sent = 0
+        mail_items: list[dict] = []
+        mail_targets: list[str] = []
         for mm in mismatches[:100]:
             cell_key = str(mm.get("key") or mm.get("cell") or "")
             if not cell_key:
@@ -2169,7 +2248,7 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
             targets: list[str] = []
             if owner:
                 targets.append(owner)
-            for name in team_recipients:
+            for name in group_recipients:
                 if name not in targets:
                     targets.append(name)
             if not targets:
@@ -2186,6 +2265,12 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                 "actual": _clean_str(actual),
                 "plan_updated": plan_info.get("updated") or mm.get("plan_updated") or "",
             }
+            alert_body = (
+                f"! {product}/{root}"
+                + (f" WF{wafer}" if wafer else "")
+                + f" {column}: [plan] {payload['plan']} → [actual] {payload['actual']}"
+            )
+            new_targets: list[str] = []
             for target in targets:
                 # 작성자는 기존 key 형식 유지(중복 재알람 방지), 팀 수신자는 사용자별 key.
                 target_alert_key = alert_key if target == owner else f"{alert_key}|u:{target}"
@@ -2196,11 +2281,7 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                     actor=actor or "flow",
                     target_user=target,
                     title="[plan/actual 불일치]",
-                    body=(
-                        f"! {product}/{root}"
-                        + (f" WF{wafer}" if wafer else "")
-                        + f" {column}: [plan] {payload['plan']} → [actual] {payload['actual']}"
-                    ),
+                    body=alert_body,
                     payload=payload,
                 )
                 if not ok:
@@ -2211,12 +2292,29 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                     **payload,
                 }
                 sent += 1
+                new_targets.append(target)
+            if new_targets:
+                mail_items.append({
+                    "owner": owner or "(작성자 미상)",
+                    "root": root,
+                    "wafer": wafer,
+                    "column": column,
+                    "plan": payload["plan"],
+                    "actual": payload["actual"],
+                    "updated": payload["plan_updated"],
+                })
+                for t in new_targets:
+                    if t not in mail_targets:
+                        mail_targets.append(t)
         if sent:
             if len(alerts) > 2000:
                 for old_key in list(alerts.keys())[: len(alerts) - 2000]:
                     alerts.pop(old_key, None)
             data["mismatch_alerts"] = alerts
             save_json(_plan_history_path(product), data)
+            # 톱니바퀴 설정에서 켠 경우에만 메일 발송 — 장부 저장 뒤라 동일 건은 1회만 나간다.
+            if mail_enabled:
+                _send_plan_mismatch_mail(product, mail_items, mail_targets, actor=actor)
         return sent
     except Exception:
         return 0
@@ -3980,7 +4078,9 @@ def get_source_config():
     cfg.setdefault("enabled", [])
     cfg.setdefault("lot_overrides", {})  # v8.4.4: product-scoped {root_col, fab_col, fab_source, ts_col, join_keys}
     cfg.setdefault("root_lot_cache", _ml_table_lookup.root_ram_cache_settings())
-    cfg.setdefault("mismatch_alert_recipients", [])
+    # 지정 팀 수신자 폐기 — 수신 대상은 계획 작성자 + 제품 동명 그룹 멤버로 고정.
+    cfg.pop("mismatch_alert_recipients", None)
+    cfg.setdefault("mismatch_mail_enabled", False)  # plan/actual 불일치 메일 발송 (기본 off)
     cfg.setdefault("query_workers", 0)  # 0 = 자동(호스트 CPU 비례)
     # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
     _migrate_legacy_root_prefix(cfg)
@@ -3990,8 +4090,8 @@ class SourceConfigReq(BaseModel):
     enabled: List[str] = []
     lot_overrides: dict = {}  # v8.4.4
     root_lot_cache: dict | None = None
-    # plan/actual 불일치 알람을 계획 작성자 외에 추가로 받을 지정 팀/사용자 목록.
-    mismatch_alert_recipients: List[str] | None = None
+    # plan/actual 불일치 알람을 메일로도 발송할지 여부 (기본 off).
+    mismatch_mail_enabled: bool | None = None
     # 쿼리 병렬 워커 수 (Polars/DuckDB/RAM 캐시 예열). 0 = 자동(호스트 CPU 비례).
     query_workers: int | None = None
 
@@ -4074,13 +4174,10 @@ def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_manager(
         cur.setdefault("lot_overrides", {}).update(req.lot_overrides)
     if req.root_lot_cache is not None:
         cur["root_lot_cache"] = _normalize_root_lot_cache_settings(req.root_lot_cache, cur.get("root_lot_cache"))
-    if req.mismatch_alert_recipients is not None:
-        seen: list[str] = []
-        for name in req.mismatch_alert_recipients:
-            clean = str(name or "").strip()
-            if clean and clean not in seen:
-                seen.append(clean)
-        cur["mismatch_alert_recipients"] = seen[:50]
+    # 지정 팀 수신자 폐기 — 저장 파일에서도 제거.
+    cur.pop("mismatch_alert_recipients", None)
+    if req.mismatch_mail_enabled is not None:
+        cur["mismatch_mail_enabled"] = bool(req.mismatch_mail_enabled)
     if req.query_workers is not None:
         cur["query_workers"] = _normalize_query_workers(req.query_workers)
         _apply_query_workers(cur["query_workers"])

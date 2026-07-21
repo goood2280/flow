@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { sf, postJson, putJson } from "../lib/api";
 import { toast } from "../components/Toast";
-import { Button, Card, EmptyState, PageHeader, Pill } from "../components/UXKit";
+import { Button, Card, EmptyState, Pill } from "../components/UXKit";
 
 const API = "/api/valve-alerts";
 
@@ -202,11 +202,6 @@ export default function My_ValveAlerts() {
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-      <PageHeader
-        title="매칭 알람 판정"
-        subtitle="Valve 파이프라인 알람(미매칭 step / RO ppid)을 판정해 룰북에 반영 — 룰북 CSV 는 파일탐색기 저장과 같은 S3 동기화로 올라가고 Valve 가 자동 소비 · 1분마다 자동 갱신"
-      />
-
       {data && !data.ok && (
         <Card title="연결 오류">
           <div style={{ color: "var(--danger, #d66)", fontSize: 13 }}>{data.error}</div>

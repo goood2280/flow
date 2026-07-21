@@ -347,6 +347,10 @@ export default function My_Admin({user}){
   const[loadBusy,setLoadBusy]=useState(false);
   const[qaReport,setQaReport]=useState({runs:[]});const[qaBusy,setQaBusy]=useState(false);const[qaMsg,setQaMsg]=useState("");
   const[editPerm,setEditPerm]=useState(null);const[permTabs,setPermTabs]=useState([]);
+  // v9.5.x 권한 그룹 — 그룹탭(소셜)과 별개의 권한 전용 그룹. 그룹에 tabs 를 지정하고
+  // 멤버를 넣으면 멤버의 권한이 그룹 권한으로 자동 적용된다 (perm_groups.json).
+  const[permGroups,setPermGroups]=useState([]);
+  const[pgEdit,setPgEdit]=useState(null);   // {orig, name, tabs:[], members:[]}
   const[bulkUsersText,setBulkUsersText]=useState("name\tusername\trole\n홍길동\thong\tuser");
   const[bulkUsersDefaultTabs,setBulkUsersDefaultTabs]=useState(BULK_DEFAULT_TABS);
   const[bulkUsersResult,setBulkUsersResult]=useState(null);
@@ -365,6 +369,7 @@ export default function My_Admin({user}){
     sf("/api/admin/all-notifications?username="+(user?.username||"")).then(d=>setNotifs(d.notifications||[])).catch(()=>{});
     if(isAdmin){
       sf("/api/admin/users").then(d=>setUsers(d.users||[])).catch(()=>{});
+      sf("/api/admin/perm-groups").then(d=>setPermGroups(d.groups||[])).catch(()=>{});
       reloadLogs();
       sf("/api/admin/logs/users").then(d=>setLogUsers(d.users||[])).catch(()=>{});
     } else {
@@ -429,7 +434,25 @@ export default function My_Admin({user}){
       })
       .catch(e=>toast.error("비번 초기화 실패: "+e.message));
   };
-  const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then(()=>{setEditPerm(null);load();setTab("perms");});};
+  const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then((d)=>{
+    if(_arr(d?.removed_from_groups).length)toast.ok(`개별 권한 지정 — 권한 그룹 [${d.removed_from_groups.join(", ")}] 에서 제외되었습니다`);
+    setEditPerm(null);load();setTab("perms");});};
+  const savePermGroup=()=>{
+    if(!pgEdit)return;
+    const name=String(pgEdit.name||"").trim();
+    if(!name){toast.warn("그룹 이름을 입력하세요");return;}
+    sf("/api/admin/perm-groups",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name,tabs:pgEdit.tabs||[],members:pgEdit.members||[],rename_from:pgEdit.orig||""})})
+      .then(d=>{setPermGroups(d.groups||[]);setPgEdit(null);load();
+        toast.ok(`권한 그룹 저장됨 — 멤버 ${(pgEdit.members||[]).length}명에게 권한 적용`);})
+      .catch(e=>toast.error(e.message||"권한 그룹 저장 실패"));
+  };
+  const deletePermGroup=(name)=>{
+    if(!confirm(`권한 그룹 '${name}' 을 삭제할까요?\n(멤버들의 현재 권한은 그대로 유지됩니다)`))return;
+    sf("/api/admin/perm-groups/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})})
+      .then(d=>{setPermGroups(d.groups||[]);toast.ok("권한 그룹 삭제됨");})
+      .catch(e=>toast.error(e.message||"삭제 실패"));
+  };
   const submitBulkUsers=()=>{
     const text=String(bulkUsersText||"").trim();
     if(!text){toast.warn("붙여넣을 사용자 행이 없습니다.");return;}
@@ -458,6 +481,9 @@ export default function My_Admin({user}){
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
   const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin?String(_arr(users).length):undefined}));
+  // username → 권한 그룹명 (한 사용자는 하나의 권한 그룹에만 속함)
+  const userPermGroup={};
+  _arr(permGroups).forEach(g=>_arr(g.members).forEach(m=>{userPermGroup[m]=g.name;}));
   const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
   const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
@@ -655,6 +681,79 @@ export default function My_Admin({user}){
 
       {/* Permissions (admin only) */}
       {tab==="perms"&&isAdmin&&<div>
+        {/* 권한 그룹 — 그룹에 권한을 지정하고 멤버를 넣으면 그 권한으로 자동 적용 (그룹탭의 소셜 그룹과 별개 운영) */}
+        {!editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+            <span style={{fontSize:14,fontWeight:700}}>👥 권한 그룹</span>
+            <span style={{fontSize:13,color:"var(--text-secondary)"}}>
+              그룹에 권한을 지정하고 사용자를 넣으면 그 권한으로 자동 조정됩니다 (그룹탭의 소셜 그룹과는 별개)
+            </span>
+            {!pgEdit&&<Button variant="primary" style={{marginLeft:"auto"}} onClick={()=>setPgEdit({orig:"",name:"",tabs:[],members:[]})}>＋ 새 그룹</Button>}
+          </div>
+          {!pgEdit&&(_arr(permGroups).length===0
+            ?<div style={{fontSize:13,color:"var(--text-secondary)"}}>권한 그룹 없음 — "＋ 새 그룹" 으로 만들고 권한과 멤버를 지정하세요</div>
+            :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+              <thead><tr>
+                {["그룹","권한","멤버",""].map((h,i)=><th key={i} style={{textAlign:"left",padding:"7px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)"}}>{h}</th>)}
+              </tr></thead>
+              <tbody>{_arr(permGroups).map(g=>(
+                <tr key={g.name}>
+                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontWeight:700}}>{g.name}</td>
+                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13}}>
+                    {_arr(g.tabs).length?_arr(g.tabs).map(t=>_tabLabel(t.split(":")[0])+(t.includes(":")?`:${t.split(":")[1]}`:"")).join(", "):"(권한 없음)"}
+                  </td>
+                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:13}}>
+                    {_arr(g.members).length?g.members.join(", "):<span style={{color:"var(--text-secondary)"}}>(없음)</span>}
+                    <span style={{color:"var(--text-secondary)"}}>{` — ${_arr(g.members).length}명`}</span>
+                  </td>
+                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",textAlign:"right"}}>
+                    <span onClick={()=>setPgEdit({orig:g.name,name:g.name,tabs:[..._arr(g.tabs)],members:[..._arr(g.members)]})} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14,marginRight:12}}>편집</span>
+                    <span onClick={()=>deletePermGroup(g.name)} style={{color:"var(--bad,#ef4444)",cursor:"pointer",fontSize:14}}>삭제</span>
+                  </td>
+                </tr>))}
+              </tbody>
+            </table>)}
+          {pgEdit&&<div style={{display:"grid",gap:12,maxWidth:640}}>
+            <label style={{display:"flex",alignItems:"center",gap:10,fontSize:14}}>
+              <span style={{color:"var(--text-secondary)",width:70}}>그룹 이름</span>
+              <input value={pgEdit.name} onChange={e=>setPgEdit(p=>({...p,name:e.target.value}))}
+                placeholder="예: 공정팀, 조회전용" style={{padding:"7px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,outline:"none",width:240}}/>
+            </label>
+            <div>
+              <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:6}}>그룹 권한 — 멤버 전원에게 이 권한이 적용됩니다</div>
+              {ALL_TABS.map(t=>(<div key={t}>
+                <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",fontSize:14,cursor:"pointer"}}>
+                  <input type="checkbox" checked={_mainTabChecked(pgEdit.tabs,t)} onChange={e=>setPgEdit(p=>({...p,tabs:_toggleMainTab(p.tabs,t,e.target.checked)}))}/>{_tabLabel(t)}
+                </label>
+                {SUB_TABS[t]&&_mainTabChecked(pgEdit.tabs,t)&&<div style={{display:"flex",flexWrap:"wrap",gap:10,padding:"0 0 4px 24px"}}>
+                  {SUB_TABS[t].map(s=>(<label key={s.key} style={{display:"flex",alignItems:"center",gap:5,fontSize:13,color:"var(--text-secondary)",cursor:"pointer"}}>
+                    <input type="checkbox" checked={_subTabChecked(pgEdit.tabs,t,s.key)} onChange={e=>setPgEdit(p=>({...p,tabs:_toggleSubTab(p.tabs,t,s.key,e.target.checked)}))}/>{s.label}
+                  </label>))}
+                </div>}
+              </div>))}
+            </div>
+            <div>
+              <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:6}}>
+                멤버 — 체크하면 이 그룹 권한으로 자동 조정됩니다 (다른 권한 그룹에 있던 사용자는 이 그룹으로 이동)
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:"6px 14px"}}>
+                {_arr(users).filter(u=>u?.role!=="admin"&&u?.status==="approved").map(u=>{
+                  const inGroup=_arr(pgEdit.members).includes(u.username);
+                  const other=userPermGroup[u.username]&&userPermGroup[u.username]!==pgEdit.orig?userPermGroup[u.username]:"";
+                  return(<label key={u.username} style={{display:"flex",alignItems:"center",gap:6,fontSize:14,cursor:"pointer"}}>
+                    <input type="checkbox" checked={inGroup}
+                      onChange={e=>setPgEdit(p=>({...p,members:e.target.checked?[...p.members,u.username]:p.members.filter(m=>m!==u.username)}))}/>
+                    {u.name?`${u.name}(${u.username})`:u.username}
+                    {other&&<span title={`현재 '${other}' 그룹 소속 — 저장 시 이 그룹으로 이동`} style={{fontSize:12,color:"var(--warn,#f59e0b)"}}>[{other}]</span>}
+                  </label>);})}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <Button variant="primary" onClick={savePermGroup} style={{padding:"8px 20px"}}>저장 — 멤버 권한 적용</Button>
+              <Button variant="subtle" onClick={()=>setPgEdit(null)} style={{padding:"8px 16px"}}>취소</Button>
+            </div>
+          </div>}
+        </div>}
         {/* O/X Permission Table */}
         {!editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto",marginBottom:16}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
@@ -669,7 +768,11 @@ export default function My_Admin({user}){
               const ut=_tabsToArray(u.tabs);
               return(<tr key={i}>
                 <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,position:"sticky",left:0,background:"var(--bg-secondary)",zIndex:1}}>{u.name||"-"}</td>
-                <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{u.username}</td>
+                <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,whiteSpace:"nowrap"}}>
+                  {u.username}
+                  {userPermGroup[u.username]&&<span title={`권한 그룹 '${userPermGroup[u.username]}' 소속 — 그룹 권한이 적용됨`}
+                    style={{marginLeft:6,fontSize:12,padding:"1px 7px",borderRadius:9,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"'Pretendard',sans-serif",fontWeight:700}}>{userPermGroup[u.username]}</span>}
+                </td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
                 {ALL_TABS.map(t=>{const mark=_tabCellMark(ut,t);return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
                   <span title={mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):""} style={{fontSize:14,color:mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
@@ -683,6 +786,9 @@ export default function My_Admin({user}){
         {/* Edit single user permissions */}
         {editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:400}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>권한: {editPerm}</div>
+          {userPermGroup[editPerm]&&<div style={{fontSize:13,color:"var(--warn,#f59e0b)",marginBottom:10}}>
+            ⚠ 권한 그룹 '{userPermGroup[editPerm]}' 소속 — 개별 저장 시 그룹에서 제외되고 이 권한이 적용됩니다
+          </div>}
           {ALL_TABS.map(t=>(<div key={t}>
             <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
               <input type="checkbox" checked={_mainTabChecked(permTabs,t)} onChange={e=>setPermTabs(_toggleMainTab(permTabs,t,e.target.checked))}/>{_tabLabel(t)}

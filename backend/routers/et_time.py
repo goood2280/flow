@@ -21,7 +21,9 @@ PGM(pt) 라벨 규칙 — auto report Main.py 와 동일:
     wafer_id, step_seq, Point) 그룹 안에서 tkout_time dense rank
     (DC_Split 은 step_id→DC layer 매핑이라 flow 에서는 step_id 로 대체,
      temperature 는 auto report 처럼 5 단위 반올림)
-  - 라벨 = f"{step_seq}({Point}pt)_{Duplicate_Count}"
+  - 라벨 = f"{step_seq}({Point}pt)" — 같은 (step_id, step_seq, Point) 조합에
+    재측정(Duplicate_Count>=2)이 있을 때만 auto report 처럼 "_{Duplicate_Count}"
+    접미사를 붙여 구분한다 (전부 1회 측정이면 "_1" 생략).
 
   GET /api/et-time/products?prefix=            ET DB 의 product 후보
   GET /api/et-time/lots?product=&prefix=       root_lot_id 후보
@@ -140,10 +142,19 @@ def build_pgm_rows(packages: list[dict]) -> list[dict]:
         for r in rows:
             r["dup"] = rank[r["tkout"] or dt.datetime.min]
 
+    # 같은 (step_id, step_seq, pt) 조합에 재측정(dup>=2)이 실제로 있을 때만
+    # _N 접미사를 붙인다 — 전부 1회 측정이면 auto report 식 "_1" 은 노이즈.
+    family_max_dup: dict[tuple, int] = {}
+    for row in prepared:
+        fam = (row["step_id"], row["step_seq"], row["pt"])
+        family_max_dup[fam] = max(family_max_dup.get(fam, 0), row["dup"])
+
     grouped: dict[tuple, dict] = {}
     for row in prepared:
         seq = row["step_seq"]
-        pgm = f"{seq}({row['pt']}pt)_{row['dup']}" if seq else f"({row['pt']}pt)_{row['dup']}"
+        pgm = f"{seq}({row['pt']}pt)" if seq else f"({row['pt']}pt)"
+        if family_max_dup[(row["step_id"], seq, row["pt"])] > 1:
+            pgm = f"{pgm}_{row['dup']}"
         key = (row["step_id"], pgm)
         g = grouped.setdefault(key, {
             "step_id": row["step_id"],
@@ -310,6 +321,114 @@ def et_time_lots(request: Request, product: str = Query(""), prefix: str = Query
     return {"candidates": candidates or []}
 
 
+@router.get("/trend")
+def et_time_trend(request: Request, product: str = Query(""), months: int = Query(0)):
+    """product 의 step_id 별 장기(수개월) 측정시간 추이 — 월 단위 요약.
+
+    측정시간은 (root_lot, wafer, step_id, PGM) 조합에서 항목(item)과 무관하게
+    동일하다는 업무 규칙을 이용해, item 행을 펼치지 않고 측정 패키지의
+    고유 조합만 컬럼 프루닝 + unique 로 가볍게 스캔한다.
+
+    지표(월별): wafer 당 step 총 측정시간(패키지 합)의 평균, 평균 PGM(패키지) 수,
+    major 의뢰 형태 = 가장 흔한 step_seq 조합과 그 비율. 의뢰서 항목 감축·PGM
+    제외가 진행되면 평균 측정시간과 PGM 수가 함께 줄어드는 것을 보기 위한 뷰.
+    """
+    current_user(request)
+    product_text = str(product or "").strip()
+    if not product_text:
+        raise HTTPException(400, "product 를 입력하세요")
+    try:
+        import polars as pl
+    except Exception:
+        raise HTTPException(500, "polars 미설치 — ET 측정시간 집계를 사용할 수 없습니다")
+    from core.lot_step import (
+        ET_ROOT, _data_product_values, _filter_valid_wafers, _parquet_files,
+    )
+    files = _parquet_files(ET_ROOT, product_text, source="et")
+    if not files:
+        raise HTTPException(404, f"ET DB 에서 product '{product_text}' 파일을 찾지 못했습니다")
+    try:
+        lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=True)
+    except Exception:
+        lf = pl.scan_parquet([str(f) for f in files])
+    lf = _filter_valid_wafers(lf)
+    schema = lf.collect_schema().names()
+    if "tkout_time" not in schema or "step_id" not in schema:
+        raise HTTPException(422, "ET DB 스키마에 tkout_time/step_id 컬럼이 없습니다")
+    if "tkin_time" not in schema:
+        raise HTTPException(422, "ET DB 에 tkin_time 이 없어 측정시간 추이를 계산할 수 없습니다")
+    prod_values = _data_product_values(product_text)
+    if prod_values and "product" in schema:
+        lf = lf.filter(pl.col("product").cast(pl.Utf8, strict=False).str.to_uppercase().is_in(sorted(prod_values)))
+    fab_col = "fab_lot_id" if "fab_lot_id" in schema else ("lot_id" if "lot_id" in schema else "")
+    cols = [c for c in (fab_col, "wafer_id", "step_id", "step_seq", "tkin_time", "tkout_time")
+            if c and c in schema]
+    try:
+        df = lf.select([pl.col(c) for c in cols]).unique().collect()
+    except Exception as e:
+        logger.warning(f"et-time trend scan failed product={product_text}: {e}")
+        raise HTTPException(500, f"ET DB 조회 실패: {e}")
+
+    # 패키지 → wafer 단위(월·step) 합산
+    wafer_data: dict[tuple, dict] = {}
+    for r in df.to_dicts():
+        tkin = _parse_time(r.get("tkin_time"))
+        tkout = _parse_time(r.get("tkout_time"))
+        if tkin is None or tkout is None:
+            continue
+        step_id = str(r.get("step_id") or "").strip()
+        if not step_id:
+            continue
+        month = tkout.strftime("%Y-%m")
+        key = (step_id, month, str(r.get(fab_col) or ""), str(r.get("wafer_id") or ""))
+        d = wafer_data.setdefault(key, {"dur": 0.0, "pgm": 0, "seqs": []})
+        d["dur"] += (tkout - tkin).total_seconds()
+        d["pgm"] += 1
+        seq = str(r.get("step_seq") or "").strip()
+        if seq:
+            d["seqs"].append(seq)
+
+    if not wafer_data:
+        raise HTTPException(404, f"'{product_text}' 에 측정시간을 계산할 수 있는 데이터가 없습니다")
+
+    # months 필터 — 최신 월 기준 최근 N개월
+    if months and months > 0:
+        latest = max(k[1] for k in wafer_data)
+        y, m = int(latest[:4]), int(latest[5:7])
+        total = y * 12 + (m - 1) - (months - 1)
+        cutoff = f"{total // 12:04d}-{total % 12 + 1:02d}"
+        wafer_data = {k: v for k, v in wafer_data.items() if k[1] >= cutoff}
+
+    # (step, month) 집계
+    agg: dict[tuple, dict] = {}
+    for (step_id, month, _fab, _wafer), d in wafer_data.items():
+        a = agg.setdefault((step_id, month), {"durs": [], "pgms": [], "combos": {}})
+        a["durs"].append(d["dur"])
+        a["pgms"].append(d["pgm"])
+        combo = "+".join(sorted(set(d["seqs"]), key=_seq_sort_key)) or "(step_seq 없음)"
+        a["combos"][combo] = a["combos"].get(combo, 0) + 1
+
+    trend: dict[str, list] = {}
+    for (step_id, month) in sorted(agg):
+        a = agg[(step_id, month)]
+        n = len(a["durs"])
+        avg = sum(a["durs"]) / n
+        major, major_n = max(a["combos"].items(), key=lambda kv: (kv[1], kv[0]))
+        trend.setdefault(step_id, []).append({
+            "month": month,
+            "wafers": n,
+            "avg_duration_sec": round(avg, 1),
+            "avg_duration_text": _fmt_duration(avg),
+            "avg_pgm_count": round(sum(a["pgms"]) / n, 1),
+            "major": major,
+            "major_share": round(major_n / n * 100),
+        })
+    # step 목록 — 데이터(wafer·월) 많은 순
+    steps = sorted(trend, key=lambda s: (-sum(p["wafers"] for p in trend[s]), s))
+    return {"product": product_text, "months": months, "steps": steps, "trend": trend,
+            "file_count": len(files)}
+
+
 @router.get("/measure")
 def et_time_measure(request: Request, product: str = Query(""),
                     root_lot_id: str = Query(""), lot_id: str = Query("")):
@@ -334,11 +453,13 @@ def et_time_measure(request: Request, product: str = Query(""),
         if func:
             row["function_step"] = func
 
-    total_sec = sum(
-        (r["duration_min_sec"] if r.get("duration_uniform") else (r.get("duration_max_sec") or 0)) or 0
-        for r in rows
-        if r.get("duration_min_sec") is not None
-    )
+    # step_id 별 측정시간 소계 — PGM(pt) 행별 대표시간(uniform 이면 min, 아니면 max) 합.
+    step_totals: dict[str, float] = {}
+    for r in rows:
+        if r.get("duration_min_sec") is None:
+            continue
+        sec = (r["duration_min_sec"] if r.get("duration_uniform") else (r.get("duration_max_sec") or 0)) or 0
+        step_totals[r["step_id"]] = step_totals.get(r["step_id"], 0.0) + sec
     has_tkin = any(r.get("duration_sec") is not None for r in rows)
     return {
         "product": product_text,
@@ -346,7 +467,9 @@ def et_time_measure(request: Request, product: str = Query(""),
         "rows": rows,
         "step_count": len({r["step_id"] for r in rows}),
         "pgm_count": len(rows),
-        "total_duration_sec": total_sec,
-        "total_duration_text": _fmt_duration(total_sec) if rows else "",
+        "step_totals": [
+            {"step_id": sid, "duration_sec": sec, "duration_text": _fmt_duration(sec)}
+            for sid, sec in step_totals.items()
+        ],
         "tkin_available": has_tkin,
     }
