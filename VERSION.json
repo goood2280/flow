@@ -1,0 +1,94 @@
+{
+  "version": "9.5.2",
+  "codename": "flow",
+  "release_notes": [
+    {
+      "version": "9.5.2",
+      "date": "2026-07-21",
+      "title": "RAM 캐시 예열 워커 — 역할 기반 분기 (api=2, worker=가용 코어 전부)",
+      "tag": "splittable",
+      "changes": [
+        "ml_table_lookup.py _root_ram_cache_load_workers: RAM 캐시 예열(선로드) 병렬 워커 수를 역할 기반으로 분기 — api 서버는 2코어 고정(요청 처리 여력 보존), worker(개발서버)는 가용 코어 전부 사용해 예열 처리량 극대화."
+      ]
+    },
+    {
+      "version": "9.5.1",
+      "date": "2026-07-21",
+      "title": "TEG Mapfile 체크 — 환산X/Y 기준점을 PCHK/PRBCHK DB Ebeam 으로",
+      "tag": "teg",
+      "changes": [
+        "환산X/Y 기준점(dx, dy)을 정답지의 기준 PCHK/PRBCHK DB Ebeam 좌표로 반영 — flat 별 H_PCHK>H_PRBCHK / V_PCHK>V_PRBCHK (사용자 지정 마커 우선) 순으로 Teg_location 에서 찾아, Mapfile 상대좌표에 그 절대좌표를 더해 원복. 정답지에 없으면 ⚙️ 설정 flat_offsets 폴백.",
+        "이로써 나머지 TEG 의 환산좌표가 기준 PCHK 절대좌표계로 정렬돼 shot 확대 뷰에서 shot 센터(ebeam 0,0) 안에 제대로 배치됨. 대조표에 기준점 출처(DB PCHK 이름 / 설정) 표시."
+      ]
+    },
+    {
+      "version": "9.5.0",
+      "date": "2026-07-21",
+      "title": "OOM 방어 · RAM 캐시 점진 갱신 · S3 업로드 가드 · 메모리 가시화 · TEG Shot 확대/Mapfile 환산 · SplitTable CPU 코어 정책",
+      "tag": "rollup",
+      "changes": [
+        "OOM 방어: memory_watchdog 상시 감시, cache_budget 풀 예산, per-request 메모리 가드, worker 캐시 최소화, upstream_proxy opt-in 봉인으로 대량 조회 시 메모리 폭주 차단.",
+        "RAM 캐시 점진 갱신: product-fair eviction(제품 간 공정 축출), stale mark 후 백그라운드 재빌드, atomic swap 으로 갱신 중 조회 무중단.",
+        "S3 업로드 가드: lot_progress 역할 체크, manual 업로드 endpoint 중복 요청 409, filebrowser S3 동기화 백그라운드화, boto3 connect/read timeout 지정으로 행 방지.",
+        "메모리 개선/가시화: filebrowser adaptive budget, reformatize byte budget, 관리자 메모리 종합현황 API + 프론트엔드 사용량 게이지.",
+        "TEG: Shot 확대 뷰 y축 반전 버그 수정, Mapfile 대조 테이블에 좌표 환산 과정(격자→ebeam) 표시.",
+        "SplitTable CPU 코어 정책: 예열 워커 1코어 고정, Polars 스레드풀 역할 기반(api=4/worker=3), query-workers 는 DuckDB 만 제어하도록 분리."
+      ]
+    },
+    {
+      "version": "9.4.8",
+      "date": "2026-07-21",
+      "title": "TEG 위치조회 — 좌표계 명시",
+      "tag": "teg",
+      "changes": [
+        "TEG 좌표 표시를 ebeam_x/ebeam_y 로 명시 (shot 센터 기준 TEG 좌하단, ebeam 좌표계) — 좌표 패널·TEG 목록 툴팁.",
+        "radius 표의 shot x/y 는 격자좌표(chip_x/y_adj)임을 헤더·툴팁에 명시 — 격자/Mapfile 상대/ebeam 좌표계 혼동 방지."
+      ]
+    },
+    {
+      "version": "9.4.7",
+      "date": "2026-07-21",
+      "title": "TEG Mapfile 체크 — 이름 재지정 + MAIN 위치조회 역반영",
+      "tag": "teg",
+      "changes": [
+        "module 이름 행별 재지정: 이름 후보 토큰(module~( / 꼬리표) 칩 UI, 인식 토큰 음영, 클릭 재지정 후 일괄 재검사. MAIN 오인 제외 행도 복구 가능.",
+        "MAIN 그룹 위치조회 역반영: die 급 MAIN 블록의 내부 TEG(ebeam 절대좌표 원복)를 위치 조회 overlay 로 저장 — 반영 시각 참고문 표시, 재반영 시 확인 후 덮어쓰기, 격자 제품은 내부 TEG 칩(die) 겹침 검사 포함.",
+        "대용량 Mapfile 성능: 원문 입력 비제어화(붙여넣기 버벅임 제거), 대조표 300행 점진 렌더 + 이름 검색 필터 (3000 module 실측 inspect 0.6s)."
+      ]
+    },
+    {
+      "version": "9.4.6",
+      "date": "2026-07-21",
+      "title": "SplitTable 검색 정체 해소 + 메모리 종합현황",
+      "tag": "splittable",
+      "changes": [
+        "SplitTable 검색 정체 해소 및 제품 간 공정성 개선 — 특정 제품 대량 조회가 다른 제품 검색을 밀어내지 않도록 조정.",
+        "캐시관리 OOM 수정: cache_budget 풀 기반 예산(worker 배수 반영), 긴급축출 tier, 503 시 축출로 메모리 워치독 방어 강화.",
+        "관리자탭 메모리 종합현황 추가 — filebrowser/reformatize 예산 포함 컴포넌트별 사용량 가시화.",
+        "worker → 운영 서버 SplitTable 검색 프록시 (FLOW_API_SERVER_URL 기반)."
+      ]
+    },
+    {
+      "version": "9.4.5",
+      "date": "",
+      "title": "워커 신호등 시계차이 진단 + 역할별 외부 서비스 분리",
+      "tag": "worker",
+      "changes": [
+        "관리자탭 개발서버 신호등: 서버 간 벽시계가 어긋난 배포에서 살아있는 워커가 오프라인으로 보이던 문제 — heartbeat 값 변화 감지로 판정하고 오프라인 사유(stale/no_heartbeat)·시계차이 감지를 표시.",
+        "역할별 기능 분리: worker(개발서버)는 SplitTable 조회·데이터 처리 등 로드 분산만 수행 — S3 업로드/자동 동기화, backup·valve·dedup 스케줄러, 메일 발송을 역할 가드로 비활성화 (운영/standalone 전용).",
+        "worker_dispatch.external_services_enabled() 단일 판정점 추가, /api/admin/worker 상태에 external_services_enabled·offline_reason·clock_skew_suspected 노출."
+      ]
+    },
+    {
+      "version": "9.4.4",
+      "date": "",
+      "title": "Flow app 운영 개선 통합 요약",
+      "tag": "rollup",
+      "changes": [
+        "SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.",
+        "사용자 데이터와 DB/runtime root는 setup.py 번들에 포함하지 않고 외부 FLOW_DATA_ROOT/FLOW_DB_ROOT 또는 로컬 ignored root에 보존.",
+        "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인."
+      ]
+    }
+  ]
+}
