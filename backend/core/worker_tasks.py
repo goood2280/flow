@@ -193,6 +193,20 @@ def _lot_progress_cache_refresh(payload: dict) -> dict:
     }
 
 
+@handler("et_tracker_scan")
+def _et_tracker_scan(payload: dict) -> dict:
+    """ET Tracker 스캔 phase — root_lot/wafer 기준 ET DB 조회 + et_history diff.
+
+    v9.5.14: 양산(api)에서 스케줄이 돌고, 개발 워커가 켜져 있으면 이 핸들러가
+    무거운 DB 스캔을 대신 수행한다. 입력(issues.json·ET DB)은 공유 data_root
+    이므로 어느 서버가 계산해도 같은 결과 — 저장·bell·메일(apply phase)은
+    api 서버가 결과 dict 를 받아 수행한다 (worker 는 메일 발송이 차단됨)."""
+    from core.et_tracker import scan_phase
+    result = scan_phase(only_issue_id=str(payload.get("only_issue_id") or ""))
+    result["executed_on"] = "worker"
+    return result
+
+
 @handler("ml_lookup_cache_build")
 def _ml_lookup_cache_build(payload: dict) -> dict:
     """ML_TABLE root_lot 파티션 lookup 캐시 빌드 (결과: db cache 파티션 트리).
