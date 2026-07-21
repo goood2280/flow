@@ -1,7 +1,18 @@
 {
-  "version": "9.5.10",
+  "version": "9.5.11",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.11",
+      "date": "2026-07-21",
+      "title": "SplitTable view 재검증 워커 오프로드 + RAM 캐시 관리 페이지 가드 교정",
+      "tag": "perf",
+      "changes": [
+        "SplitTable stale-while-revalidate 재계산을 워커(개발서버)로 오프로드 (splittable_view_recompute) — 검색 후 운영 서버 CPU 상승 해소, 워커 부재 시 기존 로컬 경로 자동 폴백.",
+        "재검증 payload는 워커가 orjson 직렬화해 반환하고, 캐시 시그니처는 운영 서버가 디스패치 직전 로컬 계산해 저장.",
+        "RAM 캐시 관리 페이지 메타데이터 API 5종(ram-cache overview/contents/priority-lots/product-budgets, memory/overview)을 light 분류로 교정 — CPU/메모리 가드 오차단 해소, 실제 스캔 가능성이 있는 lot-status/knob-allocation 은 heavy 유지."
+      ]
+    },
     {
       "version": "9.5.10",
       "date": "",

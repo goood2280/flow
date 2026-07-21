@@ -73,6 +73,17 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/notes",
     "/api/splittable/history",
     "/api/splittable/operational-history",
+    # v9.4.x: RAM 캐시 관리 페이지 — 아래 5개는 상주 캐시의 크기/메타데이터만
+    # 집계해 반환한다(신규 데이터 적재·parquet 스캔 없음). 서버가 바쁠 때일수록
+    # 봐야 하는 모니터링 화면이라 CPU/메모리 가드 대상에서 제외한다. prefix 매칭이라
+    # priority-lots/save·product-budgets/save(소규모 JSON 쓰기, page_manager 권한)도
+    # 함께 light — plan/custom-tags 쓰기와 같은 선례. 실제 스캔 가능성이 있는
+    # ram-cache/lot-status·knob-allocation 은 의도적으로 heavy 유지.
+    "/api/splittable/ram-cache/overview",
+    "/api/splittable/ram-cache/contents",
+    "/api/splittable/ram-cache/priority-lots",
+    "/api/splittable/ram-cache/product-budgets",
+    "/api/splittable/memory/overview",
     # v9.1.x: 스플릿테이블 편집(plan/tag/커스텀)은 작은 overlay 쓰기 — 메모리 가드로
     # 거절되면 안 되는 사용자 상호작용이므로 light 로 통과시킨다.
     "/api/splittable/plan",
