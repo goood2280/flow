@@ -282,7 +282,10 @@ def _estimate_view_payload_bytes(payload: dict) -> int:
 # stale hit → 백그라운드 재검증. 전역 단일 워커 + 병합 큐 — 예전 thread-per-key
 # 즉시 실행은 lot_progress 재기록 직후 검색마다 풀 재계산 스레드를 띄워, 5코어의
 # 전역 polars 풀을 사용자 검색과 나눠 쓰는 CPU 경쟁(연속 검색 지연)을 만들었다.
-# soft dep(최신 lot/fab 라벨)의 신선도는 쿨다운(기본 3h) 간격 갱신으로 충분하고,
+# v9.4.x: 재계산 자체는 워커(개발서버) 생존 시 splittable_view_recompute 로
+# 오프로드된다 (_view_revalidate_execute) — 운영 서버 polars 풀은 로컬 폴백
+# 때만 쓴다. soft dep(최신 lot/fab 라벨)의 신선도는 쿨다운(기본 3h) 간격
+# 갱신으로 충분하고,
 # 신규 lot/사용자 편집은 hard_sig 가 요청 내 동기 반영하므로 정확성과 무관하다.
 # TLS.force 는 재검증 워커가 view_split 을 재진입할 때 캐시 서빙을 건너뛰고 강제
 # 재계산하게 하는 플래그.
@@ -11122,12 +11125,68 @@ def _view_revalidate_delay_sec() -> float:
     return max(0.0, min(600.0, v))
 
 
-def _view_revalidate_worker_loop() -> None:
-    """전역 재검증 워커 — 큐를 한 건씩, 사용자에게 양보하며 처리한다.
+def _view_revalidate_execute(view_cache_key: tuple, params: dict) -> None:
+    """재검증 1건 실행 — 워커(개발서버) 생존 시 재계산을 오프로드, 아니면 로컬.
 
-    동시 재계산은 항상 최대 1건: 20명이 몰려도 백그라운드가 polars 풀에서
-    점유하는 collect 는 하나뿐이라 사용자 검색의 CPU 경쟁이 상수로 묶인다."""
+    원격 성공 시 워커가 돌려준 payload 를 이 서버에서 계산한 시그니처로
+    _split_view_cache_put 한다. 시그니처를 디스패치 *직전* 로컬 계산하는 이유:
+    ① soft_sig 에 서버-로컬 product RAM 캐시 서명이 섞여 있어 워커 값은 이
+      서버 캐시에 무의미하다.
+    ② compute 시작 시점 시그니처로 저장하는 로컬 경로와 같은 보수적 시맨틱 —
+      계산 중 데이터가 바뀌면 다음 조회가 miss 로 재계산한다.
+    로컬 폴백(local_fn)은 view_split 이 내부에서 자체 시그니처로 저장하므로
+    여기서 다시 저장하지 않는다."""
     from core import request_priority
+    from core import worker_dispatch as _wd
+
+    product = str(params.get("product") or "")
+
+    def _local() -> dict:
+        # 사용자 HTTP 요청이 진행 중이면 로컬 재계산 시작을 미룬다 (max_wait 로
+        # 상시 트래픽에서도 진행 보장). 원격 오프로드 경로는 이 서버 polars
+        # 풀을 쓰지 않으므로 양보 없이 바로 디스패치한다.
+        request_priority.yield_to_users(max_wait_sec=120.0, quiet_for_sec=3.0)
+        # request=None + force → view_split 이 캐시 서빙/감사로그/알림을 건너뛰고
+        # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다. include_related=False
+        # 명시 — 직접 호출에서는 Query(False) 기본값 객체가 truthy 라
+        # related_issues 를 계산하고 cache_put 이 도로 버리는 낭비가 있다.
+        _VIEW_REVALIDATE_TLS.force = True
+        try:
+            view_split(request=None, include_related=False, **params)
+        finally:
+            _VIEW_REVALIDATE_TLS.force = False
+        return {"ok": True, "stored": "local"}
+
+    try:
+        fp = _product_path(product)
+    except HTTPException:
+        fp = None
+    hard_sig, soft_sig = _split_view_cache_dep_signature(
+        product, custom_name=str(params.get("custom_name") or ""), product_fp=fp)
+    res = _wd.run_heavy(
+        "splittable_view_recompute", dict(params), _local,
+        # view 재계산은 보통 수 초~수 분 — 기본 30분 대기는 과하다. 타임아웃
+        # 시 run_heavy 가 _local 로 폴백하므로 동작은 오프로드 이전과 동일.
+        timeout_sec=600.0,
+        label=f"view:{product}",
+    ) or {}
+    payload_json = res.get("payload_json")
+    if isinstance(payload_json, str) and payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict) and payload:
+            _split_view_cache_put(view_cache_key, hard_sig, soft_sig, payload)
+
+
+def _view_revalidate_worker_loop() -> None:
+    """전역 재검증 워커 — 큐를 한 건씩 처리한다.
+
+    재계산은 워커(개발서버) 생존 시 오프로드되어 이 서버의 polars 풀을 쓰지
+    않고, 로컬 폴백 시에도 동시 재계산은 항상 최대 1건: 20명이 몰려도
+    백그라운드가 polars 풀에서 점유하는 collect 는 하나뿐이라 사용자 검색의
+    CPU 경쟁이 상수로 묶인다."""
     while True:
         _VIEW_REVALIDATE_WAKE.wait(timeout=60.0)
         while True:
@@ -11156,17 +11215,10 @@ def _view_revalidate_worker_loop() -> None:
                 time.sleep(wait_hint)
                 continue
             try:
-                # 사용자 HTTP 요청이 진행 중이면 재계산 시작을 미룬다 (max_wait 로
-                # 상시 트래픽에서도 진행 보장).
-                request_priority.yield_to_users(max_wait_sec=120.0, quiet_for_sec=3.0)
-                _VIEW_REVALIDATE_TLS.force = True
-                # request=None + force → view_split 이 캐시 서빙/감사로그/알림을 건너뛰고
-                # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
-                view_split(request=None, **params)
+                _view_revalidate_execute(key, params)
             except Exception as exc:
                 logger.debug("view revalidate 실패 (product=%s): %s", params.get("product"), exc)
             finally:
-                _VIEW_REVALIDATE_TLS.force = False
                 with _VIEW_REVALIDATE_LOCK:
                     _VIEW_REVALIDATE_INFLIGHT.discard(key)
                     _VIEW_REVALIDATE_LAST[key] = time.time()

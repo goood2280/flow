@@ -46,7 +46,7 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 - S3 신호등은 sync 상태 fast 응답을 먼저 그리고, 로컬 최신파일 freshness는 `date=` 파티션 pruned walk + stale-while-revalidate 캐시(TTL 5분)로 보강한다 — 대형 DB 타깃에서도 트리 전체 스캔이 응답을 막지 않는다.
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
-- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다. view revalidate는 단일 워커 + 3h 쿨다운으로 직렬화되어 사용자 조회와 CPU를 경쟁하지 않으며, 조회/RAM 예열 워커 수는 `query_workers` 설정(0=자동)으로 제어한다.
+- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다. view revalidate는 단일 워커 + 3h 쿨다운으로 직렬화되고, 워커(개발서버) 생존 시 재계산 자체를 `splittable_view_recompute` 로 오프로드해 운영 서버 polars 풀을 쓰지 않는다(payload 는 워커가 orjson 직렬화해 반환, 시그니처는 운영 서버가 디스패치 직전 로컬 계산해 저장; 로컬 폴백 시 기존과 동일). 조회/RAM 예열 워커 수는 `query_workers` 설정(0=자동)으로 제어한다.
 - RAM 캐시 관리는 데이터 그룹의 독립 탭이다(SplitTable 설정 모달에서 승격) — 전 제품 캐시 현황, 우선 lot, 예산을 한 화면에서 편집한다.
 - ET Index 다운로드(업무 탭)는 DB ET raw를 shot 단위 pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식) 규칙으로 index를 계산한다 — 항목 선택 다운로드, index 규칙 상세, 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수 지원. ET 측정시간(업무 탭)은 root lot별 step_id × PGM(pt) 측정 소요시간을 집계한다.
 - Flow-i 채팅/에이전트 실행은 tabs 토큰 `flowi` 권한이 필요하고, `core/flowi_gate`가 동시 실행 상한과 서버 부하 admission으로 운용을 보호한다(admin 우회). ReAct 도구 카탈로그는 유저 권한으로 필터되고 실행 시점에도 unit 가드가 걸린다.
@@ -91,7 +91,7 @@ auto report reformatter 이식(ET Index) → Flow-i 지식 레이어/운용 게�
 | Flow-i 운용 (v9.4) | tabs 토큰 `flowi` 권한 신설, `core/flowi_gate` 동시 실행 상한 + 서버 부하 admission(admin 우회), ReAct 도구 카탈로그 유저 권한 필터 + 실행 시점 unit 가드 |
 | ReAct 품질 (v9.4) | 역할별 예산(유저 90/120초, admin 300/600초·16~24턴), guidance 폴백 관측(status=guidance_fallback) — decision LLM 피드백 |
 | Flow-i 단위기능 (v9.4) | ET/INLINE 차트 집계 확장(median/avg/p90/p10/max·shot 단위), WF map spec-out 파서·좌표 폴백(chip_x_adj > chip_x_pos > shot_x) |
-| SplitTable (v9.4) | view revalidate 단일 워커 + 3h 쿨다운(사용자 조회와 CPU 경쟁 해소), `query_workers` 설정(0=자동/1~N 고정) |
+| SplitTable (v9.4) | view revalidate 단일 워커 + 3h 쿨다운(사용자 조회와 CPU 경쟁 해소) + 재계산 워커 오프로드(`splittable_view_recompute`), `query_workers` 설정(0=자동/1~N 고정) |
 | RAM 캐시 (v9.4) | 데이터 그룹 독립 탭 승격 — 전 제품 캐시 현황·우선 lot·예산 편집 |
 | 정리 (v9.4) | 2026-07 종합 감사 후속 데드코드 8파일 제거 (splittable notes 계열, internal_api_contract, matching/ml_heuristics, 미사용 컴포넌트 3종) |
 

@@ -74,6 +74,65 @@ def _splittable_fab_lot_index_build(payload: dict) -> dict:
         shared_lease.release(lease_name)
 
 
+@handler("splittable_view_recompute")
+def _splittable_view_recompute(payload: dict) -> dict:
+    """SplitTable view payload 재계산 (stale-while-revalidate 백그라운드 갱신).
+
+    응답-페이로드 위임의 예외 케이스 — 재계산(polars collect)이 큐 왕복을
+    압도하고, 입력(pivot 캐시·lot_progress 파생·plan/tag)은 전부 공유
+    data_root 라 어느 서버가 계산해도 같은 결과다. 산출물인 view payload 는
+    api 프로세스의 RAM 캐시 전용이라 파일로 남길 곳이 없으므로 결과 dict 로
+    그대로 돌려주고, 저장(의존 시그니처 계산 포함)은 api 측이 한다 —
+    soft_sig 에 서버-로컬 product RAM 캐시 서명이 섞여 있어 워커가 계산한
+    시그니처는 api 캐시에 무의미하다."""
+    product = str(payload.get("product") or "").strip()
+    if not product:
+        return {"ok": False, "error": "missing product"}
+    from routers import splittable as _st
+
+    params = {
+        "product": product,
+        "root_lot_id": str(payload.get("root_lot_id") or ""),
+        "wafer_ids": str(payload.get("wafer_ids") or ""),
+        "prefix": str(payload.get("prefix") or ""),
+        "custom_name": str(payload.get("custom_name") or ""),
+        "view_mode": str(payload.get("view_mode") or "all"),
+        "history_mode": str(payload.get("history_mode") or "all"),
+        "fab_lot_id": str(payload.get("fab_lot_id") or ""),
+        "custom_cols": str(payload.get("custom_cols") or ""),
+    }
+    key = _st._split_view_cache_key(
+        params["product"], params["root_lot_id"], params["wafer_ids"],
+        params["prefix"], params["custom_name"], params["view_mode"],
+        params["history_mode"], params["fab_lot_id"], params["custom_cols"],
+    )
+    # request=None + force → 캐시 서빙/감사로그/알림을 건너뛰고 순수 재계산.
+    # include_related=False 명시 — 직접 호출에서는 Query(False) 기본값 객체가
+    # truthy 라 related_issues 를 계산하고 cache_put 이 도로 버리는 낭비가 있다.
+    _st._VIEW_REVALIDATE_TLS.force = True
+    try:
+        _st.view_split(request=None, include_related=False, **params)
+    finally:
+        _st._VIEW_REVALIDATE_TLS.force = False
+    # view_split(force) 는 이 프로세스의 _VIEW_CACHE 에 저장한다 — 그 저장본
+    # (related/runtime 필드가 제거된 캐시 형태)을 돌려준다. 결과 파일은 stdlib
+    # json 으로 기록되므로 rows 에 datetime/numpy 등이 섞이면 깨진다 — HTTP
+    # 응답(_view_orjson_response)과 같은 옵션으로 여기서 미리 문자열화한다.
+    with _st._VIEW_CACHE_LOCK:
+        entry = _st._VIEW_CACHE.get(key)
+    if not entry:
+        return {"ok": False, "error": "recompute stored no view cache entry"}
+    try:
+        import orjson
+        payload_json = orjson.dumps(
+            entry[2], default=str,
+            option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS,
+        ).decode("utf-8")
+    except Exception as exc:
+        return {"ok": False, "error": f"payload serialize failed: {type(exc).__name__}: {exc}"}
+    return {"ok": True, "product": product, "payload_json": payload_json}
+
+
 @handler("flowi_chat_turn")
 def _flowi_chat_turn(payload: dict) -> dict:
     """Flow-i 채팅 턴 실행 (데이터 컨텍스트 빌드 + LLM 호출).
