@@ -487,7 +487,7 @@ export default function My_Admin({user}){
   const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
   const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
-  const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET Index 다운로드",tone:"info"},reformatize_test:{label:"ET Index 테스트",tone:"warn"}};
+  const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET 다운로드",tone:"info"},reformatize_test:{label:"ET 테스트",tone:"warn"}};
   const combinedDownloads=[
     ..._arr(dlHistory).map((d)=>{
       const src=DL_SOURCES[d.source]||DL_SOURCES.filebrowser;
@@ -958,8 +958,8 @@ export default function My_Admin({user}){
             style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
             <option value="">전체 구분</option>
             <option value="파일 다운로드">파일 다운로드</option>
-            <option value="ET Index 다운로드">ET Index 다운로드</option>
-            <option value="ET Index 테스트">ET Index 테스트</option>
+            <option value="ET 다운로드">ET 다운로드</option>
+            <option value="ET 테스트">ET 테스트</option>
           </select>
           <input value={dlFilter.q} onChange={e=>setDlFilter(f=>({...f,q:e.target.value}))}
             placeholder="사용자·대상·상세 검색"
@@ -1100,7 +1100,7 @@ export default function My_Admin({user}){
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
 const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],
-  ["tracker","이슈 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
+  ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
   ["tablemap","테이블 맵"],
   // v9.3.x: devguide 는 admin 전용 — 페이지 위임 대상에서 제외.
   ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],

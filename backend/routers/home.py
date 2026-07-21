@@ -23,7 +23,7 @@ def home_summary(request: Request):
                 "title": "Tracker 에서 우선순위 높은 이슈부터 정리",
                 "description": "최근 변경과 댓글 흐름을 한 곳에서 보고, 다음 액션을 바로 남깁니다.",
                 "tab": "tracker",
-                "cta": "이슈 추적으로 이동",
+                "cta": "ET 추적으로 이동",
                 "tone": "warn",
             },
             {

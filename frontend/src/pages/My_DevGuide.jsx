@@ -153,7 +153,7 @@ FastAPI startup (backend/app.py):
         <Code>{`main   : home(홈)
 data   : filebrowser(파일탐색기)  dashboard(대시보드)
          splittable(스플릿 테이블)
-tool   : diagnosis(에이전트)  tracker(이슈 추적)  valve(매칭알람)
+tool   : diagnosis(에이전트)  tracker(ET 추적)  valve(매칭알람)
          teg(TEG 위치 조회)  ettime(ET 측정시간)  inform(인폼 로그)
          reformatize(리포마타이즈)  meeting(회의관리)
          calendar(변경점 관리)

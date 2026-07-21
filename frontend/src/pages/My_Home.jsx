@@ -1661,7 +1661,7 @@ export default function My_Home({onNavigate,user}){
     {key:"dashboard",  icon:"📊",title:"대시보드",desc:"동적 차트, 산점도, 추세"},
     {key:"splittable", icon:"🗂️",title:"스플릿 테이블",desc:"Plan vs actual, 공유 추적"},
     {key:"diagnosis",  icon:"🤖",title:"에이전트 설정",desc:"LLM 연결 상태와 관리자 설정"},
-    {key:"tracker",    icon:"📋",title:"이슈 추적",desc:"이슈 게시판, Lot/Wafer 추적"},
+    {key:"tracker",    icon:"📋",title:"ET 추적",desc:"이슈 게시판, Lot/Wafer 추적"},
     {key:"inform",     icon:"📢",title:"인폼 로그",desc:"모듈 인폼 + 스레드 + 이미지"},
     {key:"meeting",    icon:"🗓",title:"회의관리",desc:"차수·반복·아젠다·회의록"},
     {key:"calendar",   icon:"📅",title:"변경점 관리",desc:"달력·카테고리·회의 연동"},
