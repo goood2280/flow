@@ -154,13 +154,18 @@ def test_parse_teg_name_fallback_to_module_word():
 
 
 def test_transform_v_r_and_module_rule():
-    rules = {("h", "AAA"): (-400, 0, "AAA offset x 400")}
-    # v_R: 시계 90° 회전 (x, y) → (y, -x), 이후 y 에 v_r_offset 더함
-    assert teg_check.transform("m", 3, 7, "v_R", 0, 0, v_r_offset=10) == (7, 7)
-    # v_R: 회전(+v_r_offset) 후 PCHK 절대좌표(dx, dy)를 더함
-    assert teg_check.transform("m", 3, 7, "v_R", 5, 0, v_r_offset=10) == (12, 7)
-    # 모듈별 보정 (h, AAA) → x-400
-    assert teg_check.transform("AAA", 500, 1, "h", 0, 0, rules=rules) == (100, 1)
+    # 모듈별 오프셋: H 관점 입력, 양수=빼기
+    rules_h = {("h", "AAA"): (400, 0, "AAA offset x 400")}
+    rules_v = {("v_R", "BBB"): (400, 0, "BBB offset x 400 in TEG frame")}
+    # v_R: 시계 90° 회전 (x, y) → (y, -x), 모듈 오프셋 없으면 그대로
+    assert teg_check.transform("m", 3, 7, "v_R", 0, 0) == (7, -3)
+    # v_R: 회전 후 PCHK 절대좌표(dx, dy)를 더함
+    assert teg_check.transform("m", 3, 7, "v_R", 5, 0) == (12, -3)
+    # 모듈별 보정 (h, AAA): H 관점 양수=빼기 → x - 400
+    assert teg_check.transform("AAA", 500, 1, "h", 0, 0, rules=rules_h) == (100, 1)
+    # 모듈별 보정 (v_R, BBB): TEG x=400 → 실좌표 y 에서 -400 적용
+    # 입력(3, 7) → V 회전 → (7, -3) + PCHK(0,0) → (7, -3) → V offset(400,0): real(+0, -400) → (7, -403)
+    assert teg_check.transform("BBB", 3, 7, "v_R", 0, 0, rules=rules_v) == (7, -403)
     # flat 기본(PCHK) 오프셋은 모듈 보정 전에 더해짐
     assert teg_check.transform("m", 1, 2, "h", 10, 20) == (11, 22)
 
@@ -230,7 +235,7 @@ def test_inspect_three_level_status(teg_env):
 
 
 def test_inspect_v_r_override_and_missing(teg_env):
-    # v_R 로 강제: (100,200) → 시계90° 회전 (200,-100) → +v_r_offset(10) → (200, -90)
+    # v_R 로 강제: (100,200) → 시계90° 회전 (200,-100) → +flat_offset(0,10) → (200, -90)
     (teg_env / "Teg_location.csv").write_text(
         "vehicle,teg,ebeam_x,ebeam_y\nVH_T,TEG_A,200,-90\n", encoding="utf-8")
     res = teg_check.inspect("VH_T", SAMPLE, flat="v_R")
@@ -287,29 +292,28 @@ def test_inspect_chip_overlap(teg_env):
 
 
 def test_inspect_uses_check_config(teg_env):
-    """⚙️ 설정의 flat 기본 오프셋·모듈별 오프셋·v_R 회전 offset 이 반영된다."""
+    """⚙️ 설정의 flat 기본 오프셋·모듈별 오프셋이 반영된다.
+    모듈 오프셋: H/TEG 관점 입력, 양수=빼기."""
     teg_map.save_cfg({"check": {
-        "v_r_offset": 20,
         "flat_offsets": {"h": [5, -5], "v_R": [0, 0]},
         "modules": [{"flat": "h", "name": "TEG_B", "dx": 100, "dy": 0, "note": "B 보정"}],
     }})
-    # 정답지: TEG_A = 원본+flat 오프셋, TEG_B = +flat 오프셋+모듈 오프셋
+    # 정답지: TEG_A = 원본+flat 오프셋, TEG_B = +flat 오프셋 - 모듈 오프셋(양수=빼기)
     (teg_env / "Teg_location.csv").write_text(
         "vehicle,teg,ebeam_x,ebeam_y\n"
         "VH_T,TEG_A,105,195\n"
-        "VH_T,TEG_B,75,35\n",
+        "VH_T,TEG_B,-125,35\n",
         encoding="utf-8")
     res = teg_check.inspect("VH_T", SAMPLE)
     assert res["offset"] == {"dx": 5, "dy": -5}
     rows = {r["name"]: r for r in res["teg"]["rows"]}
-    assert rows["TEG_A"]["status"] == "match"                 # (100+5, 200-5)
-    assert rows["TEG_B"]["status"] == "match"                 # (-30+5+100, 40-5)
+    assert rows["TEG_A"]["status"] == "match"                 # (100+5, 200-5) = (105, 195)
+    assert rows["TEG_B"]["status"] == "match"                 # (-30+5-100, 40-5-0) = (-125, 35)
     assert rows["TEG_B"]["rule_note"] == "B 보정"
-    # v_R 강제 시 설정된 회전 offset(20) 사용: (100,200) → (200, -100+20)
+    # v_R 강제 시: (100,200) → 회전(200, -100) → flat(0,0) → (200, -100)
     res_v = teg_check.inspect("VH_T", SAMPLE, flat="v_R")
     row_a = [r for r in res_v["teg"]["rows"] if r["name"] == "TEG_A"][0]
-    assert (row_a["calc_x"], row_a["calc_y"]) == (200, -80)
-    assert res_v["v_r_offset"] == 20
+    assert (row_a["calc_x"], row_a["calc_y"]) == (200, -100)
 
 
 def test_pchk_base_offsets_from_ref():

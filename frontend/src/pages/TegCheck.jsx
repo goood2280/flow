@@ -520,13 +520,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     { key: "matched", label: "매칭 TEG", render: r => {
         if (!r.ref_teg) return "";
         const tag = r.extended ? "확장" : r.match_source === "top_cell" ? "top_cell" : "";
+        const seq = r.ref_seq != null ? ` #${r.ref_seq}/${r.ref_total}` : "";
         return (
           <span title={r.extended
             ? `확장체크: ${r.match_token} → ${r.ref_teg} ('01' 제외 재매칭)`
             : r.match_source === "top_cell"
               ? `top_cell '${r.match_token}' 로 ${r.ref_teg} 에 매칭`
-              : `teg 이름으로 ${r.ref_teg} 에 매칭`}>
-            {r.ref_teg}{tag ? ` (${tag})` : ""}
+              : `teg 이름으로 ${r.ref_teg} 에 매칭`
+            + (r.ref_seq != null ? ` — 동명 ${r.ref_total}개 중 ${r.ref_seq}번째` : "")}>
+            {r.ref_teg}{seq}{tag ? ` (${tag})` : ""}
           </span>
         );
       } },
@@ -598,8 +600,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           </label>
         ))}
         {flatUsed === "v_R" && (
-          <Pill tone="neutral" title="Vertical(R) = 설비의 반시계 90° 회전 세팅을 원복: (x, y) → (y, -x + offset)">
-            {res.v_r_note}
+          <Pill tone="neutral" title="Vertical(R) = 설비의 반시계 90° 회전 세팅을 원복: (x, y) → (y, -x)">
+            V 회전 원복
           </Pill>
         )}
         {(() => {

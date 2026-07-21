@@ -12,8 +12,9 @@ Mapfile 좌표계 (UI 표기: h=Horizontal, v_R=Vertical(R)):
     해당 PCHK 절대좌표를 "더한다":
       · h    — 회전 없음. 그대로 두고 H_PCHK 절대좌표(flat_offsets['h'])를 더한다.
       · v_R  — 설비의 반시계 90° 세팅을 시계 90° 회전으로 원복: (x, y) → (y, -x).
-               그 뒤 v_r_offset(회전 보정)·V_PCHK 절대좌표(flat_offsets['v_R'])를 더한다.
-    마지막으로 모듈(TEG)별 오프셋을 더해 ebeam 절대좌표를 복원, 정답지와 비교한다.
+               V_PCHK 절대좌표(flat_offsets['v_R'])를 더한다.
+    마지막으로 모듈(TEG)별 오프셋을 적용(항상 H/TEG 관점 입력, 양수=빼기)해
+    ebeam 절대좌표를 복원, 정답지와 비교한다.
 오프셋들은 teg_map.json 의 `check` 섹션에 저장 — ⚙️ 설정에서 편집.
 
 원문 형식 (Streamlit PoC 'Wafer Map 검사기 v17' 파서 포팅):
@@ -34,7 +35,7 @@ from typing import Any
 from core import teg_map as _tm
 
 # ────────────────────────────────────────── 변환 규칙
-# v_R 회전 offset·flat 별 PCHK 절대좌표(offset)·모듈(TEG)별 오프셋은 teg_map.json 의
+# flat 별 PCHK 절대좌표(offset)·모듈(TEG)별 오프셋은 teg_map.json 의
 # `check` 섹션(teg_map.DEFAULT_CHECK_CFG)에 저장하고 ⚙️ 설정에서 편집한다.
 # '!' 뒤 꼬리표 → flat. 우선순위대로: PCHK 우선, 없으면 PRBCHK 폴백.
 # 설비/사이트에 따라 기준 PCHK 표기가 다를 수 있다 — 내장 마커로 안 잡히면
@@ -346,7 +347,6 @@ def detect_flat(tegs: list[dict], markers: dict[str, str] | None = None) -> tupl
 
 
 def transform(name: str, x: float, y: float, flat: str, dx: float, dy: float,
-              v_r_offset: float = 0.0,
               rules: dict[tuple[str, str], tuple[float, float, str]] | None = None,
               ) -> tuple[float, float]:
     """Mapfile 상대좌표(해당 PCHK = (0,0)) → 원래 ebeam 절대좌표 **원복**.
@@ -354,20 +354,27 @@ def transform(name: str, x: float, y: float, flat: str, dx: float, dy: float,
     Mapfile 은 PCHK 기준으로 재계산돼 올라간 flat별 상대좌표다. 상대→절대
     원복이므로 해당 PCHK 절대좌표를 "더한다" (빼지 않는다). 순서:
       · v_R — 설비의 반시계 90° 세팅을 시계 90° 회전으로 원복: (x, y) → (y, -x).
-              그 뒤 v_r_offset(회전 보정)을 y 에, PCHK 절대좌표(dx, dy)를 더한다.
+              PCHK 절대좌표(dx, dy)를 더한다.
       · h   — 회전 없이 PCHK 절대좌표(dx, dy)를 더한다.
-    마지막으로 모듈(TEG)별 보정(rules)을 더한다. 복원된 ebeam 절대좌표를 정답지
-    (Teg_location raw ebeam_x/ebeam_y)와 비교한다.
+    마지막으로 모듈(TEG)별 보정(rules)을 더한다. 모듈별 오프셋은 항상 Horizontal
+    (TEG) 관점으로 입력되며, 양수 = 빼기 규약이다. Vertical(R) TEG 이면 TEG 관점
+    x → 실좌표 y, TEG 관점 y → 실좌표 -x 로 축 변환 후 부호 반전한다.
 
-    rules: {(flat, module_name): (dx, dy, note)} — ⚙️ 설정의 모듈별 오프셋.
+    rules: {(flat, module_name): (ox, oy, note)} — ⚙️ 설정의 모듈별 오프셋
+           (Horizontal/TEG 관점 입력값, 양수 = 빼기).
     """
     if flat == "v_R":
         x, y = y, -x            # 시계 90° 회전 (설비 반시계 세팅 원복)
-        y += v_r_offset         # v_R 회전 보정 offset
     x, y = x + dx, y + dy       # PCHK 절대좌표 반영 → ebeam 절대좌표 복원
     rule = (rules or {}).get((flat, name))
     if rule:
-        return x + rule[0], y + rule[1]
+        ox, oy = rule[0], rule[1]
+        if flat == "v_R":
+            # TEG 관점(H 기준) offset → 실좌표: TEG x → real y, TEG y → real -x
+            # 양수 = 빼기 → real (x + oy, y - ox)
+            return x + oy, y - ox
+        # Horizontal: 양수 = 빼기 → real (x - ox, y - oy)
+        return x - ox, y - oy
     return x, y
 
 
@@ -516,7 +523,7 @@ def resolve_ref_teg_extended(t: dict, ref: dict[str, list[dict]] | None,
 
 def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
              x: float, y: float, extended: bool = False) -> dict:
-    """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h}.
+    """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h, ref_seq}.
 
     ref_teg = resolve_ref_teg(_extended) 로 결정된 정답지 teg (없으면 미등록).
     status: match | warning | mismatch | extended(확장체크로 매칭) |
@@ -526,23 +533,30 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
       · mismatch— 그 이상 (불일치)
       · extended— '01' 제외 재매칭으로 정답지 teg 를 찾음 (위치가 아닌 이름 검증)
     동명 후보가 여러 개면 가장 가까운 행 기준. ref_w/ref_h 는 TEG 크기(mm).
+    ref_seq: 동명 TEG 중 매칭된 순번(1-based). 후보가 1 개면 None.
+    ref_total: 동명 TEG 전체 개수 (후보가 1 개면 None).
     """
     if ref is None:
         return {"status": "noref", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
-                "ref_w": None, "ref_h": None}
+                "ref_w": None, "ref_h": None, "ref_seq": None, "ref_total": None}
     cands = ref.get(ref_teg) if ref_teg else None
     if not cands:
         return {"status": "missing", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
-                "ref_w": None, "ref_h": None}
-    c = min(cands, key=lambda c0: abs(c0["x"] - x) + abs(c0["y"] - y))
+                "ref_w": None, "ref_h": None, "ref_seq": None, "ref_total": None}
+    best_idx = min(range(len(cands)),
+                   key=lambda i: abs(cands[i]["x"] - x) + abs(cands[i]["y"] - y))
+    c = cands[best_idx]
     ddx, ddy = x - c["x"], y - c["y"]
     # 확장체크(TEGA01→TEGA)는 서로 다른 die 라 좌표는 다를 수 있어 위치 판정 대신
     # 'extended'(이름 검증) 로 표시한다. ΔX·ΔY 는 참고용으로 계산해 함께 노출.
     status = "extended" if extended else _status_of(ddx, ddy)
+    n = len(cands)
     return {"status": status,
             "ref_x": _num(c["x"]), "ref_y": _num(c["y"]),
             "dx": _num(ddx), "dy": _num(ddy),
-            "ref_w": c["w"], "ref_h": c["h"]}
+            "ref_w": c["w"], "ref_h": c["h"],
+            "ref_seq": best_idx + 1 if n > 1 else None,
+            "ref_total": n if n > 1 else None}
 
 
 # ────────────────────────────────────────── shot 칩 격자 겹침 검사
@@ -639,7 +653,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             t["name"] = ov
             t["name_source"] = "override"
 
-    # ⚙️ 설정의 TEG Mapfile 체크 섹션 — v_R 회전 offset, flat 별 PCHK 오프셋, 모듈별 오프셋
+    # ⚙️ 설정의 TEG Mapfile 체크 섹션 — flat 별 PCHK 오프셋, 모듈별 오프셋
     cfg = _tm.load_cfg()
     chk = cfg["check"]
 
@@ -668,7 +682,6 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     # flat 강제 여부 — 강제 시 모든 TEG 에 적용, 아니면 TEG 별 마커로 개별 판정
     forced = flat if flat in FLATS else None
     used = forced or detected or "h"   # 전역 기본 (마커 없는 TEG·표시용)
-    v_r_offset = float(chk["v_r_offset"])
     flat_offsets = chk["flat_offsets"]
 
     ref, tc_to_teg, ref_path, ref_err = (
@@ -702,7 +715,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         t_flat, t_marker = teg_flat(t["tail"], marker_map)
         used_t = forced or t_flat or detected or "h"
         tdx, tdy = _offset(used_t)
-        nx, ny = transform(t["name"], t["x"], t["y"], used_t, tdx, tdy, v_r_offset, rules)
+        nx, ny = transform(t["name"], t["x"], t["y"], used_t, tdx, tdy, rules)
         # 순서 기반이 아니라 이름 기반 정확 매칭 — 후보 토큰 중 정답지 teg/top_cell 과
         # 완전 일치하는 걸 찾아 그 teg 로 대조. 없으면 '01' 제외 재매칭(확장체크).
         ref_teg, msrc, mtok = resolve_ref_teg(t, ref, tc_to_teg)
@@ -755,7 +768,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         t_flat, _mk = teg_flat(t["tail"], marker_map)
         used_t = forced or t_flat or detected or "h"
         tdx, tdy = _offset(used_t)
-        nx, ny = transform(detail or group, t["x"], t["y"], used_t, tdx, tdy, v_r_offset, rules)
+        nx, ny = transform(detail or group, t["x"], t["y"], used_t, tdx, tdy, rules)
         entry = main_groups_map.setdefault(group, [])
         if not detail:
             detail = f"{group}_{len(entry) + 1}"
@@ -822,8 +835,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 for f, b in pchk_bases.items()
             },
         },
-        "v_r_offset": _num(v_r_offset),
-        "v_r_note": f"PCHK V x offset {_num(v_r_offset)}",
+        "module_offset_note": "TEG(H) 관점 입력, 양수=빼기. V: TEG x→실y, TEG y→실-x",
         "shot": shot,
         "teg": {
             "rows": rows,
