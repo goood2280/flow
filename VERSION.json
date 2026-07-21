@@ -1,7 +1,17 @@
 {
-  "version": "9.5.9",
+  "version": "9.5.10",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.10",
+      "date": "2026-07-21",
+      "title": "Teg_location — direction 열(H/V) 추가: V 는 TEG 를 세로로 세워 그림",
+      "tag": "teg",
+      "changes": [
+        "Teg_location.csv 에 direction 열 지원 — H/Horizontal=가로(기본), V/Vertical=세로. V 는 좌하단 좌표는 그대로 두고 TEG 패턴의 가로/세로(w/h)만 스왑해 세워 그린다(위치 조회 WF MAP·Shot 확대, Mapfile 체크 정답지 크기 모두 반영).",
+        "값 인식은 대소문자·전체단어(V/v/Vertical) 무관하게 'v' 로 시작하면 세로. direction 이 없으면 기존 flat_zone 열을 폴백으로 사용."
+      ]
+    },
     {
       "version": "9.5.9",
       "date": "2026-07-21",
