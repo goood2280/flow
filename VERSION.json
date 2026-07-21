@@ -1,7 +1,19 @@
 {
-  "version": "9.5.8",
+  "version": "9.5.9",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.9",
+      "date": "2026-07-21",
+      "title": "TEG 위치조회 — 일반 사용자 선택 30개 제한 · V_ 기본 offset 10 · 칩 크기 µm · MAIN 은 점 표시",
+      "tag": "teg",
+      "changes": [
+        "TEG 위치조회 전체 렌더 시 502/브라우저 다운 방지 — 일반 사용자는 TEG 동시 선택 최대 30개(초과 시 안내 메시지, '전체'도 30개까지만). 관리자(admin·teg 페이지 관리자)는 제한 없음. 상한은 서버가 역할 기반으로 내려주고(map payload max_selection) UI 가 강제.",
+        "TEG Mapfile 체크: Vertical(R) 회전 offset 기본값을 0 으로 내리고, V_ 계열 기본 offset(flat_offsets v_R) 의 y' 를 10 으로 이동 — 변환식은 그대로, 10 이 '회전 후 offset' 이 아니라 'V_ 기본 offset' 으로 적용(정답지 PCHK DB 기준점이 있으면 그 값이 우선).",
+        "칩 격자 '칩 크기' 입력 단위를 mm → µm 로 변경(저장은 mm 유지, 칩 사이 간격과 동일 단위).",
+        "TEG 위치조회 Shot 확대: MAIN 계열 TEG 는 모양(패턴) 없이 점(dot)만 표시."
+      ]
+    },
     {
       "version": "9.5.8",
       "date": "2026-07-21",
