@@ -1,7 +1,20 @@
 {
-  "version": "9.5.13",
+  "version": "9.5.14",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.14",
+      "date": "2026-07-22",
+      "title": "ET Tracker 스캔 개발 워커 우선 실행 (양산 스케줄 + worker_dispatch 오프로드)",
+      "tag": "perf",
+      "changes": [
+        "ET Tracker 스캔을 scan/apply 2단계로 분리 — 스캔 phase(ET DB 조회+et_history diff)는 개발 워커가 켜져 있으면 worker_dispatch.run_heavy 로 워커에 우선 위임, 워커 다운·과부하·타임아웃 시 양산 서버 로컬 폴백(기능 동일, 실행 위치만 변경).",
+        "apply phase(issues.json 저장·bell 알림·[ET Tracker] 메일)는 항상 양산(api) 서버에서 수행 — worker 역할은 메일 등 외부 서비스가 차단되어 있고 쓰기 경쟁도 한 곳으로 수렴.",
+        "스캔 결과에 이슈별 revision 가드 — 스캔 중 이슈가 수정되면 해당 이슈 결과는 폐기하고 다음 스캔이 재계산(et_history diff 멱등).",
+        "worker 역할에서는 ET Tracker 스케줄러 미기동(스캔 잡은 큐로만 수신), 역할 전환은 tick 마다 재확인.",
+        "톱니바퀴 ET Tracker 상태에 실행 위치(개발 워커/운영 로컬) 표시."
+      ]
+    },
     {
       "version": "9.5.13",
       "date": "2026-07-22",

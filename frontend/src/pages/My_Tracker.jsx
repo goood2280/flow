@@ -2112,6 +2112,8 @@ function TrackerSettings({ isAdmin, onChanged }) {
         <span>이슈 {etScan.status?.issues_scanned ?? 0} / 랏 {etScan.status?.lots_scanned ?? 0}</span>
         <span>신규 측정 {etScan.status?.new_entries ?? 0}건 / 메일 {etScan.status?.mail_count ?? 0}건</span>
         <span>스캔 {etScan.enabled === false ? "꺼짐" : (etScan.scan_times.length ? `매일 ${etScan.scan_times.join(", ")}` : "시간 미지정")}</span>
+        {/* v9.5.14: 개발 워커 우선 실행 — 마지막 스캔이 어디서 돌았는지 표시. */}
+        <span>실행 위치 {etScan.status?.executed_on === "worker" ? "개발 워커" : "운영(로컬)"}</span>
       </div>
       {etScan.status?.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "var(--danger)" }}>{etScan.status.last_error}</div>}
       {etScanMsg && <div style={{ marginBottom: 12, fontSize: 14, color: etScanMsg.includes("완료") ? "var(--ok)" : "var(--danger)" }}>{etScanMsg}</div>}

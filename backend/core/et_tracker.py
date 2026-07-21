@@ -564,49 +564,64 @@ def build_et_tracker_mail(iss: dict, new_items: list[dict], cfg: dict) -> dict:
     return {"subject": subject, "body": body, "images_omitted": images_omitted}
 
 
-# ─────────────────────────── scan ───────────────────────────
+# ─────────────────────────── scan (phase 분리) ───────────────────────────
+# v9.5.14: 양산(api) 서버에서 스케줄이 돌되, 개발 워커가 살아있으면 무거운
+#   스캔 phase(ET DB 조회 + 이력 diff)를 worker_dispatch.run_heavy 로 워커에
+#   우선 위임한다. 저장·bell·메일(apply phase)은 항상 api 측 — worker 역할은
+#   외부 서비스(메일)가 차단되어 있고, issues.json 쓰기 경쟁도 한 곳으로 모은다.
 
-def _scan_core(*, only_issue_id: str = "", notify: bool = True, actor: str = "scheduler") -> dict:
-    """ET source 이슈 스캔 본체. only_issue_id 지정 시 해당 이슈만 (알림/메일 없이 이력 갱신)."""
+def _slim_lot(lot: dict) -> dict:
+    """new_items 직렬화용 최소 lot 정보 (워커 → api 결과 payload)."""
+    return {
+        "root_lot_id": str((lot or {}).get("root_lot_id") or ""),
+        "lot_id": str((lot or {}).get("lot_id") or ""),
+        "wafer_id": str((lot or {}).get("wafer_id") or ""),
+        "username": str((lot or {}).get("username") or ""),
+    }
+
+
+def scan_phase(only_issue_id: str = "") -> dict:
+    """스캔 phase — ET DB 조회 + et_history diff 만 수행. 저장/알림/메일 없음.
+
+    워커·로컬 어디서 실행해도 결과가 같도록 부수효과 없이 JSON 직렬화 가능한
+    dict 를 반환한다. 이슈별 revision 을 함께 기록해 apply 시 동시 수정 가드로 쓴다."""
     started_at = _now_iso()
-    cfg = et_tracker_config()
-    summary = {
+    out = {
         "ok": True,
+        "executed_on": "local",
         "started_at": started_at,
         "finished_at": "",
-        "actor": actor,
+        "only_issue_id": str(only_issue_id or "").strip(),
+        "issues": [],
         "issues_scanned": 0,
         "lots_scanned": 0,
         "new_entries": 0,
-        "notify_count": 0,
-        "mail_count": 0,
         "last_error": "",
     }
     try:
         from core.paths import PATHS
-        from core.utils import load_json, save_json
+        from core.utils import load_json
         from core.lot_step import source_root_for_context
     except Exception as e:
-        summary.update({"ok": False, "finished_at": _now_iso(), "last_error": f"import failed: {e}"})
-        return summary
+        out.update({"ok": False, "finished_at": _now_iso(), "last_error": f"import failed: {e}"})
+        return out
     issues_fp = PATHS.data_root / "tracker" / "issues.json"
     if not issues_fp.is_file():
-        summary["finished_at"] = _now_iso()
-        return summary
+        out["finished_at"] = _now_iso()
+        return out
     issues = load_json(issues_fp, [])
     if not isinstance(issues, list):
-        summary.update({"ok": False, "finished_at": _now_iso(), "last_error": "issues.json is not a list"})
-        return summary
+        out.update({"ok": False, "finished_at": _now_iso(), "last_error": "issues.json is not a list"})
+        return out
     cats_map = _load_cats_map()
     roles = _role_names()
-    changed = False
-    scanned_issue = None
+    target = out["only_issue_id"]
     for iss in issues:
         if not isinstance(iss, dict):
             continue
-        if only_issue_id and str(iss.get("id") or "") != only_issue_id:
+        if target and str(iss.get("id") or "") != target:
             continue
-        if not only_issue_id and iss.get("status") == "closed":
+        if not target and iss.get("status") == "closed":
             continue
         source = _issue_source(iss, cats_map, roles)
         if source not in ("et", "both"):
@@ -616,100 +631,180 @@ def _scan_core(*, only_issue_id: str = "", notify: bool = True, actor: str = "sc
         source_root = source_root_for_context("et", iss.get("category") or "")
         now_iso = _now_iso()
         new_items, issue_changed, scanned = _scan_issue_lots(iss, source_root=source_root, now_iso=now_iso)
-        summary["issues_scanned"] += 1
-        summary["lots_scanned"] += scanned
-        summary["new_entries"] += len(new_items)
-        scanned_issue = iss
-        if issue_changed:
-            iss["updated_at"] = now_iso
-            iss["updated_by"] = actor
-            try:
-                iss["revision"] = int(iss.get("revision") or 0) + 1
-            except Exception:
-                iss["revision"] = 1
-            changed = True
-        if not new_items or not notify:
-            continue
-        matched = [x for x in new_items if _pgm_matches(x["entry"], cfg["pgm_filters"])]
-        if not matched:
-            continue
-        # bell — 이슈 작성자 + lot 추가자
-        base_targets = set()
-        if iss.get("username"):
-            base_targets.add(iss["username"])
-        for x in matched:
-            u = (x.get("lot") or {}).get("username")
-            if u:
-                base_targets.add(u)
-        preview = ", ".join(
-            f"{(x['entry'].get('step_id') or '-')}·{x['entry'].get('pgm') or ''}"
-            for x in matched[:4]
+        out["issues_scanned"] += 1
+        out["lots_scanned"] += scanned
+        out["new_entries"] += len(new_items)
+        out["issues"].append({
+            "issue_id": str(iss.get("id") or ""),
+            "revision": int(iss.get("revision") or 0),
+            "changed": bool(issue_changed),
+            "checked_at": now_iso,
+            "lots": iss.get("lots") or [],
+            "new_items": [
+                {"lot": _slim_lot(x.get("lot")), "entry": dict(x.get("entry") or {})}
+                for x in new_items
+            ],
+        })
+    out["finished_at"] = _now_iso()
+    return out
+
+
+def _notify_issue(iss: dict, matched: list[dict], cfg: dict, *, actor: str, summary: dict) -> None:
+    """신규 측정 감지 이슈 1건에 대한 bell + (설정 시) 메일 발송 — api 측 전용."""
+    base_targets = set()
+    if iss.get("username"):
+        base_targets.add(iss["username"])
+    for x in matched:
+        u = (x.get("lot") or {}).get("username")
+        if u:
+            base_targets.add(u)
+    preview = ", ".join(
+        f"{((x.get('entry') or {}).get('step_id') or '-')}·{(x.get('entry') or {}).get('pgm') or ''}"
+        for x in matched[:4]
+    )
+    if len(matched) > 4:
+        preview += f" 외 {len(matched) - 4}건"
+    try:
+        from core.notify import emit_event
+        from core.tracker_scheduler import _recipient_payload
+        notify_targets = _recipient_payload(base_targets, []).get("users") or []
+        for tgt in notify_targets:
+            if emit_event(
+                "et_tracker_new",
+                actor=actor,
+                target_user=tgt,
+                title=f"[ET Tracker] {iss.get('title') or iss['id']}",
+                body=f"신규 ET 측정 {len(matched)}건 · {preview}",
+                payload={
+                    "issue_id": iss.get("id") or "",
+                    "count": len(matched),
+                    "entries": [
+                        {
+                            "root_lot_id": _lot_display_root(x.get("lot") or {}),
+                            "wafer_id": (x.get("lot") or {}).get("wafer_id") or "",
+                            "step_id": (x.get("entry") or {}).get("step_id") or "",
+                            "pgm": (x.get("entry") or {}).get("pgm") or "",
+                            "time": (x.get("entry") or {}).get("time") or "",
+                        }
+                        for x in matched[:20]
+                    ],
+                },
+            ):
+                summary["notify_count"] += 1
+    except Exception as e:
+        logger.warning(f"et tracker notify failed: {e}")
+    if not cfg["mail_enabled"]:
+        return
+    try:
+        from core.mail import send_mail
+        from core.tracker_scheduler import _recipient_payload
+        recipients = _recipient_payload(base_targets, cfg["mail_group_ids"])
+        mail_targets = recipients.get("users") or []
+        extra_emails = recipients.get("extra_emails") or []
+        if not mail_targets and not extra_emails:
+            return
+        rendered = build_et_tracker_mail(iss, matched, cfg)
+        res = send_mail(
+            sender_username="flow-et-tracker",
+            receiver_usernames=mail_targets,
+            extra_emails=extra_emails,
+            title=rendered["subject"],
+            content=rendered["body"],
         )
-        if len(matched) > 4:
-            preview += f" 외 {len(matched) - 4}건"
-        try:
-            from core.notify import emit_event
-            from core.tracker_scheduler import _recipient_payload
-            notify_targets = _recipient_payload(base_targets, []).get("users") or []
-            for tgt in notify_targets:
-                if emit_event(
-                    "et_tracker_new",
-                    actor=actor,
-                    target_user=tgt,
-                    title=f"[ET Tracker] {iss.get('title') or iss['id']}",
-                    body=f"신규 ET 측정 {len(matched)}건 · {preview}",
-                    payload={
-                        "issue_id": iss.get("id") or "",
-                        "count": len(matched),
-                        "entries": [
-                            {
-                                "root_lot_id": _lot_display_root(x.get("lot") or {}),
-                                "wafer_id": (x.get("lot") or {}).get("wafer_id") or "",
-                                "step_id": x["entry"].get("step_id") or "",
-                                "pgm": x["entry"].get("pgm") or "",
-                                "time": x["entry"].get("time") or "",
-                            }
-                            for x in matched[:20]
-                        ],
-                    },
-                ):
-                    summary["notify_count"] += 1
-        except Exception as e:
-            logger.warning(f"et tracker notify failed: {e}")
-        if not cfg["mail_enabled"]:
+        if res.get("ok"):
+            summary["mail_count"] += len(res.get("to") or [])
+        elif res.get("reason"):
+            summary["last_error"] = str(res.get("reason") or "")[:300]
+    except Exception as e:
+        logger.warning(f"et tracker mail failed: {e}")
+        summary["last_error"] = f"mail: {e}"
+
+
+def _apply_scan_result(result: dict, cfg: dict, *, notify: bool, actor: str) -> dict:
+    """apply phase — 스캔 결과를 issues.json 에 반영하고 알림/메일 발송 (api 측).
+
+    스캔 중 이슈가 수정된 경우(revision 불일치)는 그 이슈 결과를 버린다 —
+    et_history diff 는 멱등이라 다음 스캔이 최신 lots 기준으로 다시 잡는다."""
+    result = result if isinstance(result, dict) else {}
+    summary = {
+        "ok": bool(result.get("ok", False)),
+        "executed_on": str(result.get("executed_on") or "local"),
+        "started_at": result.get("started_at") or _now_iso(),
+        "finished_at": "",
+        "actor": actor,
+        "issues_scanned": int(result.get("issues_scanned") or 0),
+        "lots_scanned": int(result.get("lots_scanned") or 0),
+        "new_entries": int(result.get("new_entries") or 0),
+        "skipped_stale": 0,
+        "notify_count": 0,
+        "mail_count": 0,
+        "last_error": str(result.get("last_error") or ""),
+    }
+    rows = [r for r in (result.get("issues") or []) if isinstance(r, dict)]
+    target_id = str(result.get("only_issue_id") or "").strip()
+    try:
+        from core.paths import PATHS
+        from core.utils import load_json, save_json
+    except Exception as e:
+        summary.update({"ok": False, "finished_at": _now_iso(), "last_error": f"import failed: {e}"})
+        return summary
+    issues_fp = PATHS.data_root / "tracker" / "issues.json"
+    issues = load_json(issues_fp, [])
+    if not isinstance(issues, list):
+        issues = []
+    by_id = {str(i.get("id") or ""): i for i in issues if isinstance(i, dict)}
+    changed = False
+    notify_batches: list[tuple[dict, list[dict]]] = []
+    for row in rows:
+        iss = by_id.get(str(row.get("issue_id") or ""))
+        if iss is None:
             continue
-        try:
-            from core.mail import send_mail
-            from core.tracker_scheduler import _recipient_payload
-            recipients = _recipient_payload(base_targets, cfg["mail_group_ids"])
-            mail_targets = recipients.get("users") or []
-            extra_emails = recipients.get("extra_emails") or []
-            if not mail_targets and not extra_emails:
-                continue
-            rendered = build_et_tracker_mail(iss, matched, cfg)
-            res = send_mail(
-                sender_username="flow-et-tracker",
-                receiver_usernames=mail_targets,
-                extra_emails=extra_emails,
-                title=rendered["subject"],
-                content=rendered["body"],
-            )
-            if res.get("ok"):
-                summary["mail_count"] += len(res.get("to") or [])
-            elif res.get("reason"):
-                summary["last_error"] = str(res.get("reason") or "")[:300]
-        except Exception as e:
-            logger.warning(f"et tracker mail failed: {e}")
-            summary["last_error"] = f"mail: {e}"
+        if int(iss.get("revision") or 0) != int(row.get("revision") or 0):
+            summary["skipped_stale"] += 1
+            continue
+        if row.get("changed"):
+            iss["lots"] = row.get("lots") or []
+            iss["updated_at"] = row.get("checked_at") or _now_iso()
+            iss["updated_by"] = actor
+            iss["revision"] = int(iss.get("revision") or 0) + 1
+            changed = True
+        new_items = [x for x in (row.get("new_items") or []) if isinstance(x, dict)]
+        if new_items and notify:
+            notify_batches.append((iss, new_items))
     if changed:
         try:
             save_json(issues_fp, issues, indent=2)
         except Exception as e:
             summary.update({"ok": False, "last_error": f"save issues failed: {e}"})
+    for iss, new_items in notify_batches:
+        matched = [x for x in new_items if _pgm_matches(x.get("entry") or {}, cfg["pgm_filters"])]
+        if matched:
+            _notify_issue(iss, matched, cfg, actor=actor, summary=summary)
     summary["finished_at"] = _now_iso()
-    if only_issue_id:
-        summary["issue"] = scanned_issue
+    if target_id:
+        summary["issue"] = by_id.get(target_id)
     return summary
+
+
+def _dispatch_scan(only_issue_id: str, *, timeout_sec: float) -> dict:
+    """스캔 phase 실행 위치 결정 — 개발 워커가 켜져 있으면 워커에 우선 위임.
+
+    run_heavy: api 역할 + 워커 생존/여유 → 큐잉 후 결과 대기, 그 외(워커 다운·
+    과부하·타임아웃·standalone)는 로컬 scan_phase 폴백 — 기능 동일, 실행 위치만 바뀐다."""
+    local = lambda: scan_phase(only_issue_id=only_issue_id)
+    try:
+        from core import worker_dispatch as _wd
+        result = _wd.run_heavy(
+            "et_tracker_scan",
+            {"only_issue_id": only_issue_id},
+            local,
+            timeout_sec=timeout_sec,
+            label="et_tracker_scan",
+        )
+    except Exception as e:
+        logger.warning(f"et tracker dispatch failed ({e}) — running locally")
+        result = local()
+    return result if isinstance(result, dict) else {"ok": False, "last_error": "scan returned no result"}
 
 
 def run_scan(*, force: bool = False, actor: str = "scheduler") -> dict:
@@ -724,15 +819,16 @@ def run_scan(*, force: bool = False, actor: str = "scheduler") -> dict:
     if not _scan_lock.acquire(blocking=False):
         return {**_read_status(), "ok": False, "running": True, "last_error": "scan already running"}
     try:
-        result = _scan_core(notify=True, actor=actor)
+        result = _dispatch_scan("", timeout_sec=1800.0)
+        summary = _apply_scan_result(result, cfg, notify=True, actor=actor)
     except Exception as e:
         logger.warning(f"et tracker scan failed: {e}")
-        result = {"ok": False, "started_at": _now_iso(), "finished_at": _now_iso(),
-                  "issues_scanned": 0, "lots_scanned": 0, "new_entries": 0,
-                  "notify_count": 0, "mail_count": 0, "last_error": str(e)}
+        summary = {"ok": False, "started_at": _now_iso(), "finished_at": _now_iso(),
+                   "issues_scanned": 0, "lots_scanned": 0, "new_entries": 0,
+                   "notify_count": 0, "mail_count": 0, "last_error": str(e)}
     finally:
         _scan_lock.release()
-    return _write_status({**result, "running": False})
+    return _write_status({**summary, "running": False})
 
 
 def scan_issue(issue_id: str, *, actor: str = "manual") -> dict:
@@ -740,7 +836,8 @@ def scan_issue(issue_id: str, *, actor: str = "manual") -> dict:
     if not _scan_lock.acquire(blocking=False):
         return {"ok": False, "last_error": "scan already running", "issue": None}
     try:
-        return _scan_core(only_issue_id=str(issue_id or "").strip(), notify=False, actor=actor)
+        result = _dispatch_scan(str(issue_id or "").strip(), timeout_sec=420.0)
+        return _apply_scan_result(result, et_tracker_config(), notify=False, actor=actor)
     finally:
         _scan_lock.release()
 
@@ -768,8 +865,16 @@ def _scheduler_loop():
     time.sleep(45)
     while True:
         try:
+            # v9.5.14: 스케줄 트리거는 양산(api)·standalone 만 — worker 역할은
+            #   worker_dispatch 큐로 스캔 phase 만 위임받아 실행한다. 역할은
+            #   재시작 없이 바뀔 수 있으므로 tick 마다 확인.
+            try:
+                from core.worker_dispatch import external_services_enabled
+                trigger_allowed = external_services_enabled()
+            except Exception:
+                trigger_allowed = True
             cfg = et_tracker_config()
-            if cfg["enabled"] and cfg["scan_times"]:
+            if trigger_allowed and cfg["enabled"] and cfg["scan_times"]:
                 now = dt.datetime.now()
                 due = _tick_due_slots(now, cfg)
                 if due:
@@ -787,9 +892,16 @@ def start_scheduler() -> bool:
     if os.environ.get("FLOW_DISABLE_ET_TRACKER_SCHED") == "1":
         logger.info("et tracker scheduler disabled via FLOW_DISABLE_ET_TRACKER_SCHED=1")
         return False
+    try:
+        from core.worker_dispatch import server_role
+        if server_role() == "worker":
+            logger.info("et tracker scheduler not started on worker role (scan jobs arrive via worker_dispatch)")
+            return False
+    except Exception:
+        pass
     t = threading.Thread(target=_scheduler_loop, name="et-tracker-scheduler", daemon=True)
     t.start()
     _scheduler_thread = t
     _scheduler_started = True
-    logger.info("et tracker scheduler started (daily time slots)")
+    logger.info("et tracker scheduler started (daily time slots, scan phase offloads to worker when alive)")
     return True
