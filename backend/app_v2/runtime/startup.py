@@ -41,6 +41,8 @@ def start_background_services(logger) -> None:
     )
     heavy_starters = (
         ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
+        # v9.5.13: ET Tracker 일일 스캔 (하루 n회 지정 시각에 ET DB PGM(pt) 감지)
+        ("et tracker scheduler", "core.et_tracker", "start_scheduler"),
     )
     starters = light_starters
     from core.worker_dispatch import external_services_enabled

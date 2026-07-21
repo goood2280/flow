@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Loading from "../components/Loading";
 import PageGear from "../components/PageGear";
 import { toast } from "../components/Toast";
-import { Button, Card, Chip, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../components/UXKit";
+import { Button, Card, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../components/UXKit";
 import FlowiPromptBox from "../components/FlowiPromptBox";
 import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
@@ -169,19 +169,84 @@ function getEtStatus(lot, et){
   return { icon: "⏳", text: "모니터 중, 미측정", color: "var(--warn)" };
 }
 
+/* v9.5.13: ET Tracker 측정이력 — lot 행의 et_history(스캔 누적)를 step_id 별로 묶어 표시. */
+function etHistoryStepGroups(history) {
+  const rows = Array.isArray(history) ? history.filter(h => h && typeof h === "object") : [];
+  const grouped = new Map();
+  rows.forEach(h => {
+    const step = String(h.step_id || "-");
+    const g = grouped.get(step) || { step_id: step, function_step: "", pgms: [], items: [], last: "" };
+    const func = h.function_step || h.func_step || "";
+    if (func && !g.function_step) g.function_step = func;
+    const pgm = String(h.pgm || "");
+    if (pgm && !g.pgms.includes(pgm)) g.pgms.push(pgm);
+    g.items.push(h);
+    const t = String(h.time || "");
+    if (t > g.last) g.last = t;
+    grouped.set(step, g);
+  });
+  return Array.from(grouped.values()).sort((a, b) => String(b.last).localeCompare(String(a.last)));
+}
+
+function etHistoryTitle(history) {
+  const rows = Array.isArray(history) ? history : [];
+  return rows
+    .slice()
+    .sort((a, b) => String(b?.time || "").localeCompare(String(a?.time || "")))
+    .map(h => `${h?.step_id || "-"}${h?.function_step ? `(${h.function_step})` : ""} · ${h?.pgm || "-"} · ${String(h?.time || "").slice(0, 19)}`)
+    .join("\n");
+}
+
+function renderEtHistoryCell(lot) {
+  const groups = etHistoryStepGroups(lot?.et_history);
+  if (!groups.length) {
+    return <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{lot?.last_checked_at ? "측정 이력 없음" : "스캔 전"}</span>;
+  }
+  const shown = groups.slice(0, 6);
+  return (
+    <div title={etHistoryTitle(lot?.et_history)} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 240, whiteSpace: "normal", lineHeight: 1.4 }}>
+      {shown.map((g, i) => (
+        <div key={`${g.step_id}-${i}`} style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "monospace", fontWeight: 800, color: "var(--accent)" }}>
+            {g.function_step ? `${g.step_id}(${g.function_step})` : g.step_id}
+          </span>
+          <span style={{ fontFamily: "monospace", color: "var(--text-primary)", fontWeight: 600 }}>{g.pgms.join(", ")}</span>
+        </div>
+      ))}
+      {groups.length > shown.length && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>외 {groups.length - shown.length}개 step</span>}
+    </div>
+  );
+}
+
+/* v9.5.13: 이슈 등록 시 조회 버튼으로 확인하는 ET 측정이력 미리보기 — step_id(func) · PGM(pt) 나열. */
+function renderEtPreviewCell(lot, et, fetched) {
+  const rows = etStepSummaries(lot, Array.isArray(et) ? et : []);
+  if (!rows.length) {
+    return <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{fetched ? "측정 없음" : "조회 필요"}</span>;
+  }
+  const shown = rows.slice(0, 5);
+  const title = rows.map(r => {
+    const pgms = (r.seq_points || []).map(p => `${p.seq}(${Number(p.pt_count || 0)}pt)`).join(", ");
+    return `${r.display_label || r.step_id || "-"} ${pgms}`;
+  }).join("\n");
+  return (
+    <div title={title} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 220, whiteSpace: "normal", lineHeight: 1.4 }}>
+      {shown.map((r, i) => (
+        <div key={`${r.step_id}-${i}`} style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "monospace", fontWeight: 800, color: "var(--accent)", fontSize: 14 }}>{r.display_label || r.step_id || "-"}</span>
+          <span style={{ fontFamily: "monospace", color: "var(--text-primary)", fontWeight: 600, fontSize: 14 }}>
+            {(r.seq_points || []).map(p => `${p.seq}(${Number(p.pt_count || 0)}pt)`).join(", ")}
+          </span>
+        </div>
+      ))}
+      {rows.length > shown.length && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>외 {rows.length - shown.length}개 step</span>}
+    </div>
+  );
+}
+
 function isMonitorCategory(category, roleNames = {}) {
   const monitorName = String(roleNames?.monitor || "Monitor").trim().toLowerCase();
   return String(category || "").trim().toLowerCase() === monitorName;
-}
-
-function isAnalysisCategory(category, roleNames = {}) {
-  const analysisName = String(roleNames?.analysis || "Analysis").trim().toLowerCase();
-  const value = String(category || "").trim().toLowerCase();
-  return value === "analysis" || value === analysisName;
-}
-
-function visibleTrackerCategories(cats = [], roleNames = {}) {
-  return (Array.isArray(cats) ? cats : []).filter(c => !isAnalysisCategory(c?.name || c, roleNames));
 }
 
 function trackerCategorySource(category, roleNames = {}, cats = []) {
@@ -191,12 +256,6 @@ function trackerCategorySource(category, roleNames = {}, cats = []) {
   const src = String(cat?.source || "").trim().toLowerCase();
   if (["fab", "et", "both", "auto"].includes(src)) return src;
   return "fab";
-}
-
-function monitorCategoryName(roleNames = {}, cats = []) {
-  const wanted = String(roleNames?.monitor || "Monitor").trim() || "Monitor";
-  const hit = (Array.isArray(cats) ? cats : []).find(c => String(c?.name || c || "").trim().toLowerCase() === wanted.toLowerCase());
-  return String(hit?.name || hit || wanted).trim() || "Monitor";
 }
 
 function waferSummaryText(summary) {
@@ -419,10 +478,29 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
       .catch(() => {})
       .finally(() => setBusyRow(null));
   }, [product, category]);
+  const isEtSource = trackerCategorySource(category, roleNames, cats) === "et";
   const fetchAllSteps = useCallback(() => {
     if (!readOnly || !issueId || batchBusy) return;
     setBatchBusy(true);
     setBatchDone(0);
+    if (isEtSource) {
+      // v9.5.13: ET 이슈는 lot-check-all 대신 이력 스캔 API — 새로 추가된 측정만 et_history 에 누적.
+      sf(API + "/et-scan/run-issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_id: issueId }),
+      }).then(d => {
+        const serverLots = Array.isArray(d?.lots) ? d.lots : null;
+        if (serverLots) setLots(() => serverLots);
+        setBatchDone(serverLots ? serverLots.length : 0);
+        const added = Number(d?.new_entries || 0);
+        if (added > 0) toast.info(`신규 ET 측정 ${added}건이 이력에 추가되었습니다.`);
+      }).catch(e => {
+        toast.error(e?.message || "ET 이력 스캔 실패");
+        setBatchDone(0);
+      }).finally(() => setBatchBusy(false));
+      return;
+    }
     sf(API + "/lot-check-all", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -470,14 +548,17 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
     }).catch(() => {
       setBatchDone(0);
     }).finally(() => setBatchBusy(false));
-  }, [readOnly, issueId, batchBusy, setLots]);
+  }, [readOnly, issueId, batchBusy, setLots, isEtSource]);
   useEffect(() => {
     if (!readOnly || !issueId || !lots.length || batchBusy) return;
+    // v9.5.13: ET 이슈는 열 때마다 자동 스캔하지 않는다 — 저장된 et_history 를 보여주고,
+    //   갱신은 스케줄 스캔(톱니바퀴 시각 지정) 또는 '즉시 스캔' 버튼으로만.
+    if (isEtSource) return;
     const key = `${issueId}:${String(category || "").trim().toLowerCase()}`;
     if (autoFetchRef.current === key) return;
     autoFetchRef.current = key;
     fetchAllSteps();
-  }, [readOnly, issueId, category, lots.length, batchBusy, fetchAllSteps]);
+  }, [readOnly, issueId, category, lots.length, batchBusy, fetchAllSteps, isEtSource]);
   return LotTableInner({
     lots, setLots, readOnly, issueId, product, category,
     roleNames, cats,
@@ -516,11 +597,12 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
           };
         }
         const hasPurposeColumn = parts.length >= 5;
+        // v9.5.13: ET 이슈 붙여넣기는 root_lot_id 기준 (5자리가 아니면 서버가 lot_id 로 해석).
         return {
           product: (parts[0] || "").trim(),
           monitor_prod: (parts[0] || "").trim(),
-          root_lot_id: "",
-          lot_id: (parts[1] || "").trim(),
+          root_lot_id: (parts[1] || "").trim(),
+          lot_id: "",
           wafer_id: (parts[2] || "").trim(),
           purpose: (hasPurposeColumn ? parts[3] : "").trim(),
           comment: (parts[hasPurposeColumn ? 4 : 3] || "").trim(),
@@ -617,6 +699,57 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       .then(d => setLotOptions(prev => ({ ...prev, [idx]: Array.isArray(d?.candidates) ? d.candidates : [] })))
       .catch(() => setLotOptions(prev => ({ ...prev, [idx]: [] })));
   }, [readOnly, createMonitorMode, category]);
+
+  // v9.5.13: ET 이슈 상세는 측정이력 테이블로 교체 —
+  //   root_lot_id / wafer_id / 목적 / 참고 / 측정이력(step_id · PGM(pt)) / 작성자 / 날짜.
+  //   watch·ET측정 컬럼 대신 스케줄 스캔이 누적한 et_history 를 그대로 보여준다.
+  if (readOnly && categorySource === "et") {
+    const etCellStyle = { padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 14, verticalAlign: "top" };
+    const etHeadStyle = { textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 };
+    const lastChecked = lots.reduce((acc, l) => (String(l?.last_checked_at || "") > acc ? String(l.last_checked_at) : acc), "");
+    return (
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>LOT LIST ({lots.length})</span>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+              최근 스캔 {lastChecked ? lastChecked.replace("T", " ").slice(0, 16) : "-"}
+            </span>
+            <button onClick={fetchAllSteps} disabled={!issueId || batchBusy || lots.length === 0}
+              style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--accent)", background: batchBusy ? "var(--bg-tertiary)" : "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: !issueId || batchBusy || lots.length === 0 ? "not-allowed" : "pointer", opacity: !issueId || batchBusy || lots.length === 0 ? 0.6 : 1 }}>
+              {batchBusy ? "스캔 중..." : "즉시 스캔"}
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
+          등록된 root_lot_id / wafer_id 기준으로 ET DB 에서 step_id 별 PGM(pt) 측정을 누적 기록합니다. 스캔 주기·메일은 톱니바퀴에서 설정.
+        </div>
+        <TableWrap maxHeight={340}>
+          <Tbl style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+            <thead><tr>
+              {["root_lot_id", "wafer_id", "목적", "참고", "측정이력 (step_id · PGM(pt))", "작성자", "날짜"].map(h => (
+                <th key={h} style={etHeadStyle}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {lots.map((l, i) => (
+                <tr key={i}>
+                  <td style={{ ...etCellStyle, fontFamily: "monospace", fontWeight: 700 }}>{l.root_lot_id || l.lot_id || "-"}</td>
+                  <td style={{ ...etCellStyle, fontFamily: "monospace" }} title={Array.isArray(l.wafer_ids) ? l.wafer_ids.join(", ") : ""}>{l.wafer_id || l.wafer_label || "-"}</td>
+                  <td style={etCellStyle}>{l.purpose || ""}</td>
+                  <td style={etCellStyle}>{l.comment || ""}</td>
+                  <td style={etCellStyle}>{renderEtHistoryCell(l)}</td>
+                  <td style={{ ...etCellStyle, color: "var(--text-secondary)" }}>{l.username || ""}</td>
+                  <td style={{ ...etCellStyle, color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{(l.added || "").slice(0, 10)}</td>
+                </tr>
+              ))}
+              {lots.length === 0 && <tr><td colSpan={7} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>Lot/Wafer 데이터 없음</td></tr>}
+            </tbody>
+          </Tbl>
+        </TableWrap>
+      </div>
+    );
+  }
 
   const productChoices = (current) => {
     const cur = String(current || "").trim();
@@ -741,11 +874,13 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   };
   const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
   const showStepColumn = !createMonitorMode && (readOnly || monitorMode) && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
+  // v9.5.13: ET 이슈 입력 테이블 — root_lot_id/wafer_id 로 등록하고 step 대신 측정이력을 미리 조회.
+  const showEtPreviewColumn = !readOnly && !monitorMode;
   const baseHeaders = createMonitorMode
     ? ["product", "lot_id", "purpose", "comment", "wafer_ids", "step_id(func_step)"]
     : monitorMode
     ? ["product", "lot_id", "wafer_ids", "purpose", "comment"]
-    : ["product", "lot_id", "wafer_id", "purpose", "comment"];
+    : ["product", "root_lot_id", "wafer_id", "purpose", "comment"];
   const readOnlyColSpan = baseHeaders.length + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 3;
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
@@ -778,7 +913,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   return (
     <div onPaste={!readOnly ? handlePaste : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>product / lot_id / purpose / comment ({lots.length})</span>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>LOT LIST ({lots.length})</span>
         {readOnly ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{batchBusy ? `0/${lots.length} 완료` : `${batchDone}/${lots.length} 완료`}</span>
@@ -787,12 +922,12 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               {batchBusy ? "조회 중..." : "전체 조회"}
             </button>
           </div>
-        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{createMonitorMode ? "product와 lot_id 입력 후 wafer/step 자동 조회" : "Excel TSV 붙여넣기 지원 · product / lot_id / wafer_id / purpose / comment 순서"}</span>}
+        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{createMonitorMode ? "product와 lot_id 입력 후 wafer/step 자동 조회" : "Excel TSV 붙여넣기 지원 · product / root_lot_id / wafer_id / purpose / comment 순서"}</span>}
       </div>
       {!readOnly && (
         <>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
-            {createMonitorMode ? "Monitor 이슈는 product와 lot_id를 기준으로 cache에서 wafer 매수, wafer 번호, step_id, func_step을 불러옵니다. purpose와 comment는 별도 관리 컬럼입니다." : "product를 먼저 선택하면 해당 product의 lot_id 후보가 입력 중 자동 필터링됩니다."}
+            {createMonitorMode ? "Monitor 이슈는 product와 lot_id를 기준으로 cache에서 wafer 매수, wafer 번호, step_id, func_step을 불러옵니다. purpose와 comment는 별도 관리 컬럼입니다." : "product 선택 후 root_lot_id 를 입력하세요. wafer_id 는 all / 1,2 / 1~10 형식 모두 허용, 조회를 누르면 ET 측정이력을 미리 확인합니다."}
           </div>
         </>
       )}
@@ -803,6 +938,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
             ))}
             {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
+            {showEtPreviewColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>측정이력 (step_id · PGM(pt))</th>}
             {readOnly && <>
               {showEtColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>ET 측정</th>}
               <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>watch</th>
@@ -820,7 +956,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               const et = Array.isArray(step.et) ? step.et : [];
               const watch = l.watch || {};
               const rowProduct = l.product || l.monitor_prod || "";
-              const lotValue = l.lot_id || l.root_lot_id || "";
+              const lotValue = createMonitorMode ? (l.lot_id || l.root_lot_id || "") : (l.root_lot_id || l.lot_id || "");
+              const etFetched = stepData?.[i] !== undefined;
               const stepInfo = trackerStepInfo(l, fab, et);
               const currentStepText = formatTrackerStep(l, fab, et);
               const stepIdText = stepInfo.stepId ? (stepInfo.seq !== null && stepInfo.seq !== "" ? `${stepInfo.stepId} / seq ${stepInfo.seq}` : stepInfo.stepId) : "";
@@ -918,27 +1055,28 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                   </select>
                 )}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 210 }}>{readOnly ? (l.lot_id || l.root_lot_id) : (
+                  // v9.5.13: ET 이슈 입력은 root_lot_id 기준 — 5자리가 아니면 서버가 lot_id 로 해석.
                   renderLotInput({
                     idx: i,
                     row: l,
                     value: lotValue,
                     disabled: !rowProduct,
-                    placeholder: rowProduct ? "lot_id 입력/검색" : "product 먼저 선택",
+                    placeholder: rowProduct ? "root_lot_id 입력/검색" : "product 먼저 선택",
                     onValueChange: v => {
-                      updateRow(i, { root_lot_id: "", lot_id: v });
-                      if (rowProduct) loadLotOptions(i, { ...l, root_lot_id: "", lot_id: v }, v);
+                      updateRow(i, { root_lot_id: v, lot_id: "" });
+                      if (rowProduct) loadLotOptions(i, { ...l, root_lot_id: v, lot_id: "" }, v);
                     },
                     onPick: c => {
                       const v = String(c?.value || "").trim();
-                      updateRow(i, { root_lot_id: "", lot_id: v });
-                      if (monitorMode) fetchStep(i, { ...l, root_lot_id: "", lot_id: v });
+                      updateRow(i, { root_lot_id: v, lot_id: "" });
+                      fetchStep(i, { ...l, root_lot_id: v, lot_id: "" });
                     },
-                    onBlur: v => { if (monitorMode && v) fetchStep(i, { ...l, root_lot_id: "", lot_id: v }); },
+                    onBlur: v => { if (v) fetchStep(i, { ...l, root_lot_id: v, lot_id: "" }); },
                   })
                 )}</td>
                 <td style={readOnly ? { ...cellStyle, minWidth: monitorMode ? 170 : undefined, fontFamily: monitorMode ? "monospace" : undefined, color: monitorMode ? "var(--accent)" : undefined, fontWeight: monitorMode ? 800 : undefined } : { ...sheetCell, width: 100 }}
                     title={monitorMode ? (Array.isArray(l.wafer_ids) ? l.wafer_ids.join(", ") : "") : ""}>
-                  {readOnly ? (monitorMode ? waferSummaryText(l) : l.wafer_id) : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (monitorMode && (l.root_lot_id || l.lot_id)) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}
+                  {readOnly ? (monitorMode ? waferSummaryText(l) : l.wafer_id) : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (l.root_lot_id || l.lot_id) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}
                 </td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 170 }}>{readOnly ? (l.purpose || "") : <input value={l.purpose || ""} onChange={e => updateCell(i, "purpose", e.target.value)} style={sheetInput} placeholder="purpose" />}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 180 }}>{readOnly ? l.comment : <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />}</td>
@@ -971,6 +1109,17 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                       </button>
                     )}
                   </td>}
+                {showEtPreviewColumn && <td style={{ ...cellStyle, minWidth: 250, verticalAlign: "top" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    {busyRow === i
+                      ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>…</span>
+                      : renderEtPreviewCell(l, et, etFetched)}
+                    <button onClick={() => fetchStep(i, l)} disabled={busyRow === i || !(l.root_lot_id || l.lot_id)}
+                      style={{ marginLeft: "auto", padding: "3px 7px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 14, cursor: busyRow === i || !(l.root_lot_id || l.lot_id) ? "not-allowed" : "pointer", flexShrink: 0 }}>
+                      조회
+                    </button>
+                  </div>
+                </td>}
                 {readOnly && <>
                   {showEtColumn && <td style={cellStyle}>
                     <div
@@ -1058,8 +1207,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
             {!readOnly && (
               <tr onClick={addRow} style={{ cursor: "pointer" }}
                   title="클릭 또는 + 로 행 추가 · Excel TSV 붙여넣기 지원">
-                <td colSpan={baseHeaders.length} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
-                  {lots.length === 0 ? (createMonitorMode ? "product / lot_id / purpose / comment 입력 행 추가" : "Excel 붙여넣기 (product \\t lot_id \\t wafer_id \\t purpose \\t comment) 또는 + 로 행 추가") : "(빈 행)"}
+                <td colSpan={baseHeaders.length + (showEtPreviewColumn ? 1 : 0)} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
+                  {lots.length === 0 ? (createMonitorMode ? "product / lot_id / purpose / comment 입력 행 추가" : "Excel 붙여넣기 (product \\t root_lot_id \\t wafer_id \\t purpose \\t comment) 또는 + 로 행 추가") : "(빈 행)"}
                 </td>
                 <td style={{ ...cellStyle, textAlign: "center", background: "var(--bg-tertiary)" }}>
                   <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</span>
@@ -1074,76 +1223,23 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   );
 }
 
-function IssueMailControl({ issue, mailGroups, canEdit, onSave }) {
-  if (!issue) return null;
-  const cfg = issue.mail_watch || {};
-  const enabled = !!cfg.enabled;
-  const selectedGroups = Array.isArray(cfg.mail_group_ids) ? cfg.mail_group_ids : [];
-  const groupLabel = selectedGroups.length
-    ? mailGroups.filter(g => selectedGroups.includes(g.id)).map(g => g.name).join(", ") || `${selectedGroups.length}개 그룹`
-    : "User only";
-  const save = (patch) => {
-    if (!canEdit || !onSave) return;
-    onSave({
-      mail: patch.mail ?? enabled,
-      mail_group_ids: patch.mail_group_ids ?? selectedGroups,
-    });
-  };
-  const toggleGroup = (groupId) => {
-    const cur = new Set(selectedGroups);
-    if (cur.has(groupId)) cur.delete(groupId);
-    else cur.add(groupId);
-    save({ mail_group_ids: Array.from(cur) });
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <label title="메일 발송 여부는 lot/wafer 행이 아니라 이슈 단위로 적용됩니다." style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: canEdit ? "pointer" : "default", fontSize: 14, fontWeight: 700, color: enabled ? "var(--accent)" : "var(--text-secondary)" }}>
-        <input type="checkbox" checked={enabled} disabled={!canEdit} onChange={e => save({ mail: e.target.checked })} />
-        <span>이슈 메일 발송</span>
-      </label>
-      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>watch 조건이 감지되면 이 이슈 설정으로 메일을 보냅니다.</span>
-      <details style={{ position: "relative" }}>
-        <summary title="선택하지 않으면 이슈 작성자와 lot 추가자만 받습니다." style={{ listStyle: "none", cursor: canEdit ? "pointer" : "default", padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", color: selectedGroups.length ? "var(--accent)" : "var(--text-secondary)", fontSize: 14, fontWeight: selectedGroups.length ? 700 : 500 }}>
-          수신 {groupLabel}
-        </summary>
-        {canEdit && (
-          <div style={{ position: "absolute", top: 28, left: 0, zIndex: 10, minWidth: 240, maxHeight: 240, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 14 }}>
-              <input type="checkbox" checked={selectedGroups.length === 0} onChange={() => save({ mail_group_ids: [] })} />
-              <span>User only</span>
-            </label>
-            <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
-            {mailGroups.length === 0 && <div style={{ padding: 6, color: "var(--text-secondary)", fontSize: 14 }}>등록된 수신처 그룹 없음</div>}
-            {mailGroups.map(g => (
-              <label key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 14 }}>
-                <input type="checkbox" checked={selectedGroups.includes(g.id)} onChange={() => toggleGroup(g.id)} />
-                <span style={{ flex: 1 }}>{g.name}</span>
-                <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{(g.members?.length || 0) + (g.extra_emails?.length || 0)}</span>
-              </label>
-            ))}
-          </div>
-        )}
-      </details>
-    </div>
-  );
-}
+/* v9.5.13: 이슈 단위 메일 설정(IssueMailControl) 제거 — ET Tracker 메일은
+   톱니바퀴(ET Tracker 스캔 설정)에서 on/off·수신 그룹을 한 번에 관리한다. */
 
 /* ─── Issue Form ─── */
 function IssueForm({ onSubmit, onClose, user, roleNames }) {
-  const [title, setTitle] = useState(""); const [desc, setDesc] = useState(""); const [priority, setPriority] = useState("normal");
+  const [title, setTitle] = useState(""); const [desc, setDesc] = useState("");
   const [lots, setLots] = useState([]); const [links, setLinks] = useState([""]);
-  const [category, setCategory] = useState(monitorCategoryName(roleNames)); const [cats, setCats] = useState([]);
-  // v8.5.0: group visibility
-  const [myGroups, setMyGroups] = useState([]); const [groupIds, setGroupIds] = useState([]);
+  const [cats, setCats] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#E25822" } : c))).catch(() => { }); }, []);
-  useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
-  const visibleCats = visibleTrackerCategories(cats, roleNames);
-  useEffect(() => {
-    const monitor = monitorCategoryName(roleNames, visibleCats);
-    if (!category || !visibleCats.some(c => String(c.name || c).trim() === category)) {
-      setCategory(monitor);
-    }
-  }, [roleNames, visibleCats, category]);
+  // v9.5.13: 우선순위/카테고리/그룹 가시성 선택 제거 — ET 추적탭 이슈는 ET(source=et) 카테고리로 자동 등록.
+  const etCategory = (() => {
+    const list = Array.isArray(cats) ? cats : [];
+    const bySource = list.find(c => String(c?.source || "").trim().toLowerCase() === "et");
+    if (bySource?.name) return bySource.name;
+    const byName = list.find(c => /analysis/i.test(String(c?.name || "")));
+    return byName?.name || "Analysis";
+  })();
   const S = { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
   return (
     <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 20, marginBottom: 20 }}>
@@ -1151,15 +1247,6 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
       <input value={title} onChange={e => setTitle(e.target.value)} placeholder="제목" style={{ ...S, marginBottom: 8 }} />
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
       <DescEditor value={desc} onChange={setDesc} placeholder="설명 입력... Ctrl+V 로 이미지 붙여넣기" />
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-        <select value={priority} onChange={e => setPriority(e.target.value)} style={{ ...S, width: "auto" }}>
-          <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option>
-        </select>
-        <select value={category} onChange={e => setCategory(e.target.value)} style={{ ...S, width: "auto" }}>
-          {!category && <option value="">-- 카테고리 필수 --</option>}
-          {visibleCats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-        </select>
-      </div>
       {/* Related Links */}
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1174,31 +1261,12 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
         ))}
       </div>
       <div style={{ marginBottom: 12 }}>
-        <LotTable lots={lots} setLots={setLots} readOnly={false} category={category} roleNames={roleNames} cats={cats} />
-      </div>
-      {/* v8.5.0: 그룹 가시성 */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>그룹 가시성 (비어있으면 공개)</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {myGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
-          {myGroups.map(g => {
-            const on = groupIds.includes(g.id);
-            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 14, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
-              <input type="checkbox" checked={on} onChange={e => {
-                const s = new Set(groupIds);
-                if (e.target.checked) s.add(g.id); else s.delete(g.id);
-                setGroupIds(Array.from(s));
-              }} style={{ accentColor: "var(--accent)" }} />
-              {g.name}
-            </label>;
-          })}
-        </div>
+        <LotTable lots={lots} setLots={setLots} readOnly={false} category={etCategory} roleNames={roleNames} cats={cats} />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => {
           if (!title.trim()) return;
-          if (!category) { toast.warn("카테고리를 지정해주세요."); return; }
-          onSubmit({ title, description: desc, priority, category, images: [], lots: expandLotsForSubmit(lots), links: links.filter(l => l.trim()), group_ids: groupIds });
+          onSubmit({ title, description: desc, priority: "normal", category: etCategory, images: [], lots: expandLotsForSubmit(lots), links: links.filter(l => l.trim()), group_ids: [] });
         }}
           style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>생성</button>
         <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
@@ -1224,9 +1292,14 @@ function GanttChart({ issues, onIssueClick }) {
     const c = new Date(iss.created || iss.timestamp); const e = iss.closed_at ? new Date(iss.closed_at) : now;
     if (!(c <= mEnd && e >= mStart)) return false;
     if (!q) return true;
+    // v9.5.13: 검색 확장 — 제목/담당자/카테고리 + 랏리스트 root_lot_id + 본문 내용.
+    const rootIds = Array.isArray(iss.root_lot_ids) ? iss.root_lot_ids.join(" ").toLowerCase() : "";
+    const descText = String(iss.desc_text || iss.summary || "").toLowerCase();
     return (iss.title || "").toLowerCase().includes(q)
       || (iss.username || "").toLowerCase().includes(q)
-      || (iss.category || "").toLowerCase().includes(q);
+      || (iss.category || "").toLowerCase().includes(q)
+      || rootIds.includes(q)
+      || descText.includes(q);
   });
   const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   const prevM = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
@@ -1236,9 +1309,9 @@ function GanttChart({ issues, onIssueClick }) {
       <button onClick={prevM} style={{ background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", cursor: "pointer", padding: "2px 8px" }}>◀</button>
       <span style={{ fontSize: 14, fontWeight: 700, minWidth: 120, textAlign: "center" }}>{year}.{String(month + 1).padStart(2, "0")}</span>
       <button onClick={nextM} style={{ background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", cursor: "pointer", padding: "2px 8px" }}>▶</button>
-      {/* v8.8.13: 제목 / 담당자 / 카테고리 부분일치 필터 */}
+      {/* v9.5.13: 제목 / 담당자 / root_lot_id / 본문 내용 부분일치 필터 */}
       <input value={gQuery} onChange={e => setGQuery(e.target.value)}
-        placeholder="🔎 제목 · 담당자 · 카테고리 검색"
+        placeholder="🔎 제목 · 담당자 · root_lot_id · 본문 검색"
         style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
       {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>✕ 초기화</span>}
       <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
@@ -1256,16 +1329,30 @@ function GanttChart({ issues, onIssueClick }) {
           const created = new Date(iss.created || iss.timestamp); const ended = iss.closed_at ? new Date(iss.closed_at) : now;
           return (<tr key={iss.id}>
             <td style={{ padding: "4px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }} title={`${iss.title} · 담당: ${iss.username || "-"}`}>
-              <span onClick={() => onIssueClick && onIssueClick(iss.id)} style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)", textDecoration: "none" }} onMouseEnter={e=>e.currentTarget.style.textDecoration="underline"} onMouseLeave={e=>e.currentTarget.style.textDecoration="none"}>{iss.category ? `[${iss.category}] ` : ""}{iss.title}</span>
+              <span onClick={() => onIssueClick && onIssueClick(iss.id)} style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)", textDecoration: "none" }} onMouseEnter={e=>e.currentTarget.style.textDecoration="underline"} onMouseLeave={e=>e.currentTarget.style.textDecoration="none"}>{iss.title}</span>
               {/* v8.8.13: 이슈 옆에 담당자 회색 표시 */}
               {iss.username && <span style={{ marginLeft: 6, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {iss.username}</span>}
             </td>
             {days.map(d => {
               const day = new Date(year, month, d);
               const inRange = day >= new Date(created.getFullYear(), created.getMonth(), created.getDate()) && day <= new Date(ended.getFullYear(), ended.getMonth(), ended.getDate());
-              const isStart = day.toDateString() === created.toDateString(); const isEnd = iss.closed_at && day.toDateString() === ended.toDateString();
-              return <td key={d} style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", padding: 0 }}>
-                {inRange && <div style={{ height: 14, background: iss.category ? catColor(iss.category) : (prioColor[iss.priority] || "var(--info)"), borderRadius: isStart ? "7px 0 0 7px" : isEnd ? "0 7px 7px 0" : "0", opacity: iss.status === "closed" ? 0.5 : 0.85 }} title={`${iss.title} (${iss.status})`} />}
+              const isStart = day.toDateString() === created.toDateString();
+              // v9.5.13: 바 연속화 — 범위 마지막 칸(진행중이면 오늘)만 우측 라운딩, 나머지는 셀 경계선 위로 1px 확장.
+              const isRangeEnd = day.toDateString() === ended.toDateString();
+              const showFlag = !!iss.closed_at && isRangeEnd;   // 완료 날짜 체커기(🏁)
+              return <td key={d} style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", padding: 0, height: 30, position: "relative" }}>
+                {inRange && <>
+                  <div style={{ position: "absolute", left: 0, right: isRangeEnd ? 0 : -1, top: 13, height: 14, zIndex: 1, background: iss.category ? catColor(iss.category) : (prioColor[iss.priority] || "var(--info)"), borderRadius: isStart ? (isRangeEnd ? 7 : "7px 0 0 7px") : isRangeEnd ? "0 7px 7px 0" : "0", opacity: iss.status === "closed" ? 0.5 : 0.85 }} title={`${iss.title} (${iss.status})`} />
+                  {isStart && (
+                    <div style={{ position: "absolute", top: 0, left: 1, zIndex: 2, display: "flex", alignItems: "center", gap: 2, whiteSpace: "nowrap", pointerEvents: "none", lineHeight: 1 }} title={`시작 ${created.toISOString().slice(0, 10)}`}>
+                      <span style={{ color: "#e11d48", fontSize: 10 }}>▼</span>
+                      <span style={{ color: "#e11d48", fontSize: 9, fontWeight: 800, letterSpacing: 0.5 }}>START</span>
+                    </div>
+                  )}
+                  {showFlag && (
+                    <span style={{ position: "absolute", top: -1, right: -5, zIndex: 2, fontSize: 13, pointerEvents: "none" }} title={`완료 ${ended.toISOString().slice(0, 10)}`}>🏁</span>
+                  )}
+                </>}
               </td>;
             })}
           </tr>);
@@ -1286,18 +1373,12 @@ export default function My_Tracker({ user }) {
   // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
   const [editCategory, setEditCategory] = useState("");
   const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor" } });
-  const [issueMailGroups, setIssueMailGroups] = useState([]);
   const isAdmin = user?.role === "admin";
   const statusColor = { in_progress: "var(--warn)", closed: "var(--ok)" };
   const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   // v8.1.5: look up category color from stored list; fall back to hash for orphans
   const [cats, setCats] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => { }); }, []);
-  useEffect(() => {
-    sf("/api/mail-groups/list")
-      .then(d => setIssueMailGroups(Array.isArray(d?.groups) ? d.groups : []))
-      .catch(() => setIssueMailGroups([]));
-  }, []);
   const loadTrackerPageConfig = useCallback(() => {
     return sf(API + "/db-sources").then(d => setTrackerPageConfig({
       role_names: { monitor: d.role_names?.monitor || d.monitor_name || "Monitor" },
@@ -1368,33 +1449,12 @@ export default function My_Tracker({ user }) {
   const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); setEditLots((selected.lots || []).map(l => ({ ...l }))); };
   const saveEdit = () => {
     if (!editTitle.trim()) return;
-    if (!editCategory) { toast.warn("카테고리를 지정해주세요."); return; }
-    // v8.8.13: category 도 payload 에 포함 — 이전에는 FE 에서 누락되어 수정 불가였음.
-    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, category: editCategory, lots: editLots }) })
+    // v9.5.13: 우선순위/카테고리 UI 제거 — 기존 값 그대로 유지해 저장 (빈 카테고리는 payload 에서 제외).
+    const payload = { issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, lots: editLots };
+    if ((editCategory || "").trim()) payload.category = editCategory;
+    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
       .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => toast.error(e.message));
   };
-  const saveIssueMail = (patch) => {
-    if (!selected) return;
-    sf(API + "/issue-mail", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        issue_id: selected.id,
-        mail: !!patch.mail,
-        mail_group_ids: Array.isArray(patch.mail_group_ids) ? patch.mail_group_ids : [],
-      }),
-    }).then(d => {
-      setSelected(d.issue || selected);
-      load();
-    }).catch(e => {
-      const msg = String(e?.message || "");
-      if (/method not allowed/i.test(msg)) {
-        toast.error("메일 설정 API는 POST /api/tracker/issue-mail 입니다. 현재 실행 중인 backend가 이전 버전이거나 다른 포트에 연결된 상태라서 서버 재시작이 필요합니다.");
-      } else {
-        toast.error(msg || "메일 설정 저장 실패");
-      }
-    });
-  };
-
   const filteredIssues = issues.filter(iss => {
     if (filter && iss.status !== filter) return false;
     if (search) { const s = search.toLowerCase(); return (iss.title || "").toLowerCase().includes(s) || (iss.username || "").toLowerCase().includes(s) || (iss.category || "").toLowerCase().includes(s); }
@@ -1403,17 +1463,17 @@ export default function My_Tracker({ user }) {
 
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
-      {/* Sidebar */}
-      <div style={{ width: 320, minWidth: 320, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
+      {/* Sidebar — v9.5.13: 카테고리 라벨 제거만큼 제목이 더 길게 보이도록 폭 확대 (320→380). */}
+      <div style={{ width: 380, minWidth: 380, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
         <div className="flow-sidebar-header" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ minWidth: 0 }}>
-            <span className="flow-sidebar-header-title" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
+            <span className="flow-sidebar-header-title" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>ET 추적</span>
             <div className="flow-sidebar-header-meta">{filteredIssues.length} / {issues.length} issues</div>
           </div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <Pill tone="neutral">{filteredIssues.length}</Pill>
             <Button variant="primary" onClick={() => setCreating(!creating)}>+ 새 이슈</Button>
-            <PageGear title="이슈 추적 설정" canEdit={isAdmin} position="bottom-left">
+            <PageGear title="ET 추적 설정" canEdit={isAdmin} position="bottom-left">
               <TrackerSettings isAdmin={isAdmin} onChanged={() => { loadTrackerPageConfig(); sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => {}); load(); }} />
             </PageGear>
           </div>
@@ -1438,8 +1498,8 @@ export default function My_Tracker({ user }) {
           {filteredIssues.map(iss => (
             <div key={iss.id} onClick={() => { loadDetail(iss.id); setViewTab("list"); }} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: selected?.id === iss.id ? "var(--bg-hover)" : "transparent" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                {/* v9.5.13: 카테고리 텍스트 라벨(변경점/불량/Monitor 등) 제거 — 색 점만 유지해 제목이 길게 보이도록. */}
                 <span title={iss.category ? `카테고리: ${iss.category}` : `상태: ${iss.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: iss.category ? catColor(iss.category) : (statusColor[iss.status] || "var(--muted)"), flexShrink: 0, border: iss.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
-                {iss.category && <Chip style={{ background: `color-mix(in srgb, ${catColor(iss.category)} 14%, transparent)`, borderColor: catColor(iss.category), color: catColor(iss.category), flexShrink: 0 }}>{iss.category}</Chip>}
                 <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title}</span>
                 <Pill tone={TRACKER_PRIORITY_TONE[iss.priority] || "neutral"}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</Pill>
               </div>
@@ -1490,15 +1550,7 @@ export default function My_Tracker({ user }) {
               {selected.closed_at && <span>완료: {selected.closed_at?.slice(0, 16)}</span>}
             </div>
             </section>
-            <section style={connectedPanelSection}>
-            <div style={connectedSectionTitle}>메일 알림</div>
-            <IssueMailControl
-              issue={selected}
-              mailGroups={issueMailGroups}
-              canEdit={canEdit}
-              onSave={saveIssueMail}
-            />
-            </section>
+            {/* v9.5.13: '메일 알림' 섹션 제거 — 메일 on/off·수신 그룹은 톱니바퀴 ET Tracker 설정에서 일괄 관리. */}
 
             {/* Description */}
             {editMode ? (
@@ -1516,20 +1568,7 @@ export default function My_Tracker({ user }) {
 
             )}
 
-            {/* Priority (edit) */}
-            {editMode && <section style={{ ...connectedPanelSection, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>우선순위:
-                <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
-                  <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option></select>
-              </span>
-              {/* v8.8.13: 카테고리 수정 허용 — 이전엔 FE state 누락으로 저장 시 변경 안 됨. */}
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>카테고리:
-                <select value={editCategory} onChange={e => setEditCategory(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
-                  <option value="">카테고리 필수</option>
-                  {cats.map(c => <option key={c.name || c} value={c.name || c}>{c.name || c}</option>)}
-                </select>
-              </span>
-            </section>}
+            {/* v9.5.13: 수정 모드의 우선순위/카테고리 선택 제거 — 기존 값 유지한 채 저장. */}
 
             {/* v8.8.13: 하단 썸네일 블록 제거 — 설명(desc_html) 내부의 inline 이미지만 노출.
                  legacy images 배열은 더 이상 별도 표시하지 않음 (중복 방지). */}
@@ -1637,6 +1676,13 @@ function TrackerSettings({ isAdmin, onChanged }) {
   const [sched, setSched] = useState({ enabled: true, interval_minutes: 30, et_stable_delay_minutes: 180, status: {} });
   const [schedMsg, setSchedMsg] = useState("");
   const [schedBusy, setSchedBusy] = useState(false);
+  // v9.5.13: ET Tracker 일일 스캔 설정 — 스캔 시각·메일 on/off·PGM 필터·수신 그룹·링크 주소.
+  const [etScan, setEtScan] = useState({ enabled: true, scan_times: [], mail_enabled: false, mail_group_ids: [], pgm_filters: [], app_base_url: "", status: {} });
+  const [etTimesText, setEtTimesText] = useState("");
+  const [etPgmText, setEtPgmText] = useState("");
+  const [etScanMsg, setEtScanMsg] = useState("");
+  const [etScanBusy, setEtScanBusy] = useState(false);
+  const [mailGroups, setMailGroups] = useState([]);
   const [dbSources, setDbSources] = useState({
     roots: [],
     monitor: "",
@@ -1699,8 +1745,24 @@ function TrackerSettings({ isAdmin, onChanged }) {
       })
       .finally(() => setLotProgressBusy(false));
   };
+  const applyEtScan = (d) => {
+    const next = {
+      enabled: d.enabled !== false,
+      scan_times: Array.isArray(d.scan_times) ? d.scan_times : [],
+      mail_enabled: !!d.mail_enabled,
+      mail_group_ids: Array.isArray(d.mail_group_ids) ? d.mail_group_ids.map(String) : [],
+      pgm_filters: Array.isArray(d.pgm_filters) ? d.pgm_filters : [],
+      app_base_url: d.app_base_url || "",
+      status: d.status || {},
+    };
+    setEtScan(next);
+    setEtTimesText(next.scan_times.join(", "));
+    setEtPgmText(next.pgm_filters.join(", "));
+  };
+  const loadEtScan = () => sf(API + "/et-scan").then(applyEtScan);
+  const loadMailGroups = () => sf("/api/mail-groups/list").then(d => setMailGroups(Array.isArray(d?.groups) ? d.groups : [])).catch(() => setMailGroups([]));
   // fix: arrow+Promise → Promise 가 cleanup 에 저장되어 unmount 시 crash 방지.
-  useEffect(() => { load(); loadScheduler().catch(() => {}); loadDbSources().catch(() => {}); loadLotProgressTable("").catch(() => {}); }, []);
+  useEffect(() => { load(); loadScheduler().catch(() => {}); loadDbSources().catch(() => {}); loadLotProgressTable("").catch(() => {}); loadEtScan().catch(() => {}); loadMailGroups(); }, []);
   const save = (next) => sf(API + "/categories/save", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
   }).then(() => { setMsg("저장 완료"); load(); if (onChanged) onChanged(); }).catch(e => setMsg(e.message));
@@ -1753,6 +1815,46 @@ function TrackerSettings({ isAdmin, onChanged }) {
         }));
         setSchedMsg(d?.run?.ok === false ? (d.run.last_error || "스캔 실패") : "즉시 스캔 완료");
       }).catch(e => setSchedMsg(e.message)).finally(() => setSchedBusy(false));
+  };
+  const saveEtScan = () => {
+    if (!isAdmin || etScanBusy) return;
+    const times = etTimesText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const bad = times.filter(t => !/^([01]?\d|2[0-3]):[0-5]\d$/.test(t));
+    if (bad.length) { setEtScanMsg(`시간 형식 오류: ${bad.join(", ")} (HH:MM 로 입력)`); return; }
+    const pgms = etPgmText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    setEtScanBusy(true);
+    setEtScanMsg("");
+    sf(API + "/et-scan/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: !!etScan.enabled,
+        scan_times: times,
+        mail_enabled: !!etScan.mail_enabled,
+        mail_group_ids: etScan.mail_group_ids,
+        pgm_filters: pgms,
+        app_base_url: etScan.app_base_url || "",
+      }),
+    }).then(d => { applyEtScan(d); setEtScanMsg("ET Tracker 설정 저장 완료"); })
+      .catch(e => setEtScanMsg(e.message)).finally(() => setEtScanBusy(false));
+  };
+  const runEtScanNow = () => {
+    if (!isAdmin || etScanBusy) return;
+    setEtScanBusy(true);
+    setEtScanMsg("");
+    sf(API + "/et-scan/run-now", { method: "POST" })
+      .then(d => {
+        applyEtScan(d);
+        const run = d?.run || {};
+        setEtScanMsg(run.ok === false ? (run.last_error || "스캔 실패") : `즉시 스캔 완료 · 신규 ${run.new_entries ?? 0}건 / 메일 ${run.mail_count ?? 0}건`);
+      }).catch(e => setEtScanMsg(e.message)).finally(() => setEtScanBusy(false));
+  };
+  const toggleEtMailGroup = (gid) => {
+    setEtScan(prev => {
+      const cur = new Set(prev.mail_group_ids || []);
+      if (cur.has(gid)) cur.delete(gid); else cur.add(gid);
+      return { ...prev, mail_group_ids: Array.from(cur) };
+    });
   };
   const refreshLotProgressNow = () => {
     if (!isAdmin || lotProgressBusy) return;
@@ -1940,6 +2042,79 @@ function TrackerSettings({ isAdmin, onChanged }) {
       </div>
       {status.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "var(--danger)" }}>{status.last_error}</div>}
       {schedMsg && <div style={{ marginBottom: 12, fontSize: 14, color: schedMsg.includes("완료") ? "var(--ok)" : "var(--danger)" }}>{schedMsg}</div>}
+      {/* v9.5.13: ET Tracker 일일 스캔 — 진행중 ET 이슈의 root_lot/wafer 기준 PGM(pt) 측정 감지. */}
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>ET Tracker 스캔</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8, lineHeight: 1.5 }}>
+        진행중인 ET 이슈의 root_lot_id / wafer_id 를 지정한 시각마다 ET DB 에서 조회해 step_id 별 PGM(pt) 측정을
+        이력에 누적합니다. 신규 측정 감지 시 알림, 메일 ON 이면 [ET Tracker] 메일을 발송합니다.
+      </div>
+      <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 14, color: "var(--text-secondary)" }}>
+            <input type="checkbox" checked={!!etScan.enabled} disabled={!isAdmin || etScanBusy}
+              onChange={e => setEtScan(prev => ({ ...prev, enabled: e.target.checked }))} />
+            스캔 사용
+          </label>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 14, color: etScan.mail_enabled ? "var(--accent)" : "var(--text-secondary)", fontWeight: etScan.mail_enabled ? 700 : 500 }}>
+            <input type="checkbox" checked={!!etScan.mail_enabled} disabled={!isAdmin || etScanBusy}
+              onChange={e => setEtScan(prev => ({ ...prev, mail_enabled: e.target.checked }))} />
+            메일 발송
+          </label>
+          <button onClick={runEtScanNow} disabled={!isAdmin || etScanBusy}
+            style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, cursor: isAdmin && !etScanBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+            즉시 스캔
+          </button>
+        </div>
+        <label style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
+          스캔 시간
+          <input value={etTimesText} disabled={!isAdmin || etScanBusy}
+            onChange={e => setEtTimesText(e.target.value)}
+            placeholder="예: 08:00, 13:00, 18:00 (하루 n번)"
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
+        </label>
+        <label style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
+          PGM 필터
+          <input value={etPgmText} disabled={!isAdmin || etScanBusy}
+            onChange={e => setEtPgmText(e.target.value)}
+            placeholder="예: H1, H2 — PGM(pt)에 포함될 때만 알림/메일. 비우면 전체"
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
+        </label>
+        <label style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
+          메일 링크 주소
+          <input value={etScan.app_base_url} disabled={!isAdmin || etScanBusy}
+            onChange={e => setEtScan(prev => ({ ...prev, app_base_url: e.target.value }))}
+            placeholder="예: http://flow-server:8080 — 메일 본문의 이슈 링크 베이스"
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, alignItems: "start", fontSize: 14, color: "var(--text-secondary)" }}>
+          수신 그룹
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {mailGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>등록된 수신처 그룹 없음 (작성자·lot 추가자에게만 발송)</span>}
+            {mailGroups.map(g => {
+              const on = (etScan.mail_group_ids || []).includes(String(g.id));
+              return (
+                <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 14, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: isAdmin ? "pointer" : "default", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                  <input type="checkbox" checked={on} disabled={!isAdmin || etScanBusy} onChange={() => toggleEtMailGroup(String(g.id))} style={{ accentColor: "var(--accent)" }} />
+                  {g.name}
+                  <span style={{ color: "var(--text-secondary)" }}>{(g.members?.length || 0) + (g.extra_emails?.length || 0)}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        <button onClick={saveEtScan} disabled={!isAdmin || etScanBusy}
+          style={{ justifySelf: "end", padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !etScanBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+          ET Tracker 설정 저장
+        </button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
+        <span>최근 스캔 {fmtTime(etScan.status?.finished_at || etScan.status?.started_at)}</span>
+        <span>이슈 {etScan.status?.issues_scanned ?? 0} / 랏 {etScan.status?.lots_scanned ?? 0}</span>
+        <span>신규 측정 {etScan.status?.new_entries ?? 0}건 / 메일 {etScan.status?.mail_count ?? 0}건</span>
+        <span>스캔 {etScan.enabled === false ? "꺼짐" : (etScan.scan_times.length ? `매일 ${etScan.scan_times.join(", ")}` : "시간 미지정")}</span>
+      </div>
+      {etScan.status?.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "var(--danger)" }}>{etScan.status.last_error}</div>}
+      {etScanMsg && <div style={{ marginBottom: 12, fontSize: 14, color: etScanMsg.includes("완료") ? "var(--ok)" : "var(--danger)" }}>{etScanMsg}</div>}
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>LOT_WF 현재 위치 파일</div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
         <input value={lotProgressFilter} onChange={e => setLotProgressFilter(e.target.value)}

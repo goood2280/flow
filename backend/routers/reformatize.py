@@ -1,4 +1,4 @@
-"""routers/reformatize.py — 업무 탭 "ET Index 다운로드": DB ET → vehicle reformatter index 추출.
+"""routers/reformatize.py — 업무 탭 "ET 다운로드": DB ET → vehicle reformatter index 추출.
 
 auto report 의 reformatize 흐름을 flow 화면으로 제공한다.
 제품(DB ET 폴더)을 고르면 `data_root/reformatter/<vehicle>_reformatter.csv`

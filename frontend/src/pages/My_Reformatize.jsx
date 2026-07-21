@@ -1,4 +1,4 @@
-/* My_Reformatize.jsx — 업무 > ET Index 다운로드.
+/* My_Reformatize.jsx — 업무 > ET 다운로드.
    auto report 의 reformatize 흐름을 화면으로 제공:
    DB ET 제품 선택 → data_root/reformatter/<vehicle>_reformatter.csv 규칙으로
    shot 단위 index 값 계산 → 테이블 조회(페이지) + CSV 다운로드.
@@ -491,7 +491,7 @@ export default function My_Reformatize({ user }) {
   return (
     <div style={{ padding: "24px 32px", background: "var(--bg-primary)", minHeight: "calc(100vh - 52px)", color: "var(--text-primary)", fontFamily: "'Pretendard',sans-serif" }}>
       <PageHeader
-        title="ET Index 다운로드"
+        title="ET 다운로드"
         right={<Pill tone="neutral" size="md">{user?.username || "guest"}</Pill>}
         style={{ borderRadius: 10, border: "1px solid var(--border)", marginBottom: 14 }}
       />
@@ -607,7 +607,7 @@ export default function My_Reformatize({ user }) {
       )}
 
       {/* ⚙️ 페이지 설정 */}
-      <PageGear title="ET Index 다운로드 설정" position="bottom-right">
+      <PageGear title="ET 다운로드 설정" position="bottom-right">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>한 번에 조회할 행 수</div>

@@ -104,14 +104,10 @@ def _normalize_cats(raw):
 
 
 def _public_tracker_cats():
-    """현재 이슈추적 UI/설정에서 보여줄 monitor 전용 카테고리 목록."""
-    cats = _load_cats()
-    try:
-        from core.lot_step import tracker_role_names_config
-        monitor_name = str((tracker_role_names_config() or {}).get("monitor") or "Monitor").strip().lower()
-    except Exception:
-        monitor_name = "monitor"
-    return [c for c in cats if str(c.get("name") or "").strip().lower() == monitor_name]
+    """이슈추적 UI/설정에 보여줄 카테고리 목록.
+    v9.5.13: ET Tracker 스캔 도입으로 ET(analysis) 카테고리 재노출 — monitor 전용 필터 해제.
+    (_load_cats 가 이미 monitor/analysis 역할 이름으로 제한한다.)"""
+    return _load_cats()
 
 
 def _default_monitor_category() -> str:
@@ -544,6 +540,20 @@ class EtLotCacheRefreshReq(BaseModel):
     force: bool = True
 
 
+class EtScanConfigReq(BaseModel):
+    """v9.5.13: ET Tracker 일일 스캔 설정 — 톱니바퀴에서 한 번에 관리."""
+    enabled: bool = True
+    scan_times: List[str] = []          # "HH:MM" 목록 (하루 n번)
+    mail_enabled: bool = False
+    mail_group_ids: List[str] = []
+    pgm_filters: List[str] = []         # PGM(pt) 부분일치 필터 (예: "H1")
+    app_base_url: str = ""              # 메일 본문 링크 베이스
+
+
+class EtScanIssueReq(BaseModel):
+    issue_id: str
+
+
 class TrackerDbSourcesReq(BaseModel):
     monitor: str = ""
     analysis: str = ""
@@ -598,6 +608,57 @@ def run_tracker_scheduler_now(request: Request, _a=Depends(require_page_manager(
         "run": run_result,
         **scheduler_status(),
         "can_edit": True,
+    }
+
+
+@router.get("/et-scan")
+def get_et_scan(request: Request):
+    """v9.5.13: ET Tracker 일일 스캔 설정 + 최근 실행 상태."""
+    me = current_user(request)
+    from core.et_tracker import et_scan_status
+    return {**et_scan_status(), "can_edit": is_page_manager(me, "tracker")}
+
+
+@router.post("/et-scan/save")
+def save_et_scan(req: EtScanConfigReq, request: Request, _a=Depends(require_page_manager("tracker"))):
+    from core.et_tracker import et_scan_status, save_et_tracker_config
+    save_et_tracker_config(
+        enabled=req.enabled,
+        scan_times=req.scan_times,
+        mail_enabled=req.mail_enabled,
+        mail_group_ids=req.mail_group_ids,
+        pgm_filters=req.pgm_filters,
+        app_base_url=req.app_base_url,
+    )
+    return {"ok": True, **et_scan_status(), "can_edit": True}
+
+
+@router.post("/et-scan/run-now")
+def run_et_scan_now(request: Request, _a=Depends(require_page_manager("tracker"))):
+    from core.et_tracker import et_scan_status, run_scan
+    result = run_scan(force=True, actor="manual")
+    return {"ok": bool(result.get("ok")), "run": result, **et_scan_status(), "can_edit": True}
+
+
+@router.post("/et-scan/run-issue")
+def run_et_scan_issue(req: EtScanIssueReq, request: Request):
+    """단일 ET 이슈의 측정 이력 즉시 갱신 — 알림/메일 없이 et_history 만 추가."""
+    from routers.groups import filter_by_visibility
+    me = current_user(request)
+    visible = filter_by_visibility(_load(), me["username"], me.get("role", "user"), key="group_ids")
+    if not any(i.get("id") == req.issue_id for i in visible):
+        raise HTTPException(404, "issue not found")
+    from core.et_tracker import scan_issue
+    result = scan_issue(req.issue_id, actor=me.get("username") or "manual")
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("last_error") or "scan failed")
+    iss = result.get("issue") or next((i for i in _load() if i.get("id") == req.issue_id), None)
+    return {
+        "ok": True,
+        "issue_id": req.issue_id,
+        "new_entries": int(result.get("new_entries") or 0),
+        "lots": (iss or {}).get("lots") or [],
+        "checked_at": result.get("finished_at") or "",
     }
 
 
@@ -983,7 +1044,16 @@ def list_issues(request: Request, status: str = Query(""), limit: int = Query(20
             text = re.sub(r"\s+", " ", text).strip()
             summary = text[:140]
         except Exception:
+            text = ""
             summary = ""
+        # v9.5.13: 간트 검색용 — 랏리스트 root_lot_id 목록 + 본문 텍스트(태그 제거, 2000자 cap).
+        root_lot_ids: list[str] = []
+        for lot in iss.get("lots") or []:
+            if not isinstance(lot, dict):
+                continue
+            value = str(lot.get("root_lot_id") or lot.get("lot_id") or lot.get("fab_lot_id") or "").strip()
+            if value and value not in root_lot_ids:
+                root_lot_ids.append(value)
         out.append({
             "id": iss["id"], "title": iss.get("title", ""),
             "status": iss.get("status", ""), "priority": iss.get("priority", "normal"),
@@ -992,6 +1062,8 @@ def list_issues(request: Request, status: str = Query(""), limit: int = Query(20
             "created": iss.get("created", iss.get("timestamp", "")),
             "updated_at": iss.get("updated_at") or iss.get("created") or iss.get("timestamp", ""),
             "summary": summary,
+            "desc_text": text[:2000],
+            "root_lot_ids": root_lot_ids,
             "closed_at": iss.get("closed_at"),
             "lot_count": len(iss.get("lots", [])),
             "comment_count": _comment_count(iss),

@@ -220,7 +220,7 @@ CANONICAL_PAGE_IDS = (
     "teg",
     # ET 측정시간 (root lot × step_id × PGM(pt) 소요시간) 페이지.
     "ettime",
-    # ET Index 다운로드 (vehicle reformatter REAL/ADDP index 추출) 페이지.
+    # ET 다운로드 (vehicle reformatter REAL/ADDP index 추출) 페이지.
     "reformatize",
     # Flow-i 채팅 사용 권한 — 홈 채팅 + home agent orchestrate 진입 게이트.
     "flowi",
