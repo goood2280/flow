@@ -1,7 +1,18 @@
 {
-  "version": "9.5.5",
+  "version": "9.5.6",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.6",
+      "date": "2026-07-21",
+      "title": "TEG Mapfile 체크 — 이름 기반 정확 매칭(teg/top_cell) · 확장체크('01' 제외 재매칭)",
+      "tag": "teg",
+      "changes": [
+        "정답지 대조를 순서 기반 이름 선택에서 '이름 기반 정확 매칭' 으로 변경 — module name 후보 토큰 중 Teg_location 의 teg 또는 top_cell(그 teg 의 1:1 별칭)과 완전 일치하는 값을 찾아 그 teg 로 대조. teg 이름 일치를 top_cell 일치보다 우선.",
+        "확장체크 추가 — 정답지 미등록(teg/top_cell 어디에도 없음) module 에 한해 이름 뒤 '01' 을 제외하고 재매칭(예: TEGA01 → TEGA). 매칭되면 🟣 확장체크로 검증 표시(위치가 아닌 이름 검증). 요약/목록/Shot 배치도(⊕)·대조표(매칭 TEG 열)에 근거(원래 토큰 → teg) 노출.",
+        "판정 상태에 extended(확장체크) 추가 및 대조표에 '매칭 TEG' 열 추가 — 어떤 teg 에, teg/top_cell/확장 중 무엇으로 매칭됐는지 표시."
+      ]
+    },
     {
       "version": "9.5.5",
       "date": "2026-07-21",
