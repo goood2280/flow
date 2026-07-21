@@ -125,7 +125,6 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
       const c0 = r.config.check || {};
       const fo = c0.flat_offsets || {};
       setChk({
-        v_r_offset: c0.v_r_offset ?? 0,
         h_dx: (fo.h || [0, 0])[0], h_dy: (fo.h || [0, 0])[1],
         v_dx: (fo.v_R || [0, 0])[0], v_dy: (fo.v_R || [0, 0])[1],
         modules: (c0.modules || []).map(m => ({ ...m })),
@@ -149,7 +148,6 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
       };
       if (chk) {
         patch.check = {
-          v_r_offset: Number(chk.v_r_offset) || 0,
           flat_offsets: {
             h: [Number(chk.h_dx) || 0, Number(chk.h_dy) || 0],
             v_R: [Number(chk.v_dx) || 0, Number(chk.v_dy) || 0],
@@ -293,12 +291,6 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         <input style={num} type="number" step="any" disabled={dis} value={chk.v_dy}
           onChange={e => setC({ v_dy: e.target.value })} />
       </div>
-      <div style={row}>
-        <span style={lab}>Vertical(R) 회전 offset</span>
-        <input style={num} type="number" step="any" disabled={dis} value={chk.v_r_offset}
-          onChange={e => setC({ v_r_offset: e.target.value })} />
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>회전 원복: (x, y) → (y, -x + offset)</span>
-      </div>
       <div style={{ ...row, marginBottom: 4 }}>
         <span style={lab}>TEG(module)별 오프셋</span>
         <Button disabled={dis} onClick={addMod}>+ 추가</Button>
@@ -318,12 +310,12 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           <input style={{ ...inputStyle, minWidth: 110, width: 130 }} disabled={dis}
             placeholder="TEG(module) 이름" value={m.name}
             onChange={e => setMod(i, { name: e.target.value })} />
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
+          <span style={{ fontSize: 12, color: "var(--muted)" }} title="TEG(H 관점) x 오프셋 — 양수 입력 = 빼기">x</span>
           <input style={num} type="number" step="any" disabled={dis} value={m.dx}
-            title="x 오프셋" onChange={e => setMod(i, { dx: e.target.value })} />
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>y'</span>
+            title="TEG(H 관점) x 오프셋 — 양수=빼기. V면 실좌표 y에 반영" onChange={e => setMod(i, { dx: e.target.value })} />
+          <span style={{ fontSize: 12, color: "var(--muted)" }} title="TEG(H 관점) y 오프셋 — 양수 입력 = 빼기">y</span>
           <input style={num} type="number" step="any" disabled={dis} value={m.dy}
-            title="y 오프셋" onChange={e => setMod(i, { dy: e.target.value })} />
+            title="TEG(H 관점) y 오프셋 — 양수=빼기. V면 실좌표 -x에 반영" onChange={e => setMod(i, { dy: e.target.value })} />
           <input style={{ ...inputStyle, flex: 1, minWidth: 90 }} disabled={dis}
             placeholder="비고" value={m.note || ""}
             onChange={e => setMod(i, { note: e.target.value })} />
@@ -331,7 +323,9 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         </div>
       ))}
       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
-        적용 순서: flat 변환(Vertical(R) 회전 원복) → 기본 오프셋 → TEG별 오프셋.
+        적용 순서: flat 변환(Vertical(R) 회전 원복) → 기본 오프셋 → TEG별 오프셋.<br />
+        TEG별 오프셋은 항상 Horizontal(TEG) 관점으로 입력합니다. 양수 = 빼기.<br />
+        Vertical TEG: TEG x → 실좌표 y, TEG y → 실좌표 -x 로 축 변환 적용.
         이름이 비어 있는 행은 저장 시 제외됩니다.
       </div>
 

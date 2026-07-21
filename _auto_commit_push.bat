@@ -10,7 +10,7 @@ echo === Git Status ===
 git status --short
 
 echo === Git Commit ===
-git commit -m "fix: [TEST_POINT] origin top-left parsing + WfSvg highlight"
+git commit -m "fix: remove v_r_offset, TEG offset H-perspective(positive=subtract), ref_seq for duplicate TEGs"
 
 echo === Git Push ===
 git push origin main

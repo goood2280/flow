@@ -62,14 +62,14 @@ DEFAULT_VEHICLE_CFG = {
     "image": "",        # teg_location/ 폴더 안 그림 파일명
 }
 
-# TEG Mapfile 체크(core/teg_check) 설정 — flat 별 기본 오프셋·v_R 회전 offset·모듈(TEG)별 오프셋.
+# TEG Mapfile 체크(core/teg_check) 설정 — flat 별 기본 오프셋·모듈(TEG)별 오프셋.
 # flat 키는 저장값 기준 "h"/"v_R" (UI 표기는 Horizontal / Vertical(R)).
+# 모듈별 오프셋은 항상 Horizontal(TEG) 관점으로 입력, 양수 = 빼기.
 CHECK_FLATS = ("h", "v_R")
 DEFAULT_CHECK_CFG = {
-    # v_R 회전 후 추가 offset — 기본 0. (예전엔 10 이었으나, V_ 계열 '기본 offset' 으로 이동.)
-    "v_r_offset": 0.0,                              # v_R 변환: (x, y) → (y, -x + offset)
-    # flat 별 기본 (dx, dy). V_ 계열(Vertical(R)) 기본 offset y' = 10 (회전 offset 아님).
+    # flat 별 기본 (dx, dy). V_ 계열(Vertical(R)) 기본 offset y' = 10.
     "flat_offsets": {"h": [0.0, 0.0], "v_R": [0.0, 10.0]},
+    # 모듈(TEG)별 오프셋 — H/TEG 관점 입력(양수=빼기). V: TEG x→실y, TEG y→실-x.
     "modules": [],   # [{"flat": "h"|"v_R", "name": str, "dx": float, "dy": float, "note": str}]
 }
 
@@ -143,7 +143,6 @@ def _clean_vehicle_cfg(raw: Any) -> dict | None:
 def _clean_check(raw: Any) -> dict:
     """TEG Mapfile 체크 설정 정리 — 잘못된 항목은 조용히 버리고 기본값으로."""
     out = {
-        "v_r_offset": DEFAULT_CHECK_CFG["v_r_offset"],
         "flat_offsets": {f: list(DEFAULT_CHECK_CFG["flat_offsets"][f]) for f in CHECK_FLATS},
         "modules": [],
         # 기준 PCHK 이 내장 마커(H_PCHK/H_PRBCHK 등)로 안 잡히는 설비 표기 —
@@ -163,12 +162,6 @@ def _clean_check(raw: Any) -> dict:
                     if token and token.upper() not in {s.upper() for s in seen}:
                         seen.append(token)
                 out["custom_markers"][f] = seen
-    try:
-        v = float(raw.get("v_r_offset", out["v_r_offset"]))
-        if math.isfinite(v):
-            out["v_r_offset"] = v
-    except (TypeError, ValueError):
-        pass
     fo = raw.get("flat_offsets")
     if isinstance(fo, dict):
         for f in CHECK_FLATS:
