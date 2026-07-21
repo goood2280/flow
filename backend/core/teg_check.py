@@ -87,16 +87,11 @@ PATTERN_ANNOT_RE = re.compile(r"^(.*?)\s*\(\s*pattern\s*\)\s*$", re.IGNORECASE) 
 def _parse_point_map(lines: list[str]) -> list[dict]:
     """[TEST_POINT] 섹션 → 웨이퍼 맵 1개 (맵 문자 행만). 없으면 [].
 
-    위/아래의 순수 '----' 경계선(측정 셀 t 가 하나도 없는 테두리 행)은 맵 테두리
-    표시로 보고 행에서 제외한다 — site 좌표(x,y)의 격자 기준을 콘텐츠 행에 맞춘다.
-    (내부의 빈 행은 유지.)
+    모든 행을 그대로 유지한다 — 첫/끝 줄이 전부 '-'(빈칸)이어도 격자 행으로 포함.
+    각 문자 = 셀이고 좌상단이 (1,1)이므로, 빈 행 제거 시 좌표가 어긋난다.
     """
     body = _section(lines, POINT_TAG, stop=SECTION_STOPS)
     rows = [s for s in body if s and MAP_ROW_RE.fullmatch(s)]
-    while rows and "t" not in rows[0].lower():
-        rows.pop(0)
-    while rows and "t" not in rows[-1].lower():
-        rows.pop()
     if not rows:
         return []
     w = max(len(r) for r in rows)
@@ -548,6 +543,34 @@ def resolve_ref_teg_split(t: dict, ref: dict[str, list[dict]] | None,
     return None, None, None
 
 
+_PREFIX_NAME_RE = re.compile(r"^([A-Za-z])_(.+)$")
+
+
+def resolve_ref_teg_reorder(t: dict, ref: dict[str, list[dict]] | None,
+                             tc_to_teg: dict[str, str] | None,
+                             ) -> tuple[str | None, str | None, str | None]:
+    """확장체크 — 접두사_이름 → 이름접두사01 변환 재매칭.
+
+    H_AAA01 형태의 이름을 AAA01H01 로 변환해 정답지 매칭을 시도한다.
+    패턴: {prefix}_{name} → {name}{prefix}01 (prefix=H, V 등 1글자).
+    예: H_AAA01 → AAA01H01, V_BBB02 → BBB02V01.
+    """
+    if not ref:
+        return None, None, None
+    tc_to_teg = tc_to_teg or {}
+    for tok in _name_tokens(t):
+        m = _PREFIX_NAME_RE.match(tok)
+        if m:
+            prefix, rest = m.group(1), m.group(2)
+            reordered = f"{rest}{prefix}01"
+            if reordered in ref:
+                return reordered, "teg", tok
+            teg = tc_to_teg.get(reordered)
+            if teg is not None:
+                return teg, "top_cell", tok
+    return None, None, None
+
+
 def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
              x: float, y: float, extended: bool = False) -> dict:
     """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h, ref_seq}.
@@ -747,12 +770,23 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # 완전 일치하는 걸 찾아 그 teg 로 대조. 없으면 '01' 제외 재매칭(확장체크).
         ref_teg, msrc, mtok = resolve_ref_teg(t, ref, tc_to_teg)
         extended = False
+        match_rule = "exact" if ref_teg is not None else None
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok = resolve_ref_teg_extended(t, ref, tc_to_teg)
-            extended = ref_teg is not None
+            if ref_teg is not None:
+                extended = True
+                match_rule = "01strip"
+        # 접두사_이름 → 이름접두사01 변환 재매칭 (H_AAA01 → AAA01H01)
+        if ref_teg is None and ref is not None:
+            ref_teg, msrc, mtok = resolve_ref_teg_reorder(t, ref, tc_to_teg)
+            if ref_teg is not None:
+                extended = True
+                match_rule = "reorder"
         # 분할 TEG 재매칭 — _1, _2 등 접미사 제거 후 base name 으로 정답지 검색
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok = resolve_ref_teg_split(t, ref, tc_to_teg)
+            if ref_teg is not None:
+                match_rule = "split"
             # 같은 TEG 의 분할이므로 위치 비교 정상 수행 (extended 아님)
         cmp_ = _compare(ref, ref_teg, nx, ny, extended=extended)
         if cmp_["status"] in summary:
@@ -775,6 +809,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             # 이름 기반 매칭 결과 — 대조한 정답지 teg 와 매칭 근거(teg/top_cell/확장 토큰)
             "ref_teg": ref_teg, "match_source": msrc, "match_token": mtok,
             "extended": extended,
+            "match_rule": match_rule,
             "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
             "teg_w": round(tw, 4), "teg_h": round(th, 4),
             "chip_overlap": overlap,
@@ -831,6 +866,9 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 module_tokens.add(str(c).strip())
     targets = _tm.target_verification(veh, module_tokens) if veh else {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0}
+    if veh and targets["total"] == 0:
+        targets["no_targets"] = True
+        targets["warning"] = "체크할 TEG가 설정되어 있지 않습니다"
 
     main_groups = []
     if main_groups_map:

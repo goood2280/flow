@@ -23,8 +23,9 @@ const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended
 const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)" };
 
 // 조회되어야 할 TEG 목록 신호등 — 색상 차순 정렬 기준(작을수록 위): 빨강 → 미등록 → 노랑 → 초록.
-const LIGHT_COLORS = { red: "#dc2626", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63" };
-const LIGHT_RANK = { red: 0, gray: 1, yellow: 2, green: 3 };
+const LIGHT_COLORS = { red: "#dc2626", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63", purple: "#7c3aed" };
+const LIGHT_RANK = { red: 0, gray: 1, yellow: 2, purple: 3, green: 4 };
+const MATCH_RULE_LABELS = { "01strip": "01제거", "reorder": "접두사변환", "split": "분할TEG" };
 
 function TrafficLight({ color }) {
   const c = LIGHT_COLORS[color] || LIGHT_COLORS.gray;
@@ -471,12 +472,14 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       const row = rowByRefTeg[t.teg];
       let light, label;
       if (row) {
-        if (row.status === "mismatch") { light = "red"; label = "불일치"; }
-        else if (row.status === "warning") { light = "yellow"; label = "확인필요"; }
-        else if (row.status === "extended") { light = "green"; label = "확장체크"; }
-        else { light = "green"; label = "위치 확인"; }
+        const rl = row.match_rule && row.match_rule !== "exact" ? MATCH_RULE_LABELS[row.match_rule] : null;
+        const rs = rl ? `(${rl})` : "";
+        if (row.status === "mismatch") { light = "red"; label = `불일치${rs}`; }
+        else if (row.status === "warning") { light = "yellow"; label = `확인필요${rs}`; }
+        else if (row.status === "extended") { light = "purple"; label = `확장체크${rs}`; }
+        else { light = "green"; label = `위치 확인${rs}`; }
       } else if (t.matched) {
-        light = "green"; label = "확인";   // 대상 목록과 일치(대개 MAIN 등 검사 행 밖)
+        light = "green"; label = "확인";
       } else {
         light = "gray"; label = "mapfile 미등록";
       }
@@ -492,6 +495,22 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const lightCounts = checklist.reduce((acc, it) => {
     acc[it.light] = (acc[it.light] || 0) + 1; return acc;
   }, {});
+  // 미설정 세분화: 확장체크 통과 / 다른 방향 TEG / 진짜 미설정
+  const oppositePrefix = res.flat.used === 'h' ? 'V_' : res.flat.used === 'v_R' ? 'H_' : null;
+  const { extMatchedTargets, otherDirTargets, trulyMissingTargets } = useMemo(() => {
+    const ext = [], otherDir = [], truly = [];
+    missingTargets.forEach(t => {
+      const row = rowByRefTeg[t.teg];
+      if (row) {
+        ext.push({ ...t, row });
+      } else if (oppositePrefix && t.teg.startsWith(oppositePrefix)) {
+        otherDir.push(t);
+      } else {
+        truly.push(t);
+      }
+    });
+    return { extMatchedTargets: ext, otherDirTargets: otherDir, trulyMissingTargets: truly };
+  }, [missingTargets, rowByRefTeg, oppositePrefix]);
   // 수천 행 대비: 이름 검색 필터 + 점진 렌더 (한 번에 전부 그리면 메인스레드 블로킹)
   const [rowFilter, setRowFilter] = useState("");
   const [rowLimit, setRowLimit] = useState(300);
@@ -519,14 +538,16 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     { key: "calc_y", label: "환산Y", align: "right" },
     { key: "matched", label: "매칭 TEG", render: r => {
         if (!r.ref_teg) return "";
-        const tag = r.extended ? "확장" : r.match_source === "top_cell" ? "top_cell" : "";
+        const ruleLabel = r.match_rule && MATCH_RULE_LABELS[r.match_rule];
+        const tag = ruleLabel || (r.match_source === "top_cell" ? "top_cell" : "");
         const seq = r.ref_seq != null ? ` #${r.ref_seq}/${r.ref_total}` : "";
+        const ruleDesc = ruleLabel
+          ? `확장체크(${ruleLabel}): ${r.match_token} → ${r.ref_teg}`
+          : r.match_source === "top_cell"
+            ? `top_cell '${r.match_token}' 로 ${r.ref_teg} 에 매칭`
+            : `teg 이름으로 ${r.ref_teg} 에 매칭`;
         return (
-          <span title={r.extended
-            ? `확장체크: ${r.match_token} → ${r.ref_teg} ('01' 제외 재매칭)`
-            : r.match_source === "top_cell"
-              ? `top_cell '${r.match_token}' 로 ${r.ref_teg} 에 매칭`
-              : `teg 이름으로 ${r.ref_teg} 에 매칭`
+          <span title={ruleDesc
             + (r.ref_seq != null ? ` — 동명 ${r.ref_total}개 중 ${r.ref_seq}번째` : "")}>
             {r.ref_teg}{seq}{tag ? ` (${tag})` : ""}
           </span>
@@ -683,7 +704,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>체크 대상 TEG 설정 여부</span>
             <Pill tone="ok" size="sm">설정됨 {targets.matched}</Pill>
-            <Pill tone={targets.missing ? "danger" : "neutral"} size="sm">미설정 {targets.missing}</Pill>
+            {extMatchedTargets.length > 0 && (
+              <Pill tone="neutral" size="sm">🟣 확장 {extMatchedTargets.length}</Pill>
+            )}
+            <Pill tone={trulyMissingTargets.length ? "danger" : "neutral"} size="sm">미설정 {trulyMissingTargets.length}</Pill>
+            {otherDirTargets.length > 0 && (
+              <Pill tone="neutral" size="sm">다른방향 {otherDirTargets.length}</Pill>
+            )}
             <Pill tone="neutral" size="sm">
               {targets.source === "config" ? "지정 대상" : "기본(H_/V_)"} {targets.total}개
             </Pill>
@@ -691,13 +718,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               대상 TEG 는 위치 조회 → TEG 목록 → "Mapfile 체크 대상 TEG" 에서 설정
             </span>
           </div>
-          {missingTargets.length > 0 ? (
+          {trulyMissingTargets.length > 0 ? (
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "var(--danger, #e05252)", marginBottom: 4 }}>
-                🔴 미설정 {missingTargets.length}건 — Mapfile 의 module name 에 teg/top_cell 완전 일치가 없습니다
+                🔴 미설정 {trulyMissingTargets.length}건 — Mapfile 의 module name 에 teg/top_cell 완전 일치가 없습니다
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {missingTargets.map(t => (
+                {trulyMissingTargets.map(t => (
                   <span key={t.teg}
                     title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}
                     style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
@@ -710,6 +737,40 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           ) : (
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ok, #2f9e63)" }}>
               🟢 미설정 없음 — 체크 대상 TEG 가 모두 Mapfile 에 있습니다
+            </div>
+          )}
+          {extMatchedTargets.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#7c3aed", marginBottom: 4 }}>
+                🟣 확장체크 통과 {extMatchedTargets.length}건 — 이름 변환 규칙으로 매칭됨
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {extMatchedTargets.map(t => (
+                  <span key={t.teg}
+                    title={t.row ? `${t.row.match_token} → ${t.row.ref_teg} (${MATCH_RULE_LABELS[t.row.match_rule] || "확장"})` : ""}
+                    style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
+                             border: "1px solid #7c3aed", color: "#7c3aed" }}>
+                    ✓ {t.teg} ({MATCH_RULE_LABELS[t.row?.match_rule] || "확장"})
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {otherDirTargets.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
+                {oppositePrefix === 'V_' ? 'Vertical' : 'Horizontal'} TEG {otherDirTargets.length}건 — 현재 검사 방향({res.flat.used === 'h' ? 'Horizontal' : 'Vertical(R)'})과 다른 방향의 TEG
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {otherDirTargets.map(t => (
+                  <span key={t.teg}
+                    title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}
+                    style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
+                             border: "1px solid var(--muted)", color: "var(--muted)" }}>
+                    {t.teg}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
           {matchedTargets.length > 0 && (
@@ -784,15 +845,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       {teg.ref_ok && extended.length > 0 && (
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 6 }}>
-            🟣 확장체크 {extended.length}건 — 정답지 미등록이라 '01' 을 제외하고 재매칭해 teg 를 확인했습니다
+            🟣 확장체크 {extended.length}건 — 정답지 미등록이라 이름 변환 규칙으로 재매칭해 teg 를 확인했습니다
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {extended.map((r, i) => (
               <span key={i}
-                title={`${r.match_token} → ${r.ref_teg}${r.match_source === "top_cell" ? " (top_cell)" : ""}`}
+                title={`${r.match_token} → ${r.ref_teg} (${MATCH_RULE_LABELS[r.match_rule] || "확장"})${r.match_source === "top_cell" ? " — top_cell" : ""}`}
                 style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
                          border: "1px solid #7c3aed", color: "#7c3aed" }}>
-                {r.match_token} → {r.ref_teg}{r.match_source === "top_cell" ? " (top_cell)" : ""}
+                {r.match_token} → {r.ref_teg} ({MATCH_RULE_LABELS[r.match_rule] || "확장"}){r.match_source === "top_cell" ? " top_cell" : ""}
               </span>
             ))}
           </div>
@@ -885,9 +946,14 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 teg.rows.filter(r => r.chip_overlap).map(r => r.name).join(", ")}
             </div>
           )}
-          {!shotRows.length && (
+          {!shotRows.length && targets.total > 0 && (
             <div style={{ fontSize: 12, color: "var(--ok, #2f9e63)", marginBottom: 6 }}>
               🟢 모든 TEG 일치 — 배치도에 표시할 불일치 TEG 가 없습니다.
+            </div>
+          )}
+          {!shotRows.length && targets.total === 0 && res.vehicle && (
+            <div style={{ fontSize: 12, color: "var(--danger, #e05252)", marginBottom: 6 }}>
+              ⚠ 체크할 TEG가 설정되어 있지 않습니다 — 위치 조회 → TEG 목록 → "Mapfile 체크 대상 TEG" 에서 지정하세요.
             </div>
           )}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -962,6 +1028,7 @@ function TargetChecklist({ checklist, counts, colorSort, onToggleSort, total, so
           <div style={{ display: "flex", gap: 10, fontSize: 11, color: "var(--muted)",
                         marginBottom: 6, flexWrap: "wrap" }}>
             <span><TrafficLight color="green" /> 위치확인 {counts.green || 0}</span>
+            <span><TrafficLight color="purple" /> 확장체크 {counts.purple || 0}</span>
             <span><TrafficLight color="yellow" /> 확인필요 {counts.yellow || 0}</span>
             <span><TrafficLight color="red" /> 불일치 {counts.red || 0}</span>
             <span><TrafficLight color="gray" /> 미등록 {counts.gray || 0}</span>
@@ -989,7 +1056,7 @@ function TargetChecklist({ checklist, counts, colorSort, onToggleSort, total, so
             ))}
           </div>
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-            {source === "config" ? "지정 대상" : "기본(H_/V_)"} {total}개 · 초록=위치확인 · 노랑=확인필요 · 빨강=불일치 · 회색=mapfile 미등록
+            {source === "config" ? "지정 대상" : "기본(H_/V_)"} {total}개 · 초록=위치확인 · 보라=확장체크 · 노랑=확인필요 · 빨강=불일치 · 회색=미등록
           </div>
         </>
       )}
