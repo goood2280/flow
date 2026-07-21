@@ -1,0 +1,40 @@
+{
+  "id": "handoff_v9_L8",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p3",
+  "status": "open",
+  "title": "[L8] 유저 가이드 확장 (guides 10편 + 비디오 10편)",
+  "summary": "docs/guides/ 10편 Markdown (inform/tracker/splittable/meeting/dashboard/admin/ml/filebrowser/tablemap/onboarding) + docs/videos/README.md (Loom 링크 10개)",
+  "context": {
+    "track": "longterm_v9_3plus",
+    "backlog_id": "L8",
+    "estimated_effort": "2주",
+    "target_score_delta": "문서 +0.5",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "10편 Markdown 완성 (각 페이지당 screenshot 5+ 장)",
+    "10편 Loom 링크 유효 (3~5분/편)",
+    "Home FEATURE_GUIDES 에서 직접 링크 연결",
+    "사내 공지 1회 배포"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\inform_how_to.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\tracker_how_to.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\splittable_override.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\meeting_minutes.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\dashboard_y_multi.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\admin_mail_groups.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\ml_beta.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\filebrowser_hive.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\tablemap_lineage.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\guides\\onboarding_tour.md",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\videos\\README.md"
+  ],
+  "verification": [],
+  "resolution": ""
+}

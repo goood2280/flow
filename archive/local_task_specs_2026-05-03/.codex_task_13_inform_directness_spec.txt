@@ -1,0 +1,154 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 인폼 페이지를 "list 첫 화면 그대로 살리되 디테일을 메인에 큼직하게 + 모듈 색 구분 + 기간 폐기 + 모듈요약 탭 제거" 로 개선. task #12 (4탭 단순화) 위에 사용자 직언 반영.
+
+[배경 — 사용자 직언 (2회차)]
+사용자 1차: "처음 모습은 깔끔하고 좋은데 시간별 인폼이 주르륵 보여야 하고, 제품/모듈 선택 시 list 에 즉시 반영되어 보여야 함. 우측에 + 로 별도로 뜨지 말고. 랏 인폼 클릭하면 그 랏 전체 이력+인폼 내용이 잘 보여야 함. 지금은 우측 drawer 라 좁아서 잘 안 보임."
+사용자 2차: "기간 없이 검색 결과 전부 나와야 함. 모듈 요약 탭은 필요없음 (인폼 탭에서 필터링으로 대체). list 행이 모듈별로 색이 달라서 잘 구분되게."
+
+종합 의도:
+- 첫 화면 = 시간 desc 인폼 list, 깔끔. 그대로 유지.
+- 디테일은 메인 영역 풀폭 (drawer 폐기 — list 탭 한정).
+- 4탭 → 3탭 (모듈 요약 제거).
+- 기간 chip / period filter 폐기 — 항상 전체.
+- list row 에 모듈 색 시각화.
+- + 버튼 우상단 별도 박스 제거, list 헤더 안 통합.
+
+[원하는 결과]
+
+1) INFORM_TABS 3탭으로 축소.
+   - 새 정의: [["inform","인폼"], ["audit","로그"], ["matrix","매트릭스"]].
+   - "modules" 탭 / ModuleSummaryTab 호출 / 관련 분기 모두 제거.
+   - URL query inform_tab 의 허용값에서 modules 제거. 기본 default = "inform".
+
+2) 기간 필터 완전 폐기.
+   - DEFAULT_SHARED_FILTERS 에서 period / start / end 키 제거.
+   - CommonInformFilters / InformFilterPanel / 매트릭스 / audit 의 기간 chip(7/30/90/직접/등) UI 제거.
+   - 모든 backend 호출에서 days 파라미터 미전송 또는 매우 큰 값(36500) 으로 통일.
+   - audit-log / lot-matrix / modules-summary 호출 시 기간 인자 제거. (server side 도 days 미수신 시 전체 반환하도록 default 확장).
+   - URL query 의 period/start/end 도 제거.
+
+3) + 버튼 위치 통합.
+   - 헤더(L2879-2907) 의 우상단 36x36 + 박스 제거.
+   - list 헤더 (L2920-2930, "filteredListRoots.length 건 표시 / 전체 listRoots.length 건" 영역) 우측에 "+ 신규 인폼" 버튼 통합 (text + icon, 표/카드 토글 옆).
+   - 매트릭스 탭 / audit 탭에서도 list 헤더와 동일 패턴 — 각 탭 상단 카운트 줄 우측에 "+ 신규" 버튼.
+
+4) list row 모듈별 색 구분 (인폼 탭 핵심 시각화).
+   - 카드 모드 (InformCardList): 카드 좌측에 width 4px 세로 bar (background = moduleColor(root.module)). 카드 헤더의 모듈 pill 도 진한 모듈색 배경 + 흰 글자.
+   - 표 모드 (InformVirtualList): 각 row 좌측 4px 세로 bar 동일. 모듈 column 셀 배경 = moduleColor(...) + alpha 12%. 모듈 텍스트 진한 색.
+   - moduleColor() 헬퍼는 기존 정의 활용 (없으면 MODULE_SERIES 배열을 module 이름 hash 로 인덱싱).
+   - 색 구분은 hover/selected 와 충돌 안 나게 — selected row 는 좌측 bar 6px 로 두꺼워지고 row 배경 accent alpha 약간.
+
+5) row 클릭 → 풀폭 detail (list 탭 한정, drawer 폐기).
+   - 신규 state: const [informView, setInformView] = useState("list").  // "list" | "detail"
+   - openRootForDetail 호출 시 setInformView("detail") + setSelectedRootId(...).
+   - inform 탭 main 영역 분기:
+     * informView === "list" → 기존 InformVirtualList / InformCardList.
+     * informView === "detail" → InformDetailPane 을 main 영역 풀폭으로 직접 렌더 (InformDrawer 사용 X). 헤더에 큰 ← 뒤로가기 버튼 + 제품·root_lot·모듈 pill·상태. flex:1 풀 height.
+   - 닫기/뒤로 → setInformView("list") + setSelectedRootId("").
+   - 신규 인폼 wizard 모달 (openCreateWizard) 은 그대로 모달 — 변경 X.
+   - audit / matrix 탭의 detail 호출 시에도 inform 탭으로 전환 + informView="detail" 적용 (drawer 사용 안 함).
+   - InformDrawer 컴포넌트 호출 자체는 모두 제거. 컴포넌트 정의는 잠시 유지 가능하나 import/render 0건이면 정리 권장.
+
+6) 제품/모듈 필터 즉시 반영 + 시각 피드백 강화.
+   - 기존 sharedFilters.products / modules 는 list filter 에 이미 반영됨 (filteredListRoots).
+   - 활성 chip 시각: 활성 = accent 진한 배경 + 흰 글자 + bold. 비활성 = outline.
+   - 활성 chip 옆 ✕ 버튼으로 개별 해제 (없으면 추가).
+   - 필터 변경 → list 위 카운트 줄 "X건 표시 / 전체 Y건" 즉시 갱신 (이미 그러나 강조 색상 + transition).
+   - 제품/모듈 필터 chip 영역을 list 위에 sticky (스크롤 시 고정).
+
+7) 모듈요약(modules) 탭 코드 정리.
+   - INFORM_TABS 에서 제거.
+   - ModuleSummaryTab 컴포넌트 호출 제거. 정의는 잠시 유지 가능.
+   - "modules" 탭 분기(L2953-2961) 제거.
+   - 관련 state (filteredModuleSummary 등) 사용처 0 이면 제거.
+   - "모듈 요약" 으로 점프하는 다른 곳 (있으면) 도 모두 정리.
+
+8) 매트릭스 탭 (현 상태 그대로 유지).
+   - task #13 v1 의 cell.inform_count / recent[] / lot strip drawer 강화는 사용자 요청 없음 → 보류.
+   - 단 기간 chip 만 제거 + + 버튼 통합 만 적용.
+   - 매트릭스에서 셀/lot 클릭 → inform 탭으로 전환 + informView="detail" 또는 informView="list"+필터 적용 (기존 동작 유지하되 drawer 사용 X).
+
+9) 백엔드 endpoint
+   - /lot-matrix days 파라미터 default 를 0 (전체) 또는 36500 으로 — 현재 default 90 제거. days=0 또는 미전송 시 cutoff 미적용.
+   - /audit-log days 동일하게 default 전체.
+   - /informs (list) 도 days 필터 사용처 있으면 전체.
+   - 신규 endpoint X. 시그니처는 호환 (필드 추가 X 도 OK, 기간만 default 변경).
+
+[탭 3개 default 구조 (재확인)]
+1. 인폼 (default) — 시간 desc list (카드/표 토글). row 클릭 → 풀폭 detail. 모듈색 row.
+2. 로그 — 기존 audit (기간 chip 제거, 풀폭 detail 진입은 인폼 탭 전환 후).
+3. 매트릭스 — 기존 (기간 chip 제거, drawer 사용 안 함).
+
+[코드 reference]
+- frontend/src/pages/My_Inform.jsx
+  * INFORM_TABS L35-40, DEFAULT_SHARED_FILTERS L41-50
+  * 진입 default L236, L1740
+  * + 버튼 박스 L2903-2906 (제거 대상)
+  * list 헤더 L2920-2930 (+ 버튼 통합 위치)
+  * 4탭 분기 L2918, 2938, 2941, 2953 (modules 분기 제거)
+  * CommonInformFilters L3008
+  * InformDrawer L3067 (호출 제거), 정의 L3717
+  * InformVirtualList / InformCardList (모듈색 bar 추가)
+  * filterListByMatrixLot L2680, openLotMatrixCell L2691 (drawer 호출 X)
+- backend/routers/informs.py
+  * /lot-matrix days L1080 (default 변경)
+  * /audit-log days
+  * 기타 days 파라미터 default 변경
+
+[작업 순서]
+
+A) Backend
+   1. /lot-matrix, /audit-log 의 days 파라미터 default 를 36500 (or sentinel) 로. days=0 일 때도 전체 처리.
+   2. test fixture / smoke 호출에 days 명시 안 한 케이스가 정상 작동 확인.
+
+B) Frontend
+   1. INFORM_TABS 3개로 축소 ([inform, audit, matrix]).
+   2. DEFAULT_SHARED_FILTERS 에서 period/start/end 제거.
+   3. CommonInformFilters / 다른 필터 panel 의 기간 chip / start-end input UI 제거.
+   4. URL query 의 inform_tab 허용값에서 modules 제거, period/start/end 동기 제거.
+   5. 헤더 우상단 + 박스(L2903-2906) 제거.
+   6. list 헤더 (inform 탭 + audit 탭 + matrix 탭 카운트줄) 우측에 "+ 신규 인폼" 버튼 통합 (text + plus icon, 모든 탭에서 동일하게 openCreateWizard 호출).
+   7. modules 탭 분기 / ModuleSummaryTab 호출 제거.
+   8. informView state ('list'|'detail') 도입. inform 탭 main 분기. row 클릭 / matrix 셀·lot 클릭 / audit row 클릭 → setInformView('detail') + setSelectedRootId.
+   9. InformDetailPane 풀폭 호출 — 헤더에 ← 뒤로가기 버튼 + 제품/lot/모듈/상태 pill. 기존 5탭(본문/메일/댓글/이력/첨부) 그대로.
+   10. InformDrawer 호출 0 화 (정의는 유지 가능, 단 import/render 정리).
+   11. InformVirtualList / InformCardList 에 모듈 색 좌측 4px bar + 모듈 pill 색 적용.
+   12. 활성 chip 시각 강화 (accent 배경 + 흰 글자 + bold + ✕ 해제 버튼).
+   13. 필터 chip 영역 sticky.
+
+C) 회귀 (반드시 유지)
+   - task #12 (4탭 → 3탭으로 축소만, 단순 layout 단일 column 유지)
+   - task #11 (lot-matrix 응답 호환)
+   - task #8 (5탭 detail, 5-step wizard)
+   - task #1 (모듈 wise 메일 + KNOB 강조)
+   - task #4 (권한 매트릭스)
+   - 메일 throttle, 댓글, 첨부, soft-delete, audit log 자동 기록
+
+D) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+
+E) 테스트
+   - tests/inform/test_inform_period_default.py 신규: /lot-matrix /audit-log 가 days 미전송 시 전체 반환.
+   - 기존 tests/inform/* 회귀 X.
+   - smoke (scripts/smoke_test.py) 통과 확인.
+
+[제약]
+- 페이지 신설 X — My_Inform.jsx 안에서 재구성.
+- backend endpoint 시그니처 호환 (추가만 또는 default 확장).
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~12 회귀 X (단 task #12 의 modules 탭 / period 필터 만 사용자 직언으로 폐기).
+- 매트릭스 탭의 cell/lot 강화 (task #13 v1 의 inform_count/recent[]/lot strip) 는 이번에 적용 X — 사용자 요청 없음.
+
+[완료 기준]
+- 인폼 페이지 첫 진입 = 시간 desc list (default 'inform' 탭).
+- 기간 chip / period 필드 어디에도 없음. 검색 결과 전체 표시.
+- 탭 strip = 인폼 / 로그 / 매트릭스 (3개).
+- + 신규 인폼 버튼 = 우상단 별도 박스 X, list 카운트 줄 안 통합.
+- list row 모듈별 색 (좌측 4px bar + 모듈 pill 색).
+- row 클릭 → main 영역 풀폭 detail 교체 + ← 뒤로가기. 우측 drawer 안 뜸.
+- 제품/모듈 필터 chip 활성 시각 강화 + 즉시 list 반영.
+- modules 탭 / ModuleSummaryTab 흔적 제거.
+- frontend build + setup.py 재빌드 통과.
+- 신규 테스트 + 기존 회귀 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.

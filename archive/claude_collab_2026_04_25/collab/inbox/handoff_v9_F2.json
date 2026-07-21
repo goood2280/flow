@@ -1,0 +1,37 @@
+{
+  "id": "handoff_v9_F2",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[F2] SplitTable 페이지 분할 (3,480줄 → 4파일)",
+  "summary": "My_SplitTable.jsx 를 pages/SplitTable/{index, LotTable, PlanPanel, NotesDrawer, _helpers} 5파일로 분할. paste 세트 ping-pong parity test 필수",
+  "context": {
+    "track": "feature_v9_1",
+    "backlog_id": "F2",
+    "estimated_effort": "3주",
+    "target_score_delta": "안정성 +0.5",
+    "dependencies": ["F3", "F1", "H3"]
+  },
+  "acceptance_criteria": [
+    "pytest: test_splittable_parity.py — 기존 smoke 27 케이스 중 SplitTable 관련 + 10 추가 케이스 모두 pass",
+    "수동: paste 세트 10개 복원 ping-pong 시나리오 100% 동일",
+    "수동: v9.0.x 의 /override-debug, /long-items, /fab-roots, /lot-candidates 모두 동일 동작",
+    "npm run build 성공 + bundle 비정상 증가 없음",
+    "각 파일 1,500줄 미만"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_SplitTable.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\SplitTable\\index.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\SplitTable\\LotTable.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\SplitTable\\PlanPanel.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\SplitTable\\NotesDrawer.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\SplitTable\\_helpers.js",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\tests\\frontend\\test_splittable_parity.py"
+  ],
+  "verification": [],
+  "resolution": ""
+}

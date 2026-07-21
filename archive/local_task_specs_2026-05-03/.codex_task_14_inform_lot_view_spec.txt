@@ -1,0 +1,203 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 인폼 페이지 task #13(v2) 위에 사용자 직언 5차까지 통합한 보강. 12개 항목.
+
+[배경 — 사용자 직언 통합 (3·4·5차)]
+3차: 랏 진행상황 한번에, 커스텀 세트 선택 첨부, ML_TABLE 캐시, SplitTable 25 wafer 풀폭.
+4차: "신규 인폼 등록" 버튼 텍스트 명확화.
+5차:
+- 탭 순서: **인폼 → 매트릭스 → 로그**.
+- 보통 인폼은 **fab_lot_id 단위**로 이뤄짐.
+- reason 의 **PEMS 표시 제거** (다 PEMS 라서 무의미).
+- 매트릭스: **Σ 시그마 표시 제거**, **모듈명 크게**.
+- 매트릭스 검색 = **랏만** (제품 select 등 제거).
+- 신규 wizard: **root_lot_id, fab_lot_id 리스트가 안 보여 불편** — 잘 보이게.
+- SplitTable 자동 첨부 X (3차 그대로).
+- **knob 행 선택 첨부** 또는 **커스텀 세트 신규/기존 사용**.
+- **메일 미리보기 안 보임** — 보이게.
+
+6차 (지금, 5차 일부 뒤집음):
+- 인폼 탭 = **표(table) 모드만** (카드 모드 제거 — 표가 더 깔끔).
+- 표에서 **fab_lot_id 컬럼이 잘려 나오는 문제** 해결 — 충분 폭.
+- **우측에 모듈 1개만** 표시 (그 row 의 모듈 — 어디 모듈에 인폼 갔는지). 여러 모듈 mini-strip 은 매트릭스에서 보면 됨.
+- 시간 표시 = **"몇분 전" 같은 상대시간 X**, **절대 시각 (HH:MM 또는 MM/DD HH:MM)** 으로.
+
+[원하는 결과 — 12 항목]
+
+1) 탭 순서: INFORM_TABS = [["inform","인폼"], ["matrix","매트릭스"], ["audit","로그"]].
+
+2) 인폼 탭 = 표(table) 모드만 (6차 변경 — 카드 모드 폐기).
+   - InformCardList / 카드/표 토글 / informViewMode state 모두 제거.
+   - InformVirtualList (표) 만 사용. table-layout: fixed.
+   - 카드 모드 흔적 (이전 v3 의 4행 layout 등) 모두 제거.
+
+3) 표 row 단위 = 인폼 1건 (fab_lot_id 가 있으면 그 fab_lot 단위).
+   - 한 row = 한 root inform (parent). 답글은 row 안에서 +N 로 펼치기 가능 (옵션, 기본 collapse).
+   - 정렬: 시간 desc (최근 답글/생성 기준).
+   - row 클릭 → task #13 v2 의 풀폭 detail 진입.
+
+4) 표 컬럼 / 시각 정리 (6차 핵심).
+   - 컬럼 순서 (좌→우):
+     a. 좌측 4px 세로 bar (column 외부) = moduleColor(module). 컬럼 자체는 width 4px.
+     b. **fab_lot_id** — monospace 14px weight 900. **컬럼 width 충분** (160~200px), text-overflow ellipsis 금지 또는 충분 폭으로 잘림 X. fab_lot 미정 시 root_lot_id (5자) 표시.
+     c. **root_lot_id** — pill 형태 (5자 prefix-strip), monospace 12px, width 90px.
+     d. **제품** — stripMlPrefix 적용, width 100px.
+     e. **제목** — 본문 첫 줄 1줄 ellipsis, flex 1 (남는 폭).
+     f. **상태 dot** — 6px dot + 라벨, width 70px.
+     g. **작성자** — 60px.
+     h. **시간** — width 110px. **절대 시각 표시** (오늘이면 "HH:MM", 오늘 아니면 "MM/DD HH:MM", 작년이면 "YYYY/MM/DD"). "몇분 전" 같은 상대 표시 X.
+     i. **카운트** — 답글 💬N · 메일 ✉️N · 첨부 📎N. width 100px.
+     j. **모듈** (우측 끝) — **단일 모듈 1개만** 큰 pill 로 표시. 그 row 의 module 만. moduleColor 진한 배경 + 흰 글자, font-weight 900, width 90px, 우측 끝 sticky 또는 그 위치.
+   - reason 표시 X (자동 "PEMS" auto-fill 보존).
+   - row hover: 살짝 어두운 배경.
+   - row selected: 좌측 bar 6px + accent alpha 배경 + 굵은 글자.
+   - 헤더 행: 모든 컬럼명 명시 (fab_lot_id / root_lot / 제품 / 제목 / 상태 / 작성자 / 시간 / 카운트 / 모듈), font-weight 900, sticky top.
+   - 표 layout: table-layout: fixed; width 100%; border-collapse: separate; cell padding 6px 8px.
+   - **여러 모듈 mini-strip (모듈 dot 한 줄) 표시 X** — 사용자: "여러 모듈에 인폼됐는지는 매트릭스/검색에서 보면 된다."
+
+5) reason "PEMS" 제거.
+   - 카드 / detail 헤더 / 메일 본문 prefix / wizard reason 단계 모두 제거.
+   - 데이터는 보존: server 가 reason 빈 값 또는 "PEMS" default fill (호환).
+   - wizard 신규 작성 시 reason 입력 단계 자체 제거 — 자동 reason="PEMS" set 후 POST.
+
+6) 매트릭스 cleanup.
+   - 모듈 헤더 셀의 Σ 카운트 줄 제거 (task #13 v1 잔존하면).
+   - 모듈명 글씨 크게 (font-size 14, weight 900, 단일 줄). 헤더 height 36 정도.
+   - 셀의 인폼 카운트 숫자는 그대로 유지 (task #13 v1 의 cell.inform_count 표시).
+   - 검색 input = root_lot_id 만 1개. 제품 select / 상태 chip 등 다른 필터 제거 (또는 PageGear 안으로 격하).
+   - 매트릭스 상단 = "랏 검색" input + "+ 신규 인폼 등록" 우측.
+   - 행 lot row 클릭 → 인폼 탭으로 전환 + 그 lot 필터 자동 적용 (drawer 사용 X — task #13 v2).
+
+7) Wizard root_lot_id / fab_lot_id 리스트 표시.
+   - 제품 선택 → 그 제품의 root_lot_id 후보 list (검색+체크박스 또는 콤보) 화면에 명시 표시.
+     * 데이터 source: 기존 endpoint (informs 의 product-lots 또는 splittable 의 lot list — 메모리 v8.8.1 의 /product-lots 활용).
+     * UI: 좌측 panel 또는 드롭다운 펼침. 입력 후 선택. 검색 input + scroll list.
+   - root_lot_id 선택 → 그 lot 의 fab_lot_id 후보 list 자동 표시.
+     * UI: root_lot 선택 바로 아래 영역에 fab_lot 들 체크박스 list. 다중 선택 가능 (인폼 대상 fab 들).
+     * 데이터 source: 기존 lot-candidates / fab-roots / lot-watch 등 활용.
+   - 두 list 가 wizard 본문에 충분한 height (max-height 220px 각각 + scroll) 로 보이게 — 가려지거나 스크롤 안에 묻히지 않게.
+   - Lot 입력 단계 = wizard step 의 첫 단계 또는 두 번째 단계로 강조.
+
+8) Wizard 첨부 단계 (자동 첨부 X + 3가지 옵션).
+   - 자동 첨부 코드 모두 제거 (자동으로 SplitTable plan 등이 들어가는 흐름 차단).
+   - "📋 첨부" 단계 UI — 3개 sub-tab:
+     a. **KNOB / CUSTOM 컬럼 직접 첨부**: SplitTable 의 KNOB / CUSTOM 행들 체크박스 선택. 선택된 것만 첨부.
+     b. **기존 커스텀 세트**: paste-sets / customs / saved views 통합 list (캐시 적용). 검색 + 체크박스. 선택된 세트만 첨부.
+     c. **새 커스텀 세트 만들기**: SplitTable 페이지의 커스텀 만들기 modal/page 호출 (또는 inline mini SplitTable — 너무 크면 새 창). 만든 후 자동 선택 → 첨부 list 추가.
+   - **모든 sub-tab 의 체크박스 default = 0 선택 (전부 unchecked) — "전체 첨부" 가 자동으로 켜져 있으면 안 됨** (사용자 8차 직언).
+   - "전체 선택" / "선택 해제" 버튼은 사용자 액션으로만 동작.
+   - 첨부 0개도 OK (강제 X).
+   - 선택된 첨부는 wizard 마지막 step 미리보기에 stack 표시.
+
+9) ML_TABLE 제품별 SplitTable 세트 list 캐시.
+   - 신규 GET /api/informs/splittable-sets?product=ML_TABLE_PRODA → 통합 세트 list.
+   - paste-sets + customs + saved 모두 묶음. source 표시.
+   - in-memory cache (TTL 300s) + mutation invalidation (paste-sets/save·delete, customs/save 등).
+   - 응답: {product, sets: [{id, name, source, columns_count, wafer_count, updated_at, owner}]}.
+
+10) SplitTable 스냅샷 25 wafer 풀폭 (전체창 기준).
+    - 인폼 detail / 메일 본문 / wizard 미리보기 / 카드 첨부 stack 의 SplitTable 스냅샷 영역:
+      * max-width 100% (또는 100vw - sidebar).
+      * table-layout: fixed; width 100%.
+      * cell font-size 11px, padding 2px 3px, word-break break-all.
+      * wafer column 25개 모두 한번에 표시 — 가로 스크롤 X (column 30 초과 시에만 hint 와 함께 가로 스크롤).
+    - 메일 HTML 빌더의 SplitTable 부분도 동일.
+    - 셀 색상 / FE↔BE 컬러 동기 v8.8.30 그대로.
+    - 스냅샷 위에 "25/25 wafer" 또는 "27/30 wafer (3 hidden)" 뱃지.
+
+11) 메일 미리보기 가시성.
+    - Wizard 마지막 step (또는 detail 의 "메일" 탭) 의 메일 미리보기 영역이 가려져 있는 문제 fix.
+    - 영역: max-height: none 또는 충분한 height (60vh+), overflow-y: auto, width 100%.
+    - 미리보기 내부 SplitTable 도 (10) 의 풀폭 cleanup 적용.
+    - 미리보기 헤더에 "👁️ 메일 미리보기" 라벨 + 발송 대상 이메일 / 메일 size kB 표시.
+    - 미리보기와 발송 버튼이 같은 화면에 보이도록 layout flex / sticky 적용.
+
+13) **버그 fix**: 커스텀 세트 선택 후 등록해도 SplitTable 이 인폼로그/detail/메일에 제대로 안 붙음 (사용자 7차 직언).
+    - 원인 의심: wizard 의 첨부 선택 state 가 POST payload 에 안 들어가거나, server 가 attached_sets/embed_table 등 필드를 무시.
+    - 수정:
+      a. POST /api/informs payload 에 `attached_sets: [{id, source}]` (선택된 세트들) 명시 전달.
+      b. server 가 attached_sets 받아 entry 에 저장 + detail 응답에 attachments[] 포함.
+      c. detail / 카드 / 메일 빌더가 attachments[] 순회해서 SplitTable 스냅샷 stack 렌더.
+      d. 자동 첨부 코드 잔존하면 완전 제거.
+      e. tests/inform/test_inform_attachment_roundtrip.py 신규: wizard payload → POST → detail 응답에 attachments 일치 → 메일 본문에 SplitTable 스냅샷 포함.
+    - 회귀: 기존 인폼 (attached_sets 미지정) 도 detail 정상 (빈 attachments).
+
+12) "신규 인폼 등록" 버튼 명확화.
+    - 작은 + 박스 완전 제거.
+    - 모든 탭 (인폼·매트릭스·로그) 헤더 우측에 "**+ 신규 인폼 등록**" text+icon 버튼.
+    - padding "8px 14px", border-radius 8, background var(--accent), color #fff, font-weight 900, font-size 14, min-width 140px. hover 살짝 어둡게.
+
+[코드 reference]
+- frontend/src/pages/My_Inform.jsx
+  * INFORM_TABS, DEFAULT_SHARED_FILTERS
+  * NewInformButton (이미 v2 에서 만든 것 추정 — L3047/3070/3079 호출)
+  * InformWizard L4384 (root_lot/fab_lot 리스트, 첨부 단계, 메일 미리보기 정리)
+  * InformCardList (카드 시각 정리, fab_lot 단위 그루핑)
+  * LotProgressMatrix (Σ 제거, 모듈명 크게, 검색만)
+  * openCreateWizard L1964
+- backend/routers/informs.py
+  * list endpoint 응답에 root_lot_module_counts 추가
+  * /splittable-sets 신규 + 캐시
+  * reason default fill ("PEMS" or empty)
+- backend/routers/splittable.py
+  * paste-sets (L2910), customs (L3022) — 통합 list source
+- frontend/src/pages/SplitTable/* — 스냅샷 폭 cleanup
+
+[작업 순서]
+
+A) Backend
+   1. /api/informs (list) 응답에 root_lot_module_counts 추가.
+   2. POST /api/informs 의 reason 인자가 빈 값이면 server side 에서 "PEMS" 자동 fill.
+   3. /api/informs/splittable-sets?product= 신규 + in-memory cache (TTL 300s) + invalidation.
+   4. tests/inform/test_inform_lot_strip.py 신규.
+   5. tests/inform/test_splittable_sets_cache.py 신규.
+   6. tests/inform/test_inform_reason_default.py 신규: reason 빈 값 → "PEMS" auto fill.
+
+B) Frontend (My_Inform.jsx)
+   1. INFORM_TABS 순서 [inform, matrix, audit] 로 변경. URL query 허용값 동기.
+   2. 카드/표 토글 + InformCardList 제거. InformVirtualList (표) 만 사용. informViewMode state 제거.
+   3. InformVirtualList 컬럼 재정리 (fab_lot/root_lot/제품/제목/상태/작성자/시간/카운트/모듈 1개) + fab_lot 잘림 X 충분 폭 + 절대시각 + 우측 단일 모듈 pill.
+   4. reason 표시 부분 모두 제거 (표 column / detail 헤더 / 메일 prefix / wizard).
+   5. 매트릭스 — Σ 제거, 모듈명 크게, 검색 input 만 1개 (root_lot), 제품/상태 필터 제거 (PageGear 안으로 격하).
+   6. Wizard root_lot/fab_lot 리스트 panel 추가 (제품 선택 → root list → fab list 흐름, 모두 화면 가시).
+   7. Wizard 첨부 단계 — 3 sub-tab (KNOB/기존세트/새세트) + 자동 첨부 코드 제거.
+   8. Wizard reason 입력 단계 제거 — 자동 "PEMS".
+   9. Wizard 메일 미리보기 영역 가시성 fix (height/overflow/풀폭).
+   10. SplitTable 스냅샷 폭 cleanup (모든 호출 지점).
+   11. "+ 신규 인폼 등록" 버튼 — text + 명확한 스타일 (NewInformButton 컴포넌트 강화).
+
+C) 회귀 (반드시 유지)
+   - task #13 v2 (3탭, list default, drawer 폐기 풀폭 detail, 기간 폐기, 모듈색 row, + 통합) — 이미 적용된 부분 유지.
+   - task #12, #11, #8, #4, #1 — 회귀 X.
+   - 메일 throttle, 댓글, 첨부, soft-delete, audit log 자동 기록.
+
+D) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+
+E) 테스트
+   - 위 신규 테스트 + 기존 회귀.
+   - smoke (scripts/smoke_test.py) 통과.
+
+[제약]
+- 페이지 신설 X — My_Inform.jsx 안 + 백엔드 router 안에서 보강.
+- backend endpoint 시그니처 호환 (필드 추가 또는 신규 endpoint).
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~13 회귀 X.
+- 자동 첨부 제거가 기존 첨부 표시(이미 첨부된 인폼) 를 손상하면 안 됨 — 기존 첨부 보존, 신규 wizard 만 명시 선택.
+- reason "PEMS" 제거는 표시 only — 데이터 호환 유지.
+
+[완료 기준]
+- 탭 순서 [인폼, 매트릭스, 로그].
+- 인폼 탭 = 표(table) 모드만, fab_lot_id 잘림 X (충분 폭), 우측 끝 모듈 1개 pill, 시간은 절대시각 (HH:MM 또는 MM/DD HH:MM).
+- reason "PEMS" 표시 어디에도 없음 (자동 fill 보존).
+- 매트릭스 = Σ 없음, 모듈명 크게, 검색 = 랏만.
+- Wizard 에 root_lot/fab_lot 리스트가 명시 보임.
+- Wizard 첨부 = 자동 X, KNOB/기존세트/새세트 3옵션.
+- Wizard 메일 미리보기 풀폭+충분 height.
+- SplitTable 25 wafer 한번에 표시.
+- "+ 신규 인폼 등록" 버튼 텍스트로 명확.
+- /api/informs/splittable-sets 캐시 endpoint.
+- /api/informs (list) 응답에 root_lot_module_counts.
+- frontend build + setup.py 재빌드 통과.
+- 신규 테스트 + 기존 회귀 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.

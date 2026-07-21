@@ -1,0 +1,84 @@
+{
+  "id": "handoff_v9_H6",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T16:27:34+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H6] Home 가치 제안 섹션 '3가지 질문'",
+  "summary": "My_Home.jsx 최상단에 UXKit.TwoCol 기반 '3가지 질문' (Tracker/SplitTable/Inform 카드) 추가 + /api/home/summary suggested_actions 제공",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H6",
+    "estimated_effort": "1일",
+    "target_score_delta": "UX +0.15",
+    "dependencies": [
+      "H1"
+    ]
+  },
+  "acceptance_criteria": [
+    "smoke: GET /api/home/summary 응답에 suggested_actions 필드 3건 이상",
+    "수동: 신규 계정 로그인 → Home 첫 화면 '3가지 질문' 상단 가시",
+    "수동: 3개 카드 클릭 시 각 추천 페이지로 정상 이동 + 추천 액션 반영",
+    "기존 기능 카드 그리드 하단에 여전히 존재",
+    "npm run build 성공"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Home.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\home.py"
+  ],
+  "verification": [
+    "code: backend/routers/home.py 신규 추가 — /api/home/summary 가 suggested_actions 3건과 highlights 반환",
+    "code: frontend/src/pages/My_Home.jsx 가 /api/home/summary 를 불러와 최상단 '3가지 질문' 섹션을 TwoCol 기반으로 렌더",
+    "code: 추천 카드 3개가 tracker / splittable / inform 페이지로 각각 이동하도록 연결",
+    "code: 기존 기능 카드 그리드는 새 섹션 하단에 그대로 유지",
+    "build: cd frontend && npm run build 성공",
+    "syntax: python3 -m py_compile backend/routers/home.py 성공",
+    {
+      "at": "2026-04-24T16:27:34+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 29,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 29/29 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 3,
+      "criteria_total": 5,
+      "criteria_detail": [
+        {
+          "criterion": "smoke: GET /api/home/summary 응답에 suggested_actions 필드 3건 이상",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "수동: 신규 계정 로그인 → Home 첫 화면 '3가지 질문' 상단 가시",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "수동: 3개 카드 클릭 시 각 추천 페이지로 정상 이동 + 추천 액션 반영",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "기존 기능 카드 그리드 하단에 여전히 존재",
+          "ok": false,
+          "hits": 0,
+          "tokens": 0
+        },
+        {
+          "criterion": "npm run build 성공",
+          "ok": false,
+          "hits": 0,
+          "tokens": 1
+        }
+      ]
+    }
+  ],
+  "resolution": "Home 상단에 가치 제안용 '3가지 질문' 섹션을 추가했다. 백엔드 /api/home/summary 가 suggested_actions 와 highlights 를 제공하고, 프런트 My_Home 이 이를 받아 Tracker, SplitTable, Inform 으로 바로 이동하는 질문형 카드 3개를 최상단에 노출한다. 기존 홈 카드 그리드는 아래에 그대로 유지된다."
+}

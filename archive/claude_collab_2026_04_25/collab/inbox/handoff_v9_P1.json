@@ -1,0 +1,32 @@
+{
+  "id": "handoff_v9_P1",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[P1] GitHub Actions CI 도입",
+  "summary": ".github/workflows/ci.yml + build.yml + scripts/ci_notify.py 신규. ruff/pytest/npm build/audit 매트릭스 (python 3.10/3.11/3.12)",
+  "context": {
+    "track": "platform_v9_2",
+    "backlog_id": "P1",
+    "estimated_effort": "3일",
+    "target_score_delta": "안정성 +0.2, 확장성 +0.3",
+    "dependencies": ["F3"]
+  },
+  "acceptance_criteria": [
+    "첫 PR → CI green (lint + test + build + audit 모두 pass)",
+    "일부러 broken commit (pytest assertion 깨뜨리기) → CI red + 알림 도착",
+    "main branch protection 룰: CI 성공 필수",
+    "docs/ci.md 간단 가이드 (실행 / 디버깅)"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\.github\\workflows\\ci.yml",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\.github\\workflows\\build.yml",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\scripts\\ci_notify.py"
+  ],
+  "verification": [],
+  "resolution": ""
+}

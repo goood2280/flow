@@ -1,0 +1,110 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow)의 인폼 페이지(My_Inform.jsx)에 "제품별 / 랏별 모듈 진행 매트릭스" 뷰를 복원/추가해. 한 화면에서 랏별로 어느 모듈이 끝났고 어디가 안 됐는지 체크리스트 매트릭스로 한 눈에 보여야 함. task #8 의 3-pane 구조는 유지.
+
+[배경 — 사용자 의도]
+- task #8 이전 UX 에서는 제품/랏별로 모듈 인폼 진행도가 매트릭스 테이블로 보여 매우 직관적이었다.
+- task #8 이후 모듈 progress 요약 카드 + 인폼 list 만 보여서, 한 lot 의 어느 모듈이 됐고 안 됐는지 한 화면에 안 나옴.
+- 랏별로 얼마나 진행했고 뭐가 됐는지 사용자가 알 수가 없는 상태.
+
+[원하는 결과]
+- 좌측 column 또는 좌측 상단의 모듈 progress 요약 카드 옆/아래에 "랏별 진행 매트릭스" 토글 또는 sub-탭 추가.
+- 매트릭스 테이블:
+  * 행: 제품 그룹 헤더(PRODA/PRODB/...) + 그 product 의 root_lot_id 들.
+  * 열: 모듈 list (admin_settings.inform_user_modules union 또는 inform.config 의 modules 순서).
+  * 셀: 한 (lot, module) 쌍의 인폼 상태 — completed(초록 ✓) / in_progress(주황 ◯) / received(파랑 ◎) / pending(회색 —) / 없음(빈 칸).
+  * 마지막 컬럼: 진행도 (n/N + 작은 progress bar).
+- 셀 클릭 시 우측 detail 탭으로 그 (lot, module) 인폼 1건이 활성화되어 펼쳐짐 (다중이면 가장 최근).
+- 행 클릭 시 우측 list 가 그 lot 으로 필터.
+- 검색/필터: 제품 + root_lot_id 검색 + 상태 필터.
+
+[현 코드 reference]
+- frontend/src/pages/My_Inform.jsx (task #8 push 86a64ca 이후 3-pane 구조)
+- backend/routers/informs.py
+  * GET /api/informs/modules/summary (task #8 신규) — 모듈별 카운트
+  * 인폼 list 조회 endpoint(이미 있음)
+
+[작업]
+
+A) Backend 신규/보강 endpoint
+   ★ GET /api/informs/lot-matrix?product=&days=&search=
+   - 응답: {
+       products: [
+         {
+           product: "PRODA",
+           lots: [
+             {
+               root_lot_id: "A1001",
+               modules: { "GATE": {state:"completed", inform_id:"...", checked_at:"..."},
+                          "STI":  {state:"in_progress", inform_id:"...", ...},
+                          ...},
+               progress: {done: 5, total: 11},
+               last_update: "2026-..."
+             }, ...
+           ]
+         }, ...
+       ],
+       module_order: ["GATE","STI","PC","MOL","BEOL","ET","EDS","S-D Epi","Spacer","Well","기타"]
+     }
+   - state 결정 로직:
+     * 한 (lot, module) 에 인폼이 여러 건이면 가장 최근(또는 가장 진행된) 것의 상태.
+     * received → in_progress → completed 순. completed 1건이라도 있으면 completed.
+   - days 기본 90, ?days 옵션. ?search 는 root_lot_id substring.
+   - 권한: 모든 유저 read OK.
+
+B) Frontend 매트릭스 뷰 (My_Inform.jsx)
+   ★ 좌측 column 의 모듈 progress 요약 카드 아래에 sub-탭 토글:
+   - 탭 1: "모듈별 진행 요약" (현재 카드)
+   - 탭 2: "랏별 진행 매트릭스" (신규)
+   - default 는 매트릭스 (사용자 의도 우선).
+   ★ 매트릭스 컴포넌트:
+   - 컴팩트한 표. 행 height 32, 셀 width 40~50.
+   - 첫 column: root_lot_id (제품 그룹 헤더 sticky).
+   - 그 다음 N columns: 모듈 list. 셀 안에 작은 아이콘 + 색.
+     * completed: 초록 배경 #dcfce7 + ✓
+     * in_progress: 주황 배경 #fed7aa + ◯
+     * received: 파랑 배경 #dbeafe + ◎
+     * pending: 회색 배경 #f3f4f6 + —
+     * 없음: 빈 셀
+   - 마지막 column: 진행도 "5/11" + 가로 progress bar.
+   - sticky header (모듈 라벨) + sticky 첫 column (root_lot_id).
+   - 셀 hover 시 tooltip — 작성자 / 시간 / 사유.
+   - 셀 클릭 → 우측 detail 탭에 그 인폼 활성화.
+   - 행 클릭 → 우측 인폼 list 를 그 lot 으로 필터.
+   - 제품별 그룹 헤더(PRODA, PRODB) — 행 위에 큰 글씨 + 회색 배경.
+
+C) 검색/필터 정돈
+   - 매트릭스 위 검색창: root_lot_id substring + 상태 다중 선택 chip(received/in_progress/completed).
+   - 결과 0 이면 "검색 조건에 맞는 lot 이 없어요" 한국어 안내.
+
+D) 회귀 케이스 (반드시 유지)
+   - 모듈별 progress 요약 카드 (task #8) — 탭 1 로 보존.
+   - 인폼 list / detail 5탭 (task #8).
+   - 5-step wizard.
+   - 모듈 wise 메일 (task #1), KNOB 강조, throttle.
+   - 권한 매트릭스 정합 (task #4).
+
+E) 테스트
+   - tests/inform/test_inform_lot_matrix.py 신규:
+     * GET /api/informs/lot-matrix 응답 shape, state 결정 로직(여러 인폼 → 가장 진행된 상태), days/search 필터.
+     * progress 카운트 정확.
+     * module_order 가 admin_settings 의 모듈 순서와 일치.
+   - 기존 tests/inform/* 회귀 X.
+
+F) 빌드
+   - python3 _build_setup.py 재빌드.
+   - npm --prefix frontend run build.
+
+[제약]
+- backend endpoint 시그니처 변경 X. 추가만.
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~10 회귀 X.
+- task #8 의 3-pane 구조 유지(매트릭스는 좌측 sub-탭으로 추가).
+
+[완료 기준]
+- 좌측에 "랏별 진행 매트릭스" sub-탭, 제품 그룹 + lot 행 + 모듈 columns + 상태 색 셀 + 진행도 bar.
+- 셀 클릭 → 인폼 detail 활성화. 행 클릭 → list 필터.
+- 신규 GET /api/informs/lot-matrix 동작.
+- pytest tests/inform 회귀 + 신규 통과.
+- frontend build + setup.py 재빌드 통과.
+- git status 의도된 변경만.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.

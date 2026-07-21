@@ -1,0 +1,35 @@
+{
+  "id": "handoff_v9_L2",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p3",
+  "status": "open",
+  "title": "[L2] DVC 방향성 뱃지",
+  "summary": "admin_settings.dvc_directions + UXKit.Pill size=xs + Dashboard/SplitTable 헤더 뱃지 렌더 + dvc-curator 자동 제안 + Admin 매트릭스 UI",
+  "context": {
+    "track": "longterm_v9_3plus",
+    "backlog_id": "L2",
+    "estimated_effort": "2주",
+    "target_score_delta": "도메인 +0.2",
+    "dependencies": ["F1"]
+  },
+  "acceptance_criteria": [
+    "도메인 UAT — 주요 parameter 10+ 방향 합의",
+    "Dashboard/SplitTable 헤더 뱃지 가시",
+    "dvc-curator 제안 → 승인 flow 동작",
+    "pytest 10 케이스"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\admin_settings.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\admin.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\UXKit.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Dashboard.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_SplitTable.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Admin.jsx"
+  ],
+  "verification": [],
+  "resolution": ""
+}

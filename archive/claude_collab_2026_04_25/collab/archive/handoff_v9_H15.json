@@ -1,0 +1,115 @@
+{
+  "id": "handoff_v9_H15",
+  "created_at": "2026-04-24T17:20:00+09:00",
+  "updated_at": "2026-04-24T17:39:03+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H15] Home 에 '최근 변경사항' 카드 + 자동 빌드/반영 피드백 루프",
+  "summary": "매 archive 이후 자동 생성되는 release_notes.json 을 Home 에서 조회해 '최근 변경사항' 섹션 렌더. 사용자가 매 iteration 뭐 바뀌었는지 한눈에 확인 → 즉시 방향 제시 가능.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H15",
+    "estimated_effort": "1일",
+    "target_score_delta": "UX +0.1 / 관측 +0.1",
+    "user_request": "2026-04-24 사용자 원문: '적당히 업데이트 마치고 나면 홈화면에도 반영해주고 npm run build하고 사용자한테도 보여줘야해 그래야지 계속 바꿀방향 등 제시하지'",
+    "dependencies": [],
+    "related": "daemon 에 post_batch_sync 훅 추가됨 (scripts/autonomy_daemon.py) + scripts/update_release_notes.py 신설. 이 H15 는 FE/BE 연결 영역."
+  },
+  "acceptance_criteria": [
+    "BE 엔드포인트 신설: GET /api/home/release-notes → data/holweb-data/release_notes.json 내용 리턴 (auth 필요)",
+    "Home 카드 신규: '최근 변경사항' — 최신 5~10건 표시 (title + backlog_id + 시각)",
+    "각 row 클릭 시 상세 모달 or expand (resolution 본문 + archived_at)",
+    "데이터 없으면 '아직 적용된 변경사항 없음' 플레이스홀더",
+    "Admin 전용 토글: 더 많은 변경 (15건 전체) 보기",
+    "collab/.build_needed 마커 파일 존재 시: uvicorn reload 권장 알림 (또는 자동 npm build 트리거 가능시 자동)",
+    "smoke: /api/home/release-notes 200 + JSON 응답",
+    "npm run build 성공 + Home 카드 실제 렌더 캡처 가능"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Home.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\home.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\data\\holweb-data\\release_notes.json",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\scripts\\update_release_notes.py"
+  ],
+  "verification": [
+    "backend/routers/home.py 에 GET /api/home/release-notes 추가: release_notes.json + collab/.build_needed 존재 여부 + admin 여부를 auth-required 응답으로 반환",
+    "frontend/src/pages/My_Home.jsx 에 '최근 변경사항' 카드 추가: 최신 5건 기본 표시, row 클릭 시 resolution/archived_at expand, admin 전용 '더 많은 변경 보기' 로 최대 15건 표시",
+    "releaseNotes.build_needed=true 일 때 Home 상단 Banner 경고 표시하도록 연결",
+    "python3 flow/scripts/update_release_notes.py --limit 15",
+    "결과: release_notes.json generated_at=2026-04-24T17:37:17+09:00, total_archived=14, recent items=14",
+    "smoke(직접 호출): home.release_notes(request=None) -> keys=[build_needed, generated_at, is_admin, recent, total_archived], has_recent=true",
+    "검증: cd /mnt/d/TEST_Making_Video/semi_all/flow/frontend && npm run build",
+    "결과: vite build 성공 (chunk size warning only)",
+    {
+      "at": "2026-04-24T17:39:03+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 8,
+      "criteria_total": 8,
+      "criteria_detail": [
+        {
+          "criterion": "BE 엔드포인트 신설: GET /api/home/release-notes → data/holweb-data/release_notes.json 내용 리턴 (auth 필요)",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "Home 카드 신규: '최근 변경사항' — 최신 5~10건 표시 (title + backlog_id + 시각)",
+          "ok": true,
+          "hits": 4,
+          "tokens": 5
+        },
+        {
+          "criterion": "각 row 클릭 시 상세 모달 or expand (resolution 본문 + archived_at)",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "데이터 없으면 '아직 적용된 변경사항 없음' 플레이스홀더",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "Admin 전용 토글: 더 많은 변경 (15건 전체) 보기",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "collab/.build_needed 마커 파일 존재 시: uvicorn reload 권장 알림 (또는 자동 npm build 트리거 가능시 자동)",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "smoke: /api/home/release-notes 200 + JSON 응답",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "npm run build 성공 + Home 카드 실제 렌더 캡처 가능",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        }
+      ]
+    }
+  ],
+  "resolution": "Home 에 최근 변경사항 카드와 release notes 조회 경로를 연결했다. 백엔드는 /api/home/release-notes 로 data/holweb-data/release_notes.json 내용을 인증 기반으로 반환하고 collab/.build_needed 마커 여부도 함께 내려준다. 프런트는 이를 받아 최신 변경 5건을 기본 표시하고, 각 row 클릭 시 resolution 본문과 archived 시각을 확장해서 보여주며, 관리자는 '더 많은 변경 보기' 로 15건까지 볼 수 있다. release_notes.json 은 update_release_notes.py 를 실행해 최신 archive 기준으로 갱신했다.",
+  "design_notes": {
+    "data_pipeline": "daemon(autonomy_daemon.py) 이 archive 성공 시 post_batch_sync 호출 → update_release_notes.py 실행 → release_notes.json 생성/갱신 → Home 이 /api/home/release-notes 로 조회.",
+    "build_trigger": "daemon 이 collab/.build_needed 마커 생성. Claude 워커가 이 마커 감지하면 cd frontend && npm run build 실행 후 마커 삭제. 실패 시 재시도.",
+    "home_card_layout": "기존 Home 카드 그리드에 추가. UXKit.StatusPalette + Pill 사용. 좌측 아이콘 📦, 우측 '자세히' 링크.",
+    "release_note_example": "{ 'id': 'handoff_v9_H1', 'title': '[H1] ML 탭 BETA', 'summary': '...', 'resolution': '...', 'archived_at': '2026-04-24T16:23:49+09:00', 'priority': 'p1', 'backlog_id': 'H1' }"
+  }
+}

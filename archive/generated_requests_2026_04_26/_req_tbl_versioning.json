@@ -1,0 +1,1 @@
+{"text":"[TableMap 가져오기 + 버전 관리] (1) 새로 생성 기능 외에 DB/Base 에 이미 있는 데이터(parquet/csv) 를 TableMap 에 import 하는 기능 — 소스 선택 → 스키마 프리뷰 → 테이블 노드로 등록. (2) 테이블 버전 관리 — 각 테이블별 최근 30개 버전 보존(기존 VERSIONS_DIR 확장), versions/list + versions/rollback API. UI 에서 버전 목록 + 이전 버전 미리보기 + 롤백 버튼.","from":"user"}

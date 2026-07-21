@@ -1,0 +1,1 @@
+{"text":"[Dashboard 주요 사용 시나리오 지원] 실제 Dashboard 사용 패턴 분석: (1) 여러 테이블 JOIN 해서 scatter chart (이미 LEFT JOIN 있음, UX 다듬기), (2) 복수 테이블 간 상관(corr.) chart — 변수 pair별 correlation heatmap 신규 차트 타입, (3) KNOB 값별 비율 보기 (pie/bar 는 있으나 KNOB 자동 추천), (4) FAB 진행성 (시간대별 step_id progression timeline, sankey/gantt). ML_TABLE × FAB hive 조합 chart 프리셋 제공.","from":"user"}

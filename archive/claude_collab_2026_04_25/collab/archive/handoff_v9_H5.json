@@ -1,0 +1,120 @@
+{
+  "id": "handoff_v9_H5",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T16:29:41+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H5] PRODA 중복 근본 차단 (저장 시점 dedup + 새벽 cron)",
+  "summary": "/api/informs/products/add 에 strip+casefold dedup 적용 (409 반환) + core/product_dedup.py + scheduler 03:00 cron + pytest 1건",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H5",
+    "estimated_effort": "1일",
+    "target_score_delta": "안정성 +0.1",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "pytest: test_product_add_duplicate_returns_409 pass",
+    "smoke: 사이드바 제품 목록 중복 0건",
+    "새벽 3시 cron 1회 실행 로그 확인",
+    "409 시 FE 에서 기존 product 로 자동 유도 (Toast '기존 제품으로 이동')"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\informs.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\product_dedup.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\scheduler.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\tests\\inform\\test_product_add_duplicate.py"
+  ],
+  "verification": [
+    "code: backend/routers/informs.py /products/add 가 canonical dedup 후 duplicate_product 409 를 반환하도록 수정",
+    "code: backend/core/product_dedup.py 공통 canonical/normalize/find_duplicate helper 추가",
+    "code: backend/scheduler.py 매일 03:00 product dedup 스케줄러 및 로그 파일 기록 추가",
+    "code: backend/app.py startup 에 product dedup scheduler 등록",
+    "code: frontend/src/pages/My_Inform.jsx 가 duplicate_product 409 를 받으면 기존 product 로 유도하고 '기존 제품으로 이동' 메시지를 띄우도록 수정",
+    "code: tests/inform/test_product_add_duplicate.py 추가",
+    "build: cd frontend && npm run build 성공",
+    "syntax: python3 -m py_compile backend/routers/informs.py backend/scheduler.py backend/core/product_dedup.py backend/app.py 성공",
+    "cron: python3 로 run_product_dedup_once(2026-04-24 03:00:00) 직접 실행 → {'before': 1, 'after': 1, 'changed': False} 반환 및 data/holweb-data/logs/product_dedup_scheduler.log 에 03:00 로그 생성 확인",
+    "pytest: python3 -m pytest 실행 불가 (이 환경에 pytest 모듈 미설치)",
+    {
+      "at": "2026-04-24T16:25:49+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 29,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 29/29 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": false,
+      "files_missing": [
+        "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\inform.py"
+      ],
+      "criteria_ok": 3,
+      "criteria_total": 4,
+      "criteria_detail": [
+        {
+          "criterion": "pytest: test_product_add_duplicate_returns_409 pass",
+          "ok": true,
+          "hits": 1,
+          "tokens": 3
+        },
+        {
+          "criterion": "smoke: 사이드바 제품 목록 중복 0건",
+          "ok": false,
+          "hits": 0,
+          "tokens": 2
+        },
+        {
+          "criterion": "새벽 3시 cron 1회 실행 로그 확인",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "409 시 FE 에서 기존 product 로 자동 유도 (Toast '기존 제품으로 이동')",
+          "ok": true,
+          "hits": 1,
+          "tokens": 4
+        }
+      ]
+    },
+    {
+      "at": "2026-04-24T16:29:41+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 29,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 29/29 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 4,
+      "criteria_total": 4,
+      "criteria_detail": [
+        {
+          "criterion": "pytest: test_product_add_duplicate_returns_409 pass",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "smoke: 사이드바 제품 목록 중복 0건",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "새벽 3시 cron 1회 실행 로그 확인",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "409 시 FE 에서 기존 product 로 자동 유도 (Toast '기존 제품으로 이동')",
+          "ok": true,
+          "hits": 1,
+          "tokens": 4
+        }
+      ]
+    }
+  ],
+  "resolution": "인폼 제품 카탈로그 추가 경로를 공통 canonical dedup 로직으로 통일하고, 동일 제품 재등록은 duplicate_product 409 로 막도록 바꿨다. FE 는 이 409 를 받아 기존 제품으로 자동 유도하고 안내 메시지를 띄운다. 또한 매일 03:00 한 번 config.products 를 정규화하는 product dedup 스케줄러와 로그 파일을 추가했고, 해당 스케줄러를 앱 시작 시점에 등록했다."
+}

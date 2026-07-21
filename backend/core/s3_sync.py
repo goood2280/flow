@@ -1,0 +1,421 @@
+"""core/s3_sync.py v7.3 — Push artifacts (reformatters, matching tables, product YAMLs)
+to S3 so the remote compute backend can read them.
+
+boto3 is optional: if not installed, the sync path logs the intent and marks
+each file as "queued" in the local status JSON. This lets engineers configure
+and preview the sync without needing AWS creds on dev machines.
+
+Config lives at `data/flow-data/s3_sync.json`:
+  {
+    "bucket": "my-bucket",
+    "prefix": "flow/artifacts/",
+    "region": "ap-northeast-2",
+    "enabled": true
+  }
+
+Status (append-only log) at `data/flow-data/s3_sync_status.jsonl`.
+AWS credentials/config are read from `data/flow-data/s3_ingest/aws/`.
+"""
+from __future__ import annotations
+import hashlib
+import json
+import logging
+import os
+import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+from core import aws_credentials as _aws_credentials
+
+logger = logging.getLogger("flow.s3_sync")
+
+try:
+    import boto3 as _boto3
+    from botocore.config import Config as _BotoConfig
+    _HAS_BOTO = True
+except Exception:
+    _boto3 = None
+    _BotoConfig = None
+    _HAS_BOTO = False
+
+# 네트워크 단절/S3 장애 시 업로드 스레드가 무기한 붙잡히지 않도록 타임아웃 고정.
+_BOTO_TIMEOUT_CONFIG = (
+    _BotoConfig(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2})
+    if _BotoConfig is not None else None
+)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Config
+# ──────────────────────────────────────────────────────────────────
+DEFAULT_CONFIG = {
+    "bucket": "",
+    "prefix": "flow/artifacts/",
+    "region": "ap-northeast-2",
+    "enabled": False,
+    "profile": "",      # optional named AWS profile
+}
+
+
+def master_enabled() -> bool:
+    """v9.1.x: 관리자 S3 전역 마스터 스위치 — admin_settings.json `s3_master_enabled`.
+
+    공유 flow-data 의 admin_settings.json 에 저장되므로 두 서버에 함께 적용된다.
+    파일/키가 없으면 True (기존 동작 유지)."""
+    try:
+        from core.paths import PATHS
+        p = PATHS.data_root / "admin_settings.json"
+        if p.is_file():
+            data = json.loads(p.read_text("utf-8")) or {}
+            v = data.get("s3_master_enabled")
+            if v is not None:
+                return bool(v)
+    except Exception:
+        pass
+    return True
+
+
+def disabled_by_env() -> bool:
+    """FLOW_DISABLE_S3_SYNC=1 turns off all artifact uploads on this server
+    (e.g. the dev server when prod owns the shared bucket)."""
+    return os.environ.get("FLOW_DISABLE_S3_SYNC", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def disabled_by_role() -> bool:
+    """v9.4.5: worker(개발서버) 역할은 S3 업로드를 하지 않는다 — 외부 서비스
+    연동은 운영(api)·standalone 전용 (worker_dispatch.external_services_enabled).
+    env 플래그 없이도 역할 지정만으로 개발서버 업로드가 꺼지도록 하는 가드."""
+    try:
+        from core import worker_dispatch
+        return not worker_dispatch.external_services_enabled()
+    except Exception:
+        return False
+
+SYNCABLE_DB_ROOT_FILES = {
+    "matching_step.csv",
+    "step_matching.csv",
+    "knob_ppid.csv",
+    # 실제 knob 룰북 파일명 (knob_ppid.csv 는 legacy alias) — Valve 알람 판정 반영분 동기화
+    "ppid_knob.csv",
+    # Valve vehicle_matching 마스터 (vehicle,product,step_id,step_desc)
+    "Vehicle_matching.csv",
+    "vehicle_matching.csv",
+    "inline_matching.csv",
+    "vm_matching.csv",
+    "mask.csv",
+    "inline_item_map.csv",
+    "inline_step_match.csv",
+    "inline_subitem_pos.csv",
+    "yld_shot_agg.csv",
+}
+
+SYNCABLE_DB_CACHE_FILES = {
+    "lot_progress_latest_lot_by_root_wafer.parquet",
+}
+
+
+def load_config(data_root: Path) -> Dict[str, Any]:
+    fp = data_root / "s3_sync.json"
+    if not fp.exists():
+        return DEFAULT_CONFIG.copy()
+    try:
+        d = json.loads(fp.read_text(encoding="utf-8"))
+        merged = DEFAULT_CONFIG.copy(); merged.update(d)
+        return merged
+    except Exception as exc:
+        logger.warning("Failed to read S3 sync config %s: %s", fp, exc)
+        return DEFAULT_CONFIG.copy()
+
+
+def save_config(data_root: Path, cfg: Dict[str, Any]) -> None:
+    fp = data_root / "s3_sync.json"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+# ──────────────────────────────────────────────────────────────────
+# Status log
+# ──────────────────────────────────────────────────────────────────
+def _status_path(data_root: Path) -> Path:
+    return data_root / "s3_sync_status.jsonl"
+
+
+def _append_status(data_root: Path, entry: Dict[str, Any]) -> None:
+    fp = _status_path(data_root)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    entry["ts"] = datetime.datetime.now().isoformat()
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def recent_status(data_root: Path, limit: int = 50) -> List[Dict[str, Any]]:
+    fp = _status_path(data_root)
+    if not fp.exists():
+        return []
+    lines = fp.read_text(encoding="utf-8").splitlines()[-limit:]
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except Exception as exc:
+            logger.debug("Skipping malformed S3 sync status line: %s", exc)
+    return out
+
+
+def last_sync_index(data_root: Path) -> Dict[str, Dict[str, Any]]:
+    """Return {artifact_key: last_status} — latest entry per file."""
+    idx = {}
+    for e in recent_status(data_root, limit=5000):
+        k = e.get("key") or e.get("file", "")
+        if k:
+            idx[k] = e  # later entries overwrite → ends with latest
+    return idx
+
+
+# ──────────────────────────────────────────────────────────────────
+# Artifact discovery
+# ──────────────────────────────────────────────────────────────────
+def list_artifacts(data_root: Path, db_root: Path) -> List[Dict[str, Any]]:
+    """Discover all syncable artifacts grouped by type.
+
+    Types:
+      reformatter       data/flow-data/reformatter/*.json
+      matching          <db_root>/matching/*.csv
+      product_config    data/flow-data/product_config/*.yaml
+    """
+    out = []
+    # reformatter
+    rf_dir = data_root / "reformatter"
+    if rf_dir.exists():
+        for fp in sorted(rf_dir.glob("*.json")):
+            out.append({
+                "type": "reformatter", "product": fp.stem,
+                "path": str(fp), "key": f"reformatter/{fp.name}",
+                "size": fp.stat().st_size,
+                "sha1": _sha1(fp),
+                "mtime": fp.stat().st_mtime,
+            })
+    # matching (legacy subdir)
+    mt_dir = db_root / "matching"
+    if mt_dir.exists():
+        for fp in sorted(mt_dir.glob("*.csv")):
+            out.append({
+                "type": "matching", "product": "",
+                "path": str(fp), "key": f"matching/{fp.name}",
+                "size": fp.stat().st_size,
+                "sha1": _sha1(fp),
+                "mtime": fp.stat().st_mtime,
+            })
+    # matching / rulebook (current db_root direct files)
+    if db_root.exists():
+        seen_root_files: set = set()
+        for name in sorted(SYNCABLE_DB_ROOT_FILES):
+            fp = db_root / name
+            if not fp.exists() or not fp.is_file():
+                continue
+            # Windows 는 대소문자 무시 — 케이스 변형 alias 로 인한 중복 업로드 방지
+            resolved = str(fp.resolve()).casefold()
+            if resolved in seen_root_files:
+                continue
+            seen_root_files.add(resolved)
+            out.append({
+                "type": "matching", "product": "",
+                "path": str(fp), "key": f"matching/{fp.name}",
+                "size": fp.stat().st_size,
+                "sha1": _sha1(fp),
+                "mtime": fp.stat().st_mtime,
+            })
+        cache_dir = db_root / "cache"
+        if cache_dir.exists():
+            for name in sorted(SYNCABLE_DB_CACHE_FILES):
+                fp = cache_dir / name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                out.append({
+                    "type": "cache", "product": "",
+                    "path": str(fp), "key": f"cache/{fp.name}",
+                    "size": fp.stat().st_size,
+                    "sha1": _sha1(fp),
+                    "mtime": fp.stat().st_mtime,
+                })
+    # product_config (yaml)
+    yc_dir = data_root / "product_config"
+    if yc_dir.exists():
+        for fp in sorted(yc_dir.glob("*.yaml")):
+            out.append({
+                "type": "product_config", "product": fp.stem,
+                "path": str(fp), "key": f"product_config/{fp.name}",
+                "size": fp.stat().st_size,
+                "sha1": _sha1(fp),
+                "mtime": fp.stat().st_mtime,
+            })
+    return out
+
+
+def _sha1(fp: Path) -> str:
+    h = hashlib.sha1()
+    try:
+        with fp.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+        return h.hexdigest()[:12]
+    except Exception as exc:
+        logger.debug("Unable to hash S3 sync artifact %s: %s", fp, exc)
+        return ""
+
+
+def artifact_from_path(data_root: Path, db_root: Path, path: Path) -> Optional[Dict[str, Any]]:
+    fp = Path(path)
+    if not fp.exists() or not fp.is_file():
+        return None
+    try:
+        fp = fp.resolve()
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync artifact path %s: %s", fp, exc)
+    try:
+        data_root_r = data_root.resolve()
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync data root %s: %s", data_root, exc)
+        data_root_r = data_root
+    try:
+        db_root_r = db_root.resolve()
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync DB root %s: %s", db_root, exc)
+        db_root_r = db_root
+
+    try:
+        rel = fp.relative_to(data_root_r)
+        if rel.parts[:1] == ("reformatter",) and fp.suffix.lower() == ".json":
+            return {
+                "type": "reformatter", "product": fp.stem,
+                "path": str(fp), "key": f"reformatter/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+        if rel.parts[:1] == ("product_config",) and fp.suffix.lower() in (".yaml", ".yml"):
+            return {
+                "type": "product_config", "product": fp.stem,
+                "path": str(fp), "key": f"product_config/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+    except Exception as exc:
+        logger.debug("Path %s is not a data-root S3 artifact: %s", fp, exc)
+
+    try:
+        rel = fp.relative_to(db_root_r)
+        if len(rel.parts) == 1 and fp.name in SYNCABLE_DB_ROOT_FILES:
+            return {
+                "type": "matching", "product": "",
+                "path": str(fp), "key": f"matching/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+        if rel.parts[:1] == ("matching",) and fp.suffix.lower() == ".csv":
+            return {
+                "type": "matching", "product": "",
+                "path": str(fp), "key": f"matching/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+        if rel.parts[:1] == ("cache",) and len(rel.parts) == 2 and fp.name in SYNCABLE_DB_CACHE_FILES:
+            return {
+                "type": "cache", "product": "",
+                "path": str(fp), "key": f"cache/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+    except Exception as exc:
+        logger.debug("Path %s is not a db-root S3 artifact: %s", fp, exc)
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────
+# Sync action
+# ──────────────────────────────────────────────────────────────────
+def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    fp = Path(artifact["path"])
+    key = cfg.get("prefix", "").rstrip("/") + "/" + artifact["key"]
+    entry = {
+        "key": artifact["key"], "s3_key": key, "type": artifact["type"],
+        "sha1": artifact.get("sha1", ""), "size": artifact.get("size", 0),
+    }
+    if disabled_by_env():
+        # env disable is static per server — skip the status log to avoid
+        # appending a line on every save while permanently off.
+        entry["status"] = "disabled_env"; return entry
+    if disabled_by_role():
+        # worker 역할도 서버 단위로 반영구적 — env 와 같은 이유로 status 로그 생략.
+        # disabled_env 와 마찬가지로 store fallback 도 하지 않는다 (fallback push
+        # 역시 외부 전송이므로 개발서버에서는 전부 차단).
+        entry["status"] = "disabled_role"; return entry
+    if not master_enabled():
+        # v9.1.x: 관리자 전역 스위치 꺼짐 — 저장마다 로그가 쌓이지 않게 status 기록 생략.
+        entry["status"] = "disabled_master"; return entry
+    if not cfg.get("enabled"):
+        entry["status"] = "disabled"
+        return _finish_with_store_fallback(data_root, artifact, entry)
+    if not cfg.get("bucket"):
+        entry["status"] = "no_bucket"
+        return _finish_with_store_fallback(data_root, artifact, entry)
+    if not _HAS_BOTO:
+        entry["status"] = "queued"; entry["note"] = "boto3 not installed — logged only"
+        return _finish_with_store_fallback(data_root, artifact, entry)
+    try:
+        session_kwargs, profile_conf = _aws_credentials.boto3_session_kwargs(data_root, cfg.get("profile"))
+        region = cfg.get("region") or profile_conf.get("region")
+        endpoint_url = cfg.get("endpoint_url") or profile_conf.get("endpoint_url")
+        session = _boto3.Session(**session_kwargs)
+        client_kwargs: Dict[str, Any] = {}
+        if region:
+            client_kwargs["region_name"] = region
+        if endpoint_url:
+            client_kwargs["endpoint_url"] = endpoint_url
+        if _BOTO_TIMEOUT_CONFIG is not None:
+            client_kwargs["config"] = _BOTO_TIMEOUT_CONFIG
+        s3 = session.client("s3", **client_kwargs)
+        s3.upload_file(str(fp), cfg["bucket"], key)
+        entry["status"] = "uploaded"
+    except Exception as e:
+        entry["status"] = "error"
+        entry["error"] = str(e)[:300]
+        logger.warning(f"S3 upload failed {key}: {e}")
+        return _finish_with_store_fallback(data_root, artifact, entry)
+    _append_status(data_root, entry)
+    return entry
+
+
+def _finish_with_store_fallback(data_root: Path, artifact: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    """s3_sync 가 업로드하지 못한 matching 아티팩트를 매칭알람 저장소로 즉시 push.
+
+    룰북/매칭테이블은 변경점이 생기면 바로 올라가야 하므로 (파일탐색기·SplitTable·
+    매칭알람 판정 등 어떤 저장 경로든), s3_sync 비활성/미설정/실패 환경에서
+    valve_alerts 의 전송 설정(local_root 또는 자체 S3)으로 폴백한다.
+    disabled_env / disabled_master (명시적 전체 차단) 는 폴백하지 않는다.
+    """
+    if artifact.get("type") == "matching":
+        try:
+            from core import valve_alerts as _va
+            pushed = _va.store_push_artifact(Path(artifact["path"]), artifact["key"])
+            if pushed:
+                entry["store_push"] = pushed
+        except Exception as e:
+            entry["store_push"] = f"error: {str(e)[:150]}"
+    _append_status(data_root, entry)
+    return entry
+
+
+def sync_all(data_root: Path, db_root: Path, filter_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    cfg = load_config(data_root)
+    arts = list_artifacts(data_root, db_root)
+    if filter_type:
+        arts = [a for a in arts if a["type"] == filter_type]
+    results = []
+    for a in arts:
+        results.append(sync_one(data_root, a, cfg))
+    return results
+
+
+def sync_saved_path(data_root: Path, db_root: Path, path: Path) -> Dict[str, Any]:
+    artifact = artifact_from_path(data_root, db_root, path)
+    if not artifact:
+        return {"ok": False, "status": "skipped", "reason": "not_syncable", "path": str(path)}
+    cfg = load_config(data_root)
+    result = sync_one(data_root, artifact, cfg)
+    result["ok"] = result.get("status") in {"uploaded", "queued", "disabled", "disabled_env", "disabled_role", "no_bucket"}
+    return result

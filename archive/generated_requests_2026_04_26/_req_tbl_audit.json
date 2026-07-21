@@ -1,0 +1,1 @@
+{"text":"[TableMap 감사 기록] 테이블 버전/수정/삭제 모든 이벤트에 '누가(username) / 언제(ISO ts) / 무엇을(create|edit|delete|rollback)' 를 기록. VERSIONS_DIR 의 v*.json 에 이미 updated 시각이 있지만 username 추가 필요. 테이블별 activity_log 시퀀스 유지 → UI 에서 '편집 이력' 탭으로 조회 가능.","from":"user"}

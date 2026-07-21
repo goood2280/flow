@@ -1,0 +1,49 @@
+{
+  "id": "handoff_v9_H2",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:17:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "archived",
+  "title": "[H2] Dashboard 팔레트 통일 (COLORS/PASTEL → UXKit.chartPalette)",
+  "summary": "My_Dashboard.jsx 의 로컬 COLORS/PASTEL 두 블록 삭제 후 UXKit.chartPalette (series/pastel/heat) 로 일괄 치환",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H2",
+    "estimated_effort": "반일",
+    "target_score_delta": "UX +0.05",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "grep: My_Dashboard.jsx 내 'const COLORS', 'const PASTEL' 존재 0건",
+    "수동: 3차트 동시 비교 시 series 0 (pie) 와 series 0 (bar) 색상 동일",
+    "npm run build 성공",
+    "기존 대시보드 PDF 캡처와 색상 톤 대조 시 대폭 이탈 없음 (회의자료 호환)"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\components\\UXKit.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Dashboard.jsx"
+  ],
+  "verification": [
+    "npm run build",
+    {
+      "at": "2026-04-24T15:17:00+09:00",
+      "method": "manual_claude_review",
+      "smoke_skipped": "FE-only change, backend smoke irrelevant",
+      "grep_COLORS_PASTEL_in_My_Dashboard": 0,
+      "UXKit_chartPalette_exported": true,
+      "My_Dashboard_imports_chartPalette": true,
+      "SERIES_and_PASTELS_reassigned": true,
+      "note_path_correction": "linked_files[0] was frontend/src/UXKit.jsx but actual is frontend/src/components/UXKit.jsx — corrected in archive",
+      "note_reopen": "handoff_v9_H2_reopen_20260424_151512.json was a false positive from subprocess cp949 crash; deleted",
+      "criteria_ok": 3,
+      "criteria_total": 4,
+      "criteria_skipped": [
+        "PDF 캡처 대조는 사용자 수동 확인 사항 (자동 불가)"
+      ]
+    }
+  ],
+  "resolution": "Added UXKit.chartPalette and replaced dashboard local palette blocks with shared series/pastel tokens. Claude manual review confirmed: grep clean, import correct, SERIES/PASTELS bound to chartPalette.series/pastel."
+}

@@ -1,0 +1,35 @@
+{
+  "id": "handoff_v9_F_inherit_1.11",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[F-inherit 1.11] Tracker 카테고리 대확장 (Monitor + Analysis 자동 등록)",
+  "summary": "Monitor (FAB 특정 step 알람) + Analysis (ET wafer 단위) 2 카테고리 자동 등록. wafer_id '1-10'/'all' 파싱, 하루 2회 자동 체크, 자동 완료.",
+  "context": {
+    "track": "feature_v9_1",
+    "backlog_id": "F_inherit_1.11",
+    "estimated_effort": "2주",
+    "target_score_delta": "기능 +0.1",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "tests/tracker/test_analysis_wafer_expansion.py pass",
+    "tests/tracker/test_monitor_mail_group.py pass",
+    "wafer_id '1-10' / 'all' 파싱 검증",
+    "하루 2회 자동 체크 cron 등록",
+    "자동 완료 조건 동작"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\tracker.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\tracker_auto.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Tracker.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\tests\\tracker\\test_analysis_wafer_expansion.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\tests\\tracker\\test_monitor_mail_group.py"
+  ],
+  "verification": [],
+  "resolution": ""
+}

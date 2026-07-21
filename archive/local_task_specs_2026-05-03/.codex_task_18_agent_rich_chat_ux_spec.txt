@@ -1,0 +1,142 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 에이전트의 응답 하단에 클릭 가능한 선택지·추가 정보 입력란 + Claude 같은 multi-turn 대화 UX + 컨텍스트 영속화. task #16/17 위에 얹는 UX 보강.
+
+[배경 — 사용자 직언]
+"에이전트를 통해서 하는 것들은 최대한 아래쪽에 클릭할 수 있는 선택지 혹은 추가 정보를 적을 수 있도록 안내하면서 Claude 에서 하는 경험처럼 대화가 이어가고 컨텍스트가 유지되었으면 좋겠어."
+
+해석:
+- 응답마다 actionable suggestions (chip / quick action / inline input) 하단에 노출.
+- thread / history 가 같은 세션 안에서 이어짐 (turn 간 의도·엔티티·tool 결과 보존).
+- 새로고침 또는 재방문에도 thread 복구 가능.
+- streaming 응답 (점진적 출력) + markdown / table / code 인라인 렌더 — Claude 채팅 경험.
+
+[원하는 결과]
+
+1) 에이전트 응답 schema 확장.
+   - 응답 = {message_md, suggestions, context_id, tool_results, follow_up_inputs}.
+   - **suggestions**: 클릭 가능한 옵션 (3~8개)
+     * type: "select" — 이미 정의된 값 중 하나 (예: 제품 PROD-A/B/C). value + label.
+     * type: "action" — 후속 도구 호출 (예: "메일 재발송"). action_id + label + icon.
+     * type: "navigate" — 페이지 점프 (예: "인폼 매트릭스로 가기"). path + label.
+   - **follow_up_inputs**: 자유 입력 필요 (slot filling)
+     * key, label, placeholder, type (text/number/date), suggested_values 옵션.
+     * 사용자가 type 후 Enter → 자동으로 그 key=value 로 다음 turn.
+   - **tool_results**: 호출된 tool 의 raw 결과 (디버그/expand 보기 옵션).
+   - **context_id**: thread id — 동일 thread 안에서 이전 turn 참조.
+
+2) 컨텍스트 영속화.
+   - 백엔드 thread storage: data/flow-data/agent_threads/{user}/{thread_id}.json
+   - 각 thread = {id, user, started_at, turns: [{role, message, suggestions, tool_calls, at}], entities: {product, lot, module, ...}}
+   - 신규 endpoint:
+     * POST /api/agent/threads → 신규 thread 생성, thread_id 반환.
+     * GET /api/agent/threads → 사용자의 thread list (제목 + 마지막 발화 + 시각).
+     * GET /api/agent/threads/{thread_id} → 전체 turn replay.
+     * POST /api/agent/threads/{thread_id}/turn → 신규 turn (사용자 메시지 + 응답).
+     * DELETE /api/agent/threads/{thread_id} → 삭제 (작성자 only).
+   - 기존 /api/agent/chat 또는 /api/llm/agent/run 와 호환 — thread_id 미지정 시 ephemeral.
+
+3) Claude 같은 채팅 UI (My_Diagnosis.jsx 또는 새 panel/page).
+   - 좌측 sidebar: thread list (제목 / 마지막 발화 / 시각). "+ 새 대화" 버튼. 검색 input.
+   - 중앙 main: 현재 thread 의 turn stack (user / agent 교차 카드).
+     * agent 카드 layout:
+       a. message_md — markdown 렌더 (제목/list/table/code/링크/이미지).
+       b. tool_results — 접힘 expand (default 접힘, "도구 결과 보기" 클릭 시 펼침). table/json pretty.
+       c. **suggestions** (하단) — chip 가로 배치, 클릭 시 자동 turn (사용자 메시지 = 그 chip label).
+       d. **follow_up_inputs** (하단, suggestions 아래) — 입력 row 들. label + input + Enter 또는 "보내기" 버튼.
+       e. footer — turn 시각 / 사용된 tool 갯수 / "이 답변 복사" 버튼.
+     * user 카드 layout: 단순 message + 시각.
+   - 하단 입력창: 자유 입력 + 보내기 버튼. 멀티라인 (Shift+Enter). 첨부 X.
+   - 상단 헤더: thread 제목 (자동 생성, 수정 가능) + thread 정보 (turn 수 / 시작 시각).
+   - 키보드: ESC = 입력창 포커스 해제. Ctrl+/ = 새 thread.
+
+4) Streaming 응답 (점진적 출력).
+   - 백엔드 endpoint 가 SSE (Server-Sent Events) 또는 chunked JSON 으로 점진적 출력.
+   - FE 가 token 별로 message 누적 → 사용자에게 타이핑 효과.
+   - tool 호출 phase 는 "🔧 도구 호출 중..." indicator + tool 이름 표시.
+   - 응답 완료 시 suggestions / follow_up_inputs append.
+
+5) 컨텍스트 보존 동작.
+   - 같은 thread 안에서 이전 turn 의 entities (product/lot/module/inform_id 등) 자동 누적.
+   - "이거 메일 발송" → 이전 turn 의 inform_id 자동 사용.
+   - "다음 페이지" → 이전 list 결과의 pagination 자동.
+   - thread 헤더에 현재 active entities pill 표시 (예: "📦 PROD-A · 🔢 lot ABC123 · 🔧 GATE").
+   - entity 수정/삭제 가능 (pill ✕ 클릭).
+
+6) Markdown / table / code 인라인 렌더.
+   - tool 결과가 table 이면 자동 markdown table 변환 → renderer 에서 native table 렌더.
+   - code block 좌상단 "복사" 버튼.
+   - link auto-detect → clickable.
+   - lot_id / inform_id 같은 식별자 → tooltip + 클릭 시 해당 페이지 점프.
+
+7) suggestion 자동 생성 규칙 (백엔드 LLM prompt).
+   - 응답이 list 결과면: "전체 보기 (페이지로)", "필터 추가", "다른 컬럼 보기" 등 suggestions.
+   - 응답이 단일 entity 면: "메일 재발송", "상태 변경", "수정", "삭제" 등 (권한 분기).
+   - 응답이 모호한 결과면: 후보 chip 들 (예: "PROD-A / PROD-B / PROD-C").
+   - 빈 결과면: "기간 늘리기", "다른 모듈 보기" 등.
+
+[코드 reference]
+- backend/routers/llm.py — agent endpoints, system prompt
+- frontend/src/pages/My_Diagnosis.jsx — 카탈로그 (task #17) + 채팅 UI (이번 task)
+- 또는 신규 page/panel
+- task #16 의 tool registry, task #17 의 시나리오/clarification 활용
+
+[작업 순서]
+
+A) Backend
+   1. agent thread storage (data/flow-data/agent_threads/{user}/) 디렉토리 + 파일 schema.
+   2. thread CRUD endpoint 5개 (POST list / POST create / GET list / GET detail / DELETE).
+   3. POST /api/agent/threads/{thread_id}/turn — 메시지 + thread context + 응답.
+   4. 응답 schema 에 suggestions / follow_up_inputs / tool_results / context_id 추가.
+   5. SSE streaming endpoint 옵션 (POST .../turn?stream=true).
+   6. system prompt 에 suggestion 자동 생성 규칙 명시.
+   7. 컨텍스트 자동 누적 (entities dict).
+   8. tests/agent/test_agent_threads.py 신규: thread CRUD + 컨텍스트 보존.
+   9. tests/agent/test_agent_suggestions.py 신규: 응답에 suggestions 정확.
+
+B) Frontend
+   1. My_Diagnosis.jsx 의 채팅 영역을 좌측 sidebar (thread list) + 중앙 thread + 하단 입력창 구조로 재구성.
+   2. agent message 카드 — markdown 렌더 (react-markdown 또는 simple parser) + tool_results 접힘.
+   3. suggestions chip / follow_up_inputs 하단 패널 — 클릭 시 자동 turn.
+   4. SSE streaming consumer — 점진적 token 누적.
+   5. entity pill 헤더.
+   6. 키보드 단축키 (ESC, Ctrl+/, Enter, Shift+Enter).
+   7. thread 자동 제목 생성 (첫 turn 의 user message 30자).
+
+C) 회귀 (반드시 유지)
+   - task #1~17 모두 회귀 X.
+   - 특히 task #17 의 시나리오 카탈로그 — 카드 클릭 시 새 thread 시작 + prompt 자동 입력.
+
+D) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+
+E) 테스트
+   - 위 신규 + 기존 회귀.
+   - smoke (scripts/smoke_test.py) 통과.
+
+[제약]
+- 페이지 신설 X — My_Diagnosis.jsx 안에서 재구성 또는 component 추가.
+- backend endpoint 신규 OK (thread CRUD).
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~17 회귀 X.
+- thread storage 가 admin_settings 와 분리 — data/flow-data/agent_threads/.
+- streaming SSE 가 환경에 따라 안 되면 chunked JSON polling 폴백.
+
+[완료 기준]
+- agent 응답 카드에 markdown / tool_results 접힘 / suggestions chip / follow_up_inputs 하단 패널.
+- thread sidebar + 중앙 thread + 하단 입력창 layout.
+- SSE 또는 chunked streaming 으로 점진적 응답.
+- thread 영속화 (data/flow-data/agent_threads/) + 재방문 시 복구.
+- 컨텍스트 자동 누적 (entities pill 헤더).
+- 시나리오 카드 (task #17) 클릭 시 새 thread + prompt 자동 입력.
+- 신규 테스트 + 기존 회귀 통과.
+- frontend build + setup.py 재빌드 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.
+
+[CHAIN — task #18 완료 후 자동 이어가기 (spark)]
+이 task #18 가 끝났으면 (DISCORD_SUMMARY 출력 직전 또는 직후) 추가로:
+1. `.codex_task_19_inform_wizard_mail_polish_spec.txt` 파일을 read 도구로 전체 read.
+2. spec 안 모든 요구사항 (저장된 커스텀 세트 첨부 SplitTable preview / 좌상단 cell 컬럼 이름만 / 메일 미리보기 KNOB 제거+그룹/개별 수신자+본문 정리+풀화면 SplitTable) 단계별로 빠짐없이 구현.
+3. task #19 의 회귀/빌드/테스트 까지 마무리.
+4. task #19 의 'DISCORD_SUMMARY:' 한국어 3~5줄도 출력 (task #18 요약과는 별도 블록).
+같은 동일 제약 (git add/commit/push X, admin_settings.json X, 내용 출력 X) 모두 task #19 에도 적용.

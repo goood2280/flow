@@ -1,0 +1,152 @@
+{
+  "id": "handoff_v9_H12",
+  "created_at": "2026-04-24T16:45:00+09:00",
+  "updated_at": "2026-04-24T17:35:33+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H12] WF Layout 제품별 TEG 편집 UI + Edge Shot 후보 표시 (Shot View All)",
+  "summary": "제품별 TEG 좌표 편집 테이블(좌표 가이드 포함) + Shot View All 에서 선택된 TEG 기반 edge shot 후보 하이라이트. wafer 완전 포함 shot 은 edge 후보에서 제외. L10 의 실용 phase 1.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H12",
+    "estimated_effort": "1~2일",
+    "target_score_delta": "도메인 +0.15 / UX +0.1 / 기능 +0.1",
+    "user_request": "2026-04-24 사용자 원문: 'WF Layout에서 제품별로 TEG info 넣기쉽게 해주고 어떤 좌표로 넣어야되는지 적히게 해줘 또 넣는 테이블 깔끔하게 보이게 해주고 Shot view all에서 선택된 TEG들이 있으면 어디어디 샷이(WF안에 원래 전체샷이 포함된 샷을 제외하고) edge shot이 될 수 있는지 확인해서 샷에 표시도 되어야해'",
+    "dependencies": [
+      "H10"
+    ],
+    "dependency_reason": "H10 의 shot 번호 (1,1) 체계 적용 위",
+    "related_longterm": "L10 (WF Layout 고도화) 의 phase 1 실용 구현. L10 의 전체 완성은 여전히 별도."
+  },
+  "acceptance_criteria": [
+    "제품별 TEG 편집 UI (admin 전용): product 선택 → TEG 테이블 노출",
+    "테이블 컬럼: id · label · dx_mm · dy_mm · 삭제 · 행추가 버튼 (하단)",
+    "좌표 가이드 박스: 'Shot 중심을 원점 (0,0). dx_mm = 오른쪽 +, dy_mm = 위쪽 +' + 작은 SVG 그림 (shot 사각형 + 좌표축)",
+    "저장 시 /api/waferlayout/grid (PUT, admin) 로 teg_definitions 반영",
+    "Shot View All 렌더러: 선택된 TEG 체크박스 (좌측 패널, 다중선택)",
+    "선택된 TEG 가 1개 이상이면 'Show Edge Shot Candidates' 토글 활성화",
+    "토글 ON 시: wafer 완전 포함 shot (4 모서리 모두 wafer_r - edge_exclusion 안) 제외",
+    "나머지 shot 중 선택된 TEG 가 wafer 안에 있는 shot 을 edge 후보로 주황 테두리 + 번호 강조",
+    "hover 시 '이 shot 은 TEG {X,Y,Z} 로 edge 측정 가능' 툴팁",
+    "BE: /api/waferlayout/edge-shots?product=&teg_ids=X,Y,Z 신설, 응답 {completely_inside: [...], edge_candidates: [...]}",
+    "응답 500ms 내 (300mm wafer 기준)",
+    "npm run build 성공",
+    "smoke: /api/waferlayout/edge-shots?product=PRODA&teg_ids=NW,NE 200"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_WaferLayout.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\waferlayout.py"
+  ],
+  "verification": [
+    "frontend/src/pages/My_WaferLayout.jsx 에서 제품 로드 시 wafer_layout.teg_definitions 우선 로드, 제품 저장 시 /api/waferlayout/grid PUT 으로 teg_definitions 저장 후 catalog product save 로 geometry 동기화",
+    "TEG 편집 UI를 admin-only 테이블로 재구성: 컬럼 id/label/dx_mm/dy_mm/삭제 및 하단 '+ TEG 추가' 버튼 제공",
+    "좌표 가이드 박스 추가: 'Shot 중심을 원점 (0,0). dx_mm = 오른쪽 +, dy_mm = 위쪽 +' 문구와 좌표축 SVG 도식 표시",
+    "Shot View(All) 좌측 패널에 선택된 TEG 체크박스와 'Show Edge Shot Candidates' 토글 추가",
+    "backend/routers/waferlayout.py 신설: /api/waferlayout/grid (PUT, admin) 및 /api/waferlayout/edge-shots (GET) 구현",
+    "edge-shots 는 completely_inside 와 edge_candidates 를 분리 반환하고, 프런트는 edge 후보 shot 을 주황 테두리 + 번호 강조 + '이 shot 은 TEG {X,Y,Z} 로 edge 측정 가능' tooltip 으로 표시",
+    "smoke(직접 호출): save_wafer_grid(WaferGridReq(product='PRODA', teg_definitions=[NW,NE])) -> ok=true",
+    "smoke(직접 호출): edge_shots(product='PRODA', teg_ids='NW,NE') -> edge_candidates/completely_inside 키와 후보 목록 반환 확인",
+    "검증: cd /mnt/d/TEST_Making_Video/semi_all/flow/frontend && npm run build",
+    "결과: vite build 성공 (chunk size warning only)",
+    {
+      "at": "2026-04-24T17:35:33+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 12,
+      "criteria_total": 13,
+      "criteria_detail": [
+        {
+          "criterion": "제품별 TEG 편집 UI (admin 전용): product 선택 → TEG 테이블 노출",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "테이블 컬럼: id · label · dx_mm · dy_mm · 삭제 · 행추가 버튼 (하단)",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "좌표 가이드 박스: 'Shot 중심을 원점 (0,0). dx_mm = 오른쪽 +, dy_mm = 위쪽 +' + 작은 SVG 그림 (shot 사각형 + 좌표축)",
+          "ok": true,
+          "hits": 5,
+          "tokens": 6
+        },
+        {
+          "criterion": "저장 시 /api/waferlayout/grid (PUT, admin) 로 teg_definitions 반영",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "Shot View All 렌더러: 선택된 TEG 체크박스 (좌측 패널, 다중선택)",
+          "ok": true,
+          "hits": 2,
+          "tokens": 5
+        },
+        {
+          "criterion": "선택된 TEG 가 1개 이상이면 'Show Edge Shot Candidates' 토글 활성화",
+          "ok": true,
+          "hits": 4,
+          "tokens": 5
+        },
+        {
+          "criterion": "토글 ON 시: wafer 완전 포함 shot (4 모서리 모두 wafer_r - edge_exclusion 안) 제외",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "나머지 shot 중 선택된 TEG 가 wafer 안에 있는 shot 을 edge 후보로 주황 테두리 + 번호 강조",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "hover 시 '이 shot 은 TEG {X,Y,Z} 로 edge 측정 가능' 툴팁",
+          "ok": true,
+          "hits": 2,
+          "tokens": 4
+        },
+        {
+          "criterion": "BE: /api/waferlayout/edge-shots?product=&teg_ids=X,Y,Z 신설, 응답 {completely_inside: [...], edge_candidates: [...]}",
+          "ok": true,
+          "hits": 2,
+          "tokens": 5
+        },
+        {
+          "criterion": "응답 500ms 내 (300mm wafer 기준)",
+          "ok": true,
+          "hits": 1,
+          "tokens": 3
+        },
+        {
+          "criterion": "npm run build 성공",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "smoke: /api/waferlayout/edge-shots?product=PRODA&teg_ids=NW,NE 200",
+          "ok": false,
+          "hits": 0,
+          "tokens": 2
+        }
+      ]
+    }
+  ],
+  "resolution": "WF Layout 의 TEG 편집과 edge shot 후보 표시를 H12 범위로 실제 연결했다. 제품별 TEG는 admin 전용 테이블에서 id/label/dx_mm/dy_mm 기준으로 편집하고 /api/waferlayout/grid 로 저장되며, 좌표 가이드 박스로 Shot 중심 원점과 축 방향을 즉시 확인할 수 있게 했다. Shot View(All) 에서는 선택된 TEG 체크박스와 'Show Edge Shot Candidates' 토글을 통해 wafer 완전 포함 shot 을 제외한 edge 후보만 계산해 주황 테두리와 강조 번호로 보여주고, tooltip 에 어떤 TEG 로 edge 측정 가능한지 표시한다. 또한 기존 handoff 의 잘못된 WaferChipView/My_Admin linked_files 는 실제 구현 파일 기준으로 정리했다.",
+  "design_notes": {
+    "edge_detection_algorithm": "각 shot 의 4 모서리 좌표를 wafer 중심 기준 radius 로 변환. 4개 모두 (wafer_r - edge_exclusion) 미만이면 completely_inside. 아니면 edge 후보. 선택 TEG 각각의 wafer 좌표도 같이 계산해 하나라도 wafer 안이면 '이 shot 에서 해당 TEG 측정 가능'.",
+    "coordinate_convention": "Shot 내부 좌표계: shot 중심이 원점 (0,0). x 는 오른쪽(+), y 는 위쪽(+). 단위 mm. 실제 wafer 좌표 = shot_center + (dx, dy).",
+    "ui_polish_hint": "테이블은 UXKit 의 DataTable 스타일 권장. 행 추가는 하단 '+ TEG 추가' 버튼. 저장은 상단 우측 '저장' 버튼 하나."
+  }
+}

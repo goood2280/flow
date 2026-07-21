@@ -1,0 +1,82 @@
+{
+  "id": "handoff_v9_H9",
+  "created_at": "2026-04-24T16:35:00+09:00",
+  "updated_at": "2026-04-24T17:00:33+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H9] SplitTable Final Only 모드에 'This Lot All History' 옵션 추가",
+  "summary": "현재 Final Only 는 최종값만. 'This Lot All History' 토글을 추가해 선택한 lot 의 전체 측정 이력까지 보이게.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H9",
+    "estimated_effort": "반일",
+    "target_score_delta": "도메인 +0.05",
+    "user_request": "2026-04-24 사용자 원문: 'Final Only가 This Lot All History 모두 가능하도록'",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "SplitTable 상단 Final Only 영역에 3개 라디오: All / Final Only / This Lot All History",
+    "'This Lot All History' 선택 시: 현재 선택된 root_lot_id 의 전체 측정 row (중복 포함) 표시",
+    "BE: /api/splittable/view 쿼리에 history_mode=all|final|lot_all 추가",
+    "lot 미선택 시 'This Lot All History' 는 disabled 처리",
+    "현재 Final Only (기본) 동작은 그대로 유지"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_SplitTable.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\splittable.py"
+  ],
+  "verification": [
+    "frontend: History 탭을 3개 라디오(All / Final Only / This Lot All History)로 교체하고 lot 미선택 시 lot_all 옵션 disabled 확인",
+    "frontend: Final Only 기본값 유지, All=제품 전체 plan history, This Lot All History=root_lot_id 필터 history 로딩으로 연결",
+    "backend: /api/splittable/view 에 history_mode=all|final|lot_all 검증/echo 추가",
+    "build: cd flow/frontend && npm run build 통과",
+    "backend: python3 -m py_compile flow/backend/routers/splittable.py 통과",
+    {
+      "at": "2026-04-24T17:00:33+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 5,
+      "criteria_total": 5,
+      "criteria_detail": [
+        {
+          "criterion": "SplitTable 상단 Final Only 영역에 3개 라디오: All / Final Only / This Lot All History",
+          "ok": true,
+          "hits": 7,
+          "tokens": 8
+        },
+        {
+          "criterion": "'This Lot All History' 선택 시: 현재 선택된 root_lot_id 의 전체 측정 row (중복 포함) 표시",
+          "ok": true,
+          "hits": 3,
+          "tokens": 3
+        },
+        {
+          "criterion": "BE: /api/splittable/view 쿼리에 history_mode=all|final|lot_all 추가",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "lot 미선택 시 'This Lot All History' 는 disabled 처리",
+          "ok": true,
+          "hits": 3,
+          "tokens": 3
+        },
+        {
+          "criterion": "현재 Final Only (기본) 동작은 그대로 유지",
+          "ok": true,
+          "hits": 3,
+          "tokens": 3
+        }
+      ]
+    }
+  ],
+  "resolution": "My_SplitTable History 상단을 3개 라디오 모드로 단순화했다. Final Only를 기본값으로 두고, All은 전체 product history, This Lot All History는 현재 root_lot_id 전체 이력을 보여주며 lot 미선택 시 비활성화했다. splittable view API는 history_mode 쿼리를 수용하고 all/final/lot_all 값만 허용하도록 확장했다."
+}

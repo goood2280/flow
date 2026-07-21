@@ -1,0 +1,131 @@
+{
+  "id": "handoff_v9_H4",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T16:24:49+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H4] 사이드바 애매 탭 4개 정리 (WaferLayout/Messages/TableMap/DevGuide)",
+  "summary": "WaferLayout 배너 추가 · Messages 라벨 변경 · TableMap 일반유저 숨김+Admin embed · DevGuide devguide_user 권한화",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H4",
+    "estimated_effort": "1일",
+    "target_score_delta": "UX +0.1",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "smoke: 일반 유저 토큰으로 GET /api/config/sidebar → TableMap, DevGuide 미포함",
+    "수동: 일반 계정 사이드바 11개 탭, admin 계정 15개 탭",
+    "수동: WaferLayout 진입 시 3줄 배너 노출",
+    "수동: Admin 페이지 내 TableMap 서브탭 접근 가능",
+    "admin_settings.devguide_user 리스트 Admin UI 에서 편집 가능"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\config.js",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_WaferLayout.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Message.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Admin.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\admin.py"
+  ],
+  "verification": [
+    "code: frontend/src/config.js 에 tablemap adminOnly 추가, devguide restrictedSetting=devguide_allowed 추가",
+    "code: frontend/src/App.jsx 가 /api/admin/settings 의 devguide_allowed 를 읽어 일반 사용자 DevGuide 사이드바 노출을 제어",
+    "code: frontend/src/pages/My_WaferLayout.jsx 상단 3줄 배너 추가",
+    "code: frontend/src/pages/My_Admin.jsx 에 TableMap 서브탭 추가, PAGE_IDS 의 messages 라벨을 문의함으로 정리, devguide_user 편집 UI 추가",
+    "code: backend/routers/admin.py 가 admin_settings.devguide_user 저장/조회 및 devguide_allowed 계산 지원",
+    "build: cd frontend && npm run build 성공",
+    "syntax: python3 -m py_compile backend/routers/admin.py 성공",
+    {
+      "at": "2026-04-24T16:19:23+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 1,
+      "smoke_fail": 1,
+      "smoke_note": "SMOKE TEST 결과: 29/29 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": false,
+      "files_missing": [
+        "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Messages.jsx"
+      ],
+      "criteria_ok": 5,
+      "criteria_total": 5,
+      "criteria_detail": [
+        {
+          "criterion": "smoke: 일반 유저 토큰으로 GET /api/config/sidebar → TableMap, DevGuide 미포함",
+          "ok": true,
+          "hits": 2,
+          "tokens": 5
+        },
+        {
+          "criterion": "수동: 일반 계정 사이드바 11개 탭, admin 계정 15개 탭",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "수동: WaferLayout 진입 시 3줄 배너 노출",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "수동: Admin 페이지 내 TableMap 서브탭 접근 가능",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "admin_settings.devguide_user 리스트 Admin UI 에서 편집 가능",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        }
+      ]
+    },
+    {
+      "at": "2026-04-24T16:24:49+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 29,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 29/29 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 5,
+      "criteria_total": 5,
+      "criteria_detail": [
+        {
+          "criterion": "smoke: 일반 유저 토큰으로 GET /api/config/sidebar → TableMap, DevGuide 미포함",
+          "ok": true,
+          "hits": 2,
+          "tokens": 5
+        },
+        {
+          "criterion": "수동: 일반 계정 사이드바 11개 탭, admin 계정 15개 탭",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "수동: WaferLayout 진입 시 3줄 배너 노출",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "수동: Admin 페이지 내 TableMap 서브탭 접근 가능",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "admin_settings.devguide_user 리스트 Admin UI 에서 편집 가능",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        }
+      ]
+    }
+  ],
+  "resolution": "WaferLayout 은 진입 즉시 안내 배너가 보이도록 정리했고, TableMap 은 일반 사용자 사이드바에서 숨긴 뒤 Admin 내부 서브탭에서 접근하도록 옮겼다. DevGuide 는 admin_settings.devguide_user 목록 기반으로만 일반 사용자에게 노출되도록 App 권한 게이트와 admin settings 저장 로직을 연결했다. 관리자 권한 매트릭스에서는 messages 용어를 문의함으로 정리했다."
+}

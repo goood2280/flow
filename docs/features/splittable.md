@@ -1,0 +1,85 @@
+# SplitTable
+
+SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, rulebook mapping을 맞추는 작업대다.
+
+## Owns
+
+- root lot/fab lot/wafer 축 matrix
+- KNOB/MASK/CUSTOM set plan과 actual 비교
+- final value, drift, diff, notes, related issue
+- runtime-only `TAG_*` 꼬리표 열: 원본 파일을 수정하지 않고 SplitTable matrix와 CUSTOM 세트에 표시하는 사용자 overlay
+- split 영향 후보 이벤트: notes와 plan history 변경을 append-only KnowledgeEvent로 남긴다.
+- XLSX export와 Inform Log용 SplitTable snapshot 생성
+- `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`의 root/wafer별 최신 `lot_id`를 사용한 fab lot label 표시
+
+## Does Not Own
+
+- 원천 파일 탐색 자체
+- 담당자 공지/메일 thread 관리
+- chart 중심 분석 화면
+- 근거 없는 자동 plan 저장
+
+## Code Entrypoints
+
+| Layer | Path |
+|---|---|
+| Frontend page | `frontend/src/pages/My_SplitTable.jsx` |
+| Frontend pieces | `frontend/src/pages/SplitTable/` |
+| Backend router | `backend/routers/splittable.py` |
+| Sets cache | `backend/core/splittable_sets_cache.py` |
+| Inform embed bridge | `backend/app_v2/modules/informs/splittable_embed.py` |
+| Flow-i guide | `data/flow-data/flowi_agent_features/splittable.md` |
+
+## Guardrails
+
+- 저장 전 product, lot, wafer 범위를 확정한다.
+- plan 변경은 preview와 확인 단계를 거친다.
+- Inform snapshot과 SplitTable의 root/fab/wafer 표시 규칙을 맞춘다.
+- Inform용 fab lot snapshot은 선택된 fab lot의 header/wafer scope를 유지하고, root plan overlay는 해당 scope의 wafer cell에만 적용한다.
+- fab lot 연결은 SplitTable 전용 match cache를 만들지 않고 LOT 진행 최신 캐시를 우선 사용한다. 캐시가 없거나 scope가 맞지 않으면 기존 FAB source raw scan으로 fallback한다.
+- `/api/splittable/view`는 product/root/fab/wafer/prefix/custom 조건별 view payload cache를 사용한다. product 원본, plan/tag/management overlay, rulebook/settings, `lot_progress_latest_lot_by_root_wafer.parquet` 또는 LOT progress cache 파일이 바뀌면 다음 조회에서 다시 계산한다. 응답은 `runtime_profile`과 `view_cache`를 포함해 total/collect/matrix/overlay 시간, root cache hit, payload cache hit를 노출한다.
+- SplitTable UI의 root lot 조회는 `/api/splittable/view`로 들어간다. pre-pivoted cache/payload/root/product cache가 있으면 먼저 사용하고, cache가 miss/stale이면 build를 background로 queue한 뒤 같은 요청에서 원본 ML_TABLE에 root/wafer/prefix 필터를 적용해 raw fallback 결과를 반환한다. 이 요청은 raw fallback을 수행할 수 있으므로 middleware heavy guard를 우회하지 않는다.
+- ML_TABLE 제품 원본은 선택적으로 프로세스 RAM cache에 올릴 수 있다. `/api/splittable/view`와 lot 후보 조회는 RAM hit를 우선 쓰고, miss/skip/disable 상태에서는 기존 root-lot lookup cache 또는 원본 parquet/CSV scan으로 fallback한다. 갱신 실패나 메모리 예산 초과 시 마지막 정상 RAM cache를 유지하고, source mtime/size가 바뀐 동안에는 `/view`의 `product_cache.stale=true`로 표시한다. 기본 제품 RAM 예산은 3GB이며 `FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB`로 조정한다.
+- ML_TABLE 조회 성능 최적화를 위해 사전 피벗(Pre-pivoted)된 `split_table` 캐시를 사용한다. 캐시는 `backend/app_v2/modules/splittable/cache_builder.py`가 백그라운드에서 `root_lot_id`별로 분할(Partition) 및 피벗하여 `data/Fab/cache/split_table/{product}/{root_lot_id}.parquet` 형태로 저장한다.
+- `view_split` 메인 화면 조회 시 해당 캐시 파일이 존재하면 무거운 원본 `ML_TABLE_*.parquet` 스캔 및 데이터프레임 Transpose 로직을 완전히 우회(Bypass)하는 Fast Path를 탄다. 파케이의 행렬(Matrix) 구조를 그대로 읽어와 즉각적으로 프론트엔드용 JSON으로 매핑하므로 0.1초 내외의 응답 속도와 메모리 안정성을 보장한다.
+- 캐시가 없는 경우(cache miss/stale) 기존 방식대로 원본 `ML_TABLE_*.parquet`에 fallback하여 결과를 반환하고, 동시에 백그라운드로 캐시 빌드를 큐잉한다(제품당 single-flight + 5분 cooldown). 원본이 캐시보다 최신(stale pivot)이면 이번 응답은 기존 캐시로 즉시 내보내고 재빌드를 큐잉한다. 빌드 완료 시 view payload cache를 비워 다음 조회부터 최신 데이터가 보인다.
+- pivot cache 디렉터리 이름은 canonical `ML_TABLE_*` 대문자 이름으로 통일한다(`cache_builder.canonical_product_dir`). 빌더/스케줄러/fast path 모두 같은 규칙을 쓴다. 수동 재빌드는 `POST /api/splittable/cache/pivot/refresh`(splittable page manager), 상태 확인은 `GET /api/splittable/cache/pivot/status`.
+- plan/custom tag 편집은 pivot cache와 무관하다. 편집값은 view 시점에 overlay되고 view payload cache 의존 시그니처에 plan/tag 파일 mtime이 포함되므로 저장 직후 조회에 즉시 반영된다.
+- plan/actual 불일치 알람은 계획 작성자에게 가고, `source-config`의 `mismatch_alert_recipients`(설정 패널 "불일치 알람 수신 팀", 쉼표 구분 사용자 목록)에 등록된 지정 팀에게도 함께 간다. 작성자 알람 dedup key는 기존 형식을 유지하고 팀 수신자는 사용자별 key(`...|u:<user>`)로 중복을 막는다.
+- `/api/splittable/long-wide-preview`는 FAB/INLINE/ET long source pivot cache를 우선 사용한다. cache가 fresh이면 `data/flow-data/splittable/long_pivot_cache/*.parquet`에서 preview row만 읽고, cache miss/stale이면 pivot build를 background worker에 queue한 뒤 CPU/RAM guard가 여유 있을 때만 원본 long file을 필터링/pivot해서 preview를 반환한다. guard가 높으면 원본 scan/pivot 없이 `pivot_cache.queued=true`와 `resource_guard.reason`을 반환한다.
+- 사전 피벗 캐시 위에는 root lot별 RAM cache를 둔다. 기본 예산은 3GB(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB`)이고, root-lot RAM cache CPU 예산은 최대 2 core(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_CPU_CORES`, 상한 2.0)로 둔다. 스케줄러는 30분마다 톱니바퀴의 root lot cache 설정을 읽어 기본 `AZ` prefix root lot을 최대 설정 개수까지 예열한다. prefix/최근 검색 root lot 캐싱 개수 설정 상한은 50,000이다. 캐시 후보는 현재 설정 prefix에 맞는 `prefix` 그룹과 그 외 `other` 그룹으로 나누고, prefix 그룹을 먼저 RAM에 올린 뒤 `cache/lot_progress_latest_lot_by_root_wafer.parquet`의 최신 root와 최근 조회/검색한 other root lot을 유지한다. 상태 응답은 그룹별 target/hit 수와 root별 `cache_group`을 노출한다. lookup partition이 아직 없거나 원본이 stale이면 background build를 enqueue하고 현재 요청은 기존 fallback을 유지한다. 프로세스 CPU/메모리 guard가 초과 상태이면 남은 root 예열을 건너뛰고 상태 응답에 `last_resource_guard_reason`을 남긴다.
+- History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
+- cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
+- `TAG_*` 꼬리표 값은 `data/flow-data/splittable/custom_tags.json`에만 저장하고, 원본 `ML_TABLE_*.parquet` / CSV / FAB source에는 쓰지 않는다.
+- `TAG_*` 꼬리표 열 생성은 조회 결과 표 맨 아래의 `+ TAG` 행에서 수행한다. CUSTOM 패널은 custom set 구성만 담당하며 관리 행 생성/선택 UI를 노출하지 않는다.
+- `TAG_*` 꼬리표 행은 맨 아래에 고정하지 않고 이름 앞 숫자의 natural sort 위치에 표시한다.
+- `TAG_*` 꼬리표 열 삭제는 admin 또는 `splittable` page manager만 가능하다. 삭제 시 product별 TAG 정의와 `custom_tags.json`에 저장된 해당 열의 모든 값을 함께 제거한다.
+- 기존 `MGMT_*` 관리 행 저장값은 `data/flow-data/splittable/management_rows.json`에 남아도 원본 파일을 수정하지 않는다. 신규 UI에서는 CUSTOM 선택 풀과 저장 set에서 `MGMT_*`를 제외한다.
+- CUSTOM 세트명과 선택 컬럼은 빈 문자열, 비문자 값, `undefined`, `null`을 저장/표시하지 않는다. 잘못 남은 `custom_*.json`, `custom_tags.json`, `management_rows.json` 항목은 로드 시 유효한 문자열 컬럼만 남기고 정리한다.
+- KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `step_desc -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
+- `ppid_knob.csv`는 product 없는 공용 룰북이며 `feature_name`, `rule_order`, `step_desc`, `operator`, `value`, `category` 컬럼을 기본 계약으로 한다. `feature_name`은 KNOB 이름이고 같은 KNOB에 등록된 CSV rule row 전체가 `R1`, `R2`, ..., `RO` 순서로 표시된다. 같은 `rule_order`에 여러 row가 있으면 하나의 AND 조건 묶음으로 표시한다. legacy `product` 컬럼이 있어도 읽기 필터나 UI 표시에는 쓰지 않는다.
+- `Vehicle_matching.csv`는 `product`, `step_id`, `step_desc` 컬럼을 기본 계약으로 하며, 현재 선택 product에 직접 매칭되는 row만 대소문자 구분 없이 `step_desc`별 step 후보로 노출한다. `product` 셀은 `"PRODA, PRODB"`처럼 쉼표로 여러 제품을 적을 수 있고, 각 토큰 중 현재 product와 맞는 row만 사용한다. `ML_TABLE_` 접두와 `PRODUCT_A0`/`PRODA0` 같은 동일 제품 표기는 허용하지만, `PRODA` 선택이 `PRODA0`/`PRODA1`을 함께 끌어오지는 않는다.
+- `vm_matching.csv`는 `step_desc`, `item_id`만 기본 계약으로 둔다. SplitTable row 이름은 `VM_<step_desc>_<item_id>`이고, step 후보는 `vm_matching.csv`에 저장하지 않고 현재 product와 같은 `Vehicle_matching.csv` row에서 `step_desc`로 찾아 노출한다.
+- `inline_matching.csv`는 `product`, `step_id`, `item_id`를 기본 계약으로 둔다. SplitTable row 이름은 `INLINE_<item_id>`이며, 현재 product와 직접 매칭되는 row의 `step_id`/`item_id`만 노출한다.
+- 표시 형식은 3종이다: `기본`(모든 행/열 개별 칸), `Split 체크`(split 값을 S0/S1.. 행으로 분리해 어떤 ppid/split인지 표시), `병합`(행에서 왼쪽 칸과 같은 값이면 colSpan 으로 합쳐 표시, 읽기 전용 — 편집 중에는 기본 형식으로 렌더). 툴바와 톱니바퀴 기본 표시 설정의 같은 세그먼트 컨트롤로 전환한다.
+- `Split 체크`는 KNOB/MASK 같은 split 값 비교용 표시이며, `INLINE`/`VM` prefix 또는 `INLINE_*`/`VM_*` row가 현재 표시 대상이면 비활성화한다.
+- XLSX 다운로드는 현재 표시 형식을 그대로 따른다. `Split 체크`면 `항목 / 값 / Split / wafer` 열 구조(`display_mode=split_check`), `병합`이면 행 안에서 연속 동일 값 구간을 실제 셀 병합으로 export(`display_mode=merged`, 파일명 `_merged` suffix)한다.
+- 피벗 캐시 재빌드는 기존 per-root parquet 을 지우지 않는다 — 빌드 중에도 조회는 이전 파일을 계속 서빙하고, root 단위 tmp→replace 원자 교체로만 갱신된다. 소스에서 사라진 root 의 stale 파일은 전체 빌드 성공 후에만 정리하며, 저장 포맷 세대가 바뀐 legacy 캐시(`.cache_format.json` 불일치)만 시작 시 일괄 제거한다. 빌드 실패 시 이전 캐시가 그대로 남아 다음 성공 빌드까지 서빙된다.
+- `root_lot_id`가 지정된 `download-csv`/`download-xlsx`(현재 화면 단위, wafer ≤25행)는 essential 레인으로 메모리 가드와 무관하게 항상 동작한다(`resource_guard.ESSENTIAL_IF_ROOT_SCOPED_PATHS`). root 범위가 없는 제품 전체 다운로드만 heavy 가드(실제 메모리 부족 시 거절) 대상이다.
+- 셀 선택은 뷰/편집 모드 모두에서 사각 영역으로 드래그 선택되며, `Ctrl+C` 복사는 브라우저 기본 동작(행 전체) 대신 선택한 사각 영역만 엑셀식 TSV(탭=열, 개행=행)로 클립보드에 넣는다.
+- Edit 모드에서 여러 셀을 선택하고 `Delete`/`Backspace`를 누르면 선택 범위의 plan을 일괄 삭제한다. 저장된 plan은 한 번의 `POST /api/splittable/plan/delete`(cell_keys 배열)로 지우고, 미저장 pending plan은 편집 상태에서 제거한다.
+- 적용공정정보 표시와 하단 적용 요약은 SplitTable 톱니바퀴 기본 설정에서도 켜고 끌 수 있다. 하단 적용 요약은 어떤 KNOB 변경이 어떤 `step_id` 수정으로 이어지는지 확인하기 위한 정보이므로 KNOB별 한 줄로 `step_desc`와 `step_id`만 표시하고 `item_id`는 별도 열로 노출하지 않는다. KNOB 적용공정 표시에서는 기본적으로 `operator=not_null` rule row를 제외하며, 같은 기본 설정에서 다시 포함할 수 있다. 룰북 파일명/컬럼 매핑은 톱니바퀴 고급 설정의 `ppid_knob.csv` / `Vehicle_matching.csv` / `inline_matching.csv` / `vm_matching.csv` 섹션에서 관리한다. 고급 설정 화면은 룰북 row 미리보기를 직접 나열하지 않는다.
+- Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh, root lot RAM cache prefix/max/recent-search 유지)은 `splittable` page manager 이상만 쓴다.
+- Product RAM cache 상태 조회는 로그인 사용자에게 요약만 제공하고, source path/error 상세와 수동 refresh는 admin 또는 `splittable` page manager만 사용한다.
+- Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
+- 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.
+- plan이 actual DB 값과 달라지는 경우 plan 작성자에게 `my_plan_actual_mismatch` 알림을 1회 발행한다. 저장 시 기존 actual과 이미 다르면 즉시 발행하고, 이후 DB 갱신으로 `/view`에서 새 mismatch가 관측되면 background queue가 같은 cell/plan/actual 조합을 dedupe해 발행한다. `/view` 첫 응답은 matrix와 mismatch count를 먼저 반환하고, related issue는 `/api/splittable/related-issues` 후속 호출로 붙인다.
+
+## Verify
+
+```bash
+git diff --check
+python -m pytest tests/test_splittable_lot_candidates.py
+python -m pytest tests/test_filebrowser_sql.py
+cd frontend && npm run build
+```

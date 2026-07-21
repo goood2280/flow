@@ -1,0 +1,191 @@
+[중요 안내 — 메인 codex 는 진행 X]
+이 task 는 사용자 codex weekly limit 보호 차원에서 spark codex (model=gpt-5.3-codex-spark) 만 처리합니다.
+메인 codex (model=gpt-5.5) 가 이 spec 을 read 했다면 즉시 종료. spark 만 chain 으로 진입.
+
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 에이전트(task #16~18 의 capability/시나리오/채팅 UX)에 Vertex AI Gemini API 통합. 사용자가 받은 GCP 무료 크레딧 ₩453,008 ($300) 안에서 안전하게 활용. agent 외 GCP 활용 X.
+
+[배경 — 사용자 직언]
+"제미나이 사용료가 300불 받은 거로 커버되는 거면 사용해도 좋아. agent 외에는 일단 활용 불필요. 데이터 백업 / 데모도 필요없어."
+"openai API X 룰은 그대로."
+
+해석:
+- agent 만 Gemini 호출.
+- Vertex AI 경로 사용 (GCP 크레딧 적용 가능). AI Studio 직접 X.
+- 안전장치: 일/월 budget cap.
+- GPT-OSS-120B (사내 default) 와 multi-provider 분기 — 사용자가 모델 선택 또는 자동 fallback.
+- OpenAI API 는 절대 X.
+
+[원하는 결과 — 7항목]
+
+1) Vertex AI Gemini 클라이언트.
+   - 신규 backend/core/gemini_client.py
+   - Vertex AI SDK 사용 (`google-cloud-aiplatform` 또는 `google-genai`).
+   - 인증: ADC (Application Default Credentials) 자동 인식. 사용자 setup 완료. 코드 hardcoded X.
+   - **지원 모델 (Vertex AI 카탈로그 — 300불 크레딧 적용)**:
+     * **gemini-3.1-flash-lite-preview** (가장 저렴, agent 일반 응답)
+     * **gemini-3.1-pro-preview** (복잡 tool calling / 분석, preview)
+     * **gemini-3-flash-preview** (멀티모달, preview)
+     * **gemini-2.5-flash** (GA, 안정, default 권장)
+     * **gemini-2.5-pro** (GA, 강한 추론)
+     * **gemini-2.0-flash** (GA, 가장 안정 + 저렴)
+   - default model: gemini-2.5-flash (GA, 안정성 + 가격 균형).
+   - 모델 list 는 `MODELS = {...}` 상수로 정의 — 라벨 / 가격 추정 / GA여부 / 권장 용도.
+   - region: us-central1 default (preview 모델 대부분 지원). env GEMINI_REGION 으로 override 가능 (asia-northeast3 등).
+   - 함수: `generate(messages, model, max_tokens, temperature, tools=None, stream=False)` → response.
+   - streaming: SSE chunked.
+   - tool calling: Gemini 의 function calling 형식 ↔ task #16 의 tool registry 변환.
+   - preview 모델은 SLA 약함 — 실패 시 GA 모델 (gemini-2.5-flash) 자동 fallback.
+
+2) backend/routers/llm.py 의 agent endpoint multi-provider 분기.
+   - cfg.provider == "gpt_oss" → 기존 사내 GPT-OSS-120B (default).
+   - cfg.provider == "gemini" → Vertex AI Gemini (gemini-2.5-flash default).
+   - cfg.provider == "auto" → GPT-OSS-120B 시도 → 실패/timeout 시 Gemini fallback.
+   - thread context (task #18) / tool registry (task #16) / scenarios (task #17) 모두 두 provider 호환.
+
+2-A) **효율적 호출 — 3가지 분할 전략 (사용자 직언)**.
+
+   가) **Thinking budget 제어** (gemini-2.5-flash 의 thinking 토큰 절약)
+       - 테스트에서 단순 prompt 한 호출에 thinking=227 / output=67 — thinking 이 답보다 3배.
+       - generationConfig 에 `thinkingConfig.thinkingBudget` 명시:
+         * simple_intent (인사·날짜·tool 라우팅) → thinkingBudget=0 (thinking 끔)
+         * normal (list 조회·필터 적용) → thinkingBudget=128
+         * complex (multi-step 분석·요약) → thinkingBudget=512
+         * deep (장문 추론) → thinkingBudget=2048
+       - intent 분류는 사용자 메시지 길이 + 키워드 + tool 호출 깊이로 자동 판정 (휴리스틱 함수).
+       - thinking 끄면 응답 속도 2~3배 빠름 + 비용 50% 이상 절감.
+
+   나) **Max tokens 적응** (응답 형식 별 limit 분기)
+       - 응답 형식별 max_output_tokens:
+         * single fact / yes-no → 50
+         * tool call JSON → 200
+         * list (10 row) → 600
+         * 카드 요약 → 800
+         * 자유 응답 / 분석 → 1500
+       - 호출 전 prompt 분석으로 형식 추정 → 적정 limit 설정. 토큰 낭비 방지.
+
+   다) **Planner pattern — 큰 task 를 sub-task 로 분할**
+       - 사용자 메시지가 multi-step (예: "PROD-A 의 모든 lot 인폼 받고 모듈별로 정리하고 메일 발송") 이면:
+         a. 1차 호출 (cheap, planner): "이 task 를 sub-task 로 분할해" → 단계 list 받기 (max 100 tokens, thinking 0)
+         b. 각 sub-task 별 호출 (tool calling, 분리 호출 — 짧고 정확)
+         c. 마지막 호출 (synthesizer): 모든 sub-task 결과 합쳐 자연어 요약 (500 tokens)
+       - 단계 수 별 비용 절감: 1회 거대 호출 (5000 tokens, thinking 2000) → planner 분할 (100+200×N+500 ~ 1500 tokens 평균). 30~50% 절감.
+       - planner 는 thread context (task #18) 의 entities 활용 — 같은 정보 중복 호출 X.
+       - 단계 결과 캐시 — 같은 sub-task 재호출 시 cache hit (thread 안 5분 TTL).
+
+   라) 호출 metrics 기록
+      - 각 호출에 {intent, complexity, thinking_budget, max_tokens, actual_tokens, cost_estimate, dt_s} 기록 → llm_usage.jsonl.
+      - dashboard "💰 LLM 사용량" 에서 분할 효과 (planner vs single) 비교 차트.
+
+3) 모델 선택 UI (My_Diagnosis.jsx 채팅 헤더).
+   - 헤더 우측에 select dropdown — 위 (1) 의 MODELS 카탈로그 기반 동적 옵션:
+     * GPT-OSS-120B (사내, default)
+     * Gemini 2.5 Flash (GA, 안정 + 저렴) ★ 권장
+     * Gemini 2.5 Pro (GA, 강함)
+     * Gemini 2.0 Flash (GA, 가장 저렴)
+     * Gemini 3.1 Flash Lite (preview, 최저가)
+     * Gemini 3.1 Pro (preview, 최강)
+     * Gemini 3 Flash (preview, 멀티모달)
+     * Auto (사내 우선, fallback Gemini 2.5 Flash)
+   - 선택 변경 시 thread cfg.provider 갱신, 다음 turn 부터 적용.
+   - thread 헤더 entities pill 옆에 "🤖 {model_label}" 작은 배지.
+   - 각 옵션 hover 시 가격 추정 / GA 여부 / 권장 용도 tooltip.
+
+4) 비용 추적 + budget cap.
+   - 신규 backend/core/llm_usage.py — token 사용량 추적.
+   - 호출마다 {provider, model, input_tokens, output_tokens, est_cost_usd, at, user} 기록 → data/flow-data/llm_usage.jsonl
+   - 신규 GET /api/llm/usage?period=day|week|month → 사용량 + 비용 sum.
+   - 신규 GET /api/llm/budget → 현재 cap + 사용 비율.
+   - 신규 POST /api/llm/budget (admin only) → cap 설정.
+   - default cap: $5/day, $50/month (300불 6개월 안전).
+   - cap 초과 시 Gemini 호출 차단 → 사내 GPT-OSS-120B 자동 fallback (또는 "예산 초과" 안내).
+   - cap 80% 도달 시 admin / 사용자에게 알림 (notify.py 의 emit_event 활용 — memory v9.0.0).
+
+5) admin UI — 비용 모니터.
+   - My_Diagnosis.jsx 카테고리에 "💰 LLM 사용량" 추가 (admin only).
+   - 일/주/월 사용량 차트 (사내 vs Gemini).
+   - 현재 cap 표시 + 수정 버튼.
+   - 사용량 history table.
+
+6) Secret 관리 안내 (코드 X — docs).
+   - 사용자가 이미 `bash <(curl -sSL https://storage.googleapis.com/cloud-samples-data/adc/setup_adc.sh)` 로 ADC (Application Default Credentials) 설정 완료.
+   - 즉 GOOGLE_APPLICATION_CREDENTIALS 환경변수 별도 설정 X. google-cloud-aiplatform / google-genai SDK 가 ADC 자동 인식.
+   - docs/setup_gemini.md 신규 — 사용자 setup 가이드 (ADC 기준).
+   - 항목:
+     a. GCP 콘솔 → Vertex AI API 활성화 (이미 활성화 가정, 미활성 시 활성화 안내).
+     b. ADC 인증 (사용자 이미 완료) — 검증 명령: `gcloud auth application-default print-access-token`.
+     c. project_id 설정 (옵션): `gcloud config set project project-a74ca951-f06d-477a-816` 또는 환경변수 GOOGLE_CLOUD_PROJECT.
+     d. region 환경변수 (옵션): GEMINI_REGION=asia-northeast3 (기본값 us-central1).
+     e. 테스트: `curl http://localhost:8080/api/llm/test-gemini` → 응답 검증.
+     f. 인증 만료 시 재인증: `gcloud auth application-default login`.
+   - 한국어, 200~300줄 마크다운.
+
+7) 회귀 + 안전.
+   - GEMINI_API_KEY / Service Account JSON 로그/응답에 노출 X.
+   - openai API key / openai client 호출 코드 추가 X.
+   - 사내 GPT-OSS-120B 호출 경로 변경 X (기존 동작 유지).
+   - cfg.provider 미지정 시 default = "gpt_oss".
+   - Gemini 호출 실패 시 응답에 raw key 정보 포함 X.
+
+[코드 reference]
+- backend/routers/llm.py — 기존 사내 LLM 호출 (GPT-OSS-120B)
+- backend/routers/notify.py — 알림 (v9.0.0)
+- frontend/src/pages/My_Diagnosis.jsx — agent 채팅 UI (task #16~18)
+- backend/core/* — 신규 gemini_client.py / llm_usage.py 위치
+
+[작업 순서]
+
+A) Backend
+   1. requirements.txt 또는 setup.py 의존성에 google-cloud-aiplatform 추가 (또는 google-genai).
+   2. backend/core/gemini_client.py 신규 — Vertex AI wrapper.
+   3. backend/core/llm_usage.py 신규 — 사용량 추적 + budget cap.
+   4. backend/routers/llm.py agent endpoint 에 provider 분기.
+   5. tool calling 변환 (task #16 의 tool registry ↔ Gemini function calling).
+   6. /api/llm/usage / /api/llm/budget / POST /api/llm/budget endpoint.
+   7. /api/llm/test-gemini endpoint (admin only) — Gemini 호출 동작 확인.
+   8. tests/agent/test_gemini_integration.py 신규: mock client + multi-provider 분기 + budget cap.
+   9. tests/agent/test_llm_usage.py 신규: 사용량 추적 + cap 동작.
+
+B) Frontend (My_Diagnosis.jsx)
+   1. 채팅 헤더 model select dropdown (GPT-OSS-120B / Gemini Flash / Gemini Pro / Auto).
+   2. 선택 변경 → thread cfg.provider 갱신 (POST /api/agent/threads/{id}/cfg).
+   3. entity pill 옆 "🤖 {model}" 배지.
+   4. 카테고리 "💰 LLM 사용량" 추가 (admin only) — 일/주/월 차트 + cap 수정.
+
+C) Docs
+   1. docs/setup_gemini.md 신규 — 한국어 setup 가이드.
+
+D) 회귀 (반드시 유지)
+   - task #1~19 모두 회귀 X.
+   - 사내 GPT-OSS-120B 호출 default 동작 그대로.
+   - openai API 호출 코드 추가 X.
+   - admin_settings.json 절대 수정 X.
+
+E) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+   - 의존성 설치: `pip install google-cloud-aiplatform` 또는 `google-genai` (사용자 환경 사전 설치 필요).
+
+F) 테스트
+   - 위 신규 + 기존 회귀.
+   - smoke (scripts/smoke_test.py) 통과.
+   - Gemini 실제 호출 테스트는 환경변수 설정 후 manual.
+
+[제약]
+- agent 외 GCP 활용 X (BigQuery / Cloud Run / Cloud Storage 등 추가 X).
+- OpenAI API 절대 X.
+- admin_settings.json 절대 X.
+- git add/commit/push 절대 X.
+- task #1~19 회귀 X.
+- Gemini 호출이 사내 GPT-OSS-120B 를 대체 X — 보조/선택지.
+- 사용자가 환경변수 설정 안 하면 Gemini provider 비활성화 (호출 시 안내).
+
+[완료 기준]
+- backend/core/gemini_client.py + llm_usage.py 생성.
+- agent endpoint 가 cfg.provider 로 분기.
+- 채팅 헤더 model select dropdown.
+- /api/llm/usage / /api/llm/budget endpoint 작동.
+- LLM 사용량 카테고리 (admin only) 차트 + cap 수정.
+- docs/setup_gemini.md 한국어 가이드.
+- 신규 테스트 + 기존 회귀 통과.
+- frontend build + setup.py 재빌드 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.

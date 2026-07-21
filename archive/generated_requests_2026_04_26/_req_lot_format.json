@@ -1,0 +1,1 @@
+{"text":"[root_lot_id/fab_lot_id 포맷 정정] root_lot_id 는 5자 대문자+숫자 (예: AX111). fab_lot_id 는 {root_lot_id}{letter}.{seq} 포맷 (예: AX111B.1, AX111C.1) — 한 root 가 공정 중 여러 fab_lot 으로 분기. SplitTable 에서 fab_lot_id 필터/검색 시 결과 행을 fab_lot_id 기준으로 상단 그룹화(정렬)해서 표시. FAB hive + ML_TABLE_PROD* 전부 이 포맷으로 재생성.","from":"user"}
