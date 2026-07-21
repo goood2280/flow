@@ -1,0 +1,268 @@
+{
+  "generated_at": "2026-05-01T10:33:31+09:00",
+  "runs": [
+    {
+      "run_at": "2026-05-01T10:33:31+09:00",
+      "base": "http://localhost:8080",
+      "duration_sec": 31.31,
+      "personas": {
+        "admin": {
+          "role": "admin",
+          "username": "qa_admin",
+          "pass": 0,
+          "fail": 1,
+          "latency_ms": 0,
+          "checks": [
+            {
+              "name": "admin: login",
+              "status": 401,
+              "expect": [
+                200
+              ],
+              "ok": false,
+              "detail": "user=qa_admin",
+              "latency_ms": 2017
+            }
+          ]
+        },
+        "user": {
+          "role": "user",
+          "username": "qa_user",
+          "pass": 0,
+          "fail": 1,
+          "latency_ms": 0,
+          "checks": [
+            {
+              "name": "user: login",
+              "status": 401,
+              "expect": [
+                200
+              ],
+              "ok": false,
+              "detail": "user=qa_user",
+              "latency_ms": 2032
+            }
+          ]
+        }
+      },
+      "edge_cases": [
+        {
+          "name": "edge: missing product",
+          "status": 401,
+          "expect": [
+            400
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2042
+        },
+        {
+          "name": "edge: empty splittable product",
+          "status": 401,
+          "expect": [
+            400,
+            404
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2074
+        },
+        {
+          "name": "edge: tracker pagination high",
+          "status": 401,
+          "expect": [
+            200
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2061
+        },
+        {
+          "name": "edge: unauthorized admin users",
+          "status": 401,
+          "expect": [
+            401,
+            403
+          ],
+          "ok": true,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2045
+        },
+        {
+          "name": "edge: anonymous admin users",
+          "status": 401,
+          "expect": [
+            401,
+            403
+          ],
+          "ok": true,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2020
+        },
+        {
+          "name": "edge: bad json login-like",
+          "status": 422,
+          "expect": [
+            400
+          ],
+          "ok": false,
+          "detail": "{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",1],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting proper",
+          "latency_ms": 2051
+        },
+        {
+          "name": "edge: special chars notify",
+          "status": 401,
+          "expect": [
+            200,
+            404
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2070
+        },
+        {
+          "name": "edge: long inquiry",
+          "status": 401,
+          "expect": [
+            200,
+            400
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2045
+        },
+        {
+          "name": "edge: edge shots empty ids",
+          "status": 401,
+          "expect": [
+            200
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2023
+        },
+        {
+          "name": "edge: calendar wide range",
+          "status": 401,
+          "expect": [
+            200
+          ],
+          "ok": false,
+          "detail": "{'detail': 'Authentication required'}",
+          "latency_ms": 2031
+        }
+      ],
+      "charts": [
+        {
+          "name": "charts: list",
+          "status": 401,
+          "expect": [
+            200
+          ],
+          "ok": false,
+          "detail": "charts=0",
+          "latency_ms": 2062
+        }
+      ],
+      "ux_scores": {
+        "pages": [
+          {
+            "page": "home",
+            "score": 3,
+            "notes": [
+              "header pattern missing",
+              "loading state weak"
+            ]
+          },
+          {
+            "page": "admin",
+            "score": 5,
+            "notes": []
+          },
+          {
+            "page": "waferlayout",
+            "score": 4,
+            "notes": [
+              "header pattern missing"
+            ]
+          },
+          {
+            "page": "tracker",
+            "score": 4,
+            "notes": [
+              "header pattern missing"
+            ]
+          }
+        ]
+      },
+      "issues": [
+        {
+          "severity": "high",
+          "area": "admin",
+          "desc": "admin: login",
+          "repro": "user=qa_admin"
+        },
+        {
+          "severity": "medium",
+          "area": "user",
+          "desc": "user: login",
+          "repro": "user=qa_user"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: missing product",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: empty splittable product",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: tracker pagination high",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: bad json login-like",
+          "repro": "{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",1],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting proper"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: special chars notify",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: long inquiry",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: edge shots empty ids",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "edge_cases",
+          "desc": "edge: calendar wide range",
+          "repro": "{'detail': 'Authentication required'}"
+        },
+        {
+          "severity": "medium",
+          "area": "charts",
+          "desc": "charts: list",
+          "repro": "charts=0"
+        }
+      ]
+    }
+  ]
+}

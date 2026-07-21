@@ -1,0 +1,33 @@
+{
+  "id": "tbl_20260420233830",
+  "name": "asdass",
+  "display_name": "",
+  "group_id": "",
+  "table_type": "data",
+  "columns": [
+    {
+      "name": "aa",
+      "type": "string"
+    },
+    {
+      "name": "sdfgs",
+      "type": "string"
+    }
+  ],
+  "rows": [
+    {
+      "aa": "1",
+      "sdfgs": "1"
+    }
+  ],
+  "description": "asda",
+  "aws_cmd": "",
+  "username": "hol",
+  "updated": "2026-04-20T23:38:30.231691",
+  "_audit": {
+    "username": "hol",
+    "action": "edit",
+    "saved_at": "2026-04-20T23:46:37.384147",
+    "version": 1
+  }
+}

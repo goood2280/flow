@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "poll_seconds": 300,
+  "alerts_prefix": "valve-alerts",
+  "artifacts_prefix": "flow/artifacts",
+  "local_root": "D:/semi all/flow/data/flow-data/s3_bucket/flow-datalake",
+  "s3": {
+    "bucket": "",
+    "region": "",
+    "profile": "",
+    "endpoint_url": ""
+  }
+}

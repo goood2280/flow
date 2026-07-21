@@ -1,0 +1,127 @@
+[중요 안내 — 메인 codex 는 진행 X]
+이 task 는 사용자 codex weekly limit 보호 차원에서 spark codex (model=gpt-5.3-codex-spark) 만 처리합니다.
+메인 codex (model=gpt-5.5) 가 이 spec 을 read 했다면 즉시 종료하고 더 이상 작업하지 마세요.
+spark 는 .codex_task_S1_user_manuals_spec.txt 의 [CHAIN] 명령으로 자동 진입합니다.
+
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 에이전트 페이지(My_Diagnosis.jsx) capability list 제거 + 에이전트가 사용자 권한 내 모든 작업 수행 가능 + 파일탐색기/SplitTable/인폼로그 3개 영역 완벽 지원.
+
+[배경 — 사용자 직언]
+"에이전트에 이 도우미가 도와주는 일 하지 않는 일 리스트 안 보여줘도 됨. 에이전트는 유저가 권한 있는 모든 일을 해줄 수 있는 거야. 근데 먼저 파일탐색기 SplitTable 인폼로그를 완벽하게 다 할 줄 알아야 함."
+
+해석:
+- "도와주는 일 / 하지 않는 일" UI 가 에이전트 능력의 임의 제한처럼 보여 사용자 혼란.
+- 에이전트는 RBAC(사용자 권한) 안에서 무엇이든 호출 가능해야 함 — capability allowlist 제거.
+- 우선순위: 파일탐색기 / SplitTable / 인폼로그 3대 핵심 페이지의 모든 endpoint 를 자연어로 정확히 호출.
+
+[원하는 결과]
+
+1) 에이전트 페이지 "도와주는 일 / 하지 않는 일" Panel 제거.
+   - frontend/src/pages/My_Diagnosis.jsx L201-213 부근 `Panel title="도우미가 도와주는 일 / 하지 않는 일"` 영역 (do_list / dont_list 렌더) 완전 제거.
+   - persona-card 응답의 do_list / dont_list 필드는 BE 그대로 유지 (다른 호출자 있을 수 있음). FE 만 안 보임.
+   - 그 자리에 짧은 안내 한 줄: "에이전트는 사용자 권한 안에서 가능한 모든 작업을 호출합니다." (text-secondary, 작은 글씨).
+
+2) 에이전트 capability allowlist / blocklist 제거.
+   - 백엔드/프론트엔드에서 agent 가 호출 가능한 tool/endpoint 를 hard-coded 로 제한하는 곳이 있으면 제거.
+   - 검색 키워드: "do_list", "dont_list", "agent_capability", "ALLOWED_TOOLS", "BLOCKED_TOOLS", "agent_features", "tool_allowlist".
+   - 제한 로직 제거 후 RBAC (사용자 권한 매트릭스 — task #4 의 `require_page_admin` / `_visible_to` / module 권한 등) 에만 위임.
+   - admin_settings.json 의 user 권한 / inform_user_modules / page_admins 에 의해 자동으로 권한 분기 — agent 도 동일 사용자 토큰으로 호출.
+   - persona-card 응답의 do_list/dont_list 도 backend 계산을 "RBAC 기반 자동 enumerate" 로 바꿈 (그 사용자가 호출 가능한 endpoint 카테고리 list). 단 FE 표시 X (1).
+
+3) 에이전트 tool registry — 파일탐색기 / SplitTable / 인폼로그 3대 영역 완벽 등록.
+
+   A. **파일탐색기 (FileBrowser)** — backend/routers/files.py 또는 filebrowser.py 의 모든 endpoint:
+      * GET /api/files/list, /tree, /preview
+      * POST /api/files/upload, /move, /rename, /delete (권한 분기)
+      * GET /api/files/sql-preview (apply_sql_like)
+      * Hive view, parquet preview, ML_TABLE 검색
+      * tool name: file_list / file_preview / file_sql / file_search / hive_view / parquet_peek 등
+      * 자연어 매핑: "파일 목록", "보여줘", "검색", "SQL 실행" 등 → tool 호출.
+
+   B. **SplitTable** — backend/routers/splittable.py 의 핵심 endpoint:
+      * GET /api/splittable/products, /lot-ids, /lot-candidates, /override-debug, /long-items, /long-wide-preview
+      * GET /api/splittable/paste-sets, /customs, /splittable-sets (task #14 통합)
+      * GET /api/splittable/ml-table-match, /fab-roots, /ml-table-cols
+      * POST /api/splittable/notes/save, /paste-sets/save, /customs/save, /source-config/save, /rulebook/save, /prefixes/save, /precision/save
+      * tool name: split_products / split_lot_search / split_view / split_save_set / split_custom_create 등
+      * 자연어 매핑: "ML_TABLE_PRODA 보여줘", "랏 검색", "knob 컬럼 추가", "세트 저장" 등 → tool 호출.
+
+   C. **인폼로그 (Inform)** — backend/routers/informs.py 의 핵심 endpoint:
+      * GET /api/informs (list), /by-lot, /by-product, /lot-matrix, /audit-log, /modules, /modules/summary, /config, /splittable-sets (task #14)
+      * GET /api/informs/dashboard-data (task #15)
+      * POST /api/informs (생성), /check, /status, /{id}/edit, /{id}/delete (권한 분기)
+      * tool name: inform_list / inform_create / inform_check / inform_status / inform_delete / inform_matrix / inform_dashboard 등
+      * 자연어 매핑: "이번주 인폼", "PROD-A의 GATE 인폼", "lot ABC123 진행률", "신규 인폼 작성" 등 → tool 호출.
+
+4) Agent prompt template 강화.
+   - LLM 호출 시 system prompt 에 3 영역의 tool 사용법 / 파라미터 / 한국어 자연어 예시 명시.
+   - tool 호출 결과를 한국어로 자연스럽게 요약 (단순 raw JSON dump 금지).
+   - 권한 거부 시 "이 작업은 [페이지명] admin 권한이 필요합니다" 같은 안내 (raw 401 X).
+   - tool 호출 실패 시 fallback (다른 tool 시도 또는 사용자 확인).
+
+5) Agent 페이지 일부 카테고리 라벨 정비.
+   - CATEGORIES[1] "유저 페르소나" 의 desc — "현재 로그인 유저의 권한 안에서 에이전트가 가능한 모든 작업" 톤으로.
+   - 카테고리 카드에 표시되는 데이터 중 do_list/dont_list 의존 부분 모두 정리.
+   - 다른 카테고리 (Knowledge / Audit / Rules 등) 는 변경 X.
+
+[코드 reference]
+- frontend/src/pages/My_Diagnosis.jsx
+  * Panel "도와주는 일 / 하지 않는 일" L201-213
+  * CATEGORIES 정의 L37 부근
+- backend/routers/llm.py — agent tool calling, persona-card endpoint (메모리 v9.0.4 의 에이전트 8 카테고리)
+- backend/routers/files.py / filebrowser.py
+- backend/routers/splittable.py
+- backend/routers/informs.py
+
+[작업 순서]
+
+A) Frontend
+   1. My_Diagnosis.jsx 의 "도와주는 일 / 하지 않는 일" Panel 제거. 짧은 안내 한 줄로 대체.
+   2. CATEGORIES[1] desc 미세 조정.
+   3. do_list / dont_list 렌더 흔적 모두 정리.
+
+B) Backend
+   1. agent capability allowlist / blocklist 제거 (있으면).
+   2. persona-card 응답의 do_list / dont_list 를 RBAC 기반 auto-enumerate (또는 빈 array — FE 안 쓰면 무관).
+   3. agent tool registry 정의 — 파일탐색기 / SplitTable / 인폼로그 3 영역의 모든 endpoint 를 LLM tool 로 등록.
+   4. tool 호출 시 사용자 토큰의 RBAC 검증 자동 (기존 require_page_admin / _visible_to 활용).
+   5. tool 매핑 자연어 예시 (한국어) 30+개 system prompt 에 포함.
+
+C) 회귀 (반드시 유지)
+   - task #1~15 모두 회귀 X.
+   - 특히 task #14 (인폼 페이지 layout) / task #15 (인폼 차트 라이브러리) 와 충돌 없이 동작.
+   - task #4 권한 매트릭스, task #1 모듈 wise 메일 등.
+
+D) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+
+E) 테스트
+   - tests/agent/test_agent_capability_open.py 신규: capability allowlist 제거 검증, RBAC 만 작동.
+   - tests/agent/test_agent_tools_inform.py 신규: 인폼 tool 호출 라운드트립.
+   - tests/agent/test_agent_tools_splittable.py 신규: SplitTable tool.
+   - tests/agent/test_agent_tools_files.py 신규: FB tool.
+   - 기존 tests/* 회귀 X.
+
+[제약]
+- 페이지 신설 X — My_Diagnosis.jsx + 백엔드 router 안에서 보강.
+- backend endpoint 시그니처 호환 (필드 추가 또는 신규 등록만).
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~15 회귀 X.
+- agent 권한 확장은 RBAC 안 — 사용자 권한 없는 endpoint 는 여전히 거부.
+
+[완료 기준]
+- 에이전트 페이지에 "도와주는 일 / 하지 않는 일" Panel 안 보임.
+- agent 가 사용자 권한 내 FB / SplitTable / Inform 모든 endpoint 자연어로 호출 가능.
+- 권한 거부 시 한국어 안내, raw 401 X.
+- 신규 테스트 통과 + 기존 회귀 X.
+- frontend build + setup.py 재빌드 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.
+
+[CHAIN — task #16 완료 후 자동 이어가기]
+이 task #16 가 끝났으면 (DISCORD_SUMMARY 출력 직전 또는 직후) 추가로:
+1. `.codex_task_17_agent_scenarios_e2e_spec.txt` 파일을 read 도구로 전체 read.
+2. spec 안 모든 요구사항 (multi-turn clarification 강화 + 시나리오 카탈로그 30+ + 자동 테스트 30+ + 시나리오 카드 UI) 단계별로 빠짐없이 구현.
+3. task #17 의 회귀/빌드/테스트 까지 마무리.
+4. task #17 의 'DISCORD_SUMMARY:' 한국어 3~5줄도 출력 (task #16 요약과는 별도 블록).
+같은 동일 제약 (git add/commit/push X, admin_settings.json X, 내용 출력 X) 모두 task #17 에도 적용.

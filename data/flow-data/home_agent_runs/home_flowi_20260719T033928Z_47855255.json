@@ -1,0 +1,564 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260719T033928Z_47855255",
+  "created_at": "2026-07-19T03:39:28.418338+00:00",
+  "source": "home_agent",
+  "username": "qa_claude",
+  "prompt": "lot_wf avg 그레인으로 그려줘",
+  "input_prompt": "",
+  "resolved_prompt": "lot_wf avg 그레인으로 그려줘",
+  "status": "success",
+  "reply": "'그레인'이 어떤 데이터 소스(ET, INLINE, VM, EDS, FAB 등)의 어떤 측정값(metric)을 의미하는지 알려주세요.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "success"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "success"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      },
+      {
+        "id": "iter:0:search_filebrowser_schema",
+        "label": "#1 FileBrowser 스키마 검색",
+        "phase": "react_iteration",
+        "kind": "unit_ai",
+        "tool": "search_filebrowser_schema",
+        "status": "success"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "iter:0:search_filebrowser_schema"
+      },
+      {
+        "source": "iter:0:search_filebrowser_schema",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": [
+    {
+      "tool": "search_filebrowser_schema",
+      "kind": "function",
+      "title": "FileBrowser 스키마 검색",
+      "ok": true,
+      "status": "success",
+      "blocked": false,
+      "ms": 1048,
+      "input": {
+        "prompt": "그레인"
+      },
+      "result_preview": "파일 탐색기 단위기능으로 처리하는 요청입니다. - 실행 경로: open_filebrowser - 필요한 조건: source/root, product or file, optional SQL/filter - 현재 감지: product=-, lot=-, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.",
+      "warnings": [],
+      "reason": "The term '그레인' is unknown, and the user wants a chart based on it. Searching the database schemas for this term is necessary to identify if it's a known metric or column before proceeding with chart g",
+      "source": "react",
+      "feedback_penalty": {
+        "unit_key": "search_filebrowser_schema",
+        "penalty": 0.0,
+        "boost": 0.0,
+        "score_adjustment": 0.0,
+        "up_count": 0,
+        "down_count": 0,
+        "last_rating": "",
+        "updated_at": ""
+      },
+      "result": {
+        "handled": true,
+        "intent": "filebrowser_guidance",
+        "answer": "파일 탐색기 단위기능으로 처리하는 요청입니다.\n- 실행 경로: open_filebrowser\n- 필요한 조건: source/root, product or file, optional SQL/filter\n- 현재 감지: product=-, lot=-, step=-\nFlowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.",
+        "feature": "filebrowser",
+        "action": "open_filebrowser",
+        "slots": {
+          "product": "",
+          "lots": [],
+          "root_lot_ids": [],
+          "fab_lot_ids": [],
+          "wafers": [],
+          "steps": [],
+          "terms": []
+        },
+        "missing": [],
+        "feature_entrypoints": [
+          {
+            "key": "filebrowser",
+            "title": "파일 탐색기",
+            "description": "Parquet/CSV 원천 데이터를 선택하고 SQL-like 필터와 컬럼 선택으로 빠르게 샘플링합니다.",
+            "prompt": "파일 탐색기에서 내가 가진 product/lot 조건으로 어떤 DB와 필터를 먼저 보면 좋을지 알려줘."
+          },
+          {
+            "key": "splittable",
+            "title": "스플릿 테이블",
+            "description": "Root lot/wafer 단위로 plan과 actual을 비교하고 변경 이력을 추적합니다.",
+            "prompt": "스플릿 테이블에서 plan vs actual mismatch를 빨리 확인하는 흐름을 알려줘."
+          },
+          {
+            "key": "inform",
+            "title": "인폼 로그",
+            "description": "제품/lot 인폼을 남기고 SplitTable 스냅샷, 댓글, 메일 공유까지 연결합니다.",
+            "prompt": "인폼 로그에 공유할 내용을 내 상황에 맞게 정리해줘."
+          },
+          {
+            "key": "dashboard",
+            "title": "대시보드",
+            "description": "선택한 데이터 소스를 차트로 비교하고 기간, 컬럼, 필터 조건을 바꿔 추세를 봅니다.",
+            "prompt": "대시보드에서 내 담당 제품의 이상 징후를 보기 위한 차트 구성을 추천해줘."
+          }
+        ],
+        "table": {
+          "kind": "flowi_action_plan",
+          "title": "Flowi unit feature routing",
+          "placement": "below",
+          "columns": [
+            {
+              "key": "field",
+              "label": "FIELD"
+            },
+            {
+              "key": "value",
+              "label": "VALUE"
+            }
+          ],
+          "rows": [
+            {
+              "field": "feature",
+              "value": "파일 탐색기"
+            },
+            {
+              "field": "action",
+              "value": "open_filebrowser"
+            },
+            {
+              "field": "detected_product",
+              "value": ""
+            },
+            {
+              "field": "detected_lot",
+              "value": ""
+            },
+            {
+              "field": "detected_step",
+              "value": ""
+            },
+            {
+              "field": "detected_terms",
+              "value": ""
+            },
+            {
+              "field": "needs",
+              "value": "source/root, product or file, optional SQL/filter"
+            },
+            {
+              "field": "outputs",
+              "value": "table preview, selected columns, CSV download"
+            }
+          ],
+          "total": 8,
+          "headers": [
+            "FIELD",
+            "VALUE"
+          ],
+          "max_height": 320,
+          "overflow_x": true
+        },
+        "type": "table",
+        "inline_summary": "Flowi unit feature routing 8 rows · 2 columns"
+      }
+    }
+  ],
+  "action_log": {
+    "summary": [
+      "질문을 공개 가능한 runtime 단계로 정리했습니다.",
+      "오케스트레이터 상태: success.",
+      "최종 결과를 Home 응답으로 정리했습니다."
+    ],
+    "timeline": [
+      {
+        "stage": "prompt_input",
+        "title": "프롬프트 입력",
+        "status": "success",
+        "detail": "input"
+      },
+      {
+        "stage": "semantic_layer",
+        "title": "용어해석",
+        "status": "success",
+        "detail": "semantic"
+      },
+      {
+        "stage": "orchestrator",
+        "title": "오케스트레이터",
+        "status": "success",
+        "detail": "plan"
+      },
+      {
+        "stage": "result_renderer",
+        "title": "결과 정리",
+        "status": "success",
+        "detail": "render"
+      },
+      {
+        "stage": "unit_ai:change_management",
+        "title": "변경점 관리 Flow-i",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:dashboard_agent",
+        "title": "Dashboard Agent",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:filebrowser_ai_sql",
+        "title": "FileBrowser AI SQL",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:inform_registration",
+        "title": "Inform 등록 도우미",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:ppid_knob",
+        "title": "PPID Knob 분류",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:split_nav",
+        "title": "SplitTable 열기",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:step_lookup",
+        "title": "Step ID 매칭",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "iter:0:search_filebrowser_schema",
+        "title": "#1 FileBrowser 스키마 검색",
+        "status": "success",
+        "detail": "react_iteration"
+      }
+    ],
+    "final_answer": "'그레인'이 어떤 데이터 소스(ET, INLINE, VM, EDS, FAB 등)의 어떤 측정값(metric)을 의미하는지 알려주세요.",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "warnings": [],
+    "action": "function",
+    "blocked": false,
+    "intent": "search_filebrowser_schema",
+    "feature": "search_filebrowser_schema",
+    "missing": [],
+    "inline_summary": "파일 탐색기 단위기능으로 처리하는 요청입니다. - 실행 경로: open_filebrowser - 필요한 조건: source/root, product or file, optional SQL/filter - 현재 감지: product=-, lot=-, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다."
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "lot_wf avg 그레인으로 그려줘",
+        "source": "home_agent"
+      },
+      "output_summary": {
+        "chars": 20
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "lot_wf avg 그레인으로 그려줘"
+      },
+      "output_summary": {
+        "semantic": {
+          "resolved_columns": [],
+          "alias_hits": [
+            "lot_id"
+          ],
+          "slot_hints": {
+            "lot_id": "_wf"
+          },
+          "unknown_terms": [
+            "avg",
+            "그레인으로",
+            "그려줘"
+          ],
+          "value_catalog_matches": [],
+          "value_terms": [],
+          "intent_matches": []
+        },
+        "interpretation": {},
+        "signals": null
+      },
+      "warnings": []
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "success",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "react",
+        "plan": [],
+        "unit_ai_selection": [],
+        "tool": {
+          "feature": "search_filebrowser_schema",
+          "action": "function",
+          "intent": "search_filebrowser_schema",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "success",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "'그레인'이 어떤 데이터 소스(ET, INLINE, VM, EDS, FAB 등)의 어떤 측정값(metric)을 의미하는지 알려주세요.",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": []
+      },
+      "warnings": [],
+      "preview": {}
+    },
+    "iter:0:search_filebrowser_schema": {
+      "node_id": "iter:0:search_filebrowser_schema",
+      "status": "success",
+      "input_summary": {
+        "prompt": "그레인"
+      },
+      "output_summary": {
+        "tool": "search_filebrowser_schema",
+        "title": "FileBrowser 스키마 검색",
+        "result_preview": "파일 탐색기 단위기능으로 처리하는 요청입니다. - 실행 경로: open_filebrowser - 필요한 조건: source/root, product or file, optional SQL/filter - 현재 감지: product=-, lot=-, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.",
+        "reason": "The term '그레인' is unknown, and the user wants a chart based on it. Searching the database schemas for this term is necessary to identify if it's a known metric or column before proceeding with chart g"
+      },
+      "warnings": [],
+      "preview": {}
+    }
+  },
+  "warnings": [],
+  "iterations": [
+    {
+      "index": 0,
+      "tool": "search_filebrowser_schema",
+      "title": "FileBrowser 스키마 검색",
+      "status": "success",
+      "ok": true,
+      "ms": 1048,
+      "result_preview": "파일 탐색기 단위기능으로 처리하는 요청입니다. - 실행 경로: open_filebrowser - 필요한 조건: source/root, product or file, optional SQL/filter - 현재 감지: product=-, lot=-, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.",
+      "reason": "The term '그레인' is unknown, and the user wants a chart based on it. Searching the database schemas for this term is necessary to identify if it's a known metric or column before proceeding with chart g"
+    }
+  ],
+  "stop_reason": "ask_user",
+  "semantic_frame": {
+    "resolved_columns": [],
+    "alias_hits": [
+      "lot_id"
+    ],
+    "slot_hints": {
+      "lot_id": "_wf"
+    },
+    "unknown_terms": [
+      "avg",
+      "그레인으로",
+      "그려줘"
+    ],
+    "value_catalog_matches": [],
+    "value_terms": [],
+    "intent_matches": []
+  }
+}

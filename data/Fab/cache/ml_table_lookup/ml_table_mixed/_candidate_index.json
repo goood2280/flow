@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source_path": "C:\\Users\\goood\\AppData\\Local\\Temp\\pytest-of-goood\\pytest-395\\test_mltable_product_files_are0\\ml_table_mixed.PARQUET",
+  "source_mtime": 1784422014.6066656,
+  "source_size": 1165,
+  "built_at": "2026-07-19T00:46:54+00:00",
+  "root_lot_ids": [
+    "R1000"
+  ],
+  "root_lot_id_count": 1,
+  "columns_by_prefix": {
+    "KNOB": [
+      "KNOB_ALPHA"
+    ],
+    "MASK": [],
+    "INLINE": [],
+    "VM": [],
+    "TAG": [],
+    "MGMT": []
+  },
+  "default_prefix": "KNOB"
+}

@@ -1,0 +1,97 @@
+{
+  "version": "v3",
+  "display_version": "v3.0",
+  "file": "ppid_knob.csv",
+  "artifact_type": "edm_single_file",
+  "actor": "hol",
+  "action": "edit",
+  "created_at": "2026-05-27T21:26:30",
+  "size": 2632,
+  "rows": 58,
+  "columns": 6,
+  "checksum": "sha256:b7ab77b81c73739b018d17609b73d826dfcb7ebbda024f5157135f02481c47ff",
+  "source_path": "D:\\TEST_Making_Video\\semi_all\\flow\\data\\Fab\\ppid_knob.csv",
+  "content_file": "v3.csv",
+  "note": "Grid EDM edit",
+  "change_summary": {
+    "label": "추가 1행 / 삭제 1행",
+    "rows_delta": 0,
+    "columns_delta": 0,
+    "changed_cells": 1,
+    "added_rows": 1,
+    "deleted_rows": 1,
+    "modified_rows": 0,
+    "added_columns": [],
+    "removed_columns": [],
+    "checksum_equal": false
+  },
+  "save_diff_table": {
+    "kind": "version_diff_table",
+    "title": "직전 버전 대비 변경점",
+    "columns": [
+      "rev",
+      "changed_cols",
+      "product",
+      "feature_name",
+      "function_step",
+      "rule_order",
+      "operator",
+      "category"
+    ],
+    "key_columns": [
+      "product",
+      "feature_name",
+      "rule_order"
+    ],
+    "match_strategy": "unique_key",
+    "added_columns": [],
+    "removed_columns": [],
+    "added_columns_count": 0,
+    "removed_columns_count": 0,
+    "rows": [
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "product": "PRODA",
+        "feature_name": "4.0 GATE_OX11",
+        "function_step": "GATE_STACK",
+        "rule_order": "RO",
+        "operator": "eq",
+        "category": "PPID_04_0",
+        "_changed_cols": [
+          "product",
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "category"
+        ]
+      },
+      {
+        "rev": "삭제",
+        "changed_cols": "ALL",
+        "product": "PRODA",
+        "feature_name": "4.0 GATE_OX",
+        "function_step": "GATE_STACK",
+        "rule_order": "RO",
+        "operator": "eq",
+        "category": "PPID_04_0",
+        "_changed_cols": [
+          "product",
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "category"
+        ]
+      }
+    ],
+    "counts": {
+      "added": 1,
+      "deleted": 1,
+      "modified": 0,
+      "unchanged": 57
+    },
+    "truncated": false
+  }
+}

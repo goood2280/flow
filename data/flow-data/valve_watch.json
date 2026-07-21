@@ -1,0 +1,1 @@
+{"enabled": true, "poll_seconds": 300, "notify_min_severity": "warn", "paths": ["/mnt/d/TEST_Making_Video/semi_all/flow/data/flow-data/valve/config_alerts.jsonl", "/mnt/d/TEST_Making_Video/semi_all/flow/data/flow-data/valve/status_alerts.jsonl"]}

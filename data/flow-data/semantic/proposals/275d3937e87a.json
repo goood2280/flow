@@ -1,0 +1,16 @@
+{
+  "id": "275d3937e87a",
+  "term": "Mail",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260527-AA17:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-27T14:01:56.491400+00:00",
+  "updated_at": "2026-05-27T14:01:56.491400+00:00",
+  "decided_by": null
+}

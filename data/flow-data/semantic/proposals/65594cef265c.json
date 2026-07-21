@@ -1,0 +1,16 @@
+{
+  "id": "65594cef265c",
+  "term": "alert",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260528-CE3D:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-28T10:08:04.499834+00:00",
+  "updated_at": "2026-05-28T10:08:04.499834+00:00",
+  "decided_by": null
+}

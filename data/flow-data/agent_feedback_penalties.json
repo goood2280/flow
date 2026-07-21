@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "units": {
+    "step_lookup": {
+      "unit_key": "step_lookup",
+      "up_count": 0,
+      "down_count": 2,
+      "penalty": 2.0,
+      "boost": 0.0,
+      "last_rating": "down",
+      "updated_at": "2026-07-02T23:31:34+00:00",
+      "updated_by": "hol",
+      "last_run_id": "",
+      "last_reason": "ZW654321 -> CORRECTED_STEP_X"
+    }
+  },
+  "nodes": {},
+  "home": {
+    "-|step_lookup|home_agent|zw654321 -> corrected_step_x": {
+      "key": "-|step_lookup|home_agent|zw654321 -> corrected_step_x",
+      "planner": "",
+      "tool": "step_lookup",
+      "source": "home_agent",
+      "reason_signature": "zw654321 -> corrected_step_x",
+      "up_count": 0,
+      "down_count": 2,
+      "penalty": 2.0,
+      "boost": 0.0,
+      "last_rating": "down",
+      "updated_at": "2026-07-02T23:31:34+00:00",
+      "updated_by": "hol"
+    }
+  },
+  "updated_at": "2026-07-02T23:31:34+00:00"
+}

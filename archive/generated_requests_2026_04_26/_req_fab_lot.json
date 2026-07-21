@@ -1,0 +1,1 @@
+{"text":"[fab_lot_id 의미 정정] SplitTable 및 ML_TABLE_PROD*.parquet 의 fab_lot_id 는 정적 더미가 아니라 FAB DB 내 LOT_WF 공정 진행 중 가장 마지막에 가진 fab_lot_id 로 세팅해야 함. 즉 FAB 테이블에서 (root_lot_id, wafer_id) 로 그룹화 후 max(tkout_time) 의 fab_lot_id 를 채택. 기존 d879917b(autocomplete) 는 이 정정된 값 위에서 동작해야 유효.","from":"user"}

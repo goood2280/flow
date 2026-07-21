@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source_path": "C:\\Users\\goood\\AppData\\Local\\Temp\\pytest-of-goood\\pytest-417\\test_splittable_view_route_ren0\\ML_TABLE_CONTRACT.parquet",
+  "source_mtime": 1784435137.8868406,
+  "source_size": 1928,
+  "row_count": 3,
+  "total_cols": 5,
+  "root_lot_id_count": 2,
+  "root_col": "root_lot_id",
+  "original_root_col": "root_lot_id",
+  "schema": {
+    "root_lot_id": "String",
+    "wafer_id": "Int64",
+    "fab_lot_id": "String",
+    "KNOB_GATE": "String",
+    "INLINE_TEMP": "Int64"
+  },
+  "original_schema": {
+    "root_lot_id": "String",
+    "wafer_id": "Int64",
+    "fab_lot_id": "String",
+    "KNOB_GATE": "String",
+    "INLINE_TEMP": "Int64"
+  },
+  "identity_columns": [
+    "root_lot_id",
+    "fab_lot_id",
+    "wafer_id"
+  ],
+  "candidate_index": {
+    "has_index": true,
+    "path": "D:\\semi all\\flow\\data\\Fab\\cache\\ml_table_lookup\\ML_TABLE_CONTRACT\\_candidate_index.json",
+    "version": 1,
+    "root_lot_id_count": 2,
+    "default_prefix": "KNOB",
+    "knob_column_count": 1
+  },
+  "built_at": "2026-07-19T04:25:38+00:00",
+  "build_seconds": 0.234
+}

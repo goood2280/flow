@@ -1,0 +1,33 @@
+{
+  "id": "handoff_v9_L6",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p3",
+  "status": "open",
+  "title": "[L6] SSO (SAML / OIDC)",
+  "summary": "core/sso.py + auth.py SSO callback + python3-saml/authlib 도입. SAML 2.0 SP + OIDC (Google Workspace / Azure AD) 듀얼 지원. 기존 name+password 병행 유지",
+  "context": {
+    "track": "longterm_v9_3plus",
+    "backlog_id": "L6",
+    "estimated_effort": "3주",
+    "target_score_delta": "확장 +0.4, 보안 +0.2",
+    "dependencies": ["P3", "P5"]
+  },
+  "acceptance_criteria": [
+    "사내 IdP (AD FS or Azure AD) 연동 검증",
+    "docs/sso_setup.md — IT 팀용 설정 가이드",
+    "pytest 20 케이스 (mock IdP)",
+    "롤백 절차 문서화 (SSO 장애 시 로컬 로그인 복귀)"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\sso.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\auth.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\requirements.txt",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\sso_setup.md"
+  ],
+  "verification": [],
+  "resolution": ""
+}

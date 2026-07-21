@@ -1,0 +1,16 @@
+{
+  "id": "184c64850b05",
+  "term": "Mail",
+  "category": "mapping",
+  "canonical_match": "inform",
+  "confidence": 0.55,
+  "rationale": "normalizes to existing canonical 'inform'",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260524-1625:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-24T11:36:58.254223+00:00",
+  "updated_at": "2026-05-24T11:36:58.254223+00:00",
+  "decided_by": null
+}

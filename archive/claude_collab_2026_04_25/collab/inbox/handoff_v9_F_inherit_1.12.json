@@ -1,0 +1,33 @@
+{
+  "id": "handoff_v9_F_inherit_1.12",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[F-inherit 1.12] Home 온보딩 3분 투어 (9 step spotlight)",
+  "summary": "신규 유저 첫 로그인 → 9 step spotlight tour (Home → Tracker → Inform → Meeting → SplitTable → Dashboard → ML → Admin → Done). admin_settings.user_onboarding_done[uid] 로 1회 제한",
+  "context": {
+    "track": "feature_v9_1",
+    "backlog_id": "F_inherit_1.12",
+    "estimated_effort": "1주",
+    "target_score_delta": "UX +0.1",
+    "dependencies": ["H6"]
+  },
+  "acceptance_criteria": [
+    "tests/admin/test_onboarding_status.py pass",
+    "수동: 신규 계정 3분 안에 9 step 완료",
+    "9 step spotlight 순서 (Home → Tracker → Inform → Meeting → SplitTable → Dashboard → ML → Admin → Done) 동작",
+    "admin_settings.user_onboarding_done[uid] 로 1회 제한 검증"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\components\\OnboardingTour.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\App.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\admin.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\tests\\admin\\test_onboarding_status.py"
+  ],
+  "verification": [],
+  "resolution": ""
+}

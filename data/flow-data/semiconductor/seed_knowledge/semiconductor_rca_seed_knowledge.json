@@ -1,0 +1,8 @@
+{
+  "schema_version": "flow-semi-rca-seed-v1",
+  "updated_at": "2026-04-30",
+  "description": "Empty default semiconductor RCA knowledge pack. Operators add site-specific RAG documents, table mappings, item dictionaries, and knowledge cards through flow-data registration flows.",
+  "knowledge_cards": [],
+  "causal_edges": [],
+  "historical_cases": []
+}

@@ -1,0 +1,16 @@
+{
+  "id": "5076937cad18",
+  "term": "other",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260529-0A5C:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-29T02:13:29.974800+00:00",
+  "updated_at": "2026-05-29T02:13:29.974800+00:00",
+  "decided_by": null
+}

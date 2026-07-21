@@ -1,0 +1,16 @@
+{
+  "id": "52fc0955068c",
+  "term": "user",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260528-AC14:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-28T10:07:35.517773+00:00",
+  "updated_at": "2026-05-28T10:07:35.517773+00:00",
+  "decided_by": null
+}

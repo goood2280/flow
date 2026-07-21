@@ -1,0 +1,150 @@
+{
+  "session_id": "inform_reg_0ad74d37d6b34bab",
+  "created_at": "2026-07-19T04:42:32+00:00",
+  "updated_at": "2026-07-19T04:42:33+00:00",
+  "updated_ts": 1784436153.0007122,
+  "slots": {},
+  "runs": [
+    {
+      "history_id": "agent_inform_795b38f4cd92",
+      "run_id": "agent_inform_795b38f4cd92",
+      "timestamp": "2026-07-19T04:42:33+00:00",
+      "username": "",
+      "prompt": "inform 메일 보내줘",
+      "natural_language": "inform 메일 보내줘",
+      "action": "continue",
+      "status": "collecting",
+      "answer": "누락된 Inform 등록값이 있습니다.",
+      "question": "제품명을 알려주세요.",
+      "missing": [
+        "product",
+        "lot_id",
+        "module",
+        "note",
+        "mail_target"
+      ],
+      "semantic_frame": {
+        "alias_hits": [
+          {
+            "canonical": "mail_target",
+            "alias": "메일"
+          }
+        ],
+        "slot_hints": {},
+        "unknown_terms": [
+          {
+            "term": "inform",
+            "search_priority": [
+              {
+                "location": "glossary",
+                "table_file": "FLOW_DATA_ROOT semantic/glossary or curated knowledge",
+                "confidence": 0.22
+              }
+            ]
+          },
+          {
+            "term": "보내줘",
+            "search_priority": [
+              {
+                "location": "glossary",
+                "table_file": "FLOW_DATA_ROOT semantic/glossary or curated knowledge",
+                "confidence": 0.22
+              }
+            ]
+          }
+        ],
+        "source_catalog_matches": [],
+        "intent_matches": {},
+        "current_slot_keys": [],
+        "warnings": [
+          "Unmapped semantic terms: inform, 보내줘"
+        ]
+      },
+      "slots": {},
+      "draft": {
+        "inform": {
+          "lot_id": "",
+          "product": "",
+          "module": "",
+          "reason": "PEMS",
+          "text": "",
+          "mail_draft": {
+            "subject": "",
+            "body": ""
+          }
+        },
+        "snapshot": {
+          "requested": false,
+          "custom_cols": [],
+          "attached_sets_count": 0,
+          "embed_ready": false,
+          "status": "skipped"
+        },
+        "mail_draft": {
+          "subject": "",
+          "body": ""
+        }
+      },
+      "human_review": {
+        "approval_status": "blocked_missing_slots",
+        "action_required": false,
+        "can_confirm": false,
+        "missing": [
+          "product",
+          "lot_id",
+          "module",
+          "note",
+          "mail_target"
+        ],
+        "required_values": {
+          "product": false,
+          "lot_id": false,
+          "module": false,
+          "note": false,
+          "mail_target": false
+        },
+        "session_id": "inform_reg_0ad74d37d6b34bab"
+      },
+      "requires_confirmation": false,
+      "created_inform": {},
+      "warnings": [
+        "new short-memory session created",
+        "Unmapped semantic terms: inform, 보내줘"
+      ]
+    }
+  ],
+  "status": "collecting",
+  "last_draft": {
+    "inform": {
+      "lot_id": "",
+      "product": "",
+      "module": "",
+      "reason": "PEMS",
+      "text": "",
+      "mail_draft": {
+        "subject": "",
+        "body": ""
+      }
+    },
+    "slots": {},
+    "mail_draft": {
+      "subject": "",
+      "body": ""
+    },
+    "snapshot": {
+      "requested": false,
+      "custom_cols": [],
+      "attached_sets_count": 0,
+      "embed_ready": false,
+      "status": "skipped"
+    },
+    "embed_table": null
+  },
+  "last_missing": [
+    "product",
+    "lot_id",
+    "module",
+    "note",
+    "mail_target"
+  ]
+}

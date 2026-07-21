@@ -1,0 +1,2898 @@
+{
+  "version": 1,
+  "default_target_count": 50,
+  "description": "Default Flow-i workflow few-shot catalog. Entries are templates with slots, not site-specific hardcoded values.",
+  "created_at": "2026-05-30T15:13:55+00:00",
+  "updated_at": "2026-07-19T04:50:08+00:00",
+  "updated_by": "runtime",
+  "workflows": [
+    {
+      "id": "wf_split_table_root_lot",
+      "title": "Root lot SplitTable 조회",
+      "enabled": true,
+      "priority": 110,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_split_table",
+      "examples": [
+        "A1001 스플릿테이블 보여줘",
+        "{root_lot_id} 스플릿테이블 보여줘",
+        "{root_lot_id} split table",
+        "{root_lot_id} knob 테이블 보여줘"
+      ],
+      "question_template": "{root_lot_id} 스플릿테이블 보여줘",
+      "trigger_terms": [
+        "스플릿테이블",
+        "split table",
+        "split",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id를 추출한다.",
+        "SplitTable 단위기능에서 해당 root_lot_id의 knob/plan/actual cell을 조회한다.",
+        "SplitTable 화면과 같은 header, group, row, cell 형식으로 반환한다."
+      ],
+      "orchestration": [
+        "root_lot_id를 추출한다.",
+        "SplitTable 단위기능에서 해당 root_lot_id의 knob/plan/actual cell을 조회한다.",
+        "SplitTable 화면과 같은 header, group, row, cell 형식으로 반환한다."
+      ],
+      "result_contract": {
+        "type": "split_view",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_split_table_root_lot_knob_custom_set",
+      "title": "Root lot + Knob CUSTOM SET SplitTable 조회",
+      "enabled": true,
+      "priority": 109,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_split_table_custom_set",
+      "examples": [
+        "A1001 1.0 STI Split(or Knob) 보여줘",
+        "{root_lot_id} {knob_name} Split(or Knob) 보여줘",
+        "{root_lot_id} {knob_name} Split 보여줘",
+        "{root_lot_id} {knob_name} Knob 보여줘"
+      ],
+      "question_template": "{root_lot_id} {knob_name} Split(or Knob) 보여줘",
+      "trigger_terms": [
+        "split(or knob)",
+        "custom set",
+        "split",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI",
+          "match": "contains_tokens"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id와 knob_name 후보를 분리한다.",
+        "knob_name 토큰을 포함하는 SplitTable 컬럼을 ad-hoc CUSTOM SET으로 구성한다.",
+        "SplitTable 화면 API에 custom_cols를 넘겨 화면과 같은 header, group, row, cell 형식으로 반환한다."
+      ],
+      "orchestration": [
+        "root_lot_id와 knob_name 후보를 분리한다.",
+        "knob_name 토큰을 포함하는 SplitTable 컬럼을 ad-hoc CUSTOM SET으로 구성한다.",
+        "SplitTable 화면 API에 custom_cols를 넘겨 화면과 같은 header, group, row, cell 형식으로 반환한다."
+      ],
+      "result_contract": {
+        "type": "split_view",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_fab_current_location",
+      "title": "Wafer 현재 FAB 위치 조회",
+      "enabled": true,
+      "priority": 108,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "query_current_location",
+      "examples": [
+        "A1001 #3 지금 어디에 있어?",
+        "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+        "{root_lot_id} wafer {wafer_id} current location",
+        "{root_lot_id} #{wafer_id} 현재 FAB 위치 알려줘"
+      ],
+      "question_template": "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+      "trigger_terms": [
+        "어디",
+        "현재 위치",
+        "current location",
+        "fab",
+        "progress"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "wafer_id",
+          "type": "wafer",
+          "required": true,
+          "example": "#3"
+        }
+      ],
+      "source_roles": [
+        "fab_db",
+        "step_matching"
+      ],
+      "steps": [
+        "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+        "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+        "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+      ],
+      "orchestration": [
+        "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+        "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+        "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "fields": [
+          "root_lot_id",
+          "wafer_id",
+          "step_id",
+          "step_desc",
+          "tkout_time"
+        ]
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_rulebook_knob_rules",
+      "title": "Knob rulebook 구성 조회",
+      "enabled": true,
+      "priority": 107,
+      "category": "rulebook",
+      "unit_ai": "ppid_knob",
+      "action": "query_knob_rulebook",
+      "examples": [
+        "1.6.0 LDD Knob 어떻게 룰 구성되어있어?",
+        "{knob_name} Knob 어떻게 룰 구성되어있어?",
+        "{knob_name} rulebook 보여줘"
+      ],
+      "question_template": "{knob_name} Knob 어떻게 룰 구성되어있어?",
+      "trigger_terms": [
+        "룰",
+        "rule",
+        "rulebook",
+        "ppid",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.6.0 LDD"
+        }
+      ],
+      "source_roles": [
+        "rulebook"
+      ],
+      "steps": [
+        "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다.",
+        "PPID, step_id, value mapping을 테이블로 구성한다.",
+        "검색 조건과 source를 함께 표시한다."
+      ],
+      "orchestration": [
+        "ppid_knob.csv에서 feature_name이 knob_name과 같은 row를 찾는다.",
+        "PPID, step_id, value mapping을 테이블로 구성한다.",
+        "검색 조건과 source를 함께 표시한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_step_id_desc_lookup",
+      "title": "Step ID 설명 조회",
+      "enabled": true,
+      "priority": 106,
+      "category": "step_matching",
+      "unit_ai": "step_lookup",
+      "action": "lookup_step_desc",
+      "examples": [
+        "AA100250는 무슨 step이야?",
+        "{step_id}는 무슨 step이야?",
+        "{step_id} function step 알려줘",
+        "{step_id} step_desc 알려줘"
+      ],
+      "question_template": "{step_id}는 무슨 step이야?",
+      "trigger_terms": [
+        "무슨 step",
+        "step이야",
+        "function step",
+        "step_desc"
+      ],
+      "slots": [
+        {
+          "name": "step_id",
+          "type": "step_id",
+          "required": true,
+          "example": "AA100250"
+        }
+      ],
+      "source_roles": [
+        "step_matching"
+      ],
+      "steps": [
+        "step_matching source에서 step_id를 정확 검색한다.",
+        "function_step 또는 step_desc를 답변한다.",
+        "중복 후보가 있으면 source와 후보를 함께 보여준다."
+      ],
+      "orchestration": [
+        "step_matching source에서 step_id를 정확 검색한다.",
+        "function_step 또는 step_desc를 답변한다.",
+        "중복 후보가 있으면 source와 후보를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "fields": [
+          "step_id",
+          "step_desc"
+        ]
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_split_raw_data_download",
+      "title": "Split base raw data CSV 공유",
+      "enabled": true,
+      "priority": 105,
+      "category": "raw_export",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "export_split_base_raw_data",
+      "examples": [
+        "PRODA MASK_1.0 STI raw data 공유해줘",
+        "{product} {root_lot_id} {wafer_id} {knob_name} raw data 공유해줘",
+        "{product} {knob_name} raw data csv",
+        "{product} {knob_name} raw data 다운로드"
+      ],
+      "question_template": "{product} {root_lot_id} {wafer_id} {knob_name} raw data 공유해줘",
+      "trigger_terms": [
+        "raw data",
+        "csv",
+        "다운로드",
+        "공유",
+        "export"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": false
+        },
+        {
+          "name": "wafer_id",
+          "type": "wafer",
+          "required": false
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "ML_TABLE_<product> source를 선택한다.",
+        "root_lot_id, wafer_id, knob_name 조건으로 read-only 필터를 만든다.",
+        "preview와 Raw CSV 다운로드 버튼을 제공한다."
+      ],
+      "orchestration": [
+        "ML_TABLE_<product> source를 선택한다.",
+        "root_lot_id, wafer_id, knob_name 조건으로 read-only 필터를 만든다.",
+        "preview와 Raw CSV 다운로드 버튼을 제공한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_leading_lot_by_knob_value",
+      "title": "Knob 값 기준 leading lot 조회",
+      "enabled": true,
+      "priority": 104,
+      "category": "fab_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "find_leading_lot_by_knob_value",
+      "examples": [
+        "PRODA에서 1.0 STI가 PPID_1인 leading lot이 뭐야?",
+        "{product}에서 {knob_name}이 {knob_value}인 leading lot이 뭐야?",
+        "{product} knob {knob_name} value {knob_value}인 리딩랏 뭐야?"
+      ],
+      "question_template": "{product}에서 {knob_name}이 {knob_value}인 leading lot이 뭐야?",
+      "trigger_terms": [
+        "leading lot",
+        "리딩랏",
+        "가장 빠른",
+        "knob 값"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true
+        },
+        {
+          "name": "knob_value",
+          "type": "value",
+          "required": true
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "fab_db"
+      ],
+      "steps": [
+        "ML_TABLE_<product>에서 knob_name=knob_value인 root_lot_id/wafer_id를 찾는다.",
+        "FAB DATA DB와 root_lot_id/wafer_id로 join한다.",
+        "진행 step이 가장 앞선 lot/wafer를 답하고 전체 리스트 반환 여부를 묻는다."
+      ],
+      "orchestration": [
+        "ML_TABLE_<product>에서 knob_name=knob_value인 root_lot_id/wafer_id를 찾는다.",
+        "FAB DATA DB와 root_lot_id/wafer_id로 join한다.",
+        "진행 step이 가장 앞선 lot/wafer를 답하고 전체 리스트 반환 여부를 묻는다."
+      ],
+      "result_contract": {
+        "type": "text_then_optional_table",
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_item_trend_chart_with_optional_knob_color",
+      "title": "Item trend 차트와 Knob coloring",
+      "enabled": true,
+      "priority": 103,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_item_trend",
+      "examples": [
+        "Inline 15.0 M2의 trend를 그려줘",
+        "{source_type} {item_id} trend를 그려줘",
+        "{item_id} trend를 {knob_name} Knob으로 컬러링해줘"
+      ],
+      "question_template": "{source_type} {item_id} trend를 그려줘",
+      "trigger_terms": [
+        "trend",
+        "차트",
+        "그래프",
+        "coloring",
+        "컬러링"
+      ],
+      "slots": [
+        {
+          "name": "source_type",
+          "type": "source",
+          "required": true,
+          "example": "Inline"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": false
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "split_base"
+      ],
+      "steps": [
+        "요청 source에서 item_id를 찾고 tkout_time을 x축으로 선택한다.",
+        "time series scatter plot을 만든다.",
+        "knob coloring 요청이 있으면 Split base와 root_lot_id/wafer_id로 join해 색상을 갱신한다."
+      ],
+      "orchestration": [
+        "요청 source에서 item_id를 찾고 tkout_time을 x축으로 선택한다.",
+        "time series scatter plot을 만든다.",
+        "knob coloring 요청이 있으면 Split base와 root_lot_id/wafer_id로 join해 색상을 갱신한다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "supports_refine": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_source_trend_chart_generic",
+      "title": "ET/FAB/VM 등 source별 trend 차트",
+      "enabled": true,
+      "priority": 102,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_source_metric_trend",
+      "examples": [
+        "ET VTH trend 그려줘",
+        "{source_type} {item_id} trend 그려줘",
+        "{source_type} {metric_name} 추이 보여줘",
+        "FAB step progress trend chart",
+        "VM VMIN 추이 보여줘"
+      ],
+      "question_template": "{source_type} {item_id} trend 그려줘",
+      "trigger_terms": [
+        "trend",
+        "추이",
+        "chart",
+        "source"
+      ],
+      "slots": [
+        {
+          "name": "source_type",
+          "type": "source",
+          "required": true,
+          "example": "ET"
+        },
+        {
+          "name": "metric_name",
+          "type": "item",
+          "required": true
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db",
+        "fab_db",
+        "vm_db",
+        "split_base"
+      ],
+      "steps": [
+        "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+        "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+        "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+      ],
+      "orchestration": [
+        "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+        "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+        "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "supports_refine": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_inline_et_corr_chart",
+      "title": "Inline/ET correlation chart",
+      "enabled": true,
+      "priority": 101,
+      "category": "chart_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "plot_cross_source_corr_chart",
+      "examples": [
+        "Inline 15.0 M2랑 ET VTH Corr. Chart 그려줘",
+        "Inline {inline_item}랑 ET {et_item} Corr Chart 그려줘",
+        "{source_a} {item_a}와 {source_b} {item_b} 상관 차트",
+        "INLINE {inline_item} ET {et_item} scatter R2 fitting line"
+      ],
+      "question_template": "{source_a} {item_a}와 {source_b} {item_b} 상관 차트",
+      "trigger_terms": [
+        "corr",
+        "correlation",
+        "상관",
+        "scatter",
+        "fitting",
+        "R2"
+      ],
+      "slots": [
+        {
+          "name": "source_a",
+          "type": "source",
+          "required": true,
+          "default": "Inline"
+        },
+        {
+          "name": "item_a",
+          "type": "item",
+          "required": true
+        },
+        {
+          "name": "source_b",
+          "type": "source",
+          "required": true,
+          "default": "ET"
+        },
+        {
+          "name": "item_b",
+          "type": "item",
+          "required": true
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": false
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db",
+        "split_base"
+      ],
+      "steps": [
+        "두 source에서 각각 item 값을 가져온다.",
+        "root_lot_id/wafer_id 단위로 집계한다. 기본은 Inline avg, ET median이다.",
+        "집계 기준을 답변에 명시하고 scatter plot을 그린다.",
+        "후속 요청으로 agg 변경, R2 fitting line, knob coloring을 적용한다."
+      ],
+      "orchestration": [
+        "두 source에서 각각 item 값을 가져온다.",
+        "root_lot_id/wafer_id 단위로 집계한다. 기본은 Inline avg, ET median이다.",
+        "집계 기준을 답변에 명시하고 scatter plot을 그린다.",
+        "후속 요청으로 agg 변경, R2 fitting line, knob coloring을 적용한다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "default_agg": {
+          "Inline": "avg",
+          "ET": "median"
+        },
+        "supports_refine": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_chart_knob_coloring_followup",
+      "title": "Existing chart KNOB coloring follow-up",
+      "enabled": true,
+      "priority": 100,
+      "category": "chart_refine",
+      "unit_ai": "dashboard_agent",
+      "action": "refine_chart_with_knob_coloring",
+      "examples": [
+        "chart_demo chart 1.0 STI knob coloring",
+        "방금 차트 1.0 STI Knob으로 컬러링해줘",
+        "위 chart raw data에 1.0 STI join해서 다시 그려줘",
+        "이 차트는 기존 raw data 유지하고 KNOB만 붙여서 색칠해줘"
+      ],
+      "question_template": "{chart_session_id} chart {knob_name} knob coloring",
+      "trigger_terms": [
+        "chart_demo",
+        "chart",
+        "차트",
+        "raw data",
+        "knob coloring",
+        "coloring",
+        "컬러링",
+        "join"
+      ],
+      "slots": [
+        {
+          "name": "chart_session_id",
+          "type": "chart_session",
+          "required": true,
+          "example": "chart_demo"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "직전 chart_session_id의 raw data를 그대로 읽는다.",
+        "요청된 knob_name은 ML_TABLE_<product>에서 root_lot_id/wafer_id 또는 lot_wf 기준으로 조회한다.",
+        "기존 chart raw data에는 KNOB value만 left join하고 x/y/agg 값은 다시 계산하지 않는다.",
+        "같은 chart_session_id를 갱신해 이후 raw data 다운로드와 추출 근거 질문이 이어지게 한다."
+      ],
+      "orchestration": [
+        "직전 chart_session_id의 raw data를 그대로 읽는다.",
+        "요청된 knob_name은 ML_TABLE_<product>에서 root_lot_id/wafer_id 또는 lot_wf 기준으로 조회한다.",
+        "기존 chart raw data에는 KNOB value만 left join하고 x/y/agg 값은 다시 계산하지 않는다.",
+        "같은 chart_session_id를 갱신해 이후 raw data 다운로드와 추출 근거 질문이 이어지게 한다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "requires_chart_session": true,
+        "uses_existing_raw_data": true,
+        "join_only": true,
+        "supports_raw_data": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_chart_raw_data_followup",
+      "title": "Existing chart raw data export follow-up",
+      "enabled": true,
+      "priority": 99,
+      "category": "raw_export",
+      "unit_ai": "dashboard_agent",
+      "action": "export_chart_raw_data",
+      "examples": [
+        "chart_demo chart raw data download",
+        "방금 차트 raw data 줘",
+        "이 차트 raw data csv로 내려줘",
+        "위 차트 원본 데이터 보여줘"
+      ],
+      "question_template": "{chart_session_id} chart raw data download",
+      "trigger_terms": [
+        "chart_demo",
+        "chart",
+        "차트",
+        "raw data",
+        "csv",
+        "download",
+        "다운로드",
+        "원본 데이터"
+      ],
+      "slots": [
+        {
+          "name": "chart_session_id",
+          "type": "chart_session",
+          "required": true,
+          "example": "chart_demo"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db",
+        "fab_db",
+        "vm_db",
+        "split_base"
+      ],
+      "steps": [
+        "직전 chart_session_id에 저장된 chart raw data를 찾는다.",
+        "preview table을 간단히 제공하고 CSV 다운로드 버튼을 제공한다.",
+        "KNOB coloring 후라면 join된 color_value까지 포함한다."
+      ],
+      "orchestration": [
+        "직전 chart_session_id에 저장된 chart raw data를 찾는다.",
+        "preview table을 간단히 제공하고 CSV 다운로드 버튼을 제공한다.",
+        "KNOB coloring 후라면 join된 color_value까지 포함한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": true,
+        "requires_chart_session": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_chart_raw_data_provenance_followup",
+      "title": "Existing chart raw data provenance follow-up",
+      "enabled": true,
+      "priority": 98,
+      "category": "explainability",
+      "unit_ai": "dashboard_agent",
+      "action": "explain_chart_raw_data_query",
+      "examples": [
+        "chart_demo chart raw data SQL explain",
+        "이 chart raw data 어떻게 뽑았어?",
+        "방금 차트 어느 DB Files SQL로 뽑았어?",
+        "이 raw data 추출 근거 알려줘"
+      ],
+      "question_template": "{chart_session_id} chart raw data SQL explain",
+      "trigger_terms": [
+        "chart_demo",
+        "chart",
+        "차트",
+        "raw data",
+        "SQL",
+        "DB",
+        "Files",
+        "어떻게",
+        "뽑",
+        "추출",
+        "근거"
+      ],
+      "slots": [
+        {
+          "name": "chart_session_id",
+          "type": "chart_session",
+          "required": true,
+          "example": "chart_demo"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db",
+        "fab_db",
+        "vm_db",
+        "split_base"
+      ],
+      "steps": [
+        "직전 chart_session_id의 base_data_query를 읽는다.",
+        "raw data를 만든 DB, Files, SQL equivalent, filters, aggregation을 plain text로 설명한다.",
+        "KNOB coloring이 이어졌다면 base raw data 재사용과 ML_TABLE join 조건도 같이 설명한다."
+      ],
+      "orchestration": [
+        "직전 chart_session_id의 base_data_query를 읽는다.",
+        "raw data를 만든 DB, Files, SQL equivalent, filters, aggregation을 plain text로 설명한다.",
+        "KNOB coloring이 이어졌다면 base raw data 재사용과 ML_TABLE join 조건도 같이 설명한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "requires_chart_session": true,
+        "fields": [
+          "db",
+          "files",
+          "sql",
+          "filters",
+          "aggregation",
+          "knob_join"
+        ]
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_wafer_detail",
+      "title": "Root lot wafer별 SplitTable 상세",
+      "enabled": true,
+      "priority": 94,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_split_table_wafer",
+      "examples": [
+        "{root_lot_id} #{wafer_id} split detail 보여줘"
+      ],
+      "question_template": "{root_lot_id} #{wafer_id} split detail 보여줘",
+      "trigger_terms": [
+        "split",
+        "wafer",
+        "detail"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "wafer_id",
+          "type": "wafer",
+          "required": true,
+          "example": "#3"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "split_view",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_knob_compare",
+      "title": "두 Knob 조건 비교",
+      "enabled": true,
+      "priority": 93,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "compare_knob_conditions",
+      "examples": [
+        "{root_lot_id} {knob_name}와 {knob_name_2} 비교해줘"
+      ],
+      "question_template": "{root_lot_id} {knob_name}와 {knob_name_2} 비교해줘",
+      "trigger_terms": [
+        "compare",
+        "비교",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        },
+        {
+          "name": "knob_name_2",
+          "type": "knob",
+          "required": true,
+          "example": "1.1 STI"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_plan_actual_mismatch",
+      "title": "Plan actual mismatch 조회",
+      "enabled": true,
+      "priority": 92,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "find_plan_actual_mismatch",
+      "examples": [
+        "{root_lot_id} plan actual 안 맞는 split 찾아줘"
+      ],
+      "question_template": "{root_lot_id} plan actual 안 맞는 split 찾아줘",
+      "trigger_terms": [
+        "mismatch",
+        "불일치",
+        "actual",
+        "plan"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_custom_set",
+      "title": "CUSTOM SET 기준 Split 조회",
+      "enabled": true,
+      "priority": 91,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_custom_set_split",
+      "examples": [
+        "{root_lot_id} CUSTOM SET {split_set} 기준으로 보여줘"
+      ],
+      "question_template": "{root_lot_id} CUSTOM SET {split_set} 기준으로 보여줘",
+      "trigger_terms": [
+        "custom set",
+        "set",
+        "세트"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "split_set",
+          "type": "split_set",
+          "required": true,
+          "example": "SET_A"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "split_view",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_mask_fab_columns",
+      "title": "MASK/FAB 컬럼 중심 Split 조회",
+      "enabled": true,
+      "priority": 90,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_mask_fab_split_columns",
+      "examples": [
+        "{root_lot_id} MASK FAB split 컬럼만 정리해줘"
+      ],
+      "question_template": "{root_lot_id} MASK FAB split 컬럼만 정리해줘",
+      "trigger_terms": [
+        "mask",
+        "fab",
+        "split"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_semantic_measurement_value_lookup",
+      "title": "Semantic measurement term wafer value lookup",
+      "enabled": true,
+      "priority": 90,
+      "category": "measurement",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "query_semantic_measurement",
+      "examples": [
+        "{product} {root_lot_id} {measurement_term} 값 몇이야",
+        "{product} {root_lot_id} {measurement_term} wafer 값 보여줘"
+      ],
+      "question_template": "{product} {root_lot_id} {measurement_term} 값 몇이야",
+      "trigger_terms": [
+        "값",
+        "measurement",
+        "측정값",
+        "몇이야",
+        "wafer",
+        "semantic term"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "CA BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "semantic measurement catalog에서 measurement_term을 source_type, step_id, item_id, spec으로 해석한다.",
+        "source_type의 기본 집계를 적용한다. Inline은 avg, ET는 median을 기본으로 사용한다.",
+        "root_lot_id의 #1~25 wafer 측정값을 집계해 테이블로 표시한다.",
+        "semantic term의 updated_at과 evidence를 결과와 trace에 남긴다."
+      ],
+      "orchestration": [
+        "semantic measurement catalog에서 measurement_term을 source_type, step_id, item_id, spec으로 해석한다.",
+        "source_type의 기본 집계를 적용한다. Inline은 avg, ET는 median을 기본으로 사용한다.",
+        "root_lot_id의 #1~25 wafer 측정값을 집계해 테이블로 표시한다.",
+        "semantic term의 updated_at과 evidence를 결과와 trace에 남긴다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "default_agg": {
+          "INLINE": "avg",
+          "ET": "median"
+        },
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_split_lot_summary",
+      "title": "Root lot Split 요약",
+      "enabled": true,
+      "priority": 89,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "summarize_split_lot",
+      "examples": [
+        "{root_lot_id} split 요약만 알려줘"
+      ],
+      "question_template": "{root_lot_id} split 요약만 알려줘",
+      "trigger_terms": [
+        "summary",
+        "요약",
+        "split"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "orchestration": [
+        "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+        "SplitTable source와 rulebook source를 read-only로 확인한다.",
+        "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_split_table_root_lot_knob",
+      "title": "Root lot + Knob 조건 SplitTable 조회",
+      "enabled": true,
+      "priority": 89,
+      "category": "splittable",
+      "unit_ai": "splittable",
+      "action": "show_split_table_filtered_knob",
+      "examples": [
+        "{root_lot_id} {knob_name} Split 보여줘",
+        "{root_lot_id} {knob_name} Knob 보여줘"
+      ],
+      "question_template": "{root_lot_id} {knob_name} Split 보여줘",
+      "trigger_terms": [
+        "split",
+        "knob",
+        "스플릿",
+        "노브",
+        "custom set"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI",
+          "match": "contains_tokens"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "rulebook"
+      ],
+      "steps": [
+        "root_lot_id와 knob_name 후보를 분리한다.",
+        "knob_name은 공백 단위 토큰을 포함 검색 조건으로 바꾼다.",
+        "SplitTable CUSTOM SET 조건으로 검색하고 화면과 같은 형식으로 반환한다."
+      ],
+      "orchestration": [
+        "root_lot_id와 knob_name 후보를 분리한다.",
+        "knob_name은 공백 단위 토큰을 포함 검색 조건으로 바꾼다.",
+        "SplitTable CUSTOM SET 조건으로 검색하고 화면과 같은 형식으로 반환한다."
+      ],
+      "result_contract": {
+        "type": "split_view",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_filtered_preview",
+      "title": "조건 필터 preview table",
+      "enabled": true,
+      "priority": 88,
+      "category": "filebrowser",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "preview_filtered_rows",
+      "examples": [
+        "{product} {root_lot_id} 조건 raw data 표로 보여줘"
+      ],
+      "question_template": "{product} {root_lot_id} 조건 raw data 표로 보여줘",
+      "trigger_terms": [
+        "raw data",
+        "preview",
+        "표"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_selected_columns",
+      "title": "선택 컬럼 SQL preview",
+      "enabled": true,
+      "priority": 87,
+      "category": "filebrowser",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "preview_selected_columns",
+      "examples": [
+        "{product} {columns} 컬럼만 SQL로 보여줘"
+      ],
+      "question_template": "{product} {columns} 컬럼만 SQL로 보여줘",
+      "trigger_terms": [
+        "sql",
+        "columns",
+        "컬럼"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "columns",
+          "type": "columns",
+          "required": true,
+          "example": "root_lot_id,wafer_id"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_latest_fab_rows",
+      "title": "FAB latest row preview",
+      "enabled": true,
+      "priority": 86,
+      "category": "filebrowser",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "preview_latest_fab_rows",
+      "examples": [
+        "{root_lot_id} latest FAB row 표로 보여줘"
+      ],
+      "question_template": "{root_lot_id} latest FAB row 표로 보여줘",
+      "trigger_terms": [
+        "latest",
+        "fab",
+        "row"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "fab_db"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_inline_item_sql",
+      "title": "INLINE item SQL 초안",
+      "enabled": true,
+      "priority": 85,
+      "category": "filebrowser",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "draft_inline_item_sql",
+      "examples": [
+        "{product} {item_id} INLINE SQL 초안 만들어줘"
+      ],
+      "question_template": "{product} {item_id} INLINE SQL 초안 만들어줘",
+      "trigger_terms": [
+        "inline",
+        "item",
+        "sql"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_root_lot_file_preview",
+      "title": "Root lot source file preview",
+      "enabled": true,
+      "priority": 84,
+      "category": "filebrowser",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "preview_root_lot_source_file",
+      "examples": [
+        "{root_lot_id} 관련 source file preview"
+      ],
+      "question_template": "{root_lot_id} 관련 source file preview",
+      "trigger_terms": [
+        "source file",
+        "preview",
+        "root_lot"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "fab_db"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_filebrowser_guarded_csv_export",
+      "title": "Wide table guarded CSV export",
+      "enabled": true,
+      "priority": 83,
+      "category": "raw_export",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "export_guarded_csv",
+      "examples": [
+        "{product} {knob_name} 결과 csv로 내려받게 해줘"
+      ],
+      "question_template": "{product} {knob_name} 결과 csv로 내려받게 해줘",
+      "trigger_terms": [
+        "csv",
+        "download",
+        "다운로드"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "orchestration": [
+        "요청에서 product, source, filter, selected column을 추출한다.",
+        "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+        "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_inline_trend",
+      "title": "INLINE item trend chart",
+      "enabled": true,
+      "priority": 82,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_inline_item_trend",
+      "examples": [
+        "{product} {item_id} inline trend 차트"
+      ],
+      "question_template": "{product} {item_id} inline trend 차트",
+      "trigger_terms": [
+        "inline",
+        "trend",
+        "차트"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_et_box",
+      "title": "ET item box chart",
+      "enabled": true,
+      "priority": 81,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_et_item_box",
+      "examples": [
+        "{product} {item_id} ET box plot"
+      ],
+      "question_template": "{product} {item_id} ET box plot",
+      "trigger_terms": [
+        "et",
+        "box",
+        "plot"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "PCCB_CHAIN"
+        }
+      ],
+      "source_roles": [
+        "et_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_split_knob_distribution",
+      "title": "Knob 분포 bar chart",
+      "enabled": true,
+      "priority": 80,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_knob_distribution",
+      "examples": [
+        "{product} {knob_name} 분포 bar chart"
+      ],
+      "question_template": "{product} {knob_name} 분포 bar chart",
+      "trigger_terms": [
+        "bar",
+        "distribution",
+        "분포",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        }
+      ],
+      "source_roles": [
+        "split_base"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_fab_progress_timeline",
+      "title": "FAB progress timeline",
+      "enabled": true,
+      "priority": 79,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_fab_progress_timeline",
+      "examples": [
+        "{root_lot_id} fab progress timeline 차트"
+      ],
+      "question_template": "{root_lot_id} fab progress timeline 차트",
+      "trigger_terms": [
+        "fab",
+        "timeline",
+        "progress"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "fab_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_inline_et_correlation",
+      "title": "INLINE ET correlation scatter",
+      "enabled": true,
+      "priority": 78,
+      "category": "chart_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "plot_inline_et_correlation",
+      "examples": [
+        "{product} {inline_item}와 {et_item} correlation scatter"
+      ],
+      "question_template": "{product} {inline_item}와 {et_item} correlation scatter",
+      "trigger_terms": [
+        "correlation",
+        "corr",
+        "scatter"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "inline_item",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        },
+        {
+          "name": "et_item",
+          "type": "item",
+          "required": true,
+          "example": "PCCB_CHAIN"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_wafer_map",
+      "title": "Wafer map chart",
+      "enabled": true,
+      "priority": 77,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_wafer_map",
+      "examples": [
+        "{root_lot_id} {item_id} wafer map 그려줘"
+      ],
+      "question_template": "{root_lot_id} {item_id} wafer map 그려줘",
+      "trigger_terms": [
+        "wafer map",
+        "map",
+        "wf map"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_group_by_knob",
+      "title": "Knob별 group chart",
+      "enabled": true,
+      "priority": 76,
+      "category": "chart_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "plot_metric_by_knob",
+      "examples": [
+        "{product} {item_id} 값을 {knob_name}별로 차트"
+      ],
+      "question_template": "{product} {item_id} 값을 {knob_name}별로 차트",
+      "trigger_terms": [
+        "group",
+        "by",
+        "knob",
+        "별"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "inline_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_product_compare",
+      "title": "제품별 trend 비교",
+      "enabled": true,
+      "priority": 75,
+      "category": "chart",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_product_compare_trend",
+      "examples": [
+        "{item_id} 제품별 trend 비교 차트"
+      ],
+      "question_template": "{item_id} 제품별 trend 비교 차트",
+      "trigger_terms": [
+        "product",
+        "compare",
+        "trend"
+      ],
+      "slots": [
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_chart_raw_data_followup",
+      "title": "Chart raw data follow-up",
+      "enabled": true,
+      "priority": 74,
+      "category": "raw_export",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "export_chart_raw_data",
+      "examples": [
+        "방금 차트 raw data csv로 줘"
+      ],
+      "question_template": "방금 차트 raw data csv로 줘",
+      "trigger_terms": [
+        "raw data",
+        "chart session",
+        "csv"
+      ],
+      "slots": [
+        {
+          "name": "chart_session_id",
+          "type": "chart_session",
+          "required": false
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": true
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_step_function_to_ids",
+      "title": "Function step to step_id",
+      "enabled": true,
+      "priority": 73,
+      "category": "step_matching",
+      "unit_ai": "step_lookup",
+      "action": "lookup_function_step_ids",
+      "examples": [
+        "{function_step}의 step_id가 뭐야"
+      ],
+      "question_template": "{function_step}의 step_id가 뭐야",
+      "trigger_terms": [
+        "function_step",
+        "step_id",
+        "공정"
+      ],
+      "slots": [
+        {
+          "name": "function_step",
+          "type": "step",
+          "required": true,
+          "example": "SD_EPI"
+        }
+      ],
+      "source_roles": [
+        "step_matching"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_step_vehicle_matching",
+      "title": "Vehicle matching step 설명",
+      "enabled": true,
+      "priority": 72,
+      "category": "step_matching",
+      "unit_ai": "step_lookup",
+      "action": "lookup_vehicle_matching_step",
+      "examples": [
+        "Vehicle_matching에서 {step_id} 설명 알려줘"
+      ],
+      "question_template": "Vehicle_matching에서 {step_id} 설명 알려줘",
+      "trigger_terms": [
+        "vehicle_matching",
+        "step_desc"
+      ],
+      "slots": [
+        {
+          "name": "step_id",
+          "type": "step_id",
+          "required": true,
+          "example": "AA100090"
+        }
+      ],
+      "source_roles": [
+        "step_matching"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_rulebook_feature_to_steps",
+      "title": "Feature name 영향 step_id",
+      "enabled": true,
+      "priority": 71,
+      "category": "rulebook",
+      "unit_ai": "ppid_knob",
+      "action": "lookup_feature_step_ids",
+      "examples": [
+        "{knob_name}이 어떤 step_id에 영향 받냐"
+      ],
+      "question_template": "{knob_name}이 어떤 step_id에 영향 받냐",
+      "trigger_terms": [
+        "feature_name",
+        "영향",
+        "step_id"
+      ],
+      "slots": [
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "3.0 VTN"
+        }
+      ],
+      "source_roles": [
+        "rulebook",
+        "step_matching"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_rulebook_ppid_classify",
+      "title": "PPID value knob 분류",
+      "enabled": true,
+      "priority": 70,
+      "category": "rulebook",
+      "unit_ai": "ppid_knob",
+      "action": "classify_ppid_knob",
+      "examples": [
+        "{ppid}는 어떤 knob으로 분류돼"
+      ],
+      "question_template": "{ppid}는 어떤 knob으로 분류돼",
+      "trigger_terms": [
+        "ppid",
+        "분류",
+        "knob"
+      ],
+      "slots": [
+        {
+          "name": "ppid",
+          "type": "ppid",
+          "required": true,
+          "example": "PPID_03_0"
+        }
+      ],
+      "source_roles": [
+        "rulebook"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_rulebook_rule_order",
+      "title": "Rule order 확인",
+      "enabled": true,
+      "priority": 69,
+      "category": "rulebook",
+      "unit_ai": "ppid_knob",
+      "action": "inspect_rule_order",
+      "examples": [
+        "{knob_name} rule_order 순서 보여줘"
+      ],
+      "question_template": "{knob_name} rule_order 순서 보여줘",
+      "trigger_terms": [
+        "rule_order",
+        "룰",
+        "order"
+      ],
+      "slots": [
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "3.0 VTN"
+        }
+      ],
+      "source_roles": [
+        "rulebook"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_step_unknown_candidate",
+      "title": "Unknown step 후보 source 안내",
+      "enabled": true,
+      "priority": 68,
+      "category": "step_matching",
+      "unit_ai": "step_lookup",
+      "action": "explain_unknown_step_search",
+      "examples": [
+        "{step_id} 못 찾으면 어디서 확인해?"
+      ],
+      "question_template": "{step_id} 못 찾으면 어디서 확인해?",
+      "trigger_terms": [
+        "unknown",
+        "못 찾",
+        "source"
+      ],
+      "slots": [
+        {
+          "name": "step_id",
+          "type": "step_id",
+          "required": true,
+          "example": "AA999999"
+        }
+      ],
+      "source_roles": [
+        "step_matching"
+      ],
+      "steps": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "orchestration": [
+        "matching/rulebook CSV source를 read-only로 연다.",
+        "step_id, function_step, PPID, feature_name 후보를 정규화한다.",
+        "근거 source와 후보 표를 함께 반환한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_fab_latest_step_root_lot",
+      "title": "Root lot latest step",
+      "enabled": true,
+      "priority": 67,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "query_latest_step_by_root_lot",
+      "examples": [
+        "{root_lot_id} latest step 알려줘"
+      ],
+      "question_template": "{root_lot_id} latest step 알려줘",
+      "trigger_terms": [
+        "latest step",
+        "현재 step"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "fab_db",
+        "step_matching"
+      ],
+      "steps": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "orchestration": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_fab_equipment_history",
+      "title": "Equipment history 조회",
+      "enabled": true,
+      "priority": 66,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "query_equipment_history",
+      "examples": [
+        "{root_lot_id} #{wafer_id} equipment history"
+      ],
+      "question_template": "{root_lot_id} #{wafer_id} equipment history",
+      "trigger_terms": [
+        "equipment",
+        "history",
+        "장비"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "wafer_id",
+          "type": "wafer",
+          "required": true,
+          "example": "#3"
+        }
+      ],
+      "source_roles": [
+        "fab_db"
+      ],
+      "steps": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "orchestration": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_fab_step_eta",
+      "title": "Step 도착 예상/체류 조회",
+      "enabled": true,
+      "priority": 65,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "query_step_eta",
+      "examples": [
+        "{root_lot_id} {step_id} 언제 도착해?"
+      ],
+      "question_template": "{root_lot_id} {step_id} 언제 도착해?",
+      "trigger_terms": [
+        "eta",
+        "도착",
+        "체류"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "step_id",
+          "type": "step_id",
+          "required": true,
+          "example": "AA100090"
+        }
+      ],
+      "source_roles": [
+        "fab_db",
+        "step_matching"
+      ],
+      "steps": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "orchestration": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_fab_lot_to_root_wafer",
+      "title": "Fab lot to root/wafer mapping",
+      "enabled": true,
+      "priority": 64,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "map_fab_lot_to_root_wafer",
+      "examples": [
+        "{fab_lot_id}가 어떤 root lot wafer야"
+      ],
+      "question_template": "{fab_lot_id}가 어떤 root lot wafer야",
+      "trigger_terms": [
+        "fab_lot",
+        "root",
+        "wafer"
+      ],
+      "slots": [
+        {
+          "name": "fab_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "F1001"
+        }
+      ],
+      "source_roles": [
+        "fab_db"
+      ],
+      "steps": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "orchestration": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_fab_current_location_batch",
+      "title": "여러 wafer 현재 위치",
+      "enabled": true,
+      "priority": 63,
+      "category": "fab",
+      "unit_ai": "fab_reference",
+      "action": "query_batch_current_location",
+      "examples": [
+        "{root_lot_id} wafer 전체 현재 위치 표"
+      ],
+      "question_template": "{root_lot_id} wafer 전체 현재 위치 표",
+      "trigger_terms": [
+        "wafer 전체",
+        "현재 위치",
+        "표"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        }
+      ],
+      "source_roles": [
+        "fab_db",
+        "step_matching"
+      ],
+      "steps": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "orchestration": [
+        "FAB progress source와 latest cache 후보를 고른다.",
+        "lot/wafer/step 조건으로 read-only 조회한다.",
+        "현재 위치와 근거 row 수를 표 또는 텍스트로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_measure_inline_value_by_wafer",
+      "title": "INLINE semantic term wafer value",
+      "enabled": true,
+      "priority": 62,
+      "category": "measurement",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "query_semantic_measurement",
+      "examples": [
+        "{root_lot_id} CA BCD 값 wafer별로 보여줘"
+      ],
+      "question_template": "{root_lot_id} {measurement_term} 값 wafer별로 보여줘",
+      "trigger_terms": [
+        "값",
+        "측정값",
+        "wafer"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "CA BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db"
+      ],
+      "steps": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "orchestration": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_measure_et_median",
+      "title": "ET semantic term median",
+      "enabled": true,
+      "priority": 61,
+      "category": "measurement",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "query_et_semantic_measurement",
+      "examples": [
+        "{root_lot_id} PCCB Chain median 값"
+      ],
+      "question_template": "{root_lot_id} {measurement_term} median 값",
+      "trigger_terms": [
+        "median",
+        "ET",
+        "PCCB"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "PCCB Chain"
+        }
+      ],
+      "source_roles": [
+        "et_db"
+      ],
+      "steps": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "orchestration": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_measure_spec_check",
+      "title": "Measurement spec check",
+      "enabled": true,
+      "priority": 60,
+      "category": "measurement",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "check_measurement_spec",
+      "examples": [
+        "{root_lot_id} {measurement_term} spec out 여부"
+      ],
+      "question_template": "{root_lot_id} {measurement_term} spec out 여부",
+      "trigger_terms": [
+        "spec",
+        "target",
+        "out"
+      ],
+      "slots": [
+        {
+          "name": "root_lot_id",
+          "type": "lot",
+          "required": true,
+          "example": "A1001"
+        },
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "CA BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "orchestration": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-07-19T04:50:08+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_measure_trend_chart",
+      "title": "Measurement trend chart",
+      "enabled": true,
+      "priority": 59,
+      "category": "measurement",
+      "unit_ai": "dashboard_agent",
+      "action": "plot_measurement_trend",
+      "examples": [
+        "{measurement_term} 최근 trend 차트"
+      ],
+      "question_template": "{measurement_term} 최근 trend 차트",
+      "trigger_terms": [
+        "measurement",
+        "trend",
+        "차트"
+      ],
+      "slots": [
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "CA BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "orchestration": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-05-31T13:34:00+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_measure_source_evidence",
+      "title": "Measurement source evidence",
+      "enabled": true,
+      "priority": 58,
+      "category": "measurement",
+      "unit_ai": "filebrowser_ai_sql",
+      "action": "explain_measurement_source",
+      "examples": [
+        "{measurement_term} 어떤 DB/ITEM에서 가져와?"
+      ],
+      "question_template": "{measurement_term} 어떤 DB/ITEM에서 가져와?",
+      "trigger_terms": [
+        "source",
+        "item_id",
+        "어떤 DB"
+      ],
+      "slots": [
+        {
+          "name": "measurement_term",
+          "type": "semantic_measurement",
+          "required": true,
+          "example": "CA BCD"
+        }
+      ],
+      "source_roles": [
+        "inline_db",
+        "et_db"
+      ],
+      "steps": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "orchestration": [
+        "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+        "관련 INLINE/ET source를 read-only로 조회한다.",
+        "wafer별 표 또는 chart_result로 정리한다."
+      ],
+      "result_contract": {
+        "type": "text",
+        "download": false
+      },
+      "created_at": "2026-05-31T13:34:00+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_join_split_inline_table",
+      "title": "Split + INLINE join table",
+      "enabled": true,
+      "priority": 57,
+      "category": "chart_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "join_split_inline_table",
+      "examples": [
+        "{product} {knob_name}별 {item_id} 값을 표로"
+      ],
+      "question_template": "{product} {knob_name}별 {item_id} 값을 표로",
+      "trigger_terms": [
+        "join",
+        "inline",
+        "knob",
+        "표"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "CA_BCD"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "inline_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "table",
+        "download": false
+      },
+      "created_at": "2026-05-31T13:34:00+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    },
+    {
+      "id": "wf_auto_join_split_et_chart",
+      "title": "Split + ET chart",
+      "enabled": true,
+      "priority": 56,
+      "category": "chart_join",
+      "unit_ai": "home_sql_join_dashboard",
+      "action": "plot_split_et_chart",
+      "examples": [
+        "{product} {knob_name}별 {item_id} ET 차트"
+      ],
+      "question_template": "{product} {knob_name}별 {item_id} ET 차트",
+      "trigger_terms": [
+        "join",
+        "et",
+        "chart"
+      ],
+      "slots": [
+        {
+          "name": "product",
+          "type": "product",
+          "required": true,
+          "example": "PRODA"
+        },
+        {
+          "name": "knob_name",
+          "type": "knob",
+          "required": true,
+          "example": "1.0 STI"
+        },
+        {
+          "name": "item_id",
+          "type": "item",
+          "required": true,
+          "example": "PCCB_CHAIN"
+        }
+      ],
+      "source_roles": [
+        "split_base",
+        "et_db"
+      ],
+      "steps": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "orchestration": [
+        "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+        "Dashboard Agent가 chart_result shape로 검증한다.",
+        "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+      ],
+      "result_contract": {
+        "type": "chart",
+        "download": false
+      },
+      "created_at": "2026-05-30T15:24:25+00:00",
+      "updated_at": "2026-07-19T04:50:08+00:00",
+      "updated_by": "default_seed"
+    }
+  ]
+}

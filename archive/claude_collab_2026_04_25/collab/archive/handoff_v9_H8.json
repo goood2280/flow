@@ -1,0 +1,72 @@
+{
+  "id": "handoff_v9_H8",
+  "created_at": "2026-04-24T16:35:00+09:00",
+  "updated_at": "2026-04-24T16:57:33+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H8] Dashboard 내부 용어 숨김 (chart= 쿼리·type 표시 제거)",
+  "summary": "일반 유저 Dashboard 에 'chart=xxx' 같은 내부 key 나 type 문자열이 보이지 않게 한다. 유저는 차트 제목/설명만 인지.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H8",
+    "estimated_effort": "반일",
+    "target_score_delta": "UX +0.05",
+    "user_request": "2026-04-24 사용자 원문: '대시보드 chart=~ 이런거는 user들에게 안보이면 좋겠음 유저는 딱 차트보고 직관적으로 이해할만한거만'",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "My_Dashboard.jsx 렌더 결과에 'chart=' 문자열 일반 유저 view 에 0건",
+    "차트 상단에 'type: kpi_mix' 같은 raw key 노출 금지",
+    "admin 모드에서는 debug info 로 여전히 확인 가능 (접기 패널)",
+    "URL 쿼리 파람 'chart=' 는 유지 (공유 링크 호환)"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Dashboard.jsx"
+  ],
+  "verification": [
+    "frontend에서 npm run build 통과",
+    "My_Dashboard.jsx 일반 카드 하단 메타에서 raw source/file/x_col/y_expr/chart_type 노출 제거",
+    "확대 모달에서는 일반 사용자에게 chart_type raw key 대신 한글 라벨만 보이게 하고, 관리자에게만 details debug 패널로 source/type/column/filter 메타 유지",
+    {
+      "at": "2026-04-24T16:57:33+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 3,
+      "criteria_total": 4,
+      "criteria_detail": [
+        {
+          "criterion": "My_Dashboard.jsx 렌더 결과에 'chart=' 문자열 일반 유저 view 에 0건",
+          "ok": true,
+          "hits": 1,
+          "tokens": 3
+        },
+        {
+          "criterion": "차트 상단에 'type: kpi_mix' 같은 raw key 노출 금지",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "admin 모드에서는 debug info 로 여전히 확인 가능 (접기 패널)",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "URL 쿼리 파람 'chart=' 는 유지 (공유 링크 호환)",
+          "ok": false,
+          "hits": 0,
+          "tokens": 1
+        }
+      ]
+    }
+  ],
+  "resolution": "Dashboard 일반 사용자 view에서 내부 용어를 숨기도록 카드 메타와 확대 모달 텍스트를 정리했다. 차트 타입은 한글 라벨로 치환하고, 원천 파일 경로·컬럼명·raw chart_type은 관리자 전용 debug 접기 패널로만 남겼다. 공유 URL의 chart 파라미터나 내부 데이터 구조는 변경하지 않았다."
+}

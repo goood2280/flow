@@ -1,0 +1,16 @@
+{
+  "id": "c43d9af25690",
+  "term": "first",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260703-C80E:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-03T05:23:17.631720+00:00",
+  "updated_at": "2026-07-03T05:23:17.631720+00:00",
+  "decided_by": null
+}

@@ -1,0 +1,1 @@
+{"text":"[FileBrowser 톱니 컨텍스트 분리 + S3 양방향] (1) 현재 우하단 floating gear 가 FB 페이지에서도 admin_settings(대시보드 새로고침/계산) 만 보여줌 → FB 페이지에서는 FB 전용 설정으로 교체. 포함: AWS Configure (멀티키/프로파일), 테이블별 s3 cp sync 설정, sync 주기 설정, sync 로그 뷰어. 단위기능 페이지 철학 확장. (2) FB S3 sync 를 양방향으로 — 현재는 S3→local 위주라면 local→S3 업로드 기능도 제공. 선택 테이블/파일을 push 가능.","from":"user"}

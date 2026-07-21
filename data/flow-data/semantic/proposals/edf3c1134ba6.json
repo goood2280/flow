@@ -1,0 +1,16 @@
+{
+  "id": "edf3c1134ba6",
+  "term": "contract",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260615-FB4E:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-06-15T06:02:15.694623+00:00",
+  "updated_at": "2026-06-15T06:02:15.694623+00:00",
+  "decided_by": null
+}

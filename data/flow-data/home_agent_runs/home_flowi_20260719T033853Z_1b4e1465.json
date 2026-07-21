@@ -1,0 +1,706 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260719T033853Z_1b4e1465",
+  "created_at": "2026-07-19T03:38:53.165881+00:00",
+  "source": "home_agent",
+  "username": "qa_claude",
+  "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+  "input_prompt": "",
+  "resolved_prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+  "status": "success",
+  "reply": "PRODA INLINE 7.0 SPACER의 어떤 INLINE grain (예: 특정 측정값, CD, Overlay 등)에 대한 트렌드를 확인하고 싶으신가요?",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "success"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "success"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      },
+      {
+        "id": "iter:0:search_filebrowser_schema",
+        "label": "#1 FileBrowser 스키마 검색",
+        "phase": "react_iteration",
+        "kind": "unit_ai",
+        "tool": "search_filebrowser_schema",
+        "status": "success"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "iter:0:search_filebrowser_schema"
+      },
+      {
+        "source": "iter:0:search_filebrowser_schema",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": [
+    {
+      "tool": "search_filebrowser_schema",
+      "kind": "function",
+      "title": "FileBrowser 스키마 검색",
+      "ok": true,
+      "status": "success",
+      "blocked": false,
+      "ms": 11476,
+      "input": {
+        "schema_name": "INLINE",
+        "keyword": "SPACER",
+        "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘"
+      },
+      "result_preview": "PRODA 7.0 SPACER은 INLINE item으로 해석했고 Trend x축은 tkout_time 기준입니다. INLINE grain을 선택해야 합니다.",
+      "warnings": [],
+      "reason": "To identify if '7.0 SPACER' or 'SPACER' is a valid column in the INLINE data for charting, I need to search the INLINE schema for this keyword.",
+      "source": "react",
+      "feedback_penalty": {
+        "unit_key": "search_filebrowser_schema",
+        "penalty": 0.0,
+        "boost": 0.0,
+        "score_adjustment": 0.0,
+        "up_count": 0,
+        "down_count": 0,
+        "last_rating": "",
+        "updated_at": ""
+      },
+      "result": {
+        "handled": true,
+        "intent": "dashboard_inline_trend_needs_grain",
+        "action": "collect_required_fields",
+        "answer": "PRODA 7.0 SPACER은 INLINE item으로 해석했고 Trend x축은 tkout_time 기준입니다. INLINE grain을 선택해야 합니다.",
+        "missing": [
+          "chart_grain"
+        ],
+        "feature": "dashboard",
+        "pending_prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+        "last_partial_prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+        "slots": {
+          "product": "PRODA",
+          "metric": "7.0 SPACER",
+          "source_type": "INLINE",
+          "x_col": "tkout_time",
+          "color_by": ""
+        },
+        "clarification": {
+          "question": "INLINE Trend를 어떤 grain으로 그릴까요?",
+          "choices": [
+            {
+              "id": "lot_wf",
+              "label": "1",
+              "title": "lot_wf avg",
+              "value": "lot_wf",
+              "recommended": true,
+              "description": "root_lot_id+wafer_id별 value 평균을 tkout_time x축에 표시합니다.",
+              "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘 grain: lot_wf"
+            },
+            {
+              "id": "shot",
+              "label": "2",
+              "title": "shot 전체",
+              "value": "shot",
+              "recommended": false,
+              "description": "subitem_id/shot 좌표 단위 point를 모두 tkout_time x축에 표시합니다.",
+              "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘 grain: shot"
+            }
+          ]
+        },
+        "term_resolution": [
+          {
+            "token": "7.0 SPACER",
+            "meaning": "INLINE item",
+            "wiki_refs": [
+              "schema:INLINE.item_id"
+            ],
+            "query_filter": "item_id=7.0 SPACER",
+            "status": "resolved"
+          },
+          {
+            "token": "Trend",
+            "meaning": "tkout_time x축 scatter",
+            "wiki_refs": [
+              "schema:INLINE.tkout_time"
+            ],
+            "query_filter": "x=tkout_time",
+            "status": "resolved"
+          },
+          {
+            "token": "grain",
+            "meaning": "lot_wf avg 또는 shot 전체 중 선택 필요",
+            "wiki_refs": [
+              "schema:INLINE.grain"
+            ],
+            "query_filter": "await chart_grain",
+            "status": "needs_input"
+          }
+        ],
+        "question": "라인 차트 생성을 계속하려면 chart_grain 값을 보완해 주세요.",
+        "chart_type": "trend",
+        "config": {
+          "x": "tkout_time",
+          "y": "7.0 SPACER",
+          "group": "lot_id",
+          "agg": "median",
+          "product": "PRODA",
+          "color_by": "none",
+          "group_by": "",
+          "fit": "none",
+          "stats_columns": [
+            "count",
+            "median",
+            "avg",
+            "std"
+          ],
+          "font_size": 14,
+          "axis_label_size": 12,
+          "legend": true,
+          "theme": "dark",
+          "chart_type": "trend",
+          "metric": "7.0 SPACER",
+          "item_id": "7.0 SPACER",
+          "title": "PRODA 7.0 SPACER 라인 차트"
+        },
+        "chart_config": {
+          "x": "tkout_time",
+          "y": "7.0 SPACER",
+          "group": "lot_id",
+          "agg": "median",
+          "product": "PRODA",
+          "color_by": "none",
+          "group_by": "",
+          "fit": "none",
+          "stats_columns": [
+            "count",
+            "median",
+            "avg",
+            "std"
+          ],
+          "font_size": 14,
+          "axis_label_size": 12,
+          "legend": true,
+          "theme": "dark",
+          "chart_type": "trend",
+          "metric": "7.0 SPACER",
+          "item_id": "7.0 SPACER",
+          "title": "PRODA 7.0 SPACER 라인 차트"
+        },
+        "data": [],
+        "fit": {},
+        "stats_table": [],
+        "chart_session_id": "2baf2b1c068d43799113ded1db24fc0d",
+        "chart_result": {
+          "chart_type": "trend",
+          "title": "PRODA 7.0 SPACER 라인 차트",
+          "config": {
+            "x": "tkout_time",
+            "y": "7.0 SPACER",
+            "group": "lot_id",
+            "agg": "median",
+            "product": "PRODA",
+            "color_by": "none",
+            "group_by": "",
+            "fit": "none",
+            "stats_columns": [
+              "count",
+              "median",
+              "avg",
+              "std"
+            ],
+            "font_size": 14,
+            "axis_label_size": 12,
+            "legend": true,
+            "theme": "dark",
+            "chart_type": "trend",
+            "metric": "7.0 SPACER",
+            "item_id": "7.0 SPACER",
+            "title": "PRODA 7.0 SPACER 라인 차트"
+          },
+          "chart_config": {
+            "x": "tkout_time",
+            "y": "7.0 SPACER",
+            "group": "lot_id",
+            "agg": "median",
+            "product": "PRODA",
+            "color_by": "none",
+            "group_by": "",
+            "fit": "none",
+            "stats_columns": [
+              "count",
+              "median",
+              "avg",
+              "std"
+            ],
+            "font_size": 14,
+            "axis_label_size": 12,
+            "legend": true,
+            "theme": "dark",
+            "chart_type": "trend",
+            "metric": "7.0 SPACER",
+            "item_id": "7.0 SPACER",
+            "title": "PRODA 7.0 SPACER 라인 차트"
+          },
+          "retrieved_knowledge": [],
+          "fit_params": {},
+          "stats_table": [],
+          "chart_session_id": "2baf2b1c068d43799113ded1db24fc0d"
+        },
+        "type": "chart",
+        "inline_summary": "PRODA 7.0 SPACER 라인 차트"
+      }
+    }
+  ],
+  "action_log": {
+    "summary": [
+      "질문을 공개 가능한 runtime 단계로 정리했습니다.",
+      "오케스트레이터 상태: success.",
+      "최종 결과를 Home 응답으로 정리했습니다."
+    ],
+    "timeline": [
+      {
+        "stage": "prompt_input",
+        "title": "프롬프트 입력",
+        "status": "success",
+        "detail": "input"
+      },
+      {
+        "stage": "semantic_layer",
+        "title": "용어해석",
+        "status": "success",
+        "detail": "semantic"
+      },
+      {
+        "stage": "orchestrator",
+        "title": "오케스트레이터",
+        "status": "success",
+        "detail": "plan"
+      },
+      {
+        "stage": "result_renderer",
+        "title": "결과 정리",
+        "status": "success",
+        "detail": "render"
+      },
+      {
+        "stage": "unit_ai:change_management",
+        "title": "변경점 관리 Flow-i",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:dashboard_agent",
+        "title": "Dashboard Agent",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:filebrowser_ai_sql",
+        "title": "FileBrowser AI SQL",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:inform_registration",
+        "title": "Inform 등록 도우미",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:ppid_knob",
+        "title": "PPID Knob 분류",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:split_nav",
+        "title": "SplitTable 열기",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "unit_ai:step_lookup",
+        "title": "Step ID 매칭",
+        "status": "available",
+        "detail": "unit_ai_mcp"
+      },
+      {
+        "stage": "iter:0:search_filebrowser_schema",
+        "title": "#1 FileBrowser 스키마 검색",
+        "status": "success",
+        "detail": "react_iteration"
+      }
+    ],
+    "final_answer": "PRODA INLINE 7.0 SPACER의 어떤 INLINE grain (예: 특정 측정값, CD, Overlay 등)에 대한 트렌드를 확인하고 싶으신가요?",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "warnings": [],
+    "intent": "dashboard_agent",
+    "feature": "dashboard",
+    "chart_result": {
+      "chart_type": "trend",
+      "title": "PRODA 7.0 SPACER 라인 차트",
+      "config": {
+        "x": "tkout_time",
+        "y": "7.0 SPACER",
+        "group": "lot_id",
+        "agg": "median",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "trend",
+        "metric": "7.0 SPACER",
+        "item_id": "7.0 SPACER",
+        "title": "PRODA 7.0 SPACER 라인 차트"
+      },
+      "chart_config": {
+        "x": "tkout_time",
+        "y": "7.0 SPACER",
+        "group": "lot_id",
+        "agg": "median",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "trend",
+        "metric": "7.0 SPACER",
+        "item_id": "7.0 SPACER",
+        "title": "PRODA 7.0 SPACER 라인 차트"
+      },
+      "retrieved_knowledge": [],
+      "fit_params": {},
+      "stats_table": [],
+      "chart_session_id": "2baf2b1c068d43799113ded1db24fc0d"
+    },
+    "inline_summary": "PRODA 7.0 SPACER 라인 차트",
+    "type": "chart"
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+        "source": "home_agent"
+      },
+      "output_summary": {
+        "chars": 33
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘"
+      },
+      "output_summary": {
+        "semantic": {
+          "resolved_columns": [],
+          "alias_hits": [
+            "product"
+          ],
+          "slot_hints": {
+            "product": "A"
+          },
+          "unknown_terms": [
+            "INLINE",
+            "SPACER",
+            "trend",
+            "그려줘"
+          ],
+          "value_catalog_matches": [],
+          "value_terms": [],
+          "intent_matches": []
+        },
+        "interpretation": {},
+        "signals": null
+      },
+      "warnings": []
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "success",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "react",
+        "plan": [],
+        "unit_ai_selection": [],
+        "tool": {
+          "feature": "dashboard",
+          "action": "",
+          "intent": "dashboard_agent",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "success",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "PRODA INLINE 7.0 SPACER의 어떤 INLINE grain (예: 특정 측정값, CD, Overlay 등)에 대한 트렌드를 확인하고 싶으신가요?",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": []
+      },
+      "warnings": [],
+      "preview": {}
+    },
+    "iter:0:search_filebrowser_schema": {
+      "node_id": "iter:0:search_filebrowser_schema",
+      "status": "success",
+      "input_summary": {
+        "schema_name": "INLINE",
+        "keyword": "SPACER",
+        "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘"
+      },
+      "output_summary": {
+        "tool": "search_filebrowser_schema",
+        "title": "FileBrowser 스키마 검색",
+        "result_preview": "PRODA 7.0 SPACER은 INLINE item으로 해석했고 Trend x축은 tkout_time 기준입니다. INLINE grain을 선택해야 합니다.",
+        "reason": "To identify if '7.0 SPACER' or 'SPACER' is a valid column in the INLINE data for charting, I need to search the INLINE schema for this keyword."
+      },
+      "warnings": [],
+      "preview": {}
+    }
+  },
+  "warnings": [],
+  "iterations": [
+    {
+      "index": 0,
+      "tool": "search_filebrowser_schema",
+      "title": "FileBrowser 스키마 검색",
+      "status": "success",
+      "ok": true,
+      "ms": 11476,
+      "result_preview": "PRODA 7.0 SPACER은 INLINE item으로 해석했고 Trend x축은 tkout_time 기준입니다. INLINE grain을 선택해야 합니다.",
+      "reason": "To identify if '7.0 SPACER' or 'SPACER' is a valid column in the INLINE data for charting, I need to search the INLINE schema for this keyword."
+    }
+  ],
+  "stop_reason": "ask_user",
+  "semantic_frame": {
+    "resolved_columns": [],
+    "alias_hits": [
+      "product"
+    ],
+    "slot_hints": {
+      "product": "A"
+    },
+    "unknown_terms": [
+      "INLINE",
+      "SPACER",
+      "trend",
+      "그려줘"
+    ],
+    "value_catalog_matches": [],
+    "value_terms": [],
+    "intent_matches": []
+  }
+}

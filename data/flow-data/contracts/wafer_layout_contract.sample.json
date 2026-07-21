@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "unit": "um",
+  "wafer": {
+    "wf_center_x": 0,
+    "wf_center_y": 0,
+    "wafer_radius": 150000
+  },
+  "shot_layout": {
+    "ref_shot_x": 0,
+    "ref_shot_y": 0,
+    "ref_shot_center_x": 0,
+    "ref_shot_center_y": 0,
+    "shot_pitch_x": 26000,
+    "shot_pitch_y": 28000,
+    "shot_size_x": 25000,
+    "shot_size_y": 27000
+  },
+  "chip_layout": {
+    "origin_mode": "shot_lower_left",
+    "chip_cols": 6,
+    "chip_rows": 4,
+    "chip_width": 3600,
+    "chip_height": 4800
+  },
+  "teg_layout": {
+    "default_mode": "lower_left_if_present_else_shot_center",
+    "items": [
+      { "name": "TEG_A", "teg_x": 2000, "teg_y": 3000 },
+      { "name": "TEG_B", "teg_x": 18000, "teg_y": 2500 },
+      { "name": "TEG_C" }
+    ]
+  },
+  "radius_rules": {
+    "shot_radius_basis": "shot_center_to_wf_center",
+    "teg_radius_basis": "teg_lower_left_to_wf_center_or_shot_center_if_missing"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "session_id": "2baf2b1c068d43799113ded1db24fc0d",
+  "username": "qa_claude",
+  "chart_type": "trend",
+  "config": {
+    "x": "tkout_time",
+    "y": "7.0 SPACER",
+    "group": "lot_id",
+    "agg": "median",
+    "product": "PRODA",
+    "color_by": "none",
+    "group_by": "",
+    "fit": "none",
+    "stats_columns": [
+      "count",
+      "median",
+      "avg",
+      "std"
+    ],
+    "font_size": 14,
+    "axis_label_size": 12,
+    "legend": true,
+    "theme": "dark",
+    "chart_type": "trend",
+    "metric": "7.0 SPACER",
+    "item_id": "7.0 SPACER",
+    "title": "PRODA 7.0 SPACER 라인 차트"
+  },
+  "base_data_query": {
+    "prompt": "PRODA INLINE 7.0 SPACER trend 그려줘",
+    "product": "PRODA",
+    "tool_intent": "dashboard_inline_trend_needs_grain",
+    "source_type": "INLINE",
+    "db": "1.RAWDATA_DB_INLINE",
+    "file_count": 0,
+    "filters": {
+      "product": "PRODA",
+      "item_id": "7.0 SPACER"
+    },
+    "join_keys": [
+      "root_lot_id",
+      "wafer_id"
+    ]
+  },
+  "data": [],
+  "created_at": "2026-07-19T03:38:49+00:00",
+  "refined_at": "2026-07-19T03:38:49+00:00",
+  "history": []
+}

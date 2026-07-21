@@ -1,0 +1,17 @@
+{
+  "id": "grp_derived_features",
+  "name": "Derived / Feature Table",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "columns": [],
+  "description": "ML_TABLE, ET/INLINE aggregate, yield aggregate 등 분석 소비용 파생 테이블",
+  "tables": [
+    "tbl_ml_table_features",
+    "tbl_features_inline_agg",
+    "tbl_features_et_wafer",
+    "tbl_yld_shot_agg"
+  ],
+  "updated": "2026-04-24T19:20:00"
+}

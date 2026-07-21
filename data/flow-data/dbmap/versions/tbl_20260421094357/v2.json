@@ -1,0 +1,24 @@
+{
+  "id": "tbl_20260421094357",
+  "name": "__lin_test_INLINE_data",
+  "display_name": "",
+  "group_id": "",
+  "table_type": "data",
+  "columns": [
+    {
+      "name": "k",
+      "type": "string"
+    }
+  ],
+  "rows": [],
+  "description": "",
+  "aws_cmd": "",
+  "username": "hol",
+  "updated": "2026-04-21T09:43:57.834549",
+  "_audit": {
+    "username": "hol",
+    "action": "edit",
+    "saved_at": "2026-04-21T09:43:57.852106",
+    "version": 2
+  }
+}

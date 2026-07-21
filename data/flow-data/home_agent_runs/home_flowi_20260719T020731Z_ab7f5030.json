@@ -1,0 +1,2994 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260719T020731Z_ab7f5030",
+  "created_at": "2026-07-19T02:07:31.129328+00:00",
+  "source": "llm_flowi_chat",
+  "username": "qa_claude",
+  "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+  "input_prompt": "",
+  "resolved_prompt": "",
+  "status": "success",
+  "reply": "PRODA ET IOFF spec(high 0.95) 기준 spec out map을 그렸습니다. shot median 기준 out 69/117 — 빨간색=spec out, 회색=in spec. 좌표=shot_x/shot_y.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "success"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "success"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": {
+    "kind": "public_execution_trace",
+    "visible": true,
+    "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+    "activation": {
+      "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+      "endpoint": "/api/llm/flowi/chat",
+      "intent": "react_orchestration",
+      "feature": "dashboard",
+      "action": "flowi.general",
+      "handler_action": "react_loop",
+      "api": "react_loop",
+      "handler": "react_loop",
+      "status": "done",
+      "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map",
+      "payload_summary": {},
+      "next_action": "대시보드 열기",
+      "missing": [],
+      "cause": ""
+    },
+    "semantic": {
+      "intent": "archived",
+      "coverage": 0.0,
+      "slots": {
+        "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘"
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ],
+      "candidate_count": 0
+    },
+    "plan": [
+      {
+        "agent_id": "agent_archived",
+        "unit_ai": "agent_runtime",
+        "action": "archived",
+        "title": "Agent Archived",
+        "policy": "blocked",
+        "endpoint": "archive/agent_reset_2026_05_26",
+        "approval_required": false
+      }
+    ],
+    "unit_ai_selection": [
+      {
+        "key": "agent_runtime",
+        "title": "agent_runtime.archived",
+        "status": "blocked",
+        "reason": "blocked"
+      }
+    ],
+    "guardrail": {
+      "status": "archived",
+      "blocked": true,
+      "approval_required": false,
+      "reason": "agent_runtime_archived",
+      "plan_count": 1,
+      "tool_blocked": false,
+      "tool_requires_confirmation": false,
+      "selected_feature": "dashboard",
+      "selected_action": "react_loop"
+    },
+    "interpretation": {
+      "input_slots": {
+        "product": "",
+        "lot": "",
+        "wafer": "",
+        "step": "",
+        "item": "",
+        "semantic_term": "",
+        "agg": "",
+        "meeting": "",
+        "session": "",
+        "source_candidates": []
+      },
+      "missing_slots": [],
+      "filled_slots": {},
+      "knowledge_terms": [
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        },
+        {
+          "term": "spec out map",
+          "id": "card:wafer map",
+          "title": "wafer map",
+          "kind": "knowledge_card_seed",
+          "relation_id": "",
+          "column": ""
+        },
+        {
+          "term": "그려줘",
+          "id": "card:차트 질문 플레이북",
+          "title": "차트 질문 플레이북",
+          "kind": "knowledge_card_seed",
+          "relation_id": "",
+          "column": ""
+        }
+      ],
+      "term_resolution": []
+    },
+    "evidence": {
+      "used_feature_ai": "dashboard",
+      "endpoint": "react_loop",
+      "payload_summary": {},
+      "filters": {},
+      "sql": "",
+      "selected_columns": [],
+      "source_ids": [],
+      "relation_ids": [],
+      "join_keys": [],
+      "join_plan": {},
+      "query_plan": {},
+      "sql_plan": "",
+      "impact_context": {},
+      "chart_config": {},
+      "meeting_sources": [],
+      "knowledge_sources": [
+        {
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        },
+        {
+          "id": "card:wafer map",
+          "title": "wafer map",
+          "kind": "knowledge_card_seed",
+          "term": "spec out map",
+          "source": "knowledge_cards",
+          "relation_id": "",
+          "column": ""
+        },
+        {
+          "id": "card:차트 질문 플레이북",
+          "title": "차트 질문 플레이북",
+          "kind": "knowledge_card_seed",
+          "term": "그려줘",
+          "source": "knowledge_cards",
+          "relation_id": "",
+          "column": ""
+        }
+      ],
+      "table_total": 117,
+      "api_calls": [
+        {
+          "stage": "ingress",
+          "method": "POST",
+          "path": "/api/llm/flowi/chat",
+          "callee": "flowi_chat",
+          "status": "done",
+          "output": "request accepted"
+        },
+        {
+          "stage": "orchestrator",
+          "method": "internal",
+          "path": "backend/routers/llm.py",
+          "callee": "_run_flowi_chat",
+          "status": "done",
+          "output": "workflow=ready"
+        },
+        {
+          "stage": "knowledge",
+          "method": "internal",
+          "path": "data/flow-data/knowledge + schema_relations.json",
+          "callee": "core.knowledge_vault.lookup_term",
+          "status": "done",
+          "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id, card:wafer map, card:차트 질문 플레이북"
+        },
+        {
+          "stage": "feature_api",
+          "method": "internal",
+          "path": "",
+          "callee": "react_loop",
+          "status": "done",
+          "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map"
+        },
+        {
+          "stage": "response",
+          "method": "internal",
+          "path": "Flow-i response payload",
+          "callee": "_attach_flowi_trace",
+          "status": "done",
+          "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map"
+        }
+      ]
+    },
+    "validation": {
+      "rows": 117,
+      "chart_readiness": "ready",
+      "source_count": 5,
+      "warnings": [],
+      "fallback": false,
+      "llm_used": false,
+      "llm_error": ""
+    },
+    "persona_snapshot": {
+      "label": "반도체 공정 데이터 분석가",
+      "role": "semiconductor_process_data_analyst",
+      "prompt_source": "default",
+      "system_prompt_chars": 1681,
+      "must_not_chars": 379,
+      "principle_count": 3,
+      "public_note": "내부 사고과정이 아니라 현재 적용된 persona/system prompt cache의 공개 요약입니다."
+    },
+    "prompt_cache": {
+      "allowed_features": [
+        "calendar",
+        "dashboard",
+        "devguide",
+        "diagnosis",
+        "filebrowser",
+        "inform",
+        "meeting",
+        "splittable",
+        "tablemap",
+        "tracker"
+      ],
+      "feature_entrypoint_count": 10,
+      "feature_docs": [],
+      "few_shot_count": 17,
+      "workflow_catalog_count": 54,
+      "promoted_knowledge_count": 0,
+      "cache_scope": "feature docs, workflow catalog, few-shot examples, promoted knowledge summaries"
+    },
+    "workflow_matches": [
+      {
+        "id": "wf_auto_measure_spec_check",
+        "title": "Measurement spec check",
+        "category": "measurement",
+        "unit_ai": "filebrowser_ai_sql",
+        "action": "check_measurement_spec",
+        "score": 8.86,
+        "source_roles": [
+          "inline_db",
+          "et_db"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "measurement_term",
+            "type": "semantic_measurement",
+            "required": true,
+            "example": "CA BCD"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} {measurement_term} spec out 여부"
+        ],
+        "question_template": "{root_lot_id} {measurement_term} spec out 여부",
+        "steps": [
+          "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+          "관련 INLINE/ET source를 read-only로 조회한다.",
+          "wafer별 표 또는 chart_result로 정리한다."
+        ],
+        "orchestration": [
+          "semantic measurement term을 source_type, item_id, spec으로 해석한다.",
+          "관련 INLINE/ET source를 read-only로 조회한다.",
+          "wafer별 표 또는 chart_result로 정리한다."
+        ]
+      },
+      {
+        "id": "wf_auto_chart_wafer_map",
+        "title": "Wafer map chart",
+        "category": "chart",
+        "unit_ai": "dashboard_agent",
+        "action": "plot_wafer_map",
+        "score": 4.877,
+        "source_roles": [
+          "inline_db"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "item_id",
+            "type": "item",
+            "required": true,
+            "example": "CA_BCD"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} {item_id} wafer map 그려줘"
+        ],
+        "question_template": "{root_lot_id} {item_id} wafer map 그려줘",
+        "steps": [
+          "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+          "Dashboard Agent가 chart_result shape로 검증한다.",
+          "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+        ],
+        "orchestration": [
+          "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+          "Dashboard Agent가 chart_result shape로 검증한다.",
+          "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+        ]
+      },
+      {
+        "id": "wf_item_trend_chart_with_optional_knob_color",
+        "title": "Item trend 차트와 Knob coloring",
+        "category": "chart",
+        "unit_ai": "dashboard_agent",
+        "action": "plot_item_trend",
+        "score": 3.403,
+        "source_roles": [
+          "inline_db",
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "source_type",
+            "type": "source",
+            "required": true,
+            "example": "Inline"
+          },
+          {
+            "name": "item_id",
+            "type": "item",
+            "required": true
+          },
+          {
+            "name": "knob_name",
+            "type": "knob",
+            "required": false
+          }
+        ],
+        "examples": [
+          "Inline 15.0 M2의 trend를 그려줘",
+          "{source_type} {item_id} trend를 그려줘",
+          "{item_id} trend를 {knob_name} Knob으로 컬러링해줘"
+        ],
+        "question_template": "{source_type} {item_id} trend를 그려줘",
+        "steps": [
+          "요청 source에서 item_id를 찾고 tkout_time을 x축으로 선택한다.",
+          "time series scatter plot을 만든다.",
+          "knob coloring 요청이 있으면 Split base와 root_lot_id/wafer_id로 join해 색상을 갱신한다."
+        ],
+        "orchestration": [
+          "요청 source에서 item_id를 찾고 tkout_time을 x축으로 선택한다.",
+          "time series scatter plot을 만든다.",
+          "knob coloring 요청이 있으면 Split base와 root_lot_id/wafer_id로 join해 색상을 갱신한다."
+        ]
+      },
+      {
+        "id": "wf_source_trend_chart_generic",
+        "title": "ET/FAB/VM 등 source별 trend 차트",
+        "category": "chart",
+        "unit_ai": "dashboard_agent",
+        "action": "plot_source_metric_trend",
+        "score": 3.402,
+        "source_roles": [
+          "inline_db",
+          "et_db",
+          "fab_db",
+          "vm_db",
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "source_type",
+            "type": "source",
+            "required": true,
+            "example": "ET"
+          },
+          {
+            "name": "metric_name",
+            "type": "item",
+            "required": true
+          }
+        ],
+        "examples": [
+          "ET VTH trend 그려줘",
+          "{source_type} {item_id} trend 그려줘",
+          "{source_type} {metric_name} 추이 보여줘",
+          "FAB step progress trend chart",
+          "VM VMIN 추이 보여줘"
+        ],
+        "question_template": "{source_type} {item_id} trend 그려줘",
+        "steps": [
+          "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+          "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+          "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+        ],
+        "orchestration": [
+          "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+          "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+          "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+        ]
+      },
+      {
+        "id": "wf_inline_et_corr_chart",
+        "title": "Inline/ET correlation chart",
+        "category": "chart_join",
+        "unit_ai": "home_sql_join_dashboard",
+        "action": "plot_cross_source_corr_chart",
+        "score": 3.401,
+        "source_roles": [
+          "inline_db",
+          "et_db",
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "source_a",
+            "type": "source",
+            "required": true,
+            "default": "Inline"
+          },
+          {
+            "name": "item_a",
+            "type": "item",
+            "required": true
+          },
+          {
+            "name": "source_b",
+            "type": "source",
+            "required": true,
+            "default": "ET"
+          },
+          {
+            "name": "item_b",
+            "type": "item",
+            "required": true
+          },
+          {
+            "name": "knob_name",
+            "type": "knob",
+            "required": false
+          }
+        ],
+        "examples": [
+          "Inline 15.0 M2랑 ET VTH Corr. Chart 그려줘",
+          "Inline {inline_item}랑 ET {et_item} Corr Chart 그려줘",
+          "{source_a} {item_a}와 {source_b} {item_b} 상관 차트",
+          "INLINE {inline_item} ET {et_item} scatter R2 fitting line"
+        ],
+        "question_template": "{source_a} {item_a}와 {source_b} {item_b} 상관 차트",
+        "steps": [
+          "두 source에서 각각 item 값을 가져온다.",
+          "root_lot_id/wafer_id 단위로 집계한다. 기본은 Inline avg, ET median이다.",
+          "집계 기준을 답변에 명시하고 scatter plot을 그린다.",
+          "후속 요청으로 agg 변경, R2 fitting line, knob coloring을 적용한다."
+        ],
+        "orchestration": [
+          "두 source에서 각각 item 값을 가져온다.",
+          "root_lot_id/wafer_id 단위로 집계한다. 기본은 Inline avg, ET median이다.",
+          "집계 기준을 답변에 명시하고 scatter plot을 그린다.",
+          "후속 요청으로 agg 변경, R2 fitting line, knob coloring을 적용한다."
+        ]
+      }
+    ],
+    "subagent_context": {
+      "feature_subagent": "dashboard",
+      "intent": "react_orchestration",
+      "handler_action": "react_loop",
+      "unit_action": "flowi.general",
+      "api_or_handler": "react_loop",
+      "payload_summary": {},
+      "source_profile": {},
+      "deterministic_handler": true
+    },
+    "clarification_loop": {
+      "status": "done",
+      "needs_input": false,
+      "question": "",
+      "missing": [],
+      "choices": [],
+      "next_unit_action": "flowi.general",
+      "pending_prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+      "user_answer": ""
+    },
+    "retrieved_knowledge": [
+      {
+        "id": "column:ML_TABLE_PRODA.lot_wf",
+        "title": "ML_TABLE_PRODA.lot_wf",
+        "kind": "column_catalog",
+        "summary": "lot_wf",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "lot_wf",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.root_lot_id",
+        "title": "ML_TABLE_PRODA.root_lot_id",
+        "kind": "column_catalog",
+        "summary": "root_lot_id",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "root_lot_id",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.step_id",
+        "title": "ML_TABLE_PRODA.step_id",
+        "kind": "column_catalog",
+        "summary": "step_id",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "step_id",
+        "score": null
+      },
+      {
+        "id": "card:wafer map",
+        "title": "wafer map",
+        "kind": "knowledge_card_seed",
+        "summary": "wafer map 요청 규약과 좌표 규칙. 제품별 shot 위치 정보가 있어 shot 단위 컬러링이 가능하다. - **값 컬러링 map**: \"○○ 컬러링해서 map 그려줘\" → 해당 항목 값으로 shot 에 색을 입혀 그린다. - **spec out map**: \"spec ~~ 기준 spec out map 그려줘\" → **spec out 포인트만 빨간색,",
+        "term": "spec out map",
+        "source": "knowledge_cards",
+        "relation_id": "",
+        "column": "",
+        "score": null
+      },
+      {
+        "id": "card:차트 질문 플레이북",
+        "title": "차트 질문 플레이북",
+        "kind": "knowledge_card_seed",
+        "summary": "flow-i 는 자연어 요청을 DuckDB/Polars 쿼리로 실행해 차트를 즉시 그린다 (dashboard 계열 handler + home_sql_join_dashboard 멀티소스 JOIN 유닛). 대표 차트 유형: - **trend**: y(측정 index)를 시간축에 — x 기본은 tkout_time(DC 측정시각) 또는 FAB 시간(ML_TABLE",
+        "term": "그려줘",
+        "source": "knowledge_cards",
+        "relation_id": "",
+        "column": "",
+        "score": null
+      }
+    ],
+    "steps": [
+      {
+        "key": "receive",
+        "stage": "receive",
+        "title": "요청 접수",
+        "label": "요청 접수",
+        "status": "done",
+        "detail": "prompt 40 chars, context 0 messages",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "auth",
+        "stage": "auth",
+        "title": "사용자/권한 확인",
+        "label": "사용자/권한 확인",
+        "status": "done",
+        "detail": "허용 기능 10개",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "route",
+        "stage": "route",
+        "title": "의도/단위기능 선택",
+        "label": "의도/단위기능 선택",
+        "status": "done",
+        "detail": "intent=react_orchestration, action=react_loop",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "knowledge",
+        "stage": "knowledge",
+        "title": "Agent Wiki 검색",
+        "label": "Agent Wiki 검색",
+        "status": "done",
+        "detail": "column:ML_TABLE_PRODA.lot_wf(PRODA), column:ML_TABLE_PRODA.root_lot_id(PRODA), column:ML_TABLE_PRODA.step_id(PRODA), card:wafer map(spec out map), card:차트 질문 플레이북(그려줘)",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "guardrail",
+        "stage": "guardrail",
+        "title": "권한/쓰기 보호",
+        "label": "권한/쓰기 보호",
+        "status": "done",
+        "detail": "허용된 단위기능 범위에서 진행",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "tool",
+        "stage": "tool",
+        "title": "DB/cache/tool 실행",
+        "label": "DB/cache/tool 실행",
+        "status": "done",
+        "detail": "table dashboard_wafer_map rows=117, chart dashboard_wafer_map, knowledge=column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "llm",
+        "stage": "llm",
+        "title": "LLM 답변 정리",
+        "label": "LLM 답변 정리",
+        "status": "skipped",
+        "detail": "로컬 단위기능 결과를 그대로 사용",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      },
+      {
+        "key": "render",
+        "stage": "render",
+        "title": "화면 출력 준비",
+        "label": "화면 출력 준비",
+        "status": "done",
+        "detail": "table dashboard_wafer_map rows=117, chart dashboard_wafer_map, knowledge=column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-19T02:07:31.050691+00:00"
+      }
+    ],
+    "api_calls": [
+      {
+        "stage": "ingress",
+        "feature": "llm",
+        "action": "flowi_chat",
+        "name": "Flow-i FastAPI endpoint",
+        "method": "POST",
+        "path": "/api/llm/flowi/chat",
+        "callee": "flowi_chat",
+        "purpose": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+        "payload": {
+          "prompt_chars": 40,
+          "allowed_features": 10
+        },
+        "output": "request accepted",
+        "status": "done"
+      },
+      {
+        "stage": "orchestrator",
+        "feature": "flowi",
+        "action": "react_loop",
+        "name": "Flow-i orchestrator",
+        "method": "internal",
+        "path": "backend/routers/llm.py",
+        "callee": "_run_flowi_chat",
+        "purpose": "권한, slot, intent, feature handler, LLM polish 여부를 결정",
+        "payload": {
+          "intent": "react_orchestration",
+          "feature": "dashboard",
+          "missing": []
+        },
+        "output": "workflow=ready",
+        "status": "done"
+      },
+      {
+        "stage": "knowledge",
+        "feature": "knowledge",
+        "action": "lookup_term",
+        "name": "Agent Wiki / schema lookup",
+        "method": "internal",
+        "path": "data/flow-data/knowledge + schema_relations.json",
+        "callee": "core.knowledge_vault.lookup_term",
+        "purpose": "질문 용어를 Agent Wiki schema_doc, column_catalog, promoted knowledge와 대조",
+        "payload": {
+          "terms": [
+            "PRODA",
+            "spec out map",
+            "그려줘"
+          ]
+        },
+        "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id, card:wafer map, card:차트 질문 플레이북",
+        "status": "done"
+      },
+      {
+        "stage": "feature_api",
+        "feature": "dashboard",
+        "action": "react_loop",
+        "name": "dashboard handler",
+        "method": "internal",
+        "path": "",
+        "callee": "react_loop",
+        "purpose": "선택된 feature handler가 local result를 생성",
+        "payload": {
+          "intent": "react_orchestration",
+          "action": "react_loop"
+        },
+        "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map",
+        "status": "done"
+      },
+      {
+        "stage": "response",
+        "feature": "flowi",
+        "action": "render_response",
+        "name": "Answer composer",
+        "method": "internal",
+        "path": "Flow-i response payload",
+        "callee": "_attach_flowi_trace",
+        "purpose": "tool result, clarification, next actions, trace를 화면 응답으로 패키징",
+        "payload": {
+          "llm_used": false
+        },
+        "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map",
+        "status": "done"
+      }
+    ],
+    "call_graph": {
+      "nodes": [
+        {
+          "id": "prompt",
+          "type": "input",
+          "title": "Prompt 전달",
+          "detail": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+          "status": "done"
+        },
+        {
+          "id": "fastapi",
+          "type": "fastapi",
+          "title": "/api/llm/flowi/chat",
+          "detail": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+          "status": "done"
+        },
+        {
+          "id": "orchestrator",
+          "type": "orchestrator",
+          "title": "오케스트레이터 판단",
+          "detail": "intent=react_orchestration, action=react_loop",
+          "status": "done"
+        },
+        {
+          "id": "guardrail",
+          "type": "guardrail",
+          "title": "Schema / permission check",
+          "detail": "필수 slot, 권한, 저장 전 확인 상태 검증",
+          "status": "done"
+        },
+        {
+          "id": "knowledge",
+          "type": "knowledge",
+          "title": "Agent Wiki / Schema",
+          "detail": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id, card:wafer map, card:차트 질문 플레이북",
+          "status": "done"
+        },
+        {
+          "id": "feature",
+          "type": "feature_subagent",
+          "title": "dashboard subagent",
+          "detail": "react_loop",
+          "status": "done"
+        },
+        {
+          "id": "api_1",
+          "type": "api_call",
+          "title": "dashboard handler",
+          "detail": "react_loop",
+          "status": "done"
+        },
+        {
+          "id": "result",
+          "type": "result",
+          "title": "Tool result",
+          "detail": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map",
+          "status": "done"
+        },
+        {
+          "id": "answer",
+          "type": "answer",
+          "title": "Answer payload",
+          "detail": "answer, table/chart, clarification, next_actions를 반환",
+          "status": "done"
+        }
+      ],
+      "edges": [
+        {
+          "source": "prompt",
+          "target": "fastapi",
+          "label": "POST"
+        },
+        {
+          "source": "fastapi",
+          "target": "orchestrator",
+          "label": "request"
+        },
+        {
+          "source": "orchestrator",
+          "target": "guardrail",
+          "label": "validate"
+        },
+        {
+          "source": "guardrail",
+          "target": "knowledge",
+          "label": "lookup"
+        },
+        {
+          "source": "knowledge",
+          "target": "feature",
+          "label": "dispatch"
+        },
+        {
+          "source": "feature",
+          "target": "api_1",
+          "label": "internal"
+        },
+        {
+          "source": "api_1",
+          "target": "result",
+          "label": "return"
+        },
+        {
+          "source": "result",
+          "target": "answer",
+          "label": "compose"
+        }
+      ],
+      "layout": "linear_dag",
+      "activation": {
+        "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+        "endpoint": "/api/llm/flowi/chat",
+        "intent": "react_orchestration",
+        "feature": "dashboard",
+        "action": "flowi.general",
+        "handler_action": "react_loop",
+        "api": "react_loop",
+        "handler": "react_loop",
+        "status": "done",
+        "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map",
+        "payload_summary": {},
+        "next_action": "대시보드 열기",
+        "missing": [],
+        "cause": ""
+      }
+    }
+  },
+  "action_log": {
+    "summary": [
+      "선택한 intent/action은 react_orchestration / flowi.general이며 dashboard 기능으로 처리했습니다.",
+      "사용 근거는 Wiki/schema 5건(column:ML_TABLE_PRODA.lot_wf, ML_TABLE_PRODA, column:ML_TABLE_PRODA.root_lot_id)입니다.",
+      "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+      "실행 경로는 dashboard handler입니다.",
+      "검증 결과: 결과 117건, chart ready."
+    ],
+    "timeline": [
+      {
+        "stage": "semantic_layer",
+        "title": "질문 해석",
+        "detail": "intent=archived, coverage=0.0, slots=prompt",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "card:wafer map",
+          "card:차트 질문 플레이북"
+        ],
+        "api_refs": [
+          {
+            "stage": "ingress",
+            "name": "Flow-i FastAPI endpoint",
+            "method": "POST",
+            "path": "/api/llm/flowi/chat",
+            "callee": "flowi_chat",
+            "status": "done",
+            "output": "request accepted"
+          },
+          {
+            "stage": "knowledge",
+            "name": "Agent Wiki / schema lookup",
+            "method": "internal",
+            "path": "data/flow-data/knowledge + schema_relations.json",
+            "callee": "core.knowledge_vault.lookup_term",
+            "status": "done",
+            "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id, card:wafer map, card:차트 질문 플레이북"
+          }
+        ]
+      },
+      {
+        "stage": "task_planner",
+        "title": "실행 계획",
+        "detail": "agent_runtime",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "card:wafer map",
+          "card:차트 질문 플레이북"
+        ],
+        "api_refs": [
+          {
+            "stage": "orchestrator",
+            "name": "Flow-i orchestrator",
+            "method": "internal",
+            "path": "backend/routers/llm.py",
+            "callee": "_run_flowi_chat",
+            "status": "done",
+            "output": "workflow=ready"
+          }
+        ]
+      },
+      {
+        "stage": "unit_agents",
+        "title": "단위 기능 실행",
+        "detail": "dashboard handler",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "card:wafer map",
+          "card:차트 질문 플레이북"
+        ],
+        "api_refs": [
+          {
+            "stage": "feature_api",
+            "name": "dashboard handler",
+            "method": "internal",
+            "callee": "react_loop",
+            "status": "done",
+            "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map"
+          }
+        ]
+      },
+      {
+        "stage": "conclusion",
+        "title": "결과 검증과 답변",
+        "detail": "rows=117, answer_chars=125",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "card:wafer map",
+          "card:차트 질문 플레이북"
+        ],
+        "api_refs": [
+          {
+            "stage": "response",
+            "name": "Answer composer",
+            "method": "internal",
+            "path": "Flow-i response payload",
+            "callee": "_attach_flowi_trace",
+            "status": "done",
+            "output": "dashboard_wafer_map 117 rows, PRODA ET IOFF Spec Out Map"
+          }
+        ]
+      }
+    ],
+    "final_answer": "PRODA ET IOFF spec(high 0.95) 기준 spec out map을 그렸습니다. shot median 기준 out 69/117 — 빨간색=spec out, 회색=in spec. 좌표=shot_x/shot_y.",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "table": {
+      "kind": "dashboard_wafer_map",
+      "title": "IOFF WF map",
+      "placement": "below",
+      "columns": [
+        {
+          "key": "shot_x",
+          "label": "SHOT_X"
+        },
+        {
+          "key": "shot_y",
+          "label": "SHOT_Y"
+        },
+        {
+          "key": "value",
+          "label": "VALUE"
+        },
+        {
+          "key": "mean",
+          "label": "MEAN"
+        },
+        {
+          "key": "n",
+          "label": "N"
+        },
+        {
+          "key": "lot_count",
+          "label": "LOT_COUNT"
+        },
+        {
+          "key": "wafer_count",
+          "label": "WAFER_COUNT"
+        },
+        {
+          "key": "out",
+          "label": "OUT"
+        }
+      ],
+      "rows": [
+        {
+          "shot_x": -4.0,
+          "shot_y": -5.0,
+          "value": 0.9471,
+          "mean": 0.9763859259259259,
+          "n": 3645,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": -3.0,
+          "shot_y": -5.0,
+          "value": 0.9291,
+          "mean": 0.9638525963149078,
+          "n": 3582,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": -2.0,
+          "shot_y": -5.0,
+          "value": 0.9111,
+          "mean": 0.9581160272804774,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": -1.0,
+          "shot_y": -5.0,
+          "value": 0.9607,
+          "mean": 0.9864360544217687,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": "OUT"
+        },
+        {
+          "shot_x": 0.0,
+          "shot_y": -5.0,
+          "value": 0.9475,
+          "mean": 0.9835437659033079,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": 1.0,
+          "shot_y": -5.0,
+          "value": 0.9465,
+          "mean": 0.9790429951690822,
+          "n": 3726,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": 2.0,
+          "shot_y": -5.0,
+          "value": 0.9471,
+          "mean": 0.9806885503231763,
+          "n": 3249,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": 3.0,
+          "shot_y": -5.0,
+          "value": 0.9589000000000001,
+          "mean": 0.9900334959349593,
+          "n": 3690,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": "OUT"
+        },
+        {
+          "shot_x": 4.0,
+          "shot_y": -5.0,
+          "value": 0.9389000000000001,
+          "mean": 0.976523102310231,
+          "n": 3636,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": ""
+        },
+        {
+          "shot_x": -5.0,
+          "shot_y": -4.0,
+          "value": 0.9512,
+          "mean": 0.9791768911055694,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "out": "OUT"
+        }
+      ],
+      "total": 117,
+      "headers": [
+        "SHOT_X",
+        "SHOT_Y",
+        "VALUE",
+        "MEAN",
+        "N",
+        "LOT_COUNT",
+        "WAFER_COUNT",
+        "OUT"
+      ],
+      "max_height": 320,
+      "overflow_x": true
+    },
+    "inline_summary": "IOFF WF map 117 rows · 8 columns",
+    "feature": "dashboard",
+    "intent": "react_orchestration",
+    "chart_result": {
+      "ok": true,
+      "kind": "dashboard_wafer_map",
+      "title": "PRODA ET IOFF Spec Out Map",
+      "points": [
+        {
+          "x": -4.0,
+          "y": -5.0,
+          "value": 0.9471,
+          "mean": 0.9764,
+          "n": 3645,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": -5.0,
+          "value": 0.9291,
+          "mean": 0.9639,
+          "n": 3582,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": -5.0,
+          "value": 0.9111,
+          "mean": 0.9581,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": -5.0,
+          "value": 0.9607,
+          "mean": 0.9864,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,-5.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": -5.0,
+          "value": 0.9475,
+          "mean": 0.9835,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": 1.0,
+          "y": -5.0,
+          "value": 0.9465,
+          "mean": 0.979,
+          "n": 3726,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": 2.0,
+          "y": -5.0,
+          "value": 0.9471,
+          "mean": 0.9807,
+          "n": 3249,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": 3.0,
+          "y": -5.0,
+          "value": 0.9589,
+          "mean": 0.99,
+          "n": 3690,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,-5.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": -5.0,
+          "value": 0.9389,
+          "mean": 0.9765,
+          "n": 3636,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,-5.0)",
+          "out": false
+        },
+        {
+          "x": -5.0,
+          "y": -4.0,
+          "value": 0.9512,
+          "mean": 0.9792,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": -4.0,
+          "value": 0.937,
+          "mean": 0.9676,
+          "n": 3366,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,-4.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": -4.0,
+          "value": 0.9478,
+          "mean": 0.9793,
+          "n": 3510,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,-4.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": -4.0,
+          "value": 0.9662,
+          "mean": 0.9889,
+          "n": 3582,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": -1.0,
+          "y": -4.0,
+          "value": 0.9752,
+          "mean": 0.9961,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": -4.0,
+          "value": 0.9374,
+          "mean": 0.9722,
+          "n": 3483,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,-4.0)",
+          "out": false
+        },
+        {
+          "x": 1.0,
+          "y": -4.0,
+          "value": 0.966,
+          "mean": 0.9907,
+          "n": 3474,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": -4.0,
+          "value": 0.9654,
+          "mean": 0.9892,
+          "n": 3600,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": -4.0,
+          "value": 0.9488,
+          "mean": 0.9848,
+          "n": 3771,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,-4.0)",
+          "out": false
+        },
+        {
+          "x": 4.0,
+          "y": -4.0,
+          "value": 0.9282,
+          "mean": 0.9706,
+          "n": 3411,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,-4.0)",
+          "out": false
+        },
+        {
+          "x": 5.0,
+          "y": -4.0,
+          "value": 0.9528,
+          "mean": 0.9861,
+          "n": 3456,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,-4.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": -3.0,
+          "value": 0.9355,
+          "mean": 0.9711,
+          "n": 3708,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,-3.0)",
+          "out": false
+        },
+        {
+          "x": -4.0,
+          "y": -3.0,
+          "value": 0.9493,
+          "mean": 0.9849,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,-3.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": -3.0,
+          "value": 0.9485,
+          "mean": 0.9756,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,-3.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": -3.0,
+          "value": 0.9257,
+          "mean": 0.966,
+          "n": 3384,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,-3.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": -3.0,
+          "value": 0.9667,
+          "mean": 0.9946,
+          "n": 3708,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": -3.0,
+          "value": 0.9545,
+          "mean": 0.9874,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": -3.0,
+          "value": 0.9271,
+          "mean": 0.9692,
+          "n": 3573,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,-3.0)",
+          "out": false
+        },
+        {
+          "x": 2.0,
+          "y": -3.0,
+          "value": 0.9665,
+          "mean": 0.9894,
+          "n": 3303,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": -3.0,
+          "value": 0.9807,
+          "mean": 1.0016,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": -3.0,
+          "value": 0.9585,
+          "mean": 0.989,
+          "n": 3789,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": -3.0,
+          "value": 0.9707,
+          "mean": 0.9943,
+          "n": 3375,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,-3.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": -2.0,
+          "value": 0.937,
+          "mean": 0.9696,
+          "n": 3483,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": -4.0,
+          "y": -2.0,
+          "value": 0.944,
+          "mean": 0.9753,
+          "n": 3654,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": -2.0,
+          "value": 0.9582,
+          "mean": 0.9864,
+          "n": 3627,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,-2.0)",
+          "out": true
+        },
+        {
+          "x": -2.0,
+          "y": -2.0,
+          "value": 0.9368,
+          "mean": 0.9721,
+          "n": 3591,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": -2.0,
+          "value": 0.9302,
+          "mean": 0.9671,
+          "n": 3438,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": 0.0,
+          "y": -2.0,
+          "value": 0.9592,
+          "mean": 0.988,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,-2.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": -2.0,
+          "value": 0.953,
+          "mean": 0.9871,
+          "n": 3753,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,-2.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": -2.0,
+          "value": 0.9316,
+          "mean": 0.9751,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": 3.0,
+          "y": -2.0,
+          "value": 0.9762,
+          "mean": 0.997,
+          "n": 3483,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,-2.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": -2.0,
+          "value": 0.9464,
+          "mean": 0.9834,
+          "n": 3438,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,-2.0)",
+          "out": false
+        },
+        {
+          "x": 5.0,
+          "y": -2.0,
+          "value": 0.9678,
+          "mean": 1.0026,
+          "n": 3753,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,-2.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": -1.0,
+          "value": 0.9525,
+          "mean": 0.9814,
+          "n": 3429,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": -1.0,
+          "value": 0.9343,
+          "mean": 0.9683,
+          "n": 3492,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,-1.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": -1.0,
+          "value": 0.9345,
+          "mean": 0.9673,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,-1.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": -1.0,
+          "value": 0.9827,
+          "mean": 1.0031,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": -1.0,
+          "y": -1.0,
+          "value": 0.9469,
+          "mean": 0.9813,
+          "n": 3591,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,-1.0)",
+          "out": false
+        },
+        {
+          "x": 0.0,
+          "y": -1.0,
+          "value": 0.9499,
+          "mean": 0.9782,
+          "n": 3438,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,-1.0)",
+          "out": false
+        },
+        {
+          "x": 1.0,
+          "y": -1.0,
+          "value": 0.9589,
+          "mean": 0.988,
+          "n": 3573,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": -1.0,
+          "value": 0.9787,
+          "mean": 1.0024,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": -1.0,
+          "value": 0.9405,
+          "mean": 0.9793,
+          "n": 3573,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,-1.0)",
+          "out": false
+        },
+        {
+          "x": 4.0,
+          "y": -1.0,
+          "value": 0.9523,
+          "mean": 0.987,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": -1.0,
+          "value": 0.9687,
+          "mean": 0.993,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,-1.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": 0.0,
+          "value": 0.9362,
+          "mean": 0.9727,
+          "n": 3600,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,0.0)",
+          "out": false
+        },
+        {
+          "x": -4.0,
+          "y": 0.0,
+          "value": 0.951,
+          "mean": 0.9821,
+          "n": 3591,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,0.0)",
+          "out": true
+        },
+        {
+          "x": -3.0,
+          "y": 0.0,
+          "value": 0.932,
+          "mean": 0.9744,
+          "n": 3384,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,0.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": 0.0,
+          "value": 0.9554,
+          "mean": 0.9807,
+          "n": 3762,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,0.0)",
+          "out": true
+        },
+        {
+          "x": -1.0,
+          "y": 0.0,
+          "value": 0.9452,
+          "mean": 0.982,
+          "n": 3420,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,0.0)",
+          "out": false
+        },
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "value": 0.9786,
+          "mean": 1.0006,
+          "n": 3537,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,0.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": 0.0,
+          "value": 0.9224,
+          "mean": 0.9729,
+          "n": 3501,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,0.0)",
+          "out": false
+        },
+        {
+          "x": 2.0,
+          "y": 0.0,
+          "value": 0.9786,
+          "mean": 0.9963,
+          "n": 3564,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,0.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": 0.0,
+          "value": 0.9684,
+          "mean": 0.9966,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,0.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 0.0,
+          "value": 0.9734,
+          "mean": 0.9971,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,0.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": 0.0,
+          "value": 0.9558,
+          "mean": 0.9932,
+          "n": 3420,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,0.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": 1.0,
+          "value": 0.9761,
+          "mean": 0.991,
+          "n": 3492,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,1.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": 1.0,
+          "value": 0.9297,
+          "mean": 0.97,
+          "n": 3753,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,1.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": 1.0,
+          "value": 0.9699,
+          "mean": 0.9922,
+          "n": 3510,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,1.0)",
+          "out": true
+        },
+        {
+          "x": -2.0,
+          "y": 1.0,
+          "value": 0.9317,
+          "mean": 0.9692,
+          "n": 3420,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,1.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": 1.0,
+          "value": 0.9459,
+          "mean": 0.9791,
+          "n": 3744,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,1.0)",
+          "out": false
+        },
+        {
+          "x": 0.0,
+          "y": 1.0,
+          "value": 0.9667,
+          "mean": 0.9948,
+          "n": 3564,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,1.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": 1.0,
+          "value": 0.9467,
+          "mean": 0.9847,
+          "n": 3483,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,1.0)",
+          "out": false
+        },
+        {
+          "x": 2.0,
+          "y": 1.0,
+          "value": 0.9437,
+          "mean": 0.9791,
+          "n": 3501,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,1.0)",
+          "out": false
+        },
+        {
+          "x": 3.0,
+          "y": 1.0,
+          "value": 0.9619,
+          "mean": 0.9993,
+          "n": 3438,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,1.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 1.0,
+          "value": 0.9697,
+          "mean": 0.9975,
+          "n": 3834,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,1.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": 1.0,
+          "value": 0.9427,
+          "mean": 0.9845,
+          "n": 3501,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,1.0)",
+          "out": false
+        },
+        {
+          "x": -5.0,
+          "y": 2.0,
+          "value": 0.969,
+          "mean": 0.9854,
+          "n": 3357,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,2.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": 2.0,
+          "value": 0.9472,
+          "mean": 0.9815,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,2.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": 2.0,
+          "value": 0.9522,
+          "mean": 0.981,
+          "n": 3726,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,2.0)",
+          "out": true
+        },
+        {
+          "x": -2.0,
+          "y": 2.0,
+          "value": 0.968,
+          "mean": 0.9928,
+          "n": 3501,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,2.0)",
+          "out": true
+        },
+        {
+          "x": -1.0,
+          "y": 2.0,
+          "value": 0.9566,
+          "mean": 0.9858,
+          "n": 3339,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,2.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": 2.0,
+          "value": 0.942,
+          "mean": 0.9817,
+          "n": 3645,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,2.0)",
+          "out": false
+        },
+        {
+          "x": 1.0,
+          "y": 2.0,
+          "value": 0.9798,
+          "mean": 1.004,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,2.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": 2.0,
+          "value": 0.9568,
+          "mean": 0.9898,
+          "n": 3618,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,2.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": 2.0,
+          "value": 0.952,
+          "mean": 0.9826,
+          "n": 3474,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,2.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 2.0,
+          "value": 0.9598,
+          "mean": 0.9886,
+          "n": 3510,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,2.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": 2.0,
+          "value": 0.9614,
+          "mean": 0.9963,
+          "n": 3771,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,2.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": 3.0,
+          "value": 0.9463,
+          "mean": 0.9791,
+          "n": 3600,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,3.0)",
+          "out": false
+        },
+        {
+          "x": -4.0,
+          "y": 3.0,
+          "value": 0.9479,
+          "mean": 0.9837,
+          "n": 3303,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,3.0)",
+          "out": false
+        },
+        {
+          "x": -3.0,
+          "y": 3.0,
+          "value": 0.9581,
+          "mean": 0.9853,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,3.0)",
+          "out": true
+        },
+        {
+          "x": -2.0,
+          "y": 3.0,
+          "value": 0.9387,
+          "mean": 0.9833,
+          "n": 3582,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,3.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": 3.0,
+          "value": 0.9809,
+          "mean": 1.0017,
+          "n": 3717,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,3.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": 3.0,
+          "value": 0.9475,
+          "mean": 0.9813,
+          "n": 3294,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,3.0)",
+          "out": false
+        },
+        {
+          "x": 1.0,
+          "y": 3.0,
+          "value": 0.9601,
+          "mean": 0.9847,
+          "n": 3573,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,3.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": 3.0,
+          "value": 0.9623,
+          "mean": 0.9985,
+          "n": 3555,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,3.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": 3.0,
+          "value": 0.9893,
+          "mean": 1.0067,
+          "n": 3609,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,3.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 3.0,
+          "value": 0.9455,
+          "mean": 0.9841,
+          "n": 3465,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,3.0)",
+          "out": false
+        },
+        {
+          "x": 5.0,
+          "y": 3.0,
+          "value": 0.9897,
+          "mean": 1.0086,
+          "n": 3375,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,3.0)",
+          "out": true
+        },
+        {
+          "x": -5.0,
+          "y": 4.0,
+          "value": 0.962,
+          "mean": 0.9923,
+          "n": 3627,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-5.0,4.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": 4.0,
+          "value": 0.9582,
+          "mean": 0.9864,
+          "n": 3699,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,4.0)",
+          "out": true
+        },
+        {
+          "x": -3.0,
+          "y": 4.0,
+          "value": 0.942,
+          "mean": 0.9749,
+          "n": 3447,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,4.0)",
+          "out": false
+        },
+        {
+          "x": -2.0,
+          "y": 4.0,
+          "value": 0.9646,
+          "mean": 0.9876,
+          "n": 3528,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,4.0)",
+          "out": true
+        },
+        {
+          "x": -1.0,
+          "y": 4.0,
+          "value": 0.9268,
+          "mean": 0.9691,
+          "n": 3663,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,4.0)",
+          "out": false
+        },
+        {
+          "x": 0.0,
+          "y": 4.0,
+          "value": 0.9606,
+          "mean": 0.9968,
+          "n": 3672,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,4.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": 4.0,
+          "value": 0.9598,
+          "mean": 0.9911,
+          "n": 3420,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,4.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": 4.0,
+          "value": 0.9634,
+          "mean": 0.9962,
+          "n": 3447,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,4.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": 4.0,
+          "value": 0.9772,
+          "mean": 1.0021,
+          "n": 3591,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,4.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 4.0,
+          "value": 0.9586,
+          "mean": 0.9992,
+          "n": 3519,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,4.0)",
+          "out": true
+        },
+        {
+          "x": 5.0,
+          "y": 4.0,
+          "value": 0.954,
+          "mean": 0.9937,
+          "n": 3681,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(5.0,4.0)",
+          "out": true
+        },
+        {
+          "x": -4.0,
+          "y": 5.0,
+          "value": 0.9587,
+          "mean": 0.9854,
+          "n": 3402,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-4.0,5.0)",
+          "out": true
+        },
+        {
+          "x": -3.0,
+          "y": 5.0,
+          "value": 0.9547,
+          "mean": 0.9831,
+          "n": 3573,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-3.0,5.0)",
+          "out": true
+        },
+        {
+          "x": -2.0,
+          "y": 5.0,
+          "value": 0.9473,
+          "mean": 0.9863,
+          "n": 3645,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-2.0,5.0)",
+          "out": false
+        },
+        {
+          "x": -1.0,
+          "y": 5.0,
+          "value": 0.9699,
+          "mean": 0.9972,
+          "n": 3357,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(-1.0,5.0)",
+          "out": true
+        },
+        {
+          "x": 0.0,
+          "y": 5.0,
+          "value": 0.9709,
+          "mean": 0.9951,
+          "n": 3501,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(0.0,5.0)",
+          "out": true
+        },
+        {
+          "x": 1.0,
+          "y": 5.0,
+          "value": 0.9587,
+          "mean": 0.9902,
+          "n": 3555,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(1.0,5.0)",
+          "out": true
+        },
+        {
+          "x": 2.0,
+          "y": 5.0,
+          "value": 0.9873,
+          "mean": 1.0102,
+          "n": 3582,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(2.0,5.0)",
+          "out": true
+        },
+        {
+          "x": 3.0,
+          "y": 5.0,
+          "value": 0.9613,
+          "mean": 0.9936,
+          "n": 3474,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(3.0,5.0)",
+          "out": true
+        },
+        {
+          "x": 4.0,
+          "y": 5.0,
+          "value": 0.9657,
+          "mean": 0.9928,
+          "n": 3591,
+          "lot_count": 30,
+          "wafer_count": 25,
+          "label": "shot(4.0,5.0)",
+          "out": true
+        }
+      ],
+      "total": 117,
+      "mode": "spec_out",
+      "spec": {
+        "low": null,
+        "high": 0.95,
+        "label": "high 0.95"
+      },
+      "out_n": 69,
+      "x_label": "shot_x",
+      "y_label": "shot_y",
+      "coord_basis": "shot_x/shot_y",
+      "value_label": "IOFF median",
+      "metric": "IOFF",
+      "source": "ET",
+      "sources": {
+        "file_count": 1,
+        "items": [
+          "IOFF"
+        ]
+      },
+      "chart_type": "wafer_map",
+      "config": {
+        "value": "IOFF",
+        "agg": "median",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "wafer_map",
+        "metric": "IOFF",
+        "item_id": "IOFF",
+        "title": "PRODA IOFF 웨이퍼 맵"
+      },
+      "chart_config": {
+        "value": "IOFF",
+        "agg": "median",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "wafer_map",
+        "metric": "IOFF",
+        "item_id": "IOFF",
+        "title": "PRODA IOFF 웨이퍼 맵"
+      },
+      "retrieved_knowledge": [],
+      "fit_params": {},
+      "stats_table": [
+        {
+          "count": 117,
+          "median": 0.0,
+          "avg": 0.0,
+          "std": 3.093374
+        }
+      ],
+      "chart_session_id": "4c988a7803c54512983a823c87169d48"
+    },
+    "action": "react_loop",
+    "type": "chart",
+    "answer": "PRODA ET IOFF spec(high 0.95) 기준 spec out map을 그렸습니다. shot median 기준 out 69/117 — 빨간색=spec out, 회색=in spec. 좌표=shot_x/shot_y."
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘",
+        "source": "llm_flowi_chat"
+      },
+      "output_summary": {
+        "chars": 40
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘"
+      },
+      "output_summary": {
+        "semantic": {
+          "intent": "archived",
+          "coverage": 0.0,
+          "slots": {
+            "prompt": "PRODA IOFF spec 0.95 이하 spec out map 그려줘"
+          },
+          "warnings": [
+            "agent_runtime_archived"
+          ],
+          "candidate_count": 0
+        },
+        "interpretation": {
+          "input_slots": {
+            "product": "",
+            "lot": "",
+            "wafer": "",
+            "step": "",
+            "item": "",
+            "semantic_term": "",
+            "agg": "",
+            "meeting": "",
+            "session": "",
+            "source_candidates": []
+          },
+          "missing_slots": [],
+          "filled_slots": {},
+          "knowledge_terms": [
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.lot_wf",
+              "title": "ML_TABLE_PRODA.lot_wf",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "lot_wf"
+            },
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.root_lot_id",
+              "title": "ML_TABLE_PRODA.root_lot_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "root_lot_id"
+            },
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.step_id",
+              "title": "ML_TABLE_PRODA.step_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "step_id"
+            },
+            {
+              "term": "spec out map",
+              "id": "card:wafer map",
+              "title": "wafer map",
+              "kind": "knowledge_card_seed",
+              "relation_id": "",
+              "column": ""
+            },
+            {
+              "term": "그려줘",
+              "id": "card:차트 질문 플레이북",
+              "title": "차트 질문 플레이북",
+              "kind": "knowledge_card_seed",
+              "relation_id": "",
+              "column": ""
+            }
+          ],
+          "term_resolution": []
+        },
+        "signals": {}
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ]
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "success",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "",
+        "plan": [
+          {
+            "agent_id": "agent_archived",
+            "unit_ai": "agent_runtime",
+            "action": "archived",
+            "title": "Agent Archived",
+            "policy": "blocked",
+            "endpoint": "archive/agent_reset_2026_05_26",
+            "approval_required": false
+          }
+        ],
+        "unit_ai_selection": [
+          {
+            "key": "agent_runtime",
+            "title": "agent_runtime.archived",
+            "status": "blocked",
+            "reason": "blocked"
+          }
+        ],
+        "tool": {
+          "feature": "dashboard",
+          "action": "react_loop",
+          "intent": "react_orchestration",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "success",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "PRODA ET IOFF spec(high 0.95) 기준 spec out map을 그렸습니다. shot median 기준 out 69/117 — 빨간색=spec out, 회색=in spec. 좌표=shot_x/shot_y.",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": [
+          "선택한 intent/action은 react_orchestration / flowi.general이며 dashboard 기능으로 처리했습니다.",
+          "사용 근거는 Wiki/schema 5건(column:ML_TABLE_PRODA.lot_wf, ML_TABLE_PRODA, column:ML_TABLE_PRODA.root_lot_id)입니다.",
+          "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+          "실행 경로는 dashboard handler입니다.",
+          "검증 결과: 결과 117건, chart ready."
+        ]
+      },
+      "warnings": [],
+      "preview": {
+        "kind": "dashboard_wafer_map",
+        "title": "IOFF WF map",
+        "columns": [
+          "{'key': 'shot_x', 'label': 'SHOT_X'}",
+          "{'key': 'shot_y', 'label': 'SHOT_Y'}",
+          "{'key': 'value', 'label': 'VALUE'}",
+          "{'key': 'mean', 'label': 'MEAN'}",
+          "{'key': 'n', 'label': 'N'}",
+          "{'key': 'lot_count', 'label': 'LOT_COUNT'}",
+          "{'key': 'wafer_count', 'label': 'WAFER_COUNT'}",
+          "{'key': 'out', 'label': 'OUT'}"
+        ],
+        "rows": [
+          {
+            "shot_x": -4.0,
+            "shot_y": -5.0,
+            "value": 0.9471,
+            "mean": 0.9763859259259259,
+            "n": 3645,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": -3.0,
+            "shot_y": -5.0,
+            "value": 0.9291,
+            "mean": 0.9638525963149078,
+            "n": 3582,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": -2.0,
+            "shot_y": -5.0,
+            "value": 0.9111,
+            "mean": 0.9581160272804774,
+            "n": 3519,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": -1.0,
+            "shot_y": -5.0,
+            "value": 0.9607,
+            "mean": 0.9864360544217687,
+            "n": 3528,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": "OUT"
+          },
+          {
+            "shot_x": 0.0,
+            "shot_y": -5.0,
+            "value": 0.9475,
+            "mean": 0.9835437659033079,
+            "n": 3537,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": 1.0,
+            "shot_y": -5.0,
+            "value": 0.9465,
+            "mean": 0.9790429951690822,
+            "n": 3726,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": 2.0,
+            "shot_y": -5.0,
+            "value": 0.9471,
+            "mean": 0.9806885503231763,
+            "n": 3249,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": 3.0,
+            "shot_y": -5.0,
+            "value": 0.9589000000000001,
+            "mean": 0.9900334959349593,
+            "n": 3690,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": "OUT"
+          },
+          {
+            "shot_x": 4.0,
+            "shot_y": -5.0,
+            "value": 0.9389000000000001,
+            "mean": 0.976523102310231,
+            "n": 3636,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": ""
+          },
+          {
+            "shot_x": -5.0,
+            "shot_y": -4.0,
+            "value": 0.9512,
+            "mean": 0.9791768911055694,
+            "n": 3609,
+            "lot_count": 30,
+            "wafer_count": 25,
+            "out": "OUT"
+          }
+        ],
+        "total": 117
+      }
+    }
+  },
+  "warnings": []
+}

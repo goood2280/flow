@@ -1,0 +1,16 @@
+{
+  "id": "c49888d94c4a",
+  "term": "other",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260703-DCF1:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-03T04:31:02.427947+00:00",
+  "updated_at": "2026-07-03T04:31:02.427947+00:00",
+  "decided_by": null
+}

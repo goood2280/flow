@@ -1,0 +1,197 @@
+{
+  "backup_root": "data/Fab/_backups/fab_root_fix_20260426_141619",
+  "products": {
+    "PRODA": {
+      "ml_roots": [
+        "A1000",
+        "A1001",
+        "A1002",
+        "A1003",
+        "A1004",
+        "A1005",
+        "A1006",
+        "A1007",
+        "A1008",
+        "A1009",
+        "A1010",
+        "A1011",
+        "A1012",
+        "A1013",
+        "A1014",
+        "A1015",
+        "A1016",
+        "A1017",
+        "A1018",
+        "A1019",
+        "A1020",
+        "A1021",
+        "A1022",
+        "A1023",
+        "A1024",
+        "A1025",
+        "A1026",
+        "A1027",
+        "A1028",
+        "A1029"
+      ],
+      "files": [
+        {
+          "path": "data/Fab/1.RAWDATA_DB_FAB/PRODA/date=20240418/part_0.parquet",
+          "backup": "data/Fab/_backups/fab_root_fix_20260426_141619/1.RAWDATA_DB_FAB/PRODA/date=20240418/part_0.parquet",
+          "before_rows": 10520,
+          "after_rows": 21040,
+          "source_root_count": 15,
+          "target_root_count": 30,
+          "mapping_sample": [
+            {
+              "source_root": "A0001",
+              "target_root": "A1000"
+            },
+            {
+              "source_root": "A0002",
+              "target_root": "A1001"
+            },
+            {
+              "source_root": "A0003",
+              "target_root": "A1002"
+            },
+            {
+              "source_root": "A0004",
+              "target_root": "A1003"
+            },
+            {
+              "source_root": "A0005",
+              "target_root": "A1004"
+            }
+          ]
+        },
+        {
+          "path": "data/Fab/1.RAWDATA_DB_FAB/PRODA/date=20240423/part_0.parquet",
+          "backup": "data/Fab/_backups/fab_root_fix_20260426_141619/1.RAWDATA_DB_FAB/PRODA/date=20240423/part_0.parquet",
+          "before_rows": 4500,
+          "after_rows": 9000,
+          "source_root_count": 15,
+          "target_root_count": 30,
+          "mapping_sample": [
+            {
+              "source_root": "A0001",
+              "target_root": "A1000"
+            },
+            {
+              "source_root": "A0002",
+              "target_root": "A1001"
+            },
+            {
+              "source_root": "A0003",
+              "target_root": "A1002"
+            },
+            {
+              "source_root": "A0004",
+              "target_root": "A1003"
+            },
+            {
+              "source_root": "A0005",
+              "target_root": "A1004"
+            }
+          ]
+        }
+      ]
+    },
+    "PRODB": {
+      "ml_roots": [
+        "B1000",
+        "B1001",
+        "B1002",
+        "B1003",
+        "B1004",
+        "B1005",
+        "B1006",
+        "B1007",
+        "B1008",
+        "B1009",
+        "B1010",
+        "B1011",
+        "B1012",
+        "B1013",
+        "B1014",
+        "B1015",
+        "B1016",
+        "B1017",
+        "B1018",
+        "B1019",
+        "B1020",
+        "B1021",
+        "B1022",
+        "B1023",
+        "B1024",
+        "B1025",
+        "B1026",
+        "B1027",
+        "B1028",
+        "B1029"
+      ],
+      "files": [
+        {
+          "path": "data/Fab/1.RAWDATA_DB_FAB/PRODB/date=20240418/part_0.parquet",
+          "backup": "data/Fab/_backups/fab_root_fix_20260426_141619/1.RAWDATA_DB_FAB/PRODB/date=20240418/part_0.parquet",
+          "before_rows": 10520,
+          "after_rows": 21040,
+          "source_root_count": 15,
+          "target_root_count": 30,
+          "mapping_sample": [
+            {
+              "source_root": "B0001",
+              "target_root": "B1000"
+            },
+            {
+              "source_root": "B0002",
+              "target_root": "B1001"
+            },
+            {
+              "source_root": "B0003",
+              "target_root": "B1002"
+            },
+            {
+              "source_root": "B0004",
+              "target_root": "B1003"
+            },
+            {
+              "source_root": "B0005",
+              "target_root": "B1004"
+            }
+          ]
+        },
+        {
+          "path": "data/Fab/1.RAWDATA_DB_FAB/PRODB/date=20240423/part_0.parquet",
+          "backup": "data/Fab/_backups/fab_root_fix_20260426_141619/1.RAWDATA_DB_FAB/PRODB/date=20240423/part_0.parquet",
+          "before_rows": 4500,
+          "after_rows": 9000,
+          "source_root_count": 15,
+          "target_root_count": 30,
+          "mapping_sample": [
+            {
+              "source_root": "B0001",
+              "target_root": "B1000"
+            },
+            {
+              "source_root": "B0002",
+              "target_root": "B1001"
+            },
+            {
+              "source_root": "B0003",
+              "target_root": "B1002"
+            },
+            {
+              "source_root": "B0004",
+              "target_root": "B1003"
+            },
+            {
+              "source_root": "B0005",
+              "target_root": "B1004"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

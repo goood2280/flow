@@ -1,0 +1,1037 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260719T035507Z_4491638c",
+  "created_at": "2026-07-19T03:55:07.873725+00:00",
+  "source": "llm_flowi_chat",
+  "username": "qa_claude",
+  "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+  "input_prompt": "",
+  "resolved_prompt": "",
+  "status": "blocked",
+  "reply": "메일 미리보기에 필요한 값을 선택해 주세요.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "blocked"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "blocked"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": {
+    "kind": "public_execution_trace",
+    "visible": true,
+    "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+    "activation": {
+      "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+      "endpoint": "/api/llm/flowi/chat",
+      "intent": "inform_module_mail_preview",
+      "feature": "inform",
+      "action": "inform.draft.resolve",
+      "handler_action": "compose_inform_module_mail",
+      "api": "compose_inform_module_mail",
+      "handler": "compose_inform_module_mail",
+      "status": "needs_input",
+      "output": "flowi_function_arguments 7 rows",
+      "payload_summary": {},
+      "next_action": "GATE로 진행",
+      "missing": [
+        "module"
+      ],
+      "cause": ""
+    },
+    "semantic": {
+      "intent": "archived",
+      "coverage": 0.0,
+      "slots": {
+        "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}"
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ],
+      "candidate_count": 0
+    },
+    "plan": [
+      {
+        "agent_id": "agent_archived",
+        "unit_ai": "agent_runtime",
+        "action": "archived",
+        "title": "Agent Archived",
+        "policy": "blocked",
+        "endpoint": "archive/agent_reset_2026_05_26",
+        "approval_required": false
+      }
+    ],
+    "unit_ai_selection": [
+      {
+        "key": "agent_runtime",
+        "title": "agent_runtime.archived",
+        "status": "blocked",
+        "reason": "blocked"
+      }
+    ],
+    "guardrail": {
+      "status": "archived",
+      "blocked": true,
+      "approval_required": false,
+      "reason": "agent_runtime_archived",
+      "plan_count": 1,
+      "tool_blocked": false,
+      "tool_requires_confirmation": true,
+      "selected_feature": "inform",
+      "selected_action": "compose_inform_module_mail"
+    },
+    "interpretation": {
+      "input_slots": {
+        "product": "",
+        "lot": "",
+        "wafer": "",
+        "step": "",
+        "item": "",
+        "semantic_term": "",
+        "agg": "",
+        "meeting": "",
+        "session": "",
+        "source_candidates": []
+      },
+      "missing_slots": [
+        "module"
+      ],
+      "filled_slots": {},
+      "knowledge_terms": [],
+      "term_resolution": []
+    },
+    "evidence": {
+      "used_feature_ai": "inform",
+      "endpoint": "compose_inform_module_mail",
+      "payload_summary": {},
+      "filters": {},
+      "sql": "",
+      "selected_columns": [],
+      "source_ids": [],
+      "relation_ids": [],
+      "join_keys": [],
+      "join_plan": {},
+      "query_plan": {},
+      "sql_plan": "",
+      "impact_context": {},
+      "chart_config": {},
+      "meeting_sources": [],
+      "knowledge_sources": [],
+      "table_total": 7,
+      "api_calls": [
+        {
+          "stage": "ingress",
+          "method": "POST",
+          "path": "/api/llm/flowi/chat",
+          "callee": "flowi_chat",
+          "status": "done",
+          "output": "request accepted"
+        },
+        {
+          "stage": "orchestrator",
+          "method": "internal",
+          "path": "backend/routers/llm.py",
+          "callee": "_run_flowi_chat",
+          "status": "waiting",
+          "output": "workflow=awaiting_fields"
+        },
+        {
+          "stage": "feature_api",
+          "method": "internal",
+          "path": "",
+          "callee": "compose_inform_module_mail",
+          "status": "waiting",
+          "output": "flowi_function_arguments 7 rows"
+        },
+        {
+          "stage": "response",
+          "method": "internal",
+          "path": "Flow-i response payload",
+          "callee": "_attach_flowi_trace",
+          "status": "done",
+          "output": "flowi_function_arguments 7 rows"
+        }
+      ]
+    },
+    "validation": {
+      "rows": 7,
+      "chart_readiness": "",
+      "source_count": 0,
+      "warnings": [],
+      "fallback": false,
+      "llm_used": false,
+      "llm_error": ""
+    },
+    "persona_snapshot": {
+      "label": "반도체 공정 데이터 분석가",
+      "role": "semiconductor_process_data_analyst",
+      "prompt_source": "default",
+      "system_prompt_chars": 1681,
+      "must_not_chars": 379,
+      "principle_count": 3,
+      "public_note": "내부 사고과정이 아니라 현재 적용된 persona/system prompt cache의 공개 요약입니다."
+    },
+    "prompt_cache": {
+      "allowed_features": [
+        "calendar",
+        "dashboard",
+        "devguide",
+        "diagnosis",
+        "filebrowser",
+        "inform",
+        "meeting",
+        "splittable",
+        "tablemap",
+        "tracker"
+      ],
+      "feature_entrypoint_count": 10,
+      "feature_docs": [],
+      "few_shot_count": 17,
+      "workflow_catalog_count": 54,
+      "promoted_knowledge_count": 0,
+      "cache_scope": "feature docs, workflow catalog, few-shot examples, promoted knowledge summaries"
+    },
+    "workflow_matches": [],
+    "subagent_context": {
+      "feature_subagent": "inform",
+      "intent": "inform_module_mail_preview",
+      "handler_action": "compose_inform_module_mail",
+      "unit_action": "inform.draft.resolve",
+      "api_or_handler": "compose_inform_module_mail",
+      "payload_summary": {},
+      "source_profile": {},
+      "deterministic_handler": true,
+      "slots": {}
+    },
+    "clarification_loop": {
+      "status": "needs_input",
+      "needs_input": true,
+      "question": "module 값을 선택하거나 직접 입력해 주세요.",
+      "missing": [
+        "module"
+      ],
+      "choices": [
+        {
+          "id": "1",
+          "label": "1",
+          "title": "GATE로 진행",
+          "description": "module=GATE 로 이어서 진행",
+          "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} GATE",
+          "value": "GATE",
+          "recommended": true
+        },
+        {
+          "id": "2",
+          "label": "2",
+          "title": "STI로 진행",
+          "description": "module=STI 로 이어서 진행",
+          "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} STI",
+          "value": "STI",
+          "recommended": false
+        },
+        {
+          "id": "3",
+          "label": "3",
+          "title": "PC로 진행",
+          "description": "module=PC 로 이어서 진행",
+          "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} PC",
+          "value": "PC",
+          "recommended": false
+        }
+      ],
+      "next_unit_action": "inform.draft.resolve",
+      "pending_prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+      "user_answer": ""
+    },
+    "retrieved_knowledge": [],
+    "steps": [
+      {
+        "key": "receive",
+        "stage": "receive",
+        "title": "요청 접수",
+        "label": "요청 접수",
+        "status": "done",
+        "detail": "prompt 72 chars, context 12 messages",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "auth",
+        "stage": "auth",
+        "title": "사용자/권한 확인",
+        "label": "사용자/권한 확인",
+        "status": "done",
+        "detail": "허용 기능 10개",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "route",
+        "stage": "route",
+        "title": "의도/단위기능 선택",
+        "label": "의도/단위기능 선택",
+        "status": "done",
+        "detail": "intent=inform_module_mail_preview, action=compose_inform_module_mail",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "guardrail",
+        "stage": "guardrail",
+        "title": "권한/쓰기 보호",
+        "label": "권한/쓰기 보호",
+        "status": "done",
+        "detail": "허용된 단위기능 범위에서 진행",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "tool",
+        "stage": "tool",
+        "title": "DB/cache/tool 실행",
+        "label": "DB/cache/tool 실행",
+        "status": "done",
+        "detail": "table flowi_function_arguments rows=7, choices=3",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "llm",
+        "stage": "llm",
+        "title": "LLM 답변 정리",
+        "label": "LLM 답변 정리",
+        "status": "skipped",
+        "detail": "로컬 단위기능 결과를 그대로 사용",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      },
+      {
+        "key": "render",
+        "stage": "render",
+        "title": "화면 출력 준비",
+        "label": "화면 출력 준비",
+        "status": "done",
+        "detail": "table flowi_function_arguments rows=7, choices=3",
+        "ts": "2026-07-19T03:55:07.797785+00:00"
+      }
+    ],
+    "api_calls": [
+      {
+        "stage": "ingress",
+        "feature": "llm",
+        "action": "flowi_chat",
+        "name": "Flow-i FastAPI endpoint",
+        "method": "POST",
+        "path": "/api/llm/flowi/chat",
+        "callee": "flowi_chat",
+        "purpose": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+        "payload": {
+          "prompt_chars": 72,
+          "allowed_features": 10
+        },
+        "output": "request accepted",
+        "status": "done"
+      },
+      {
+        "stage": "orchestrator",
+        "feature": "flowi",
+        "action": "compose_inform_module_mail",
+        "name": "Flow-i orchestrator",
+        "method": "internal",
+        "path": "backend/routers/llm.py",
+        "callee": "_run_flowi_chat",
+        "purpose": "권한, slot, intent, feature handler, LLM polish 여부를 결정",
+        "payload": {
+          "intent": "inform_module_mail_preview",
+          "feature": "inform",
+          "missing": [
+            "module"
+          ]
+        },
+        "output": "workflow=awaiting_fields",
+        "status": "waiting"
+      },
+      {
+        "stage": "feature_api",
+        "feature": "inform",
+        "action": "compose_inform_module_mail",
+        "name": "inform handler",
+        "method": "internal",
+        "path": "",
+        "callee": "compose_inform_module_mail",
+        "purpose": "선택된 feature handler가 local result를 생성",
+        "payload": {
+          "intent": "inform_module_mail_preview",
+          "action": "compose_inform_module_mail"
+        },
+        "output": "flowi_function_arguments 7 rows",
+        "status": "waiting"
+      },
+      {
+        "stage": "response",
+        "feature": "flowi",
+        "action": "render_response",
+        "name": "Answer composer",
+        "method": "internal",
+        "path": "Flow-i response payload",
+        "callee": "_attach_flowi_trace",
+        "purpose": "tool result, clarification, next actions, trace를 화면 응답으로 패키징",
+        "payload": {
+          "llm_used": false
+        },
+        "output": "flowi_function_arguments 7 rows",
+        "status": "done"
+      }
+    ],
+    "call_graph": {
+      "nodes": [
+        {
+          "id": "prompt",
+          "type": "input",
+          "title": "Prompt 전달",
+          "detail": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+          "status": "done"
+        },
+        {
+          "id": "fastapi",
+          "type": "fastapi",
+          "title": "/api/llm/flowi/chat",
+          "detail": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+          "status": "done"
+        },
+        {
+          "id": "orchestrator",
+          "type": "orchestrator",
+          "title": "오케스트레이터 판단",
+          "detail": "intent=inform_module_mail_preview, action=compose_inform_module_mail",
+          "status": "waiting"
+        },
+        {
+          "id": "guardrail",
+          "type": "guardrail",
+          "title": "Schema / permission check",
+          "detail": "필수 slot, 권한, 저장 전 확인 상태 검증",
+          "status": "waiting"
+        },
+        {
+          "id": "feature",
+          "type": "feature_subagent",
+          "title": "inform subagent",
+          "detail": "compose_inform_module_mail",
+          "status": "waiting"
+        },
+        {
+          "id": "api_1",
+          "type": "api_call",
+          "title": "inform handler",
+          "detail": "compose_inform_module_mail",
+          "status": "waiting"
+        },
+        {
+          "id": "result",
+          "type": "result",
+          "title": "Tool result",
+          "detail": "flowi_function_arguments 7 rows",
+          "status": "done"
+        },
+        {
+          "id": "answer",
+          "type": "answer",
+          "title": "Answer payload",
+          "detail": "answer, table/chart, clarification, next_actions를 반환",
+          "status": "done"
+        }
+      ],
+      "edges": [
+        {
+          "source": "prompt",
+          "target": "fastapi",
+          "label": "POST"
+        },
+        {
+          "source": "fastapi",
+          "target": "orchestrator",
+          "label": "request"
+        },
+        {
+          "source": "orchestrator",
+          "target": "guardrail",
+          "label": "validate"
+        },
+        {
+          "source": "guardrail",
+          "target": "feature",
+          "label": "dispatch"
+        },
+        {
+          "source": "feature",
+          "target": "api_1",
+          "label": "internal"
+        },
+        {
+          "source": "api_1",
+          "target": "result",
+          "label": "return"
+        },
+        {
+          "source": "result",
+          "target": "answer",
+          "label": "compose"
+        }
+      ],
+      "layout": "linear_dag",
+      "activation": {
+        "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+        "endpoint": "/api/llm/flowi/chat",
+        "intent": "inform_module_mail_preview",
+        "feature": "inform",
+        "action": "inform.draft.resolve",
+        "handler_action": "compose_inform_module_mail",
+        "api": "compose_inform_module_mail",
+        "handler": "compose_inform_module_mail",
+        "status": "needs_input",
+        "output": "flowi_function_arguments 7 rows",
+        "payload_summary": {},
+        "next_action": "GATE로 진행",
+        "missing": [
+          "module"
+        ],
+        "cause": ""
+      }
+    }
+  },
+  "action_log": {
+    "summary": [
+      "선택한 intent/action은 inform_module_mail_preview / inform.draft.resolve이며 inform 기능으로 처리했습니다.",
+      "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+      "실행 경로는 inform handler입니다.",
+      "검증 결과: 결과 7건."
+    ],
+    "timeline": [
+      {
+        "stage": "semantic_layer",
+        "title": "질문 해석",
+        "detail": "intent=archived, coverage=0.0, slots=prompt",
+        "status": "done",
+        "evidence_refs": [],
+        "api_refs": [
+          {
+            "stage": "ingress",
+            "name": "Flow-i FastAPI endpoint",
+            "method": "POST",
+            "path": "/api/llm/flowi/chat",
+            "callee": "flowi_chat",
+            "status": "done",
+            "output": "request accepted"
+          }
+        ]
+      },
+      {
+        "stage": "task_planner",
+        "title": "실행 계획",
+        "detail": "agent_runtime",
+        "status": "waiting",
+        "evidence_refs": [],
+        "api_refs": [
+          {
+            "stage": "orchestrator",
+            "name": "Flow-i orchestrator",
+            "method": "internal",
+            "path": "backend/routers/llm.py",
+            "callee": "_run_flowi_chat",
+            "status": "waiting",
+            "output": "workflow=awaiting_fields"
+          }
+        ]
+      },
+      {
+        "stage": "unit_agents",
+        "title": "단위 기능 실행",
+        "detail": "inform handler",
+        "status": "waiting",
+        "evidence_refs": [],
+        "api_refs": [
+          {
+            "stage": "feature_api",
+            "name": "inform handler",
+            "method": "internal",
+            "callee": "compose_inform_module_mail",
+            "status": "waiting",
+            "output": "flowi_function_arguments 7 rows"
+          }
+        ]
+      },
+      {
+        "stage": "conclusion",
+        "title": "결과 검증과 답변",
+        "detail": "rows=7, answer_chars=24",
+        "status": "done",
+        "evidence_refs": [],
+        "api_refs": [
+          {
+            "stage": "response",
+            "name": "Answer composer",
+            "method": "internal",
+            "path": "Flow-i response payload",
+            "callee": "_attach_flowi_trace",
+            "status": "done",
+            "output": "flowi_function_arguments 7 rows"
+          }
+        ]
+      }
+    ],
+    "final_answer": "메일 미리보기에 필요한 값을 선택해 주세요.",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "type": "table",
+    "pending_prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+    "inline_summary": "compose_inform_module_mail 7 rows · 2 columns",
+    "action": "compose_inform_module_mail",
+    "answer": "메일 미리보기에 필요한 값을 선택해 주세요.",
+    "table": {
+      "kind": "flowi_function_arguments",
+      "title": "compose_inform_module_mail",
+      "placement": "below",
+      "columns": [
+        {
+          "key": "field",
+          "label": "FIELD"
+        },
+        {
+          "key": "value",
+          "label": "VALUE"
+        }
+      ],
+      "rows": [
+        {
+          "field": "product_source",
+          "value": "missing"
+        },
+        {
+          "field": "aggregations",
+          "value": "{\"ET\": \"median\", \"INLINE\": \"avg\", \"FAB\": \"latest\"}"
+        },
+        {
+          "field": "join_keys",
+          "value": "[\"root_lot_id\", \"fab_lot_id\", \"wafer_id\", \"lot_wf\"]"
+        },
+        {
+          "field": "max_rows",
+          "value": 12
+        },
+        {
+          "field": "read_only",
+          "value": true
+        },
+        {
+          "field": "side_effect",
+          "value": "confirm_before_write"
+        },
+        {
+          "field": "lot_count",
+          "value": 0
+        }
+      ],
+      "total": 7,
+      "headers": [
+        "FIELD",
+        "VALUE"
+      ],
+      "max_height": 320,
+      "overflow_x": true
+    },
+    "last_partial_prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+    "feature": "inform",
+    "arguments_choices": {
+      "message": "또는 직접 입력해 주세요",
+      "fields": [
+        {
+          "field": "module",
+          "question": "어느 모듈인가요?",
+          "choices": [
+            {
+              "id": "1",
+              "label": "1",
+              "title": "GATE로 진행",
+              "value": "GATE",
+              "recommended": true,
+              "description": "module=GATE 로 이어서 진행",
+              "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} GATE"
+            },
+            {
+              "id": "2",
+              "label": "2",
+              "title": "STI로 진행",
+              "value": "STI",
+              "recommended": false,
+              "description": "module=STI 로 이어서 진행",
+              "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} STI"
+            },
+            {
+              "id": "3",
+              "label": "3",
+              "title": "PC로 진행",
+              "value": "PC",
+              "recommended": false,
+              "description": "module=PC 로 이어서 진행",
+              "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true} PC"
+            },
+            {
+              "id": "free",
+              "label": "직접",
+              "title": "다른 모듈 입력",
+              "value": "",
+              "recommended": false,
+              "description": "자유 입력으로 값을 이어서 입력합니다.",
+              "free_input": true,
+              "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}"
+            }
+          ],
+          "free_input_label": "다른 모듈 입력"
+        }
+      ]
+    },
+    "intent": "inform_module_mail_preview",
+    "requires_confirmation": true,
+    "missing": [
+      "module"
+    ],
+    "missing_freetext": []
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}",
+        "source": "llm_flowi_chat"
+      },
+      "output_summary": {
+        "chars": 72
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}"
+      },
+      "output_summary": {
+        "semantic": {
+          "intent": "archived",
+          "coverage": 0.0,
+          "slots": {
+            "prompt": "FLOWI_INFORM_MAIL {\"inform_ids\": [\"inf_260719_8b44de\"], \"confirm\": true}"
+          },
+          "warnings": [
+            "agent_runtime_archived"
+          ],
+          "candidate_count": 0
+        },
+        "interpretation": {
+          "input_slots": {
+            "product": "",
+            "lot": "",
+            "wafer": "",
+            "step": "",
+            "item": "",
+            "semantic_term": "",
+            "agg": "",
+            "meeting": "",
+            "session": "",
+            "source_candidates": []
+          },
+          "missing_slots": [
+            "module"
+          ],
+          "filled_slots": {},
+          "knowledge_terms": [],
+          "term_resolution": []
+        },
+        "signals": {}
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ]
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "blocked",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "",
+        "plan": [
+          {
+            "agent_id": "agent_archived",
+            "unit_ai": "agent_runtime",
+            "action": "archived",
+            "title": "Agent Archived",
+            "policy": "blocked",
+            "endpoint": "archive/agent_reset_2026_05_26",
+            "approval_required": false
+          }
+        ],
+        "unit_ai_selection": [
+          {
+            "key": "agent_runtime",
+            "title": "agent_runtime.archived",
+            "status": "blocked",
+            "reason": "blocked"
+          }
+        ],
+        "tool": {
+          "feature": "inform",
+          "action": "compose_inform_module_mail",
+          "intent": "inform_module_mail_preview",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "blocked",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "메일 미리보기에 필요한 값을 선택해 주세요.",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": [
+          "선택한 intent/action은 inform_module_mail_preview / inform.draft.resolve이며 inform 기능으로 처리했습니다.",
+          "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+          "실행 경로는 inform handler입니다.",
+          "검증 결과: 결과 7건."
+        ]
+      },
+      "warnings": [],
+      "preview": {
+        "kind": "flowi_function_arguments",
+        "title": "compose_inform_module_mail",
+        "columns": [
+          "{'key': 'field', 'label': 'FIELD'}",
+          "{'key': 'value', 'label': 'VALUE'}"
+        ],
+        "rows": [
+          {
+            "field": "product_source",
+            "value": "missing"
+          },
+          {
+            "field": "aggregations",
+            "value": "{\"ET\": \"median\", \"INLINE\": \"avg\", \"FAB\": \"latest\"}"
+          },
+          {
+            "field": "join_keys",
+            "value": "[\"root_lot_id\", \"fab_lot_id\", \"wafer_id\", \"lot_wf\"]"
+          },
+          {
+            "field": "max_rows",
+            "value": 12
+          },
+          {
+            "field": "read_only",
+            "value": true
+          },
+          {
+            "field": "side_effect",
+            "value": "confirm_before_write"
+          },
+          {
+            "field": "lot_count",
+            "value": 0
+          }
+        ],
+        "total": 7
+      }
+    }
+  },
+  "warnings": []
+}

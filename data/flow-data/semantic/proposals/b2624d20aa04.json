@@ -1,0 +1,16 @@
+{
+  "id": "b2624d20aa04",
+  "term": "Feature",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260717-0904:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-17T00:14:42.934831+00:00",
+  "updated_at": "2026-07-17T00:14:42.934831+00:00",
+  "decided_by": null
+}

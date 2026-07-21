@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source_path": "C:\\Users\\goood\\AppData\\Local\\Temp\\pytest-of-goood\\pytest-394\\test_http_wrapper_swaps_rows_w0\\ML_TABLE_COMPACT2.parquet",
+  "source_mtime": 1784421952.4934313,
+  "source_size": 1188,
+  "built_at": "2026-07-19T00:45:52+00:00",
+  "root_lot_ids": [
+    "RCP02"
+  ],
+  "root_lot_id_count": 1,
+  "columns_by_prefix": {
+    "KNOB": [
+      "KNOB_ALPHA"
+    ],
+    "MASK": [],
+    "INLINE": [],
+    "VM": [],
+    "TAG": [],
+    "MGMT": []
+  },
+  "default_prefix": "KNOB"
+}

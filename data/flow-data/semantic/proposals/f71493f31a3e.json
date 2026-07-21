@@ -1,0 +1,16 @@
+{
+  "id": "f71493f31a3e",
+  "term": "Mail",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260714-4702:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-14T02:11:17.509127+00:00",
+  "updated_at": "2026-07-14T02:11:17.509127+00:00",
+  "decided_by": null
+}

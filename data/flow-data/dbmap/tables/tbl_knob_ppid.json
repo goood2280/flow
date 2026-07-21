@@ -1,0 +1,27 @@
+{
+  "id": "tbl_knob_ppid",
+  "name": "knob_ppid",
+  "display_name": "KNOB_RULEBOOK",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_rulebook_config",
+  "table_type": "rulebook",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "function_step", "type": "string" },
+    { "name": "module", "type": "string" },
+    { "name": "step_id", "type": "string" },
+    { "name": "ppid", "type": "string" },
+    { "name": "knob_name", "type": "string" },
+    { "name": "priority", "type": "int" },
+    { "name": "is_active", "type": "bool" }
+  ],
+  "rows": [],
+  "description": "step/function/module/ppid 조합을 KNOB 이름으로 변환하는 rulebook",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

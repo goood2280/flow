@@ -1,0 +1,18 @@
+{
+  "modules": [
+    "GATE",
+    "STI",
+    "PC",
+    "MOL",
+    "BEOL",
+    "Spacer",
+    "Well",
+    "기타"
+  ],
+  "reasons": [
+    "PEMS"
+  ],
+  "products": [],
+  "raw_db_root": "",
+  "reason_templates": {}
+}

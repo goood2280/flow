@@ -1,0 +1,14 @@
+{
+  "user": "test1",
+  "messages": [
+    {
+      "id": "33cb7ac223",
+      "from": "test1",
+      "text": "문의!",
+      "created_at": "2026-04-20T23:53:49.746860"
+    }
+  ],
+  "last_read_by_user": "2026-04-20T23:57:53.423197",
+  "last_read_by_admin": "",
+  "updated_at": "2026-04-20T23:53:49.746860"
+}

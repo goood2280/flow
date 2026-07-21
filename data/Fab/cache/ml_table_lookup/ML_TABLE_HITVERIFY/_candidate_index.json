@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source_path": "C:\\Users\\goood\\AppData\\Local\\Temp\\pytest-of-goood\\pytest-394\\test_hit_path_skips_cache_stat0\\ML_TABLE_HITVERIFY.parquet",
+  "source_mtime": 1784421952.617356,
+  "source_size": 1188,
+  "built_at": "2026-07-19T00:45:52+00:00",
+  "root_lot_ids": [
+    "RHV01"
+  ],
+  "root_lot_id_count": 1,
+  "columns_by_prefix": {
+    "KNOB": [
+      "KNOB_ALPHA"
+    ],
+    "MASK": [],
+    "INLINE": [],
+    "VM": [],
+    "TAG": [],
+    "MGMT": []
+  },
+  "default_prefix": "KNOB"
+}

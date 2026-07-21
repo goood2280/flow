@@ -1,0 +1,43 @@
+2026-05-31 21:25:00,571 [INFO] Chart scheduler disabled (set FLOW_ENABLE_DASHBOARD_SCHEDULER=1 to enable)
+D:\TEST_Making_Video\semi_all\flow\backend\routers\llm.py:22164: UserWarning: Field name "schema" in "FlowiEdmProposalReq" shadows an attribute in parent "BaseModel"
+  class FlowiEdmProposalReq(BaseModel):
+2026-05-31 21:25:01,166 [INFO] Router disabled by FLOW_DISABLED_ROUTERS: ml
+2026-05-31 21:25:01,174 [INFO] [sysmon] background loop started
+2026-05-31 21:25:01,441 [INFO] Loaded routers: ['admin', 'agent', 'auth', 'calendar', 'catalog', 'catalog:match_router', 'dashboard', 'dbmap', 'filebrowser', 'groups', 'home', 'home_agent', 'informs', 'informs_extra', 'knowledge', 'llm', 'lot_progress', 'mail_groups', 'meetings', 'messages', 'monitor', 'reformatter', 's3_ingest', 'semiconductor', 'session_api', 'skills', 'splittable', 'sql_workspace', 'tracker']
+2026-05-31 21:25:01,441 [INFO] flow paths \u2014 prod=False
+2026-05-31 21:25:01,442 [INFO]   app_root  = D:\TEST_Making_Video\semi_all\flow
+2026-05-31 21:25:01,443 [INFO]   data_root = D:\TEST_Making_Video\semi_all\flow\data\flow-data
+2026-05-31 21:25:01,445 [INFO]   db_root   = D:\TEST_Making_Video\semi_all\flow\data\Fab
+2026-05-31 21:25:01,445 [INFO] SplitTable match cache scheduler disabled (set FLOW_ENABLE_SPLITTABLE_MATCH_CACHE=1 to enable)
+2026-05-31 21:25:01,446 [INFO] SplitTable product RAM cache scheduler disabled (set FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE=1 to enable)
+2026-05-31 21:25:01,446 [INFO] heavy background DB scanners disabled (set FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1 to enable)
+2026-05-31 21:25:01,447 [INFO] Tracker ET lot cache scheduler disabled (set FLOW_ENABLE_TRACKER_ET_LOT_CACHE=1 to enable)
+2026-05-31 21:25:01,451 [INFO] filebrowser preview prewarmer started
+2026-05-31 21:25:01,463 [INFO] backup scheduler started
+2026-05-31 21:25:01,465 [INFO] [valve_watch] background loop started
+2026-05-31 21:25:01,465 [INFO] [valve_watch] scheduler started
+2026-05-31 21:25:01,467 [INFO] product dedup scheduler started (03:00 daily)
+2026-05-31 21:25:01,468 [INFO] ML_TABLE root RAM cache scheduler started (interval=30m)
+INFO:     Started server process [30148]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-05-31 21:25:01,562 [INFO] filebrowser preview prewarm: warmed 13 source(s)
+2026-05-31 21:25:33,406 [INFO] backup cleanup: removed 1 old zip(s), keeping 5
+2026-05-31 21:25:33,407 [INFO] backup ok: \config\work\sharedworkspace\flow_data_20260531_212531_startup.zip (3,992,329 bytes)
+2026-05-31 21:33:55,407 [WARNING] matching_cache.read failed file=D:\TEST_Making_Video\semi_all\flow\data\Fab\step_matching.csv: IO Error: Cannot open file "D:\TEST_Making_Video\semi_all\flow\data\Fab\.matching_cache.duckdb": 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다.
+
+File is already open in 
+C:\Windows\System32\dllhost.exe (PID 924)
+2026-05-31 21:33:55,510 [WARNING] matching_cache.read failed file=D:\TEST_Making_Video\semi_all\flow\data\Fab\ppid_knob.csv: IO Error: Cannot open file "D:\TEST_Making_Video\semi_all\flow\data\Fab\.matching_cache.duckdb": 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다.
+
+File is already open in 
+C:\Windows\System32\dllhost.exe (PID 924)
+2026-05-31 21:34:17,739 [WARNING] matching_cache.read failed file=D:\TEST_Making_Video\semi_all\flow\data\Fab\step_matching.csv: IO Error: Cannot open file "D:\TEST_Making_Video\semi_all\flow\data\Fab\.matching_cache.duckdb": 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다.
+
+File is already open in 
+C:\Windows\System32\dllhost.exe (PID 924)
+2026-05-31 21:34:17,823 [WARNING] matching_cache.read failed file=D:\TEST_Making_Video\semi_all\flow\data\Fab\ppid_knob.csv: IO Error: Cannot open file "D:\TEST_Making_Video\semi_all\flow\data\Fab\.matching_cache.duckdb": 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다.
+
+File is already open in 
+C:\Windows\System32\dllhost.exe (PID 924)

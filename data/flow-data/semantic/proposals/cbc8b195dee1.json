@@ -1,0 +1,16 @@
+{
+  "id": "cbc8b195dee1",
+  "term": "issue",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260528-CE3D:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-28T10:07:54.159899+00:00",
+  "updated_at": "2026-05-28T10:07:54.159899+00:00",
+  "decided_by": null
+}

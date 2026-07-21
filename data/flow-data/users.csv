@@ -1,0 +1,9 @@
+username,password_hash,role,status,created,tabs,email,name
+hol,pbkdf2$sha256$200000$16de1cd45a982ce8e9c92c21f71c2796$adbcfb54ccd4f5d93c9fb399657041e8afaddcdced20e97da1b88044d7b8e7d4,admin,approved,2026-04-18T22:27:39.850610,__all__,,Admin
+man1,pbkdf2$sha256$200000$fe6aa0c6014b16769a94a50080da5386$9fe26a5a3aa63e6ce9ef1ddbf5406646f626ad7b32acab8b47d0025c4152ee53,user,approved,2026-04-29T22:08:34.201188,"filebrowser,dashboard,splittable,calendar,meeting,inform",,1111
+hong,pbkdf2$sha256$200000$04e83d213c12e00385b29feedae92fc3$95686268e2c8d7d69d86b4816a13c685f9164fe9a8743a39e5aba1685d95bd3f,user,approved,2026-05-12T07:28:00.990878,"filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar",,홍길동
+aaa,pbkdf2$sha256$200000$3e0af18025b4999aab59915a99f04eb6$b67f5d9d1f002f00187be53a3203a778e4feacf3ef20f5076d028b29f0e1f527,user,approved,2026-05-28T07:43:33.115293,"filebrowser,dashboard,splittable,diagnosis,inform,meeting,calendar",,우
+test_fb,pbkdf2$sha256$200000$fe7e056c4efa8a9e253e2caa62debd84$b4aed11368aa83c6ba7b15780dcc3d18ba7e2425716af060aaa00d3fb2aee4e0,user,approved,2026-07-06T22:28:33.490260,"filebrowser:db,splittable:view,inform:matrix,inform:audit,dashboard",,test_fb
+test_ops,pbkdf2$sha256$200000$f58645b8b171cdedba89a5da05c761f8$6e5a15d1acd968129db99c61f496a1d20da5384bbf32315237f14ea071dd5fdd,user,approved,2026-07-06T22:28:34.826306,"splittable:view,tracker",,test_ops
+test_docs,pbkdf2$sha256$200000$d254409a1c3f5d70839e6c88334b6f10$c7cac2c011c7ff11ad1e75dda0698916cd24582184d3d2a972546c744f1cbca0,user,approved,2026-07-06T22:28:35.699601,"inform,meeting",,test_docs
+claude_qa,pbkdf2$sha256$200000$d5c54b99a29e87fb0273d0b373312484$ec9ea4234a2dc5ec74b8754d1975a0d7a5a9b9662c0bc0117985a47ce21f97f1,admin,approved,2026-07-13T22:45:40,"filebrowser,dashboard,splittable,tracker,teg,inform,calendar,tablemap",claude_qa@local.test,Claude QA

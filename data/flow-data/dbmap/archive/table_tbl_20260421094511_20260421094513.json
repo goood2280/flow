@@ -1,0 +1,18 @@
+{
+  "id": "tbl_20260421094511",
+  "name": "ML_TABLE_PRODA",
+  "display_name": "",
+  "group_id": "",
+  "table_type": "data",
+  "columns": [
+    {
+      "name": "k",
+      "type": "string"
+    }
+  ],
+  "rows": [],
+  "description": "",
+  "aws_cmd": "",
+  "username": "hol",
+  "updated": "2026-04-21T09:45:11.878266"
+}

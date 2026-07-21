@@ -1,0 +1,19 @@
+{
+  "id": "handoff_20260424_144500_001",
+  "created_at": "2026-04-24T14:45:00+09:00",
+  "updated_at": "2026-04-24T15:17:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "archived",
+  "title": "Dashboard trend UX review",
+  "summary": "Claude found trend cards too noisy",
+  "context": {
+    "archive_reason": "Protocol bootstrap sample by codex before official kickoff. Superseded by handoff_v9_H7 (to be created if needed). Archived 2026-04-24 15:17 by Claude to keep inbox clean."
+  },
+  "acceptance_criteria": [],
+  "linked_files": [],
+  "verification": [],
+  "resolution": "Reviewing dashboard trend UX and palette issues for next pass (merged into H2 scope)"
+}

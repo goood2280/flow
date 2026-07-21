@@ -1,0 +1,56 @@
+{
+  "version": "v16",
+  "display_version": "v6.5",
+  "file": "step_matching.csv",
+  "artifact_type": "edm_single_file",
+  "actor": "hol",
+  "action": "edit",
+  "created_at": "2026-07-08T23:09:38",
+  "size": 3037,
+  "rows": 112,
+  "columns": 3,
+  "checksum": "sha256:8abe2c4f21a2b8b553878b9b20c98ebf64763c11d25dad0f14e0a559044376b2",
+  "source_path": "D:\\TEST_Making_Video\\semi_all\\flow\\data\\Fab\\step_matching.csv",
+  "content_file": "v16.csv",
+  "note": "timing test 0",
+  "change_summary": {
+    "label": "변경 없음",
+    "rows_delta": 0,
+    "columns_delta": 0,
+    "changed_cells": 0,
+    "added_rows": 0,
+    "deleted_rows": 0,
+    "modified_rows": 0,
+    "added_columns": [],
+    "removed_columns": [],
+    "checksum_equal": true
+  },
+  "save_diff_table": {
+    "kind": "version_diff_table",
+    "title": "직전 버전 대비 변경점",
+    "columns": [
+      "rev",
+      "changed_cols",
+      "product",
+      "step_id",
+      "function_step"
+    ],
+    "key_columns": [
+      "product",
+      "step_id"
+    ],
+    "match_strategy": "unique_key",
+    "added_columns": [],
+    "removed_columns": [],
+    "added_columns_count": 0,
+    "removed_columns_count": 0,
+    "rows": [],
+    "counts": {
+      "added": 0,
+      "deleted": 0,
+      "modified": 0,
+      "unchanged": 112
+    },
+    "truncated": false
+  }
+}

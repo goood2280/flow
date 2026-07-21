@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source_path": "C:\\Users\\goood\\AppData\\Local\\Temp\\pytest-of-goood\\pytest-395\\test_fab_lot_id_is_exposed_whe0\\ML_TABLE_STD.parquet",
+  "source_mtime": 1784422014.9944592,
+  "source_size": 1188,
+  "built_at": "2026-07-19T00:46:55+00:00",
+  "root_lot_ids": [
+    "R9100"
+  ],
+  "root_lot_id_count": 1,
+  "columns_by_prefix": {
+    "KNOB": [
+      "KNOB_ALPHA"
+    ],
+    "MASK": [],
+    "INLINE": [],
+    "VM": [],
+    "TAG": [],
+    "MGMT": []
+  },
+  "default_prefix": "KNOB"
+}

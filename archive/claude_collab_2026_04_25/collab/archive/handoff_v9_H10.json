@@ -1,0 +1,90 @@
+{
+  "id": "handoff_v9_H10",
+  "created_at": "2026-04-24T16:35:00+09:00",
+  "updated_at": "2026-04-24T17:23:04+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H10] WF Map chip_view edge 잘린 chip 빨간색 + shot 번호 체계 (1,1)=좌상단",
+  "summary": "현재 wafer 경계에 걸려 잘린 chip 이 회색 처리. 빨간색으로 바꿔 edge 영향 가시화. Shot 번호는 wafer 덮는 전체 shot grid 기준 좌상단이 (1,1).",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H10",
+    "estimated_effort": "1일",
+    "target_score_delta": "도메인 +0.1 / UX +0.05",
+    "user_request": "2026-04-24 사용자 원문: 'chip_view에서도 edge걸려서 잘린 chip도 빨간색으로 표시, shot은 WF가 다 덮히는 shot 사각형을 다채웠을때 기준으로 좌상단이 1,1'",
+    "dependencies": [],
+    "related_longterm": "L10 (WF Layout 고도화) 의 축소판. H10 은 즉시 시각화 개선, L10 은 TEG 좌표/EDS 매핑 대수술."
+  },
+  "acceptance_criteria": [
+    "chip_view 렌더러: wafer_radius - edge_exclusion 을 넘어가는 chip 은 fill=red, stroke=red-dark",
+    "기존 온전한 chip 은 기존 색상 유지",
+    "shot 번호 체계: wafer 를 덮는 가상 grid 기준 row=1 top / col=1 left, 1-indexed",
+    "(1,1) 이 wafer 의 좌상단 (실제로 wafer 밖일 수 있음)",
+    "hover 시 'Shot (r,c)' 표기",
+    "기존에 wafer 안의 shot 만 indexing 하던 로직은 is_in_wafer flag 로 분리 (UI 에 활용)"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_WaferLayout.jsx"
+  ],
+  "verification": [
+    "frontend/src/pages/My_WaferLayout.jsx 에 shotLabel helper 를 추가하고 hover title 을 Shot (r,c) 형식으로 통일",
+    "chip 계산에서 chipTouch && !chipInside 인 edge-cut chip 을 보존해 chip view 에서 red fill / dark red stroke 로 렌더하도록 변경",
+    "shot numbering 은 retained shots 전체 기준의 gridShotY/gridShotX 를 UI 표기 기본값으로 사용하고, usableShot 기반 판정은 isInWafer 플래그로 분리 유지",
+    "linked_files 경로 정정: 존재하지 않는 frontend/src/components/WaferChipView.jsx 제거",
+    "검증: cd /mnt/d/TEST_Making_Video/semi_all/flow/frontend && npm run build",
+    "결과: vite build 성공 (동적 import chunk 경고만 존재, 실패 없음)",
+    {
+      "at": "2026-04-24T17:23:04+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 6,
+      "criteria_total": 6,
+      "criteria_detail": [
+        {
+          "criterion": "chip_view 렌더러: wafer_radius - edge_exclusion 을 넘어가는 chip 은 fill=red, stroke=red-dark",
+          "ok": true,
+          "hits": 3,
+          "tokens": 8
+        },
+        {
+          "criterion": "기존 온전한 chip 은 기존 색상 유지",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "shot 번호 체계: wafer 를 덮는 가상 grid 기준 row=1 top / col=1 left, 1-indexed",
+          "ok": true,
+          "hits": 4,
+          "tokens": 7
+        },
+        {
+          "criterion": "(1,1) 이 wafer 의 좌상단 (실제로 wafer 밖일 수 있음)",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "hover 시 'Shot (r,c)' 표기",
+          "ok": true,
+          "hits": 1,
+          "tokens": 3
+        },
+        {
+          "criterion": "기존에 wafer 안의 shot 만 indexing 하던 로직은 is_in_wafer flag 로 분리 (UI 에 활용)",
+          "ok": true,
+          "hits": 2,
+          "tokens": 5
+        }
+      ]
+    }
+  ],
+  "resolution": "WF Layout 의 chip view 와 shot 라벨 체계를 H10 기준으로 정리했다. wafer usable 영역 밖이지만 wafer 와 교차하는 edge-cut chip 은 더 이상 버리지 않고 빨간색으로 표시해 edge 영향을 즉시 식별할 수 있게 했고, shot 번호는 usable shot 전용 ET numbering 과 분리해 retained full grid 기준 좌상단이 (1,1) 이 되도록 고정했다. shot rect/chip rect hover 는 모두 Shot (r,c) 형식으로 통일했으며, 실존하지 않던 WaferChipView linked_files 경로도 실제 단일 구현 파일로 교정했다."
+}

@@ -1,0 +1,1458 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260715T150747Z_6807b6f8",
+  "created_at": "2026-07-15T15:07:47.339866+00:00",
+  "source": "llm_flowi_chat",
+  "username": "tester",
+  "prompt": "PRODA FAB IOFF chart",
+  "input_prompt": "",
+  "resolved_prompt": "",
+  "status": "success",
+  "reply": "Dashboard Agent source orchestration으로 차트를 생성했습니다.\n- source: db_FAB\n- selected columns: wafer_id, IOFF\n- join: single source\n- rows: 1",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "success"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "success"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": {
+    "kind": "public_execution_trace",
+    "visible": true,
+    "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+    "activation": {
+      "prompt": "PRODA FAB IOFF chart",
+      "endpoint": "/api/llm/flowi/chat",
+      "intent": "dashboard_source_chart_runtime",
+      "feature": "dashboard",
+      "action": "flowi.general",
+      "handler_action": "dashboard.source_chart_runtime",
+      "api": "dashboard chart draft/session",
+      "handler": "_augment_dashboard_tool",
+      "status": "done",
+      "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer",
+      "payload_summary": {},
+      "next_action": "대시보드 열기",
+      "missing": [],
+      "cause": ""
+    },
+    "semantic": {
+      "intent": "archived",
+      "coverage": 0.0,
+      "slots": {
+        "prompt": "PRODA FAB IOFF chart"
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ],
+      "candidate_count": 0
+    },
+    "plan": [
+      {
+        "agent_id": "agent_archived",
+        "unit_ai": "agent_runtime",
+        "action": "archived",
+        "title": "Agent Archived",
+        "policy": "blocked",
+        "endpoint": "archive/agent_reset_2026_05_26",
+        "approval_required": false
+      }
+    ],
+    "unit_ai_selection": [
+      {
+        "key": "agent_runtime",
+        "title": "agent_runtime.archived",
+        "status": "blocked",
+        "reason": "blocked"
+      }
+    ],
+    "guardrail": {
+      "status": "archived",
+      "blocked": true,
+      "approval_required": false,
+      "reason": "agent_runtime_archived",
+      "plan_count": 1,
+      "tool_blocked": false,
+      "tool_requires_confirmation": false,
+      "selected_feature": "dashboard",
+      "selected_action": "dashboard.source_chart_runtime"
+    },
+    "interpretation": {
+      "input_slots": {
+        "product": "",
+        "lot": "",
+        "wafer": "",
+        "step": "",
+        "item": "",
+        "semantic_term": "",
+        "agg": "",
+        "meeting": "",
+        "session": "",
+        "source_candidates": [
+          "db_FAB"
+        ]
+      },
+      "missing_slots": [],
+      "filled_slots": {},
+      "knowledge_terms": [
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "term": "PRODA",
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        }
+      ],
+      "term_resolution": []
+    },
+    "evidence": {
+      "used_feature_ai": "dashboard",
+      "endpoint": "dashboard chart draft/session",
+      "payload_summary": {},
+      "filters": {},
+      "sql": "",
+      "selected_columns": [
+        "wafer_id",
+        "IOFF"
+      ],
+      "source_ids": [
+        "db_FAB"
+      ],
+      "relation_ids": [],
+      "join_keys": [],
+      "join_plan": {
+        "single_source": true,
+        "blocked": false,
+        "relation_ids": [],
+        "join_keys": []
+      },
+      "query_plan": {},
+      "sql_plan": "SELECT wafer_id, IOFF",
+      "impact_context": {},
+      "chart_config": {
+        "x": "wafer_id",
+        "y": "IOFF",
+        "color": "lot_id",
+        "agg": "raw",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "scatter",
+        "source_evidence": {
+          "source_ids": [
+            "db_FAB"
+          ],
+          "relation_ids": [],
+          "join_keys": [],
+          "selected_columns": [
+            "wafer_id",
+            "IOFF"
+          ]
+        },
+        "metric": "LKG",
+        "item_id": "LKG",
+        "title": "PRODA LKG 산점도"
+      },
+      "meeting_sources": [],
+      "knowledge_sources": [
+        {
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "term": "PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        }
+      ],
+      "table_total": 1,
+      "api_calls": [
+        {
+          "stage": "ingress",
+          "method": "POST",
+          "path": "/api/llm/flowi/chat",
+          "callee": "flowi_chat",
+          "status": "done",
+          "output": "request accepted"
+        },
+        {
+          "stage": "orchestrator",
+          "method": "internal",
+          "path": "backend/routers/llm.py",
+          "callee": "_run_flowi_chat",
+          "status": "done",
+          "output": "workflow=ready"
+        },
+        {
+          "stage": "knowledge",
+          "method": "internal",
+          "path": "data/flow-data/knowledge + schema_relations.json",
+          "callee": "core.knowledge_vault.lookup_term",
+          "status": "done",
+          "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id"
+        },
+        {
+          "stage": "feature_api",
+          "method": "internal",
+          "path": "dashboard chart draft/session",
+          "callee": "_augment_dashboard_tool",
+          "status": "done",
+          "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer"
+        },
+        {
+          "stage": "response",
+          "method": "internal",
+          "path": "Flow-i response payload",
+          "callee": "_attach_flowi_trace",
+          "status": "done",
+          "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer"
+        }
+      ]
+    },
+    "validation": {
+      "rows": 1,
+      "chart_readiness": "ready",
+      "source_count": 1,
+      "warnings": [],
+      "fallback": false,
+      "llm_used": false,
+      "llm_error": ""
+    },
+    "persona_snapshot": {
+      "label": "반도체 공정 데이터 분석가",
+      "role": "semiconductor_process_data_analyst",
+      "prompt_source": "default",
+      "system_prompt_chars": 1681,
+      "must_not_chars": 379,
+      "principle_count": 3,
+      "public_note": "내부 사고과정이 아니라 현재 적용된 persona/system prompt cache의 공개 요약입니다."
+    },
+    "prompt_cache": {
+      "allowed_features": [
+        "calendar",
+        "dashboard",
+        "devguide",
+        "diagnosis",
+        "filebrowser",
+        "inform",
+        "meeting",
+        "splittable",
+        "tablemap",
+        "tracker"
+      ],
+      "feature_entrypoint_count": 10,
+      "feature_docs": [],
+      "few_shot_count": 17,
+      "workflow_catalog_count": 54,
+      "promoted_knowledge_count": 0,
+      "cache_scope": "feature docs, workflow catalog, few-shot examples, promoted knowledge summaries"
+    },
+    "workflow_matches": [
+      {
+        "id": "wf_source_trend_chart_generic",
+        "title": "ET/FAB/VM 등 source별 trend 차트",
+        "category": "chart",
+        "unit_ai": "dashboard_agent",
+        "action": "plot_source_metric_trend",
+        "score": 7.402,
+        "source_roles": [
+          "inline_db",
+          "et_db",
+          "fab_db",
+          "vm_db",
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "source_type",
+            "type": "source",
+            "required": true,
+            "example": "ET"
+          },
+          {
+            "name": "metric_name",
+            "type": "item",
+            "required": true
+          }
+        ],
+        "examples": [
+          "ET VTH trend 그려줘",
+          "{source_type} {item_id} trend 그려줘",
+          "{source_type} {metric_name} 추이 보여줘",
+          "FAB step progress trend chart",
+          "VM VMIN 추이 보여줘"
+        ],
+        "question_template": "{source_type} {item_id} trend 그려줘",
+        "steps": [
+          "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+          "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+          "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+        ],
+        "orchestration": [
+          "semantic source catalog에서 source_type에 맞는 source를 고른다.",
+          "기본 시간 컬럼과 metric 컬럼을 확인한다.",
+          "source grain에 맞는 기본 집계로 trend chart를 구성한다."
+        ]
+      },
+      {
+        "id": "wf_fab_current_location",
+        "title": "Wafer 현재 FAB 위치 조회",
+        "category": "fab",
+        "unit_ai": "fab_reference",
+        "action": "query_current_location",
+        "score": 7.008,
+        "source_roles": [
+          "fab_db",
+          "step_matching"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "wafer_id",
+            "type": "wafer",
+            "required": true,
+            "example": "#3"
+          }
+        ],
+        "examples": [
+          "A1001 #3 지금 어디에 있어?",
+          "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+          "{root_lot_id} wafer {wafer_id} current location",
+          "{root_lot_id} #{wafer_id} 현재 FAB 위치 알려줘"
+        ],
+        "question_template": "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+        "steps": [
+          "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+          "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+          "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+        ],
+        "orchestration": [
+          "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+          "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+          "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+        ]
+      },
+      {
+        "id": "wf_auto_split_mask_fab_columns",
+        "title": "MASK/FAB 컬럼 중심 Split 조회",
+        "category": "splittable",
+        "unit_ai": "splittable",
+        "action": "show_mask_fab_split_columns",
+        "score": 4.49,
+        "source_roles": [
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} MASK FAB split 컬럼만 정리해줘"
+        ],
+        "question_template": "{root_lot_id} MASK FAB split 컬럼만 정리해줘",
+        "steps": [
+          "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+          "SplitTable source와 rulebook source를 read-only로 확인한다.",
+          "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+        ],
+        "orchestration": [
+          "root_lot_id, wafer_id, knob_name 후보를 분리한다.",
+          "SplitTable source와 rulebook source를 read-only로 확인한다.",
+          "Home에 인라인 표 또는 SplitTable block으로 정리한다."
+        ]
+      },
+      {
+        "id": "wf_auto_filebrowser_latest_fab_rows",
+        "title": "FAB latest row preview",
+        "category": "filebrowser",
+        "unit_ai": "filebrowser_ai_sql",
+        "action": "preview_latest_fab_rows",
+        "score": 4.486,
+        "source_roles": [
+          "fab_db"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} latest FAB row 표로 보여줘"
+        ],
+        "question_template": "{root_lot_id} latest FAB row 표로 보여줘",
+        "steps": [
+          "요청에서 product, source, filter, selected column을 추출한다.",
+          "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+          "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+        ],
+        "orchestration": [
+          "요청에서 product, source, filter, selected column을 추출한다.",
+          "FileBrowser AI SQL read-only 계약으로 preview 또는 export를 만든다.",
+          "표와 다운로드 가능 여부를 Home 응답에 붙인다."
+        ]
+      },
+      {
+        "id": "wf_auto_chart_fab_progress_timeline",
+        "title": "FAB progress timeline",
+        "category": "chart",
+        "unit_ai": "dashboard_agent",
+        "action": "plot_fab_progress_timeline",
+        "score": 4.479,
+        "source_roles": [
+          "fab_db"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} fab progress timeline 차트"
+        ],
+        "question_template": "{root_lot_id} fab progress timeline 차트",
+        "steps": [
+          "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+          "Dashboard Agent가 chart_result shape로 검증한다.",
+          "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+        ],
+        "orchestration": [
+          "축/그룹/집계 후보를 semantic layer에서 정리한다.",
+          "Dashboard Agent가 chart_result shape로 검증한다.",
+          "Home에서 Plotly chart와 raw data export 경로를 함께 보여준다."
+        ]
+      }
+    ],
+    "subagent_context": {
+      "feature_subagent": "dashboard",
+      "intent": "dashboard_source_chart_runtime",
+      "handler_action": "dashboard.source_chart_runtime",
+      "unit_action": "flowi.general",
+      "api_or_handler": "dashboard chart draft/session",
+      "payload_summary": {},
+      "source_profile": {},
+      "deterministic_handler": true,
+      "filters": {}
+    },
+    "clarification_loop": {
+      "status": "done",
+      "needs_input": false,
+      "question": "",
+      "missing": [],
+      "choices": [],
+      "next_unit_action": "flowi.general",
+      "pending_prompt": "PRODA FAB IOFF chart",
+      "user_answer": ""
+    },
+    "retrieved_knowledge": [
+      {
+        "id": "column:ML_TABLE_PRODA.lot_wf",
+        "title": "ML_TABLE_PRODA.lot_wf",
+        "kind": "column_catalog",
+        "summary": "lot_wf",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "lot_wf",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.root_lot_id",
+        "title": "ML_TABLE_PRODA.root_lot_id",
+        "kind": "column_catalog",
+        "summary": "root_lot_id",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "root_lot_id",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.step_id",
+        "title": "ML_TABLE_PRODA.step_id",
+        "kind": "column_catalog",
+        "summary": "step_id",
+        "term": "PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "step_id",
+        "score": null
+      }
+    ],
+    "steps": [
+      {
+        "key": "receive",
+        "stage": "receive",
+        "title": "요청 접수",
+        "label": "요청 접수",
+        "status": "done",
+        "detail": "prompt 20 chars, context 2 messages",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "auth",
+        "stage": "auth",
+        "title": "사용자/권한 확인",
+        "label": "사용자/권한 확인",
+        "status": "done",
+        "detail": "허용 기능 10개",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "route",
+        "stage": "route",
+        "title": "의도/단위기능 선택",
+        "label": "의도/단위기능 선택",
+        "status": "done",
+        "detail": "intent=dashboard_source_chart_runtime, action=dashboard.source_chart_runtime",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "knowledge",
+        "stage": "knowledge",
+        "title": "Agent Wiki 검색",
+        "label": "Agent Wiki 검색",
+        "status": "done",
+        "detail": "column:ML_TABLE_PRODA.lot_wf(PRODA), column:ML_TABLE_PRODA.root_lot_id(PRODA), column:ML_TABLE_PRODA.step_id(PRODA)",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "guardrail",
+        "stage": "guardrail",
+        "title": "권한/쓰기 보호",
+        "label": "권한/쓰기 보호",
+        "status": "done",
+        "detail": "허용된 단위기능 범위에서 진행",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "tool",
+        "stage": "tool",
+        "title": "DB/cache/tool 실행",
+        "label": "DB/cache/tool 실행",
+        "status": "done",
+        "detail": "table dashboard_source_chart_rows rows=1, chart dashboard_scatter, knowledge=column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "llm",
+        "stage": "llm",
+        "title": "LLM 답변 정리",
+        "label": "LLM 답변 정리",
+        "status": "skipped",
+        "detail": "로컬 단위기능 결과를 그대로 사용",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      },
+      {
+        "key": "render",
+        "stage": "render",
+        "title": "화면 출력 준비",
+        "label": "화면 출력 준비",
+        "status": "done",
+        "detail": "table dashboard_source_chart_rows rows=1, chart dashboard_scatter, knowledge=column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-15T15:07:47.255865+00:00"
+      }
+    ],
+    "api_calls": [
+      {
+        "stage": "ingress",
+        "feature": "llm",
+        "action": "flowi_chat",
+        "name": "Flow-i FastAPI endpoint",
+        "method": "POST",
+        "path": "/api/llm/flowi/chat",
+        "callee": "flowi_chat",
+        "purpose": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+        "payload": {
+          "prompt_chars": 20,
+          "allowed_features": 10
+        },
+        "output": "request accepted",
+        "status": "done"
+      },
+      {
+        "stage": "orchestrator",
+        "feature": "flowi",
+        "action": "dashboard.source_chart_runtime",
+        "name": "Flow-i orchestrator",
+        "method": "internal",
+        "path": "backend/routers/llm.py",
+        "callee": "_run_flowi_chat",
+        "purpose": "권한, slot, intent, feature handler, LLM polish 여부를 결정",
+        "payload": {
+          "intent": "dashboard_source_chart_runtime",
+          "feature": "dashboard",
+          "missing": []
+        },
+        "output": "workflow=ready",
+        "status": "done"
+      },
+      {
+        "stage": "knowledge",
+        "feature": "knowledge",
+        "action": "lookup_term",
+        "name": "Agent Wiki / schema lookup",
+        "method": "internal",
+        "path": "data/flow-data/knowledge + schema_relations.json",
+        "callee": "core.knowledge_vault.lookup_term",
+        "purpose": "질문 용어를 Agent Wiki schema_doc, column_catalog, promoted knowledge와 대조",
+        "payload": {
+          "terms": [
+            "PRODA"
+          ]
+        },
+        "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+        "status": "done"
+      },
+      {
+        "stage": "feature_api",
+        "feature": "dashboard",
+        "action": "dashboard.source_chart_runtime",
+        "name": "Dashboard chart draft",
+        "method": "internal",
+        "path": "dashboard chart draft/session",
+        "callee": "_augment_dashboard_tool",
+        "purpose": "차트 draft/config를 만들고 Home inline preview용 data/session을 구성",
+        "payload": {
+          "chart_type": "scatter",
+          "chart_session_id": "b0dda36422414d0b8baa7eae346665b9",
+          "config": {
+            "x": "wafer_id",
+            "y": "IOFF",
+            "color": "lot_id",
+            "agg": "raw",
+            "product": "PRODA",
+            "color_by": "none",
+            "group_by": "",
+            "fit": "none",
+            "stats_columns": [
+              "count",
+              "median",
+              "avg",
+              "std"
+            ],
+            "font_size": 14,
+            "axis_label_size": 12,
+            "legend": true,
+            "theme": "dark",
+            "chart_type": "scatter",
+            "source_evidence": {
+              "source_ids": [
+                "db_FAB"
+              ],
+              "relation_ids": [],
+              "join_keys": [],
+              "selected_columns": [
+                "wafer_id",
+                "IOFF"
+              ]
+            },
+            "metric": "LKG",
+            "item_id": "LKG",
+            "title": "PRODA LKG 산점도"
+          }
+        },
+        "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer",
+        "status": "done"
+      },
+      {
+        "stage": "response",
+        "feature": "flowi",
+        "action": "render_response",
+        "name": "Answer composer",
+        "method": "internal",
+        "path": "Flow-i response payload",
+        "callee": "_attach_flowi_trace",
+        "purpose": "tool result, clarification, next actions, trace를 화면 응답으로 패키징",
+        "payload": {
+          "llm_used": false
+        },
+        "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer",
+        "status": "done"
+      }
+    ],
+    "call_graph": {
+      "nodes": [
+        {
+          "id": "prompt",
+          "type": "input",
+          "title": "Prompt 전달",
+          "detail": "PRODA FAB IOFF chart",
+          "status": "done"
+        },
+        {
+          "id": "fastapi",
+          "type": "fastapi",
+          "title": "/api/llm/flowi/chat",
+          "detail": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+          "status": "done"
+        },
+        {
+          "id": "orchestrator",
+          "type": "orchestrator",
+          "title": "오케스트레이터 판단",
+          "detail": "intent=dashboard_source_chart_runtime, action=dashboard.source_chart_runtime",
+          "status": "done"
+        },
+        {
+          "id": "guardrail",
+          "type": "guardrail",
+          "title": "Schema / permission check",
+          "detail": "필수 slot, 권한, 저장 전 확인 상태 검증",
+          "status": "done"
+        },
+        {
+          "id": "knowledge",
+          "type": "knowledge",
+          "title": "Agent Wiki / Schema",
+          "detail": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id",
+          "status": "done"
+        },
+        {
+          "id": "feature",
+          "type": "feature_subagent",
+          "title": "dashboard subagent",
+          "detail": "dashboard.source_chart_runtime",
+          "status": "done"
+        },
+        {
+          "id": "api_1",
+          "type": "api_call",
+          "title": "Dashboard chart draft",
+          "detail": "dashboard chart draft/session",
+          "status": "done"
+        },
+        {
+          "id": "result",
+          "type": "result",
+          "title": "Tool result",
+          "detail": "dashboard_source_chart_rows 1 rows, IOFF by wafer",
+          "status": "done"
+        },
+        {
+          "id": "answer",
+          "type": "answer",
+          "title": "Answer payload",
+          "detail": "answer, table/chart, clarification, next_actions를 반환",
+          "status": "done"
+        }
+      ],
+      "edges": [
+        {
+          "source": "prompt",
+          "target": "fastapi",
+          "label": "POST"
+        },
+        {
+          "source": "fastapi",
+          "target": "orchestrator",
+          "label": "request"
+        },
+        {
+          "source": "orchestrator",
+          "target": "guardrail",
+          "label": "validate"
+        },
+        {
+          "source": "guardrail",
+          "target": "knowledge",
+          "label": "lookup"
+        },
+        {
+          "source": "knowledge",
+          "target": "feature",
+          "label": "dispatch"
+        },
+        {
+          "source": "feature",
+          "target": "api_1",
+          "label": "internal"
+        },
+        {
+          "source": "api_1",
+          "target": "result",
+          "label": "return"
+        },
+        {
+          "source": "result",
+          "target": "answer",
+          "label": "compose"
+        }
+      ],
+      "layout": "linear_dag",
+      "activation": {
+        "prompt": "PRODA FAB IOFF chart",
+        "endpoint": "/api/llm/flowi/chat",
+        "intent": "dashboard_source_chart_runtime",
+        "feature": "dashboard",
+        "action": "flowi.general",
+        "handler_action": "dashboard.source_chart_runtime",
+        "api": "dashboard chart draft/session",
+        "handler": "_augment_dashboard_tool",
+        "status": "done",
+        "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer",
+        "payload_summary": {},
+        "next_action": "대시보드 열기",
+        "missing": [],
+        "cause": ""
+      }
+    }
+  },
+  "action_log": {
+    "summary": [
+      "선택한 intent/action은 dashboard_source_chart_runtime / flowi.general이며 dashboard 기능으로 처리했습니다.",
+      "사용 근거는 Wiki/schema 3건(column:ML_TABLE_PRODA.lot_wf, ML_TABLE_PRODA, column:ML_TABLE_PRODA.root_lot_id)입니다.",
+      "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+      "실행 경로는 Dashboard chart draft입니다.",
+      "검증 결과: 결과 1건, chart ready."
+    ],
+    "timeline": [
+      {
+        "stage": "semantic_layer",
+        "title": "질문 해석",
+        "detail": "intent=archived, coverage=0.0, slots=prompt",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "db_FAB"
+        ],
+        "api_refs": [
+          {
+            "stage": "ingress",
+            "name": "Flow-i FastAPI endpoint",
+            "method": "POST",
+            "path": "/api/llm/flowi/chat",
+            "callee": "flowi_chat",
+            "status": "done",
+            "output": "request accepted"
+          },
+          {
+            "stage": "knowledge",
+            "name": "Agent Wiki / schema lookup",
+            "method": "internal",
+            "path": "data/flow-data/knowledge + schema_relations.json",
+            "callee": "core.knowledge_vault.lookup_term",
+            "status": "done",
+            "output": "column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.step_id"
+          }
+        ]
+      },
+      {
+        "stage": "task_planner",
+        "title": "실행 계획",
+        "detail": "agent_runtime",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "db_FAB"
+        ],
+        "api_refs": [
+          {
+            "stage": "orchestrator",
+            "name": "Flow-i orchestrator",
+            "method": "internal",
+            "path": "backend/routers/llm.py",
+            "callee": "_run_flowi_chat",
+            "status": "done",
+            "output": "workflow=ready"
+          }
+        ]
+      },
+      {
+        "stage": "unit_agents",
+        "title": "단위 기능 실행",
+        "detail": "Dashboard chart draft",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "db_FAB"
+        ],
+        "api_refs": [
+          {
+            "stage": "feature_api",
+            "name": "Dashboard chart draft",
+            "method": "internal",
+            "path": "dashboard chart draft/session",
+            "callee": "_augment_dashboard_tool",
+            "status": "done",
+            "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer"
+          }
+        ]
+      },
+      {
+        "stage": "conclusion",
+        "title": "결과 검증과 답변",
+        "detail": "rows=1, answer_chars=134",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.lot_wf",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "column:ML_TABLE_PRODA.step_id",
+          "db_FAB"
+        ],
+        "api_refs": [
+          {
+            "stage": "response",
+            "name": "Answer composer",
+            "method": "internal",
+            "path": "Flow-i response payload",
+            "callee": "_attach_flowi_trace",
+            "status": "done",
+            "output": "dashboard_source_chart_rows 1 rows, IOFF by wafer"
+          }
+        ]
+      }
+    ],
+    "final_answer": "Dashboard Agent source orchestration으로 차트를 생성했습니다.\n- source: db_FAB\n- selected columns: wafer_id, IOFF\n- join: single source\n- rows: 1",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "intent": "dashboard_source_chart_runtime",
+    "answer": "Dashboard Agent source orchestration으로 차트를 생성했습니다.\n- source: db_FAB\n- selected columns: wafer_id, IOFF\n- join: single source\n- rows: 1",
+    "inline_summary": "IOFF by wafer",
+    "chart_result": {
+      "ok": true,
+      "kind": "dashboard_scatter",
+      "chart_type": "scatter",
+      "title": "IOFF by wafer",
+      "points": [
+        {
+          "x": 1,
+          "y": 0.12
+        }
+      ],
+      "total": 1,
+      "config": {
+        "x": "wafer_id",
+        "y": "IOFF",
+        "color": "lot_id",
+        "agg": "raw",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "scatter",
+        "source_evidence": {
+          "source_ids": [
+            "db_FAB"
+          ],
+          "relation_ids": [],
+          "join_keys": [],
+          "selected_columns": [
+            "wafer_id",
+            "IOFF"
+          ]
+        },
+        "metric": "LKG",
+        "item_id": "LKG",
+        "title": "PRODA LKG 산점도"
+      },
+      "chart_config": {
+        "x": "wafer_id",
+        "y": "IOFF",
+        "color": "lot_id",
+        "agg": "raw",
+        "product": "PRODA",
+        "color_by": "none",
+        "group_by": "",
+        "fit": "none",
+        "stats_columns": [
+          "count",
+          "median",
+          "avg",
+          "std"
+        ],
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": true,
+        "theme": "dark",
+        "chart_type": "scatter",
+        "source_evidence": {
+          "source_ids": [
+            "db_FAB"
+          ],
+          "relation_ids": [],
+          "join_keys": [],
+          "selected_columns": [
+            "wafer_id",
+            "IOFF"
+          ]
+        },
+        "metric": "LKG",
+        "item_id": "LKG",
+        "title": "PRODA LKG 산점도"
+      },
+      "retrieved_knowledge": [],
+      "fit_params": {},
+      "stats_table": [
+        {
+          "count": 1,
+          "median": 0.12,
+          "avg": 0.12,
+          "std": 0.0
+        }
+      ],
+      "chart_session_id": "b0dda36422414d0b8baa7eae346665b9"
+    },
+    "type": "chart",
+    "warnings": [],
+    "selected_columns": [
+      "wafer_id",
+      "IOFF"
+    ],
+    "action": "dashboard.source_chart_runtime",
+    "feature": "dashboard",
+    "table": {
+      "kind": "dashboard_source_chart_rows",
+      "title": "Dashboard source rows",
+      "placement": "below",
+      "columns": [
+        {
+          "key": "wafer_id",
+          "label": "WAFER_ID"
+        },
+        {
+          "key": "IOFF",
+          "label": "IOFF"
+        }
+      ],
+      "rows": [
+        {
+          "wafer_id": 1,
+          "IOFF": 0.12
+        }
+      ],
+      "total": 1,
+      "headers": [
+        "WAFER_ID",
+        "IOFF"
+      ],
+      "max_height": 320,
+      "overflow_x": true
+    }
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA FAB IOFF chart",
+        "source": "llm_flowi_chat"
+      },
+      "output_summary": {
+        "chars": 20
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "PRODA FAB IOFF chart"
+      },
+      "output_summary": {
+        "semantic": {
+          "intent": "archived",
+          "coverage": 0.0,
+          "slots": {
+            "prompt": "PRODA FAB IOFF chart"
+          },
+          "warnings": [
+            "agent_runtime_archived"
+          ],
+          "candidate_count": 0
+        },
+        "interpretation": {
+          "input_slots": {
+            "product": "",
+            "lot": "",
+            "wafer": "",
+            "step": "",
+            "item": "",
+            "semantic_term": "",
+            "agg": "",
+            "meeting": "",
+            "session": "",
+            "source_candidates": [
+              "db_FAB"
+            ]
+          },
+          "missing_slots": [],
+          "filled_slots": {},
+          "knowledge_terms": [
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.lot_wf",
+              "title": "ML_TABLE_PRODA.lot_wf",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "lot_wf"
+            },
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.root_lot_id",
+              "title": "ML_TABLE_PRODA.root_lot_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "root_lot_id"
+            },
+            {
+              "term": "PRODA",
+              "id": "column:ML_TABLE_PRODA.step_id",
+              "title": "ML_TABLE_PRODA.step_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "step_id"
+            }
+          ],
+          "term_resolution": []
+        },
+        "signals": {}
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ]
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "success",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "",
+        "plan": [
+          {
+            "agent_id": "agent_archived",
+            "unit_ai": "agent_runtime",
+            "action": "archived",
+            "title": "Agent Archived",
+            "policy": "blocked",
+            "endpoint": "archive/agent_reset_2026_05_26",
+            "approval_required": false
+          }
+        ],
+        "unit_ai_selection": [
+          {
+            "key": "agent_runtime",
+            "title": "agent_runtime.archived",
+            "status": "blocked",
+            "reason": "blocked"
+          }
+        ],
+        "tool": {
+          "feature": "dashboard",
+          "action": "dashboard.source_chart_runtime",
+          "intent": "dashboard_source_chart_runtime",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "success",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "Dashboard Agent source orchestration으로 차트를 생성했습니다. - source: db_FAB - selected columns: wafer_id, IOFF - join: single source - rows: 1",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": [
+          "선택한 intent/action은 dashboard_source_chart_runtime / flowi.general이며 dashboard 기능으로 처리했습니다.",
+          "사용 근거는 Wiki/schema 3건(column:ML_TABLE_PRODA.lot_wf, ML_TABLE_PRODA, column:ML_TABLE_PRODA.root_lot_id)입니다.",
+          "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+          "실행 경로는 Dashboard chart draft입니다.",
+          "검증 결과: 결과 1건, chart ready."
+        ]
+      },
+      "warnings": [],
+      "preview": {
+        "kind": "dashboard_source_chart_rows",
+        "title": "Dashboard source rows",
+        "columns": [
+          "{'key': 'wafer_id', 'label': 'WAFER_ID'}",
+          "{'key': 'IOFF', 'label': 'IOFF'}"
+        ],
+        "rows": [
+          {
+            "wafer_id": 1,
+            "IOFF": 0.12
+          }
+        ],
+        "total": 1
+      }
+    }
+  },
+  "warnings": []
+}

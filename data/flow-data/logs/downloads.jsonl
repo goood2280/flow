@@ -1,0 +1,6 @@
+﻿{"username": "hol", "product": "1.RAWDATA_DB_FAB/PRODA", "sql": "", "rows": 13500, "cols": 16, "select_cols": "", "size_mb": 2.1, "timestamp": "2026-04-30T08:07:00.692240"}
+{"username": "hol", "product": "1.RAWDATA_DB_FAB/PRODA", "sql": "", "rows": 13500, "cols": 3, "select_cols": "root_lot_id,lot_id,fab_lot_id", "size_mb": 0.32, "timestamp": "2026-04-30T08:07:17.221871"}
+{"username": "hol", "product": "ML_TABLE_PRODB.parquet", "sql": "", "rows": 3725, "cols": 148, "select_cols": "", "size_mb": 4.96, "timestamp": "2026-05-05T07:07:56.865681"}
+{"source": "reformatize", "username": "claude_qa", "product": "PRODA", "sql": "lot_filter=A1001", "rows": 2745, "cols": 21, "select_cols": "PRODA_reformatter.csv", "size_mb": 0.61, "timestamp": "2026-07-17T18:53:04.787364"}
+{"source": "reformatize_test", "username": "claude_qa", "product": "PRODA", "sql": "lot_filter=A1001", "rows": 2745, "cols": 17, "select_cols": "VTH_SIGMA=({VTH_IDX} - avg({VTH_IDX})) / std({VTH_IDX}), RAW_VTH_X10={VTH} * 10", "size_mb": 0.43, "timestamp": "2026-07-17T19:09:06.360952"}
+{"source": "reformatize", "username": "claude_qa", "product": "PRODA", "sql": "lot_filter=A1001", "rows": 2745, "cols": 15, "select_cols": "PRODA_reformatter.csv | VTH_IDX,VTH_NORM", "size_mb": 0.38, "timestamp": "2026-07-17T23:27:30.225989"}

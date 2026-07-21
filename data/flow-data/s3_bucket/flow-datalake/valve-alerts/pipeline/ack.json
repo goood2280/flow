@@ -1,0 +1,20 @@
+{
+  "ro|VH_PRODB|CC980500|PP_X9_0500": {
+    "status": "반영완료",
+    "note": "METAL_ETCH R2 → KNOB_M2",
+    "by": "hol",
+    "ts": 1783734609.6807168
+  },
+  "ro|VH_PRODA|CC970200|PP_X9_0200": {
+    "status": "반영완료",
+    "note": "10.0 CONTACT R2 → 테스트1",
+    "by": "hol",
+    "ts": 1783740495.914823
+  },
+  "um|VH_PRODA|XX777700": {
+    "status": "반영불필요",
+    "note": "",
+    "by": "hol",
+    "ts": 1783742081.0424774
+  }
+}

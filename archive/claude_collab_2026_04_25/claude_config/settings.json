@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "description": "FabCanvas.ai Claude Code harness — follows OmniHarness structure. Hooks push live activity to the OmniHarness viewer (OMNIHARNESS_URL, defaults to :8082).",
+  "env": {
+    "OMNIHARNESS_URL": "http://localhost:8082"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python D:/TEST_Making_Video/semi_all/OmniHarness/scripts/hook_to_omniharness.py pre"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python D:/TEST_Making_Video/semi_all/OmniHarness/scripts/hook_to_omniharness.py post"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Bash|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python D:/TEST_Making_Video/semi_all/OmniHarness/scripts/hook_to_omniharness.py tool"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python D:/TEST_Making_Video/semi_all/OmniHarness/scripts/hook_to_omniharness.py prompt"
+          }
+        ]
+      }
+    ]
+  }
+}

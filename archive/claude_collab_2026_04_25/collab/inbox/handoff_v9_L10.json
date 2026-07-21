@@ -1,0 +1,44 @@
+{
+  "id": "handoff_v9_L10",
+  "created_at": "2026-04-24T15:55:00+09:00",
+  "updated_at": "2026-04-24T15:55:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[L10] WF Layout 고도화 (Shot·TEG·Radius·EDS/ET 매핑)",
+  "summary": "wafer 위 shot-grid + TEG 배치 정의 + edge shot 시뮬레이션 + EDS↔ET 매칭 + ET Report radius 컬럼까지 고도화. 현재 My_WaferLayout.jsx 는 wafer 시각화 수준이라 엔지니어 실제 업무를 따라가지 못함.",
+  "context": {
+    "track": "longterm_v9_3plus",
+    "backlog_id": "L10",
+    "estimated_effort": "2~4 sprint (분할 필수)",
+    "target_score_delta": "도메인 +0.3 / UX +0.2",
+    "spec_doc": "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\collab\\L10_wflayout_advanced.md",
+    "dependencies": [],
+    "split_suggested": [
+      "L10.1: shot_grid 데이터 모델 + admin CRUD + shot grid overlay",
+      "L10.2: TEG 정의 + wafer 상 좌표/radius 계산 BE",
+      "L10.3: Edge shot 시뮬레이션 FE (TEG multi-select 실시간)",
+      "L10.4: EDS↔ET 매칭 + ET Report radius 컬럼"
+    ]
+  },
+  "acceptance_criteria": [
+    "shot_grid.json 스키마 + /api/waferlayout/grid CRUD (admin) 동작",
+    "/api/waferlayout/teg-positions 가 (x_mm, y_mm, radius_mm) 리턴",
+    "Edge shot 시뮬레이션: TEG 3개 선택 시 500ms 내 응답",
+    "EDS↔ET 매칭: L2 distance 로 최근접 die 찾고 wafer map 에 선 overlay",
+    "ET Report 표에 radius_mm + radius_bin 자동 컬럼 + 필터/정렬",
+    "smoke: /api/waferlayout/grid?product=PRODA 200 OK",
+    "5개 이상 product 에 shot_grid 정의 저장"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_WaferLayout.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\waferlayout.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\ettime.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\data\\config\\shot_grid",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\collab\\L10_wflayout_advanced.md"
+  ],
+  "verification": [],
+  "resolution": ""
+}

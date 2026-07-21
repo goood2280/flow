@@ -1,0 +1,1 @@
+{"text":"[XLSX/CSV 다운로드 컬러링 + 자연 정렬] (1) SplitTable XLSX 다운로드 시 각 셀을 UI 와 동일하게 unique-value 별 컬러링 (동일 값=같은 색, prefix 색 계열). (2) Parameter 행들을 접미사 숫자 기준 자연 정렬 — 예: 'KNOB_12.0_ASV_...' 같이 prefix + 숫자 포함 이름에서 숫자를 파싱해 12.0 < 13.0 순으로 정렬. KNOB/MASK/INLINE/VM/FAB 전부 적용.","from":"user"}

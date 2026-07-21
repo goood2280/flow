@@ -1,0 +1,16 @@
+{
+  "id": "grp_rulebook_config",
+  "name": "Rulebook / Config",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "columns": [],
+  "description": "KNOB rulebook, ET reformatter, mask/process setting 등 엔지니어 정의 규칙 테이블",
+  "tables": [
+    "tbl_knob_ppid",
+    "tbl_reformatter_et",
+    "tbl_mask"
+  ],
+  "updated": "2026-04-24T19:20:00"
+}

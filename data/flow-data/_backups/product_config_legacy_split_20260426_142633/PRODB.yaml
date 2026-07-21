@@ -1,0 +1,22 @@
+product: PRODB
+process_id: B_MAIN
+description: Product B ET sample config using Flow demo product naming
+owner: et_team
+et_key_items:
+  - VTH
+  - IDSAT
+  - IOFF
+  - RINGOSC
+perf_metric: VTH
+probe_card_watch:
+  enabled: true
+  notify_admin: true
+  items:
+    - item_id: VTH
+      alias: Vth
+      step_ids: [ETA100010]
+      step_seqs: ["1", "2"]
+      spec: both
+      lsl: 0.1
+      usl: 1.0
+      severity: warn

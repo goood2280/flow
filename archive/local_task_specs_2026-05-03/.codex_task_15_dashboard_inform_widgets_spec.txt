@@ -1,0 +1,118 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow) 대시보드(My_Dashboard.jsx) 에 "인폼로그 source" 차트 카탈로그 12종 추가. task #14 완료 후 이어서 작업.
+
+[배경 — 사용자 직언]
+"대시보드 인폼로그 여러가지 가능한 것들 만들어줘"
+- 인폼 데이터(informs.json + audit_log.json)를 source 로 한 다양한 시각화 차트.
+- 사용자가 대시보드에서 1-click 으로 추가 가능한 "차트 라이브러리" 형태.
+- 기존 대시보드 차트 시스템 (chart_type=scatter/line/bar/pie/binning/box/area/pareto/donut/treemap/wafer_map/combo/heatmap/step_knob_binning/table) 위에 얹기 — 신규 프레임워크 X.
+
+[원하는 결과 — 차트 12종 + 라이브러리 UI]
+
+A) 백엔드 — 인폼 데이터 dashboard 어댑터.
+   - 신규 GET /api/informs/dashboard-data?metric=&groupby=&period=&product=&module= →
+     응답 {points: [{x, y, series, color}], series_order: [...], meta: {...}}
+   - metric (집계 대상):
+     * count           — 인폼 row 카운트
+     * resolution_rate — completed / total 비율
+     * first_reply_h   — 첫 답글까지 시간 (hour 평균/median)
+     * mail_rate       — 메일 발송된 인폼 비율
+     * attach_rate     — 첨부 있는 인폼 비율
+     * pending_age     — 미해결 인폼의 경과 시간 (hour)
+   - groupby (X 축 차원):
+     * module / product / root_lot / fab_lot / author / status / date_day / date_week / date_month / hour_of_day / day_of_week
+   - period: all (default) / 7d / 30d / 90d (사용자 직언 5차 — 기본 전체).
+   - product / module: 추가 필터 (옵션).
+   - in-memory cache TTL 60s (dashboard 재로드시 부담 줄이기).
+
+B) 백엔드 — dashboard chart cfg 에 source="inform" 분기 추가.
+   - dashboard.py 의 차트 렌더 분기 (L1797 부근 chart_type 분기) 위에 source 분기.
+   - cfg.source == "inform" 이면 db/parquet 대신 (A) 의 endpoint data 사용 (또는 직접 호출).
+   - 기존 source (db/file) 회귀 X.
+
+C) 프론트엔드 — 인폼 차트 카탈로그 12종 (preset 정의).
+   각 preset = {id, label, chart_type, source:"inform", metric, groupby, default_filters, color_strategy, default_size}.
+
+   1. **모듈별 인폼 카운트** (bar) — metric=count, groupby=module, 모듈 고정 색.
+   2. **일별 인폼 추이** (line) — metric=count, groupby=date_day, series=optional(module).
+   3. **제품별 인폼 분포** (donut) — metric=count, groupby=product.
+   4. **상태별 일별 분포** (stacked bar) — metric=count, groupby=date_day × status.
+   5. **랏×모듈 매트릭스 미니** (heatmap) — metric=count, x=module y=root_lot (top 20 lots).
+   6. **응답 시간 분포** (binning) — metric=first_reply_h, x=hours bucket(0-1/1-4/4-24/24-72/72+).
+   7. **처리율 추이** (line) — metric=resolution_rate, groupby=date_day.
+   8. **작성자별 인폼 top10** (pareto) — metric=count, groupby=author, top 10 desc.
+   9. **활동 heatmap** (heatmap) — metric=count, x=hour_of_day y=day_of_week.
+   10. **모듈×제품 카운트** (heatmap) — metric=count, x=module y=product.
+   11. **첨부/메일 발송률** (donut) — metric=attach_rate + mail_rate (옵션 toggle).
+   12. **오래된 미해결 인폼** (table) — pending 인폼 desc by age, columns: root_lot/fab_lot/모듈/작성자/경과시간/제목.
+
+D) 프론트엔드 — 차트 라이브러리 UI.
+   - 대시보드 페이지 상단 (또는 좌측 panel) 에 "+ 인폼 차트 추가" 버튼 신설.
+   - 클릭 → 모달 또는 drawer 로 12종 카드 grid (4 column) 표시.
+   - 각 카드: 차트 thumbnail + 라벨 + 1줄 설명 + "추가" 버튼.
+   - 추가 버튼 클릭 → 그 preset 으로 신규 차트 cfg 생성 → 대시보드 layout 의 다음 빈 자리에 삽입 → 자동 저장.
+   - 사용자가 cfg 를 수정하면 (groupby/metric/period 변경) 일반 dashboard 편집 UI 로 가능.
+   - 기존 dashboard 차트 추가 흐름 (db/file source) 도 그대로 유지 — 두 흐름 공존.
+
+E) 프론트엔드 — 인폼 차트 렌더 분기.
+   - 기존 dashboard 차트 컴포넌트가 cfg.source 를 보고 source==="inform" 이면 /api/informs/dashboard-data 호출.
+   - 응답 shape 호환 (points/series). 모듈 색은 moduleColor() 함수 적용.
+   - 차트 헤더에 source 배지 ("📋 인폼") 작게 표시 — 일반 dashboard 차트와 구분.
+
+[코드 reference]
+- backend/routers/dashboard.py — chart cfg 분기 (L1797), 차트 렌더 (L2189 bar / L2082 cross table / L2227 trend 등)
+- backend/routers/informs.py — 인폼 데이터 source
+- frontend/src/pages/My_Dashboard.jsx (2803줄)
+- scripts/seed_power_dashboard.py — seed pattern 참고
+- backend/routers/informs.py 의 /lot-matrix / /audit-log / /modules/summary 등 기존 집계 endpoint 일부 재사용 가능
+
+[작업 순서]
+
+A) Backend
+   1. /api/informs/dashboard-data 신규 — metric × groupby × period 매트릭스 처리.
+   2. 6 개 metric 함수 (count/resolution_rate/first_reply_h/mail_rate/attach_rate/pending_age) 구현.
+   3. 11 개 groupby 함수 구현 (module/product/root_lot/fab_lot/author/status/date_day/date_week/date_month/hour_of_day/day_of_week).
+   4. dashboard.py 의 차트 렌더 분기 위에 cfg.source=="inform" 분기 추가.
+   5. in-memory cache (TTL 60s).
+   6. tests/inform/test_inform_dashboard_data.py 신규: 12 metric×groupby 조합 응답 정확.
+
+B) Frontend
+   1. INFORM_CHART_PRESETS 상수 12개 정의 (preset 별 cfg).
+   2. "+ 인폼 차트 추가" 버튼 + 모달 grid (4 column).
+   3. 카드 추가 → dashboard cfg 에 push → 자동 저장 + 렌더.
+   4. 기존 차트 컴포넌트가 cfg.source==="inform" 이면 /informs/dashboard-data 호출.
+   5. 인폼 차트 헤더에 "📋 인폼" 배지.
+
+C) 회귀 (반드시 유지)
+   - task #1~14 모두 회귀 X.
+   - 기존 dashboard db/file source 차트 동작 그대로.
+   - dashboard 멀티 Y, 시리즈별 색상 (v8.8.13) 유지.
+   - 인폼 페이지 / 매트릭스 / 로그 / wizard 변경 X (이번 task 는 dashboard 만).
+
+D) 빌드
+   - python3 _build_setup.py 재빌드
+   - npm --prefix frontend run build
+
+E) 테스트
+   - 위 신규 테스트 + 기존 회귀.
+   - smoke (scripts/smoke_test.py) 통과.
+
+[제약]
+- 페이지 신설 X — My_Dashboard.jsx + dashboard.py 안에서 보강.
+- backend endpoint 신규 OK (informs/dashboard-data 만), 시그니처 호환.
+- admin_settings.json 절대 수정 X, 내용 출력 X.
+- git add/commit/push 절대 X.
+- task #1~14 회귀 X.
+
+[완료 기준]
+- /api/informs/dashboard-data 6 metric × 11 groupby 조합 정상 응답.
+- dashboard 에 "+ 인폼 차트 추가" 버튼 + 12종 preset 카드 라이브러리.
+- 카드 클릭으로 차트 추가 → cfg 저장 → 즉시 렌더.
+- cfg.source="inform" 차트가 dashboard 일반 편집 UI 와 호환.
+- 인폼 차트 헤더에 "📋 인폼" 배지.
+- frontend build + setup.py 재빌드 통과.
+- 신규 테스트 + 기존 회귀 통과.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약.
+
+[CHAIN — 차단 (메인 codex 한도 보호)]
+사용자 codex weekly limit 임계로 인해 task #16~18 은 spark codex 가 처리합니다.
+이 task #15 만 마무리한 후 추가 task 진입 X. DISCORD_SUMMARY 출력 후 종료.

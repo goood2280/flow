@@ -1,0 +1,18 @@
+{
+  "id": "tbl_20260421094508",
+  "name": "INLINE_agg",
+  "display_name": "",
+  "group_id": "",
+  "table_type": "data",
+  "columns": [
+    {
+      "name": "k",
+      "type": "string"
+    }
+  ],
+  "rows": [],
+  "description": "",
+  "aws_cmd": "",
+  "username": "hol",
+  "updated": "2026-04-21T09:45:08.878145"
+}

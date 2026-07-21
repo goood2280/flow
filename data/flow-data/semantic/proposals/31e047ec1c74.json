@@ -1,0 +1,16 @@
+{
+  "id": "31e047ec1c74",
+  "term": "alert",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260703-EDBF:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-03T04:31:05.780184+00:00",
+  "updated_at": "2026-07-03T04:31:05.780184+00:00",
+  "decided_by": null
+}

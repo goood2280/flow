@@ -1,0 +1,106 @@
+{
+  "version": "1.0",
+  "generated_by": "flow",
+  "purpose": "flow to valve bridge contract",
+  "products": [
+    {
+      "product": "PRODA",
+      "query_contract": {
+        "sources": [
+          {
+            "source": "FAB",
+            "table": "RAW_FAB_DATA",
+            "params_template": {
+              "product_code": {
+                "op": "eq",
+                "value": "PRODA"
+              }
+            },
+            "custom_col": [
+              "lot_id",
+              "wafer_id",
+              "root_lot_id",
+              "step_id",
+              "tkin_time",
+              "tkout_time",
+              "eqp",
+              "item_id",
+              "value"
+            ],
+            "shard_hierarchy": []
+          },
+          {
+            "source": "ET",
+            "table": "RAW_ET_DATA",
+            "params_template": {
+              "product_code": {
+                "op": "eq",
+                "value": "PRODA"
+              }
+            },
+            "custom_col": [
+              "root_lot_id",
+              "fab_lot_id",
+              "wafer_id",
+              "step_id",
+              "step_seq",
+              "item_id",
+              "shot_x",
+              "shot_y",
+              "tkin_time",
+              "tkout_time",
+              "value"
+            ],
+            "shard_hierarchy": [
+              "root_lot_id",
+              "item_id"
+            ]
+          }
+        ]
+      },
+      "process_registry": {
+        "process_id": [
+          "P1"
+        ],
+        "line_id": [
+          "L1"
+        ],
+        "product_code": "PRODA"
+      },
+      "reformatter_exports": {
+        "ET": [
+          {
+            "report_variant": "default_internal_all_pt",
+            "point_mode": "all_pt",
+            "report_audience": "internal",
+            "rawitem_ids": [
+              "Rc",
+              "Vth_n",
+              "Vth_p"
+            ],
+            "aliases": [
+              "Rc_abs",
+              "Vth_n_abs",
+              "Vth_p_abs"
+            ],
+            "tracker_attach": true
+          },
+          {
+            "report_variant": "selected_pt_external",
+            "point_mode": "selected_pt",
+            "report_audience": "external",
+            "rawitem_ids": [
+              "Rc",
+              "Vth_n"
+            ],
+            "aliases": [
+              "M1DC",
+              "Ioff_mix"
+            ],
+            "tracker_attach": false
+          }
+        ]
+      }
+    }
+  ]
+}

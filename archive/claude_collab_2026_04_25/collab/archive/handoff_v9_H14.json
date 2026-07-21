@@ -1,0 +1,140 @@
+{
+  "id": "handoff_v9_H14",
+  "created_at": "2026-04-24T16:55:00+09:00",
+  "updated_at": "2026-04-24T17:29:03+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H14] Tracker LOT_WF 측정여부 자동 반영 + DB/base 파일 구조 확장 권한",
+  "summary": "이슈추적 Lot/Wafer 표의 '현재 step'/'ET 측정' 컬럼이 실제 값으로 자동 채워지게. 필요 시 DB 스키마·base 파일 구조 자유롭게 확장 (사용자 권한 부여). 사내 로컬 파일 세팅도 마이그레이션 스크립트로 자동 변환.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H14",
+    "estimated_effort": "1~2일",
+    "target_score_delta": "기능 +0.2 / 도메인 +0.1 / 관측 +0.05",
+    "user_request": "2026-04-24 사용자 원문: '이거도 측정여부 안뜨는데 전반적으로 내가 말한 부분을 실현하기 위해서 DB나 base file 구조를 좀 바꿔야될게 있으면 조정해줘 맞춰서 사내 로컬 파일 세팅을 일부 바꿔도돼'",
+    "dependencies": [
+      "H11"
+    ],
+    "dependency_reason": "H11 의 전체 조회 버튼 + monitor_prod 컬럼 기반 확장",
+    "user_authorization": "DB 스키마 / base file (data/holweb-data/) / config 파일 자유 확장 + 자동 마이그레이션 허용"
+  },
+  "acceptance_criteria": [
+    "Tracker LOT_WF 스키마 확장: current_step (str), current_step_seq (int), et_measured (bool), et_last_seq (int), et_last_time (iso), last_checked_at (iso) 필드 추가",
+    "'현재 step' 컬럼: 조회 완료되면 step_id + step_seq (예: 'LITHO_01 / seq 17') 표시. 미조회면 '조회 필요' 플레이스홀더",
+    "'ET 측정' 컬럼: ✅ (측정 완료, last seq) / ⏳ (모니터 중, 미측정) / ❌ (관련 ET 데이터 없음) 중 하나",
+    "H11 의 '전체 조회' 버튼 클릭 시: 모든 row 에 대해 current_step + et_measured 동시 업데이트",
+    "backend/core/lot_step.py 에 check_et_measured(root_lot_id, product) 함수 추가 (ETTime long 에서 해당 lot row 존재 + 최신 seq 반환)",
+    "data/holweb-data/tracker/ 아래 기존 파일 있으면 스키마 자동 마이그레이션 (누락 필드 null default)",
+    "마이그레이션 스크립트 scripts/migrate_tracker_schema.py 신설 (idempotent, 실행 로그 남김)",
+    "Admin 페이지에 '트래커 스키마 재마이그레이션' 버튼 1개 추가 (admin-only)",
+    "smoke: /api/tracker/lot-check-all POST 200 + 응답에 et_measured 포함",
+    "npm run build 성공"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Tracker.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\tracker.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\lot_step.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\admin.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Admin.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\tracker_schema.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\scripts\\migrate_tracker_schema.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\collab\\SCORE_LOG.md"
+  ],
+  "verification": [
+    "backend/core/tracker_schema.py 추가: tracker/issues.json LOT_WF row 에 current_step/current_step_seq/et_measured/et_last_seq/et_last_time/last_checked_at nullable 필드를 보정하는 공통 helper 구현",
+    "backend/routers/tracker.py 에서 router import 시 자동 마이그레이션 실행, create/bulk lot 저장 시 새 schema 기본값 주입, /api/tracker/lot-check-all 이 current_step + ET 측정 상태를 계산해 issue lots 에 실제 backfill 저장하도록 확장",
+    "backend/core/lot_step.py 에 check_et_measured(root_lot_id, product, ...) 추가 및 snapshot_row_fields 를 current_step_seq/et_measured 계열 필드까지 확장",
+    "backend/routers/admin.py + frontend/src/pages/My_Admin.jsx 에 admin-only '트래커 스키마 재마이그레이션' 버튼/엔드포인트 추가",
+    "frontend/src/pages/My_Tracker.jsx 에 현재 step 표시를 'step_id / seq N' 형식으로 정리하고 ET 측정을 ✅ / ⏳ / ❌ 상태로 렌더하도록 변경",
+    "scripts/migrate_tracker_schema.py 추가: idempotent 실행, 백업 생성, schema_migrations.jsonl 로그 기록",
+    "실행: python3 flow/scripts/migrate_tracker_schema.py",
+    "결과: changed=true, issues=3, lots_updated=4, backup=/mnt/d/TEST_Making_Video/semi_all/flow/data/holweb-data/tracker/issues.backup_20260424_172632.json 생성",
+    "function smoke: monkeypatch current_user/filter_by_visibility 후 tracker.lot_check_all(LotCheckAllReq) 호출 → row_keys 에 et_measured/current_step_seq/last_checked_at 포함 확인",
+    "검증: cd /mnt/d/TEST_Making_Video/semi_all/flow/frontend && npm run build",
+    "결과: vite build 성공 (chunk size warning only)",
+    {
+      "at": "2026-04-24T17:29:03+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 10,
+      "criteria_total": 10,
+      "criteria_detail": [
+        {
+          "criterion": "Tracker LOT_WF 스키마 확장: current_step (str), current_step_seq (int), et_measured (bool), et_last_seq (int), et_last_time (iso), last_checked_a",
+          "ok": true,
+          "hits": 14,
+          "tokens": 14
+        },
+        {
+          "criterion": "'현재 step' 컬럼: 조회 완료되면 step_id + step_seq (예: 'LITHO_01 / seq 17') 표시. 미조회면 '조회 필요' 플레이스홀더",
+          "ok": true,
+          "hits": 5,
+          "tokens": 8
+        },
+        {
+          "criterion": "'ET 측정' 컬럼: ✅ (측정 완료, last seq) / ⏳ (모니터 중, 미측정) / ❌ (관련 ET 데이터 없음) 중 하나",
+          "ok": true,
+          "hits": 4,
+          "tokens": 4
+        },
+        {
+          "criterion": "H11 의 '전체 조회' 버튼 클릭 시: 모든 row 에 대해 current_step + et_measured 동시 업데이트",
+          "ok": true,
+          "hits": 3,
+          "tokens": 3
+        },
+        {
+          "criterion": "backend/core/lot_step.py 에 check_et_measured(root_lot_id, product) 함수 추가 (ETTime long 에서 해당 lot row 존재 + 최신 seq 반환)",
+          "ok": true,
+          "hits": 4,
+          "tokens": 5
+        },
+        {
+          "criterion": "data/holweb-data/tracker/ 아래 기존 파일 있으면 스키마 자동 마이그레이션 (누락 필드 null default)",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "마이그레이션 스크립트 scripts/migrate_tracker_schema.py 신설 (idempotent, 실행 로그 남김)",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "Admin 페이지에 '트래커 스키마 재마이그레이션' 버튼 1개 추가 (admin-only)",
+          "ok": true,
+          "hits": 5,
+          "tokens": 5
+        },
+        {
+          "criterion": "smoke: /api/tracker/lot-check-all POST 200 + 응답에 et_measured 포함",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        },
+        {
+          "criterion": "npm run build 성공",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        }
+      ]
+    }
+  ],
+  "resolution": "Tracker LOT_WF row 스키마를 확장해 현재 step 과 ET 측정여부가 실제 데이터로 자동 반영되도록 정리했다. batch 전체 조회는 이제 각 row 에 대해 current_step/current_step_seq 와 et_measured/et_last_seq/et_last_time/last_checked_at 을 계산해 issue lots 에 다시 저장하고, 프런트는 이를 기반으로 '현재 step' 을 'STEP_ID / seq N' 형태로 보여주며 ET 측정은 ✅ 완료, ⏳ 미조회/모니터 중, ❌ 데이터 없음 상태로 표시한다. 또한 기존 tracker/issues.json 은 router import 시 자동 보정되고, scripts/migrate_tracker_schema.py 와 Admin 재마이그레이션 버튼으로 사내 로컬 파일 세팅도 반복 가능하게 만들었다.",
+  "design_notes": {
+    "data_location_flexibility": "tracker 데이터가 현재 JSON 이면 JSON 스키마 확장. SQLite 로 마이그 필요하다면 P3 (platform) 까지 기다리지 말고 자율 판단.",
+    "et_measured_detection": "check_et_measured(root_lot_id, product): /api/ettime/lots 내부 로직 재사용. ET long table 에서 fab_lot_id LIKE root_lot_id% 쿼리 → exists? + max(step_seq) 반환.",
+    "migration_safety": "기존 필드 삭제 금지. 새 필드는 nullable + default null. 마이그레이션 스크립트는 실행 전 백업 자동 복사.",
+    "user_permission_note": "사용자 명시적으로 DB/base/로컬 파일 변경 권한 부여. 큰 변경 시 SCORE_LOG 에 변경 내용 + 영향 범위 append.",
+    "future_link": "F5 (ET Report) 의 /api/ettime/lot/{id} 가 구현되면 이 H14 의 et_measured 도 더 정확해짐. F5 이전이면 간단한 exists 체크만."
+  }
+}

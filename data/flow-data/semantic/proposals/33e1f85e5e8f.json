@@ -1,0 +1,16 @@
+{
+  "id": "33e1f85e5e8f",
+  "term": "PEMS",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "inform",
+    "ref": "inf_260702_fb6b7f"
+  },
+  "status": "pending",
+  "created_at": "2026-07-02T14:53:20.867665+00:00",
+  "updated_at": "2026-07-02T14:53:20.867665+00:00",
+  "decided_by": null
+}

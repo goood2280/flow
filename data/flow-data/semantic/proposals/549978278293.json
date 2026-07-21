@@ -1,0 +1,16 @@
+{
+  "id": "549978278293",
+  "term": "tracker",
+  "category": "mapping",
+  "canonical_match": "tracker",
+  "confidence": 0.55,
+  "rationale": "normalizes to existing canonical 'tracker'",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260524-8C58:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-24T00:26:12.558090+00:00",
+  "updated_at": "2026-05-24T00:26:12.558090+00:00",
+  "decided_by": null
+}

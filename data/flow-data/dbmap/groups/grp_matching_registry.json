@@ -1,0 +1,17 @@
+{
+  "id": "grp_matching_registry",
+  "name": "Matching / Registry",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "columns": [],
+  "description": "제품별 step_id, function_step, module, shot/map registry를 관리하는 계약 테이블 묶음",
+  "tables": [
+    "tbl_step_matching",
+    "tbl_inline_step_match",
+    "tbl_vm_matching",
+    "tbl_inline_item_map"
+  ],
+  "updated": "2026-04-24T19:20:00"
+}

@@ -1,0 +1,97 @@
+{
+  "id": "handoff_v9_H11",
+  "created_at": "2026-04-24T16:38:00+09:00",
+  "updated_at": "2026-04-24T17:04:33+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "done",
+  "title": "[H11] Tracker LOT_WF 테이블 monitor_prod 컬럼 + 전체 일괄 조회 버튼",
+  "summary": "이슈추적의 LOT_WF 테이블에 monitor_prod 컬럼 추가 (현재 step 조회용). 기존 row 별 개별 조회 버튼 제거하고 테이블 전체 일괄 조회 버튼 하나로 통합.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H11",
+    "estimated_effort": "반일~1일",
+    "target_score_delta": "기능 +0.1 / UX +0.05",
+    "user_request": "2026-04-24 사용자 원문: '이슈추적할때 LOT_WF table에 모니터 prod 도 넣는 칸 있게해서 현재 step이 조회하면 잘 나왔으면 해 그리고 개별 조회말고 그냥 전체 테이블에 대해서 조회 되는 버튼으로'",
+    "dependencies": []
+  },
+  "acceptance_criteria": [
+    "Tracker LOT_WF 테이블 스키마에 monitor_prod 컬럼 추가 (string, nullable)",
+    "monitor_prod 값이 있는 row 는 해당 product 기준으로 /lot-check 호출 → 현재 step 업데이트",
+    "monitor_prod 미지정 row 는 기본 product 규칙 유지",
+    "개별 row '조회' 버튼 제거",
+    "테이블 상단에 '전체 조회' 버튼 1개 (클릭 시 batch POST /api/tracker/lot-check-all)",
+    "전체 조회 시 progress 표시 (X/N 완료)",
+    "완료 후 각 row 의 current_step / step_seq / 마지막 이동시각 업데이트 렌더"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Tracker.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\tracker.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\lot_step.py"
+  ],
+  "verification": [
+    "frontend: LOT_WF 입력/읽기 테이블에 monitor_prod 컬럼 추가, readOnly row별 '조회' 제거, 상단 '전체 조회' 버튼과 X/N 완료 표시 추가",
+    "backend: POST /api/tracker/lot-check-all 추가, row별 monitor_prod 우선 product override 후 snapshot/current_step/step_seq/last_move_at 계산 반환",
+    "backend: GET /api/tracker/lot-step 에 monitor_prod 쿼리 추가",
+    "build: cd flow/frontend && npm run build 통과",
+    "backend: python3 -m py_compile flow/backend/routers/tracker.py flow/backend/core/lot_step.py 통과",
+    {
+      "at": "2026-04-24T17:04:33+09:00",
+      "by": "autonomy_daemon",
+      "smoke_pass": 30,
+      "smoke_fail": 0,
+      "smoke_note": "SMOKE TEST 결과: 30/30 PASS  ·  0 FAIL\n서버: http://localhost:8080  ·  유저: hol\n========================================================",
+      "files_ok": true,
+      "files_missing": [],
+      "criteria_ok": 7,
+      "criteria_total": 7,
+      "criteria_detail": [
+        {
+          "criterion": "Tracker LOT_WF 테이블 스키마에 monitor_prod 컬럼 추가 (string, nullable)",
+          "ok": true,
+          "hits": 4,
+          "tokens": 6
+        },
+        {
+          "criterion": "monitor_prod 값이 있는 row 는 해당 product 기준으로 /lot-check 호출 → 현재 step 업데이트",
+          "ok": true,
+          "hits": 6,
+          "tokens": 6
+        },
+        {
+          "criterion": "monitor_prod 미지정 row 는 기본 product 규칙 유지",
+          "ok": true,
+          "hits": 2,
+          "tokens": 2
+        },
+        {
+          "criterion": "개별 row '조회' 버튼 제거",
+          "ok": true,
+          "hits": 1,
+          "tokens": 1
+        },
+        {
+          "criterion": "테이블 상단에 '전체 조회' 버튼 1개 (클릭 시 batch POST /api/tracker/lot-check-all)",
+          "ok": true,
+          "hits": 2,
+          "tokens": 3
+        },
+        {
+          "criterion": "전체 조회 시 progress 표시 (X/N 완료)",
+          "ok": true,
+          "hits": 1,
+          "tokens": 2
+        },
+        {
+          "criterion": "완료 후 각 row 의 current_step / step_seq / 마지막 이동시각 업데이트 렌더",
+          "ok": true,
+          "hits": 3,
+          "tokens": 4
+        }
+      ]
+    }
+  ],
+  "resolution": "Tracker LOT_WF 테이블 스키마에 nullable monitor_prod를 추가했다. readonly 상세에서는 개별 조회를 제거하고 테이블 상단의 '전체 조회' 버튼으로 일괄 조회하도록 바꿨다. batch 응답은 각 row의 snapshot과 current_step/step_seq/last_move_at를 내려주며, monitor_prod가 있으면 해당 product 기준으로 step 조회하고 없으면 기존 product 규칙을 유지한다."
+}

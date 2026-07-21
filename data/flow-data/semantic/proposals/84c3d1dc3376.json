@@ -1,0 +1,16 @@
+{
+  "id": "84c3d1dc3376",
+  "term": "level",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260530-BD8B:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-30T14:34:29.530161+00:00",
+  "updated_at": "2026-05-30T14:34:29.530161+00:00",
+  "decided_by": null
+}

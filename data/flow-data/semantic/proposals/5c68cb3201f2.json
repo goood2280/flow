@@ -1,0 +1,16 @@
+{
+  "id": "5c68cb3201f2",
+  "term": "Mail",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260529-B42F:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-05-29T13:31:45.886102+00:00",
+  "updated_at": "2026-05-29T13:31:45.886102+00:00",
+  "decided_by": null
+}

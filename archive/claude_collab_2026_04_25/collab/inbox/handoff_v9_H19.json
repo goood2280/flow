@@ -1,0 +1,51 @@
+{
+  "id": "handoff_v9_H19",
+  "created_at": "2026-04-24T19:08:00+09:00",
+  "updated_at": "2026-04-24T19:08:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "open",
+  "title": "[H19] Tracker 카테고리별 컬럼 분기 (Monitor: FAB target_step · Analysis: ET 측정)",
+  "summary": "Tracker 이슈 카테고리(Monitor/Analysis/기타) 에 따라 LOT_WF 테이블 컬럼 세트 분기. Monitor 는 ET 불필요 — FAB 진행/target_step/도달 메일 중심. Analysis 는 ET 측정 유지.",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H19",
+    "estimated_effort": "1일",
+    "target_score_delta": "도메인 +0.1 / UX +0.1 / 기능 +0.05",
+    "user_request": "2026-04-24 사용자 원문: '모니터 카테고리로 했는데 왜 ET 측정이 있는거야 ET는 필요없고 FAB 진행 어디있고 어디지나면 메일가고 이런게 중요한거야'",
+    "dependencies": ["H11", "H14"],
+    "dependency_reason": "H11 의 monitor_prod + H14 의 et_measured 위에 카테고리 분기 얹기"
+  },
+  "acceptance_criteria": [
+    "Tracker issue 스키마에 category 기반 column_set 매핑:",
+    "  Monitor: [root_lot_id, wafer_id, monitor_prod, current_step, current_step_seq, target_step, reached, notify_email]",
+    "  Analysis: [root_lot_id, wafer_id, monitor_prod, current_step, current_step_seq, et_measured, et_last_seq, et_last_time]",
+    "  Other (default): [root_lot_id, wafer_id, current_step]",
+    "FE: issue.category 값에 따라 테이블 컬럼 헤더/셀 조건부 렌더",
+    "Monitor row: target_step 입력 필드 + notify_on_reach 체크박스 + 도달 여부 뱃지 (✅ 도달 / ⏳ 진행중)",
+    "Monitor 도달 감지: /api/tracker/lot-check-all 시 current_step_seq >= target_step_seq 면 reached=true",
+    "도달 시 자동 메일: notify_email 있고 reached 방금 true 된 lot 은 messages 허브로 발송 (중복 방지 기록)",
+    "BE: tracker_schema.py 에 column_set_for_category(category) 추가",
+    "마이그레이션: 기존 Monitor 카테고리 row 에 target_step 필드 null default 로 add",
+    "smoke: /api/tracker/issues 응답에 category 별 row 확인 + target_step 필드 존재",
+    "npm run build 성공"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Tracker.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\tracker.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\tracker_schema.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\lot_step.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\scripts\\migrate_tracker_schema.py"
+  ],
+  "verification": [],
+  "resolution": "",
+  "design_notes": {
+    "category_vs_columns": "현재는 category 가 label/color 역할만 함. 이번에 column_set 과 notify_rule 까지 엮음.",
+    "monitor_use_case": "엔지니어가 '이 lot 이 GATE_ETCH 도달하면 알려줘' 설정 → 도달 시 즉시 이메일/알림. ET 는 관심 없음.",
+    "analysis_use_case": "'이 lot ET 측정 완료되면 결과 보고 싶다' → et_measured ✅ 되면 알림.",
+    "other_use_case": "일반 이슈 — 단순 Lot 추적. 컬럼 최소.",
+    "future": "카테고리 추가 시 column_set map 에 새 entry 만 추가하면 확장 가능. v9.1 F_inherit 1.11 의 카테고리 대확장과 자연스럽게 통합."
+  }
+}

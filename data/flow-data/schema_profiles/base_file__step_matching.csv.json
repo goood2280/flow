@@ -1,0 +1,27 @@
+{
+  "source_id": "base_file__step_matching.csv",
+  "snapshots": [
+    {
+      "schema_version": "s1",
+      "source_id": "base_file__step_matching.csv",
+      "source_type": "base_file",
+      "root": "",
+      "product": "",
+      "file": "step_matching.csv",
+      "columns": [
+        "PRODA\tAA100010\t1.0 STI A"
+      ],
+      "dtypes": {
+        "PRODA\tAA100010\t1.0 STI A": "String"
+      },
+      "grain": "row",
+      "join_keys": [],
+      "column_count": 1,
+      "total_rows": 0,
+      "created_at": "2026-05-07T21:15:42",
+      "actor": "hol",
+      "note": "FileBrowser schema snapshot",
+      "checksum": "sha256:ebc607bd3a55a2f0013827e6648343621ef43692cf1b16f66d5be6ae98158d72"
+    }
+  ]
+}

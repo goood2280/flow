@@ -1,0 +1,19 @@
+1 #wafer-map MAP1
+2 !
+3 --ttt--
+4 -ttttt-
+5 ttttttt
+6 -ttttt-
+7 --ttt--
+8 !
+9 <SITES>
+10 Pattern, P1
+11 1 4 3
+12 2 2 2
+13 # end
+14 #teg-map
+15 module m1 (-9500, -6800) ! TEG_A, H_TPCHK
+16 module m2 (1200, 2500) ! TEG_B, H_TPCHK
+17 module m3 (7600, -4100) ! TEG_C, H_TPCHK
+18 module m4 (-5890, -3400) ! TEG_D, V_TPCHK
+19 # end

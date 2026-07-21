@@ -1,0 +1,39 @@
+{
+  "id": "handoff_v9_H17",
+  "created_at": "2026-04-24T19:05:00+09:00",
+  "updated_at": "2026-04-24T19:05:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p1",
+  "status": "open",
+  "title": "[H17] Home '3가지 질문' 섹션 제거 + 간단 가이드 탭 신설",
+  "summary": "H6 로 넣은 Home 상단 '3가지 질문/추천 진입점' 섹션 제거. 사용법은 사용자가 직접 체감. 대신 별도 '간단 가이드' 탭 신설 (페이지별 짧은 tip 1~2줄).",
+  "context": {
+    "track": "hotfix_v9_0_3",
+    "backlog_id": "H17",
+    "estimated_effort": "반일",
+    "target_score_delta": "UX +0.05 / 문서 +0.05",
+    "user_request": "2026-04-24 사용자 원문: '3가지 질문 (...) 따로 필요없을거같아 어차피 사람들이 쓰면서 사용법 찾을거야 이런거는나중에 간단 가이드탭을 만들어서 탭에 넣거나 배포하는게 좋을거같아'",
+    "dependencies": ["H6"],
+    "dependency_reason": "H6 이 추가한 섹션을 제거"
+  },
+  "acceptance_criteria": [
+    "My_Home.jsx 에서 '3가지 질문' / suggested_actions 섹션 제거",
+    "/api/home/summary 응답의 suggested_actions 필드는 유지 (호환성), 단 Home 에서 렌더 안 함",
+    "신규 탭 추가: '간단 가이드' (config.js 의 PLANNED → ACTIVE 전환 또는 새 key 'guide')",
+    "guide 페이지: 13개 주요 페이지 (Home/FileBrowser/Dashboard/SplitTable/ETTime/Tracker/Inform/Meeting/Calendar/TableMap/ML/WaferLayout/Admin) 각각 2~3줄 tip",
+    "각 tip: '뭘 하는 페이지' + '주요 액션 1~2개' + 'edge 팁' 형식",
+    "tip 본문은 markdown 파일 기반 (docs/user_tips/<page>.md) 로 admin 이 수정 가능",
+    "npm run build 성공"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Home.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\pages\\My_Guide.jsx",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\frontend\\src\\config.js",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\routers\\guide.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\user_tips"
+  ],
+  "verification": [],
+  "resolution": ""
+}

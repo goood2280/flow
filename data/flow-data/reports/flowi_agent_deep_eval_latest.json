@@ -1,0 +1,702 @@
+{
+  "generated_at": "2026-05-23T18:26:16.158490+00:00",
+  "summary": {
+    "passed": 131,
+    "failed": 0,
+    "total": 131
+  },
+  "groups": {
+    "semantic": {
+      "passed": 108,
+      "failed": 0,
+      "total": 108
+    },
+    "knowledge": {
+      "passed": 5,
+      "failed": 0,
+      "total": 5
+    },
+    "sql": {
+      "passed": 17,
+      "failed": 0,
+      "total": 17
+    },
+    "meta": {
+      "passed": 1,
+      "failed": 0,
+      "total": 1
+    }
+  },
+  "doc_id": "agent_deep_eval_semiconductor_terms",
+  "cleanup_knowledge": false,
+  "min_cases": 80,
+  "catalog": {
+    "semantic_prompt_cases": 26,
+    "sql_answer_cases": 15,
+    "source_views": [
+      "fab_db",
+      "step_map_db",
+      "split_db",
+      "et_db",
+      "tracker_db",
+      "inform_db"
+    ]
+  },
+  "results": [
+    {
+      "name": "semantic/step_id simple question/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['step_id']"
+    },
+    {
+      "name": "semantic/step_id simple question/slot/steps/AA100570",
+      "ok": true,
+      "detail": "expected='AA100570' in ['AA100570']"
+    },
+    {
+      "name": "semantic/step_id simple question/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/step_id to function_step/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/step_id to function_step/term/function_step",
+      "ok": true,
+      "detail": "expected='function_step' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/step_id to function_step/slot/steps/AA100570",
+      "ok": true,
+      "detail": "expected='AA100570' in ['AA100570']"
+    },
+    {
+      "name": "semantic/step_id to function_step/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/korean function step/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/korean function step/term/function_step",
+      "ok": true,
+      "detail": "expected='function_step' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/korean function step/slot/steps/AA200010",
+      "ok": true,
+      "detail": "expected='AA200010' in ['AA200010']"
+    },
+    {
+      "name": "semantic/korean function step/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/korean module process/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/korean module process/term/function_step",
+      "ok": true,
+      "detail": "expected='function_step' in ['function_step', 'step_id']"
+    },
+    {
+      "name": "semantic/korean module process/slot/steps/AA220000",
+      "ok": true,
+      "detail": "expected='AA220000' in ['AA220000']"
+    },
+    {
+      "name": "semantic/korean module process/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/product root wafer step/term/product",
+      "ok": true,
+      "detail": "expected='product' in ['radius', 'PRODA', 'wafer_id', 'function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose', '#21', 'schema_label', 'A1000']"
+    },
+    {
+      "name": "semantic/product root wafer step/term/root_lot_id",
+      "ok": true,
+      "detail": "expected='root_lot_id' in ['radius', 'PRODA', 'wafer_id', 'function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose', '#21', 'schema_label', 'A1000']"
+    },
+    {
+      "name": "semantic/product root wafer step/term/wafer_id",
+      "ok": true,
+      "detail": "expected='wafer_id' in ['radius', 'PRODA', 'wafer_id', 'function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose', '#21', 'schema_label', 'A1000']"
+    },
+    {
+      "name": "semantic/product root wafer step/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['radius', 'PRODA', 'wafer_id', 'function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose', '#21', 'schema_label', 'A1000']"
+    },
+    {
+      "name": "semantic/product root wafer step/slot/products/PRODA",
+      "ok": true,
+      "detail": "expected='PRODA' in ['PRODA']"
+    },
+    {
+      "name": "semantic/product root wafer step/slot/root_lot_ids/A1000",
+      "ok": true,
+      "detail": "expected='A1000' in ['A1000']"
+    },
+    {
+      "name": "semantic/product root wafer step/slot/wafer_ids/21",
+      "ok": true,
+      "detail": "expected=21 in [21]"
+    },
+    {
+      "name": "semantic/product root wafer step/coverage",
+      "ok": true,
+      "detail": "coverage=0.889"
+    },
+    {
+      "name": "semantic/korean root wafer process/term/root_lot_id",
+      "ok": true,
+      "detail": "expected='root_lot_id' in ['wafer_id', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'A1000']"
+    },
+    {
+      "name": "semantic/korean root wafer process/term/wafer_id",
+      "ok": true,
+      "detail": "expected='wafer_id' in ['wafer_id', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'A1000']"
+    },
+    {
+      "name": "semantic/korean root wafer process/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['wafer_id', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'A1000']"
+    },
+    {
+      "name": "semantic/korean root wafer process/slot/root_lot_ids/A1000",
+      "ok": true,
+      "detail": "expected='A1000' in ['A1000']"
+    },
+    {
+      "name": "semantic/korean root wafer process/coverage",
+      "ok": true,
+      "detail": "coverage=0.667"
+    },
+    {
+      "name": "semantic/fab lot step/term/fab_lot_id",
+      "ok": true,
+      "detail": "expected='fab_lot_id' in ['function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'A1000.2', 'product', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/fab lot step/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['function_step', 'step_id', 'lot_id', 'root_lot_id', 'lot_wf', 'A1000.2', 'product', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/fab lot step/slot/fab_lot_ids/A1000.2",
+      "ok": true,
+      "detail": "expected='A1000.2' in ['A1000.2']"
+    },
+    {
+      "name": "semantic/fab lot step/slot/root_lot_ids/A1000",
+      "ok": true,
+      "detail": "expected='A1000' in ['A1000']"
+    },
+    {
+      "name": "semantic/fab lot step/coverage",
+      "ok": true,
+      "detail": "coverage=0.8"
+    },
+    {
+      "name": "semantic/lot id raw data/term/fab_lot_id",
+      "ok": true,
+      "detail": "expected='fab_lot_id' in ['source_ids', 'lot_id', 'root_lot_id', 'lot_wf', 'fab_lot_id', 'filebrowser']"
+    },
+    {
+      "name": "semantic/lot id raw data/term/filebrowser",
+      "ok": true,
+      "detail": "expected='filebrowser' in ['source_ids', 'lot_id', 'root_lot_id', 'lot_wf', 'fab_lot_id', 'filebrowser']"
+    },
+    {
+      "name": "semantic/lot id raw data/slot/root_lot_ids/A1004",
+      "ok": true,
+      "detail": "expected='A1004' in ['A1004']"
+    },
+    {
+      "name": "semantic/lot id raw data/coverage",
+      "ok": true,
+      "detail": "coverage=0.6"
+    },
+    {
+      "name": "semantic/lot_wf underscore/term/lot_wf",
+      "ok": true,
+      "detail": "expected='lot_wf' in ['lot_wf', 'group_by', 'filebrowser', 'source_ids']"
+    },
+    {
+      "name": "semantic/lot_wf underscore/term/filebrowser",
+      "ok": true,
+      "detail": "expected='filebrowser' in ['lot_wf', 'group_by', 'filebrowser', 'source_ids']"
+    },
+    {
+      "name": "semantic/lot_wf underscore/slot/lot_wfs/A1000_W21",
+      "ok": true,
+      "detail": "expected='A1000_W21' in ['A1000_W21']"
+    },
+    {
+      "name": "semantic/lot_wf underscore/coverage",
+      "ok": true,
+      "detail": "coverage=1.0"
+    },
+    {
+      "name": "semantic/lot wafer korean/term/lot_wf",
+      "ok": true,
+      "detail": "expected='lot_wf' in ['source_ids', 'step_id', 'lot_wf', 'group_by', 'filebrowser']"
+    },
+    {
+      "name": "semantic/lot wafer korean/term/filebrowser",
+      "ok": true,
+      "detail": "expected='filebrowser' in ['source_ids', 'step_id', 'lot_wf', 'group_by', 'filebrowser']"
+    },
+    {
+      "name": "semantic/lot wafer korean/slot/lot_wfs/A1002_W5",
+      "ok": true,
+      "detail": "expected='A1002_W5' in ['A1002_W5']"
+    },
+    {
+      "name": "semantic/lot wafer korean/coverage",
+      "ok": true,
+      "detail": "coverage=0.8"
+    },
+    {
+      "name": "semantic/knob lot_wf list/term/knob",
+      "ok": true,
+      "detail": "expected='knob' in ['knob', 'table', 'lot_wf', 'product', 'group_by', 'table_id', 'purpose', 'schema_label']"
+    },
+    {
+      "name": "semantic/knob lot_wf list/term/lot_wf",
+      "ok": true,
+      "detail": "expected='lot_wf' in ['knob', 'table', 'lot_wf', 'product', 'group_by', 'table_id', 'purpose', 'schema_label']"
+    },
+    {
+      "name": "semantic/knob lot_wf list/intent",
+      "ok": true,
+      "detail": "actual='knob_analysis' expected='knob_analysis'"
+    },
+    {
+      "name": "semantic/knob lot_wf list/slot/knobs/KNOB_A",
+      "ok": true,
+      "detail": "expected='KNOB_A' in ['KNOB_A']"
+    },
+    {
+      "name": "semantic/knob lot_wf list/coverage",
+      "ok": true,
+      "detail": "coverage=0.444"
+    },
+    {
+      "name": "semantic/ppid split wafer/term/knob",
+      "ok": true,
+      "detail": "expected='knob' in ['radius', 'wafer_id', 'knob', 'lot_wf', 'group_by']"
+    },
+    {
+      "name": "semantic/ppid split wafer/term/wafer_id",
+      "ok": true,
+      "detail": "expected='wafer_id' in ['radius', 'wafer_id', 'knob', 'lot_wf', 'group_by']"
+    },
+    {
+      "name": "semantic/ppid split wafer/intent",
+      "ok": true,
+      "detail": "actual='knob_analysis' expected='knob_analysis'"
+    },
+    {
+      "name": "semantic/ppid split wafer/slot/knobs/PPID_04_2",
+      "ok": true,
+      "detail": "expected='PPID_04_2' in ['PPID_04_2']"
+    },
+    {
+      "name": "semantic/ppid split wafer/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/numeric sort step knob/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['SORT', 'knob', 'step_id', 'lot_wf', 'group_by']"
+    },
+    {
+      "name": "semantic/numeric sort step knob/term/knob",
+      "ok": true,
+      "detail": "expected='knob' in ['SORT', 'knob', 'step_id', 'lot_wf', 'group_by']"
+    },
+    {
+      "name": "semantic/numeric sort step knob/term/lot_wf",
+      "ok": true,
+      "detail": "expected='lot_wf' in ['SORT', 'knob', 'step_id', 'lot_wf', 'group_by']"
+    },
+    {
+      "name": "semantic/numeric sort step knob/intent",
+      "ok": true,
+      "detail": "actual='knob_analysis' expected='knob_analysis'"
+    },
+    {
+      "name": "semantic/numeric sort step knob/slot/steps/24.0 SORT",
+      "ok": true,
+      "detail": "expected='24.0 SORT' in ['24.0 SORT']"
+    },
+    {
+      "name": "semantic/numeric sort step knob/slot/knobs/KNOB",
+      "ok": true,
+      "detail": "expected='KNOB' in ['KNOB']"
+    },
+    {
+      "name": "semantic/numeric sort step knob/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/korean split knob/term/knob",
+      "ok": true,
+      "detail": "expected='knob' in ['knob', 'group_by']"
+    },
+    {
+      "name": "semantic/korean split knob/intent",
+      "ok": true,
+      "detail": "actual='knob_analysis' expected='knob_analysis'"
+    },
+    {
+      "name": "semantic/korean split knob/coverage",
+      "ok": true,
+      "detail": "coverage=0.333"
+    },
+    {
+      "name": "semantic/raw DB sql join/term/filebrowser",
+      "ok": true,
+      "detail": "expected='filebrowser' in ['source_ids', 'join', 'ai_sql', 'lot_wf', 'product', 'filebrowser']"
+    },
+    {
+      "name": "semantic/raw DB sql join/term/ai_sql",
+      "ok": true,
+      "detail": "expected='ai_sql' in ['source_ids', 'join', 'ai_sql', 'lot_wf', 'product', 'filebrowser']"
+    },
+    {
+      "name": "semantic/raw DB sql join/intent",
+      "ok": true,
+      "detail": "actual='filebrowser_ai_sql' expected='filebrowser_ai_sql'"
+    },
+    {
+      "name": "semantic/raw DB sql join/coverage",
+      "ok": true,
+      "detail": "coverage=0.714"
+    },
+    {
+      "name": "semantic/ai sql filter sort/term/ai_sql",
+      "ok": true,
+      "detail": "expected='ai_sql' in ['ai_sql']"
+    },
+    {
+      "name": "semantic/ai sql filter sort/intent",
+      "ok": true,
+      "detail": "actual='filebrowser_ai_sql' expected='filebrowser_ai_sql'"
+    },
+    {
+      "name": "semantic/ai sql filter sort/coverage",
+      "ok": true,
+      "detail": "coverage=0.667"
+    },
+    {
+      "name": "semantic/chart trend scatter/term/chart",
+      "ok": true,
+      "detail": "expected='chart' in ['chart', 'end', 'chart_session_id']"
+    },
+    {
+      "name": "semantic/chart trend scatter/intent",
+      "ok": true,
+      "detail": "actual='chart_analysis' expected='chart_analysis'"
+    },
+    {
+      "name": "semantic/chart trend scatter/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/korean chart trend/term/chart",
+      "ok": true,
+      "detail": "expected='chart' in ['chart', 'chart_session_id']"
+    },
+    {
+      "name": "semantic/korean chart trend/intent",
+      "ok": true,
+      "detail": "actual='chart_analysis' expected='chart_analysis'"
+    },
+    {
+      "name": "semantic/korean chart trend/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/inform mail/term/inform",
+      "ok": true,
+      "detail": "expected='inform' in ['inform']"
+    },
+    {
+      "name": "semantic/inform mail/intent",
+      "ok": true,
+      "detail": "actual='inform_draft' expected='inform_draft'"
+    },
+    {
+      "name": "semantic/inform mail/coverage",
+      "ok": true,
+      "detail": "coverage=0.667"
+    },
+    {
+      "name": "semantic/meeting recall/term/meeting",
+      "ok": true,
+      "detail": "expected='meeting' in ['minutes', 'meeting', 'meeting_id']"
+    },
+    {
+      "name": "semantic/meeting recall/intent",
+      "ok": true,
+      "detail": "actual='meeting_recall' expected='meeting_recall'"
+    },
+    {
+      "name": "semantic/meeting recall/coverage",
+      "ok": true,
+      "detail": "coverage=0.667"
+    },
+    {
+      "name": "semantic/tracker issue/term/tracker",
+      "ok": true,
+      "detail": "expected='tracker' in ['tracker']"
+    },
+    {
+      "name": "semantic/tracker issue/intent",
+      "ok": true,
+      "detail": "actual='tracker_lookup' expected='tracker_lookup'"
+    },
+    {
+      "name": "semantic/tracker issue/coverage",
+      "ok": true,
+      "detail": "coverage=0.75"
+    },
+    {
+      "name": "semantic/semantic wiki schema/term/semantic_layer",
+      "ok": true,
+      "detail": "expected='semantic_layer' in ['wiki', 'semantic_layer', 'schema', 'kind', 'schema_label']"
+    },
+    {
+      "name": "semantic/semantic wiki schema/intent",
+      "ok": true,
+      "detail": "actual='semantic_inspection' expected='semantic_inspection'"
+    },
+    {
+      "name": "semantic/semantic wiki schema/coverage",
+      "ok": true,
+      "detail": "coverage=0.833"
+    },
+    {
+      "name": "semantic/langgraph langsmith trace/term/langgraph",
+      "ok": true,
+      "detail": "expected='langgraph' in ['langsmith', 'langgraph']"
+    },
+    {
+      "name": "semantic/langgraph langsmith trace/term/langsmith",
+      "ok": true,
+      "detail": "expected='langsmith' in ['langsmith', 'langgraph']"
+    },
+    {
+      "name": "semantic/langgraph langsmith trace/intent",
+      "ok": true,
+      "detail": "actual='traceable_orchestration' expected='traceable_orchestration'"
+    },
+    {
+      "name": "semantic/langgraph langsmith trace/coverage",
+      "ok": true,
+      "detail": "coverage=0.8"
+    },
+    {
+      "name": "semantic/product code/term/product",
+      "ok": true,
+      "detail": "expected='product' in ['lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/product code/term/fab_lot_id",
+      "ok": true,
+      "detail": "expected='fab_lot_id' in ['lot_id', 'root_lot_id', 'lot_wf', 'product', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/product code/slot/products/PRODZ",
+      "ok": true,
+      "detail": "expected='PRODZ' in ['PRODZ']"
+    },
+    {
+      "name": "semantic/product code/coverage",
+      "ok": true,
+      "detail": "coverage=0.5"
+    },
+    {
+      "name": "semantic/wf shorthand/term/wafer_id",
+      "ok": true,
+      "detail": "expected='wafer_id' in ['lot_wf', 'wafer_id', 'step_id']"
+    },
+    {
+      "name": "semantic/wf shorthand/term/step_id",
+      "ok": true,
+      "detail": "expected='step_id' in ['lot_wf', 'wafer_id', 'step_id']"
+    },
+    {
+      "name": "semantic/wf shorthand/slot/root_lot_ids/A1007",
+      "ok": true,
+      "detail": "expected='A1007' in ['A1007']"
+    },
+    {
+      "name": "semantic/wf shorthand/slot/wafer_ids/12",
+      "ok": true,
+      "detail": "expected=12 in [12]"
+    },
+    {
+      "name": "semantic/wf shorthand/coverage",
+      "ok": true,
+      "detail": "coverage=0.5"
+    },
+    {
+      "name": "semantic/rootlot and fab lot/term/root_lot_id",
+      "ok": true,
+      "detail": "expected='root_lot_id' in ['lot_id', 'root_lot_id', 'lot_wf', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/rootlot and fab lot/term/fab_lot_id",
+      "ok": true,
+      "detail": "expected='fab_lot_id' in ['lot_id', 'root_lot_id', 'lot_wf', 'fab_lot_id', 'group_by', 'purpose']"
+    },
+    {
+      "name": "semantic/rootlot and fab lot/slot/root_lot_ids/A9999",
+      "ok": true,
+      "detail": "expected='A9999' in ['A9999']"
+    },
+    {
+      "name": "semantic/rootlot and fab lot/slot/fab_lot_ids/A9999.3",
+      "ok": true,
+      "detail": "expected='A9999.3' in ['A9999.3']"
+    },
+    {
+      "name": "semantic/rootlot and fab lot/coverage",
+      "ok": true,
+      "detail": "coverage=0.6"
+    },
+    {
+      "name": "knowledge/upsert/doc_id",
+      "ok": true,
+      "detail": "actual='agent_deep_eval_semiconductor_terms' expected='agent_deep_eval_semiconductor_terms'"
+    },
+    {
+      "name": "knowledge/get_doc",
+      "ok": true,
+      "detail": "doc=dict"
+    },
+    {
+      "name": "knowledge/tags/lot_wf",
+      "ok": true,
+      "detail": "expected='lot_wf' in ['agent', 'deep-eval', 'semantic', 'lot_wf', 'knob', 'multi-db']"
+    },
+    {
+      "name": "knowledge/body/function_step",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "knowledge/search/finds_deep_eval_doc",
+      "ok": true,
+      "detail": "expected='agent_deep_eval_semiconductor_terms' in ['agent_deep_eval_semiconductor_terms', 'proda_sort_knob_split_rule', 'ml_table_proda.lot_wf', 'dashboard_chart_generation_rules', 'ml_table_proda.step_id', 'proda_dashboard_query_manual', 'ml_table_proda.wafer_id', 'proda_a1001_lot_watch', 'proda_dibl_ss_rca_issue', 'proda_operating_overview', 'proda_a1001_w07_wafer_signal', 'knowledge_vault_overview']"
+    },
+    {
+      "name": "sql/step_id AA100570 function_step/rows",
+      "ok": true,
+      "detail": "actual=[{'function_step': 'CONTACT'}] expected=[{'function_step': 'CONTACT'}]"
+    },
+    {
+      "name": "sql/step_id AA200010 function_step/rows",
+      "ok": true,
+      "detail": "actual=[{'function_step': 'PHOTO'}] expected=[{'function_step': 'PHOTO'}]"
+    },
+    {
+      "name": "sql/lot_wf list for PPID_A/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1000_W21'}, {'lot_wf': 'A1001_W07'}] expected=[{'lot_wf': 'A1000_W21'}, {'lot_wf': 'A1001_W07'}]"
+    },
+    {
+      "name": "sql/lot_wf list for HIGH knob value/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1000_W21'}, {'lot_wf': 'A1001_W07'}] expected=[{'lot_wf': 'A1000_W21'}, {'lot_wf': 'A1001_W07'}]"
+    },
+    {
+      "name": "sql/24.0 SORT split lot_wf/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1002_W05', 'knob': 'PPID_SORT_A'}] expected=[{'lot_wf': 'A1002_W05', 'knob': 'PPID_SORT_A'}]"
+    },
+    {
+      "name": "sql/five-source raw join columns/rowcount",
+      "ok": true,
+      "detail": "actual=5 expected=5"
+    },
+    {
+      "name": "sql/five-source raw join columns/columns",
+      "ok": true,
+      "detail": "actual=['product', 'root_lot_id', 'lot_wf', 'step_id', 'function_step', 'knob', 'metric', 'value', 'issue_status', 'inform_id'] expected=['product', 'root_lot_id', 'lot_wf', 'step_id', 'function_step', 'knob', 'metric', 'value', 'issue_status', 'inform_id']"
+    },
+    {
+      "name": "sql/exact cross-db row A1000_W21/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1000_W21', 'function_step': 'CONTACT', 'knob': 'PPID_A', 'value': 10.2, 'inform_id': 'INF-1'}] expected=[{'lot_wf': 'A1000_W21', 'function_step': 'CONTACT', 'knob': 'PPID_A', 'value': 10.2, 'inform_id': 'INF-1'}]"
+    },
+    {
+      "name": "sql/root_lot CD average/rows",
+      "ok": true,
+      "detail": "actual=[{'root_lot_id': 'A1000', 'avg_cd': 10.8}, {'root_lot_id': 'A1001', 'avg_cd': 9.8}, {'root_lot_id': 'A1002', 'avg_cd': 12.0}, {'root_lot_id': 'A1003', 'avg_cd': 13.1}] expected=[{'root_lot_id': 'A1000', 'avg_cd': 10.8}, {'root_lot_id': 'A1001', 'avg_cd': 9.8}, {'root_lot_id': 'A1002', 'avg_cd': 12.0}, {'root_lot_id': 'A1003', 'avg_cd': 13.1}]"
+    },
+    {
+      "name": "sql/CONTACT wafer list/rows",
+      "ok": true,
+      "detail": "actual=[{'root_lot_id': 'A1000', 'wafer_id': 21, 'lot_wf': 'A1000_W21'}, {'root_lot_id': 'A1001', 'wafer_id': 7, 'lot_wf': 'A1001_W07'}] expected=[{'root_lot_id': 'A1000', 'wafer_id': 21, 'lot_wf': 'A1000_W21'}, {'root_lot_id': 'A1001', 'wafer_id': 7, 'lot_wf': 'A1001_W07'}]"
+    },
+    {
+      "name": "sql/tracker issue left join/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1000_W21', 'issue_status': 'NONE'}, {'lot_wf': 'A1000_W22', 'issue_status': 'OPEN'}] expected=[{'lot_wf': 'A1000_W21', 'issue_status': 'NONE'}, {'lot_wf': 'A1000_W22', 'issue_status': 'OPEN'}]"
+    },
+    {
+      "name": "sql/inform evidence for sort split/rows",
+      "ok": true,
+      "detail": "actual=[{'lot_wf': 'A1002_W05', 'inform_id': 'INF-2', 'inform_summary': 'sort split'}] expected=[{'lot_wf': 'A1002_W05', 'inform_id': 'INF-2', 'inform_summary': 'sort split'}]"
+    },
+    {
+      "name": "sql/PPID raw rows across fab split et/rowcount",
+      "ok": true,
+      "detail": "actual=4 expected=4"
+    },
+    {
+      "name": "sql/knob high max CD/rows",
+      "ok": true,
+      "detail": "actual=[{'max_cd': 10.2}] expected=[{'max_cd': 10.2}]"
+    },
+    {
+      "name": "sql/function_step by knob/rows",
+      "ok": true,
+      "detail": "actual=[{'function_step': 'CONTACT'}] expected=[{'function_step': 'CONTACT'}]"
+    },
+    {
+      "name": "sql/product raw row count/rows",
+      "ok": true,
+      "detail": "actual=[{'product': 'PRODA', 'rows': 3}, {'product': 'PRODB', 'rows': 2}] expected=[{'product': 'PRODA', 'rows': 3}, {'product': 'PRODB', 'rows': 2}]"
+    },
+    {
+      "name": "sql/safety/drop_rejected",
+      "ok": true,
+      "detail": "허용되지 않는 키워드 사용: DROP"
+    },
+    {
+      "name": "meta/min_case_count",
+      "ok": true,
+      "detail": "cases=130 min=80"
+    }
+  ]
+}

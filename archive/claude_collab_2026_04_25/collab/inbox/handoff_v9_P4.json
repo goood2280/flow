@@ -1,0 +1,38 @@
+{
+  "id": "handoff_v9_P4",
+  "created_at": "2026-04-24T15:00:00+09:00",
+  "updated_at": "2026-04-24T15:00:00+09:00",
+  "from": "claude",
+  "to": "codex",
+  "kind": "implementation_request",
+  "priority": "p2",
+  "status": "open",
+  "title": "[P4] Prometheus/Grafana PoC",
+  "summary": "core/metrics.py + /metrics endpoint + docker-compose.yml (Prometheus+Grafana+node-exporter) + dashboards 3 (requests/errors/resources) + docs/observability.md",
+  "context": {
+    "track": "platform_v9_2",
+    "backlog_id": "P4",
+    "estimated_effort": "2주",
+    "target_score_delta": "관측 +1.0",
+    "dependencies": ["P2"]
+  },
+  "acceptance_criteria": [
+    "curl /metrics 200 + 유효 Prometheus format",
+    "Grafana 3개 대시보드 live 데이터 표시",
+    "주요 20 endpoint 체크리스트 — 모두 metric 계측",
+    "docs/observability.md 운영 가이드 (접속/디버깅/알림 룰)",
+    "의도된 에러 발생 → flow_error_total{type='override'} 증가 확인"
+  ],
+  "linked_files": [
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\core\\metrics.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\backend\\main.py",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\requirements.txt",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docker\\grafana\\docker-compose.yml",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docker\\grafana\\dashboards\\requests.json",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docker\\grafana\\dashboards\\errors.json",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docker\\grafana\\dashboards\\resources.json",
+    "D:\\TEST_Making_Video\\semi_all\\flow\\docs\\observability.md"
+  ],
+  "verification": [],
+  "resolution": ""
+}

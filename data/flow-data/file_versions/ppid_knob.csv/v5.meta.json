@@ -1,0 +1,204 @@
+{
+  "version": "v5",
+  "display_version": "v4.0",
+  "file": "ppid_knob.csv",
+  "artifact_type": "edm_single_file",
+  "actor": "hol",
+  "action": "valve-alert",
+  "created_at": "2026-07-11T10:50:08",
+  "size": 3191,
+  "rows": 66,
+  "columns": 6,
+  "checksum": "sha256:977e41b5e61e32cb48cf2b7ec3dc90adb85520a9237d791aeee825558bbe2aa7",
+  "source_path": "D:\\semi all\\flow\\data\\Fab\\ppid_knob.csv",
+  "content_file": "v5.csv",
+  "note": "[Valve 알람 판정] ro|VH_PRODB|CC980500|PP_X9_0500: PP_X9_0500 → KNOB_M2 (METAL_ETCH R2)",
+  "change_summary": {
+    "label": "추가 8행",
+    "rows_delta": 8,
+    "columns_delta": 0,
+    "changed_cells": 198,
+    "added_rows": 8,
+    "deleted_rows": 0,
+    "modified_rows": 0,
+    "added_columns": [],
+    "removed_columns": [],
+    "checksum_equal": false
+  },
+  "save_diff_table": {
+    "kind": "version_diff_table",
+    "title": "직전 버전 대비 변경점",
+    "columns": [
+      "rev",
+      "changed_cols",
+      "feature_name",
+      "function_step",
+      "rule_order",
+      "operator",
+      "value",
+      "category"
+    ],
+    "key_columns": [
+      "__row_signature",
+      "__occurrence"
+    ],
+    "match_strategy": "sequence",
+    "added_columns": [],
+    "removed_columns": [],
+    "added_columns_count": 0,
+    "removed_columns_count": 0,
+    "rows": [
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "10.0 CONTACT",
+        "function_step": "CONTACT_ETCH",
+        "rule_order": "R1",
+        "operator": "eq",
+        "value": "PP_CE_B1",
+        "category": "KNOB_STD",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "GATE_ETCH",
+        "function_step": "GATE_ETCH",
+        "rule_order": "R1",
+        "operator": "eq",
+        "value": "PP_GE_A1",
+        "category": "KNOB_A",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "GATE_ETCH",
+        "function_step": "GATE_ETCH",
+        "rule_order": "R2",
+        "operator": "eq",
+        "value": "PP_GE_A2",
+        "category": "KNOB_B",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "GATE_ETCH",
+        "function_step": "GATE_ETCH",
+        "rule_order": "R3",
+        "operator": "eq",
+        "value": "PP_X9_2300",
+        "category": "KNOB_NEW",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "GATE_ETCH",
+        "function_step": "GATE_ETCH",
+        "rule_order": "RO",
+        "operator": "",
+        "value": "",
+        "category": "",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "METAL_ETCH",
+        "function_step": "METAL_ETCH",
+        "rule_order": "R1",
+        "operator": "eq",
+        "value": "PP_ME_C1",
+        "category": "KNOB_M1",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "METAL_ETCH",
+        "function_step": "METAL_ETCH",
+        "rule_order": "R2",
+        "operator": "eq",
+        "value": "PP_X9_0500",
+        "category": "KNOB_M2",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      },
+      {
+        "rev": "추가",
+        "changed_cols": "ALL",
+        "feature_name": "METAL_ETCH",
+        "function_step": "METAL_ETCH",
+        "rule_order": "RO",
+        "operator": "",
+        "value": "",
+        "category": "",
+        "_changed_cols": [
+          "feature_name",
+          "function_step",
+          "rule_order",
+          "operator",
+          "value",
+          "category"
+        ]
+      }
+    ],
+    "counts": {
+      "added": 8,
+      "deleted": 0,
+      "modified": 0,
+      "unchanged": 58
+    },
+    "truncated": false
+  }
+}

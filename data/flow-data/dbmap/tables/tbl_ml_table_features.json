@@ -1,0 +1,26 @@
+{
+  "id": "tbl_ml_table_features",
+  "name": "ml_table_features",
+  "display_name": "ML_TABLE_FEATURES",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_derived_features",
+  "table_type": "data",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "table_name", "type": "string" },
+    { "name": "feature_group", "type": "string" },
+    { "name": "feature_name", "type": "string" },
+    { "name": "feature_order", "type": "float" },
+    { "name": "function_step", "type": "string" },
+    { "name": "module", "type": "string" }
+  ],
+  "rows": [],
+  "description": "ML_TABLE 파생 feature catalog와 의미 메타 정보",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

@@ -1,0 +1,151 @@
+{
+  "updated_at": "2026-05-25T14:07:29+09:00",
+  "docs": [
+    {
+      "doc_id": "dashboard_chart_generation_rules",
+      "kind": "agent_wiki",
+      "title": "Dashboard Chart Generation Rules",
+      "summary": "Flow-i dashboard chart requests must use Agent Wiki interpretation rules, then verify columns and rows against DB/Files before returning a chart.",
+      "updated_at": "2026-05-13T00:00:00+09:00",
+      "entity": {
+        "product": "",
+        "root_lot_id": "",
+        "wafer_id": ""
+      },
+      "tags": [
+        "dashboard",
+        "chart",
+        "flowi",
+        "trend",
+        "scatter",
+        "INLINE",
+        "ET",
+        "lot_wf",
+        "tkout_time"
+      ],
+      "path": "wiki/agent_wiki/dashboard_chart_generation_rules.md",
+      "schema_type": "agent_llm_wiki_page_v1"
+    },
+    {
+      "doc_id": "ml_table_proda.lot_wf",
+      "kind": "schema_doc",
+      "title": "ML_TABLE_PRODA · LOT_WF",
+      "summary": "LOT_WF는 root_lot_id와 wafer_id를 결합한 wafer-level 분석 키입니다.",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "entity": {
+        "product": "PRODA",
+        "root_lot_id": "",
+        "wafer_id": ""
+      },
+      "tags": [
+        "schema",
+        "ML_TABLE_PRODA",
+        "LOT_WF",
+        "root_lot_id",
+        "wafer_id"
+      ],
+      "path": "wiki/schema_doc/ml_table_proda.lot_wf.md",
+      "related_doc_ids": [
+        "ml_table_proda.root_lot_id",
+        "ml_table_proda.wafer_id",
+        "proda_dashboard_query_manual"
+      ],
+      "relations": {
+        "ml_table_proda.root_lot_id": "combines",
+        "ml_table_proda.wafer_id": "combines",
+        "proda_dashboard_query_manual": "used_by"
+      },
+      "schema_type": "demo_operational_knowledge_v1",
+      "relation_id": "ML_TABLE_PRODA",
+      "column_refs": [
+        "ML_TABLE_PRODA.LOT_WF"
+      ]
+    },
+    {
+      "doc_id": "ml_table_proda.root_lot_id",
+      "kind": "schema_doc",
+      "title": "ML_TABLE_PRODA · root_lot_id",
+      "summary": "ML_TABLE_PRODA 에 RootLotID 라는 열이 있어.",
+      "updated_at": "2026-05-12T22:51:08+09:00",
+      "entity": {
+        "product": "",
+        "root_lot_id": "",
+        "wafer_id": ""
+      },
+      "tags": [
+        "schema_doc",
+        "ML_TABLE_PRODA",
+        "root_lot_id"
+      ],
+      "path": "wiki/schema_doc/ml_table_proda.root_lot_id.md",
+      "relation_id": "ML_TABLE_PRODA",
+      "column_refs": [
+        "ML_TABLE_PRODA.root_lot_id"
+      ]
+    },
+    {
+      "doc_id": "ml_table_proda.step_id",
+      "kind": "schema_doc",
+      "title": "ML_TABLE_PRODA · step_id",
+      "summary": "step_id는 공정 또는 측정 단계 식별자로 split/knob 비교 필터에 사용됩니다.",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "entity": {
+        "product": "PRODA",
+        "root_lot_id": "",
+        "wafer_id": ""
+      },
+      "tags": [
+        "schema",
+        "ML_TABLE_PRODA",
+        "step_id",
+        "function_step"
+      ],
+      "path": "wiki/schema_doc/ml_table_proda.step_id.md",
+      "related_doc_ids": [
+        "proda_sort_knob_split_rule",
+        "proda_dashboard_query_manual"
+      ],
+      "relations": {
+        "proda_sort_knob_split_rule": "filters_split",
+        "proda_dashboard_query_manual": "filters_chart"
+      },
+      "schema_type": "demo_operational_knowledge_v1",
+      "relation_id": "ML_TABLE_PRODA",
+      "column_refs": [
+        "ML_TABLE_PRODA.step_id"
+      ]
+    },
+    {
+      "doc_id": "ml_table_proda.wafer_id",
+      "kind": "schema_doc",
+      "title": "ML_TABLE_PRODA · wafer_id",
+      "summary": "wafer_id는 lot 안의 wafer 단위 식별자이며 LOT_WF 구성에 사용됩니다.",
+      "updated_at": "2026-05-15T07:47:08+09:00",
+      "entity": {
+        "product": "PRODA",
+        "root_lot_id": "",
+        "wafer_id": ""
+      },
+      "tags": [
+        "schema",
+        "ML_TABLE_PRODA",
+        "wafer_id",
+        "LOT_WF"
+      ],
+      "path": "wiki/schema_doc/ml_table_proda.wafer_id.md",
+      "related_doc_ids": [
+        "proda_a1001_w07_wafer_signal",
+        "ml_table_proda.lot_wf"
+      ],
+      "relations": {
+        "proda_a1001_w07_wafer_signal": "identifies",
+        "ml_table_proda.lot_wf": "builds_key"
+      },
+      "schema_type": "demo_operational_knowledge_v1",
+      "relation_id": "ML_TABLE_PRODA",
+      "column_refs": [
+        "ML_TABLE_PRODA.wafer_id"
+      ]
+    }
+  ]
+}

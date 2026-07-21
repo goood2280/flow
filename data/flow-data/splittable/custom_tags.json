@@ -1,0 +1,29 @@
+{
+  "columns": [
+    {
+      "product": "ML_TABLE_PRODA",
+      "column": "TAG_1.0_TEST",
+      "label": "1.0_TEST",
+      "username": "hol",
+      "created": "2026-05-20T07:42:37",
+      "updated": "2026-05-20T07:42:45"
+    }
+  ],
+  "values": {
+    "ML_TABLE_PRODA|A1001|9|TAG_1.0_TEST": {
+      "value": "asdas",
+      "username": "hol",
+      "updated": "2026-05-20T07:42:45"
+    },
+    "ML_TABLE_PRODA|A1001|1|TAG_1.0_TEST": {
+      "value": "asdasda",
+      "username": "hol",
+      "updated": "2026-05-20T07:42:45"
+    },
+    "ML_TABLE_PRODA|A1001|2|TAG_1.0_TEST": {
+      "value": "asda",
+      "username": "hol",
+      "updated": "2026-05-20T07:42:45"
+    }
+  }
+}

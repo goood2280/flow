@@ -1,0 +1,16 @@
+{
+  "id": "9a5fb9aa8966",
+  "term": "gate",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "tracker_comment",
+    "ref": "ISS-260713-128A:comment"
+  },
+  "status": "pending",
+  "created_at": "2026-07-13T14:38:57.919271+00:00",
+  "updated_at": "2026-07-13T14:38:57.919271+00:00",
+  "decided_by": null
+}

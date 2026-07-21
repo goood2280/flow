@@ -1,0 +1,25 @@
+{
+  "id": "tbl_inline_item_map",
+  "name": "inline_item_map",
+  "display_name": "INLINE_ITEM_MAP",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_matching_registry",
+  "table_type": "matching",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "inline_item_id", "type": "string" },
+    { "name": "inline_alias", "type": "string" },
+    { "name": "subitem_id", "type": "string" },
+    { "name": "shot_x", "type": "int" },
+    { "name": "shot_y", "type": "int" }
+  ],
+  "rows": [],
+  "description": "INLINE subitem과 shot 좌표 및 alias를 연결하는 shot map registry",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

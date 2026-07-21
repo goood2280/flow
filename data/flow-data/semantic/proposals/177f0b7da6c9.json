@@ -1,0 +1,16 @@
+{
+  "id": "177f0b7da6c9",
+  "term": "GATE",
+  "category": "new_canonical",
+  "canonical_match": null,
+  "confidence": 0.55,
+  "rationale": "no existing canonical or alias matches",
+  "origin": {
+    "kind": "inform",
+    "ref": "inf_260528_a382d5"
+  },
+  "status": "pending",
+  "created_at": "2026-05-28T13:49:55.510112+00:00",
+  "updated_at": "2026-05-28T13:49:55.510112+00:00",
+  "decided_by": null
+}

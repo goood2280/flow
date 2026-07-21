@@ -1,0 +1,72 @@
+flow 앱(/mnt/d/TEST_Making_Video/semi_all/flow)의 권한 가드 매트릭스를 backend/FE 양쪽 정밀 검토하고 누수를 fix해줘. "권한 없는 작업은 일반 유저 측에서 시도조차 못 하고, 시도되더라도 backend 가 단호하게 차단" 이 목표.
+
+[배경 — 사용자 의도]
+- 일반 유저(role!=admin)는 admin 전용 기능을 UI 에서도 호출 시도할 수 없어야 한다.
+- 어떤 경로(직접 API 호출, 다른 탭 우회 등)로도 admin 전용 변경이 절대 통과하지 않아야 한다.
+- 현재 backend require_admin/is_page_admin/Depends(current_user) 가 14 라우터 90회, FE role==='admin'/isAdmin 분기가 12 페이지 192회 있다. 누수 위험 높다.
+- 이전 task #1~5, #3 push 후 신규 라우터 (/api/informs/modules/*, /api/dashboard/multi-db-chart, /api/dashboard/chart-refine, /api/agent/*, /api/llm/flowi/inform/walkthrough/*) 도 모두 매트릭스에 포함.
+
+[현 상태 — 작업 시작 전 codex 가 직접 grep 해서 매트릭스 만들어]
+- backend: backend/routers/{admin,agent,calendar,dbmap,filebrowser,groups,informs,llm,messages,monitor,s3_ingest,semiconductor,tracker,waferlayout,splittable,dashboard,catalog,ettime,home,ml,reformatter,session_api,auth,meetings,mail_groups,informs_extra}.py 의 모든 @router.{get,post,put,delete,patch} 데코레이터 + 의존성 함수 추출.
+- FE: pages/My_*.jsx 에서 admin 분기 조건 + 그 분기 안에서 호출하는 API 경로 추출.
+- 매트릭스 형태(보고용 docs/permission_matrix.md):
+  | endpoint | method | backend gate | FE caller(file:line) | FE gate | risk |
+
+[작업]
+
+A) 매트릭스 작성 (보고)
+   - docs/permission_matrix.md 신규.
+   - 각 endpoint 를 표 한 줄로. risk = {ok | leak_be_open(backend gate 없는데 FE에서 admin only) | leak_fe_open(FE에서 일반 유저에게 노출되는데 backend admin-only) | inconsistent}.
+   - 매트릭스 끝에 risk 별 카운트 요약.
+
+B) 누수 fix (코드)
+   1) leak_be_open: backend 에 require_admin 또는 is_page_admin 의존성 추가. 단 "조회만 admin 표시"인 페이지면 read 는 모든 유저, write 만 admin 로 분리.
+   2) leak_fe_open: FE 에서 해당 버튼/메뉴/탭을 user.role!=='admin'일 때 hide. 잠금 아이콘 + 툴팁 "관리자만 사용 가능" 도 OK.
+   3) inconsistent: backend gate 정책이 옳다고 가정 — FE 를 backend 에 맞춰 정렬.
+
+C) 페이지 단위 admin 위임(is_page_admin) 정합성
+   - admin_settings.json 의 page_admins 매트릭스(있으면)를 기반으로 한다 — admin 본인 외에도 특정 페이지 admin 로 위임된 유저는 그 페이지 admin 기능을 쓸 수 있게.
+   - require_admin 과 is_page_admin 의 사용 위치를 docs/permission_matrix.md 의 같은 표에 함께 표시.
+
+D) 자연어 호출 차단 (홈 Flowi)
+   - /api/llm/flowi/chat 가 일반 유저로부터 admin 전용 함수(예: 매칭테이블 변경 / 룰북 변경 / 지식 promote / users 삭제 / DB 직접 변경) 키워드를 받았을 때 selected_function 후보에서 그 함수를 제거하고 친근 한국어 안내로 거절: "이 작업은 권한이 필요해요. 관리자에게 요청해 주세요."
+   - 거절 응답에는 missing/arguments_choices 동봉 X. blocked=true + reject_reason.
+   - task #2 의 권한 거절 흐름 (이미 일부 들어있을 수 있음) 과 정합성 유지.
+
+E) Admin 전용 라우터의 일관 패턴
+   - /api/admin/* 는 항상 require_admin.
+   - /api/agent/admin-tools/* (task #3 에서 추가) 는 require_admin.
+   - /api/informs/{id}/send-mail 은 작성자 또는 admin 만(기존 정책 확인 후 강화).
+   - /api/llm/flowi/admin/update, /flowi/feedback/promote, /flowi/persona POST, /api/llm/flowi/inform/walkthrough/confirm 등 admin 변경/write 는 require_admin.
+   - /api/dashboard/chart-defaults POST 는 admin only (task #5).
+   - 정책에 어긋나는 곳이 있으면 fix 후 매트릭스에 변경 이력 표기.
+
+F) 테스트
+   - tests/test_permission_matrix.py 신규:
+     * 일반 유저 세션으로 모든 admin-only endpoint POST/PUT/DELETE 호출 → 401/403 반환 검증.
+     * page_admin 로 위임된 유저는 그 페이지 admin endpoint OK, 다른 페이지 admin endpoint 는 403.
+     * 홈 Flowi /chat 에 admin 전용 함수 유발 prompt 를 일반 유저로 호출 → blocked=true.
+   - 기존 테스트 회귀 없게.
+
+G) FE 권한 헬퍼 일원화
+   - frontend/src/lib 에 권한 헬퍼 useUserRole(), isAdmin(user), isPageAdmin(user, pageKey) 신규 또는 기존 사용. 페이지마다 ad-hoc 분기 하지 말고 헬퍼 호출 패턴으로 일원화.
+   - 기존 직접 비교(user?.role==='admin')는 그대로 두되, 새 코드는 헬퍼 사용.
+
+H) 매트릭스 상시 업데이트 가이드
+   - docs/permission_matrix.md 끝에 "갱신 절차" 섹션 — 새 endpoint 추가 시 이 표에도 반드시 추가, 누락 시 CI 에서 잡을 수 있게 scripts/check_permission_matrix.py 신규(간단 grep 비교).
+
+I) 빌드
+   - python3 _build_setup.py 재빌드.
+   - npm --prefix frontend run build.
+
+[제약]
+- git add/commit/push 절대 X.
+- admin_settings.json 절대 수정/내용 출력 X. 읽기 OK 단 token/key 절대 출력 X.
+- 권한 강화 시 기존 정상 사용자 흐름 회귀 X — 일반 유저가 자신의 인폼/회의/이슈를 수정할 수 있는 것 같은 본인 데이터 권한은 그대로.
+- 검토 결과 risk 가 0 이면 fix 는 skip 하고 매트릭스만 보고. risk 있으면 모두 fix.
+
+[완료 기준]
+- docs/permission_matrix.md 생성, risk 별 카운트 0 (모두 fix 완료) 또는 부득이한 잔여는 명시 사유 첨부.
+- tests/test_permission_matrix.py 통과.
+- frontend build 통과, setup.py 재빌드, git status 의도된 변경만.
+- 마지막에 'DISCORD_SUMMARY:' 한국어 3~5줄 요약 + risk 카운트 표시.

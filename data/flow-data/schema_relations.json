@@ -1,0 +1,464 @@
+{
+  "relations": [
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001"
+      ],
+      "right_column": "ROOT_LOT_ID",
+      "relation_id": "944dd50639bfdfca69",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "root_lot_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODA",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "A1000"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODA.root_lot_id 와 ML_TABLE_PRODA.ROOT_LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001B.1"
+      ],
+      "right_column": "LOT_ID",
+      "relation_id": "eaed196e5a393ee453",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "lot_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODA",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "A1000A.3"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODA.lot_id 와 ML_TABLE_PRODA.LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: wafer_id",
+        "sample overlap: 1"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "right_column": "WAFER_ID",
+      "relation_id": "4f5ac4203e3376cb0c",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "wafer_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODA",
+      "canonical_key": "wafer_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "1"
+      ],
+      "right_dtype": "Int64",
+      "rationale": "ET PRODA.wafer_id 와 ML_TABLE_PRODA.WAFER_ID 는 normalized column name match, known join-key alias: wafer_id, sample overlap: 1 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: step_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "AA100250",
+        "AA100090",
+        "AA100260",
+        "AA100280",
+        "AA100110"
+      ],
+      "right_column": "step_id",
+      "relation_id": "170d40314956f4e6ad",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "step_id",
+      "right_label": "step_matching",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODA",
+      "canonical_key": "step_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_step_matching.csv",
+      "left_sample": [
+        "EA100010"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODA.step_id 와 step_matching.step_id 는 normalized column name match, known join-key alias: step_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODB",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001"
+      ],
+      "right_column": "ROOT_LOT_ID",
+      "relation_id": "a14d7fd25e63a60945",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "root_lot_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODB",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "B1000"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODB.root_lot_id 와 ML_TABLE_PRODA.ROOT_LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODB",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001B.1"
+      ],
+      "right_column": "LOT_ID",
+      "relation_id": "954ce5b2ee5f49599c",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "lot_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODB",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "B1000A.3"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODB.lot_id 와 ML_TABLE_PRODA.LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODB",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: wafer_id",
+        "sample overlap: 1"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "right_column": "WAFER_ID",
+      "relation_id": "b5513361a8541153ce",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "wafer_id",
+      "right_label": "ML_TABLE_PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODB",
+      "canonical_key": "wafer_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "1"
+      ],
+      "right_dtype": "Int64",
+      "rationale": "ET PRODB.wafer_id 와 ML_TABLE_PRODA.WAFER_ID 는 normalized column name match, known join-key alias: wafer_id, sample overlap: 1 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "ET PRODB",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: step_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "AA100250",
+        "AA100090",
+        "AA100260",
+        "AA100280",
+        "AA100110"
+      ],
+      "right_column": "step_id",
+      "relation_id": "a840426f51f9c9c185",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "step_id",
+      "right_label": "step_matching",
+      "left_source_id": "db_1.RAWDATA_DB_ET_PRODB",
+      "canonical_key": "step_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_step_matching.csv",
+      "left_sample": [
+        "EA100010"
+      ],
+      "right_dtype": "String",
+      "rationale": "ET PRODB.step_id 와 step_matching.step_id 는 normalized column name match, known join-key alias: step_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:49:05.764334+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "FAB PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001"
+      ],
+      "right_column": "ROOT_LOT_ID",
+      "relation_id": "55584e045e6bfcfc0a",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "root_lot_id",
+      "right_label": "ML_TABLE PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_FAB_PRODA",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "A1000"
+      ],
+      "right_dtype": "String",
+      "rationale": "FAB PRODA.root_lot_id 와 ML_TABLE PRODA.ROOT_LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:48:59.593474+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "FAB PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: root_lot_id",
+        "dtype compatible: string"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "A1001B.1"
+      ],
+      "right_column": "LOT_ID",
+      "relation_id": "ca364d3ca7adc4d5b3",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "lot_id",
+      "right_label": "ML_TABLE PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_FAB_PRODA",
+      "canonical_key": "root_lot_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "A1000A.1",
+        "A1000A.2"
+      ],
+      "right_dtype": "String",
+      "rationale": "FAB PRODA.lot_id 와 ML_TABLE PRODA.LOT_ID 는 normalized column name match, known join-key alias: root_lot_id, dtype compatible: string 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:48:59.593474+00:00",
+      "note": ""
+    },
+    {
+      "left_source_type": "db",
+      "left_label": "FAB PRODA",
+      "evidence": [
+        "normalized column name match",
+        "known join-key alias: wafer_id",
+        "sample overlap: 1"
+      ],
+      "status": "confirmed",
+      "confidence": 0.99,
+      "right_sample": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "right_column": "WAFER_ID",
+      "relation_id": "e7214921349439ec44",
+      "relation_type": "join_key",
+      "left_dtype": "String",
+      "left_column": "wafer_id",
+      "right_label": "ML_TABLE PRODA",
+      "left_source_id": "db_1.RAWDATA_DB_FAB_PRODA",
+      "canonical_key": "wafer_id",
+      "right_source_type": "file",
+      "right_source_id": "file_base_root_ML_TABLE_PRODA.parquet",
+      "left_sample": [
+        "1"
+      ],
+      "right_dtype": "Int64",
+      "rationale": "FAB PRODA.wafer_id 와 ML_TABLE PRODA.WAFER_ID 는 normalized column name match, known join-key alias: wafer_id, sample overlap: 1 근거로 join key 후보입니다. 신뢰도 0.99.",
+      "confirmed_by": "hol",
+      "confirmed_at": "2026-05-12T14:48:59.593474+00:00",
+      "note": ""
+    }
+  ],
+  "column_catalog": [
+    {
+      "relation_id": "ML_TABLE_PRODA",
+      "column": "lot_wf",
+      "raw_names": [
+        "LOT_WF",
+        "lot_wafer_key"
+      ],
+      "dtype": "string",
+      "canonical_alias": "lot_wf",
+      "unit": null,
+      "fk": "root_lot_id+wafer_id",
+      "sample_values": [
+        "A1001_W07",
+        "A1002_W01"
+      ],
+      "wiki_doc_id": "ml_table_proda.lot_wf",
+      "created_at": "2026-05-15T07:47:09+09:00",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "updated_by": "codex_demo_seed"
+    },
+    {
+      "relation_id": "ML_TABLE_PRODA",
+      "column": "root_lot_id",
+      "raw_names": [
+        "RootLotID",
+        "ROOT_LOT_ID"
+      ],
+      "dtype": "string",
+      "canonical_alias": "root_lot_id",
+      "unit": null,
+      "fk": null,
+      "sample_values": [
+        "A1001",
+        "A1002",
+        "A1003"
+      ],
+      "wiki_doc_id": "ml_table_proda.root_lot_id",
+      "created_at": "2026-05-12T22:51:08+09:00",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "updated_by": "codex_demo_seed"
+    },
+    {
+      "relation_id": "ML_TABLE_PRODA",
+      "column": "step_id",
+      "raw_names": [
+        "StepID",
+        "STEP_ID"
+      ],
+      "dtype": "string",
+      "canonical_alias": "step_id",
+      "unit": null,
+      "fk": "function_step",
+      "sample_values": [
+        "SORT",
+        "ET01",
+        "METRO"
+      ],
+      "wiki_doc_id": "ml_table_proda.step_id",
+      "created_at": "2026-05-15T07:47:09+09:00",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "updated_by": "codex_demo_seed"
+    },
+    {
+      "relation_id": "ML_TABLE_PRODA",
+      "column": "wafer_id",
+      "raw_names": [
+        "WaferID",
+        "WAFER_ID"
+      ],
+      "dtype": "string",
+      "canonical_alias": "wafer_id",
+      "unit": null,
+      "fk": null,
+      "sample_values": [
+        "W01",
+        "W07",
+        "W13"
+      ],
+      "wiki_doc_id": "ml_table_proda.wafer_id",
+      "created_at": "2026-05-15T07:47:09+09:00",
+      "updated_at": "2026-05-15T07:47:09+09:00",
+      "updated_by": "codex_demo_seed"
+    }
+  ],
+  "updated_at": "2026-05-15T07:47:09+09:00",
+  "updated_by": "codex_demo_seed"
+}

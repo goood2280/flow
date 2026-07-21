@@ -1,0 +1,4620 @@
+{
+  "ok": true,
+  "run_id": "home_flowi_20260718T144112Z_a22d11f9",
+  "created_at": "2026-07-18T14:41:12.669719+00:00",
+  "source": "llm_flowi_chat",
+  "username": "hol",
+  "prompt": "A1002 스플릿테이블 보여줘",
+  "input_prompt": "",
+  "resolved_prompt": "",
+  "status": "success",
+  "reply": "ML_TABLE_PRODA A1002 SplitTable KNOB 기준으로 27개 row를 조회했습니다.\n아래는 조회된 스플릿 데이터입니다. 전체 화면은 SplitTable 열기 버튼을 사용하세요.",
+  "graph": {
+    "nodes": [
+      {
+        "id": "prompt_input",
+        "label": "프롬프트 입력",
+        "phase": "input",
+        "status": "success"
+      },
+      {
+        "id": "semantic_layer",
+        "label": "용어해석",
+        "phase": "semantic",
+        "status": "success"
+      },
+      {
+        "id": "orchestrator",
+        "label": "오케스트레이터",
+        "phase": "plan",
+        "status": "success"
+      },
+      {
+        "id": "result_renderer",
+        "label": "결과 정리",
+        "phase": "render",
+        "status": "success"
+      },
+      {
+        "id": "unit_ai:change_management",
+        "label": "변경점 관리 Flow-i",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "change_management",
+        "feedback_penalty": {
+          "unit_key": "change_management",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:dashboard_agent",
+        "label": "Dashboard Agent",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "dashboard_agent",
+        "feedback_penalty": {
+          "unit_key": "dashboard_agent",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:filebrowser_ai_sql",
+        "label": "FileBrowser AI SQL",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "filebrowser_ai_sql",
+        "feedback_penalty": {
+          "unit_key": "filebrowser_ai_sql",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:inform_registration",
+        "label": "Inform 등록 도우미",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "inform_registration",
+        "feedback_penalty": {
+          "unit_key": "inform_registration",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:ppid_knob",
+        "label": "PPID Knob 분류",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "ppid_knob",
+        "feedback_penalty": {
+          "unit_key": "ppid_knob",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:split_nav",
+        "label": "SplitTable 열기",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "split_nav",
+        "feedback_penalty": {
+          "unit_key": "split_nav",
+          "penalty": 0.0,
+          "boost": 0.0,
+          "score_adjustment": 0.0,
+          "up_count": 0,
+          "down_count": 0,
+          "last_rating": "",
+          "updated_at": ""
+        },
+        "status": "available"
+      },
+      {
+        "id": "unit_ai:step_lookup",
+        "label": "Step ID 매칭",
+        "phase": "unit_ai_mcp",
+        "kind": "unit_ai",
+        "tool": "step_lookup",
+        "feedback_penalty": {
+          "unit_key": "step_lookup",
+          "penalty": 2.0,
+          "boost": 0.0,
+          "score_adjustment": -2.0,
+          "up_count": 0,
+          "down_count": 2,
+          "last_rating": "down",
+          "updated_at": "2026-07-02T23:31:34+00:00"
+        },
+        "status": "available"
+      }
+    ],
+    "edges": [
+      {
+        "source": "prompt_input",
+        "target": "semantic_layer"
+      },
+      {
+        "source": "semantic_layer",
+        "target": "orchestrator"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:change_management"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:dashboard_agent"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:filebrowser_ai_sql"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:inform_registration"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:ppid_knob"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:split_nav"
+      },
+      {
+        "source": "orchestrator",
+        "target": "unit_ai:step_lookup"
+      },
+      {
+        "source": "orchestrator",
+        "target": "result_renderer"
+      }
+    ]
+  },
+  "trace": {
+    "kind": "public_execution_trace",
+    "visible": true,
+    "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+    "activation": {
+      "prompt": "A1002 스플릿테이블 보여줘",
+      "endpoint": "/api/llm/flowi/chat",
+      "intent": "split_nav",
+      "feature": "splittable",
+      "action": "splittable.view",
+      "handler_action": "query_splittable_view",
+      "api": "/api/splittable/view",
+      "handler": "routers.splittable.view_split",
+      "status": "done",
+      "output": "splittable_view_rows 675 rows",
+      "payload_summary": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ]
+      },
+      "next_action": "표 확인",
+      "missing": [],
+      "cause": ""
+    },
+    "semantic": {
+      "intent": "archived",
+      "coverage": 0.0,
+      "slots": {
+        "prompt": "A1002 스플릿테이블 보여줘"
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ],
+      "candidate_count": 0
+    },
+    "plan": [
+      {
+        "agent_id": "agent_archived",
+        "unit_ai": "agent_runtime",
+        "action": "archived",
+        "title": "Agent Archived",
+        "policy": "blocked",
+        "endpoint": "archive/agent_reset_2026_05_26",
+        "approval_required": false
+      }
+    ],
+    "unit_ai_selection": [
+      {
+        "key": "agent_runtime",
+        "title": "agent_runtime.archived",
+        "status": "blocked",
+        "reason": "blocked"
+      }
+    ],
+    "guardrail": {
+      "status": "archived",
+      "blocked": true,
+      "approval_required": false,
+      "reason": "agent_runtime_archived",
+      "plan_count": 1,
+      "tool_blocked": false,
+      "tool_requires_confirmation": false,
+      "selected_feature": "splittable",
+      "selected_action": "query_splittable_view"
+    },
+    "interpretation": {
+      "input_slots": {
+        "product": "ML_TABLE_PRODA",
+        "lot": [
+          "A1002"
+        ],
+        "wafer": "",
+        "step": "",
+        "item": "",
+        "semantic_term": "",
+        "agg": "",
+        "meeting": "",
+        "session": "",
+        "source_candidates": []
+      },
+      "missing_slots": [],
+      "filled_slots": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ]
+      },
+      "knowledge_terms": [
+        {
+          "term": "A1002",
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "term": "A1002",
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "term": "ML_TABLE_PRODA",
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        }
+      ],
+      "term_resolution": []
+    },
+    "evidence": {
+      "used_feature_ai": "splittable",
+      "endpoint": "/api/splittable/view",
+      "payload_summary": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ]
+      },
+      "filters": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ],
+        "fab_lot_ids": [],
+        "wafer_ids": [],
+        "step": "",
+        "prefix": "KNOB",
+        "custom_set_filter": "",
+        "custom_cols": [],
+        "source": "splittable.view"
+      },
+      "sql": "",
+      "selected_columns": [],
+      "source_ids": [],
+      "relation_ids": [],
+      "join_keys": [],
+      "join_plan": {},
+      "query_plan": {},
+      "sql_plan": "",
+      "impact_context": {},
+      "chart_config": {},
+      "meeting_sources": [],
+      "knowledge_sources": [
+        {
+          "id": "column:ML_TABLE_PRODA.root_lot_id",
+          "title": "ML_TABLE_PRODA.root_lot_id",
+          "kind": "column_catalog",
+          "term": "A1002",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "root_lot_id"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.lot_wf",
+          "title": "ML_TABLE_PRODA.lot_wf",
+          "kind": "column_catalog",
+          "term": "A1002",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "lot_wf"
+        },
+        {
+          "id": "column:ML_TABLE_PRODA.step_id",
+          "title": "ML_TABLE_PRODA.step_id",
+          "kind": "column_catalog",
+          "term": "ML_TABLE_PRODA",
+          "source": "column_catalog",
+          "relation_id": "ML_TABLE_PRODA",
+          "column": "step_id"
+        }
+      ],
+      "table_total": 675,
+      "api_calls": [
+        {
+          "stage": "ingress",
+          "method": "POST",
+          "path": "/api/llm/flowi/chat",
+          "callee": "flowi_chat",
+          "status": "done",
+          "output": "request accepted"
+        },
+        {
+          "stage": "orchestrator",
+          "method": "internal",
+          "path": "backend/routers/llm.py",
+          "callee": "_run_flowi_chat",
+          "status": "done",
+          "output": "workflow=ready"
+        },
+        {
+          "stage": "knowledge",
+          "method": "internal",
+          "path": "data/flow-data/knowledge + schema_relations.json",
+          "callee": "core.knowledge_vault.lookup_term",
+          "status": "done",
+          "output": "column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id"
+        },
+        {
+          "stage": "feature_api",
+          "method": "GET",
+          "path": "/api/splittable/view",
+          "callee": "routers.splittable.view_split",
+          "status": "done",
+          "output": "splittable_view_rows 675 rows"
+        },
+        {
+          "stage": "response",
+          "method": "internal",
+          "path": "Flow-i response payload",
+          "callee": "_attach_flowi_trace",
+          "status": "done",
+          "output": "splittable_view_rows 675 rows"
+        }
+      ]
+    },
+    "validation": {
+      "rows": 675,
+      "chart_readiness": "",
+      "source_count": 3,
+      "warnings": [],
+      "fallback": false,
+      "llm_used": false,
+      "llm_error": ""
+    },
+    "persona_snapshot": {
+      "label": "반도체 공정 데이터 분석가",
+      "role": "semiconductor_process_data_analyst",
+      "prompt_source": "default",
+      "system_prompt_chars": 1681,
+      "must_not_chars": 379,
+      "principle_count": 3,
+      "public_note": "내부 사고과정이 아니라 현재 적용된 persona/system prompt cache의 공개 요약입니다."
+    },
+    "prompt_cache": {
+      "allowed_features": [
+        "calendar",
+        "dashboard",
+        "devguide",
+        "diagnosis",
+        "filebrowser",
+        "inform",
+        "meeting",
+        "splittable",
+        "tablemap",
+        "tracker"
+      ],
+      "feature_entrypoint_count": 10,
+      "feature_docs": [],
+      "few_shot_count": 17,
+      "workflow_catalog_count": 54,
+      "promoted_knowledge_count": 0,
+      "cache_scope": "feature docs, workflow catalog, few-shot examples, promoted knowledge summaries"
+    },
+    "workflow_matches": [
+      {
+        "id": "wf_split_table_root_lot",
+        "title": "Root lot SplitTable 조회",
+        "category": "splittable",
+        "unit_ai": "splittable",
+        "action": "show_split_table",
+        "score": 10.51,
+        "source_roles": [
+          "split_base",
+          "rulebook"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          }
+        ],
+        "examples": [
+          "A1001 스플릿테이블 보여줘",
+          "{root_lot_id} 스플릿테이블 보여줘",
+          "{root_lot_id} split table",
+          "{root_lot_id} knob 테이블 보여줘"
+        ],
+        "question_template": "{root_lot_id} 스플릿테이블 보여줘",
+        "steps": [
+          "root_lot_id를 추출한다.",
+          "SplitTable 단위기능에서 해당 root_lot_id의 knob/plan/actual cell을 조회한다.",
+          "SplitTable 화면과 같은 header, group, row, cell 형식으로 반환한다."
+        ],
+        "orchestration": [
+          "root_lot_id를 추출한다.",
+          "SplitTable 단위기능에서 해당 root_lot_id의 knob/plan/actual cell을 조회한다.",
+          "SplitTable 화면과 같은 header, group, row, cell 형식으로 반환한다."
+        ]
+      },
+      {
+        "id": "wf_split_table_root_lot_knob",
+        "title": "Root lot + Knob 조건 SplitTable 조회",
+        "category": "splittable",
+        "unit_ai": "splittable",
+        "action": "show_split_table_filtered_knob",
+        "score": 8.889,
+        "source_roles": [
+          "split_base",
+          "rulebook"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "knob_name",
+            "type": "knob",
+            "required": true,
+            "example": "1.0 STI",
+            "match": "contains_tokens"
+          }
+        ],
+        "examples": [
+          "{root_lot_id} {knob_name} Split 보여줘",
+          "{root_lot_id} {knob_name} Knob 보여줘"
+        ],
+        "question_template": "{root_lot_id} {knob_name} Split 보여줘",
+        "steps": [
+          "root_lot_id와 knob_name 후보를 분리한다.",
+          "knob_name은 공백 단위 토큰을 포함 검색 조건으로 바꾼다.",
+          "SplitTable CUSTOM SET 조건으로 검색하고 화면과 같은 형식으로 반환한다."
+        ],
+        "orchestration": [
+          "root_lot_id와 knob_name 후보를 분리한다.",
+          "knob_name은 공백 단위 토큰을 포함 검색 조건으로 바꾼다.",
+          "SplitTable CUSTOM SET 조건으로 검색하고 화면과 같은 형식으로 반환한다."
+        ]
+      },
+      {
+        "id": "wf_semantic_measurement_value_lookup",
+        "title": "Semantic measurement term wafer value lookup",
+        "category": "measurement",
+        "unit_ai": "filebrowser_ai_sql",
+        "action": "query_semantic_measurement",
+        "score": 4.49,
+        "source_roles": [
+          "inline_db",
+          "et_db"
+        ],
+        "slots": [
+          {
+            "name": "product",
+            "type": "product",
+            "required": true,
+            "example": "PRODA"
+          },
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "measurement_term",
+            "type": "semantic_measurement",
+            "required": true,
+            "example": "CA BCD"
+          }
+        ],
+        "examples": [
+          "{product} {root_lot_id} {measurement_term} 값 몇이야",
+          "{product} {root_lot_id} {measurement_term} wafer 값 보여줘"
+        ],
+        "question_template": "{product} {root_lot_id} {measurement_term} 값 몇이야",
+        "steps": [
+          "semantic measurement catalog에서 measurement_term을 source_type, step_id, item_id, spec으로 해석한다.",
+          "source_type의 기본 집계를 적용한다. Inline은 avg, ET는 median을 기본으로 사용한다.",
+          "root_lot_id의 #1~25 wafer 측정값을 집계해 테이블로 표시한다.",
+          "semantic term의 updated_at과 evidence를 결과와 trace에 남긴다."
+        ],
+        "orchestration": [
+          "semantic measurement catalog에서 measurement_term을 source_type, step_id, item_id, spec으로 해석한다.",
+          "source_type의 기본 집계를 적용한다. Inline은 avg, ET는 median을 기본으로 사용한다.",
+          "root_lot_id의 #1~25 wafer 측정값을 집계해 테이블로 표시한다.",
+          "semantic term의 updated_at과 evidence를 결과와 trace에 남긴다."
+        ]
+      },
+      {
+        "id": "wf_fab_current_location",
+        "title": "Wafer 현재 FAB 위치 조회",
+        "category": "fab",
+        "unit_ai": "fab_reference",
+        "action": "query_current_location",
+        "score": 4.108,
+        "source_roles": [
+          "fab_db",
+          "step_matching"
+        ],
+        "slots": [
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": true,
+            "example": "A1001"
+          },
+          {
+            "name": "wafer_id",
+            "type": "wafer",
+            "required": true,
+            "example": "#3"
+          }
+        ],
+        "examples": [
+          "A1001 #3 지금 어디에 있어?",
+          "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+          "{root_lot_id} wafer {wafer_id} current location",
+          "{root_lot_id} #{wafer_id} 현재 FAB 위치 알려줘"
+        ],
+        "question_template": "{root_lot_id} #{wafer_id} 지금 어디에 있어?",
+        "steps": [
+          "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+          "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+          "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+        ],
+        "orchestration": [
+          "FAB DATA DB에서 root_lot_id와 wafer_id를 검색한다.",
+          "tkout_time이 가장 최신인 row의 step_id를 고른다.",
+          "step_matching source에서 step_id의 step_desc/function_step을 찾아 함께 병기한다."
+        ]
+      },
+      {
+        "id": "wf_split_raw_data_download",
+        "title": "Split base raw data CSV 공유",
+        "category": "raw_export",
+        "unit_ai": "filebrowser_ai_sql",
+        "action": "export_split_base_raw_data",
+        "score": 4.105,
+        "source_roles": [
+          "split_base"
+        ],
+        "slots": [
+          {
+            "name": "product",
+            "type": "product",
+            "required": true,
+            "example": "PRODA"
+          },
+          {
+            "name": "root_lot_id",
+            "type": "lot",
+            "required": false
+          },
+          {
+            "name": "wafer_id",
+            "type": "wafer",
+            "required": false
+          },
+          {
+            "name": "knob_name",
+            "type": "knob",
+            "required": true
+          }
+        ],
+        "examples": [
+          "PRODA MASK_1.0 STI raw data 공유해줘",
+          "{product} {root_lot_id} {wafer_id} {knob_name} raw data 공유해줘",
+          "{product} {knob_name} raw data csv",
+          "{product} {knob_name} raw data 다운로드"
+        ],
+        "question_template": "{product} {root_lot_id} {wafer_id} {knob_name} raw data 공유해줘",
+        "steps": [
+          "ML_TABLE_<product> source를 선택한다.",
+          "root_lot_id, wafer_id, knob_name 조건으로 read-only 필터를 만든다.",
+          "preview와 Raw CSV 다운로드 버튼을 제공한다."
+        ],
+        "orchestration": [
+          "ML_TABLE_<product> source를 선택한다.",
+          "root_lot_id, wafer_id, knob_name 조건으로 read-only 필터를 만든다.",
+          "preview와 Raw CSV 다운로드 버튼을 제공한다."
+        ]
+      }
+    ],
+    "subagent_context": {
+      "feature_subagent": "splittable",
+      "intent": "split_nav",
+      "handler_action": "query_splittable_view",
+      "unit_action": "splittable.view",
+      "api_or_handler": "/api/splittable/view",
+      "payload_summary": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ]
+      },
+      "source_profile": {},
+      "deterministic_handler": true,
+      "filters": {
+        "product": "ML_TABLE_PRODA",
+        "root_lot_ids": [
+          "A1002"
+        ],
+        "prefix": "KNOB",
+        "source": "splittable.view"
+      }
+    },
+    "clarification_loop": {
+      "status": "done",
+      "needs_input": false,
+      "question": "",
+      "missing": [],
+      "choices": [],
+      "next_unit_action": "splittable.view",
+      "pending_prompt": "A1002 스플릿테이블 보여줘",
+      "user_answer": ""
+    },
+    "retrieved_knowledge": [
+      {
+        "id": "column:ML_TABLE_PRODA.root_lot_id",
+        "title": "ML_TABLE_PRODA.root_lot_id",
+        "kind": "column_catalog",
+        "summary": "root_lot_id",
+        "term": "A1002",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "root_lot_id",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.lot_wf",
+        "title": "ML_TABLE_PRODA.lot_wf",
+        "kind": "column_catalog",
+        "summary": "lot_wf",
+        "term": "A1002",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "lot_wf",
+        "score": null
+      },
+      {
+        "id": "column:ML_TABLE_PRODA.step_id",
+        "title": "ML_TABLE_PRODA.step_id",
+        "kind": "column_catalog",
+        "summary": "step_id",
+        "term": "ML_TABLE_PRODA",
+        "source": "column_catalog",
+        "relation_id": "ML_TABLE_PRODA",
+        "column": "step_id",
+        "score": null
+      }
+    ],
+    "steps": [
+      {
+        "key": "receive",
+        "stage": "receive",
+        "title": "요청 접수",
+        "label": "요청 접수",
+        "status": "done",
+        "detail": "prompt 16 chars, context 8 messages",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "auth",
+        "stage": "auth",
+        "title": "사용자/권한 확인",
+        "label": "사용자/권한 확인",
+        "status": "done",
+        "detail": "허용 기능 10개",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "route",
+        "stage": "route",
+        "title": "의도/단위기능 선택",
+        "label": "의도/단위기능 선택",
+        "status": "done",
+        "detail": "intent=split_nav, action=query_splittable_view",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "knowledge",
+        "stage": "knowledge",
+        "title": "Agent Wiki 검색",
+        "label": "Agent Wiki 검색",
+        "status": "done",
+        "detail": "column:ML_TABLE_PRODA.root_lot_id(A1002), column:ML_TABLE_PRODA.lot_wf(A1002), column:ML_TABLE_PRODA.step_id(ML_TABLE_PRODA)",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "guardrail",
+        "stage": "guardrail",
+        "title": "권한/쓰기 보호",
+        "label": "권한/쓰기 보호",
+        "status": "done",
+        "detail": "허용된 단위기능 범위에서 진행",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "tool",
+        "stage": "tool",
+        "title": "DB/cache/tool 실행",
+        "label": "DB/cache/tool 실행",
+        "status": "done",
+        "detail": "table splittable_view_rows rows=675, knowledge=column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "llm",
+        "stage": "llm",
+        "title": "LLM 답변 정리",
+        "label": "LLM 답변 정리",
+        "status": "skipped",
+        "detail": "로컬 단위기능 결과를 그대로 사용",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      },
+      {
+        "key": "render",
+        "stage": "render",
+        "title": "화면 출력 준비",
+        "label": "화면 출력 준비",
+        "status": "done",
+        "detail": "table splittable_view_rows rows=675, knowledge=column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id",
+        "ts": "2026-07-18T14:41:12.602254+00:00"
+      }
+    ],
+    "api_calls": [
+      {
+        "stage": "ingress",
+        "feature": "llm",
+        "action": "flowi_chat",
+        "name": "Flow-i FastAPI endpoint",
+        "method": "POST",
+        "path": "/api/llm/flowi/chat",
+        "callee": "flowi_chat",
+        "purpose": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+        "payload": {
+          "prompt_chars": 16,
+          "allowed_features": 10
+        },
+        "output": "request accepted",
+        "status": "done"
+      },
+      {
+        "stage": "orchestrator",
+        "feature": "flowi",
+        "action": "query_splittable_view",
+        "name": "Flow-i orchestrator",
+        "method": "internal",
+        "path": "backend/routers/llm.py",
+        "callee": "_run_flowi_chat",
+        "purpose": "권한, slot, intent, feature handler, LLM polish 여부를 결정",
+        "payload": {
+          "intent": "split_nav",
+          "feature": "splittable",
+          "missing": []
+        },
+        "output": "workflow=ready",
+        "status": "done"
+      },
+      {
+        "stage": "knowledge",
+        "feature": "knowledge",
+        "action": "lookup_term",
+        "name": "Agent Wiki / schema lookup",
+        "method": "internal",
+        "path": "data/flow-data/knowledge + schema_relations.json",
+        "callee": "core.knowledge_vault.lookup_term",
+        "purpose": "질문 용어를 Agent Wiki schema_doc, column_catalog, promoted knowledge와 대조",
+        "payload": {
+          "terms": [
+            "A1002",
+            "ML_TABLE_PRODA"
+          ]
+        },
+        "output": "column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id",
+        "status": "done"
+      },
+      {
+        "stage": "feature_api",
+        "feature": "splittable",
+        "action": "query_splittable_view",
+        "name": "SplitTable view",
+        "method": "GET",
+        "path": "/api/splittable/view",
+        "callee": "routers.splittable.view_split",
+        "purpose": "product/root/wafer/step/prefix 조건으로 split table row를 조회",
+        "payload": {
+          "product": "ML_TABLE_PRODA",
+          "prefix": "KNOB"
+        },
+        "output": "splittable_view_rows 675 rows",
+        "status": "done",
+        "metadata": {
+          "elapsed_ms": 22,
+          "runtime_profile": {
+            "total_ms": 22.442,
+            "root_cache_hit": false,
+            "product_cache_hit": false,
+            "payload_cache_hit": true,
+            "data_source": "payload_cache",
+            "scan_ms": 0.0,
+            "root_scan_ms": 0.0,
+            "collect_ms": 0.0,
+            "matrix_ms": 0.0,
+            "overlay_ms": 0.0,
+            "root_cache_status": ""
+          },
+          "view_cache": {
+            "hit": true,
+            "payload_cache_hit": true,
+            "stale": false,
+            "entries": 3,
+            "max_entries": 512,
+            "key": "87a62f2bbf9a"
+          }
+        }
+      },
+      {
+        "stage": "response",
+        "feature": "flowi",
+        "action": "render_response",
+        "name": "Answer composer",
+        "method": "internal",
+        "path": "Flow-i response payload",
+        "callee": "_attach_flowi_trace",
+        "purpose": "tool result, clarification, next actions, trace를 화면 응답으로 패키징",
+        "payload": {
+          "llm_used": false
+        },
+        "output": "splittable_view_rows 675 rows",
+        "status": "done"
+      }
+    ],
+    "call_graph": {
+      "nodes": [
+        {
+          "id": "prompt",
+          "type": "input",
+          "title": "Prompt 전달",
+          "detail": "A1002 스플릿테이블 보여줘",
+          "status": "done"
+        },
+        {
+          "id": "fastapi",
+          "type": "fastapi",
+          "title": "/api/llm/flowi/chat",
+          "detail": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+          "status": "done"
+        },
+        {
+          "id": "orchestrator",
+          "type": "orchestrator",
+          "title": "오케스트레이터 판단",
+          "detail": "intent=split_nav, action=query_splittable_view",
+          "status": "done"
+        },
+        {
+          "id": "guardrail",
+          "type": "guardrail",
+          "title": "Schema / permission check",
+          "detail": "필수 slot, 권한, 저장 전 확인 상태 검증",
+          "status": "done"
+        },
+        {
+          "id": "knowledge",
+          "type": "knowledge",
+          "title": "Agent Wiki / Schema",
+          "detail": "column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id",
+          "status": "done"
+        },
+        {
+          "id": "feature",
+          "type": "feature_subagent",
+          "title": "splittable subagent",
+          "detail": "query_splittable_view",
+          "status": "done"
+        },
+        {
+          "id": "api_1",
+          "type": "api_call",
+          "title": "SplitTable view",
+          "detail": "/api/splittable/view",
+          "status": "done"
+        },
+        {
+          "id": "result",
+          "type": "result",
+          "title": "Tool result",
+          "detail": "splittable_view_rows 675 rows",
+          "status": "done"
+        },
+        {
+          "id": "answer",
+          "type": "answer",
+          "title": "Answer payload",
+          "detail": "answer, table/chart, clarification, next_actions를 반환",
+          "status": "done"
+        }
+      ],
+      "edges": [
+        {
+          "source": "prompt",
+          "target": "fastapi",
+          "label": "POST"
+        },
+        {
+          "source": "fastapi",
+          "target": "orchestrator",
+          "label": "request"
+        },
+        {
+          "source": "orchestrator",
+          "target": "guardrail",
+          "label": "validate"
+        },
+        {
+          "source": "guardrail",
+          "target": "knowledge",
+          "label": "lookup"
+        },
+        {
+          "source": "knowledge",
+          "target": "feature",
+          "label": "dispatch"
+        },
+        {
+          "source": "feature",
+          "target": "api_1",
+          "label": "GET"
+        },
+        {
+          "source": "api_1",
+          "target": "result",
+          "label": "return"
+        },
+        {
+          "source": "result",
+          "target": "answer",
+          "label": "compose"
+        }
+      ],
+      "layout": "linear_dag",
+      "activation": {
+        "prompt": "A1002 스플릿테이블 보여줘",
+        "endpoint": "/api/llm/flowi/chat",
+        "intent": "split_nav",
+        "feature": "splittable",
+        "action": "splittable.view",
+        "handler_action": "query_splittable_view",
+        "api": "/api/splittable/view",
+        "handler": "routers.splittable.view_split",
+        "status": "done",
+        "output": "splittable_view_rows 675 rows",
+        "payload_summary": {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_ids": [
+            "A1002"
+          ]
+        },
+        "next_action": "표 확인",
+        "missing": [],
+        "cause": ""
+      }
+    }
+  },
+  "action_log": {
+    "summary": [
+      "선택한 intent/action은 split_nav / splittable.view이며 splittable 기능으로 처리했습니다.",
+      "사용 근거는 Wiki/schema 3건(column:ML_TABLE_PRODA.root_lot_id, ML_TABLE_PRODA, column:ML_TABLE_PRODA.lot_wf)입니다.",
+      "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+      "실행 경로는 SplitTable view입니다.",
+      "/api/splittable/view 실제 호출 완료 (22ms / cache hit=True).",
+      "검증 결과: 결과 675건."
+    ],
+    "timeline": [
+      {
+        "stage": "semantic_layer",
+        "title": "질문 해석",
+        "detail": "intent=archived, coverage=0.0, slots=prompt",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.lot_wf",
+          "column:ML_TABLE_PRODA.step_id"
+        ],
+        "api_refs": [
+          {
+            "stage": "ingress",
+            "name": "Flow-i FastAPI endpoint",
+            "method": "POST",
+            "path": "/api/llm/flowi/chat",
+            "callee": "flowi_chat",
+            "status": "done",
+            "output": "request accepted"
+          },
+          {
+            "stage": "knowledge",
+            "name": "Agent Wiki / schema lookup",
+            "method": "internal",
+            "path": "data/flow-data/knowledge + schema_relations.json",
+            "callee": "core.knowledge_vault.lookup_term",
+            "status": "done",
+            "output": "column:ML_TABLE_PRODA.root_lot_id, column:ML_TABLE_PRODA.lot_wf, column:ML_TABLE_PRODA.step_id"
+          }
+        ]
+      },
+      {
+        "stage": "task_planner",
+        "title": "실행 계획",
+        "detail": "agent_runtime",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.lot_wf",
+          "column:ML_TABLE_PRODA.step_id"
+        ],
+        "api_refs": [
+          {
+            "stage": "orchestrator",
+            "name": "Flow-i orchestrator",
+            "method": "internal",
+            "path": "backend/routers/llm.py",
+            "callee": "_run_flowi_chat",
+            "status": "done",
+            "output": "workflow=ready"
+          }
+        ]
+      },
+      {
+        "stage": "unit_agents",
+        "title": "단위 기능 실행",
+        "detail": "SplitTable view",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.lot_wf",
+          "column:ML_TABLE_PRODA.step_id"
+        ],
+        "api_refs": [
+          {
+            "stage": "feature_api",
+            "name": "SplitTable view",
+            "method": "GET",
+            "path": "/api/splittable/view",
+            "callee": "routers.splittable.view_split",
+            "status": "done",
+            "output": "splittable_view_rows 675 rows",
+            "metadata": {
+              "elapsed_ms": 22,
+              "runtime_profile": {
+                "total_ms": 22.442,
+                "root_cache_hit": false,
+                "product_cache_hit": false,
+                "payload_cache_hit": true,
+                "data_source": "payload_cache",
+                "scan_ms": 0.0,
+                "root_scan_ms": 0.0,
+                "collect_ms": 0.0,
+                "matrix_ms": 0.0,
+                "overlay_ms": 0.0,
+                "root_cache_status": ""
+              },
+              "view_cache": {
+                "hit": true,
+                "payload_cache_hit": true,
+                "stale": false,
+                "entries": 3,
+                "max_entries": 512,
+                "key": "87a62f2bbf9a"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": "conclusion",
+        "title": "결과 검증과 답변",
+        "detail": "rows=675, answer_chars=110",
+        "status": "done",
+        "evidence_refs": [
+          "column:ML_TABLE_PRODA.root_lot_id",
+          "ML_TABLE_PRODA",
+          "column:ML_TABLE_PRODA.lot_wf",
+          "column:ML_TABLE_PRODA.step_id"
+        ],
+        "api_refs": [
+          {
+            "stage": "response",
+            "name": "Answer composer",
+            "method": "internal",
+            "path": "Flow-i response payload",
+            "callee": "_attach_flowi_trace",
+            "status": "done",
+            "output": "splittable_view_rows 675 rows"
+          }
+        ]
+      }
+    ],
+    "final_answer": "ML_TABLE_PRODA A1002 SplitTable KNOB 기준으로 27개 row를 조회했습니다.\n아래는 조회된 스플릿 데이터입니다. 전체 화면은 SplitTable 열기 버튼을 사용하세요.",
+    "disclaimer": "내부 추론 원문이 아니라 검증 가능한 실행 요약입니다."
+  },
+  "tool": {
+    "answer": "ML_TABLE_PRODA A1002 SplitTable KNOB 기준으로 27개 row를 조회했습니다.\n아래는 조회된 스플릿 데이터입니다. 전체 화면은 SplitTable 열기 버튼을 사용하세요.",
+    "action": "query_splittable_view",
+    "type": "split_view",
+    "intent": "split_nav",
+    "split_view": {
+      "kind": "splittable_view",
+      "title": "SplitTable view",
+      "headers": [
+        "#2",
+        "#3",
+        "#4",
+        "#5",
+        "#6",
+        "#7",
+        "#8",
+        "#9",
+        "#14",
+        "#15",
+        "#16",
+        "#17",
+        "#18",
+        "#19",
+        "#20",
+        "#21",
+        "#22",
+        "#25",
+        "#1",
+        "#10",
+        "#11",
+        "#12",
+        "#13",
+        "#23",
+        "#24"
+      ],
+      "header_groups": [
+        {
+          "label": "A1002A.1",
+          "span": 1
+        },
+        {
+          "label": "A1002A.2",
+          "span": 17
+        },
+        {
+          "label": "A1002A.3",
+          "span": 1
+        },
+        {
+          "label": "A1002B.1",
+          "span": 4
+        },
+        {
+          "label": "A1002B.2",
+          "span": 1
+        },
+        {
+          "label": "A1002C.2",
+          "span": 1
+        }
+      ],
+      "wafer_fab_list": [
+        "A1002A.1",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.2",
+        "A1002A.3",
+        "A1002B.1",
+        "A1002B.1",
+        "A1002B.1",
+        "A1002B.1",
+        "A1002B.2",
+        "A1002C.2"
+      ],
+      "root_lot_id": "A1002",
+      "lot_id_label": "A1002A.1, A1002A.2, A1002A.3, A1002B.1, A1002B.2, A1002C.2",
+      "row_labels": {
+        "root_lot_id": "root_lot_id",
+        "lot_id": "lot_id",
+        "parameter": "항목"
+      },
+      "rows": [
+        {
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_1.0 STI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_01_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_1.0 STI",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_2.0 WELL",
+          "display": "KNOB_2.0 WELL",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_2.0 WELL",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_02_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_2.0 WELL",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_3.0 VTN",
+          "display": "KNOB_3.0 VTN",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_3.0 VTN",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_03_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_3.0 VTN",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_4.0 GATE_OX",
+          "display": "KNOB_4.0 GATE_OX",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_04_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_4.0 GATE_OX",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_4.0 GATE_OX11",
+          "display": "KNOB_4.0 GATE_OX11",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_4.0 GATE_OX11",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_5.0 PC",
+          "display": "KNOB_5.0 PC",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_5.0 PC",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_05_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_5.0 PC",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_6.0 LDD",
+          "display": "KNOB_6.0 LDD",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_6.0 LDD",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_06_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_6.0 LDD",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_7.0 SPACER",
+          "display": "KNOB_7.0 SPACER",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_7.0 SPACER",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_07_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_7.0 SPACER",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_8.0 SD_EPI",
+          "display": "KNOB_8.0 SD_EPI",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_08_2",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_8.0 SD_EPI",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_9.0 SILICIDE",
+          "display": "KNOB_9.0 SILICIDE",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_09_3",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_9.0 SILICIDE",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_10.0 CONTACT",
+          "display": "KNOB_10.0 CONTACT",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_10.0 CONTACT",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_10_0",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_10.0 CONTACT",
+              "can_plan": true
+            }
+          ]
+        },
+        {
+          "parameter": "KNOB_11.0 M0",
+          "display": "KNOB_11.0 M0",
+          "cells": [
+            {
+              "wafer_id": "2",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|2|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "3",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|3|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "4",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|4|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "5",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|5|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "6",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|6|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "7",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|7|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "8",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|8|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "9",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|9|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "14",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|14|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "15",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|15|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "16",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|16|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "17",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|17|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "18",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|18|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "19",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|19|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "20",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|20|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "21",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|21|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "22",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|22|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "25",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|25|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "1",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|1|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "10",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|10|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "11",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|11|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "12",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|12|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "13",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|13|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "23",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|23|KNOB_11.0 M0",
+              "can_plan": true
+            },
+            {
+              "wafer_id": "24",
+              "actual": "PPID_11_1",
+              "plan": "",
+              "mismatch": false,
+              "highlight": false,
+              "key": "A1002|24|KNOB_11.0 M0",
+              "can_plan": true
+            }
+          ]
+        }
+      ],
+      "total": 675,
+      "row_label": "KNOB",
+      "source": "splittable.view",
+      "lot_warn": "",
+      "available_fab_lots": [
+        "A1002A.1",
+        "A1002A.2",
+        "A1002A.3",
+        "A1002B.1",
+        "A1002B.2",
+        "A1002C.2"
+      ]
+    },
+    "table": {
+      "kind": "splittable_view_rows",
+      "title": "SplitTable rows",
+      "placement": "below",
+      "columns": [
+        {
+          "key": "product",
+          "label": "PRODUCT"
+        },
+        {
+          "key": "root_lot_id",
+          "label": "ROOT_LOT_ID"
+        },
+        {
+          "key": "lot_id",
+          "label": "LOT_ID"
+        },
+        {
+          "key": "fab_lot_id",
+          "label": "FAB_LOT_ID"
+        },
+        {
+          "key": "wafer_id",
+          "label": "WAFER_ID"
+        },
+        {
+          "key": "step",
+          "label": "STEP"
+        },
+        {
+          "key": "parameter",
+          "label": "PARAMETER"
+        },
+        {
+          "key": "display",
+          "label": "DISPLAY"
+        },
+        {
+          "key": "actual",
+          "label": "ACTUAL"
+        },
+        {
+          "key": "plan",
+          "label": "PLAN"
+        },
+        {
+          "key": "mismatch",
+          "label": "MISMATCH"
+        },
+        {
+          "key": "cell_key",
+          "label": "CELL_KEY"
+        }
+      ],
+      "rows": [
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.1",
+          "fab_lot_id": "A1002A.1",
+          "wafer_id": "2",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|2|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "3",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|3|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "4",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|4|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "5",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|5|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "6",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|6|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "7",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|7|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "8",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|8|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "9",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|9|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "14",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|14|KNOB_1.0 STI"
+        },
+        {
+          "product": "ML_TABLE_PRODA",
+          "root_lot_id": "A1002",
+          "lot_id": "A1002A.2",
+          "fab_lot_id": "A1002A.2",
+          "wafer_id": "15",
+          "step": "",
+          "parameter": "KNOB_1.0 STI",
+          "display": "KNOB_1.0 STI",
+          "actual": "PPID_01_3",
+          "plan": "",
+          "mismatch": false,
+          "cell_key": "A1002|15|KNOB_1.0 STI"
+        }
+      ],
+      "total": 675,
+      "source": "splittable.view",
+      "headers": [
+        "PRODUCT",
+        "ROOT_LOT_ID",
+        "LOT_ID",
+        "FAB_LOT_ID",
+        "WAFER_ID",
+        "STEP",
+        "PARAMETER",
+        "DISPLAY",
+        "ACTUAL",
+        "PLAN",
+        "MISMATCH",
+        "CELL_KEY"
+      ],
+      "max_height": 320,
+      "overflow_x": true
+    },
+    "feature": "splittable",
+    "inline_summary": "SplitTable view 675개 셀"
+  },
+  "node_details": {
+    "prompt_input": {
+      "node_id": "prompt_input",
+      "status": "success",
+      "input_summary": {
+        "prompt": "A1002 스플릿테이블 보여줘",
+        "source": "llm_flowi_chat"
+      },
+      "output_summary": {
+        "chars": 16
+      },
+      "warnings": []
+    },
+    "semantic_layer": {
+      "node_id": "semantic_layer",
+      "status": "success",
+      "input_summary": {
+        "prompt": "A1002 스플릿테이블 보여줘"
+      },
+      "output_summary": {
+        "semantic": {
+          "intent": "archived",
+          "coverage": 0.0,
+          "slots": {
+            "prompt": "A1002 스플릿테이블 보여줘"
+          },
+          "warnings": [
+            "agent_runtime_archived"
+          ],
+          "candidate_count": 0
+        },
+        "interpretation": {
+          "input_slots": {
+            "product": "ML_TABLE_PRODA",
+            "lot": [
+              "A1002"
+            ],
+            "wafer": "",
+            "step": "",
+            "item": "",
+            "semantic_term": "",
+            "agg": "",
+            "meeting": "",
+            "session": "",
+            "source_candidates": []
+          },
+          "missing_slots": [],
+          "filled_slots": {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_ids": [
+              "A1002"
+            ]
+          },
+          "knowledge_terms": [
+            {
+              "term": "A1002",
+              "id": "column:ML_TABLE_PRODA.root_lot_id",
+              "title": "ML_TABLE_PRODA.root_lot_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "root_lot_id"
+            },
+            {
+              "term": "A1002",
+              "id": "column:ML_TABLE_PRODA.lot_wf",
+              "title": "ML_TABLE_PRODA.lot_wf",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "lot_wf"
+            },
+            {
+              "term": "ML_TABLE_PRODA",
+              "id": "column:ML_TABLE_PRODA.step_id",
+              "title": "ML_TABLE_PRODA.step_id",
+              "kind": "column_catalog",
+              "relation_id": "ML_TABLE_PRODA",
+              "column": "step_id"
+            }
+          ],
+          "term_resolution": []
+        },
+        "signals": {}
+      },
+      "warnings": [
+        "agent_runtime_archived"
+      ]
+    },
+    "orchestrator": {
+      "node_id": "orchestrator",
+      "status": "success",
+      "input_summary": {
+        "candidate_unit_ai": []
+      },
+      "output_summary": {
+        "planner": "",
+        "plan": [
+          {
+            "agent_id": "agent_archived",
+            "unit_ai": "agent_runtime",
+            "action": "archived",
+            "title": "Agent Archived",
+            "policy": "blocked",
+            "endpoint": "archive/agent_reset_2026_05_26",
+            "approval_required": false
+          }
+        ],
+        "unit_ai_selection": [
+          {
+            "key": "agent_runtime",
+            "title": "agent_runtime.archived",
+            "status": "blocked",
+            "reason": "blocked"
+          }
+        ],
+        "tool": {
+          "feature": "splittable",
+          "action": "query_splittable_view",
+          "intent": "split_nav",
+          "blocked": false
+        }
+      },
+      "warnings": []
+    },
+    "result_renderer": {
+      "node_id": "result_renderer",
+      "status": "success",
+      "input_summary": {
+        "selected_unit_ai": []
+      },
+      "output_summary": {
+        "answer": "ML_TABLE_PRODA A1002 SplitTable KNOB 기준으로 27개 row를 조회했습니다. 아래는 조회된 스플릿 데이터입니다. 전체 화면은 SplitTable 열기 버튼을 사용하세요.",
+        "ok": true,
+        "needs_input": false,
+        "action_log_summary": [
+          "선택한 intent/action은 split_nav / splittable.view이며 splittable 기능으로 처리했습니다.",
+          "사용 근거는 Wiki/schema 3건(column:ML_TABLE_PRODA.root_lot_id, ML_TABLE_PRODA, column:ML_TABLE_PRODA.lot_wf)입니다.",
+          "실행 계획은 agent_runtime 단위 기능 후보를 확인했습니다.",
+          "실행 경로는 SplitTable view입니다.",
+          "/api/splittable/view 실제 호출 완료 (22ms / cache hit=True).",
+          "검증 결과: 결과 675건."
+        ]
+      },
+      "warnings": [],
+      "preview": {
+        "kind": "splittable_view_rows",
+        "title": "SplitTable rows",
+        "columns": [
+          "{'key': 'product', 'label': 'PRODUCT'}",
+          "{'key': 'root_lot_id', 'label': 'ROOT_LOT_ID'}",
+          "{'key': 'lot_id', 'label': 'LOT_ID'}",
+          "{'key': 'fab_lot_id', 'label': 'FAB_LOT_ID'}",
+          "{'key': 'wafer_id', 'label': 'WAFER_ID'}",
+          "{'key': 'step', 'label': 'STEP'}",
+          "{'key': 'parameter', 'label': 'PARAMETER'}",
+          "{'key': 'display', 'label': 'DISPLAY'}",
+          "{'key': 'actual', 'label': 'ACTUAL'}",
+          "{'key': 'plan', 'label': 'PLAN'}",
+          "{'key': 'mismatch', 'label': 'MISMATCH'}",
+          "{'key': 'cell_key', 'label': 'CELL_KEY'}"
+        ],
+        "rows": [
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.1",
+            "fab_lot_id": "A1002A.1",
+            "wafer_id": "2",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|2|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "3",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|3|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "4",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|4|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "5",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|5|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "6",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|6|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "7",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|7|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "8",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|8|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "9",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|9|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "14",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|14|KNOB_1.0 STI"
+          },
+          {
+            "product": "ML_TABLE_PRODA",
+            "root_lot_id": "A1002",
+            "lot_id": "A1002A.2",
+            "fab_lot_id": "A1002A.2",
+            "wafer_id": "15",
+            "step": "",
+            "parameter": "KNOB_1.0 STI",
+            "display": "KNOB_1.0 STI",
+            "actual": "PPID_01_3",
+            "plan": "",
+            "mismatch": false,
+            "cell_key": "A1002|15|KNOB_1.0 STI"
+          }
+        ],
+        "total": 675
+      }
+    }
+  },
+  "warnings": []
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "username": "qa_admin",
+    "password_hash": "pbkdf2$sha256$200000$d3ede353448c93a14c3d0c39148caec7$ad8fcc895c9cc5779cf6a1eb67a8231e0ff1b17df4aed1f85ad8068946ecb642",
+    "role": "admin",
+    "status": "approved",
+    "tabs": "filebrowser,dashboard,splittable,tracker,inform,meeting,calendar,tablemap,ml,devguide,diagnosis",
+    "name": "Qa Admin",
+    "email": "qa_admin@local.test",
+    "created": "2026-04-24T18:53:37+09:00"
+  },
+  {
+    "username": "qa_user",
+    "password_hash": "pbkdf2$sha256$200000$e1f30f2de310e9f2f5b44c9eb59a408a$2079b79fb00e69bd14df6fabb00cf004ff3db5040dec194a651f7b3a20d09920",
+    "role": "user",
+    "status": "approved",
+    "tabs": "filebrowser,dashboard,splittable,tracker,inform,meeting,calendar,diagnosis",
+    "name": "Qa User",
+    "email": "qa_user@local.test",
+    "created": "2026-04-24T18:53:37+09:00"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "GATE": [
+    "GATE_DOSE",
+    "GATE_TIME"
+  ],
+  "STI": [
+    "STI_DEPTH",
+    "STI_CD"
+  ],
+  "PC": [
+    "PC_DOSE"
+  ],
+  "MOL": [],
+  "BEOL": [],
+  "ET": [],
+  "EDS": [],
+  "S-D Epi": [],
+  "Spacer": [],
+  "Well": []
+}
