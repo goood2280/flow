@@ -536,6 +536,28 @@ def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin
             write_users(users)
             send_notify(req.username, "Account Approved",
                         "Your account has been approved.", "info")
+            # 가입 승인 메일 — 비밀번호 찾기 메일과 같은 경로. 발송 실패해도 승인은 유지.
+            try:
+                from core.mail import load_mail_cfg, send_mail
+                try:
+                    _sender = (load_mail_cfg().get("from_addr") or "").strip()
+                except Exception:
+                    _sender = ""
+                _mres = send_mail(
+                    sender_username=_sender or "flow",
+                    receiver_usernames=[req.username],
+                    extra_emails=[],
+                    title="[flow] 가입 승인 완료",
+                    content=(
+                        "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
+                        f"<p><b>{html.escape(req.username)}</b> 님, flow 가입이 승인되었습니다.</p>"
+                        "<p>로그인 후 서비스를 이용하실 수 있습니다.</p>"
+                        "</div>"
+                    ),
+                )
+                _audit(request, "admin:approve-mail", detail=f"user={req.username};ok={_mres.get('ok')};reason={_mres.get('reason','')}", tab="admin")
+            except Exception:
+                pass
             _audit(request, "admin:approve", detail=f"user={req.username}", tab="admin")
             return {"ok": True}
     raise HTTPException(404)
@@ -759,8 +781,14 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
         if u["username"] == req.username:
             u["tabs"] = ",".join(tokens)
             write_users(users)
-            _audit(request, "admin:set-tabs", detail=f"user={req.username} tabs={u['tabs']}", tab="admin")
-            return {"ok": True}
+            # 개별 지정은 권한 그룹보다 우선 — 속해 있던 권한 그룹에서 자동 제외
+            # (그룹에 남겨두면 다음 그룹 저장 때 그룹 권한이 다시 덮어쓰므로).
+            removed = _remove_from_perm_groups(req.username)
+            detail = f"user={req.username} tabs={u['tabs']}"
+            if removed:
+                detail += f" (권한그룹 {','.join(removed)} 에서 제외)"
+            _audit(request, "admin:set-tabs", detail=detail, tab="admin")
+            return {"ok": True, "removed_from_groups": removed}
     raise HTTPException(404)
 
 
@@ -771,7 +799,8 @@ def get_user_tabs(request: Request, username: str = Query(...)):
     v9.0.x: archived tabs are filtered out of existing saved preferences."""
     # v8.8.3: 새로 추가된 탭 — 기존 유저는 기본 허용.
     _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "diagnosis"}
-    _ARCHIVED_TABS = {"ettime", "waferlayout"}
+    # v9.5.x: ettime 은 "ET 측정시간" 탭으로 부활 — archived 목록에서 제외.
+    _ARCHIVED_TABS = {"waferlayout"}
     verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
@@ -787,11 +816,130 @@ def get_user_tabs(request: Request, username: str = Query(...)):
                              if t.strip() and t.strip().split(":")[0] not in _ARCHIVED_TABS]
                 main_tabs = {t.split(":")[0] for t in tabs_list}
                 # 기존 유저가 저장된 tabs 에 신규 탭을 갖고 있지 않으면 자동 추가 (하위호환).
-                for nt in _NEW_DEFAULT_TABS:
-                    if nt not in main_tabs:
-                        tabs_list.append(nt)
+                # 권한 그룹 소속 유저는 그룹 권한이 정답이므로 자동 추가하지 않는다.
+                in_perm_group = any(username in g["members"] for g in _load_perm_groups())
+                if not in_perm_group:
+                    for nt in _NEW_DEFAULT_TABS:
+                        if nt not in main_tabs:
+                            tabs_list.append(nt)
             return {"tabs": ",".join(tabs_list)}
     raise HTTPException(404)
+
+
+# ── 권한 그룹 (permission groups) ─────────────────────────────────────
+# 그룹탭(소셜 그룹, data_root/groups/groups.json)과는 별개의 권한 전용 그룹.
+# 그룹에 tabs 권한을 지정하고 사용자를 멤버로 넣으면 그 사용자의 users.csv
+# tabs 가 그룹 권한으로 즉시 덮어써진다(materialize). 한 사용자는 하나의
+# 권한 그룹에만 속한다. 개별 set-tabs 로 권한을 따로 지정하면 그룹에서 빠진다.
+PERM_GROUPS_FILE = PATHS.data_root / "perm_groups.json"
+
+
+def _load_perm_groups() -> list:
+    data = load_json(PERM_GROUPS_FILE, {"groups": []}) or {}
+    raw = data.get("groups") if isinstance(data, dict) else data
+    out = []
+    for g in raw or []:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name") or "").strip()
+        if not name:
+            continue
+        tabs = [str(t or "").strip() for t in (g.get("tabs") or []) if str(t or "").strip()]
+        members = [str(m or "").strip() for m in (g.get("members") or []) if str(m or "").strip()]
+        out.append({"name": name, "tabs": tabs, "members": members})
+    return out
+
+
+def _save_perm_groups(groups: list) -> None:
+    save_json(PERM_GROUPS_FILE, {"groups": groups})
+
+
+def _remove_from_perm_groups(username: str) -> list:
+    """개별 권한 지정 시 호출 — 사용자가 속한 권한 그룹에서 제외. 제외된 그룹명 반환."""
+    groups = _load_perm_groups()
+    removed = []
+    for g in groups:
+        if username in g["members"]:
+            g["members"] = [m for m in g["members"] if m != username]
+            removed.append(g["name"])
+    if removed:
+        _save_perm_groups(groups)
+    return removed
+
+
+class PermGroupReq(BaseModel):
+    name: str
+    tabs: list = []
+    members: List[str] = []
+    rename_from: str = ""   # 그룹 이름 변경 시 기존 이름
+
+
+class PermGroupDeleteReq(BaseModel):
+    name: str
+
+
+@router.get("/perm-groups")
+def perm_groups_list(_admin=Depends(require_admin)):
+    return {"groups": _load_perm_groups()}
+
+
+@router.post("/perm-groups")
+def perm_groups_save(req: PermGroupReq, request: Request, _admin=Depends(require_admin)):
+    name = str(req.name or "").strip()
+    if not name:
+        raise HTTPException(400, "그룹 이름을 입력하세요")
+    tokens: list = []
+    for part in req.tabs:
+        token = canonical_tab_token(part)
+        if token and token not in tokens:
+            tokens.append(token)
+    users = read_users()
+    by_name = {u["username"]: u for u in users}
+    members: list = []
+    for m in req.members:
+        m = str(m or "").strip()
+        if not m or m in members:
+            continue
+        u = by_name.get(m)
+        if u is None:
+            raise HTTPException(400, f"없는 사용자: {m}")
+        if u.get("role") == "admin":
+            raise HTTPException(400, f"admin 계정({m})은 권한 그룹에 넣을 수 없습니다 — 항상 전체 권한")
+        members.append(m)
+    old_name = str(req.rename_from or "").strip() or name
+    groups = [g for g in _load_perm_groups() if g["name"] not in (name, old_name)]
+    # 한 사용자는 하나의 권한 그룹에만 — 다른 그룹에서 자동 제거.
+    for g in groups:
+        g["members"] = [m for m in g["members"] if m not in members]
+    groups.append({"name": name, "tabs": tokens, "members": members})
+    groups.sort(key=lambda g: g["name"])
+    _save_perm_groups(groups)
+    # 멤버 권한 실적용 — users.csv tabs 를 그룹 권한으로 덮어쓴다.
+    csv_tabs = ",".join(tokens)
+    applied = 0
+    for m in members:
+        u = by_name.get(m)
+        if u is not None and u.get("tabs") != csv_tabs:
+            u["tabs"] = csv_tabs
+            applied += 1
+    if applied:
+        write_users(users)
+    _audit(request, "admin:perm-group-save",
+           detail=f"group={name} tabs={csv_tabs or '(없음)'} members={','.join(members) or '(없음)'} applied={applied}",
+           tab="admin")
+    return {"ok": True, "applied": applied, "groups": _load_perm_groups()}
+
+
+@router.post("/perm-groups/delete")
+def perm_groups_delete(req: PermGroupDeleteReq, request: Request, _admin=Depends(require_admin)):
+    name = str(req.name or "").strip()
+    groups = _load_perm_groups()
+    remain = [g for g in groups if g["name"] != name]
+    if len(remain) == len(groups):
+        raise HTTPException(404, f"권한 그룹 없음: {name}")
+    _save_perm_groups(remain)
+    _audit(request, "admin:perm-group-delete", detail=f"group={name} (멤버 권한은 유지)", tab="admin")
+    return {"ok": True, "groups": remain}
 
 
 # ── Messaging ──

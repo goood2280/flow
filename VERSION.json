@@ -1,7 +1,21 @@
 {
-  "version": "9.5.11",
+  "version": "9.5.12",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.12",
+      "date": "2026-07-21",
+      "title": "캐시 관리 탭 통합 + plan/actual 알람 그룹 발송 + 권한 그룹 + ET trend/집계",
+      "tag": "feature",
+      "changes": [
+        "SplitTable 톱니바퀴 고급 탭의 FAB root/fab_lot 캐시 수동 스캔, 제품 원본 RAM cache 수동 갱신, Root lot RAM cache 설정/갱신, 쿼리 병렬 코어 수 조정을 데이터 > 캐시 관리 탭(관리자 전용 섹션)으로 이동.",
+        "plan/actual 불일치 알람의 지정 팀 수신자(mismatch_alert_recipients) 폐기 — 수신 대상은 계획 작성자 + 제품명과 동일한 이름의 그룹 멤버로 고정, 저장 파일에서도 키 제거. 알람 발생 시 HTML 메일 발송(비밀번호 찾기 메일과 같은 경로), 온오프는 톱니바퀴 토글(기본 꺼짐).",
+        "Admin 권한 그룹(perm-groups) 신설 — 그룹에 tabs 권한을 지정하고 멤버를 넣으면 일괄 적용, 개별 권한 지정 시 해당 그룹에서 자동 제외, 가입 승인 시 안내 메일 발송.",
+        "ET 측정시간 /trend — step_id별 월 단위 장기 추이(wafer당 측정시간, 평균 PGM 수, major 의뢰 형태 step_seq 조합 비율).",
+        "ET Index 다운로드 — 제품 파일 다중 레이아웃(제품 폴더/hive 파티션/루트 플랫) 흡수, shot 단위 → (root_lot, wafer, step, PGM) 집계 방식 선택(max/min/median/avg/std/p90/p10).",
+        "대시보드/매칭알람 페이지 상단 PageHeader 제거(레이아웃 정리)."
+      ]
+    },
     {
       "version": "9.5.11",
       "date": "2026-07-21",

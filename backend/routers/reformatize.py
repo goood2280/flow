@@ -32,7 +32,7 @@ from app_v2.shared.source_adapter import resolve_named_child
 from core.auth import current_user, require_admin
 from core.paths import PATHS
 from core.utils import (
-    csv_response, jsonl_append, load_json, read_source, safe_filename,
+    csv_response, jsonl_append, load_json, safe_filename,
     save_json, serialize_rows,
 )
 from core.vehicle_reformatter import (
@@ -169,27 +169,79 @@ def _settings() -> dict:
 
 
 def _et_root() -> Path:
+    """ET DB 루트 — ET 측정시간(lot_step)과 동일한 해석 규칙을 사용.
+
+    lot_step 은 관리자 설정 루트·이름 토큰 매칭·하위 폴더 fallback 을 지원해
+    사내 DB 구조(중첩/변형 이름)에서도 루트를 찾는다. 실패 시에만 기존
+    resolve_named_child 방식으로 폴백.
+    """
+    try:
+        from core.lot_step import ET_ROOT, _resolve_source_root_dirs
+        dirs = _resolve_source_root_dirs("et", ET_ROOT)
+        if dirs:
+            return dirs[0]
+    except Exception:
+        pass
     rp = resolve_named_child(PATHS.db_root, ET_ROOT_NAME)
     if rp is None or not rp.is_dir():
         raise HTTPException(404, "DB ET 루트를 찾을 수 없습니다")
     return rp
 
 
+def _product_files(product: str) -> list[Path]:
+    """제품의 ET 데이터 파일 목록 — lot_step 과 동일한 탐색.
+
+    제품 폴더(<PRODUCT>/제품명_시간.parquet), hive(product=/date=) 파티션,
+    루트 플랫 파일명(제품명_날짜.parquet) 레이아웃을 모두 흡수한다.
+    """
+    from core.lot_step import ET_ROOT, _parquet_files
+    files = [fp for fp in _parquet_files(ET_ROOT, product, source="et") if fp.is_file()]
+    return sorted(set(files))
+
+
 def _product_sig(product: str) -> tuple:
-    """제품 폴더 내 데이터 파일들의 (path, mtime, size) 시그니처."""
-    rp = _et_root()
-    pd = rp / product
-    if not pd.is_dir():
-        hive = list(rp.rglob(f"product={product}"))
-        if not hive:
-            raise HTTPException(404, f"ET 제품 없음: {product}")
-        pd = hive[0]
+    """제품 데이터 파일들의 (path, mtime, size) 시그니처."""
+    files = _product_files(product)
+    if not files:
+        raise HTTPException(404, f"ET 제품 없음: {product}")
     sig = []
-    for fp in sorted(pd.rglob("*")):
-        if fp.is_file() and fp.suffix.lower() in (".parquet", ".csv"):
-            st = fp.stat()
-            sig.append((str(fp), st.st_mtime, st.st_size))
+    for fp in files:
+        st = fp.stat()
+        sig.append((str(fp), st.st_mtime, st.st_size))
     return tuple(sig)
+
+
+def _read_et_files(files: list[Path]) -> pl.DataFrame:
+    """파일 목록을 직접 읽어 read_source 와 동일한 정규화를 적용한 long df.
+
+    read_source 는 db_root/<루트>/<제품>/ 고정 경로만 지원하므로, lot_step 이
+    찾은 파일 목록(중첩 루트·date= hive 포함)을 그대로 읽는 경로를 둔다.
+    """
+    from core.utils import cast_all_str, filter_valid_wafer_ids_df, normalize_source_df, read_one_file
+    dfs = []
+    for fp in files:
+        d = read_one_file(fp)
+        if d is not None and d.height > 0:
+            dfs.append(cast_all_str(d))
+    if not dfs:
+        raise HTTPException(404, "읽을 수 있는 ET 데이터 파일이 없습니다")
+    if len(dfs) == 1:
+        df = dfs[0]
+    else:
+        all_cols, seen = [], set()
+        for d in dfs:
+            for c in d.columns:
+                if c not in seen:
+                    all_cols.append(c)
+                    seen.add(c)
+        unified = []
+        for d in dfs:
+            missing = [c for c in all_cols if c not in d.columns]
+            if missing:
+                d = d.with_columns([pl.lit(None).cast(pl.Utf8).alias(c) for c in missing])
+            unified.append(d.select(all_cols))
+        df = pl.concat(unified, how="vertical")
+    return normalize_source_df(filter_valid_wafer_ids_df(df), root=_et_root().name, file="")
 
 
 def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
@@ -198,7 +250,7 @@ def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
         hit = _RAW_CACHE.get(product)
         if hit and hit[0] == sig:
             return hit[1]
-    df = read_source("flat", _et_root().name, product, "", max_files=None)
+    df = _read_et_files([Path(p) for p, _mtime, _size in sig])
     est = _df_est_bytes(df)
     with _CACHE_LOCK:
         _RAW_CACHE.pop(product, None)
@@ -207,12 +259,13 @@ def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
     return df
 
 
-def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict]]:
-    """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블).
+def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int]:
+    """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블, 필터된 raw 행수).
 
     필터는 raw(long) ET 데이터에 먼저 적용한 뒤 reformatize 한다 — ADDP 의
     그룹 통계(std/avg)도 필터된 모집단 기준으로 계산된다.
     결과는 (product, 필터 조합) 단위로 캐시 (파일 시그니처 일치 시 재사용).
+    raw 행수는 다운로드 상한(max_download_rows) 판정 기준.
     """
     csv_fp = find_vehicle_csv(VEHICLE_DIR, product)
     if csv_fp is None:
@@ -224,7 +277,7 @@ def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[st
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] == sig:
-            return hit[1], hit[2], hit[3], hit[4], hit[5]
+            return hit[1], hit[2], hit[3], hit[4], hit[5], hit[6]
     table = load_vehicle_table(csv_fp)
     if not table:
         raise HTTPException(400, f"{csv_fp.name}: 유효한 REAL/ADDP 행이 없습니다")
@@ -234,6 +287,7 @@ def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[st
     df = _apply_filters(df, f)
     if df.height == 0:
         raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
+    raw_rows = df.height
     try:
         wide, out_cols, errors = reformatize(df, table)
     except ValueError as e:
@@ -242,8 +296,8 @@ def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[st
     with _CACHE_LOCK:
         _CACHE.pop(key, None)
         if _evict_cache_locked(_CACHE, _CACHE_MAX, _cache_max_bytes(), est):
-            _CACHE[key] = (sig, wide, out_cols, errors, csv_fp.name, table, est)
-    return wide, out_cols, errors, csv_fp.name, table
+            _CACHE[key] = (sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, est)
+    return wide, out_cols, errors, csv_fp.name, table, raw_rows
 
 
 # ── 조회/다운로드 필터 ───────────────────────────────────────────────
@@ -356,20 +410,28 @@ def _apply_filters(df: pl.DataFrame, f: Filters) -> pl.DataFrame:
 
 @router.get("/products")
 def products(_user=Depends(current_user)):
-    rp = _et_root()
+    # ET 측정시간과 동일한 탐색(db_product_candidates) — 제품 폴더·hive·플랫
+    # 파일명·parquet product 컬럼 스캔까지 흡수. 실패 시 기존 폴더 나열 폴백.
     names: set[str] = set()
-    for child in sorted(rp.iterdir()):
-        if not child.is_dir():
-            continue
-        if child.name.startswith("product="):
-            names.add(child.name[len("product="):])
-        else:
-            hive = [d.name[len("product="):] for d in child.iterdir()
-                    if d.is_dir() and d.name.startswith("product=")]
-            if hive:
-                names.update(hive)
+    try:
+        from core.lot_step import ET_ROOT, db_product_candidates
+        names.update(db_product_candidates(source_root=ET_ROOT, source="et", limit=1000))
+    except Exception:
+        logger.exception("reformatize products: db_product_candidates failed")
+    if not names:
+        rp = _et_root()
+        for child in sorted(rp.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name.startswith("product="):
+                names.add(child.name[len("product="):])
             else:
-                names.add(child.name)
+                hive = [d.name[len("product="):] for d in child.iterdir()
+                        if d.is_dir() and d.name.startswith("product=")]
+                if hive:
+                    names.update(hive)
+                else:
+                    names.add(child.name)
     out = []
     for name in sorted(names):
         csv_fp = find_vehicle_csv(VEHICLE_DIR, name)
@@ -402,6 +464,72 @@ def list_items(product: str = Query(...), _user=Depends(current_user)):
     } for r in table]
     items.sort(key=lambda x: (x["report_order"] if x["report_order"] is not None else 9999, x["alias"]))
     return {"product": product, "vehicle_csv": csv_fp.name, "items": items}
+
+
+# ── 집계(aggregation) — shot 단위 wide 를 (root_lot_id, wafer_id, step_id,
+#    PGM(pt)) 그룹으로 요약해서 뽑는 옵션 ─────────────────────────────
+_AGG_METHODS = ("max", "min", "median", "avg", "std", "p90", "p10")
+
+
+def _agg_expr(col: str, method: str) -> pl.Expr:
+    e = pl.col(col).cast(pl.Float64, strict=False)
+    if method == "max":
+        return e.max()
+    if method == "min":
+        return e.min()
+    if method == "median":
+        return e.median()
+    if method == "avg":
+        return e.mean()
+    if method == "std":
+        return e.std()
+    if method == "p90":
+        return e.quantile(0.9, "linear")
+    return e.quantile(0.1, "linear")  # p10
+
+
+def _ensure_pgm(wide: pl.DataFrame) -> pl.DataFrame:
+    """pgm 컬럼이 없으면 ET 측정시간과 동일 규칙으로 파생.
+
+    PGM(pt) = step_seq(측정 shot 수 pt), 같은 (step_id, step_seq, pt) 조합에
+    재측정(tkout_time dense rank ≥ 2)이 있을 때만 _차수 접미사.
+    """
+    if "pgm" in wide.columns:
+        return wide
+    if "step_seq" not in wide.columns:
+        return wide.with_columns(pl.lit("").alias("pgm"))
+    pkg = [c for c in ("root_lot_id", "wafer_id", "step_id", "step_seq", "tkout_time") if c in wide.columns]
+    w = wide.with_columns(pl.len().over(pkg).alias("_pt"))
+    if "tkout_time" in w.columns:
+        dup_keys = [c for c in ("root_lot_id", "wafer_id", "step_id", "step_seq", "_pt") if c in w.columns]
+        w = w.with_columns(pl.col("tkout_time").rank("dense").over(dup_keys).cast(pl.Int64).alias("_dup"))
+    else:
+        w = w.with_columns(pl.lit(1, dtype=pl.Int64).alias("_dup"))
+    fam_keys = [c for c in ("step_id", "step_seq", "_pt") if c in w.columns]
+    w = w.with_columns(pl.col("_dup").max().over(fam_keys).alias("_dupmax"))
+    label = pl.col("step_seq").cast(pl.Utf8) + "(" + pl.col("_pt").cast(pl.Utf8) + "pt)"
+    return w.with_columns(
+        pl.when(pl.col("_dupmax") > 1)
+        .then(label + "_" + pl.col("_dup").cast(pl.Utf8))
+        .otherwise(label)
+        .alias("pgm")
+    ).drop(["_pt", "_dup", "_dupmax"])
+
+
+def _aggregate(wide: pl.DataFrame, alias_cols: list[str], method: str) -> pl.DataFrame:
+    """wide(shot 단위) → (root_lot_id, wafer_id, step_id, pgm) 그룹 집계."""
+    method = str(method or "").strip().lower()
+    if method not in _AGG_METHODS:
+        raise HTTPException(400, f"지원하지 않는 집계 방식 '{method}' — 허용: {', '.join(_AGG_METHODS)}")
+    w = _ensure_pgm(wide)
+    keys = [c for c in ("root_lot_id", "wafer_id", "step_id", "pgm") if c in w.columns]
+    if not keys:
+        raise HTTPException(400, "집계 키(root_lot_id/wafer_id/step_id/PGM) 컬럼이 데이터에 없습니다")
+    cols = [c for c in alias_cols if c in w.columns]
+    if not cols:
+        raise HTTPException(400, "집계할 index 컬럼이 없습니다 — Index 항목을 선택하세요")
+    aggs = [pl.len().alias("shot_count")] + [_agg_expr(c, method).alias(c) for c in cols]
+    return w.group_by(keys, maintain_order=True).agg(aggs).sort(keys)
 
 
 def _select_aliases(out_cols: list[str], wanted: list[str]) -> list[str]:
@@ -439,14 +567,17 @@ class RunReq(Filters):
     offset: int = 0
     limit: int = 0          # 0 → settings.page_rows
     items: list[str] = []   # 선택된 index alias — 비우면 전체
+    agg: str = ""           # ""=shot raw, 또는 max/min/median/avg/std/p90/p10
 
 
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
-    wide_full, out_cols, errors, vehicle_csv, table = _compute(req.product, req)
+    wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(req.product, req)
     out_cols = _select_aliases(out_cols, req.items)
     wide = wide_full.select(out_cols)
+    if req.agg.strip():
+        wide = _aggregate(wide, [r["alias"] for r in table if r["alias"] in wide.columns], req.agg)
     cfg = _settings()
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
@@ -480,29 +611,35 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
              step_filter: str = Query(""), wafer_filter: str = Query(""),
              site_cnt_filter: str = Query(""), days: int = Query(0),
              date_from: str = Query(""), date_to: str = Query(""),
-             items: str = Query(""), user=Depends(current_user)):
+             items: str = Query(""), agg: str = Query(""), user=Depends(current_user)):
     f = Filters(lot_filter=lot_filter, step_filter=step_filter, wafer_filter=wafer_filter,
                 site_cnt_filter=site_cnt_filter, days=days, date_from=date_from, date_to=date_to)
     if not _has_filter(f):
         raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
                                  "기간(tkout_time)·root_lot_id·step_id·wafer_id·total_site_cnt "
                                  "중 하나 이상을 지정하세요")
-    wide_full, out_cols, _errors, vehicle_csv, _table = _compute(product, f)
+    wide_full, out_cols, _errors, vehicle_csv, table, raw_rows = _compute(product, f)
+    cfg = _settings()
+    # 상한 판정은 필터된 raw(long) 행수 기준 — 집계/pivot 으로 결과 행이 줄어도
+    # raw 가 상한을 넘으면 차단.
+    if raw_rows > cfg["max_download_rows"]:
+        raise HTTPException(400, f"필터된 raw 데이터 {raw_rows:,}행이 다운로드 최대 "
+                                 f"{cfg['max_download_rows']:,}행을 초과합니다. 기간·lot 등 필터를 "
+                                 f"조정해 행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.")
     wanted = [s.strip() for s in items.split(",") if s.strip()]
     out_cols = _select_aliases(out_cols, wanted)
     wide = wide_full.select(out_cols)
-    cfg = _settings()
-    if wide.height > cfg["max_download_rows"]:
-        raise HTTPException(400, f"결과 {wide.height:,}행이 다운로드 최대 {cfg['max_download_rows']:,}행을 "
-                                 f"초과합니다. 기간·lot 등 필터를 조정해 행을 줄이거나 "
-                                 f"톱니바퀴 설정에서 상한을 올리세요.")
+    agg_method = str(agg or "").strip().lower()
+    if agg_method:
+        wide = _aggregate(wide, [r["alias"] for r in table if r["alias"] in wide.columns], agg_method)
     csv_bytes = wide.write_csv().encode("utf-8")
     jsonl_append(DL_LOG, {
         "source": "reformatize",
         "username": user.get("username", ""),
         "product": product,
-        "sql": _filter_desc(f),
-        "rows": wide.height, "cols": wide.width,
+        "sql": _filter_desc(f) + (f", agg={agg_method}(root_lot·wafer·step·pgm)" if agg_method else ""),
+        "agg": agg_method,
+        "rows": wide.height, "cols": wide.width, "raw_rows": raw_rows,
         "select_cols": vehicle_csv + (" | " + ",".join(wanted) if wanted else " | all"),
         "size_mb": round(len(csv_bytes) / 1e6, 2),
     })
@@ -527,7 +664,7 @@ class TestReq(Filters):
 
 def _run_test(product: str, items: list[TestItem], f: Filters):
     """필터된 base wide + 테스트 ADDP 적용 → (결과 df[key+meta+참조+테스트], 테스트 alias, 에러)."""
-    wide_full, out_cols, _base_errors, vehicle_csv, _table = _compute(product, f)
+    wide_full, out_cols, _base_errors, vehicle_csv, _table, _raw_rows = _compute(product, f)
     rows = []
     seen_alias: set[str] = set()
     for it in items:
@@ -570,7 +707,7 @@ def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
         "columns": {},
     }
     if product:
-        wide_full, out_cols, _e, vehicle_csv, table = _compute(product, Filters())
+        wide_full, out_cols, _e, vehicle_csv, table, _raw_rows = _compute(product, Filters())
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
         keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
         metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]

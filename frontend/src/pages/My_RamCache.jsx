@@ -1,10 +1,45 @@
 import { useState, useEffect, useCallback } from "react";
 import { toast } from "../components/Toast";
 import { sf } from "../lib/api";
+import { canManagePage } from "../lib/permissions";
 
 // v9.3.x: RAM 캐시 관리 — SplitTable 톱니바퀴(설정 모달) 안에 있던 캐시 관리를
 // 데이터 그룹의 독립 탭으로 승격. 제품별 분해(전 제품 현황)를 추가.
+// v9.5.x: 톱니바퀴 고급 탭의 캐시 수동 스캔(FAB/제품 원본/Root lot)과
+// Root lot RAM cache 설정, 쿼리 병렬 코어 수 조정을 이 탭으로 이동.
 const API = "/api/splittable";
+
+const ROOT_LOT_CACHE_LIMIT_MAX = 50000;
+const ROOT_LOT_CACHE_DEFAULT = { step_ids: [], searched_limit: 1000, target_roots: 1000 };
+const normalizeRootLotCacheSettings = (raw = {}) => {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const stepRaw = Array.isArray(src.step_ids) ? src.step_ids : String(src.step_ids || "").split(",");
+  const step_ids = []; const seen = new Set();
+  stepRaw.forEach(item => {
+    const p = String(item || "").trim().toUpperCase();
+    if (!p || seen.has(p)) return;
+    seen.add(p); step_ids.push(p);
+  });
+  const num = (key, fallback) => {
+    const n = Number(src[key]);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(ROOT_LOT_CACHE_LIMIT_MAX, Math.floor(n)));
+  };
+  return {
+    step_ids,
+    searched_limit: num("searched_limit", ROOT_LOT_CACHE_DEFAULT.searched_limit),
+    target_roots: num("target_roots", ROOT_LOT_CACHE_DEFAULT.target_roots),
+  };
+};
+const rootLotCacheDraftFromSettings = (raw = {}) => {
+  const s = normalizeRootLotCacheSettings(raw);
+  return { ...s, stepText: s.step_ids.join(", ") };
+};
+const settingsFromRootLotCacheDraft = (draft = {}) => normalizeRootLotCacheSettings({
+  step_ids: String(draft.stepText || "").split(","),
+  searched_limit: draft.searched_limit,
+  target_roots: draft.target_roots,
+});
 
 const S_INPUT = {
   padding: "4px 6px", borderRadius: 4, border: "1px solid var(--border)",
@@ -15,7 +50,8 @@ const S_BTN = {
   background: "transparent", color: "var(--text-primary)", fontSize: 13, cursor: "pointer",
 };
 
-export default function My_RamCache() {
+export default function My_RamCache({ user }) {
+  const canManage = canManagePage(user, "splittable");
   const [overview, setOverview] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [memOverview, setMemOverview] = useState(null);
@@ -30,6 +66,18 @@ export default function My_RamCache() {
   const [budgets, setBudgets] = useState(null);
   const [budgetDraft, setBudgetDraft] = useState("");
   const [budgetSaving, setBudgetSaving] = useState(false);
+  // 관리자 전용 — 캐시 수동 스캔/설정 (SplitTable 톱니바퀴에서 이동)
+  const [srcCfg, setSrcCfg] = useState(null);
+  const [fabCacheBusy, setFabCacheBusy] = useState(false);
+  const [productCacheStatus, setProductCacheStatus] = useState(null);
+  const [productCacheBusy, setProductCacheBusy] = useState(false);
+  const [rootLotCacheStatus, setRootLotCacheStatus] = useState(null);
+  const [rootLotCacheBusy, setRootLotCacheBusy] = useState(false);
+  const [rootLotCacheSaveBusy, setRootLotCacheSaveBusy] = useState(false);
+  const [rootLotCacheDraft, setRootLotCacheDraft] = useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
+  const [queryWorkersStatus, setQueryWorkersStatus] = useState(null);
+  const [queryWorkersDraft, setQueryWorkersDraft] = useState(3);
+  const [queryWorkersSaveBusy, setQueryWorkersSaveBusy] = useState(false);
 
   const loadOverview = useCallback(() => {
     setOverviewLoading(true);
@@ -74,13 +122,111 @@ export default function My_RamCache() {
       .catch(() => {});
   }, []);
 
+  // 관리자 — 소스 설정(root_lot_cache 저장 시 enabled/lot_overrides 보존용) + 쿼리 워커 로드
+  const loadSourceConfig = useCallback(() => {
+    sf(API + "/source-config")
+      .then(d => {
+        setSrcCfg(d);
+        setRootLotCacheDraft(rootLotCacheDraftFromSettings(d.root_lot_cache || ROOT_LOT_CACHE_DEFAULT));
+      })
+      .catch(() => setSrcCfg(null));
+  }, []);
+  const loadQueryWorkers = useCallback(() => {
+    sf(API + "/query-workers")
+      .then(d => { setQueryWorkersStatus(d); setQueryWorkersDraft(d.effective || 3); })
+      .catch(() => {});
+  }, []);
+  const reloadProductCacheStatus = useCallback((prod) => {
+    const q = prod ? ("?product=" + encodeURIComponent(prod)) : "";
+    return sf(API + "/product-cache/status" + q)
+      .then(d => setProductCacheStatus(d))
+      .catch(() => setProductCacheStatus(null));
+  }, []);
+  const reloadRootLotCacheStatus = useCallback((prod) => {
+    const q = prod ? ("?product=" + encodeURIComponent(prod)) : "";
+    return sf(API + "/root-lot-cache/status" + q)
+      .then(d => setRootLotCacheStatus(d))
+      .catch(() => setRootLotCacheStatus(null));
+  }, []);
+
   useEffect(() => { loadOverview(); }, [loadOverview]);
+  useEffect(() => {
+    if (!canManage) return;
+    loadSourceConfig();
+    loadQueryWorkers();
+  }, [canManage, loadSourceConfig, loadQueryWorkers]);
   useEffect(() => {
     if (!selProd) return;
     loadPriority(selProd);
     loadContents(selProd);
     loadBudgets(selProd);
-  }, [selProd, loadPriority, loadContents, loadBudgets]);
+    if (canManage) { reloadProductCacheStatus(selProd); reloadRootLotCacheStatus(selProd); }
+  }, [selProd, canManage, loadPriority, loadContents, loadBudgets, reloadProductCacheStatus, reloadRootLotCacheStatus]);
+
+  const runFabMatchCache = () => {
+    setFabCacheBusy(true);
+    sf(API + "/match-cache/refresh", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product: selProd || "", force: true }) })
+      .then(r => {
+        const rows = r.products || [];
+        if (r.queued) toast.info(`FAB 매칭 캐시 스캔 예약됨: ${rows.length}개 제품`);
+        else if (r.running) toast.warn("FAB 매칭 캐시 스캔이 이미 실행 중입니다.");
+        else toast.ok(`FAB 매칭 캐시 스캔 완료: ${rows.filter(x => x.ok).length}/${rows.length}`);
+      })
+      .catch(e => toast.error("FAB 매칭 캐시 스캔 실패: " + (e?.message || e)))
+      .finally(() => setFabCacheBusy(false));
+  };
+  const runProductRamCache = () => {
+    setProductCacheBusy(true);
+    sf(API + "/product-cache/refresh", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product: selProd || "", force: true }) })
+      .then(r => {
+        const rows = r.products || [];
+        if (r.queued) toast.info(`제품 원본 RAM cache 갱신 예약됨: ${rows.length}개 제품`);
+        else if (r.running) toast.warn("제품 원본 RAM cache 갱신이 이미 실행 중입니다.");
+        else toast.ok(`제품 원본 RAM cache 갱신 완료: ${rows.filter(x => x.ok).length}/${rows.length}`);
+        reloadProductCacheStatus(selProd);
+      })
+      .catch(e => toast.error("제품 원본 RAM cache 갱신 실패: " + (e?.message || e)))
+      .finally(() => setProductCacheBusy(false));
+  };
+  const saveRootLotCacheSettings = () => {
+    const settings = settingsFromRootLotCacheDraft(rootLotCacheDraft);
+    setRootLotCacheSaveBusy(true);
+    sf(API + "/source-config/save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: srcCfg?.enabled || [], lot_overrides: srcCfg?.lot_overrides || {}, root_lot_cache: settings }) })
+      .then(() => {
+        setRootLotCacheDraft(rootLotCacheDraftFromSettings(settings));
+        toast.ok("Root lot RAM cache 설정 저장됨");
+        loadSourceConfig();
+        reloadRootLotCacheStatus(selProd);
+      })
+      .catch(e => toast.error("Root lot RAM cache 설정 저장 실패: " + (e?.message || e)))
+      .finally(() => setRootLotCacheSaveBusy(false));
+  };
+  const runRootLotRamCache = () => {
+    setRootLotCacheBusy(true);
+    sf(API + "/root-lot-cache/refresh", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product: selProd || "", force: true }) })
+      .then(r => {
+        const rows = r.products || [];
+        toast.ok(`Root lot RAM cache 갱신 완료: ${rows.filter(x => x.ok).length}/${rows.length}`);
+        reloadRootLotCacheStatus(selProd);
+        reloadProductCacheStatus(selProd);
+        loadOverview();
+        if (selProd) loadContents(selProd);
+      })
+      .catch(e => toast.error("Root lot RAM cache 갱신 실패: " + (e?.message || e)))
+      .finally(() => setRootLotCacheBusy(false));
+  };
+  const saveQueryWorkers = () => {
+    setQueryWorkersSaveBusy(true);
+    sf(API + "/query-workers/save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query_workers: queryWorkersDraft }) })
+      .then(d => { setQueryWorkersStatus(d); setQueryWorkersDraft(d.configured || 0); toast.ok("쿼리 워커 수 저장됨 (effective: " + d.effective + ")"); })
+      .catch(e => toast.error("쿼리 워커 수 저장 실패: " + (e?.message || e)))
+      .finally(() => setQueryWorkersSaveBusy(false));
+  };
 
   const savePriority = (lots) => {
     sf(API + "/ram-cache/priority-lots/save", {
@@ -135,19 +281,17 @@ export default function My_RamCache() {
   const refreshAll = () => {
     loadOverview();
     if (selProd) { loadPriority(selProd); loadContents(selProd); loadBudgets(selProd); }
+    if (canManage) {
+      loadSourceConfig(); loadQueryWorkers();
+      reloadProductCacheStatus(selProd); reloadRootLotCacheStatus(selProd);
+    }
   };
 
   const usagePct = overview?.max_mb ? Math.min(100, overview.total_mb / overview.max_mb * 100) : 0;
 
   return (
     <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>🧠 주요 Lot · RAM 캐시 관리</div>
-          <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 2 }}>
-            제품별 주요 lot 관리(목적·위치·코멘트) — 등록된 lot은 RAM 캐시에 우선 적재됩니다
-          </div>
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 14 }}>
         <button onClick={refreshAll} style={{ ...S_BTN, color: "var(--accent)" }}>새로고침</button>
       </div>
 
@@ -253,6 +397,120 @@ export default function My_RamCache() {
           * = 제품별 상한 직접 설정됨 (기본 {overview?.default_max_roots?.toLocaleString() || "-"}). 행을 클릭하면 아래에서 해당 제품을 관리합니다.
         </div>
       </div>
+
+      {/* 관리자 — 캐시 수동 스캔/설정 (SplitTable 톱니바퀴에서 이동) */}
+      {canManage && <div style={{ display: "grid", gap: 10, padding: "10px 12px", borderRadius: 8,
+        border: "1px solid var(--border)", background: "var(--bg-card)", marginBottom: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>관리자 · 캐시 수동 스캔 / 설정</div>
+
+        {/* FAB root/fab_lot 매칭 캐시 스캔 */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={runFabMatchCache} disabled={fabCacheBusy}
+            style={{ ...S_BTN, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)",
+              fontWeight: 700, borderRadius: 999, cursor: fabCacheBusy ? "wait" : "pointer", opacity: fabCacheBusy ? 0.65 : 1 }}>
+            {fabCacheBusy ? "FAB 캐시 스캔 중..." : "FAB root/fab_lot 캐시 수동 스캔"}
+          </button>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            {selProd ? `선택 제품(${selProd}) 기준` : "제품 미선택 시 전체 표시 제품을 스캔합니다"}
+          </span>
+        </div>
+
+        {/* 제품 원본 RAM cache 수동 갱신 */}
+        {(() => {
+          const pc = (productCacheStatus?.products || [])[0] || {};
+          const hit = !!pc.hit; const stale = !!pc.stale;
+          const refreshing = !!pc.refreshing || !!productCacheStatus?.job?.running;
+          const tone = stale ? "rgba(245,158,11,0.95)" : hit ? "rgba(37,99,235,0.95)" : "var(--text-secondary)";
+          return (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={runProductRamCache} disabled={productCacheBusy}
+                style={{ ...S_BTN, border: "1px solid rgba(37,99,235,0.8)", background: "rgba(37,99,235,0.10)",
+                  color: "rgba(37,99,235,0.95)", fontWeight: 700, borderRadius: 999,
+                  cursor: productCacheBusy ? "wait" : "pointer", opacity: productCacheBusy ? 0.65 : 1 }}>
+                {productCacheBusy ? "제품 원본 RAM cache 갱신 중..." : "제품 원본 RAM cache 수동 갱신"}
+              </button>
+              <span style={{ fontSize: 13, color: tone, fontWeight: 700 }}>
+                {refreshing ? "refreshing" : stale ? "stale" : hit ? "hit" : "miss"}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                rows {pc.row_count || 0} · {Number(pc.estimated_mb || 0).toFixed(1)} MB · {pc.loaded_at || "not loaded"}
+              </span>
+            </div>);
+        })()}
+
+        {/* Root lot RAM cache 설정/갱신 */}
+        {(() => {
+          const rc = rootLotCacheStatus?.cache || {};
+          const settings = rootLotCacheStatus?.settings || settingsFromRootLotCacheDraft(rootLotCacheDraft);
+          return (
+            <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 8,
+              border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, fontWeight: 800 }}>Root lot RAM cache</div>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                  cached {rc.hit_roots || 0} roots (step {rc.step_hit_roots || 0} / other {rc.other_hit_roots || 0}) · {Number(rc.estimated_mb || 0).toFixed(1)} MB / {rc.max_gb || 0} GB · CPU {Number(rc.cpu_budget_cores || 0).toFixed(1)} cores
+                </span>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                  step {(settings.step_ids || []).join(",") || "-"} · target {settings.target_roots || 0} · searched {settings.searched_limit || 0}
+                </span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, alignItems: "center" }}>
+                <input value={rootLotCacheDraft.stepText || ""} onChange={e => setRootLotCacheDraft(d => ({ ...d, stepText: e.target.value }))}
+                  placeholder="step_id (예: 6000, 7200)" title="이 step 들을 지난(통과=tkout) lot 을 tkout_time 최신순으로 메모리 캐싱"
+                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
+                <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.target_roots}
+                  onChange={e => setRootLotCacheDraft(d => ({ ...d, target_roots: e.target.value }))}
+                  title="상시 메모리에 유지할 총 root 개수 목표 (약 1000)"
+                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
+                <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.searched_limit}
+                  onChange={e => setRootLotCacheDraft(d => ({ ...d, searched_limit: e.target.value }))}
+                  title="검색된 root lot 을 유지할 최대 개수(무조건 최우선 포함)"
+                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
+                <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}
+                  style={{ ...S_BTN, fontWeight: 700, cursor: rootLotCacheSaveBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                  {rootLotCacheSaveBusy ? "저장 중" : "설정 저장"}
+                </button>
+                <button onClick={runRootLotRamCache} disabled={rootLotCacheBusy}
+                  style={{ ...S_BTN, border: "1px solid rgba(37,99,235,0.8)", background: "rgba(37,99,235,0.10)",
+                    color: "rgba(37,99,235,0.95)", fontWeight: 700, cursor: rootLotCacheBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                  {rootLotCacheBusy ? "갱신 중" : "Root cache 갱신"}
+                </button>
+              </div>
+            </div>);
+        })()}
+
+        {/* 쿼리 병렬 코어 수 */}
+        <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 8,
+          border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>쿼리 병렬 코어 수</div>
+            {queryWorkersStatus && <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+              현재 {queryWorkersStatus.effective}코어 · CPU {queryWorkersStatus.cpu_count}코어
+            </span>}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+            SplitTable 조회 시 사용할 CPU 코어 수. 숫자가 높으면 단일 조회는 빠르지만, 동시 사용자가 많으면 서버가 느려집니다. 기본 3코어 권장.
+            {queryWorkersStatus?.essential_concurrency && <span> (동시 조회 상한: {queryWorkersStatus.essential_concurrency}건)</span>}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={queryWorkersDraft} onChange={e => setQueryWorkersDraft(Number(e.target.value))}
+              style={{ ...S_INPUT, fontFamily: "monospace", cursor: "pointer" }}>
+              {[1, 2, 3, 4].filter(n => n <= (queryWorkersStatus?.cpu_count || 4)).map(n => (
+                <option key={n} value={n}>{n}코어{n === 3 ? " (권장)" : n === 1 ? " (절약)" : ""}</option>
+              ))}
+            </select>
+            <button onClick={saveQueryWorkers} disabled={queryWorkersSaveBusy}
+              style={{ ...S_BTN, fontWeight: 700, cursor: queryWorkersSaveBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+              {queryWorkersSaveBusy ? "저장 중" : "저장"}
+            </button>
+            <button onClick={loadQueryWorkers}
+              style={{ ...S_BTN, border: "1px solid rgba(37,99,235,0.8)", background: "rgba(37,99,235,0.10)",
+                color: "rgba(37,99,235,0.95)", fontWeight: 700, whiteSpace: "nowrap" }}>
+              새로고침
+            </button>
+          </div>
+        </div>
+      </div>}
 
       {/* 선택 제품 상세 */}
       {selProd && <div>

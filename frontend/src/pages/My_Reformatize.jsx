@@ -193,7 +193,7 @@ function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
         <span style={{ fontSize: 14, fontWeight: 800 }}>📋 Index 항목 선택</span>
         <Pill tone={nSel === 0 ? "warn" : "accent"}>{nSel} / {items.length}</Pill>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          {nSel === 0 ? "뽑을 항목을 선택하세요 — REPORT ORDER 전체 버튼으로 리포트 대상만 일괄 선택 가능" : "REAL 은 raw × scale factor, ADDP 는 수식·참조 확인"}
+          {nSel === 0 ? "뽑을 항목을 선택하세요 — REPORT ORDER 전체 버튼으로 리포트 대상만 일괄 선택 가능" : "ALIAS 선택 — ADDP FORM 은 reformatter CSV 와 동일 (REAL 은 빈칸)"}
         </span>
         <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲ 접기" : "▼ 펼치기"}</span>
       </div>
@@ -213,7 +213,7 @@ function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
           <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
             <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <thead><tr>
-                {["", "구분", "ITEM (alias)", "R.ORD", "계산 상세", "단위/spec"].map((h, i) => (
+                {["", "ALIAS", "ADDP FORM"].map((h, i) => (
                   <th key={i} style={{ ...head, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr></thead>
@@ -224,26 +224,9 @@ function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
                     <td style={{ ...cell, width: 30 }}>
                       <input type="checkbox" readOnly checked={selected.has(it.alias)} style={{ accentColor: "var(--accent)" }} />
                     </td>
-                    <td style={cell}><Pill tone={it.category === "addp" ? "warn" : "accent"}>{it.category === "addp" ? "ADDP" : "REAL"}</Pill></td>
-                    <td style={{ ...cell, ...mono, fontWeight: 700, color: "var(--accent)" }}>{it.alias}</td>
-                    <td style={{ ...cell, ...mono, color: it.report_order != null ? "var(--text-primary)" : "var(--text-secondary)" }}>
-                      {it.report_order != null ? it.report_order : "-"}
-                    </td>
+                    <td style={{ ...cell, ...mono, fontWeight: 700, color: "var(--accent)", whiteSpace: "nowrap" }}>{it.alias}</td>
                     <td style={{ ...cell, ...mono, whiteSpace: "normal", wordBreak: "break-all" }}>
-                      {it.category === "addp" ? (
-                        <>
-                          <span>{it.addp_form}</span>
-                          {(it.refs || []).length > 0 && (
-                            <span style={{ color: "var(--text-secondary)" }}>{"  ← 참조: " + it.refs.join(", ")}</span>
-                          )}
-                        </>
-                      ) : (
-                        <span>{it.itemid}{it.abs ? " → abs" : ""} × <b>{it.scale ?? 1}</b><span style={{ color: "var(--text-secondary)" }}> (scale factor)</span></span>
-                      )}
-                    </td>
-                    <td style={{ ...cell, ...mono, color: "var(--text-secondary)" }}>
-                      {(it.unit ? `[${it.unit}] ` : "") + (it.speclow != null || it.spechigh != null ? `${it.speclow ?? "-"}~${it.spechigh ?? "-"}` : "")}
-                      {it.target != null ? ` (t ${it.target})` : ""}
+                      {it.category === "addp" ? it.addp_form : ""}
                     </td>
                   </tr>
                 ))}
@@ -432,6 +415,7 @@ export default function My_Reformatize({ user }) {
   const [dlBusy, setDlBusy] = useState(false);
   const [itemList, setItemList] = useState([]);          // vehicle CSV 의 REAL/ADDP 항목
   const [selItems, setSelItems] = useState(new Set());   // 선택된 alias (기본 전체)
+  const [agg, setAgg] = useState("");                    // ""=shot raw, max/min/median/avg/std/p90/p10
 
   useEffect(() => {
     sf(API + "/products").then(d => {
@@ -467,7 +451,7 @@ export default function My_Reformatize({ user }) {
     if (!product) { toast.warn("제품을 선택하세요"); return; }
     if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     setBusy(true);
-    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, ...filterBody(filters), items: selArray() })
+    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, ...filterBody(filters), items: selArray(), agg })
       .then(d => { setResult(d); setOffset(d.offset || 0); })
       .catch(e => toast.error(e.message || "조회 실패"))
       .finally(() => setBusy(false));
@@ -481,7 +465,7 @@ export default function My_Reformatize({ user }) {
       return;
     }
     setDlBusy(true);
-    dl(API + "/download" + qs({ product, ...filterBody(filters), items: selArray().join(",") }), `${product}_reformatize.csv`)
+    dl(API + "/download" + qs({ product, ...filterBody(filters), items: selArray().join(","), agg }), `${product}_reformatize.csv`)
       .then(() => toast.ok("다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
       .catch(e => toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
@@ -508,7 +492,6 @@ export default function My_Reformatize({ user }) {
     <div style={{ padding: "24px 32px", background: "var(--bg-primary)", minHeight: "calc(100vh - 52px)", color: "var(--text-primary)", fontFamily: "'Pretendard',sans-serif" }}>
       <PageHeader
         title="ET Index 다운로드"
-        subtitle="DB ET 데이터를 vehicle reformatter 규칙(REAL/ADDP)으로 계산해 shot 단위 index 값을 추출합니다."
         right={<Pill tone="neutral" size="md">{user?.username || "guest"}</Pill>}
         style={{ borderRadius: 10, border: "1px solid var(--border)", marginBottom: 14 }}
       />
@@ -564,6 +547,15 @@ export default function My_Reformatize({ user }) {
         <input value={filters.site_cnt_filter} onChange={e => setF({ site_cnt_filter: e.target.value })}
           onKeyDown={onFilterEnter}
           placeholder="total_site_cnt (쉼표=OR, 일치)" style={{ ...inputStyle, width: 180 }} />
+        <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>집계</span>
+        <select value={agg} onChange={e => { setAgg(e.target.value); setResult(null); setOffset(0); }}
+          title="root_lot_id × wafer_id × step_id × PGM(pt) 그룹으로 index 를 집계해서 추출"
+          style={{ ...inputStyle, width: 170 }}>
+          <option value="">shot raw (집계 없음)</option>
+          {["max", "min", "median", "avg", "std", "p90", "p10"].map(m => (
+            <option key={m} value={m}>{m.toUpperCase()}</option>
+          ))}
+        </select>
         {hasAnyFilter(filters) && (
           <Button onClick={() => setFilters(EMPTY_FILTERS)}>필터 초기화</Button>
         )}

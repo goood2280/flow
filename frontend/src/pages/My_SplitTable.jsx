@@ -40,37 +40,8 @@ const COLOR_PREFIXES=["KNOB","MASK"];
 const CANDIDATE_PREVIEW_LIMIT=50;
 const CANDIDATE_SEARCH_LIMIT=120;
 const ROOT_LOT_CACHE_LIMIT_MAX=50000;
-const ROOT_LOT_CACHE_DEFAULT={step_ids:[],searched_limit:1000,target_roots:1000};
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
-const normalizeRootLotCacheSettings=(raw={})=>{
-  const src=raw&&typeof raw==="object"?raw:{};
-  const stepRaw=Array.isArray(src.step_ids)?src.step_ids:String(src.step_ids||"").split(",");
-  const step_ids=[];const seen=new Set();
-  stepRaw.forEach(item=>{
-    const p=String(item||"").trim().toUpperCase();
-    if(!p||seen.has(p))return;
-    seen.add(p);step_ids.push(p);
-  });
-  const num=(key, fallback)=>{
-    const n=Number(src[key]);
-    if(!Number.isFinite(n))return fallback;
-    return Math.max(0,Math.min(ROOT_LOT_CACHE_LIMIT_MAX,Math.floor(n)));
-  };
-  return {
-    step_ids,
-    searched_limit:num("searched_limit",ROOT_LOT_CACHE_DEFAULT.searched_limit),
-    target_roots:num("target_roots",ROOT_LOT_CACHE_DEFAULT.target_roots),
-  };
-};
-const rootLotCacheDraftFromSettings=(raw={})=>{
-  const s=normalizeRootLotCacheSettings(raw);
-  return {...s,stepText:s.step_ids.join(", ")};
-};
-const settingsFromRootLotCacheDraft=(draft={})=>normalizeRootLotCacheSettings({
-  step_ids:String(draft.stepText||"").split(","),
-  searched_limit:draft.searched_limit,
-  target_roots:draft.target_roots,
-});
+// v9.5.x: Root lot RAM cache 설정/수동 스캔/쿼리 코어 조정은 캐시 관리 탭(My_RamCache)으로 이동.
 const isInlineVmSplitParam=(value)=>{
   const v=String(value||"").trim().toUpperCase();
   return v==="INLINE"||v==="VM"||v.startsWith("INLINE_")||v.startsWith("VM_");
@@ -332,7 +303,6 @@ export default function My_SplitTable({user}){
   const[fabRoots,setFabRoots]=useState([]);
   const[overridePreview,setOverridePreview]=useState(null);
   const[overridePreviewLoading,setOverridePreviewLoading]=useState(false);
-  const[fabCacheBusy,setFabCacheBusy]=useState(false);
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
   const[fabSourceOptions,setFabSourceOptions]=useState([]);
   // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
@@ -454,18 +424,8 @@ export default function My_SplitTable({user}){
   const[featMask,setFeatMask]=useState("");
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
   const[customTags,setCustomTags]=useState([]);
-  const[productCacheStatus,setProductCacheStatus]=useState(null);
-  const[productCacheBusy,setProductCacheBusy]=useState(false);
-  const[rootLotCacheStatus,setRootLotCacheStatus]=useState(null);
-  const[rootLotCacheBusy,setRootLotCacheBusy]=useState(false);
-  const[rootLotCacheSaveBusy,setRootLotCacheSaveBusy]=useState(false);
-  const[rootLotCacheDraft,setRootLotCacheDraft]=useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
-  const[mismatchRecipientsDraft,setMismatchRecipientsDraft]=useState("");
-  const[mismatchRecipientsSaveBusy,setMismatchRecipientsSaveBusy]=useState(false);
-  // 쿼리 병렬 워커 수 설정
-  const[queryWorkersStatus,setQueryWorkersStatus]=useState(null);
-  const[queryWorkersDraft,setQueryWorkersDraft]=useState(3);
-  const[queryWorkersSaveBusy,setQueryWorkersSaveBusy]=useState(false);
+  const[mismatchMailEnabled,setMismatchMailEnabled]=useState(false);
+  const[mismatchMailSaveBusy,setMismatchMailSaveBusy]=useState(false);
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(cleanCustomSets(d.customs||[])));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
@@ -493,45 +453,23 @@ export default function My_SplitTable({user}){
   const loadSourceConfig=()=>sf(API+"/source-config").then(d=>{
     setEnabledSources(normalizeEnabledProducts(d.enabled));
     if(d.lot_overrides)setLotOverrides(normalizeOverrideConfig(d.lot_overrides));
-    setRootLotCacheDraft(rootLotCacheDraftFromSettings(d.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
-    setMismatchRecipientsDraft((d.mismatch_alert_recipients||[]).join(", "));
+    setMismatchMailEnabled(!!d.mismatch_mail_enabled);
     return d;
   }).catch(()=>({}));
-  const saveMismatchRecipients=()=>{
-    const recipients=mismatchRecipientsDraft.split(",").map(s=>s.trim()).filter(Boolean);
+  const toggleMismatchMail=(next)=>{
     const enabledForSave=enabledSources?[...enabledSources]:(products||[]).filter(p=>p.source_type==="base_file").map(p=>p.name).filter(Boolean);
-    setMismatchRecipientsSaveBusy(true);
+    setMismatchMailSaveBusy(true);
+    setMismatchMailEnabled(next);
     sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({enabled:enabledForSave,lot_overrides:lotOverrides||{},mismatch_alert_recipients:recipients})})
-      .then(()=>{toast.ok("불일치 알람 수신 팀 저장됨");return loadSourceConfig();})
-      .catch(e=>toast.error("불일치 알람 수신 팀 저장 실패: "+(e?.message||e)))
-      .finally(()=>setMismatchRecipientsSaveBusy(false));
-  };
-  const loadQueryWorkers=()=>sf(API+"/query-workers")
-    .then(d=>{setQueryWorkersStatus(d);setQueryWorkersDraft(d.effective||3);})
-    .catch(()=>{});
-  const saveQueryWorkers=()=>{
-    setQueryWorkersSaveBusy(true);
-    sf(API+"/query-workers/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({query_workers:queryWorkersDraft})})
-      .then(d=>{setQueryWorkersStatus(d);setQueryWorkersDraft(d.configured||0);toast.ok("쿼리 워커 수 저장됨 (effective: "+d.effective+")");})
-      .catch(e=>toast.error("쿼리 워커 수 저장 실패: "+(e?.message||e)))
-      .finally(()=>setQueryWorkersSaveBusy(false));
+      body:JSON.stringify({enabled:enabledForSave,lot_overrides:lotOverrides||{},mismatch_mail_enabled:next})})
+      .then(()=>{toast.ok(next?"불일치 알람 메일 발송 켜짐":"불일치 알람 메일 발송 꺼짐");return loadSourceConfig();})
+      .catch(e=>{setMismatchMailEnabled(!next);toast.error("메일 발송 설정 저장 실패: "+(e?.message||e));})
+      .finally(()=>setMismatchMailSaveBusy(false));
   };
   const reloadMlMatch=()=>{if(!selProd)return Promise.resolve();
     return sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
       .then(d=>setMlMatch(toMlMatch(d)))
       .catch(()=>{});
-  };
-  const reloadProductRamCacheStatus=()=>{const q=selProd?("?product="+encodeURIComponent(selProd)):"";
-    return sf(API+"/product-cache/status"+q)
-      .then(d=>setProductCacheStatus(d))
-      .catch(()=>setProductCacheStatus(null));
-  };
-  const reloadRootLotCacheStatus=()=>{const q=selProd?("?product="+encodeURIComponent(selProd)):"";
-    return sf(API+"/root-lot-cache/status"+q)
-      .then(d=>setRootLotCacheStatus(d))
-      .catch(()=>setRootLotCacheStatus(null));
   };
   const persistLotOverrides=async(nextLotOverrides)=>{
     await sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -541,67 +479,6 @@ export default function My_SplitTable({user}){
     if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
   };
   const saveSourceConfig=(enabled)=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...enabled]})}).catch(()=>{});};
-  const runFabMatchCache=()=>{
-    setFabCacheBusy(true);
-    sf(API+"/match-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
-      .then(r=>{
-        const rows=r.products||[];
-        if(r.queued){
-          toast.info(`FAB 매칭 캐시 스캔 예약됨: ${rows.length}개 제품`);
-        }else if(r.running){
-          toast.warn("FAB 매칭 캐시 스캔이 이미 실행 중입니다.");
-        }else{
-          const ok=rows.filter(x=>x.ok).length;
-          toast.ok(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
-        }
-        reloadMlMatch();
-        if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
-      })
-      .catch(e=>toast.error("FAB 매칭 캐시 스캔 실패: "+(e?.message||e)))
-      .finally(()=>setFabCacheBusy(false));
-  };
-  const runProductRamCache=()=>{
-    setProductCacheBusy(true);
-    sf(API+"/product-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
-      .then(r=>{
-        const rows=r.products||[];
-        if(r.queued){
-          toast.info(`제품 원본 RAM cache 갱신 예약됨: ${rows.length}개 제품`);
-        }else if(r.running){
-          toast.warn("제품 원본 RAM cache 갱신이 이미 실행 중입니다.");
-        }else{
-          const ok=rows.filter(x=>x.ok).length;
-          toast.ok(`제품 원본 RAM cache 갱신 완료: ${ok}/${rows.length}`);
-        }
-        reloadProductRamCacheStatus();
-        if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
-      })
-      .catch(e=>toast.error("제품 원본 RAM cache 갱신 실패: "+(e?.message||e)))
-      .finally(()=>setProductCacheBusy(false));
-  };
-  const saveRootLotCacheSettings=()=>{
-    const settings=settingsFromRootLotCacheDraft(rootLotCacheDraft);
-    const enabledForSave=enabledSources?[...enabledSources]:(products||[]).filter(p=>p.source_type==="base_file").map(p=>p.name).filter(Boolean);
-    setRootLotCacheSaveBusy(true);
-    sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({enabled:enabledForSave,lot_overrides:lotOverrides||{},root_lot_cache:settings})})
-      .then(()=>{setRootLotCacheDraft(rootLotCacheDraftFromSettings(settings));toast.ok("Root lot RAM cache 설정 저장됨");return Promise.all([loadSourceConfig(),reloadRootLotCacheStatus()]);})
-      .catch(e=>toast.error("Root lot RAM cache 설정 저장 실패: "+(e?.message||e)))
-      .finally(()=>setRootLotCacheSaveBusy(false));
-  };
-  const runRootLotRamCache=()=>{
-    setRootLotCacheBusy(true);
-    sf(API+"/root-lot-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
-      .then(r=>{
-        const rows=r.products||[];
-        const ok=rows.filter(x=>x.ok).length;
-        toast.ok(`Root lot RAM cache 갱신 완료: ${ok}/${rows.length}`);
-        reloadRootLotCacheStatus();
-        reloadProductRamCacheStatus();
-      })
-      .catch(e=>toast.error("Root lot RAM cache 갱신 실패: "+(e?.message||e)))
-      .finally(()=>setRootLotCacheBusy(false));
-  };
   useEffect(()=>{
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
@@ -609,8 +486,7 @@ export default function My_SplitTable({user}){
         const enabled=normalizeEnabledProducts(srcRes.enabled, prods);
         setEnabledSources(enabled);
         if(srcRes.lot_overrides) setLotOverrides(normalizeOverrideConfig(srcRes.lot_overrides));
-        setRootLotCacheDraft(rootLotCacheDraftFromSettings(srcRes.root_lot_cache||ROOT_LOT_CACHE_DEFAULT));
-        setMismatchRecipientsDraft((srcRes.mismatch_alert_recipients||[]).join(", "));
+        setMismatchMailEnabled(!!srcRes.mismatch_mail_enabled);
         // Set initial product to first visible source
         const visible=enabled?prods.filter(p=>enabled.has(p.name)):prods;
         if(visible.length)setSelProd(visible[0].name);else if(prods.length)setSelProd(prods[0].name);
@@ -627,7 +503,6 @@ export default function My_SplitTable({user}){
     reloadCustoms();
     loadUniques();
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
-    loadQueryWorkers();
   },[]);
   // v9.2.x: flow-i 딥링크 — URL query(product/root) 를 1회 소비해 자동 검색까지 수행.
   const deepLinkRef=useRef(null);
@@ -753,10 +628,8 @@ export default function My_SplitTable({user}){
   //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);setProductCacheStatus(null);setRootLotCacheStatus(null);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
     reloadCustomTags();
-    reloadProductRamCacheStatus();
-    reloadRootLotCacheStatus();
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
         setProductSchema((d.columns||[]).map(c=>c.name||c));
@@ -781,6 +654,15 @@ export default function My_SplitTable({user}){
     sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
       .then(d=>setInlineMetaSt(d.items||{})).catch(()=>setInlineMetaSt({}));
   },[selProd]);
+  // v9.5.x: 캐시관리 주요 Lot purpose — 검색 lot_id 가 등록된 lot_id 와 "완전 일치"할 때만
+  // 헤더에 purpose 표시. root_lot_id(앞 5자리)만 같은 경우는 표시하지 않는다.
+  const[priorityPurposeMap,setPriorityPurposeMap]=useState({});
+  useEffect(()=>{if(!selProd){setPriorityPurposeMap({});return;}
+    sf(API+"/ram-cache/priority-lots?product="+encodeURIComponent(selProd))
+      .then(d=>{const m={};(d.lots||[]).forEach(l=>{const id=String(l.lot_id||"").trim().toUpperCase();const p=String(l.purpose||"").trim();if(id&&p)m[id]=p;});setPriorityPurposeMap(m);})
+      .catch(()=>setPriorityPurposeMap({}));
+  },[selProd]);
+  const priorityPurpose=priorityPurposeMap[String(lotId||"").trim().toUpperCase()]||"";
   // v9.0.4: 이름이 같거나 prefix/casing 만 다른 경우도 soft-landing 으로 자동 매칭.
   const metaLookup=(metaMap, param, prefix)=>{
     if(!param||!metaMap) return null;
@@ -1035,7 +917,6 @@ export default function My_SplitTable({user}){
     }).then(raw=>{
       const d=expandViewRows(raw);
       setData(d);
-      if(d.product_cache)setProductCacheStatus(prev=>prev?{...prev,products:[{...d.product_cache,product:selProd}]}:{products:[{...d.product_cache,product:selProd}]});
       if(d.precision)setPrecision(d.precision);
       // v9.0.1: 응답에 동봉된 같은 root 의 fab_lot_id 들로 콤보박스 자동 채움 —
       //   별도 lot-candidates 호출 없이 즉시 보임. 빈 배열이면 기존 fabSuggestions 유지.
@@ -1633,99 +1514,21 @@ export default function My_SplitTable({user}){
             <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
               제품 노출, Lot 컬럼 연결, 컬럼/공정 규칙만 관리합니다. 규칙 추가·수정은 각 섹션의 <b>편집</b> 버튼에서 처리합니다.
             </div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <button onClick={runFabMatchCache} disabled={fabCacheBusy}
-                style={{padding:"5px 12px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:fabCacheBusy?"wait":"pointer",opacity:fabCacheBusy?0.65:1}}>
-                {fabCacheBusy?"FAB 캐시 스캔 중...":"FAB root/fab_lot 캐시 수동 스캔"}
-              </button>
-              <span style={{fontSize:14,color:"var(--text-secondary)"}}>현재 선택 제품 기준. 제품 미선택 시 전체 표시 제품을 스캔합니다.</span>
+            <div style={{fontSize:13,color:"var(--text-secondary)",lineHeight:1.5}}>
+              캐시 수동 스캔(FAB/제품 원본/Root lot RAM cache)과 쿼리 병렬 코어 수 조정은 <b>데이터 &gt; 캐시 관리</b> 탭으로 이동했습니다.
             </div>
-            {(()=>{const pc=(productCacheStatus?.products||[])[0]||data?.product_cache||{};const hit=!!pc.hit;const stale=!!pc.stale;const refreshing=!!pc.refreshing||!!productCacheStatus?.job?.running;const tone=stale?"rgba(245,158,11,0.95)":hit?"rgba(37,99,235,0.95)":"var(--text-secondary)";return(
-              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",paddingTop:2}}>
-                <button onClick={runProductRamCache} disabled={productCacheBusy}
-                  style={{padding:"5px 12px",borderRadius:999,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:productCacheBusy?"wait":"pointer",opacity:productCacheBusy?0.65:1}}>
-                  {productCacheBusy?"제품 원본 RAM cache 갱신 중...":"제품 원본 RAM cache 수동 갱신"}
-                </button>
-                <span style={{fontSize:14,color:tone,fontWeight:700}}>
-                  {refreshing?"refreshing":stale?"stale":hit?"hit":"miss"}
-                </span>
-                <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                  rows {pc.row_count||0} · {Number(pc.estimated_mb||0).toFixed(1)} MB · {pc.loaded_at||"not loaded"}
-                </span>
-              </div>);})()}
-            {(()=>{const rc=rootLotCacheStatus?.cache||{};const settings=rootLotCacheStatus?.settings||settingsFromRootLotCacheDraft(rootLotCacheDraft);return(
-              <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
-                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                  <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>Root lot RAM cache</div>
-                  <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    cached {rc.hit_roots||0} roots (step {rc.step_hit_roots||0} / other {rc.other_hit_roots||0}) · {Number(rc.estimated_mb||0).toFixed(1)} MB / {rc.max_gb||0} GB · CPU {Number(rc.cpu_budget_cores||0).toFixed(1)} cores
-                  </span>
-                  <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    step {(settings.step_ids||[]).join(",")||"-"} · target {settings.target_roots||0} · searched {settings.searched_limit||0}
-                  </span>
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,alignItems:"center"}}>
-                  <input value={rootLotCacheDraft.stepText||""} onChange={e=>setRootLotCacheDraft(d=>({...d,stepText:e.target.value}))}
-                    placeholder="step_id (예: 6000, 7200)" title="이 step 들을 지난(통과=tkout) lot 을 tkout_time 최신순으로 메모리 캐싱" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.target_roots}
-                    onChange={e=>setRootLotCacheDraft(d=>({...d,target_roots:e.target.value}))}
-                    title="상시 메모리에 유지할 총 root 개수 목표 (약 1000)" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.searched_limit}
-                    onChange={e=>setRootLotCacheDraft(d=>({...d,searched_limit:e.target.value}))}
-                    title="검색된 root lot 을 유지할 최대 개수(무조건 최우선 포함)" style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                  <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}
-                    style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:rootLotCacheSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
-                    {rootLotCacheSaveBusy?"저장 중":"설정 저장"}
-                  </button>
-                  <button onClick={runRootLotRamCache} disabled={rootLotCacheBusy}
-                    style={{padding:"6px 10px",borderRadius:6,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:rootLotCacheBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
-                    {rootLotCacheBusy?"갱신 중":"Root cache 갱신"}
-                  </button>
-                </div>
-              </div>);})()}
             <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>plan/actual 불일치 알람 수신 팀</div>
-                <span style={{fontSize:13,color:"var(--text-secondary)"}}>계획 작성자 외에 알람을 함께 받을 사용자 목록 (쉼표 구분)</span>
-              </div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <input value={mismatchRecipientsDraft} onChange={e=>setMismatchRecipientsDraft(e.target.value)}
-                  placeholder="user1, user2" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",minWidth:0}}/>
-                <button onClick={saveMismatchRecipients} disabled={mismatchRecipientsSaveBusy}
-                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:mismatchRecipientsSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
-                  {mismatchRecipientsSaveBusy?"저장 중":"저장"}
-                </button>
-              </div>
-            </div>
-            {/* 쿼리 병렬 코어 수 설정 */}
-            <div style={{display:"grid",gap:8,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-card)"}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>쿼리 병렬 코어 수</div>
-                {queryWorkersStatus&&<span style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                  현재 {queryWorkersStatus.effective}코어 · CPU {queryWorkersStatus.cpu_count}코어
-                </span>}
+                <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>plan/actual 불일치 알람 메일</div>
               </div>
               <div style={{fontSize:13,color:"var(--text-secondary)",lineHeight:1.5}}>
-                SplitTable 조회 시 사용할 CPU 코어 수. 숫자가 높으면 단일 조회는 빠르지만, 동시 사용자가 많으면 서버가 느려집니다. 기본 3코어 권장.
-                {queryWorkersStatus?.essential_concurrency&&<span> (동시 조회 상한: {queryWorkersStatus.essential_concurrency}건)</span>}
+                알람은 계획 작성자와, 이름이 제품명과 같은 그룹(대소문자 무시)의 멤버에게 발송됩니다.
               </div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <select value={queryWorkersDraft}
-                  onChange={e=>setQueryWorkersDraft(Number(e.target.value))}
-                  style={{padding:"6px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>
-                  {[1,2,3,4].filter(n=>n<=(queryWorkersStatus?.cpu_count||4)).map(n=>(
-                    <option key={n} value={n}>{n}코어{n===3?" (권장)":n===1?" (절약)":""}</option>
-                  ))}
-                </select>
-                <button onClick={saveQueryWorkers} disabled={queryWorkersSaveBusy}
-                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:queryWorkersSaveBusy?"wait":"pointer",whiteSpace:"nowrap"}}>
-                  {queryWorkersSaveBusy?"저장 중":"저장"}
-                </button>
-                <button onClick={loadQueryWorkers}
-                  style={{padding:"6px 10px",borderRadius:6,border:"1px solid rgba(37,99,235,0.8)",background:"rgba(37,99,235,0.10)",color:"rgba(37,99,235,0.95)",fontSize:14,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
-                  새로고침
-                </button>
-              </div>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"var(--text-primary)",cursor:mismatchMailSaveBusy?"wait":"pointer",userSelect:"none"}}>
+                <input type="checkbox" checked={mismatchMailEnabled} disabled={mismatchMailSaveBusy}
+                  onChange={e=>toggleMismatchMail(e.target.checked)}/>
+                알람 발생 시 수신자에게 메일도 발송 (기본 꺼짐)
+              </label>
             </div>
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
@@ -2124,18 +1927,17 @@ export default function My_SplitTable({user}){
     {/* Main */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <div style={{padding:"8px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{selProd}</span>
+        <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{stripMlPrefix(selProd)}</span>
         {lotId&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>| {lotId}</span>}
-        <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
-          {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
+        {lotId&&priorityPurpose&&<span title={"캐시관리 주요 Lot purpose: "+priorityPurpose}
+          style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}}>
+          📌 {priorityPurpose}</span>}
+        {isCustomMode&&<span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
+          {"CUSTOM"+(selCustom?": "+selCustom:"")}</span>}
         {/* v8.8.5: 상단 fab_source 배지 — Fab Lot ID 가 어디서 join 되어 왔는지 한눈에 확인. */}
         {(data?.match_cache||mlMatch.match_cache||data?.override||mlMatch.override) && (()=>{const cache=(data?.match_cache?.hit?data.match_cache:(mlMatch.match_cache?.hit?mlMatch.match_cache:null));
-          if(cache){
-            const title=`cache_path: ${cache.path||"(없음)"}\nsource: ${cache.source||"lot_progress_latest_cache"}\nfab_col: ${cache.fab_col||"lot_id"} · ts_col: ${cache.ts_col||"(없음)"}\njoin_keys: [${(cache.join_keys||[]).join(", ")}]\nbuilt_at: ${cache.built_at||"(없음)"}\nrows: ${cache.row_count||0}`;
-            return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--info-50)",color:"var(--info)",border:"1px solid var(--info-line)",fontFamily:"monospace",cursor:"help"}}>
-              💾 LOT 최신 캐시 · {cache.fab_col||"lot_id"}@{cache.ts_col||"tkout_time"}
-            </span>;
-          }
+          // v9.5.x: 운영 UI 정리 — LOT 최신 캐시 배지는 내부 정보라 숨김(오류/확인필요 배지는 유지).
+          if(cache)return null;
           const ov=data?.override||mlMatch.override;
           if(!ov) return null;
           if(ov.error){
@@ -2435,7 +2237,7 @@ export default function My_SplitTable({user}){
               <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontFamily:"monospace",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
                 {rootRowLabel}
               </th>
-              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{lotN===0&&<span style={{marginLeft:8,fontSize:14,fontWeight:600,color:"var(--accent)"}}>+ LOT 노트 ({drawerRoot})</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
+              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
               <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontFamily:"monospace",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0

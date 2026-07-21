@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import Loading from "../components/Loading";
-import { PageHeader, Pill, Button, statusPalette, uxColors } from "../components/UXKit";
+import { Pill, Button, statusPalette } from "../components/UXKit";
 import { WipStackedBar } from "../components/PlotlyChart";
 import { sf as apiSf } from "../lib/api";
 
@@ -217,11 +217,6 @@ function WipSplitPanel() {
 export default function My_Dashboard() {
   return (
     <div style={{ padding: "16px 18px", background: "var(--bg-primary)", color: "var(--text-primary)", maxWidth: "none", margin: 0, height: "100%", minHeight: 0, overflow: "auto", boxSizing: "border-box" }}>
-      <PageHeader
-        title="대시보드"
-        subtitle="WIP × Split 현황 — latest cache 기준"
-        style={{ marginBottom: 16, borderRadius: 10, border: `1px solid ${uxColors.border}` }}
-      />
       <WipSplitPanel />
     </div>
   );

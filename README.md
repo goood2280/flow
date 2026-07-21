@@ -47,13 +47,13 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 - LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
 - Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
 - Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다. view revalidate는 단일 워커 + 3h 쿨다운으로 직렬화되고, 워커(개발서버) 생존 시 재계산 자체를 `splittable_view_recompute` 로 오프로드해 운영 서버 polars 풀을 쓰지 않는다(payload 는 워커가 orjson 직렬화해 반환, 시그니처는 운영 서버가 디스패치 직전 로컬 계산해 저장; 로컬 폴백 시 기존과 동일). 조회/RAM 예열 워커 수는 `query_workers` 설정(0=자동)으로 제어한다.
-- RAM 캐시 관리는 데이터 그룹의 독립 탭이다(SplitTable 설정 모달에서 승격) — 전 제품 캐시 현황, 우선 lot, 예산을 한 화면에서 편집한다.
-- ET Index 다운로드(업무 탭)는 DB ET raw를 shot 단위 pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식) 규칙으로 index를 계산한다 — 항목 선택 다운로드, index 규칙 상세, 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수 지원. ET 측정시간(업무 탭)은 root lot별 step_id × PGM(pt) 측정 소요시간을 집계한다.
+- RAM 캐시 관리는 데이터 그룹의 독립 탭이다(SplitTable 설정 모달에서 승격) — 전 제품 캐시 현황, 우선 lot, 예산을 한 화면에서 편집한다. SplitTable 톱니바퀴에 있던 캐시 수동 스캔(FAB root/fab_lot 매칭, 제품 원본 RAM cache, Root lot RAM cache)과 Root lot 캐시 설정(step_ids/target/searched), 쿼리 병렬 코어 수 조정도 이 탭의 관리자 전용 섹션으로 이동했다.
+- ET Index 다운로드(업무 탭)는 DB ET raw를 shot 단위 pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식) 규칙으로 index를 계산한다 — 항목 선택 다운로드, index 규칙 상세, 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수 지원, shot 단위 wide 를 (root_lot, wafer, step, PGM) 그룹으로 요약하는 집계 방식(max/min/median/avg/std/p90/p10) 선택. ET 측정시간(업무 탭)은 root lot별 step_id × PGM(pt) 측정 소요시간을 집계하고, `/trend`로 step별 장기(월 단위) 추이 — wafer당 측정시간·평균 PGM 수·major 의뢰 형태 — 를 본다.
 - Flow-i 채팅/에이전트 실행은 tabs 토큰 `flowi` 권한이 필요하고, `core/flowi_gate`가 동시 실행 상한과 서버 부하 admission으로 운용을 보호한다(admin 우회). ReAct 도구 카탈로그는 유저 권한으로 필터되고 실행 시점에도 unit 가드가 걸린다.
 - CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`). 메모리 보호 소프트밴드(RSS가 limit 근처)는 기본적으로 **실제 호스트 여유 메모리**를 기준으로 판단한다 — Polars RSS 잔류만으로 스플릿테이블 조회/다운로드나 백그라운드 빌드를 거절하지 않는다(하드캡 RSS≥limit는 유지, `FLOW_PROCESS_MEMORY_LIMIT_STRICT=1`로 엄격 모드 복원). 스플릿테이블 불러오기·파일 보기는 예약 레인(essential lane)으로 가드와 무관하게 항상 처리된다.
 - S3 주기 업로드/다운로드는 서버별로 켜고 끌 수 있다 — env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` 또는 FileBrowser S3 항목 탭의 방향별 토글(개발/양산 2서버가 같은 버킷을 쓸 때 개발 서버는 끔).
 - 회의관리/인폼 화면은 FileBrowser와 같은 UXKit 공통 컴포넌트로 통일돼 있다.
-- plan/actual 불일치 알람은 계획 작성자와 지정 팀(`source-config.mismatch_alert_recipients`)에게 간다.
+- plan/actual 불일치 알람은 계획 작성자와, 이름이 제품명과 같은 그룹(그룹 관리, 대소문자 무시)의 멤버에게 간다. 메일 발송 여부는 SplitTable 톱니바퀴의 토글로 제어한다(기본 꺼짐). 별도 지정 팀 목록(`mismatch_alert_recipients`)은 폐기됐다.
 - 세부 운영 상태, 가능한 작업, 100ms light endpoint 기준은 [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md)에 둔다.
 
 ## Flow-i 에이전틱 오케스트레이션 & 공유 스킬
@@ -79,12 +79,17 @@ GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/
 
 **6) 지식 레이어 (지식 카드)** — Flow-i가 답변에 쓰는 도메인 지식을 카드 단위(`core/knowledge_cards.py`)로 관리한다. 우선순위는 local > seed > generated > adapter — 사내에서 채운 local 카드가 항상 이기고, 시드 카드 번들(`core/knowledge_seed_cards/`, setup.py 포함)은 일반 공정용어와 제품별 공정구간 채움 틀을 제공한다. 사내 반입 후 제품 실명/ET 항목/공정구간은 "지식 채움" 인터뷰로 채운다. 계약은 [docs/features/knowledge-layer.md](docs/features/knowledge-layer.md).
 
-## Recent Changes (2026-07, v9.2~v9.4)
+## Recent Changes (2026-07, v9.2~v9.5)
 
-auto report reformatter 이식(ET Index) → Flow-i 지식 레이어/운용 게이트 → 캐시 워커 정리 순의 배치. 상세는 [VERSION.json](VERSION.json) release notes와 각 feature 문서에 있다.
+auto report reformatter 이식(ET Index) → Flow-i 지식 레이어/운용 게이트 → 캐시 워커 정리 → 캐시 관리 탭 통합/권한 그룹 순의 배치. 상세는 [VERSION.json](VERSION.json) release notes와 각 feature 문서에 있다.
 
 | 영역 | 변경 |
 |---|---|
+| 캐시 관리 (v9.5) | SplitTable 톱니바퀴의 캐시 수동 스캔(FAB/제품 원본/Root lot RAM cache)·Root lot 캐시 설정·쿼리 병렬 코어 수 조정을 캐시 관리 탭 관리자 섹션으로 통합 |
+| plan/actual 알람 (v9.5) | 지정 팀 수신자(`mismatch_alert_recipients`) 폐기 — 수신 대상 = 계획 작성자 + 제품 동명 그룹 멤버 고정, HTML 메일 발송 온오프 토글(기본 꺼짐) |
+| 권한 그룹 (v9.5) | Admin 권한 그룹(perm-groups) 신설 — 그룹에 tabs 권한 지정 + 멤버 일괄 적용, 개별 권한 지정 시 그룹에서 자동 제외, 가입 승인 시 안내 메일 발송 |
+| ET 측정시간 (v9.5) | `/trend` 월 단위 장기 추이 — wafer당 step 측정시간·평균 PGM 수·major 의뢰 형태(step_seq 조합 비율) |
+| ET Index (v9.5) | 제품 파일 다중 레이아웃(제품 폴더/hive/플랫) 흡수, shot→(root_lot, wafer, step, PGM) 집계 방식 선택(max/min/median/avg/std/p90/p10) |
 | ET Index 다운로드 (v9.2~9.3) | 업무 탭 신설 — DB ET raw shot pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식, 재귀 고정점) index 계산. 항목 선택 다운로드(REPORT ORDER 일괄 선택), index 규칙 상세 바(ADDP→REAL 체인 추적), 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수(`manual_functions.py` mtime 자동 로딩), downloads.jsonl source 구분 |
 | ET 측정시간 (v9.2) | 업무 탭 신설 — root lot별 step_id × PGM(pt) 측정 소요시간(tkout−tkin) 집계 |
 | 지식 레이어 (v9.4) | 지식 카드 `core/knowledge_cards.py` + 시드 번들(local > seed > generated > adapter), 공정용어·제품별 공정구간 채움틀 카드, "지식 채움" 인터뷰 증거 보강 |
