@@ -7884,30 +7884,63 @@ def _run_unified_scan(product: str, force: bool) -> dict:
     """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신."""
     global _UNIFIED_SCAN_BUSY
     results: dict = {"ok": True, "product": product}
+    _label = product or "전체 제품"
+    try:
+        from core.cache_event_log import record as _log_event
+    except Exception:
+        _log_event = None
+
+    def _log(cat, msg, *, ok=True, detail=None):
+        if _log_event:
+            try:
+                _log_event(cat, msg, ok=ok, product=product, detail=detail)
+            except Exception:
+                pass
+
     try:
         # 1. FAB match cache
+        _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 갱신 시작 ({_label})")
         try:
             results["match_cache"] = enqueue_match_cache_refresh(product=product, force=force, reason="unified_scan")
+            mc = results["match_cache"]
+            _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 완료 ({_label})",
+                 ok=bool(mc.get("ok")),
+                 detail={"queued": mc.get("queued"), "running": mc.get("running")})
         except Exception as e:
             results["match_cache"] = {"ok": False, "error": str(e)}
+            _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 실패 ({_label}): {e}", ok=False)
 
         # 2. Product RAM cache
+        _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 갱신 시작 ({_label})")
         try:
             results["product_cache"] = enqueue_product_ram_cache_refresh(product=product, force=force, reason="unified_scan")
+            pc = results["product_cache"]
+            _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 완료 ({_label})",
+                 ok=bool(pc.get("ok")),
+                 detail={"queued": pc.get("queued"), "products": len(pc.get("products") or [])})
         except Exception as e:
             results["product_cache"] = {"ok": False, "error": str(e)}
+            _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 실패 ({_label}): {e}", ok=False)
 
         # 3. Root lot RAM cache
+        _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 갱신 시작 ({_label})")
         try:
             results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=force)
+            rc = results["root_lot_cache"]
+            _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 완료 ({_label})",
+                 ok=bool(rc.get("ok")),
+                 detail={"products": len(rc.get("products") or []),
+                         "max_gb": rc.get("max_gb")})
         except Exception as e:
             results["root_lot_cache"] = {"ok": False, "error": str(e)}
+            _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 실패 ({_label}): {e}", ok=False)
 
         results["ok"] = any([
             (results.get("match_cache") or {}).get("ok"),
             (results.get("product_cache") or {}).get("ok"),
             (results.get("root_lot_cache") or {}).get("ok"),
         ])
+        _log("scan", f"[수동 스캔] 완료 ({_label}) — ok={results['ok']}", ok=results["ok"])
     finally:
         with _UNIFIED_SCAN_LOCK:
             _UNIFIED_SCAN_BUSY = False
