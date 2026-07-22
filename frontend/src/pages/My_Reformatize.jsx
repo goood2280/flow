@@ -126,11 +126,83 @@ function RuleInfoBar({ alias, rule, onSelect, onClose }) {
   );
 }
 
+/* 의존성 트리 — ADDP 재귀 참조를 시각화 */
+function DepTreeNode({ node, depth = 0 }) {
+  const indent = depth * 20;
+  if (!node) return null;
+  const catColor = node.category === "addp" ? "#e67e22" : node.category === "real" ? "#27ae60" : "var(--text-secondary)";
+  const label = node.derived_from ? `${node.alias} (← ${node.derived_from})` : node.alias;
+  return (
+    <>
+      <div style={{ marginLeft: indent, padding: "2px 0", fontSize: 12, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ color: catColor, fontWeight: 700, minWidth: 40 }}>
+          {node.category === "addp" ? "ADDP" : node.category === "real" ? "REAL" : node.derived_from ? "↳" : "REF"}
+        </span>
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        {node.category === "real" && (
+          <span style={{ color: "var(--text-secondary)" }}>
+            ITEMID={node.itemid} {node.absolute ? "abs " : ""}×{node.scale ?? 1}
+          </span>
+        )}
+        {node.category === "addp" && node.addp_form && (
+          <span style={{ color: "var(--text-secondary)", maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            = {node.addp_form}
+          </span>
+        )}
+        {node.circular && <span style={{ color: "#e74c3c" }}>(순환 참조)</span>}
+      </div>
+      {(node.children || []).map((ch, i) => <DepTreeNode key={i} node={ch} depth={depth + 1} />)}
+    </>
+  );
+}
+
+function DepTreePanel({ tree }) {
+  const [open, setOpen] = useState(false);
+  if (!tree || !tree.length) return null;
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 8, background: "var(--bg-secondary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }} onClick={() => setOpen(o => !o)}>
+        <span style={{ fontWeight: 700 }}>🌳 의존성 트리</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>ADDP 재귀 참조 · raw data 의존 관계</span>
+        <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6, maxHeight: 260, overflow: "auto" }}>
+          {tree.map((node, i) => <DepTreeNode key={i} node={node} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ResultTable({ result, highlight }) {
   const hi = useMemo(() => new Set(highlight || []), [highlight]);
   const spec = result.spec || {};
+  const roles = result.col_roles || {};
   const [selRule, setSelRule] = useState("");
-  const clickable = (c) => hi.has(c) && spec[c];
+  const clickable = (c) => (hi.has(c) || roles[c] === "dep" || roles[c] === "selected") && spec[c];
+
+  const colColor = (c) => {
+    const role = roles[c];
+    if (role === "selected") return "var(--accent)";
+    if (role === "dep") return "#e67e22";
+    if (role === "raw") return "#27ae60";
+    return head.color;
+  };
+  const cellColor = (c) => {
+    const role = roles[c];
+    if (role === "selected") return "var(--text-primary)";
+    if (role === "dep") return "#e67e22";
+    if (role === "raw") return "#27ae60";
+    return "var(--text-secondary)";
+  };
+  const cellWeight = (c) => {
+    const role = roles[c];
+    if (role === "selected") return 700;
+    if (role === "dep") return 600;
+    return 400;
+  };
+
   return (
     <>
       <RuleInfoBar alias={selRule} rule={spec[selRule]} onClose={() => setSelRule("")}
@@ -143,7 +215,7 @@ function ResultTable({ result, highlight }) {
               onClick={() => { if (clickable(c)) setSelRule(prev => prev === c ? "" : c); }}
               style={{
                 ...head,
-                color: hi.has(c) ? "var(--accent)" : head.color,
+                color: colColor(c),
                 cursor: clickable(c) ? "pointer" : "default",
                 textDecoration: clickable(c) ? "underline dotted" : "none",
                 background: selRule === c ? "var(--accent-glow)" : head.background,
@@ -152,8 +224,10 @@ function ResultTable({ result, highlight }) {
                 ? (spec[c].category === "addp"
                     ? `ADDP: ${spec[c].addp_form || ""} — 클릭하여 상세`
                     : `REAL: ${spec[c].itemid || ""}${spec[c].abs ? " abs" : ""} ×${spec[c].scale ?? 1} — 클릭하여 상세`)
-                : c}>
+                : roles[c] === "raw" ? `raw ITEMID 원본 값` : c}>
               {c}
+              {roles[c] === "raw" && <span style={{ fontSize: 9, opacity: 0.6 }}> (raw)</span>}
+              {roles[c] === "dep" && <span style={{ fontSize: 9, opacity: 0.6 }}> (dep)</span>}
             </th>
           ))}
         </tr></thead>
@@ -164,8 +238,8 @@ function ResultTable({ result, highlight }) {
           {(result.rows || []).map((row, i) => (
             <tr key={i}>
               {(result.columns || []).map(c => (
-                <td key={c} style={{ ...cell, fontFamily: "monospace", color: hi.has(c) ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: hi.has(c) ? 600 : 400 }}>
-                  {hi.has(c) ? fmtVal(row[c]) : String(row[c] ?? "")}
+                <td key={c} style={{ ...cell, fontFamily: "monospace", color: cellColor(c), fontWeight: cellWeight(c) }}>
+                  {(roles[c] === "selected" || roles[c] === "dep" || roles[c] === "raw") ? fmtVal(row[c]) : String(row[c] ?? "")}
                 </td>
               ))}
             </tr>
@@ -428,8 +502,9 @@ export default function My_Reformatize({ user }) {
 
   const selected = products.find(p => p.product === product);
 
-  // 제품 변경 시 vehicle CSV 의 REAL/ADDP 항목 목록 로드 — 기본 전체 선택
-  // (auto report 와 동일: 전체 reformatter 값을 alias 로 뽑는다).
+  // 제품 변경 시 vehicle CSV 의 REAL/ADDP 항목 목록 로드
+  // 기본 선택: REPORT ORDER 가 있는 항목만 (리포트 대상, 경량 기본값).
+  // 전체 선택 시 pivot 비용이 크므로 필요한 항목만 골라 조회하는 것을 권장.
   useEffect(() => {
     setItemList([]); setSelItems(new Set());
     if (!product || !selected?.vehicle_csv) return;
@@ -437,7 +512,8 @@ export default function My_Reformatize({ user }) {
       .then(d => {
         const items = d.items || [];
         setItemList(items);
-        setSelItems(new Set(items.map(it => it.alias)));
+        const report = items.filter(it => it.report_order != null);
+        setSelItems(new Set((report.length ? report : items).map(it => it.alias)));
       })
       .catch(() => {});
   }, [product, selected?.vehicle_csv]);
@@ -586,6 +662,9 @@ export default function My_Reformatize({ user }) {
           {result.rule_errors.map((e, i) => <div key={i} style={{ fontSize: 12, fontFamily: "monospace" }}>{e}</div>)}
         </Banner>
       )}
+
+      {/* 의존성 트리 */}
+      {result?.dep_tree?.length > 0 && <DepTreePanel tree={result.dep_tree} />}
 
       {/* 결과 테이블 */}
       {!result && !busy && (

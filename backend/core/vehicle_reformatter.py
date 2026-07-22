@@ -12,6 +12,11 @@ ADDP FORM 은 `{ALIAS}` 로 다른 컬럼(REAL alias 또는 다른 ADDP)을 참�
 ADDP → ADDP 재귀 참조는 auto report 처럼 고정점 반복으로 해소한다.
 수식 평가는 core/reformatter 의 안전 평가기(_eval_safe_expr)를 재사용한다
 (임의 코드 실행 없음). auto report 의 rmax/rmin 은 행단위 max/min 으로 매핑.
+
+MA_Window 는 auto report 와 동일하게 multi-output:
+  ALIAS(=window 폭), ALIAS_minus_margin, ALIAS_plus_margin,
+  ALIAS_ovl_index, ALIAS_new  — 5개 컬럼을 자동 생성하며, 다른 ADDP 가
+  `{ALIAS_new}` 등으로 참조 가능하다.
 """
 from __future__ import annotations
 
@@ -45,6 +50,8 @@ _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 _FUNC_ALIASES = {"rmax": "max", "rmin": "min", "ABS": "abs", "POWER": "power", "AVG": "avg", "STD": "std", "stddev": "std"}
 # auto report 의 wafer 단위 groupby transform (std/AVG) 기준 키
 GROUP_TRANSFORM_KEYS = ["root_lot_id", "wafer_id", "tkout_time"]
+# MA_Window multi-output 파생 컬럼 접미사 (auto report 호환)
+_MA_WINDOW_SUFFIXES = ("minus_margin", "plus_margin", "ovl_index", "new")
 
 
 # ── ADDP 수식 평가 — core/reformatter 의 AST 화이트리스트를 재사용하되
@@ -293,12 +300,29 @@ FORMULA_HELP = [
 ]
 
 
+def _find_base_addp(name: str, by_alias: dict[str, dict]) -> str | None:
+    """파생 컬럼명(예: WINDOW_new)에서 원본 ADDP alias(예: WINDOW)를 찾는다.
+
+    auto report 의 MA_Window 가 ALIAS, ALIAS_minus_margin, ALIAS_plus_margin,
+    ALIAS_ovl_index, ALIAS_new 를 자동 생성하므로 다른 ADDP 가 `{ALIAS_new}`
+    처럼 참조할 때 원본 alias 를 추적해야 한다.
+    """
+    for suffix in _MA_WINDOW_SUFFIXES:
+        tag = "_" + suffix
+        if name.endswith(tag):
+            base = name[: -len(tag)]
+            if base in by_alias and by_alias[base]["category"] == "addp":
+                return base
+    return None
+
+
 def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str],
                          ) -> tuple[List[Dict[str, Any]], set[str]]:
     """선택된 alias 에서 ADDP 의존성을 재귀 해소해 필요한 테이블 행과 ITEMID 집합을 반환.
 
     ADDP 수식이 {이름} 으로 다른 alias 를 참조할 때 해당 alias 의 REAL ITEMID 까지
     추적하여 raw 데이터 필터링에 사용할 ITEMID 세트를 만든다.
+    파생 컬럼(예: WINDOW_new)도 원본 ADDP 까지 재귀 추적한다.
     """
     by_alias: dict[str, dict] = {r["alias"]: r for r in table}
     needed_aliases: set[str] = set()
@@ -317,13 +341,57 @@ def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str
                     if ref not in needed_aliases:
                         queue.append(ref)
         else:
-            # 테이블에 없으면 raw ITEMID 직접 참조로 간주
-            extra_itemids.add(name)
+            # 파생 컬럼(MA_Window auto-expand)인지 확인
+            base = _find_base_addp(name, by_alias)
+            if base:
+                if base not in needed_aliases:
+                    queue.append(base)
+            else:
+                # 테이블에 없으면 raw ITEMID 직접 참조로 간주
+                extra_itemids.add(name)
     needed_rows = [r for r in table if r["alias"] in needed_aliases]
     needed_itemids = {r["itemid"] for r in needed_rows
                       if r["category"] == "real" and r["itemid"]}
     needed_itemids |= extra_itemids
     return needed_rows, needed_itemids
+
+
+def build_dependency_tree(table: List[Dict[str, Any]], selected_aliases: List[str],
+                          ) -> List[Dict[str, Any]]:
+    """선택된 alias 의 의존성 트리 구조를 반환한다 (프론트엔드 표시용).
+
+    ADDP → ADDP, ADDP → REAL 재귀 추적. 파생 컬럼(WINDOW_new 등)도 포함.
+    반환 예시:
+      [{"alias": "A", "category": "addp", "addp_form": "...",
+        "children": [
+          {"alias": "B", "category": "addp", "children": [...]},
+          {"alias": "C", "category": "real", "itemid": "...", "scale": 1.0}
+        ]}]
+    """
+    by_alias: dict[str, dict] = {r["alias"]: r for r in table}
+
+    def _node(name: str, seen: frozenset[str] = frozenset()) -> dict:
+        if name in seen:
+            return {"alias": name, "circular": True}
+        # 파생 컬럼 (WINDOW_new 등)
+        base = _find_base_addp(name, by_alias) if name not in by_alias else None
+        if base:
+            return {"alias": name, "derived_from": base,
+                    "children": [_node(base, seen | {name})]}
+        row = by_alias.get(name)
+        if not row:
+            return {"alias": name, "category": "raw_ref"}
+        node: Dict[str, Any] = {"alias": name, "category": row["category"]}
+        if row["category"] == "real":
+            node.update(itemid=row["itemid"], scale=row["scale"],
+                        absolute=row["absolute"], unit=row.get("unit", ""))
+        elif row["category"] == "addp":
+            node["addp_form"] = row.get("addp_form", "")
+            refs = formula_refs(node["addp_form"])
+            node["children"] = [_node(r, seen | {name}) for r in refs]
+        return node
+
+    return [_node(a) for a in selected_aliases]
 
 
 def _num_or_none(value):
@@ -468,18 +536,39 @@ def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
     if metas:
         meta_df = df.group_by(keys).agg([pl.col(m).first() for m in metas])
 
-    # ── 선택된 alias 가 있으면 필요한 ITEMID 만 필터 → pivot 속도 개선 ──
+    # ── ITEMID 필터 — 항상 테이블에 정의된 항목만 pivot (메모리 폭발 방지) ──
+    # 데이터에는 수천 개의 item_id 가 있을 수 있으나 vehicle 테이블에서
+    # 참조하는 ITEMID 만 pivot 하면 컬럼 수를 10~100배 줄일 수 있다.
     work_table = table
     if selected_aliases:
         work_table, needed_ids = resolve_needed_items(table, selected_aliases)
-        if needed_ids and item_col in df.columns:
-            df = df.filter(pl.col(item_col).is_in(list(needed_ids)))
+    else:
+        all_aliases = [r["alias"] for r in table]
+        _, needed_ids = resolve_needed_items(table, all_aliases)
+    if needed_ids and item_col in df.columns:
+        pre = df.height
+        df = df.filter(pl.col(item_col).is_in(list(needed_ids)))
+        if pre > 0 and df.height < pre:
+            logger.info("ITEMID 필터: %d → %d 행 (item %d개)",
+                        pre, df.height, len(needed_ids))
 
-    wide = (
+    pre_agg = (
         df.group_by(keys + [item_col])
         .agg(pl.col(value_col).cast(pl.Float64, strict=False).mean().alias("_v"))
-        .pivot(index=keys, on=item_col, values="_v", aggregate_function="first")
     )
+    # polars 1.x 에서 pivot API 가 변경됨 — aggregate_function 제거.
+    # 이미 group_by 로 unique 하므로 aggregate 불필요.
+    try:
+        wide = pre_agg.pivot(on=item_col, index=keys, values="_v")
+    except TypeError:
+        # polars < 1.0 폴백
+        try:
+            wide = pre_agg.pivot(
+                index=keys, on=item_col, values="_v",
+                aggregate_function="first",
+            )
+        except Exception as e:
+            raise ValueError(f"pivot 실패: {e}") from e
     if meta_df is not None:
         wide = wide.join(meta_df, on=keys, how="left")
 
@@ -524,11 +613,25 @@ def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
     return wide, out_cols, errors
 
 
+def _is_ma_window_only(expr_norm: str) -> bool:
+    """수식이 MA_Window 를 사용하면서 MA_OVL_INDEX/MA_WINDOW_MIN 은 아닌지 판별.
+
+    MA_Window 를 사용하는 ADDP 는 auto report 호환 multi-output (5개 컬럼)을
+    자동 생성한다.
+    """
+    return bool(re.search(r"\bMA_Window\s*\(", expr_norm)) and \
+        not bool(re.search(r"\bMA_OVL_INDEX\s*\(", expr_norm)) and \
+        not bool(re.search(r"\bMA_WINDOW_MIN\s*\(", expr_norm))
+
+
 def apply_addp_rows(wide: pl.DataFrame, rows: List[Dict[str, Any]]) -> tuple[pl.DataFrame, list[str]]:
     """ADDP 행들을 고정점 반복으로 적용. rows 는 {alias, addp_form} 필수.
 
     auto report 의 Reformatize 와 동일하게 계산 가능한 항목부터 매 패스 해소하고,
     끝까지 참조가 풀리지 않으면 null 컬럼 + 에러 메시지를 남긴다.
+
+    MA_Window 를 사용하는 ADDP 는 auto report 호환으로 alias, alias_minus_margin,
+    alias_plus_margin, alias_ovl_index, alias_new 5개 컬럼을 자동 생성한다.
     """
     errors: list[str] = []
     group_keys = [c for c in GROUP_TRANSFORM_KEYS if c in wide.columns]
@@ -540,7 +643,13 @@ def apply_addp_rows(wide: pl.DataFrame, rows: List[Dict[str, Any]]) -> tuple[pl.
         progressed = False
         for row in list(pending):
             alias = str(row["alias"]).strip()
-            expr_norm, token_map, refs = _normalize_form(row.get("addp_form") or "")
+            # auto report 호환: ADDP 자체 SCALE FACTOR 를 수식에 적용
+            # (REAL 은 reformatize 에서 scale 적용, ADDP 는 여기서 wrapping)
+            raw_form = row.get("addp_form") or ""
+            addp_scale = float(row.get("scale", 1.0) or 1.0)
+            if addp_scale != 1.0 and raw_form.strip():
+                raw_form = f"{addp_scale}*({raw_form})"
+            expr_norm, token_map, refs = _normalize_form(raw_form)
             if not expr_norm:
                 errors.append(f"ADDP '{alias}': 수식이 비어 있습니다")
                 wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(alias))
@@ -554,24 +663,77 @@ def apply_addp_rows(wide: pl.DataFrame, rows: List[Dict[str, Any]]) -> tuple[pl.
             try:
                 if used_rowwise:
                     # MA_Window / manual 함수 — polars Expr 불가, 행 단위 평가.
+                    ma_multi = _is_ma_window_only(expr_norm)
                     funcs_row = {**_rowwise_scalar_funcs(), **rowwise}
-                    code = _compile_expr(expr_norm, set(token_map.keys()), funcs_row)
                     needed = {t: c for t, c in token_map.items()}
                     struct_cols = sorted(set(needed.values()))
 
-                    def _row_eval(rec: dict, _code=code, _needed=needed, _funcs=funcs_row):
-                        env = {t: _to_float(rec.get(c)) for t, c in _needed.items()}
-                        try:
-                            out = eval(_code, {"__builtins__": {}}, {**_funcs, **env})  # noqa: S307
-                            return None if out is None else float(out)
-                        except Exception:
-                            return None
+                    if ma_multi:
+                        # ── auto report 호환 multi-output ──
+                        # MA_Window → dict 를 반환하는 _ma_window_calc 로 교체
+                        funcs_multi = dict(funcs_row)
+                        funcs_multi["MA_Window"] = _ma_window_calc
+                        code_multi = _compile_expr(expr_norm, set(token_map.keys()), funcs_multi)
 
-                    if struct_cols:
-                        out_expr = pl.struct(struct_cols).map_elements(_row_eval, return_dtype=pl.Float64)
+                        def _row_eval_multi(rec: dict,
+                                            _code=code_multi, _needed=needed,
+                                            _funcs=funcs_multi):
+                            env = {t: _to_float(rec.get(c)) for t, c in _needed.items()}
+                            try:
+                                out = eval(_code, {"__builtins__": {}}, {**_funcs, **env})  # noqa: S307
+                                if isinstance(out, dict):
+                                    return {
+                                        "window": _to_float(out.get("window")),
+                                        "minus_margin": _to_float(out.get("minus_margin")),
+                                        "plus_margin": _to_float(out.get("plus_margin")),
+                                        "ovl_index": _to_float(out.get("ovl_index")),
+                                        "new": _to_float(out.get("new")),
+                                    }
+                                v = None if out is None else float(out)
+                                return {"window": v, "minus_margin": None,
+                                        "plus_margin": None, "ovl_index": None, "new": None}
+                            except Exception:
+                                return {"window": None, "minus_margin": None,
+                                        "plus_margin": None, "ovl_index": None, "new": None}
+
+                        _struct_dtype = pl.Struct({
+                            "window": pl.Float64, "minus_margin": pl.Float64,
+                            "plus_margin": pl.Float64, "ovl_index": pl.Float64,
+                            "new": pl.Float64,
+                        })
+                        if struct_cols:
+                            out_s = pl.struct(struct_cols).map_elements(
+                                _row_eval_multi, return_dtype=_struct_dtype)
+                        else:
+                            out_s = pl.lit(_row_eval_multi({})).cast(_struct_dtype)
+                        tmp = "_ma_tmp_"
+                        wide = wide.with_columns(out_s.alias(tmp))
+                        wide = wide.with_columns([
+                            pl.col(tmp).struct.field("window").cast(pl.Float64, strict=False).alias(alias),
+                            pl.col(tmp).struct.field("minus_margin").cast(pl.Float64, strict=False).alias(f"{alias}_minus_margin"),
+                            pl.col(tmp).struct.field("plus_margin").cast(pl.Float64, strict=False).alias(f"{alias}_plus_margin"),
+                            pl.col(tmp).struct.field("ovl_index").cast(pl.Float64, strict=False).alias(f"{alias}_ovl_index"),
+                            pl.col(tmp).struct.field("new").cast(pl.Float64, strict=False).alias(f"{alias}_new"),
+                        ]).drop(tmp)
+                        logger.info("ADDP '%s': MA_Window multi-output → %s, %s_new, %s_ovl_index ...",
+                                    alias, alias, alias, alias)
                     else:
-                        out_expr = pl.lit(_row_eval({}), dtype=pl.Float64)
-                    wide = wide.with_columns(out_expr.alias(alias))
+                        # ── 단일 값 rowwise (MA_OVL_INDEX, MA_WINDOW_MIN, manual 등) ──
+                        code = _compile_expr(expr_norm, set(token_map.keys()), funcs_row)
+
+                        def _row_eval(rec: dict, _code=code, _needed=needed, _funcs=funcs_row):
+                            env = {t: _to_float(rec.get(c)) for t, c in _needed.items()}
+                            try:
+                                out = eval(_code, {"__builtins__": {}}, {**_funcs, **env})  # noqa: S307
+                                return None if out is None else float(out)
+                            except Exception:
+                                return None
+
+                        if struct_cols:
+                            out_expr = pl.struct(struct_cols).map_elements(_row_eval, return_dtype=pl.Float64)
+                        else:
+                            out_expr = pl.lit(_row_eval({}), dtype=pl.Float64)
+                        wide = wide.with_columns(out_expr.alias(alias))
                 else:
                     env = {
                         token: pl.col(colname).cast(pl.Float64, strict=False)

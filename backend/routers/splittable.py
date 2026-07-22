@@ -7869,6 +7869,75 @@ def evict_root_lot_ram_cache_entry(req: RootLotRamCacheEvictReq, _perm=Depends(r
     return _ml_table_lookup.evict_root_ram_cache_entry(source_path=req.source_path, root_lot_id=req.root_lot_id)
 
 
+# ── 통합 수동 스캔 (FAB + product + root lot 일괄) ──────────────────────
+
+class UnifiedScanReq(BaseModel):
+    product: str = ""
+    force: bool = True
+
+
+_UNIFIED_SCAN_LOCK = threading.Lock()
+_UNIFIED_SCAN_BUSY = False
+
+
+def _run_unified_scan(product: str, force: bool) -> dict:
+    """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신."""
+    global _UNIFIED_SCAN_BUSY
+    results: dict = {"ok": True, "product": product}
+    try:
+        # 1. FAB match cache
+        try:
+            results["match_cache"] = enqueue_match_cache_refresh(product=product, force=force, reason="unified_scan")
+        except Exception as e:
+            results["match_cache"] = {"ok": False, "error": str(e)}
+
+        # 2. Product RAM cache
+        try:
+            results["product_cache"] = enqueue_product_ram_cache_refresh(product=product, force=force, reason="unified_scan")
+        except Exception as e:
+            results["product_cache"] = {"ok": False, "error": str(e)}
+
+        # 3. Root lot RAM cache
+        try:
+            results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=force)
+        except Exception as e:
+            results["root_lot_cache"] = {"ok": False, "error": str(e)}
+
+        results["ok"] = any([
+            (results.get("match_cache") or {}).get("ok"),
+            (results.get("product_cache") or {}).get("ok"),
+            (results.get("root_lot_cache") or {}).get("ok"),
+        ])
+    finally:
+        with _UNIFIED_SCAN_LOCK:
+            _UNIFIED_SCAN_BUSY = False
+    return results
+
+
+@router.post("/ram-cache/unified-scan")
+def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splittable"))):
+    """관리자: 선택 제품의 전체 캐시(FAB/product/root lot) 통합 수동 스캔."""
+    global _UNIFIED_SCAN_BUSY
+    product = str(req.product or "").strip()
+    with _UNIFIED_SCAN_LOCK:
+        if _UNIFIED_SCAN_BUSY:
+            return {"ok": True, "running": True, "detail": "통합 스캔이 이미 실행 중입니다."}
+        _UNIFIED_SCAN_BUSY = True
+    t = threading.Thread(
+        target=_run_unified_scan,
+        args=(product, bool(req.force)),
+        name="splittable-unified-scan",
+        daemon=True,
+    )
+    t.start()
+    return {
+        "ok": True,
+        "queued": True,
+        "product": product,
+        "detail": f"통합 스캔 시작됨 — FAB/product/root lot 캐시를 순서대로 갱신합니다. ({product or '전체 제품'})",
+    }
+
+
 # ── RAM Cache 우선 Lot 등록 / 전체 목록 / 제품별 예산 ──────────────────
 _RAM_CACHE_PRIORITY_FILE = PLAN_DIR / "ram_cache_priority_lots.json"
 
@@ -8081,6 +8150,13 @@ def get_ram_cache_overview():
     budgets = cfg.get("ram_cache_product_budgets") or {}
     default_max_roots = int(_ml_table_lookup._root_ram_cache_target_roots())
     _use_dev = not PATHS.is_prod
+    if not _use_dev:
+        try:
+            from core.worker_dispatch import server_role
+            if server_role() == "worker":
+                _use_dev = True
+        except Exception:
+            pass
     for prod_name, row in product_rows.items():
         b = budgets.get(prod_name) if isinstance(budgets, dict) else None
         max_roots = None
@@ -8562,11 +8638,20 @@ def get_ram_cache_product_budgets():
     default_max_roots = int(
         _ml_table_lookup._root_ram_cache_target_roots()
     )
+    _is_dev = not PATHS.is_prod
+    if not _is_dev:
+        try:
+            from core.worker_dispatch import server_role
+            if server_role() == "worker":
+                _is_dev = True
+        except Exception:
+            pass
     return {
         "ok": True,
         "products": products,
         "default_max_roots": default_max_roots,
         "default_max_roots_dev": min(200, default_max_roots),
+        "is_dev": _is_dev,
     }
 
 

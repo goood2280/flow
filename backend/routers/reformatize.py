@@ -36,9 +36,10 @@ from core.utils import (
     save_json, serialize_rows,
 )
 from core.vehicle_reformatter import (
-    FORMULA_HELP, PIVOT_KEY_COLS, PIVOT_META_COLS, apply_addp_rows,
-    find_vehicle_csv, formula_refs, load_vehicle_table, reformatize,
-    resolve_needed_items, rowwise_function_help,
+    FORMULA_HELP, PIVOT_KEY_COLS, PIVOT_META_COLS, _MA_WINDOW_SUFFIXES,
+    apply_addp_rows, build_dependency_tree, find_vehicle_csv, formula_refs,
+    load_vehicle_table, reformatize, resolve_needed_items,
+    rowwise_function_help,
 )
 
 logger = logging.getLogger("flow.reformatize")
@@ -69,15 +70,15 @@ DEFAULT_SETTINGS = {"page_rows": 500, "max_download_rows": 100_000}
 PAGE_ROWS_MAX = 5_000
 DOWNLOAD_ROWS_MAX = 1_000_000
 
-# pivot+index 결과 캐시 — (product, 필터 조합) 별로 (sig 일치 시) 재사용.
-# 값: (sig, wide_full_df, out_cols, rule_errors, vehicle_csv_name, vehicle_table, est_bytes)
+# pivot+index 결과 캐시 — (product, 필터 조합) 별로 (full_sig 일치 시) 재사용.
+# 값: (full_sig, wide_full_df, out_cols, rule_errors, vehicle_csv_name, vehicle_table, raw_rows, est_bytes)
 # wide_full 은 raw item 컬럼을 포함 — 관리자 수식 테스트가 참조.
 _CACHE: dict[tuple, tuple] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 8
 
 # raw(long) ET df 캐시 — 필터 조합이 바뀔 때마다 파일을 다시 읽지 않도록 제품별 보관.
-# 값: (sig, df, est_bytes)
+# 값: (full_sig, df, est_bytes)
 _RAW_CACHE: dict[str, tuple] = {}
 _RAW_CACHE_MAX = 2
 
@@ -227,18 +228,25 @@ def _product_sig(product: str) -> tuple:
     return tuple(sig)
 
 
-def _read_et_files(files: list[Path]) -> pl.DataFrame:
+def _read_et_files(files: list[Path],
+                   needed_ids: set[str] | None = None) -> pl.DataFrame:
     """파일 목록을 직접 읽어 read_source 와 동일한 정규화를 적용한 long df.
 
-    read_source 는 db_root/<루트>/<제품>/ 고정 경로만 지원하므로, lot_step 이
-    찾은 파일 목록(중첩 루트·date= hive 포함)을 그대로 읽는 경로를 둔다.
+    ``needed_ids`` 가 주어지면 각 파일을 읽은 직후 item_id 필터를 적용해
+    concat 전 메모리를 대폭 줄인다 (대용량 ET 제품의 OOM 방지).
     """
     from core.utils import cast_all_str, filter_valid_wafer_ids_df, normalize_source_df, read_one_file
     dfs = []
     for fp in files:
         d = read_one_file(fp)
         if d is not None and d.height > 0:
-            dfs.append(cast_all_str(d))
+            d = cast_all_str(d)
+            # 파일별 item_id 조기 필터 — concat 전 메모리 절감
+            if needed_ids and "item_id" in d.columns:
+                d = d.filter(pl.col("item_id").is_in(list(needed_ids)))
+                if d.height == 0:
+                    continue
+            dfs.append(d)
     if not dfs:
         raise HTTPException(404, "읽을 수 있는 ET 데이터 파일이 없습니다")
     if len(dfs) == 1:
@@ -260,18 +268,43 @@ def _read_et_files(files: list[Path]) -> pl.DataFrame:
     return normalize_source_df(filter_valid_wafer_ids_df(df), root=_et_root().name, file="")
 
 
-def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
-    """제품의 raw(long) ET df — 파일 시그니처가 같으면 캐시 재사용."""
+_LARGE_RAW_THRESHOLD = 200 * 1024 * 1024   # 200MB parquet → ~1GB DataFrame
+
+
+def _load_raw(product: str, product_sig: tuple, full_sig: tuple,
+              needed_ids: set[str] | None = None) -> pl.DataFrame:
+    """제품의 raw(long) ET df — 파일 시그니처가 같으면 캐시 재사용.
+
+    ``product_sig`` 는 데이터 파일만의 (path, mtime, size) 튜플 — 파일 목록용.
+    ``full_sig`` 는 데이터+CSV 시그니처 — 캐시 무효화 키.
+    ``needed_ids`` 가 주어지면 item_id 필터 적용.
+    """
     with _CACHE_LOCK:
         hit = _RAW_CACHE.get(product)
-        if hit and hit[0] == sig:
-            return hit[1]
-    df = _read_et_files([Path(p) for p, _mtime, _size in sig])
+        if hit and hit[0] == full_sig:
+            df = hit[1]
+            if needed_ids and "item_id" in df.columns:
+                return df.filter(pl.col("item_id").is_in(list(needed_ids)))
+            return df
+
+    files = [Path(p) for p, _mtime, _size in product_sig]
+    total_bytes = sum(s for _, _, s in product_sig)
+
+    # 대용량 + item 필터 있음 → 파일별 필터 로딩 (캐시 건너뜀, OOM 방지)
+    if needed_ids and total_bytes > _LARGE_RAW_THRESHOLD:
+        logger.info("reformatize raw: '%s' ~%dMB — %d item 필터 로딩",
+                    product, total_bytes >> 20, len(needed_ids))
+        return _read_et_files(files, needed_ids=needed_ids)
+
+    # 소규모 or 필터 없음 → 전체 로딩 + 캐싱
+    df = _read_et_files(files)
     est = _df_est_bytes(df)
     with _CACHE_LOCK:
         _RAW_CACHE.pop(product, None)
         if _evict_cache_locked(_RAW_CACHE, _RAW_CACHE_MAX, _raw_cache_max_bytes(), est):
-            _RAW_CACHE[product] = (sig, df, est)
+            _RAW_CACHE[product] = (full_sig, df, est)
+    if needed_ids and "item_id" in df.columns:
+        return df.filter(pl.col("item_id").is_in(list(needed_ids)))
     return df
 
 
@@ -280,37 +313,63 @@ def _compute(product: str, f: Filters,
              ) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int]:
     """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블, 필터된 raw 행수).
 
-    필터는 raw(long) ET 데이터에 먼저 적용한 뒤 reformatize 한다 — ADDP 의
-    그룹 통계(std/avg)도 필터된 모집단 기준으로 계산된다.
-    결과는 (product, 필터 조합, 선택 항목) 단위로 캐시 (파일 시그니처 일치 시 재사용).
-    raw 행수는 다운로드 상한(max_download_rows) 판정 기준.
+    핵심 흐름:
+      1) vehicle 테이블 파싱 → 필요한 ITEMID 집합(needed_ids) 결정
+      2) raw ET 데이터 로드 — needed_ids 로 **파일별 조기 필터** (OOM 방지)
+      3) 사용자 필터(기간·lot 등) 적용
+      4) reformatize (pivot + REAL/ADDP 계산)
 
-    ``selected_items`` 가 주어지면 ADDP 의존성 해소 후 필요한 ITEMID 만
-    pivot 하여 속도를 높인다. 비어있거나 None 이면 전체 항목 처리 (관리자 수식 테스트용).
+    ``selected_items`` 가 주어지면 ADDP 의존성을 재귀 해소해 필요한 ITEMID 만
+    raw 에서 필터+pivot 한다. None 이면 테이블 전체 항목 기준.
     """
     csv_fp = _find_csv(product)
     if csv_fp is None:
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다 "
                                  f"(DB루트/reformatter 또는 {VEHICLE_DIR} 안에 "
                                  f"<vehicle>_reformatter.csv 를 두세요)")
-    st = csv_fp.stat()
-    sig = _product_sig(product) + ((str(csv_fp), st.st_mtime, st.st_size),)
+
+    # ── 1) 시그니처·캐시 키 ──
+    product_sig = _product_sig(product)          # 데이터 파일만
+    csv_st = csv_fp.stat()
+    full_sig = product_sig + ((str(csv_fp), csv_st.st_mtime, csv_st.st_size),)
     sel_key = tuple(sorted(set(selected_items))) if selected_items else ()
     key = (product, _filters_key(f), sel_key)
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
-        if hit and hit[0] == sig:
+        if hit and hit[0] == full_sig:
             return hit[1], hit[2], hit[3], hit[4], hit[5], hit[6]
+
+    # ── 2) vehicle 테이블 → 필요 ITEMID 결정 (raw 로딩 전!) ──
     table = load_vehicle_table(csv_fp)
     if not table:
         raise HTTPException(400, f"{csv_fp.name}: 유효한 REAL/ADDP 행이 없습니다")
-    df = _load_raw(product, sig)
+    if selected_items:
+        _, needed_ids = resolve_needed_items(table, selected_items)
+    else:
+        all_aliases = [r["alias"] for r in table]
+        _, needed_ids = resolve_needed_items(table, all_aliases)
+
+    # ── 3) raw 로딩 — 대용량이면 파일별 item_id 필터 (OOM 방지) ──
+    df = _load_raw(product, product_sig, full_sig, needed_ids=needed_ids)
     if df.height == 0:
         raise HTTPException(400, f"'{product}' ET 데이터가 비어 있습니다")
     df = _apply_filters(df, f)
     if df.height == 0:
         raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
     raw_rows = df.height
+
+    # 크기 가드 — 필터 후에도 너무 크면 pivot 전에 차단
+    _MAX_RAW_FOR_PIVOT = 20_000_000
+    if raw_rows > _MAX_RAW_FOR_PIVOT:
+        raise HTTPException(
+            400,
+            f"필터 후 raw 데이터가 {raw_rows:,}행으로 너무 큽니다 "
+            f"(상한 {_MAX_RAW_FOR_PIVOT:,}). 기간·lot 등 필터를 더 좁혀 주세요.",
+        )
+    logger.info("reformatize [%s]: raw %d행, items=%s, filters=%s",
+                product, raw_rows,
+                f"{len(selected_items)}개" if selected_items else "전체",
+                _filter_desc(f) or "없음")
     try:
         wide, out_cols, errors = reformatize(
             df, table,
@@ -322,7 +381,7 @@ def _compute(product: str, f: Filters,
     with _CACHE_LOCK:
         _CACHE.pop(key, None)
         if _evict_cache_locked(_CACHE, _CACHE_MAX, _cache_max_bytes(), est):
-            _CACHE[key] = (sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, est)
+            _CACHE[key] = (full_sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, est)
     return wide, out_cols, errors, csv_fp.name, table, raw_rows
 
 
@@ -567,6 +626,46 @@ def _select_aliases(out_cols: list[str], wanted: list[str]) -> list[str]:
     return [c for c in out_cols if c in fixed or c in want]
 
 
+def _resolve_output_cols(
+    out_cols: list[str],
+    table: list[dict],
+    wanted: list[str],
+    wide_full: pl.DataFrame,
+    *,
+    include_raw: bool = True,
+) -> list[str]:
+    """선택 항목의 ADDP 의존성 + MA_Window 파생 + raw ITEMID 를 포함한 출력 컬럼 결정.
+
+    run 과 download 에서 동일 로직을 공유한다.
+    """
+    if not wanted:
+        return _select_aliases(out_cols, wanted)
+    resolved_rows, _ = resolve_needed_items(table, wanted)
+    resolved_aliases = [r["alias"] for r in resolved_rows]
+    # MA_Window 파생 컬럼
+    ma_derived = []
+    for a in resolved_aliases:
+        for sfx in _MA_WINDOW_SUFFIXES:
+            derived = f"{a}_{sfx}"
+            if derived in wide_full.columns:
+                ma_derived.append(derived)
+    # raw ITEMID 컬럼
+    raw_cols = []
+    if include_raw:
+        for r in resolved_rows:
+            if r["category"] == "real" and r["itemid"] in wide_full.columns:
+                if r["itemid"] != r["alias"] and r["itemid"] not in raw_cols:
+                    raw_cols.append(r["itemid"])
+    all_show = resolved_aliases + ma_derived + raw_cols
+    cols = _select_aliases(out_cols, all_show)
+    existing = set(cols)
+    for c in ma_derived + raw_cols:
+        if c in wide_full.columns and c not in existing:
+            cols.append(c)
+            existing.add(c)
+    return [c for c in cols if c in wide_full.columns]
+
+
 @router.get("/settings")
 def settings_get(_user=Depends(current_user)):
     return _settings()
@@ -599,10 +698,20 @@ class RunReq(Filters):
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
-    wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(
-        req.product, req, selected_items=req.items or None)
-    out_cols = _select_aliases(out_cols, req.items)
-    wide = wide_full.select(out_cols)
+    try:
+        wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(
+            req.product, req, selected_items=req.items or None)
+    except Exception as e:
+        logger.exception("reformatize run failed: product=%s", req.product)
+        raise HTTPException(500, f"계산 실패: {e}")
+
+    # ── 의존성 트리 구축 + 출력 컬럼 결정 ──
+    dep_tree = []
+    selected_set = set(req.items) if req.items else set()
+    out_cols = _resolve_output_cols(out_cols, table, req.items, wide_full)
+    if req.items:
+        dep_tree = build_dependency_tree(table, req.items)
+    wide = wide_full.select(out_cols) if out_cols else wide_full
     if req.agg.strip():
         wide = _aggregate(wide, [r["alias"] for r in table if r["alias"] in wide.columns], req.agg)
     cfg = _settings()
@@ -618,12 +727,26 @@ def run(req: RunReq, _user=Depends(current_user)):
                          "addp_form": r["addp_form"],
                          "refs": formula_refs(r["addp_form"]) if r["category"] == "addp" else []}
             for r in table if r["alias"] in wide.columns}
+    # 컬럼 역할 분류 (프론트엔드 표시용)
+    fixed_set = set(PIVOT_KEY_COLS) | set(PIVOT_META_COLS)
+    col_roles = {}
+    for c in page.columns:
+        if c in fixed_set:
+            col_roles[c] = "key"
+        elif c in selected_set:
+            col_roles[c] = "selected"
+        elif c in spec:
+            col_roles[c] = "dep"         # 의존성 ADDP/REAL
+        else:
+            col_roles[c] = "raw"         # raw ITEMID 원본
     return {
         "product": req.product,
         "vehicle_csv": vehicle_csv,
         "columns": list(page.columns),
         "index_columns": index_cols,
         "spec": spec,
+        "col_roles": col_roles,
+        "dep_tree": dep_tree,
         "rows": serialize_rows(page.to_dicts()),
         "offset": offset,
         "limit": limit,
@@ -655,8 +778,8 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
         raise HTTPException(400, f"필터된 raw 데이터 {raw_rows:,}행이 다운로드 최대 "
                                  f"{cfg['max_download_rows']:,}행을 초과합니다. 기간·lot 등 필터를 "
                                  f"조정해 행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.")
-    out_cols = _select_aliases(out_cols, wanted)
-    wide = wide_full.select(out_cols)
+    out_cols = _resolve_output_cols(out_cols, table, wanted, wide_full, include_raw=False)
+    wide = wide_full.select(out_cols) if out_cols else wide_full
     agg_method = str(agg or "").strip().lower()
     if agg_method:
         wide = _aggregate(wide, [r["alias"] for r in table if r["alias"] in wide.columns], agg_method)

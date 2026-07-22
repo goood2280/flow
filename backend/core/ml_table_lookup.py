@@ -217,7 +217,8 @@ def _root_ram_cache_product_budget(product_token: str) -> int:
     max_roots 를 읽는다. 키는 제품 캐시 관리 페이지가 저장한 제품명
     (예: "ML_TABLE_PRODA"). bare 이름("PRODA")도 허용. 미설정이면 0.
 
-    운영/개발 서버 구분: PATHS.is_prod 가 아니면 max_roots_dev 를 우선 사용."""
+    운영/개발 서버 구분: PATHS.is_prod 가 아니면 max_roots_dev 를 우선 사용.
+    server_role 이 worker(개발서버 오프로드)이면 is_prod 와 무관하게 dev 예산 사용."""
     try:
         raw = json.loads(ROOT_RAM_CACHE_SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
@@ -228,6 +229,13 @@ def _root_ram_cache_product_budget(product_token: str) -> int:
     token = str(product_token or "").strip().upper()
     bare = token[len("ML_TABLE_"):] if token.startswith("ML_TABLE_") else token
     use_dev = not PATHS.is_prod
+    if not use_dev:
+        try:
+            from core.worker_dispatch import server_role
+            if server_role() == "worker":
+                use_dev = True
+        except Exception:
+            pass
     for key, val in budgets.items():
         key_upper = str(key).strip().upper()
         key_bare = key_upper[len("ML_TABLE_"):] if key_upper.startswith("ML_TABLE_") else key_upper
@@ -1193,7 +1201,7 @@ def _discover_ml_table_files() -> list[Path]:
     return files
 
 
-def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any]) -> bool:
+def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any], *, force: bool = False) -> bool:
     if status.get("has_cache") and not status.get("source_stale"):
         return True
     try:
@@ -1201,7 +1209,11 @@ def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any]) ->
     except Exception:
         source_size = 0
     max_build_bytes = _root_ram_cache_build_max_bytes()
-    if max_build_bytes and source_size and source_size <= max_build_bytes:
+    # force=True(수동 스캔)이면 파일 크기와 무관하게 빌드 큐에 등록한다.
+    # 자동 예열에서만 크기 제한을 적용해 과대 파일의 자동 빌드를 방지한다.
+    if force:
+        enqueue_build(fp)
+    elif max_build_bytes and source_size and source_size <= max_build_bytes:
         enqueue_build(fp)
     return False
 
@@ -1231,7 +1243,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             if fp is None:
                 continue
             status = cache_status(fp)
-            if not _ensure_lookup_cache_ready_for_root_ram(fp, status):
+            if not _ensure_lookup_cache_ready_for_root_ram(fp, status, force=force):
                 rows.append({
                     "file": Path(fp).name,
                     "ok": False,
