@@ -1566,6 +1566,14 @@ def _filter_wafer_lf(lf: pl.LazyFrame, wafer_ids: str = "") -> pl.LazyFrame:
 
 def _root_ram_cache_loop() -> None:
     global _ROOT_RAM_REFRESH_COUNTER
+    # 개발서버는 시작 직후 부하를 피하기 위해 첫 예열을 지연한다.
+    if not PATHS.is_prod:
+        initial_delay = 120.0  # 2분 지연
+        logger.info("ML_TABLE root RAM cache: dev server initial delay %.0fs", initial_delay)
+        while initial_delay > 0 and not _ROOT_RAM_STOP.is_set():
+            step = min(initial_delay, 30.0)
+            _ROOT_RAM_STOP.wait(step)
+            initial_delay -= step
     while not _ROOT_RAM_STOP.is_set():
         try:
             refresh_root_lot_ram_cache(force=False)
@@ -1588,10 +1596,6 @@ def start_root_lot_ram_cache_scheduler() -> bool:
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
         logger.info("ML_TABLE root RAM cache scheduler disabled")
         return False
-    # 개발서버에서는 예열 스케줄러를 비활성화 — 메모리 보호 우선
-    if not PATHS.is_prod:
-        logger.info("ML_TABLE root RAM cache scheduler disabled (dev server — memory protection)")
-        return False
     _ROOT_RAM_STOP.clear()
     _ROOT_RAM_THREAD = threading.Thread(
         target=_root_ram_cache_loop,
@@ -1600,7 +1604,7 @@ def start_root_lot_ram_cache_scheduler() -> bool:
     )
     _ROOT_RAM_THREAD.start()
     _ROOT_RAM_STARTED = True
-    logger.info("ML_TABLE root RAM cache scheduler started (interval=%sm)", root_ram_cache_refresh_minutes())
+    logger.info("ML_TABLE root RAM cache scheduler started (interval=%sm, is_prod=%s)", root_ram_cache_refresh_minutes(), PATHS.is_prod)
     return True
 
 
