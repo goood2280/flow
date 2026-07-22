@@ -1,1 +1,0 @@
-{"text":"[TableMap display_name 분리] 테이블맵에 표시되는 이름과 실제 DB 또는 저장되는 테이블명을 서로 다르게 지정 가능하게. 기존 name(필수, 고유, 물리 테이블/파일명) 는 유지하고 display_name (optional) 추가 → UI 렌더 시 display_name||name 표시. CSV/파일 저장 시에는 name 사용. 스키마 변경: dbmap save_table 에 display_name 필드 수용 + 프론트 TableEditor 에서 label 입력 필드 신설.","from":"user"}

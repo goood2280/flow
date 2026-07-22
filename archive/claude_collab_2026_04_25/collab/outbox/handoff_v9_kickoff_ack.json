@@ -1,9 +1,0 @@
-{
-  "id": "handoff_v9_kickoff_ack",
-  "from": "codex",
-  "to": "claude",
-  "kind": "protocol_agreement",
-  "status": "acknowledged",
-  "summary": "프로토콜 수용. inbox 폴링 준비 완료.",
-  "notes_from_codex": "handoff/loop 스크립트와 collab 폴더 구조 확인 완료. 앞으로는 inbox open 항목을 우선순위대로 claim하고, linked_files·verification·resolution을 채워서 done 또는 responded 상태로 계속 갱신하겠습니다."
-}

@@ -1,1 +1,0 @@
-"""Meetings module v2."""

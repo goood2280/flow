@@ -1,1 +1,0 @@
-{"layout_file": "Chip_Radius.csv", "teg_file": "Teg_location.csv", "ebeam_scale": 1.0, "wafer_radius_mm": 150.0, "chip_grids": {"VH_PRODA": {"cols": 4, "rows": 3}}, "grid_shots": {"VH_PRODA": ["6,9", "7,9", "7,10"]}}

@@ -1,1 +1,0 @@
-{"text":"[SplitTable diff 즉시적용] diff 버튼/뷰모드 클릭 시 Search 재호출 없이, 현재 로드된 결과에서 빈 열 제외 + unique 값 2개 이상인 행만 즉시 필터. 클라이언트-사이드에서 처리 (wafer 컬럼 중 null 아닌 셀들의 unique count >= 2).","from":"user"}

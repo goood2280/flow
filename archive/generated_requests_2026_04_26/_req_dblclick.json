@@ -1,1 +1,0 @@
-{"text":"[SplitTable 빈셀 dbl-click edit + suggestion list] 빈 셀 dbl-click → 즉시 edit 모드. 값 직접 입력 또는 suggestion list 에서 선택. suggestion list = 해당 param (행) 의 unique 값 리스트를 검색 범위가 아닌 전체 데이터셋(ML_TABLE_PROD*) 기준으로 수집. 이미 plan 세팅된 값이 있으면 그것도 suggestion 에 포함. 백엔드 신규 엔드포인트 /api/splittable/column-values?product=&col= 필요.","from":"user"}

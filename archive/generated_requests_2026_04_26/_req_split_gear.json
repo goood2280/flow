@@ -1,1 +1,0 @@
-{"text":"[SplitTable root/fab_lot_id 컬럼 사용자 설정] SplitTable 페이지 좌하단 톱니바퀴에서 root_lot_id / fab_lot_id 에 매핑할 실제 컬럼명을 사용자가 직접 지정. 소프트랜딩 — 미설정/기본값이면 자동 감지, 설정값이 있으면 그 컬럼 사용. 저장은 data_root/splittable/source_config.json 확장 (product 별 override map). backend _detect_lot_wafer 가 override 우선 참조.","from":"user"}

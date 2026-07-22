@@ -1,6 +1,0 @@
-{"ts": 1783734609.6822214, "alert_id": "ro|VH_PRODB|CC980500|PP_X9_0500", "type": "ro_ppid", "action": "classify", "vehicle": "VH_PRODB", "step_id": "CC980500", "step_desc": "METAL_ETCH", "ppid": "PP_X9_0500", "feature_name": "METAL_ETCH", "rule_order": "R2", "category": "KNOB_M2", "file": "ppid_knob.csv", "by": "hol", "detail": "PP_X9_0500 → KNOB_M2"}
-{"ts": 1783740495.915812, "alert_id": "ro|VH_PRODA|CC970200|PP_X9_0200", "type": "ro_ppid", "action": "classify", "vehicle": "VH_PRODA", "step_id": "CC970200", "step_desc": "CONTACT_ETCH", "ppid": "PP_X9_0200", "feature_name": "10.0 CONTACT", "rule_order": "R2", "category": "테스트1", "file": "ppid_knob.csv", "by": "hol", "detail": "PP_X9_0200 → 테스트1"}
-{"ts": 1783742081.0438294, "alert_id": "um|VH_PRODA|XX777700", "type": "ack", "action": "반영불필요", "by": "hol", "detail": ""}
-{"ts": 1783742083.4794688, "alert_id": "um|VH_PRODB|XX777700", "type": "ack", "action": "반영불필요", "by": "hol", "detail": ""}
-{"ts": 1783742552.7507172, "alert_id": "um|VH_PRODB|XX777700", "type": "ack", "action": "반영불필요", "by": "hol", "detail": "데모: 계속 표시 확인"}
-{"ts": 1783742554.8948739, "alert_id": "um|VH_PRODB|XX777700", "type": "ack", "action": "active", "by": "hol", "detail": ""}

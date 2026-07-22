@@ -1,222 +1,199 @@
-# flow
+# Flow
 
-Fab data analytics and plan-vs-actual tracking platform.
+Flow는 반도체 개발·파일 공유·SplitTable 관리·WF MAP 검사·데이터 분석을 lot/wafer 중심으로 연결하는 FastAPI + React 웹 애플리케이션입니다.
 
-`flow`는 반도체 개발/pilot 단계에서 공정 데이터, 실험 plan, actual, issue, inform, meeting, action item을 lot/wafer 중심으로 이어 보는 FastAPI + React/Vite 웹 앱이다.
+이 GitHub 저장소는 사내 반입을 단순화하기 위해 두 파일만 배포합니다.
 
-- 기본 포트: **8080**
-- 기본 admin: `hol / hol12345!`
-- 버전/번들 메타: [VERSION.json](VERSION.json)
-- 공식 에이전트 진입점: [AGENTS.md](AGENTS.md), [TODO.md](TODO.md)
-- Flow 작업 컨텍스트: [docs/AGENT_FLOW_CONTEXT.md](docs/AGENT_FLOW_CONTEXT.md)
+- `setup.py`: 백엔드, 프런트엔드, 문서와 운영 스크립트를 압축 포함한 단일 설치 파일
+- `README.md`: 설치 및 운영 안내
 
-## Start Here
+DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함되지 않으며 업데이트 시에도 덮어쓰지 않습니다.
 
-| 목적 | 문서 |
-|---|---|
-| 문서 전체 지도 | [docs/README.md](docs/README.md) |
-| 화면/기능별 책임 | [docs/features/README.md](docs/features/README.md) |
-| 코드 구조 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| 수정 기준과 검증 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| GitHub `main` 푸시 절차 | [docs/GITHUB_MAIN_PUSH.md](docs/GITHUB_MAIN_PUSH.md) |
-| 앱 운영/성능 리포트 | [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md) |
-| 사내 반입/업데이트 | [docs/SOFT_LANDING_INTERNAL.md](docs/SOFT_LANDING_INTERNAL.md) |
+## 주요 기능
 
-## Current Shape
+- 파일 공유, 대용량 parquet/CSV 탐색 및 미리보기
+- 제품별 SplitTable 검색, plan/actual 비교와 편집
+- root lot/wafer 기준 FAB 데이터 결합
+- WF MAP, TEG MAP, 공정 데이터 검사
+- Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
+- 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
+- 캐시 수동 스캔의 현재 단계, 실행 중 작업, 향후 큐와 피크 메모리 관측
 
-```text
-flow/
-├── app.py                 # uvicorn shim -> backend/app.py
-├── backend/               # FastAPI app, routers, core helpers, app_v2 modules
-├── frontend/              # React/Vite shell and page tabs
-├── scripts/               # smoke, preflight, migration, fixture helpers
-├── tests/                 # pytest contract/unit coverage
-└── docs/                  # active operation/development docs
-```
+## 권장 서버 구성
 
-GitHub에는 앱 코드와 문서만 둔다. `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`는 로컬/사내 운영 데이터 루트이며 checkout 뒤 필요할 때 생성되거나 `FLOW_DB_ROOT` / `FLOW_DATA_ROOT`로 외부 경로를 연결한다.
+기준 구성은 다음과 같습니다.
 
-현재 우선 흐름은 Agent 탭이 FileBrowser AI SQL은 그대로 두고, `goal -> semantic_layer -> task_planner -> unit_agents -> conclusion` runtime trace를 FastAPI SSE로 보여주는 것이다.
+| 역할 | 권장 자원 | 책임 |
+|---|---:|---|
+| 운영 API | 5코어 / 28GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시 |
+| 개발 worker | 5코어 / 10~15GB RAM | lookup/pivot/FAB index 등 무거운 공유 캐시 생성 |
 
-현재 운영 상태:
+두 서버는 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 개발 worker가 살아 있으면 무거운 작업을 worker로 위임하고, 꺼져 있으면 운영 서버가 사용자 요청이 없는 시간에 한 작업씩 천천히 수행합니다.
 
-- Flow-i Home은 자연어 요청을 기능별 unit action으로 라우팅하고, Agent 탭은 LangGraph/LangSmith-ready runtime 설계와 시멘틱 해석을 보여준다.
-- Agent 단위기능 AI 탭은 각 unit 실행 결과/이력과 LangGraph node detail에 feedback을 붙이고, LangGraph State I/O와 공유 state 설계를 실행 전후 trace 결과와 비교한다.
-- FileBrowser는 DB 제품/root parquet 첫 클릭에 스키마를 즉시 그리고 샘플 행을 백그라운드로 이어 받는 2단계 로드를 쓴다. DB(hive) 제품 기본 preview는 **최신 `date=` 파티션 한정 최대 500행**이며, 과거 파티션 폴더는 목록화하지 않는 pruned walk로 찾는다. SQL/컬럼 선택/집계 조회는 전체 파티션을 스캔하되 100행 preview 계약을 유지한다. AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
-- S3 신호등은 sync 상태 fast 응답을 먼저 그리고, 로컬 최신파일 freshness는 `date=` 파티션 pruned walk + stale-while-revalidate 캐시(TTL 5분)로 보강한다 — 대형 DB 타깃에서도 트리 전체 스캔이 응답을 막지 않는다.
-- LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
-- Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
-- Split Table은 root_lot_id별 사전 피벗 `split_table` 파케이 캐시 Fast Path를 쓰고, 캐시 미스/stale이면 백그라운드 single-flight 재빌드를 큐잉한다. plan/tag 편집은 view 시점 overlay라 저장 직후 반영된다. view revalidate는 단일 워커 + 3h 쿨다운으로 직렬화되고, 워커(개발서버) 생존 시 재계산 자체를 `splittable_view_recompute` 로 오프로드해 운영 서버 polars 풀을 쓰지 않는다(payload 는 워커가 orjson 직렬화해 반환, 시그니처는 운영 서버가 디스패치 직전 로컬 계산해 저장; 로컬 폴백 시 기존과 동일). 조회/RAM 예열 워커 수는 `query_workers` 설정(0=자동)으로 제어한다.
-- RAM 캐시 관리는 데이터 그룹의 독립 탭이다(SplitTable 설정 모달에서 승격) — 전 제품 캐시 현황, 우선 lot, 예산을 한 화면에서 편집한다. SplitTable 톱니바퀴에 있던 캐시 수동 스캔(FAB root/fab_lot 매칭, 제품 원본 RAM cache, Root lot RAM cache)과 Root lot 캐시 설정(step_ids/target/searched), 쿼리 병렬 코어 수 조정도 이 탭의 관리자 전용 섹션으로 이동했다.
-- ET Index 다운로드(업무 탭)는 DB ET raw를 shot 단위 pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식) 규칙으로 index를 계산한다 — 항목 선택 다운로드, index 규칙 상세, 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수 지원, shot 단위 wide 를 (root_lot, wafer, step, PGM) 그룹으로 요약하는 집계 방식(max/min/median/avg/std/p90/p10) 선택. ET 측정시간(업무 탭)은 root lot별 step_id × PGM(pt) 측정 소요시간을 집계하고, `/trend`로 step별 장기(월 단위) 추이 — wafer당 측정시간·평균 PGM 수·major 의뢰 형태 — 를 본다.
-- Flow-i 채팅/에이전트 실행은 tabs 토큰 `flowi` 권한이 필요하고, `core/flowi_gate`가 동시 실행 상한과 서버 부하 admission으로 운용을 보호한다(admin 우회). ReAct 도구 카탈로그는 유저 권한으로 필터되고 실행 시점에도 unit 가드가 걸린다.
-- CPU/메모리 한도는 호스트를 읽어 자동 산출(코어-1, 총메모리 65%)하고, 백그라운드 작업(캐시 빌드, S3 주기 동기화)은 사용자 요청에 양보한다(`core/request_priority`). 메모리 보호 소프트밴드(RSS가 limit 근처)는 기본적으로 **실제 호스트 여유 메모리**를 기준으로 판단한다 — Polars RSS 잔류만으로 스플릿테이블 조회/다운로드나 백그라운드 빌드를 거절하지 않는다(하드캡 RSS≥limit는 유지, `FLOW_PROCESS_MEMORY_LIMIT_STRICT=1`로 엄격 모드 복원). 스플릿테이블 불러오기·파일 보기는 예약 레인(essential lane)으로 가드와 무관하게 항상 처리된다.
-- S3 주기 업로드/다운로드는 서버별로 켜고 끌 수 있다 — env `FLOW_DISABLE_S3_INGEST`/`FLOW_DISABLE_S3_SYNC` 또는 FileBrowser S3 항목 탭의 방향별 토글(개발/양산 2서버가 같은 버킷을 쓸 때 개발 서버는 끔).
-- 회의관리/인폼 화면은 FileBrowser와 같은 UXKit 공통 컴포넌트로 통일돼 있다.
-- plan/actual 불일치 알람은 계획 작성자와, 이름이 제품명과 같은 그룹(그룹 관리, 대소문자 무시)의 멤버에게 간다. 메일 발송 여부는 SplitTable 톱니바퀴의 토글로 제어한다(기본 꺼짐). 별도 지정 팀 목록(`mismatch_alert_recipients`)은 폐기됐다.
-- 세부 운영 상태, 가능한 작업, 100ms light endpoint 기준은 [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md)에 둔다.
+## 빠른 설치
 
-## Flow-i 에이전틱 오케스트레이션 & 공유 스킬
+### 1. 요구 사항
 
-사내 GPT OSS 120B(OpenAI 호환 endpoint)로 Home 첫 화면의 수작업(파일 내부 항목 조회, SplitTable 확인 등)을 에이전틱하게 처리하는 흐름. 세부 계약은 [docs/features/flowi-agent.md](docs/features/flowi-agent.md).
+- Python 3.10 이상
+- Node.js와 npm
+- DB/data 공유 경로에 대한 읽기·쓰기 권한
 
-**1) LLM 연결 (admin)** — Agent 탭 LLM 설정에서 프리셋 "GPT OSS 120B (사내)"(`openai_compatible`) 선택 후 사내 endpoint URL과 토큰만 입력하고 연결 테스트. 내부 프로필이 연결되면 외부 dev AI(vertex/openai)는 자동 차단된다.
+### 2. 설치
 
-**2) 에이전틱 모드 (admin)** — 같은 화면의 "에이전틱 오케스트레이션" 체크박스로 `LLM 도구 선택(tool call)`과 `반복 실행 루프(ReAct)`를 켠다. env `FLOW_LLM_TOOL_CALL`/`FLOW_LLM_REACT_LOOP`가 설정된 서버에서는 env가 우선. 켜면 Home Flow-i가 LLM으로 도구를 골라 결과를 관찰하며 다단계 실행한다 (native tool_calls 미사용 — on-prem 서빙 호환).
-
-**3) 공유 스킬 (모든 유저)** — 자주 반복되는 작업 패턴은 Skill Miner가 후보로 발굴하고 admin 승인으로 공유 스킬이 된다(SQL 작업대 탭은 에이전트 탭 재편에서 제거됨). Home 채팅에서:
-- `쓸 수 있는 스킬 알려줘` → 공유 스킬 카탈로그 (부족한 권한은 `권한 필요:` 표시)
-- `<스킬 제목> 스킬 실행해줘` → read-only 즉시 실행, 결과 행 미리보기
-실행은 스킬의 `required_features`가 사용자 기능 권한의 부분집합일 때만 허용된다 — **권한이 없는 시스템에 스킬로 우회 접근할 수 없다**. 비공유 스킬은 작성자/admin만 보이며, `POST /api/skills/{key}/share`로 전환한다.
-
-**4) step 조회 + human-in-the-loop 학습 (모든 유저)** — Home 채팅에서:
-- `AA100100는 무슨 step이야` → step_matching/Vehicle_matching 기반 양방향 조회. 정확 일치가 없으면 suffix 변형(AB100000EC ↔ AB100000) 기준 유사 후보 제시.
-- `SD_EPI step_id 관련 파일 어디에 있어` → 룰북/매칭테이블(Files 단일 파일)을 횡단 검색해 어느 파일 어느 열에 쓰이는지 답한다. 수정은 Files 편집 화면으로.
-- 못 찾은 매핑은 `기억해: <용어>는 <답>`으로 가르치면 전 유저 공유 학습 데이터(`flowi_fewshots.json`)에 저장되고 다음부터 즉시 답한다. `잊어줘: <용어>`로 삭제.
-- 답이 틀렸으면 싫어요 + 코멘트(`X -> Y` 또는 `정답은 Y`)로 교정하면 같은 저장소에 반영된다.
-
-**5) 파일 설명문 카탈로그 (모든 유저 등록, Admin 관리)** — `파일 설명: ppid_knob.csv는 PPID 값을 knob으로 분류하는 규칙` 처럼 파일별 설명만 등록해두면, 이후 검색성 질문("PPID_08_0 어디에 있어?")에서 Flow-i가 설명과 질문을 대조해 대상 파일을 고르고 내용을 검색해 파일/열/행을 답한다. 설명이 없거나 못 찾으면 few-shot 티칭 또는 파일 설명 등록을 요청하는 human-in-the-loop 안내를 준다. 두 학습 저장소(few-shot, 파일 설명)는 **Admin → Flow-i 학습** 탭에서 조회/수정/삭제한다.
-
-**6) 지식 레이어 (지식 카드)** — Flow-i가 답변에 쓰는 도메인 지식을 카드 단위(`core/knowledge_cards.py`)로 관리한다. 우선순위는 local > seed > generated > adapter — 사내에서 채운 local 카드가 항상 이기고, 시드 카드 번들(`core/knowledge_seed_cards/`, setup.py 포함)은 일반 공정용어와 제품별 공정구간 채움 틀을 제공한다. 사내 반입 후 제품 실명/ET 항목/공정구간은 "지식 채움" 인터뷰로 채운다. 계약은 [docs/features/knowledge-layer.md](docs/features/knowledge-layer.md).
-
-## Recent Changes (2026-07, v9.2~v9.5)
-
-auto report reformatter 이식(ET Index) → Flow-i 지식 레이어/운용 게이트 → 캐시 워커 정리 → 캐시 관리 탭 통합/권한 그룹 순의 배치. 상세는 [VERSION.json](VERSION.json) release notes와 각 feature 문서에 있다.
-
-| 영역 | 변경 |
-|---|---|
-| 캐시 관리 (v9.5) | SplitTable 톱니바퀴의 캐시 수동 스캔(FAB/제품 원본/Root lot RAM cache)·Root lot 캐시 설정·쿼리 병렬 코어 수 조정을 캐시 관리 탭 관리자 섹션으로 통합 |
-| plan/actual 알람 (v9.5) | 지정 팀 수신자(`mismatch_alert_recipients`) 폐기 — 수신 대상 = 계획 작성자 + 제품 동명 그룹 멤버 고정, HTML 메일 발송 온오프 토글(기본 꺼짐) |
-| 권한 그룹 (v9.5) | Admin 권한 그룹(perm-groups) 신설 — 그룹에 tabs 권한 지정 + 멤버 일괄 적용, 개별 권한 지정 시 그룹에서 자동 제외, 가입 승인 시 안내 메일 발송 |
-| ET 측정시간 (v9.5) | `/trend` 월 단위 장기 추이 — wafer당 step 측정시간·평균 PGM 수·major 의뢰 형태(step_seq 조합 비율) |
-| ET Index (v9.5) | 제품 파일 다중 레이아웃(제품 폴더/hive/플랫) 흡수, shot→(root_lot, wafer, step, PGM) 집계 방식 선택(max/min/median/avg/std/p90/p10) |
-| ET Index 다운로드 (v9.2~9.3) | 업무 탭 신설 — DB ET raw shot pivot 후 vehicle CSV(REAL abs/scale → ADDP 수식, 재귀 고정점) index 계산. 항목 선택 다운로드(REPORT ORDER 일괄 선택), index 규칙 상세 바(ADDP→REAL 체인 추적), 관리자 ADDP 수식 테스트(require_admin), MA_Window/매뉴얼 함수(`manual_functions.py` mtime 자동 로딩), downloads.jsonl source 구분 |
-| ET 측정시간 (v9.2) | 업무 탭 신설 — root lot별 step_id × PGM(pt) 측정 소요시간(tkout−tkin) 집계 |
-| 지식 레이어 (v9.4) | 지식 카드 `core/knowledge_cards.py` + 시드 번들(local > seed > generated > adapter), 공정용어·제품별 공정구간 채움틀 카드, "지식 채움" 인터뷰 증거 보강 |
-| Flow-i 운용 (v9.4) | tabs 토큰 `flowi` 권한 신설, `core/flowi_gate` 동시 실행 상한 + 서버 부하 admission(admin 우회), ReAct 도구 카탈로그 유저 권한 필터 + 실행 시점 unit 가드 |
-| ReAct 품질 (v9.4) | 역할별 예산(유저 90/120초, admin 300/600초·16~24턴), guidance 폴백 관측(status=guidance_fallback) — decision LLM 피드백 |
-| Flow-i 단위기능 (v9.4) | ET/INLINE 차트 집계 확장(median/avg/p90/p10/max·shot 단위), WF map spec-out 파서·좌표 폴백(chip_x_adj > chip_x_pos > shot_x) |
-| SplitTable (v9.4) | view revalidate 단일 워커 + 3h 쿨다운(사용자 조회와 CPU 경쟁 해소) + 재계산 워커 오프로드(`splittable_view_recompute`), `query_workers` 설정(0=자동/1~N 고정) |
-| RAM 캐시 (v9.4) | 데이터 그룹 독립 탭 승격 — 전 제품 캐시 현황·우선 lot·예산 편집 |
-| 정리 (v9.4) | 2026-07 종합 감사 후속 데드코드 8파일 제거 (splittable notes 계열, internal_api_contract, matching/ml_heuristics, 미사용 컴포넌트 3종) |
-
-## Current Version
-
-현재 표시 버전은 `VERSION.json`의 release metadata와 파일 mtime 기반 bundle label을 함께 본다. 최신 checkout에서 아래 명령으로 확인한다.
+빈 폴더에 `setup.py`를 복사한 뒤 실행합니다.
 
 ```bash
-python3 setup.py version
+python setup.py
 ```
 
-실행 중인 앱에서는 `/version.json`을 확인한다. `setup.py`는 source/doc 변경 후 반드시 `_build_setup.py`로 재생성한다.
+이 명령은 다음을 순서대로 수행합니다.
 
-## Validation Structure
+1. 포함된 Flow 소스를 현재 폴더에 추출
+2. 백엔드 Python 의존성 설치
+3. 프런트엔드 npm 의존성 설치 및 production build
 
-`flow`의 검증은 앱 안의 smoke/preflight/test 스크립트를 기준으로 한다.
-
-| 항목 | 역할 |
-|---|---|
-| `scripts/smoke_test.py` | 실행 중인 `localhost:8080` 앱에 로그인해 FileBrowser, SplitTable, Inform, Meeting, Tracker, Admin 기본 API를 확인 |
-| `scripts/tab_smoke.py` | admin/smoke user로 주요 탭 endpoint를 반복 확인 |
-| `scripts/smoke_lot_flow.py` | lot 중심 E2E 업무 시나리오 smoke |
-| `scripts/preflight_internal.py` | 사내 반입 전 포트, root, data_root 보존, backup/restore 기준 확인 |
-| `scripts/latency_budget_probe.py` | warm server 기준 light API가 100ms 예산을 넘는지 확인 |
-| `tests/` | backend/router/service 계약과 회귀 단위 테스트 |
-
-앱은 8080을 사용한다. 실행 중인 앱의 root 해석은 `/runtime-roots.json`에서 확인한다.
-
-## Quick Start
+소스만 먼저 풀려면 다음 명령을 사용합니다.
 
 ```bash
-pip install -r backend/requirements.txt
-cd frontend && npm install && npm run build
-cd ..
+python setup.py extract
+```
+
+설치 후 서버를 실행합니다.
+
+```bash
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-자체 추출 번들은 루트에서 backend deps와 frontend build를 함께 준비할 수 있다.
+접속 주소는 `http://<서버주소>:8080`입니다.
+
+초기 관리자 계정은 `hol / hol12345!`이며, 사내 반입 전에 반드시 비밀번호를 변경하거나 `FLOW_ADMIN_PW`를 지정하십시오.
+
+## 운영 API 서버 설정
+
+PowerShell 예시:
+
+```powershell
+$env:FLOW_SERVER_ROLE="api"
+$env:FLOW_DB_ROOT="\\shared-server\flow\DB"
+$env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
+$env:FLOW_CACHE_TOTAL_BUDGET_FRACTION="0.45"
+$env:FLOW_PROCESS_MEMORY_LIMIT_FRACTION="0.80"
+uvicorn app:app --host 0.0.0.0 --port 8080
+```
+
+Linux 예시:
 
 ```bash
-python3 setup.py
+export FLOW_SERVER_ROLE=api
+export FLOW_DB_ROOT=/config/work/sharedworkspace/DB
+export FLOW_DATA_ROOT=/config/work/sharedworkspace/flow-data
+export FLOW_CACHE_TOTAL_BUDGET_FRACTION=0.45
+export FLOW_PROCESS_MEMORY_LIMIT_FRACTION=0.80
+uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
-접속:
+## 개발 worker 서버 설정
 
-```text
-http://localhost:8080
+운영 서버와 동일한 DB/data 공유 경로를 지정합니다.
+
+```powershell
+$env:FLOW_SERVER_ROLE="worker"
+$env:FLOW_DB_ROOT="\\shared-server\flow\DB"
+$env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
+$env:FLOW_WORKER_CONCURRENCY="1"
+$env:FLOW_POLARS_MAX_THREADS="2"
+uvicorn app:app --host 0.0.0.0 --port 8081
 ```
 
-## Validation
+개발 worker 기본 정책:
 
-문서만 수정:
+- 무거운 작업 동시 실행 1개
+- Polars 최대 2 threads
+- API용 product/root/view RAM 캐시 비활성화
+- backup, mail, S3 등 운영 scheduler 비활성화
+- worker available memory와 process memory admission 통과 후 작업 실행
+
+## SplitTable 성능 및 메모리 정책
+
+- 서로 다른 root lot 조회도 제품 전체가 아닌 root partition/pivot 파일 하나만 읽습니다.
+- 요청 중에는 root의 전체 wide frame을 RAM에 올리지 않고 필요한 prefix/custom 컬럼만 parquet projection으로 읽습니다.
+- lookup/pivot/FAB root index는 개발 worker가 우선 생성합니다.
+- worker가 없으면 운영 서버의 사용자 요청이 조용할 때 local fallback을 1개씩 실행합니다.
+- lookup 초기 생성은 운영 fallback에서 root 4개, 개발 worker에서 root 2개 단위로 처리합니다.
+- pivot 생성은 root 1개씩 처리합니다.
+- 압축 크기 128MB를 넘는 단일 root partition은 순간 OOM 방지를 위해 RAM 예열을 생략합니다.
+- 전체 프로세스 캐시 풀 기본값은 물리 메모리의 45%, process soft limit은 80%입니다.
+- 5코어 운영 서버의 root-scoped 조회는 기본 3개가 실행되고 추가 요청은 큐에서 기다립니다.
+
+샘플 데이터 검증 결과:
+
+- 서로 다른 5개 root 동시 조회: 전체 약 312ms
+- 서로 다른 root 순차 조회: 첫 초기화 이후 약 56~86ms
+- 동일 조건 재조회: 약 8.7ms
+- cold partition 5개 동시 조회: 약 433ms, 측정 process peak RSS 증가 약 71.7MB
+
+운영 데이터의 실제 속도는 parquet 폭, root당 wafer/row 수, 공유 스토리지와 네트워크 성능에 따라 달라집니다.
+
+## 캐시 관리 화면
+
+관리자용 데이터 캐시 화면에서 다음을 확인할 수 있습니다.
+
+- 수동 스캔 단계별 `queued / running / done / failed`
+- 현재 실행 중인 제품과 앞으로 대기 중인 작업
+- root RAM 유휴 예열의 현재 root와 향후 큐
+- API RSS, 작업 시작 이후 peak 증가량, 최소 host available memory
+- worker 현재/대기 task와 worker lifetime peak RSS
+
+## 업데이트와 데이터 보존
+
+새 `setup.py`를 기존 설치 폴더에서 다시 실행해도 운영 데이터는 보존됩니다.
+
+보호 대상에는 다음이 포함됩니다.
+
+- `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`
+- `FLOW_DATA_ROOT`, `FLOW_DB_ROOT`, `FLOW_WAFER_MAP_ROOT` 아래의 모든 파일
+- users, sessions, groups, informs, tracker, meetings, dashboard, cache와 로그
+
+설치 전 소형 설정/state 파일은 사용자 홈의 `.flow_backups`에 snapshot됩니다. 수동 복구가 필요하면 다음 명령을 사용합니다.
 
 ```bash
-git diff --check
+python setup.py restore latest
 ```
 
-일반 코드 수정:
+버전과 번들 생성 시각 확인:
 
 ```bash
-git diff --check
-cd frontend && npm run build
-python3 scripts/smoke_test.py
+python setup.py version
 ```
 
-백엔드 단위 테스트:
+## 개별 설치 명령
 
 ```bash
-python3 -m pytest tests
+python setup.py extract
+python setup.py install-deps
+python setup.py build-frontend
+python setup.py version
+python setup.py sync-version
+python setup.py restore latest
 ```
 
-사내 반입/업데이트:
+## 검증
 
-```bash
-python3 scripts/preflight_internal.py --write-probe
-```
+현재 배포본은 다음 검증을 통과한 상태로 생성합니다.
 
-warm server light API latency:
+- Python 구문 검사
+- 백엔드 pytest 60개
+- Vite production build
+- 로컬 HTML/JS HTTP 200 smoke test
+- `setup.py` 추출 파일 목록 및 데이터 제외 정책 확인
 
-```bash
-FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
-```
+## 주의 사항
 
-`setup.py` 또는 번들 산출물을 갱신했을 때:
-
-```bash
-python3 _build_setup.py
-python3 setup.py version
-```
-
-## GitHub Main Push
-
-일반 절차는 [docs/GITHUB_MAIN_PUSH.md](docs/GITHUB_MAIN_PUSH.md)를 따른다. 이 작업환경에서는 WSL Git에 GitHub credential이 없을 수 있으므로, `git push origin main`이 인증 실패하면 Windows Git credential을 쓰는 `git.exe push origin main`을 사용한다.
-
-```bash
-git status --short --branch
-git fetch origin
-python3 _build_setup.py
-python3 setup.py version
-git add -A
-git commit -m "..."
-git push origin main
-# WSL HTTPS 인증 실패 시
-git.exe push origin main
-```
-
-푸시 후에는 `git rev-parse HEAD`와 `git rev-parse origin/main`이 같은지 확인한다.
-
-## Key Paths
-
-| 항목 | 의미 |
-|---|---|
-| `FLOW_DB_ROOT` | 운영 DB root override |
-| `FLOW_DATA_ROOT` | 운영 data root override |
-| `FLOW_WAFER_MAP_ROOT` | wafer map root override |
-| `data/Fab/` | env가 없을 때 쓰는 로컬 DB root fallback. Git 추적 대상 아님 |
-| `data/flow-data/` | env가 없을 때 쓰는 로컬 runtime/user state fallback. Git 추적 대상 아님 |
-
-공유 서버에서는 `/config/work/sharedworkspace/DB`와 `/config/work/sharedworkspace/flow-data`를 자동 감지한다. 코드 업데이트, `setup.py`, frontend build는 runtime/user data를 Git에 넣거나 덮어쓰면 안 된다. 데이터가 없는 fresh checkout도 빈 로컬 root 또는 명시된 외부 root로 기동해야 한다.
+- `setup.py`는 사내 코드와 프런트엔드를 포함하므로 외부에 공개하지 마십시오.
+- 운영 서버와 worker 서버의 시스템 시간과 공유 경로 권한을 맞추십시오.
+- DB 및 runtime data를 Git 저장소 안에 직접 커밋하지 마십시오.
+- 개발 worker 메모리가 부족할 때 동시 실행 수를 늘리지 마십시오.
 
 ## License
 
-Private. 사내/개인 검증 목적의 저장소다.
+Private. 사내/개인 검증 목적으로만 사용합니다.
