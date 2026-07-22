@@ -38,7 +38,7 @@ from core.utils import (
 from core.vehicle_reformatter import (
     FORMULA_HELP, PIVOT_KEY_COLS, PIVOT_META_COLS, apply_addp_rows,
     find_vehicle_csv, formula_refs, load_vehicle_table, reformatize,
-    rowwise_function_help,
+    resolve_needed_items, rowwise_function_help,
 )
 
 logger = logging.getLogger("flow.reformatize")
@@ -48,6 +48,22 @@ VEHICLE_DIR = PATHS.data_root / "reformatter"
 SETTINGS_FILE = PATHS.data_root / "reformatize_settings.json"
 DL_LOG = PATHS.download_log
 ET_ROOT_NAME = "ET"
+
+
+def _find_csv(product: str) -> Path | None:
+    """reformatter CSV 탐색 — DB 루트 reformatter 폴더 우선, data_root 폴백.
+
+    사내 DB 구조에서 reformatter CSV 를 DB 트리 아래 두는 운영을 지원한다.
+    """
+    try:
+        db_ref_dir = PATHS.db_root / "reformatter"
+        if db_ref_dir.is_dir():
+            fp = find_vehicle_csv(db_ref_dir, product)
+            if fp is not None:
+                return fp
+    except Exception:
+        pass
+    return find_vehicle_csv(VEHICLE_DIR, product)
 
 DEFAULT_SETTINGS = {"page_rows": 500, "max_download_rows": 100_000}
 PAGE_ROWS_MAX = 5_000
@@ -259,21 +275,28 @@ def _load_raw(product: str, sig: tuple) -> pl.DataFrame:
     return df
 
 
-def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int]:
+def _compute(product: str, f: Filters,
+             selected_items: list[str] | None = None,
+             ) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int]:
     """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블, 필터된 raw 행수).
 
     필터는 raw(long) ET 데이터에 먼저 적용한 뒤 reformatize 한다 — ADDP 의
     그룹 통계(std/avg)도 필터된 모집단 기준으로 계산된다.
-    결과는 (product, 필터 조합) 단위로 캐시 (파일 시그니처 일치 시 재사용).
+    결과는 (product, 필터 조합, 선택 항목) 단위로 캐시 (파일 시그니처 일치 시 재사용).
     raw 행수는 다운로드 상한(max_download_rows) 판정 기준.
+
+    ``selected_items`` 가 주어지면 ADDP 의존성 해소 후 필요한 ITEMID 만
+    pivot 하여 속도를 높인다. 비어있거나 None 이면 전체 항목 처리 (관리자 수식 테스트용).
     """
-    csv_fp = find_vehicle_csv(VEHICLE_DIR, product)
+    csv_fp = _find_csv(product)
     if csv_fp is None:
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다 "
-                                 f"({VEHICLE_DIR} 안에 <vehicle>_reformatter.csv 를 두세요)")
+                                 f"(DB루트/reformatter 또는 {VEHICLE_DIR} 안에 "
+                                 f"<vehicle>_reformatter.csv 를 두세요)")
     st = csv_fp.stat()
     sig = _product_sig(product) + ((str(csv_fp), st.st_mtime, st.st_size),)
-    key = (product, _filters_key(f))
+    sel_key = tuple(sorted(set(selected_items))) if selected_items else ()
+    key = (product, _filters_key(f), sel_key)
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] == sig:
@@ -289,7 +312,10 @@ def _compute(product: str, f: Filters) -> tuple[pl.DataFrame, list[str], list[st
         raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
     raw_rows = df.height
     try:
-        wide, out_cols, errors = reformatize(df, table)
+        wide, out_cols, errors = reformatize(
+            df, table,
+            selected_aliases=selected_items if selected_items else None,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     est = _df_est_bytes(wide)
@@ -434,7 +460,7 @@ def products(_user=Depends(current_user)):
                     names.add(child.name)
     out = []
     for name in sorted(names):
-        csv_fp = find_vehicle_csv(VEHICLE_DIR, name)
+        csv_fp = _find_csv(name)
         out.append({"product": name, "vehicle_csv": csv_fp.name if csv_fp else ""})
     return {"products": out, "vehicle_dir": str(VEHICLE_DIR)}
 
@@ -446,7 +472,7 @@ def list_items(product: str = Query(...), _user=Depends(current_user)):
     REAL 은 raw ITEMID·abs·scale factor, ADDP 는 ADDP Form 과 참조 컬럼을 함께 반환.
     데이터를 읽지 않고 규칙 CSV 만 파싱하므로 가볍다.
     """
-    csv_fp = find_vehicle_csv(VEHICLE_DIR, product)
+    csv_fp = _find_csv(product)
     if csv_fp is None:
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
     table = load_vehicle_table(csv_fp)
@@ -573,7 +599,8 @@ class RunReq(Filters):
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
-    wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(req.product, req)
+    wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(
+        req.product, req, selected_items=req.items or None)
     out_cols = _select_aliases(out_cols, req.items)
     wide = wide_full.select(out_cols)
     if req.agg.strip():
@@ -618,7 +645,9 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
         raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
                                  "기간(tkout_time)·root_lot_id·step_id·wafer_id·total_site_cnt "
                                  "중 하나 이상을 지정하세요")
-    wide_full, out_cols, _errors, vehicle_csv, table, raw_rows = _compute(product, f)
+    wanted = [s.strip() for s in items.split(",") if s.strip()]
+    wide_full, out_cols, _errors, vehicle_csv, table, raw_rows = _compute(
+        product, f, selected_items=wanted or None)
     cfg = _settings()
     # 상한 판정은 필터된 raw(long) 행수 기준 — 집계/pivot 으로 결과 행이 줄어도
     # raw 가 상한을 넘으면 차단.
@@ -626,7 +655,6 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
         raise HTTPException(400, f"필터된 raw 데이터 {raw_rows:,}행이 다운로드 최대 "
                                  f"{cfg['max_download_rows']:,}행을 초과합니다. 기간·lot 등 필터를 "
                                  f"조정해 행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.")
-    wanted = [s.strip() for s in items.split(",") if s.strip()]
     out_cols = _select_aliases(out_cols, wanted)
     wide = wide_full.select(out_cols)
     agg_method = str(agg or "").strip().lower()

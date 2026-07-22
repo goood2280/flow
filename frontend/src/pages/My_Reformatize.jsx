@@ -193,7 +193,7 @@ function ItemSelectPanel({ items, selected, onToggle, onSelectSet }) {
         <span style={{ fontSize: 14, fontWeight: 800 }}>📋 Index 항목 선택</span>
         <Pill tone={nSel === 0 ? "warn" : "accent"}>{nSel} / {items.length}</Pill>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          {nSel === 0 ? "뽑을 항목을 선택하세요 — REPORT ORDER 전체 버튼으로 리포트 대상만 일괄 선택 가능" : "ALIAS 선택 — ADDP FORM 은 reformatter CSV 와 동일 (REAL 은 빈칸)"}
+          {nSel === 0 ? "뽑을 항목을 선택하세요" : `전체 reformatter alias 중 ${nSel}개 선택됨`}
         </span>
         <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲ 접기" : "▼ 펼치기"}</span>
       </div>
@@ -428,12 +428,17 @@ export default function My_Reformatize({ user }) {
 
   const selected = products.find(p => p.product === product);
 
-  // 제품 변경 시 vehicle CSV 의 REAL/ADDP 항목 목록 로드 — 기본 선택 없음 (직접 고르거나 REPORT ORDER 전체).
+  // 제품 변경 시 vehicle CSV 의 REAL/ADDP 항목 목록 로드 — 기본 전체 선택
+  // (auto report 와 동일: 전체 reformatter 값을 alias 로 뽑는다).
   useEffect(() => {
     setItemList([]); setSelItems(new Set());
     if (!product || !selected?.vehicle_csv) return;
     sf(API + "/items?product=" + encodeURIComponent(product))
-      .then(d => setItemList(d.items || []))
+      .then(d => {
+        const items = d.items || [];
+        setItemList(items);
+        setSelItems(new Set(items.map(it => it.alias)));
+      })
       .catch(() => {});
   }, [product, selected?.vehicle_csv]);
 
