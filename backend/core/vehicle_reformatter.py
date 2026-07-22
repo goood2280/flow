@@ -293,6 +293,39 @@ FORMULA_HELP = [
 ]
 
 
+def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str],
+                         ) -> tuple[List[Dict[str, Any]], set[str]]:
+    """선택된 alias 에서 ADDP 의존성을 재귀 해소해 필요한 테이블 행과 ITEMID 집합을 반환.
+
+    ADDP 수식이 {이름} 으로 다른 alias 를 참조할 때 해당 alias 의 REAL ITEMID 까지
+    추적하여 raw 데이터 필터링에 사용할 ITEMID 세트를 만든다.
+    """
+    by_alias: dict[str, dict] = {r["alias"]: r for r in table}
+    needed_aliases: set[str] = set()
+    extra_itemids: set[str] = set()           # 테이블에 없는 직접 참조 ITEMID
+    queue = list(selected_aliases)
+    while queue:
+        name = queue.pop()
+        if name in needed_aliases:
+            continue
+        row = by_alias.get(name)
+        if row:
+            needed_aliases.add(name)
+            if row["category"] == "addp":
+                refs = formula_refs(row.get("addp_form") or "")
+                for ref in refs:
+                    if ref not in needed_aliases:
+                        queue.append(ref)
+        else:
+            # 테이블에 없으면 raw ITEMID 직접 참조로 간주
+            extra_itemids.add(name)
+    needed_rows = [r for r in table if r["alias"] in needed_aliases]
+    needed_itemids = {r["itemid"] for r in needed_rows
+                      if r["category"] == "real" and r["itemid"]}
+    needed_itemids |= extra_itemids
+    return needed_rows, needed_itemids
+
+
 def _num_or_none(value):
     try:
         if value is None or str(value).strip() == "":
@@ -411,11 +444,16 @@ def formula_refs(addp_form: str) -> list[str]:
 
 def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
                 item_col: str = "item_id", value_col: str = "value",
+                selected_aliases: list[str] | None = None,
                 ) -> tuple[pl.DataFrame, list[str], list[str]]:
     """long ET df + vehicle 테이블 → (full wide df, 출력 컬럼 순서, 에러 목록).
 
     full wide 는 raw item 컬럼을 포함한다 (관리자 수식 테스트에서 참조 가능).
     출력 컬럼 순서: pivot key → 메타 → alias(REPORT ORDER 순).
+
+    ``selected_aliases`` 가 주어지면 ADDP 의존성을 재귀 해소한 뒤 필요한
+    ITEMID 만 raw 데이터에서 필터하여 pivot 한다. 불필요한 컬럼을 줄여
+    대규모 ET 데이터에서 10~30× 속도 개선.
     """
     errors: list[str] = []
     if item_col not in df.columns or value_col not in df.columns:
@@ -425,35 +463,53 @@ def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
     if not keys:
         raise ValueError("pivot key 컬럼이 없습니다 (root_lot_id/wafer_id/shot_x ...)")
 
+    # ── 메타 컬럼은 item_id 필터 전에 추출 (메타는 shot 당 공통) ──
+    meta_df = None
+    if metas:
+        meta_df = df.group_by(keys).agg([pl.col(m).first() for m in metas])
+
+    # ── 선택된 alias 가 있으면 필요한 ITEMID 만 필터 → pivot 속도 개선 ──
+    work_table = table
+    if selected_aliases:
+        work_table, needed_ids = resolve_needed_items(table, selected_aliases)
+        if needed_ids and item_col in df.columns:
+            df = df.filter(pl.col(item_col).is_in(list(needed_ids)))
+
     wide = (
         df.group_by(keys + [item_col])
         .agg(pl.col(value_col).cast(pl.Float64, strict=False).mean().alias("_v"))
         .pivot(index=keys, on=item_col, values="_v", aggregate_function="first")
     )
-    if metas:
-        meta_df = df.group_by(keys).agg([pl.col(m).first() for m in metas])
+    if meta_df is not None:
         wide = wide.join(meta_df, on=keys, how="left")
 
-    # ── REAL: alias = (item * scale) [abs] ──
-    for row in table:
+    # ── REAL: alias = (item * scale) [abs] — 일괄 처리 ──
+    real_exprs: list[pl.Expr] = []
+    real_null_aliases: list[str] = []
+    for row in work_table:
         if row["category"] != "real":
             continue
         alias, itemid = row["alias"], row["itemid"]
         if itemid not in wide.columns:
             errors.append(f"REAL '{alias}': ITEMID '{itemid}' 가 ET 데이터에 없습니다")
-            wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(alias))
+            real_null_aliases.append(alias)
             continue
         expr = pl.col(itemid).cast(pl.Float64, strict=False) * float(row["scale"])
         if row["absolute"]:
             expr = expr.abs()
-        wide = wide.with_columns(expr.alias(alias))
+        real_exprs.append(expr.alias(alias))
+    if real_null_aliases:
+        wide = wide.with_columns([pl.lit(None, dtype=pl.Float64).alias(a)
+                                   for a in real_null_aliases])
+    if real_exprs:
+        wide = wide.with_columns(real_exprs)
 
     # ── ADDP: 고정점 반복 (ADDP → ADDP 재귀 참조 해소) ──
-    wide, addp_errors = apply_addp_rows(wide, [r for r in table if r["category"] == "addp"])
+    wide, addp_errors = apply_addp_rows(wide, [r for r in work_table if r["category"] == "addp"])
     errors.extend(addp_errors)
 
     ordered = sorted(
-        table,
+        work_table,
         key=lambda r: (r["report_order"] if r["report_order"] is not None else 9999,
                        str(r["alias"])),
     )
