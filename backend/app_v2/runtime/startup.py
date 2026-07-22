@@ -16,15 +16,20 @@ from core.runtime_limits import (
 def start_background_services(logger) -> None:
     """Start optional background schedulers without blocking app startup."""
 
-    light_starters = (
+    core_starters = (
         # 워커 오프로드 배선을 가장 먼저 — worker 역할이면 heartbeat/큐 소비를
         # 즉시 시작해 api 서버가 최대한 빨리 오프로드를 재개할 수 있게 한다.
         ("worker dispatch", "core.worker_dispatch", "start_services"),
         # OOM 방어 — 개발서버는 자동 재시작이 없어 죽기 전에 캐시를 비우는 게
         # 유일한 방어선. 모든 역할에서 켠다.
         ("memory watchdog", "core.memory_watchdog", "start_background"),
+    )
+    # 프로세스 로컬 캐시/재검증 서비스. worker는 공유 파일 산출만 담당하므로
+    # 이런 캐시를 따로 보유하거나 api와 같은 revalidator를 중복 실행하지 않는다.
+    local_service_starters = (
         ("filebrowser cache cleanup", "routers.filebrowser", "cleanup_legacy_cache_roots"),
         ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
+        ("splittable search cache maintainer", "routers.splittable", "start_split_search_cache_maintainer"),
         ("splittable fab lot index revalidator", "routers.splittable", "start_fab_lot_index_revalidator"),
     )
     # 외부 서비스 연동/운영성 스케줄러 — 운영(api)·standalone 전용.
@@ -44,16 +49,17 @@ def start_background_services(logger) -> None:
         # v9.5.13: ET Tracker 일일 스캔 (하루 n회 지정 시각에 ET DB PGM(pt) 감지)
         ("et tracker scheduler", "core.et_tracker", "start_scheduler"),
     )
-    starters = light_starters
+    starters = core_starters
     from core.worker_dispatch import external_services_enabled
-    if external_services_enabled():
-        starters = starters + external_starters
+    local_services_enabled = external_services_enabled()
+    if local_services_enabled:
+        starters = starters + local_service_starters + external_starters
     else:
         logger.info(
-            "external-service schedulers disabled on worker role "
-            "(backup/valve watch/valve alerts/dedup run on the api server)"
+            "local cache/revalidator and external schedulers disabled on worker role "
+            "(the api server owns RAM caches and schedules shared-file work)"
         )
-    if splittable_match_cache_enabled():
+    if local_services_enabled and splittable_match_cache_enabled():
         starters = starters + (
             ("splittable match cache scheduler", "routers.splittable", "start_match_cache_scheduler"),
         )
@@ -62,7 +68,7 @@ def start_background_services(logger) -> None:
             "SplitTable match cache scheduler disabled "
             "(set FLOW_ENABLE_SPLITTABLE_MATCH_CACHE=1 to enable)"
         )
-    if splittable_product_ram_cache_scheduler_enabled():
+    if local_services_enabled and splittable_product_ram_cache_scheduler_enabled():
         starters = starters + (
             ("splittable product RAM cache scheduler", "routers.splittable", "start_product_ram_cache_scheduler"),
         )
@@ -71,7 +77,7 @@ def start_background_services(logger) -> None:
             "SplitTable product RAM cache scheduler disabled "
             "(set FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE=1 to enable)"
         )
-    if splittable_root_lot_ram_cache_scheduler_enabled():
+    if local_services_enabled and splittable_root_lot_ram_cache_scheduler_enabled():
         starters = starters + (
             ("splittable root lot RAM cache scheduler", "core.ml_table_lookup", "start_root_lot_ram_cache_scheduler"),
         )
@@ -80,14 +86,14 @@ def start_background_services(logger) -> None:
             "SplitTable root lot RAM cache scheduler disabled "
             "(set FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE=1 to enable)"
         )
-    if heavy_background_jobs_enabled():
+    if local_services_enabled and heavy_background_jobs_enabled():
         starters = starters + heavy_starters
     else:
         logger.info(
             "heavy background DB scanners disabled "
             "(set FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1 to enable)"
         )
-    if tracker_et_lot_cache_enabled():
+    if local_services_enabled and tracker_et_lot_cache_enabled():
         starters = starters + (
             ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
         )

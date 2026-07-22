@@ -214,6 +214,11 @@ _VIEW_CACHE_CELL_COST = 450  # 레거시 _cells 셀당 파이썬 객체 비용 (
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
+_VIEW_PRODUCT_SIG_CACHE: OrderedDict[tuple[str, ...], tuple[float, tuple]] = OrderedDict()
+_VIEW_PRODUCT_SIG_LOCK = threading.Lock()
+_VIEW_PRODUCT_SIG_CACHE_MAX = 512
+_VIEW_COMPUTE_LOCK = threading.Lock()
+_VIEW_COMPUTE_EVENTS: dict[tuple, tuple[int, threading.Event]] = {}
 
 
 def _view_cache_max_entries() -> int:
@@ -254,15 +259,16 @@ def _view_cache_auto_max_mb() -> float:
 def _view_cache_max_bytes() -> int:
     raw = str(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "") or "").strip()
     if raw:
-        # 운영자 명시 핀 — 전체 캐시 풀 상한을 적용하지 않는다.
         try:
             mb = float(raw)
         except Exception:
             mb = _view_cache_auto_max_mb()
-        return int(max(64.0, min(4096.0, mb)) * 1024 * 1024)
-    budget = int(max(64.0, min(4096.0, _view_cache_auto_max_mb())) * 1024 * 1024)
+        budget = int(max(64.0, min(4096.0, mb)) * 1024 * 1024)
+    else:
+        budget = int(max(64.0, min(4096.0, _view_cache_auto_max_mb())) * 1024 * 1024)
     try:
         from core import cache_budget
+        # 운영자 개별 설정도 프로세스 전체 안전 풀은 우회하지 않는다.
         budget = cache_budget.capped("splittable_view_payload", budget)
     except Exception:
         pass
@@ -279,6 +285,57 @@ def _estimate_view_payload_bytes(payload: dict) -> int:
     if payload.get("rows_compact") is not None:
         approx += cells * 40 + 4096
     return approx
+
+
+def _view_product_signature(paths: list[Path]) -> tuple:
+    """공유 드라이브 stat 묶음을 짧게 메모이즈해 payload-cache HIT를 빠르게 한다.
+
+    앱을 통한 plan/tag/config 쓰기는 `_clear_split_view_cache()`를 호출하므로 즉시
+    무효화된다. 외부에서 ML_TABLE을 교체한 경우만 기본 2초 안에 감지한다.
+    """
+    key = tuple(str(Path(path)) for path in paths)
+    now = time.monotonic()
+    ttl = max(0.0, min(30.0, _env_float("FLOW_SPLITTABLE_VIEW_SIGNATURE_TTL_SEC", 2.0)))
+    with _VIEW_PRODUCT_SIG_LOCK:
+        cached = _VIEW_PRODUCT_SIG_CACHE.get(key)
+        if cached is not None and now - cached[0] <= ttl:
+            _VIEW_PRODUCT_SIG_CACHE.move_to_end(key)
+            return cached[1]
+    value = tuple(_path_cache_sig(path) for path in paths)
+    with _VIEW_PRODUCT_SIG_LOCK:
+        _VIEW_PRODUCT_SIG_CACHE[key] = (now, value)
+        _VIEW_PRODUCT_SIG_CACHE.move_to_end(key)
+        while len(_VIEW_PRODUCT_SIG_CACHE) > _VIEW_PRODUCT_SIG_CACHE_MAX:
+            _VIEW_PRODUCT_SIG_CACHE.popitem(last=False)
+    return value
+
+
+def _view_compute_begin(key: tuple) -> tuple[bool, threading.Event]:
+    """같은 검색 key의 동시 cold 계산을 single-flight로 병합한다."""
+    with _VIEW_COMPUTE_LOCK:
+        current = _VIEW_COMPUTE_EVENTS.get(key)
+        if current is not None:
+            return False, current[1]
+        event = threading.Event()
+        _VIEW_COMPUTE_EVENTS[key] = (threading.get_ident(), event)
+        return True, event
+
+
+def _view_compute_finish(key: tuple | None) -> None:
+    if key is None:
+        return
+    event = None
+    with _VIEW_COMPUTE_LOCK:
+        current = _VIEW_COMPUTE_EVENTS.get(key)
+        if current is not None and current[0] == threading.get_ident():
+            _VIEW_COMPUTE_EVENTS.pop(key, None)
+            event = current[1]
+    if event is not None:
+        event.set()
+
+
+def _view_compute_wait_seconds() -> float:
+    return max(1.0, min(300.0, _env_float("FLOW_SPLITTABLE_VIEW_SINGLEFLIGHT_WAIT_SEC", 90.0)))
 # stale hit → 백그라운드 재검증. 전역 단일 워커 + 병합 큐 — 예전 thread-per-key
 # 즉시 실행은 lot_progress 재기록 직후 검색마다 풀 재계산 스레드를 띄워, 5코어의
 # 전역 polars 풀을 사용자 검색과 나눠 쓰는 CPU 경쟁(연속 검색 지연)을 만들었다.
@@ -993,7 +1050,28 @@ def _root_lot_lookup_cache_candidates(product: str, prefix: str = "", limit: int
 
 
 def _product_ram_cache_available() -> bool:
-    return not _env_bool("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE", False)
+    if _env_bool("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE", False):
+        return False
+    # 톱니바퀴 설정(관리자 UI): 운영/개발 분리 — 개발서버는 product_ram_enabled_dev
+    # 우선, 없으면 product_ram_enabled. False 면 끈다.
+    try:
+        from core import cache_settings
+        is_dev = _ml_table_lookup._root_ram_cache_use_dev()
+        if not cache_settings.get_bool_role("product_ram_enabled", is_dev, True):
+            return False
+    except Exception:
+        pass
+    # worker의 RAM은 api와 공유되지 않는다. 개발 워커는 공유 디스크 캐시 빌드에
+    # 집중하고, 전체 제품 DataFrame 상주는 운영 api가 맡는다. 진단용으로 정말
+    # 필요할 때만 명시 opt-in한다.
+    try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker" and not _env_bool("FLOW_ENABLE_WORKER_RAM_CACHE", False):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _product_ram_cache_scheduler_enabled() -> bool:
@@ -1021,20 +1099,26 @@ def _product_ram_cache_refresh_minutes() -> int:
 
 def _product_ram_cache_max_bytes() -> int:
     raw = os.environ.get("FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB", "")
-    pinned = str(raw or "").strip() != ""
+    if raw == "":
+        # 톱니바퀴 설정(관리자 UI): 운영/개발 분리 — product_ram_gb(_dev)>0 이면 사용.
+        try:
+            from core import cache_settings
+            _is_dev = _ml_table_lookup._root_ram_cache_use_dev()
+            _gb_s = cache_settings.get_float_role("product_ram_gb", _is_dev)
+            if _gb_s is not None and _gb_s > 0:
+                raw = str(_gb_s)
+        except Exception:
+            pass
     try:
         gb = float(raw or PRODUCT_RAM_CACHE_MAX_GB_DEFAULT)
     except Exception:
         gb = PRODUCT_RAM_CACHE_MAX_GB_DEFAULT
-        pinned = False
     if gb <= 0:
         return 0
     budget = int(gb * 1024 * 1024 * 1024)
-    if pinned:
-        # 운영자 명시 핀 — 전체 캐시 풀 상한을 적용하지 않는다.
-        return budget
     try:
         from core import cache_budget
+        # 명시값은 이 캐시의 희망 상한이며, 전체 캐시 안전 풀은 항상 적용한다.
         budget = cache_budget.capped("splittable_product_ram", budget)
     except Exception:
         pass
@@ -1100,6 +1184,33 @@ def _product_ram_cache_estimated_bytes(df: pl.DataFrame) -> int:
             return int(df.height) * max(1, len(df.columns)) * 16
         except Exception:
             return 0
+
+
+def _product_ram_cache_source_memory_estimate(fp: Path) -> int:
+    """collect 전에 계산하는 보수적 메모리 추정치.
+
+    parquet 파일 크기는 압축 크기라 200MB 파일이 RAM에서 수 GB로 커질 수 있다.
+    가능하면 row-group의 uncompressed byte 합을 쓰고 약간의 DataFrame overhead를
+    더한다. metadata를 읽을 수 없을 때만 파일 크기로 폴백한다.
+    """
+    try:
+        source_bytes = int(Path(fp).stat().st_size)
+    except Exception:
+        source_bytes = 0
+    uncompressed = 0
+    if Path(fp).suffix.lower() == ".parquet":
+        try:
+            import pyarrow.parquet as pq  # type: ignore
+
+            meta = pq.ParquetFile(str(fp)).metadata
+            for row_group_idx in range(meta.num_row_groups):
+                row_group = meta.row_group(row_group_idx)
+                for col_idx in range(row_group.num_columns):
+                    uncompressed += int(row_group.column(col_idx).total_uncompressed_size or 0)
+        except Exception:
+            uncompressed = 0
+    overhead = max(1.0, min(3.0, _env_float("FLOW_SPLITTABLE_PRODUCT_RAM_ESTIMATE_FACTOR", 1.25)))
+    return int(max(source_bytes, uncompressed) * overhead)
 
 
 def _product_ram_cache_total_bytes_locked(exclude_product: str = "") -> int:
@@ -1283,8 +1394,9 @@ def _refresh_product_ram_cache_products(products: list[str], force: bool = False
                         results.append(result)
                         continue
                     used_bytes = _product_ram_cache_total_bytes_locked(exclude_product=canonical)
-                source_bytes = int(source_sig[2] or 0)
-                if max_bytes and source_bytes > max(0, max_bytes - used_bytes):
+                estimated_source_bytes = _product_ram_cache_source_memory_estimate(fp)
+                remaining_budget = max(0, max_bytes - used_bytes) if max_bytes else 0
+                if max_bytes and estimated_source_bytes > remaining_budget:
                     reason = "memory_budget_precheck"
                     _product_ram_cache_mark_status(canonical, {
                         "skipped": True,
@@ -1293,11 +1405,15 @@ def _refresh_product_ram_cache_products(products: list[str], force: bool = False
                         "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
                         "last_refresh_epoch": time.time(),
                     })
-                    result.update({"skipped": True, "reason": reason})
+                    result.update({
+                        "skipped": True,
+                        "reason": reason,
+                        "estimated_mb": round(estimated_source_bytes / (1024 * 1024), 3),
+                    })
                     results.append(result)
                     continue
                 try:
-                    from core.runtime_limits import process_memory_high
+                    from core.runtime_limits import process_memory_high, system_memory_snapshot
                     if process_memory_high():
                         reason = "process_memory_high"
                         _product_ram_cache_mark_status(canonical, {
@@ -1308,6 +1424,26 @@ def _refresh_product_ram_cache_products(products: list[str], force: bool = False
                             "last_refresh_epoch": time.time(),
                         })
                         result.update({"skipped": True, "reason": reason})
+                        results.append(result)
+                        continue
+                    memory = system_memory_snapshot()
+                    available_gb = float(memory.get("system_memory_available_gb") or 0.0)
+                    reserve_gb = float(memory.get("system_memory_min_available_gb") or 2.0)
+                    headroom_bytes = int(max(0.0, available_gb - reserve_gb) * (1024 ** 3))
+                    if headroom_bytes > 0 and estimated_source_bytes > headroom_bytes:
+                        reason = "host_memory_headroom_precheck"
+                        _product_ram_cache_mark_status(canonical, {
+                            "skipped": True,
+                            "skip_reason": reason,
+                            "error": "",
+                            "last_refresh_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "last_refresh_epoch": time.time(),
+                        })
+                        result.update({
+                            "skipped": True,
+                            "reason": reason,
+                            "estimated_mb": round(estimated_source_bytes / (1024 * 1024), 3),
+                        })
                         results.append(result)
                         continue
                 except Exception:
@@ -7611,7 +7747,15 @@ def _run_started_match_cache_job(products: list[str], force: bool, reason: str =
                 break
             _match_cache_job_update(current_product=raw_product, paused=False)
             try:
-                result = _refresh_match_cache_products([raw_product], force=force)
+                from core import worker_dispatch as _wd
+
+                result = _wd.run_heavy(
+                    "splittable_match_cache_refresh",
+                    {"product": raw_product, "force": bool(force)},
+                    lambda: _refresh_match_cache_products([raw_product], force=force),
+                    label=f"match_cache:{raw_product}",
+                    local_idle_only=(reason != "unified_scan"),
+                ) or {"ok": False, "products": []}
             except Exception as e:
                 logger.warning("SplitTable match cache queued build failed (product=%s) %s: %s",
                                raw_product, type(e).__name__, e, exc_info=True)
@@ -7878,9 +8022,56 @@ class UnifiedScanReq(BaseModel):
 
 _UNIFIED_SCAN_LOCK = threading.Lock()
 _UNIFIED_SCAN_BUSY = False
+_UNIFIED_SCAN_JOB_ID = ""
 
 
-def _run_unified_scan(product: str, force: bool) -> dict:
+def _wait_for_cache_job(status_fn, *, stage: str) -> dict:
+    """이미 실행 중인 캐시 stage가 끝날 때까지 통합 스캔 스레드에서 대기."""
+    timeout = max(60.0, min(6 * 3600.0, _env_float("FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC", 3600.0)))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = status_fn()
+        if not status.get("running"):
+            return {
+                "ok": bool(status.get("ok_count")),
+                "queued": False,
+                "products": status.get("products") or [],
+                "job": status,
+                "joined_existing": True,
+            }
+        time.sleep(1.0)
+    return {"ok": False, "error": f"{stage}_timeout", "joined_existing": True}
+
+
+def _wait_for_root_lookup_caches(result: dict, *, product: str) -> dict:
+    """root RAM 예열이 요청한 lookup 파티션 빌드를 기다린 뒤 한 번 재시도."""
+    pending = {
+        str(row.get("file") or "")
+        for row in (result.get("products") or [])
+        if row.get("build_pending") and row.get("file")
+    }
+    if not pending:
+        return result
+    timeout = max(60.0, min(6 * 3600.0, _env_float("FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC", 3600.0)))
+    deadline = time.monotonic() + timeout
+    while pending and time.monotonic() < deadline:
+        ready: set[str] = set()
+        for file_name in pending:
+            fp = _ml_table_lookup.resolve_ml_table_file(file=file_name)
+            if fp is not None and _ml_table_lookup.cache_status(fp).get("status") == "fresh":
+                ready.add(file_name)
+        pending.difference_update(ready)
+        if pending:
+            time.sleep(1.0)
+    if pending:
+        out = dict(result)
+        out.update(ok=False, error="root_lookup_build_timeout", pending_files=sorted(pending))
+        return out
+    # lookup build 완료 직후 운영 프로세스 RAM에 실제 root frame을 올린다.
+    return _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=False)
+
+
+def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
     """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신."""
     global _UNIFIED_SCAN_BUSY
     results: dict = {"ok": True, "product": product}
@@ -7890,50 +8081,135 @@ def _run_unified_scan(product: str, force: bool) -> dict:
     except Exception:
         _log_event = None
 
-    def _log(cat, msg, *, ok=True, detail=None):
+    def _log(cat, msg, *, ok=True, detail=None, stage="", phase=""):
+        """통합 스캔 이벤트를 작업/단계와 함께 남긴다.
+
+        캐시 이벤트 로그는 일반 캐시 이벤트도 함께 보관하므로, 수동 스캔의
+        각 단계가 어느 작업에서 나온 것인지 구분할 수 있는 식별자를 넣는다.
+        프런트는 이 값을 사용해 FAB / 제품 원본 / Root lot 이력을 별도 열에
+        표시한다.
+        """
         if _log_event:
             try:
-                _log_event(cat, msg, ok=ok, product=product, detail=detail)
+                event_detail = dict(detail or {})
+                if job_id:
+                    event_detail["job_id"] = job_id
+                if stage:
+                    event_detail["stage"] = stage
+                if phase:
+                    event_detail["phase"] = phase
+                _log_event(cat, msg, ok=ok, product=product, detail=event_detail or None)
             except Exception:
                 pass
 
     try:
+        # 이 함수 자체가 이미 background thread다. 각 stage가 다시 별도 thread를
+        # 띄우면 FAB scan + 전체 product collect + root warmup이 동시에 실행되어
+        # 개발서버 OOM의 직접 원인이 된다. 여기서는 stage를 실제 완료 순서로 직렬화.
         # 1. FAB match cache
-        _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 갱신 시작 ({_label})")
+        if job_id:
+            from core.cache_event_log import stage_started
+            stage_started(job_id, "match_cache")
+        _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 갱신 시작 ({_label})",
+             stage="match_cache", phase="started")
         try:
-            results["match_cache"] = enqueue_match_cache_refresh(product=product, force=force, reason="unified_scan")
+            match_products = _match_cache_products(product)
+            started, _status = _begin_match_cache_job(
+                match_products, force=force, reason="unified_scan"
+            )
+            if started:
+                results["match_cache"] = _run_started_match_cache_job(
+                    match_products,
+                    force,
+                    reason="unified_scan",
+                    refresh_plan_risk=False,
+                )
+            else:
+                results["match_cache"] = _wait_for_cache_job(
+                    _match_cache_job_status, stage="match_cache"
+                )
             mc = results["match_cache"]
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "match_cache", ok=bool(mc.get("ok")),
+                               detail={"products": len(mc.get("products") or [])})
             _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 완료 ({_label})",
                  ok=bool(mc.get("ok")),
-                 detail={"queued": mc.get("queued"), "running": mc.get("running")})
+                 detail={"products": len(mc.get("products") or [])},
+                 stage="match_cache", phase="finished")
         except Exception as e:
             results["match_cache"] = {"ok": False, "error": str(e)}
-            _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 실패 ({_label}): {e}", ok=False)
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "match_cache", ok=False, detail={"error": str(e)})
+            _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 실패 ({_label}): {e}", ok=False,
+                 stage="match_cache", phase="failed")
 
         # 2. Product RAM cache
-        _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 갱신 시작 ({_label})")
+        if job_id:
+            from core.cache_event_log import stage_started
+            stage_started(job_id, "product_ram")
+        _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 갱신 시작 ({_label})",
+             stage="product_ram", phase="started")
         try:
-            results["product_cache"] = enqueue_product_ram_cache_refresh(product=product, force=force, reason="unified_scan")
+            product_ram_products = _product_ram_cache_products(product)
+            started, _status = _begin_product_ram_cache_job(
+                product_ram_products, force=force, reason="unified_scan"
+            )
+            if started:
+                results["product_cache"] = _run_started_product_ram_cache_job(
+                    product_ram_products, force, reason="unified_scan"
+                )
+            else:
+                results["product_cache"] = _wait_for_cache_job(
+                    _product_ram_cache_job_status, stage="product_ram_cache"
+                )
             pc = results["product_cache"]
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "product_ram", ok=bool(pc.get("ok")),
+                               detail={"products": len(pc.get("products") or [])})
             _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 완료 ({_label})",
                  ok=bool(pc.get("ok")),
-                 detail={"queued": pc.get("queued"), "products": len(pc.get("products") or [])})
+                 detail={"products": len(pc.get("products") or [])},
+                 stage="product_ram", phase="finished")
         except Exception as e:
             results["product_cache"] = {"ok": False, "error": str(e)}
-            _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 실패 ({_label}): {e}", ok=False)
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "product_ram", ok=False, detail={"error": str(e)})
+            _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 실패 ({_label}): {e}", ok=False,
+                 stage="product_ram", phase="failed")
 
         # 3. Root lot RAM cache
-        _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 갱신 시작 ({_label})")
+        if job_id:
+            from core.cache_event_log import stage_started
+            stage_started(job_id, "root_lot_ram")
+        _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 갱신 시작 ({_label})",
+             stage="root_lot_ram", phase="started")
         try:
             results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=force)
+            results["root_lot_cache"] = _wait_for_root_lookup_caches(
+                results["root_lot_cache"], product=product
+            )
             rc = results["root_lot_cache"]
-            _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 완료 ({_label})",
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "root_lot_ram", ok=bool(rc.get("ok")),
+                               detail={"products": len(rc.get("products") or []),
+                                       "max_gb": rc.get("max_gb")})
+            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 완료 ({_label})",
                  ok=bool(rc.get("ok")),
                  detail={"products": len(rc.get("products") or []),
-                         "max_gb": rc.get("max_gb")})
+                         "max_gb": rc.get("max_gb")},
+                 stage="root_lot_ram", phase="finished")
         except Exception as e:
             results["root_lot_cache"] = {"ok": False, "error": str(e)}
-            _log("scan", f"[수동 스캔] 3/3 Root lot RAM 캐시 실패 ({_label}): {e}", ok=False)
+            if job_id:
+                from core.cache_event_log import stage_finished
+                stage_finished(job_id, "root_lot_ram", ok=False, detail={"error": str(e)})
+            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 실패 ({_label}): {e}", ok=False,
+                 stage="root_lot_ram", phase="failed")
 
         results["ok"] = any([
             (results.get("match_cache") or {}).get("ok"),
@@ -7942,6 +8218,12 @@ def _run_unified_scan(product: str, force: bool) -> dict:
         ])
         _log("scan", f"[수동 스캔] 완료 ({_label}) — ok={results['ok']}", ok=results["ok"])
     finally:
+        if job_id:
+            try:
+                from core.cache_event_log import finish_job
+                finish_job(job_id, ok=bool(results.get("ok")), detail={"product": product})
+            except Exception:
+                logger.debug("unified scan job tracker finish failed", exc_info=True)
         with _UNIFIED_SCAN_LOCK:
             _UNIFIED_SCAN_BUSY = False
     return results
@@ -7950,15 +8232,27 @@ def _run_unified_scan(product: str, force: bool) -> dict:
 @router.post("/ram-cache/unified-scan")
 def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splittable"))):
     """관리자: 선택 제품의 전체 캐시(FAB/product/root lot) 통합 수동 스캔."""
-    global _UNIFIED_SCAN_BUSY
+    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID
     product = str(req.product or "").strip()
     with _UNIFIED_SCAN_LOCK:
         if _UNIFIED_SCAN_BUSY:
             return {"ok": True, "running": True, "detail": "통합 스캔이 이미 실행 중입니다."}
         _UNIFIED_SCAN_BUSY = True
+    from core.cache_event_log import start_job
+    job_id = start_job(
+        "unified_scan",
+        f"SplitTable 통합 캐시 스캔 ({product or '전체 제품'})",
+        [
+            ("match_cache", "FAB 매칭 캐시"),
+            ("product_ram", "제품 원본 RAM 캐시"),
+            ("root_lot_ram", "Root lot lookup/RAM 캐시"),
+        ],
+        product=product,
+    )
+    _UNIFIED_SCAN_JOB_ID = job_id
     t = threading.Thread(
         target=_run_unified_scan,
-        args=(product, bool(req.force)),
+        args=(product, bool(req.force), job_id),
         name="splittable-unified-scan",
         daemon=True,
     )
@@ -7966,9 +8260,175 @@ def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splitt
     return {
         "ok": True,
         "queued": True,
+        "job_id": job_id,
         "product": product,
         "detail": f"통합 스캔 시작됨 — FAB/product/root lot 캐시를 순서대로 갱신합니다. ({product or '전체 제품'})",
     }
+
+
+def _cache_queue_snapshot() -> dict:
+    """관리 화면에 노출할 캐시 관련 실행/대기 큐의 작은 스냅샷."""
+    try:
+        from core import worker_dispatch
+        worker = worker_dispatch.queue_snapshot(limit=50)
+    except Exception:
+        worker = {"depth": 0, "queued": [], "running": []}
+    try:
+        lookup_raw = _ml_table_lookup.build_queue_snapshot()
+        lookup = {
+            "running": bool(lookup_raw.get("running")),
+            "current": Path(str(lookup_raw.get("current") or "")).name,
+            "queued": [Path(str(value)).name for value in (lookup_raw.get("queued") or [])],
+            "last_error": str(lookup_raw.get("last_error") or ""),
+        }
+    except Exception:
+        lookup = {"running": False, "current": "", "queued": [], "last_error": ""}
+    try:
+        root_prefetch = _ml_table_lookup.root_ram_prefetch_snapshot(limit=50)
+    except Exception:
+        root_prefetch = {"running": False, "depth": 0, "queued": []}
+    match = _match_cache_job_status()
+    product = _product_ram_cache_job_status()
+    return {
+        "worker": worker,
+        "lookup_build": lookup,
+        "root_prefetch": root_prefetch,
+        "match_cache": {
+            "running": bool(match.get("running")),
+            "current": str(match.get("current_product") or ""),
+            "remaining": max(0, int(match.get("total") or 0) - int(match.get("done") or 0)),
+            "queued": max(
+                0,
+                int(match.get("total") or 0)
+                - int(match.get("done") or 0)
+                - (1 if match.get("running") and match.get("current_product") else 0),
+            ),
+        },
+        "product_ram": {
+            "running": bool(product.get("running")),
+            "current": str(product.get("current_product") or ""),
+            "remaining": max(0, int(product.get("total") or 0) - int(product.get("done") or 0)),
+            "queued": max(
+                0,
+                int(product.get("total") or 0)
+                - int(product.get("done") or 0)
+                - (1 if product.get("running") and product.get("current_product") else 0),
+            ),
+        },
+    }
+
+
+@router.get("/ram-cache/scan-status")
+def unified_scan_status():
+    """통합 수동 스캔 진행 여부 — 프런트가 진행 로그를 폴링할 동안 종료 감지용."""
+    with _UNIFIED_SCAN_LOCK:
+        running = bool(_UNIFIED_SCAN_BUSY)
+    from core.cache_event_log import get_jobs
+    return {
+        "ok": True,
+        "running": running,
+        "job_id": _UNIFIED_SCAN_JOB_ID,
+        "jobs": get_jobs(recent=1),
+        "queues": _cache_queue_snapshot(),
+    }
+
+
+# ── 캐시 예산 조절 (톱니바퀴) ─────────────────────────────────────────────
+def _cache_budget_settings_payload() -> dict:
+    """저장된 예산 설정 + 실제 적용(effective) 값 + 호스트 정보."""
+    from core import cache_settings, cache_budget
+    saved = cache_settings.read()
+
+    def _gb(n):
+        return round(float(n or 0) / (1024 ** 3), 2)
+
+    host_gb = 0.0
+    try:
+        from core.runtime_limits import system_memory_snapshot
+        host_gb = round(float(system_memory_snapshot().get("system_memory_total_gb") or 0.0), 1)
+    except Exception:
+        pass
+    env_pins = {
+        "pool_fraction": "FLOW_CACHE_TOTAL_BUDGET_FRACTION" in os.environ,
+        "dev_factor": "FLOW_DEV_CACHE_BUDGET_FACTOR" in os.environ,
+        "root_ram_gb": "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB" in os.environ,
+        "product_ram_gb": "FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB" in os.environ,
+        "product_ram_enabled": "FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ,
+    }
+    return {
+        "ok": True,
+        "saved": saved,
+        "is_dev": _ml_table_lookup._root_ram_cache_use_dev(),
+        "host_total_gb": host_gb,
+        "env_pins": env_pins,   # env 로 고정된 항목은 UI 편집 무시됨
+        "effective": {
+            "pool_fraction": round(cache_budget._pool_fraction(), 3),
+            "dev_factor": round(cache_budget.worker_budget_factor(), 3),
+            "pool_gb": _gb(cache_budget.pool_bytes()),
+            "root_ram_gb": _gb(_ml_table_lookup._root_ram_cache_max_bytes()),
+            "product_ram_enabled": _product_ram_cache_available(),
+            "product_ram_gb": _gb(_product_ram_cache_max_bytes()),
+        },
+        "defaults": {
+            "pool_fraction": 0.45,
+            "dev_factor": 0.35,
+            "product_ram_enabled": True,
+        },
+    }
+
+
+@router.get("/cache-budget/settings")
+def get_cache_budget_settings(request: Request):
+    if not is_page_manager(current_user(request), "splittable"):
+        raise HTTPException(403, "관리자 전용")
+    return _cache_budget_settings_payload()
+
+
+class CacheBudgetSaveReq(BaseModel):
+    pool_fraction: float | None = None
+    pool_fraction_dev: float | None = None
+    dev_factor: float | None = None
+    root_ram_gb: float | None = None
+    root_ram_gb_dev: float | None = None
+    product_ram_enabled: bool | None = None
+    product_ram_enabled_dev: bool | None = None
+    product_ram_gb: float | None = None
+    product_ram_gb_dev: float | None = None
+
+
+@router.post("/cache-budget/settings/save")
+def save_cache_budget_settings(req: CacheBudgetSaveReq, _perm=Depends(require_page_manager("splittable"))):
+    """캐시 예산 조절값 저장. 빈 값(None)은 미변경, 0/음수 GB 는 '자동'(키 삭제).
+    운영/개발 분리: <key> = 운영, <key>_dev = 개발서버 전용(미설정 시 운영값 폴백)."""
+    from core import cache_settings
+    partial: dict = {}
+    fields = req.model_dump(exclude_unset=True)
+
+    def _put_gb(key):
+        if key in fields:
+            v = fields[key]
+            partial[key] = None if (v is None or float(v) <= 0) else max(0.1, min(64.0, float(v)))
+
+    if "pool_fraction" in fields:
+        partial["pool_fraction"] = None if fields["pool_fraction"] is None else max(0.1, min(0.8, float(fields["pool_fraction"])))
+    if "pool_fraction_dev" in fields:
+        v = fields["pool_fraction_dev"]
+        partial["pool_fraction_dev"] = None if (v is None or v == "") else max(0.1, min(0.8, float(v)))
+    if "dev_factor" in fields:
+        partial["dev_factor"] = None if fields["dev_factor"] is None else max(0.05, min(1.0, float(fields["dev_factor"])))
+    _put_gb("root_ram_gb"); _put_gb("root_ram_gb_dev")
+    _put_gb("product_ram_gb"); _put_gb("product_ram_gb_dev")
+    if "product_ram_enabled" in fields:
+        partial["product_ram_enabled"] = None if fields["product_ram_enabled"] is None else bool(fields["product_ram_enabled"])
+    if "product_ram_enabled_dev" in fields:
+        partial["product_ram_enabled_dev"] = None if fields["product_ram_enabled_dev"] is None else bool(fields["product_ram_enabled_dev"])
+    cache_settings.save(partial)
+    try:
+        from core import cache_budget
+        cache_budget.invalidate()   # 풀 메모 무효화 → 즉시 반영
+    except Exception:
+        pass
+    return _cache_budget_settings_payload()
 
 
 # ── RAM Cache 우선 Lot 등록 / 전체 목록 / 제품별 예산 ──────────────────
@@ -8178,31 +8638,36 @@ def get_ram_cache_overview():
             root_lot_id = str(entry.get("root_lot_id") or key[1] or "").strip().upper()
             if root_lot_id in priority_roots_by_product.get(prod_name, set()):
                 row["priority_cached"] += 1
-    # 제품별 예산 병합 — 운영/개발 구분
+    # 제품별 예산 병합 — 운영/개발 구분. 실제 캐싱 로직(_root_ram_cache_product_budget)과
+    # 동일하게: 개발서버에서 max_roots_dev 가 없으면 운영 max_roots 가 아니라 개발
+    # 기본 target 을 적용한다(표시값이 실제 적재량과 일치하도록).
     cfg = load_json(SOURCE_CFG, {})
     budgets = cfg.get("ram_cache_product_budgets") or {}
-    default_max_roots = int(_ml_table_lookup._root_ram_cache_target_roots())
-    _use_dev = not PATHS.is_prod
-    if not _use_dev:
-        try:
-            from core.worker_dispatch import server_role
-            if server_role() == "worker":
-                _use_dev = True
-        except Exception:
-            pass
+    _use_dev = _ml_table_lookup._root_ram_cache_use_dev()
+    # 기본 target — 서버 역할 반영.
+    default_max_roots = int(_ml_table_lookup._root_ram_cache_default_target_roots())
     for prod_name, row in product_rows.items():
         b = budgets.get(prod_name) if isinstance(budgets, dict) else None
-        max_roots = None
+        custom_val = None  # 명시 설정된 값 (없으면 기본 target)
         if isinstance(b, dict):
             try:
-                if _use_dev and b.get("max_roots_dev") is not None:
-                    max_roots = int(b.get("max_roots_dev"))
+                if _use_dev:
+                    if b.get("max_roots_dev") is not None:
+                        custom_val = int(b.get("max_roots_dev"))
+                    # dev 예산 미설정 → 기본 target 폴백 (custom 아님)
                 else:
-                    max_roots = int(b.get("max_roots"))
+                    if b.get("max_roots") is not None:
+                        custom_val = int(b.get("max_roots"))
             except Exception:
-                max_roots = None
-        row["max_roots"] = max_roots if max_roots else default_max_roots
-        row["max_roots_custom"] = bool(max_roots)
+                custom_val = None
+        elif b is not None and not _use_dev:
+            # 스칼라 예산 = 운영 전용. 개발서버는 기본 target.
+            try:
+                custom_val = int(b)
+            except Exception:
+                custom_val = None
+        row["max_roots"] = custom_val if custom_val else default_max_roots
+        row["max_roots_custom"] = bool(custom_val)
         row["mb"] = round(row["mb"], 1)
     max_bytes = _ml_table_lookup._root_ram_cache_max_bytes()
     products = sorted(product_rows.values(), key=lambda r: (-r["mb"], r["product"]))
@@ -8212,6 +8677,7 @@ def get_ram_cache_overview():
         "total_mb": round(total_bytes / (1024 * 1024), 1),
         "max_mb": round(max_bytes / (1024 * 1024), 1) if max_bytes else 0,
         "default_max_roots": default_max_roots,
+        "is_dev": _use_dev,
     }
 
 
@@ -8359,13 +8825,15 @@ def get_cache_event_log(
 ):
     """관리자 전용 — 캐시 성공/실패 이벤트 로그 + peak RAM."""
     user = current_user(request)
-    if not is_page_manager(user):
+    if not is_page_manager(user, "splittable"):
         raise HTTPException(403, "관리자 전용")
-    from core.cache_event_log import get_events, peak_ram_info
+    from core.cache_event_log import get_events, get_jobs, peak_ram_info
     return {
         "ok": True,
         "events": get_events(limit=limit, category=category),
         "peak_ram": peak_ram_info(),
+        "jobs": get_jobs(recent=3),
+        "queues": _cache_queue_snapshot(),
     }
 
 
@@ -8671,19 +9139,12 @@ def get_ram_cache_product_budgets():
     default_max_roots = int(
         _ml_table_lookup._root_ram_cache_target_roots()
     )
-    _is_dev = not PATHS.is_prod
-    if not _is_dev:
-        try:
-            from core.worker_dispatch import server_role
-            if server_role() == "worker":
-                _is_dev = True
-        except Exception:
-            pass
+    _is_dev = _ml_table_lookup._root_ram_cache_use_dev()
     return {
         "ok": True,
         "products": products,
         "default_max_roots": default_max_roots,
-        "default_max_roots_dev": min(200, default_max_roots),
+        "default_max_roots_dev": int(_ml_table_lookup._root_ram_cache_target_roots_dev()),
         "is_dev": _is_dev,
     }
 
@@ -9825,8 +10286,24 @@ def _scan_product(
                 fab_sources = ["<fab_lot_index>"]
         if fab_lf is None:
             if str(root_lot_id or "").strip():
-                _enqueue_fab_lot_index_build(
+                enqueued = _enqueue_fab_lot_index_build(
                     product, fab_source, include_all=include_all, reason="scan_miss")
+                canonical_product = (
+                    _canonical_mltable_product_name(product, allow_bare=True)
+                    or str(product or "").strip().upper()
+                )
+                with _FAB_IDX_BUILD_LOCK:
+                    fab_index_running = canonical_product in _FAB_IDX_BUILD_INPROGRESS
+                runtime_profile = runtime_profile if runtime_profile is not None else {}
+                runtime_profile["fab_index_queued"] = bool(
+                    enqueued or fab_index_running
+                )
+                runtime_profile["cache_incomplete"] = True
+                # Never scan a multi-GB FAB tree in an interactive root request.
+                # The main ML table is still immediately useful; the worker-built
+                # per-root FAB index will refresh labels on the next UI poll.
+                if not _env_bool("FLOW_SPLITTABLE_INTERACTIVE_FAB_RAW_FALLBACK", False):
+                    return _strip_non_authoritative_fab_fields(lf, product)
             fab_lf, fab_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
         if fab_lf is None:
             logger.warning("_scan_product: FAB source scan 실패 (product=%s fab_source=%s sources=%s)",
@@ -10446,10 +10923,14 @@ def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *,
         "data_source": data_source,
         "scan_ms": round(float(src.get("scan_ms") or 0.0), 3),
         "root_scan_ms": round(float(src.get("root_scan_ms") or 0.0), 3),
+        "singleflight_wait_ms": round(float(src.get("singleflight_wait_ms") or 0.0), 3),
         "collect_ms": round(float(src.get("collect_ms") or 0.0), 3),
         "matrix_ms": round(float(src.get("matrix_ms") or 0.0), 3),
         "overlay_ms": round(float(src.get("overlay_ms") or 0.0), 3),
         "root_cache_status": str(src.get("root_cache_status") or ""),
+        "root_prefetch_queued": bool(src.get("root_prefetch_queued")),
+        "fab_index_queued": bool(src.get("fab_index_queued")),
+        "cache_incomplete": bool(src.get("cache_incomplete")),
     }
 
 
@@ -10467,6 +10948,7 @@ def _split_view_finish_payload(
     out["runtime_profile"] = rp
     out["view_cache"] = _split_view_cache_stats(payload_cache_hit, view_cache_key, stale=view_stale)
     _record_search_timing(out, rp)
+    _view_compute_finish(view_cache_key)
     return out
 
 
@@ -10574,7 +11056,7 @@ def _split_view_cache_dep_signature(product: str, custom_name: str = "", product
             fresh_paths.append(custom_fp)
         except HTTPException:
             pass
-    per_product_hard = tuple(_path_cache_sig(path) for path in fresh_paths)
+    per_product_hard = _view_product_signature(fresh_paths)
     global_hard, global_soft = _view_global_stat_sig()
     hard_sig = (per_product_hard, global_hard)
     soft_sig = global_soft + (_product_ram_cache_view_signature(product),)
@@ -10590,6 +11072,8 @@ def _clear_split_view_cache() -> None:
     # 지연 없이 즉시 반영되도록.
     with _VIEW_GLOBAL_SIG_LOCK:
         _VIEW_GLOBAL_SIG_CACHE.clear()
+    with _VIEW_PRODUCT_SIG_LOCK:
+        _VIEW_PRODUCT_SIG_CACHE.clear()
     # 대기 중이던 재검증도 함께 버린다 — 대상 엔트리가 방금 전부 비워졌으므로
     # 재계산해도 다음 stale hit 때 다시 등록될 뿐인 낭비다.
     with _VIEW_REVALIDATE_LOCK:
@@ -10612,6 +11096,9 @@ _PIVOT_BUILD_LOCK = threading.Lock()
 _PIVOT_BUILD_INPROGRESS: set[str] = set()
 _PIVOT_BUILD_LAST: dict[str, float] = {}
 _PIVOT_BUILD_COOLDOWN_SEC = 300.0
+_SEARCH_CACHE_MAINT_LOCK = threading.Lock()
+_SEARCH_CACHE_MAINT_THREAD: threading.Thread | None = None
+_SEARCH_CACHE_MAINT_WAKE = threading.Event()
 
 
 def _pivot_cache_path(product: str, root_lot_id: str) -> Path:
@@ -10701,6 +11188,7 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
                 {"product": canonical, "product_path": str(source_fp) if source_fp else ""},
                 _local_build,
                 label=f"pivot:{canonical}",
+                local_idle_only=True,
             )
             ok = bool((res or {}).get("ok"))
         finally:
@@ -10715,6 +11203,87 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "") -> bool:
     threading.Thread(target=_run, daemon=True, name=f"splittable-pivot-{canonical}").start()
     logger.info(f"pivot cache build queued for {canonical} ({reason})")
     return True
+
+
+def _pivot_cache_needs_build(product: str, source_fp: Path) -> bool:
+    """Cheap completeness check; the worker performs the expensive fingerprint."""
+    try:
+        out_dir = _pivot_cache_path(product, "__probe__").parent
+        fingerprint_fp = out_dir / ".root_fingerprints.json"
+        if not fingerprint_fp.is_file():
+            return True
+        if source_fp.stat().st_mtime > fingerprint_fp.stat().st_mtime:
+            return True
+        expected = {
+            str(value or "").strip()
+            for value in (
+                _ml_table_lookup.read_candidate_index(source_fp).get("root_lot_ids") or []
+            )
+            if str(value or "").strip()
+        }
+        if not expected:
+            return False
+        meta = json.loads(fingerprint_fp.read_text(encoding="utf-8"))
+        built = {str(value or "").strip() for value in (meta.get("roots") or {})}
+        if not expected.issubset(built):
+            return True
+        return sum(1 for _path in out_dir.glob("*.parquet")) < len(expected)
+    except Exception:
+        return True
+
+
+def _split_search_cache_maintenance_once() -> None:
+    """Keep shared lookup/pivot files ready before users switch root lots."""
+    for source_fp in _ml_table_lookup.discover_ml_table_files():
+        try:
+            product = source_fp.stem
+            status = _ml_table_lookup.cache_status(source_fp)
+            if status.get("status") != "fresh":
+                _ml_table_lookup.enqueue_build(source_fp)
+                continue
+            if _pivot_cache_needs_build(product, source_fp):
+                _enqueue_pivot_cache_build(product, reason="maintenance_incomplete")
+        except Exception:
+            logger.debug("SplitTable search cache maintenance failed: %s", source_fp, exc_info=True)
+
+
+def _split_search_cache_maintenance_loop() -> None:
+    try:
+        first_delay = float(os.environ.get("FLOW_SPLITTABLE_SEARCH_CACHE_FIRST_DELAY_SEC", "") or 20.0)
+    except Exception:
+        first_delay = 20.0
+    _SEARCH_CACHE_MAINT_WAKE.wait(max(0.0, min(600.0, first_delay)))
+    while True:
+        _SEARCH_CACHE_MAINT_WAKE.clear()
+        _split_search_cache_maintenance_once()
+        try:
+            interval = float(os.environ.get("FLOW_SPLITTABLE_SEARCH_CACHE_MAINT_SEC", "") or 900.0)
+        except Exception:
+            interval = 900.0
+        _SEARCH_CACHE_MAINT_WAKE.wait(max(60.0, min(21600.0, interval)))
+
+
+def start_split_search_cache_maintainer() -> bool:
+    """Start the API-side coordinator; heavy builds still run on the worker."""
+    global _SEARCH_CACHE_MAINT_THREAD
+    with _SEARCH_CACHE_MAINT_LOCK:
+        if _SEARCH_CACHE_MAINT_THREAD is not None and _SEARCH_CACHE_MAINT_THREAD.is_alive():
+            return False
+        _SEARCH_CACHE_MAINT_THREAD = threading.Thread(
+            target=_split_search_cache_maintenance_loop,
+            daemon=True,
+            name="splittable-search-cache-maintainer",
+        )
+        _SEARCH_CACHE_MAINT_THREAD.start()
+    return True
+
+
+try:
+    _ml_table_lookup.register_build_complete_hook(
+        lambda fp: _enqueue_pivot_cache_build(Path(fp).stem, reason="lookup_complete")
+    )
+except Exception:
+    logger.debug("lookup-complete pivot hook registration failed", exc_info=True)
 
 
 # ── Per-root FAB latest-lot index (additive fast layer for the fab join) ──────
@@ -10823,15 +11392,31 @@ def _fab_lot_index_sweep_once() -> None:
     """Compare every built index against the live FAB source signature and
     enqueue rebuilds on drift. One signature walk is shared by all products
     that resolve to the same (fab_source, include_all) source set."""
+    base = _base_root() / "cache" / "fab_lot_index"
+    products: set[str] = set()
     try:
-        base = _base_root() / "cache" / "fab_lot_index"
-        product_dirs = [p for p in base.iterdir() if p.is_dir()]
+        products.update(p.name for p in base.iterdir() if p.is_dir())
     except Exception:
+        pass
+    # A sweep that only visits existing index directories can never create the
+    # first index. Include configured products so a fresh deployment prepares
+    # every root before the first operator searches it.
+    try:
+        cfg = load_json(SOURCE_CFG, {}) or {}
+        products.update(
+            _canonical_mltable_product_name(value, allow_bare=True)
+            or str(value or "").strip().upper()
+            for value in (cfg.get("enabled") or [])
+            if str(value or "").strip()
+        )
+    except Exception:
+        pass
+    products.discard("")
+    if not products:
         return
     include_all = _foreground_global_fab_scan_enabled()
     sig_memo: dict[tuple, list] = {}
-    for pdir in product_dirs:
-        product = pdir.name
+    for product in sorted(products):
         try:
             ml_product, _ov, fab_source = _current_fab_override(product)
             if not ml_product:
@@ -11289,6 +11874,7 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
                 {"product": canonical, "fab_source": fab_source, "include_all": include_all},
                 _local_build,
                 label=f"fabidx:{canonical}",
+                local_idle_only=True,
             )
             ok = bool((res or {}).get("ok"))
         finally:
@@ -11418,6 +12004,7 @@ def _view_revalidate_execute(view_cache_key: tuple, params: dict) -> None:
         # 시 run_heavy 가 _local 로 폴백하므로 동작은 오프로드 이전과 동일.
         timeout_sec=600.0,
         label=f"view:{product}",
+        local_idle_only=True,
     ) or {}
     payload_json = res.get("payload_json")
     if isinstance(payload_json, str) and payload_json:
@@ -11660,7 +12247,22 @@ def _split_view_large_root_cache_or_defer(
         queued = _ml_table_lookup.enqueue_build(fp)
         runtime_profile["_lookup_cache"] = _split_view_lookup_cache_public(status, queued)
         runtime_profile["root_cache_hit"] = False
-        return None, None
+        # 수백 MB ML_TABLE을 HTTP 요청에서 직접 collect하면 동시 검색 2~3건만으로
+        # 수 GB peak가 겹친다. 큰 소스는 공유 lookup 빌드를 먼저 끝내고 프런트가
+        # 짧게 재시도한다. 작은 개발 fixture만 기존 raw fallback을 허용한다.
+        return None, _split_view_cache_preparing_payload(
+            product,
+            root,
+            wafer_ids,
+            prefix,
+            history_mode,
+            status,
+            queued,
+            message="Root lot 인덱스를 준비 중입니다. 완료되면 자동 재검색됩니다.",
+            started=started,
+            runtime_profile=runtime_profile,
+            view_cache_key=view_cache_key,
+        )
     # 소스가 갱신돼 cache 가 stale 여도, 해당 root 의 hive 파티션이 있으면 즉시
     # 서빙하고 백그라운드 재빌드만 예약한다(allow_stale). 데이터 갱신 직후마다
     # 소스 전체를 재스캔(5~10초)하던 것을 파티션 인덱스 읽기로 대체 — 이 stale
@@ -11719,6 +12321,12 @@ def _attach_split_view_runtime_fields(
             role,
         )
     out["product_cache"] = _product_ram_cache_response_meta(out.get("product") or "")
+    if runtime_profile and runtime_profile.get("fab_index_queued"):
+        out["background_cache"] = {
+            "queued": True,
+            "kind": "fab_root_index",
+            "message": "FAB 랏 인덱스를 백그라운드에서 준비 중입니다. 표는 자동으로 갱신됩니다.",
+        }
     if started is not None:
         out = _split_view_finish_payload(
             out,
@@ -11875,7 +12483,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     # 백그라운드 stale-revalidate 스레드의 재진입이면 캐시 서빙/감사로그를 건너뛰고
     # 순수 재계산 후 fresh 시그니처로 캐시를 덮어쓴다.
     force_recompute = bool(getattr(_VIEW_REVALIDATE_TLS, "force", False))
-    if not force_recompute:
+    if not force_recompute and not cache_first_enabled:
         _audit_split_view_search(request, product, root_lot_id, fab_lot_id, wafer_ids, prefix)
     _lot_warn = ""
     fp = _product_path(product)
@@ -11918,6 +12526,45 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             payload_cache_hit=False,
             view_cache_key=view_cache_key,
         )
+    # 같은 cold key가 동시에 들어오면 한 요청만 계산하고 나머지는 결과를 기다린다.
+    # 수백 MB 원본/파티션 scan이 중복 실행되는 메모리 스파이크와 CPU 경합을 방지한다.
+    compute_owner, compute_event = _view_compute_begin(view_cache_key)
+    if not compute_owner:
+        wait_started = time.perf_counter()
+        completed = compute_event.wait(timeout=_view_compute_wait_seconds())
+        runtime_profile["singleflight_wait_ms"] = (time.perf_counter() - wait_started) * 1000.0
+        view_hard_sig, view_soft_sig = _split_view_cache_dep_signature(
+            product, custom_name=custom_name, product_fp=fp)
+        freshness, cached_view = _split_view_cache_get(view_cache_key, view_hard_sig, view_soft_sig)
+        if cached_view is not None:
+            return _attach_split_view_runtime_fields(
+                cached_view,
+                request,
+                include_related=include_related,
+                started=started,
+                runtime_profile=runtime_profile,
+                payload_cache_hit=True,
+                view_cache_key=view_cache_key,
+                view_stale=(freshness == "stale"),
+            )
+        if completed:
+            # 이전 owner가 빈 결과/오류로 끝났다면 한 요청만 다음 owner가 된다.
+            compute_owner, compute_event = _view_compute_begin(view_cache_key)
+        if not compute_owner:
+            status = _ml_table_lookup.cache_status(fp) if root_lot_id.strip() and fp.suffix.lower() == ".parquet" else {}
+            return _split_view_cache_preparing_payload(
+                product,
+                root_lot_id,
+                wafer_ids,
+                prefix,
+                _history_mode,
+                status,
+                {"status": "running", "queued": True},
+                message="같은 SplitTable 검색을 처리 중입니다. 완료되면 자동 재검색됩니다.",
+                started=started,
+                runtime_profile=runtime_profile,
+                view_cache_key=view_cache_key,
+            )
     pivot_base_lf = None
     try:
         if root_lot_id.strip() and not cache_first_enabled:
@@ -11952,6 +12599,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 # 백그라운드에서 제품 전체 pivot cache 를 빌드해 다음 검색을 즉시화한다.
                 _enqueue_pivot_cache_build(product, reason="cache_miss")
     except HTTPException:
+        _view_compute_finish(view_cache_key)
         raise
     except Exception as e:
         logger.warning(f"Fast path failed: {e}")
@@ -12349,7 +12997,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "lookup_cache": runtime_profile.get("_lookup_cache") or _split_view_lookup_cache_public(None, None),
             "lot_warn": _lot_warn,
         }
-        _split_view_cache_put(view_cache_key, view_hard_sig, view_soft_sig, payload)
+        # FAB root index가 아직 없을 때의 부분 응답을 payload cache에 고정하지 않는다.
+        # 인덱스 완료 후 UI polling 또는 다음 검색이 즉시 완전한 결과를 받게 한다.
+        if not runtime_profile.get("cache_incomplete"):
+            _split_view_cache_put(view_cache_key, view_hard_sig, view_soft_sig, payload)
         return _attach_split_view_runtime_fields(
             payload,
             request,
@@ -12360,8 +13011,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             view_cache_key=view_cache_key,
         )
     except HTTPException:
+        _view_compute_finish(view_cache_key)
         raise
     except Exception as e:
+        _view_compute_finish(view_cache_key)
         raise HTTPException(400, f"View error: {str(e)}")
 
 

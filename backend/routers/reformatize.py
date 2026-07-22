@@ -185,6 +185,18 @@ def _settings() -> dict:
     return out
 
 
+def _ensure_raw_rows_within_limit(raw_rows: int, max_raw_rows: int | None) -> None:
+    """설정 한도를 넘는 wide pivot/CSV 생성을 공통으로 차단한다."""
+    if max_raw_rows is None or raw_rows <= max_raw_rows:
+        return
+    raise HTTPException(
+        400,
+        f"필터된 raw 데이터 {raw_rows:,}행이 조회/다운로드 최대 "
+        f"{max_raw_rows:,}행을 초과합니다. 기간·lot 등 필터를 조정해 "
+        "행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.",
+    )
+
+
 def _et_root() -> Path:
     """ET DB 루트 — ET 측정시간(lot_step)과 동일한 해석 규칙을 사용.
 
@@ -310,6 +322,7 @@ def _load_raw(product: str, product_sig: tuple, full_sig: tuple,
 
 def _compute(product: str, f: Filters,
              selected_items: list[str] | None = None,
+             max_raw_rows: int | None = None,
              ) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int]:
     """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블, 필터된 raw 행수).
 
@@ -337,6 +350,7 @@ def _compute(product: str, f: Filters,
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] == full_sig:
+            _ensure_raw_rows_within_limit(hit[6], max_raw_rows)
             return hit[1], hit[2], hit[3], hit[4], hit[5], hit[6]
 
     # ── 2) vehicle 테이블 → 필요 ITEMID 결정 (raw 로딩 전!) ──
@@ -357,6 +371,11 @@ def _compute(product: str, f: Filters,
     if df.height == 0:
         raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
     raw_rows = df.height
+
+    # 조회 화면도 다운로드와 같은 설정 한도 안에서만 pivot 한다. 이 검사를
+    # pivot 전에 수행해야 넓은 ET raw를 wide로 펼치다 서버가 502/OOM으로
+    # 끊기는 상황을 막을 수 있다.
+    _ensure_raw_rows_within_limit(raw_rows, max_raw_rows)
 
     # 크기 가드 — 필터 후에도 너무 크면 pivot 전에 차단
     _MAX_RAW_FOR_PIVOT = 20_000_000
@@ -638,9 +657,11 @@ def _resolve_output_cols(
 
     run 과 download 에서 동일 로직을 공유한다.
     """
-    if not wanted:
-        return _select_aliases(out_cols, wanted)
-    resolved_rows, _ = resolve_needed_items(table, wanted)
+    # items=[]는 UI의 "전체 선택"을 의미한다. 이 경우에도 모든 계산에
+    # 필요한 REAL 원본 값을 함께 내보내야, 조회 결과와 CSV가 같은 근거
+    # 데이터를 담는다.
+    roots = wanted or [r["alias"] for r in table]
+    resolved_rows, needed_itemids = resolve_needed_items(table, roots)
     resolved_aliases = [r["alias"] for r in resolved_rows]
     # MA_Window 파생 컬럼
     ma_derived = []
@@ -652,12 +673,13 @@ def _resolve_output_cols(
     # raw ITEMID 컬럼
     raw_cols = []
     if include_raw:
-        for r in resolved_rows:
-            if r["category"] == "real" and r["itemid"] in wide_full.columns:
-                if r["itemid"] != r["alias"] and r["itemid"] not in raw_cols:
-                    raw_cols.append(r["itemid"])
+        # REAL alias가 아닌 ITEMID를 ADDP 식에서 직접 참조한 경우도
+        # resolve_needed_items가 포함하므로, 계산에 쓴 원본값을 빠뜨리지 않는다.
+        for itemid in sorted(needed_itemids):
+            if itemid in wide_full.columns and itemid not in raw_cols:
+                raw_cols.append(itemid)
     all_show = resolved_aliases + ma_derived + raw_cols
-    cols = _select_aliases(out_cols, all_show)
+    cols = _select_aliases(out_cols, all_show) if wanted else list(out_cols)
     existing = set(cols)
     for c in ma_derived + raw_cols:
         if c in wide_full.columns and c not in existing:
@@ -698,9 +720,15 @@ class RunReq(Filters):
 @router.post("/run")
 def run(req: RunReq, _user=Depends(current_user)):
     t0 = time.monotonic()
+    cfg = _settings()
     try:
         wide_full, out_cols, errors, vehicle_csv, table, _raw_rows = _compute(
-            req.product, req, selected_items=req.items or None)
+            req.product, req, selected_items=req.items or None,
+            max_raw_rows=cfg["max_download_rows"])
+    except HTTPException:
+        # 입력/행 수 한도 오류를 500으로 감싸면 프록시에서 502처럼 보일 수 있다.
+        # 사용자가 필터나 설정을 바로 조정할 수 있도록 원래 상태 코드를 보존한다.
+        raise
     except Exception as e:
         logger.exception("reformatize run failed: product=%s", req.product)
         raise HTTPException(500, f"계산 실패: {e}")
@@ -714,7 +742,6 @@ def run(req: RunReq, _user=Depends(current_user)):
     wide = wide_full.select(out_cols) if out_cols else wide_full
     if req.agg.strip():
         wide = _aggregate(wide, [r["alias"] for r in table if r["alias"] in wide.columns], req.agg)
-    cfg = _settings()
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
     page = wide.slice(offset, limit)
@@ -769,16 +796,13 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
                                  "기간(tkout_time)·root_lot_id·step_id·wafer_id·total_site_cnt "
                                  "중 하나 이상을 지정하세요")
     wanted = [s.strip() for s in items.split(",") if s.strip()]
-    wide_full, out_cols, _errors, vehicle_csv, table, raw_rows = _compute(
-        product, f, selected_items=wanted or None)
     cfg = _settings()
-    # 상한 판정은 필터된 raw(long) 행수 기준 — 집계/pivot 으로 결과 행이 줄어도
-    # raw 가 상한을 넘으면 차단.
-    if raw_rows > cfg["max_download_rows"]:
-        raise HTTPException(400, f"필터된 raw 데이터 {raw_rows:,}행이 다운로드 최대 "
-                                 f"{cfg['max_download_rows']:,}행을 초과합니다. 기간·lot 등 필터를 "
-                                 f"조정해 행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.")
-    out_cols = _resolve_output_cols(out_cols, table, wanted, wide_full, include_raw=False)
+    wide_full, out_cols, _errors, vehicle_csv, table, raw_rows = _compute(
+        product, f, selected_items=wanted or None,
+        max_raw_rows=cfg["max_download_rows"])
+    # 조회와 다운로드는 완전히 같은 열을 제공한다. 특히 ADDP 계산에 쓰인
+    # REAL raw ITEMID도 CSV에 남겨 계산 근거를 재현할 수 있게 한다.
+    out_cols = _resolve_output_cols(out_cols, table, wanted, wide_full, include_raw=True)
     wide = wide_full.select(out_cols) if out_cols else wide_full
     agg_method = str(agg or "").strip().lower()
     if agg_method:

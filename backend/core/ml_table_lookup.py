@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,9 +41,18 @@ META_FILE = "_meta.json"
 CANDIDATE_INDEX_FILE = "_candidate_index.json"
 CANDIDATE_INDEX_VERSION = 1
 CANDIDATE_COLUMN_PREFIXES = ("KNOB", "MASK", "INLINE", "VM", "TAG", "MGMT")
+_META_CACHE_LOCK = threading.Lock()
+_META_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_META_CACHE_TTL_SEC = 2.0
+_META_CACHE_MAX = 512
 BUILD_LOCK_STALE_SECONDS = 30 * 60
 LOOKUP_CACHE_MEMORY_WAIT_SECONDS_DEFAULT = 5.0
 LOOKUP_CACHE_PARTITION_MAX_ROWS_DEFAULT = 250_000
+LOOKUP_CACHE_BUILD_CHUNK_SIZE_DEFAULT = 4
+# 개발서버는 청크당 collect 메모리를 더 낮게 — 대용량 제품 빌드도 평탄하게(느려도 OK).
+LOOKUP_CACHE_BUILD_CHUNK_SIZE_DEV_DEFAULT = 2
+LOOKUP_CACHE_BUILD_RETRY_SECONDS_DEFAULT = 30.0
+LOOKUP_CACHE_BUILD_RETRY_MAX_DEFAULT = 3
 LATEST_LOT_BY_ROOT_WAFER_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
@@ -68,6 +78,8 @@ IDENTITY_COLUMN_CANDIDATES = (
 _BUILD_LOCK = threading.Lock()
 _BUILD_QUEUE: deque[Path] = deque()
 _BUILD_THREAD: threading.Thread | None = None
+_BUILD_RETRY_TIMERS: dict[str, threading.Timer] = {}
+_BUILD_RETRY_COUNTS: dict[str, int] = {}
 _BUILD_STATE: dict[str, Any] = {
     "running": False,
     "paused": False,
@@ -100,9 +112,13 @@ ROOT_RAM_CACHE_PRIORITY_ROOT_PREFIX_DEFAULT = "AZ"
 ROOT_RAM_CACHE_SEARCHED_ROOTS_DEFAULT = 1000
 # 상시 메모리에 유지할 총 root(knob 수준) 개수 목표. searched 를 최우선으로 채우고
 # 남는 자리를 latest cache 기준 지정 step 통과 lot(tkout_time 최신순)으로 채운다.
-ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT = 1000
+ROOT_RAM_CACHE_TARGET_ROOTS_DEFAULT = 150
 ROOT_RAM_CACHE_ROOTS_MAX = 50000
-ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 768.0
+# 0 = 크기 무제한(기본). 대용량 제품도 자동으로 lookup 캐시를 빌드한다 —
+# 빌드는 root_lot_id 청크 단위(_sink_lookup_cache_partitions_chunked)로
+# 메모리를 가드하며 진행하므로 파일 크기로 자동 빌드를 막지 않는다(막으면
+# 대용량 제품이 영구 미캐시). 운영자가 상한을 원하면 env(MB)>0 로 지정.
+ROOT_RAM_CACHE_BUILD_MAX_MB_DEFAULT = 0.0
 ROOT_RAM_CACHE_CPU_CORES_DEFAULT = 2.0
 ROOT_RAM_CACHE_RESOURCE_CHECK_SEC = 1.0
 ROOT_RAM_CACHE_SETTINGS_FILE = PATHS.data_root / "splittable" / "source_config.json"
@@ -131,6 +147,17 @@ _ROOT_RAM_RESOURCE_STATE: dict[str, Any] = {
     "checked_epoch": 0.0,
     "reason": "",
     "snapshot": {},
+}
+_ROOT_RAM_PREFETCH_LOCK = threading.Lock()
+_ROOT_RAM_PREFETCH_QUEUE: deque[tuple[Path, str]] = deque()
+_ROOT_RAM_PREFETCH_PENDING: set[str] = set()
+_ROOT_RAM_PREFETCH_WAKE = threading.Event()
+_ROOT_RAM_PREFETCH_THREAD: threading.Thread | None = None
+_ROOT_RAM_PREFETCH_STATE: dict[str, Any] = {
+    "running": False,
+    "current_product": "",
+    "current_root": "",
+    "last_error": "",
 }
 
 
@@ -212,13 +239,32 @@ def _root_ram_settings() -> dict[str, Any]:
     return settings if isinstance(settings, dict) else {}
 
 
+def _root_ram_cache_use_dev() -> bool:
+    """개발서버(운영보다 작은 lot 예산) 컨텍스트 여부.
+
+    PATHS.is_prod 가 아니면 dev. 운영이라도 server_role 이 worker(개발서버
+    오프로드)이면 dev 예산을 쓴다."""
+    if not PATHS.is_prod:
+        return True
+    try:
+        from core.worker_dispatch import server_role
+        if server_role() == "worker":
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _root_ram_cache_product_budget(product_token: str) -> int:
     """source_config.json 최상위 `ram_cache_product_budgets` 에서 제품별
     max_roots 를 읽는다. 키는 제품 캐시 관리 페이지가 저장한 제품명
     (예: "ML_TABLE_PRODA"). bare 이름("PRODA")도 허용. 미설정이면 0.
 
-    운영/개발 서버 구분: PATHS.is_prod 가 아니면 max_roots_dev 를 우선 사용.
-    server_role 이 worker(개발서버 오프로드)이면 is_prod 와 무관하게 dev 예산 사용."""
+    운영/개발 서버 구분: 개발서버(_root_ram_cache_use_dev)이면 max_roots_dev 를
+    사용한다. **개발서버에서 max_roots_dev 가 설정돼 있지 않으면 0 을 반환**해
+    호출측이 개발 기본 target(_root_ram_cache_target_roots_dev)으로 폴백하게
+    한다 — 예전엔 운영 max_roots 를 그대로 써서 개발서버가 운영과 같은 수의
+    lot 을 적재(메모리 오버킬)하는 버그가 있었다."""
     try:
         raw = json.loads(ROOT_RAM_CACHE_SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
@@ -228,24 +274,24 @@ def _root_ram_cache_product_budget(product_token: str) -> int:
         return 0
     token = str(product_token or "").strip().upper()
     bare = token[len("ML_TABLE_"):] if token.startswith("ML_TABLE_") else token
-    use_dev = not PATHS.is_prod
-    if not use_dev:
-        try:
-            from core.worker_dispatch import server_role
-            if server_role() == "worker":
-                use_dev = True
-        except Exception:
-            pass
+    use_dev = _root_ram_cache_use_dev()
     for key, val in budgets.items():
         key_upper = str(key).strip().upper()
         key_bare = key_upper[len("ML_TABLE_"):] if key_upper.startswith("ML_TABLE_") else key_upper
         if key_upper == token or (bare and key_bare == bare):
             if isinstance(val, dict):
-                if use_dev and val.get("max_roots_dev") is not None:
-                    max_roots = val.get("max_roots_dev")
+                if use_dev:
+                    dev_val = val.get("max_roots_dev")
+                    if dev_val is None:
+                        # 개발서버 dev 예산 미설정 → 운영값을 쓰지 않고 기본 폴백(0).
+                        return 0
+                    max_roots = dev_val
                 else:
                     max_roots = val.get("max_roots")
             else:
+                # 스칼라 예산은 운영 전용으로 간주 — 개발서버는 기본 폴백(0).
+                if use_dev:
+                    return 0
                 max_roots = val
             try:
                 return max(0, min(ROOT_RAM_CACHE_ROOTS_MAX, int(max_roots)))
@@ -306,7 +352,16 @@ def _load_priority_root_lot_ids(product: str) -> list[str]:
 
 
 def root_ram_cache_available() -> bool:
-    return not _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False)
+    if _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False):
+        return False
+    try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker" and not _env_bool("FLOW_ENABLE_WORKER_RAM_CACHE", False):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def root_ram_cache_refresh_minutes() -> int:
@@ -387,32 +442,47 @@ def _root_ram_cache_target_roots() -> int:
     )
 
 
+ROOT_RAM_CACHE_TARGET_ROOTS_DEV_DEFAULT = 50
+
+
+def _root_ram_cache_target_roots_dev() -> int:
+    """개발서버 기본 target root 수 — 운영보다 작게 유지(메모리 보호).
+
+    제품별 dev 예산(max_roots_dev)이 없을 때의 폴백. 기본 50 과 운영 target 중
+    작은 값. env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_TARGET_ROOTS_DEV 로 강제.
+    """
+    prod_target = _root_ram_cache_target_roots()
+    base = min(ROOT_RAM_CACHE_TARGET_ROOTS_DEV_DEFAULT, prod_target)
+    return _env_int(
+        "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_TARGET_ROOTS_DEV",
+        base,
+        0,
+        ROOT_RAM_CACHE_ROOTS_MAX,
+    )
+
+
+def _root_ram_cache_default_target_roots() -> int:
+    """제품별 예산이 없을 때 적용할 기본 target — 서버 역할(운영/개발) 반영."""
+    if _root_ram_cache_use_dev():
+        return _root_ram_cache_target_roots_dev()
+    return _root_ram_cache_target_roots()
+
+
 def _root_ram_cache_load_workers() -> int:
     """상시 캐시 예열의 병렬 파티션-로드 워커 수 — 역할 기반 기본값.
 
-    예열은 파티션 parquet 을 병렬로 읽어 RAM 에 적재한다. 워커가 많을수록 예열이
-    빨라진다(단, 각 collect 는 공용 Polars 풀을 빌려 실제 CPU 병렬도는 풀 크기로
-    상한 — 워커 수는 '동시에 몇 파티션을 로드하나'라는 IO/메모리 축). query_workers
-    설정과는 무관(분리)하며, 역할별 기본값은:
-      · api(운영):    2 — 사용자 검색에 코어를 양보하며 완만히 예열.
-      · worker(개발): 가용 코어 전부 — 로드 분산 전용 서버라 예열을 최대한 빨리.
-      · standalone/기타: 2.
+    예열은 파티션 parquet 을 읽어 RAM 에 적재한다. 워커 수는 '동시에 몇 파티션을
+    로드하나'라는 IO/메모리 축(각 collect 는 공용 Polars 풀을 빌려 CPU 병렬도는
+    풀 크기로 상한). query_workers 설정과는 무관(분리).
+      · 개발서버(dev/worker): 1 — **순차 로드**. 병렬 로드는 한 번에 여러 프레임을
+        메모리에 올려 순간 RSS 스파이크 → 메모리 워치독 축출/OOM 을 유발했다.
+        개발서버는 메모리 안전을 예열 속도보다 우선한다(사용자 승인: 순차 허용).
+      · 운영(api/standalone-prod): 2 — 사용자 검색에 코어를 양보하며 완만히 예열.
     env FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS 로 강제 가능(1~32).
     """
-    try:
-        from core import worker_dispatch
-        role = worker_dispatch.server_role()
-    except Exception:
-        role = "standalone"
-    if role == "worker":
-        # 개발서버는 로드 분산 전용 — 가용 코어를 다 써서 예열을 빠르게.
-        try:
-            from core.runtime_limits import effective_cpu_count
-            default = max(1, int(effective_cpu_count()))
-        except Exception:
-            default = 4
-    else:
-        default = 2  # api / standalone
+    # API searches use up to four Polars threads. Background RAM warmup stays
+    # single-file even on production so five interactive users keep CPU/I/O.
+    default = 1
     return _env_int("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS", default, 1, 32)
 
 
@@ -537,13 +607,23 @@ def _root_ram_cache_auto_max_gb() -> float:
 
 def _root_ram_cache_max_bytes() -> int:
     if "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB" in os.environ:
-        # 운영자 명시 핀 — 전체 캐시 풀 상한을 적용하지 않는다.
         gb = _env_float("FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB", ROOT_RAM_CACHE_MAX_GB_DEFAULT, 0.0, 64.0)
-        return int(gb * 1024 * 1024 * 1024)
-    budget = int(_root_ram_cache_auto_max_gb() * 1024 * 1024 * 1024)
+        budget = int(gb * 1024 * 1024 * 1024)
+    else:
+        # 톱니바퀴 설정(관리자 UI): 운영/개발 분리 — root_ram_gb(_dev)>0 이면 고정.
+        _gb_s = None
+        try:
+            from core import cache_settings
+            _gb_s = cache_settings.get_float_role("root_ram_gb", _root_ram_cache_use_dev())
+        except Exception:
+            _gb_s = None
+        if _gb_s is not None and _gb_s > 0:
+            budget = int(max(0.0, min(64.0, _gb_s)) * 1024 * 1024 * 1024)
+        else:
+            budget = int(_root_ram_cache_auto_max_gb() * 1024 * 1024 * 1024)
     try:
         from core import cache_budget
-
+        # 개별 env 고정값도 전체 프로세스 캐시 안전 풀을 우회하지 않는다.
         budget = cache_budget.capped("splittable_root_ram", budget)
     except Exception:
         pass
@@ -946,6 +1026,138 @@ def _root_ram_cache_put(
     )
 
 
+def _root_ram_prefetch_key(fp: Path, root_lot_id: str) -> str:
+    return f"{Path(fp).resolve()}|{str(root_lot_id or '').strip().upper()}"
+
+
+def root_ram_prefetch_snapshot(limit: int = 50) -> dict[str, Any]:
+    """Small, path-safe snapshot for the cache management screen."""
+    with _ROOT_RAM_PREFETCH_LOCK:
+        depth = len(_ROOT_RAM_PREFETCH_QUEUE)
+        queued = list(_ROOT_RAM_PREFETCH_QUEUE)[:max(0, int(limit or 0))]
+        state = dict(_ROOT_RAM_PREFETCH_STATE)
+    return {
+        **state,
+        "depth": depth,
+        "queued": [
+            {"product": Path(fp).stem, "root_lot_id": root}
+            for fp, root in queued
+        ],
+    }
+
+
+def _root_ram_prefetch_loop() -> None:
+    """Load searched roots into API-local RAM only after user traffic is quiet."""
+    import gc
+
+    while True:
+        _ROOT_RAM_PREFETCH_WAKE.wait(timeout=60.0)
+        while True:
+            with _ROOT_RAM_PREFETCH_LOCK:
+                if not _ROOT_RAM_PREFETCH_QUEUE:
+                    _ROOT_RAM_PREFETCH_STATE.update(
+                        running=False, current_product="", current_root=""
+                    )
+                    _ROOT_RAM_PREFETCH_WAKE.clear()
+                    break
+                fp, root = _ROOT_RAM_PREFETCH_QUEUE.popleft()
+                _ROOT_RAM_PREFETCH_STATE.update(
+                    running=True,
+                    current_product=Path(fp).stem,
+                    current_root=root,
+                    last_error="",
+                )
+            key = _root_ram_prefetch_key(fp, root)
+            requeued = False
+            try:
+                from core import request_priority
+
+                quiet_for = _env_float(
+                    "FLOW_SPLITTABLE_ROOT_PREFETCH_IDLE_QUIET_SEC", 5.0, 0.0, 300.0
+                )
+                while request_priority.users_active(quiet_for_sec=quiet_for):
+                    time.sleep(1.0)
+                status = cache_status(fp)
+                files = _partition_files(cache_dir_for(fp), root)
+                if not files or not status.get("has_cache"):
+                    continue
+                # A single unusually large root must not create an unbounded
+                # decompression spike. Parquet can expand several-fold in RAM;
+                # skip RAM warming and keep serving it through projected disk I/O.
+                max_input_mb = _env_float(
+                    "FLOW_SPLITTABLE_ROOT_PREFETCH_MAX_INPUT_MB", 128.0, 1.0, 4096.0
+                )
+                compressed_bytes = 0
+                for part in files:
+                    try:
+                        compressed_bytes += int(part.stat().st_size)
+                    except OSError:
+                        pass
+                if compressed_bytes > int(max_input_mb * 1024 * 1024):
+                    with _ROOT_RAM_PREFETCH_LOCK:
+                        _ROOT_RAM_PREFETCH_STATE["last_error"] = (
+                            f"prefetch_skipped_large_partition:{compressed_bytes / (1024 ** 2):.1f}MB"
+                        )
+                    continue
+                if _root_ram_cache_get(fp, root, files, status) is not None:
+                    continue
+                guard_reason, _snapshot = _root_ram_cache_resource_guard_reason()
+                if guard_reason:
+                    with _ROOT_RAM_PREFETCH_LOCK:
+                        _ROOT_RAM_PREFETCH_QUEUE.append((fp, root))
+                        requeued = True
+                    time.sleep(10.0)
+                    break
+                df = _load_root_ram_cache_frame(files)
+                _root_ram_cache_store_frame(fp, root, df, files, status)
+                df = None
+                gc.collect()
+            except Exception as exc:
+                logger.debug(
+                    "root RAM idle prefetch failed product=%s root=%s: %s",
+                    Path(fp).stem, root, exc,
+                )
+                with _ROOT_RAM_PREFETCH_LOCK:
+                    _ROOT_RAM_PREFETCH_STATE["last_error"] = str(exc)
+            finally:
+                with _ROOT_RAM_PREFETCH_LOCK:
+                    if not requeued:
+                        _ROOT_RAM_PREFETCH_PENDING.discard(key)
+                    _ROOT_RAM_PREFETCH_STATE.update(
+                        running=False, current_product="", current_root=""
+                    )
+
+
+def enqueue_root_ram_prefetch(fp: Path, root_lot_id: str) -> bool:
+    """Queue a cold root for idle-time RAM warmup without delaying its request."""
+    global _ROOT_RAM_PREFETCH_THREAD
+    if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
+        return False
+    fp = Path(fp).resolve()
+    root = str(root_lot_id or "").strip().upper()
+    if not root:
+        return False
+    key = _root_ram_prefetch_key(fp, root)
+    max_queue = _env_int("FLOW_SPLITTABLE_ROOT_PREFETCH_MAX_QUEUE", 256, 1, 5000)
+    with _ROOT_RAM_PREFETCH_LOCK:
+        if key in _ROOT_RAM_PREFETCH_PENDING:
+            return False
+        if len(_ROOT_RAM_PREFETCH_QUEUE) >= max_queue:
+            old_fp, old_root = _ROOT_RAM_PREFETCH_QUEUE.popleft()
+            _ROOT_RAM_PREFETCH_PENDING.discard(_root_ram_prefetch_key(old_fp, old_root))
+        _ROOT_RAM_PREFETCH_QUEUE.append((fp, root))
+        _ROOT_RAM_PREFETCH_PENDING.add(key)
+        if _ROOT_RAM_PREFETCH_THREAD is None or not _ROOT_RAM_PREFETCH_THREAD.is_alive():
+            _ROOT_RAM_PREFETCH_THREAD = threading.Thread(
+                target=_root_ram_prefetch_loop,
+                daemon=True,
+                name="ml-table-root-idle-prefetch",
+            )
+            _ROOT_RAM_PREFETCH_THREAD.start()
+    _ROOT_RAM_PREFETCH_WAKE.set()
+    return True
+
+
 def _product_match_keys(fp: Path) -> set[str]:
     stem = Path(fp).stem.strip().upper()
     keys = {stem}
@@ -962,7 +1174,13 @@ def _latest_lot_by_root_wafer_path() -> Path:
     return PATHS.db_cache_dir / LATEST_LOT_BY_ROOT_WAFER_FILE
 
 
-def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, step_ids: list[str] | None = None) -> list[str]:
+def _recent_root_lot_ids_from_latest_parquet(
+    fp: Path,
+    limit: int,
+    *,
+    step_ids: list[str] | None = None,
+    allowed_roots: set[str] | None = None,
+) -> list[str]:
     cache_fp = _latest_lot_by_root_wafer_path()
     if limit <= 0 or not cache_fp.is_file():
         return []
@@ -995,6 +1213,8 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, step_ids: 
             if time_col else pl.lit("").alias("__time")
         ),
     ]).filter(pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != ""))
+    if allowed_roots is not None:
+        q = q.filter(pl.col("root_lot_id").is_in(sorted(allowed_roots)))
     # AZ prefix root 우선: prefix 매칭 lot 을 tkout_time 최신순으로 먼저 채우고,
     # 남는 자리를 나머지 lot(tkout_time 최신순)으로 채운다.
     prefix = _root_ram_cache_priority_prefix()
@@ -1012,7 +1232,13 @@ def _recent_root_lot_ids_from_latest_parquet(fp: Path, limit: int, *, step_ids: 
     return [str(v or "").strip().upper() for v in rows["root_lot_id"].to_list() if str(v or "").strip()]
 
 
-def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, step_ids: list[str] | None = None) -> list[str]:
+def _recent_root_lot_ids_from_latest_cache(
+    fp: Path,
+    limit: int,
+    *,
+    step_ids: list[str] | None = None,
+    allowed_roots: set[str] | None = None,
+) -> list[str]:
     if limit <= 0:
         return []
     norm_steps = [str(s or "").strip().upper() for s in (step_ids or []) if str(s or "").strip()]
@@ -1021,12 +1247,22 @@ def _recent_root_lot_ids_from_latest_cache(fp: Path, limit: int, *, step_ids: li
 
     def add(root_lot_id: str) -> None:
         root = str(root_lot_id or "").strip().upper()
-        if not root or root in seen or len(out) >= limit:
+        if (
+            not root
+            or root in seen
+            or len(out) >= limit
+            or (allowed_roots is not None and root not in allowed_roots)
+        ):
             return
         seen.add(root)
         out.append(root)
 
-    for root in _recent_root_lot_ids_from_latest_parquet(fp, limit, step_ids=norm_steps or None):
+    for root in _recent_root_lot_ids_from_latest_parquet(
+        fp,
+        limit,
+        step_ids=norm_steps or None,
+        allowed_roots=allowed_roots,
+    ):
         add(root)
     if len(out) >= limit:
         return out
@@ -1201,6 +1437,11 @@ def _discover_ml_table_files() -> list[Path]:
     return files
 
 
+def discover_ml_table_files() -> list[Path]:
+    """Public read-only discovery used by the shared search-cache maintainer."""
+    return _discover_ml_table_files()
+
+
 def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any], *, force: bool = False) -> bool:
     if status.get("has_cache") and not status.get("source_stale"):
         return True
@@ -1209,11 +1450,14 @@ def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any], *,
     except Exception:
         source_size = 0
     max_build_bytes = _root_ram_cache_build_max_bytes()
-    # force=True(수동 스캔)이면 파일 크기와 무관하게 빌드 큐에 등록한다.
-    # 자동 예열에서만 크기 제한을 적용해 과대 파일의 자동 빌드를 방지한다.
-    if force:
-        enqueue_build(fp)
-    elif max_build_bytes and source_size and source_size <= max_build_bytes:
+    # 대용량 제품도 자동으로 lookup 캐시를 빌드한다. 빌드는 청크 단위
+    # (_sink_lookup_cache_partitions_chunked)로 메모리를 가드하며 진행하므로
+    # 파일 크기로 자동 빌드를 막지 않는다 — 막으면 대용량 제품이 영구 미캐시.
+    # 운영자가 상한(env MB>0)을 두면 그 이하만 자동 빌드한다.
+    #   · force=True(수동 스캔): 항상 빌드.
+    #   · max_build_bytes<=0(기본, 무제한): 항상 빌드.
+    #   · 상한 지정 시: source_size<=상한일 때만.
+    if force or max_build_bytes <= 0 or not source_size or source_size <= max_build_bytes:
         enqueue_build(fp)
     return False
 
@@ -1237,6 +1481,22 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
     recent_limit = int(settings["recent_roots"])
     searched_limit = int(settings["searched_limit"])
     target_roots = int(settings["target_roots"])
+    # 제품별 예산이 없을 때 적용할 기본 target — 개발서버면 작게(메모리 보호).
+    default_target_roots = _root_ram_cache_default_target_roots()
+    # 진행 로그(캐시 관리 페이지 이벤트 로그) — 로드 중 실시간 진행 표시.
+    try:
+        from core.cache_event_log import record as _cache_log
+    except Exception:
+        _cache_log = None
+
+    def _scan_progress(msg: str, *, ok: bool = True) -> None:
+        if _cache_log is None:
+            return
+        try:
+            _cache_log("cache_op", msg, ok=ok, product=product or "")
+        except Exception:
+            pass
+
     rows: list[dict[str, Any]] = []
     with _ROOT_RAM_REFRESH_LOCK:
         for fp in files:
@@ -1244,23 +1504,47 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                 continue
             status = cache_status(fp)
             if not _ensure_lookup_cache_ready_for_root_ram(fp, status, force=force):
+                # 원본 lookup 캐시(파티션)가 아직 없거나 stale — 빌드를 큐에 넣고
+                # 이번 사이클은 적재를 건너뛴다. 대용량 제품은 빌드가 오래 걸리므로
+                # 진행 로그로 "빌드 중"을 알려 조용한 미캐시로 오인하지 않게 한다.
+                _reason = status.get("status") or "missing"
+                _prod_lbl = _safe_product_token(Path(fp).stem) or Path(fp).name
+                _scan_progress(
+                    f"[빌드] {_prod_lbl}: 원본 lookup 캐시 준비 중({_reason}) — "
+                    f"빌드는 청크 단위로 진행되며 완료 후 다음 사이클에 적재됩니다",
+                    ok=True,
+                )
                 rows.append({
                     "file": Path(fp).name,
                     "ok": False,
                     "skipped": True,
-                    "reason": status.get("status") or "missing",
-                    "cache_status": status.get("status") or "",
+                    "reason": _reason,
+                    "cache_status": _reason,
+                    "build_pending": True,
                 })
                 continue
+            candidate_index_meta = read_candidate_index(fp)
+            available_roots = {
+                str(value or "").strip().upper()
+                for value in (candidate_index_meta.get("root_lot_ids") or [])
+                if str(value or "").strip()
+            }
+            if not available_roots:
+                available_roots = {
+                    str(value or "").strip().upper()
+                    for value in _root_lot_ids_from_cache_dir(cache_dir_for(fp))
+                    if str(value or "").strip()
+                }
             roots: list[str] = []
             seen: set[str] = set()
             _file_key = Path(fp).name
             # ⓪ priority: 우선 lot 등록 페이지에서 등록된 root — 최우선, 매 사이클 갱신.
             _product_token = _safe_product_token(Path(fp).stem)
             priority_roots = _load_priority_root_lot_ids(_product_token)
-            # 제품별 예산(max_roots)이 설정돼 있으면 이 파일에 한해 전역 target 을 덮어쓴다.
+            # 제품별 예산(max_roots)이 설정돼 있으면 이 파일에 한해 기본 target 을 덮어쓴다.
+            # 미설정이면 서버 역할(운영/개발)에 맞는 기본 target 으로 폴백한다.
             product_budget = _root_ram_cache_product_budget(_product_token)
-            file_target_roots = product_budget if product_budget > 0 else target_roots
+            file_target_roots = product_budget if product_budget > 0 else default_target_roots
             # ① searched: 한번이라도 검색된 root — 무조건 최우선, 매 사이클 갱신.
             searched_roots = _searched_root_lot_ids(fp, searched_limit)
             # ② step/latest 후보 — 빈 공간 채우기용이므로 매 사이클 계산하지 않고
@@ -1268,24 +1552,51 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             _refresh_step_latest = force or (_ROOT_RAM_REFRESH_COUNTER % _ROOT_RAM_STEP_LATEST_REFRESH_EVERY == 0)
             if _refresh_step_latest:
                 step_roots = _recent_root_lot_ids_from_latest_cache(
-                    fp, file_target_roots or recent_limit, step_ids=step_ids
+                    fp,
+                    file_target_roots or recent_limit,
+                    step_ids=step_ids,
+                    allowed_roots=available_roots,
                 ) if step_ids else []
                 # latest 도 target 까지 공급 — 기존 recent_limit(기본 100) 상한 탓에
                 # step 미설정 시 캐시가 ~100 root 에서 멈췄다. 실제 저장량은 바이트
                 # 예산(eviction)이 동적으로 제한하므로 후보는 target 만큼 넉넉히.
-                latest_roots = _recent_root_lot_ids_from_latest_cache(fp, file_target_roots or recent_limit)
+                latest_roots = _recent_root_lot_ids_from_latest_cache(
+                    fp,
+                    file_target_roots or recent_limit,
+                    allowed_roots=available_roots,
+                )
                 _ROOT_RAM_LAST_STEP_ROOTS[_file_key] = step_roots
                 _ROOT_RAM_LAST_LATEST_ROOTS[_file_key] = latest_roots
             else:
                 step_roots = _ROOT_RAM_LAST_STEP_ROOTS.get(_file_key, [])
                 latest_roots = _ROOT_RAM_LAST_LATEST_ROOTS.get(_file_key, [])
-            candidates = _root_ram_cache_candidates(
+            raw_candidates = _root_ram_cache_candidates(
                 priority_roots=priority_roots,
                 searched_roots=searched_roots,
                 step_roots=step_roots,
                 latest_roots=latest_roots,
-                target=file_target_roots,
+                # target은 실제 lookup 파티션이 있는 후보를 거른 뒤 적용한다.
+                # canonical latest-lot cache는 cross-product FAB lineage를 포함할 수
+                # 있어 다른 제품 root가 섞인다. 먼저 자르면 존재하지 않는 root가
+                # 슬롯을 먹고 해당 제품의 정상 lot가 RAM에 올라오지 않았다.
+                target=0,
             )
+            invalid_candidate_count = 0
+            # fresh lookup에 root가 0개라면 "필터 없음"이 아니라 실제 적재
+            # 가능 후보가 없다는 뜻이다. 빈 set도 유효한 allow-list로 취급한다.
+            if available_roots is not None:
+                invalid_candidate_count = len([
+                    row for row in raw_candidates
+                    if str(row.get("root_lot_id") or "").strip().upper() not in available_roots
+                ])
+                candidates = [
+                    row for row in raw_candidates
+                    if str(row.get("root_lot_id") or "").strip().upper() in available_roots
+                ]
+            else:
+                candidates = raw_candidates
+            if file_target_roots > 0:
+                candidates = candidates[:file_target_roots]
             for candidate in candidates:
                 root = str(candidate.get("root_lot_id") or "").strip().upper()
                 if root and root not in seen:
@@ -1295,7 +1606,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             step_target_roots = len([row for row in candidates if row.get("cache_group") == "step"])
             other_target_roots = len(candidates) - step_target_roots - priority_target_roots
             cached = 0
-            missing = 0
+            missing = invalid_candidate_count
             resource_skipped = 0
             last_skip_reason = ""
             # Phase 0: 이미 캐시된 것/파티션 없는 것을 걸러 로드 대상만 추린다.
@@ -1342,57 +1653,103 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                         logger.debug("root RAM warm load 실패 source=%s: %s", fp, exc)
                         return None
 
+                def _store_frame(candidate, root, part_files, df) -> str:
+                    """로드된 프레임 1개를 삽입. 반환: "cached"|"budget"|"skip"."""
+                    nonlocal last_skip_reason
+                    if df is None:
+                        return "skip"
+                    key = _root_cache_key(fp, root)
+                    idx = candidate_index.get(key, len(candidate_keys))
+                    if _root_ram_cache_store_frame(
+                        fp,
+                        root,
+                        df,
+                        part_files,
+                        status,
+                        cache_group=str(candidate.get("cache_group") or ""),
+                        cache_sources=[str(s) for s in (candidate.get("cache_sources") or [])],
+                        protect_keys=set(candidate_keys[:idx]),
+                    ) is not None:
+                        return "cached"
+                    last_skip_reason = "ram_budget_full"
+                    return "budget"
+
                 # target 확대(≈1000 root)로 전량 선로드하면 예산과 무관하게 미삽입
                 # 프레임이 RSS 를 부풀리므로 chunk 단위로 로드→삽입하고, 예산이
                 # 차면 나머지(전부 후순위)는 이번 사이클에서 중단한다.
-                chunk_size = max(8, workers * 2)
+                #   · 순차(workers==1, 개발서버): chunk_size=1 — 한 번에 프레임 1개만
+                #     메모리에 올려 로드→삽입→해제. 순간 RSS 스파이크를 없앤다.
+                #   · 병렬(workers>1, 운영): 기존과 동일한 chunk 단위 병렬 로드.
+                chunk_size = 1 if workers <= 1 else max(8, workers * 2)
+                total_to_load = len(to_load)
+                _prod_label = _product_token or Path(fp).stem
+                if total_to_load:
+                    _scan_progress(
+                        f"[적재] {_prod_label}: {total_to_load} root 로드 시작 "
+                        f"(target {file_target_roots}, workers {workers})"
+                    )
+                _progress_every = max(1, total_to_load // 4)
+                _next_progress = _progress_every
                 budget_stop = False
-                for start in range(0, len(to_load), chunk_size):
+                for start in range(0, total_to_load, chunk_size):
+                    # RAM warmup is opportunistic. If a user starts searching,
+                    # stop this cycle and let the next scheduler tick continue.
+                    # On-demand requests still read the projected disk partition.
+                    if request_priority.users_active(quiet_for_sec=5.0):
+                        resource_skipped += total_to_load - start
+                        last_skip_reason = "user_requests_active"
+                        break
                     if budget_stop:
-                        budget_skipped += len(to_load) - start
+                        budget_skipped += total_to_load - start
                         last_skip_reason = "ram_budget_full"
                         break
                     chunk = to_load[start:start + chunk_size]
-                    loaded: dict[str, pl.DataFrame] = {}
                     if workers > 1 and len(chunk) > 1:
+                        # 병렬 로드 → 삽입.
+                        loaded: dict[str, pl.DataFrame] = {}
                         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="root-ram-warm") as ex:
                             futs = {ex.submit(_safe_load, files): root for (_c, root, files) in chunk}
                             for fut in as_completed(futs):
                                 df = fut.result()
                                 if df is not None:
                                     loaded[futs[fut]] = df
+                        for candidate, root, part_files in chunk:
+                            df = loaded.get(root)
+                            if df is None:
+                                continue
+                            # 로드 중 메모리 압박이 올라갔을 수 있으니 삽입 직전 재확인.
+                            gr, _snap2 = _root_ram_cache_resource_guard_reason()
+                            if gr:
+                                resource_skipped += 1
+                                last_skip_reason = gr
+                                continue
+                            outcome = _store_frame(candidate, root, part_files, df)
+                            if outcome == "cached":
+                                cached += 1
+                            elif outcome == "budget":
+                                budget_skipped += 1
+                        loaded.clear()
                     else:
-                        for (_c, root, files) in chunk:
-                            df = _safe_load(files)
-                            if df is not None:
-                                loaded[root] = df
-                    for candidate, root, part_files in chunk:
-                        df = loaded.get(root)
-                        if df is None:
-                            continue
-                        # 로드 중 메모리 압박이 올라갔을 수 있으니 삽입 직전 재확인.
-                        gr, _snap2 = _root_ram_cache_resource_guard_reason()
-                        if gr:
-                            resource_skipped += 1
-                            last_skip_reason = gr
-                            continue
-                        key = _root_cache_key(fp, root)
-                        idx = candidate_index.get(key, len(candidate_keys))
-                        if _root_ram_cache_store_frame(
-                            fp,
-                            root,
-                            df,
-                            part_files,
-                            status,
-                            cache_group=str(candidate.get("cache_group") or ""),
-                            cache_sources=[str(s) for s in (candidate.get("cache_sources") or [])],
-                            protect_keys=set(candidate_keys[:idx]),
-                        ) is not None:
-                            cached += 1
-                        else:
-                            budget_skipped += 1
-                            last_skip_reason = "ram_budget_full"
-                    loaded.clear()
+                        # 순차 모드: 한 번에 프레임 1개만 — 로드 즉시 삽입/해제.
+                        for candidate, root, part_files in chunk:
+                            # 로드 전에 가드 확인 — 압박 시 아예 로드하지 않는다.
+                            gr, _snap2 = _root_ram_cache_resource_guard_reason()
+                            if gr:
+                                resource_skipped += 1
+                                last_skip_reason = gr
+                                continue
+                            df = _safe_load(part_files)
+                            outcome = _store_frame(candidate, root, part_files, df)
+                            if outcome == "cached":
+                                cached += 1
+                            elif outcome == "budget":
+                                budget_skipped += 1
+                            df = None
+                    # 진행 로그 — 25% 단위 throttle.
+                    done = min(total_to_load, start + len(chunk))
+                    if total_to_load and done >= _next_progress:
+                        _scan_progress(f"[적재] {_prod_label}: {cached}/{total_to_load} root 적재")
+                        _next_progress += _progress_every
                     # 전역 예산 95% 이상이라도 이 제품이 아직 자기 지분(share)을
                     # 못 채웠으면 계속 로드한다 — 삽입 시 지분 초과 제품의 항목이
                     # eviction 되므로 모든 제품이 공정하게 등록된다. 전역이 차고
@@ -1593,6 +1950,17 @@ def start_root_lot_ram_cache_scheduler() -> bool:
     global _ROOT_RAM_THREAD, _ROOT_RAM_STARTED
     if _ROOT_RAM_STARTED:
         return False
+    try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker" and not _env_bool("FLOW_ENABLE_WORKER_RAM_CACHE", False):
+            logger.info(
+                "ML_TABLE root RAM cache scheduler disabled on worker role "
+                "(shared lookup builds remain enabled)"
+            )
+            return False
+    except Exception:
+        pass
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
         logger.info("ML_TABLE root RAM cache scheduler disabled")
         return False
@@ -1608,8 +1976,29 @@ def start_root_lot_ram_cache_scheduler() -> bool:
     return True
 
 
+_CACHE_ROOT_MEMO_LOCK = threading.Lock()
+_CACHE_ROOT_MEMO: tuple[float, Path | None] = (0.0, None)
+
+
 def _cache_root() -> Path:
-    return PATHS.db_cache_dir / LOOKUP_CACHE_DIRNAME
+    """Resolve the runtime-editable DB cache root with a short read TTL.
+
+    ``PATHS.db_cache_dir`` intentionally re-reads the root profile. Calling it
+    several times in every SplitTable request costs milliseconds on a shared
+    workspace, while a two-second delay for an admin path change is harmless.
+    """
+    global _CACHE_ROOT_MEMO
+    now = time.monotonic()
+    cached_at, cached_path = _CACHE_ROOT_MEMO
+    if cached_path is not None and now - cached_at <= 2.0:
+        return cached_path
+    resolved = PATHS.db_cache_dir / LOOKUP_CACHE_DIRNAME
+    with _CACHE_ROOT_MEMO_LOCK:
+        cached_at, cached_path = _CACHE_ROOT_MEMO
+        if cached_path is not None and now - cached_at <= 2.0:
+            return cached_path
+        _CACHE_ROOT_MEMO = (now, resolved)
+        return resolved
 
 
 def cache_dir_for(fp: Path) -> Path:
@@ -1626,13 +2015,25 @@ def candidate_index_path_for(fp: Path) -> Path:
 
 def _read_meta(fp: Path) -> dict[str, Any]:
     meta_fp = meta_path_for(fp)
+    key = str(meta_fp)
+    now = time.monotonic()
+    with _META_CACHE_LOCK:
+        cached = _META_CACHE.get(key)
+        if cached is not None and now - cached[0] <= _META_CACHE_TTL_SEC:
+            return dict(cached[1])
     if not meta_fp.is_file():
         return {}
     try:
         data = json.loads(meta_fp.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        out = data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        out = {}
+    with _META_CACHE_LOCK:
+        _META_CACHE[key] = (now, dict(out))
+        if len(_META_CACHE) > _META_CACHE_MAX:
+            oldest = min(_META_CACHE, key=lambda item: _META_CACHE[item][0])
+            _META_CACHE.pop(oldest, None)
+    return out
 
 
 def _write_meta(fp: Path, meta: dict[str, Any]) -> None:
@@ -1641,6 +2042,8 @@ def _write_meta(fp: Path, meta: dict[str, Any]) -> None:
     tmp = meta_fp.with_suffix(meta_fp.suffix + ".tmp")
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(meta_fp)
+    with _META_CACHE_LOCK:
+        _META_CACHE[str(meta_fp)] = (time.monotonic(), dict(meta))
 
 
 def read_candidate_index(fp: Path) -> dict[str, Any]:
@@ -1668,9 +2071,33 @@ def _build_lock_path(fp: Path) -> Path:
     return root / f"{_safe_product_token(Path(fp).stem)}.build.lock"
 
 
+def _local_pid_alive(pid: int) -> bool:
+    """같은 호스트가 남긴 build lock의 프로세스 생존 여부를 보수적으로 확인."""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        import psutil  # type: ignore
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+        except Exception:
+            # 권한 등으로 확인할 수 없으면 활성 lock으로 간주한다.
+            return True
+
+
 def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
     lock_fp = _build_lock_path(fp)
+    owner_id = f"{socket.gethostname()}:{os.getpid()}"
     payload = json.dumps({
+        "owner": owner_id,
+        "host": socket.gethostname(),
         "pid": os.getpid(),
         "started_at": _utc_now(),
         "source_path": str(Path(fp).resolve()),
@@ -1685,14 +2112,61 @@ def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
                 age = time.time() - lock_fp.stat().st_mtime
             except Exception:
                 age = 0.0
-            if attempt == 0 and age > BUILD_LOCK_STALE_SECONDS:
+            try:
+                owner_meta = json.loads(lock_fp.read_text(encoding="utf-8"))
+                if not isinstance(owner_meta, dict):
+                    owner_meta = {}
+            except Exception:
+                owner_meta = {}
+            # 워커가 OOM/종료되면 O_EXCL lock 파일만 남고 30분 동안 api의
+            # 폴백까지 막혔다. 마지막 heartbeat의 정확한 owner와 일치하고 그
+            # heartbeat가 stale인 경우에만 즉시 고아 lock으로 회수한다.
+            orphaned_worker_lock = False
+            lock_owner_id = str(owner_meta.get("owner") or "")
+            lock_host = str(owner_meta.get("host") or "")
+            try:
+                lock_pid = int(owner_meta.get("pid") or 0)
+            except Exception:
+                lock_pid = 0
+            # worker 재시작 후 heartbeat owner가 새 PID로 바뀐 경우에도, 같은
+            # 머신의 새 worker는 이전 PID를 검사해 OOM 고아 lock을 즉시 회수한다.
+            orphaned_local_process_lock = bool(
+                lock_host
+                and lock_host.casefold() == socket.gethostname().casefold()
+                and lock_pid > 0
+                and lock_pid != os.getpid()
+                and not _local_pid_alive(lock_pid)
+            )
+            if lock_owner_id and lock_owner_id != owner_id:
+                try:
+                    from core import worker_dispatch as _wd
+
+                    hb = _wd.heartbeat_meta(fresh_read=True)
+                    hb_owner = str(hb.get("owner") or "")
+                    orphaned_worker_lock = bool(
+                        hb_owner
+                        and lock_owner_id == hb_owner
+                        and not _wd.worker_alive(fresh_read=True)
+                    )
+                except Exception:
+                    orphaned_worker_lock = False
+            if attempt == 0 and (
+                age > BUILD_LOCK_STALE_SECONDS
+                or orphaned_worker_lock
+                or orphaned_local_process_lock
+            ):
                 try:
                     lock_fp.unlink()
+                    if orphaned_worker_lock or orphaned_local_process_lock:
+                        logger.warning(
+                            "reclaimed orphaned worker lookup-build lock source=%s owner=%s",
+                            fp, lock_owner_id,
+                        )
                     continue
                 except Exception:
                     pass
             try:
-                owner = lock_fp.read_text(encoding="utf-8")[:1000]
+                owner = json.dumps(owner_meta, ensure_ascii=False)[:1000] if owner_meta else lock_fp.read_text(encoding="utf-8")[:1000]
             except Exception:
                 owner = ""
             return None, lock_fp, owner
@@ -1796,6 +2270,11 @@ def _job_snapshot() -> dict[str, Any]:
         state["queued"] = list(_BUILD_QUEUE)
     state["queued"] = [str(p) for p in state.get("queued") or []]
     return state
+
+
+def build_queue_snapshot() -> dict[str, Any]:
+    """Return the lookup build queue without exposing mutable internal state."""
+    return _job_snapshot()
 
 
 def _job_status_for(fp: Path) -> str:
@@ -1933,7 +2412,10 @@ def cache_status(fp: Path) -> dict[str, Any]:
     fp = Path(fp)
     cdir = cache_dir_for(fp)
     meta = _read_meta(fp)
-    has_cache = bool(meta and cdir.is_dir() and _partition_files(cdir))
+    # _meta.json은 전체 파티션 쓰기가 성공한 뒤 마지막에 원자 기록된다. 따라서
+    # 상태 확인마다 수천 개 root 디렉터리를 rglob 할 필요가 없다. 기존 코드는
+    # 첫 검색마다 전체 lookup tree를 순회해 root 수에 비례해 느려졌다.
+    has_cache = bool(meta and cdir.is_dir())
     stale = _meta_source_stale(meta, fp) if has_cache else False
     job = _job_status_for(fp)
     status = "fresh" if has_cache and not stale else ("stale" if has_cache and stale else "missing")
@@ -2052,6 +2534,20 @@ def _lookup_cache_partition_max_rows() -> int:
     )
 
 
+def _lookup_cache_build_chunk_size() -> int:
+    # 개발서버는 청크를 작게 — 대용량 제품 빌드도 청크당 collect 메모리를 낮춰
+    # 순간 스파이크를 억제(느려도 OOM 방지 우선).
+    default = LOOKUP_CACHE_BUILD_CHUNK_SIZE_DEFAULT
+    if _root_ram_cache_use_dev():
+        default = min(default, LOOKUP_CACHE_BUILD_CHUNK_SIZE_DEV_DEFAULT)
+    return _env_int(
+        "FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_CHUNK_SIZE",
+        default,
+        1,
+        500,
+    )
+
+
 def _wait_for_lookup_cache_memory(fp: Path) -> bool:
     """메모리 여유가 생길 때까지 대기. 상한 초과 시 False — 이번 빌드는 건너뛴다.
 
@@ -2100,6 +2596,77 @@ def _sink_lookup_cache_partitions(lf: pl.LazyFrame, tmp_dir: Path) -> None:
     lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
 
 
+def _sink_lookup_cache_partitions_chunked(
+    fp: Path, lf_base: pl.LazyFrame, tmp_dir: Path,
+) -> None:
+    """root_lot_id 단위 청크로 파티션 작성 — OOM 방지.
+
+    전체 파일을 한꺼번에 sink_parquet(PartitionBy) 하면 메모리가 급증해
+    8 GB 급 서버에서 OOM 이 발생했다. 대신:
+      1. unique root_lot_id 목록을 먼저 추출 (컬럼 1개만 스캔)
+      2. CHUNK_SIZE 개씩 묶어서 필터 → collect → 파티션 파일 쓰기
+      3. 매 청크 완료 후 gc.collect() + 메모리 체크
+    최대 메모리 사용량이 (전체 / 청크 수) 수준으로 제한된다.
+    """
+    import gc
+
+    chunk_size = _lookup_cache_build_chunk_size()
+    max_rows = _lookup_cache_partition_max_rows()
+
+    # ① unique root_lot_id 추출 (컬럼 하나만 스캔 — 메모리 부담 최소)
+    root_lot_ids = (
+        lf_base.select("root_lot_id")
+        .unique()
+        .collect()["root_lot_id"]
+        .to_list()
+    )
+    root_lot_ids = sorted(set(str(r) for r in root_lot_ids if r))
+    total = len(root_lot_ids)
+    logger.info(
+        "ML_TABLE lookup cache chunked build: %d root_lot_ids (chunk_size=%d), source=%s",
+        total, chunk_size, fp,
+    )
+
+    # ② 청크 단위 처리
+    for chunk_start in range(0, total, chunk_size):
+        chunk_roots = root_lot_ids[chunk_start : chunk_start + chunk_size]
+
+        # 메모리 압박 시 대기 — 타임아웃이면 빌드 중단
+        if process_memory_high():
+            gc.collect()
+            if not _wait_for_lookup_cache_memory(fp):
+                raise RuntimeError(
+                    f"memory guard timeout during chunked cache build "
+                    f"({chunk_start}/{total})"
+                )
+
+        # 이 청크의 root 만 필터 → collect
+        chunk_df = lf_base.filter(
+            pl.col("root_lot_id").is_in(chunk_roots)
+        ).collect()
+
+        # 각 root_lot_id 별 파티션 디렉토리에 쓰기
+        for root in chunk_roots:
+            root_df = chunk_df.filter(pl.col("root_lot_id") == root)
+            if root_df.height == 0:
+                continue
+            part_dir = tmp_dir / f"root_lot_id={root}"
+            part_dir.mkdir(parents=True, exist_ok=True)
+            for file_idx, row_start in enumerate(range(0, root_df.height, max_rows)):
+                part = root_df.slice(row_start, max_rows)
+                out_path = part_dir / f"{file_idx:04d}.parquet"
+                part.write_parquet(str(out_path))
+
+        del chunk_df
+        gc.collect()
+
+        done = min(chunk_start + chunk_size, total)
+        logger.info(
+            "ML_TABLE lookup cache build: %d/%d root_lot_ids written",
+            done, total,
+        )
+
+
 def _parquet_row_count(fp: Path) -> int:
     try:
         import pyarrow.parquet as pq  # type: ignore
@@ -2126,6 +2693,13 @@ def _lookup_cache_written_stats(cache_dir: Path) -> tuple[int, int]:
 def _build_lookup_cache(fp: Path) -> dict[str, Any]:
     fp = Path(fp).resolve()
     started = time.monotonic()
+    _prod_lbl = _safe_product_token(Path(fp).stem) or Path(fp).name
+    # 오프로드된 개발서버(worker)에서 빌드해도 공유 로그로 운영 화면에 뜨도록 기록.
+    try:
+        from core.cache_event_log import record as _cache_log
+        _cache_log("build", f"lookup 캐시 빌드 시작: {_prod_lbl}", product=_prod_lbl)
+    except Exception:
+        pass
     cdir = cache_dir_for(fp)
     tmp_dir = cdir.with_name(cdir.name + ".tmp")
     cols, schema = _scan_schema(fp)
@@ -2148,7 +2722,7 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
-        _sink_lookup_cache_partitions(lf, tmp_dir)
+        _sink_lookup_cache_partitions_chunked(fp, lf, tmp_dir)
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
@@ -2175,6 +2749,12 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         "build_seconds": round(time.monotonic() - started, 3),
     }
     _write_meta(fp, meta)
+    try:
+        from core.cache_event_log import record as _cache_log
+        _cache_log("build", f"lookup 캐시 빌드 완료: {_prod_lbl} — {root_count} roots, {meta['build_seconds']}s",
+                   product=_prod_lbl, detail={"roots": root_count, "rows": row_count, "seconds": meta["build_seconds"]})
+    except Exception:
+        pass
     return {"ok": True, "cache_dir": str(cdir), "meta": meta}
 
 
@@ -2224,6 +2804,76 @@ def _run_build_complete_hooks(fp: Path) -> None:
             logger.debug("ml_table_lookup build-complete hook failed", exc_info=True)
 
 
+def _cancel_build_retry(fp: Path) -> None:
+    key = str(Path(fp).resolve())
+    with _BUILD_LOCK:
+        timer = _BUILD_RETRY_TIMERS.pop(key, None)
+        _BUILD_RETRY_COUNTS.pop(key, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _schedule_build_retry(fp: Path) -> bool:
+    """짧은 지연 뒤 실패한 lookup build를 제한 횟수만큼 재등록한다.
+
+    워커가 죽은 직후 로컬 폴백이 고아 lock/일시 메모리 압박에 막혀도 30분짜리
+    RAM scheduler 다음 tick까지 제품이 비지 않게 한다. 같은 source timer는 하나만
+    유지하고, 연속 자동 재시도는 기본 3회로 제한한다.
+    """
+    path = Path(fp).resolve()
+    key = str(path)
+    max_retries = _env_int(
+        "FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_RETRY_MAX",
+        LOOKUP_CACHE_BUILD_RETRY_MAX_DEFAULT,
+        0,
+        20,
+    )
+    delay = _env_float(
+        "FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_RETRY_SECONDS",
+        LOOKUP_CACHE_BUILD_RETRY_SECONDS_DEFAULT,
+        1.0,
+        3600.0,
+    )
+    with _BUILD_LOCK:
+        current = _BUILD_RETRY_TIMERS.get(key)
+        if current is not None and current.is_alive():
+            return True
+        count = int(_BUILD_RETRY_COUNTS.get(key) or 0)
+        if count >= max_retries:
+            return False
+        _BUILD_RETRY_COUNTS[key] = count + 1
+
+        def _retry() -> None:
+            with _BUILD_LOCK:
+                _BUILD_RETRY_TIMERS.pop(key, None)
+            enqueue_build(path)
+
+        timer = threading.Timer(delay, _retry)
+        timer.daemon = True
+        timer.name = "ml-table-lookup-retry"
+        _BUILD_RETRY_TIMERS[key] = timer
+        timer.start()
+    return True
+
+
+def _warm_root_ram_after_lookup_build(fp: Path) -> None:
+    """공유 lookup 산출물을 만든 뒤 api/standalone의 로컬 RAM을 즉시 예열."""
+    try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker":
+            return
+    except Exception:
+        pass
+    try:
+        refresh_root_lot_ram_cache(product=Path(fp).stem, force=False)
+    except Exception as exc:
+        logger.warning("root RAM warm after lookup build failed source=%s: %s", fp, exc)
+
+
 def _worker_loop() -> None:
     while True:
         with _BUILD_LOCK:
@@ -2256,22 +2906,46 @@ def _worker_loop() -> None:
             from core import worker_dispatch as _wd
             res = _wd.run_heavy(
                 "ml_lookup_cache_build",
-                {"source_path": str(fp.resolve())},
+                {
+                    "product": fp.stem,
+                    "file": fp.name,
+                    # 구버전 worker 호환용. 새 worker는 logical identifier를 우선한다.
+                    "source_path": str(fp.resolve()),
+                },
                 _local_build,
                 label=f"ml_lookup:{fp.stem}",
+                local_idle_only=True,
             ) or {}
-            if res.get("error") == "memory_wait_timeout":
+            fresh_after = cache_status(fp).get("status") == "fresh"
+            if not fresh_after:
+                reason = str(
+                    res.get("error")
+                    or res.get("reason")
+                    or cache_status(fp).get("status")
+                    or "lookup_build_not_fresh"
+                )
                 with _BUILD_LOCK:
-                    _BUILD_STATE["last_error"] = "memory_wait_timeout"
+                    _BUILD_STATE["last_error"] = reason
                     _BUILD_STATE["last_source"] = str(fp.resolve())
                     _BUILD_STATE["finished_at"] = _utc_now()
+                if _schedule_build_retry(fp):
+                    logger.warning(
+                        "ML_TABLE lookup cache not fresh after build; retry scheduled source=%s reason=%s",
+                        fp, reason,
+                    )
                 continue
+            _cancel_build_retry(fp)
             with _BUILD_LOCK:
+                _BUILD_STATE["last_error"] = ""
                 _BUILD_STATE["last_source"] = str(fp.resolve())
                 _BUILD_STATE["finished_at"] = _utc_now()
             # 빌드 완료 → 소비 캐시(SplitTable view payload) 무효화 훅 실행.
             # 이렇게 해야 stale 파티션으로 렌더한 payload 가 fresh 데이터로 수렴.
             _run_build_complete_hooks(fp)
+            # lookup은 공유 디스크 산출물이지만 root RAM은 프로세스 로컬이다.
+            # remote build 직후 api가 자기 RAM을 채워야 "빌드는 됐는데 제품별 lot
+            # 캐시는 다음 30분 tick까지 0"인 공백이 생기지 않는다.
+            _warm_root_ram_after_lookup_build(fp)
         except Exception as exc:
             logger.warning("ML_TABLE lookup cache build failed source=%s: %s", fp, exc, exc_info=True)
             with _BUILD_LOCK:
@@ -2389,6 +3063,17 @@ def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allo
         enqueue_build(fp)
     files = _partition_files(cache_dir_for(fp), root)
     if not files:
+        # meta is written last, so this normally means a partition was removed
+        # after a successful build. Rebuild only when the candidate index says
+        # the requested root should exist (or the index itself is unavailable).
+        index = read_candidate_index(fp)
+        known_roots = {
+            str(value or "").strip().upper()
+            for value in (index.get("root_lot_ids") or [])
+            if str(value or "").strip()
+        }
+        if not index or not known_roots or root in known_roots:
+            enqueue_build(fp)
         return None, status
     # data_source 를 profile 에 기록해 호출측이 RAM 히트 / 첫 적재 / 디스크 스캔을
     # 구분해 타이밍 breakdown 에 표시할 수 있게 한다.
@@ -2396,12 +3081,15 @@ def scan_root_lot_cache(fp: Path, root_lot_id: str, wafer_ids: str = "", *, allo
     lf = _root_ram_cache_get(fp, root, files, status)
     data_source = "ram" if lf is not None else ""
     if lf is None:
-        lf = _root_ram_cache_put(fp, root, files, status)
-        if lf is not None:
-            data_source = "ram_load"
-    if lf is None:
+        # A cold root can be very wide. Collecting every column into RAM inside
+        # the HTTP request made switching to another root much slower and let
+        # five different-root requests multiply peak memory. Serve a projected
+        # lazy parquet scan now; warm the full root later in one idle thread.
+        prefetch_queued = enqueue_root_ram_prefetch(fp, root)
         lf = pl.scan_parquet([str(p) for p in files], hive_partitioning=True)
         data_source = "disk"
+        if profile is not None:
+            profile["root_prefetch_queued"] = bool(prefetch_queued)
     if profile is not None:
         profile["root_data_source"] = data_source
         profile["root_scan_ms"] = round((time.perf_counter() - _t0) * 1000.0, 3)

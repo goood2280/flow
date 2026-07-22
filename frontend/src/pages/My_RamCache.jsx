@@ -19,6 +19,78 @@ const S_BTN = {
   background: "transparent", color: "var(--text-primary)", fontSize: 13, cursor: "pointer",
 };
 
+const JOB_TONE = {
+  running: "rgba(37,99,235,0.95)", queued: "rgba(245,158,11,0.95)",
+  done: "rgba(34,197,94,0.9)", failed: "rgba(239,68,68,0.9)", skipped: "var(--text-secondary)",
+};
+const SCAN_STAGE_LABEL = {
+  match_cache: "FAB 매칭 캐시",
+  product_ram: "제품 원본 RAM 캐시",
+  root_lot_ram: "Root lot lookup/RAM 캐시",
+};
+
+function scanStageLabel(event) {
+  const stage = event?.detail?.stage;
+  if (!stage) return "-";
+  const label = SCAN_STAGE_LABEL[stage] || stage;
+  const phase = event?.detail?.phase;
+  const phaseLabel = phase === "started" ? "시작" : phase === "finished" ? "완료" : phase === "failed" ? "실패" : "";
+  return phaseLabel ? `${label} · ${phaseLabel}` : label;
+}
+
+function CacheJobPanel({ jobs, queues }) {
+  const visible = (jobs || []).slice(0, 3);
+  const worker = queues?.worker || {};
+  const lookup = queues?.lookup_build || {};
+  const rootPrefetch = queues?.root_prefetch || {};
+  const externalQueued = Number(worker.depth || 0) + (lookup.queued || []).length
+    + Number(rootPrefetch.depth || 0)
+    + Number(queues?.match_cache?.queued || 0) + Number(queues?.product_ram?.queued || 0);
+  if (!visible.length && !externalQueued && !(worker.running || []).length && !lookup.running) return null;
+  return <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 7,
+    border: "1px solid var(--border)", background: "var(--bg-card)" }}>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 13, fontWeight: 800 }}>캐시 작업 파이프라인</span>
+      <span style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        실행 {visible.filter(j => j.status === "running").length} · 외부 큐 {externalQueued}
+      </span>
+    </div>
+    {visible.map(job => <div key={job.id} style={{ display: "grid", gap: 6, padding: "7px 8px",
+      borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+        <b>{job.label}</b>
+        <span style={{ color: JOB_TONE[job.status] || "var(--text-secondary)", fontFamily: "monospace" }}>{job.status}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {(job.stages || []).map(stage => <span key={stage.id} title={stage.detail?.error || ""}
+          style={{ fontSize: 11, padding: "2px 7px", borderRadius: 999,
+            border: `1px solid ${JOB_TONE[stage.status] || "var(--border)"}`,
+            color: JOB_TONE[stage.status] || "var(--text-secondary)" }}>
+          {stage.status === "done" ? "✓" : stage.status === "running" ? "●" : stage.status === "failed" ? "!" : "○"} {stage.label}
+        </span>)}
+      </div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11,
+        color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        <span>RSS {Number(job.current_rss_gb || 0).toFixed(2)}GB</span>
+        <span>API 작업 Peak {Number(job.peak_effective_gb || 0).toFixed(2)}GB</span>
+        <span>Peak 증가 +{Number(job.peak_delta_gb || 0).toFixed(2)}GB</span>
+        <span>최저 여유 {Number(job.min_system_available_gb || 0).toFixed(2)}GB</span>
+      </div>
+    </div>)}
+    {(externalQueued > 0 || (worker.running || []).length > 0 || lookup.running) &&
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11,
+        color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        <span>개발 워커: 실행 {(worker.running || []).length} / 대기 {worker.depth || 0}</span>
+        <span>worker RAM {Number(worker.load?.mem_effective_gb || 0).toFixed(2)}GB / 프로세스 peak RSS {Number(worker.load?.peak_rss_gb || 0).toFixed(2)}GB</span>
+        <span>lookup: {lookup.current || "-"} / 대기 {(lookup.queued || []).length}</span>
+        <span>Root 유휴 예열: {rootPrefetch.current_root || "-"} / 대기 {rootPrefetch.depth || 0}</span>
+        <span>FAB 대기 {queues?.match_cache?.queued || 0}</span>
+        <span>제품 RAM 대기 {queues?.product_ram?.queued || 0}</span>
+        {worker.overloaded_reason && <span style={{ color: "rgba(239,68,68,0.9)" }}>worker guard: {worker.overloaded_reason}</span>}
+      </div>}
+  </div>;
+}
+
 export default function My_RamCache({ user }) {
   const canManage = isAdmin(user);
   const [overview, setOverview] = useState(null);
@@ -47,6 +119,56 @@ export default function My_RamCache({ user }) {
   const [cacheEventLog, setCacheEventLog] = useState(null);
   const [cacheEventLogFilter, setCacheEventLogFilter] = useState("");
   const [peakRam, setPeakRam] = useState(null);
+  const [cacheJobs, setCacheJobs] = useState([]);
+  const [cacheQueues, setCacheQueues] = useState(null);
+  // 관리자 전용 — 캐시 예산 조절 톱니바퀴
+  const [budgetModalOpen, setBudgetModalOpen] = useState(false);
+  const [budgetCfg, setBudgetCfg] = useState(null);
+  const [budgetForm, setBudgetForm] = useState({});
+  const [budgetCfgSaving, setBudgetCfgSaving] = useState(false);
+
+  const loadBudgetCfg = useCallback(() => {
+    sf(API + "/cache-budget/settings")
+      .then(d => {
+        setBudgetCfg(d);
+        const s = d.saved || {};
+        setBudgetForm({
+          pool_fraction: s.pool_fraction ?? "",
+          pool_fraction_dev: s.pool_fraction_dev ?? "",
+          dev_factor: s.dev_factor ?? "",
+          root_ram_gb: s.root_ram_gb ?? "",
+          root_ram_gb_dev: s.root_ram_gb_dev ?? "",
+          product_ram_enabled: s.product_ram_enabled ?? true,
+          product_ram_enabled_dev: s.product_ram_enabled_dev ?? (s.product_ram_enabled ?? true),
+          product_ram_gb: s.product_ram_gb ?? "",
+          product_ram_gb_dev: s.product_ram_gb_dev ?? "",
+        });
+      })
+      .catch(e => toast.error("예산 설정 로드 실패: " + (e?.message || e)));
+  }, []);
+
+  const openBudgetModal = () => { setBudgetModalOpen(true); loadBudgetCfg(); };
+
+  const saveBudgetCfg = () => {
+    setBudgetCfgSaving(true);
+    const num = v => (v === "" || v === null || v === undefined ? null : Number(v));
+    const payload = {
+      pool_fraction: num(budgetForm.pool_fraction),
+      pool_fraction_dev: num(budgetForm.pool_fraction_dev),
+      dev_factor: num(budgetForm.dev_factor),
+      root_ram_gb: num(budgetForm.root_ram_gb),
+      root_ram_gb_dev: num(budgetForm.root_ram_gb_dev),
+      product_ram_gb: num(budgetForm.product_ram_gb),
+      product_ram_gb_dev: num(budgetForm.product_ram_gb_dev),
+      product_ram_enabled: !!budgetForm.product_ram_enabled,
+      product_ram_enabled_dev: !!budgetForm.product_ram_enabled_dev,
+    };
+    sf(API + "/cache-budget/settings/save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload) })
+      .then(d => { setBudgetCfg(d); toast.ok("캐시 예산 설정 저장됨"); loadOverview(); })
+      .catch(e => toast.error("저장 실패: " + (e?.message || e)))
+      .finally(() => setBudgetCfgSaving(false));
+  };
 
   const loadOverview = useCallback(() => {
     setOverviewLoading(true);
@@ -100,7 +222,11 @@ export default function My_RamCache({ user }) {
   const loadCacheEventLog = useCallback((cat) => {
     const q = cat ? ("?category=" + encodeURIComponent(cat)) : "";
     sf(API + "/cache-event-log" + q)
-      .then(d => { setCacheEventLog(d.events || []); setPeakRam(d.peak_ram || null); })
+      .then(d => {
+        setCacheEventLog(d.events || []); setPeakRam(d.peak_ram || null);
+        setCacheJobs(d.jobs || []); setCacheQueues(d.queues || null);
+        setUnifiedScanBusy((d.jobs || []).some(job => job.status === "running"));
+      })
       .catch(() => { setCacheEventLog(null); setPeakRam(null); });
   }, []);
   const reloadProductCacheStatus = useCallback((prod) => {
@@ -122,6 +248,11 @@ export default function My_RamCache({ user }) {
     loadQueryWorkers();
     loadCacheEventLog("");
   }, [canManage, loadQueryWorkers, loadCacheEventLog]);
+  useEffect(() => {
+    if (!canManage || !(cacheJobs || []).some(job => job.status === "running")) return;
+    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), 2500);
+    return () => clearTimeout(timer);
+  }, [canManage, cacheJobs, cacheEventLogFilter, loadCacheEventLog]);
   useEffect(() => {
     if (!selProd) return;
     loadPriority(selProd);
@@ -145,20 +276,44 @@ export default function My_RamCache({ user }) {
         if (r.queued) toast.ok(`통합 캐시 스캔 시작됨 (${selProd || "전체 제품"}) — FAB/product/root lot 순서대로 갱신됩니다.`);
         else if (r.running) toast.warn("통합 캐시 스캔이 이미 실행 중입니다.");
         else toast.ok("통합 캐시 스캔 요청 완료");
-        // 잠시 후 상태 갱신 (백그라운드 작업이 시작되도록)
-        // 스캔 진행 중 이벤트 로그 갱신 — 3초, 8초, 15초 후에 상태 확인
-        const delays = [3000, 8000, 15000];
-        const timers = delays.map(d => setTimeout(() => {
-          reloadProductCacheStatus(selProd);
-          reloadRootLotCacheStatus(selProd);
-          loadOverview();
-          if (selProd) loadContents(selProd);
-          loadCacheEventLog(cacheEventLogFilter);
-        }, d));
-        // cleanup은 불필요 — fire-and-forget 패턴
+        // 진행 로그 실시간 폴링 — 스캔이 끝날 때까지(scan-status.running=false) 이벤트
+        // 로그를 2.5초마다 갱신한다. 예전엔 3/8/15초 후 한 번씩만 갱신해 오래 걸리는
+        // 적재의 진행 로그가 뜨지 않았다. 최대 10분(240틱) 상한.
+        // 이전에 예열/축출 필터를 선택했어도, 이번 수동 스캔의 단계·적재 이력이
+        // 모두 보이도록 '전체' 로 전환한다(단계 마커=scan, 적재 진행=cache_op,
+        // 예열 요약=warmup 을 한 로그에서 시간순으로 본다).
+        const scanLogFilter = "";
+        setCacheEventLogFilter(scanLogFilter);
+        loadCacheEventLog(scanLogFilter);
+        let ticks = 0;
+        const MAX_TICKS = 240;
+        const poll = setInterval(() => {
+          ticks += 1;
+          loadCacheEventLog(scanLogFilter);
+          if (ticks % 2 === 0) {   // 5초마다 현황/상태도 갱신
+            reloadProductCacheStatus(selProd);
+            reloadRootLotCacheStatus(selProd);
+            loadOverview();
+            if (selProd) loadContents(selProd);
+          }
+          sf(API + "/ram-cache/scan-status")
+            .then(s => {
+              setCacheJobs(s.jobs || []); setCacheQueues(s.queues || null);
+              if (!s.running || ticks >= MAX_TICKS) {
+                clearInterval(poll);
+                setUnifiedScanBusy(false);
+                // 종료 직후 마지막 갱신
+                loadCacheEventLog(scanLogFilter);
+                reloadProductCacheStatus(selProd);
+                reloadRootLotCacheStatus(selProd);
+                loadOverview();
+                if (selProd) loadContents(selProd);
+              }
+            })
+            .catch(() => { if (ticks >= MAX_TICKS) { clearInterval(poll); setUnifiedScanBusy(false); } });
+        }, 2500);
       })
-      .catch(e => toast.error("통합 캐시 스캔 실패: " + (e?.message || e)))
-      .finally(() => setUnifiedScanBusy(false));
+      .catch(e => { toast.error("통합 캐시 스캔 실패: " + (e?.message || e)); setUnifiedScanBusy(false); });
   };
   const saveQueryWorkers = () => {
     setQueryWorkersSaveBusy(true);
@@ -235,9 +390,127 @@ export default function My_RamCache({ user }) {
 
   return (
     <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
+        {canManage && <button onClick={openBudgetModal} title="캐시 예산 조절"
+          style={{ ...S_BTN, display: "flex", alignItems: "center", gap: 4 }}>⚙ 예산 설정</button>}
         <button onClick={refreshAll} style={{ ...S_BTN, color: "var(--accent)" }}>새로고침</button>
       </div>
+
+      {/* 캐시 예산 조절 모달 (톱니바퀴) */}
+      {budgetModalOpen && canManage && (
+        <div onClick={() => setBudgetModalOpen(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+            display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", overflow: "auto" }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: "min(560px, 100%)", background: "var(--bg-card)", border: "1px solid var(--border)",
+              borderRadius: 12, padding: 18, display: "grid", gap: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 16, fontWeight: 800 }}>⚙ 캐시 예산 조절</span>
+              <button onClick={() => setBudgetModalOpen(false)} style={{ ...S_BTN, padding: "2px 8px" }}>✕</button>
+            </div>
+            {budgetCfg && <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              현재 서버: <b>{budgetCfg.is_dev ? "개발" : "운영"}</b> · 호스트 메모리 {budgetCfg.host_total_gb} GB ·
+              실제 캐시 풀 <b style={{ color: "var(--accent)" }}>{budgetCfg.effective?.pool_gb} GB</b>
+              <div>예산을 넘으면 오래된 항목부터 자동 축출됩니다(크래시 없음). 빈칸/0 = 자동. env 로 고정된 항목은 편집이 무시됩니다.</div>
+            </div>}
+            {budgetCfg && (() => {
+              const eff = budgetCfg.effective || {}; const pins = budgetCfg.env_pins || {};
+              const row = (label, key, unit, ph, effVal, extra) => (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center",
+                  padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{label} {pins[key] && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}>· env 고정</span>}</div>
+                    {extra}
+                    <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>현재 적용: <b>{effVal}</b></div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="number" step="any" value={budgetForm[key] ?? ""} disabled={pins[key]}
+                      placeholder={ph} onChange={e => setBudgetForm(f => ({ ...f, [key]: e.target.value }))}
+                      style={{ ...S_INPUT, width: 84, fontFamily: "monospace", opacity: pins[key] ? 0.5 : 1 }} />
+                    <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{unit}</span>
+                  </div>
+                </div>
+              );
+              return <div style={{ display: "grid", gap: 8 }}>
+                {/* 전체 캐시 풀 비율 — 운영/개발 분리 */}
+                <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>전체 캐시 풀 비율 (×)
+                    {pins.pool_fraction && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}> · env 고정</span>}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>호스트 메모리 × 이 비율이 전 캐시 합계 상한 (0.1~0.8). 현재 서버({budgetCfg.is_dev ? "개발" : "운영"}) 적용: <b>{eff.pool_fraction} → 풀 {eff.pool_gb}GB</b></div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>운영
+                      <input type="number" step="any" value={budgetForm.pool_fraction ?? ""} disabled={pins.pool_fraction}
+                        placeholder={String(budgetCfg.defaults?.pool_fraction ?? 0.45)}
+                        onChange={e => setBudgetForm(f => ({ ...f, pool_fraction: e.target.value }))}
+                        style={{ ...S_INPUT, width: 76, fontFamily: "monospace" }} /></label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>개발
+                      <input type="number" step="any" value={budgetForm.pool_fraction_dev ?? ""} disabled={pins.pool_fraction}
+                        placeholder="운영×축소 자동"
+                        onChange={e => setBudgetForm(f => ({ ...f, pool_fraction_dev: e.target.value }))}
+                        style={{ ...S_INPUT, width: 110, fontFamily: "monospace" }} /></label>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    개발을 비우면 <b>운영값 × 개발 축소계수({eff.dev_factor})</b>로 자동 계산됩니다.
+                    {budgetCfg.is_dev && !budgetForm.pool_fraction_dev && <label style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 6 }}>· 축소계수
+                      <input type="number" step="any" value={budgetForm.dev_factor ?? ""} disabled={pins.dev_factor}
+                        placeholder={String(budgetCfg.defaults?.dev_factor ?? 0.35)}
+                        onChange={e => setBudgetForm(f => ({ ...f, dev_factor: e.target.value }))}
+                        style={{ ...S_INPUT, width: 64, fontFamily: "monospace" }} /></label>}
+                  </div>
+                </div>
+                {/* Root lot RAM 캐시 — 운영/개발 분리 */}
+                <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>Root lot RAM 캐시 (GB)
+                    {pins.root_ram_gb && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}> · env 고정</span>}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>SplitTable 검색용 per-root 메모리 캐시 (빈칸=적응형). 현재 서버({budgetCfg.is_dev ? "개발" : "운영"}) 적용: <b>{eff.root_ram_gb} GB</b></div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>운영
+                      <input type="number" step="any" value={budgetForm.root_ram_gb ?? ""} disabled={pins.root_ram_gb} placeholder="자동"
+                        onChange={e => setBudgetForm(f => ({ ...f, root_ram_gb: e.target.value }))}
+                        style={{ ...S_INPUT, width: 76, fontFamily: "monospace" }} /></label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>개발
+                      <input type="number" step="any" value={budgetForm.root_ram_gb_dev ?? ""} disabled={pins.root_ram_gb} placeholder="운영값 따름"
+                        onChange={e => setBudgetForm(f => ({ ...f, root_ram_gb_dev: e.target.value }))}
+                        style={{ ...S_INPUT, width: 96, fontFamily: "monospace" }} /></label>
+                  </div>
+                </div>
+                {/* 제품 원본 RAM 캐시 — 운영/개발 각각 켜기/끄기 + 상한 */}
+                <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>제품 원본 RAM 캐시 (운영/개발 개별)
+                    {pins.product_ram_enabled && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}> · env 고정</span>}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    제품 전체 테이블을 통째로 메모리에 상주(가장 무거움). SplitTable 검색엔 필수 아님 — 10~15GB 개발서버는 <b>꺼두는 것 권장</b>.
+                    현재 서버({budgetCfg.is_dev ? "개발" : "운영"}) 적용: <b>{eff.product_ram_enabled ? "켜짐" : "꺼짐"}{eff.product_ram_enabled ? ` · ${eff.product_ram_gb}GB` : ""}</b>
+                  </div>
+                  {[["운영", "product_ram_enabled", "product_ram_gb"], ["개발", "product_ram_enabled_dev", "product_ram_gb_dev"]].map(([lbl, ek, gk]) => (
+                    <div key={ek} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, minWidth: 56, cursor: pins.product_ram_enabled ? "default" : "pointer" }}>
+                        <input type="checkbox" checked={!!budgetForm[ek]} disabled={pins.product_ram_enabled}
+                          onChange={e => setBudgetForm(f => ({ ...f, [ek]: e.target.checked }))} />{lbl}
+                      </label>
+                      {budgetForm[ek] && <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>상한
+                        <input type="number" step="any" value={budgetForm[gk] ?? ""} disabled={pins.product_ram_gb} placeholder="자동"
+                          onChange={e => setBudgetForm(f => ({ ...f, [gk]: e.target.value }))}
+                          style={{ ...S_INPUT, width: 76, fontFamily: "monospace" }} /> GB</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>;
+            })()}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setBudgetModalOpen(false)} style={S_BTN}>닫기</button>
+              <button onClick={saveBudgetCfg} disabled={budgetCfgSaving}
+                style={{ ...S_BTN, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)",
+                  fontWeight: 700, cursor: budgetCfgSaving ? "wait" : "pointer" }}>
+                {budgetCfgSaving ? "저장 중" : "저장"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 전체 사용량 바 */}
       <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", marginBottom: 14 }}>
@@ -383,6 +656,9 @@ export default function My_RamCache({ user }) {
                   style={{ ...S_BTN, fontSize: 11, padding: "2px 6px", whiteSpace: "nowrap" }}>상태 새로고침</button>
               </div>);
           })()}
+          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+            수동 스캔의 단계별 진행은 아래 <b>캐시 이벤트 로그</b>에 실시간으로 표시됩니다.
+          </div>
         </div>
 
         {/* 쿼리 병렬 코어 수 */}
@@ -453,10 +729,11 @@ export default function My_RamCache({ user }) {
             <select value={cacheEventLogFilter} onChange={e => { setCacheEventLogFilter(e.target.value); loadCacheEventLog(e.target.value); }}
               style={{ ...S_INPUT, fontSize: 12, cursor: "pointer" }}>
               <option value="">전체</option>
+              <option value="scan">수동 스캔</option>
               <option value="warmup">예열</option>
               <option value="eviction">축출</option>
               <option value="watchdog">워치독</option>
-              <option value="cache_op">캐시 작업</option>
+              <option value="cache_op">캐시 적재</option>
             </select>
             <button onClick={() => loadCacheEventLog(cacheEventLogFilter)}
               style={{ ...S_BTN, fontSize: 12, padding: "3px 8px" }}>새로고침</button>
@@ -466,7 +743,9 @@ export default function My_RamCache({ user }) {
               <thead>
                 <tr style={{ background: "var(--bg-secondary)", position: "sticky", top: 0 }}>
                   <th style={{ padding: "4px 6px", textAlign: "left", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>시간</th>
+                  <th style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>서버</th>
                   <th style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>분류</th>
+                  <th style={{ padding: "4px 6px", textAlign: "left", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>단계</th>
                   <th style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>상태</th>
                   <th style={{ padding: "4px 6px", textAlign: "left", borderBottom: "1px solid var(--border)" }}>이벤트</th>
                 </tr>
@@ -478,16 +757,30 @@ export default function My_RamCache({ user }) {
                     <td style={{ padding: "3px 6px", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>
                       {ev.ts_iso ? ev.ts_iso.replace("T", " ").slice(0, 19) : "-"}
                     </td>
+                    <td style={{ padding: "3px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
+                      {ev.origin
+                        ? <span title={ev.host || ""} style={{ padding: "1px 5px", borderRadius: 3, fontSize: 10, fontWeight: 700,
+                            background: ev.origin === "운영" ? "rgba(37,99,235,0.12)" : "rgba(245,158,11,0.12)",
+                            color: ev.origin === "운영" ? "rgba(37,99,235,0.95)" : "rgba(217,119,6,0.95)" }}>{ev.origin}</span>
+                        : <span style={{ color: "var(--text-secondary)" }}>-</span>}
+                    </td>
                     <td style={{ padding: "3px 6px", textAlign: "center" }}>
                       <span style={{ padding: "1px 5px", borderRadius: 3, fontSize: 11,
                         background: ev.category === "warmup" ? "rgba(37,99,235,0.12)" :
                                     ev.category === "eviction" ? "rgba(245,158,11,0.12)" :
-                                    ev.category === "watchdog" ? "rgba(239,68,68,0.12)" : "rgba(156,163,175,0.12)",
+                                    ev.category === "watchdog" ? "rgba(239,68,68,0.12)" :
+                                    ev.category === "scan" ? "rgba(34,197,94,0.14)" :
+                                    ev.category === "cache_op" ? "rgba(16,185,129,0.10)" : "rgba(156,163,175,0.12)",
                         color: ev.category === "warmup" ? "rgba(37,99,235,0.95)" :
                                ev.category === "eviction" ? "rgba(245,158,11,0.95)" :
-                               ev.category === "watchdog" ? "rgba(239,68,68,0.9)" : "var(--text-secondary)" }}>
+                               ev.category === "watchdog" ? "rgba(239,68,68,0.9)" :
+                               ev.category === "scan" ? "rgba(22,163,74,0.95)" :
+                               ev.category === "cache_op" ? "rgba(5,150,105,0.9)" : "var(--text-secondary)" }}>
                         {ev.category}
                       </span>
+                    </td>
+                    <td style={{ padding: "3px 6px", whiteSpace: "nowrap", color: ev.detail?.stage ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                      {scanStageLabel(ev)}
                     </td>
                     <td style={{ padding: "3px 6px", textAlign: "center",
                       color: ev.ok ? "rgba(34,197,94,0.9)" : "rgba(239,68,68,0.9)", fontWeight: 700 }}>
@@ -500,7 +793,7 @@ export default function My_RamCache({ user }) {
                   </tr>
                 ))}
                 {(!cacheEventLog || cacheEventLog.length === 0) &&
-                  <tr><td colSpan={4} style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)" }}>
+                  <tr><td colSpan={6} style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)" }}>
                     이벤트 로그가 없습니다</td></tr>}
               </tbody>
             </table>

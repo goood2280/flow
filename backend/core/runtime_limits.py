@@ -181,16 +181,17 @@ def heavy_background_jobs_enabled() -> bool:
     """
     if "FLOW_ENABLE_HEAVY_BACKGROUND_JOBS" in os.environ:
         return _env_flag("FLOW_ENABLE_HEAVY_BACKGROUND_JOBS")
-    # 워커 역할(개발서버)은 무거운 백그라운드 잡을 대신 돌려주는 게 존재 이유 —
-    # 명시 env 없이도 기본 켠다. 역할은 env > server_role.json > 자동 순으로
-    # worker_dispatch 가 판정한다 (import 실패 시 env 만 확인하는 폴백).
+    # worker는 api가 제출한 작업을 소비하는 실행 노드이지 스케줄 소유자가 아니다.
+    # 여기서 자체 scheduler까지 켜면 api 스케줄과 중복 실행되고, lookup 빌드와
+    # Tracker/ET 스캔이 같은 개발 서버에서 겹쳐 OOM을 유발한다. 명시 env는
+    # 비표준 단독-worker 배포를 위해 위에서 계속 우선한다.
     try:
         from core.worker_dispatch import server_role as _server_role
         if _server_role() == "worker":
-            return True
+            return False
     except Exception:
         if os.environ.get("FLOW_SERVER_ROLE", "").strip().lower() == "worker":
-            return True
+            return False
     return resource_profile() in _FULL_PROFILES
 
 
@@ -214,6 +215,13 @@ def splittable_product_ram_cache_scheduler_enabled() -> bool:
         return not _env_flag("FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE")
     if "FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ:
         return _env_flag("FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE")
+    try:
+        from core.worker_dispatch import server_role as _server_role
+        if _server_role() == "worker":
+            return False
+    except Exception:
+        if os.environ.get("FLOW_SERVER_ROLE", "").strip().lower() == "worker":
+            return False
     return resource_profile() in (_FULL_PROFILES | {"prod", "production"})
 
 
@@ -223,6 +231,13 @@ def splittable_root_lot_ram_cache_scheduler_enabled() -> bool:
         return not _env_flag("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE")
     if "FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE" in os.environ:
         return _env_flag("FLOW_ENABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE")
+    try:
+        from core.worker_dispatch import server_role as _server_role
+        if _server_role() == "worker":
+            return False
+    except Exception:
+        if os.environ.get("FLOW_SERVER_ROLE", "").strip().lower() == "worker":
+            return False
     return True
 
 
@@ -627,8 +642,8 @@ def _polars_threads_for_role() -> int:
 
     Polars 풀은 프로세스 수명 동안 최초 1회만 크기가 정해지고(런타임 변경 불가)
     모든 동시 검색이 이 단일 풀을 공유한다. 그래서 무거운 빌드를 개발서버로
-    오프로드하는 api 는 검색 병렬도를 더 주고(4), 그 빌드를 직접 도는 worker 는
-    하나 낮춘다(3). standalone/기타는 기존 호스트 비례 자동값. 모두 실제 코어
+    오프로드하는 api 는 검색 병렬도를 더 주고(4), 수 GB FAB/lookup 빌드를 직접
+    도는 worker 는 peak memory를 줄이기 위해 2로 제한한다. standalone/기타는 기존 호스트 비례 자동값. 모두 실제 코어
     수로 상한 클램프한다.
 
     연결 상태(개발서버 alive 여부)는 런타임에 변하지만 풀은 재크기 불가이므로,
@@ -642,7 +657,7 @@ def _polars_threads_for_role() -> int:
     if role == "api":
         want = 4
     elif role == "worker":
-        want = 3
+        want = 2
     else:
         # standalone: 기존 호스트 비례 자동값 (한 코어는 uvicorn/event loop 용으로 남김).
         budget_threads = int(cpu_budget_cores())
@@ -683,4 +698,3 @@ def apply_runtime_limits() -> None:
     ):
         flow_name = f"FLOW_{name}"
         os.environ.setdefault(name, os.environ.get(flow_name, "1"))
-

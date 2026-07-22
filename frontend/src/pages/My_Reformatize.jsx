@@ -702,12 +702,12 @@ export default function My_Reformatize({ user }) {
             <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>테이블 한 페이지에 표시할 행 수 (10~5,000)</div>
           </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>CSV 다운로드 최대 행</div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>조회·CSV 다운로드 최대 raw 행</div>
             <input type="number" min={100} max={1000000}
               value={(gearForm || settings).max_download_rows}
               onChange={e => setGearForm({ ...(gearForm || settings), max_download_rows: e.target.value })}
               style={{ ...inputStyle, width: "100%" }} />
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>초과 시 기간·lot 등 필터를 조정해 행을 줄여야 다운로드됩니다 (100~1,000,000)</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>초과 시 pivot 전 중단됩니다. 기간·lot 등 필터를 조정하거나 상한을 올리세요 (100~1,000,000)</div>
           </div>
           <Button variant="primary" onClick={saveSettings}>저장</Button>
         </div>

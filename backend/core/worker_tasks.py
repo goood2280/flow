@@ -6,7 +6,8 @@ core.worker_dispatch.start_services() 가 worker 역할일 때 import 하며, im
 
 규칙:
   - 기본은 결과가 shared workspace 파일로 남는 작업 (pivot 캐시, 인덱스,
-    파티션 등). 프로세스 RAM 캐시 워밍은 서버별 자원이라 오프로드 대상이 아니다.
+    파티션 등). 프로세스 RAM 캐시는 운영 API 서버가 소유하므로 오프로드
+    대상이 아니다.
   - 예외적으로 응답-페이로드 작업도 허용하되, ①지연 허용(자체 처리 시간이
     큐 왕복 ~1초를 압도)이고 ②부수 상태가 전부 공유 data_root 에 남아 어느
     서버가 실행해도 이후 요청을 서빙할 수 있는 작업만 (예: flowi_chat_turn —
@@ -42,6 +43,10 @@ def _splittable_pivot_build(payload: dict) -> dict:
         return {"ok": False, "error": "missing product"}
     source_raw = str(payload.get("product_path") or "").strip()
     source_fp = Path(source_raw) if source_raw else None
+    # 서버마다 shared DB의 mount 경로가 다를 수 있다. api의 절대 경로가 worker에
+    # 없으면 product 이름으로 worker 로컬 PATHS에서 다시 해석한다.
+    if source_fp is not None and not source_fp.is_file():
+        source_fp = None
     from core import shared_lease
     lease_name = f"splittable_pivot_{product}"
     if not shared_lease.try_acquire(lease_name, ttl_sec=1800.0):
@@ -72,6 +77,19 @@ def _splittable_fab_lot_index_build(payload: dict) -> dict:
         return {"ok": ok, "product": product}
     finally:
         shared_lease.release(lease_name)
+
+
+@handler("splittable_match_cache_refresh")
+def _splittable_match_cache_refresh(payload: dict) -> dict:
+    """수 GB FAB source를 읽는 제품별 match cache를 개발 worker에서 생성."""
+    product = str(payload.get("product") or "").strip()
+    if not product:
+        return {"ok": False, "error": "missing product"}
+    from routers import splittable
+
+    return splittable._refresh_match_cache_products(
+        [product], force=bool(payload.get("force"))
+    )
 
 
 @handler("splittable_view_recompute")
@@ -213,18 +231,32 @@ def _ml_lookup_cache_build(payload: dict) -> dict:
 
     build_lookup_cache 자체가 cross-server 빌드 락 + fresh 스킵을 갖고 있어
     그대로 위임한다."""
-    source_raw = str(payload.get("source_path") or "").strip()
-    if not source_raw:
-        return {"ok": False, "error": "missing source_path"}
-    fp = Path(source_raw)
-    if not fp.is_file():
-        return {"ok": False, "error": f"source not found: {source_raw}"}
     from core import ml_table_lookup
+
+    # 절대경로는 서버별 mount 차이 때문에 transport 식별자로 쓰지 않는다.
+    # logical product/file을 먼저 worker의 PATHS에서 해석하고, 구버전 api가 보낸
+    # source_path는 같은 경로가 실제 존재할 때만 호환 폴백으로 사용한다.
+    product = str(payload.get("product") or "").strip()
+    file_name = str(payload.get("file") or "").strip()
+    fp = ml_table_lookup.resolve_ml_table_file(product=product, file=file_name)
+    source_raw = str(payload.get("source_path") or "").strip()
+    if fp is None and source_raw:
+        candidate = Path(source_raw)
+        if candidate.is_file():
+            fp = candidate
+    if fp is None:
+        logical = file_name or product or source_raw or "(empty)"
+        return {"ok": False, "error": f"source not found on worker: {logical}"}
     res = ml_table_lookup.build_lookup_cache(fp, force=bool(payload.get("force")))
+    fresh = ml_table_lookup.cache_status(fp).get("status") == "fresh"
+    ok = bool(res.get("ok")) and fresh
     return {
-        "ok": bool(res.get("ok")),
+        # build_lock_held 같은 정상 skip도 cache가 stale이면 작업 성공이 아니다.
+        # transport 실패로 돌려 api의 로컬 폴백/제한 재시도를 활성화한다.
+        "ok": ok,
         "skipped": bool(res.get("skipped")),
         "reason": str(res.get("reason") or ""),
+        "error": "" if ok else str(res.get("error") or res.get("reason") or "lookup cache not fresh"),
         "cache_dir": str(res.get("cache_dir") or ""),
         "build_seconds": (res.get("meta") or {}).get("build_seconds"),
     }

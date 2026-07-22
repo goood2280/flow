@@ -11,7 +11,8 @@
     heartbeat 가 다시 신선해지면 자동으로 오프로드가 재개된다 (상태 저장 없음
     — 매 디스패치마다 heartbeat 신선도만 본다).
   - 오프로드 가능한 작업은 "결과가 shared workspace 파일로 남는 것"만.
-    프로세스 RAM 캐시 워밍은 서버별 로컬 자원이므로 대상이 아니다.
+    프로세스 RAM 캐시는 API 응답을 서빙하는 운영서버가 소유하며 worker의
+    오프로드/백그라운드 예열 대상이 아니다.
   - 이중 실행 안전성은 이 모듈이 아니라 기존 cross-server 가드(shared_lease,
     ml_table_lookup build lock)가 담당한다. 최악의 폴백 경쟁도 중복 빌드
     1회로 수렴 — 기존 무락 동작과 같은 안전도.
@@ -42,8 +43,8 @@
   FLOW_WORKER_OFFLOAD         0 이면 api 역할이어도 오프로드 끔 (기본 켬)
   FLOW_WORKER_HEARTBEAT_SEC   워커 heartbeat 주기 (기본 10)
   FLOW_WORKER_STALE_SEC       heartbeat 가 이보다 오래되면 다운 판정 (기본 45)
-  FLOW_WORKER_CONCURRENCY     워커 동시 실행 슬롯 (기본 2 — 5코어/15GB 개발서버
-                              기준, polars 스레드 예산과 곱해지는 걸 감안한 값)
+  FLOW_WORKER_CONCURRENCY     워커 동시 실행 슬롯 (기본 1 — Polars 빌드 두 개가
+                              겹쳐 OOM 나는 것을 막고, 필요할 때만 명시적으로 확대)
   FLOW_WORKER_TASK_TIMEOUT_SEC 오프로드 기본 대기 한도 (기본 1800)
   FLOW_WORKER_MAX_QUEUE       큐 깊이가 이보다 크면 로컬 실행 (기본 32)
 """
@@ -82,6 +83,8 @@ _HB_CHANGE_LOCK = threading.Lock()
 _STARTED = threading.Event()
 _WORKER_RUNNING: set[str] = set()
 _WORKER_RUNNING_LOCK = threading.Lock()
+_LOCAL_HEAVY_GATE = threading.Semaphore(1)
+_LOCAL_UNGUARDED_TYPES = {"ping", "flowi_chat_turn"}
 
 
 # ── env / role ────────────────────────────────────────────────────────────────
@@ -228,7 +231,7 @@ def default_task_timeout_sec() -> float:
 
 
 def worker_concurrency() -> int:
-    return int(_env_float("FLOW_WORKER_CONCURRENCY", 2.0, 1.0, 16.0))
+    return int(_env_float("FLOW_WORKER_CONCURRENCY", 1.0, 1.0, 16.0))
 
 
 def max_queue_depth() -> int:
@@ -363,6 +366,37 @@ def _queue_depth() -> int:
         return 0
 
 
+def queue_snapshot(limit: int = 50) -> dict:
+    """관리 화면용 공유 worker queue 요약. payload의 논리 식별자만 노출한다."""
+    rows: list[dict] = []
+    try:
+        candidates = sorted(
+            (p for p in _queue_dir().iterdir() if p.name.endswith(".task.json")),
+            key=lambda p: p.name,
+        )[:max(1, min(200, int(limit or 50)))]
+    except Exception:
+        candidates = []
+    for fp in candidates:
+        task = _read_json(fp)
+        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        rows.append({
+            "id": str(task.get("id") or fp.stem),
+            "type": str(task.get("type") or ""),
+            "submitted_at": task.get("submitted_at") or task.get("created_at") or "",
+            "product": str(payload.get("product") or payload.get("file") or ""),
+        })
+    meta = heartbeat_meta()
+    return {
+        "depth": _queue_depth(),
+        "queued": rows,
+        "running": list(meta.get("running") or []),
+        "worker_alive": worker_alive(),
+        "accepting_tasks": bool(meta.get("accepting_tasks", True)),
+        "overloaded_reason": str(meta.get("overloaded_reason") or ""),
+        "load": dict(meta.get("load") or {}),
+    }
+
+
 def _bump(key: str) -> None:
     with _STATS_LOCK:
         _STATS[key] = _STATS.get(key, 0) + 1
@@ -435,8 +469,9 @@ def worker_overloaded_reason(meta: dict | None = None) -> str:
     동일하고 실행 위치만 바뀐다.
 
     임계값:
-      FLOW_WORKER_OFFLOAD_MIN_AVAIL_GB  워커 호스트 가용 메모리 하한 (기본 2.0)
-      FLOW_WORKER_OFFLOAD_MAX_MEM_PCT   워커 프로세스 메모리/한도 비율 상한 (기본 90)
+      FLOW_WORKER_OFFLOAD_MIN_AVAIL_GB  워커 호스트 가용 메모리 하한
+                                        (기본 총량 25%, 2.5~4GB)
+      FLOW_WORKER_OFFLOAD_MAX_MEM_PCT   워커 프로세스 메모리/한도 비율 상한 (기본 80)
     """
     if meta is None:
         meta = heartbeat_meta()
@@ -449,15 +484,77 @@ def worker_overloaded_reason(meta: dict | None = None) -> str:
             return 0.0
 
     avail = _f("system_memory_available_gb")
-    min_avail = _env_float("FLOW_WORKER_OFFLOAD_MIN_AVAIL_GB", 2.0, 0.0, 64.0)
+    total = _f("system_memory_total_gb")
+    default_min_avail = max(2.5, min(4.0, total * 0.25)) if total > 0 else 3.0
+    min_avail = _env_float("FLOW_WORKER_OFFLOAD_MIN_AVAIL_GB", default_min_avail, 0.0, 64.0)
     if avail > 0 and avail < min_avail:
         return f"low_host_memory (avail {avail:.1f}GB < {min_avail:.1f}GB)"
     effective = _f("mem_effective_gb")
     limit = _f("mem_limit_gb")
-    max_pct = _env_float("FLOW_WORKER_OFFLOAD_MAX_MEM_PCT", 90.0, 10.0, 100.0)
+    max_pct = _env_float("FLOW_WORKER_OFFLOAD_MAX_MEM_PCT", 80.0, 10.0, 100.0)
     if limit > 0 and effective > 0 and (100.0 * effective / limit) >= max_pct:
         return f"process_memory_high ({100.0 * effective / limit:.0f}% >= {max_pct:.0f}%)"
     return ""
+
+
+def _run_local_heavy(
+    task_type: str,
+    name: str,
+    local_fn: Callable[[], dict | None],
+    *,
+    idle_only: bool = False,
+) -> dict | None:
+    """워커 폴백 캐시/DB 작업을 프로세스당 하나로 직렬화하고 메모리를 admission."""
+    if task_type in _LOCAL_UNGUARDED_TYPES:
+        return local_fn()
+    queue_timeout = _env_float("FLOW_LOCAL_HEAVY_QUEUE_TIMEOUT_SEC", 600.0, 1.0, 3600.0)
+    if not _LOCAL_HEAVY_GATE.acquire(timeout=queue_timeout):
+        logger.warning("local heavy queue timeout: %s", name)
+        return {"ok": False, "error": "local_heavy_queue_timeout"}
+    try:
+        if idle_only:
+            idle_wait = _env_float("FLOW_LOCAL_HEAVY_IDLE_WAIT_SEC", 1800.0, 0.0, 21600.0)
+            quiet_for = _env_float("FLOW_LOCAL_HEAVY_IDLE_QUIET_SEC", 10.0, 0.0, 300.0)
+            idle_deadline = time.monotonic() + idle_wait
+            while True:
+                try:
+                    from core import request_priority
+
+                    busy = request_priority.users_active(quiet_for_sec=quiet_for)
+                except Exception:
+                    busy = False
+                if not busy:
+                    break
+                if time.monotonic() >= idle_deadline:
+                    logger.info("local heavy deferred until next idle window: %s", name)
+                    return {"ok": False, "error": "local_heavy_waiting_for_idle"}
+                time.sleep(2.0)
+        memory_wait = _env_float("FLOW_LOCAL_HEAVY_MEMORY_WAIT_SEC", 120.0, 0.0, 1800.0)
+        deadline = time.monotonic() + memory_wait
+        while True:
+            reason = ""
+            try:
+                from core.runtime_limits import process_memory_high, process_memory_snapshot
+
+                snap = process_memory_snapshot()
+                total = float(snap.get("system_memory_total_gb") or 0.0)
+                available = float(snap.get("system_memory_available_gb") or 0.0)
+                default_reserve = max(2.5, min(6.0, total * 0.15)) if total > 0 else 3.0
+                reserve = _env_float("FLOW_LOCAL_HEAVY_MIN_AVAILABLE_GB", default_reserve, 0.0, 64.0)
+                if process_memory_high():
+                    reason = "process_memory_high"
+                elif available > 0 and available < reserve:
+                    reason = f"low_host_memory:{available:.1f}GB<{reserve:.1f}GB"
+            except Exception:
+                reason = ""
+            if not reason:
+                return local_fn()
+            if time.monotonic() >= deadline:
+                logger.warning("local heavy memory admission timeout: %s (%s)", name, reason)
+                return {"ok": False, "error": "local_heavy_memory_guard", "reason": reason}
+            time.sleep(2.0)
+    finally:
+        _LOCAL_HEAVY_GATE.release()
 
 
 def run_heavy(
@@ -467,6 +564,7 @@ def run_heavy(
     *,
     timeout_sec: float | None = None,
     label: str = "",
+    local_idle_only: bool = False,
 ) -> dict | None:
     """무거운 파일 산출 작업을 워커로 오프로드하고, 실패하면 로컬 실행.
 
@@ -478,21 +576,21 @@ def run_heavy(
     name = label or task_type
     if not offload_enabled() or not worker_alive():
         _bump("local_direct")
-        return local_fn()
+        return _run_local_heavy(task_type, name, local_fn, idle_only=local_idle_only)
     overload = worker_overloaded_reason()
     if overload:
         logger.info(f"worker overloaded ({overload}) — running {name} locally")
         _bump("local_worker_overloaded")
-        return local_fn()
+        return _run_local_heavy(task_type, name, local_fn, idle_only=local_idle_only)
     if _queue_depth() >= max_queue_depth():
         logger.info(f"worker queue full — running {name} locally")
         _bump("local_direct")
-        return local_fn()
+        return _run_local_heavy(task_type, name, local_fn, idle_only=local_idle_only)
     timeout = float(timeout_sec if timeout_sec is not None else default_task_timeout_sec())
     submitted = _submit(task_type, payload, timeout)
     if not submitted:
         _bump("local_direct")
-        return local_fn()
+        return _run_local_heavy(task_type, name, local_fn, idle_only=local_idle_only)
     task_id, queue_fp = submitted
     _bump("offloaded")
     logger.info(f"offloaded {name} to worker (task={task_id})")
@@ -507,7 +605,7 @@ def run_heavy(
     else:
         _bump("local_fallback")
         logger.warning(f"worker task {name} unresolved (worker down/timeout) — falling back to local")
-    return local_fn()
+    return _run_local_heavy(task_type, name, local_fn, idle_only=local_idle_only)
 
 
 # ── worker side: consume loop ─────────────────────────────────────────────────
@@ -517,12 +615,19 @@ def _load_snapshot() -> dict:
         from core.runtime_limits import process_cpu_snapshot, process_memory_snapshot
         cpu = process_cpu_snapshot()
         mem = process_memory_snapshot()
+        try:
+            from core.cache_event_log import peak_rss_bytes
+            peak_rss_gb = peak_rss_bytes() / (1024 ** 3)
+        except Exception:
+            peak_rss_gb = 0.0
         return {
             "cpu_cores": cpu.get("process_cpu_cores"),
             "cpu_budget_cores": cpu.get("process_cpu_budget_cores"),
             "mem_effective_gb": mem.get("process_memory_effective_gb"),
             "mem_limit_gb": mem.get("process_memory_limit_gb"),
+            "system_memory_total_gb": mem.get("system_memory_total_gb"),
             "system_memory_available_gb": mem.get("system_memory_available_gb"),
+            "peak_rss_gb": round(peak_rss_gb, 3),
         }
     except Exception:
         return {}
@@ -540,6 +645,8 @@ def _heartbeat_loop() -> None:
             _ensure_dirs()
             with _WORKER_RUNNING_LOCK:
                 running = sorted(_WORKER_RUNNING)
+            load = _load_snapshot()
+            overloaded = worker_overloaded_reason({"load": load})
             _write_json_atomic(_heartbeat_path(), {
                 "owner": _owner_id(),
                 "role": "worker",
@@ -551,7 +658,9 @@ def _heartbeat_loop() -> None:
                 "running": running,
                 "queue_depth": _queue_depth(),
                 "handlers": sorted(_HANDLERS.keys()),
-                "load": _load_snapshot(),
+                "load": load,
+                "accepting_tasks": not bool(overloaded),
+                "overloaded_reason": overloaded,
             })
         except Exception:
             logger.debug("worker heartbeat write failed", exc_info=True)
@@ -603,7 +712,19 @@ def _execute_task(task: dict, claimed_fp: Path) -> None:
                 started = time.monotonic()
                 try:
                     out = fn(dict(task.get("payload") or {}))
-                    result.update(ok=True, result=out if isinstance(out, dict) else {"ok": bool(out)})
+                    payload = out if isinstance(out, dict) else {"ok": bool(out)}
+                    # 핸들러가 정상 return 했더라도 payload.ok=False 면 작업 실패다.
+                    # 예전에는 transport 성공으로 포장되어 api 측 run_heavy()가
+                    # 로컬 폴백하지 않았고, 특히 워커에서 source path를 못 찾은
+                    # ML lookup 빌드가 조용히 유실됐다.
+                    if isinstance(payload, dict) and payload.get("ok") is False:
+                        result.update(
+                            ok=False,
+                            result=payload,
+                            error=str(payload.get("error") or payload.get("reason") or "handler_returned_not_ok"),
+                        )
+                    else:
+                        result.update(ok=True, result=payload)
                 except Exception as exc:
                     logger.warning(f"worker task {label} raised: {exc}", exc_info=True)
                     result.update(ok=False, error=f"{type(exc).__name__}: {exc}")
@@ -657,6 +778,13 @@ def _consume_loop() -> None:
             if time.time() - last_janitor > _JANITOR_INTERVAL_SEC:
                 last_janitor = time.time()
                 _janitor_once()
+            # 제출 시점(api heartbeat 판단)과 실제 claim 시점 사이에 메모리 상태가
+            # 바뀔 수 있다. 워커 자신도 claim 직전에 다시 확인해, 직전 빌드의
+            # allocator/RSS가 남아 있는 상태에서 다음 대형 작업을 겹치지 않는다.
+            overload = worker_overloaded_reason({"load": _load_snapshot()})
+            if overload:
+                time.sleep(max(_POLL_IDLE_SEC, 1.0))
+                continue
             if not slots.acquire(timeout=_POLL_IDLE_SEC):
                 continue
             claimed = _claim_next()

@@ -87,13 +87,20 @@ PATTERN_ANNOT_RE = re.compile(r"^(.*?)\s*\(\s*pattern\s*\)\s*$", re.IGNORECASE) 
 def _parse_point_map(lines: list[str]) -> list[dict]:
     """[TEST_POINT] 섹션 → 웨이퍼 맵 1개 (맵 문자 행만). 없으면 [].
 
-    모든 행을 그대로 유지한다 — 첫/끝 줄이 전부 '-'(빈칸)이어도 격자 행으로 포함.
-    각 문자 = 셀이고 좌상단이 (1,1)이므로, 빈 행 제거 시 좌표가 어긋난다.
+    새 bracket 양식은 같은 길이의 ``----`` 줄로 맵 위/아래 경계를 표시할 수 있다.
+    이 한 쌍만 제거하고 내부의 '-' 행은 좌표 보존을 위해 그대로 유지한다.
     """
     body = _section(lines, POINT_TAG, stop=SECTION_STOPS)
     rows = [s for s in body if s and MAP_ROW_RE.fullmatch(s)]
     if not rows:
         return []
+    if (
+        len(rows) >= 3
+        and rows[0] == rows[-1]
+        and set(rows[0]) == {"-"}
+        and any("t" in row.lower() for row in rows[1:-1])
+    ):
+        rows = rows[1:-1]
     w = max(len(r) for r in rows)
     return [{"name": "TEST_POINT", "rows": [r.ljust(w, "-") for r in rows],
              "w": w, "h": len(rows), "origin": "top-left"}]

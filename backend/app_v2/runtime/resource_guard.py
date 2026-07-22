@@ -89,6 +89,9 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/cache-event-log",
     "/api/splittable/query-workers",
     "/api/splittable/ram-cache/unified-scan",
+    "/api/splittable/ram-cache/scan-status",
+    "/api/splittable/cache-budget/settings",
+    "/api/splittable/cache-budget/settings/save",
     # v9.1.x: 스플릿테이블 편집(plan/tag/커스텀)은 작은 overlay 쓰기 — 메모리 가드로
     # 거절되면 안 되는 사용자 상호작용이므로 light 로 통과시킨다.
     "/api/splittable/plan",

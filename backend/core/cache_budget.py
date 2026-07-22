@@ -10,8 +10,9 @@
 계약:
   - cap_bytes(name) → 해당 캐시가 가질 수 있는 최대 바이트. 0 = 상한 없음
     (호스트 총량을 못 읽는 환경).
-  - 각 캐시의 예산 함수는 "운영자가 env 로 명시 고정하지 않은 경우에만"
-    min(자체 예산, cap) 을 적용한다 — 명시 env 핀은 항상 우선.
+  - 각 캐시의 예산 함수는 env 명시값을 희망 상한으로 사용하되 항상
+    min(자체 예산, cap) 을 적용한다. 개별 설정 실수로 전체 안전 풀을 우회해
+    서버가 OOM 되는 경로를 허용하지 않는다.
   - 지분 합계는 1.0 — 모든 캐시가 꽉 차도 풀 총량을 넘지 않는다.
 
 환경변수:
@@ -51,54 +52,92 @@ _WORKER_FACTOR_DEFAULT = 0.25
 _DEV_FACTOR_DEFAULT = 0.35  # dev(standalone) 서버 캐시 풀 축소 계수
 
 
-def _pool_fraction() -> float:
-    raw = os.environ.get("FLOW_CACHE_TOTAL_BUDGET_FRACTION", "")
+def _is_dev() -> bool:
+    """개발서버(worker 또는 비운영 standalone) 여부."""
     try:
-        value = float(raw) if raw not in (None, "") else _POOL_FRACTION_DEFAULT
+        from core.worker_dispatch import server_role
+        if server_role() == "worker":
+            return True
     except Exception:
-        value = _POOL_FRACTION_DEFAULT
-    return max(0.1, min(0.8, value))
+        pass
+    try:
+        from core.paths import PATHS
+        return not bool(PATHS.is_prod)
+    except Exception:
+        return False
+
+
+def _pool_fraction() -> float:
+    """캐시 풀 비율 — 운영/개발 분리. env > 톱니바퀴(pool_fraction[_dev]) > 기본."""
+    raw = os.environ.get("FLOW_CACHE_TOTAL_BUDGET_FRACTION", "")
+    if raw not in (None, ""):
+        try:
+            return max(0.1, min(0.8, float(raw)))
+        except Exception:
+            pass
+    # 톱니바퀴 설정(관리자 UI): 개발서버는 pool_fraction_dev 우선, 없으면 pool_fraction.
+    try:
+        from core import cache_settings
+        v = cache_settings.get_float_role("pool_fraction", _is_dev())
+        if v is not None:
+            return max(0.1, min(0.8, v))
+    except Exception:
+        pass
+    return _POOL_FRACTION_DEFAULT
 
 
 def worker_budget_factor() -> float:
-    """서버 역할/환경에 따른 캐시 풀 축소 계수.
+    """서버 역할별 캐시 풀 추가 축소 계수.
 
-    - worker(개발서버 오프로드) 역할: 기본 0.25 (1/4)
-    - 비운영(dev) standalone: 기본 0.35 — OOM 방지
     - 운영(prod) api: 1.0 (축소 없음)
+    - 개발(worker/standalone-dev): 개발 풀 비율(pool_fraction_dev)이 **명시되면
+      1.0**(그 값이 이미 최종이라 중복 축소 안 함). 미설정이면 역할별 기본 축소
+      계수(worker 0.25 / dev 0.35, env·톱니바퀴 dev_factor 로 조정).
 
-    역할은 관리자 탭에서 런타임에 바뀔 수 있다 — pool memo TTL(60s) 안에
-    자동 반영된다."""
+    역할은 런타임에 바뀔 수 있다 — pool memo TTL(60s) 안에 자동 반영된다."""
     try:
         from core.worker_dispatch import server_role
-
         role = server_role()
     except Exception:
         role = "standalone"
-
+    if not _is_dev():
+        return 1.0
+    # 개발 풀 비율이 명시되면 추가 축소를 곱하지 않는다(중복 축소 방지).
+    try:
+        from core import cache_settings
+        if cache_settings.read().get("pool_fraction_dev") not in (None, ""):
+            return 1.0
+    except Exception:
+        pass
     if role == "worker":
         raw = os.environ.get("FLOW_WORKER_CACHE_BUDGET_FACTOR", "")
         try:
-            value = float(raw) if raw not in (None, "") else _WORKER_FACTOR_DEFAULT
+            return max(0.05, min(1.0, float(raw))) if raw not in (None, "") else _WORKER_FACTOR_DEFAULT
         except Exception:
-            value = _WORKER_FACTOR_DEFAULT
-        return max(0.05, min(1.0, value))
-
-    # 비운영(dev) standalone — 캐시 예산 축소로 OOM 방지
+            return _WORKER_FACTOR_DEFAULT
+    # standalone dev
+    raw = os.environ.get("FLOW_DEV_CACHE_BUDGET_FACTOR", "")
+    if raw not in (None, ""):
+        try:
+            return max(0.05, min(1.0, float(raw)))
+        except Exception:
+            pass
     try:
-        from core.paths import PATHS
-
-        if not PATHS.is_prod:
-            raw = os.environ.get("FLOW_DEV_CACHE_BUDGET_FACTOR", "")
-            try:
-                value = float(raw) if raw not in (None, "") else _DEV_FACTOR_DEFAULT
-            except Exception:
-                value = _DEV_FACTOR_DEFAULT
-            return max(0.05, min(1.0, value))
+        from core import cache_settings
+        v = cache_settings.get_float("dev_factor")
+        if v is not None:
+            return max(0.05, min(1.0, v))
     except Exception:
         pass
+    return _DEV_FACTOR_DEFAULT
 
-    return 1.0
+
+def invalidate() -> None:
+    """풀 메모(60s TTL)를 즉시 무효화 — 톱니바퀴에서 예산 설정 저장 직후 호출해
+    변경이 바로 반영되게 한다."""
+    global _POOL_MEMO
+    with _POOL_MEMO_LOCK:
+        _POOL_MEMO = None
 
 
 def pool_bytes() -> int:

@@ -266,6 +266,14 @@ export default function My_SplitTable({user}){
   const[showMergedView,setShowMergedView]=useState(false);
   const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
+  const viewRetryTimerRef=useRef(null);
+  const viewSearchSeqRef=useRef(0);
+  // 검색 조건이 바뀌면 이전 lookup 준비 polling을 즉시 중단한다.
+  useEffect(()=>{
+    viewSearchSeqRef.current+=1;
+    if(viewRetryTimerRef.current){clearTimeout(viewRetryTimerRef.current);viewRetryTimerRef.current=null;}
+    return()=>{if(viewRetryTimerRef.current){clearTimeout(viewRetryTimerRef.current);viewRetryTimerRef.current=null;}};
+  },[selProd,lotId,fabLotId]);
   // 새 검색 결과/표시 모드 변경 시 점진 렌더 한도를 초기화.
   useEffect(()=>{setRowRenderLimit(ROW_RENDER_INITIAL);},[data,viewMode]);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
@@ -901,21 +909,35 @@ export default function My_SplitTable({user}){
   // v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다.
   // FAB 공정 진행 중 fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 검증으로 검색을 막지 않는다.
   const loadView=(opts={})=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;
+    const prepAttempt=Number(opts._prepAttempt||0);
+    const searchSeq=opts._searchSeq||(++viewSearchSeqRef.current);
+    if(opts._searchSeq&&searchSeq!==viewSearchSeqRef.current)return;
+    if(prepAttempt===0&&viewRetryTimerRef.current){clearTimeout(viewRetryTimerRef.current);viewRetryTimerRef.current=null;}
     const effectiveCustomMode=opts.customMode ?? isCustomMode;
     const effectiveCustomCols=cleanCustomColumns(opts.customCols ?? customCols);
     const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
     const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
     let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
+    if(prepAttempt>0)url+="&cache_first=true";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
     if(effectiveCustomMode&&effectiveCustomCols.length>0)url+="&custom_cols="+encodeURIComponent(effectiveCustomCols.join(","));
     else if(effectiveCustomMode&&effectiveCustomName)url+="&custom_name="+encodeURIComponent(effectiveCustomName);
-    let loadingStarted=false;
+    let loadingStarted=false;let retryScheduled=false;
     ensureSessionForSearch().then(()=>{
-      loadingStarted=true;setLoading(true);
+      if(searchSeq!==viewSearchSeqRef.current)return null;
+      if(prepAttempt===0){loadingStarted=true;setLoading(true);}
       return sf(url);
     }).then(raw=>{
+      if(!raw||searchSeq!==viewSearchSeqRef.current)return;
       const d=expandViewRows(raw);
+      const lc=d.lookup_cache||{};
+      const preparing=!d.rows?.length&&(lc.queued===true||lc.status==="queued"||lc.status==="running");
+      if(preparing&&prepAttempt<240){
+        setData(d);setLoading(false);retryScheduled=true;
+        viewRetryTimerRef.current=setTimeout(()=>loadView({...opts,_prepAttempt:prepAttempt+1,_searchSeq:searchSeq}),1500);
+        return;
+      }
       setData(d);
       if(d.precision)setPrecision(d.precision);
       // v9.0.1: 응답에 동봉된 같은 root 의 fab_lot_id 들로 콤보박스 자동 채움 —
@@ -925,10 +947,21 @@ export default function My_SplitTable({user}){
       }
       setPendingPlans({});setPendingTags({});setPendingManagement({});clearCellSelection();reloadNotes();
       loadRelatedIssuesForView(d);
+      const backgroundPreparing=d.background_cache?.queued===true;
+      if(backgroundPreparing&&prepAttempt<60){
+        setLoading(false);retryScheduled=true;
+        viewRetryTimerRef.current=setTimeout(()=>loadView({...opts,_prepAttempt:prepAttempt+1,_searchSeq:searchSeq}),10000);
+      }
     }).catch(e=>{
+      if(searchSeq!==viewSearchSeqRef.current)return;
+      if(prepAttempt>0&&prepAttempt<240){
+        retryScheduled=true;
+        viewRetryTimerRef.current=setTimeout(()=>loadView({...opts,_prepAttempt:prepAttempt+1,_searchSeq:searchSeq}),2000);
+        return;
+      }
       if(String(e?.message||"").includes("Session expired"))return;
       toast.error(e.message);
-    }).finally(()=>{if(loadingStarted)setLoading(false);});};
+    }).finally(()=>{if(loadingStarted&&!retryScheduled)setLoading(false);});};
   // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
   const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
     sf(API+"/notes?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(lot))
@@ -2201,6 +2234,7 @@ export default function My_SplitTable({user}){
           displayForValue:(raw,row)=>String(formatCell(raw,row._param) ?? raw),
         });
         return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
+        {data.background_cache?.queued&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(30,64,175,0.95)",background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>{data.background_cache.message||"관련 캐시를 백그라운드에서 준비 중입니다."}</div>}
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:14,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
           <span style={{fontWeight:800,color:"rgba(59,130,246,0.95)",fontFamily:"monospace"}}>이슈추적 {data.related_issues.length}건</span>

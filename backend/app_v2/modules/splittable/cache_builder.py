@@ -21,8 +21,11 @@ CACHE_DIR = PATHS.db_cache_dir / "split_table" if hasattr(PATHS, "db_cache_dir")
 # view) always has spare RAM/CPU. When the process is already near its memory
 # budget we shrink the chunk and wait longer between chunks so the reserved UI
 # lane keeps working instead of tripping the memory guard.
-_CHUNK_SIZE_DEFAULT = 5
-_CHUNK_SIZE_UNDER_MEMORY_PRESSURE = 2
+# 제품별 root가 수천 wafer인 운영 데이터에서도 한 청크의 full-wide frame이
+# 여러 root만큼 겹치지 않게 한다. 빌드는 즉시성이 없는 worker/idle 작업이라
+# 처리량보다 피크 메모리 상한을 우선한다.
+_CHUNK_SIZE_DEFAULT = 1
+_CHUNK_SIZE_UNDER_MEMORY_PRESSURE = 1
 
 # per-root 파일의 저장 포맷 세대. 포맷이 바뀌면(legacy 전치형 등) 시작 시 일괄
 # 제거가 필요하지만, 같은 포맷의 재빌드는 기존 파일을 그대로 서빙하면서 root

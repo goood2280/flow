@@ -86,6 +86,13 @@ def _env_flag(name: str, default: bool) -> bool:
 def _is_prod_server() -> bool:
     """운영 서버 여부 — 개발서버면 watchdog 임계값을 낮춘다."""
     try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker":
+            return False
+    except Exception:
+        pass
+    try:
         from core.paths import PATHS
 
         return PATHS.is_prod
