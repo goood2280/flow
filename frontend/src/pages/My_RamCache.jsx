@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { toast } from "../components/Toast";
 import { sf } from "../lib/api";
-import { canManagePage } from "../lib/permissions";
+import { isAdmin } from "../lib/permissions";
 
 // v9.3.x: RAM 캐시 관리 — SplitTable 톱니바퀴(설정 모달) 안에 있던 캐시 관리를
 // 데이터 그룹의 독립 탭으로 승격. 제품별 분해(전 제품 현황)를 추가.
@@ -9,37 +9,6 @@ import { canManagePage } from "../lib/permissions";
 // Root lot RAM cache 설정, 쿼리 병렬 코어 수 조정을 이 탭으로 이동.
 const API = "/api/splittable";
 
-const ROOT_LOT_CACHE_LIMIT_MAX = 50000;
-const ROOT_LOT_CACHE_DEFAULT = { step_ids: [], searched_limit: 1000, target_roots: 1000 };
-const normalizeRootLotCacheSettings = (raw = {}) => {
-  const src = raw && typeof raw === "object" ? raw : {};
-  const stepRaw = Array.isArray(src.step_ids) ? src.step_ids : String(src.step_ids || "").split(",");
-  const step_ids = []; const seen = new Set();
-  stepRaw.forEach(item => {
-    const p = String(item || "").trim().toUpperCase();
-    if (!p || seen.has(p)) return;
-    seen.add(p); step_ids.push(p);
-  });
-  const num = (key, fallback) => {
-    const n = Number(src[key]);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(0, Math.min(ROOT_LOT_CACHE_LIMIT_MAX, Math.floor(n)));
-  };
-  return {
-    step_ids,
-    searched_limit: num("searched_limit", ROOT_LOT_CACHE_DEFAULT.searched_limit),
-    target_roots: num("target_roots", ROOT_LOT_CACHE_DEFAULT.target_roots),
-  };
-};
-const rootLotCacheDraftFromSettings = (raw = {}) => {
-  const s = normalizeRootLotCacheSettings(raw);
-  return { ...s, stepText: s.step_ids.join(", ") };
-};
-const settingsFromRootLotCacheDraft = (draft = {}) => normalizeRootLotCacheSettings({
-  step_ids: String(draft.stepText || "").split(","),
-  searched_limit: draft.searched_limit,
-  target_roots: draft.target_roots,
-});
 
 const S_INPUT = {
   padding: "4px 6px", borderRadius: 4, border: "1px solid var(--border)",
@@ -51,7 +20,7 @@ const S_BTN = {
 };
 
 export default function My_RamCache({ user }) {
-  const canManage = canManagePage(user, "splittable");
+  const canManage = isAdmin(user);
   const [overview, setOverview] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [memOverview, setMemOverview] = useState(null);
@@ -65,19 +34,21 @@ export default function My_RamCache({ user }) {
   const [contentsLoading, setContentsLoading] = useState(false);
   const [budgets, setBudgets] = useState(null);
   const [budgetDraft, setBudgetDraft] = useState("");
+  const [budgetDraftDev, setBudgetDraftDev] = useState("");
   const [budgetSaving, setBudgetSaving] = useState(false);
-  // 관리자 전용 — 캐시 수동 스캔/설정 (SplitTable 톱니바퀴에서 이동)
-  const [srcCfg, setSrcCfg] = useState(null);
+  // 관리자 전용 — 캐시 수동 스캔 (SplitTable 톱니바퀴에서 이동)
   const [fabCacheBusy, setFabCacheBusy] = useState(false);
   const [productCacheStatus, setProductCacheStatus] = useState(null);
   const [productCacheBusy, setProductCacheBusy] = useState(false);
   const [rootLotCacheStatus, setRootLotCacheStatus] = useState(null);
   const [rootLotCacheBusy, setRootLotCacheBusy] = useState(false);
-  const [rootLotCacheSaveBusy, setRootLotCacheSaveBusy] = useState(false);
-  const [rootLotCacheDraft, setRootLotCacheDraft] = useState(rootLotCacheDraftFromSettings(ROOT_LOT_CACHE_DEFAULT));
   const [queryWorkersStatus, setQueryWorkersStatus] = useState(null);
   const [queryWorkersDraft, setQueryWorkersDraft] = useState(3);
   const [queryWorkersSaveBusy, setQueryWorkersSaveBusy] = useState(false);
+  // 관리자 전용 — 캐시 이벤트 로그 + Peak RAM
+  const [cacheEventLog, setCacheEventLog] = useState(null);
+  const [cacheEventLogFilter, setCacheEventLogFilter] = useState("");
+  const [peakRam, setPeakRam] = useState(null);
 
   const loadOverview = useCallback(() => {
     setOverviewLoading(true);
@@ -118,23 +89,21 @@ export default function My_RamCache({ user }) {
         setBudgets(d);
         const pb = (d.products || {})[prod];
         setBudgetDraft(pb ? String(pb.max_roots) : "");
+        setBudgetDraftDev(pb ? String(pb.max_roots_dev ?? "") : "");
       })
       .catch(() => {});
   }, []);
 
-  // 관리자 — 소스 설정(root_lot_cache 저장 시 enabled/lot_overrides 보존용) + 쿼리 워커 로드
-  const loadSourceConfig = useCallback(() => {
-    sf(API + "/source-config")
-      .then(d => {
-        setSrcCfg(d);
-        setRootLotCacheDraft(rootLotCacheDraftFromSettings(d.root_lot_cache || ROOT_LOT_CACHE_DEFAULT));
-      })
-      .catch(() => setSrcCfg(null));
-  }, []);
   const loadQueryWorkers = useCallback(() => {
     sf(API + "/query-workers")
       .then(d => { setQueryWorkersStatus(d); setQueryWorkersDraft(d.effective || 3); })
       .catch(() => {});
+  }, []);
+  const loadCacheEventLog = useCallback((cat) => {
+    const q = cat ? ("?category=" + encodeURIComponent(cat)) : "";
+    sf(API + "/cache-event-log" + q)
+      .then(d => { setCacheEventLog(d.events || []); setPeakRam(d.peak_ram || null); })
+      .catch(() => { setCacheEventLog(null); setPeakRam(null); });
   }, []);
   const reloadProductCacheStatus = useCallback((prod) => {
     const q = prod ? ("?product=" + encodeURIComponent(prod)) : "";
@@ -152,9 +121,9 @@ export default function My_RamCache({ user }) {
   useEffect(() => { loadOverview(); }, [loadOverview]);
   useEffect(() => {
     if (!canManage) return;
-    loadSourceConfig();
     loadQueryWorkers();
-  }, [canManage, loadSourceConfig, loadQueryWorkers]);
+    loadCacheEventLog("");
+  }, [canManage, loadQueryWorkers, loadCacheEventLog]);
   useEffect(() => {
     if (!selProd) return;
     loadPriority(selProd);
@@ -189,20 +158,6 @@ export default function My_RamCache({ user }) {
       })
       .catch(e => toast.error("제품 원본 RAM cache 갱신 실패: " + (e?.message || e)))
       .finally(() => setProductCacheBusy(false));
-  };
-  const saveRootLotCacheSettings = () => {
-    const settings = settingsFromRootLotCacheDraft(rootLotCacheDraft);
-    setRootLotCacheSaveBusy(true);
-    sf(API + "/source-config/save", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: srcCfg?.enabled || [], lot_overrides: srcCfg?.lot_overrides || {}, root_lot_cache: settings }) })
-      .then(() => {
-        setRootLotCacheDraft(rootLotCacheDraftFromSettings(settings));
-        toast.ok("Root lot RAM cache 설정 저장됨");
-        loadSourceConfig();
-        reloadRootLotCacheStatus(selProd);
-      })
-      .catch(e => toast.error("Root lot RAM cache 설정 저장 실패: " + (e?.message || e)))
-      .finally(() => setRootLotCacheSaveBusy(false));
   };
   const runRootLotRamCache = () => {
     setRootLotCacheBusy(true);
@@ -240,9 +195,11 @@ export default function My_RamCache({ user }) {
   const saveBudget = () => {
     if (!selProd) return;
     setBudgetSaving(true);
+    const payload = { product: selProd, max_roots: Number(budgetDraft) || 1000 };
+    if (budgetDraftDev !== "") payload.max_roots_dev = Number(budgetDraftDev) || 200;
     sf(API + "/ram-cache/product-budgets/save", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ product: selProd, max_roots: Number(budgetDraft) || 1000 }),
+      body: JSON.stringify(payload),
     })
       .then(() => { toast.ok("예산 저장됨"); loadBudgets(selProd); loadOverview(); })
       .catch(e => toast.error("저장 실패: " + (e?.message || e)))
@@ -282,8 +239,9 @@ export default function My_RamCache({ user }) {
     loadOverview();
     if (selProd) { loadPriority(selProd); loadContents(selProd); loadBudgets(selProd); }
     if (canManage) {
-      loadSourceConfig(); loadQueryWorkers();
+      loadQueryWorkers();
       reloadProductCacheStatus(selProd); reloadRootLotCacheStatus(selProd);
+      loadCacheEventLog(cacheEventLogFilter);
     }
   };
 
@@ -438,10 +396,9 @@ export default function My_RamCache({ user }) {
             </div>);
         })()}
 
-        {/* Root lot RAM cache 설정/갱신 */}
+        {/* Root lot RAM cache 수동 갱신 */}
         {(() => {
           const rc = rootLotCacheStatus?.cache || {};
-          const settings = rootLotCacheStatus?.settings || settingsFromRootLotCacheDraft(rootLotCacheDraft);
           return (
             <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 8,
               border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
@@ -450,30 +407,17 @@ export default function My_RamCache({ user }) {
                 <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
                   cached {rc.hit_roots || 0} roots (step {rc.step_hit_roots || 0} / other {rc.other_hit_roots || 0}) · {Number(rc.estimated_mb || 0).toFixed(1)} MB / {rc.max_gb || 0} GB · CPU {Number(rc.cpu_budget_cores || 0).toFixed(1)} cores
                 </span>
-                <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>
-                  step {(settings.step_ids || []).join(",") || "-"} · target {settings.target_roots || 0} · searched {settings.searched_limit || 0}
-                </span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, alignItems: "center" }}>
-                <input value={rootLotCacheDraft.stepText || ""} onChange={e => setRootLotCacheDraft(d => ({ ...d, stepText: e.target.value }))}
-                  placeholder="step_id (예: 6000, 7200)" title="이 step 들을 지난(통과=tkout) lot 을 tkout_time 최신순으로 메모리 캐싱"
-                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
-                <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.target_roots}
-                  onChange={e => setRootLotCacheDraft(d => ({ ...d, target_roots: e.target.value }))}
-                  title="상시 메모리에 유지할 총 root 개수 목표 (약 1000)"
-                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
-                <input type="number" min="0" max={ROOT_LOT_CACHE_LIMIT_MAX} value={rootLotCacheDraft.searched_limit}
-                  onChange={e => setRootLotCacheDraft(d => ({ ...d, searched_limit: e.target.value }))}
-                  title="검색된 root lot 을 유지할 최대 개수(무조건 최우선 포함)"
-                  style={{ ...S_INPUT, fontFamily: "monospace", minWidth: 0 }} />
-                <button onClick={saveRootLotCacheSettings} disabled={rootLotCacheSaveBusy}
-                  style={{ ...S_BTN, fontWeight: 700, cursor: rootLotCacheSaveBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
-                  {rootLotCacheSaveBusy ? "저장 중" : "설정 저장"}
-                </button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button onClick={runRootLotRamCache} disabled={rootLotCacheBusy}
                   style={{ ...S_BTN, border: "1px solid rgba(37,99,235,0.8)", background: "rgba(37,99,235,0.10)",
-                    color: "rgba(37,99,235,0.95)", fontWeight: 700, cursor: rootLotCacheBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
-                  {rootLotCacheBusy ? "갱신 중" : "Root cache 갱신"}
+                    color: "rgba(37,99,235,0.95)", fontWeight: 700, borderRadius: 999,
+                    cursor: rootLotCacheBusy ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+                  {rootLotCacheBusy ? "갱신 중..." : selProd ? `Root cache 갱신 (${selProd})` : "Root cache 전체 갱신"}
+                </button>
+                <button onClick={() => reloadRootLotCacheStatus(selProd)}
+                  style={{ ...S_BTN, fontWeight: 700, whiteSpace: "nowrap" }}>
+                  상태 새로고침
                 </button>
               </div>
             </div>);
@@ -508,6 +452,96 @@ export default function My_RamCache({ user }) {
                 color: "rgba(37,99,235,0.95)", fontWeight: 700, whiteSpace: "nowrap" }}>
               새로고침
             </button>
+          </div>
+        </div>
+      </div>}
+
+      {/* 관리자 — Peak RAM 사용량 + 캐시 이벤트 로그 */}
+      {canManage && <div style={{ display: "grid", gap: 10, padding: "10px 12px", borderRadius: 8,
+        border: "1px solid var(--border)", background: "var(--bg-card)", marginBottom: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>관리자 · Peak RAM & 캐시 이벤트 로그</div>
+
+        {/* Peak RAM 표시 */}
+        {peakRam && <div style={{ display: "grid", gap: 4, padding: "8px 10px", borderRadius: 8,
+          border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>Peak RAM 사용량</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 13, fontFamily: "monospace" }}>
+            <span>현재 RSS: <b style={{ color: "var(--accent)" }}>{peakRam.rss_gb?.toFixed(2) || "?"} GB</b></span>
+            <span>Peak RSS: <b style={{ color: (peakRam.peak_rss_gb || 0) > (peakRam.limit_gb || 999) * 0.85
+              ? "rgba(239,68,68,0.9)" : "var(--accent)" }}>{peakRam.peak_rss_gb?.toFixed(2) || "?"} GB</b></span>
+            <span>Effective: <b>{peakRam.effective_gb?.toFixed(2) || "?"} GB</b></span>
+            <span>Limit: <b>{peakRam.limit_gb?.toFixed(2) || "?"} GB</b></span>
+            <span>System: <b>{peakRam.system_total_gb?.toFixed(1) || "?"} GB</b>
+              {peakRam.system_available_gb != null && <span style={{ color: "var(--text-secondary)" }}>
+                {" "}(avail {peakRam.system_available_gb.toFixed(1)})</span>}
+            </span>
+          </div>
+          {peakRam.watchdog && <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12,
+            color: "var(--text-secondary)", fontFamily: "monospace" }}>
+            <span>Watchdog warn: {peakRam.watchdog.warn_pct}%</span>
+            <span>critical: {peakRam.watchdog.critical_pct}%</span>
+            <span>safe: {peakRam.watchdog.safe_pct}%</span>
+          </div>}
+        </div>}
+
+        {/* 캐시 이벤트 로그 */}
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 800 }}>캐시 이벤트 로그</span>
+            <select value={cacheEventLogFilter} onChange={e => { setCacheEventLogFilter(e.target.value); loadCacheEventLog(e.target.value); }}
+              style={{ ...S_INPUT, fontSize: 12, cursor: "pointer" }}>
+              <option value="">전체</option>
+              <option value="warmup">예열</option>
+              <option value="eviction">축출</option>
+              <option value="watchdog">워치독</option>
+              <option value="cache_op">캐시 작업</option>
+            </select>
+            <button onClick={() => loadCacheEventLog(cacheEventLogFilter)}
+              style={{ ...S_BTN, fontSize: 12, padding: "3px 8px" }}>새로고침</button>
+          </div>
+          <div style={{ maxHeight: 320, overflow: "auto", borderRadius: 6, border: "1px solid var(--border)" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "monospace" }}>
+              <thead>
+                <tr style={{ background: "var(--bg-secondary)", position: "sticky", top: 0 }}>
+                  <th style={{ padding: "4px 6px", textAlign: "left", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>시간</th>
+                  <th style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>분류</th>
+                  <th style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>상태</th>
+                  <th style={{ padding: "4px 6px", textAlign: "left", borderBottom: "1px solid var(--border)" }}>이벤트</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(cacheEventLog || []).map((ev, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)",
+                    background: !ev.ok ? "rgba(239,68,68,0.04)" : ev.category === "eviction" ? "rgba(245,158,11,0.04)" : "transparent" }}>
+                    <td style={{ padding: "3px 6px", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>
+                      {ev.ts_iso ? ev.ts_iso.replace("T", " ").slice(0, 19) : "-"}
+                    </td>
+                    <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                      <span style={{ padding: "1px 5px", borderRadius: 3, fontSize: 11,
+                        background: ev.category === "warmup" ? "rgba(37,99,235,0.12)" :
+                                    ev.category === "eviction" ? "rgba(245,158,11,0.12)" :
+                                    ev.category === "watchdog" ? "rgba(239,68,68,0.12)" : "rgba(156,163,175,0.12)",
+                        color: ev.category === "warmup" ? "rgba(37,99,235,0.95)" :
+                               ev.category === "eviction" ? "rgba(245,158,11,0.95)" :
+                               ev.category === "watchdog" ? "rgba(239,68,68,0.9)" : "var(--text-secondary)" }}>
+                        {ev.category}
+                      </span>
+                    </td>
+                    <td style={{ padding: "3px 6px", textAlign: "center",
+                      color: ev.ok ? "rgba(34,197,94,0.9)" : "rgba(239,68,68,0.9)", fontWeight: 700 }}>
+                      {ev.ok ? "OK" : "FAIL"}
+                    </td>
+                    <td style={{ padding: "3px 6px", fontFamily: "inherit", fontSize: 12, wordBreak: "break-all" }}>
+                      {ev.event}
+                      {ev.product && <span style={{ marginLeft: 6, color: "var(--text-secondary)" }}>({ev.product})</span>}
+                    </td>
+                  </tr>
+                ))}
+                {(!cacheEventLog || cacheEventLog.length === 0) &&
+                  <tr><td colSpan={4} style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)" }}>
+                    이벤트 로그가 없습니다</td></tr>}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>}
@@ -627,12 +661,17 @@ export default function My_RamCache({ user }) {
         {/* 전체 캐시 서브탭 */}
         {subTab === "contents" && <div style={{ display: "grid", gap: 8 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", borderRadius: 6,
-            border: "1px solid var(--border)", background: "var(--bg-card)" }}>
+            border: "1px solid var(--border)", background: "var(--bg-card)", flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>이 제품 캐시 상한</span>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>운영</span>
             <input type="number" min={0} max={50000} value={budgetDraft} onChange={e => setBudgetDraft(e.target.value)}
               placeholder={String(budgets?.default_max_roots || 1000)}
               style={{ ...S_INPUT, width: 80, fontFamily: "monospace" }} />
-            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>root lots (기본: {budgets?.default_max_roots || 1000})</span>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>개발</span>
+            <input type="number" min={0} max={50000} value={budgetDraftDev} onChange={e => setBudgetDraftDev(e.target.value)}
+              placeholder={String(budgets?.default_max_roots_dev || 200)}
+              style={{ ...S_INPUT, width: 80, fontFamily: "monospace" }} />
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>root lots</span>
             <button onClick={saveBudget} disabled={budgetSaving}
               style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent",
                 color: "var(--accent)", fontSize: 12, fontWeight: 700, cursor: budgetSaving ? "wait" : "pointer" }}>

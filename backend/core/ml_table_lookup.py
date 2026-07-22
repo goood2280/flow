@@ -215,7 +215,9 @@ def _root_ram_settings() -> dict[str, Any]:
 def _root_ram_cache_product_budget(product_token: str) -> int:
     """source_config.json 최상위 `ram_cache_product_budgets` 에서 제품별
     max_roots 를 읽는다. 키는 제품 캐시 관리 페이지가 저장한 제품명
-    (예: "ML_TABLE_PRODA"). bare 이름("PRODA")도 허용. 미설정이면 0."""
+    (예: "ML_TABLE_PRODA"). bare 이름("PRODA")도 허용. 미설정이면 0.
+
+    운영/개발 서버 구분: PATHS.is_prod 가 아니면 max_roots_dev 를 우선 사용."""
     try:
         raw = json.loads(ROOT_RAM_CACHE_SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
@@ -225,11 +227,18 @@ def _root_ram_cache_product_budget(product_token: str) -> int:
         return 0
     token = str(product_token or "").strip().upper()
     bare = token[len("ML_TABLE_"):] if token.startswith("ML_TABLE_") else token
+    use_dev = not PATHS.is_prod
     for key, val in budgets.items():
         key_upper = str(key).strip().upper()
         key_bare = key_upper[len("ML_TABLE_"):] if key_upper.startswith("ML_TABLE_") else key_upper
         if key_upper == token or (bare and key_bare == bare):
-            max_roots = val.get("max_roots") if isinstance(val, dict) else val
+            if isinstance(val, dict):
+                if use_dev and val.get("max_roots_dev") is not None:
+                    max_roots = val.get("max_roots_dev")
+                else:
+                    max_roots = val.get("max_roots")
+            else:
+                max_roots = val
             try:
                 return max(0, min(ROOT_RAM_CACHE_ROOTS_MAX, int(max_roots)))
             except Exception:
@@ -1414,6 +1423,28 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
             "resource": resource_snapshot,
             "products": rows,
         })
+    # 캐시 이벤트 로그 기록 — 예열 결과
+    try:
+        from core.cache_event_log import record as _log_event
+        for row in rows:
+            fname = row.get("file", "?")
+            if row.get("ok"):
+                _log_event(
+                    "warmup",
+                    f"예열 완료: {fname} — cached {row.get('cached_roots', 0)}/{row.get('target_roots', 0)} roots"
+                    + (f" (skip: resource {row.get('resource_skipped_roots', 0)}, budget {row.get('budget_skipped_roots', 0)})"
+                       if row.get("resource_skipped_roots") or row.get("budget_skipped_roots") else ""),
+                    ok=True,
+                    product=fname,
+                    detail={"cached": row.get("cached_roots", 0), "target": row.get("target_roots", 0),
+                            "missing": row.get("missing_roots", 0),
+                            "resource_skipped": row.get("resource_skipped_roots", 0),
+                            "budget_skipped": row.get("budget_skipped_roots", 0)},
+                )
+            else:
+                _log_event("warmup", f"예열 실패: {fname}", ok=False, product=fname)
+    except Exception:
+        pass
     # 예열 사이클 동안 eviction 으로 참조가 끊긴 프레임의 파이썬측 순환을 즉시
     # 회수한다 — allocator 가 OS 에 돌려주는 것과 별개로, 지연 회수분이 다음
     # 사이클의 로드 스파이크와 겹치는 것을 막는다.
@@ -1544,6 +1575,10 @@ def start_root_lot_ram_cache_scheduler() -> bool:
         return False
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
         logger.info("ML_TABLE root RAM cache scheduler disabled")
+        return False
+    # 개발서버에서는 예열 스케줄러를 비활성화 — 메모리 보호 우선
+    if not PATHS.is_prod:
+        logger.info("ML_TABLE root RAM cache scheduler disabled (dev server — memory protection)")
         return False
     _ROOT_RAM_STOP.clear()
     _ROOT_RAM_THREAD = threading.Thread(

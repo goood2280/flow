@@ -48,6 +48,7 @@ SHARES: dict[str, float] = {
 
 
 _WORKER_FACTOR_DEFAULT = 0.25
+_DEV_FACTOR_DEFAULT = 0.35  # dev(standalone) 서버 캐시 풀 축소 계수
 
 
 def _pool_fraction() -> float:
@@ -60,23 +61,44 @@ def _pool_fraction() -> float:
 
 
 def worker_budget_factor() -> float:
-    """worker(개발서버) 역할이면 풀 축소 계수(기본 1/4), 아니면 1.0.
+    """서버 역할/환경에 따른 캐시 풀 축소 계수.
+
+    - worker(개발서버 오프로드) 역할: 기본 0.25 (1/4)
+    - 비운영(dev) standalone: 기본 0.35 — OOM 방지
+    - 운영(prod) api: 1.0 (축소 없음)
 
     역할은 관리자 탭에서 런타임에 바뀔 수 있다 — pool memo TTL(60s) 안에
     자동 반영된다."""
     try:
         from core.worker_dispatch import server_role
 
-        if server_role() != "worker":
-            return 1.0
+        role = server_role()
     except Exception:
-        return 1.0
-    raw = os.environ.get("FLOW_WORKER_CACHE_BUDGET_FACTOR", "")
+        role = "standalone"
+
+    if role == "worker":
+        raw = os.environ.get("FLOW_WORKER_CACHE_BUDGET_FACTOR", "")
+        try:
+            value = float(raw) if raw not in (None, "") else _WORKER_FACTOR_DEFAULT
+        except Exception:
+            value = _WORKER_FACTOR_DEFAULT
+        return max(0.05, min(1.0, value))
+
+    # 비운영(dev) standalone — 캐시 예산 축소로 OOM 방지
     try:
-        value = float(raw) if raw not in (None, "") else _WORKER_FACTOR_DEFAULT
+        from core.paths import PATHS
+
+        if not PATHS.is_prod:
+            raw = os.environ.get("FLOW_DEV_CACHE_BUDGET_FACTOR", "")
+            try:
+                value = float(raw) if raw not in (None, "") else _DEV_FACTOR_DEFAULT
+            except Exception:
+                value = _DEV_FACTOR_DEFAULT
+            return max(0.05, min(1.0, value))
     except Exception:
-        value = _WORKER_FACTOR_DEFAULT
-    return max(0.05, min(1.0, value))
+        pass
+
+    return 1.0
 
 
 def pool_bytes() -> int:
