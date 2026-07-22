@@ -37,6 +37,12 @@ _WARN_PCT_DEFAULT = 75.0
 _CRITICAL_PCT_DEFAULT = 85.0
 _SAFE_PCT_DEFAULT = 70.0
 _INTERVAL_SEC_DEFAULT = 15.0
+
+# 개발서버 전용 — 더 적극적인 eviction 으로 OOM 방지
+_DEV_WARN_PCT_DEFAULT = 60.0
+_DEV_CRITICAL_PCT_DEFAULT = 70.0
+_DEV_SAFE_PCT_DEFAULT = 50.0
+_DEV_INTERVAL_SEC_DEFAULT = 10.0
 _CRITICAL_RECHECK_SEC = 5.0
 _WARN_LOG_COOLDOWN_SEC = 300.0
 _EXTERNAL_TRIGGER_DEBOUNCE_SEC = 20.0
@@ -77,26 +83,40 @@ def _env_flag(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _is_prod_server() -> bool:
+    """운영 서버 여부 — 개발서버면 watchdog 임계값을 낮춘다."""
+    try:
+        from core.paths import PATHS
+
+        return PATHS.is_prod
+    except Exception:
+        return True  # 판별 불가 시 안전하게 운영 기본값 사용
+
+
 def enabled() -> bool:
     return _env_flag("FLOW_MEMORY_WATCHDOG_ENABLE", True)
 
 
 def warn_pct() -> float:
-    return _env_float("FLOW_MEMORY_WARN_PCT", _WARN_PCT_DEFAULT, 30.0, 99.0)
+    default = _WARN_PCT_DEFAULT if _is_prod_server() else _DEV_WARN_PCT_DEFAULT
+    return _env_float("FLOW_MEMORY_WARN_PCT", default, 30.0, 99.0)
 
 
 def critical_pct() -> float:
     # critical 은 warn 밑으로 내려갈 수 없다 — 잘못 설정해도 순서 보장.
-    return max(warn_pct(), _env_float("FLOW_MEMORY_CRITICAL_PCT", _CRITICAL_PCT_DEFAULT, 40.0, 99.0))
+    default = _CRITICAL_PCT_DEFAULT if _is_prod_server() else _DEV_CRITICAL_PCT_DEFAULT
+    return max(warn_pct(), _env_float("FLOW_MEMORY_CRITICAL_PCT", default, 40.0, 99.0))
 
 
 def safe_pct() -> float:
     # safe 는 warn 위로 올라갈 수 없다.
-    return min(warn_pct(), _env_float("FLOW_MEMORY_SAFE_PCT", _SAFE_PCT_DEFAULT, 20.0, 95.0))
+    default = _SAFE_PCT_DEFAULT if _is_prod_server() else _DEV_SAFE_PCT_DEFAULT
+    return min(warn_pct(), _env_float("FLOW_MEMORY_SAFE_PCT", default, 20.0, 95.0))
 
 
 def interval_sec() -> float:
-    return _env_float("FLOW_MEMORY_WATCHDOG_INTERVAL_SEC", _INTERVAL_SEC_DEFAULT, 3.0, 300.0)
+    default = _INTERVAL_SEC_DEFAULT if _is_prod_server() else _DEV_INTERVAL_SEC_DEFAULT
+    return _env_float("FLOW_MEMORY_WATCHDOG_INTERVAL_SEC", default, 3.0, 300.0)
 
 
 def _memory_pct() -> tuple[float, float, float]:
@@ -216,6 +236,19 @@ def _run_eviction_pass(trigger: str, pct: float, effective_gb: float, total_gb: 
         freed_total / (1024 * 1024),
         {k: round(v / (1024 * 1024), 1) for k, v in freed_by_tier.items()} or "nothing left",
     )
+    # 캐시 이벤트 로그 기록
+    try:
+        from core.cache_event_log import record as _log_event
+        tier_summary = ", ".join(f"{k}: {round(v / (1024*1024), 1)}MB" for k, v in freed_by_tier.items()) or "nothing"
+        _log_event(
+            "eviction",
+            f"긴급 축출 ({trigger}): {round(pct, 1)}% → {round(pct_after, 1)}% — freed {round(freed_total / (1024*1024), 1)}MB [{tier_summary}]",
+            ok=freed_total > 0,
+            detail={"freed_bytes": freed_total, "freed_by_tier": freed_by_tier,
+                    "pct_before": round(pct, 1), "pct_after": round(pct_after, 1), "trigger": trigger},
+        )
+    except Exception:
+        pass
     return event
 
 
@@ -243,6 +276,17 @@ def check_once(trigger: str = "interval") -> dict:
                 "[memory_watchdog] memory high: process %.2fGB / host %.2fGB (%.1f%% >= warn %.0f%%)",
                 effective_gb, total_gb, pct, warn_pct(),
             )
+            try:
+                from core.cache_event_log import record as _log_event
+                _log_event(
+                    "watchdog",
+                    f"메모리 경고: {round(effective_gb, 2)}GB / {round(total_gb, 2)}GB ({round(pct, 1)}% ≥ warn {warn_pct():.0f}%)",
+                    ok=True,
+                    detail={"pct": round(pct, 1), "effective_gb": round(effective_gb, 2),
+                            "total_gb": round(total_gb, 2), "threshold": warn_pct()},
+                )
+            except Exception:
+                pass
     if pct >= critical_pct():
         # 동시 트리거(백그라운드 주기 + 503 경로) 직렬화 — 이미 진행 중이면 스킵.
         if _EVICT_LOCK.acquire(blocking=False):

@@ -8076,16 +8076,20 @@ def get_ram_cache_overview():
             root_lot_id = str(entry.get("root_lot_id") or key[1] or "").strip().upper()
             if root_lot_id in priority_roots_by_product.get(prod_name, set()):
                 row["priority_cached"] += 1
-    # 제품별 예산 병합
+    # 제품별 예산 병합 — 운영/개발 구분
     cfg = load_json(SOURCE_CFG, {})
     budgets = cfg.get("ram_cache_product_budgets") or {}
     default_max_roots = int(_ml_table_lookup._root_ram_cache_target_roots())
+    _use_dev = not PATHS.is_prod
     for prod_name, row in product_rows.items():
         b = budgets.get(prod_name) if isinstance(budgets, dict) else None
         max_roots = None
         if isinstance(b, dict):
             try:
-                max_roots = int(b.get("max_roots"))
+                if _use_dev and b.get("max_roots_dev") is not None:
+                    max_roots = int(b.get("max_roots_dev"))
+                else:
+                    max_roots = int(b.get("max_roots"))
             except Exception:
                 max_roots = None
         row["max_roots"] = max_roots if max_roots else default_max_roots
@@ -8235,6 +8239,24 @@ def get_memory_overview():
         "watchdog": watchdog,
         "cache_budget_pool": budget_pool,
         "upstream_proxy": proxy,
+    }
+
+
+@router.get("/cache-event-log")
+def get_cache_event_log(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    category: str = Query(""),
+):
+    """관리자 전용 — 캐시 성공/실패 이벤트 로그 + peak RAM."""
+    user = current_user(request)
+    if not is_page_manager(user):
+        raise HTTPException(403, "관리자 전용")
+    from core.cache_event_log import get_events, peak_ram_info
+    return {
+        "ok": True,
+        "events": get_events(limit=limit, category=category),
+        "peak_ram": peak_ram_info(),
     }
 
 
@@ -8521,20 +8543,22 @@ def get_ram_cache_knob_allocation(product: str = Query(""), lot_id: str = Query(
 
 @router.get("/ram-cache/product-budgets")
 def get_ram_cache_product_budgets():
-    """제품별 RAM 캐시 예산(max_roots) 조회."""
+    """제품별 RAM 캐시 예산(max_roots) 조회 — 운영/개발 구분."""
     cfg = load_json(SOURCE_CFG, {})
     budgets = cfg.get("ram_cache_product_budgets") or {}
-    # 각 product 의 max_roots 값을 dict 형태로 반환
     products: dict[str, dict] = {}
     if isinstance(budgets, dict):
         for prod_key, prod_val in budgets.items():
             if isinstance(prod_val, dict):
-                products[prod_key] = {"max_roots": int(prod_val.get("max_roots") or 1000)}
+                products[prod_key] = {
+                    "max_roots": int(prod_val.get("max_roots") or 1000),
+                    "max_roots_dev": int(prod_val["max_roots_dev"]) if prod_val.get("max_roots_dev") is not None else None,
+                }
             else:
                 try:
-                    products[prod_key] = {"max_roots": int(prod_val)}
+                    products[prod_key] = {"max_roots": int(prod_val), "max_roots_dev": None}
                 except Exception:
-                    products[prod_key] = {"max_roots": 1000}
+                    products[prod_key] = {"max_roots": 1000, "max_roots_dev": None}
     default_max_roots = int(
         _ml_table_lookup._root_ram_cache_target_roots()
     )
@@ -8542,12 +8566,14 @@ def get_ram_cache_product_budgets():
         "ok": True,
         "products": products,
         "default_max_roots": default_max_roots,
+        "default_max_roots_dev": min(200, default_max_roots),
     }
 
 
 class RamCacheProductBudgetSaveReq(BaseModel):
     product: str
     max_roots: int = 1000
+    max_roots_dev: int | None = None
 
 
 @router.post("/ram-cache/product-budgets/save")
@@ -8555,20 +8581,28 @@ def save_ram_cache_product_budget(
     req: RamCacheProductBudgetSaveReq,
     _perm=Depends(require_page_manager("splittable")),
 ):
-    """제품별 RAM 캐시 예산(max_roots) 저장. source_config.json 의
-    ram_cache_product_budgets 아래에 기록한다."""
+    """제품별 RAM 캐시 예산(max_roots) 저장 — 운영/개발 구분.
+    source_config.json 의 ram_cache_product_budgets 아래에 기록한다."""
     product = str(req.product or "").strip()
     if not product:
         raise HTTPException(400, "product is required")
     max_roots = max(0, min(ROOT_LOT_CACHE_LIMIT_MAX, int(req.max_roots or 1000)))
+    entry: dict = {"max_roots": max_roots}
+    if req.max_roots_dev is not None:
+        entry["max_roots_dev"] = max(0, min(ROOT_LOT_CACHE_LIMIT_MAX, int(req.max_roots_dev)))
     cfg = load_json(SOURCE_CFG, {})
     budgets = cfg.setdefault("ram_cache_product_budgets", {})
     if not isinstance(budgets, dict):
         budgets = {}
         cfg["ram_cache_product_budgets"] = budgets
-    budgets[product] = {"max_roots": max_roots}
+    # 기존 dev 값 보존 (운영에서만 max_roots 만 보낼 때)
+    existing = budgets.get(product)
+    if isinstance(existing, dict) and req.max_roots_dev is None and existing.get("max_roots_dev") is not None:
+        entry["max_roots_dev"] = existing["max_roots_dev"]
+    budgets[product] = entry
     save_json(SOURCE_CFG, cfg)
-    return {"ok": True, "product": product, "max_roots": max_roots}
+    return {"ok": True, "product": product, "max_roots": max_roots,
+            "max_roots_dev": entry.get("max_roots_dev")}
 
 
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
