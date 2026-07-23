@@ -1676,7 +1676,10 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         days = max(1, min(90, int(days)))
     except Exception:
         days = 7
-    rows = list(jsonl_read(ACTIVITY_LOG) or [])
+    # limit=0 → 전체 로드. 기본 limit(200)이면 최근 200건만 필터 대상이라, 바쁜 서버에서
+    # 그 200건이 전부 오늘치가 되어 1/7/30일 을 늘려도 '오늘 것만' 보이던 버그. jsonl_read 는
+    # 어차피 전체 파일을 읽어 모든 줄을 파싱한 뒤 슬라이스하므로 limit=0 이어도 추가 비용 없음.
+    rows = list(jsonl_read(ACTIVITY_LOG, limit=0) or [])
     cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
     by_user = collections.Counter()
     by_action = collections.Counter()
@@ -1748,7 +1751,8 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
         days = max(1, min(365, int(days)))
     except Exception:
         days = 30
-    rows = list(jsonl_read(ACTIVITY_LOG) or [])
+    # limit=0 → 전체 로드 (기본 200 이면 최근 200건만 집계되어 오래된 날짜가 빠짐).
+    rows = list(jsonl_read(ACTIVITY_LOG, limit=0) or [])
     cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
     features: dict = {}
     for r in rows:
