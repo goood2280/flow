@@ -434,6 +434,14 @@ export default function My_Admin({user}){
       })
       .catch(e=>toast.error("비번 초기화 실패: "+e.message));
   };
+  const changeRole=(username,role)=>{
+    if(!username)return;
+    const label=role==="admin"?"관리자로 승격":"일반 유저로 강등";
+    if(!confirm(`${username} 을(를) ${label}하시겠습니까?\n\n변경 즉시 해당 유저의 세션이 종료되며(재로그인 필요), 재로그인 시 새 역할이 적용됩니다.`))return;
+    sf("/api/admin/set-role",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,role})})
+      .then(d=>{toast.ok(`${username} → ${role==="admin"?"관리자":"일반 유저"}${d.revoked_sessions?` (세션 ${d.revoked_sessions}개 종료)`:""}`);load();})
+      .catch(e=>toast.error("역할 변경 실패: "+(e.message||e)));
+  };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then((d)=>{
     if(_arr(d?.removed_from_groups).length)toast.ok(`개별 권한 지정 — 권한 그룹 [${d.removed_from_groups.join(", ")}] 에서 제외되었습니다`);
     setEditPerm(null);load();setTab("perms");});};
@@ -572,7 +580,10 @@ export default function My_Admin({user}){
                     <Button variant="ghost" onClick={()=>resetPassword(u.username)}>비번 초기화</Button>
                     <Button variant="danger" onClick={()=>{if(confirm("삭제하시겠습니까?"))action("/api/admin/delete-user",{username:u.username});}}>삭제</Button>
                     <Button variant="ghost" onClick={()=>{setEditPerm(u.username);setPermTabs(_tabsToArray(u.tabs));setTab("perms");}} style={{color:"var(--info,#3b82f6)",border:"1px solid var(--info,#3b82f6)"}}>권한</Button>
+                    <Button variant="ghost" onClick={()=>changeRole(u.username,"admin")} style={{color:"var(--warn,#f59e0b)",border:"1px solid var(--warn,#f59e0b)"}}>관리자로 승격</Button>
                   </>}
+                  {u.status==="approved"&&u.role==="admin"&&
+                    <Button variant="ghost" onClick={()=>changeRole(u.username,"user")} style={{color:"var(--warn,#f59e0b)",border:"1px solid var(--warn,#f59e0b)"}}>일반 유저로 강등</Button>}
                 </div>
               </td></tr>)}</tbody>
           </table>

@@ -792,6 +792,41 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
     raise HTTPException(404)
 
 
+class SetRoleReq(BaseModel):
+    username: str
+    role: str  # "user" | "admin"
+
+
+@router.post("/set-role")
+def set_role(req: SetRoleReq, request: Request, _admin=Depends(require_admin)):
+    """admin 이 특정 유저의 역할(admin/user)을 변경. 강등/승격 모두 지원.
+    - 'admin' 이면 전체 권한, 'user' 면 일반 유저(탭 권한/페이지 위임에 따름).
+    - 변경 즉시 해당 유저의 세션 토큰을 무효화해 재로그인 시 새 역할이 적용된다.
+    - 마지막 남은 admin 을 강등하면 잠금되므로 차단한다."""
+    from core.auth import revoke_user_tokens
+    new_role = str(req.role or "").strip().lower()
+    if new_role not in {"user", "admin"}:
+        raise HTTPException(400, "role must be 'user' or 'admin'")
+    users = read_users()
+    for u in users:
+        if u["username"] == req.username:
+            old_role = str(u.get("role") or "user").strip() or "user"
+            if old_role == new_role:
+                return {"ok": True, "username": req.username, "role": new_role, "unchanged": True}
+            # 마지막 admin 강등 방지 (전체 잠금 방지).
+            if old_role == "admin" and new_role != "admin":
+                admin_count = sum(1 for x in users if str(x.get("role") or "").strip() == "admin")
+                if admin_count <= 1:
+                    raise HTTPException(400, "마지막 관리자는 강등할 수 없습니다. 다른 관리자를 먼저 지정하세요.")
+            u["role"] = new_role
+            write_users(users)
+            revoked = revoke_user_tokens(req.username)  # 즉시 반영 — 기존 admin 세션 강제 종료
+            _audit(request, "admin:set-role",
+                   detail=f"user={req.username};{old_role}->{new_role};revoked={revoked}", tab="admin")
+            return {"ok": True, "username": req.username, "role": new_role, "revoked_sessions": revoked}
+    raise HTTPException(404)
+
+
 @router.get("/user-tabs")
 def get_user_tabs(request: Request, username: str = Query(...)):
     """v8.4.6: 본인 또는 admin 만.
