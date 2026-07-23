@@ -37,6 +37,11 @@ _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
 # 파일 캐시까지 RSS 로 계상됨) 0.65 는 10GB 급 호스트에서 상시 상한 초과를 유발했다.
 # 0.80 으로 올려 10GB→8.0 / 12GB→9.6 / 16GB→12.8 처럼 환경별로 여유 있게 잡는다.
 _PROCESS_MEMORY_LIMIT_FRACTION_DEFAULT = 0.80
+# 개발(small) 프로파일 프로세스 메모리 상한 하한(GB). FAB 매칭캐시 등 빌드가 순간
+# 수 GB(예: 6GB)를 쓰는데 분수 상한(총량×0.80, 10GB→8GB)이 너무 낮으면 가드가
+# 빌드를 조기 throttle 한다. 최소 이 값까지는 상한을 보장한다(총량-예약으로 클램프).
+# env FLOW_DEV_PROCESS_MEMORY_LIMIT_GB 로 조절.
+_DEV_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 9.5
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
 _PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
@@ -129,12 +134,26 @@ def process_memory_limit_fraction() -> float:
     )
 
 
+def _dev_process_memory_floor_gb() -> float:
+    """개발(small) 프로파일 프로세스 메모리 상한 하한(GB). 0 이면 하한 없음."""
+    return _env_float(
+        "FLOW_DEV_PROCESS_MEMORY_LIMIT_GB",
+        _DEV_PROCESS_MEMORY_LIMIT_GB_DEFAULT,
+        0.0,
+        512.0,
+    )
+
+
 def auto_process_memory_limit_gb() -> float:
     """Host-proportional RSS limit: ~80% of detected total memory.
 
     Falls back to the fixed small-profile default when total memory cannot
     be detected. Detection honors cgroup limits and env overrides. The
-    fraction is tunable via FLOW_PROCESS_MEMORY_LIMIT_FRACTION."""
+    fraction is tunable via FLOW_PROCESS_MEMORY_LIMIT_FRACTION.
+
+    개발 하한(_dev_process_memory_floor_gb)을 최소 보장하되, 호스트 총량-0.5GB
+    (OS 여유)를 넘지 않도록 클램프한다 — FAB 캐시 등 순간 수 GB 빌드가 분수 상한에
+    걸려 조기 throttle 되는 것을 막는다."""
     total_bytes = 0.0
     override = _memory_override_total_bytes()
     if override:
@@ -147,7 +166,12 @@ def auto_process_memory_limit_gb() -> float:
     if total_bytes <= 0:
         return _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT
     total_gb = total_bytes / (1024 ** 3)
-    return max(2.0, round(total_gb * process_memory_limit_fraction(), 1))
+    frac_limit = max(2.0, round(total_gb * process_memory_limit_fraction(), 1))
+    floor = _dev_process_memory_floor_gb()
+    if floor > 0:
+        floor = min(floor, round(max(2.0, total_gb - 0.5), 1))   # OS 여유 0.5GB 확보
+        return max(frac_limit, floor)
+    return frac_limit
 
 
 def cpu_budget_cores() -> float:

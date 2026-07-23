@@ -1,7 +1,17 @@
 {
-  "version": "9.5.24",
+  "version": "9.5.25",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.25",
+      "date": "2026-07-23",
+      "title": "개발 서버 프로세스 메모리 상한 하한 9.5GB — FAB 캐시 빌드 조기 throttle 방지",
+      "tag": "perf",
+      "changes": [
+        "개발(small 프로파일) 프로세스 메모리 가드 상한에 하한 9.5GB 보장. 기존엔 총량×0.80(10GB 호스트→8GB)이라 FAB 매칭캐시 등 순간 6GB 빌드가 상한에 근접해 위험/조기 throttle 되었음. 이제 max(분수상한, 9.5GB) 로 잡되 호스트 총량-0.5GB(OS 여유)를 넘지 않게 클램프.",
+        "적용 결과: 10GB 개발 8→9.5GB, 12GB 이상은 분수상한이 더 커서 그대로(영향 없음), 8GB 이하는 총량-0.5 로 안전 클램프. env FLOW_DEV_PROCESS_MEMORY_LIMIT_GB 로 조절(기본 9.5, 0=하한 없음). 서버 재시작 후 적용."
+      ]
+    },
     {
       "version": "9.5.24",
       "date": "2026-07-23",
