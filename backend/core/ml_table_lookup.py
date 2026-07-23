@@ -1472,7 +1472,12 @@ def _ensure_lookup_cache_ready_for_root_ram(fp: Path, status: dict[str, Any], *,
     return False
 
 
-def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool = False) -> dict[str, Any]:
+def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool = False,
+                               load_now: bool = False) -> dict[str, Any]:
+    # load_now: 관리자 트리거(수동 스캔/전체 셋업)면 True — 활성 유저에게 yield 하지 않고
+    # 지금 적재한다. 예약(백그라운드) warmup 은 기본 False(opportunistic) — 바쁜 서버에서
+    # 유저 요청에 양보. 예전엔 force 와 무관하게 항상 yield 해, 바쁜 운영서버에서 수동
+    # 스캔조차 '0/N 적재'만 뜨던 문제(첫 청크에서 users_active 로 break)를 해결.
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
         return {
             "ok": False,
@@ -1705,7 +1710,7 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                     # RAM warmup is opportunistic. If a user starts searching,
                     # stop this cycle and let the next scheduler tick continue.
                     # On-demand requests still read the projected disk partition.
-                    if request_priority.users_active(quiet_for_sec=5.0):
+                    if not load_now and request_priority.users_active(quiet_for_sec=5.0):
                         resource_skipped += total_to_load - start
                         last_skip_reason = "user_requests_active"
                         break

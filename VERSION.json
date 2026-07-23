@@ -1,7 +1,18 @@
 {
-  "version": "9.5.33",
+  "version": "9.5.34",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.34",
+      "date": "2026-07-23",
+      "title": "예열 적재 안 되던 문제(바쁜 서버 yield) + 개발서버 root RAM 캐시 '실패'→'건너뜀'",
+      "tag": "fix",
+      "changes": [
+        "root RAM 예열이 활성 유저 요청에 무조건 yield(users_active면 첫 청크에서 break)해, 바쁜 운영서버에선 수동 스캔/전체 셋업조차 '0/N 랏 적재'만 뜨던 문제. load_now 플래그 추가 — 관리자 트리거(수동 스캔/전체 셋업/수동 새로고침)는 yield 하지 않고 지금 적재. 예약(백그라운드) 예열은 기존대로 opportunistic(유저에 양보).",
+        "개발(worker) 서버에서 root RAM 캐시 비활성 시 통합 스캔 3단계가 '실패'로 뜨던 것을 '건너뜀(비활성 — 운영 api 전용)'으로 확실히 처리 — root RAM 캐시는 조회를 서빙하는 운영 서버 전용이라 개발서버에선 FAB 매칭 캐시만 수행되는 게 정상.",
+        "참고: 상한 랏(max_roots)을 올려도 RAM GB 예산 한도 내에서만 적재됨 — 많이 늘리려면 Root RAM 캐시 GB 예산도 함께 상향."
+      ]
+    },
     {
       "version": "9.5.33",
       "date": "2026-07-23",

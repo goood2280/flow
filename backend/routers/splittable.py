@@ -8285,7 +8285,7 @@ def root_lot_ram_cache_status(request: Request, product: str = Query("")):
 
 @router.post("/root-lot-cache/refresh")
 def refresh_root_lot_ram_cache_now(req: RootLotRamCacheRefreshReq, _perm=Depends(require_page_manager("splittable"))):
-    return _ml_table_lookup.refresh_root_lot_ram_cache(product=req.product or "", force=bool(req.force))
+    return _ml_table_lookup.refresh_root_lot_ram_cache(product=req.product or "", force=bool(req.force), load_now=True)
 
 
 class RootLotRamCacheEvictReq(BaseModel):
@@ -8354,7 +8354,7 @@ def _wait_for_root_lookup_caches(result: dict, *, product: str) -> dict:
         out.update(ok=False, error="root_lookup_build_timeout", pending_files=sorted(pending))
         return out
     # lookup build 완료 직후 운영 프로세스 RAM에 실제 root frame을 올린다.
-    return _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=False)
+    return _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=False, load_now=True)
 
 
 def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
@@ -8479,10 +8479,17 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
         _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 갱신 시작 ({_label})",
              stage="root_lot_ram", phase="started")
         try:
-            results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=force)
-            results["root_lot_cache"] = _wait_for_root_lookup_caches(
-                results["root_lot_cache"], product=product
-            )
+            # 개발(worker) 서버 등에서 root RAM 캐시가 비활성이면(조회를 서빙하는 운영 api
+            # 전용) refresh 가 reason="disabled" 를 즉시 반환 → 아래 rc_disabled 로 '건너뜀'
+            # 표시하고 FAB 매칭 캐시만 수행되게 한다(개발서버에서 '실패'로 뜨지 않음).
+            if not _ml_table_lookup.root_ram_cache_available():
+                results["root_lot_cache"] = {"ok": True, "skipped": True, "reason": "disabled",
+                                             "products": [], "warmed_products": 0, "build_pending": 0}
+            else:
+                results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(
+                    product=product, force=force, load_now=True)
+                results["root_lot_cache"] = _wait_for_root_lookup_caches(
+                    results["root_lot_cache"], product=product)
             rc = results["root_lot_cache"]
             pending = int(rc.get("build_pending") or 0)
             warmed = int(rc.get("warmed_products") or 0)
