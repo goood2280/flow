@@ -1140,25 +1140,56 @@ def install_deps() -> int:
         'openpyxl', 'xlsxwriter', 'xlrd',
         'psutil',   # 시스템 모니터 (core/sysmon.py)
     ]
-    return _pip_install(pkgs)
+    rc = _pip_install(pkgs)
+    if rc != 0:
+        # 제한된 사내망에서 pip registry 접근 실패 가능 — 앱 구동에 필요한 핵심
+        # 패키지가 이미 설치돼 있으면 파이프라인을 중단하지 않는다(경고). FLOW_SETUP_STRICT=1 이면 엄격.
+        missing = []
+        for mod in ('fastapi', 'uvicorn', 'polars', 'pandas', 'pyarrow', 'numpy', 'psutil'):
+            try:
+                __import__(mod)
+            except Exception:
+                missing.append(mod)
+        if not missing and not _setup_strict():
+            print(f'[deps] pip 설치 실패(rc={rc}) - 핵심 패키지는 이미 설치됨, 파이프라인 계속')
+            return 0
+        if missing:
+            print(f'[deps] pip 실패 + 미설치 핵심 패키지: {", ".join(missing)}', file=sys.stderr)
+    return rc
+
+
+def _setup_strict() -> bool:
+    return os.environ.get('FLOW_SETUP_STRICT', '').strip().lower() not in ('', '0', 'false', 'no', 'off')
 
 
 def build_frontend() -> int:
     fe = ROOT / 'frontend'
+    # 이미 빌드된 산출물(git 커밋/이전 배포)이 있으면, 제한된 사내망에서 npm registry
+    # 접근 실패로 install/build 가 깨져도 파이프라인을 중단하지 않고 기존 dist 로 계속한다.
+    # (dist 는 setup.py 번들엔 없지만 git 체크아웃에는 포함 — deployment dist remains tracked)
+    dist_ok = (fe / 'dist' / 'index.html').is_file()
+    strict = _setup_strict()
+
+    def _ok_or(rc, where):
+        if rc != 0 and dist_ok and not strict:
+            print(f'[npm] {where} 실패(rc={rc}) - 기존 빌드된 frontend/dist 사용, 파이프라인 계속')
+            return 0
+        return rc
+
     if not (fe / 'package.json').exists():
         print('frontend/package.json not found - skipping', file=sys.stderr)
-        return 1
+        return 1 if (strict or not dist_ok) else 0
     if not _has('npm'):
-        print('[npm] not found - skip frontend install/build')
+        print('[npm] not found - skip frontend install/build' + (' (기존 dist 사용)' if dist_ok else ''))
         return 0
     if (ROOT / 'package.json').exists():
-        rc = _run('npm install', cwd=ROOT)
+        rc = _ok_or(_run('npm install', cwd=ROOT), 'root npm install')
         if rc != 0:
             return rc
-    rc = _run('npm install', cwd=fe)
+    rc = _ok_or(_run('npm install', cwd=fe), 'frontend npm install')
     if rc != 0:
         return rc
-    return _run('npm run build', cwd=fe)
+    return _ok_or(_run('npm run build', cwd=fe), 'npm run build')
 
 
 def print_version() -> int:
