@@ -1826,6 +1826,18 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                             "resource_skipped": row.get("resource_skipped_roots", 0),
                             "budget_skipped": row.get("budget_skipped_roots", 0)},
                 )
+            elif row.get("build_pending") or row.get("skipped"):
+                # 진짜 실패가 아니라 원본 lookup 캐시가 아직 빌드 중 — 빌드 완료 후
+                # 다음 사이클에 적재된다. '실패'로 오표시하지 않는다(ok=True, 대기).
+                _reason = row.get("reason") or row.get("cache_status") or "빌드 대기"
+                _log_event(
+                    "warmup",
+                    f"예열 대기: {fname} — 원본 lookup 캐시 빌드 중({_reason}), 완료 후 다음 사이클에 적재",
+                    ok=True,
+                    product=fname,
+                    detail={"build_pending": True, "reason": _reason,
+                            "mem_lots_total": _mem_lots_total},
+                )
             else:
                 _log_event("warmup", f"예열 실패: {fname}", ok=False, product=fname)
     except Exception:

@@ -1,7 +1,17 @@
 {
-  "version": "9.5.20",
+  "version": "9.5.21",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.21",
+      "date": "2026-07-23",
+      "title": "warmup '예열 실패' 오표시 수정 — 실제로는 원본 lookup 캐시 빌드 대기 중",
+      "tag": "fix",
+      "changes": [
+        "root RAM 예열(warmup)에서 원본 lookup 캐시가 아직 빌드되지 않은 제품을 '예열 실패'로 잘못 표시하던 문제 수정. 이는 실패가 아니라 '빌드 대기(build_pending)' 상태로, 빌드 큐에 넣고 이번 사이클만 건너뛴 뒤 빌드 완료 후 다음 사이클에 적재된다. 이제 '예열 대기: … 원본 lookup 캐시 빌드 중, 완료 후 다음 사이클에 적재'로 ok=True 표시(빨간 실패로 뜨지 않음).",
+        "warmup rows 의 ok=False 는 build_pending/skipped 뿐이었으므로, 사실상 초기 대량 빌드 중 뜨던 모든 '예열 실패'가 이 대기 상태였음. 진짜 빌드 실패는 [빌드] 로그/빌드 상태로 별도 표시."
+      ]
+    },
     {
       "version": "9.5.20",
       "date": "2026-07-23",
