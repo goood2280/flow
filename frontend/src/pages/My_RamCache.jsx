@@ -142,6 +142,8 @@ export default function My_RamCache({ user }) {
           product_ram_enabled_dev: s.product_ram_enabled_dev ?? (s.product_ram_enabled ?? true),
           product_ram_gb: s.product_ram_gb ?? "",
           product_ram_gb_dev: s.product_ram_gb_dev ?? "",
+          match_cache_batch_roots: s.match_cache_batch_roots ?? "",
+          match_cache_batch_roots_dev: s.match_cache_batch_roots_dev ?? "",
         });
       })
       .catch(e => toast.error("예산 설정 로드 실패: " + (e?.message || e)));
@@ -162,6 +164,8 @@ export default function My_RamCache({ user }) {
       product_ram_gb_dev: num(budgetForm.product_ram_gb_dev),
       product_ram_enabled: !!budgetForm.product_ram_enabled,
       product_ram_enabled_dev: !!budgetForm.product_ram_enabled_dev,
+      match_cache_batch_roots: num(budgetForm.match_cache_batch_roots),
+      match_cache_batch_roots_dev: num(budgetForm.match_cache_batch_roots_dev),
     };
     sf(API + "/cache-budget/settings/save", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload) })
@@ -497,6 +501,29 @@ export default function My_RamCache({ user }) {
                           style={{ ...S_INPUT, width: 76, fontFamily: "monospace" }} /> GB</span>}
                     </div>
                   ))}
+                </div>
+                {/* FAB 매칭캐시 빌드 배치 크기 — 운영/개발 분리 */}
+                <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>FAB 매칭캐시 빌드 배치 (root 개수)
+                    {pins.match_cache_batch_roots && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}> · env 고정</span>}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    수동스캔의 FAB 매칭캐시를 root_lot_id 단위로 나눠 빌드할 때 한 번에 처리할 root 수.
+                    <b>작을수록 peak RAM ↓, 대신 FAB 재스캔이 늘어 느려짐</b>. 메모리 작은 개발서버는 낮게(예: 50~100) 권장.
+                    빈칸/0 = 기본 300. 현재 서버({budgetCfg.is_dev ? "개발" : "운영"}) 적용: <b>{eff.match_cache_batch_roots} root/배치</b>
+                  </div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>운영
+                      <input type="number" step="1" min="1" value={budgetForm.match_cache_batch_roots ?? ""} disabled={pins.match_cache_batch_roots}
+                        placeholder={String(budgetCfg.defaults?.match_cache_batch_roots ?? 300)}
+                        onChange={e => setBudgetForm(f => ({ ...f, match_cache_batch_roots: e.target.value }))}
+                        style={{ ...S_INPUT, width: 90, fontFamily: "monospace" }} /></label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>개발
+                      <input type="number" step="1" min="1" value={budgetForm.match_cache_batch_roots_dev ?? ""} disabled={pins.match_cache_batch_roots}
+                        placeholder="운영값 따름"
+                        onChange={e => setBudgetForm(f => ({ ...f, match_cache_batch_roots_dev: e.target.value }))}
+                        style={{ ...S_INPUT, width: 110, fontFamily: "monospace" }} /></label>
+                  </div>
                 </div>
               </div>;
             })()}

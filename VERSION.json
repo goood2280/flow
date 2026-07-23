@@ -1,7 +1,20 @@
 {
-  "version": "9.5.16",
+  "version": "9.5.17",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.17",
+      "date": "2026-07-23",
+      "title": "FAB 매칭캐시 root_lot_id 배치 스트리밍 빌드 — peak RAM 폭발 해결(개발서버 OOM 방지)",
+      "tag": "perf",
+      "changes": [
+        "수동스캔 FAB 매칭캐시 빌드가 글로벌 FAB 전체를 concat 후 sort+unique 하며 전량을 메모리에 버퍼링해 peak RAM 28GB+ 로 개발서버(메모리 작음)에서 OOM 되던 문제 해결.",
+        "root_lot_id(정규화 join key) 단위로 배치를 나눠 하나씩 정렬·중복제거 후 parquet part 로 흘려쓰고, 배치 사이 메모리 해제(del+gc)·메모리 가드 확인. 배치끼리 키가 배타적이라 마지막에 sort/unique 없이 스트리밍 병합 — 글로벌 결과와 동일(검증 완료).",
+        "peak RAM 을 한 배치(기본 root 300개) 크기로 제한. 속도는 느려지지만 메모리 우선(대량 FAB 도 안전). batch_col 이 join key 가 아니면 자동 legacy 폴백(행 손실 없음).",
+        "캐시관리 ⚙ 예산 설정에 'FAB 매칭캐시 빌드 배치(root 개수)' 신설 — 운영/개발 개별 조절(env>톱니바퀴>기본 300). 개발서버는 낮게(50~100) 권장.",
+        "env FLOW_MATCH_CACHE_STREAM(기본 ON), FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS 로도 제어."
+      ]
+    },
     {
       "version": "9.5.16",
       "date": "2026-07-22",

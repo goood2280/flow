@@ -6420,6 +6420,40 @@ def _match_cache_memory_wait_seconds() -> float:
     return _float_env_clamped("FLOW_SPLITTABLE_MATCH_CACHE_MEMORY_WAIT_SEC", 60.0, 5.0, 600.0)
 
 
+def _match_cache_stream_enabled() -> bool:
+    """FAB 매칭캐시 빌드를 root_lot_id 배치 스트리밍으로 처리할지 여부(기본 ON).
+    글로벌 sort+unique 의 peak RAM 폭발을 막는다. 0/false 로 끄면 legacy 경로."""
+    raw = str(os.environ.get("FLOW_MATCH_CACHE_STREAM", "1") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+MATCH_CACHE_STREAM_BATCH_ROOTS_DEFAULT = 300
+
+
+def _match_cache_stream_batch_roots() -> int:
+    """root_lot_id 배치 스트리밍에서 한 번에 처리할 root(정규화 join key) 값 개수.
+    작을수록 peak RAM 이 낮고 대신 FAB 원천을 여러 번 재스캔해 느려진다.
+    개발서버(메모리 작음) OOM 방지를 위해 기본값은 보수적으로 잡는다.
+
+    우선순위: env(FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS) > 캐시관리 예산설정 톱니바퀴
+    (match_cache_batch_roots[_dev], 운영/개발 분리) > 기본값 300."""
+    env_raw = os.environ.get("FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS", "")
+    if str(env_raw).strip():
+        try:
+            return max(1, min(100000, int(env_raw)))
+        except Exception:
+            pass
+    try:
+        from core import cache_settings
+        is_dev = bool(_ml_table_lookup._root_ram_cache_use_dev())
+        v = cache_settings.get_int_role("match_cache_batch_roots", is_dev, None)
+        if v is not None:
+            return max(1, min(100000, int(v)))
+    except Exception:
+        pass
+    return MATCH_CACHE_STREAM_BATCH_ROOTS_DEFAULT
+
+
 def _match_cache_products(product: str = "") -> list[str]:
     raw = str(product or "").strip()
     if raw:
@@ -7560,6 +7594,111 @@ def _fab_lot_snapshot_from_cache(product: str, root_lot_id: str, wafer_id: str =
     return _clean_str(df.item(0, 0))
 
 
+def _build_match_cache_streamed(
+    q_base,
+    tmp: Path,
+    *,
+    unique_subset: list[str],
+    ts_present: bool,
+    batch_col: str,
+    roots_per_batch: int,
+    product: str = "",
+) -> int:
+    """root_lot_id(=dedup subset 컬럼) 단위로 FAB 매칭캐시를 나눠 빌드한다.
+
+    글로벌 ``q.sort(ts).unique()`` 는 파이프라인 브레이커라 전체 FAB 를 메모리에
+    버퍼링해 peak RAM 이 폭발한다(수십 GB). 여기서는 dedup subset 에 속한 한 컬럼
+    (``batch_col``, 정규화된 join key = root_lot_id)의 값으로 배치를 나눈다.
+    dedup subset 의 한 컬럼으로 나누면 서로 다른 배치는 dedup 그룹이 절대 겹치지
+    않으므로, 각 배치를 개별적으로 sort+unique 한 뒤 **마지막에 sort/unique 없이
+    스트리밍 병합만** 하면 글로벌 sort+unique 와 결과가 동일하다.
+
+    peak RAM 은 한 배치(roots_per_batch 개의 root) 크기로 제한된다. 대신 FAB 원천을
+    배치 수만큼 재스캔하므로 느리다(속도↔메모리 트레이드오프, 메모리 우선).
+    배치 사이에서 프레임을 해제(del+gc)하고 메모리 가드를 확인한다.
+    """
+    def _dedup(part_q):
+        if ts_present:
+            part_q = part_q.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
+            return part_q.unique(subset=unique_subset, keep="first", maintain_order=True)
+        return part_q.unique(subset=unique_subset, keep="last")
+
+    partdir = tmp.parent / (tmp.name + ".parts")
+    try:
+        if partdir.exists():
+            for f in partdir.glob("*.parquet"):
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            try:
+                partdir.rmdir()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 배치 키 값 목록 — 한 컬럼만 collect 하므로 저메모리. batch_col 은 join_tmp_key 라
+    # q_base 에서 이미 null/빈문자 필터가 적용된 상태 → drop_nulls 로 행 손실 없음.
+    try:
+        vals_df = q_base.select(pl.col(batch_col)).unique().collect(streaming=True)
+    except TypeError:
+        vals_df = q_base.select(pl.col(batch_col)).unique().collect()
+    vals = sorted({str(v) for v in vals_df.get_column(batch_col).drop_nulls().to_list()})
+
+    if not vals:
+        # 빈 결과: 스키마만 있는 빈 parquet 생성 (legacy 경로와 동일 산출).
+        return _write_match_cache_lazyframe(_dedup(q_base), tmp)
+
+    partdir.mkdir(parents=True, exist_ok=True)
+    part_paths: list[Path] = []
+    total_batches = (len(vals) + roots_per_batch - 1) // roots_per_batch
+    try:
+        for idx in range(0, len(vals), roots_per_batch):
+            if _MATCH_CACHE_STOP.is_set():
+                raise RuntimeError("match cache build stopped")
+            _wait_for_match_cache_memory()
+            batch_no = idx // roots_per_batch + 1
+            chunk = vals[idx:idx + roots_per_batch]
+            part_q = _dedup(q_base.filter(pl.col(batch_col).is_in(chunk)))
+            part_path = partdir / f"part_{batch_no:05d}.parquet"
+            _write_match_cache_lazyframe(part_q, part_path)
+            part_paths.append(part_path)
+            try:
+                _match_cache_job_update(
+                    stream_product=product,
+                    stream_batch=batch_no,
+                    stream_batch_total=total_batches,
+                    stream_roots=len(vals),
+                )
+            except Exception:
+                pass
+            logger.info(
+                "match cache stream (product=%s) batch %d/%d — %d roots/batch, %d roots total",
+                product, batch_no, total_batches, roots_per_batch, len(vals),
+            )
+            try:
+                del part_q
+                gc.collect()
+            except Exception:
+                pass
+
+        # 배치끼리 batch_col 값이 배타적 → sort/unique 없이 스트리밍 병합만 하면 된다.
+        merged = pl.scan_parquet([str(p) for p in part_paths])
+        row_count = _write_match_cache_lazyframe(merged, tmp)
+    finally:
+        for p in part_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            partdir.rmdir()
+        except Exception:
+            pass
+    return row_count
+
+
 def _refresh_match_cache_products(products: list[str], force: bool = False) -> dict:
     """Build persisted FAB root/fab/wafer connection tables for known products."""
     products = [p for p in products if p]
@@ -7653,13 +7792,41 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                     unique_subset = [c for c in (MATCH_CACHE_ROOT_COL, MATCH_CACHE_WAFER_COL) if c in keep]
                 if not unique_subset:
                     unique_subset = [c for c in (MATCH_CACHE_FAB_COL,) if c in keep]
-                if MATCH_CACHE_TS_COL in keep:
-                    q = q.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
-                    q = q.unique(subset=unique_subset, keep="first", maintain_order=True)
-                else:
-                    q = q.unique(subset=unique_subset, keep="last")
+                ts_present = MATCH_CACHE_TS_COL in keep
                 tmp = fp.with_suffix(fp.suffix + ".tmp")
-                row_count = _write_match_cache_lazyframe(q, tmp)
+
+                # root_lot_id 배치 스트리밍: dedup subset 에 속한 정규화 join key 한 컬럼
+                # (가능하면 root_lot_id) 으로 배치를 나눠 peak RAM 을 한 배치 크기로 제한.
+                # batch_col 은 반드시 join_tmp_keys(=null 필터 완료) 중 하나여야 행 손실이 없다.
+                subset_join_keys = [c for c in unique_subset if c in join_tmp_keys]
+                batch_col = ""
+                if subset_join_keys:
+                    root_src = cols.get("root_col") or ""
+                    if root_src:
+                        for jk, tmpk in zip(join_keys, join_tmp_keys):
+                            if tmpk in subset_join_keys and str(jk).casefold() == str(root_src).casefold():
+                                batch_col = tmpk
+                                break
+                    if not batch_col:
+                        batch_col = subset_join_keys[0]
+
+                if _match_cache_stream_enabled() and batch_col:
+                    row_count = _build_match_cache_streamed(
+                        q, tmp,
+                        unique_subset=unique_subset,
+                        ts_present=ts_present,
+                        batch_col=batch_col,
+                        roots_per_batch=_match_cache_stream_batch_roots(),
+                        product=ml_product,
+                    )
+                else:
+                    # legacy: 글로벌 sort+unique (streaming off 또는 배치 키 없음).
+                    if ts_present:
+                        q = q.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
+                        q = q.unique(subset=unique_subset, keep="first", maintain_order=True)
+                    else:
+                        q = q.unique(subset=unique_subset, keep="last")
+                    row_count = _write_match_cache_lazyframe(q, tmp)
                 tmp.replace(fp)
                 meta = {
                     "version": MATCH_CACHE_VERSION,
@@ -8354,6 +8521,7 @@ def _cache_budget_settings_payload() -> dict:
         "root_ram_gb": "FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB" in os.environ,
         "product_ram_gb": "FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB" in os.environ,
         "product_ram_enabled": "FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ,
+        "match_cache_batch_roots": "FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS" in os.environ,
     }
     return {
         "ok": True,
@@ -8368,11 +8536,13 @@ def _cache_budget_settings_payload() -> dict:
             "root_ram_gb": _gb(_ml_table_lookup._root_ram_cache_max_bytes()),
             "product_ram_enabled": _product_ram_cache_available(),
             "product_ram_gb": _gb(_product_ram_cache_max_bytes()),
+            "match_cache_batch_roots": _match_cache_stream_batch_roots(),
         },
         "defaults": {
             "pool_fraction": 0.45,
             "dev_factor": 0.35,
             "product_ram_enabled": True,
+            "match_cache_batch_roots": MATCH_CACHE_STREAM_BATCH_ROOTS_DEFAULT,
         },
     }
 
@@ -8394,6 +8564,8 @@ class CacheBudgetSaveReq(BaseModel):
     product_ram_enabled_dev: bool | None = None
     product_ram_gb: float | None = None
     product_ram_gb_dev: float | None = None
+    match_cache_batch_roots: int | None = None
+    match_cache_batch_roots_dev: int | None = None
 
 
 @router.post("/cache-budget/settings/save")
@@ -8418,6 +8590,13 @@ def save_cache_budget_settings(req: CacheBudgetSaveReq, _perm=Depends(require_pa
         partial["dev_factor"] = None if fields["dev_factor"] is None else max(0.05, min(1.0, float(fields["dev_factor"])))
     _put_gb("root_ram_gb"); _put_gb("root_ram_gb_dev")
     _put_gb("product_ram_gb"); _put_gb("product_ram_gb_dev")
+
+    def _put_int(key, lo, hi):
+        if key in fields:
+            v = fields[key]
+            partial[key] = None if (v is None or v == "" or float(v) <= 0) else int(max(lo, min(hi, float(v))))
+    _put_int("match_cache_batch_roots", 1, 100000)
+    _put_int("match_cache_batch_roots_dev", 1, 100000)
     if "product_ram_enabled" in fields:
         partial["product_ram_enabled"] = None if fields["product_ram_enabled"] is None else bool(fields["product_ram_enabled"])
     if "product_ram_enabled_dev" in fields:

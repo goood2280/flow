@@ -126,3 +126,13 @@ def get_bool_role(key: str, is_dev: bool, default: bool) -> bool:
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_int_role(key: str, is_dev: bool, default=None):
+    v = _role_value(key, is_dev)
+    if v is None:
+        return default
+    try:
+        return int(float(v))
+    except Exception:
+        return default
