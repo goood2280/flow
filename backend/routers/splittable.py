@@ -6420,6 +6420,13 @@ def _match_cache_memory_wait_seconds() -> float:
     return _float_env_clamped("FLOW_SPLITTABLE_MATCH_CACHE_MEMORY_WAIT_SEC", 60.0, 5.0, 600.0)
 
 
+def _match_cache_memory_max_wait_seconds() -> float:
+    """매칭캐시 빌드 전 메모리 가드 대기의 최대 한도(초). 초과하면 무한 대기 대신
+    경고 후 진행한다(빌드는 스트리밍이라 메모리 제한적, run_heavy 에 2차 가드도 있음).
+    0 = 무제한(구동작). 기본 600초 — 개발서버에서 통합 스캔이 영원히 멈추는 것 방지."""
+    return _float_env_clamped("FLOW_SPLITTABLE_MATCH_CACHE_MEMORY_MAX_WAIT_SEC", 600.0, 0.0, 21600.0)
+
+
 def _match_cache_stream_enabled() -> bool:
     """FAB 매칭캐시 빌드를 root_lot_id 배치 스트리밍으로 처리할지 여부(기본 ON).
     글로벌 sort+unique 의 peak RAM 폭발을 막는다. 0/false 로 끄면 legacy 경로."""
@@ -6535,6 +6542,8 @@ def _wait_for_match_cache_memory() -> bool:
     except Exception:
         return True
     wait_s = _match_cache_memory_wait_seconds()
+    max_wait = _match_cache_memory_max_wait_seconds()
+    waited = 0.0
     while not _MATCH_CACHE_STOP.is_set():
         try:
             high = process_memory_high()
@@ -6544,8 +6553,19 @@ def _wait_for_match_cache_memory() -> bool:
         if not high:
             _match_cache_job_update(paused=False, memory=snap)
             return True
+        # 무한 대기 방지 — 메모리 가드가 max_wait 넘게 계속 high 면 경고 후 진행한다.
+        # (스트리밍 빌드라 메모리 제한적이고, run_heavy 로컬 실행에 2차 메모리 admission
+        #  가드가 또 있다.) 개발서버에서 통합 스캔이 stage 1 에서 영원히 멈추던 문제 해결.
+        if max_wait > 0 and waited >= max_wait:
+            logger.warning(
+                "match cache memory guard high for %.0fs — 대기 한도 초과, 진행함 "
+                "(snap=%s)", waited, snap,
+            )
+            _match_cache_job_update(paused=False, memory=snap)
+            return True
         _match_cache_job_update(paused=True, memory=snap)
         _MATCH_CACHE_STOP.wait(wait_s)
+        waited += wait_s
     return False
 
 
@@ -8466,20 +8486,25 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
             rc = results["root_lot_cache"]
             pending = int(rc.get("build_pending") or 0)
             warmed = int(rc.get("warmed_products") or 0)
+            # 개발(worker) 역할 등에서 root RAM 캐시가 비활성이면 '실패'가 아니라 '건너뜀'.
+            rc_disabled = (rc.get("reason") == "disabled")
+            rc_ok = bool(rc.get("ok")) or rc_disabled
             # 원본 lookup 캐시가 아직 빌드 중이면 예열은 '대기'다(실패 아님) — 빌드 완료
             # 후 자동 적재된다. 대기 개수를 표시해 조용한 미적재로 오인하지 않게 한다.
             note = (f" · 빌드 대기 {pending}개(원본 lookup 캐시 빌드 완료 후 자동 적재)"
                     if pending else "")
+            phase_label = ("건너뜀(비활성 — 이 서버에서 꺼짐)" if rc_disabled
+                           else f"완료{note}")
             if job_id:
                 from core.cache_event_log import stage_finished
-                stage_finished(job_id, "root_lot_ram", ok=bool(rc.get("ok")),
+                stage_finished(job_id, "root_lot_ram", ok=rc_ok,
                                detail={"products": len(rc.get("products") or []),
-                                       "max_gb": rc.get("max_gb"),
+                                       "max_gb": rc.get("max_gb"), "disabled": rc_disabled,
                                        "build_pending": pending, "warmed": warmed})
-            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 완료 ({_label}){note}",
-                 ok=bool(rc.get("ok")),
+            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 {phase_label} ({_label})",
+                 ok=rc_ok,
                  detail={"products": len(rc.get("products") or []),
-                         "max_gb": rc.get("max_gb"),
+                         "max_gb": rc.get("max_gb"), "disabled": rc_disabled,
                          "build_pending": pending, "warmed": warmed},
                  stage="root_lot_ram", phase="finished")
         except Exception as e:
