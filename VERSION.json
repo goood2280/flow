@@ -1,7 +1,20 @@
 {
-  "version": "9.5.22",
+  "version": "9.5.23",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.23",
+      "date": "2026-07-23",
+      "title": "전체 셋업 수동 버튼 (초기 1회) — 운영 로컬·5병렬·20GB 로 전 제품 빠른 캐싱, 관리자 전용",
+      "tag": "feature",
+      "changes": [
+        "캐시관리 페이지에 '⚡ 전체 셋업 (초기 1회)' 버튼 신설(관리자 전용). 초기 운영 배포 시 전 제품 캐시를 한 번에 빠르게 빌드한다.",
+        "개발 워커로 오프로드하지 않고 운영 서버에서 직접 처리(FLOW_WORKER_OFFLOAD=0). 랏(lookup) 캐시를 5병렬 로컬로 직접 빌드(큐/로컬-heavy-게이트 우회, 파일별 빌드락으로 안전) 후, 매칭캐시→제품원본RAM→root예열을 이어서 수행.",
+        "실행 동안만 자원 상향: 메모리 가드 20GB, lookup 청크/매칭 배치 확대, 제품 원본 RAM 캐시 켬 — 종료 후 원래 env 로 복원.",
+        "env 로 조절: FLOW_FULL_SETUP_WORKERS(5), FLOW_FULL_SETUP_MEMORY_GB(20), FLOW_FULL_SETUP_LOOKUP_CHUNK(32), FLOW_FULL_SETUP_MATCH_BATCH_ROOTS(2000). 백엔드 POST /api/splittable/ram-cache/full-setup 는 require_admin, 프론트 버튼도 admin 전용.",
+        "진행은 캐시 이벤트 로그에 '[전체셋업] 랏캐시 N/전체 · RSS · 남은시간' 으로 실시간 표시."
+      ]
+    },
     {
       "version": "9.5.22",
       "date": "2026-07-23",

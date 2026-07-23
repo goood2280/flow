@@ -289,14 +289,14 @@ export default function My_RamCache({ user }) {
     }
   }, [selProd, canManage, loadPriority, loadContents, loadBudgets, reloadProductCacheStatus, reloadRootLotCacheStatus]);
 
-  const runUnifiedScan = () => {
+  // 통합 스캔/전체 셋업 공용 — 시작 요청 후 진행 로그를 실시간 폴링한다.
+  const startScanAndPoll = (reqPromise, okMsg, maxTicks = 240) => {
     setUnifiedScanBusy(true);
-    sf(API + "/ram-cache/unified-scan", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ product: selProd || "", force: true }) })
+    reqPromise
       .then(r => {
-        if (r.queued) toast.ok(`통합 캐시 스캔 시작됨 (${selProd || "전체 제품"}) — FAB/product/root lot 순서대로 갱신됩니다.`);
-        else if (r.running) toast.warn("통합 캐시 스캔이 이미 실행 중입니다.");
-        else toast.ok("통합 캐시 스캔 요청 완료");
+        if (r.queued) toast.ok(okMsg);
+        else if (r.running) toast.warn("스캔이 이미 실행 중입니다.");
+        else toast.ok("요청 완료");
         // 진행 로그 실시간 폴링 — 스캔이 끝날 때까지(scan-status.running=false) 이벤트
         // 로그를 2.5초마다 갱신한다. 예전엔 3/8/15초 후 한 번씩만 갱신해 오래 걸리는
         // 적재의 진행 로그가 뜨지 않았다. 최대 10분(240틱) 상한.
@@ -307,7 +307,7 @@ export default function My_RamCache({ user }) {
         setCacheEventLogFilter(scanLogFilter);
         loadCacheEventLog(scanLogFilter);
         let ticks = 0;
-        const MAX_TICKS = 240;
+        const MAX_TICKS = maxTicks;
         const poll = setInterval(() => {
           ticks += 1;
           loadCacheEventLog(scanLogFilter);
@@ -334,7 +334,27 @@ export default function My_RamCache({ user }) {
             .catch(() => { if (ticks >= MAX_TICKS) { clearInterval(poll); setUnifiedScanBusy(false); } });
         }, 2500);
       })
-      .catch(e => { toast.error("통합 캐시 스캔 실패: " + (e?.message || e)); setUnifiedScanBusy(false); });
+      .catch(e => { toast.error("스캔 실패: " + (e?.message || e)); setUnifiedScanBusy(false); });
+  };
+
+  const runUnifiedScan = () => startScanAndPoll(
+    sf(API + "/ram-cache/unified-scan", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product: selProd || "", force: true }) }),
+    `통합 캐시 스캔 시작됨 (${selProd || "전체 제품"}) — FAB/product/root lot 순서대로 갱신됩니다.`,
+  );
+
+  const runFullSetup = () => {
+    if (!window.confirm(
+      "전체 셋업(초기 1회)을 시작합니다.\n\n" +
+      "· 개발 워커로 넘기지 않고 운영 서버에서 직접 처리\n" +
+      "· 5병렬 · 최대 20GB 로 전 제품 캐시(랏→매칭→제품RAM→예열)를 빠르게 빌드\n" +
+      "· 제품 수가 많으면 오래 걸릴 수 있고 운영 서버 자원을 많이 사용합니다.\n\n계속할까요?"
+    )) return;
+    startScanAndPoll(
+      sf(API + "/ram-cache/full-setup", { method: "POST" }),
+      "전체 셋업 시작됨 — 운영 로컬에서 전 제품 캐시를 병렬 빌드합니다.",
+      1440,   // 전체 셋업은 오래 걸릴 수 있어 폴링 상한을 1시간으로
+    );
   };
   const saveQueryWorkers = () => {
     setQueryWorkersSaveBusy(true);
@@ -676,6 +696,20 @@ export default function My_RamCache({ user }) {
             </button>
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
               FAB 매칭 → 제품 원본 → Root lot RAM 캐시를 순서대로 갱신합니다
+            </span>
+          </div>
+          {/* 전체 셋업 (초기 1회) — 운영 로컬·5병렬·20GB 로 전 제품 빠른 캐싱. 관리자 전용. */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+            paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+            <button onClick={runFullSetup} disabled={unifiedScanBusy}
+              style={{ ...S_BTN, border: "1px solid rgba(245,158,11,0.9)", background: "rgba(245,158,11,0.12)",
+                color: "rgba(217,119,6,1)", fontWeight: 800, borderRadius: 999,
+                cursor: unifiedScanBusy ? "wait" : "pointer", opacity: unifiedScanBusy ? 0.65 : 1,
+                fontSize: 14, padding: "7px 16px" }}>
+              {unifiedScanBusy ? "실행 중..." : "⚡ 전체 셋업 (초기 1회)"}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+              운영 서버에서 <b>직접</b> 전 제품 캐시를 <b>5병렬·최대 20GB</b> 로 빠르게 빌드(개발 워커로 넘기지 않음). 초기 배포 시 1회용.
             </span>
           </div>
           {/* 캐시 상태 요약 */}

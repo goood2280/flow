@@ -33,7 +33,7 @@ import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
-from core.auth import current_user, is_page_manager, require_page_manager
+from core.auth import current_user, is_page_manager, require_page_manager, require_admin
 from core.domain import classify_process_area
 from core import latest_lot_partitions as _latest_lot_partitions
 from core import matching_cache as _matching_cache
@@ -8529,6 +8529,196 @@ def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splitt
         "job_id": job_id,
         "product": product,
         "detail": f"통합 스캔 시작됨 — FAB/product/root lot 캐시를 순서대로 갱신합니다. ({product or '전체 제품'})",
+    }
+
+
+# ── 전체 셋업 (초기 1회, 운영 로컬·병렬·고자원 빠른 캐싱) ──────────────────
+#   개발 워커로 오프로드하지 않고 운영 서버에서 직접, N코어 병렬 + 큰 메모리로
+#   전 제품 캐시(랏 lookup → 매칭 → 제품RAM → 예열)를 한 번에 빌드한다. 관리자 전용.
+
+def _full_setup_config() -> dict:
+    return {
+        "workers": int(_float_env_clamped("FLOW_FULL_SETUP_WORKERS", 5.0, 1.0, 32.0)),
+        "memory_gb": _float_env_clamped("FLOW_FULL_SETUP_MEMORY_GB", 20.0, 2.0, 512.0),
+        "lookup_chunk": int(_float_env_clamped("FLOW_FULL_SETUP_LOOKUP_CHUNK", 32.0, 1.0, 500.0)),
+        "match_batch": int(_float_env_clamped("FLOW_FULL_SETUP_MATCH_BATCH_ROOTS", 2000.0, 1.0, 100000.0)),
+    }
+
+
+def _full_setup_env_apply(cfg: dict) -> dict:
+    """전체 셋업 동안만 적용할 env 오버라이드. 원래 값 dict 반환(복원용)."""
+    overrides = {
+        "FLOW_WORKER_OFFLOAD": "0",                                  # 개발 오프로드 금지 → 운영 로컬 처리
+        "FLOW_PROCESS_MEMORY_LIMIT_GB": str(cfg["memory_gb"]),       # 메모리 가드 상한 상향
+        "FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_CHUNK_SIZE": str(cfg["lookup_chunk"]),
+        "FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS": str(cfg["match_batch"]),
+        "FLOW_ENABLE_SPLITTABLE_PRODUCT_RAM_CACHE": "1",             # 제품 원본 RAM 캐시 켬
+    }
+    saved = {k: os.environ.get(k) for k in overrides}
+    os.environ.update({k: str(v) for k, v in overrides.items()})
+    return saved
+
+
+def _full_setup_env_restore(saved: dict) -> None:
+    for k, old in (saved or {}).items():
+        if old is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = old
+
+
+def _proc_rss_gb() -> float:
+    try:
+        from core.runtime_limits import process_memory_snapshot
+        snap = process_memory_snapshot()
+        return round(float(snap.get("process_rss_gb")
+                           or snap.get("process_memory_effective_gb") or 0.0), 2)
+    except Exception:
+        return 0.0
+
+
+def _fmt_dur_ko(sec: float) -> str:
+    sec = int(max(0, sec))
+    if sec < 60:
+        return f"{sec}초"
+    if sec < 3600:
+        return f"{sec // 60}분 {sec % 60}초"
+    return f"{sec // 3600}시간 {(sec % 3600) // 60}분"
+
+
+def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
+    """전 제품의 랏(lookup) 캐시를 운영 로컬에서 N개 병렬로 직접 빌드.
+
+    큐/오프로드/로컬-heavy-게이트(Semaphore 1)를 우회하고 build_lookup_cache 를
+    직접 호출한다(파일별 빌드락으로 동일 파일 중복만 방지, 다른 제품끼리는 병렬).
+    각 빌드는 청크 스트리밍이라 제품당 메모리가 제한된다."""
+    import concurrent.futures as _cf
+    from core.cache_event_log import record as _rec
+    files = _ml_table_lookup._discover_ml_table_files() or []
+    total = len(files)
+    ok_count = 0
+    if not total:
+        return {"ok": True, "total": 0, "built": 0}
+    _rec("cache_op",
+         f"[전체셋업] 랏캐시 병렬 빌드 시작 — {total:,}개 제품 · {cfg['workers']}병렬(운영 로컬)"
+         f" · 청크 {cfg['lookup_chunk']} · 메모리 상한 {cfg['memory_gb']}GB",
+         product="")
+    done = [0]
+    lock = threading.Lock()
+    started = time.time()
+
+    def _one(fp) -> bool:
+        prod = Path(fp).stem
+        okp = True
+        try:
+            _ml_table_lookup.build_lookup_cache(Path(fp), force=True)
+        except Exception as exc:
+            okp = False
+            logger.warning("full setup lookup build failed source=%s: %s", fp, exc)
+        with lock:
+            done[0] += 1
+            n = done[0]
+        elapsed = time.time() - started
+        eta = (elapsed / n) * (total - n) if n else 0.0
+        try:
+            _rec("cache_op",
+                 f"[전체셋업] 랏캐시 {n:,}/{total:,} — {prod}"
+                 f" · RSS {_proc_rss_gb()}GB · 남은 ~{_fmt_dur_ko(eta)}",
+                 ok=okp, product=prod)
+        except Exception:
+            pass
+        return okp
+
+    with _cf.ThreadPoolExecutor(max_workers=int(cfg["workers"]), thread_name_prefix="full-setup") as ex:
+        for res in ex.map(_one, files):
+            if res:
+                ok_count += 1
+    _rec("cache_op",
+         f"[전체셋업] 랏캐시 완료 — {ok_count:,}/{total:,} 성공 · 총 {_fmt_dur_ko(time.time() - started)}",
+         product="")
+    return {"ok": ok_count > 0, "total": total, "built": ok_count}
+
+
+def _run_full_setup_scan(job_id: str = "") -> dict:
+    global _UNIFIED_SCAN_BUSY
+    cfg = _full_setup_config()
+    saved = _full_setup_env_apply(cfg)
+    try:
+        from core import cache_budget
+        cache_budget.invalidate()
+    except Exception:
+        pass
+    from core.cache_event_log import record as _rec
+    started = time.time()
+    ok = True
+    try:
+        _rec("cache_op",
+             f"[전체셋업] 시작 — 운영 로컬 · {cfg['workers']}병렬 · 메모리 {cfg['memory_gb']}GB"
+             f" (랏캐시 → 매칭 → 제품RAM → 예열)",
+             product="")
+        # Phase A: 랏(lookup) 캐시 전 제품 병렬 로컬 빌드 (가장 무겁고 병렬 이득 큼)
+        _full_setup_build_lookups_parallel(cfg)
+        # Phase B: 매칭 캐시 → 제품 원본 RAM → root 예열 (기존 통합 스캔 재사용).
+        #   랏캐시가 이미 빌드돼 있어 예열이 skip 없이 즉시 적재된다.
+        #   _run_unified_scan 이 finally 에서 job 종료 + busy 해제까지 처리한다.
+        _run_unified_scan("", True, job_id)
+        _rec("cache_op",
+             f"[전체셋업] 전체 완료 · 총 {_fmt_dur_ko(time.time() - started)} · RSS {_proc_rss_gb()}GB",
+             product="")
+    except Exception as exc:
+        ok = False
+        logger.warning("full setup scan failed: %s", exc, exc_info=True)
+        try:
+            _rec("cache_op", f"[전체셋업] 실패: {exc}", ok=False, product="")
+            if job_id:
+                from core.cache_event_log import finish_job
+                finish_job(job_id, ok=False, detail={"error": str(exc)})
+        except Exception:
+            pass
+    finally:
+        _full_setup_env_restore(saved)
+        try:
+            from core import cache_budget
+            cache_budget.invalidate()
+        except Exception:
+            pass
+        with _UNIFIED_SCAN_LOCK:
+            _UNIFIED_SCAN_BUSY = False
+    return {"ok": ok}
+
+
+@router.post("/ram-cache/full-setup")
+def full_setup_scan(_admin=Depends(require_admin)):
+    """관리자 전용: 초기 1회 전체 셋업. 운영 서버에서 직접(개발 오프로드 없이)
+    N코어 병렬 + 큰 메모리로 전 제품 캐시(랏→매칭→제품RAM→예열)를 빠르게 빌드."""
+    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID
+    with _UNIFIED_SCAN_LOCK:
+        if _UNIFIED_SCAN_BUSY:
+            return {"ok": True, "running": True, "detail": "스캔이 이미 실행 중입니다."}
+        _UNIFIED_SCAN_BUSY = True
+    cfg = _full_setup_config()
+    from core.cache_event_log import start_job
+    job_id = start_job(
+        "full_setup",
+        "전체 셋업 (운영 로컬 · 빠른 캐싱)",
+        [
+            ("match_cache", "FAB 매칭 캐시"),
+            ("product_ram", "제품 원본 RAM 캐시"),
+            ("root_lot_ram", "Root lot lookup/RAM 캐시"),
+        ],
+        product="",
+    )
+    _UNIFIED_SCAN_JOB_ID = job_id
+    t = threading.Thread(target=_run_full_setup_scan, args=(job_id,),
+                         name="splittable-full-setup", daemon=True)
+    t.start()
+    return {
+        "ok": True,
+        "queued": True,
+        "job_id": job_id,
+        "config": cfg,
+        "detail": (f"전체 셋업 시작 — 운영 로컬에서 {cfg['workers']}병렬로 전 제품 캐시를 "
+                   f"빌드합니다 (메모리 상한 {cfg['memory_gb']}GB). 개발 워커로 넘기지 않습니다."),
     }
 
 
