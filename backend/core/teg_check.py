@@ -87,18 +87,23 @@ PATTERN_ANNOT_RE = re.compile(r"^(.*?)\s*\(\s*pattern\s*\)\s*$", re.IGNORECASE) 
 def _parse_point_map(lines: list[str]) -> list[dict]:
     """[TEST_POINT] 섹션 → 웨이퍼 맵 1개 (맵 문자 행만). 없으면 [].
 
-    새 bracket 양식은 같은 길이의 ``----`` 줄로 맵 위/아래 경계를 표시할 수 있다.
-    이 한 쌍만 제거하고 내부의 '-' 행은 좌표 보존을 위해 그대로 유지한다.
+    새 bracket 양식은 맵 위/아래 경계를 ``----`` 장식 줄로 표시할 수 있다. 이런
+    테두리 줄은 콘텐츠 행보다 **짧은** 전부-하이픈 줄이므로, 콘텐츠 폭보다 짧은
+    경우에만 한 쌍을 제거한다. 콘텐츠와 **같은 폭**의 전부-하이픈 줄(원형 웨이퍼
+    가장자리의 빈 샷 행)은 진짜 맵 행이므로 좌표 보존을 위해 그대로 유지한다.
     """
     body = _section(lines, POINT_TAG, stop=SECTION_STOPS)
     rows = [s for s in body if s and MAP_ROW_RE.fullmatch(s)]
     if not rows:
         return []
+    # 테두리 제거는 첫/끝 줄이 (a) 서로 같고 (b) 전부 '-' 이며 (c) 내부 콘텐츠 폭보다
+    # 짧을 때만. 같은 폭이면 빈 샷 행으로 보고 유지 → 격자 좌표가 밀리지 않는다.
     if (
         len(rows) >= 3
         and rows[0] == rows[-1]
         and set(rows[0]) == {"-"}
         and any("t" in row.lower() for row in rows[1:-1])
+        and len(rows[0]) < max(len(r) for r in rows[1:-1])
     ):
         rows = rows[1:-1]
     w = max(len(r) for r in rows)

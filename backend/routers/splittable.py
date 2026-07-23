@@ -7690,8 +7690,8 @@ def _build_match_cache_streamed(
     last_emit = 0.0
     emit_min_gap = _match_cache_stream_log_gap_seconds()
     _emit(
-        f"[매칭] {product}: 스트리밍 빌드 시작 — {total_roots:,} root → {total_batches:,} 배치"
-        f" (배치당 {roots_per_batch:,} root)",
+        f"[매칭] {product}: 스트리밍 빌드 시작 — 총 {total_roots:,} 랏 → {total_batches:,} 배치"
+        f" (배치당 {roots_per_batch:,} 랏)",
         detail={"phase": "start", "roots": total_roots, "batches": total_batches,
                 "roots_per_batch": roots_per_batch, "rss_gb": _rss_gb()},
     )
@@ -7710,16 +7710,23 @@ def _build_match_cache_streamed(
             rows_done += int(part_rows or 0)
             b_dur = time.time() - b_start
             elapsed = time.time() - started
+            roots_done = min(idx + len(chunk), total_roots)
+            pct = roots_done * 100 // total_roots if total_roots else 100
             # ETA: 지금까지 배치당 평균 소요 × 남은 배치.
             avg = elapsed / batch_no if batch_no else 0.0
             eta = avg * (total_batches - batch_no)
             rss = _rss_gb()
             try:
+                mem_lots = _ml_table_lookup.root_ram_cache_lot_count()
+            except Exception:
+                mem_lots = 0
+            try:
                 _match_cache_job_update(
                     stream_product=product, stream_batch=batch_no,
                     stream_batch_total=total_batches, stream_roots=total_roots,
-                    stream_rows=rows_done, stream_rss_gb=rss,
-                    stream_eta_sec=round(eta, 1),
+                    stream_roots_done=roots_done, stream_rows=rows_done,
+                    stream_rss_gb=rss, stream_eta_sec=round(eta, 1),
+                    stream_mem_lots=mem_lots,
                 )
             except Exception:
                 pass
@@ -7728,12 +7735,15 @@ def _build_match_cache_streamed(
             if batch_no == 1 or batch_no == total_batches or (now - last_emit) >= emit_min_gap:
                 last_emit = now
                 _emit(
-                    f"[매칭] {product}: 배치 {batch_no:,}/{total_batches:,}"
-                    f" ({batch_no * 100 // total_batches}%) · {b_dur:.1f}s/배치"
-                    f" · 누적 {rows_done:,}행 · RSS {rss}GB · 남은시간 ~{_fmt_dur(eta)}",
+                    f"[매칭] {product}: 랏 {roots_done:,}/{total_roots:,} ({pct}%)"
+                    f" · 배치 {batch_no:,}/{total_batches:,} · {b_dur:.1f}s"
+                    f" · 누적 {rows_done:,}행 · 메모리 {mem_lots}랏 상주 · RSS {rss}GB"
+                    f" · 남은 ~{_fmt_dur(eta)}",
                     detail={"phase": "batch", "batch": batch_no, "batches": total_batches,
+                            "roots_done": roots_done, "roots_total": total_roots,
                             "batch_sec": round(b_dur, 2), "elapsed_sec": round(elapsed, 1),
-                            "eta_sec": round(eta, 1), "rows": rows_done, "rss_gb": rss},
+                            "eta_sec": round(eta, 1), "rows": rows_done,
+                            "mem_lots": mem_lots, "rss_gb": rss},
                 )
             try:
                 del part_q
@@ -7745,10 +7755,11 @@ def _build_match_cache_streamed(
         merged = pl.scan_parquet([str(p) for p in part_paths])
         row_count = _write_match_cache_lazyframe(merged, tmp)
         _emit(
-            f"[매칭] {product}: 완료 — {row_count:,}행 · {total_batches:,}배치"
+            f"[매칭] {product}: 완료 — {total_roots:,}랏 · {row_count:,}행 · {total_batches:,}배치"
             f" · 총 {_fmt_dur(time.time() - started)} · RSS {_rss_gb()}GB",
-            detail={"phase": "done", "rows": int(row_count), "batches": total_batches,
-                    "total_sec": round(time.time() - started, 1), "rss_gb": _rss_gb()},
+            detail={"phase": "done", "roots": total_roots, "rows": int(row_count),
+                    "batches": total_batches, "total_sec": round(time.time() - started, 1),
+                    "rss_gb": _rss_gb()},
         )
     finally:
         for p in part_paths:

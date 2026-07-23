@@ -687,6 +687,16 @@ def _root_ram_total_bytes_locked(exclude_key: tuple[str, str] | None = None) -> 
     return total
 
 
+def root_ram_cache_lot_count(source_path: str = "") -> int:
+    """현재 메모리에 올라와 있는 '분리된 랏(root_lot_id) 캐시' 개수.
+    source_path 지정 시 해당 제품 파일에 속한 랏 캐시 수만 센다."""
+    with _ROOT_RAM_CACHE_LOCK:
+        if not source_path:
+            return len(_ROOT_RAM_CACHE)
+        sp = str(source_path)
+        return sum(1 for key in _ROOT_RAM_CACHE if key[0] == sp)
+
+
 def _root_ram_source_bytes_locked() -> dict[str, int]:
     """source_path(제품 파일)별 캐시 점유 바이트 합계."""
     totals: dict[str, int] = {}
@@ -1748,7 +1758,10 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
                     # 진행 로그 — 25% 단위 throttle.
                     done = min(total_to_load, start + len(chunk))
                     if total_to_load and done >= _next_progress:
-                        _scan_progress(f"[적재] {_prod_label}: {cached}/{total_to_load} root 적재")
+                        _scan_progress(
+                            f"[적재] {_prod_label}: {cached}/{total_to_load} 랏 적재"
+                            f" · 메모리 총 {root_ram_cache_lot_count()}랏 상주"
+                        )
                         _next_progress += _progress_every
                     # 전역 예산 95% 이상이라도 이 제품이 아직 자기 지분(share)을
                     # 못 채웠으면 계속 로드한다 — 삽입 시 지분 초과 제품의 항목이
@@ -1795,18 +1808,21 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
     # 캐시 이벤트 로그 기록 — 예열 결과
     try:
         from core.cache_event_log import record as _log_event
+        _mem_lots_total = root_ram_cache_lot_count()
         for row in rows:
             fname = row.get("file", "?")
             if row.get("ok"):
                 _log_event(
                     "warmup",
-                    f"예열 완료: {fname} — cached {row.get('cached_roots', 0)}/{row.get('target_roots', 0)} roots"
+                    f"예열 완료: {fname} — {row.get('cached_roots', 0)}/{row.get('target_roots', 0)} 랏 적재"
+                    + f" · 메모리 총 {_mem_lots_total}랏 상주"
                     + (f" (skip: resource {row.get('resource_skipped_roots', 0)}, budget {row.get('budget_skipped_roots', 0)})"
                        if row.get("resource_skipped_roots") or row.get("budget_skipped_roots") else ""),
                     ok=True,
                     product=fname,
                     detail={"cached": row.get("cached_roots", 0), "target": row.get("target_roots", 0),
                             "missing": row.get("missing_roots", 0),
+                            "mem_lots_total": _mem_lots_total,
                             "resource_skipped": row.get("resource_skipped_roots", 0),
                             "budget_skipped": row.get("budget_skipped_roots", 0)},
                 )

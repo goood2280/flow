@@ -97,6 +97,35 @@ def test_parse_new_bracket_format():
     assert "CAND_A" in tegs[0]["candidates"] and "TEG_A" in tegs[0]["candidates"]
 
 
+# 콘텐츠와 같은 폭의 전부-하이픈 행(원형 웨이퍼 상/하단 빈 샷 행)은 테두리가 아니라
+# 진짜 맵 행이므로 유지되어야 한다. (짧은 '----' 테두리만 제거)
+FULLWIDTH_DASH_SAMPLE = """\
+[TEST_POINT]
+-------
+--ttt--
+-ttttt-
+ttttttt
+-ttttt-
+--ttt--
+-------
+[TEST_SITES]
+P1(Pattern) = (1)(4,3)
+[MODULES_COORDINATE]
+CAND_A (100, 200) ! TEG_A
+"""
+
+
+def test_fullwidth_dash_rows_kept_as_shots():
+    lines = teg_check.strip_line_numbers(FULLWIDTH_DASH_SAMPLE)
+    maps = teg_check.parse_wafer_maps(lines)
+    assert len(maps) == 1 and maps[0]["name"] == "TEST_POINT"
+    # 상/하단 '-------'(폭 7, 콘텐츠와 동일 폭)는 빈 샷 행으로 유지 → h=7
+    assert maps[0]["w"] == 7 and maps[0]["h"] == 7
+    assert maps[0]["rows"][0] == "-------" and maps[0]["rows"][-1] == "-------"
+    # 가운데 full 행은 그대로 index 3
+    assert maps[0]["rows"][3] == "ttttttt"
+
+
 def test_new_format_with_line_numbers():
     # 행번호 프리픽스가 붙어 와도 strip 후 동일하게 파싱
     numbered = "\n".join(f"{i + 1} {ln}" for i, ln in enumerate(NEW_SAMPLE.splitlines()))
