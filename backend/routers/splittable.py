@@ -6454,6 +6454,11 @@ def _match_cache_stream_batch_roots() -> int:
     return MATCH_CACHE_STREAM_BATCH_ROOTS_DEFAULT
 
 
+def _match_cache_stream_log_gap_seconds() -> float:
+    """배치 진행 로그 최소 간격(초). 배치가 빠를 때 이벤트 로그 폭주를 막는다."""
+    return _float_env_clamped("FLOW_MATCH_CACHE_STREAM_LOG_GAP_SEC", 1.5, 0.0, 30.0)
+
+
 def _match_cache_products(product: str = "") -> list[str]:
     raw = str(product or "").strip()
     if raw:
@@ -7623,6 +7628,32 @@ def _build_match_cache_streamed(
             return part_q.unique(subset=unique_subset, keep="first", maintain_order=True)
         return part_q.unique(subset=unique_subset, keep="last")
 
+    # 캐시 이벤트 로그(사용자가 보는 화면)로 진행 상황을 내보내는 헬퍼.
+    # warmup/cache_op 와 같은 category 라 수동스캔 '전체' 필터에 실시간 표시된다.
+    def _emit(event: str, *, ok: bool = True, detail: dict | None = None):
+        try:
+            from core.cache_event_log import record as _rec
+            _rec("cache_op", event, ok=ok, detail=detail or {}, product=product)
+        except Exception:
+            pass
+
+    def _rss_gb() -> float:
+        try:
+            from core.runtime_limits import process_memory_snapshot
+            snap = process_memory_snapshot()
+            return round(float(snap.get("process_rss_gb")
+                               or snap.get("process_memory_effective_gb") or 0.0), 2)
+        except Exception:
+            return 0.0
+
+    def _fmt_dur(sec: float) -> str:
+        sec = int(max(0, sec))
+        if sec < 60:
+            return f"{sec}초"
+        if sec < 3600:
+            return f"{sec // 60}분 {sec % 60}초"
+        return f"{sec // 3600}시간 {(sec % 3600) // 60}분"
+
     partdir = tmp.parent / (tmp.name + ".parts")
     try:
         if partdir.exists():
@@ -7652,31 +7683,58 @@ def _build_match_cache_streamed(
 
     partdir.mkdir(parents=True, exist_ok=True)
     part_paths: list[Path] = []
-    total_batches = (len(vals) + roots_per_batch - 1) // roots_per_batch
+    total_roots = len(vals)
+    total_batches = (total_roots + roots_per_batch - 1) // roots_per_batch
+    started = time.time()
+    rows_done = 0
+    last_emit = 0.0
+    emit_min_gap = _match_cache_stream_log_gap_seconds()
+    _emit(
+        f"[매칭] {product}: 스트리밍 빌드 시작 — {total_roots:,} root → {total_batches:,} 배치"
+        f" (배치당 {roots_per_batch:,} root)",
+        detail={"phase": "start", "roots": total_roots, "batches": total_batches,
+                "roots_per_batch": roots_per_batch, "rss_gb": _rss_gb()},
+    )
     try:
-        for idx in range(0, len(vals), roots_per_batch):
+        for idx in range(0, total_roots, roots_per_batch):
             if _MATCH_CACHE_STOP.is_set():
                 raise RuntimeError("match cache build stopped")
             _wait_for_match_cache_memory()
             batch_no = idx // roots_per_batch + 1
+            b_start = time.time()
             chunk = vals[idx:idx + roots_per_batch]
             part_q = _dedup(q_base.filter(pl.col(batch_col).is_in(chunk)))
             part_path = partdir / f"part_{batch_no:05d}.parquet"
-            _write_match_cache_lazyframe(part_q, part_path)
+            part_rows = _write_match_cache_lazyframe(part_q, part_path)
             part_paths.append(part_path)
+            rows_done += int(part_rows or 0)
+            b_dur = time.time() - b_start
+            elapsed = time.time() - started
+            # ETA: 지금까지 배치당 평균 소요 × 남은 배치.
+            avg = elapsed / batch_no if batch_no else 0.0
+            eta = avg * (total_batches - batch_no)
+            rss = _rss_gb()
             try:
                 _match_cache_job_update(
-                    stream_product=product,
-                    stream_batch=batch_no,
-                    stream_batch_total=total_batches,
-                    stream_roots=len(vals),
+                    stream_product=product, stream_batch=batch_no,
+                    stream_batch_total=total_batches, stream_roots=total_roots,
+                    stream_rows=rows_done, stream_rss_gb=rss,
+                    stream_eta_sec=round(eta, 1),
                 )
             except Exception:
                 pass
-            logger.info(
-                "match cache stream (product=%s) batch %d/%d — %d roots/batch, %d roots total",
-                product, batch_no, total_batches, roots_per_batch, len(vals),
-            )
+            # 첫·마지막 배치는 항상, 그 외엔 최소 간격 스로틀 — 작은 배치의 로그 폭주 방지.
+            now = time.time()
+            if batch_no == 1 or batch_no == total_batches or (now - last_emit) >= emit_min_gap:
+                last_emit = now
+                _emit(
+                    f"[매칭] {product}: 배치 {batch_no:,}/{total_batches:,}"
+                    f" ({batch_no * 100 // total_batches}%) · {b_dur:.1f}s/배치"
+                    f" · 누적 {rows_done:,}행 · RSS {rss}GB · 남은시간 ~{_fmt_dur(eta)}",
+                    detail={"phase": "batch", "batch": batch_no, "batches": total_batches,
+                            "batch_sec": round(b_dur, 2), "elapsed_sec": round(elapsed, 1),
+                            "eta_sec": round(eta, 1), "rows": rows_done, "rss_gb": rss},
+                )
             try:
                 del part_q
                 gc.collect()
@@ -7686,6 +7744,12 @@ def _build_match_cache_streamed(
         # 배치끼리 batch_col 값이 배타적 → sort/unique 없이 스트리밍 병합만 하면 된다.
         merged = pl.scan_parquet([str(p) for p in part_paths])
         row_count = _write_match_cache_lazyframe(merged, tmp)
+        _emit(
+            f"[매칭] {product}: 완료 — {row_count:,}행 · {total_batches:,}배치"
+            f" · 총 {_fmt_dur(time.time() - started)} · RSS {_rss_gb()}GB",
+            detail={"phase": "done", "rows": int(row_count), "batches": total_batches,
+                    "total_sec": round(time.time() - started, 1), "rss_gb": _rss_gb()},
+        )
     finally:
         for p in part_paths:
             try:
