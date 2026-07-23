@@ -8639,7 +8639,8 @@ def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
         return {"ok": True, "total": 0, "built": 0}
     _rec("cache_op",
          f"[전체셋업] 랏캐시 병렬 빌드 시작 — {total:,}개 제품 · {cfg['workers']}병렬(운영 로컬)"
-         f" · 청크 {cfg['lookup_chunk']} · 메모리 상한 {cfg['memory_gb']}GB",
+         f" · 청크 {cfg['lookup_chunk']} · 메모리 상한 {cfg['memory_gb']}GB"
+         f" · 이미 빌드된 제품은 건너뜀(재실행 시 이어서 진행)",
          product="")
     done = [0]
     lock = threading.Lock()
@@ -8649,7 +8650,9 @@ def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
         prod = Path(fp).stem
         okp = True
         try:
-            _ml_table_lookup.build_lookup_cache(Path(fp), force=True)
+            # force=False: 이미 빌드된(fresh) 캐시는 건너뛴다 → 전체 셋업이 중간에
+            # 끊겨 재실행해도 처음부터 다시 하지 않고 남은 것만 이어서 빌드(수렴 보장).
+            _ml_table_lookup.build_lookup_cache(Path(fp), force=False)
         except Exception as exc:
             okp = False
             logger.warning("full setup lookup build failed source=%s: %s", fp, exc)
@@ -8699,7 +8702,8 @@ def _run_full_setup_scan(job_id: str = "") -> dict:
         # Phase B: 매칭 캐시 → 제품 원본 RAM → root 예열 (기존 통합 스캔 재사용).
         #   랏캐시가 이미 빌드돼 있어 예열이 skip 없이 즉시 적재된다.
         #   _run_unified_scan 이 finally 에서 job 종료 + busy 해제까지 처리한다.
-        _run_unified_scan("", True, job_id)
+        #   force=False: 이미 최신인 매칭/제품RAM/예열은 건너뛰어 재실행 시 이어서 진행.
+        _run_unified_scan("", False, job_id)
         _rec("cache_op",
              f"[전체셋업] 전체 완료 · 총 {_fmt_dur_ko(time.time() - started)} · RSS {_proc_rss_gb()}GB",
              product="")
