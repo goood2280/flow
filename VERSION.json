@@ -1,7 +1,19 @@
 {
-  "version": "9.5.19",
+  "version": "9.5.20",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.20",
+      "date": "2026-07-23",
+      "title": "ML lookup(랏) 캐시 빌드 peak RAM 6~7GB 스파이크 수정 — 청크 collect 를 스트리밍 엔진으로",
+      "tag": "perf",
+      "changes": [
+        "랏캐시(lookup cache) 빌드의 청크별 collect 를 스트리밍 엔진(collect_streaming)으로 전환. 정렬 안 된 ML_TABLE 에서 root_lot_id is_in 필터는 parquet row-group skip 이 안 돼, in-memory collect 가 청크가 2 root 만 뽑아도 파일 전체를 디컴프레션하며 peak RAM 이 6~7GB 로 치솟던 문제 해결. 스트리밍은 morsel 단위 처리라 peak = 청크 결과 크기 수준으로 실제로 제한됨.",
+        "unique root_lot_id 추출도 스트리밍 collect 로 전환.",
+        "제품 원본 RAM 캐시를 꺼도 랏캐시 빌드는 정상(디스크 parquet 직접 스캔, 제품 RAM 캐시 비의존) — 이 스파이크는 랏캐시 빌드 자체의 문제였음.",
+        "빌드 정합성 유지(파티션/행수 동일 검증). 청크 크기는 env FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_CHUNK_SIZE 로 조절(운영 4/개발 2)."
+      ]
+    },
     {
       "version": "9.5.19",
       "date": "2026-07-23",

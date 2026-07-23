@@ -2625,15 +2625,14 @@ def _sink_lookup_cache_partitions_chunked(
     최대 메모리 사용량이 (전체 / 청크 수) 수준으로 제한된다.
     """
     import gc
+    from core.parquet_perf import collect_streaming
 
     chunk_size = _lookup_cache_build_chunk_size()
     max_rows = _lookup_cache_partition_max_rows()
 
     # ① unique root_lot_id 추출 (컬럼 하나만 스캔 — 메모리 부담 최소)
     root_lot_ids = (
-        lf_base.select("root_lot_id")
-        .unique()
-        .collect()["root_lot_id"]
+        collect_streaming(lf_base.select("root_lot_id").unique())["root_lot_id"]
         .to_list()
     )
     root_lot_ids = sorted(set(str(r) for r in root_lot_ids if r))
@@ -2656,10 +2655,13 @@ def _sink_lookup_cache_partitions_chunked(
                     f"({chunk_start}/{total})"
                 )
 
-        # 이 청크의 root 만 필터 → collect
-        chunk_df = lf_base.filter(
-            pl.col("root_lot_id").is_in(chunk_roots)
-        ).collect()
+        # 이 청크의 root 만 필터 → collect. 스트리밍 엔진으로 읽어 파일 전체가
+        # 한꺼번에 디컴프레션되며 peak RAM 이 치솟는 것을 막는다(정렬 안 된 ML_TABLE
+        # 에서 is_in 필터는 row-group skip 이 안 돼 in-memory collect 는 파일 전체를
+        # 메모리에 올린다). 스트리밍은 morsel 단위로 처리 → peak = 청크 결과 크기 수준.
+        chunk_df = collect_streaming(
+            lf_base.filter(pl.col("root_lot_id").is_in(chunk_roots))
+        )
 
         # 각 root_lot_id 별 파티션 디렉토리에 쓰기
         for root in chunk_roots:
