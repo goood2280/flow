@@ -275,34 +275,34 @@ export function WipStackedBar({
   if (!bins.length) {
     return <div style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>표시할 WIP 데이터가 없습니다.</div>;
   }
-  // bin 이 많아 bar 가 뭉개질 때는 컨테이너를 가로 스크롤로 전환 —
-  // bar 하나당 최소 폭을 보장하고, 그보다 넓은 화면에서는 100% 채운다.
-  const MIN_BAR_PX = 26;
-  const minInnerWidth = bins.length * MIN_BAR_PX + 160;
+  // bin 수가 많아도 가로 스크롤을 만들지 않고 항상 컨테이너 폭에 맞춘다 —
+  // 막대는 얇아지고 라벨은 회전/축소로 대응한다(전체화면 폭에 한눈에 들어오게).
   const manyBins = bins.length > 24;
+  const veryMany = bins.length > 48;
+  const tickFont = veryMany ? 9 : manyBins ? 10 : 12;
+  const chartH = Math.max(240, height);
   return (
-    <div style={{ width: "100%", minHeight: Math.max(220, height), position: "relative", overflowX: "auto" }}>
-      <div style={{ minWidth: minInnerWidth, width: "100%" }}>
-        <Plot
-          data={traces}
-          layout={{
-            autosize: true,
-            height: Math.max(240, height),
-            barmode: "stack",
-            paper_bgcolor: bg,
-            plot_bgcolor: bg,
-            margin: { l: 64, r: 22, t: 16, b: manyBins ? 84 : 62 },
-            hovermode: "closest",
-            xaxis: { title: { text: xLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true, type: "category", tickangle: manyBins ? -45 : 0 },
-            yaxis: { title: { text: yLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true },
-            legend: { orientation: "h", y: -0.28, x: 0, font: { size: 11, color: fg } },
-            showlegend: true,
-          }}
-          config={{ responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
-          useResizeHandler
-          style={{ width: "100%", height: Math.max(240, height) }}
-        />
-      </div>
+    <div style={{ width: "100%", minHeight: Math.max(220, height) }}>
+      <Plot
+        data={traces}
+        layout={{
+          autosize: true,
+          height: chartH,
+          barmode: "stack",
+          bargap: veryMany ? 0.04 : 0.15,
+          paper_bgcolor: bg,
+          plot_bgcolor: bg,
+          margin: { l: 64, r: 22, t: 16, b: veryMany ? 96 : manyBins ? 84 : 62 },
+          hovermode: "closest",
+          xaxis: { title: { text: xLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true, type: "category", tickangle: veryMany ? -90 : manyBins ? -45 : 0, tickfont: { size: tickFont, color: fg } },
+          yaxis: { title: { text: yLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true },
+          legend: { orientation: "h", y: -0.28, x: 0, font: { size: 11, color: fg } },
+          showlegend: true,
+        }}
+        config={{ responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
+        useResizeHandler
+        style={{ width: "100%", height: chartH }}
+      />
     </div>
   );
 }

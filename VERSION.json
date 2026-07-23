@@ -1,7 +1,17 @@
 {
-  "version": "9.5.25",
+  "version": "9.5.26",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.26",
+      "date": "2026-07-23",
+      "title": "대시보드 WIP 차트 가로 스크롤 제거 + 뷰포트 높이 반응형 (전체화면 한눈에)",
+      "tag": "fix",
+      "changes": [
+        "대시보드 WIP 스택 막대 차트가 x축 카테고리(bin)가 많아지면 bin당 최소폭(26px)을 강제하고 overflowX:auto 로 가로 스크롤바를 만들던 문제 수정. minWidth/overflowX 제거 → 이미 걸려 있던 responsive+width:100% 로 항상 컨테이너 폭에 맞춤(막대는 얇아지고 라벨은 회전/축소로 대응, bin>48 이면 -90도·작은 폰트).",
+        "차트 높이를 고정 430px 대신 뷰포트 기준(innerHeight×0.5, 320~900 클램프, 리사이즈 반응)으로 산출 — 전체화면에서 한눈에 들어오게. useChartHeight 훅."
+      ]
+    },
     {
       "version": "9.5.25",
       "date": "2026-07-23",

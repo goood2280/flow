@@ -12,6 +12,21 @@ const API = "/api/dashboard";
 const sf = (url, o) => apiSf(url, o);
 const BAD = statusPalette.bad;
 
+// 차트 높이를 뷰포트에 맞춰 산출 — 고정 430px 대신 전체화면 기준으로 한눈에 들어오게.
+function useChartHeight(ratio = 0.5, min = 320, max = 900) {
+  const calc = () => {
+    const h = typeof window !== "undefined" ? window.innerHeight : 800;
+    return Math.max(min, Math.min(max, Math.round(h * ratio)));
+  };
+  const [h, setH] = useState(calc);
+  useEffect(() => {
+    const on = () => setH(calc());
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return h;
+}
+
 /* ═══ WIP × Split 현황 (latest cache 기반) ═══ */
 const WIP_BIN_CHOICES = [1000, 10000, 100000];
 // X축 기준 — step_id 숫자 구간 / step_desc 앞머리 숫자(예: FAB_1.0 STI → 1.0).
@@ -30,6 +45,7 @@ function WipSplitPanel() {
   const [splitCol, setSplitCol] = useState("");
   const [axis, setAxis] = useState("step_id");
   const dark = typeof document !== "undefined" && (document.documentElement.classList.contains("dark") || localStorage.getItem("hol_dark") === "true");
+  const chartH = useChartHeight();
 
   const fetchData = (p, b, s, a) => {
     setLoading(true);
@@ -158,7 +174,7 @@ function WipSplitPanel() {
           현재 STEP 구간별 WAFER 물량 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>— {splitCol || "split 없음"} 비중 스택</span>
         </div>
         {loading && !data ? <Loading /> : (
-          <WipStackedBar bins={bins} splitValues={splitValues} dark={dark} unassignedLabel={unassigned} height={430}
+          <WipStackedBar bins={bins} splitValues={splitValues} dark={dark} unassignedLabel={unassigned} height={chartH}
             xLabel={axis === "step_desc" ? "STEP_DESC 앞 숫자" : `STEP BIN (간격 ${data?.bin_size ?? binSize})`} yLabel="WAFERS" />
         )}
       </div>
