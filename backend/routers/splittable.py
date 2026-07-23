@@ -7669,17 +7669,37 @@ def _build_match_cache_streamed(
     except Exception:
         pass
 
-    # 배치 키 값 목록 — 한 컬럼만 collect 하므로 저메모리. batch_col 은 join_tmp_key 라
-    # q_base 에서 이미 null/빈문자 필터가 적용된 상태 → drop_nulls 로 행 손실 없음.
+    # 글로벌 FAB(q_base = _scan_global_fab_sources 전체 concat)를 배치마다 재스캔하면
+    # 배치 수만큼 전체 FAB 를 다시 읽어 매우 느리고, Windows 워킹셋이 반복 mmap 으로
+    # 계속 부풀어 RSS 가 꾸준히 오른다. 따라서 필요한 컬럼만 투영된 q_base 를 **딱 한 번**
+    # 임시 parquet 로 흘려쓴다(정렬 없음 → 완전 스트리밍, 저메모리). 이후 배치/중복제거는
+    # 이 작은 로컬 파일만 읽으므로 글로벌 재스캔이 사라진다(속도·RSS 동시 개선).
+    base_tmp = tmp.parent / (tmp.name + ".base.parquet")
     try:
-        vals_df = q_base.select(pl.col(batch_col)).unique().collect(streaming=True)
+        base_tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    _emit(f"[매칭] {product}: 원본 FAB 1회 스캔·투영 중… (배치 재스캔 제거)",
+          detail={"phase": "base_scan", "rss_gb": _rss_gb()})
+    _write_match_cache_lazyframe(q_base, base_tmp)
+    base_lf = pl.scan_parquet(str(base_tmp))
+
+    # 배치 키 값 목록 — 작은 투영본에서 한 컬럼만 collect (글로벌 재스캔 아님).
+    try:
+        vals_df = base_lf.select(pl.col(batch_col)).unique().collect(streaming=True)
     except TypeError:
-        vals_df = q_base.select(pl.col(batch_col)).unique().collect()
+        vals_df = base_lf.select(pl.col(batch_col)).unique().collect()
     vals = sorted({str(v) for v in vals_df.get_column(batch_col).drop_nulls().to_list()})
 
     if not vals:
         # 빈 결과: 스키마만 있는 빈 parquet 생성 (legacy 경로와 동일 산출).
-        return _write_match_cache_lazyframe(_dedup(q_base), tmp)
+        try:
+            return _write_match_cache_lazyframe(_dedup(base_lf), tmp)
+        finally:
+            try:
+                base_tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     partdir.mkdir(parents=True, exist_ok=True)
     part_paths: list[Path] = []
@@ -7703,7 +7723,7 @@ def _build_match_cache_streamed(
             batch_no = idx // roots_per_batch + 1
             b_start = time.time()
             chunk = vals[idx:idx + roots_per_batch]
-            part_q = _dedup(q_base.filter(pl.col(batch_col).is_in(chunk)))
+            part_q = _dedup(base_lf.filter(pl.col(batch_col).is_in(chunk)))
             part_path = partdir / f"part_{batch_no:05d}.parquet"
             part_rows = _write_match_cache_lazyframe(part_q, part_path)
             part_paths.append(part_path)
@@ -7769,6 +7789,10 @@ def _build_match_cache_streamed(
                 pass
         try:
             partdir.rmdir()
+        except Exception:
+            pass
+        try:
+            base_tmp.unlink(missing_ok=True)
         except Exception:
             pass
     return row_count

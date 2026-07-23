@@ -29,6 +29,23 @@ const SCAN_STAGE_LABEL = {
   root_lot_ram: "Root lot lookup/RAM 캐시",
 };
 
+// 캐시 이벤트 시간은 백엔드가 UTC(ts epoch / ts_iso)로 기록한다. 화면에는 항상
+// 한국시간(Asia/Seoul)으로 표시한다. epoch(ts) 우선, 없으면 ts_iso 파싱.
+function fmtKst(ev) {
+  const ms = ev?.ts ? ev.ts * 1000 : (ev?.ts_iso ? Date.parse(ev.ts_iso) : NaN);
+  if (!ms || Number.isNaN(ms)) {
+    return ev?.ts_iso ? ev.ts_iso.replace("T", " ").slice(0, 19) : "-";
+  }
+  try {
+    return new Date(ms).toLocaleString("sv-SE", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+  } catch {
+    return ev?.ts_iso ? ev.ts_iso.replace("T", " ").slice(0, 19) : "-";
+  }
+}
+
 function scanStageLabel(event) {
   const stage = event?.detail?.stage;
   if (!stage) return "-";
@@ -782,7 +799,7 @@ export default function My_RamCache({ user }) {
                   <tr key={i} style={{ borderBottom: "1px solid var(--border)",
                     background: !ev.ok ? "rgba(239,68,68,0.04)" : ev.category === "eviction" ? "rgba(245,158,11,0.04)" : "transparent" }}>
                     <td style={{ padding: "3px 6px", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>
-                      {ev.ts_iso ? ev.ts_iso.replace("T", " ").slice(0, 19) : "-"}
+                      {fmtKst(ev)}
                     </td>
                     <td style={{ padding: "3px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
                       {ev.origin

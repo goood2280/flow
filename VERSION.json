@@ -1,7 +1,18 @@
 {
-  "version": "9.5.21",
+  "version": "9.5.22",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.22",
+      "date": "2026-07-23",
+      "title": "캐시 로그 시간 KST 표시 + 매칭캐시 스트리밍 RSS 상승/속도 근본 개선(글로벌 FAB 1회 스캔)",
+      "tag": "fix",
+      "changes": [
+        "캐시 이벤트 로그 시간을 한국시간(Asia/Seoul)으로 표시 — 기존엔 UTC(ts_iso) 를 그대로 잘라 KST-9시간으로 보였음. epoch(ts) 기반 fmtKst() 로 변환.",
+        "FAB 매칭캐시 스트리밍 빌드에서 RSS 가 배치마다 꾸준히 오르고 느리던 문제 근본 수정 — 기존엔 배치마다 글로벌 FAB 전체(_scan_global_fab_sources concat)를 재스캔해, 배치 수만큼 전체 FAB 를 다시 읽고 Windows 워킹셋이 반복 mmap 으로 부풀었음. 이제 필요한 컬럼만 투영한 원본을 임시 parquet 로 1회만 흘려쓰고(정렬 없음=완전 스트리밍), 이후 배치/중복제거는 그 작은 로컬 파일만 읽음 → 글로벌 재스캔 제거(속도·RSS 동시 개선). 산출물은 글로벌 sort+unique 와 동일(검증).",
+        "배치 로그에 '원본 FAB 1회 스캔·투영 중' 단계 표시."
+      ]
+    },
     {
       "version": "9.5.21",
       "date": "2026-07-23",
