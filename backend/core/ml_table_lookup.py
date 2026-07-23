@@ -2665,6 +2665,40 @@ def _sink_lookup_cache_partitions_chunked(
         total, chunk_size, fp,
     )
 
+    # 캐시 이벤트 로그(관리 화면)에도 랏 단위 진행을 표시한다 — 기존엔 logger.info(터미널)
+    # 로만 찍혀 수동스캔 3/3 화면에서 lookup 빌드 진행이 안 보였다(FAB 처럼 보이게).
+    try:
+        from core.cache_event_log import record as _cache_log
+    except Exception:
+        _cache_log = None
+    _prod_lbl = _safe_product_token(Path(fp).stem) or Path(fp).name
+
+    def _emit(msg: str, ok: bool = True) -> None:
+        if _cache_log is None:
+            return
+        try:
+            _cache_log("cache_op", msg, ok=ok, product=_prod_lbl)
+        except Exception:
+            pass
+
+    def _rss_gb() -> float:
+        try:
+            return round(float(process_memory_snapshot().get("process_rss_gb") or 0.0), 2)
+        except Exception:
+            return 0.0
+
+    def _fmt_dur(sec: float) -> str:
+        sec = int(max(0, sec))
+        if sec < 60:
+            return f"{sec}초"
+        if sec < 3600:
+            return f"{sec // 60}분 {sec % 60}초"
+        return f"{sec // 3600}시간 {(sec % 3600) // 60}분"
+
+    _bld_started = time.monotonic()
+    _last_emit = 0.0
+    _emit(f"[랏캐시빌드] {_prod_lbl}: {total:,} 랏 → 청크 {chunk_size}개씩 파티션 생성 시작 · RSS {_rss_gb()}GB")
+
     # ② 청크 단위 처리
     for chunk_start in range(0, total, chunk_size):
         chunk_roots = root_lot_ids[chunk_start : chunk_start + chunk_size]
@@ -2706,6 +2740,15 @@ def _sink_lookup_cache_partitions_chunked(
             "ML_TABLE lookup cache build: %d/%d root_lot_ids written",
             done, total,
         )
+        # 첫·마지막 청크는 항상, 그 외엔 ~2초 간격 스로틀로 이벤트 로그에 진행 표시.
+        _now = time.monotonic()
+        if done >= total or (_now - _last_emit) >= 2.0:
+            _last_emit = _now
+            _elapsed = _now - _bld_started
+            _eta = (_elapsed / done) * (total - done) if done else 0.0
+            _pct = done * 100 // total if total else 100
+            _emit(f"[랏캐시빌드] {_prod_lbl}: {done:,}/{total:,} 랏 ({_pct}%)"
+                  f" · RSS {_rss_gb()}GB · 남은 ~{_fmt_dur(_eta)}")
 
 
 def _parquet_row_count(fp: Path) -> int:

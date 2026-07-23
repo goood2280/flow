@@ -319,6 +319,13 @@ def _is_backend_app_v2_source(parts: list[str]) -> bool:
     return len(parts) >= 2 and parts[0] == "backend" and parts[1] == "app_v2"
 
 
+# 쓰기 실패(잠긴 파일/권한)를 모아 두었다가 extract 끝에서 요약한다. 운영서버에서
+# 앱(uvicorn)이 실행 중이면 Windows 가 로드된 .py/.pyd 를 잠가 write 가 실패하는데,
+# 예전엔 여기서 예외가 그대로 터져 setup.py 가 exit 1(+traceback) → Hudson durable
+# task step 비정상 종료로 이어졌다. 이제 파일별로 잡고 계속 진행한다.
+_WRITE_FAILURES: list = []
+
+
 def _write(rel: str, gz_b64: str) -> None:
     # 사용자 데이터 보존 가드 — defense in depth.
     #
@@ -392,8 +399,14 @@ def _write(rel: str, gz_b64: str) -> None:
     except Exception:
         pass
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(data)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+    except Exception as _e:
+        # 잠긴 파일/권한 등으로 개별 파일 쓰기가 실패해도 배포 전체를 중단하지 않는다.
+        # (예외를 그대로 던지면 setup.py 가 exit 1 → 파이프라인 abort.)
+        # NOTE: 이 블록은 빌더의 header f-string 안이라 중괄호를 피해 문자열 연결 사용.
+        _WRITE_FAILURES.append((rel, type(_e).__name__ + ": " + str(_e)))
 
 
 '''
@@ -1130,6 +1143,18 @@ def extract() -> int:
     print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")
     print(f"[extract] manual restore: python setup.py restore [latest|<timestamp>]")
+    if _WRITE_FAILURES:
+        # 앱(uvicorn)이 실행 중이면 로드된 파일이 잠겨 쓰기가 실패할 수 있다 —
+        # 배포 전 앱 중지 후 재실행 권장. 파이프라인은 중단하지 않는다(경고).
+        print(f"[extract] WARN {len(_WRITE_FAILURES)}개 파일 쓰기 실패(잠김/권한 추정) — "
+              f"운영 앱 실행 중이면 중지 후 재배포 권장:", file=sys.stderr)
+        for rel, err in _WRITE_FAILURES[:20]:
+            print(f"  - {rel}: {err}", file=sys.stderr)
+        if len(_WRITE_FAILURES) > 20:
+            print(f"  ... 외 {len(_WRITE_FAILURES) - 20}개", file=sys.stderr)
+        if _setup_strict():
+            print("[extract] FLOW_SETUP_STRICT=1 — 쓰기 실패로 실패 처리(exit 1)", file=sys.stderr)
+            return 1
     return 0
 
 

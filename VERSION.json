@@ -1,7 +1,17 @@
 {
-  "version": "9.5.28",
+  "version": "9.5.29",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.29",
+      "date": "2026-07-23",
+      "title": "CI/CD: 잠긴 파일 write 크래시 완화 + ML_TABLE lookup 빌드 진행을 캐시 이벤트 로그에 표시",
+      "tag": "fix",
+      "changes": [
+        "CI/CD durable task 단계(python setup.py)에서 extract 중 개별 파일 write 가 실패(운영 앱 실행 중 Windows 가 로드된 .py/.pyd 를 잠금)하면 예외가 그대로 터져 exit 1(+traceback) → Hudson AbortException 파이프라인 종료되던 문제 완화. _write 를 파일별로 try/except 하고 실패 목록을 extract 끝에서 요약, 파이프라인은 계속(경고). FLOW_SETUP_STRICT=1 이면 실패 처리. (앱 중지 후 재배포 권장 안내 포함)",
+        "ML_TABLE lookup 캐시 빌드(수동스캔 3/3 Root lot 의 일부) 진행을 캐시 이벤트 로그에 랏 단위로 표시 — 기존엔 logger.info(터미널)로만 찍혀 관리 화면에 안 보였음. 이제 '[랏캐시빌드] 제품: N/전체 랏 (%) · RSS · 남은시간' 으로 시작/진행/완료 표시(FAB 처럼). 첫·마지막 청크 항상 + ~2초 스로틀."
+      ]
+    },
     {
       "version": "9.5.28",
       "date": "2026-07-23",
