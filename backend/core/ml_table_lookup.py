@@ -1850,8 +1850,19 @@ def refresh_root_lot_ram_cache(product: str = "", file: str = "", *, force: bool
         gc.collect()
     except Exception:
         pass
+    # build_pending(원본 lookup 캐시가 아직 빌드 중)은 실패가 아니라 '대기' 상태다.
+    # 진짜 실패(ok=False 이면서 build_pending/skipped 아님)가 하나도 없으면 ok=True 로
+    # 본다 — 전부 대기여도 '실패'로 표시하지 않는다(빌드 완료 후 다음 사이클에 적재).
+    genuine_fail = any(
+        (not row.get("ok")) and not (row.get("build_pending") or row.get("skipped"))
+        for row in rows
+    )
+    pending_ct = sum(1 for row in rows if row.get("build_pending"))
+    warmed_ct = sum(1 for row in rows if row.get("ok"))
     return {
-        "ok": any(row.get("ok") for row in rows),
+        "ok": (not genuine_fail),
+        "build_pending": pending_ct,
+        "warmed_products": warmed_ct,
         "enabled": True,
         "products": rows,
         "interval_minutes": root_ram_cache_refresh_minutes(),

@@ -8431,13 +8431,18 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
                     _product_ram_cache_job_status, stage="product_ram_cache"
                 )
             pc = results["product_cache"]
+            # 제품 원본 RAM 캐시를 설정에서 끈 경우(비활성)는 '실패'가 아니라 '건너뜀'.
+            pc_disabled = not _product_ram_cache_available()
+            pc_ok = bool(pc.get("ok")) or pc_disabled
             if job_id:
                 from core.cache_event_log import stage_finished
-                stage_finished(job_id, "product_ram", ok=bool(pc.get("ok")),
-                               detail={"products": len(pc.get("products") or [])})
-            _log("scan", f"[수동 스캔] 2/3 제품 원본 RAM 캐시 완료 ({_label})",
-                 ok=bool(pc.get("ok")),
-                 detail={"products": len(pc.get("products") or [])},
+                stage_finished(job_id, "product_ram", ok=pc_ok,
+                               detail={"products": len(pc.get("products") or []), "disabled": pc_disabled})
+            _log("scan",
+                 f"[수동 스캔] 2/3 제품 원본 RAM 캐시 "
+                 f"{'건너뜀(비활성 — 설정에서 꺼짐)' if pc_disabled else '완료'} ({_label})",
+                 ok=pc_ok,
+                 detail={"products": len(pc.get("products") or []), "disabled": pc_disabled},
                  stage="product_ram", phase="finished")
         except Exception as e:
             results["product_cache"] = {"ok": False, "error": str(e)}
@@ -8459,15 +8464,23 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
                 results["root_lot_cache"], product=product
             )
             rc = results["root_lot_cache"]
+            pending = int(rc.get("build_pending") or 0)
+            warmed = int(rc.get("warmed_products") or 0)
+            # 원본 lookup 캐시가 아직 빌드 중이면 예열은 '대기'다(실패 아님) — 빌드 완료
+            # 후 자동 적재된다. 대기 개수를 표시해 조용한 미적재로 오인하지 않게 한다.
+            note = (f" · 빌드 대기 {pending}개(원본 lookup 캐시 빌드 완료 후 자동 적재)"
+                    if pending else "")
             if job_id:
                 from core.cache_event_log import stage_finished
                 stage_finished(job_id, "root_lot_ram", ok=bool(rc.get("ok")),
                                detail={"products": len(rc.get("products") or []),
-                                       "max_gb": rc.get("max_gb")})
-            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 완료 ({_label})",
+                                       "max_gb": rc.get("max_gb"),
+                                       "build_pending": pending, "warmed": warmed})
+            _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 완료 ({_label}){note}",
                  ok=bool(rc.get("ok")),
                  detail={"products": len(rc.get("products") or []),
-                         "max_gb": rc.get("max_gb")},
+                         "max_gb": rc.get("max_gb"),
+                         "build_pending": pending, "warmed": warmed},
                  stage="root_lot_ram", phase="finished")
         except Exception as e:
             results["root_lot_cache"] = {"ok": False, "error": str(e)}

@@ -1,7 +1,18 @@
 {
-  "version": "9.5.23",
+  "version": "9.5.24",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.24",
+      "date": "2026-07-23",
+      "title": "루트랏 캐시 '실패' 오표시 수정(빌드 대기는 실패 아님) + 제품 원본 RAM 비활성은 '건너뜀'",
+      "tag": "fix",
+      "changes": [
+        "루트랏(root lot) 캐시 예열이 원본 lookup 캐시 빌드 대기(build_pending)뿐인데도 top-level ok=False 로 반환해 통합 스캔이 '루트랏캐시 실패'로 표시하던 문제 수정. 진짜 실패가 하나도 없으면 ok=True, 대기 개수(build_pending)를 함께 반환 → '빌드 대기 N개(완료 후 자동 적재)'로 표시.",
+        "제품 원본 RAM 캐시를 설정에서 끈 경우 통합 스캔 2단계가 '실패'로 뜨던 것을 '건너뜀(비활성)'으로 표시(실패 아님).",
+        "확인: 제품 원본 RAM 캐시(off)와 루트랏 캐시는 서로 독립(FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE vs FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE) — 제품 RAM 을 꺼도 루트랏 캐시는 정상 갱신된다. '실패'는 lookup 캐시 빌드가 아직 안 끝난 대기 상태였을 뿐."
+      ]
+    },
     {
       "version": "9.5.23",
       "date": "2026-07-23",
