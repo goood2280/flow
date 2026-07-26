@@ -1,7 +1,19 @@
 {
-  "version": "9.5.37",
+  "version": "9.5.38",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.38",
+      "date": "2026-07-26",
+      "title": "SplitTable 계산 최적화 — parquet 스키마 메모이즈 + KNOB 전용 캐시 + KNOB 프리워밍",
+      "tag": "perf",
+      "changes": [
+        "[가장 큰 건] parquet 스키마 조회 메모이즈 — cold 검색 1건이 `collect_schema()` 를 16~25회 부르고 있었고(실측 계측), 비싼 것은 조회 자체가 아니라 그때마다 새로 여는 `scan_parquet()` 파일 열기였다(4000컬럼 실측 9.1ms/회, 파생 LazyFrame 조회는 0.02ms). `_scan_parquet_compat` 이 스키마 프로브용으로 매번 열던 것을 (경로+mtime+size) 키로 캐시하고, 방금 구한 컬럼 목록을 `filter_valid_wafer_ids_lazy` 에 넘겨 두 번째 조회도 없앴다. 호출당 16.6ms → 1.0ms(16x), 검색 1건 기준 약 47~78ms 절감(4000컬럼). prefix 무관하게 모든 검색에 적용된다.",
+        "KNOB 전용 pivot 사이드카 — SplitTable 에서 압도적으로 많이 보는 것이 KNOB prefix 라, per-root pivot 캐시를 만들 때 KNOB 컬럼+앵커만 담은 좁은 파일을 `<제품>/knob/<root>.parquet` 에 함께 쓴다. prefix=KNOB 단독 조회(커스텀 세트/추가 컬럼 없음)만 이 파일을 읽는다(4000→2000컬럼 실측: 파일 열기 18.2→8.3ms, 읽기 22.2→14.1ms ≈ 검색당 18ms). 다른 prefix 는 기존 전체 파일 그대로라 회귀가 없다. 하위 폴더에 두는 이유는 lot-candidates 가 캐시 폴더의 `*.parquet` stem 으로 랏 후보를 만들기 때문(같은 폴더면 'A1000.KNOB' 같은 가짜 랏이 뜬다). 사이드카가 없거나(구버전 캐시) 본 파일보다 오래됐거나 앵커 컬럼이 빠져 있으면 전체 파일로 폴백하므로 결과를 바꿀 수 없고, 증분 빌드는 사이드카가 없는 root 를 강제로 다시 써서 backfill 한다. runtime_profile.knob_sidecar 로 실제 사용 여부를 확인할 수 있다.",
+        "KNOB view payload 프리워밍 — 관리자가 등록해 둔 우선 lot × prefix=KNOB 조합의 view payload 를 백그라운드로 미리 계산한다(기본 30분 주기, 기동 3분 뒤 첫 실행, 최대 50랏). 가장 흔한 검색이 cold 계산 자체를 건너뛰고 캐시 HIT 로 끝나고, HIT 는 cold 레인에 줄서지 않으므로(9.5.36 self-gated 경로) 동시 사용자 대기도 함께 준다. 이미 fresh 면 건너뛰고, 사용자 요청 중에는 yield_to_users 로 양보하며, 메모리 압박 시 중단한다. 캐시관리 이벤트 로그에 결과가 남는다. env FLOW_SPLITTABLE_KNOB_PREWARM=0 으로 끌 수 있고 주기/랏수도 env 로 조절한다.",
+        "부수: KNOB 사이드카로 읽어도 all_columns(FE 컬럼 선택기 목록)는 전체 pivot 스키마 기준으로 복원한다 — 안 그러면 KNOB 화면에서 커스텀 세트를 만들 때 INLINE/VM 컬럼이 사라진다(검증에서 149→29 로 줄어드는 회귀를 잡아 수정)."
+      ]
+    },
     {
       "version": "9.5.37",
       "date": "2026-07-26",

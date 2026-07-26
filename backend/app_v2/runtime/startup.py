@@ -31,6 +31,9 @@ def start_background_services(logger) -> None:
         ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
         ("splittable search cache maintainer", "routers.splittable", "start_split_search_cache_maintainer"),
         ("splittable fab lot index revalidator", "routers.splittable", "start_fab_lot_index_revalidator"),
+        # 우선 lot × KNOB view payload 프리워밍 — 가장 흔한 검색을 cold 계산 없이
+        # 캐시 HIT 로 만든다(HIT 는 cold 레인에 줄서지 않아 동시 대기도 함께 준다).
+        ("splittable KNOB prewarmer", "routers.splittable", "start_knob_prewarmer"),
     )
     # 외부 서비스 연동/운영성 스케줄러 — 운영(api)·standalone 전용.
     # worker(개발서버) 역할은 로드 분산(SplitTable·데이터 처리)만 담당하므로

@@ -705,16 +705,44 @@ def _scan_cast_options():
         return None
 
 
-def _first_scan_schema_with_string_cats(source, hive_partitioning=None):
-    if not isinstance(source, (list, tuple)) or not source:
+# ── parquet 스키마 메모이즈 ───────────────────────────────────────────────
+# `collect_schema()` 는 파일 footer 를 파싱하므로 컬럼 수에 비례해 비싸다
+# (4000컬럼 실측 9.2ms/회). 그런데 cold 검색 1건이 이 호출을 16~25회 하고,
+# 같은 파일에 매번 같은 답을 다시 묻는다 — 넓은 테이블에서는 검색 시간의
+# 대부분이 데이터 읽기(21ms)가 아니라 이 반복 조회(~164ms)였다.
+# 파일 mtime+size 로 키를 잡아 내용이 바뀌면 자동 무효화된다.
+_SCAN_SCHEMA_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
+_SCAN_SCHEMA_CACHE_LOCK = threading.Lock()
+_SCAN_SCHEMA_CACHE_MAX = 256
+
+
+def _scan_schema_cache_key(source, hive_partitioning) -> tuple | None:
+    """(경로, mtime, size, hive) 키. stat 실패(원격/미존재)면 None = 캐시 미사용."""
+    try:
+        p = Path(str(source))
+        st = p.stat()
+        return (str(p), st.st_mtime, st.st_size, bool(hive_partitioning))
+    except Exception:
         return None
+
+
+def _cached_scan_schema(source, hive_partitioning=None):
+    """(schema_override, column_names) 반환. schema_override 는 Categorical→String
+    드리프트 보정이 필요할 때만 dict, 아니면 None (기존 계약 유지)."""
+    key = _scan_schema_cache_key(source, hive_partitioning)
+    if key is not None:
+        with _SCAN_SCHEMA_CACHE_LOCK:
+            hit = _SCAN_SCHEMA_CACHE.get(key)
+            if hit is not None:
+                _SCAN_SCHEMA_CACHE.move_to_end(key)
+                return hit
     try:
         kwargs = {}
         if hive_partitioning is not None:
             kwargs["hive_partitioning"] = hive_partitioning
-        schema = pl.scan_parquet(str(source[0]), **kwargs).collect_schema()
+        schema = pl.scan_parquet(str(source), **kwargs).collect_schema()
     except Exception:
-        return None
+        return None, None
     out = {}
     changed = False
     for name, dtype in schema.items():
@@ -723,18 +751,40 @@ def _first_scan_schema_with_string_cats(source, hive_partitioning=None):
             changed = True
         else:
             out[name] = dtype
-    return out if changed else None
+    value = (out if changed else None, list(schema.names()))
+    if key is not None:
+        with _SCAN_SCHEMA_CACHE_LOCK:
+            _SCAN_SCHEMA_CACHE[key] = value
+            _SCAN_SCHEMA_CACHE.move_to_end(key)
+            while len(_SCAN_SCHEMA_CACHE) > _SCAN_SCHEMA_CACHE_MAX:
+                _SCAN_SCHEMA_CACHE.popitem(last=False)
+    return value
+
+
+def _first_scan_schema_with_string_cats(source, hive_partitioning=None):
+    if not isinstance(source, (list, tuple)) or not source:
+        return None
+    return _cached_scan_schema(source[0], hive_partitioning)[0]
 
 
 def _scan_parquet_compat(source, **kwargs):
     """Scan parquet while accepting String/Categorical drift across partitions."""
     scan_kwargs = dict(kwargs)
+    hive = scan_kwargs.get("hive_partitioning")
+    names = None
     if "schema" not in scan_kwargs:
-        schema = _first_scan_schema_with_string_cats(
-            source, hive_partitioning=scan_kwargs.get("hive_partitioning")
-        )
-        if schema:
-            scan_kwargs["schema"] = schema
+        is_multi = isinstance(source, (list, tuple))
+        first = (source[0] if source else None) if is_multi else source
+        if first is not None and not isinstance(first, (list, tuple)):
+            schema, names = _cached_scan_schema(first, hive_partitioning=hive)
+            # Categorical 드리프트 보정은 원래 계약대로 다중 파티션 스캔에만 적용.
+            # 단일 파일은 드리프트가 없고, names 캐시는 양쪽 다 재사용한다.
+            if schema and is_multi:
+                scan_kwargs["schema"] = schema
+    if hive:
+        # hive 파티션 컬럼은 개별 파일 스키마에 없다 — 컬럼 목록이 불완전할 수
+        # 있으므로 이 경우엔 넘기지 않고 기존처럼 lf 에서 직접 읽게 둔다.
+        names = None
     opts = _scan_cast_options()
     if opts is not None and "cast_options" not in scan_kwargs:
         scan_kwargs["cast_options"] = opts
@@ -745,7 +795,9 @@ def _scan_parquet_compat(source, **kwargs):
         lf = pl.scan_parquet(source, **scan_kwargs)
     try:
         from core.utils import filter_valid_wafer_ids_lazy
-        return filter_valid_wafer_ids_lazy(lf)
+        # 방금 구한 컬럼 이름을 넘겨 두 번째 collect_schema 를 없앤다.
+        # (hive 파티션 컬럼은 스캔 뒤에만 보이지만, wafer 컬럼 탐지 용도라 무관)
+        return filter_valid_wafer_ids_lazy(lf, names)
     except Exception:
         return lf
 
@@ -1845,6 +1897,148 @@ def start_product_ram_cache_scheduler() -> bool:
     _PRODUCT_RAM_CACHE_THREAD.start()
     _PRODUCT_RAM_CACHE_STARTED = True
     logger.info("SplitTable product RAM cache scheduler started (interval=%sm)", _product_ram_cache_refresh_minutes())
+    return True
+
+
+# ── KNOB view payload 프리워밍 ────────────────────────────────────────────
+# SplitTable 에서 압도적으로 많이 보는 것이 KNOB prefix 이고, 우선 lot 은 이미
+# 관리자가 등록해 둔다. 그 조합(우선 lot × prefix=KNOB)의 view payload 를 미리
+# 계산해 두면 가장 흔한 검색이 **cold 계산 자체를 건너뛰고** 캐시 HIT 로 끝난다.
+# HIT 는 cold 레인에 줄서지 않으므로(self-gated 경로) 동시 사용자 대기도 함께 준다.
+# 계산을 빠르게 하는 게 아니라 없애는 접근이라 다중 조회에서 효과가 가장 크다.
+_KNOB_PREWARM_STOP = threading.Event()
+_KNOB_PREWARM_THREAD = None
+_KNOB_PREWARM_STARTED = False
+_KNOB_PREWARM_LAST: dict = {"at": "", "warmed": 0, "skipped": 0, "failed": 0, "reason": ""}
+
+
+def _knob_prewarm_enabled() -> bool:
+    return str(os.environ.get("FLOW_SPLITTABLE_KNOB_PREWARM", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _knob_prewarm_interval_sec() -> float:
+    return max(60.0, min(24 * 3600.0, _env_float("FLOW_SPLITTABLE_KNOB_PREWARM_INTERVAL_SEC", 1800.0)))
+
+
+def _knob_prewarm_max_lots() -> int:
+    try:
+        n = int(float(os.environ.get("FLOW_SPLITTABLE_KNOB_PREWARM_MAX_LOTS", "") or 50))
+    except Exception:
+        n = 50
+    return max(1, min(500, n))
+
+
+def _knob_prewarm_targets() -> list[tuple[str, str]]:
+    """(product, root_lot_id) 목록 — 캐싱 활성화된 우선 lot 만, 상한 적용."""
+    out: list[tuple[str, str]] = []
+    try:
+        data = _load_priority_lots_file()
+    except Exception:
+        return out
+    limit = _knob_prewarm_max_lots()
+    for product, lots in (data or {}).items():
+        if not isinstance(lots, list):
+            continue
+        for entry in lots:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("cache_enabled") is False:
+                continue
+            lot = str(entry.get("lot_id") or "").strip()
+            if not lot:
+                continue
+            out.append((str(product or "").strip(), lot))
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _knob_prewarm_once() -> dict:
+    warmed = skipped = failed = 0
+    reason = ""
+    targets = _knob_prewarm_targets()
+    if not targets:
+        reason = "우선 lot 없음"
+    for product, root in targets:
+        if _KNOB_PREWARM_STOP.is_set():
+            reason = "중지 요청"
+            break
+        try:
+            from core.runtime_limits import process_memory_high
+            if process_memory_high():
+                skipped += len(targets) - (warmed + skipped + failed)
+                reason = "메모리 압박으로 중단"
+                break
+        except Exception:
+            pass
+        # 사용자 검색이 진행 중이면 양보 — 프리워밍이 실사용을 밀어내지 않게 한다.
+        try:
+            from core import request_priority as _rp
+            _rp.yield_to_users(max_wait_sec=120.0, quiet_for_sec=3.0)
+        except Exception:
+            pass
+        try:
+            key = _split_view_cache_key(product, root, "", "KNOB", "", "all", "all", "", "")
+            hard, soft = _split_view_cache_dep_signature(product)
+            freshness, cached = _split_view_cache_get(key, hard, soft)
+            if cached is not None and freshness == "fresh":
+                skipped += 1
+                continue
+            # request=None → 감사로그/알림을 남기지 않는다(사용자 검색이 아니므로).
+            # cold 레인은 view_split_core 가 스스로 잡으므로 동시성 상한이 지켜진다.
+            view_split_core(
+                product=product, root_lot_id=root, wafer_ids="", prefix="KNOB",
+                custom_name="", view_mode="all", history_mode="all", fab_lot_id="",
+                custom_cols="", include_related=False, cache_first=False, request=None)
+            warmed += 1
+        except Exception as exc:
+            failed += 1
+            logger.debug("KNOB prewarm 실패 (%s/%s): %s", product, root, exc)
+    result = {
+        "at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "warmed": warmed, "skipped": skipped, "failed": failed,
+        "targets": len(targets), "reason": reason,
+    }
+    _KNOB_PREWARM_LAST.update(result)
+    if warmed or failed:
+        try:
+            from core import cache_event_log
+            cache_event_log.record(
+                "cache_op", "knob_prewarm", ok=(failed == 0),
+                detail={"warmed": warmed, "skipped": skipped, "failed": failed,
+                        "targets": len(targets), "reason": reason})
+        except Exception:
+            pass
+    return result
+
+
+def _knob_prewarm_loop() -> None:
+    # 기동 직후는 캐시/스케줄러가 자리를 잡을 시간을 준다.
+    if _KNOB_PREWARM_STOP.wait(_env_float("FLOW_SPLITTABLE_KNOB_PREWARM_START_DELAY_SEC", 180.0)):
+        return
+    while not _KNOB_PREWARM_STOP.is_set():
+        try:
+            _knob_prewarm_once()
+        except Exception as exc:
+            logger.warning("KNOB prewarm loop 오류: %s", exc)
+        if _KNOB_PREWARM_STOP.wait(_knob_prewarm_interval_sec()):
+            return
+
+
+def start_knob_prewarmer() -> bool:
+    global _KNOB_PREWARM_THREAD, _KNOB_PREWARM_STARTED
+    if _KNOB_PREWARM_STARTED:
+        return False
+    if not _knob_prewarm_enabled():
+        logger.info("SplitTable KNOB prewarmer disabled (FLOW_SPLITTABLE_KNOB_PREWARM=0)")
+        return False
+    _KNOB_PREWARM_STOP.clear()
+    _KNOB_PREWARM_THREAD = threading.Thread(
+        target=_knob_prewarm_loop, name="splittable-knob-prewarm", daemon=True)
+    _KNOB_PREWARM_THREAD.start()
+    _KNOB_PREWARM_STARTED = True
+    logger.info("SplitTable KNOB prewarmer started (interval=%.0fs, max %d lots)",
+                _knob_prewarm_interval_sec(), _knob_prewarm_max_lots())
     return True
 
 
@@ -11842,6 +12036,9 @@ def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *,
         "product_cache_hit": bool(src.get("product_cache_hit")),
         "payload_cache_hit": bool(payload_cache_hit),
         "data_source": data_source,
+        # KNOB 전용 사이드카(좁은 pivot 파일)로 읽었는지 — 운영에서 이 경로가
+        # 실제로 도는지 확인용. False 면 전체 pivot 파일로 폴백한 것.
+        "knob_sidecar": bool(src.get("root_data_source_detail") == "knob_sidecar"),
         "scan_ms": round(float(src.get("scan_ms") or 0.0), 3),
         "root_scan_ms": round(float(src.get("root_scan_ms") or 0.0), 3),
         "singleflight_wait_ms": round(float(src.get("singleflight_wait_ms") or 0.0), 3),
@@ -12033,6 +12230,59 @@ def _pivot_cache_path(product: str, root_lot_id: str) -> Path:
     canonical = canonical_product_dir(product) or str(product or "").strip()
     safe_root = str(root_lot_id).replace("/", "_").replace("\\", "_")
     return _base_root() / "cache" / "split_table" / canonical / f"{safe_root}.parquet"
+
+
+def _pivot_cache_knob_path(product: str, root_lot_id: str) -> Path:
+    """KNOB 전용 사이드카 경로 (하위 폴더 — lot-candidates 의 *.parquet 열거와 분리)."""
+    from app_v2.modules.splittable.cache_builder import KNOB_SIDECAR_DIR
+    main = _pivot_cache_path(product, root_lot_id)
+    return main.parent / KNOB_SIDECAR_DIR / main.name
+
+
+def _knob_only_request(prefix: str, custom_name: str, custom_cols: str) -> bool:
+    """이 검색이 KNOB prefix '만' 보는가 (사이드카 사용 조건)."""
+    if str(custom_name or "").strip() or str(custom_cols or "").strip():
+        return False
+    parts = [p.strip().upper() for p in str(prefix or "").split(",") if p.strip()]
+    return parts == ["KNOB"]
+
+
+def _merge_all_columns(frame_cols: list, full_cols: list | None, lot_col: str, wf_col: str) -> list:
+    """FE 컬럼 선택기용 전체 컬럼 목록.
+
+    KNOB 사이드카로 읽으면 프레임에는 KNOB 컬럼밖에 없다. 그대로 내보내면
+    커스텀 세트 만들 때 INLINE/VM 등이 사라지므로, 전체 pivot 스키마를 기준으로
+    복원하고 프레임에만 있는 항목(태그/관리 행 오버레이)을 뒤에 붙인다."""
+    if not full_cols:
+        return frame_cols
+    skip = {c for c in (lot_col, wf_col) if c}
+    out = [c for c in full_cols if c not in skip]
+    seen = set(out)
+    for c in frame_cols or []:
+        if c not in seen:
+            out.append(c)
+            seen.add(c)
+    return out
+
+
+def _knob_sidecar_usable(sidecar: Path, main: Path) -> bool:
+    """사이드카를 써도 결과가 같은가.
+
+    ① 본 파일보다 오래되지 않았고 ② 렌더에 필요한 앵커 컬럼(lot/wafer/fab)이
+    모두 들어 있어야 한다. 하나라도 어긋나면 전체 파일로 폴백한다 — 사이드카가
+    결과를 바꾸는 경로를 만들지 않는다."""
+    try:
+        if sidecar.stat().st_mtime < main.stat().st_mtime - 1.0:
+            return False
+    except OSError:
+        return False
+    names = _cached_scan_schema(sidecar)[1]
+    if not names:
+        return False
+    lower = {str(n).lower() for n in names}
+    if not any(n in lower for n in ("wafer_id", "waferid", "wafer")):
+        return False
+    return any(n in lower for n in ("root_lot_id", "lot_id"))
 
 
 def _pivot_cache_build_state(product: str) -> str:
@@ -13527,6 +13777,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
             view_cache_key=view_cache_key,
         )
     pivot_base_lf = None
+    knob_sidecar_all_columns = None
     try:
         if root_lot_id.strip() and not cache_first_enabled:
             fast_cache_path = _pivot_cache_path(product, root_lot_id.strip())
@@ -13553,7 +13804,22 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                 if is_legacy:
                     _enqueue_pivot_cache_build(product, reason="legacy_pivot_format")
                 elif cache_names:
-                    pivot_base_lf = _cast_cats_lazy(_scan_parquet_compat(str(fast_cache_path)))
+                    # KNOB 만 보는 검색이면 KNOB 전용 사이드카(좁은 파일)를 읽는다.
+                    # 없거나 앵커 컬럼이 빠져 있으면 그대로 전체 파일 — 결과 동일.
+                    read_path = fast_cache_path
+                    if _knob_only_request(prefix, custom_name, custom_cols):
+                        knob_path = _pivot_cache_knob_path(product, root_lot_id.strip())
+                        if _knob_sidecar_usable(knob_path, fast_cache_path):
+                            read_path = knob_path
+                            runtime_profile["root_data_source_detail"] = "knob_sidecar"
+                            # 좁은 파일로 읽으면 프레임 스키마에 KNOB 밖 컬럼이 없다.
+                            # all_columns(FE 컬럼 선택기 목록)는 전체 스키마여야 하므로
+                            # 여기서 확보해 둔다 — 안 그러면 커스텀 세트에서 INLINE/VM 이 사라진다.
+                            knob_sidecar_all_columns = list(cache_names)
+                        else:
+                            # 구버전 캐시엔 사이드카가 없다 — 다음 빌드에서 backfill.
+                            _enqueue_pivot_cache_build(product, reason="knob_sidecar_missing")
+                    pivot_base_lf = _cast_cats_lazy(_scan_parquet_compat(str(read_path)))
                     runtime_profile["root_cache_hit"] = True
             else:
                 # pivot cache miss — 이번 요청은 아래 일반 경로로 처리하고,
@@ -13965,7 +14231,8 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
             "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "available_fab_lots": available_fab_lots,
             "prefixes": _load_prefixes(), "precision": load_json_cached(PRECISION_CFG, DEFAULT_PRECISION), "root_lot_id": root_lot_id,
-            "all_columns": all_data_cols, "selected_count": len(selected),
+            "all_columns": _merge_all_columns(all_data_cols, knob_sidecar_all_columns, lot_col, wf_col),
+            "selected_count": len(selected),
             "prefix": prefix or (custom_name if custom_name else ""),
             "history_mode": _history_mode,
             "plan_allowed_prefixes": PLAN_ALLOWED_PREFIXES,

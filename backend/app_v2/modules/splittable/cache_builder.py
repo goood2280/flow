@@ -42,6 +42,36 @@ _ROOT_FINGERPRINT_FILE = ".root_fingerprints.json"
 # 해시 합이 Int64 를 넘지 않도록 32bit 소수로 접는다 (root 당 수만 행이어도 여유).
 _FINGERPRINT_FOLD_PRIME = 4294967291
 
+# ── KNOB 전용 사이드카 ────────────────────────────────────────────────────
+# SplitTable 에서 압도적으로 많이 보는 것이 KNOB_ prefix 다. 전체 per-root 파일은
+# 모든 그룹(INLINE/VM/MASK/…)을 담고 있어 파일 열기(footer 파싱)와 컬럼 청크
+# 읽기가 컬럼 수에 비례해 비싸다. KNOB 컬럼 + 앵커만 담은 좁은 파일을 함께 써
+# 두면 prefix=KNOB 조회가 그 파일만 읽는다 (4000→2000컬럼 실측: 파일 열기
+# 18.2→8.3ms, 읽기 22.2→14.1ms).
+#
+# **하위 폴더**에 둔다 — lot-candidates 가 캐시 폴더의 `*.parquet` stem 으로 랏
+# 후보를 만들기 때문에 같은 폴더에 두면 "A1000.KNOB" 같은 가짜 랏이 뜬다.
+# 사이드카가 없거나 필요한 컬럼이 빠져 있으면 읽기측이 전체 파일로 폴백하므로
+# (구버전 캐시 포함) 이 파일이 결과를 바꿀 수 없다.
+KNOB_SIDECAR_DIR = "knob"
+_KNOB_PREFIX = "KNOB_"
+
+
+def _knob_sidecar_columns(columns, anchors) -> list[str]:
+    """KNOB 컬럼 + 앵커(root/lot/wafer/fab). 순서는 원본 유지."""
+    keep_upper = {str(a).upper() for a in anchors if a}
+    # fab lot 라벨/헤더 그룹핑에 쓰이는 컬럼도 함께 — 없으면 읽기측이 폴백한다.
+    keep_upper |= {"FAB_LOT_ID", "FAB_LOTID", "FAB_LOT", "PRODUCT"}
+    out = []
+    for c in columns:
+        cu = str(c).upper()
+        if cu.startswith(_KNOB_PREFIX) or cu in keep_upper:
+            out.append(c)
+    # KNOB 컬럼이 하나도 없으면 사이드카를 만들 이유가 없다.
+    if not any(str(c).upper().startswith(_KNOB_PREFIX) for c in out):
+        return []
+    return out
+
 
 def _cache_format_matches(out_dir: Path) -> bool:
     try:
@@ -217,8 +247,11 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
         # 동안 SplitTable 조회는 이전 파일을 계속 서빙하고, root 단위 tmp→replace
         # 로만 새 데이터로 교체된다. 포맷 세대가 다른 legacy 캐시(전치형/잘못된
         # 키)만 시작 시 일괄 제거해 신·구 포맷이 섞이지 않게 한다.
+        knob_dir = out_dir / KNOB_SIDECAR_DIR
+        knob_cols = _knob_sidecar_columns(columns, (root_col, lot_col, wf_col))
+
         if not _cache_format_matches(out_dir):
-            for stale in out_dir.glob("*.parquet"):
+            for stale in list(out_dir.glob("*.parquet")) + list(knob_dir.glob("*.parquet")):
                 try:
                     stale.unlink()
                 except Exception:
@@ -254,6 +287,11 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
                 try:
                     st = (out_dir / _safe_root_filename(r)).stat()
                 except OSError:
+                    return True
+                # KNOB 사이드카가 아직 없는 root(구버전 캐시)는 내용이 그대로여도
+                # 한 번 다시 써서 backfill 한다 — 증분 빌드가 계속 건너뛰면
+                # 사이드카가 영영 안 생긴다.
+                if knob_cols and not (knob_dir / _safe_root_filename(r)).exists():
                     return True
                 return fingerprints_mtime is not None and st.st_mtime > fingerprints_mtime + 1.0
 
@@ -302,6 +340,16 @@ def build_pivoted_cache_for_product(product: str, db_root: Path = None, product_
                 out_df.write_parquet(tmp_path)
                 tmp_path.replace(final_path)
                 partitions_built += 1
+
+                # KNOB 전용 사이드카 — 실패해도 전체 파일이 정답이므로 조용히 넘어간다.
+                if knob_cols:
+                    try:
+                        knob_dir.mkdir(parents=True, exist_ok=True)
+                        knob_tmp = knob_dir / f"{safe_root}.tmp.parquet"
+                        out_df.select([c for c in knob_cols if c in out_df.columns]).write_parquet(knob_tmp)
+                        knob_tmp.replace(knob_dir / f"{safe_root}.parquet")
+                    except Exception as exc:
+                        logger.debug("KNOB 사이드카 기록 실패 (%s/%s): %s", canonical, safe_root, exc)
 
             del chunk_df
             del partitions
