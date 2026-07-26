@@ -1408,6 +1408,9 @@ function ActivityDashboardPanel(){
   const [summary,setSummary]=useState(null);
   const [features,setFeatures]=useState(null);
   const [splitCache,setSplitCache]=useState(null);
+  // 검색 타이밍 기간 — 0 = 최근(메모리 링버퍼), 그 외는 공유 JSONL 기간 조회.
+  const [timingHours,setTimingHours]=useState(24);
+  const [timing,setTiming]=useState(null);
   const [err,setErr]=useState("");
   const reload=()=>{
     setErr("");
@@ -1416,7 +1419,13 @@ function ActivityDashboardPanel(){
     // SplitTable RAM 캐시 상태 + 최근 검색 단계별 타이밍(관리자에게만 recent_searches 포함).
     sf("/api/splittable/root-lot-cache/status").then(setSplitCache).catch(()=>setSplitCache(null));
   };
+  const reloadTiming=()=>{
+    if(!timingHours){setTiming(null);return;}
+    sf("/api/splittable/search-timings?hours="+timingHours+"&limit=200")
+      .then(setTiming).catch(()=>setTiming(null));
+  };
   useEffect(()=>{reload();},[days]);
+  useEffect(()=>{reloadTiming();},[timingHours]);
   const barItem=(label,val,max,color)=>(<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
     <span style={{fontSize:14,minWidth:120,fontFamily:"monospace"}}>{label}</span>
     <div style={{flex:1,height:14,background:"var(--bg-tertiary)",borderRadius:3,overflow:"hidden"}}>
@@ -1484,7 +1493,10 @@ function ActivityDashboardPanel(){
         {_arr(summary?.split_table_lot_searches).length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>최근 SplitTable LOT 검색이 없습니다</div>}
       </div>
     </div>
-    {(()=>{const rc=splitCache?.cache||{};const st=splitCache?.settings||{};const rows=_arr(splitCache?.recent_searches);
+    {(()=>{const rc=splitCache?.cache||{};const st=splitCache?.settings||{};
+      // 기간을 고르면 공유 JSONL(며칠 치), '최근'이면 메모리 링버퍼.
+      const rows=timingHours?_arr(timing?.rows):_arr(splitCache?.recent_searches);
+      const sum=timingHours?(timing?.summary||null):null;
       const dsLabel={payload_cache:"응답캐시",pivot_cache:"pivot캐시",product_ram:"제품RAM",ram:"메모리HIT",ram_load:"메모리적재",disk:"디스크(첫검색)",root_cache:"캐시",raw:"원본스캔"};
       const dsColor=(ds)=>ds==="disk"||ds==="ram_load"?"var(--accent)":(ds==="ram"||ds==="payload_cache"||ds==="pivot_cache"||ds==="product_ram")?"#22c55e":"var(--text-secondary)";
       const ms=(v)=>Number(v||0).toFixed(1);
@@ -1505,6 +1517,35 @@ function ActivityDashboardPanel(){
         <span>target {st.target_roots||0} · step [{(st.step_ids||[]).join(",")||"-"}]</span>
         <span>최근갱신 {(rc.last_refresh_at||"").replace("T"," ")||"-"}</span>
       </div>
+      {/* 기간 선택 + 집계 — '대기'가 지속적으로 큰지 며칠 단위로 확인하는 용도.
+          최근 = 프로세스 메모리(재시작 시 사라짐), 나머지는 공유 JSONL 누적본. */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+        <span style={{fontSize:13,color:"var(--text-secondary)"}}>기간</span>
+        {[[0,"최근"],[24,"24시간"],[72,"3일"],[168,"7일"],[720,"30일"]].map(([h,l])=>(
+          <span key={h} onClick={()=>setTimingHours(h)} style={{padding:"2px 10px",borderRadius:5,fontSize:13,cursor:"pointer",
+            border:"1px solid "+(timingHours===h?"var(--accent)":"var(--border)"),
+            color:timingHours===h?"var(--accent)":"var(--text-secondary)",
+            fontWeight:timingHours===h?700:400}}>{l}</span>))}
+        <span onClick={()=>{reload();reloadTiming();}} style={{padding:"2px 10px",borderRadius:5,fontSize:13,cursor:"pointer",border:"1px solid var(--border)",color:"var(--text-secondary)"}}>새로고침</span>
+        {timingHours&&timing?<span style={{fontSize:13,color:"var(--text-secondary)",fontFamily:"monospace"}}>검색 {timing.count||0}건</span>:null}
+      </div>
+      {sum?(()=>{
+        const pct=Number(sum.slow_wait_pct||0);
+        const verdict=pct>=20?{c:"#ef4444",t:"대기가 잦습니다 — 검색 동시 슬롯(캐시 예산 톱니바퀴) 상향을 검토하세요"}
+          :pct>=5?{c:"var(--accent)",t:"가끔 줄섭니다 — 추세를 더 지켜보세요"}
+          :{c:"#22c55e",t:"줄서기 거의 없음 — 슬롯을 늘릴 이유가 없습니다"};
+        return(<div style={{display:"grid",gap:6,padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-tertiary)",marginBottom:10}}>
+          <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:13,fontFamily:"monospace"}}>
+            <span><b>대기</b> p50 {ms(sum.wait_ms?.p50)} · p90 {ms(sum.wait_ms?.p90)} · 최대 {ms(sum.wait_ms?.max)}</span>
+            <span><b>계산</b> p50 {ms(sum.compute_ms?.p50)} · p90 {ms(sum.compute_ms?.p90)} · 최대 {ms(sum.compute_ms?.max)}</span>
+            <span><b>체감</b> p90 {ms(sum.wall_ms?.p90)}</span>
+          </div>
+          <div style={{fontSize:13,color:verdict.c,fontWeight:600}}>
+            대기 200ms 이상 검색 {sum.slow_wait_count||0}건 ({pct}%) — {verdict.t}
+          </div>
+          {timing&&!timing.persisted?<div style={{fontSize:11,color:"var(--accent)"}}>※ 로그 파일 경로를 못 읽어 메모리 기록만 집계됩니다.</div>:null}
+        </div>);
+      })():null}
       <div style={{maxHeight:260,overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
           <thead><tr>{["시각","product","root_lot_id","데이터소스","wall(체감)","대기","계산","scan","root_scan","collect","matrix","overlay","rows"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
@@ -1524,7 +1565,7 @@ function ActivityDashboardPanel(){
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)"}}>{r.row_count||0}</td>
           </tr>))}</tbody>
         </table>
-        {rows.length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>최근 검색 타이밍이 없습니다 (SplitTable에서 root_lot_id로 검색하면 기록됩니다)</div>}
+        {rows.length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>{timingHours?"이 기간에 기록된 검색이 없습니다":"최근 검색 타이밍이 없습니다"} (SplitTable에서 root_lot_id로 검색하면 기록됩니다)</div>}
       </div>
       <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>ms 단위 · <b>wall(체감)</b> = <b>대기</b> + <b>계산</b>. <b>대기</b>=동시 요청 때문에 줄 선 시간(응답캐시 HIT 는 줄서지 않아 항상 0), <b>계산</b>=실제 처리 시간. <u>대기가 크면 동시성 문제(레인 슬롯 부족), 계산이 크면 캐시/데이터 문제</u>입니다. · <b>응답캐시</b>=완성된 결과 즉시 반환, <b>디스크(첫검색)</b>/<b>메모리적재</b>=첫 조회로 파티션 parquet 읽음. scan=캐시/조인 준비, collect=피벗 수집, matrix=셀 매트릭스 구성.</div>
       {/* RAM 캐시 개별 항목 목록 + 삭제 관리 */}

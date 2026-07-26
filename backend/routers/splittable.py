@@ -38,6 +38,7 @@ from core.domain import classify_process_area
 from core import latest_lot_partitions as _latest_lot_partitions
 from core import matching_cache as _matching_cache
 from core import ml_table_lookup as _ml_table_lookup
+from core import search_timing_log as _search_timing_log
 from core import s3_sync as _s3
 from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, load_json_cached, save_json, safe_id,
@@ -231,13 +232,11 @@ _VIEW_COMPUTE_EVENTS: dict[tuple, tuple[int, threading.Event]] = {}
 _VIEW_COLD_LANE_TLS = threading.local()
 
 
-def _view_cold_lane_concurrency() -> int:
-    raw = os.environ.get("FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY", "").strip()
-    if raw:
-        try:
-            return max(1, min(8, int(raw)))
-        except Exception:
-            pass
+_VIEW_COLD_CONCURRENCY_MIN = 1
+_VIEW_COLD_CONCURRENCY_MAX = 8
+
+
+def _view_cold_lane_default() -> int:
     try:
         from core.runtime_limits import effective_cpu_count
         cores = int(effective_cpu_count())
@@ -248,7 +247,80 @@ def _view_cold_lane_concurrency() -> int:
     return max(1, min(4, (cores + 1) // 2))
 
 
-_VIEW_COLD_SEMAPHORE = threading.Semaphore(_view_cold_lane_concurrency())
+def _view_cold_lane_concurrency() -> int:
+    """우선순위: env > 톱니바퀴 설정(운영/개발 분리) > 코어수 기반 기본값.
+
+    호출할 때마다 다시 읽는다 — 톱니바퀴에서 저장하면 재시작 없이 다음 요청부터
+    적용된다(설정 읽기는 2초 메모이즈). polars 스레드 풀과 달리 이 레인은
+    런타임 조절이 가능하다."""
+    raw = os.environ.get("FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY", "").strip()
+    if raw:
+        try:
+            return max(_VIEW_COLD_CONCURRENCY_MIN, min(_VIEW_COLD_CONCURRENCY_MAX, int(raw)))
+        except Exception:
+            pass
+    try:
+        from core import cache_settings
+        saved = cache_settings.get_int_role(
+            "view_cold_concurrency", _ml_table_lookup._root_ram_cache_use_dev(), None)
+        if saved:
+            return max(_VIEW_COLD_CONCURRENCY_MIN, min(_VIEW_COLD_CONCURRENCY_MAX, int(saved)))
+    except Exception:
+        pass
+    return _view_cold_lane_default()
+
+
+class _ResizableLane:
+    """크기를 런타임에 바꿀 수 있는 동시성 게이트.
+
+    threading.Semaphore 는 생성 시점에 크기가 고정이라 톱니바퀴로 조절할 수 없다.
+    여기서는 활성 수를 직접 세고 목표 크기를 acquire 시점마다 다시 읽는다.
+    대기 중에도 상한이 커질 수 있으므로 최대 1초 간격으로 깨어나 재확인한다."""
+
+    def __init__(self, size_fn):
+        self._size_fn = size_fn
+        self._cond = threading.Condition()
+        self._active = 0
+
+    def acquire(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._cond:
+            while True:
+                try:
+                    limit = max(1, int(self._size_fn()))
+                except Exception:
+                    limit = 1
+                if self._active < limit:
+                    self._active += 1
+                    return True
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    return False
+                self._cond.wait(min(remain, 1.0))
+
+    def release(self) -> None:
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            self._cond.notify()
+
+    def stats(self) -> dict:
+        with self._cond:
+            active = self._active
+        try:
+            limit = max(1, int(self._size_fn()))
+        except Exception:
+            limit = 1
+        return {"active": active, "limit": limit}
+
+
+_VIEW_COLD_SEMAPHORE = _ResizableLane(_view_cold_lane_concurrency)
+
+
+def _view_cold_lane_stats() -> dict:
+    out = _VIEW_COLD_SEMAPHORE.stats()
+    out["default"] = _view_cold_lane_default()
+    out["env_pinned"] = bool(os.environ.get("FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY", "").strip())
+    return out
 
 
 def _view_cold_lane_wait_sec() -> float:
@@ -8348,6 +8420,21 @@ def root_lot_ram_cache_status(request: Request, product: str = Query("")):
     return out
 
 
+@router.get("/search-timings")
+def get_search_timings(request: Request, hours: float = Query(24.0), limit: int = Query(200)):
+    """검색 타이밍 기간 조회 + 집계 (관리자 전용).
+
+    공유 JSONL 에 누적된 기록을 읽어 wait(줄서기) / compute(계산) 분포를 낸다.
+    slow_wait_pct 가 지속적으로 높으면 cold 레인 슬롯을 늘릴 근거가 되고,
+    wait 은 낮은데 compute 가 크면 레인이 아니라 캐시/계산 쪽 문제다."""
+    if not is_page_manager(current_user(request), "splittable"):
+        raise HTTPException(403, "관리자 전용")
+    out = _search_timing_log.query(hours=hours, limit=limit)
+    out["ok"] = True
+    out["cold_lane"] = _view_cold_lane_stats()
+    return out
+
+
 @router.post("/root-lot-cache/refresh")
 def refresh_root_lot_ram_cache_now(req: RootLotRamCacheRefreshReq, _perm=Depends(require_page_manager("splittable"))):
     return _ml_table_lookup.refresh_root_lot_ram_cache(product=req.product or "", force=bool(req.force), load_now=True)
@@ -9143,6 +9230,7 @@ def _cache_budget_settings_payload() -> dict:
         "product_ram_gb": "FLOW_SPLITTABLE_PRODUCT_RAM_CACHE_MAX_GB" in os.environ,
         "product_ram_enabled": "FLOW_DISABLE_SPLITTABLE_PRODUCT_RAM_CACHE" in os.environ,
         "match_cache_batch_roots": "FLOW_MATCH_CACHE_STREAM_BATCH_ROOTS" in os.environ,
+        "view_cold_concurrency": "FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY" in os.environ,
     }
     return {
         "ok": True,
@@ -9158,13 +9246,17 @@ def _cache_budget_settings_payload() -> dict:
             "product_ram_enabled": _product_ram_cache_available(),
             "product_ram_gb": _gb(_product_ram_cache_max_bytes()),
             "match_cache_batch_roots": _match_cache_stream_batch_roots(),
+            "view_cold_concurrency": _view_cold_lane_concurrency(),
         },
         "defaults": {
             "pool_fraction": 0.45,
             "dev_factor": 0.35,
             "product_ram_enabled": True,
             "match_cache_batch_roots": MATCH_CACHE_STREAM_BATCH_ROOTS_DEFAULT,
+            "view_cold_concurrency": _view_cold_lane_default(),
         },
+        # 검색 동시성 레인 현황 — 톱니바퀴에서 현재 몇 개가 돌고 있는지 함께 보여준다.
+        "cold_lane": _view_cold_lane_stats(),
     }
 
 
@@ -9187,6 +9279,8 @@ class CacheBudgetSaveReq(BaseModel):
     product_ram_gb_dev: float | None = None
     match_cache_batch_roots: int | None = None
     match_cache_batch_roots_dev: int | None = None
+    view_cold_concurrency: int | None = None
+    view_cold_concurrency_dev: int | None = None
 
 
 @router.post("/cache-budget/settings/save")
@@ -9218,6 +9312,9 @@ def save_cache_budget_settings(req: CacheBudgetSaveReq, _perm=Depends(require_pa
             partial[key] = None if (v is None or v == "" or float(v) <= 0) else int(max(lo, min(hi, float(v))))
     _put_int("match_cache_batch_roots", 1, 100000)
     _put_int("match_cache_batch_roots_dev", 1, 100000)
+    # 검색 cold 레인 슬롯 — 0/빈값이면 키 삭제(코어수 기반 자동값 복귀).
+    _put_int("view_cold_concurrency", _VIEW_COLD_CONCURRENCY_MIN, _VIEW_COLD_CONCURRENCY_MAX)
+    _put_int("view_cold_concurrency_dev", _VIEW_COLD_CONCURRENCY_MIN, _VIEW_COLD_CONCURRENCY_MAX)
     if "product_ram_enabled" in fields:
         partial["product_ram_enabled"] = None if fields["product_ram_enabled"] is None else bool(fields["product_ram_enabled"])
     if "product_ram_enabled_dev" in fields:
@@ -11777,13 +11874,10 @@ def _split_view_finish_payload(
 
 
 # ── SplitTable 검색 타이밍 로그 (관리자 breakdown 용) ──────────────────────────
-# 최근 검색들의 단계별 소요시간을 링버퍼에 보관해 관리자 화면에서 "메모리 캐시
-# 히트일 때 속도 / 첫 검색(DB 조회) 시 단계별 breakdown" 을 보여준다.
-_SEARCH_TIMING_LOG_MAX = 50
-_SEARCH_TIMING_LOG: deque = deque(maxlen=_SEARCH_TIMING_LOG_MAX)
-_SEARCH_TIMING_LOCK = threading.Lock()
-
-
+# 단계별 소요시간을 기록해 관리자 화면에서 "캐시 히트일 때 속도 / 첫 검색(DB 조회)
+# 단계별 breakdown / 동시 요청 때문에 줄 선 시간" 을 보여준다.
+# 보관은 core/search_timing_log.py 가 담당한다 — 인메모리 링버퍼(최근 조회용) +
+# 공유 JSONL(며칠 치 관찰용, 운영/개발 서버 통합).
 def _record_search_timing(payload: dict, rp: dict) -> None:
     try:
         root = str(payload.get("root_lot_id") or "").strip()
@@ -11814,17 +11908,13 @@ def _record_search_timing(payload: dict, rp: dict) -> None:
             "row_count": row_count,
             "cache_status": rp.get("root_cache_status") or "",
         }
-        with _SEARCH_TIMING_LOCK:
-            _SEARCH_TIMING_LOG.append(entry)
+        _search_timing_log.record(entry)
     except Exception:
         pass
 
 
 def recent_search_timings(limit: int = 50) -> list[dict]:
-    with _SEARCH_TIMING_LOCK:
-        items = list(_SEARCH_TIMING_LOG)
-    items.reverse()
-    return items[:max(1, int(limit or 50))]
+    return _search_timing_log.recent(limit)
 
 
 def _view_global_stat_sig() -> tuple:

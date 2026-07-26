@@ -192,6 +192,8 @@ export default function My_RamCache({ user }) {
           product_ram_gb_dev: s.product_ram_gb_dev ?? "",
           match_cache_batch_roots: s.match_cache_batch_roots ?? "",
           match_cache_batch_roots_dev: s.match_cache_batch_roots_dev ?? "",
+          view_cold_concurrency: s.view_cold_concurrency ?? "",
+          view_cold_concurrency_dev: s.view_cold_concurrency_dev ?? "",
         });
       })
       .catch(e => toast.error("예산 설정 로드 실패: " + (e?.message || e)));
@@ -214,6 +216,8 @@ export default function My_RamCache({ user }) {
       product_ram_enabled_dev: !!budgetForm.product_ram_enabled_dev,
       match_cache_batch_roots: num(budgetForm.match_cache_batch_roots),
       match_cache_batch_roots_dev: num(budgetForm.match_cache_batch_roots_dev),
+      view_cold_concurrency: num(budgetForm.view_cold_concurrency),
+      view_cold_concurrency_dev: num(budgetForm.view_cold_concurrency_dev),
     };
     sf(API + "/cache-budget/settings/save", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload) })
@@ -624,6 +628,37 @@ export default function My_RamCache({ user }) {
                         placeholder="운영값 따름"
                         onChange={e => setBudgetForm(f => ({ ...f, match_cache_batch_roots_dev: e.target.value }))}
                         style={{ ...S_INPUT, width: 110, fontFamily: "monospace" }} /></label>
+                  </div>
+                </div>
+                {/* SplitTable 검색 동시 슬롯 (cold 레인) — 운영/개발 분리 */}
+                <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>SplitTable 검색 동시 슬롯 (첫 조회)
+                    {pins.view_cold_concurrency && <span style={{ fontSize: 10, color: "rgba(245,158,11,0.95)" }}> · env 고정</span>}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    캐시에 없는 <b>첫 조회(cold)만</b> 이 슬롯 수만큼 동시에 처리하고 나머지는 대기시킨다.
+                    이미 계산된 결과를 돌려주는 재조회는 줄서지 않으므로 영향 없음.
+                    <b> 올리면 동시 첫조회는 덜 기다리지만 메모리 피크와 CPU 경쟁이 커진다.</b>
+                    <u>활동 대시보드 → SplitTable 검색 타이밍의 &apos;대기&apos; 수치가 지속적으로 클 때만 올리세요</u>
+                    (대기는 작은데 &apos;계산&apos;이 크면 슬롯을 늘려도 나아지지 않습니다).
+                    빈칸/0 = 자동({budgetCfg.defaults?.view_cold_concurrency ?? "-"}).
+                    현재 서버({budgetCfg.is_dev ? "개발" : "운영"}) 적용: <b>{eff.view_cold_concurrency} 슬롯</b>
+                    {budgetCfg.cold_lane ? <> · 지금 실행 중 <b>{budgetCfg.cold_lane.active}</b>건</> : null}
+                  </div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>운영
+                      <input type="number" step="1" min="1" max="8" value={budgetForm.view_cold_concurrency ?? ""} disabled={pins.view_cold_concurrency}
+                        placeholder={String(budgetCfg.defaults?.view_cold_concurrency ?? "")}
+                        onChange={e => setBudgetForm(f => ({ ...f, view_cold_concurrency: e.target.value }))}
+                        style={{ ...S_INPUT, width: 90, fontFamily: "monospace" }} /></label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>개발
+                      <input type="number" step="1" min="1" max="8" value={budgetForm.view_cold_concurrency_dev ?? ""} disabled={pins.view_cold_concurrency}
+                        placeholder="운영값 따름"
+                        onChange={e => setBudgetForm(f => ({ ...f, view_cold_concurrency_dev: e.target.value }))}
+                        style={{ ...S_INPUT, width: 110, fontFamily: "monospace" }} /></label>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "var(--text-secondary)" }}>
+                    저장 즉시 적용됩니다 (재시작 불필요).
                   </div>
                 </div>
               </div>;
