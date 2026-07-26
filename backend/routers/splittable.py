@@ -11729,10 +11729,16 @@ def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *,
     lane_wait_ms = float(src.get("lane_wait_ms") or 0.0)
     cold_lane_wait_ms = float(src.get("cold_lane_wait_ms") or 0.0)
     return {
+        # total_ms 는 핸들러 전체 = cold 레인 대기(핸들러 '안'에서 줄 선 시간)를
+        # 포함한다. 순수 계산만 보려면 compute_ms 를 쓸 것 — total 만 보면 줄서기가
+        # 계산 시간으로 오인된다.
         "total_ms": round(total_ms, 3),
+        "compute_ms": round(max(0.0, total_ms - cold_lane_wait_ms), 3),
         # 핸들러 밖에서 줄 선 시간까지 포함한 체감 시간. total_ms 만 보면 "서버는
         # 빠른데 사용자는 느린" 상태의 원인이 안 보인다.
         "wall_ms": round(total_ms + lane_wait_ms, 3),
+        # 줄 선 시간 합계 = 미들웨어 레인 + cold 계산 레인.
+        "wait_ms": round(lane_wait_ms + cold_lane_wait_ms, 3),
         "lane_wait_ms": round(lane_wait_ms, 3),
         "cold_lane_wait_ms": round(cold_lane_wait_ms, 3),
         "root_cache_hit": bool(src.get("root_cache_hit")),
@@ -11793,7 +11799,9 @@ def _record_search_timing(payload: dict, rp: dict) -> None:
             "root_lot_id": root,
             "data_source": rp.get("data_source") or "",
             "total_ms": rp.get("total_ms") or 0.0,
+            "compute_ms": rp.get("compute_ms") or 0.0,
             "wall_ms": rp.get("wall_ms") or 0.0,
+            "wait_ms": rp.get("wait_ms") or 0.0,
             "lane_wait_ms": rp.get("lane_wait_ms") or 0.0,
             "cold_lane_wait_ms": rp.get("cold_lane_wait_ms") or 0.0,
             "scan_ms": rp.get("scan_ms") or 0.0,

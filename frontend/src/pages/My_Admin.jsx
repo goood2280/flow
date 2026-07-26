@@ -1488,9 +1488,12 @@ function ActivityDashboardPanel(){
       const dsLabel={payload_cache:"응답캐시",pivot_cache:"pivot캐시",product_ram:"제품RAM",ram:"메모리HIT",ram_load:"메모리적재",disk:"디스크(첫검색)",root_cache:"캐시",raw:"원본스캔"};
       const dsColor=(ds)=>ds==="disk"||ds==="ram_load"?"var(--accent)":(ds==="ram"||ds==="payload_cache"||ds==="pivot_cache"||ds==="product_ram")?"#22c55e":"var(--text-secondary)";
       const ms=(v)=>Number(v||0).toFixed(1);
-      // 대기 = 미들웨어 레인 대기 + cold 계산 레인 대기. 계산은 빠른데 사용자만
-      // 느린 경우를 구분하려고 total 과 따로 낸다 (wall = 대기 + total).
-      const waitColor=(r)=>{const w=Number(r.lane_wait_ms||0)+Number(r.cold_lane_wait_ms||0);
+      // wall(체감) = 대기 + 계산. 대기 = 미들웨어 레인 + cold 계산 레인에서 줄 선 시간.
+      // total_ms 는 cold 레인 대기를 포함하므로 '계산'에는 compute_ms 를 쓴다 —
+      // total 을 그대로 쓰면 줄서기가 계산 시간으로 오인된다.
+      const waitOf=(r)=>Number(r.wait_ms??(Number(r.lane_wait_ms||0)+Number(r.cold_lane_wait_ms||0)));
+      const computeOf=(r)=>Number(r.compute_ms??(Number(r.total_ms||0)-Number(r.cold_lane_wait_ms||0)));
+      const waitColor=(r)=>{const w=waitOf(r);
         return w>=1000?"#ef4444":w>=200?"var(--accent)":"var(--text-secondary)";};
       return(
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
@@ -1504,15 +1507,15 @@ function ActivityDashboardPanel(){
       </div>
       <div style={{maxHeight:260,overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
-          <thead><tr>{["시각","product","root_lot_id","데이터소스","wall","대기","total","scan","root_scan","collect","matrix","overlay","rows"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+          <thead><tr>{["시각","product","root_lot_id","데이터소스","wall(체감)","대기","계산","scan","root_scan","collect","matrix","overlay","rows"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
           <tbody>{rows.map((r,i)=>(<tr key={i}>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.at||"").replace("T"," ").slice(0,19)}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.product||""}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--accent)"}}>{r.root_lot_id||""}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:700,color:dsColor(r.data_source)}}>{dsLabel[r.data_source]||r.data_source||"-"}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:700}}>{ms(r.wall_ms||r.total_ms)}</td>
-            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:waitColor(r)}}>{ms(Number(r.lane_wait_ms||0)+Number(r.cold_lane_wait_ms||0))}</td>
-            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{ms(r.total_ms)}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:waitOf(r)>=200?700:400,color:waitColor(r)}}>{ms(waitOf(r))}</td>
+            <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{ms(computeOf(r))}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{ms(r.scan_ms)}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{ms(r.root_scan_ms)}</td>
             <td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{ms(r.collect_ms)}</td>
@@ -1523,7 +1526,7 @@ function ActivityDashboardPanel(){
         </table>
         {rows.length===0&&<div style={{padding:20,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>최근 검색 타이밍이 없습니다 (SplitTable에서 root_lot_id로 검색하면 기록됩니다)</div>}
       </div>
-      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>ms 단위 · <b>wall</b>=사용자 체감(대기+total), <b>대기</b>=동시 요청 때문에 줄 선 시간, <b>total</b>=서버 계산 시간. 대기가 크면 동시성 문제, total 이 크면 계산 문제입니다. · <b>메모리HIT</b>=RAM 캐시 즉시응답, <b>디스크(첫검색)</b>/<b>메모리적재</b>=첫 조회로 파티션 parquet 읽음. scan=캐시/조인 준비, collect=피벗 수집, matrix=셀 매트릭스 구성.</div>
+      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>ms 단위 · <b>wall(체감)</b> = <b>대기</b> + <b>계산</b>. <b>대기</b>=동시 요청 때문에 줄 선 시간(응답캐시 HIT 는 줄서지 않아 항상 0), <b>계산</b>=실제 처리 시간. <u>대기가 크면 동시성 문제(레인 슬롯 부족), 계산이 크면 캐시/데이터 문제</u>입니다. · <b>응답캐시</b>=완성된 결과 즉시 반환, <b>디스크(첫검색)</b>/<b>메모리적재</b>=첫 조회로 파티션 parquet 읽음. scan=캐시/조인 준비, collect=피벗 수집, matrix=셀 매트릭스 구성.</div>
       {/* RAM 캐시 개별 항목 목록 + 삭제 관리 */}
       {_arr(splitCache?.cache?.roots).length > 0 && (<>
         <div style={{fontSize:14,fontWeight:700,marginTop:16,marginBottom:8}}>RAM 캐시 항목 ({_arr(splitCache?.cache?.roots).length}개)</div>
