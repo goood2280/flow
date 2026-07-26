@@ -154,11 +154,20 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger) -> tuple[lis
             _ensure_local_package(package_name, package_dir)
     loaded: list[str] = []
     failed: list[tuple[str, str]] = []
+    # Security: aipd_bridge serves the /aipd demo console + /aipd/api/* OUTSIDE
+    # session auth (AuthMiddleware only guards /api/*), and its endpoints take the
+    # caller identity from a client-supplied `?user=` query param defaulting to
+    # "admin" — an unauthenticated privilege-escalation surface (P0). aipd now
+    # feeds Flow via S3 sync only (-> vehicle_matching / ppid_knob), so the HTTP
+    # console is unused. Disabled unconditionally here; env cannot re-enable a
+    # security disable. To restore: move routes under /api/aipd/* and derive the
+    # user from current_user(request), THEN drop it from this set.
+    _SECURITY_DISABLED = {"aipd_bridge"}
     disabled = {
         name.strip()
         for name in os.environ.get("FLOW_DISABLED_ROUTERS", "ml").split(",")
         if name.strip()
-    }
+    } | _SECURITY_DISABLED
     for file_path in sorted(routers_dir.glob("*.py")):
         if file_path.name.startswith("_"):
             continue

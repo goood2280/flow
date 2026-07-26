@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Iterable
 
 from fastapi import Request
@@ -32,6 +33,16 @@ DEFAULT_ESSENTIAL_PREFIXES = (
     "/api/filebrowser/base-file-view",
     "/api/filebrowser/root-parquet-view",
 )
+
+# essential 중에서도 "핸들러가 스스로 직렬화하는" 경로. 미들웨어는 메모리/CPU 가드
+# 면제만 해주고 세마포어는 걸지 않는다.
+#
+# /view 요청의 대부분은 payload 캐시 HIT(수십 ms)인데, 예약 레인이 코어수 기준
+# 2~4 슬롯뿐이라 앞선 cold 계산(수 초) 뒤에 줄 서는 head-of-line blocking 이
+# 생겼다("여러 명이 동시에 검색하면 느리다"의 직접 원인). 라우터가 cold 계산
+# 구간에서만 자체 세마포어(_VIEW_COLD_SEMAPHORE)를 잡으므로, HIT·빈 결과·
+# single-flight 대기는 여기서 막힐 이유가 없다.
+DEFAULT_SELF_GATED_PATHS = ("/api/splittable/view",)
 
 # 스플릿테이블 다운로드는 현재 화면 단위(root lot 1개, wafer 최대 25행) 내보내기라
 # 메모리가 가볍다. root_lot_id 가 지정된 요청만 essential 레인으로 항상 보장하고,
@@ -179,6 +190,19 @@ def _auto_essential_concurrency() -> int:
     return max(1, min(4, (cores + 1) // 2))
 
 
+def _self_gated_paths() -> tuple[str, ...]:
+    """가드 면제는 유지하되 미들웨어 세마포어는 걸지 않는 경로.
+
+    비우려면 FLOW_SELF_GATED_API_PATHS="none" (핸들러 자체 게이트를 끄지 않으므로
+    되돌리면 예전처럼 essential 레인으로 직렬화된다)."""
+    raw = os.environ.get("FLOW_SELF_GATED_API_PATHS", "").strip()
+    if raw.lower() == "none":
+        return ()
+    if raw:
+        return tuple(p.strip() for p in raw.split(",") if p.strip())
+    return DEFAULT_SELF_GATED_PATHS
+
+
 def _light_paths() -> tuple[str, ...]:
     raw = os.environ.get("FLOW_LIGHT_API_PATHS", "")
     extra = tuple(p.strip() for p in raw.split(",") if p.strip())
@@ -283,6 +307,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         self._light_paths = _light_paths()
         self._flowi_chat_paths = _flowi_chat_paths()
         self._essential_prefixes = _essential_prefixes()
+        self._self_gated_paths = _self_gated_paths()
         self._semaphore = asyncio.Semaphore(self._concurrency)
         self._flowi_semaphore = asyncio.Semaphore(self._flowi_concurrency)
         self._essential_semaphore = asyncio.Semaphore(self._essential_concurrency)
@@ -306,12 +331,37 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             return bool(str(request.query_params.get("root_lot_id") or "").strip())
         return False
 
+    @staticmethod
+    def _stamp_lane_wait(request: Request, waited_sec: float, group: str) -> float:
+        """레인 대기 시간을 핸들러가 읽을 수 있게 request.state 에 남긴다.
+
+        핸들러의 total_ms 는 세마포어 획득 '이후'부터 재기 때문에, 레인에서 오래
+        기다린 요청도 서버 기록상으로는 빨라 보였다(사용자만 느리고 원인은 안
+        보이는 상태). SplitTable runtime_profile 이 이 값을 합산해 wall_ms 로
+        노출하므로 "계산이 느린 것" 과 "줄 서느라 느린 것" 을 구분할 수 있다."""
+        waited_ms = round(max(0.0, float(waited_sec)) * 1000.0, 3)
+        try:
+            request.state.lane_wait_ms = waited_ms
+            request.state.lane_group = group
+        except Exception:
+            pass
+        return waited_ms
+
+    @staticmethod
+    def _stamp_lane_headers(response, waited_ms: float, group: str) -> None:
+        try:
+            response.headers.setdefault("X-Flow-Lane-Wait-Ms", str(waited_ms))
+            response.headers.setdefault("X-Flow-Lane-Group", group)
+        except Exception:
+            pass
+
     async def _run_essential(self, request: Request, call_next):
         """Serve an interactive read through the reserved lane.
 
         Never rejected by the memory/CPU guard — only queued behind the small
         reserved concurrency so a burst of clicks cannot exhaust RAM. Falls
         back to a clear 429 only when the reserved lane itself stays saturated."""
+        wait_started = time.perf_counter()
         try:
             await asyncio.wait_for(
                 self._essential_semaphore.acquire(), timeout=self._essential_queue_timeout
@@ -324,10 +374,12 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                     "active_heavy_requests": self._essential_active,
                     "heavy_request_concurrency": self._essential_concurrency,
                     "heavy_request_group": "essential",
+                    "lane_wait_ms": round((time.perf_counter() - wait_started) * 1000.0, 3),
                 },
                 status_code=429,
                 headers={"Retry-After": "5"},
             )
+        waited_ms = self._stamp_lane_wait(request, time.perf_counter() - wait_started, "essential")
         self._essential_active += 1
         try:
             response = await call_next(request)
@@ -335,6 +387,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                 "X-Flow-Heavy-Request-Concurrency", str(self._essential_concurrency)
             )
             response.headers.setdefault("X-Flow-Heavy-Request-Group", "essential")
+            self._stamp_lane_headers(response, waited_ms, "essential")
             return response
         finally:
             self._essential_active = max(0, self._essential_active - 1)
@@ -380,6 +433,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             # 사용자 활동 시각을 남긴다.
             _request_priority.note_api_request(path)
         if path.startswith("/api/") and self._is_light_request(request):
+            self._stamp_lane_wait(request, 0.0, "light")
             return await call_next(request)
         if not path.startswith("/api/"):
             return await call_next(request)
@@ -390,6 +444,13 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             proxied = await _try_upstream_proxy(request)
             if proxied is not None:
                 return proxied
+            if _matches(path, self._self_gated_paths):
+                # 가드 면제만 적용하고 통과 — 핸들러가 cold 계산 구간에서만
+                # 자체 세마포어를 잡는다(캐시 HIT 가 cold 뒤에 줄서지 않게).
+                self._stamp_lane_wait(request, 0.0, "self_gated")
+                response = await call_next(request)
+                self._stamp_lane_headers(response, 0.0, "self_gated")
+                return response
             return await self._run_essential(request, call_next)
         is_flowi_chat = _matches(path, self._flowi_chat_paths)
         if is_flowi_chat:
@@ -421,6 +482,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         if cpu_snap:
             return self._cpu_guard_response(cpu_snap, group)
 
+        wait_started = time.perf_counter()
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=queue_timeout)
         except asyncio.TimeoutError:
@@ -436,10 +498,12 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
                     "active_heavy_requests": active,
                     "heavy_request_concurrency": concurrency,
                     "heavy_request_group": group,
+                    "lane_wait_ms": round((time.perf_counter() - wait_started) * 1000.0, 3),
                 },
                 status_code=429,
                 headers={"Retry-After": "15"},
             )
+        heavy_waited_ms = self._stamp_lane_wait(request, time.perf_counter() - wait_started, group)
 
         if group == "flowi_chat":
             self._flowi_active += 1
@@ -464,6 +528,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             response.headers.setdefault("X-Flow-Heavy-Request-Concurrency", str(concurrency))
             response.headers.setdefault("X-Flow-Heavy-Request-Group", group)
+            self._stamp_lane_headers(response, heavy_waited_ms, group)
             return response
         finally:
             if group == "flowi_chat":

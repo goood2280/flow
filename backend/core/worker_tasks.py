@@ -129,7 +129,8 @@ def _splittable_view_recompute(payload: dict) -> dict:
     # truthy 라 related_issues 를 계산하고 cache_put 이 도로 버리는 낭비가 있다.
     _st._VIEW_REVALIDATE_TLS.force = True
     try:
-        _st.view_split(request=None, include_related=False, **params)
+        # core 직접 호출 — 캐시 엔트리만 필요하므로 레거시 rows 복원은 낭비다.
+        _st.view_split_core(request=None, include_related=False, **params)
     finally:
         _st._VIEW_REVALIDATE_TLS.force = False
     # view_split(force) 는 이 프로세스의 _VIEW_CACHE 에 저장한다 — 그 저장본

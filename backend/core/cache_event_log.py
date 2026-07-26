@@ -178,6 +178,15 @@ def record(
         entry["detail"] = detail
     with _LOCK:
         _EVENTS.append(entry)
+        # 이 이벤트가 특정 작업(job)에 속하면 그 작업의 '마지막 진행 시각'을 갱신한다.
+        # get_jobs() 가 이 값으로 '진행 없음(정지)'을 판정하므로, 로그가 계속 찍히는
+        # 동안은 절대 stale 로 오판하지 않는다.
+        job_id = str((detail or {}).get("job_id") or "")
+        if job_id:
+            job = _ACTIVE_JOBS.get(job_id)
+            if job:
+                job["updated_ts"] = entry["ts"]
+                job["last_event"] = event
     # 서버 간 공유 — 다른 서버(운영)의 캐시관리 화면에서도 보이도록 파일에 append.
     _append_shared(entry)
 
@@ -265,6 +274,8 @@ def start_job(kind: str, label: str, stages: list[tuple[str, str]], *, product: 
         "product": str(product or ""),
         "status": "running",
         "started_ts": now,
+        "updated_ts": now,
+        "last_event": "",
         "started_at": _utc_iso(),
         "finished_at": "",
         "current_stage": "",
@@ -295,6 +306,7 @@ def _update_stage(job_id: str, stage_id: str, status: str, detail: dict[str, Any
         if not job:
             return
         _apply_memory_sample(job, sample)
+        job["updated_ts"] = time.time()
         for stage in job.get("stages") or []:
             if stage.get("id") != stage_id:
                 continue
@@ -315,6 +327,26 @@ def stage_started(job_id: str, stage_id: str) -> None:
     _update_stage(job_id, stage_id, "running")
 
 
+def heartbeat(job_id: str, note: str = "") -> None:
+    """작업이 살아 있음을 알린다 — 오래 걸리는 대기(다른 잡 종료 대기, 랏캐시 빌드
+    대기)에서 주기적으로 호출한다. 이 값이 갱신되지 않으면 get_jobs() 가 정지로
+    보고 자동 실패 처리하므로, '진짜 진행 중'인 작업은 반드시 여기를 두드려야 한다."""
+    if not job_id:
+        return
+    with _LOCK:
+        job = _ACTIVE_JOBS.get(job_id)
+        if not job:
+            return
+        job["updated_ts"] = time.time()
+        if note:
+            job["last_event"] = str(note)
+
+
+def stage_skipped(job_id: str, stage_id: str, detail: dict[str, Any] | None = None) -> None:
+    """단계를 '건너뜀'으로 종료 — 비활성(설정에서 꺼짐) 등. 실패가 아니다."""
+    _update_stage(job_id, stage_id, "skipped", detail)
+
+
 def stage_finished(job_id: str, stage_id: str, *, ok: bool, detail: dict[str, Any] | None = None) -> None:
     _update_stage(job_id, stage_id, "done" if ok else "failed", detail)
 
@@ -328,6 +360,7 @@ def finish_job(job_id: str, *, ok: bool, detail: dict[str, Any] | None = None) -
         _apply_memory_sample(job, sample)
         job["status"] = "done" if ok else "failed"
         job["finished_at"] = _utc_iso()
+        job["finished_ts"] = time.time()
         job["current_stage"] = ""
         if detail:
             job["detail"] = dict(detail)
@@ -338,12 +371,62 @@ def finish_job(job_id: str, *, ok: bool, detail: dict[str, Any] | None = None) -
         _RECENT_JOBS.appendleft(copy.deepcopy(job))
 
 
+def stale_after_sec() -> float:
+    """이 시간 동안 아무 진행(이벤트/단계 변화/heartbeat)이 없으면 정지로 본다."""
+    try:
+        value = float(os.environ.get("FLOW_CACHE_JOB_STALE_SEC", "") or 1800.0)
+    except Exception:
+        value = 1800.0
+    return max(120.0, min(6 * 3600.0, value))
+
+
+def reap_stale_jobs() -> list[str]:
+    """진행이 끊긴 작업을 '실패(응답 없음)'로 종료한다.
+
+    스레드가 예외 없이 죽거나 외부 호출에 영원히 붙잡히면 작업이 running 으로
+    남아 화면이 무한 로딩된다. 진행 신호(updated_ts)가 stale_after_sec 동안
+    없으면 실패로 확정해 화면이 반드시 끝난 상태를 보게 한다."""
+    limit = stale_after_sec()
+    now = time.time()
+    stale_ids: list[str] = []
+    with _LOCK:
+        for job_id, job in list(_ACTIVE_JOBS.items()):
+            idle = now - float(job.get("updated_ts") or job.get("started_ts") or now)
+            if idle >= limit:
+                stale_ids.append(job_id)
+    for job_id in stale_ids:
+        idle_txt = f"{int(limit // 60)}분"
+        finish_job(job_id, ok=False, detail={"error": "stale_no_progress", "idle_limit_sec": limit})
+        try:
+            record("scan", f"[작업 실패] 진행 신호 없음 — {idle_txt} 이상 아무 진행이 없어 중단 처리했습니다"
+                           f" (job {job_id}). 서버 로그(터미널)에서 원인을 확인하세요.", ok=False)
+        except Exception:
+            pass
+    return stale_ids
+
+
 def get_jobs(*, recent: int = 3) -> list[dict[str, Any]]:
-    """활성 작업을 먼저, 그 뒤 최근 완료 작업을 반환한다."""
+    """활성 작업을 먼저, 그 뒤 최근 완료 작업을 반환한다.
+
+    반환 전 정지된 작업을 실패로 확정하고(reap), 각 작업에 경과/무진행 시간을
+    덧붙인다 — 화면이 '얼마나 돌고 있는지'와 '멈춘 건지'를 구분할 수 있게 한다."""
+    reap_stale_jobs()
+    now = time.time()
+    limit = stale_after_sec()
     with _LOCK:
         active = [copy.deepcopy(job) for job in _ACTIVE_JOBS.values()]
         history = [copy.deepcopy(job) for job in list(_RECENT_JOBS)[:max(0, recent)]]
     active.sort(key=lambda row: float(row.get("started_ts") or 0.0), reverse=True)
+    for job in active:
+        started = float(job.get("started_ts") or now)
+        updated = float(job.get("updated_ts") or started)
+        job["elapsed_sec"] = round(max(0.0, now - started), 1)
+        job["idle_sec"] = round(max(0.0, now - updated), 1)
+        job["stale_after_sec"] = limit
+    for job in history:
+        started = float(job.get("started_ts") or now)
+        job["elapsed_sec"] = round(max(0.0, float(job.get("finished_ts") or now) - started), 1)
+        job["idle_sec"] = 0.0
     return active + history
 
 

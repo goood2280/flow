@@ -71,6 +71,43 @@ export const chartPalette = {
   heat: ["#dbeafe","#93c5fd","#60a5fa","#3b82f6","#1d4ed8","#1e3a8a"],
 };
 
+// ── 카테고리 시리즈 팔레트 (스택바/다계열 차트용) ──────────────────────────
+// 앞 8슬롯은 표준 카테고리 순서, 9번째부터는 같은 hue 가족의 lightness 스텝
+// (composite encoding) 으로 20계열까지 확장. 순서 자체가 색약 안전장치라 임의로
+// 섞지 말 것. 인접쌍 기준 검증 결과(light 표면 #fff / dark 표면 #262626):
+//   색약(protan·deutan) 최소 ΔE 9.1(light) / 8.4(dark)  — 기준 ≥ 8
+//   일반시야 최소 ΔE      19.6(light) / 19.3(dark)       — 기준 ≥ 15
+// 21번째부터는 색을 새로 만들지 않는다 → "기타"로 접고 표에서 원값을 본다.
+export const categoricalSeries = {
+  light: ["#2a78d6","#eb6834","#1baf7a","#eda100","#e87ba4","#008300","#4a3aa7","#e34948",
+          "#035bb4","#fd7845","#5649b6","#56c050","#b0081d","#37bf89","#98335e","#62a6fe",
+          "#9e3703","#9a96ff","#037202","#e97ca5"],
+  dark:  ["#3987e5","#d95926","#199e70","#c98500","#d55181","#008300","#9085e9","#e66767",
+          "#0761bc","#e36230","#6052b0","#3ea939","#aa285e","#4290ef","#a83902","#8a7fe2",
+          "#027902","#df5a89","#875802","#29a778"],
+};
+// 정체성이 없는 두 버킷 — 시리즈 색을 쓰지 않고 중립 회색으로 뒤로 물린다.
+export const seriesNeutral = {
+  light: { other: "#8f8d87", missing: "#c9c7c1" },
+  dark: { other: "#a9a7a0", missing: "#6e6d68" },
+};
+export const SERIES_COLOR_LIMIT = categoricalSeries.light.length;
+
+// 값 목록 → 색 맵. 색은 "순위"가 아니라 "값" 을 따라가야 하므로 호출부에서
+// 안정적인 순서(이름순)로 정렬한 배열을 넘긴다.
+export function buildSeriesColors(values, { dark = false, missingLabel = "", otherLabel = "" } = {}) {
+  const pal = dark ? categoricalSeries.dark : categoricalSeries.light;
+  const nt = dark ? seriesNeutral.dark : seriesNeutral.light;
+  const map = {};
+  let i = 0;
+  for (const v of values || []) {
+    if (v && v === missingLabel) map[v] = nt.missing;
+    else if (v && v === otherLabel) map[v] = nt.other;
+    else map[v] = pal[i++ % pal.length];
+  }
+  return map;
+}
+
 // 상태 팔레트 (SplitTable stCellBg 기반) — knob/mask/fab/action 공통 톤.
 export const statusPalette = {
   ok: { bg: "var(--ok-50)", fg: "var(--ok)", line: "var(--ok-line)" },

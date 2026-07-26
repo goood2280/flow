@@ -40,7 +40,7 @@ from core import matching_cache as _matching_cache
 from core import ml_table_lookup as _ml_table_lookup
 from core import s3_sync as _s3
 from core.utils import (
-    _STR, is_cat, find_lot_wafer_cols, load_json, save_json, safe_id,
+    _STR, is_cat, find_lot_wafer_cols, load_json, load_json_cached, save_json, safe_id,
     csv_response, csv_writer_bytes,
 )
 from core.splittable_sets_cache import invalidate as invalidate_splittable_sets_cache
@@ -211,6 +211,7 @@ _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX_ENTRIES_DEFAULT = 512
 _VIEW_CACHE_BYTES = 0  # 현재 보유 추정치 (lock 하에서만 갱신)
 _VIEW_CACHE_CELL_COST = 450  # 레거시 _cells 셀당 파이썬 객체 비용 (실측 441B)
+_VIEW_CACHE_COMPACT_CELL_COST = 40  # v2 슬림 행(a/p/m) 셀당 비용 — 캐시는 이쪽만 담는다
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
@@ -219,6 +220,60 @@ _VIEW_PRODUCT_SIG_LOCK = threading.Lock()
 _VIEW_PRODUCT_SIG_CACHE_MAX = 512
 _VIEW_COMPUTE_LOCK = threading.Lock()
 _VIEW_COMPUTE_EVENTS: dict[tuple, tuple[int, threading.Event]] = {}
+
+# ── /view cold 계산 전용 레인 ────────────────────────────────────────────────
+# 예전에는 resource_guard 의 essential 세마포어(코어수 기준 2~4슬롯)가 /view 요청
+# '전체' 를 직렬화했다. 그래서 payload 캐시 HIT(수십 ms)도 앞선 cold 계산(수 초)
+# 뒤에 줄을 섰고, 동시 사용자가 늘수록 HIT 응답까지 같이 느려졌다.
+# 이제 미들웨어는 /view 를 self-gated 로 통과시키고(app_v2/runtime/resource_guard.py
+# DEFAULT_SELF_GATED_PATHS), 실제 메모리를 쓰는 cold 계산 구간만 이 세마포어로
+# 직렬화한다. 캐시 HIT·빈 결과·single-flight 대기는 여기 줄서지 않는다.
+_VIEW_COLD_LANE_TLS = threading.local()
+
+
+def _view_cold_lane_concurrency() -> int:
+    raw = os.environ.get("FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY", "").strip()
+    if raw:
+        try:
+            return max(1, min(8, int(raw)))
+        except Exception:
+            pass
+    try:
+        from core.runtime_limits import effective_cpu_count
+        cores = int(effective_cpu_count())
+    except Exception:
+        cores = 4
+    # essential 레인과 같은 산식 — cold 계산의 메모리 피크는 예전과 동일하므로
+    # 동시 실행 수는 유지하고, "줄 서는 대상" 만 cold 로 좁힌다.
+    return max(1, min(4, (cores + 1) // 2))
+
+
+_VIEW_COLD_SEMAPHORE = threading.Semaphore(_view_cold_lane_concurrency())
+
+
+def _view_cold_lane_wait_sec() -> float:
+    return max(1.0, min(600.0, _env_float("FLOW_SPLITTABLE_VIEW_COLD_QUEUE_TIMEOUT_SEC", 90.0)))
+
+
+def _view_cold_lane_acquire(runtime_profile: dict | None = None) -> bool:
+    """cold 계산 슬롯을 잡는다. 대기 시간은 runtime_profile 에 남긴다."""
+    wait_started = time.perf_counter()
+    ok = _VIEW_COLD_SEMAPHORE.acquire(timeout=_view_cold_lane_wait_sec())
+    if runtime_profile is not None:
+        runtime_profile["cold_lane_wait_ms"] = (time.perf_counter() - wait_started) * 1000.0
+    if ok:
+        _VIEW_COLD_LANE_TLS.held = True
+    return ok
+
+
+def _view_cold_lane_release() -> None:
+    """획득한 스레드에서만 1회 반납 (미획득 상태 호출은 무시)."""
+    if getattr(_VIEW_COLD_LANE_TLS, "held", False):
+        _VIEW_COLD_LANE_TLS.held = False
+        try:
+            _VIEW_COLD_SEMAPHORE.release()
+        except Exception:
+            pass
 
 
 def _view_cache_max_entries() -> int:
@@ -276,15 +331,20 @@ def _view_cache_max_bytes() -> int:
 
 
 def _estimate_view_payload_bytes(payload: dict) -> int:
+    compact = payload.get("rows_compact")
+    if compact is not None:
+        cells = 0
+        for r in compact:
+            a = r.get("a")
+            if isinstance(a, list):
+                cells += len(a)
+        return 8192 + cells * _VIEW_CACHE_COMPACT_CELL_COST
     cells = 0
     for r in (payload.get("rows") or []):
         c = r.get("_cells")
         if isinstance(c, dict):
             cells += len(c)
-    approx = 8192 + cells * _VIEW_CACHE_CELL_COST
-    if payload.get("rows_compact") is not None:
-        approx += cells * 40 + 4096
-    return approx
+    return 8192 + cells * _VIEW_CACHE_CELL_COST
 
 
 def _view_product_signature(paths: list[Path]) -> tuple:
@@ -322,6 +382,9 @@ def _view_compute_begin(key: tuple) -> tuple[bool, threading.Event]:
 
 
 def _view_compute_finish(key: tuple | None) -> None:
+    # cold 레인 반납은 owner 등록 여부와 무관하게 항상 시도한다 — 모든 종료 경로가
+    # 이 함수를 지나므로 여기 한 곳에서 반납하면 누수가 없다(미획득이면 no-op).
+    _view_cold_lane_release()
     if key is None:
         return
     event = None
@@ -539,7 +602,7 @@ def _clean_overlay_store_data(data: Any, *, allow_management: bool = True) -> tu
 
 
 def _load_prefixes():
-    prefixes = load_json(PREFIX_CFG, DEFAULT_PREFIXES)
+    prefixes = load_json_cached(PREFIX_CFG, DEFAULT_PREFIXES)
     if not isinstance(prefixes, list):
         prefixes = list(DEFAULT_PREFIXES)
     out = [str(p).strip().upper() for p in prefixes if str(p).strip()]
@@ -1771,7 +1834,8 @@ def _custom_tags_path() -> Path:
 
 
 def _load_custom_tags_data() -> dict:
-    data = load_json(_custom_tags_path(), {"columns": [], "values": {}})
+    # cached — _clean_overlay_store_data 는 입력을 수정하지 않고 새 컨테이너를 만든다.
+    data = load_json_cached(_custom_tags_path(), {"columns": [], "values": {}})
     cleaned, changed = _clean_overlay_store_data(data, allow_management=True)
     if changed:
         _save_custom_tags_data(cleaned)
@@ -1890,7 +1954,8 @@ def _management_rows_path() -> Path:
 
 
 def _load_management_rows_data() -> dict:
-    data = load_json(_management_rows_path(), {"columns": [], "values": {}})
+    # cached — 위 _load_custom_tags_data 와 동일한 이유.
+    data = load_json_cached(_management_rows_path(), {"columns": [], "values": {}})
     cleaned, changed = _clean_overlay_store_data(data, allow_management=True)
     if changed:
         _save_management_rows_data(cleaned)
@@ -8309,13 +8374,60 @@ class UnifiedScanReq(BaseModel):
 _UNIFIED_SCAN_LOCK = threading.Lock()
 _UNIFIED_SCAN_BUSY = False
 _UNIFIED_SCAN_JOB_ID = ""
+_UNIFIED_SCAN_THREAD: threading.Thread | None = None
+
+# 대기 중 진행 로그 간격 — 대기도 '진행'으로 보이게 해 정지와 구분한다.
+_SCAN_WAIT_LOG_GAP_SEC = 15.0
 
 
-def _wait_for_cache_job(status_fn, *, stage: str) -> dict:
-    """이미 실행 중인 캐시 stage가 끝날 때까지 통합 스캔 스레드에서 대기."""
-    timeout = max(60.0, min(6 * 3600.0, _env_float("FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC", 3600.0)))
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _scan_stage_timeout_sec() -> float:
+    return max(60.0, min(6 * 3600.0, _env_float("FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC", 3600.0)))
+
+
+def _reap_dead_unified_scan() -> bool:
+    """스캔 스레드가 죽었는데 busy 플래그만 남은 상태를 정리한다.
+
+    이 방어가 없으면 스레드가 예기치 않게 사라졌을 때 이후 모든 스캔 요청이
+    '이미 실행 중'으로 거부되고 화면은 영원히 '스캔 중...'에 머문다.
+    반환: 정리했으면 True."""
+    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID, _UNIFIED_SCAN_THREAD
+    with _UNIFIED_SCAN_LOCK:
+        if not _UNIFIED_SCAN_BUSY:
+            return False
+        thread = _UNIFIED_SCAN_THREAD
+        if thread is not None and thread.is_alive():
+            return False
+        job_id = _UNIFIED_SCAN_JOB_ID
+        _UNIFIED_SCAN_BUSY = False
+        _UNIFIED_SCAN_THREAD = None
+    logger.warning("unified scan thread vanished — busy flag cleared (job=%s)", job_id)
+    try:
+        from core.cache_event_log import finish_job, record
+        if job_id:
+            finish_job(job_id, ok=False, detail={"error": "scan_thread_vanished"})
+        record("scan", "[작업 실패] 스캔 스레드가 종료되어 작업을 중단 처리했습니다 "
+                       "(서버 재시작/강제 종료 등). 다시 실행할 수 있습니다.", ok=False)
+    except Exception:
+        logger.debug("unified scan reap logging failed", exc_info=True)
+    return True
+
+
+def _wait_for_cache_job(status_fn, *, stage: str, stage_label: str = "", job_id: str = "") -> dict:
+    """이미 실행 중인 캐시 stage가 끝날 때까지 통합 스캔 스레드에서 대기.
+
+    대기 동안 주기적으로 진행 로그를 남긴다 — 예전엔 최대 1시간을 아무 로그 없이
+    대기해 화면이 멈춘 것처럼 보였다."""
+    from core.cache_event_log import record as _rec, heartbeat as _beat
+    timeout = _scan_stage_timeout_sec()
+    label = stage_label or stage
+    started = time.monotonic()
+    deadline = started + timeout
+    next_log = started + _SCAN_WAIT_LOG_GAP_SEC
+    _rec("scan", f"[대기] {label}: 다른 요청이 이미 실행 중 — 끝날 때까지 기다립니다"
+                 f" (최대 {_fmt_dur_ko(timeout)})",
+         detail={"job_id": job_id, "stage": stage, "phase": "waiting"} if job_id else {"stage": stage})
+    while True:
+        now = time.monotonic()
         status = status_fn()
         if not status.get("running"):
             return {
@@ -8325,12 +8437,31 @@ def _wait_for_cache_job(status_fn, *, stage: str) -> dict:
                 "job": status,
                 "joined_existing": True,
             }
+        if now >= deadline:
+            break
+        if now >= next_log:
+            next_log = now + _SCAN_WAIT_LOG_GAP_SEC
+            _beat(job_id, f"{label} 대기 중")
+            done = int(status.get("done") or 0)
+            total = int(status.get("total") or 0)
+            progress = f" · {done}/{total} 진행" if total else ""
+            _rec("scan",
+                 f"[대기] {label}: 실행 중인 작업 대기 {_fmt_dur_ko(now - started)} 경과{progress}"
+                 f" (현재: {status.get('current_product') or '-'})",
+                 detail={"job_id": job_id, "stage": stage, "phase": "waiting"} if job_id else {"stage": stage})
         time.sleep(1.0)
-    return {"ok": False, "error": f"{stage}_timeout", "joined_existing": True}
+    _rec("scan", f"[실패] {label}: 대기 시간 초과({_fmt_dur_ko(timeout)}) — 앞선 작업이 끝나지 않았습니다."
+                 f" env FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC 로 대기 한도를 조절할 수 있습니다.",
+         ok=False, detail={"job_id": job_id, "stage": stage, "phase": "failed"} if job_id else {"stage": stage})
+    return {"ok": False, "error": f"{stage}_timeout", "joined_existing": True,
+            "detail": f"대기 시간 초과({int(timeout)}초)"}
 
 
-def _wait_for_root_lookup_caches(result: dict, *, product: str) -> dict:
-    """root RAM 예열이 요청한 lookup 파티션 빌드를 기다린 뒤 한 번 재시도."""
+def _wait_for_root_lookup_caches(result: dict, *, product: str, job_id: str = "") -> dict:
+    """root RAM 예열이 요청한 lookup 파티션 빌드를 기다린 뒤 한 번 재시도.
+
+    빌드는 수 분~수십 분 걸릴 수 있으므로 대기 진행을 주기적으로 로그에 남긴다."""
+    from core.cache_event_log import record as _rec, heartbeat as _beat
     pending = {
         str(row.get("file") or "")
         for row in (result.get("products") or [])
@@ -8338,27 +8469,57 @@ def _wait_for_root_lookup_caches(result: dict, *, product: str) -> dict:
     }
     if not pending:
         return result
-    timeout = max(60.0, min(6 * 3600.0, _env_float("FLOW_UNIFIED_SCAN_STAGE_TIMEOUT_SEC", 3600.0)))
-    deadline = time.monotonic() + timeout
-    while pending and time.monotonic() < deadline:
+    total = len(pending)
+    timeout = _scan_stage_timeout_sec()
+    started = time.monotonic()
+    deadline = started + timeout
+    next_log = started + _SCAN_WAIT_LOG_GAP_SEC
+    _detail = {"job_id": job_id, "stage": "root_lot_ram", "phase": "waiting"}
+    _rec("scan", f"[대기] 랏캐시(원본 lookup) 빌드 대기 — {total}개 제품 "
+                 f"(최대 {_fmt_dur_ko(timeout)}). 빌드 진행은 [랏캐시빌드] 로그에 표시됩니다.",
+         detail=_detail)
+    while pending:
+        now = time.monotonic()
         ready: set[str] = set()
         for file_name in pending:
             fp = _ml_table_lookup.resolve_ml_table_file(file=file_name)
             if fp is not None and _ml_table_lookup.cache_status(fp).get("status") == "fresh":
                 ready.add(file_name)
         pending.difference_update(ready)
-        if pending:
-            time.sleep(1.0)
+        if not pending:
+            break
+        if now >= deadline:
+            break
+        if now >= next_log:
+            next_log = now + _SCAN_WAIT_LOG_GAP_SEC
+            _beat(job_id, "랏캐시 빌드 대기 중")
+            _rec("scan",
+                 f"[대기] 랏캐시 빌드 {total - len(pending)}/{total} 완료 · "
+                 f"{_fmt_dur_ko(now - started)} 경과 · 남은 제품: "
+                 + ", ".join(sorted(pending)[:3]) + ("…" if len(pending) > 3 else ""),
+                 detail=_detail)
+        time.sleep(1.0)
     if pending:
+        _rec("scan",
+             f"[실패] 랏캐시 빌드 대기 시간 초과({_fmt_dur_ko(timeout)}) — "
+             f"미완료 {len(pending)}/{total}개: " + ", ".join(sorted(pending)[:5]),
+             ok=False, detail={"job_id": job_id, "stage": "root_lot_ram", "phase": "failed"})
         out = dict(result)
-        out.update(ok=False, error="root_lookup_build_timeout", pending_files=sorted(pending))
+        out.update(ok=False, error="root_lookup_build_timeout", pending_files=sorted(pending),
+                   detail=f"랏캐시 빌드 대기 시간 초과 — 미완료 {len(pending)}개")
         return out
+    _rec("scan", f"[대기] 랏캐시 빌드 {total}/{total} 완료 — RAM 적재를 이어서 진행합니다",
+         detail=_detail)
     # lookup build 완료 직후 운영 프로세스 RAM에 실제 root frame을 올린다.
     return _ml_table_lookup.refresh_root_lot_ram_cache(product=product, force=False, load_now=True)
 
 
-def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
-    """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신."""
+def _run_unified_scan(product: str, force: bool, job_id: str = "", *,
+                      owns_job: bool = True) -> dict:
+    """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신.
+
+    owns_job=False 면 job 종료/busy 해제를 호출자가 맡는다(전체 셋업이 이 함수를
+    Phase B 로 감싸 쓰므로, 감싼 쪽이 끝나기 전에 작업이 '완료'로 닫히면 안 된다)."""
     global _UNIFIED_SCAN_BUSY
     results: dict = {"ok": True, "product": product}
     _label = product or "전체 제품"
@@ -8388,6 +8549,33 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
             except Exception:
                 pass
 
+    # 단계별 결과 요약 — 마지막에 '무엇이 되고 무엇이 실패했는지'를 한 줄로 남긴다.
+    stage_outcomes: dict[str, str] = {}
+
+    def _err_text(payload: dict) -> str:
+        """실패 사유를 사람이 읽을 수 있는 한 줄로.
+
+        주의: 최상위 `reason` 은 트리거 사유("unified_scan")라 실패 원인이 아니다 —
+        여기서 쓰면 화면에 'unified_scan' 이 실패 사유처럼 뜬다. 실제 원인은
+        top-level error/detail 또는 제품별 결과의 reason 에 있다."""
+        payload = payload or {}
+        for key in ("detail", "error", "last_error"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        rows = payload.get("products") or []
+        bad = [row for row in rows if isinstance(row, dict) and not row.get("ok")]
+        if bad:
+            parts = [f"{row.get('product') or row.get('file') or '?'}: "
+                     f"{row.get('reason') or row.get('error') or '실패'}"
+                     for row in bad[:3]]
+            more = f" 외 {len(bad) - 3}개" if len(bad) > 3 else ""
+            return "; ".join(parts) + more
+        if not rows:
+            return ("처리 대상 제품이 없습니다 — 제품명이 올바른지, ML_TABLE 원본 파일이 "
+                    "존재하는지 확인하세요")
+        return "원인 미상(서버 터미널 로그 확인 필요)"
+
     try:
         # 이 함수 자체가 이미 background thread다. 각 stage가 다시 별도 thread를
         # 띄우면 FAB scan + 전체 product collect + root warmup이 동시에 실행되어
@@ -8412,19 +8600,28 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
                 )
             else:
                 results["match_cache"] = _wait_for_cache_job(
-                    _match_cache_job_status, stage="match_cache"
+                    _match_cache_job_status, stage="match_cache",
+                    stage_label="FAB 매칭 캐시", job_id=job_id,
                 )
             mc = results["match_cache"]
+            mc_ok = bool(mc.get("ok"))
+            stage_outcomes["1/3 FAB 매칭"] = "완료" if mc_ok else "실패"
             if job_id:
                 from core.cache_event_log import stage_finished
-                stage_finished(job_id, "match_cache", ok=bool(mc.get("ok")),
-                               detail={"products": len(mc.get("products") or [])})
-            _log("scan", f"[수동 스캔] 1/3 FAB 매칭 캐시 완료 ({_label})",
-                 ok=bool(mc.get("ok")),
+                stage_finished(job_id, "match_cache", ok=mc_ok,
+                               detail={"products": len(mc.get("products") or []),
+                                       "error": "" if mc_ok else _err_text(mc)})
+            _log("scan",
+                 f"[수동 스캔] 1/3 FAB 매칭 캐시 "
+                 + (f"완료 — {len(mc.get('products') or [])}개 제품" if mc_ok
+                    else f"실패: {_err_text(mc)}")
+                 + f" ({_label})",
+                 ok=mc_ok,
                  detail={"products": len(mc.get("products") or [])},
-                 stage="match_cache", phase="finished")
+                 stage="match_cache", phase="finished" if mc_ok else "failed")
         except Exception as e:
             results["match_cache"] = {"ok": False, "error": str(e)}
+            stage_outcomes["1/3 FAB 매칭"] = "실패"
             if job_id:
                 from core.cache_event_log import stage_finished
                 stage_finished(job_id, "match_cache", ok=False, detail={"error": str(e)})
@@ -8448,24 +8645,35 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
                 )
             else:
                 results["product_cache"] = _wait_for_cache_job(
-                    _product_ram_cache_job_status, stage="product_ram_cache"
+                    _product_ram_cache_job_status, stage="product_ram_cache",
+                    stage_label="제품 원본 RAM 캐시", job_id=job_id,
                 )
             pc = results["product_cache"]
             # 제품 원본 RAM 캐시를 설정에서 끈 경우(비활성)는 '실패'가 아니라 '건너뜀'.
             pc_disabled = not _product_ram_cache_available()
             pc_ok = bool(pc.get("ok")) or pc_disabled
+            stage_outcomes["2/3 제품 원본"] = ("건너뜀" if pc_disabled else "완료" if pc_ok else "실패")
             if job_id:
-                from core.cache_event_log import stage_finished
-                stage_finished(job_id, "product_ram", ok=pc_ok,
-                               detail={"products": len(pc.get("products") or []), "disabled": pc_disabled})
+                from core.cache_event_log import stage_finished, stage_skipped
+                if pc_disabled:
+                    stage_skipped(job_id, "product_ram", {"disabled": True, "reason": "설정에서 꺼짐"})
+                else:
+                    stage_finished(job_id, "product_ram", ok=pc_ok,
+                                   detail={"products": len(pc.get("products") or []),
+                                           "error": "" if pc_ok else _err_text(pc)})
             _log("scan",
                  f"[수동 스캔] 2/3 제품 원본 RAM 캐시 "
-                 f"{'건너뜀(비활성 — 설정에서 꺼짐)' if pc_disabled else '완료'} ({_label})",
+                 + ("건너뜀(비활성 — 설정에서 꺼짐. 랏캐시와는 무관하게 랏캐시는 계속 갱신됩니다)"
+                    if pc_disabled else
+                    f"완료 — {len(pc.get('products') or [])}개 제품" if pc_ok else
+                    f"실패: {_err_text(pc)}")
+                 + f" ({_label})",
                  ok=pc_ok,
                  detail={"products": len(pc.get("products") or []), "disabled": pc_disabled},
-                 stage="product_ram", phase="finished")
+                 stage="product_ram", phase="finished" if pc_ok else "failed")
         except Exception as e:
             results["product_cache"] = {"ok": False, "error": str(e)}
+            stage_outcomes["2/3 제품 원본"] = "실패"
             if job_id:
                 from core.cache_event_log import stage_finished
                 stage_finished(job_id, "product_ram", ok=False, detail={"error": str(e)})
@@ -8489,7 +8697,7 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
                 results["root_lot_cache"] = _ml_table_lookup.refresh_root_lot_ram_cache(
                     product=product, force=force, load_now=True)
                 results["root_lot_cache"] = _wait_for_root_lookup_caches(
-                    results["root_lot_cache"], product=product)
+                    results["root_lot_cache"], product=product, job_id=job_id)
             rc = results["root_lot_cache"]
             pending = int(rc.get("build_pending") or 0)
             warmed = int(rc.get("warmed_products") or 0)
@@ -8500,51 +8708,68 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "") -> dict:
             # 후 자동 적재된다. 대기 개수를 표시해 조용한 미적재로 오인하지 않게 한다.
             note = (f" · 빌드 대기 {pending}개(원본 lookup 캐시 빌드 완료 후 자동 적재)"
                     if pending else "")
-            phase_label = ("건너뜀(비활성 — 이 서버에서 꺼짐)" if rc_disabled
-                           else f"완료{note}")
+            phase_label = (
+                "건너뜀(비활성 — 이 서버 역할/설정에서 꺼짐. 조회를 서빙하는 운영 서버 전용)"
+                if rc_disabled else
+                f"완료 — {warmed}개 제품 예열{note}" if rc_ok else
+                f"실패: {_err_text(rc)}"
+            )
+            stage_outcomes["3/3 Root lot"] = ("건너뜀" if rc_disabled else "완료" if rc_ok else "실패")
             if job_id:
-                from core.cache_event_log import stage_finished
-                stage_finished(job_id, "root_lot_ram", ok=rc_ok,
-                               detail={"products": len(rc.get("products") or []),
-                                       "max_gb": rc.get("max_gb"), "disabled": rc_disabled,
-                                       "build_pending": pending, "warmed": warmed})
+                from core.cache_event_log import stage_finished, stage_skipped
+                _stage_detail = {"products": len(rc.get("products") or []),
+                                 "max_gb": rc.get("max_gb"), "disabled": rc_disabled,
+                                 "build_pending": pending, "warmed": warmed,
+                                 "error": "" if rc_ok else _err_text(rc)}
+                if rc_disabled:
+                    stage_skipped(job_id, "root_lot_ram", _stage_detail)
+                else:
+                    stage_finished(job_id, "root_lot_ram", ok=rc_ok, detail=_stage_detail)
             _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 {phase_label} ({_label})",
                  ok=rc_ok,
                  detail={"products": len(rc.get("products") or []),
                          "max_gb": rc.get("max_gb"), "disabled": rc_disabled,
                          "build_pending": pending, "warmed": warmed},
-                 stage="root_lot_ram", phase="finished")
+                 stage="root_lot_ram", phase="finished" if rc_ok else "failed")
         except Exception as e:
             results["root_lot_cache"] = {"ok": False, "error": str(e)}
+            stage_outcomes["3/3 Root lot"] = "실패"
             if job_id:
                 from core.cache_event_log import stage_finished
                 stage_finished(job_id, "root_lot_ram", ok=False, detail={"error": str(e)})
             _log("scan", f"[수동 스캔] 3/3 Root lot lookup/RAM 캐시 실패 ({_label}): {e}", ok=False,
                  stage="root_lot_ram", phase="failed")
 
-        results["ok"] = any([
-            (results.get("match_cache") or {}).get("ok"),
-            (results.get("product_cache") or {}).get("ok"),
-            (results.get("root_lot_cache") or {}).get("ok"),
-        ])
-        _log("scan", f"[수동 스캔] 완료 ({_label}) — ok={results['ok']}", ok=results["ok"])
+        # 전체 성공 판정 — 예전엔 any() 라 3개 중 2개가 실패해도 '완료(ok=True)'로
+        # 보였다. 하나라도 실패하면 실패로 본다(건너뜀은 실패가 아니다).
+        failed = [name for name, outcome in stage_outcomes.items() if outcome == "실패"]
+        results["ok"] = not failed
+        results["stages"] = dict(stage_outcomes)
+        summary = " · ".join(f"{name} {outcome}" for name, outcome in stage_outcomes.items())
+        _log("scan",
+             (f"[수동 스캔] 전체 완료 ({_label}) — {summary}" if not failed
+              else f"[수동 스캔] 실패 ({_label}) — {summary} · 실패 단계: {', '.join(failed)}"),
+             ok=results["ok"], detail={"stages": dict(stage_outcomes)})
     finally:
-        if job_id:
-            try:
-                from core.cache_event_log import finish_job
-                finish_job(job_id, ok=bool(results.get("ok")), detail={"product": product})
-            except Exception:
-                logger.debug("unified scan job tracker finish failed", exc_info=True)
-        with _UNIFIED_SCAN_LOCK:
-            _UNIFIED_SCAN_BUSY = False
+        if owns_job:
+            if job_id:
+                try:
+                    from core.cache_event_log import finish_job
+                    finish_job(job_id, ok=bool(results.get("ok")),
+                               detail={"product": product, "stages": results.get("stages") or {}})
+                except Exception:
+                    logger.debug("unified scan job tracker finish failed", exc_info=True)
+            with _UNIFIED_SCAN_LOCK:
+                _UNIFIED_SCAN_BUSY = False
     return results
 
 
 @router.post("/ram-cache/unified-scan")
 def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splittable"))):
     """관리자: 선택 제품의 전체 캐시(FAB/product/root lot) 통합 수동 스캔."""
-    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID
+    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID, _UNIFIED_SCAN_THREAD
     product = str(req.product or "").strip()
+    _reap_dead_unified_scan()
     with _UNIFIED_SCAN_LOCK:
         if _UNIFIED_SCAN_BUSY:
             return {"ok": True, "running": True, "detail": "통합 스캔이 이미 실행 중입니다."}
@@ -8567,6 +8792,7 @@ def unified_scan(req: UnifiedScanReq, _perm=Depends(require_page_manager("splitt
         name="splittable-unified-scan",
         daemon=True,
     )
+    _UNIFIED_SCAN_THREAD = t
     t.start()
     return {
         "ok": True,
@@ -8631,19 +8857,22 @@ def _fmt_dur_ko(sec: float) -> str:
     return f"{sec // 3600}시간 {(sec % 3600) // 60}분"
 
 
-def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
+def _full_setup_build_lookups_parallel(cfg: dict, job_id: str = "") -> dict:
     """전 제품의 랏(lookup) 캐시를 운영 로컬에서 N개 병렬로 직접 빌드.
 
     큐/오프로드/로컬-heavy-게이트(Semaphore 1)를 우회하고 build_lookup_cache 를
     직접 호출한다(파일별 빌드락으로 동일 파일 중복만 방지, 다른 제품끼리는 병렬).
     각 빌드는 청크 스트리밍이라 제품당 메모리가 제한된다."""
     import concurrent.futures as _cf
-    from core.cache_event_log import record as _rec
+    from core.cache_event_log import record as _rec, heartbeat as _beat
     files = _ml_table_lookup._discover_ml_table_files() or []
     total = len(files)
     ok_count = 0
+    failed_products: list[str] = []
     if not total:
-        return {"ok": True, "total": 0, "built": 0}
+        _rec("cache_op", "[전체셋업] 랏캐시 빌드 대상 제품이 없습니다 (ML_TABLE_*.parquet 미검출)",
+             ok=False, product="", detail={"job_id": job_id} if job_id else None)
+        return {"ok": False, "total": 0, "built": 0, "detail": "빌드 대상 제품 없음"}
     _rec("cache_op",
          f"[전체셋업] 랏캐시 병렬 빌드 시작 — {total:,}개 제품 · {cfg['workers']}병렬(운영 로컬)"
          f" · 청크 {cfg['lookup_chunk']} · 메모리 상한 {cfg['memory_gb']}GB"
@@ -8656,23 +8885,29 @@ def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
     def _one(fp) -> bool:
         prod = Path(fp).stem
         okp = True
+        err = ""
         try:
             # force=False: 이미 빌드된(fresh) 캐시는 건너뛴다 → 전체 셋업이 중간에
             # 끊겨 재실행해도 처음부터 다시 하지 않고 남은 것만 이어서 빌드(수렴 보장).
             _ml_table_lookup.build_lookup_cache(Path(fp), force=False)
         except Exception as exc:
             okp = False
+            err = f"{type(exc).__name__}: {exc}"
             logger.warning("full setup lookup build failed source=%s: %s", fp, exc)
         with lock:
             done[0] += 1
             n = done[0]
+            if not okp:
+                failed_products.append(prod)
         elapsed = time.time() - started
         eta = (elapsed / n) * (total - n) if n else 0.0
         try:
+            _beat(job_id, f"랏캐시 빌드 {n}/{total}")
             _rec("cache_op",
                  f"[전체셋업] 랏캐시 {n:,}/{total:,} — {prod}"
-                 f" · RSS {_proc_rss_gb()}GB · 남은 ~{_fmt_dur_ko(eta)}",
-                 ok=okp, product=prod)
+                 + ("" if okp else f" · 빌드 실패: {err}")
+                 + f" · RSS {_proc_rss_gb()}GB · 남은 ~{_fmt_dur_ko(eta)}",
+                 ok=okp, product=prod, detail={"job_id": job_id} if job_id else None)
         except Exception:
             pass
         return okp
@@ -8681,10 +8916,16 @@ def _full_setup_build_lookups_parallel(cfg: dict) -> dict:
         for res in ex.map(_one, files):
             if res:
                 ok_count += 1
+    all_ok = ok_count == total
     _rec("cache_op",
-         f"[전체셋업] 랏캐시 완료 — {ok_count:,}/{total:,} 성공 · 총 {_fmt_dur_ko(time.time() - started)}",
-         product="")
-    return {"ok": ok_count > 0, "total": total, "built": ok_count}
+         (f"[전체셋업] 랏캐시 완료 — {ok_count:,}/{total:,} 성공 · 총 {_fmt_dur_ko(time.time() - started)}"
+          if all_ok else
+          f"[전체셋업] 랏캐시 일부 실패 — {ok_count:,}/{total:,} 성공, {len(failed_products)}개 실패: "
+          + ", ".join(sorted(failed_products)[:5]) + ("…" if len(failed_products) > 5 else "")),
+         ok=all_ok, product="", detail={"job_id": job_id} if job_id else None)
+    return {"ok": ok_count > 0, "all_ok": all_ok, "total": total, "built": ok_count,
+            "failed": sorted(failed_products),
+            "detail": "" if all_ok else f"{len(failed_products)}개 제품 랏캐시 빌드 실패"}
 
 
 def _run_full_setup_scan(job_id: str = "") -> dict:
@@ -8703,17 +8944,30 @@ def _run_full_setup_scan(job_id: str = "") -> dict:
         _rec("cache_op",
              f"[전체셋업] 시작 — 운영 로컬 · {cfg['workers']}병렬 · 메모리 {cfg['memory_gb']}GB"
              f" (랏캐시 → 매칭 → 제품RAM → 예열)",
-             product="")
+             product="", detail={"job_id": job_id} if job_id else None)
         # Phase A: 랏(lookup) 캐시 전 제품 병렬 로컬 빌드 (가장 무겁고 병렬 이득 큼)
-        _full_setup_build_lookups_parallel(cfg)
+        if job_id:
+            from core.cache_event_log import stage_started, stage_finished
+            stage_started(job_id, "lookup_build")
+        phase_a = _full_setup_build_lookups_parallel(cfg, job_id)
+        if job_id:
+            from core.cache_event_log import stage_finished
+            stage_finished(job_id, "lookup_build", ok=bool(phase_a.get("all_ok")),
+                           detail={"built": phase_a.get("built"), "total": phase_a.get("total"),
+                                   "error": phase_a.get("detail") or ""})
         # Phase B: 매칭 캐시 → 제품 원본 RAM → root 예열 (기존 통합 스캔 재사용).
         #   랏캐시가 이미 빌드돼 있어 예열이 skip 없이 즉시 적재된다.
         #   _run_unified_scan 이 finally 에서 job 종료 + busy 해제까지 처리한다.
         #   force=False: 이미 최신인 매칭/제품RAM/예열은 건너뛰어 재실행 시 이어서 진행.
-        _run_unified_scan("", False, job_id)
+        phase_b = _run_unified_scan("", False, job_id, owns_job=False)
+        ok = bool(phase_b.get("ok")) and bool(phase_a.get("all_ok"))
         _rec("cache_op",
-             f"[전체셋업] 전체 완료 · 총 {_fmt_dur_ko(time.time() - started)} · RSS {_proc_rss_gb()}GB",
-             product="")
+             (f"[전체셋업] 전체 완료 · 총 {_fmt_dur_ko(time.time() - started)} · RSS {_proc_rss_gb()}GB"
+              if ok else
+              f"[전체셋업] 완료(일부 실패) · 랏캐시 {phase_a.get('built')}/{phase_a.get('total')}"
+              f" · 후속 단계: {phase_b.get('stages') or {}}"
+              f" · 총 {_fmt_dur_ko(time.time() - started)}"),
+             ok=ok, product="")
     except Exception as exc:
         ok = False
         logger.warning("full setup scan failed: %s", exc, exc_info=True)
@@ -8731,6 +8985,12 @@ def _run_full_setup_scan(job_id: str = "") -> dict:
             cache_budget.invalidate()
         except Exception:
             pass
+        if job_id:
+            try:
+                from core.cache_event_log import finish_job
+                finish_job(job_id, ok=ok, detail={"kind": "full_setup"})
+            except Exception:
+                logger.debug("full setup job tracker finish failed", exc_info=True)
         with _UNIFIED_SCAN_LOCK:
             _UNIFIED_SCAN_BUSY = False
     return {"ok": ok}
@@ -8740,7 +9000,8 @@ def _run_full_setup_scan(job_id: str = "") -> dict:
 def full_setup_scan(_admin=Depends(require_admin)):
     """관리자 전용: 초기 1회 전체 셋업. 운영 서버에서 직접(개발 오프로드 없이)
     N코어 병렬 + 큰 메모리로 전 제품 캐시(랏→매칭→제품RAM→예열)를 빠르게 빌드."""
-    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID
+    global _UNIFIED_SCAN_BUSY, _UNIFIED_SCAN_JOB_ID, _UNIFIED_SCAN_THREAD
+    _reap_dead_unified_scan()
     with _UNIFIED_SCAN_LOCK:
         if _UNIFIED_SCAN_BUSY:
             return {"ok": True, "running": True, "detail": "스캔이 이미 실행 중입니다."}
@@ -8751,6 +9012,7 @@ def full_setup_scan(_admin=Depends(require_admin)):
         "full_setup",
         "전체 셋업 (운영 로컬 · 빠른 캐싱)",
         [
+            ("lookup_build", "랏(lookup) 캐시 병렬 빌드"),
             ("match_cache", "FAB 매칭 캐시"),
             ("product_ram", "제품 원본 RAM 캐시"),
             ("root_lot_ram", "Root lot lookup/RAM 캐시"),
@@ -8760,6 +9022,7 @@ def full_setup_scan(_admin=Depends(require_admin)):
     _UNIFIED_SCAN_JOB_ID = job_id
     t = threading.Thread(target=_run_full_setup_scan, args=(job_id,),
                          name="splittable-full-setup", daemon=True)
+    _UNIFIED_SCAN_THREAD = t
     t.start()
     return {
         "ok": True,
@@ -8825,15 +9088,35 @@ def _cache_queue_snapshot() -> dict:
 
 @router.get("/ram-cache/scan-status")
 def unified_scan_status():
-    """통합 수동 스캔 진행 여부 — 프런트가 진행 로그를 폴링할 동안 종료 감지용."""
+    """통합 수동 스캔 진행 여부 — 프런트가 진행 로그를 폴링할 동안 종료 감지용.
+
+    반환 전 죽은 스레드/정지 작업을 정리한다 — 화면이 끝나지 않는 '스캔 중'에
+    갇히지 않도록, running=False 는 반드시 언젠가 온다."""
+    global _UNIFIED_SCAN_BUSY
+    reaped = _reap_dead_unified_scan()
+    from core.cache_event_log import get_jobs
+    jobs = get_jobs(recent=1)          # 내부에서 정지 작업(stale)을 실패로 확정
+    # 작업 추적기가 정지로 판정했으면 busy 플래그도 함께 푼다.
+    if not reaped and any(job.get("id") == _UNIFIED_SCAN_JOB_ID and job.get("status") != "running"
+                          for job in jobs):
+        with _UNIFIED_SCAN_LOCK:
+            if _UNIFIED_SCAN_BUSY and not (_UNIFIED_SCAN_THREAD and _UNIFIED_SCAN_THREAD.is_alive()):
+                _UNIFIED_SCAN_BUSY = False
     with _UNIFIED_SCAN_LOCK:
         running = bool(_UNIFIED_SCAN_BUSY)
-    from core.cache_event_log import get_jobs
+    last = next((job for job in jobs if job.get("id") == _UNIFIED_SCAN_JOB_ID), None)
     return {
         "ok": True,
         "running": running,
         "job_id": _UNIFIED_SCAN_JOB_ID,
-        "jobs": get_jobs(recent=1),
+        # 마지막 작업의 최종 상태 — 프런트가 '완료/실패'를 명확히 표시하는 데 쓴다.
+        "last_status": str((last or {}).get("status") or ""),
+        "last_stages": [
+            {"id": s.get("id"), "label": s.get("label"), "status": s.get("status"),
+             "error": str((s.get("detail") or {}).get("error") or "")}
+            for s in ((last or {}).get("stages") or [])
+        ],
+        "jobs": jobs,
         "queues": _cache_queue_snapshot(),
     }
 
@@ -10327,7 +10610,9 @@ def _load_plan_data(product: str) -> dict:
     merged = {"plans": {}, "history": [], "mismatch_alerts": {}}
     seen_history: set[str] = set()
     for fp in _plan_alias_paths(product):
-        data = load_json(fp, {}) if fp.exists() else {}
+        # cached — merged 로 복사만 하고 원본은 건드리지 않는다. cold 검색마다 plan
+        # 전체를 재파싱하던 비용(GIL 점유 + 공유드라이브 read)을 없앤다.
+        data = load_json_cached(fp, {}) if fp.exists() else {}
         if not isinstance(data, dict):
             continue
         plans = data.get("plans")
@@ -11429,11 +11714,27 @@ def _split_view_data_source_label(src: dict, *, payload_cache_hit: bool) -> str:
     return "raw"
 
 
+def _request_lane_wait_ms(request: Request | None) -> float:
+    """ResourceGuardMiddleware 가 남긴 레인 대기 시간(ms). 없으면 0."""
+    try:
+        return max(0.0, float(getattr(request.state, "lane_wait_ms", 0.0) or 0.0))
+    except Exception:
+        return 0.0
+
+
 def _split_view_runtime_profile(started: float, runtime_profile: dict | None, *, payload_cache_hit: bool) -> dict:
     src = runtime_profile or {}
     data_source = _split_view_data_source_label(src, payload_cache_hit=payload_cache_hit)
+    total_ms = (time.perf_counter() - started) * 1000.0
+    lane_wait_ms = float(src.get("lane_wait_ms") or 0.0)
+    cold_lane_wait_ms = float(src.get("cold_lane_wait_ms") or 0.0)
     return {
-        "total_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "total_ms": round(total_ms, 3),
+        # 핸들러 밖에서 줄 선 시간까지 포함한 체감 시간. total_ms 만 보면 "서버는
+        # 빠른데 사용자는 느린" 상태의 원인이 안 보인다.
+        "wall_ms": round(total_ms + lane_wait_ms, 3),
+        "lane_wait_ms": round(lane_wait_ms, 3),
+        "cold_lane_wait_ms": round(cold_lane_wait_ms, 3),
         "root_cache_hit": bool(src.get("root_cache_hit")),
         "product_cache_hit": bool(src.get("product_cache_hit")),
         "payload_cache_hit": bool(payload_cache_hit),
@@ -11483,6 +11784,8 @@ def _record_search_timing(payload: dict, rp: dict) -> None:
         if not root:
             return
         rows = payload.get("rows")
+        if not isinstance(rows, list):
+            rows = payload.get("rows_compact")
         row_count = len(rows) if isinstance(rows, list) else 0
         entry = {
             "at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -11490,6 +11793,9 @@ def _record_search_timing(payload: dict, rp: dict) -> None:
             "root_lot_id": root,
             "data_source": rp.get("data_source") or "",
             "total_ms": rp.get("total_ms") or 0.0,
+            "wall_ms": rp.get("wall_ms") or 0.0,
+            "lane_wait_ms": rp.get("lane_wait_ms") or 0.0,
+            "cold_lane_wait_ms": rp.get("cold_lane_wait_ms") or 0.0,
             "scan_ms": rp.get("scan_ms") or 0.0,
             "root_scan_ms": rp.get("root_scan_ms") or 0.0,
             "collect_ms": rp.get("collect_ms") or 0.0,
@@ -12437,6 +12743,13 @@ def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload:
     stored.pop("related_issues", None)
     stored.pop("runtime_profile", None)
     stored.pop("view_cache", None)
+    # 레거시 fat rows(`_cells`, 셀당 9키 dict ≈441B)는 캐시에 담지 않는다. HTTP 응답은
+    # rows_compact(≈40B/셀)만 쓰고 fat rows 는 버려지므로, 저장하면 엔트리 하나가
+    # 예산의 ~11배를 먹어 다른 사용자의 검색 결과를 계속 밀어냈다(= 여러 명이
+    # 서로 다른 lot 을 검색하면 전부 cold 로 떨어지던 원인). 레거시 형태가 필요한
+    # 내부 호출자는 _expand_view_rows() 로 그때 복원한다.
+    if stored.get("rows_compact") is not None:
+        stored.pop("rows", None)
     # v: lookup_cache 는 그대로 저장한다 — HIT 경로에서 _attach 가 매번
     # _ml_table_lookup.cache_status(meta 읽기 + partition dir glob) 를 재계산하던
     # 비용을 없앤다. 저장 시점의 배지값이 약간 stale 할 수 있으나, 캐시가 렌더된
@@ -12504,7 +12817,8 @@ def _view_revalidate_execute(view_cache_key: tuple, params: dict) -> None:
         # related_issues 를 계산하고 cache_put 이 도로 버리는 낭비가 있다.
         _VIEW_REVALIDATE_TLS.force = True
         try:
-            view_split(request=None, include_related=False, **params)
+            # core 직접 호출 — 반환값을 쓰지 않고 캐시만 덥히므로 레거시 rows 복원이 낭비다.
+            view_split_core(request=None, include_related=False, **params)
         finally:
             _VIEW_REVALIDATE_TLS.force = False
         return {"ok": True, "stored": "local"}
@@ -12897,49 +13211,57 @@ def _view_orjson_response(payload):
     return Response(content=body, media_type="application/json")
 
 
-def _compact_view_rows(rows: list, n_cols: int) -> list:
-    """HTTP 전송용 슬림 셀 포맷 (cells_format v2).
+def _expand_view_rows(payload: dict) -> dict:
+    """슬림 셀 포맷(cells_format v2) → 레거시 `_cells` 행으로 복원.
 
-    레거시 `_cells` 는 셀마다 행-상수 플래그와 파생 가능한 key 를 반복 포함해
-    payload 대부분이 중복 메타였다 (KNOB 2000행×25웨이퍼 ≈ 10.9MB). v2 행은
-    actual 배열(a) + sparse plan(p) + sparse mismatch(m) + 행-상수 플래그만
-    담는다. FE(My_SplitTable expandViewRows)가 수신 직후 레거시 `_cells` 로
-    복원하므로 화면/편집 동작은 동일하다. 셀 key 는 FE 가
-    `root_lot_id|wafer_keys[ci]|_param` 으로 재조립한다 — 서버의 셀 생성
-    f-string 과 정확히 일치해야 plan 저장 키가 어긋나지 않는다."""
-    compact = []
-    for r in rows:
-        cells = r.get("_cells") or {}
-        vals = [None] * n_cols
-        plans_sparse = {}
-        mism = []
-        for ci_str, cell in cells.items():
-            try:
-                ci = int(ci_str)
-            except Exception:
-                continue
-            if not (0 <= ci < n_cols):
-                continue
-            vals[ci] = cell.get("actual")
-            pv = cell.get("plan")
-            if pv is not None:
-                plans_sparse[ci_str] = pv
-            if cell.get("mismatch"):
-                mism.append(ci)
-        row_c = {"_param": r.get("_param"), "_display": r.get("_display"), "a": vals}
-        if plans_sparse:
-            row_c["p"] = plans_sparse
-        if mism:
-            row_c["m"] = mism
-        first = next(iter(cells.values()), {})
-        if first.get("can_plan"):
-            row_c["can_plan"] = True
-        if first.get("is_custom_tag"):
-            row_c["tag"] = True
-        if first.get("is_management_row"):
-            row_c["mgmt"] = True
-        compact.append(row_c)
-    return compact
+    v2 행은 actual 배열(a) + sparse plan(p) + sparse mismatch(m) + 행-상수
+    플래그만 담는다. 셀마다 행-상수 플래그와 파생 가능한 key 를 반복하던 레거시
+    `_cells` 는 KNOB 2000행×25웨이퍼에서 ≈10.9MB(셀당 실측 441B)였고, HTTP 응답은
+    이미 v2 만 보낸다. 그래서 서버는 v2 만 만들고 캐시하며, 레거시 형태가 필요한
+    내부 호출자(informs embed, 백그라운드 revalidate, knob-allocation, worker
+    task)만 이 함수로 복원한다.
+
+    셀 key 조립 규칙 `root_lot_id|wafer_keys[ci]|_param` 은 FE(My_SplitTable
+    expandViewRows)와 동일한 계약이다 — 어긋나면 plan 저장 키가 틀어진다."""
+    if not isinstance(payload, dict):
+        return payload
+    compact = payload.get("rows_compact")
+    if compact is None:
+        return payload
+    existing = payload.get("rows")
+    if isinstance(existing, list) and existing:
+        return payload
+    wafer_keys = payload.get("wafer_keys") or []
+    n_keys = len(wafer_keys)
+    root = str(payload.get("root_lot_id") or "")
+    rows = []
+    for r in compact:
+        vals = r.get("a") or []
+        plans_sparse = r.get("p") or {}
+        mism = set(r.get("m") or [])
+        can_plan = bool(r.get("can_plan"))
+        is_tag = bool(r.get("tag"))
+        is_mgmt = bool(r.get("mgmt"))
+        param = r.get("_param")
+        cells = {}
+        for ci in range(len(vals)):
+            key = str(ci)
+            wf = wafer_keys[ci] if ci < n_keys else ci
+            cells[key] = {
+                "actual": vals[ci],
+                "plan": plans_sparse.get(key),
+                "key": f"{root}|{wf}|{param}",
+                "can_plan": can_plan,
+                "mismatch": ci in mism,
+                "is_custom_tag": is_tag,
+                "can_tag": is_tag,
+                "is_management_row": is_mgmt,
+                "can_management_edit": is_mgmt,
+            }
+        rows.append({"_param": param, "_display": r.get("_display"), "_cells": cells})
+    out = dict(payload)
+    out["rows"] = rows
+    return out
 
 
 @router.get("/view")
@@ -12952,11 +13274,10 @@ def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
                     include_related: bool = Query(False),
                     cache_first: bool = Query(False),
                     request: Request = None):
-    # HTTP 진입점 — view_split 은 내부 호출자(재검증 스레드/informs embed/테스트)가
-    # 레거시 rows(dict) 를 기대하므로 그대로 두고, 라우트에서만 슬림 셀 포맷으로
-    # 바꿔치기해 orjson 직렬화한다. rows_compact 는 payload 빌드 시 1회 계산되어
-    # view cache 에 같이 저장되므로 HIT 경로 추가 비용은 없다.
-    payload = view_split(
+    # HTTP 진입점 — 서버는 슬림 셀 포맷(v2)만 만들고 캐시한다. 레거시 rows(_cells)를
+    # 기대하는 내부 호출자(재검증 스레드/informs embed/knob-allocation/테스트)는
+    # view_split() 래퍼가 _expand_view_rows() 로 그때 복원해 준다.
+    payload = view_split_core(
         product=product, root_lot_id=root_lot_id, wafer_ids=wafer_ids,
         prefix=prefix, custom_name=custom_name, view_mode=view_mode,
         history_mode=history_mode, fab_lot_id=fab_lot_id,
@@ -12970,7 +13291,14 @@ def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
     return _view_orjson_response(payload)
 
 
-def view_split(product: str = Query(...), root_lot_id: str = Query(""),
+def view_split(**kwargs) -> dict:
+    """레거시 계약(rows = `_cells` dict) 을 유지하는 내부 호출자용 래퍼.
+
+    HTTP 경로는 view_split_core 를 직접 쓰고 슬림 포맷 그대로 내보낸다."""
+    return _expand_view_rows(view_split_core(**kwargs))
+
+
+def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                wafer_ids: str = Query(""), prefix: str = Query("KNOB"),
                custom_name: str = Query(""), view_mode: str = Query("all"),
                history_mode: str = Query("all"),
@@ -12992,6 +13320,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         "overlay_ms": 0.0,
         "root_cache_status": "",
         "root_data_source": "",
+        # 미들웨어 레인 대기(있으면). started 는 레인 통과 후에 찍히므로 이 값을
+        # 더해야 사용자가 체감한 시간(wall_ms)이 된다.
+        "lane_wait_ms": _request_lane_wait_ms(request),
+        "cold_lane_wait_ms": 0.0,
     }
     _history_mode = (history_mode or "all").strip().lower() or "all"
     if _history_mode not in ("all", "final", "lot_all"):
@@ -13082,6 +13414,20 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 runtime_profile=runtime_profile,
                 view_cache_key=view_cache_key,
             )
+    # 여기부터가 실제 메모리/CPU 를 쓰는 cold 계산이다. 미들웨어가 아니라 이 지점에서
+    # 직렬화하므로, 위에서 이미 반환된 캐시 HIT/단일비행 대기 요청은 슬롯을 기다리지
+    # 않는다. 슬롯 확보 실패(레인 포화)는 429 대신 "준비 중" 페이로드로 응답해
+    # FE 의 기존 자동 재조회 흐름을 그대로 태운다.
+    if not _view_cold_lane_acquire(runtime_profile):
+        _view_compute_finish(view_cache_key)
+        return _split_view_cache_preparing_payload(
+            product, root_lot_id, wafer_ids, prefix, _history_mode,
+            {}, {"status": "running", "queued": True},
+            message="검색 요청이 몰려 대기 중입니다. 잠시 후 자동으로 다시 조회합니다.",
+            started=started,
+            runtime_profile=runtime_profile,
+            view_cache_key=view_cache_key,
+        )
     pivot_base_lf = None
     try:
         if root_lot_id.strip() and not cache_first_enabled:
@@ -13160,7 +13506,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         fab_lot_col = "fab_lot_id"
         try:
             schema_names = lf.collect_schema().names()
-            _cfg = load_json(SOURCE_CFG, {}) or {}
+            _cfg = load_json_cached(SOURCE_CFG, {}) or {}
             _ov = _lot_override_for(_cfg, product)
             _fc = (_ov.get("fab_col") or "").strip()
             if _fc and _fc in schema_names:
@@ -13397,21 +13743,29 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         runtime_profile["overlay_ms"] = float(runtime_profile.get("overlay_ms") or 0.0) + (time.perf_counter() - overlay_started) * 1000.0
 
         matrix_started = time.perf_counter()
-        rows = []
+        # 슬림 셀 포맷(v2)을 곧바로 만든다. 예전에는 셀마다 9키 dict + f-string key 를
+        # 만들고(KNOB 2000행×25웨이퍼 ≈ 5만 dict / 10만 f-string) 그 결과를 다시
+        # 전량 순회해 compact 로 변환했다. 이 구간은 순수 파이썬이라 GIL 을 놓지
+        # 않아 동시 검색이 여기서 그대로 직렬화됐다. 셀 key 는 plan/mismatch 가
+        # 실제로 있는 셀에서만 조립한다(대부분 lot 은 plan 이 없거나 몇 개뿐).
+        rows_compact = []
+        row_mismatches = []  # rows_compact 와 같은 인덱스 — diff 필터 후 평탄화
         df_cols_set = set(df.columns)
+        n_cols = len(wf_sorted)
+        has_plans = bool(plans)
         for col_name in selected:
             is_tag_col = col_name in tag_labels
             is_management_row = col_name in management_labels
-            row_vals = [None] * len(wf_sorted)
-            plan_vals = [None] * len(wf_sorted)
+            vals = [None] * n_cols
+            plan_vals = [None] * n_cols
             # v8.8.16: CUSTOM 에 저장된 컬럼이 현재 df 에 없더라도 빈 행으로 표시.
             #   (e.g. plan 전용 가상 컬럼, 다른 제품에서 저장된 컬럼 등). plan 값은 여전히 lookup.
             if is_tag_col:
                 for ci, wf_key in enumerate(wf_sorted):
-                    row_vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+                    vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
             elif is_management_row:
                 for ci, wf_key in enumerate(wf_sorted):
-                    row_vals[ci] = management_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+                    vals[ci] = management_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
             elif col_name in df_cols_set:
                 try:
                     col_data = df[col_name].to_list()
@@ -13419,62 +13773,73 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         key = wf_raw[i] if i < len(wf_raw) else None
                         idx = wf_idx.get(key)
                         if idx is not None:
-                            row_vals[idx] = val
-                            ck = f"{root_lot_id}|{key}|{col_name}"
-                            pv = plans.get(ck, {}).get("value")
-                            if pv is not None:
-                                plan_vals[idx] = pv
+                            vals[idx] = val
+                            if has_plans:
+                                pv = plans.get(f"{root_lot_id}|{key}|{col_name}", {}).get("value")
+                                if pv is not None:
+                                    plan_vals[idx] = pv
                 except Exception:
                     pass
-            else:
+            elif has_plans:
                 # 가상 컬럼 — plan 값만 확인.
                 for ci, wf_key in enumerate(wf_sorted):
-                    ck = f"{root_lot_id}|{wf_key}|{col_name}"
-                    pv = plans.get(ck, {}).get("value")
+                    pv = plans.get(f"{root_lot_id}|{wf_key}|{col_name}", {}).get("value")
                     if pv is not None:
                         plan_vals[ci] = pv
 
-            # Build _cells dict keyed by column index
-            # Check if this column allows plan editing
-            col_upper = col_name.upper()
-            can_plan = (not is_tag_col and not is_management_row) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
-            _cells = {}
-            for ci, wf_key in enumerate(wf_sorted):
-                actual = row_vals[ci]
-                plan = plan_vals[ci]
+            plans_sparse = {}
+            mism = []
+            cell_mismatches = []
+            for ci in range(n_cols):
+                actual = vals[ci]
                 actual_str = None if actual is None else str(actual)
                 if actual_str in ("None", "null"):
                     actual_str = None
-                ck = f"{root_lot_id}|{wf_key}|{col_name}"
-                mismatch = False
+                vals[ci] = actual_str
+                plan = plan_vals[ci]
+                if plan is None:
+                    continue
+                plans_sparse[str(ci)] = plan
                 if plan and actual_str and str(plan) != actual_str:
-                    mismatch = True
-                _cells[str(ci)] = {"actual": actual_str, "plan": plan, "key": ck,
-                                   "can_plan": can_plan, "mismatch": mismatch,
-                                   "is_custom_tag": is_tag_col, "can_tag": is_tag_col,
-                                   "is_management_row": is_management_row,
-                                   "can_management_edit": is_management_row}
-            # v8.8.14: _display — rule_order + step_desc를 포함한 렌더용 이름.
-            #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
-            rows.append({"_param": col_name, "_display": col_rename.get(col_name, col_name), "_cells": _cells})
-
-        if view_mode == "diff":
-            rows = [r for r in rows
-                    if len(set(c.get("actual") for c in r["_cells"].values()
-                               if c.get("actual") is not None)) > 1]
-
-        # Detect mismatches and send notifications to plan owners
-        mismatches = []
-        for r in rows:
-            for ci, cell in r["_cells"].items():
-                if cell.get("mismatch"):
-                    plan_info = plans.get(cell["key"], {})
-                    mismatches.append({
-                        "param": r["_param"], "key": cell["key"],
-                        "plan": cell["plan"], "actual": cell["actual"],
+                    mism.append(ci)
+                    ck = f"{root_lot_id}|{wf_sorted[ci]}|{col_name}"
+                    plan_info = plans.get(ck, {})
+                    cell_mismatches.append({
+                        "param": col_name, "key": ck,
+                        "plan": plan, "actual": actual_str,
                         "plan_user": plan_info.get("user", ""),
                         "plan_updated": plan_info.get("updated", ""),
                     })
+
+            # v8.8.14: _display — rule_order + step_desc를 포함한 렌더용 이름.
+            #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
+            row_c = {"_param": col_name, "_display": col_rename.get(col_name, col_name), "a": vals}
+            if plans_sparse:
+                row_c["p"] = plans_sparse
+            if mism:
+                row_c["m"] = mism
+            if n_cols:
+                # 행-상수 플래그 — 셀이 하나도 없으면(웨이퍼 0개) 레거시와 동일하게 생략.
+                col_upper = col_name.upper()
+                if (not is_tag_col and not is_management_row) and any(
+                        col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES):
+                    row_c["can_plan"] = True
+                if is_tag_col:
+                    row_c["tag"] = True
+                if is_management_row:
+                    row_c["mgmt"] = True
+            rows_compact.append(row_c)
+            row_mismatches.append(cell_mismatches)
+
+        if view_mode == "diff":
+            keep = [i for i, r in enumerate(rows_compact)
+                    if len(set(v for v in r["a"] if v is not None)) > 1]
+            rows_compact = [rows_compact[i] for i in keep]
+            row_mismatches = [row_mismatches[i] for i in keep]
+
+        # Detect mismatches and send notifications to plan owners
+        # (diff 모드에서는 레거시와 동일하게 화면에 남은 행만 대상)
+        mismatches = [m for per_row in row_mismatches for m in per_row]
         runtime_profile["matrix_ms"] = float(runtime_profile.get("matrix_ms") or 0.0) + (time.perf_counter() - matrix_started) * 1000.0
         if not force_recompute:
             # 백그라운드 재검증은 동일 데이터를 재계산하는 것이므로 알림을 중복 발송하지 않는다.
@@ -13496,13 +13861,12 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         runtime_profile["overlay_ms"] = float(runtime_profile.get("overlay_ms") or 0.0) + (time.perf_counter() - overlay_started) * 1000.0
         payload = {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
-            "headers": headers, "rows": rows,
-            "rows_compact": _compact_view_rows(rows, len(wf_sorted)),
+            "headers": headers, "rows_compact": rows_compact,
             "wafer_keys": [f"{k}" for k in wf_sorted],
             "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
             "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "available_fab_lots": available_fab_lots,
-            "prefixes": _load_prefixes(), "precision": load_json(PRECISION_CFG, DEFAULT_PRECISION), "root_lot_id": root_lot_id,
+            "prefixes": _load_prefixes(), "precision": load_json_cached(PRECISION_CFG, DEFAULT_PRECISION), "root_lot_id": root_lot_id,
             "all_columns": all_data_cols, "selected_count": len(selected),
             "prefix": prefix or (custom_name if custom_name else ""),
             "history_mode": _history_mode,

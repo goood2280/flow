@@ -24,10 +24,23 @@ const JOB_TONE = {
   done: "rgba(34,197,94,0.9)", failed: "rgba(239,68,68,0.9)", skipped: "var(--text-secondary)",
 };
 const SCAN_STAGE_LABEL = {
+  lookup_build: "랏(lookup) 캐시 빌드",
   match_cache: "FAB 매칭 캐시",
   product_ram: "제품 원본 RAM 캐시",
   root_lot_ram: "Root lot lookup/RAM 캐시",
 };
+// 작업/단계 상태를 한국어로 — 화면에서 'done/failed' 대신 '완료/실패'로 읽히게.
+const JOB_STATUS_KO = {
+  running: "진행 중", queued: "대기", done: "완료", failed: "실패", skipped: "건너뜀",
+};
+const STAGE_MARK = { done: "✓", running: "●", failed: "✕", skipped: "—", queued: "○" };
+
+function fmtDur(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  if (s < 60) return `${s}초`;
+  if (s < 3600) return `${Math.floor(s / 60)}분 ${s % 60}초`;
+  return `${Math.floor(s / 3600)}시간 ${Math.floor((s % 3600) / 60)}분`;
+}
 
 // 캐시 이벤트 시간은 백엔드가 UTC(ts epoch / ts_iso)로 기록한다. 화면에는 항상
 // 한국시간(Asia/Seoul)으로 표시한다. epoch(ts) 우선, 없으면 ts_iso 파싱.
@@ -72,28 +85,46 @@ function CacheJobPanel({ jobs, queues }) {
         실행 {visible.filter(j => j.status === "running").length} · 외부 큐 {externalQueued}
       </span>
     </div>
-    {visible.map(job => <div key={job.id} style={{ display: "grid", gap: 6, padding: "7px 8px",
-      borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
-        <b>{job.label}</b>
-        <span style={{ color: JOB_TONE[job.status] || "var(--text-secondary)", fontFamily: "monospace" }}>{job.status}</span>
-      </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {(job.stages || []).map(stage => <span key={stage.id} title={stage.detail?.error || ""}
-          style={{ fontSize: 11, padding: "2px 7px", borderRadius: 999,
-            border: `1px solid ${JOB_TONE[stage.status] || "var(--border)"}`,
-            color: JOB_TONE[stage.status] || "var(--text-secondary)" }}>
-          {stage.status === "done" ? "✓" : stage.status === "running" ? "●" : stage.status === "failed" ? "!" : "○"} {stage.label}
-        </span>)}
-      </div>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11,
-        color: "var(--text-secondary)", fontFamily: "monospace" }}>
-        <span>RSS {Number(job.current_rss_gb || 0).toFixed(2)}GB</span>
-        <span>API 작업 Peak {Number(job.peak_effective_gb || 0).toFixed(2)}GB</span>
-        <span>Peak 증가 +{Number(job.peak_delta_gb || 0).toFixed(2)}GB</span>
-        <span>최저 여유 {Number(job.min_system_available_gb || 0).toFixed(2)}GB</span>
-      </div>
-    </div>)}
+    {visible.map(job => {
+      const failedStages = (job.stages || []).filter(s => s.status === "failed");
+      // 진행 신호가 한동안 없으면 '응답 없음'을 명시한다 — 무한 로딩처럼 보이지 않게.
+      const idleWarn = job.status === "running" && Number(job.idle_sec || 0) > 120;
+      return <div key={job.id} style={{ display: "grid", gap: 6, padding: "7px 8px",
+        borderRadius: 6, border: `1px solid ${job.status === "failed" ? "rgba(239,68,68,0.5)" : "var(--border)"}`,
+        background: job.status === "failed" ? "rgba(239,68,68,0.05)" : "var(--bg-secondary)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+          <b>{job.label}</b>
+          <span style={{ color: JOB_TONE[job.status] || "var(--text-secondary)", fontFamily: "monospace", fontWeight: 700 }}>
+            {JOB_STATUS_KO[job.status] || job.status}
+            {job.elapsed_sec != null && <span style={{ color: "var(--text-secondary)", fontWeight: 400 }}>
+              {" · "}{fmtDur(job.elapsed_sec)} 경과</span>}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {(job.stages || []).map(stage => <span key={stage.id} title={stage.detail?.error || ""}
+            style={{ fontSize: 11, padding: "2px 7px", borderRadius: 999,
+              border: `1px solid ${JOB_TONE[stage.status] || "var(--border)"}`,
+              color: JOB_TONE[stage.status] || "var(--text-secondary)" }}>
+            {STAGE_MARK[stage.status] || "○"} {stage.label} · {JOB_STATUS_KO[stage.status] || stage.status}
+          </span>)}
+        </div>
+        {failedStages.length > 0 && <div style={{ fontSize: 11, color: "rgba(239,68,68,0.95)", lineHeight: 1.5 }}>
+          {failedStages.map(s => <div key={s.id}>✕ {s.label} 실패{s.detail?.error ? ` — ${s.detail.error}` : ""}</div>)}
+        </div>}
+        {idleWarn && <div style={{ fontSize: 11, color: "rgba(245,158,11,0.95)" }}>
+          ⚠ {fmtDur(job.idle_sec)} 동안 새 진행 로그가 없습니다
+          {job.stale_after_sec ? ` — ${fmtDur(job.stale_after_sec)}까지 진행이 없으면 자동으로 실패 처리합니다` : ""}
+        </div>}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11,
+          color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          {job.last_event && <span style={{ color: "var(--text-primary)" }}>최근: {job.last_event}</span>}
+          <span>RSS {Number(job.current_rss_gb || 0).toFixed(2)}GB</span>
+          <span>API 작업 Peak {Number(job.peak_effective_gb || 0).toFixed(2)}GB</span>
+          <span>Peak 증가 +{Number(job.peak_delta_gb || 0).toFixed(2)}GB</span>
+          <span>최저 여유 {Number(job.min_system_available_gb || 0).toFixed(2)}GB</span>
+        </div>
+      </div>;
+    })}
     {(externalQueued > 0 || (worker.running || []).length > 0 || lookup.running) &&
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11,
         color: "var(--text-secondary)", fontFamily: "monospace" }}>
@@ -269,11 +300,15 @@ export default function My_RamCache({ user }) {
     loadQueryWorkers();
     loadCacheEventLog("");
   }, [canManage, loadQueryWorkers, loadCacheEventLog]);
+  // 캐시 작업 진행 폴링 — 수동 스캔뿐 아니라 **예약/자동 캐싱**도 같은 화면에
+  // 실시간으로 보이게 한다. 실행 중인 작업이 있으면 2.5초, 없으면 15초 간격.
+  // (수동 스캔 중에는 startScanAndPoll 의 인터벌이 담당하므로 중복 폴링 생략)
   useEffect(() => {
-    if (!canManage || !(cacheJobs || []).some(job => job.status === "running")) return;
-    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), 2500);
+    if (!canManage || unifiedScanBusy) return;
+    const busyJob = (cacheJobs || []).some(job => job.status === "running");
+    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), busyJob ? 2500 : 15000);
     return () => clearTimeout(timer);
-  }, [canManage, cacheJobs, cacheEventLogFilter, loadCacheEventLog]);
+  }, [canManage, unifiedScanBusy, cacheJobs, cacheEventLogFilter, loadCacheEventLog]);
   useEffect(() => {
     if (!selProd) return;
     loadPriority(selProd);
@@ -307,7 +342,18 @@ export default function My_RamCache({ user }) {
         setCacheEventLogFilter(scanLogFilter);
         loadCacheEventLog(scanLogFilter);
         let ticks = 0;
+        let errStreak = 0;
         const MAX_TICKS = maxTicks;
+        const MAX_ERR_STREAK = 5;   // 상태 조회가 연속 실패하면 조용히 도는 대신 중단
+        const finishPolling = () => {
+          clearInterval(poll);
+          setUnifiedScanBusy(false);
+          loadCacheEventLog(scanLogFilter);
+          reloadProductCacheStatus(selProd);
+          reloadRootLotCacheStatus(selProd);
+          loadOverview();
+          if (selProd) loadContents(selProd);
+        };
         const poll = setInterval(() => {
           ticks += 1;
           loadCacheEventLog(scanLogFilter);
@@ -319,22 +365,40 @@ export default function My_RamCache({ user }) {
           }
           sf(API + "/ram-cache/scan-status")
             .then(s => {
+              errStreak = 0;
               setCacheJobs(s.jobs || []); setCacheQueues(s.queues || null);
-              if (!s.running || ticks >= MAX_TICKS) {
-                clearInterval(poll);
-                setUnifiedScanBusy(false);
-                // 종료 직후 마지막 갱신
-                loadCacheEventLog(scanLogFilter);
-                reloadProductCacheStatus(selProd);
-                reloadRootLotCacheStatus(selProd);
-                loadOverview();
-                if (selProd) loadContents(selProd);
+              if (!s.running) {
+                // 끝났으면 성공/실패를 반드시 알린다 — 예전엔 조용히 멈춰
+                // 실패해도 화면상 '그냥 끝난' 것처럼 보였다.
+                const failed = (s.last_stages || []).filter(st => st.status === "failed");
+                if (s.last_status === "failed" || failed.length) {
+                  toast.error("캐시 작업 실패 — "
+                    + (failed.length
+                      ? failed.map(st => `${st.label}${st.error ? `: ${st.error}` : ""}`).join(" / ")
+                      : "자세한 사유는 아래 캐시 이벤트 로그를 확인하세요"));
+                } else {
+                  toast.ok("캐시 작업 완료");
+                }
+                finishPolling();
+                return;
+              }
+              if (ticks >= MAX_TICKS) {
+                // 서버 작업은 계속 진행 중 — 화면 폴링만 멈춘다(무한 폴링 방지).
+                toast.warn("작업이 아직 진행 중입니다 — 자동 갱신을 멈춥니다. "
+                  + "'새로고침'으로 진행 상황을 계속 확인할 수 있습니다.");
+                finishPolling();
               }
             })
-            .catch(() => { if (ticks >= MAX_TICKS) { clearInterval(poll); setUnifiedScanBusy(false); } });
+            .catch(e => {
+              errStreak += 1;
+              if (errStreak >= MAX_ERR_STREAK || ticks >= MAX_TICKS) {
+                toast.error("진행 상태를 확인할 수 없습니다 (" + (e?.message || e) + ") — 자동 갱신을 중단합니다.");
+                finishPolling();
+              }
+            });
         }, 2500);
       })
-      .catch(e => { toast.error("스캔 실패: " + (e?.message || e)); setUnifiedScanBusy(false); });
+      .catch(e => { toast.error("스캔 시작 실패: " + (e?.message || e)); setUnifiedScanBusy(false); });
   };
 
   const runUnifiedScan = () => startScanAndPoll(
@@ -732,10 +796,25 @@ export default function My_RamCache({ user }) {
                 </span>
                 <button onClick={() => { reloadProductCacheStatus(selProd); reloadRootLotCacheStatus(selProd); }}
                   style={{ ...S_BTN, fontSize: 11, padding: "2px 6px", whiteSpace: "nowrap" }}>상태 새로고침</button>
+                {/* 랏(root lot) 캐시가 0 인 이유를 명시 — 개발서버에서 '고장'으로 오인되던 부분.
+                    제품 원본 RAM 캐시 온오프와는 무관하다는 점까지 문장에 포함된다. */}
+                {rc.enabled === false && <div style={{ flexBasis: "100%", fontFamily: "inherit",
+                  fontSize: 12, color: "rgba(245,158,11,0.95)", lineHeight: 1.5 }}>
+                  ⚠ Root lot RAM 캐시 비활성 — {rc.disabled_reason || "이 서버에서 꺼져 있습니다"}
+                </div>}
+                {productCacheStatus?.enabled === false && <div style={{ flexBasis: "100%", fontFamily: "inherit",
+                  fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                  ℹ 제품 원본 RAM 캐시가 꺼져 있습니다(개발서버 권장). 이 설정은 <b>랏(lookup)/Root lot 캐시와 독립</b>이며,
+                  꺼도 랏 캐시 빌드·적재는 정상 동작합니다.
+                </div>}
               </div>);
           })()}
+          {/* 진행 상황 패널 — 수동 스캔/전체 셋업/예약 작업 모두 같은 형태로 표시된다.
+              (단계별 상태 · 경과시간 · 실패 사유 · 메모리 · 외부 큐) */}
+          <CacheJobPanel jobs={cacheJobs} queues={cacheQueues} />
           <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-            수동 스캔의 단계별 진행은 아래 <b>캐시 이벤트 로그</b>에 실시간으로 표시됩니다.
+            수동 스캔의 단계별 진행은 위 <b>캐시 작업 파이프라인</b>과 아래 <b>캐시 이벤트 로그</b>에 실시간으로 표시됩니다.
+            실패하면 단계 배지가 <b style={{ color: "rgba(239,68,68,0.9)" }}>실패</b>로 바뀌고 사유가 함께 표시됩니다.
           </div>
         </div>
 

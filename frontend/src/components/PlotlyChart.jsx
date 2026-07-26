@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Plot from "react-plotly.js";
-import { chartPalette } from "./UXKit";
+import { chartPalette, buildSeriesColors } from "./UXKit";
 
 const SERIES = chartPalette.series || ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#f59e0b", "#0891b2"];
 const MISSING_COLOR = "#9ca3af";
@@ -243,65 +243,232 @@ export function FlowPlotlyChart({
   );
 }
 
+// 컨테이너 실제 폭 관측 — 레전드가 몇 줄로 접히는지 계산하려면 픽셀 폭이 필요하다.
+function useBoxWidth() {
+  const ref = useRef(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const upd = () => setW(el.clientWidth || 0);
+    upd();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", upd);
+      return () => window.removeEventListener("resize", upd);
+    }
+    const ro = new ResizeObserver(upd);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+
+
+// 대략적인 글자 폭(= font size × 비율). Plotly 기본 sans-serif 기준 근사치.
+const GLYPH_W = 0.62;
+// 스택 세그먼트 사이를 갈라놓는 표면색 간격(px). 테두리를 그리는 대신 배경색
+// 선을 얹어 인접 색이 서로 번지지 않게 한다.
+const SEGMENT_GAP = 1;
+// 막대 두께 상한 — 굵은 색 블록이 되지 않도록 잘라내고 남는 폭은 여백으로 둔다.
+const BAR_MAX_PX = 24;
+// bin 이 한두 개뿐이면(예: 간격 100000) 24px 막대 하나가 빈 캔버스에 떠 있는
+// 꼴이 된다 — 이때만 두께를 풀어 "전체 대비 구성" 막대처럼 읽히게 한다.
+const BAR_MAX_PX_SPARSE = 96;
+
 export function WipStackedBar({
   bins = [],
   splitValues = [],
   height = 420,
   dark = false,
   unassignedLabel = "(미지정)",
-  xLabel = "STEP BIN",
-  yLabel = "WAFERS",
+  otherLabel = "",
+  norm = "count",   // "count" | "percent" — percent 면 각 구간을 100% 로 정규화
 }) {
-  const bg = dark ? "#111111" : "#ffffff";
-  const fg = dark ? "#e5e7eb" : "#111827";
-  const grid = dark ? "rgba(148,163,184,0.22)" : "rgba(15,23,42,0.12)";
+  // 표면/잉크는 앱 테마 토큰과 같은 값 — 차트가 카드 위에 얹힌 것처럼 보이게.
+  const surface = dark ? "#262626" : "#ffffff";
+  const ink = dark ? "#e5e5e5" : "#171717";
+  const muted = dark ? "#a3a3a3" : "#737373";
+  const hairline = dark ? "#333333" : "#ececec";
+  const [boxRef, boxW] = useBoxWidth();
+
+  const baseH = Math.max(240, Math.round(height));
+  const tickFont = 10;
+
+  // 첫 렌더는 추정식으로 그리고, 실제 그려진 레전드 높이를 재서 한 번 보정한다
+  // (plotly 의 줄바꿈 개수는 폰트 실측폭에 달려 있어 추정이 어긋날 수 있다).
+  const [legendMeasured, setLegendMeasured] = useState(0);
+  const legendMeasuredRef = useRef(0);
+  const legendSig = `${splitValues.length}|${splitValues.join("|").length}|${boxW}`;
+  useEffect(() => { legendMeasuredRef.current = 0; setLegendMeasured(0); }, [legendSig]);
+  const onPlotRendered = (_fig, gd) => {
+    const eff = gd?._fullLayout?.legend?._effHeight;
+    if (!eff) return;
+    const px = Math.round(eff) + 10;
+    if (Math.abs(px - legendMeasuredRef.current) > 4) {
+      legendMeasuredRef.current = px;
+      setLegendMeasured(px);
+    }
+  };
+
+  // ── 아래 여백 배분: x 눈금 라벨 → 레전드. 축 제목은 카드 헤더가 대신하므로
+  // 그리지 않는다(세로 공간 절약). 레전드를 plotly 자동 배치에 맡기면 계열이
+  // 스무 개쯤 될 때 x축 글자 위로 겹치므로 필요한 픽셀을 직접 계산한다.
+  const geo = useMemo(() => {
+    const maxTickLen = bins.reduce((m, b) => Math.max(m, String(b?.label ?? "").length), 0);
+    const plotW0 = Math.max(320, (boxW || 1200) - 56 - 18);
+    // bin 이 50~80개여도 라벨은 눕히지 않는다 — 세로로 눕힌 90도 라벨은 높이를
+    // 80px 씩 먹고 읽히지도 않는다. 대신 들어갈 수 있는 개수만 골라 찍는다.
+    const labelPitch = maxTickLen * tickFont * GLYPH_W + 16;
+    const maxLabels = Math.max(2, Math.floor(plotW0 / labelPitch));
+    const tickStep = Math.max(1, Math.ceil(bins.length / maxLabels));
+    const tickvals = bins.filter((_, i) => i % tickStep === 0).map((b) => b.label);
+    const tickPx = Math.round(tickFont * 1.9);
+    const tickToLegend = 14;
+
+    const n = splitValues.length;
+    const legendFont = 11;
+    const maxNameLen = splitValues.reduce((m, s) => Math.max(m, String(s).length), 0);
+    // 이름이 다 들어가는 폭을 우선하고, 220px 를 넘길 때만 잘라 쓴다.
+    const wantedEntry = Math.round(maxNameLen * legendFont * GLYPH_W) + 30;
+    const entryPx = Math.max(60, Math.min(220, wantedEntry));
+    const plotW = Math.max(320, (boxW || 1200) - 56 - 18);
+    // 실측: 한 항목의 가로 피치 = entrywidth + itemwidth(30) + 여백(≈15).
+    const perRow = Math.max(1, Math.floor(plotW / (entryPx + 45)));
+    const legendRows = n ? Math.ceil(n / perRow) : 0;
+    const legendEst = n ? legendRows * (legendFont + 8) + 8 : 0;
+    const legendPx = legendMeasured > 0 ? Math.max(legendEst, legendMeasured) : legendEst;
+
+    // 주어진 높이를 절대 넘기지 않는다 — 전체화면에서 한 화면에 들어와야 하므로
+    // 공간이 부족하면 그림 영역을 줄이고(하한 120px) 레전드를 우선 살린다.
+    const want = tickPx + tickToLegend + legendPx + 6;
+    const totalH = baseH;
+    const bottom = Math.round(Math.max(32, Math.min(want, totalH - 12 - 120)));
+    const plotAreaH = Math.max(80, totalH - 12 - bottom);
+    const legendY = -Math.min(0.98, (tickPx + tickToLegend) / plotAreaH);
+    const nameChars = Math.max(8, Math.floor((entryPx - 26) / (legendFont * GLYPH_W)));
+
+    // 막대 두께: 카테고리 한 칸의 픽셀 폭에서 상한을 넘지 않게 데이터 단위로 환산.
+    const perCat = plotW / Math.max(1, bins.length);
+    const capPx = bins.length <= 3 ? BAR_MAX_PX_SPARSE : BAR_MAX_PX;
+    const barWidth = Math.min(0.72, capPx / Math.max(1, perCat));
+    return { totalH, bottom, legendY, legendFont, entryPx, nameChars, barWidth, tickvals };
+  }, [bins, splitValues, boxW, baseH, tickFont, legendMeasured]);
+
+  const colorMap = useMemo(
+    () => buildSeriesColors(splitValues, { dark, missingLabel: unassignedLabel, otherLabel }),
+    [splitValues, dark, unassignedLabel, otherLabel],
+  );
+
   const traces = useMemo(() => {
     const labels = bins.map((b) => b.label);
-    let colorIdx = 0;
     return splitValues.map((sv) => {
-      const isMissing = sv === unassignedLabel;
-      const color = isMissing ? MISSING_COLOR : SERIES[colorIdx++ % SERIES.length];
+      const full = String(sv);
+      // 레전드 항목 폭을 넘는 긴 값은 잘라 표기 — 원값은 hover 와 표에 그대로 있다.
+      const shown = full.length > geo.nameChars ? `${full.slice(0, geo.nameChars - 1)}…` : full;
+      const counts = bins.map((b) => Number(b?.splits?.[sv] || 0));
+      // 축이 %로 바뀌어도 hover 는 늘 원 수량과 구간 내 비중을 같이 보여준다.
+      const cd = bins.map((b, i) => [counts[i], b.total ? (counts[i] / b.total) * 100 : 0, String(b.full ?? b.label ?? "")]);
       return {
         type: "bar",
-        name: sv,
+        name: shown,
         x: labels,
-        y: bins.map((b) => Number(b?.splits?.[sv] || 0)),
-        marker: { color, opacity: isMissing ? 0.55 : 0.92 },
-        hovertemplate: `%{x}<br>${sv}: %{y} wafers<extra></extra>`,
+        y: counts,
+        customdata: cd,
+        width: geo.barWidth,
+        marker: {
+          color: colorMap[sv] || MISSING_COLOR,
+          // 테두리가 아니라 "표면색 간격" — 맞닿은 세그먼트를 흰 선이 가른다.
+          line: { color: surface, width: SEGMENT_GAP },
+        },
+        hovertemplate: `<b>${full}</b><br>%{customdata[2]}<br>%{customdata[0]:,} wafer · 구간의 %{customdata[1]:.1f}%<extra></extra>`,
       };
     });
-  }, [bins, splitValues, unassignedLabel]);
+  }, [bins, splitValues, geo.nameChars, geo.barWidth, colorMap, surface]);
 
   if (!bins.length) {
-    return <div style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>표시할 WIP 데이터가 없습니다.</div>;
+    return (
+      <div ref={boxRef} style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: muted, fontSize: 13 }}>
+        표시할 WIP 데이터가 없습니다.
+      </div>
+    );
   }
-  // bin 수가 많아도 가로 스크롤을 만들지 않고 항상 컨테이너 폭에 맞춘다 —
-  // 막대는 얇아지고 라벨은 회전/축소로 대응한다(전체화면 폭에 한눈에 들어오게).
-  const manyBins = bins.length > 24;
-  const veryMany = bins.length > 48;
-  const tickFont = veryMany ? 9 : manyBins ? 10 : 12;
-  const chartH = Math.max(240, height);
   return (
-    <div style={{ width: "100%", minHeight: Math.max(220, height) }}>
+    <div ref={boxRef} style={{ width: "100%", height: geo.totalH }}>
       <Plot
         data={traces}
         layout={{
           autosize: true,
-          height: chartH,
+          height: geo.totalH,
           barmode: "stack",
-          bargap: veryMany ? 0.04 : 0.15,
-          paper_bgcolor: bg,
-          plot_bgcolor: bg,
-          margin: { l: 64, r: 22, t: 16, b: veryMany ? 96 : manyBins ? 84 : 62 },
+          barnorm: norm === "percent" ? "percent" : "",
+          bargap: 0.12,
+          paper_bgcolor: surface,
+          plot_bgcolor: surface,
+          font: { family: "system-ui, -apple-system, 'Segoe UI', sans-serif", color: muted },
+          // autoexpand 를 끄면 plotly 가 레전드에 맞춰 여백을 다시 부풀리지 않는다
+          // — 아래 여백/레전드 y 를 여기서 계산한 값 그대로 쓰기 위함.
+          margin: { l: 56, r: 18, t: 12, b: geo.bottom, autoexpand: false },
           hovermode: "closest",
-          xaxis: { title: { text: xLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true, type: "category", tickangle: veryMany ? -90 : manyBins ? -45 : 0, tickfont: { size: tickFont, color: fg } },
-          yaxis: { title: { text: yLabel, font: { size: 13, color: fg } }, gridcolor: grid, zerolinecolor: grid, color: fg, automargin: true },
-          legend: { orientation: "h", y: -0.28, x: 0, font: { size: 11, color: fg } },
-          showlegend: true,
+          hoverlabel: {
+            bgcolor: surface,
+            bordercolor: hairline,
+            font: { size: 12, color: ink, family: "system-ui, -apple-system, 'Segoe UI', sans-serif" },
+          },
+          xaxis: {
+            type: "category",
+            showgrid: false,
+            showline: true,
+            linecolor: hairline,
+            linewidth: 1,
+            ticks: "",
+            tickangle: 0,
+            tickmode: "array",
+            tickvals: geo.tickvals,
+            tickfont: { size: tickFont, color: muted },
+            automargin: false,
+          },
+          yaxis: {
+            // 값은 눈금이 읽어준다 — 축 제목/눈금선은 카드 헤더와 hairline 이 대신.
+            gridcolor: hairline,
+            gridwidth: 1,
+            griddash: "solid",
+            zeroline: false,
+            showline: false,
+            ticks: "",
+            nticks: 5,
+            separatethousands: true,
+            tickfont: { size: 11, color: muted },
+            automargin: false,
+            rangemode: "tozero",
+            ...(norm === "percent"
+              ? { range: [0, 100], tickmode: "array", tickvals: [0, 25, 50, 75, 100], ticktext: ["0", "25", "50", "75", "100%"] }
+              : {}),
+          },
+          legend: {
+            orientation: "h",
+            x: 0,
+            xanchor: "left",
+            y: geo.legendY,
+            yanchor: "top",
+            yref: "paper",
+            font: { size: geo.legendFont, color: muted },
+            entrywidth: geo.entryPx,
+            entrywidthmode: "pixels",
+            itemwidth: 30,
+            bgcolor: "rgba(0,0,0,0)",
+          },
+          showlegend: splitValues.length > 1,
         }}
-        config={{ responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"] }}
+        config={{
+          responsive: true,
+          displaylogo: false,
+          // 모드바는 hover 시에만, PNG 저장 하나만 남긴다 — 확대/올가미는 이 차트에 불필요.
+          modeBarButtonsToRemove: ["lasso2d", "select2d", "zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
+        }}
+        onInitialized={onPlotRendered}
+        onUpdate={onPlotRendered}
         useResizeHandler
-        style={{ width: "100%", height: chartH }}
+        style={{ width: "100%", height: geo.totalH }}
       />
     </div>
   );

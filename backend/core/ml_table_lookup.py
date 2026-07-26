@@ -351,6 +351,30 @@ def _load_priority_root_lot_ids(product: str) -> list[str]:
     return out
 
 
+def root_ram_cache_disabled_reason() -> str:
+    """root lot RAM 캐시가 꺼져 있는 이유(사람이 읽는 문장). 켜져 있으면 빈 문자열.
+
+    개발/worker 서버에서 랏 캐시가 '안 올라오는' 것이 고장으로 오인되지 않도록
+    화면에 그대로 노출한다. 이 캐시는 조회를 서빙하는 운영(api) 서버 전용이며,
+    **제품 원본 RAM 캐시(끄기 권장) 와는 완전히 별개**다 — 원본 RAM 캐시를 꺼도
+    랏(lookup) 캐시 빌드와 root RAM 적재는 영향받지 않는다."""
+    if _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False):
+        return "env FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE=1 로 꺼져 있습니다"
+    try:
+        from core.worker_dispatch import server_role
+
+        if server_role() == "worker" and not _env_bool("FLOW_ENABLE_WORKER_RAM_CACHE", False):
+            return ("이 서버의 역할이 '개발(worker)' 이라 root lot RAM 캐시가 비활성입니다 "
+                    "— 조회를 서빙하는 운영(api) 서버 전용. 개발서버에서도 적재하려면 "
+                    "env FLOW_ENABLE_WORKER_RAM_CACHE=1. (제품 원본 RAM 캐시 온오프와는 무관)")
+    except Exception:
+        pass
+    if _root_ram_cache_max_bytes() <= 0:
+        return ("root RAM 캐시 예산이 0 입니다 — ⚙ 예산 설정의 'Root RAM 캐시 GB'"
+                "(개발/운영 분리) 또는 전체 캐시 풀 비율을 확인하세요")
+    return ""
+
+
 def root_ram_cache_available() -> bool:
     if _env_bool("FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE", False):
         return False
@@ -1901,6 +1925,7 @@ def root_ram_cache_status(fp: Path | None = None, *, include_detail: bool = Fals
     entry_groups = [str(entry.get("cache_group") or "other") for _key, entry in entries]
     out = {
         "enabled": root_ram_cache_available(),
+        "disabled_reason": root_ram_cache_disabled_reason(),
         "hit_roots": len(entries),
         "stale_roots": len([1 for _key, entry in entries if entry.get("stale")]),
         "priority_hit_roots": len([g for g in entry_groups if g == "priority"]),

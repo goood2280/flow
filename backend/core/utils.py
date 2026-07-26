@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import csv as csv_mod
+from collections import OrderedDict
 from pathlib import Path
 from fastapi import HTTPException
 import polars as pl
@@ -726,6 +727,54 @@ def load_json(path: Path, default=None):
     return default if default is not None else {}
 
 
+# ── 읽기 전용 설정/오버레이 JSON 메모이즈 ─────────────────────────────────────
+# SplitTable cold 검색 1회가 plan/custom-tag/management/prefix/precision/source
+# 설정 JSON 을 매번 read + json.loads 했다. 이 파일들은 공유 드라이브에 있고
+# 파싱은 GIL 을 쥔 채 도는 순수 파이썬이라, 동시 검색이 늘수록 그대로 직렬화됐다.
+# mtime+size 로 키를 잡아 내용이 바뀌면 자동 무효화되고, 앱을 통한 쓰기는
+# save_json 이 즉시 무효화한다.
+#
+# 반환 객체는 호출자들 사이에서 '공유'된다 — 반드시 읽기 전용으로만 쓸 것.
+# 수정이 필요하면 load_json() 을 그대로 쓰거나 복사해서 다루면 된다.
+_JSON_CACHE: "OrderedDict[str, tuple[float, int, object]]" = OrderedDict()
+_JSON_CACHE_LOCK = threading.Lock()
+_JSON_CACHE_MAX_ENTRIES = 128
+
+
+def load_json_cached(path: Path, default=None):
+    """load_json 의 메모이즈 버전 — 반환 dict/list 를 수정하면 안 된다."""
+    try:
+        st = path.stat()
+    except Exception:
+        return default if default is not None else {}
+    key = str(path)
+    sig = (st.st_mtime, int(st.st_size))
+    with _JSON_CACHE_LOCK:
+        hit = _JSON_CACHE.get(key)
+        if hit is not None and (hit[0], hit[1]) == sig:
+            _JSON_CACHE.move_to_end(key)
+            return hit[2]
+    try:
+        value = json.loads(path.read_text("utf-8"))
+    except Exception:
+        return default if default is not None else {}
+    with _JSON_CACHE_LOCK:
+        _JSON_CACHE[key] = (sig[0], sig[1], value)
+        _JSON_CACHE.move_to_end(key)
+        while len(_JSON_CACHE) > _JSON_CACHE_MAX_ENTRIES:
+            _JSON_CACHE.popitem(last=False)
+    return value
+
+
+def invalidate_json_cache(path: Path | None = None) -> None:
+    """save_json 및 외부 쓰기 경로에서 호출 — 경로 미지정이면 전체 비움."""
+    with _JSON_CACHE_LOCK:
+        if path is None:
+            _JSON_CACHE.clear()
+        else:
+            _JSON_CACHE.pop(str(path), None)
+
+
 def _json_default(o):
     """v8.8.2: datetime/Decimal/UUID/Path/set 등 비-JSON 타입을 안전하게 문자열로.
     polars import 결과 rows 에 섞여 들어오는 타입들을 커버."""
@@ -766,6 +815,9 @@ def save_json(path: Path, data, indent: int = None):
         json.dumps(data, ensure_ascii=False, indent=indent, default=_json_default),
         "utf-8",
     )
+    # mtime 해상도가 거친 파일시스템에서도 같은 초 안의 재저장이 즉시 반영되도록
+    # 명시적으로 비운다 (load_json_cached 의 mtime+size 키와 이중 안전장치).
+    invalidate_json_cache(path)
 
 
 def jsonl_append(path: Path, entry: dict, add_timestamp: bool = True):

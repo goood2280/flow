@@ -1,72 +1,119 @@
-# SplitTable 검색 속도 — CPU/메모리 스케일링 분석 & 권장치
+# SplitTable 검색 및 메모리 운영 기준
 
-작성 2026-07-14. 대상: root_lot_id 검색이 4000행 기준 최대 ~10초 걸리는 콜드 경로.
+기준 환경은 운영 서버 5코어/28GB, 개발 worker 서버 5코어/10~15GB이다.
+FAB 원본은 수 GB, `ML_TABLE_<제품>.parquet`은 수백 MB, 제품별 root lot은
+수천 개까지 증가할 수 있다고 가정한다.
 
-## 1. 검색 단계별 breakdown (관리자 화면에서 실시간 확인)
+## 검색 경로
 
-`GET /api/splittable/view` 응답의 `runtime_profile` 과 관리자 페이지의
-"SplitTable 검색 타이밍" 표에서 아래 값을 ms 단위로 확인한다.
+1. `/api/splittable/view`는 같은 조건의 완성된 view payload cache를 먼저 찾는다.
+2. 서로 다른 root lot의 첫 검색은 제품별 pre-pivot cache 또는 root-lot lookup
+   partition 하나만 읽는다. 요청 스레드는 해당 root의 전체 wide frame을 RAM에
+   올리지 않고, 화면에 필요한 prefix/custom 컬럼만 parquet projection으로 읽는다.
+3. 수백 MB ML_TABLE에 lookup cache가 없으면 API 프로세스에서 원본 전체를 읽지
+   않는다. worker에 빌드를 예약하고 `queued/running` 응답을 반환한다.
+4. UI는 준비 응답을 받으면 `cache_first=true`로 자동 재조회한다. 준비 중 재조회는
+   검색 감사 로그를 중복 생성하지 않는다.
+5. 동일 키의 동시 첫 검색은 single-flight로 합쳐 같은 root를 여러 번 계산하지 않는다.
+6. API startup maintainer가 누락된 lookup/pivot/FAB root index를 선제 탐지한다. 실제
+   빌드는 개발 worker에 맡기고, worker가 꺼져 있으면 운영 서버가 사용자 요청이
+   10초 이상 조용할 때 하나씩 수행한다.
+7. 디스크에서 처음 읽은 root의 전체 RAM 예열 역시 요청 밖의 단일 idle queue에서
+   진행한다. 압축 partition이 128MB를 넘으면 transient OOM 방지를 위해 RAM 예열을
+   생략하고 projection 디스크 경로를 유지한다.
 
-| 단계 | 필드 | 내용 | 병렬화 |
-|---|---|---|---|
-| 데이터 소스 | `data_source` | payload_cache / pivot_cache / product_ram / **ram**(메모리 HIT) / **ram_load**(첫 적재) / **disk**(첫 검색) / raw | — |
-| root scan | `root_scan_ms` | RAM 캐시 조회 or 파티션 parquet 읽기 | polars |
-| scan(준비) | `scan_ms` | 위 + latest-lot/fab override join **lazy 구성** | polars |
-| collect | `collect_ms` | 피벗 프레임 실제 collect | **polars (코어 스케일)** |
-| matrix | `matrix_ms` | 셀 매트릭스 구성(Python 루프) | **serial (병목)** |
-| overlay | `overlay_ms` | plan/tag/management 오버레이 | 경미 |
+`cache_status()`는 성공 시 마지막에 원자 기록되는 `_meta.json`으로 완성 여부를
+판단한다. 모든 root 디렉터리를 재귀 순회하지 않는다. DB/cache 경로와 의존 파일
+signature는 짧은 TTL로 메모한다. 실제 파티션이 사라졌지만 meta가 남아 있으면
+candidate index에 존재하는 root에 한해 자동 재빌드를 예약한다.
 
-콜드(=`disk`/`ram_load`) 10초의 대부분은 **collect_ms**(파티션 스캔+조인+피벗)와
-**matrix_ms**(4000행 × 파라미터 셀 Python 루프)에 몰린다. 메모리 HIT(`ram`)면
-root_scan 이 수십 ms 로 떨어지고 collect 도 in-memory 라 전체가 sub-second 로 준다.
+## 현재 샘플 기준 (2026-07-22)
 
-## 2. CPU 스케일링
+- lookup 상태 확인: median 약 0.36ms, p95 약 0.48ms
+- 서로 다른 5개 root 순차 조회(pivot 준비됨): 56~151ms, 첫 import성 조회 제외 시
+  약 56~86ms
+- 서로 다른 5개 root 동시 조회: 전체 wall 312ms, 각 요청 308~311ms
+- 동일 조건 재조회: 8.7ms
+- 5개 cold lookup partition 동시 projection 조회: 전체 wall 433ms, 측정 프로세스
+  peak RSS 증가 71.7MB
+- 전체 30-root pivot 준비: 988ms, 측정 프로세스 peak RSS 증가 67.0MB
 
-- polars 스레드 = `min(FLOW_CPU_BUDGET_CORES, 코어수-1)` (기본 `코어수-1`). scan/join/
-  collect 가 이 스레드로 병렬 실행된다 (`backend/core/runtime_limits.py:_default_polars_threads`).
-- **권장: 물리 8코어(→ polars 7스레드).** 4→8코어면 polars 병렬 구간이 대략 1.7~2×
-  빨라진다. 8코어 초과는 단일 4000행 검색에선 수확체감 — parquet row-group 수 상한과
-  serial 한 `matrix` 루프(Amdahl) 때문. 동시 사용자(설계 30명)를 감안하면 8~12코어가
-  현실적 상한.
-- 예열(상시 RAM 캐시 채우기)은 이제 **병렬 로드**(`FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS`,
-  기본 `min(8, cpu_budget)`)라 코어 수에 비례해 hot set 을 빨리 채운다 →
-  콜드 10초 검색 자체의 발생 빈도가 준다.
+샘플은 약 0.8MB ML_TABLE/30 root 데이터다. 운영의 수백 MB 원본에서는 첫 전체
+lookup 빌드 시간은 더 길지만, 요청 프로세스는 그 파일을 직접 전체 scan하지 않고
+준비 화면을 반환한다. lookup 완성 뒤 개별 root 조회량은 제품 전체가 아니라 해당
+partition 크기에 비례한다.
 
-## 3. 메모리 스케일링
+## 메모리 한도
 
-- RAM 캐시 예산 = RSS 한도의 40%, `[3, 8]GB` 클램프. RSS 한도 = 총 메모리의 80%
-  (`runtime_limits.auto_process_memory_limit_gb`, `_root_ram_cache_auto_max_gb`).
-- 상시 유지 목표 = `target_roots` ≈ 1000 root(knob 수준). 4000행 root 파티션이 수 MB면
-  1000 root ≈ 수 GB.
-- **권장: 개발 16GB / 양산 24~32GB.**
-  - 16GB → RSS 한도 ~12.8GB → 캐시 예산 ~5GB (16×0.8×0.4). 1000-root hot set 이 대체로
-    상주 → 대부분 검색이 메모리 HIT.
-  - 메모리가 부족하면 eviction 으로 hot root 가 디스크로 밀려 **10초 콜드 읽기가 반복**된다.
-  - `FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB` 로 캐시 예산을 명시 고정 가능.
+기본 process soft limit은 물리 메모리의 80%, 전체 cache pool은 물리 메모리의
+45%이다. 개별 cache 환경변수를 더 크게 지정해도 전체 pool의 해당 share를 넘지
+못한다.
 
-간이 산식: 필요 캐시 예산 ≈ (target_roots) × (root당 평균 파티션 MB). 이 값이 host의
-40%×80%×총메모리보다 작아야 eviction 없이 상주한다.
+| cache | pool share | 운영 28GB 기준 상한 |
+|---|---:|---:|
+| SplitTable root RAM | 40% | 약 5.04GB |
+| FileBrowser preview | 18% | 약 2.27GB |
+| SplitTable product RAM | 14% | 약 1.76GB |
+| SplitTable view payload | 12% | 약 1.51GB |
+| Reformatize raw | 10% | 약 1.26GB |
+| Reformatize wide | 6% | 약 0.76GB |
 
-## 4. 병렬처리 반영/후속
+운영 API의 process soft limit은 약 22.4GB다. worker가 없어서 운영 서버에서
+fallback하는 heavy 작업도 semaphore 1개로 직렬화하며, 기본 약 4.2GB의 host
+available memory를 남기지 못하면 최대 120초 대기 후 안전하게 실패한다. 자동
+유지보수 fallback은 사용자 요청이 계속 있으면 기본 최대 30분 대기 후 다음 주기로
+미루며, pivot 파일 생성도 root 1개씩 처리한다.
 
-- **반영됨**: 상시 RAM 캐시 예열의 파티션 로드 병렬화(위 워커). eviction/우선순위
-  결정성은 "병렬 로드 → 우선순위 순 순차 삽입"으로 보존.
-- **후속 후보**: `matrix` 단계의 Python 셀 루프(`splittable.py` `_prepare_view_frame` 이후
-  매트릭스 구성)가 유일한 serial 병목. 대량 행에서 polars 벡터화 또는 파라미터 청크
-  병렬화로 추가 개선 여지. (이번 변경 범위 밖.)
+개발 worker는 `FLOW_WORKER_CONCURRENCY=1`, Polars 2 threads가 기본이다. API용
+root/product/view RAM cache 및 일반 scheduler는 worker 역할에서 비활성화된다.
+worker task claim은 available memory 2.5~4GB와 process memory 80%를 admission
+기준으로 사용한다. lookup cache 초기 생성은 운영 fallback에서 root 4개, 개발
+worker에서 root 2개씩만 collect하고, pivot 생성은 서버 역할과 무관하게 1개씩
+처리한다.
 
-## 5. 설정 레버 요약
+5코어 운영 API에서 root-scoped SplitTable 조회 lane은 기본 3개다. 5명이 동시에
+조회하면 3개가 실행되고 2개는 최대 90초 queue에서 기다리므로, 다섯 full-wide
+collect가 동시에 겹치거나 즉시 429가 나는 구조가 아니다.
 
-| env | 기본 | 용도 |
-|---|---|---|
-| `FLOW_CPU_BUDGET_CORES` | 자동(코어-1) | polars/예열 코어 예산 |
-| `FLOW_POLARS_MAX_THREADS` | min(예산, 코어-1) | polars 스레드 직접 지정 |
-| `FLOW_PROCESS_MEMORY_LIMIT_GB` | 자동(총×0.8) | RSS 소프트 한도 |
-| `FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_MAX_GB` | 자동(한도×0.4, 3~8) | RAM 캐시 예산 |
-| `FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_TARGET_ROOTS` | 1000 | 상시 유지 root 수 |
-| `FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_LOAD_WORKERS` | min(8, 예산) | 예열 병렬 로드 워커 |
-| `FLOW_SPLITTABLE_ROOT_LOT_RAM_CACHE_STEP_IDS` | 설정(톱니바퀴) | 캐싱 대상 step_id |
+## 권장 역할 설정
 
-**요약 권장**: 8코어 / 16GB(개발), 8~12코어 / 24~32GB(양산 동시 30명). 이러면 지정 step
-통과 lot ~1000개가 상시 메모리 상주 → 콜드 10초 검색이 대부분 메모리 HIT sub-second 로
-수렴하고, 남는 콜드 검색도 polars 코어 스케일로 단축된다.
+운영 서버:
+
+```text
+FLOW_SERVER_ROLE=api
+FLOW_CACHE_TOTAL_BUDGET_FRACTION=0.45
+FLOW_PROCESS_MEMORY_LIMIT_FRACTION=0.80
+```
+
+개발 서버:
+
+```text
+FLOW_SERVER_ROLE=worker
+FLOW_WORKER_CONCURRENCY=1
+FLOW_POLARS_MAX_THREADS=2
+```
+
+개별 RAM cache GB 값을 먼저 고정하기보다 전체 pool 비율을 유지한다. 특정 cache를
+줄여야 할 때만 해당 `*_MAX_GB` 값을 더 낮게 지정한다.
+
+## 운영 관측
+
+RAM 캐시 관리 화면의 수동 스캔 패널은 다음을 표시한다.
+
+- FAB match → 제품 RAM → root lot RAM 단계별 queued/running/done/failed 상태
+- 현재 API RSS, 해당 작업 시작 이후 API peak 증가량, 최소 host available memory
+- worker 실행/대기 task, lookup build 실행/대기 제품
+- 현재 root RAM idle 예열 항목과 앞으로 대기 중인 root
+- worker 현재 effective memory와 worker 프로세스 lifetime peak RSS
+
+API 작업 peak와 worker 프로세스 peak는 서로 다른 프로세스의 값이므로 화면에서도
+구분해서 표기한다.
+
+## 검증
+
+```powershell
+python -m py_compile backend/core/cache_event_log.py backend/core/ml_table_lookup.py backend/core/worker_dispatch.py backend/core/worker_tasks.py backend/routers/splittable.py
+python -m pytest -q tests/test_worker_cache_resilience.py
+cd frontend
+npm run build
+```
