@@ -2002,7 +2002,8 @@ export default function My_FileBrowser({user}){
               return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
                 onClick={()=>{
                   if(isDirUp){
-                    setBaseDir("");
+                    // 최상위로 튀지 않고 바로 위 폴더로. (예: valve-alerts/pipeline → valve-alerts)
+                    setBaseDir(baseDir.includes("/")?baseDir.slice(0,baseDir.lastIndexOf("/")):"");
                     setSelBaseMeta(null);
                     setSelBaseFile("");
                     setData(null);

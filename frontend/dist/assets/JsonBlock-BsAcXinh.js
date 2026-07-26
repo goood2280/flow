@@ -1,0 +1,1 @@
+import{j as e}from"./index-Ce_zVL-H.js";function i({value:r,maxHeight:o=160}){return e.jsx("pre",{style:{margin:0,maxHeight:o,overflow:"auto",padding:8,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-secondary)",fontSize:12,lineHeight:1.45,whiteSpace:"pre-wrap",wordBreak:"break-word"},children:JSON.stringify(r??{},null,2)})}export{i as J};

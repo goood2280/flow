@@ -3009,6 +3009,50 @@ def test_admin_configured_folder_can_be_versioned_single_file(monkeypatch, tmp_p
     assert "cache" not in filebrowser._load_filebrowser_settings()["versioned_single_file_dirs"]
 
 
+def test_drop_in_json_folder_is_listed_without_registration(monkeypatch, tmp_path):
+    """Valve 매칭알람처럼 루트에 통째로 넣은 json 폴더는 등록 없이 Files 에 보여야 한다."""
+    pipeline = tmp_path / "valve-alerts" / "pipeline"
+    pipeline.mkdir(parents=True)
+    (pipeline / "VH_PRODA.json").write_text('{"alerts": []}', encoding="utf-8")
+    (pipeline / "ack.json").write_text("{}", encoding="utf-8")
+    # parquet/CSV 가 든 폴더는 DB 스코프 소유 — Files 에 끌어오지 않는다.
+    hive_dir = tmp_path / "1.RAWDATA_DB_ET"
+    hive_dir.mkdir()
+    (hive_dir / "part.csv").write_text("a\n1\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+    filebrowser._DROP_IN_FOLDER_CACHE.clear()
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "csv_rules": {},
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+    })
+
+    listed = filebrowser.base_files()
+    paths = {row.get("path") for row in listed["files"]}
+    assert "valve-alerts" in paths
+    assert "valve-alerts/pipeline/VH_PRODA.json" in paths
+    assert "valve-alerts/pipeline/ack.json" in paths
+    assert not any(str(p or "").startswith("1.RAWDATA_DB_ET") for p in paths)
+
+    preview = filebrowser.base_file_view(
+        file="valve-alerts/pipeline/VH_PRODA.json",
+        sql="",
+        rows=200,
+        cols=10,
+        select_cols="",
+        engine="auto",
+        meta_only=False,
+        page=0,
+        page_size=200,
+    )
+    assert preview["kind"] == "json"
+    assert preview["parsed_top_keys"] == ["alerts"]
+
+
 def test_default_reformatter_folder_versions_json_and_csv(monkeypatch, tmp_path):
     reformatter_dir = tmp_path / "reformatter"
     reformatter_dir.mkdir()

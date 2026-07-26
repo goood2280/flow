@@ -89,6 +89,12 @@ BASE_VERSION_DIR = PATHS.data_root / "file_versions"
 BASE_VERSION_CAP = 5
 EDM_VERSION_MAX_CSV_BYTES = 5_000_000
 SINGLE_FILE_FOLDER_TEXT_EXTENSIONS = {".json", ".yaml", ".yml", ".md", ".txt"}
+# drop-in 폴더 = 사용자가 DB/Base 루트에 그대로 넣어둔, parquet/CSV 가 없는 폴더.
+# 등록 없이 Files 에 노출하되 탐지 비용은 아래 상한으로 묶는다.
+_DROP_IN_FOLDER_SCAN_LIMIT = 400
+_DROP_IN_FOLDER_MAX_DEPTH = 3
+_DROP_IN_FOLDER_CACHE_TTL_SEC = 30.0
+_DROP_IN_FOLDER_CACHE: dict[tuple, tuple[float, tuple, tuple[str, ...]]] = {}
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 100
@@ -399,6 +405,78 @@ def _cache_entry_meta(fp: Path) -> dict:
     }
 
 
+def _is_drop_in_folder(folder: Path) -> bool:
+    """parquet/CSV 없이 json/yaml/md/txt 만 든 폴더인가.
+
+    이런 폴더는 `count_data_files` 가 0 이라 `/roots`(DB 스코프)에서 걸러지고,
+    톱니바퀴 "Files에 표시할 폴더" 에 등록하기 전에는 Files 에서도 안 보였다.
+    즉 사용자가 루트에 통째로 넣어둔 묶음(예: Valve 매칭알람 valve-alerts/pipeline/*.json)이
+    화면 어디에도 나타나지 않았다. 스캔은 depth/entry 수로 제한한다 — 사진 수만 장짜리
+    폴더에서 전체 walk 를 돌지 않기 위함.
+    """
+    seen_text = False
+    scanned = 0
+    stack: list[tuple[Path, int]] = [(folder, 0)]
+    while stack and scanned < _DROP_IN_FOLDER_SCAN_LIMIT:
+        current, depth = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    scanned += 1
+                    if scanned > _DROP_IN_FOLDER_SCAN_LIMIT:
+                        break
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth + 1 < _DROP_IN_FOLDER_MAX_DEPTH:
+                                stack.append((Path(entry.path), depth + 1))
+                            continue
+                    except OSError:
+                        continue
+                    ext = Path(entry.name).suffix.lower()
+                    if ext in DATA_EXTENSIONS:
+                        return False  # DB 스코프가 이미 보여주는 폴더
+                    if ext in SINGLE_FILE_FOLDER_TEXT_EXTENSIONS:
+                        seen_text = True
+        except OSError:
+            return False
+    return seen_text
+
+
+def _drop_in_folder_names(roots: tuple[Path, ...], registered: set[str]) -> set[str]:
+    """등록 없이 Files 에 노출할 최상위 폴더 이름 (root 별 TTL 캐시)."""
+    out: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        cache_key = (str(root), tuple(sorted(registered)))
+        sig = _path_sig(root)
+        now = time.monotonic()
+        cached = _DROP_IN_FOLDER_CACHE.get(cache_key)
+        if cached and cached[1] == sig and now - cached[0] < _DROP_IN_FOLDER_CACHE_TTL_SEC:
+            out.update(cached[2])
+            continue
+        found: list[str] = []
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    name = entry.name
+                    if name.startswith(".") or name.startswith("_"):
+                        continue
+                    if name.casefold() in registered:
+                        continue
+                    if _is_drop_in_folder(Path(entry.path)):
+                        found.append(name.casefold())
+        except OSError:
+            found = []
+        if len(_DROP_IN_FOLDER_CACHE) > 32:
+            _DROP_IN_FOLDER_CACHE.clear()
+        _DROP_IN_FOLDER_CACHE[cache_key] = (now, sig, tuple(found))
+        out.update(found)
+    return out
+
+
 def _single_file_folder_names(settings: dict | None = None) -> set[str]:
     settings = settings or _load_filebrowser_settings()
     names = {_SINGLE_FILE_STEP_CACHE_DIR}
@@ -409,6 +487,8 @@ def _single_file_folder_names(settings: dict | None = None) -> set[str]:
         if not name or name in {".", ".."} or "/" in name or "\\" in name:
             continue
         clean.add(name)
+    # 등록되지 않았어도 데이터 파일 없이 json/텍스트만 든 폴더는 Files 에 노출한다.
+    clean.update(_drop_in_folder_names((_base_root(), _db_root()), clean))
     return clean
 
 
@@ -5397,12 +5477,12 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 "parsed_top_keys": list(parsed.keys()) if isinstance(parsed, dict) else None,
             }
         return _serve_static("json", _build_json)
-    if ext == ".md":
+    if ext in {".md", ".txt"}:
         def _build_md() -> dict:
             try:
-                text = fp.read_text(encoding="utf-8")
+                text = fp.read_text(encoding="utf-8", errors="replace")
             except Exception as e:
-                raise HTTPException(400, f"Cannot read md: {e}")
+                raise HTTPException(400, f"Cannot read {ext.lstrip('.')}: {e}")
             return {"kind": "md", "file": file, "size": fp.stat().st_size, "text": text,
                     "truncated": False}
         return _serve_static("md", _build_md)

@@ -5,6 +5,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## Owns
 
 - DB root, root-level base/rulebook 파일 탐색
+- **Files 폴더 노출 규칙** — Files 목록에는 ① 톱니바퀴 "Files에 표시할 폴더"(`hidden_db_dirs`)에 등록된 폴더와 ② parquet/CSV 없이 json/yaml/md/txt만 든 "drop-in" 폴더가 보인다. ②는 사용자가 DB/Base root에 통째로 넣어둔 묶음(예: Valve 매칭알람 `valve-alerts/pipeline/*.json`)을 위한 것이다 — 데이터 파일이 없어 `/roots`(DB 스코프)에서도 걸러지므로 등록 전에는 화면 어디에도 안 나왔다. 탐지는 depth 3 / 400 entry 로 제한하고 root별 30초 TTL 캐시를 쓴다(`_is_drop_in_folder`). parquet/CSV가 든 폴더는 DB 스코프 소유이므로 Files로 끌어오지 않는다. 폴더 안 파일은 `.csv .parquet .json .yaml .yml .md .txt`가 보이고, json/yaml/md/txt는 `/base-file-view`가 원문 그대로 렌더한다.
 - parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 DB 제품/root parquet을 처음 열면 2단계로 로드한다: ① `meta_only=true`로 스키마를 즉시 그리고("샘플 행 불러오는 중…" 표시), ② 최신 date 파티션 한정 샘플(DB 제품은 500행)을 백그라운드로 이어 받아 교체한다. SQL/SELECT/정렬/집계가 있는 조회와 페이지 이동은 기존처럼 단일 `meta_only=false` 요청이다. 응답 순서 꼬임은 요청 시퀀스 가드로 무시한다.
 - read-only SQL/filter/download preview
 - 빠른 화면 표시: SQL/컬럼 선택/집계 결과와 단일 파일 preview는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. DB(hive) 제품의 기본 preview만 최신 date 파티션 한정으로 최대 500행(`DB_LATEST_PREVIEW_ROWS`)을 허용한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
