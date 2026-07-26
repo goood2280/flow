@@ -6,8 +6,8 @@
 
 | 순서 | 문서 | 언제 읽나 |
 |---:|---|---|
-| 1 | [../README.md](../README.md) | 설치, 실행, 기본 구조를 빠르게 확인할 때 |
-| 2 | [AGENT_FLOW_CONTEXT.md](AGENT_FLOW_CONTEXT.md) | 에이전트가 Flow 프로젝트 맥락과 data rule을 확인할 때 |
+| 1 | [../CLAUDE.md](../CLAUDE.md) | **에이전트 진입점** — 미션, 코드 지도, 불변식, 검증, 배포, 알려진 함정 |
+| 2 | [../README.md](../README.md) | 설치, 실행, 기본 구조를 빠르게 확인할 때 |
 | 3 | [features/README.md](features/README.md) | 화면/기능별 책임과 코드 진입점을 볼 때 |
 | 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 책임 경계를 볼 때 |
 | 5 | [DEVELOPMENT.md](DEVELOPMENT.md) | 수정 전 체크, 검증 명령, 리팩터 기준을 볼 때 |
@@ -40,5 +40,13 @@ cd .. && uvicorn app:app --host 0.0.0.0 --port 8080
 ```bash
 git diff --check
 python scripts/smoke_test.py
+python -m pytest tests
+```
+
+사내(Linux) 서버 반입 전:
+
+```bash
 python3 scripts/preflight_internal.py --write-probe
 ```
+
+> 개발 PC(Windows)에서는 `python`을 쓴다. `python3`는 앱 실행 별칭 스텁이라 동작하지 않는다.

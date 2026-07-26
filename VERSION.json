@@ -1,7 +1,23 @@
 {
-  "version": "9.5.38",
+  "version": "9.5.39",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "9.5.39",
+      "date": "2026-07-26",
+      "title": "에이전트 진입점 CLAUDE.md + 유실 파일 복구(tests 92개·scheduler.py) + setup.py 번들 완전화",
+      "tag": "chore",
+      "changes": [
+        "[가장 큰 건] setup.py 번들이 불완전했다 — `_build_setup.py` 의 INCLUDE 목록과 extract 쪽 `_ALLOWED_TOP_LEVEL` 화이트리스트 양쪽에서 tests/·scripts 일부·CLAUDE.md·.gitignore·.gitattributes·backend/scheduler.py·_build_setup.py 자신·package-lock.json 이 빠져 있었다. 그래서 2026-07-20 커밋 bb0737b5 가 저장소를 'README.md + setup.py' 로 줄였을 때 번들에 없던 125개 파일이 영구 소실됐다(테스트 92개, scheduler.py, .gitignore 등). 양쪽 목록을 채워 446개 파일이 추출되도록 고쳤고, 빈 디렉터리에서 실제로 extract 해 전부 복원되는 것을 확인했다. 이제 GitHub 저장소를 두 파일로 줄여도 소스가 유실되지 않는다.",
+        "extract 가드의 닷파일 버그 수정 — `_write` 가 경로를 정규화할 때 쓰던 `lstrip('./')` 은 문자 집합 제거라 '.gitignore' 를 'gitignore' 로 만들어 L0 화이트리스트에서 탈락시켰다. './' prefix 와 선행 '/' 만 제거하도록 바꿨다. 선행 '/' 를 남기면 L1 의 startswith('data/') 가드가 '/data/x' 를 놓치므로 함께 제거한다 — data/·./data/·/data/·flow-data/·..//data/x 가 모두 차단되는 것을 재확인했다.",
+        "backend/scheduler.py 복구 — bb0737b5 에서 유실됐는데 app_v2/runtime/startup.py 는 계속 ('product dedup scheduler', 'scheduler', 'start_scheduler') 를 부르고 있었고, 스케줄러 기동 실패는 warning 로그로만 삼켜져 매일 03:00 제품 dedup 이 6일간 조용히 멈춰 있었다.",
+        "tests/ 92개 복구 — 히스토리(bb0737b5^)에서 되살렸다. 현재 코드 기준 1,022 통과 / 45 실패이고, 45개는 v9.4.x 시점 기대값(캐시 이름 변경, allowed_roots kwarg 추가, JSX 원문 문자열 assert 등)이다. 목록과 이유는 tests/README.md 에 기록했다.",
+        "CLAUDE.md 신설 — Claude Code 세션이 자동으로 읽는 유일한 진입점. 미션, 코드 지도, 불변식, 검증, 배포, 알려진 함정을 담는다. docs/AGENT_FLOW_CONTEXT.md 는 여기로 통합(존재하지 않는 AGENTS.md·TODO.md 를 Source Of Truth 로 가리키고 있었다).",
+        "문서 없던 기능 5개 신규 작성 — 캐시 관리(ramcache), ET 측정시간(et_time), ET 다운로드(reformatize), TEG 위치 조회(teg_map), 매칭알람(valve_alerts). docs/features/README.md 인덱스에 탭 키 열을 넣어 frontend/src/config.js 와 대조 가능하게 했다.",
+        ".gitattributes 복구 + .gitignore 보강(vite timestamp, 운영 데이터 루트) — 둘 다 저장소에서 유실된 상태였고, origin/main 에 .gitignore 가 아예 없어 새 clone 이 ignore 규칙 없이 시작하고 있었다.",
+        "부수: 프런트 5개 탭 데드코드/중복 정리와 ZoomPanSvg 공용화(순 -554줄), 캐시관리 overview 에 can_manage 내려주기."
+      ]
+    },
     {
       "version": "9.5.38",
       "date": "2026-07-26",

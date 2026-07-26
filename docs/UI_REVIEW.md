@@ -107,4 +107,4 @@ UI 통일성 평균 ≈ **3.1/10**. 토큰/primitive가 잘 있는데도 페이�
 
 - 이 점수는 코드 정황 기준이며, 실제 시각 인상(브라우저)에서 본 것이 아니다.
 - 실제 코드 변경은 Codex CLI 세션이 진행. 본 세션은 평가/명세/하네스 유지가 역할.
-- 작업 큐는 [`../TODO.md`](../TODO.md), 페이지별 책임은 [`features/README.md`](features/README.md), 코드 품질 평가는 [`REVIEW.md`](REVIEW.md).
+- 작업 큐는 [`../CLAUDE.md`](../CLAUDE.md), 페이지별 책임은 [`features/README.md`](features/README.md), 코드 품질 평가는 [`REVIEW.md`](REVIEW.md).

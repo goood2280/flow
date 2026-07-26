@@ -6,10 +6,11 @@
       🟢 일치 / 🟡 확인필요(ΔX·ΔY 각 3 이내) / 🔴 불일치 / ⚪ 미등록 로 표시.
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../lib/api";
 import { toast } from "../components/Toast";
-import { Button, Card, DataTable, EmptyState, Pill, Select, Textarea } from "../components/UXKit";
+import ZoomPanSvg from "../components/ZoomPanSvg";
+import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, Textarea } from "../components/UXKit";
 
 const API = "/api/teg-map";
 
@@ -26,6 +27,14 @@ const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)" };
 const LIGHT_COLORS = { red: "#dc2626", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63", purple: "#7c3aed" };
 const LIGHT_RANK = { red: 0, gray: 1, yellow: 2, purple: 3, green: 4 };
 const MATCH_RULE_LABELS = { "01strip": "01제거", "reorder": "접두사변환", "split": "분할TEG" };
+
+/* monospace 테두리 칩 — 대상 TEG 나열용 (색 = 테두리+글자 공용) */
+function TokenChip({ color = "var(--muted)", title, children }) {
+  return (
+    <span title={title} style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px",
+      borderRadius: 4, border: `1px solid ${color}`, color }}>{children}</span>
+  );
+}
 
 function TrafficLight({ color }) {
   const c = LIGHT_COLORS[color] || LIGHT_COLORS.gray;
@@ -82,7 +91,7 @@ function WfSvg({ map, sitesHl = [], tegHl = [], px = 6, showLabels = false }) {
   }, [rows]);
 
   if (w * h > MAX_CELLS) {
-    return <div style={{ fontSize: 12, color: "var(--danger, #e05252)" }}>
+    return <div style={{ fontSize: 12, color: "var(--danger)" }}>
       맵이 너무 큽니다 ({w}×{h}={w * h} 셀) — 파싱 오류일 수 있습니다.
     </div>;
   }
@@ -140,9 +149,9 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
         return (
           <div key={p.name} onClick={() => onSelect(isSel ? null : i)}
             style={{
-              border: `1px solid ${isSel ? "var(--accent, #5a8cff)" : "var(--line)"}`,
+              border: `1px solid ${isSel ? "var(--accent)" : "var(--line)"}`,
               borderRadius: 6, padding: 8, cursor: "pointer",
-              background: isSel ? "var(--panel)" : "transparent",
+              background: isSel ? "var(--accent-glow)" : "transparent",
             }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, maxWidth: 160,
@@ -166,7 +175,7 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
 
 /* ── shot 확대 뷰 — 칩 격자 + 계산 좌표 기준 TEG 배치.
    TEG 는 칩 사이(스크라이브)에 있어야 정상 — 칩 위에 겹치면 빨간색.
-   마우스 휠(확대/축소) + 드래그(패닝) + 핀치 줌 + 리셋 버튼 (위치 조회 ShotZoom 과 동일). ── */
+   zoom/pan/핀치 로직은 공용 ZoomPanSvg 로 통합 (위치 조회 ShotZoom 과 공유). ── */
 function ShotView({ shot, rows }) {
   const SIZE = 380;
   const W = shot.shot_w_mm, H = shot.shot_h_mm;
@@ -179,83 +188,10 @@ function ShotView({ shot, rows }) {
   const toY = (mm) => oy + (H / 2 - mm) * s;
   const cells = shot.cells || [];
 
-  // ── zoom / pan 상태 ──
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const svgRef = useRef(null);
-  const dragRef = useRef(null);           // { startX, startY, panX0, panY0 } | null
-  const pinchRef = useRef(null);          // { dist0, zoom0 } | null
-  const pointersRef = useRef(new Map());  // pointerId → { x, y }
-
-  const ZOOM_MIN = 1, ZOOM_MAX = 12, ZOOM_STEP = 1.15;
-  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
-
-  // 마우스 휠 → 줌 (커서 중심)
-  const onWheel = useCallback((e) => {
-    e.preventDefault();
-    const rect = svgRef.current.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    setZoom(prev => {
-      const next = e.deltaY < 0
-        ? Math.min(ZOOM_MAX, prev * ZOOM_STEP)
-        : Math.max(ZOOM_MIN, prev / ZOOM_STEP);
-      const ratio = 1 - next / prev;
-      setPan(p => ({ x: p.x + (mx - p.x) * ratio, y: p.y + (my - p.y) * ratio }));
-      return next;
-    });
-  }, []);
-
-  const pinchDist = (pts) => {
-    const arr = [...pts.values()];
-    if (arr.length < 2) return 0;
-    return Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y);
-  };
-  const onPointerDown = useCallback((e) => {
-    svgRef.current?.setPointerCapture(e.pointerId);
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size === 2) {
-      pinchRef.current = { dist0: pinchDist(pointersRef.current), zoom0: zoom };
-      dragRef.current = null;
-    } else if (pointersRef.current.size === 1) {
-      dragRef.current = { startX: e.clientX, startY: e.clientY, panX0: pan.x, panY0: pan.y };
-    }
-  }, [zoom, pan]);
-  const onPointerMove = useCallback((e) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size === 2 && pinchRef.current) {
-      const d = pinchDist(pointersRef.current);
-      if (pinchRef.current.dist0 > 0) {
-        setZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchRef.current.zoom0 * (d / pinchRef.current.dist0))));
-      }
-    } else if (dragRef.current && pointersRef.current.size === 1) {
-      setPan({ x: dragRef.current.panX0 + (e.clientX - dragRef.current.startX),
-               y: dragRef.current.panY0 + (e.clientY - dragRef.current.startY) });
-    }
-  }, []);
-  const onPointerUp = useCallback((e) => {
-    pointersRef.current.delete(e.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (pointersRef.current.size === 0) dragRef.current = null;
-  }, []);
-
-  // 휠 이벤트는 passive:false 필요 → ref 방식으로 등록
-  useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return;
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [onWheel]);
-
-  const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
-
   return (
-    <div style={{ position: "relative", display: "inline-block" }}>
-      <svg ref={svgRef} width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-        style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6,
-                 cursor: isZoomed ? "grab" : "zoom-in", touchAction: "none", userSelect: "none" }}
-        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+    <ZoomPanSvg size={SIZE}>
+      {(zoom) => (
+        <>
           <rect x={ox} y={oy} width={w} height={h} fill="rgba(128,128,128,0.05)"
             stroke="var(--muted)" strokeWidth={1 / zoom} />
           {/* shot 센터 십자 */}
@@ -270,9 +206,9 @@ function ShotView({ shot, rows }) {
               ⚪ 미등록=파랑. 칩(die) 겹침이면 빨간 테두리·⚠ 로 강조 (status 무관). */}
           {rows.map((t, i) => {
             const overlap = t.chip_overlap;
-            const color = t.status === "mismatch" ? "#dc2626"
-              : t.status === "warning" ? "#d99a1a"
-              : t.status === "extended" ? "#7c3aed" : "#2563eb";
+            const color = t.status === "mismatch" ? LIGHT_COLORS.red
+              : t.status === "warning" ? LIGHT_COLORS.yellow
+              : t.status === "extended" ? LIGHT_COLORS.purple : TEG_HL;
             const glyph = t.status === "warning" ? "△ "
               : t.status === "mismatch" ? "✕ "
               : t.status === "extended" ? "⊕ " : t.status === "missing" ? "○ " : "";
@@ -282,10 +218,10 @@ function ShotView({ shot, rows }) {
               <g key={i}>
                 <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
                   fill={color} opacity={overlap ? 0.9 : 0.7}
-                  stroke={overlap ? "#dc2626" : "none"} strokeWidth={overlap ? 1.4 / zoom : 0} />
-                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={color} stroke="var(--panel)" strokeWidth={0.8 / zoom} />
+                  stroke={overlap ? LIGHT_COLORS.red : "none"} strokeWidth={overlap ? 1.4 / zoom : 0} />
+                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={color} stroke="var(--bg-card)" strokeWidth={0.8 / zoom} />
                 <text x={x + wpx + 4 / zoom} y={yBottom - hpx / 2} fontSize={11 / zoom}
-                  fill={overlap ? "#dc2626" : "var(--text)"}
+                  fill={overlap ? LIGHT_COLORS.red : "var(--text-primary)"}
                   fontWeight={overlap ? 700 : 400} dominantBaseline="middle">
                   {glyph}{t.name}{overlap ? " ⚠" : ""}
                 </text>
@@ -295,26 +231,9 @@ function ShotView({ shot, rows }) {
           <text x={SIZE / 2} y={oy + h + 16 / zoom} fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle">
             {fmtN(Math.round(W * 100) / 100)} mm
           </text>
-        </g>
-      </svg>
-      {/* 줌 리셋 버튼 — 줌/패닝 상태일 때만 표시 */}
-      {isZoomed && (
-        <button onClick={resetView} title="보기 초기화"
-          style={{ position: "absolute", top: 6, right: 6, width: 28, height: 28,
-                   display: "flex", alignItems: "center", justifyContent: "center",
-                   background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 4,
-                   cursor: "pointer", fontSize: 14, color: "var(--muted)", opacity: 0.85 }}>
-          ↺
-        </button>
+        </>
       )}
-      {zoom > 1.05 && (
-        <span style={{ position: "absolute", bottom: 6, right: 6, fontSize: 11,
-                       color: "var(--muted)", background: "var(--panel)", padding: "1px 5px",
-                       borderRadius: 3, border: "1px solid var(--line)", opacity: 0.8 }}>
-          ×{zoom.toFixed(1)}
-        </span>
-      )}
-    </div>
+    </ZoomPanSvg>
   );
 }
 
@@ -336,14 +255,14 @@ function NameCell({ r, ov, onPick }) {
               fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
               cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
               background: isA ? "rgba(90,140,255,0.20)" : "transparent",
-              border: `1px solid ${isA ? "var(--accent, #5a8cff)" : "var(--line)"}`,
+              border: `1px solid ${isA ? "var(--accent)" : "var(--line)"}`,
               fontWeight: isA ? 700 : 400,
               color: isA ? "var(--text)" : "var(--muted)",
             }}>{v}</span>
         );
       })}
       {pending && (
-        <span style={{ fontSize: 11, color: "#e0a452", fontWeight: 700 }}>재적용 필요</span>
+        <span style={{ fontSize: 11, color: "var(--warn)", fontWeight: 700 }}>재적용 필요</span>
       )}
     </div>
   );
@@ -391,7 +310,7 @@ function MainGroupSection({ vehicle, groups }) {
       <div style={{ fontSize: 12, color: "var(--muted)" }}>
         MAIN 은 die 급 블록으로, 내부 TEG 정보가 Mapfile 에 같은 그룹명으로 나열됩니다.
         아래 그룹을 반영하면 TEG 위치 조회에서 해당 MAIN 을 고를 때 내부 TEG 위치·모양이 함께 표시됩니다.
-        <span style={{ color: "#e0a452" }}> 설비 Mapfile 세팅에서 가져온 값이라 이상이 있을 수
+        <span style={{ color: "var(--warn)" }}> 설비 Mapfile 세팅에서 가져온 값이라 이상이 있을 수
         있습니다 — 위치조회에 반영 시각이 참고문으로 표시됩니다.</span>
       </div>
       {groups.map(g => {
@@ -559,7 +478,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     { key: "dy", label: "ΔY", align: "right", render: r => fmtN(r.dy) },
     ...(res.shot?.checked ? [{
       key: "chip", label: "칩 겹침", render: r => r.chip_overlap
-        ? <span style={{ color: "#dc2626", fontWeight: 700 }}>⚠ 겹침</span> : "",
+        ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>⚠ 겹침</span> : "",
     }] : []),
     { key: "note", label: "비고", render: r => r.rule_note || "" },
   ];
@@ -583,9 +502,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   // 칩 격자 모드(res.shot.checked)에서만 의미가 있어 그 때만 컬럼을 붙인다.
   const dieCol = {
     key: "die", label: "칩 격자(die)", render: r => r.chip_overlap
-      ? <span style={{ color: "#dc2626", fontWeight: 700 }}
+      ? <span style={{ color: "var(--danger)", fontWeight: 700 }}
           title="TEG 사각형이 die(칩) 영역 안에 들어감 — 위치 확인 필요">die 내 (확인필요)</span>
-      : <span style={{ color: "var(--ok, #2f9e63)", fontWeight: 700 }}
+      : <span style={{ color: "var(--ok)", fontWeight: 700 }}
           title="TEG 가 die 밖(칩 사이 스크라이브)에 있음 — 거의 문제 없음">die 밖 (문제없음)</span>,
   };
   const warnCols = res.shot?.checked ? [...badCols, dieCol] : badCols;
@@ -593,7 +512,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {!teg.ref_ok && (
-        <div style={{ fontSize: 13, color: "var(--danger, #e05252)" }}>
+        <div style={{ fontSize: 13, color: "var(--danger)" }}>
           정답지를 못 읽었습니다 — {teg.ref_error}
         </div>
       )}
@@ -629,7 +548,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           const pb = res.pchk_base;
           const fromDb = pb && pb.source === "db";
           return (
-            <span style={{ fontSize: 12, color: fromDb ? "var(--ok, #2f9e63)" : "var(--muted)" }}
+            <span style={{ fontSize: 12, color: fromDb ? "var(--ok)" : "var(--muted)" }}
               title={fromDb
                 ? `기준점(dx, dy) = 정답지 ${pb.ref_name} 의 DB Ebeam 좌표. Mapfile 상대좌표에 이 값을 더해 환산X/Y 를 원복합니다.`
                 : "정답지에서 기준 PCHK/PRBCHK 을 찾지 못해 ⚙️ 설정의 기본 오프셋을 사용합니다."}>
@@ -646,7 +565,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       {res.flat.needs_input && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
                       padding: "8px 10px", borderRadius: 8,
-                      background: "rgba(224,164,82,0.10)", fontSize: 13 }}>
+                      background: "var(--warn-50)", fontSize: 13 }}>
           <span style={{ fontWeight: 600 }}>기준 마커 직접 입력</span>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             H(가로):
@@ -720,38 +639,34 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           </div>
           {trulyMissingTargets.length > 0 ? (
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--danger, #e05252)", marginBottom: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--danger)", marginBottom: 4 }}>
                 🔴 미설정 {trulyMissingTargets.length}건 — Mapfile 의 module name 에 teg/top_cell 완전 일치가 없습니다
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {trulyMissingTargets.map(t => (
-                  <span key={t.teg}
-                    title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}
-                    style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
-                             border: "1px solid var(--danger, #e05252)", color: "var(--danger, #e05252)" }}>
+                  <TokenChip key={t.teg} color="var(--danger)"
+                    title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}>
                     {t.teg}
-                  </span>
+                  </TokenChip>
                 ))}
               </div>
             </div>
           ) : (
-            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ok, #2f9e63)" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ok)" }}>
               🟢 미설정 없음 — 체크 대상 TEG 가 모두 Mapfile 에 있습니다
             </div>
           )}
           {extMatchedTargets.length > 0 && (
             <div style={{ marginTop: 4 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#7c3aed", marginBottom: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--violet)", marginBottom: 4 }}>
                 🟣 확장체크 통과 {extMatchedTargets.length}건 — 이름 변환 규칙으로 매칭됨
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {extMatchedTargets.map(t => (
-                  <span key={t.teg}
-                    title={t.row ? `${t.row.match_token} → ${t.row.ref_teg} (${MATCH_RULE_LABELS[t.row.match_rule] || "확장"})` : ""}
-                    style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
-                             border: "1px solid #7c3aed", color: "#7c3aed" }}>
+                  <TokenChip key={t.teg} color="var(--violet)"
+                    title={t.row ? `${t.row.match_token} → ${t.row.ref_teg} (${MATCH_RULE_LABELS[t.row.match_rule] || "확장"})` : ""}>
                     ✓ {t.teg} ({MATCH_RULE_LABELS[t.row?.match_rule] || "확장"})
-                  </span>
+                  </TokenChip>
                 ))}
               </div>
             </div>
@@ -763,32 +678,26 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {otherDirTargets.map(t => (
-                  <span key={t.teg}
-                    title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}
-                    style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
-                             border: "1px solid var(--muted)", color: "var(--muted)" }}>
+                  <TokenChip key={t.teg}
+                    title={t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음"}>
                     {t.teg}
-                  </span>
+                  </TokenChip>
                 ))}
               </div>
             </div>
           )}
           {matchedTargets.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              <button onClick={() => setShowMatchedTargets(v => !v)}
-                style={{ fontSize: 11, color: "var(--accent, #5a8cff)", background: "none",
-                         border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+              <LinkBtn onClick={() => setShowMatchedTargets(v => !v)} style={{ fontSize: 11 }}>
                 {showMatchedTargets ? "▾" : "▸"} 설정됨 {matchedTargets.length}건
-              </button>
+              </LinkBtn>
               {showMatchedTargets && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
                   {matchedTargets.map(t => (
-                    <span key={t.teg}
-                      title={`Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`}
-                      style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
-                               border: "1px solid var(--ok, #2f9e63)", color: "var(--ok, #2f9e63)" }}>
+                    <TokenChip key={t.teg} color="var(--ok)"
+                      title={`Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`}>
                       {t.teg}{t.matched_by === "top_cell" ? ` ⟵ ${t.matched_module}` : ""}
-                    </span>
+                    </TokenChip>
                   ))}
                 </div>
               )}
@@ -806,7 +715,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       {pendingCount > 0 && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
                       padding: "6px 10px", borderRadius: 8,
-                      background: "rgba(224,164,82,0.10)", fontSize: 13 }}>
+                      background: "var(--warn-50)", fontSize: 13 }}>
           <Button variant="primary" disabled={busy} onClick={onReapply}>
             이름 재지정 재검사 ({pendingCount}건)
           </Button>
@@ -818,18 +727,18 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
 
       {teg.ref_ok && (bad.length ? (
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger, #e05252)", marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger)", marginBottom: 6 }}>
             🔴 불일치 {bad.length}건 — 정답지와 ΔX·ΔY 가 3 을 초과합니다
           </div>
           <DataTable columns={badCols} rows={bad} maxHeight={260} />
         </div>
       ) : (
-        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ok, #2f9e63)" }}>🟢 불일치 없음</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ok)" }}>🟢 불일치 없음</div>
       ))}
 
       {teg.ref_ok && warn.length > 0 && (
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#c98a1a", marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--warn)", marginBottom: 6 }}>
             🟡 확인필요 {warn.length}건 — ΔX·ΔY 가 각각 3 이내 (소수점·세팅 차이일 수 있음)
             {res.shot?.checked && (() => {
               const outside = warn.filter(r => !r.chip_overlap).length;
@@ -844,28 +753,24 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
 
       {teg.ref_ok && extended.length > 0 && (
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--violet)", marginBottom: 6 }}>
             🟣 확장체크 {extended.length}건 — 정답지 미등록이라 이름 변환 규칙으로 재매칭해 teg 를 확인했습니다
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {extended.map((r, i) => (
-              <span key={i}
-                title={`${r.match_token} → ${r.ref_teg} (${MATCH_RULE_LABELS[r.match_rule] || "확장"})${r.match_source === "top_cell" ? " — top_cell" : ""}`}
-                style={{ fontFamily: "monospace", fontSize: 12, padding: "1px 6px", borderRadius: 4,
-                         border: "1px solid #7c3aed", color: "#7c3aed" }}>
+              <TokenChip key={i} color="var(--violet)"
+                title={`${r.match_token} → ${r.ref_teg} (${MATCH_RULE_LABELS[r.match_rule] || "확장"})${r.match_source === "top_cell" ? " — top_cell" : ""}`}>
                 {r.match_token} → {r.ref_teg} ({MATCH_RULE_LABELS[r.match_rule] || "확장"}){r.match_source === "top_cell" ? " top_cell" : ""}
-              </span>
+              </TokenChip>
             ))}
           </div>
         </div>
       )}
 
       <div>
-        <button onClick={() => setShowAll(v => !v)}
-          style={{ fontSize: 12, color: "var(--accent, #5a8cff)", background: "none",
-                   border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+        <LinkBtn onClick={() => setShowAll(v => !v)}>
           {showAll ? "▾" : "▸"} 전체 {teg.rows.length}건
-        </button>
+        </LinkBtn>
         {(showAll || (teg.ref_ok && !bad.length)) && (
           <>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
@@ -882,12 +787,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <DataTable columns={fullCols} rows={visRows} maxHeight={320}
               rowStyle={overlapRowStyle} />
             {filteredRows.length > rowLimit && (
-              <button onClick={() => setRowLimit(l => l + 500)}
-                style={{ fontSize: 12, color: "var(--accent, #5a8cff)", background: "none",
-                         border: "none", cursor: "pointer", padding: "4px 0",
-                         textDecoration: "underline" }}>
+              <LinkBtn onClick={() => setRowLimit(l => l + 500)} style={{ padding: "4px 0" }}>
                 더 보기 +500 ({rowLimit}/{filteredRows.length})
-              </button>
+              </LinkBtn>
             )}
           </>
         )}
@@ -897,11 +799,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           경우 여기서 이름을 재지정하면 검사 대상으로 돌아온다 */}
       {teg.excluded_main > 0 && (
         <div>
-          <button onClick={() => setShowMain(v => !v)}
-            style={{ fontSize: 12, color: "var(--accent, #5a8cff)", background: "none",
-                     border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+          <LinkBtn onClick={() => setShowMain(v => !v)}>
             {showMain ? "▾" : "▸"} MAIN 제외 {teg.excluded_main}건 — 이름이 잘못 인식된 행은 여기서 재지정
-          </button>
+          </LinkBtn>
           {showMain && (
             <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6,
                           maxHeight: 260, overflow: "auto" }}>
@@ -930,29 +830,29 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
             shot 확대 — {fmtN(res.shot.shot_w_mm)}×{fmtN(res.shot.shot_h_mm)} mm, 계산 좌표(EbeamX/Y × 배율) 기준,
             shot 센터 = ebeam (0,0). 🟢 일치 · 🟣 확장체크 · ⚪ 미등록 TEG 는 숨기고
-            <span style={{ color: "#dc2626", fontWeight: 700 }}> ✕ 불일치</span> ·
-            <span style={{ color: "#d99a1a", fontWeight: 700 }}> △ 확인필요</span> 만 표시합니다.
+            <span style={{ color: "var(--danger)", fontWeight: 700 }}> ✕ 불일치</span> ·
+            <span style={{ color: "var(--warn)", fontWeight: 700 }}> △ 확인필요</span> 만 표시합니다.
             {res.shot.checked ? (
               <> TEG 는 칩 사이(스크라이브)에 있어야 정상 —
-                <span style={{ color: "#dc2626", fontWeight: 700 }}> die 안에 겹치면 빨간 테두리·⚠</span>.
+                <span style={{ color: "var(--danger)", fontWeight: 700 }}> die 안에 겹치면 빨간 테두리·⚠</span>.
               </>
             ) : (
               <> ⚙️ 설정에서 이 vehicle 의 shot 표시 방식을 "칩 격자"로 지정하면 칩 겹침을 검사합니다.</>
             )}
           </div>
           {res.shot.checked && summary.chip_overlap > 0 && (
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger, #e05252)", marginBottom: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger)", marginBottom: 6 }}>
               ⚠ 칩 위에 걸친 TEG {summary.chip_overlap}건 — {
                 teg.rows.filter(r => r.chip_overlap).map(r => r.name).join(", ")}
             </div>
           )}
           {!shotRows.length && targets.total > 0 && (
-            <div style={{ fontSize: 12, color: "var(--ok, #2f9e63)", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, color: "var(--ok)", marginBottom: 6 }}>
               🟢 모든 TEG 일치 — 배치도에 표시할 불일치 TEG 가 없습니다.
             </div>
           )}
           {!shotRows.length && targets.total === 0 && res.vehicle && (
-            <div style={{ fontSize: 12, color: "var(--danger, #e05252)", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 6 }}>
               ⚠ 체크할 TEG가 설정되어 있지 않습니다 — 위치 조회 → TEG 목록 → "Mapfile 체크 대상 TEG" 에서 지정하세요.
             </div>
           )}
@@ -982,7 +882,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                         계산값: ({r.calc_x}, {r.calc_y})
                       </div>
                       {res.shot?.checked && (
-                        <div style={{ color: r.chip_overlap ? "#dc2626" : "var(--ok, #2f9e63)",
+                        <div style={{ color: r.chip_overlap ? "#dc2626" : "var(--ok)",
                                       fontWeight: 600 }}>
                           칩 격자: {r.chip_overlap ? "die 내 (확인필요)" : "die 밖 (문제없음)"}
                         </div>
@@ -1012,7 +912,7 @@ function TargetChecklist({ checklist, counts, colorSort, onToggleSort, total, so
         {total > 0 && (
           <button onClick={onToggleSort}
             title="정렬 기준 전환 — 색상순(빨강→노랑→초록) ↔ 이름순"
-            style={{ fontSize: 11, color: "var(--accent, #5a8cff)", background: "none",
+            style={{ fontSize: 11, color: "var(--accent)", background: "none",
                      border: "1px solid var(--line)", borderRadius: 4, cursor: "pointer",
                      padding: "1px 6px" }}>
             {colorSort ? "색상순 ↓" : "이름순"}
@@ -1205,7 +1105,7 @@ export default function TegCheck({ vehicle }) {
                       { key: "y", label: "y", align: "right" },
                       { key: "st", label: "상태", render: r => {
                           const s = siteStatus(selMap, r.x, r.y);
-                          return <span style={{ color: s === "측정" ? "var(--ok, #2f9e63)" : "var(--danger, #e05252)",
+                          return <span style={{ color: s === "측정" ? "var(--ok)" : "var(--danger)",
                                                 fontWeight: 600 }}>{s}</span>;
                         } },
                     ]}

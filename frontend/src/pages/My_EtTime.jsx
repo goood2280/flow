@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { sf, qs } from "../lib/api";
 import { toast } from "../components/Toast";
 import Loading from "../components/Loading";
-import { Card, EmptyState, Input, PageHeader, PageShell, Pill, Select } from "../components/UXKit";
+import { Button, Card, EmptyState, Input, PageHeader, PageShell, Pill, Select } from "../components/UXKit";
 
 const API = "/api/et-time";
 
@@ -178,10 +178,8 @@ export default function My_EtTime() {
               })}
             </datalist>
           </div>
-          <button onClick={search} disabled={loading} style={{
-            padding: "7px 22px", borderRadius: 6, border: "none", background: "var(--accent)",
-            color: "#fff", fontSize: 14, fontWeight: 700, cursor: loading ? "wait" : "pointer",
-          }}>조회</button>
+          <Button variant="primary" onClick={search} disabled={loading}
+            style={{ padding: "7px 22px", cursor: loading ? "wait" : "pointer" }}>조회</Button>
           {data && (
             <div style={{ display: "flex", gap: 8, marginLeft: "auto", alignItems: "center", flexWrap: "wrap" }}>
               <Pill tone="neutral">STEP {data.step_count}</Pill>
@@ -274,11 +272,9 @@ export default function My_EtTime() {
               <option value={12}>최근 12개월</option>
               <option value={24}>최근 24개월</option>
             </Select>
-            <button onClick={() => loadTrend()} disabled={trendLoading || !product.trim()} style={{
-              padding: "6px 18px", borderRadius: 6, border: "none", background: "var(--accent)",
-              color: "#fff", fontSize: 13, fontWeight: 700, cursor: trendLoading ? "wait" : "pointer",
-              opacity: product.trim() ? 1 : 0.5,
-            }}>{trendLoading ? "스캔 중…" : "추이 조회"}</button>
+            <Button variant="primary" onClick={() => loadTrend()} disabled={trendLoading || !product.trim()}
+              style={{ padding: "6px 18px", fontSize: 13, cursor: trendLoading ? "wait" : "pointer" }}>
+              {trendLoading ? "스캔 중…" : "추이 조회"}</Button>
           </span>
         </div>
         {trend && (

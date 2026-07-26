@@ -2,14 +2,13 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import Loading from "../components/Loading";
 import { Button, statusPalette, buildSeriesColors, SERIES_COLOR_LIMIT } from "../components/UXKit";
 import { WipStackedBar } from "../components/PlotlyChart";
-import { sf as apiSf } from "../lib/api";
+import { sf } from "../lib/api";
 
 // v9.2 (2026-07-12): 대시보드 = WIP × Split 현황 단일 화면.
 // 기존 차트 보드(저장 차트 그리드/에디터/스케줄러 UI)는 퇴역 —
 // 원본 전체는 archive/dashboard_chartboard_2026_07_12/My_Dashboard.full.jsx 참조.
 // 차트 보드용 백엔드 API(/api/dashboard/charts 등)는 아직 남아 있다.
 const API = "/api/dashboard";
-const sf = (url, o) => apiSf(url, o);
 const BAD = statusPalette.bad;
 
 // 차트가 "접히는 선(fold)" 위에서 끝나도록 남은 높이를 실측해 넘긴다.
@@ -21,7 +20,6 @@ const BAD = statusPalette.bad;
 function scrollParent(el) {
   for (let p = el?.parentElement; p; p = p.parentElement) {
     const oy = getComputedStyle(p).overflowY;
-    if ((oy === "auto" || oy === "scroll") && p.scrollHeight > p.clientHeight + 1) return p;
     if (oy === "auto" || oy === "scroll") return p;
   }
   return null;
@@ -30,10 +28,11 @@ function useFoldHeight(ref, { min = 260, gap = 12 } = {}) {
   const [h, setH] = useState(420);
   useEffect(() => {
     let last = 0;
+    let box = null; // 스크롤 부모는 마운트 후 고정 — 매 tick getComputedStyle 워크 방지
     const calc = () => {
       const el = ref.current;
       if (!el) return;
-      const box = scrollParent(el);
+      if (!box || !box.isConnected) box = scrollParent(el);
       let offset;
       let viewH;
       if (box) {
@@ -49,7 +48,7 @@ function useFoldHeight(ref, { min = 260, gap = 12 } = {}) {
     };
     calc();
     window.addEventListener("resize", calc);
-    const timer = setInterval(calc, 200);
+    const timer = setInterval(calc, 500);
     return () => { window.removeEventListener("resize", calc); clearInterval(timer); };
   }, [ref, min, gap]);
   return h;
@@ -67,11 +66,18 @@ const NORM_CHOICES = [
   { value: "percent", label: "비중 100%" },
 ];
 const OTHER_PREFIX = "기타";
+const EMPTY_ARR = [];
 const nf = (n) => Number(n || 0).toLocaleString();
 
 const microLabel = { fontSize: 10, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--text-secondary)", fontWeight: 600 };
 const cardStyle = { border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" };
 const numFont = { fontVariantNumeric: "tabular-nums" };
+const selStyle = {
+  padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 7,
+  background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 12.5, minWidth: 118,
+};
+const th = { padding: "6px 10px", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)", fontWeight: 600, fontSize: 11, color: "var(--text-secondary)" };
+const td = { padding: "5px 10px", borderBottom: "1px solid var(--border)" };
 
 // 채움색 위에 얹는 글자색 — 밝은 색이면 잉크, 어두운 색이면 흰색.
 function inkOn(hex) {
@@ -82,7 +88,7 @@ function inkOn(hex) {
   return lum > 0.55 ? "#171717" : "#ffffff";
 }
 
-function Field({ children, title, dim = false }) {
+function FilterField({ children, title, dim = false }) {
   return (
     <label style={{ display: "grid", gap: 3, opacity: dim ? 0.45 : 1 }}>
       <span style={microLabel}>{title}</span>
@@ -121,6 +127,116 @@ function Segmented({ value, onChange, options }) {
           }}
         >{o.label}</button>
       ))}
+    </div>
+  );
+}
+
+// Split 기준 열 선택 — 열이 수백 개라 네이티브 select 로는 찾기가 어렵다.
+// 입력창은 검색 필터, 그 아래는 지금까지처럼 그룹(KNOB/MASK/FAB/기타)별 스크롤 목록.
+function SplitColSelect({ value, groups, onChange, style }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hi, setHi] = useState(0);
+  const boxRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // 필터는 그룹 구조를 유지한 채 걸고, 키보드 이동용으로 평평한 목록도 같이 만든다.
+  const { shown, flat } = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const out = [];
+    const list = [];
+    for (const [g, cols] of Object.entries(groups || {})) {
+      const hit = needle ? cols.filter((c) => String(c).toLowerCase().includes(needle)) : cols;
+      if (!hit.length) continue;
+      out.push([g, hit]);
+      list.push(...hit);
+    }
+    return { shown: out, flat: list };
+  }, [groups, q]);
+
+  // 필터가 바뀌면 하이라이트는 항상 첫 항목으로.
+  useEffect(() => { setHi(0); }, [q, open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (!boxRef.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const pick = (c) => {
+    setOpen(false);
+    setQ("");
+    inputRef.current?.blur();
+    if (c !== value) onChange(c);
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) { setOpen(true); return; }
+      const n = flat.length;
+      if (!n) return;
+      setHi((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+    } else if (e.key === "Enter") {
+      if (e.nativeEvent?.isComposing || e.keyCode === 229) return; // 한글 조합 중 Enter 무시
+      e.preventDefault();
+      if (open && flat[hi]) pick(flat[hi]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+      setQ("");
+      inputRef.current?.blur();
+    }
+  };
+
+  return (
+    <div ref={boxRef} style={{ position: "relative", ...style }}>
+      <input
+        ref={inputRef}
+        value={open ? q : (value || "")}
+        placeholder={open ? (value || "열 이름 검색") : "열 선택"}
+        onFocus={() => { setOpen(true); setQ(""); }}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onKeyDown={onKeyDown}
+        style={{ ...selStyle, width: "100%", minWidth: 0, boxSizing: "border-box", cursor: open ? "text" : "pointer" }}
+      />
+      {open && (
+        <div
+          // FilterField 가 <label> 이라 목록 클릭이 label 로 올라가면 input 이 다시
+          // 포커스를 받아 방금 닫은 드롭다운이 곧바로 열린다 — 여기서 끊는다.
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute", top: "calc(100% + 3px)", left: 0, minWidth: "100%", width: "max-content", maxWidth: 420,
+            maxHeight: 260, overflow: "auto", zIndex: 40, ...cardStyle, boxShadow: "0 6px 18px rgba(0,0,0,.18)",
+          }}
+        >
+          {shown.length === 0 ? (
+            <div style={{ padding: "8px 10px", fontSize: 12, color: "var(--text-secondary)" }}>검색 결과 없음</div>
+          ) : shown.map(([g, cols]) => (
+            <div key={g}>
+              <div style={{ ...microLabel, padding: "5px 10px 3px", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{g}</div>
+              {cols.map((c) => {
+                const idx = flat.indexOf(c);
+                const active = idx === hi;
+                return (
+                  <div
+                    key={c}
+                    ref={active ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                    onMouseEnter={() => setHi(idx)}
+                    onMouseDown={(e) => { e.preventDefault(); pick(c); }}
+                    style={{
+                      padding: "5px 10px", fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap",
+                      background: active ? "var(--bg-hover)" : "transparent",
+                      color: c === value ? "var(--text-primary)" : "var(--text-secondary)",
+                      fontWeight: c === value ? 650 : 400,
+                    }}
+                  >{c}</div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -185,8 +301,8 @@ function WipSplitPanel() {
     fetchData(product, b, splitCol, axis);
   };
 
-  const bins = data?.bins || [];
-  const splitValues = data?.split_values || [];
+  const bins = data?.bins || EMPTY_ARR;
+  const splitValues = data?.split_values || EMPTY_ARR;
   const unassigned = data?.unassigned_label || "(미지정)";
   const totalBySplit = useMemo(() => {
     const acc = {};
@@ -262,29 +378,23 @@ function WipSplitPanel() {
   }, [splitValues, totalBySplit, grandTotal]);
   const shareMax = shareRows.length ? shareRows[0].n : 0;
 
-  const selStyle = {
-    padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 7,
-    background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 12.5, minWidth: 118,
-  };
   const matchedPct = grandTotal ? Math.round(((data?.matched_wafers ?? 0) / grandTotal) * 100) : 0;
-  const th = { padding: "6px 10px", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)", fontWeight: 600, fontSize: 11, color: "var(--text-secondary)" };
-  const td = { padding: "5px 10px", borderBottom: "1px solid var(--border)" };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 10, paddingBottom: 16 }}>
       {/* 필터 + 요약 한 줄 — 아래 모든 카드가 같은 슬라이스를 본다 */}
       <div style={{ display: "flex", gap: 14, alignItems: "end", flexWrap: "wrap", padding: "8px 12px", ...cardStyle, background: "var(--bg-tertiary)" }}>
-        <Field title="Product">
+        <FilterField title="Product">
           <select style={selStyle} value={product} onChange={(e) => fetchData(e.target.value, binSize, "", axis)}>
-            {(data?.products || (product ? [product] : [])).map((p) => <option key={p} value={p}>{p}</option>)}
+            {(data?.products || EMPTY_ARR).map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-        </Field>
-        <Field title="X축">
+        </FilterField>
+        <FilterField title="X축">
           <select style={selStyle} value={axis} onChange={(e) => { setAxis(e.target.value); fetchData(product, binSize, splitCol, e.target.value); }}>
             {AXIS_CHOICES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
-        </Field>
-        <Field title="STEP BIN 간격" dim={axis !== "step_id"}>
+        </FilterField>
+        <FilterField title="STEP BIN 간격" dim={axis !== "step_id"}>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             <input
               type="number"
@@ -316,16 +426,15 @@ function WipSplitPanel() {
               ))}
             </div>
           </div>
-        </Field>
-        <Field title="Split 기준 열">
-          <select style={{ ...selStyle, minWidth: 168 }} value={splitCol} onChange={(e) => fetchData(product, binSize, e.target.value, axis)}>
-            {Object.entries(groupedSplitCols).map(([g, cols]) => cols.length ? (
-              <optgroup key={g} label={g}>
-                {cols.map((c) => <option key={c} value={c}>{c}</option>)}
-              </optgroup>
-            ) : null)}
-          </select>
-        </Field>
+        </FilterField>
+        <FilterField title="Split 기준 열">
+          <SplitColSelect
+            value={splitCol}
+            groups={groupedSplitCols}
+            onChange={(c) => fetchData(product, binSize, c, axis)}
+            style={{ minWidth: 168 }}
+          />
+        </FilterField>
         <Button variant="subtle" onClick={() => fetchData(product, binSize, splitCol, axis)} disabled={loading}>{loading ? "조회 중…" : "새로고침"}</Button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
           <Stat title="총 WAFER" value={nf(grandTotal)} sub={`${product || "-"} · latest cache`} />

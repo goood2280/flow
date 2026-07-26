@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(ROOT / "backend"))
+
+from app_v2.modules.semantic_learning import inbox  # noqa: E402
+from app_v2.modules.semantic_lexicon import store  # noqa: E402
+from routers import agent  # noqa: E402
+
+
+class _State:
+    def __init__(self, user: dict):
+        self.user = user
+
+
+class _Request:
+    headers = {}
+    method = "GET"
+    query_params = {}
+
+    def __init__(self, username: str = "tester", role: str = "admin"):
+        self.state = _State({"username": username, "role": role})
+
+
+@pytest.fixture()
+def semantic_store(tmp_path, monkeypatch):
+    semantic_dir = tmp_path / "semantic"
+    proposals_dir = semantic_dir / "proposals"
+    semantic_dir.mkdir()
+    proposals_dir.mkdir()
+    monkeypatch.setattr(store, "LEXICON_DIR", semantic_dir)
+    monkeypatch.setattr(store, "ALIAS_FILE", semantic_dir / "alias_groups.json")
+    monkeypatch.setattr(store, "INTENT_FILE", semantic_dir / "intent_hints.json")
+    monkeypatch.setattr(store, "CHANGES_FILE", semantic_dir / "changes.jsonl")
+    monkeypatch.setattr(inbox, "INBOX_DIR", proposals_dir)
+    monkeypatch.setattr(agent, "current_user", lambda request: request.state.user)
+    return semantic_dir
+
+
+def test_semantic_lexicon_alias_intent_roundtrip(semantic_store):
+    req = _Request(role="admin")
+
+    agent.semantic_alias_group_upsert(
+        "ioff",
+        agent.SemanticAliasGroupReq(
+            aliases=["IOFF", "누설전류"],
+            semantic_class="metric",
+            normalization={"case": "upper"},
+            value_domain=["numeric"],
+        ),
+        req,
+    )
+    agent.semantic_intent_hint_upsert("inform_registration", agent.SemanticIntentHintReq(required_canonicals=["product", "lot_id"]), req)
+
+    payload = agent.semantic_lexicon(req)
+    assert payload["ok"] is True
+    assert payload["alias_groups"]["disk"]["ioff"] == ["IOFF", "누설전류"]
+    assert payload["alias_group_entries"]["disk"]["ioff"]["semantic_class"] == "metric"
+    assert payload["alias_group_meta"]["effective"]["ioff"]["value_domain"] == ["numeric"]
+    assert payload["intent_hints"]["disk"]["inform_registration"] == ["product", "lot_id"]
+    assert payload["changes"]
+
+    deleted = agent.semantic_alias_group_delete("ioff", req)
+    assert deleted["deleted"] is True
+    assert "ioff" not in deleted["alias_groups"]["disk"]
+
+
+def test_semantic_sources_api_returns_catalog(semantic_store):
+    payload = agent.semantic_sources(_Request(role="user"))
+
+    assert payload["ok"] is True
+    assert payload["docs_base"] == "docs/semantic"
+    assert payload["sources"]["rulebook"]["path_patterns"] == ["FLOW_DB_ROOT/ppid_knob.csv"]
+    assert payload["sources"]["step_matching"]["fallback_path_patterns"] == ["FLOW_DB_ROOT/step_matching.csv"]
+    assert payload["sources"]["split_base"]["related_question_ids"] == ["Q4"]
+    assert "rulebook" in payload["roles"]
+
+
+def test_semantic_sources_api_allows_writer_crud(semantic_store, monkeypatch, tmp_path):
+    from core import semantic_source_catalog
+
+    monkeypatch.setattr(semantic_source_catalog, "SOURCE_FILE", tmp_path / "semantic" / "source_catalog.json")
+    monkeypatch.setattr(semantic_source_catalog, "CHANGES_FILE", tmp_path / "semantic" / "source_catalog.changes.jsonl")
+    req = _Request(role="admin")
+
+    out = agent.semantic_source_upsert(
+        "custom_inline",
+        agent.SemanticSourceCatalogReq(source={
+            "title": "Custom Inline source",
+            "role": "inline_db",
+            "roles": ["inline_db"],
+            "path_patterns": ["FLOW_DB_ROOT/custom_inline.parquet"],
+            "search_terms": ["custom inline"],
+        }),
+        req,
+    )
+
+    assert out["ok"] is True
+    assert out["sources"]["custom_inline"]["title"] == "Custom Inline source"
+    deleted = agent.semantic_source_delete("custom_inline", req)
+    assert deleted["deleted"] is True
+    assert "custom_inline" not in deleted["sources"]
+
+
+def test_semantic_measurements_api_delete(semantic_store, monkeypatch, tmp_path):
+    from core import semantic_measure_catalog
+
+    monkeypatch.setattr(semantic_measure_catalog, "TERMS_FILE", tmp_path / "semantic" / "measurement_terms.json")
+    monkeypatch.setattr(semantic_measure_catalog, "CHANGES_FILE", tmp_path / "semantic" / "measurement_terms.changes.jsonl")
+    monkeypatch.setattr(semantic_measure_catalog, "CHANGE_MANAGEMENT_HISTORY", tmp_path / "semantic" / "measurement_history.jsonl")
+    req = _Request(role="admin")
+    agent.semantic_measurement_upsert(
+        "measure_test_term",
+        agent.SemanticMeasurementTermReq(term={"term": "Test Term", "source_type": "INLINE", "item_id": "TEST"}),
+        req,
+    )
+
+    deleted = agent.semantic_measurement_delete("measure_test_term", req)
+
+    assert deleted["deleted"] is True
+    assert all(row["id"] != "measure_test_term" for row in deleted["terms"])
+
+
+def test_semantic_write_requires_admin_or_page_manager(semantic_store, monkeypatch):
+    req = _Request(username="viewer", role="user")
+    monkeypatch.setattr(agent, "is_page_manager", lambda _user, _page: False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent.semantic_alias_group_upsert("ioff", agent.SemanticAliasGroupReq(aliases=["IOFF"]), req)
+    assert excinfo.value.status_code == 403
+
+    monkeypatch.setattr(agent, "is_page_manager", lambda _user, page: page == "diagnosis")
+    out = agent.semantic_alias_group_upsert("ioff", agent.SemanticAliasGroupReq(aliases=["IOFF"]), req)
+    assert out["ok"] is True
+
+
+def test_semantic_proposal_approve_adds_alias_and_marks_decided(semantic_store):
+    req = _Request(role="admin")
+    agent.semantic_alias_group_upsert("wafer_id", agent.SemanticAliasGroupReq(aliases=["wafer"]), req)
+    proposal = inbox.enqueue_proposal({
+        "term": "웨이퍼",
+        "category": "mapping",
+        "canonical_match": "wafer_id",
+        "confidence": 0.8,
+        "rationale": "test",
+        "origin": {"kind": "inform", "ref": "if-001"},
+    })
+
+    decided = agent.semantic_proposal_decision(
+        proposal["id"],
+        agent.SemanticProposalDecisionReq(decision="approve"),
+        req,
+    )
+
+    assert decided["proposal"]["status"] == "approved"
+    assert "웨이퍼" in decided["alias_groups"]["disk"]["wafer_id"]
+    pending = agent.semantic_proposals(req, status="pending")["proposals"]
+    assert all(row["id"] != proposal["id"] for row in pending)
+
+
+def test_semantic_draft_from_json_and_text_is_read_only(semantic_store):
+    req = _Request(role="user")
+
+    json_out = agent.semantic_draft(agent.SemanticDraftReq(text='{"alias_groups":{"oxide":["산화막"]}}'), req)
+    assert json_out["draft"]["alias_groups"] == {"oxide": ["산화막"]}
+    assert store.load_alias_groups() == {}
+
+    text_out = agent.semantic_draft(agent.SemanticDraftReq(text="산화막 두께 intent:inform_registration -> product,lot_id"), req)
+    assert text_out["ok"] is True
+    assert text_out["draft"]["alias_groups"]
+    assert text_out["draft"]["intent_hints"]["inform_registration"] == ["product", "lot_id"]
+    assert store.load_alias_groups() == {}
+
+
+def test_semantic_draft_builds_source_and_measurement_catalog_entries(semantic_store):
+    req = _Request(role="user")
+
+    out = agent.semantic_draft(
+        agent.SemanticDraftReq(text=(
+            "source id=custom_inline; title=Custom Inline source; role=inline_db; "
+            "path=FLOW_DB_ROOT/custom_inline.parquet; columns=product,step_id,item_id; "
+            "search_terms=custom inline,trend; docs_path=docs/semantic/custom_inline.md\n"
+            "measurement term=CA BCD; source_type=INLINE; product=PRODA; "
+            "step_id=AA100001; item_id=CA_BCD; target=10; spec_low=8; spec_high=12; "
+            "aliases=CA BCD,CABCD; evidence=Inline spec review"
+        )),
+        req,
+    )
+
+    draft = out["draft"]
+    source = draft["source_catalog"]["custom_inline"]
+    assert source["title"] == "Custom Inline source"
+    assert source["role"] == "inline_db"
+    assert source["path_patterns"] == ["FLOW_DB_ROOT/custom_inline.parquet"]
+    assert source["columns"] == ["product", "step_id", "item_id"]
+    assert source["search_terms"] == ["custom inline", "trend"]
+
+    term = draft["measurement_terms"]["measure_inline_proda_ca_bcd"]
+    assert term["term"] == "CA BCD"
+    assert term["source_type"] == "INLINE"
+    assert term["product"] == "PRODA"
+    assert term["step_id"] == "AA100001"
+    assert term["item_id"] == "CA_BCD"
+    assert term["target"] == 10
+    assert term["spec_low"] == 8
+    assert term["spec_high"] == 12
+    assert term["evidence"][0]["label"] == "Inline spec review"
+    assert store.load_alias_groups() == {}
+
+
+def test_archived_agent_fallback_explains_legacy_scope(semantic_store):
+    req = _Request(role="user")
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent.archived_agent_endpoint("runtime", req)
+
+    assert excinfo.value.status_code == 410
+    detail = str(excinfo.value.detail)
+    assert "Legacy Agent Studio endpoint is archived for rebuild." in detail
+    assert "active Unit AI and Semantic layer routes remain available" in detail

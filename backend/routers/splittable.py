@@ -9665,7 +9665,7 @@ def get_ram_cache_contents(product: str = Query("")):
 
 
 @router.get("/ram-cache/overview")
-def get_ram_cache_overview():
+def get_ram_cache_overview(request: Request):
     """제품별 RAM 캐시 현황 요약 — 캐시 관리 페이지 상단 제품별 분해용.
 
     RAM 캐시 키(소스 경로)를 제품명으로 되돌려 제품 단위로 집계한다.
@@ -9769,6 +9769,10 @@ def get_ram_cache_overview():
         "max_mb": round(max_bytes / (1024 * 1024), 1) if max_bytes else 0,
         "default_max_roots": default_max_roots,
         "is_dev": _use_dev,
+        # 캐시 관리 화면의 관리자 블록 노출 기준 — 이 페이지의 관리 기능은 모두
+        # splittable page manager 권한으로 보호돼 있어 그 판정을 그대로 내려준다.
+        # (일반 유저에겐 주요 Lot / 전체 캐시만 보인다)
+        "can_manage": is_page_manager(current_user(request), "splittable"),
     }
 
 

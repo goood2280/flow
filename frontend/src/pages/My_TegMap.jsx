@@ -15,7 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sf, putJson } from "../lib/api";
 import { toast } from "../components/Toast";
 import PageGear from "../components/PageGear";
-import { Button, Card, EmptyState, PageHeader, Pill, Select, TabStrip } from "../components/UXKit";
+import ZoomPanSvg from "../components/ZoomPanSvg";
+import { Button, Card, EmptyState, LinkBtn, PageHeader, Pill, Select, TabStrip } from "../components/UXKit";
 import TegCheck from "./TegCheck";
 
 const API = "/api/teg-map";
@@ -26,7 +27,7 @@ const TEG_COLORS = [
 ];
 
 const inputStyle = {
-  background: "var(--panel)", color: "var(--text)", border: "1px solid var(--line)",
+  background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--line)",
   borderRadius: 4, padding: "4px 8px", fontSize: 13, minWidth: 110,
 };
 
@@ -465,7 +466,7 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nea
 
   return (
     <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-      style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6 }}>
+      style={{ background: "var(--bg-card)", border: "1px solid var(--line)", borderRadius: 6 }}>
       {/* wafer 경계 원 + 최외곽선(점선) */}
       {mmMode && (
         <>
@@ -538,14 +539,15 @@ function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nea
 }
 
 /* ── shot 확대 SVG — 한 shot 안 TEG 위치·그림·칩 격자 ──
-   v9.3.x: 마우스 휠(확대/축소) + 드래그(패닝) + 리셋 버튼 지원.
-   핀치 줌은 pointer 이벤트 기반으로 터치 디바이스에서도 동작.       ── */
+   zoom/pan/핀치 로직은 공용 ZoomPanSvg 로 통합 (TegCheck ShotView 와 공유). ── */
 function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const SIZE = 380;
   const geo = data.geometry;
   const display = data.display || { mode: "none" };
-  const W = geo.fit === "radius" ? geo.shot_w_mm : 1;
-  const H = geo.fit === "radius" ? geo.shot_h_mm : 1;
+  if (geo.fit !== "radius") {
+    return <EmptyState icon="⚠" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
+  }
+  const W = geo.shot_w_mm, H = geo.shot_h_mm;
   const pad = 0.12;
   const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
   const w = W * s, h = H * s;
@@ -557,98 +559,10 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
   const cellsInfo = display.mode === "grid" ? chipCells(display, W, H) : null;
   const showImage = display.mode === "image" && imgUrl;
 
-  // ── zoom / pan 상태 ──
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const svgRef = useRef(null);
-  const dragRef = useRef(null);           // { startX, startY, panX0, panY0 } | null
-  const pinchRef = useRef(null);          // { dist0, zoom0 } | null
-  const pointersRef = useRef(new Map());  // pointerId → { x, y }
-
-  const ZOOM_MIN = 1, ZOOM_MAX = 12, ZOOM_STEP = 1.15;
-
-  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
-
-  // 마우스 휠 → 줌 (커서 중심)
-  const onWheel = useCallback((e) => {
-    e.preventDefault();
-    const rect = svgRef.current.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    setZoom(prev => {
-      const next = e.deltaY < 0
-        ? Math.min(ZOOM_MAX, prev * ZOOM_STEP)
-        : Math.max(ZOOM_MIN, prev / ZOOM_STEP);
-      const ratio = 1 - next / prev;
-      setPan(p => ({ x: p.x + (mx - p.x) * ratio, y: p.y + (my - p.y) * ratio }));
-      return next;
-    });
-  }, []);
-
-  // 핀치 거리 계산
-  const pinchDist = (pts) => {
-    const arr = [...pts.values()];
-    if (arr.length < 2) return 0;
-    const dx = arr[0].x - arr[1].x, dy = arr[0].y - arr[1].y;
-    return Math.hypot(dx, dy);
-  };
-
-  const onPointerDown = useCallback((e) => {
-    svgRef.current?.setPointerCapture(e.pointerId);
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size === 2) {
-      // 핀치 시작
-      pinchRef.current = { dist0: pinchDist(pointersRef.current), zoom0: zoom };
-      dragRef.current = null;
-    } else if (pointersRef.current.size === 1) {
-      dragRef.current = { startX: e.clientX, startY: e.clientY, panX0: pan.x, panY0: pan.y };
-    }
-  }, [zoom, pan]);
-
-  const onPointerMove = useCallback((e) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size === 2 && pinchRef.current) {
-      // 핀치 줌
-      const d = pinchDist(pointersRef.current);
-      if (pinchRef.current.dist0 > 0) {
-        const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchRef.current.zoom0 * (d / pinchRef.current.dist0)));
-        setZoom(next);
-      }
-    } else if (dragRef.current && pointersRef.current.size === 1) {
-      // 팬
-      const dx = e.clientX - dragRef.current.startX, dy = e.clientY - dragRef.current.startY;
-      setPan({ x: dragRef.current.panX0 + dx, y: dragRef.current.panY0 + dy });
-    }
-  }, []);
-
-  const onPointerUp = useCallback((e) => {
-    pointersRef.current.delete(e.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (pointersRef.current.size === 0) dragRef.current = null;
-  }, []);
-
-  // 휠 이벤트는 passive:false 필요 → ref 방식으로 등록
-  useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return;
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [onWheel]);
-
-  const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
-
-  // v9.3.x: early return을 훅 아래로 이동 (Rules-of-Hooks 준수)
-  if (geo.fit !== "radius") {
-    return <EmptyState icon="⚠" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
-  }
-
   return (
-    <div style={{ position: "relative", display: "inline-block" }}>
-      <svg ref={svgRef} width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-        style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6,
-                 cursor: isZoomed ? "grab" : "zoom-in", touchAction: "none", userSelect: "none" }}
-        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+    <ZoomPanSvg size={SIZE}>
+      {(zoom) => (
+        <>
           {showImage && (
             <image href={imgUrl} x={ox} y={oy} width={w} height={h}
               preserveAspectRatio="none" opacity="0.9" />
@@ -679,8 +593,8 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
                 {!main && (
                   <rect x={x} y={yBottom - hpx} width={wpx} height={hpx} fill={tegColor(t.teg)} opacity="0.75" />
                 )}
-                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={tegColor(t.teg)} stroke="var(--panel)" strokeWidth={0.8 / zoom} />
-                <text x={labelX} y={labelY} fontSize={11 / zoom} fill="var(--text)" dominantBaseline="middle">
+                <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={tegColor(t.teg)} stroke="var(--bg-card)" strokeWidth={0.8 / zoom} />
+                <text x={labelX} y={labelY} fontSize={11 / zoom} fill="var(--text-primary)" dominantBaseline="middle">
                   {t.teg}
                 </text>
               </g>
@@ -701,27 +615,9 @@ function ShotZoom({ data, selectedTegs, tegColor, imgUrl }) {
               {(display.gap_x > 0 || display.gap_y > 0) ? ` · 간격 ${fmt(display.gap_x * 1000, 0)}×${fmt(display.gap_y * 1000, 0)} µm` : ""}
             </text>
           )}
-        </g>
-      </svg>
-      {/* 줌 리셋 버튼 — 줌/패닝 상태일 때만 표시 */}
-      {isZoomed && (
-        <button onClick={resetView} title="보기 초기화"
-          style={{ position: "absolute", top: 6, right: 6, width: 28, height: 28,
-                   display: "flex", alignItems: "center", justifyContent: "center",
-                   background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 4,
-                   cursor: "pointer", fontSize: 14, color: "var(--muted)", opacity: 0.85 }}>
-          ↺
-        </button>
+        </>
       )}
-      {/* 줌 배율 표시 */}
-      {zoom > 1.05 && (
-        <span style={{ position: "absolute", bottom: 6, right: 6, fontSize: 11,
-                       color: "var(--muted)", background: "var(--panel)", padding: "1px 5px",
-                       borderRadius: 3, border: "1px solid var(--line)", opacity: 0.8 }}>
-          ×{zoom.toFixed(1)}
-        </span>
-      )}
-    </div>
+    </ZoomPanSvg>
   );
 }
 
@@ -904,7 +800,7 @@ function CheckTargetEditor({ vehicle, canEdit }) {
         <div style={{ padding: "0 9px 9px" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.6, marginBottom: 6 }}>
             체크한 TEG 가 "TEG Mapfile 체크" 대상입니다. 기본값 = 이름이 H_/V_ 로 시작하는 것 전부.
-            {!canEdit && <span style={{ color: "#c78a1e" }}> · admin / teg 페이지 관리자만 변경·저장할 수 있습니다.</span>}
+            {!canEdit && <span style={{ color: "var(--warn)" }}> · admin / teg 페이지 관리자만 변경·저장할 수 있습니다.</span>}
             {!data?.teg_ok && <span style={{ color: "#e05252" }}> · 이 vehicle 의 Teg_location 데이터가 없습니다.</span>}
           </div>
           {tegs.length > 12 && (
@@ -944,17 +840,9 @@ function CheckTargetEditor({ vehicle, canEdit }) {
           {canEdit && (
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
               <Button variant="primary" disabled={saving || !dirty} onClick={save}>저장</Button>
-              <button onClick={checkDefault} disabled={saving}
-                style={{ fontSize: 11, color: "var(--accent, #5a8cff)", background: "none",
-                         border: "none", cursor: "pointer", textDecoration: "underline" }}>
-                H_/V_ 선택
-              </button>
-              <button onClick={resetDefault} disabled={saving}
-                style={{ fontSize: 11, color: "var(--muted)", background: "none",
-                         border: "none", cursor: "pointer", textDecoration: "underline" }}>
-                기본값으로 초기화
-              </button>
-              {dirty && <span style={{ fontSize: 11, color: "#e0a452" }}>저장 필요</span>}
+              <LinkBtn onClick={checkDefault} disabled={saving} style={{ fontSize: 11 }}>H_/V_ 선택</LinkBtn>
+              <LinkBtn tone="muted" onClick={resetDefault} disabled={saving} style={{ fontSize: 11 }}>기본값으로 초기화</LinkBtn>
+              {dirty && <span style={{ fontSize: 11, color: "var(--warn)" }}>저장 필요</span>}
             </div>
           )}
         </div>
@@ -1067,6 +955,12 @@ export default function My_TegMap({ user }) {
 
   const geo = data?.geometry;
   const display = data?.display || { mode: "none" };
+  // 가장 가까운 샷 센터 — WaferMap 빨간 점 표시 + 실center 차이 계산용
+  const nearestShot = useMemo(() => {
+    if (geo?.fit !== "radius") return null;
+    const withR = (data?.shots || []).filter(s0 => typeof s0.radius === "number");
+    return withR.length ? withR.reduce((a, b) => (a.radius <= b.radius ? a : b)) : null;
+  }, [data, geo]);
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1127,20 +1021,10 @@ export default function My_TegMap({ user }) {
               <span style={{ color: "#c78a1e", fontWeight: 700 }}> ■ 연노랑</span> = shot 이 걸치거나 밖.
               격자/그림은 shot 확대에서만 표시됩니다.
             </div>
-            {/* 가장 가까운 샷 센터 — WaferMap 빨간 점 표시 + 실center 차이 계산용 */}
-            {(() => {
-              const withR = geo?.fit === "radius"
-                ? (data.shots || []).filter(s0 => typeof s0.radius === "number")
-                : [];
-              // eslint-disable-next-line react-hooks/rules-of-hooks
-              const _nearestShot = withR.length
-                ? withR.reduce((a, b) => (a.radius <= b.radius ? a : b))
-                : null;
-              return (
             <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
               <WaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
                 selectedShot={selectedShot} onShotClick={onShotClick}
-                nearestShot={_nearestShot} />
+                nearestShot={nearestShot} />
               {/* TEG 목록 — 다중 선택 가능 */}
               <div style={{ minWidth: 170, maxWidth: 240 }}>
                 {/* Chip_Radius 계산 정보 — shot 크기 + 가장 가까운 shot 실center 델타(µm) */}
@@ -1148,12 +1032,12 @@ export default function My_TegMap({ user }) {
                     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 12, lineHeight: 1.7 }}>
                       <div style={{ fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>Chip_Radius 계산 정보</div>
                       <div>shot 크기: <b>{fmt(geo.shot_w_mm, 3)} × {fmt(geo.shot_h_mm, 3)} mm</b></div>
-                      {_nearestShot && (
+                      {nearestShot && (
                         <>
-                          <div>가장 가까운 샷: <b style={{ color: "#e05252" }}>({_nearestShot.x}, {_nearestShot.y})</b>
+                          <div>가장 가까운 샷: <b style={{ color: "#e05252" }}>({nearestShot.x}, {nearestShot.y})</b>
                             <span style={{ color: "var(--muted)", marginLeft: 4 }}>(빨간 점)</span></div>
                           <div title="실center(wafer 중심)에서 가장 가까운 샷 센터로 이동하는 Δx, Δy. x 우측↑, y 위↑ 양수.">
-                            실center 차이: <b>Δx {fmt(_nearestShot.mm_x * 1000, 1)} · Δy {fmt(-_nearestShot.mm_y * 1000, 1)} µm</b>
+                            실center 차이: <b>Δx {fmt(nearestShot.mm_x * 1000, 1)} · Δy {fmt(-nearestShot.mm_y * 1000, 1)} µm</b>
                           </div>
                         </>
                       )}
@@ -1177,17 +1061,13 @@ export default function My_TegMap({ user }) {
                   <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
                     TEG 목록 ({selectedTegs.size}/{tegNames.length})
                     {maxSel != null && (
-                      <span style={{ fontWeight: 400, color: "#c78a1e" }} title="일반 사용자 동시 선택 상한 (관리자는 무제한)"> · 최대 {maxSel}</span>
+                      <span style={{ fontWeight: 400, color: "var(--warn)" }} title="일반 사용자 동시 선택 상한 (관리자는 무제한)"> · 최대 {maxSel}</span>
                     )}
                   </span>
                   {tegNames.length > 1 && (
                     <div style={{ display: "flex", gap: 2 }}>
-                      <button onClick={selectAllTegs}
-                        style={{ fontSize: 11, color: "var(--accent, #5a8cff)", background: "none",
-                          border: "none", cursor: "pointer", padding: "2px 5px", textDecoration: "underline" }}>전체</button>
-                      <button onClick={deselectAllTegs}
-                        style={{ fontSize: 11, color: "var(--muted)", background: "none",
-                          border: "none", cursor: "pointer", padding: "2px 5px", textDecoration: "underline" }}>해제</button>
+                      <LinkBtn onClick={selectAllTegs} style={{ fontSize: 11, padding: "2px 5px" }}>전체</LinkBtn>
+                      <LinkBtn tone="muted" onClick={deselectAllTegs} style={{ fontSize: 11, padding: "2px 5px" }}>해제</LinkBtn>
                     </div>
                   )}
                 </div>
@@ -1213,7 +1093,7 @@ export default function My_TegMap({ user }) {
                         style={{
                           display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
                           border: "none", borderLeft: `3px solid ${on ? tegColor(n) : "transparent"}`,
-                          background: on ? "var(--panel)" : "transparent", color: "var(--text)",
+                          background: on ? "var(--bg-hover)" : "transparent", color: "var(--text-primary)",
                           padding: "5px 8px", fontSize: 13, textAlign: "left",
                           fontWeight: on ? 700 : 400, opacity: on ? 1 : 0.65,
                         }}>
@@ -1227,7 +1107,7 @@ export default function My_TegMap({ user }) {
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n}</span>
                         {ovG && (
                           <span style={{ marginLeft: "auto", fontSize: 10, flexShrink: 0,
-                                         color: "#c78a1e", border: "1px solid #c78a1e",
+                                         color: "var(--warn)", border: "1px solid var(--warn)",
                                          borderRadius: 4, padding: "0 4px" }}>Mapfile</span>
                         )}
                       </button>
@@ -1237,9 +1117,9 @@ export default function My_TegMap({ user }) {
                 {/* MAIN overlay 참고문 — 설비 Mapfile 세팅 유래 값이라 이상 가능성 안내 */}
                 {Object.keys(mainOverlays).length > 0 && (
                   <div style={{ marginTop: 8, padding: "6px 8px", borderRadius: 6,
-                                background: "rgba(199,138,30,0.10)", fontSize: 11,
+                                background: "var(--warn-50)", fontSize: 11,
                                 lineHeight: 1.6, color: "var(--muted)" }}>
-                    <div style={{ fontWeight: 700, color: "#c78a1e" }}>
+                    <div style={{ fontWeight: 700, color: "var(--warn)" }}>
                       ⓘ MAIN 내부 TEG — Mapfile 기준 반영
                     </div>
                     {Object.entries(mainOverlays).map(([g, m]) => (
@@ -1258,8 +1138,6 @@ export default function My_TegMap({ user }) {
                 <CheckTargetEditor vehicle={vehicle} canEdit={canEdit} />
               </div>
             </div>
-              );
-            })()}
           </Card>
 
           {/* 우: shot 확대 + radius */}

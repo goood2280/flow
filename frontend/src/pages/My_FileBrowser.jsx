@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Loading from "../components/Loading";
 import Modal from "../components/Modal";
 import { PageGearButton } from "../components/PageGear";
 import { toast } from "../components/Toast";
-import { dl, sf } from "../lib/api";
+import { dl, qs, sf } from "../lib/api";
 import { allowedSubTabs } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/filebrowser";
@@ -19,6 +19,9 @@ const FB_AMBER = chartPalette.series[1];
 const FB_MUTED = "#64748b";
 const FB_DISABLED = "#94a3b8";
 const FB_GRID_LINE = "1px solid var(--border)";
+// 파일 목록 렌더용 확장자 색/아이콘 — 행 map 안에서 객체를 재할당하지 않도록 모듈 상수로 유지.
+const EXT_COLOR={parquet:"var(--ok)",csv:FB_INFO.fg,json:FB_AMBER,md:FB_DISABLED,yaml:"var(--warn)",yml:"var(--warn)",dir:FB_DISABLED};
+const EXT_ICON={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"};
 const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
 const S3_STATUS_FAST_URL="/api/s3ingest/status-by-target?include_local=0";
@@ -395,7 +398,6 @@ const validationRuleFields=[
 const sortRuleFields=[
   ["sort","저장 정렬","feature_name asc leading_number last\nrule_order asc rule_order last"],
 ];
-const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 function revStyle(rev){
   if(rev==="추가")return{bg:"#dcfce7",fg:"#166534",line:FB_OK.fg};
@@ -466,7 +468,7 @@ function LazyAwsPanel({ user, compact = false }) {
   return <Comp user={user} compact={compact} />;
 }
 
-export default function My_FileBrowser({user,onNavigate}){
+export default function My_FileBrowser({user}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);const[productsLoading,setProductsLoading]=useState(false);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
@@ -483,8 +485,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[baseRaw,setBaseRaw]=useState(null);
   const[selBaseMeta,setSelBaseMeta]=useState(null);
   // Column selection state
-  const[selectedCols,setSelectedCols]=useState([]);const[colSelectMode,setColSelectMode]=useState(false);
-  const[page,setPage]=useState(0);
+  const[selectedCols,setSelectedCols]=useState([]);
   const[error,setError]=useState("");
   const[isBaseEditing,setIsBaseEditing]=useState(false);
   const[editRows,setEditRows]=useState([]);
@@ -509,8 +510,6 @@ export default function My_FileBrowser({user,onNavigate}){
   const[baseSaveBusy,setBaseSaveBusy]=useState("");
   const[rawEditing,setRawEditing]=useState(false);
   const[rawEditText,setRawEditText]=useState("");
-  const[schemaSnapshotMsg,setSchemaSnapshotMsg]=useState("");
-  const[schemaSnapshots,setSchemaSnapshots]=useState([]);
   // S3 sync status map (public endpoint) — powers sidebar traffic-light dots
   const[s3Status,setS3Status]=useState(()=>readStoredS3Status());
   const[s3StatusReady,setS3StatusReady]=useState(false);
@@ -663,18 +662,6 @@ export default function My_FileBrowser({user,onNavigate}){
     }catch(e){setBaseVersionMsg(e.message||"버전 미리보기 실패");}
     finally{setBaseVersionPreviewLoading(false);}
   };
-  const migrateLegacyHistory=async()=>{
-    if(!selBaseFile)return;
-    if(!isFileBrowserAdmin){toast.warn("Admin 또는 FileBrowser page_admin 만 migration 할 수 있습니다.");return;}
-    const note=window.prompt("legacy .history migration 사유를 입력하세요.", "Migrate legacy .history to EDM versions");
-    if(note===null)return;
-    try{
-      const d=await sf(API+"/base-file/migrate-history",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({file:selBaseFile,username:user?.username||"",note})});
-      setBaseVersionMsg(`migration 완료 · migrated ${d.migrated||0} / skipped ${d.skipped||0}`);
-      loadBaseVersions(selBaseFile);
-    }catch(e){setBaseVersionMsg(e.message||"migration 실패");}
-  };
   const rollbackBaseVersion=async(version)=>{
     if(!selBaseFile||!version)return;
     if(!isFileBrowserAdmin){toast.warn("Admin 또는 FileBrowser page_admin 만 롤백할 수 있습니다.");return;}
@@ -710,51 +697,6 @@ export default function My_FileBrowser({user,onNavigate}){
       loadBaseFileView(selBaseFile,{});
     }catch(e){setBaseVersionMsg(e.message||"저장 실패");}
     finally{setBaseSaveBusy("");}
-  };
-  const saveSchemaSnapshot=async()=>{
-    const cols=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
-    if(!cols.length){setSchemaSnapshotMsg("저장할 schema column 이 없습니다.");return;}
-    const isDbMode=mode!=="base"&&mode!=="root";
-    const colLower=new Map(cols.map(c=>[c.toLowerCase(),c]));
-    const joinKeyCandidates=["product","process_id","root_lot_id","lot_id","wafer_id","lot_wf","LOT_WF","shot_x","shot_y","item_id","step_id","step_seq","subitem_id"];
-    const joinKeys=joinKeyCandidates.map(k=>colLower.get(k.toLowerCase())).filter(Boolean);
-    const grain=colLower.has("shot_x")&&colLower.has("shot_y")?"shot":(colLower.has("wafer_id")?"wafer":(colLower.has("root_lot_id")||colLower.has("lot_id")?"lot":"row"));
-    const sourceType=mode==="base"?"base_file":(mode==="root"?"root_parquet":"db_product");
-    const body={
-      source_type:sourceType,
-      root:isDbMode?selRoot:"",
-      product:isDbMode?selProd:"",
-      file:mode==="base"?selBaseFile:(mode==="root"?selRootPq:""),
-      columns:cols,
-      dtypes:data?.dtypes||{},
-      grain,
-      join_keys:joinKeys,
-      total_rows:data?.total_rows,
-      username:user?.username||"",
-      note:"FileBrowser schema snapshot",
-    };
-    try{
-      const d=await sf(API+"/schema/snapshot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      const added=d.diff?.added_columns?.length||0,removed=d.diff?.removed_columns?.length||0,dtype=d.diff?.dtype_changes?.length||0;
-      setSchemaSnapshotMsg(`schema 저장 완료 · added ${added} / removed ${removed} / dtype ${dtype}`);
-      loadSchemaSnapshots(body);
-    }catch(e){setSchemaSnapshotMsg(e.message||"schema 저장 실패");}
-  };
-  const loadSchemaSnapshots=async(sourceBody=null)=>{
-    const isDbMode=mode!=="base"&&mode!=="root";
-    const body=sourceBody||{
-      source_type:mode==="base"?"base_file":(mode==="root"?"root_parquet":"db_product"),
-      root:isDbMode?selRoot:"",
-      product:isDbMode?selProd:"",
-      file:mode==="base"?selBaseFile:(mode==="root"?selRootPq:""),
-    };
-    const q=new URLSearchParams({source_type:body.source_type||"",root:body.root||"",product:body.product||"",file:body.file||""});
-    try{
-      const d=await sf(API+"/schema/snapshots?"+q.toString());
-      setSchemaSnapshots(d.snapshots||[]);
-      const added=d.diff?.added_columns?.length||0,removed=d.diff?.removed_columns?.length||0,dtype=d.diff?.dtype_changes?.length||0;
-      setSchemaSnapshotMsg((d.snapshots||[]).length?`schema 이력 ${(d.snapshots||[]).length}개 · latest diff +${added}/-${removed} dtype ${dtype}`:"schema 이력이 없습니다.");
-    }catch(e){setSchemaSnapshotMsg(e.message||"schema 이력 로드 실패");}
   };
   const[s3Open,setS3Open]=useState(false);
   const[s3Items,setS3Items]=useState([]);
@@ -1223,11 +1165,6 @@ export default function My_FileBrowser({user,onNavigate}){
     const a=cleanAggregateSpec(spec);
     return a?{agg_func:a.function,agg_column:a.column,agg_group_by:a.group_by.join(",")}:{};
   };
-  const sortLabel=(spec)=>{
-    const s=cleanSortSpec(spec);
-    if(!s)return"";
-    return `${s.column} ${s.direction}${s.nulls==="first"?" nulls first":""}`;
-  };
   const aggregateLabel=(spec)=>{
     const a=cleanAggregateSpec(spec);
     if(!a)return"";
@@ -1324,11 +1261,10 @@ export default function My_FileBrowser({user,onNavigate}){
   const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setSortSpec(null);setAggregateSpec(null);
-    setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
-    const url=buildUrl(API+"/base-file-view",params);
+    const url=API+"/base-file-view"+qs(params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"||d.kind==="yaml"){
         // Render natively: JSON is pretty-printed, md shown as raw <pre>.
@@ -1369,10 +1305,6 @@ export default function My_FileBrowser({user,onNavigate}){
     return()=>{alive=false;};
   },[selRoot]);
 
-  const buildUrl=(base,params)=>{
-    const q=Object.entries(params).filter(([_,v])=>v!==undefined&&v!=="").map(([k,v])=>k+"="+encodeURIComponent(v)).join("&");
-    return base+"?"+q;
-  };
 
   useEffect(()=>{
     const q=String(colSearch||"").trim();
@@ -1389,7 +1321,7 @@ export default function My_FileBrowser({user,onNavigate}){
     let alive=true;
     setRemoteColsLoading(true);
     const t=setTimeout(()=>{
-      sf(buildUrl(API+"/columns/search",params)).then(d=>{
+      sf(API+"/columns/search"+qs(params)).then(d=>{
         if(!alive)return;
         setRemoteCols((d.columns||[]).map(c=>String(c||"")).filter(Boolean));
         if(d.dtypes)setData(prev=>prev?{...prev,dtypes:{...(prev.dtypes||{}),...(d.dtypes||{})}}:prev);
@@ -1404,17 +1336,17 @@ export default function My_FileBrowser({user,onNavigate}){
     const seq=++viewSeqRef.current;
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
-    setPage(pageArg);setSampleLoading(false);
+    setSampleLoading(false);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
-    const url=buildUrl(API+"/view",params);
+    const url=API+"/view"+qs(params);
     const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
     if(previewFirst){
       // 최신 date 파티션 한정 샘플 — 서버가 500행까지 허용하므로 넉넉히 요청.
-      const sampleUrl=buildUrl(API+"/view",{...params,rows:DB_PREVIEW_ROWS,page_size:DB_PREVIEW_ROWS,meta_only:false});
-      sf(buildUrl(API+"/view",{...params,meta_only:true})).then(d=>{
+      const sampleUrl=API+"/view"+qs({...params,rows:DB_PREVIEW_ROWS,page_size:DB_PREVIEW_ROWS,meta_only:false});
+      sf(API+"/view"+qs({...params,meta_only:true})).then(d=>{
         if(seq!==viewSeqRef.current)return;
         setSelectedCols([]);setData(d);setLoading(false);setSampleLoading(true);
         sf(sampleUrl).then(d2=>{
@@ -1434,15 +1366,15 @@ export default function My_FileBrowser({user,onNavigate}){
     const seq=++viewSeqRef.current;
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
-    setPage(pageArg);setSampleLoading(false);
+    setSampleLoading(false);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
-    const url=buildUrl(API+"/root-parquet-view",params);
+    const url=API+"/root-parquet-view"+qs(params);
     const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
     if(previewFirst){
-      sf(buildUrl(API+"/root-parquet-view",{...params,meta_only:true})).then(d=>{
+      sf(API+"/root-parquet-view"+qs({...params,meta_only:true})).then(d=>{
         if(seq!==viewSeqRef.current)return;
         setSelectedCols([]);setData(d);setLoading(false);setSampleLoading(true);
         sf(url).then(d2=>{
@@ -1477,8 +1409,7 @@ export default function My_FileBrowser({user,onNavigate}){
       if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
-      setPage(0);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
+      const url=API+"/base-file-view"+qs({file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
         select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)});
       sf(url).then(d=>{setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
@@ -1979,23 +1910,10 @@ export default function My_FileBrowser({user,onNavigate}){
     dl(url,"data.csv").catch(e=>toast.error(e.message||"다운로드 실패"));
   };
 
-  const gotoPage=(nextPage)=>{
-    if(mode==="base"&&isBaseEditing){
-      setError("편집 모드에서는 페이지 이동이 비활성됩니다.");
-      return;
-    }
-    const p=Math.max(0,nextPage);
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
-    else if(mode==="base"&&selBaseFile&&!baseRaw){
-      setLoading(true);setError("");setTab("data");setPage(p);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
-        select_cols:selectedCols.length?selectedCols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
-      sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
-    } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
-  };
 
-  const allCols=data?.all_columns||data?.columns||[];
-  const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols;
+  // 컬럼 목록은 data/colSearch 변경 때만 재계산 (1초 ticker 등 무관 렌더에서 재filter 방지)
+  const allCols=useMemo(()=>data?.all_columns||data?.columns||[],[data]);
+  const filteredCols=useMemo(()=>colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols,[allCols,colSearch]);
   const displayCols=(data?.all_columns_truncated&&colSearch.trim())?remoteCols:filteredCols;
   const fbActiveRule=formToRule(fbRuleForm);
   const fbActiveRuleSections=ruleSummarySections(fbActiveRule);
@@ -2005,7 +1923,6 @@ export default function My_FileBrowser({user,onNavigate}){
   const isBaseEditingMode = mode==="base"&&isBaseEditing;
   const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
   const hasCopiedBaseRows = !!baseEditCopiedRowsRef.current?.length;
-  const showBasePager = false;
   const settingsTabs=[
     ...(canRunS3Ingest?[{k:"items",l:"항목 ("+s3Items.length+")"}]:[]),
     ...(canManageS3Ingest?[{k:"add",l:"+ 추가"}]:[]),
@@ -2078,8 +1995,8 @@ export default function My_FileBrowser({user,onNavigate}){
               const kind=(f.kind||"file").toLowerCase();
               const isDir=kind==="dir";
               const isDirUp=kind==="dir_up";
-              const extColor={parquet:"#10b981",csv:FB_INFO.fg,json:FB_AMBER,md:FB_DISABLED,yaml:"#eab308",yml:"#eab308",dir:FB_DISABLED}[f.ext]||FB_MUTED;
-              const icon=isDirUp?"↩":({parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"}[f.ext]||"📁");
+              const extColor=EXT_COLOR[f.ext]||FB_MUTED;
+              const icon=isDirUp?"↩":(EXT_ICON[f.ext]||"📁");
               const displayName=baseDir&&!isDirUp?String(fileKey).replace(new RegExp("^"+baseDir.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"/"),""):f.name;
               const titlePath=[f.name];
               return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
@@ -2115,17 +2032,17 @@ export default function My_FileBrowser({user,onNavigate}){
                     {!isDir&&!isDirUp&&lightFreshText(fileKey)}
                     {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
                     {!isDir&&!isDirUp&&<>
-                      <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
+                      <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:`color-mix(in srgb, ${extColor} 13%, transparent)`,color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
                       <span style={sidebarMeta}>{formatSize(f.size)}</span>
                     </>}
-                    {isDir&&<span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>DIR</span>}
+                    {isDir&&<span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:`color-mix(in srgb, ${extColor} 13%, transparent)`,color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>DIR</span>}
                   </span>
                 </span>
                 {/* DB/root 원본은 read-only. Flow-i가 Files 영역에 등록한 uploads 파일만 삭제 가능. */}
                 {isAdmin&&!isDir&&f.source==="uploads"&&<span
                   onClick={(e)=>{e.stopPropagation();deleteBaseFile(f.name);}}
                   title={"Files 등록 파일 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
-                  style={{fontSize:14,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:FB_BAD.fg,border:`1px solid ${FB_BAD.fg}55`,background:"transparent",flexShrink:0}}>
+                  style={{fontSize:14,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:FB_BAD.fg,border:"1px solid var(--danger-line)",background:"transparent",flexShrink:0}}>
                   🗑
                 </span>}
               </div>);
@@ -2401,13 +2318,6 @@ export default function My_FileBrowser({user,onNavigate}){
                         style={{width:14,height:14}}/> 헤더 포함</label>
                     <span style={{padding:"2px 8px",borderRadius:4,border:"1px dashed var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:12}}>Ctrl+V 붙여넣기 안내</span>
                   </>}
-                  {showBasePager&&<>
-                    <button onClick={()=>gotoPage((data.page??page)-1)} disabled={(data.page??page)<=0}
-                      style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:(data.page??page)<=0?"default":"pointer",opacity:(data.page??page)<=0?0.45:1}}>이전</button>
-                    <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>page {(data.page??page)+1}</span>
-                    <button onClick={()=>gotoPage((data.page??page)+1)} disabled={!data.has_more}
-                      style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:data.has_more?"pointer":"default",opacity:data.has_more?1:0.45}}>다음</button>
-                  </>}
                 </div>
               </div>
               {/* Tabs: Data + Columns */}
@@ -2445,7 +2355,7 @@ export default function My_FileBrowser({user,onNavigate}){
                             <span>{ri+1}</span>
                             <button type="button" onClick={(e)=>{e.stopPropagation();deleteBaseEditRow(ri);}}
                               title={`${ri+1}행 삭제`}
-                              style={{...baseEditRowActionButton,width:22,border:`1px solid ${FB_BAD.fg}55`,background:FB_BAD.bg,color:FB_BAD.fg,fontSize:12}}>
+                              style={{...baseEditRowActionButton,width:22,border:"1px solid var(--danger-line)",background:FB_BAD.bg,color:FB_BAD.fg,fontSize:12}}>
                               ×
                             </button>
                           </span>

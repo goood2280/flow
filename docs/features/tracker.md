@@ -1,6 +1,6 @@
-# Tracker
+# Tracker (ET 추적)
 
-Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 추적한다.
+탭 `tracker` / 라벨 "ET 추적". 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 추적한다.
 
 ## Owns
 
@@ -12,6 +12,7 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 - 새 이슈 lot 입력 표의 product, lot_id(fab_lot_id), wafer_id, purpose, comment 관리
 - Monitor lot summary: 입력된 `lot_id` 1행을 유지하고 현재 Qty, wafer 압축 라벨, step/status metadata를 붙인다.
 - 명시된 lot 이상 / split 영향 키워드를 append-only KnowledgeEvent 후보로 남긴다.
+- **ET 일일 스캔** — 하루 n회 지정 시각에 ET DB의 PGM(pt)을 감지해 `et_history`에 누적하고, 톱니바퀴 설정으로 일괄 메일을 보낸다 (`core/et_tracker.py`, `/api/tracker/et-scan/*`).
 
 ## Does Not Own
 
@@ -26,6 +27,8 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 | Frontend page | `frontend/src/pages/My_Tracker.jsx` |
 | Backend router | `backend/routers/tracker.py` |
 | Module layer | `backend/app_v2/modules/tracker/` |
+| ET 일일 스캔 | `backend/core/et_tracker.py` |
+| 스케줄러 | `backend/core/tracker_scheduler.py` |
 | Tracker data | `data/flow-data/tracker/` |
 | Flow-i guide | `data/flow-data/flowi_agent_features/tracker.md` |
 
@@ -46,5 +49,8 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 
 ```bash
 git diff --check
-python -m pytest tests/test_tracker_app_v2.py
+```
+
+```bash
+python -m pytest tests/test_tracker_category_source.py
 ```

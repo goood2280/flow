@@ -452,6 +452,20 @@ export function Button({ variant = "ghost", children, onClick, disabled, title, 
 }
 
 
+// ── LinkBtn — 밑줄 텍스트형 버튼 (전체/해제/더 보기/접기 등 인라인 액션) ──
+// tone: "accent"(기본) | "muted"
+export function LinkBtn({ tone = "accent", children, style = {}, ...props }) {
+  return (
+    <button {...props}
+      style={{ fontSize: 12, color: tone === "muted" ? c.textSub : c.accent,
+               background: "none", border: "none", cursor: "pointer", padding: 0,
+               textDecoration: "underline", whiteSpace: "nowrap", ...style }}>
+      {children}
+    </button>
+  );
+}
+
+
 // ── EmptyState ────────────────────────────────────────
 export function EmptyState({ icon = "○", title, hint }) {
   return (
@@ -475,6 +489,6 @@ export function Field({ label, children, hint, style = {} }) {
 
 export default {
   Pill, Card, Chip, TableWrap, Tbl, Filter, Btn, Avatar, Input, Select, Textarea,
-  StatusDot, TabStrip, PageHeader, PageShell, Toolbar, Panel, Banner, TwoCol, DataTable, Button, EmptyState, Field,
+  StatusDot, TabStrip, PageHeader, PageShell, Toolbar, Panel, Banner, TwoCol, DataTable, Button, LinkBtn, EmptyState, Field,
   statusPalette, formControlStyle,
 };

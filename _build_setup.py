@@ -41,6 +41,11 @@ INCLUDE_DIRS = [
     'frontend/src',
     'frontend/public',
     'docs',
+    # 검증 수단과 운영 스크립트도 번들에 담는다. 이게 빠져 있으면 GitHub 저장소를
+    # "README.md + setup.py" 로 줄였을 때 영구 소실된다 — 2026-07-20 커밋
+    # bb0737b5 에서 실제로 tests/ 92 개와 scripts/ 가 그렇게 사라졌다.
+    'tests',
+    'scripts',
 ]
 
 INCLUDE_FILES = [
@@ -56,9 +61,18 @@ INCLUDE_FILES = [
     'routers/__init__.py',
     'backend/app.py',
     'backend/requirements.txt',
+    # backend/ 루트 모듈 — INCLUDE_DIRS 의 app_v2/core/routers 에 안 걸린다.
+    # startup.py 가 import 하므로 빠지면 제품 dedup 스케줄러가 조용히 죽는다.
+    'backend/scheduler.py',
     'frontend/index.html',
     'frontend/package.json',
     'frontend/vite.config.js',
+    # 에이전트 진입점 + 저장소 위생 규칙 + 번들 빌더 자신.
+    # _build_setup.py 가 빠지면 setup.py 를 다시 만들 수단이 사라진다.
+    'CLAUDE.md',
+    '.gitignore',
+    '.gitattributes',
+    '_build_setup.py',
     # NOTE: archive/domain_sources_* 내부 원문 도메인 노트는 번들에서 제외.
     # 내부 도메인 지식 파일은 public repo/installer payload 에 유출되어서는 안 됨.
 ]
@@ -311,7 +325,13 @@ _PROTECTED_SEGMENTS = {{
 
 _ALLOWED_TOP_LEVEL = {{
     'backend', 'frontend', 'docs', 'scripts', 'app_v2', 'core', 'routers',
+    'tests',
     'app.py', 'README.md', 'VERSION.json', 'requirements.txt',
+    # 에이전트 진입점 / 저장소 위생 규칙 / 번들 빌더 자신 / npm 잠금.
+    # 이 화이트리스트에 없으면 FILES 에 담겨 있어도 extract 가 조용히 버린다 —
+    # GitHub 저장소를 "README.md + setup.py" 로 줄였을 때 영구 소실되는 경로다.
+    'CLAUDE.md', '.gitignore', '.gitattributes', '_build_setup.py',
+    'package.json', 'package-lock.json',
 }}
 
 
@@ -338,7 +358,13 @@ def _write(rel: str, gz_b64: str) -> None:
     #   L3) 파일명이 _PROTECTED_BASENAMES 에 있으면 skip
     #   L4) resolve() 한 절대 경로가 ./data 또는 ./data/flow-data 아래면 skip
     #   L5) FLOW_DATA_ROOT / FLOW_{{DB,WAFER_MAP}}_ROOT 아래면 skip
-    rel_posix = rel.replace("\\\\", "/").lstrip("./")
+    # NOTE: lstrip("./") 은 문자 집합 제거라 ".gitignore" -> "gitignore" 로 망가뜨려
+    # 닷파일이 L0 화이트리스트에서 탈락했다. "./" prefix 와 선행 "/" 만 제거한다
+    # (선행 "/" 를 남기면 L1 의 startswith("data/") 가드가 "/data/x" 를 놓친다).
+    rel_posix = rel.replace("\\\\", "/")
+    while rel_posix.startswith("./"):
+        rel_posix = rel_posix[2:]
+    rel_posix = rel_posix.lstrip("/")
     parts = [p for p in rel_posix.split("/") if p]
 
     # L0: 화이트리스트 — 허용 루트가 아니면 설치 대상 아님 (보수적 기본값).

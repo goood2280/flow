@@ -11,17 +11,13 @@ import { allowedSubTabs, useUserRole } from "../lib/permissions";
 // 렌더 시점에 평가해야 한다 (모듈 상수로 고정하면 로그인 전 평가 시 탭이 영구히 빈다).
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
-import { statusPalette, chartPalette } from "../components/UXKit";
+import { statusPalette } from "../components/UXKit";
 import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS } from "../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
 const INFORM_WIZARD_OPEN_KEY="flow_inform_open_wizard_v1";
-const OK = statusPalette.ok;
-const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
-const INFO = statusPalette.info;
-const WHITE = "var(--bg-secondary)";
 const GRID_BORDER = "rgba(85,85,85,0.95)";
 const GRID_LINE = `1px solid ${GRID_BORDER}`;
 const GRID_LINE_STRONG = `2px solid ${GRID_BORDER}`;
@@ -238,6 +234,13 @@ export default function My_SplitTable({user}){
   const ROW_RENDER_INITIAL=200, ROW_RENDER_CHUNK=300;
   const[rowRenderLimit,setRowRenderLimit]=useState(ROW_RENDER_INITIAL);
   const renderMoreRef=useRef(null);
+  const[showParamMeta,setShowParamMeta]=useState(false);
+  const[showLineageSummary,setShowLineageSummary]=useState(false);
+  const[showSplitCheckView,setShowSplitCheckView]=useState(false);
+  // v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 colSpan 으로 병합해 표시 (읽기 전용).
+  const[showMergedView,setShowMergedView]=useState(false);
+  const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
+  const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   useEffect(()=>{
     const el=renderMoreRef.current;
     if(!el)return;
@@ -258,14 +261,8 @@ export default function My_SplitTable({user}){
     };
     target.addEventListener("scroll",onScroll,{passive:true});
     return()=>{io.disconnect();target.removeEventListener("scroll",onScroll);};
-  });
-  const[showParamMeta,setShowParamMeta]=useState(false);
-  const[showLineageSummary,setShowLineageSummary]=useState(false);
-  const[showSplitCheckView,setShowSplitCheckView]=useState(false);
-  // v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 colSpan 으로 병합해 표시 (읽기 전용).
-  const[showMergedView,setShowMergedView]=useState(false);
-  const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
-  const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
+    // deps: sentinel 은 data/viewMode/limit 변경 때만 재마운트 — 매 렌더 재등록 방지
+  },[data,viewMode,rowRenderLimit]);
   const viewRetryTimerRef=useRef(null);
   const viewSearchSeqRef=useRef(0);
   // 검색 조건이 바뀌면 이전 lookup 준비 polling을 즉시 중단한다.
@@ -308,7 +305,6 @@ export default function My_SplitTable({user}){
   const[enabledSources,setEnabledSources]=useState(null); // null = loading, Set of product names
   // v8.4.4: product 별 lot_id 컬럼 override (soft-landing)
   const[lotOverrides,setLotOverrides]=useState({});
-  const[fabRoots,setFabRoots]=useState([]);
   const[overridePreview,setOverridePreview]=useState(null);
   const[overridePreviewLoading,setOverridePreviewLoading]=useState(false);
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
@@ -324,13 +320,12 @@ export default function My_SplitTable({user}){
     const out=[{value:"",label:"(자동) LOT 최신 캐시 우선, 없으면 DB FAB 경로 fallback",source_type:"auto"}];
     const fabRootsReq=sf(API+"/fab-roots").then(d=>{
       const roots = d.roots || [];
-      setFabRoots(roots);
       for(const r of roots){
         for(const p of r.products){
           out.push({value:`${r.name}/${p}`,label:`[DB] ${r.name}/${p}`,source_type:"db_product"});
         }
       }
-    }).catch(()=>{setFabRoots([]);});
+    }).catch(()=>{});
     const tmap=sf("/api/dbmap/tables").then(d=>{
       for(const t of (d.tables||[])){
         const name=t.display_name||t.name||t.id;
@@ -423,14 +418,6 @@ export default function My_SplitTable({user}){
   const splitTableRef=useRef(null);
   const settingsLotLinkRef=useRef(null);
   const scrollToSettingsLotLink=()=>settingsLotLinkRef.current?.scrollIntoView({behavior:"smooth",block:"start"});
-  // v4.1: Features tab state — drives /splittable/features (wide ET⋈INLINE) and
-  // /splittable/uniques (catalog for KNOB/MASK/product/ppid filters + feature names).
-  const[features,setFeatures]=useState(null);const[featuresLoading,setFeaturesLoading]=useState(false);
-  const[uniques,setUniques]=useState(null);
-  const[featProd,setFeatProd]=useState("");const[featPpid,setFeatPpid]=useState("");
-  const[featKnob,setFeatKnob]=useState("");const[featKnobVal,setFeatKnobVal]=useState("");
-  const[featMask,setFeatMask]=useState("");
-  const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
   const[customTags,setCustomTags]=useState([]);
   const[mismatchMailEnabled,setMismatchMailEnabled]=useState(false);
   const[mismatchMailSaveBusy,setMismatchMailSaveBusy]=useState(false);
@@ -441,12 +428,6 @@ export default function My_SplitTable({user}){
       .then(d=>setCustomTags(d.columns||[]))
       .catch(()=>setCustomTags([]));
   };
-  // v4.1: Features loader — wide ET⋈INLINE sample (default 200 rows, 40 cols).
-  const loadFeatures=()=>{setFeaturesLoading(true);
-    sf(API+"/features?rows=200&cols=40").then(d=>{setFeatures(d);setFeaturesLoading(false);})
-      .catch(e=>{toast.error(e.message);setFeaturesLoading(false);});};
-  // v4.1: Uniques catalog — _uniques.json as-is. Runs once alongside products.
-  const loadUniques=()=>sf(API+"/uniques").then(d=>setUniques(d.uniques||{})).catch(()=>setUniques({}));
   const normalizeOverrideConfig=(raw)=>{
     const next={...(raw||{})};
     Object.keys(next).forEach((k)=>{ if(next[k]) next[k]={...next[k], fab_source:normFabSource(next[k].fab_source)}; });
@@ -509,7 +490,6 @@ export default function My_SplitTable({user}){
         setPrefixes(prefRes.prefixes||[]);
       });
     reloadCustoms();
-    loadUniques();
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
   },[]);
   // v9.2.x: flow-i 딥링크 — URL query(product/root) 를 1회 소비해 자동 검색까지 수행.
@@ -748,56 +728,6 @@ export default function My_SplitTable({user}){
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
   const[rbMatchParam,setRbMatchParam]=useState("");
   const[rbMatchRow,setRbMatchRow]=useState(null);
-  // v8.8.15: Rulebook 행 CRUD modal — admin 이 knob_ppid/step_matching/inline_matching/vm_matching 의
-  //   행을 직접 추가/수정/삭제. KNOB/VM item 정의는 공용, step/inline matching 은 product-scoped 로 저장한다.
-  const[rbRowKind,setRbRowKind]=useState(null);
-  const[rbRowCols,setRbRowCols]=useState([]);
-  const[rbRowReq,setRbRowReq]=useState([]);
-  const[rbRowRows,setRbRowRows]=useState([]);
-  const[rbRowSaving,setRbRowSaving]=useState(false);
-  const isCommonRulebook=(kind)=>kind==="knob_ppid"||kind==="vm_matching";
-  const normalizeRbRow=(kind,row)=>{
-    const r={...(row||{})};
-    if((kind==="knob_ppid"||kind==="step_matching")&&!String(r.step_desc||"").trim()) r.step_desc=r.function_step||r.func_step||"";
-    if(kind==="knob_ppid"&&!String(r.value||"").trim()) r.value=r.ppid||r.category||"";
-    return r;
-  };
-  const openRowEditor=(kind)=>{
-    if(!selProd){toast.warn("먼저 제품을 선택하세요.");return;}
-    setRbRowKind(kind);setRbRowRows([]);setRbRowCols([]);setRbRowReq([]);
-    sf(API+"/rulebook?kind="+encodeURIComponent(kind)+"&product="+encodeURIComponent(selProd))
-      .then(d=>{
-        setRbRowCols(d.columns||[]);
-        // required 는 FE 스키마 (product는 자동 스코프)
-        const reqMap={knob_ppid:["feature_name","step_desc"],step_matching:["product","step_id","step_desc"],inline_matching:["product","step_id","item_id"],vm_matching:["step_desc","item_id"]};
-        setRbRowReq(reqMap[kind]||[]);
-        // KNOB/VM item 정의는 공용, step/INLINE 매칭은 제품 행만 편집한다.
-        const prodRows=(d.rows||[]).map(r=>normalizeRbRow(kind,r));
-        setRbRowRows(prodRows);
-      })
-      .catch(e=>{toast.error("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
-  };
-  const rbAddRow=()=>{const blank={};(rbRowCols||[]).forEach(c=>{blank[c]=(c==="product"&&!isCommonRulebook(rbRowKind))?(selProd||""):"";});setRbRowRows(rs=>[...rs,blank]);};
-  const rbUpdateCell=(i,col,v)=>{setRbRowRows(rs=>rs.map((r,idx)=>idx===i?{...r,[col]:v}:r));};
-  const rbDelRow=(i)=>{setRbRowRows(rs=>rs.filter((_,idx)=>idx!==i));};
-  const rbSaveRows=()=>{if(!rbRowKind||!selProd)return;
-    // validate required
-    const bad=rbRowRows.findIndex(r=>(rbRowReq||[]).some(c=>!String(r[c]||"").trim()));
-    if(bad>=0){toast.warn(`행 ${bad+1}: 필수 컬럼 누락 (${rbRowReq.join(", ")})`);return;}
-    setRbRowSaving(true);
-    sf(API+"/rulebook/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({kind:rbRowKind,rows:rbRowRows,product:isCommonRulebook(rbRowKind)?"":selProd,username:user?.username||""})})
-      .then(()=>{setRbRowKind(null);setRbRowRows([]);
-        // 관련 메타 재로드
-        if(rbRowKind==="knob_ppid"||rbRowKind==="step_matching"){sf(API+"/knob-meta?product="+encodeURIComponent(selProd)).then(d=>setKnobMeta(d.features||{})).catch(()=>{});}
-        if(rbRowKind==="inline_matching"){sf(API+"/inline-meta?product="+encodeURIComponent(selProd)).then(d=>setInlineMetaSt(d.items||{})).catch(()=>{});}
-        if(rbRowKind==="vm_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
-        if(rbRowKind==="step_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
-        loadView&&loadView();
-      })
-      .catch(e=>toast.error("저장 실패: "+e.message))
-      .finally(()=>setRbRowSaving(false));
-  };
   const openRuleMatchView=(kind,param,row=null)=>{
     setRbMatchKind(kind);
     setRbMatchParam(String(param || "").trim());
@@ -1012,7 +942,6 @@ export default function My_SplitTable({user}){
   // v8.4.9-c: 특정 (wafer × param) 셀용 메모 — 행/열 교차 단위.
   const notesForCell=(wid,param)=>notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${wid}__${param}`);
   // v8.7.8: parameter 전역 태그 (product 내 모든 LOT 공통) + LOT 노트
-  const notesParamGlobal=(param)=>notes.filter(n=>n.scope==="param_global"&&n.key===`${selProd}__PARAM__${param}`);
   const notesForLot=()=>notes.filter(n=>n.scope==="lot"&&n.key===`${selProd}__LOT__${lotId}`);
   const doSearch=()=>loadView();
   const openTrackerIssue=(issueId)=>{
@@ -1033,9 +962,20 @@ export default function My_SplitTable({user}){
   const loadHistoryByMode=(mode)=>{const next=normalizeHistoryMode(mode);setHistMode(next);if(isFinalHistoryMode(next))loadHistoryFinal(next);else loadHistory(next);};
   const columnFromCellKey=(key)=>String(key||"").split("|").slice(2).join("|");
   const hasValue=(v)=>v!=null&&v!==""&&v!=="None"&&v!=="null";
-  const pendingValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingPlans,cell.key)?pendingPlans[cell.key]:undefined;
-  const pendingTagValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingTags,cell.key)?pendingTags[cell.key]:undefined;
-  const pendingManagementValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingManagement,cell.key)?pendingManagement[cell.key]:undefined;
+  const pendingFor=(map)=>(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(map,cell.key)?map[cell.key]:undefined;
+  const pendingValueFor=pendingFor(pendingPlans);
+  const pendingTagValueFor=pendingFor(pendingTags);
+  const pendingManagementValueFor=pendingFor(pendingManagement);
+  // 셀에 pending 편집(tag > mgmt > plan 우선순위)을 반영한 유효 셀 계산 — 렌더/복사/뷰 5곳 공용.
+  const effectiveCellFor=(cell)=>{
+    const pendingPlan=pendingValueFor(cell);
+    const pendingTag=pendingTagValueFor(cell);
+    const pendingMgmt=pendingManagementValueFor(cell);
+    const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
+      :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
+      :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+    return {effectiveCell,pendingPlan,pendingTag,pendingMgmt};
+  };
   const suggestionValuesFor=(param,base=[])=>{
     const out=[];const seen=new Set();
     const add=(v)=>{if(!hasValue(v))return;const s=String(v);if(seen.has(s))return;seen.add(s);out.push(s);};
@@ -1096,13 +1036,8 @@ export default function My_SplitTable({user}){
   const rowsWithPendingPlans=(rows)=>rows.map(row=>{
     const nextCells={};
     Object.entries(row._cells||{}).forEach(([ci,cell])=>{
-      const pendingPlan=pendingValueFor(cell);
-      const pendingTag=pendingTagValueFor(cell);
-      const pendingMgmt=pendingManagementValueFor(cell);
-      if(pendingTag!==undefined) nextCells[String(ci)]={...cell,actual:pendingTag};
-      else if(pendingMgmt!==undefined) nextCells[String(ci)]={...cell,actual:pendingMgmt};
-      else if(pendingPlan!==undefined) nextCells[String(ci)]={...cell,plan:pendingPlan};
-      else nextCells[String(ci)]={...cell};
+      const {effectiveCell,pendingPlan,pendingTag,pendingMgmt}=effectiveCellFor(cell);
+      nextCells[String(ci)]=(pendingTag!==undefined||pendingMgmt!==undefined||pendingPlan!==undefined)?effectiveCell:{...cell};
     });
     return {
       _param: row._param,
@@ -1124,9 +1059,6 @@ export default function My_SplitTable({user}){
     (Array.isArray(data?.available_fab_lots)?data.available_fab_lots:[]).forEach(add);
     return out;
   };
-  const firstVisibleFabLotForInform=()=>{
-    return uniqueVisibleFabLotsForInform()[0]||"";
-  };
   const startInformFromCurrentSnapshot=()=>{
     const rows=currentRowsForInformSnapshot();
     if(!selProd||!data||!rows.length){toast.warn("먼저 SplitTable 을 조회하세요.");return;}
@@ -1134,7 +1066,7 @@ export default function My_SplitTable({user}){
     const typedFabLot=String(fabLotId||"").trim();
     const typedLot=String(lotId||"").trim();
     const visibleFabLots=uniqueVisibleFabLotsForInform();
-    const viewFabLot=visibleFabLots[0]||firstVisibleFabLotForInform();
+    const viewFabLot=visibleFabLots[0]||"";
     const typedLotIsFab=/[._\-/]/.test(typedLot);
     const rootOnly=!!typedLot&&!typedFabLot&&!typedLotIsFab;
     const selectedFabLots=typedFabLot
@@ -1358,7 +1290,6 @@ export default function My_SplitTable({user}){
     }
     return out;
   })();
-  const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols.slice(0,100);
   // v8.8.16: CUSTOM 모드 전용 컬럼 풀 — productSchema (전체) + allCols (현재 lot) + customCols 합집합.
   //   lot 검색 전이라도 선택 가능하며, plan 전용 가상 컬럼(저장된 customCols) 도 보존.
   // v8.8.33: product/root_lot_id/wafer_id/lot_id/fab_lot_id 는 **항상** 자동 첨부되는 기본 식별자 —
@@ -1469,7 +1400,7 @@ export default function My_SplitTable({user}){
             ✓ 전체 체크{colSearch?` (${filteredCustomCols.length})`:""}
           </button>
           <button onClick={()=>{if(colSearch){const fs=new Set(filteredCustomCols);setCustomCols(activeCustomCols.filter(c=>!fs.has(c)));}else setCustomCols([]);}}
-            style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,cursor:"pointer",fontWeight:600}}>
+            style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--danger-line)",background:"transparent",color:"var(--danger)",fontSize:14,cursor:"pointer",fontWeight:600}}>
             ✕ 전체 제거
           </button>
           <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{activeCustomCols.length}/{customPool.length} 선택</span>
@@ -2020,7 +1951,7 @@ export default function My_SplitTable({user}){
           ))}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
+            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
             <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
@@ -2028,7 +1959,7 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":"");const fmtSuffix=splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--ok-line)",background:"transparent",color:"var(--ok)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)")}>⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
-            <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
+            <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--info)",background:"transparent",color:"var(--info)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
           </>}
           <button onClick={startInformFromCurrentSnapshot} disabled={informSnapshotBusy||!data?.rows?.length}
             title="현재 SplitTable 화면을 plan 포함 snapshot 으로 Inform 작성에 첨부"
@@ -2178,12 +2109,7 @@ export default function My_SplitTable({user}){
             for(let ci=normalizedSelection.startCol;ci<=normalizedSelection.endCol;ci++){
               const cell=cells[String(ci)];let val="";
               if(cell){
-                const pendingPlan=pendingValueFor(cell);
-                const pendingTag=pendingTagValueFor(cell);
-                const pendingMgmt=pendingManagementValueFor(cell);
-                const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
-                  :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
-                  :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                const {effectiveCell}=effectiveCellFor(cell);
                 const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
                 val=hasValue(raw)?String(formatCell(raw,rowData._param)??raw):"";
               }
@@ -2196,7 +2122,8 @@ export default function My_SplitTable({user}){
           if(e.clipboardData)e.clipboardData.setData("text/plain",tsv);
           else if(navigator.clipboard)navigator.clipboard.writeText(tsv).catch(()=>{});
         };
-        const lineageSummary = buildLineageSummary(displayRows);
+        // 요약 토글이 켜졌을 때만 계산 (매 렌더 전체 행 × knobLookup 비용 절약)
+        const lineageSummary = showLineageSummary ? buildLineageSummary(displayRows) : [];
         const headerGroupLabels = [...new Set((data.header_groups||[]).map(g=>String(g?.label||"").trim()).filter(Boolean))];
         const lotHeaderRoot = String(data.root_lot_id||lotId||"").trim();
         const lotHeaderLot = String((fabLotId||"").trim() || headerGroupLabels.join(", ") || lotId || "").trim();
@@ -2211,7 +2138,8 @@ export default function My_SplitTable({user}){
         const lotHeaderHeight = hasLotRow ? 24 : 0;
         const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
-        const splitCheckStView=buildSplitCheckStView({
+        // split 체크 뷰가 활성일 때만 스냅샷 뷰 모델 생성
+        const splitCheckStView=!splitCheckViewActive?null:buildSplitCheckStView({
           ...data,
           rows:displayRows,
           root_lot_id:lotHeaderRoot,
@@ -2222,12 +2150,7 @@ export default function My_SplitTable({user}){
         },{
           valueForCell:(cell,row)=>{
             if(!cell)return "";
-            const pendingPlan=pendingValueFor(cell);
-            const pendingTag=pendingTagValueFor(cell);
-            const pendingMgmt=pendingManagementValueFor(cell);
-            const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
-              :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
-              :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+            const {effectiveCell}=effectiveCellFor(cell);
             const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
             return hasValue(raw)?raw:"";
           },
@@ -2378,12 +2301,7 @@ export default function My_SplitTable({user}){
                   const cell=cells[String(ci)];
                   let paintVal=null;
                   if(cell){
-                    const pendingPlan=pendingValueFor(cell);
-                    const pendingTag=pendingTagValueFor(cell);
-                    const pendingMgmt=pendingManagementValueFor(cell);
-                    const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
-                      :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
-                      :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                    const {effectiveCell}=effectiveCellFor(cell);
                     paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
                   }
                   const key=hasValue(paintVal)?String(paintVal):"";
@@ -2411,14 +2329,9 @@ export default function My_SplitTable({user}){
                   style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-card)",position:"relative",outline:isCellSelected(ri,ci)?"2px solid rgba(59,130,246,0.9)":"none",outlineOffset:-1}}>
                   {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
-                const pendingPlan=pendingValueFor(cell);
-                const pendingTag=pendingTagValueFor(cell);
-                const pendingMgmt=pendingManagementValueFor(cell);
+                const {effectiveCell,pendingPlan,pendingTag,pendingMgmt}=effectiveCellFor(cell);
                 const isCustomTag=cell.is_custom_tag===true;
                 const isManagementRow=cell.is_management_row===true;
-                const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
-                  :pendingMgmt!==undefined?{...cell,actual:pendingMgmt}
-                  :pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
                 const paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
                 const bgStyle=getCellBg(paintVal,uniqMap,row._param);const planStyle=getCellPlanStyle(effectiveCell);
                 const canPlan=cell.can_plan!==false; // default true for backward compat
@@ -2566,126 +2479,7 @@ export default function My_SplitTable({user}){
               <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"rgba(34,197,94,0.95)"}}>{h.new||"-"}</td>
             </tr>);})}</tbody></table>
         )}
-      </div>:tab==="features"?(()=>{
-        // v4.1: Features tab — wide ET⋈INLINE table with KNOB/MASK/product/ppid filters.
-        // Feature names are sourced from _uniques.json (dvc_features + inline_features)
-        // so "TC_NS_X" (canonical) and any alias form cannot diverge.
-        const u=uniques||{};
-        const prodOpts=Array.isArray(u.products)?u.products:[];
-        const ppidOpts=featProd&&u.ppids&&u.ppids[featProd]?u.ppids[featProd]:[];
-        const knobOpts=u.knobs&&typeof u.knobs==="object"?Object.keys(u.knobs):[];
-        const knobValOpts=featKnob&&u.knobs&&Array.isArray(u.knobs[featKnob])?u.knobs[featKnob]:[];
-        const maskOpts=u.masks&&Array.isArray(u.masks.reticles)?u.masks.reticles:(u.masks&&Array.isArray(u.masks.photo_steps)?u.masks.photo_steps:[]);
-        const dvcNames=Array.isArray(u.dvc_features)?u.dvc_features.map(f=>f.name).filter(Boolean):[];
-        const inlineNames=Array.isArray(u.inline_features)?u.inline_features.map(f=>f.name).filter(Boolean):[];
-        const featureNames=[...dvcNames,...inlineNames];
-        const sampleRows=features?.sample||[];
-        // Client-side filter by selected values (best-effort; exact column name
-        // depends on the feature-table schema — the filter is additive).
-        const filterRow=(r)=>{
-          if(featProd&&r.product!=null&&String(r.product)!==featProd)return false;
-          if(featPpid&&r.ppid!=null&&String(r.ppid)!==featPpid)return false;
-          if(featKnob&&featKnobVal&&r[featKnob]!=null&&String(r[featKnob])!==featKnobVal)return false;
-          return true;
-        };
-        const filtered=sampleRows.filter(filterRow);
-        const cols=features?.columns||[];
-        const toggleFeat=(n)=>setSelFeatCols(prev=>prev.includes(n)?prev.filter(x=>x!==n):[...prev,n]);
-        const buildPlan=()=>{
-          const plan={
-            created:new Date().toISOString(),
-            product:featProd||null,ppid:featPpid||null,
-            filters:{knob:featKnob?{name:featKnob,value:featKnobVal||null}:null,mask:featMask||null},
-            features:[...selFeatCols],
-            source:{endpoint:API+"/features",rows:features?.total_rows||null,cols:features?.total_cols||null},
-          };
-          setMlPlan(plan);
-        };
-        return(<div className="splittable-features" style={{flex:1,overflow:"auto",padding:16}}>
-          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
-            <button className="splittable-load-features" onClick={loadFeatures} disabled={featuresLoading}
-              style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:featuresLoading?"default":"pointer",opacity:featuresLoading?0.5:1}}>
-              {featuresLoading?"Loading…":"Load features"}
-            </button>
-            {features&&<span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6}}>
-              {features.total_rows?.toLocaleString()}행 × {features.total_cols}열 | 표시 {sampleRows.length} | join: {features.join}
-            </span>}
-            {uniques&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>uniques: {Object.keys(uniques).length} keys</span>}
-          </div>
-          {/* Filter row */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8,marginBottom:12,padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
-            <label style={{fontSize:14,color:"var(--text-secondary)"}}>제품 (product)
-              <select className="splittable-feat-product" value={featProd} onChange={e=>{setFeatProd(e.target.value);setFeatPpid("");}} style={{...S,width:"100%",marginTop:4}}>
-                <option value="">— 전체 —</option>
-                {prodOpts.map(p=><option key={p} value={p}>{p}</option>)}
-              </select>
-            </label>
-            <label style={{fontSize:14,color:"var(--text-secondary)"}}>PPID
-              <select className="splittable-feat-ppid" value={featPpid} onChange={e=>setFeatPpid(e.target.value)} disabled={!featProd} style={{...S,width:"100%",marginTop:4,opacity:featProd?1:0.5}}>
-                <option value="">— 전체 —</option>
-                {ppidOpts.map(p=><option key={p} value={p}>{p}</option>)}
-              </select>
-            </label>
-            <label style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB
-              <select className="splittable-feat-knob" value={featKnob} onChange={e=>{setFeatKnob(e.target.value);setFeatKnobVal("");}} style={{...S,width:"100%",marginTop:4}}>
-                <option value="">— 선택 —</option>
-                {knobOpts.map(k=><option key={k} value={k}>{k}</option>)}
-              </select>
-            </label>
-            <label style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB 값
-              <select className="splittable-feat-knob-val" value={featKnobVal} onChange={e=>setFeatKnobVal(e.target.value)} disabled={!featKnob} style={{...S,width:"100%",marginTop:4,opacity:featKnob?1:0.5}}>
-                <option value="">— 전체 —</option>
-                {knobValOpts.map(v=><option key={String(v)} value={String(v)}>{String(v)}</option>)}
-              </select>
-            </label>
-            <label style={{fontSize:14,color:"var(--text-secondary)"}}>MASK
-              <select className="splittable-feat-mask" value={featMask} onChange={e=>setFeatMask(e.target.value)} style={{...S,width:"100%",marginTop:4}}>
-                <option value="">— 전체 —</option>
-                {maskOpts.map(m=><option key={m} value={m}>{m}</option>)}
-              </select>
-            </label>
-          </div>
-          {/* Feature picker */}
-          {featureNames.length>0&&<div style={{padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,marginBottom:12}}>
-            <div style={{fontSize:14,fontWeight:600,color:"var(--accent)",marginBottom:6}}>Feature 선택 ({selFeatCols.length}/{featureNames.length}) — _uniques.json 기반</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:4,maxHeight:140,overflow:"auto"}}>
-              {featureNames.map(n=>{const on=selFeatCols.includes(n);return(
-                <span key={n} className="splittable-feature-chip" data-selected={on?"1":"0"} onClick={()=>toggleFeat(n)}
-                  style={{padding:"3px 8px",borderRadius:4,fontSize:14,cursor:"pointer",fontFamily:"monospace",fontWeight:on?700:400,
-                    background:on?"var(--accent-glow)":"var(--bg-hover)",color:on?"var(--accent)":"var(--text-secondary)",
-                    border:"1px solid "+(on?"var(--accent)":"transparent")}}>{n}</span>
-              );})}
-            </div>
-            <div style={{display:"flex",gap:6,marginTop:8,alignItems:"center"}}>
-              <button className="splittable-build-plan" onClick={buildPlan} disabled={!selFeatCols.length}
-                style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:selFeatCols.length?"pointer":"default",opacity:selFeatCols.length?1:0.5}}>
-                ML plan 생성
-              </button>
-              {selFeatCols.length>0&&<button onClick={()=>{setSelFeatCols([]);setMlPlan(null);}} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>초기화</button>}
-              {mlPlan&&<span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>plan: {mlPlan.features.length} features • {mlPlan.created.slice(11,19)}</span>}
-            </div>
-            {mlPlan&&<pre className="splittable-ml-plan" style={{margin:"8px 0 0",padding:8,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)",maxHeight:140,overflow:"auto",whiteSpace:"pre-wrap"}}>{JSON.stringify(mlPlan,null,2)}</pre>}
-          </div>}
-          {/* Features table */}
-          {featuresLoading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading features..."/></div>
-          :!features?<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>상단의 <b>Load features</b> 버튼으로 ET⋈INLINE wide form 을 불러오세요.</div>
-          :<div className="splittable-features-table" style={{overflow:"auto",maxHeight:"calc(100vh - 440px)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
-            <table style={{borderCollapse:"collapse",fontSize:14,width:"max-content",minWidth:"100%"}}>
-              <thead><tr>
-                <th style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1}}>#</th>
-                {cols.map(c=><th key={c} data-col={c} style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:selFeatCols.includes(c)?"var(--accent)":"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1,whiteSpace:"nowrap",cursor:"pointer"}} onClick={()=>toggleFeat(c)} title="클릭 → feature select 토글">{c}</th>)}
-              </tr></thead>
-              <tbody>{filtered.slice(0,200).map((r,i)=>(<tr key={i}>
-                <td style={{padding:"4px 8px",borderBottom:GRID_LINE,color:"rgba(100,116,139,0.95)",fontSize:14}}>{i+1}</td>
-                {cols.map(c=><td key={c} style={{padding:"4px 8px",borderBottom:GRID_LINE,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,background:selFeatCols.includes(c)?"var(--accent-glow)":"transparent"}} title={String(r[c]==null?"":r[c])}>
-                  {r[c]===null||r[c]===undefined?<span style={{color:"rgba(100,116,139,0.95)"}}>null</span>:String(r[c])}
-                </td>)}
-              </tr>))}</tbody>
-            </table>
-            {filtered.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>필터와 일치하는 행이 없습니다.</div>}
-          </div>}
-        </div>);
-      })():null}
+      </div>:null}
     </div>
     <SplitTableCellEditor
       activeCell={activeCell}
@@ -2907,78 +2701,6 @@ export default function My_SplitTable({user}){
             <button onClick={saveSchemaEdit}
               style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
           </div>
-      </Modal>
-    )}
-    {/* v8.8.15: Rulebook 행 CRUD modal — 제품 스코프 행 편집. 공용(product 빈값) 행은 여기서 건드리지 않음. */}
-    {rbRowKind && (
-      <Modal open onClose={()=>!rbRowSaving&&setRbRowKind(null)} width={920} zIndex={3000} closeOnBackdrop={!rbRowSaving}>
-        <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
-          <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
-            <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
-            {isCommonRulebook(rbRowKind)
-              ? <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>공용 KNOB 룰</span>
-              : <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>}
-            <span style={{fontSize:14,color:"var(--text-secondary)"}}>행 {rbRowRows.length}개</span>
-            <span style={{flex:1}}/>
-            <button onClick={rbAddRow} disabled={rbRowSaving}
-              style={{padding:"4px 12px",borderRadius:4,border:"1px solid #22c55e",background:"transparent",color:"rgba(34,197,94,0.95)",fontSize:14,cursor:"pointer",fontWeight:600}}>+ 행 추가</button>
-            <span onClick={()=>!rbRowSaving&&setRbRowKind(null)} style={{cursor:rbRowSaving?"wait":"pointer",fontSize:16,marginLeft:4}}>✕</span>
-          </div>
-          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
-            {isCommonRulebook(rbRowKind)
-              ? "KNOB 룰은 제품 공용으로 편집합니다. product 열이 있어도 매칭 필터에는 쓰지 않습니다."
-              : `이 제품(${selProd})의 행만 이 modal 에서 편집합니다. 저장 시 기존 해당 제품 행은 전체 교체되고, 다른 제품/공용 행은 보존됩니다.`}
-            필수 컬럼: <span style={{fontFamily:"monospace",color:"rgba(245,158,11,0.95)"}}>{(rbRowReq||[]).join(", ")}</span>
-          </div>
-          <div style={{flex:1,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
-            {rbRowRows.length===0 ? (
-              <div style={{padding:"30px 20px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>
-                이 제품에 등록된 행이 없습니다. 우측 상단 <b>+ 행 추가</b>로 시작하세요.
-              </div>
-            ) : (
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
-                <thead style={{position:"sticky",top:0,background:"var(--bg-card)",zIndex:1}}>
-                  <tr>
-                    <th style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",width:40,color:"var(--text-secondary)"}}>#</th>
-                    {(rbRowCols||[]).map(c=>(
-                      <th key={c} style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",color:(rbRowReq||[]).includes(c)?"rgba(245,158,11,0.95)":"var(--text-secondary)",fontWeight:(rbRowReq||[]).includes(c)?700:500}}>
-                        {c}{(rbRowReq||[]).includes(c)&&" *"}{c==="product"&&!isCommonRulebook(rbRowKind)&&" 🔒"}
-                      </th>
-                    ))}
-                    <th style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",width:50}}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rbRowRows.map((r,i)=>(
-                    <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
-                      <td style={{padding:"4px 8px",color:"var(--text-secondary)"}}>{i+1}</td>
-                      {(rbRowCols||[]).map(c=>(
-                        <td key={c} style={{padding:"2px 4px"}}>
-                          <input value={r[c]||""} disabled={c==="product"&&!isCommonRulebook(rbRowKind)}
-                            onChange={e=>rbUpdateCell(i,c,e.target.value)}
-                            placeholder={(rbRowReq||[]).includes(c)?"필수":""}
-                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"rgba(239,68,68,0.95)":"var(--border)"}`,background:c==="product"&&!isCommonRulebook(rbRowKind)?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
-                        </td>
-                      ))}
-                      <td style={{padding:"2px 4px",textAlign:"center"}}>
-                        <button onClick={()=>rbDelRow(i)} title="행 삭제" disabled={rbRowSaving}
-                          style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,cursor:"pointer"}}>🗑</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:12}}>
-            <div style={{fontSize:14,color:"var(--text-secondary)"}}>* 필수 · 🔒 자동</div>
-            <span style={{flex:1}}/>
-            <button onClick={()=>!rbRowSaving&&setRbRowKind(null)} disabled={rbRowSaving}
-              style={{padding:"6px 14px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:rbRowSaving?"wait":"pointer"}}>취소</button>
-          <button onClick={rbSaveRows} disabled={rbRowSaving}
-              style={{padding:"6px 16px",borderRadius:4,border:"none",background:rbRowSaving?"var(--border)":"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:rbRowSaving?"wait":"pointer"}}>{rbRowSaving?"저장 중…":`저장 (${rbRowRows.length}행)`}</button>
-          </div>
-        </div>
       </Modal>
     )}
     {/* v9.0.5: Rulebook 규칙 미리보기 modal — 인덱스(KNOB/INLINE/VM) 클릭 시 연결 규칙 표시. */}

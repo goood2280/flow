@@ -96,4 +96,4 @@
 
 - 이 점수는 코드 정황 기준이며, 사용자 시나리오 만족도(예: Inform Log가 실제 인폼 thread를 잘 만드는가)는 **별도로 평가**한다. 이 보고서는 "다음에 어디를 손대야 위험·이득이 큰가"를 보는 용도다.
 - 실제 코드 변경은 Codex CLI 세션이 진행. 본 세션은 평가/명세/하네스 유지가 역할.
-- 최신 작업 큐와 책임 분담은 [`../TODO.md`](../TODO.md), Agent ↔ feature 계약은 [`features/flowi-agent.md`](features/flowi-agent.md), 그리고 각 [`features/inform.md`](features/inform.md), [`features/splittable.md`](features/splittable.md), [`features/filebrowser.md`](features/filebrowser.md)를 본다.
+- 최신 작업 큐와 책임 분담은 [`../CLAUDE.md`](../CLAUDE.md), Agent ↔ feature 계약은 [`features/flowi-agent.md`](features/flowi-agent.md), 그리고 각 [`features/inform.md`](features/inform.md), [`features/splittable.md`](features/splittable.md), [`features/filebrowser.md`](features/filebrowser.md)를 본다.
