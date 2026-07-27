@@ -1,1 +1,0 @@
-{"text":"[ML_TABLE KNOB lot-dominant + split 섞임] ML_TABLE_PROD*.parquet 의 KNOB_* 컬럼이 지금은 wafer 마다 거의 랜덤. 실제 fab 처럼 한 root_lot 내 대다수 wafer 는 동일한 KNOB 값을 갖고, 소수(2-3개)만 다른 split 값을 갖도록 재생성. plan vs actual diff 테스트 시나리오 현실화.","from":"user"}

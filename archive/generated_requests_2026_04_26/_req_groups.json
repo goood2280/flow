@@ -1,1 +1,0 @@
-{"text":"[User Groups + 그룹별 권한/가시성] 현재 Dashboard 차트는 admin-only 또는 all-users 만 선택 가능. 다음 확장: (1) 유저를 그룹으로 묶는 user_groups 구조 (Admin 페이지에서 그룹 관리/유저 배정), (2) Dashboard 차트에 visibility={public|group|admin} 선택 + group_id, (3) Tracker 이슈도 group_id 로 격리 — 그룹 내 유저만 해당 그룹 이슈 표시. 공통 5-테이블 데이터 모델에 user_groups + 기존 permissions 확장으로 구현.","from":"user"}

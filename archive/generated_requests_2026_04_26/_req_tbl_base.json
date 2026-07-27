@@ -1,1 +1,0 @@
-{"text":"[TableMap → Base 저장] 테이블맵에서 테이블 신규 생성 시 CSV 가 파일탐색기 Base 루트에 저장되어 Base 탭에서 바로 확인 가능하도록. 기존 DB 루트 저장 경로 → Base 루트 경로로 변경 (dbmap.py _write_db_csv → base_root/<name>.csv). 대시보드 데이터소스에도 자동으로 노출 (이미 find_all_sources 가 base 루트 스캔하므로 즉시 반영).","from":"user"}

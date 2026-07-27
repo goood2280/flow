@@ -1,1 +1,0 @@
-{"text":"[Dashboard KNOB → FAB 진행 조회] KNOB 컬럼 조건(예: KNOB_GATE_PPID==='AAA_BB')으로 ML_TABLE 필터 → 매칭된 (root_lot_id, wafer_id) 리스트 → 같은 product 의 FAB DB 에서 각 wafer 의 '가장 최근 step' (step_id max 또는 out_ts max) 조회 → 화면에 (wafer, 현재 위치/step_id, eqp_chamber, out_ts) 표시. 신규 엔드포인트 /api/dashboard/knob-fab-progress. Dashboard 상단 도구 또는 신규 탭으로 진입.","from":"user"}
