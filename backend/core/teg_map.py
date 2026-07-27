@@ -957,7 +957,9 @@ def map_payload(vehicle: str) -> dict:
                     ox, oy = float(row.get("x")), float(row.get("y"))
                 except (TypeError, ValueError):
                     continue
-                name = f"{g}·{str(row.get('teg') or '').strip()}"
+                inner = str(row.get("teg") or "").strip()
+                # 내부 TEG 가 하나뿐이라 이름이 그룹과 같으면 "MAIN02·MAIN02" 로 겹쳐 쓰지 않는다.
+                name = g if (not inner or inner == g) else f"{g}·{inner}"
                 i = 2
                 base = name
                 while name in taken:

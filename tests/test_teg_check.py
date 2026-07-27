@@ -574,6 +574,38 @@ def test_inspect_main_groups(teg_env):
     assert res["teg"]["summary"]["total"] >= 1
 
 
+def test_main_group_auto_name_skips_suffix_when_alone(teg_env):
+    """이름 토큰이 없는 MAIN 내부 TEG — 하나뿐이면 접미사 없이 그룹 이름 그대로."""
+    text = ("#teg-map\n"
+            "module DUMMY1 (1, 2) ! MAIN02, , \n"
+            "# end")
+    res = teg_check.inspect("VH_T", text)
+    groups = res["teg"]["main_groups"]
+    assert [t["teg"] for t in groups[0]["tegs"]] == ["MAIN02"]
+    assert "_auto" not in groups[0]["tegs"][0]
+
+
+def test_main_group_auto_name_numbers_when_multiple(teg_env):
+    """2 개 이상이면 구분이 필요하므로 _1, _2, _3 넘버링을 유지한다."""
+    text = ("#teg-map\n"
+            "module DUMMY1 (1, 2) ! MAIN02, , \n"
+            "module DUMMY1 (3, 4) ! MAIN02, , \n"
+            "module DUMMY1 (5, 6) ! MAIN02, , \n"
+            "# end")
+    res = teg_check.inspect("VH_T", text)
+    groups = res["teg"]["main_groups"]
+    assert [t["teg"] for t in groups[0]["tegs"]] == ["MAIN02_1", "MAIN02_2", "MAIN02_3"]
+
+
+def test_main_overlay_single_teg_name_is_not_doubled(teg_env):
+    """내부 TEG 이름이 그룹과 같으면 위치 조회 이름은 'MAIN02·MAIN02' 가 아니라 'MAIN02'."""
+    _write_layout(teg_env)
+    teg_map.apply_main_overlays("VH_T", [{"group": "MAIN02",
+                                          "tegs": [{"teg": "MAIN02", "x": 1000, "y": 2000}]}])
+    names = [t["teg"] for t in teg_map.map_payload("VH_T")["tegs"] if t.get("overlay_group")]
+    assert names == ["MAIN02"]
+
+
 def test_main_overlay_apply_exists_overwrite(teg_env):
     groups = [{"group": "MAIN02",
                "tegs": [{"teg": "module_detail", "x": 12.5, "y": -3.0},

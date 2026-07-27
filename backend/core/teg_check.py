@@ -851,8 +851,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         tdx, tdy = _offset(used_t)
         nx, ny = transform(detail or group, t["x"], t["y"], used_t, tdx, tdy, rules)
         entry = main_groups_map.setdefault(group, [])
-        if not detail:
-            detail = f"{group}_{len(entry) + 1}"
+        auto = not detail
+        if auto:
+            # 이름 토큰이 없는 행은 그룹 이름으로 넘버링한다. 이 그룹에 자동 이름이
+            # 하나뿐이면 아래 후처리에서 접미사를 떼어 그냥 그룹 이름이 된다.
+            detail = f"{group}_{sum(1 for e in entry if e['_auto']) + 1}"
         names = {e["teg"] for e in entry}
         base, n = detail, 2
         while detail in names:
@@ -864,7 +867,21 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         if shot.get("checked"):
             overlap = _overlaps_chip(shot["cells"], nx * scale, ny * scale,
                                      float(cfg["teg_default_w"]), float(cfg["teg_default_h"]))
-        entry.append({"teg": detail, "x": _num(nx), "y": _num(ny), "chip_overlap": overlap})
+        entry.append({"teg": detail, "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
+                      "_auto": auto})
+    # 자동 이름이 그룹에 하나뿐이면 `_1` 을 떼고 그룹 이름 그대로 쓴다 —
+    # 넘버링은 구분이 필요한 2 개 이상일 때만 의미가 있다.
+    for group, entry in main_groups_map.items():
+        autos = [e for e in entry if e["_auto"]]
+        if len(autos) == 1:
+            taken = {e["teg"] for e in entry if e is not autos[0]}
+            name, n = group, 2
+            while name in taken:
+                name = f"{group}_{n}"
+                n += 1
+            autos[0]["teg"] = name
+        for e in entry:
+            e.pop("_auto", None)
     # ── 체크 대상 TEG 설정 여부 — 위치 조회에서 지정한 체크 대상 TEG 가 이 Mapfile 의
     #    module name 목록에 (teg 또는 top_cell 완전 일치로) 등장하는지. 등장하지 않은
     #    대상은 '미설정'. 받은 module name 목록 = 파싱된 각 행의 이름 + 이름 후보 토큰

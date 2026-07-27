@@ -839,6 +839,10 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             ) : (
               <> ⚙️ 설정에서 이 vehicle 의 shot 표시 방식을 "칩 격자"로 지정하면 칩 겹침을 검사합니다.</>
             )}
+            <div style={{ marginTop: 4 }}>
+              ※ Teg_location 에 크기(teg_w/teg_h)가 없는 TEG 와 MAIN 내부 TEG 는
+              ⚙️ 설정의 <b>기본 TEG 사이즈</b>로 그려집니다 — 실제 크기와 다를 수 있으니 참고 부탁드립니다.
+            </div>
           </div>
           {res.shot.checked && summary.chip_overlap > 0 && (
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger)", marginBottom: 6 }}>

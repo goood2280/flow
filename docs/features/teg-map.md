@@ -61,6 +61,10 @@ DB root의 `teg_location/` 폴더 (파일탐색기 위치 안).
 
 > 원문 좌표 원복은 PCHK 상대좌표 → ebeam 절대좌표로 되돌리는 계산이며, PCHK는 별도 TEG 행으로 다룬다. TEG offset은 H 관점(양수=차감)이고, 중복 TEG는 `ref_seq`로 구분한다.
 
+**이름 넘버링 규약** — 접미사는 구분이 필요할 때만 붙인다. 같은 이름이 2개 이상이면 `_1`, `_2`, `_3`, 하나뿐이면 접미사 없이 원래 이름 그대로다. Teg_location 동명 TEG(`map_payload`), 동명 TEG 매칭 순번(`ref_seq`), MAIN 내부 TEG 자동 이름(이름 토큰이 없는 행) 모두 같은 규칙을 따른다. MAIN 내부 TEG가 하나뿐이면 이름이 그룹명과 같아지므로 위치 조회 표시명도 `MAIN02·MAIN02`가 아니라 `MAIN02`다.
+
+shot 확대 뷰에서 TEG 사각형은 Teg_location의 `teg_w`/`teg_h`로 그리고, 크기가 없는 TEG와 MAIN 내부 TEG(정답지에 없음)는 설정의 **기본 TEG 사이즈**로 그린다 — 화면 안내문에도 같은 내용을 적어 둔다.
+
 ## Does Not Own
 
 - WF MAP 결함 패턴 분석 — 파일탐색기/대시보드
