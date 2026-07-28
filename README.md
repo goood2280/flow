@@ -102,8 +102,10 @@ $env:FLOW_DB_ROOT="\\shared-server\flow\DB"
 $env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
 $env:FLOW_WORKER_CONCURRENCY="1"
 $env:FLOW_POLARS_MAX_THREADS="2"
-uvicorn app:app --host 0.0.0.0 --port 8081
+uvicorn app:app --host 0.0.0.0 --port 8080
 ```
+
+포트는 운영서버와 다른 머신이므로 8080을 그대로 씁니다. `scripts/worker_watchdog.py`로 원격 기동도 함께 쓴다면 `--port`를 같은 값으로 맞춥니다(워치독 기본값은 8081).
 
 개발 worker 기본 정책:
 
@@ -112,6 +114,162 @@ uvicorn app:app --host 0.0.0.0 --port 8081
 - API용 product/root/view RAM 캐시 비활성화
 - backup, mail, S3 등 운영 scheduler 비활성화
 - worker available memory와 process memory admission 통과 후 작업 실행
+
+## 자동 재시작 (프로세스 상시 기동)
+
+프로세스가 죽었을 때 되살리는 것은 앱이 아니라 **바깥의 관리자**가 합니다. 죽은 프로세스는 스스로를 되살릴 수 없기 때문입니다.
+
+| 서버 | 방법 |
+|---|---|
+| 운영서버 | Docker 재시작 정책 (`--restart unless-stopped`) — 이미 적용됨 |
+| 개발서버 | systemd 유닛 (`scripts/flow.service`) |
+
+수동 `uvicorn` 실행은 OOM이나 예기치 못한 종료 뒤 아무도 되살리지 않습니다. 개발서버는 무거운 작업을 넘겨받는 쪽이라 죽을 여지가 가장 크고, 죽어 있으면 운영서버의 위임이 조용히 로컬 폴백으로 떨어져 느려집니다.
+
+### 프로토콜 A — 자동 재시작 켜기 (개발서버, 최초 1회)
+
+모두 **개발서버 셸에서** 실행합니다. 각 단계의 "확인" 이 통과해야 다음으로 넘어갑니다.
+
+**A-1. 사전 확인** — 유닛에 적을 값을 먼저 알아냅니다.
+
+```bash
+whoami && pwd && which python3 && python3 -c "import fastapi, uvicorn; print('deps ok')"
+```
+
+확인: flow를 실행할 계정, `app.py`가 있는 backend 경로, python3 절대경로가 나오고 `deps ok`가 찍힐 것. `deps ok`가 안 나오면 먼저 `python setup.py install-deps`를 합니다.
+
+**A-2. 유닛 파일 값 수정** — 템플릿을 그대로 쓰면 반드시 실패합니다(`/opt/flow/backend`, 사용자 `flow`는 예시값).
+
+```bash
+sudo nano /etc/systemd/system/flow.service
+```
+
+`scripts/flow.service` 내용을 붙여넣고 아래를 A-1에서 확인한 값으로 고칩니다.
+
+| 항목 | 설명 |
+|---|---|
+| `User` / `Group` | flow를 실행할 계정 |
+| `WorkingDirectory` | `app.py`가 있는 backend 디렉터리 |
+| `ExecStart` | python3 절대경로 + 포트(개발서버 8080) |
+| `FLOW_DATA_ROOT` / `FLOW_DB_ROOT` | **운영서버와 같은 공유 경로** (다르면 위임이 동작하지 않음) |
+| `FLOW_ADMIN_PW` | 실제 비밀번호 (미설정 시 공개된 기본값이 시드됨) |
+
+**A-3. 등록·기동**
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now flow
+```
+
+`daemon-reload`는 유닛 파일 변경을 systemd에 읽히고, `enable`은 부팅 시 자동 시작 등록, `--now`는 지금 바로 기동입니다.
+
+**A-4. 검증** — 셋 다 통과해야 완료입니다.
+
+```bash
+systemctl status flow
+```
+
+확인: `Active: active (running)`, 그리고 `Loaded:` 줄에 `enabled`.
+
+```bash
+curl -s localhost:8080/health
+```
+
+확인: `{"status":"ok",...}`.
+
+```bash
+sudo systemctl kill -s SIGKILL flow && sleep 8 && systemctl status flow --no-pager | head -3
+```
+
+확인: 강제로 죽였는데도 다시 `active (running)`이면 자동 재시작이 실제로 동작하는 것입니다. **이 테스트를 꼭 한 번 해보세요** — 유닛이 등록만 되고 재시작이 안 되는 경우를 여기서 걸러냅니다.
+
+**A-5. 실패했다면**
+
+```bash
+journalctl -u flow -n 50 --no-pager
+```
+
+대부분 A-2의 경로·계정·python 경로 오타입니다. 로그에 이유가 그대로 찍힙니다. 고친 뒤에는 항상 `sudo systemctl daemon-reload && sudo systemctl restart flow`.
+
+### 프로토콜 B — 업데이트 (setup.py 재배포)
+
+자동 재시작이 켜진 뒤에는 **프로세스를 그냥 죽이면 안 됩니다.** `Restart=always`는 예기치 못한 종료에만 반응하므로 `systemctl stop`은 되살아나지 않지만, `kill`/`pkill`로 죽이면 즉시 재기동돼 구버전과 신버전 파일이 섞인 채로 앱이 뜹니다.
+
+**B-1. 진행 중 작업 확인** — 정지는 30초 후 강제 종료라 무거운 작업이 끊깁니다. 캐시 관리 화면에서 스캔·빌드가 도는지 봅니다.
+
+**B-2. 백업**
+
+```bash
+python3 scripts/preflight_internal.py --write-probe --backup-now
+```
+
+**B-3. 정지** — 여기서 `kill`을 쓰지 않습니다.
+
+```bash
+sudo systemctl stop flow
+```
+
+확인: `systemctl status flow`가 `inactive (dead)`. 이 상태는 유지됩니다(되살아나지 않음).
+
+**B-4. 교체**
+
+```bash
+FLOW_SETUP_STRICT=1 python3 setup.py extract && python3 setup.py install-deps
+```
+
+`FLOW_SETUP_STRICT=1`이 중요합니다. 기본값은 일부 파일 쓰기가 실패해도 경고만 내고 성공(exit 0)으로 끝나서, 일부만 갱신된 상태를 정상으로 오인합니다.
+
+확인: 명령이 exit 0으로 끝날 것. 실패하면 B-6.
+
+**B-5. 기동**
+
+```bash
+sudo systemctl start flow
+```
+
+**B-6. 검증**
+
+```bash
+systemctl status flow && curl -s localhost:8080/health && curl -s localhost:8080/version.json
+```
+
+확인: `active (running)` + `{"status":"ok"}` + 버전이 새 배포 시각인지.
+
+**B-7. 문제가 생겼다면 롤백**
+
+```bash
+sudo systemctl stop flow && python3 setup.py restore latest && sudo systemctl start flow
+```
+
+> Docker 운영서버는 이미지 교체 → 컨테이너 재생성이므로 B 프로토콜이 필요 없습니다.
+
+### 프로토콜 C — 일상 조작
+
+| 목적 | 명령 |
+|---|---|
+| 상태 확인 | `systemctl status flow` |
+| 실시간 로그 | `journalctl -u flow -f` |
+| 최근 로그 50줄 | `journalctl -u flow -n 50 --no-pager` |
+| 수동 재시작 | `sudo systemctl restart flow` |
+| 임시 정지 (되살아나지 않음) | `sudo systemctl stop flow` |
+| 다시 시작 | `sudo systemctl start flow` |
+| 부팅 자동시작 해제 | `sudo systemctl disable flow` |
+| 유닛 수정 반영 | `sudo systemctl daemon-reload && sudo systemctl restart flow` |
+
+### 헬스체크
+
+`GET /health`는 **인증 없이** 접근됩니다. 감시 도구가 세션 토큰을 들고 다닐 수 없기 때문이며, 대신 경로·환경변수 같은 내부 정보는 넣지 않습니다.
+
+```bash
+curl -s localhost:8080/health
+```
+
+```json
+{"status":"ok","uptime_sec":195,"started_at":"2026-07-29T00:36:16"}
+```
+
+systemd는 프로세스가 *죽는* 것은 감지하지만 *살아서 멎은* 것은 모릅니다. 외부 모니터링이 이 엔드포인트를 주기적으로 확인하고, 응답이 없거나 200이 아니면 재시작 대상으로 판단하면 됩니다. Docker 운영서버에서는 `HEALTHCHECK`에 같은 경로를 쓸 수 있습니다.
+
+> **Windows 개발서버라면** systemd가 없으므로 [NSSM](https://nssm.cc)으로 서비스 등록하거나, 작업 스케줄러에서 "시스템 시작 시 실행" + "작업이 실패하면 다시 시작"을 설정합니다. 이때도 B 프로토콜의 순서(정지 → 교체 → 기동)는 같습니다.
 
 ## SplitTable 성능 및 메모리 정책
 
@@ -165,6 +323,10 @@ python setup.py restore latest
 ```bash
 python setup.py version
 ```
+
+### 자동 재시작이 켜진 서버를 업데이트할 때
+
+`systemctl stop` → `extract` → `systemctl start` 순서를 지켜야 합니다. 프로세스를 `kill`로 죽이면 systemd가 즉시 되살려 구버전과 신버전이 섞입니다. 단계별 절차와 검증 기준은 위의 **[프로토콜 B — 업데이트](#프로토콜-b--업데이트-setuppy-재배포)** 를 그대로 따릅니다.
 
 ## 개별 설치 명령
 
