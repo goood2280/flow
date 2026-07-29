@@ -15,6 +15,8 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - 제품별 SplitTable 검색, plan/actual 비교와 편집
 - root lot/wafer 기준 FAB 데이터 결합
 - WF MAP, TEG MAP, 공정 데이터 검사
+- ET 추적(일일 스캔·변경점 이슈·메일 발송)과 ET Index 다운로드
+- Valve 파이프라인 매칭알람 판정 — 미매칭 step / RO ppid 를 룰북 CSV에 반영
 - Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
 - 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
 - 캐시 수동 스캔의 현재 단계, 실행 중 작업, 향후 큐와 피크 메모리 관측
@@ -284,6 +286,32 @@ systemd는 프로세스가 *죽는* 것은 감지하지만 *살아서 멎은* �
 
 `setup.py extract`는 끝날 때 dist 정합을 검사해 `extract_report.json`을 남기고, 누락이 있으면 `[extract] FAIL` 로그를 냅니다 (`FLOW_SETUP_STRICT=1`이면 exit 1). 실패 화면의 캡처 한 장이면 원인 보고가 끝납니다.
 
+## 매칭알람 (Valve 연동)
+
+Valve 파이프라인이 발행한 미매칭 step / RO ppid 알람을 읽어 엔지니어 판정을 받고, 그 판정을 DB 루트의 `Vehicle_matching.csv` · `ppid_knob.csv` 에 반영합니다.
+
+알람 파일의 위치는 `data/flow-data/valve_alerts.json` 의 `local_root` 가 정합니다. 비어 있으면 S3, 값이 있으면 그 폴더를 버킷 루트처럼 씁니다. **S3가 없는 환경에서는 Valve가 알람을 공유 DB 폴더에 떨궈 두고 flow가 그걸 읽는 구성이 기본입니다.**
+
+```json
+{ "local_root": "{db_root}", "alerts_prefix": "valve-alerts" }
+```
+
+```
+{db_root}/valve-alerts/pipeline/{vehicle}.json   ← Valve가 씀
+{db_root}/valve-alerts/pipeline/ack.json         ← flow가 씀 (양방향, 폴더 sync로 덮지 말 것)
+{db_root}/flow/artifacts/matching/*.csv          ← 판정 반영 결과 (Valve가 가져감)
+```
+
+`local_root` 에는 `{db_root}` / `{data_root}` / `{app_root}` 토큰을 쓸 수 있습니다. 설치마다 다른 드라이브 경로를 설정에 박지 않기 위한 것으로, 해석은 `FLOW_DB_ROOT` 체인을 그대로 따릅니다.
+
+미매칭 step 은 **function step 추천**이 함께 뜹니다. 같은 앞 영문자 계열에서 번호가 가까운 매칭 step 을 앞뒤로 뽑아 최근 며칠치 `ppid · eqp_id · eqp_model · area` unique 집합을 비교하고, 사내 LLM이 연결돼 있으면 그 근거로 최종 선택을 받습니다. **LLM이 없어도 동작합니다** — `AI 미적용`과 사유를 표시하고 step_id 숫자가 가장 가까운 step 의 function step 을 제시합니다. 반영은 사람이 확인 후 누릅니다.
+
+데모·점검용 예시 알람은 실제 FAB raw 를 읽어 만듭니다.
+
+```bash
+python scripts/seed_valve_alert_examples.py --write
+```
+
 ## SplitTable 성능 및 메모리 정책
 
 - 서로 다른 root lot 조회도 제품 전체가 아닌 root partition/pivot 파일 하나만 읽습니다.
@@ -357,9 +385,9 @@ python setup.py restore latest
 현재 배포본은 다음 검증을 통과한 상태로 생성합니다.
 
 - Python 구문 검사
-- 백엔드 pytest 60개
+- 백엔드 pytest 1,296개 전부 통과 (실패 0 — 실패는 곧 회귀로 봅니다)
 - Vite production build
-- 로컬 HTML/JS HTTP 200 smoke test
+- 로컬 HTTP smoke test 35항목 (인증 방어 포함)
 - `setup.py` 추출 파일 목록 및 데이터 제외 정책 확인
 
 ## 주의 사항
