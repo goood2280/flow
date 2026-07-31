@@ -1,7 +1,22 @@
 {
-  "version": "10.0.2",
+  "version": "10.0.3",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.3",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "ET 다운로드 — lot 만 지정한 조회가 파일 전체를 열던 문제 + ET 추적 목록 재파싱 제거",
+      "changes": [
+        "[증상1] ET 다운로드에서 root_lot_id 만 넣으면 '찾고 계산하는' 데 아주 오래 걸렸다. 기간 필터가 없으면 _prune_files_by_date 가 아무것도 못 걸러 제품 전체(수백 일치 parquet)를 열기 때문인데, 문제는 그 다음이었다.",
+        "[원인 A — 필터가 맨 마지막] _scan_one_et_file 이 wafer 정규화(전 행 정규식) → 전 열 Utf8 캐스팅 → 필터 순이었다. 가장 선택적인 조건(lot/step/item)이 맨 뒤라, 랏 하나를 찾는 조회도 파일 전체를 변환한 뒤에야 버렸다. predicate pushdown 도 캐스팅에 막혀 parquet 리더까지 못 갔다. 이제 _split_pushdown_exprs 로 식을 pre/post/probe 로 나눠, 식별자 필터를 스캔 직후 원본 dtype 에 걸고 살아남은 행에만 정규화·캐스팅을 한다. wafer 식만 정규화 뒤에 남긴다 — raw 1026 → wafer 1 순서를 지켜야 결과가 같다.",
+        "[원인 B — 후보 파일을 안 좁힘] parquet 은 columnar 라 필터 열 하나만 읽는 비용이 전체 읽기의 수십분의 1이다. _candidate_files 가 본 읽기 전에 lot/step/item 열만 훑어 head(1) 로 '이 파일에 그게 있나' 만 묻고 후보를 좁힌다. 판정 불가(열 없음·스캔 실패)면 그 파일은 남긴다 — 사전판정 실수로 데이터가 조용히 빠지는 쪽이 훨씬 나쁘다. 기간 식은 사전판정에 넣지 않는다(이미 파일명으로 걸렀고 전 행 datetime 파싱은 값싼 질문이 아니다).",
+        "[효과] 30일치·9백만행·200MB 합성 데이터, 1코어 기준 root_lot_id 단독 조회 6.1초 → 0.21초(약 29배). 결과 행은 fingerprint 까지 동일함을 확인했다. 기간 필터만 준 조회는 얻을 게 없으므로 그대로다(회귀 없음). 스캔 예산 판정도 좁힌 목록 위에서 하므로, lot 하나 지정한 조회가 4GB 상한 400 에 걸리던 것도 같이 풀린다. 끄려면 FLOW_REFORMATIZE_PROBE=0.",
+        "[증상2] ET 추적은 등록은 금방인데 목록에 뜨는 게 느렸다. issues.json 은 lot 행마다 ET 측정이력(et_history, 행당 최대 500건)을 안고 있어 이슈당 ~120KB 인데, 목록 응답은 이슈당 1KB 도 안 된다 — 목록을 열 때마다 수십 MB 를 파싱해 몇 KB 를 만들고 있었다.",
+        "[수정2] _list_rows() 가 파일 시그니처(mtime_ns, size)를 키로 투영된 행만 캐시한다. 쓰기는 전부 save_json(ISSUES_FILE) 을 지나 시그니처가 바뀌므로 자동 무효화되고 워커가 써도 잡힌다. 가시성 필터는 사용자마다 다르므로 캐시에 넣지 않고 매 요청에 건다. 로컬 측정 최초 7~31ms → 재요청 0.05ms. et_history 가 계속 커지면 최초 파싱·쓰기는 여전히 느려지므로, 한계에 닿으면 _HISTORY_CAP 축소나 이력 분리가 다음 단계다.",
+        "[검증] 신규 tests/test_reformatize_candidate_files.py 12건(좁히기 전후 결과 동일성·보수적 유지·wafer 정규화 순서 포함), tests/test_tracker_list_cache.py 7건."
+      ]
+    },
     {
       "version": "10.0.2",
       "date": "2026-07-31",
