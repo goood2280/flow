@@ -1,7 +1,27 @@
 {
-  "version": "10.0.7",
+  "version": "10.0.8",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.8",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "대시보드 제품별 WIP 귀속 수정 + FAB lot_type 구분축 + Peak RAM 을 Grafana 와 비교 가능하게",
+      "changes": [
+        "[증상1] 대시보드 WIP 이 제품별로 달라야 하는데 모든 제품이 똑같은 wafer 수를 냈다. 실측: PRODA·PRODB 둘 다 1,500 wafer, 캐시에 60개 root 전부가 두 제품 모두에 들어 있었다.",
+        "[원인] 서로 다른 두 의미가 `product` 열 하나에 뭉개져 있었다. FAB 매칭 캐시는 **일부러 FAB 전체를 훑는다** — 자기 FAB 폴더가 없는 제품도 다른 폴더에서 lot lineage 를 찾아오는 것이 의도된 동작이고 SplitTable 의 fab lot 라벨이 여기 의존한다. 그런데 latest cache 를 만들 때 모든 행에 ML_TABLE 제품명을 그대로 찍어서, 물량을 세는 대시보드가 남의 랏까지 자기 것으로 셌다.",
+        "[처음 시도한 수정을 되돌림] `product` 를 FAB 폴더 기준으로 바꿨더니 기존 테스트(`test_match_cache_searches_entire_fab_db_when_product_folder_is_missing`)가 잡아냈다 — 교차 폴더 lineage 조회가 깨진다. 열의 의미를 바꾸는 대신 **덮지 않고 추가**하는 쪽으로 재설계했다.",
+        "[수정1] latest cache 에 `src_product`(이 랏이 실제로 속한 FAB 제품 폴더) 열 추가. `product`(ML_TABLE 제품, 교차 lineage 포함)는 그대로 두고 SplitTable 동작을 보존한다. 매칭 캐시는 `__cache_src_product` 로 행별 출처를 싣는다(`_scan_global_fab_sources(tag_source_product=True)` — 다른 호출자의 스키마는 안 건드린다).",
+        "[수정2] 대시보드 WIP 은 `src_product` 로 귀속·집계한다(`_wip_split_product_expr`, 없으면 `product` 폴백). 실측 확인: product 는 제품당 60 roots(lineage 유지), src_product 는 제품당 30 roots 로 **겹침 0** — PRODA 는 A1xxx, PRODB 는 B1xxx. 드릴다운도 같이 갈린다.",
+        "[신규] FAB `lot_type` 을 매칭 캐시로 싣고 대시보드 구분 축에 노출한다(`랏 구분(lot_type)`, 목록 맨 앞). override 열 해석이 실제 FAB 스키마에 있는 열만 통과시키므로 **lot_type 이 없는 환경에서는 옵션에 아예 안 나온다**(빌드 실패 없음).",
+        "[증상2] 캐시관리의 Peak RAM 이 Grafana 로 보는 값보다 훨씬 높게 잡혔다.",
+        "[원인2 — 불일치가 아님] Peak 이 전부 **RSS** 였다. RSS 는 mmap 된 parquet 페이지까지 센다(polars 가 parquet 을 mmap). Grafana 의 `container_memory_working_set_bytes` 는 회수 가능한 file cache 를 빼므로 낮다 — 이 코드베이스의 cgroup 리더도 같은 계산을 한다. 비교 가능한 값(PSS)은 이미 `Effective` 로 순간값만 보여줬고 **peak 은 안 들고 있었다**.",
+        "[수정3] peak 샘플이 RSS 와 Effective(PSS)를 함께 남긴다. `recent_peak_rss` 가 `peak_effective_gb`/`peak_effective_ts`/`effective_sample_count` 를 반환하고, 두 최댓값의 시점이 달라도 각각 보고한다(RSS 는 낮은데 PSS 가 최대인 순간이 실제로 있다).",
+        "[수정3 안전장치] effective 가 없는 옛 샘플은 **세지 않는다** — 0 으로 세면 'Peak Effective 0GB' 라는 거짓 안심이 된다. 또 PSS 를 못 읽는 플랫폼(Windows 개발 PC)에서는 Effective 가 RSS 로 폴백돼 두 값이 같아지므로 `effective_is_pss` 로 알려 화면이 '비교 가능' 이라고 단정하지 않게 했다.",
+        "[화면] 캐시관리 Peak RAM 패널에 '최근 2일 Peak Effective' 와 표본 수를 추가하고, RSS 가 Grafana 보다 높은 이유(mmap 페이지 포함 / peak 은 최댓값이라 스크랩 간격에 안 보일 수 있음 / ET 다운로드 자식 프로세스는 여기 안 잡힘)를 화면에서 직접 설명한다. **Effective 표본은 이 배포 시점부터 쌓이므로** 표본이 적을 때 48시간 RSS peak 과 나란히 보면 격차를 과장해 읽는다 — 그래서 표본 수를 같이 낸다.",
+        "[검증] 전체 pytest 1,482 통과 / 0 실패. 신규 tests/test_wip_product_attribution.py 13건(FAB 폴더 추출, 출처 기반 귀속, ML_TABLE 접두 접기, 빈 값·옛 캐시 폴백, 같은 랏 이중 집계 방지, lot_type 유무), tests/test_ram_peak_effective.py 7건(두 값 동시 기록, 최댓값 시점 분리, 옛 샘플 미집계, 다른 서버·기간 밖 제외, 빈 결과 모양, RSS 0 샘플 폐기). 로컬 서버로 대시보드 API·드릴다운까지 실측 확인."
+      ]
+    },
     {
       "version": "10.0.7",
       "date": "2026-07-31",
