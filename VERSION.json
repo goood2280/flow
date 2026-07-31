@@ -1,7 +1,16 @@
 {
-  "version": "10.0.13",
+  "version": "10.0.14",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.14",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "스플릿테이블 2중 테두리 및 굵은 선 완화",
+      "changes": [
+        "[데이터 스플릿 테이블] 증상 → 표 테두리가 두 겹으로 보이거나 굵게 표시되고, 렌더링 시 벌어지는 현상. 원인 → 이전 수정에서 border-collapse: separate 모델 도입 시, 각 셀에 개별적으로 부여된 borderBottom/borderRight 인라인 스타일과 전체 강제 1px 테두리가 중첩되어 2px로 렌더링됨. 조치 → 전체 셀 대상의 강제 테두리 속성을 제거하고, 테이블 외곽을 감싸도록 borderTop/borderLeft를 부여해 1px 단일 선으로 깔끔하게 맞물리도록 수정 (두께 2px이던 강력한 선도 1px로 완화)."
+      ]
+    },
     {
       "version": "10.0.13",
       "date": "2026-07-31",
