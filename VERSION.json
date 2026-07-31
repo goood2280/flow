@@ -1,0 +1,48 @@
+{
+  "version": "10.0.2",
+  "codename": "flow",
+  "release_notes": [
+    {
+      "version": "10.0.2",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "릴리스 노트가 배포 때마다 사라지던 구조 수정 + VERSION.json 을 GitHub 추적 대상에 추가",
+      "changes": [
+        "[증상] VERSION.json 의 release_notes 가 배포를 돌 때마다 rollup 1건으로 리셋됐다. 이 저장소의 유일한 변경 이력인데, 2026-07-31 에 9.5.x 전량이 이렇게 사라졌고 되살릴 방법이 없었다.",
+        "[원인] _build_setup.installer_version_meta 가 노트를 'Flow app 운영 개선 통합 요약' 1건으로 압축해 VERSION_META 에 넣고, setup.py extract 가 파일을 푼 직후 그 값으로 VERSION.json 을 무조건 덮어썼다. 번들 안에는 진짜 파일이 들어 있었지만 덮어쓰기가 그 뒤에 실행돼 항상 졌다.",
+        "[수정1 — 메타 = 전문] installer_version_meta 가 VERSION.json 을 그대로 싣는다. 번들 메타와 파일이 같아져 어느 경로로 써도 손실이 없다 (수십 KB, 6MB 번들에서 무시 가능).",
+        "[수정2 — extract 는 없을 때만 쓴다] FILES 루프가 이미 번들 원본을 썼으므로, 뒤따르던 무조건 덮어쓰기를 'VERSION.json 이 없을 때만' 으로 좁혔다. 신규 설치는 여전히 전체 노트를 갖고 시작한다.",
+        "[수정3 — sync-version 은 이력을 줄이지 않는다] 작업트리 노트 수가 번들 메타보다 많으면 쓰기를 거부하고 이유를 출력한다.",
+        "[수정4 — extract 가 모르는 인자를 거부한다] extract 는 항상 현재 폴더에 풀고 대상 폴더를 바꾸는 옵션이 없다. `--dest /tmp/...` 처럼 없는 옵션을 붙이면 안전한 임시 추출로 착각한 채 소스 트리를 번들 시점으로 되돌리게 된다 — 이제 exit 2 로 거부하고 올바른 방법(setup.py 를 그 폴더로 복사)을 안내한다.",
+        "[GitHub 추적 3파일] origin/main 이 README.md + setup.py + VERSION.json 을 추적한다. 잃으면 복구 못 하는 파일은 번들 밖에도 사본을 둔다 — 이제 커밋 diff 에 릴리스 노트 변경이 보이고 `git show <sha>:VERSION.json` 으로 어느 시점이든 되돌린다. .gitignore·CLAUDE.md·README.md·docs/GITHUB_MAIN_PUSH.md 를 같이 갱신했다.",
+        "[검증] 신규 tests/test_setup_bundle_version_safety.py 8건. 실제 추출 2종으로 확인 — 기존 VERSION.json 이 있는 트리에 풀면 노트 보존, 빈 폴더에 풀면 전체 노트로 생성. `extract --dest` 는 exit 2."
+      ]
+    },
+    {
+      "version": "10.0.1",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "ET 추적 — 스캔해도 진행결과가 안 나오던 3가지 원인 + ET 다운로드 1코어 상한",
+      "changes": [
+        "[증상] ET 측정시간에서는 같은 root_lot 의 PGM(pt) 가 잘 나오는데, ET 추적에서 스캔을 눌러도 측정이력이 계속 비어 있었다. 화면에는 '측정 이력 없음' 만 떠서 왜 비었는지 알 방법이 없었다. 원인이 셋이었고 전부 조용히 실패하는 종류였다.",
+        "[원인1 — 카테고리가 스캔 대상에서 빠짐] Tracker 는 ET DB 하나만 추적하는데, 카테고리 DB source 미지정(auto)은 백엔드에서 스캔 대상 제외, 프런트에서는 FAB 로 해석돼 측정이력 열 자체가 안 나왔다. 카테고리 목록이 Monitor/Analysis 로 좁혀지면서 그 전에 만든 legacy 이름(변경점·불량·모니터링 등) 이슈는 전부 여기에 걸렸다. 이제 Monitor 역할만 FAB, 그 외는 전부 ET 다 — 프런트 trackerCategorySource 와 백엔드 _category_source·_issue_source 가 같은 규칙을 쓴다.",
+        "[원인2 — root 칸의 fab lot 을 못 찾음] et_packages 는 root_lot_id 가 채워져 있으면 root 열로만 조회했고, lot_id 폴백은 lot 칸이 비어 있을 때만 돌았다. 두 칸이 다 차 있으면서 root 칸에 fab lot 이 들어간 행은 영영 0건이었다. 이제 root_lot_id/lot_id/fab_lot_id 를 한 번의 OR 로 매칭하고 공백·대소문자 차이도 흡수한다 (ET 측정시간의 재조회 호환 규칙과 같은 범위, 스캔은 1회).",
+        "[원인3 — 실패를 빈 결과로 감춤] et_packages 는 파일 없음·스키마 이상·집계 실패 어느 쪽이든 빈 리스트를 돌려줬다. 이제 diag dict 로 사유를 올려 lot 행에 last_scan_status='error' + last_scan_error 로 남기고, 화면은 '조회 실패 · <사유>' 를 빨간색으로 보여준다. 스캔 대상에서 빠진 이슈도 scan_phase().skipped[] 에 이유가 남고 /et-scan/run-issue 는 409 로 그 문장을 그대로 돌려준다. 톱니바퀴 '즉시 스캔' 결과 문구에도 스캔 이슈 수와 제외 사유가 붙는다.",
+        "[부수] 톱니바퀴 ET DB 폴더 설정이 실제 폴더와 어긋나면 기본 루트(1.RAWDATA_DB_ET)로 폴백한다. et_history 엔트리에 wafer_id 를 남겨 all/범위 행을 wafer 별로 펼칠 때 이력이 사라지지 않게 했다. 집계에 쓰는 열만 명시적으로 select 해 넓은 long 포맷 원본에서 읽는 양을 줄였다. 이슈 상세와 톱니바퀴에 '전체 재조회'(워터마크 무시) 버튼을 뒀다.",
+        "[ET 다운로드 CPU] 다운로드 계산은 spawn 자식에서 도는데, 자식은 app.py 를 안 거쳐 runtime_limits 가 실행되지 않는다. polars 스레드풀은 최초 import 때 크기가 고정되므로 부모 환경에 큰 값이 박혀 있으면 다운로드 한 건이 호스트 코어를 전부 잡았다. 자식 진입점을 core/reformatize_child.py 로 분리해 polars import 전에 스레드 상한을 심는다 — 기본 1코어, FLOW_REFORMATIZE_THREADS 로 조절. 대기열 워커도 기본 1건이라 ET 다운로드 전체가 1코어 안에서 돈다. 열 projection·파일 pruning·item pushdown 은 기존 경로 그대로다.",
+        "[검증] 프런트 빌드 통과, smoke 35/35, 전체 스위트 1,385 통과 0 실패. 신규 tests/test_et_tracker_scan_visibility.py 12건."
+      ]
+    },
+    {
+      "version": "10.0.0",
+      "date": "",
+      "title": "Flow app 운영 개선 통합 요약",
+      "tag": "rollup",
+      "changes": [
+        "SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.",
+        "사용자 데이터와 DB/runtime root는 setup.py 번들에 포함하지 않고 외부 FLOW_DATA_ROOT/FLOW_DB_ROOT 또는 로컬 ignored root에 보존.",
+        "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인."
+      ]
+    }
+  ]
+}
