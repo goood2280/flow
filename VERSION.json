@@ -1,7 +1,29 @@
 {
-  "version": "10.0.14",
+  "version": "10.0.16",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.16",
+      "date": "2026-07-31",
+      "tag": "refactor",
+      "title": "캐시 관리 페이지 UI 탭 분리",
+      "changes": [
+        "[UI/캐시관리] 증상 → 원인 → 조치: 캐시관리 페이지에 많은 정보가 한 화면에 표시되어 복잡했음 -> 제품별 현황, 캐싱 진행, 검색 속도 3개의 주요 소탭으로 화면 구성을 분리하여 각 기능의 가시성과 관리 편의성을 향상시킴.",
+        "[7/30 누락분] 누락된 커밋 반영"
+      ]
+    },
+    {
+      "version": "10.0.15",
+      "date": "2026-07-31",
+      "tag": "feat",
+      "title": "대시보드 lot_type 필터 추가 및 캐시 반영",
+      "changes": [
+        "[대시보드/캐시] 증상 -> 원인 -> 조치: 대시보드에서 lot_type 기준으로 물량을 필터링할 수 없었음 -> lot_progress_cache 스키마에 lot_type이 누락되어 있었고 대시보드 api에 필터 로직이 없었음 -> 캐시 스키마에 lot_type을 추가하여 파싱하도록 수정하고, 대시보드 API와 UI(My_Dashboard.jsx)에 lot_type 전체/단일 선택 필터를 추가함.",
+        "[7/30 누락분] 누락된 커밋 반영",
+        "[UI/XLSX] 증상 -> 원인 -> 조치: split table 엑셀 저장 시 병합 모드에서 빨간 테두리가 이상하게 출력됨 -> is_mismatch일 때 border-color가 중첩 적용됨 -> xlsx 생성 시 is_mismatch 빨간 테두리(mismatch_border) 적용 코드를 주석 처리함.",
+        "[UI/Dashboard] 대시보드 bin 간격 기본값을 30000으로 상향하고 1000/10000/100000 퀵버튼을 제거함."
+      ]
+    },
     {
       "version": "10.0.14",
       "date": "2026-07-31",
