@@ -1,7 +1,16 @@
 {
-  "version": "10.0.11",
+  "version": "10.0.12",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.12",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "스플릿테이블 항목 정렬 시 prefix 최우선 순위 버그 수정",
+      "changes": [
+        "[데이터 스플릿 테이블] 증상 → KNOB과 INLINE 항목이 섞여서 출력됨 (KNOB이 위에 오지 않음). 원인 → prefix 정렬을 최우선으로 하려 했으나, 내부에서 split(분할) 여부로 그룹핑하는 로직이 먼저 적용되고 있었음. 조치 → split 여부보다 prefix(KNOB, MASK 등)를 최상단 정렬 조건으로 격상하여 요청한 순서(KNOB 최상단 등)가 보장되도록 수정."
+      ]
+    },
     {
       "version": "10.0.11",
       "date": "2026-07-31",
