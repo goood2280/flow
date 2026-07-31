@@ -1,7 +1,26 @@
 {
-  "version": "10.0.4",
+  "version": "10.0.5",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.5",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "운영서버 라우터 기동 실패 자가복구 (신규 모듈 누락) + ET 조회 진행 표시 · REAL raw 열 제거",
+      "changes": [
+        "[증상1 — 운영 장애] 운영서버에서 auth_providers import 실패·latest_lot_cache_format 모듈 없음으로 라우터들이 죽어 SplitTable·FileBrowser·Flow-i 탭이 통째로 동작하지 않았다. 신규 제품의 root lot 목록이 안 붙고 대시보드에 'WIP 없음' 이 뜨던 것도 같은 원인이다.",
+        "[원인] 운영 Docker 환경은 **덮어쓰기는 되는데 새 파일 생성만 막힌다** (frontend/dist 자가복구가 만들어진 이유와 같은 원인). 그래서 이미 있던 .py 는 새 버전으로 갱신되는데 그 릴리스에서 새로 생긴 모듈만 안 생긴다. 번들·extract 는 멀쩡했다 — 로컬 재현에서 latest_lot_cache_format.py 와 lot_list_cache.py 두 개만 지우자 splittable·filebrowser·llm 세 라우터가 그대로 죽었다.",
+        "[왜 신규 제품 WIP 까지 비었나] 같은 모듈이 없어서 'splittable root lot RAM cache scheduler init failed' 로 랏 캐시 스케줄러도 죽었다. 앱은 정상 기동하고 화면도 떠서 아무도 못 봤고, 그동안 신규 제품의 latest-lot/root-lot 캐시가 아예 안 만들어졌다. CLAUDE.md 가 경고한 '스케줄러 기동 실패는 warning 한 줄로 삼켜진다' 함정이 실제로 터진 사례다.",
+        "[수정1 — backend 소스 자가복구] 라우터 import 가 실패했을 때만 setup.py 번들에서 **없는** backend .py 를 복원하고 실패한 라우터만 재시도한다(router_loader 에 only= 추가 — 전체를 다시 부르면 정상 라우터가 중복 등록된다). 있는 파일은 절대 덮어쓰지 않는다. 정상 기동에는 비용이 0 이다(번들을 아예 열지 않는다). 재현 트리에서 34/34 라우터 복구 확인.",
+        "[수정2 — 스케줄러 실패 가시화] 기동 실패 스케줄러를 warning → error 로 올리고 startup.SCHEDULER_ERRORS 에 모아 /deploy-info.json 에 노출한다. 셸 없는 운영 서버에서 '왜 이 기능만 조용히 멈췄나' 를 브라우저만으로 잡는다.",
+        "[수정3 — 배포 진단] /deploy-info.json 에 routers_loaded · routers_failed(라우터별 오류 요약) · schedulers_failed · source_repair 추가. 라우터가 죽으면 해당 탭이 통째로 실패하는데 여태 응답에 아무 단서가 없었다.",
+        "[ET 1 — REAL raw 열 제거] REAL alias 는 ITEMID × scale factor 라서 alias 열과 raw ITEMID 열을 같이 실으면 같은 값을 배율만 빼고 두 번 싣는 중복이었다(scale=1.0 이면 아예 같은 숫자 두 열). 이제 출력에 REAL alias 가 있는 ITEMID 의 raw 열은 내보내지 않는다. 조회·CSV 동일 적용.",
+        "[ET 1 단서 보존] alias 로 노출되지 않는 ITEMID(관리자 비공개 처리, 또는 ADDP 수식이 REAL 행 없이 ITEMID 를 직접 참조하는 경우)는 그대로 남긴다 — 빼면 ADDP 계산 근거가 통째로 사라진다.",
+        "[ET 2 — 조회 진행 표시] 조회(/run)는 동기 POST 라 폴링할 job 이 없어 로딩창이 'ET index 계산 중' 한 줄로 멈춰 보였다. 화면이 만든 1회용 토큰으로 진행 상황만 따로 폴링하는 GET /api/reformatize/run/progress 추가. 이제 '대상 parquet 찾는 중: PRODA_2025_07_23.parquet (3/120개)' 처럼 어떤 파일을 몇 개 중 몇 번째로 보고 있는지 그대로 보인다. 폴링이 실패해도 조회는 계속된다(진행 표시만 사라짐).",
+        "[ET 2 부수] 파일 탐색 단계 문구에 파일명 추가, 로딩 단계 표시 오매핑 수정 — '규칙 CSV 확인 중'과 '대상 파일 찾는 중' 이 CSV/파일 키워드에 먼저 걸려 읽기 단계인데도 'CSV 생성' 으로 표시되던 문제. 긴 진행 문구가 오버레이를 밀어내지 않도록 Loading 라벨 폭 제한.",
+        "[검증] 전체 pytest 1,429 통과 / 0 실패. 신규 tests/test_reformatize_run_progress.py 6건, tests/test_router_loader.py 재시도 계약 1건, REAL raw 열 계약 테스트 갱신(기존 4건이 옛 계약을 잠그고 있어 새 계약으로 교체 + alias 없는 ITEMID 보존 1건 추가). 로컬 서버 기동 후 /deploy-info.json routers_loaded=34·failed=[] 확인, 실제 조회로 진행 문구와 REAL raw 열 제거 확인."
+      ]
+    },
     {
       "version": "10.0.4",
       "date": "2026-07-31",
