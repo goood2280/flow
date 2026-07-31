@@ -1,7 +1,30 @@
 {
-  "version": "10.0.17",
+  "version": "10.1.0",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.1.0",
+      "date": "2026-08-01",
+      "tag": "feat",
+      "title": "대시보드 전체보기·적용공정 표기 개편·ET 스캔 배치 + 7/31 회귀 5건 수정",
+      "changes": [
+        "[대시보드] product '전체' 추가 — 제품 필터 없이 전 제품을 제품별 색으로 표시(Split 기준열 대신). 제품 개별 선택은 src_product 기준으로 정상 분리됨을 실데이터로 확인.",
+        "[대시보드/캐시] lot_type 이 canonical latest 캐시(lot_progress_latest_lot_by_root_wafer)에 실리지 않아 Lot Type 필터가 항상 '전체'뿐이었음 -> LATEST_LOT_STEP_CACHE_COLUMNS 에 lot_type 추가(FAB 최신 행 기준). 사내 반영 시 캐시 재생성 1회 필요.",
+        "[SplitTable/XLSX] 병합 다운로드에서 mismatch 빨간 테두리가 안 보이던 문제 -> openpyxl 은 병합 범위 앵커 셀에만 테두리를 넣으면 상자가 끊기고 그리드 보강 패스가 나머지를 덮어씀. 구간 전체에 상자를 그리는 _outline_span 추가하고 주석 처리돼 있던 is_mismatch 분기 복원.",
+        "[SplitTable] '적용 공정 정보' 표기 개편 — 항목명 대신 연결 공정 표시. KNOB=step_id(같은 rule_order 의 AND 는 'A & B', step_id 없는 조건 제외), INLINE/VM='step_id | item_id', 복수면 줄바꿈. 표시 대상 없는 매칭 행은 숨김. Split 체크 뷰·병합 뷰·인폼 스냅샷 동일 적용(INLINE/VM 은 기존에 도달 불가 조건이라 아무것도 안 나오고 있었음).",
+        "[SplitTable] Vehicle_matching 에 module 열이 있으면 항목을 module 별로 묶어 표시(위아래 같은 값은 rowSpan 병합). inline_matching 에는 module 이 없어 step_id -> Vehicle_matching module 로 보강.",
+        "[SplitTable] 인폼 스냅샷이 Split 체크 상태를 물고 가도록 display_mode 전달(기존에는 항상 matrix 고정).",
+        "[인폼] 신규 인폼 등록을 모달 팝업에서 페이지 내 인라인 진행으로 전환('← 목록으로'). 인폼 로그 필터를 칩 누적 다중선택에서 리스트 단일 선택으로 바꾸고 '필터 초기화' 제거.",
+        "[인폼] 메일 미리보기에서 SplitTable 기술 메타 3줄(source 제목/자동 note/wafer 배지) 제거 — showTitle/showMeta prop.",
+        "[ET 추적] 스캔이 사내에서 오래 걸리던 원인 = ET DB lot 비교식이 cast+strip+upper 정규화라 parquet predicate pushdown 이 죽는데, lot 행마다 그 전체 파일 읽기를 반복. et_packages_multi 로 이슈의 lot 을 한 번에 읽고 lot 별 필터·집계는 메모리에서 처리(결과 동일성 계약 테스트 추가).",
+        "[캐시관리] 캐싱 진행 탭 상단에 '지금 상태' 한 줄 요약, Peak RAM 지표 접기, 이벤트 로그를 표에서 한 줄 리스트로(분류 한글화). 검색 속도 '최근 검색 상세' 200건·항상 펼침.",
+        "[ET 다운로드] 일괄 선택 버튼 전부 제거(선택은 행 체크박스로만), R.ORD 필터는 '전체'+'Auto report 항목' 2개만, UNIT 필터 제거, 공개/비공개 필터와 전체 공개·비공개는 관리자 전용.",
+        "[회귀 수정] SplitTable root lot 드롭다운이 '이미 캐시된 root' 만 보여주던 문제 — get_lot_candidates 의 split_table_cache_fast 분기가 맨 앞이라 lookup 캐시(완전 목록)를 가로챔. 뒤로 이동하고 완전 목록 취급 해제.",
+        "[회귀 수정] prefix 최우선 정렬 복원 때 TAG_ 가 통째로 맨 뒤로 밀려 '커스텀 태그 번호 위치 유지' 가 죽어 있었음 — 앞머리 숫자가 있는 TAG 는 KNOB 과 같은 순위.",
+        "[회귀 수정] header_groups 라벨이 빈 문자열로 나가 프런트 lot_id 헤더가 빈 칸이 되던 문제 -> '—' 복원.",
+        "[회귀 수정] lot_type 추가로 낡아진 테스트 기대값 3곳 및 인폼 UI 계약 토큰 갱신. 전체 스위트 1483 pass / 0 fail."
+      ]
+    },
     {
       "version": "10.0.17",
       "date": "2026-07-31",
