@@ -1,7 +1,16 @@
 {
-  "version": "10.0.12",
+  "version": "10.0.13",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.13",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "스플릿테이블 lot id 표기 및 행 테두리 사라짐 버그 수정",
+      "changes": [
+        "[데이터 스플릿 테이블] 증상 → 특정 LOT 검색 시 아래 헤더 영역의 lot id가 \"-\" (대시)로 표기되고, 행이 많아지면 테이블 셀 사이 선이 사라짐. 원인 → fab_lot_id가 캐싱되지 않은 경우 백엔드가 강제로 \"—\"를 반환하여 프런트엔드의 기본값 폴백이 차단됨. 행 선 누락은 CSS border-collapse: collapse 모델의 렌더링 한계. 조치 → 백엔드에서 빈 값 반환 시 \"\"를 내려주도록 수정하여 원래 lot id가 표시되도록 하고, 테이블 테두리를 border-collapse: separate 모델로 변경하여 렌더링 누락 방지."
+      ]
+    },
     {
       "version": "10.0.12",
       "date": "2026-07-31",
