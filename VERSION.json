@@ -1,7 +1,27 @@
 {
-  "version": "10.0.5",
+  "version": "10.0.6",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.0.6",
+      "date": "2026-07-31",
+      "tag": "fix",
+      "title": "전체 셋업 메모리 초과(28GB 축출) 수정 + FAB 랏 인덱스 진행 표시",
+      "changes": [
+        "[증상] 초기 전체 셋업 중 FAB 매칭 캐시 단계에서 RSS 가 28GB 를 넘겨 캐시가 축출됐다. '매칭 캐시가 병렬로 도는 것 아니냐'는 의심이 있었다.",
+        "[확인 — 병렬 아님] FAB 매칭 캐시는 어떤 경우에도 제품 병렬이 아니다. `_refresh_match_cache_products` 는 `_MATCH_CACHE_BUILD_LOCK` 안의 순차 for 문이고, `FLOW_FULL_SETUP_WORKERS`(기본 1)는 Phase A(랏 lookup 빌드)에만 적용된다. root RAM 예열 로더도 기본 1이다. 기본 설정에서 병렬로 도는 것은 없다.",
+        "[원인] 전체 셋업이 속도를 위해 **peak RAM 을 정하는 두 값**을 키워서 넘기고 있었다 — 랏캐시 청크 4→32(8배), FAB 매칭 배치 300→2000 root(6.7배). 스트리밍 빌드의 peak 은 병렬도가 아니라 한 단위의 크기다(랏캐시 peak ≈ 청크 개수만큼의 root wide, 매칭 peak ≈ 배치 1개). 게다가 메모리 가드는 청크/배치 **사이**에서만 확인하므로 한 단위 안에서 벌어지는 초과는 못 막는다 — 배치를 키우면 가드가 무력해진다.",
+        "[원인2 — 설정 무시] env 는 캐시관리 ⚙ 설정보다 우선순위가 높다. 전체 셋업이 env 를 무조건 심었으므로, 관리자가 메모리를 지키려고 ⚙ 에서 낮춰둔 배치 크기가 **가장 무거운 작업에서만 조용히 무시**됐다.",
+        "[수정] 전체 셋업은 청크/배치를 기본으로 건드리지 않는다. `FLOW_FULL_SETUP_LOOKUP_CHUNK` / `FLOW_FULL_SETUP_MATCH_BATCH_ROOTS` 를 명시 지정(>0)했을 때만 덮어쓴다 → ⚙ 설정이 살아남는다. workers=1(순차)·메모리 상한 20GB 는 그대로. peak 을 낮추는 대신 FAB 원천 재스캔이 늘어 느려지는 트레이드오프는 사용자 승인.",
+        "[가시성] 실제 적용된 청크/배치를 시작 로그와 `/ram-cache/full-setup` 응답의 `effective` 에 찍는다 — 요청 파라미터(`config`, 0=오버라이드 없음)와 구분된다.",
+        "[증상2] 스캔 큐의 `fabidx:<제품>` 작업이 수 분간 돌면서 진행 내용이 전혀 안 보였다.",
+        "[원인2] 이 빌드가 `logger.info` 만 쓰고 `cache_event_log.record` 를 안 불렀다. 캐시관리 화면은 이벤트 로그만 읽는다(매칭 캐시는 이미 배치별로 내보내고 있었다).",
+        "[수정2] FAB 랏 인덱스 빌드에 진행 표시 추가 — 전체 재빌드는 시작(파일/배치 수) · 배치별 N/M(%)·누적 행·RSS·ETA · root 파티션 기록 · 완료, 증분은 시작(새 파일 수)·완료(교체 root 수)를 `[FAB랏인덱스]` 로 내보낸다. 첫·마지막 배치는 항상, 중간은 스로틀(`FLOW_SPLITTABLE_FAB_INDEX_LOG_GAP_SEC`, 기본 1.5초). **변화가 없어 건너뛰는 경우에도 알린다** — 아무 이벤트 없이 끝나면 멈춘 줄 안다. 증분 포기(새 파일이 기존 root 30% 초과) 사유도 표시.",
+        "[수정3] 스캔 큐 라벨을 사람이 읽는 이름으로: `fabidx:PRODA` → `FAB 랏 인덱스 (root별 최신 FAB lot): PRODA`.",
+        "[참고 — fabidx 가 하는 일] FAB 원천을 root_lot_id 정규화 키로 재분할해 두는 파생 캐시다. fab override join 이 (root,wafer)별 최신 FAB lot 을 고를 때 검색마다 FAB 전체를 스캔하던 비용을 없앤다(원천이 root 로 파티션되지 않았고 root 필터가 cast+upper 로 감싸여 predicate pushdown 이 안 먹는다). 실측 ~2,130ms → ~13~40ms. 순수 additive — miss/오류면 기존 전체 스캔으로 폴백한다.",
+        "[검증] 전체 pytest 1,438 통과 / 0 실패. 신규 tests/test_full_setup_memory_profile.py 5건(기본 순차·오버라이드 없음, ⚙ 설정이 전체 셋업을 통과해 살아남음, 명시 env 는 여전히 적용, 복원 시 env 정리), tests/test_fab_lot_index_progress.py 4건(cache_op category, 이벤트 로그 실패해도 빌드 안 죽음, 건너뜀도 보고, 전체 재빌드 시작·완료 보고)."
+      ]
+    },
     {
       "version": "10.0.5",
       "date": "2026-07-31",
