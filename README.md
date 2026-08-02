@@ -20,7 +20,12 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - Valve 파이프라인 매칭알람 판정 — 미매칭 step / RO ppid 를 룰북 CSV에 반영
 - Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
 - 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
-- 캐시 수동 스캔의 현재 단계, 실행 중 작업, 향후 큐와 피크 메모리 관측
+- 필수 SplitTable 캐시 작업 큐, 실행 중 작업과 피크 메모리 관측
+
+SplitTable 캐시는 완성 응답 RAM/압축 디스크 → `root_lot_id`별 pivot/lookup →
+WIP latest-lot 및 root별 FAB 인덱스 순으로 읽습니다. 제품 전체 RAM과 Root lot RAM
+예열은 사용하지 않습니다. 관리 화면의 수동 캐싱은 이 필수 공유 디스크 캐시 작업을
+일반 큐에 한 번 등록할 뿐이며, 검색 조건별 응답 캐시는 실제 검색 때 생성됩니다.
 
 ## 권장 서버 구성
 
@@ -318,12 +323,12 @@ python scripts/seed_valve_alert_examples.py --write
 - 서로 다른 root lot 조회도 제품 전체가 아닌 root partition/pivot 파일 하나만 읽습니다.
 - 요청 중에는 root의 전체 wide frame을 RAM에 올리지 않고 필요한 prefix/custom 컬럼만 parquet projection으로 읽습니다.
 - lookup/pivot/FAB root index는 개발 worker가 우선 생성합니다.
-- worker가 없으면 운영 서버의 사용자 요청이 조용할 때 local fallback을 1개씩 실행합니다.
-- lookup 초기 생성은 운영 fallback에서 root 4개, 개발 worker에서 root 2개 단위로 처리합니다.
+- 자동 lookup/pivot/FAB/view 캐시는 운영 API heartbeat가 살아 있을 때 worker가 꾸준히 처리합니다. API가 내려가면 큐에 보존하고, 복구 후 이어서 처리합니다.
+- 수동 캐싱은 normal 우선순위로 큐에 들어가며 worker가 없으면 운영 서버가 메모리 가드를 거쳐 한 작업씩 local fallback합니다.
 - pivot 생성은 root 1개씩 처리합니다.
-- 압축 크기 128MB를 넘는 단일 root partition은 순간 OOM 방지를 위해 RAM 예열을 생략합니다.
-- 전체 프로세스 캐시 풀 기본값은 물리 메모리의 45%, process soft limit은 80%입니다.
-- 5코어 운영 서버의 root-scoped 조회는 기본 3개가 실행되고 추가 요청은 큐에서 기다립니다.
+- 제품 전체 RAM과 Root lot RAM 예열은 자동·수동 모두 폐기했습니다. 가장 먼저 읽는 view 응답 RAM은 호스트의 15%, 1~6GB 범위이며 30GB 호스트에서는 약 4.5GB입니다.
+- 역할 마커는 소스 폴더가 아니라 `{data_root}/worker/roles/<hostname>/`에 저장되어, `.dev_worker` 같은 파일이 Git/설치 번들에 섞여도 운영 서버가 worker로 기동되지 않습니다.
+- 5코어 운영 서버의 cold root-scoped 조회는 기본 2개가 실행되고 추가 요청은 짧은 큐에서 기다립니다.
 
 샘플 데이터 검증 결과:
 
