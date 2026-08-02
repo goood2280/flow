@@ -1,7 +1,100 @@
 {
-  "version": "10.1.0",
+  "version": "10.1.7",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.1.7",
+      "date": "2026-08-02",
+      "tag": "style",
+      "title": "홈 기능 카드 IBM Carbon 타일 전환 · 전역 서체 통일",
+      "changes": [
+        "[홈 기능 카드] 권한별 기능 진입 카드를 IBM Carbon clickable tile 구조로 전환했다. 각진 표면, 16px 내부 간격, 168px 높이, 명확한 제목·설명 위계와 우측 하단 이동 화살표를 공통 적용했다.",
+        "[타이포그래피] 카드 제목에 강제되던 모노스페이스를 제거하고 제목·설명·태그를 전역 Pretendard Variable 산세리프 토큰으로 통일했다. 제목은 16px/600, 설명은 14px/400 Carbon 타입 단계로 정리했다.",
+        "[상호작용·접근성] 기능 카드를 실제 button 요소로 바꿔 키보드 접근성을 보장하고, hover·active·2px focus-visible 상태와 70ms Carbon 모션을 적용했다.",
+        "[반응형] 홈 카드 그리드는 데스크톱 4열, 태블릿 2열, 모바일 1열로 전환된다. 실제 로컬 렌더링에서 15개 카드, 4열, 168px 높이, 16px 패딩과 통일된 폰트 계산값을 확인했다."
+      ]
+    },
+    {
+      "version": "10.1.6",
+      "date": "2026-08-02",
+      "tag": "refactor",
+      "title": "SplitTable 필수 캐시 3계층 확정 · RAM 예열 완전 폐기 · 수동 작업 큐화",
+      "changes": [
+        "[RAM 예열 폐기] 제품 전체 ML_TABLE RAM과 Root lot RAM 예열을 자동·수동·환경변수 opt-in 모두에서 비활성화했다. 기존 개별 수동 적재 API도 작업을 시작하지 않고 retired 상태를 반환해 잘못 복제된 서버 설정으로 대용량 RAM 적재가 재활성화되지 않는다.",
+        "[수동 캐싱] 수동 캐싱과 호환용 전체 셋업 버튼은 빌드를 직접 직렬 수행하지 않는다. 평소 검색 경로에 필요한 root별 ML_TABLE lookup, root별 SplitTable pivot, WIP latest-lot, root별 FAB latest 인덱스를 normal 우선순위 큐에 제품당 1회 등록하고 즉시 반환한다.",
+        "[캐시 읽기 계약] SplitTable 읽기 순서를 ① 검색조건별 완성 응답 RAM → 압축 공유 디스크 payload ② root_lot_id별 pivot, 폴백 lookup ③ root_lot_id+wafer_id 최신 lot_id/step/tkout을 제공하는 WIP latest와 root별 FAB 인덱스로 명시했다. 응답 캐시는 검색 조합별 read-through라 수동 전체 생성 대상에서 제외했다.",
+        "[메모리 안정성] lookup/pivot/FAB/WIP latest 빌드를 같은 서버 공용 캐시 슬롯으로 직렬화했다. 개발 worker가 있으면 일반 큐를 꾸준히 처리하고, 없으면 운영 서버가 메모리 admission guard를 거쳐 한 작업씩 폴백하므로 ET 다운로드 등과 겹쳐도 빌드 피크가 중첩되지 않는다.",
+        "[캐시관리 UI] 제품/Root RAM 예산·수동 적재 표현과 구형 전체 셋업 버튼을 제거하고, 제품 선택형 수동 캐싱 버튼 하나와 실제 3계층의 용도·생성 시점·root 분할 기준을 캐싱 진행 화면에 표시했다."
+      ]
+    },
+    {
+      "version": "10.1.5",
+      "date": "2026-08-02",
+      "tag": "perf",
+      "title": "SplitTable hot 응답 메모리 집중 · 캐시 계층 단순화 · worker 역할 안전화",
+      "changes": [
+        "[검색 응답 RAM] SplitTable 읽기 첫 단계인 완성 view payload 캐시를 호스트 메모리의 15%, 1~6GB 적응형으로 확대했다. 30GB 호스트는 약 4.5GB를 쓰며 전체 캐시 풀의 35% 지분 상한을 함께 적용해 ET 다운로드·백그라운드 빌드 여유를 남긴다.",
+        "[캐시 계층 단순화] pivot이 먼저 읽혀 효과가 겹치는 제품 전체 RAM과 Root lot RAM 자동 예열을 기본 비활성화했다. lookup/pivot/FAB 공유 디스크 캐시와 완성 응답 캐시를 기본 경로로 두고, 기존 상태 API·개별 수동 적재·Dashboard/캐시관리 계약은 유지했다.",
+        "[Worker/API 생존 연동] 개발 worker는 운영 API heartbeat가 신선할 때만 maintenance 자동 캐시를 claim한다. 운영이 내려가면 자동 작업은 durable 큐에 보존되고 수동/일반 작업은 계속 처리하며, 운영 복구 후 밀린 자동 캐시를 이어서 수행한다.",
+        "[역할 마커 배포 안전] worker/standalone 역할 마커와 역할 저장을 소스 폴더에서 hostname별 data_root 경로로 이동했다. legacy .dev_worker 파일은 무시·정리하고 설치 번들에서도 명시 제외해, 개발 체크아웃이 Git/운영 배포로 복제돼도 운영 서버가 worker로 오인되지 않는다.",
+        "[캐시관리] 권장 검색 응답 RAM 예산을 톱니바퀴 최상단에 운영/개발별로 노출하고, Root lot RAM은 고급/수동, 제품 전체 RAM은 호환용(기본 꺼짐)으로 명확히 표시했다. 자동예열 미시작을 장애가 아니라 의도된 정상 상태로 표시한다.",
+        "[언어 선택] 병목은 Python GIL보다 parquet I/O·Polars collect·행렬 조립·중복 캐시였다. Polars 연산은 네이티브 코드에서 GIL을 해제하므로 C# 전면 재작성 없이 캐시 경로·동시성·메모리 배분을 먼저 개선했다."
+      ]
+    },
+    {
+      "version": "10.1.4",
+      "date": "2026-08-01",
+      "tag": "perf",
+      "title": "SplitTable 연속 검색 안정화 · 개발 worker 지속 캐시 · 저메모리 인덱스",
+      "changes": [
+        "[SplitTable/동시사용] 5코어 API의 cold 검색 레인을 최대 2개, Polars 전역 풀을 2 threads로 맞춰 서로 다른 사용자의 연속 검색이 Python 행렬 조립·parquet collect에서 과경합하지 않게 했다. cache HIT는 cold 레인을 타지 않는다.",
+        "[Worker/지속캐시] 자동 ML lookup·pivot·FAB lot index·view 재검증·lot progress 작업은 worker가 오프라인/과부하/timeout이어도 운영 API에서 heavy local fallback하지 않는다. 공유 durable 큐에 남아 개발서버 복귀 뒤 계속하고 같은 제품/검색 작업은 dedupe한다.",
+        "[Worker/공정성] 큐 기본 상한을 32→256으로 확대하고 기본 5번째 claim을 maintenance 작업에 예약했다. 일반 요청이 계속 들어와도 캐시 진행이 굶지 않으며 worker heavy concurrency=1 계약은 유지한다.",
+        "[View cache] RAM LRU에서 밀리거나 API가 재시작해도 압축 공유 디스크 payload cache에서 복원한다. view RAM 자동 예산은 호스트 1%, 256~512MB로 낮추고 톱니바퀴 view_mb 설정을 실제 적용한다.",
+        "[캐시 무효화] lookup/pivot/FAB/product 갱신이 모든 제품의 view payload를 지우던 전역 clear를 제품별 공유 invalidation token으로 변경했다. 다른 제품을 보고 있는 사용자의 cache HIT는 유지된다.",
+        "[FAB DB] 수 GB 전체 인덱스 빌드를 기본 50만 행 배치로 낮추고 완료 배치를 staging에 체크포인트해 중단·재시작 시 이어받는다. 공개 root 파티션을 완성본 단위로 교체해 재빌드 도중 전체 인덱스가 사라지는 구간을 제거했다.",
+        "[메모리] 제품 전체 ML_TABLE RAM cache는 명시 opt-in으로 바꾸고, API root RAM 자동 예산을 0.5~2GB로 축소했다. 개발 worker의 process-local product/root RAM은 기본 비활성화해 공유 디스크 캐시 빌드 메모리를 확보했다."
+      ]
+    },
+    {
+      "version": "10.1.3",
+      "date": "2026-08-01",
+      "tag": "refactor",
+      "title": "캐시관리 진행 순서·제품 대기열·자동 일정 가시화",
+      "changes": [
+        "[캐시관리] ‘캐싱 진행 및 로그’를 ‘캐싱 진행·스케줄’로 개편. 현재 작업/제품, 바로 다음 제품 또는 큐 작업, 가장 가까운 자동 실행 시각을 상단 3개 카드로 표시한다.",
+        "[캐시관리] 랏 lookup → FAB 매칭 → 제품 원본 RAM → Root lot RAM 단계 흐름과 현재 단계의 제품 처리 순서를 한 줄 타임라인으로 표시하고, 완료·현재·다음 제품을 구분한다.",
+        "[캐시관리] FAB 매칭·제품 원본 RAM·Root lot RAM 스케줄러의 실제 다음 tick 시각과 주기를 API 상태에 추가했다. 작업 상태에는 전체 제품 순서와 완료 위치를 보존해 다음 제품을 추측하지 않고 표시한다.",
+        "[캐시관리] 스캔 대기열을 실행/대기 순으로 단순화하고 중단·취소를 같은 행에 배치했다. 기술 진행 정보·외부 큐·메모리와 상세 이벤트 로그·Peak RAM은 기본 접힘으로 이동했다.",
+        "[검색속도] 긴 설명 문단을 실제 측정값 기반 자동 진단 3개 카드(캐시 구성·대기열·캐시 미스)로 교체. 전체/랏 RAM 히트율, 200ms 이상 대기 비율, 미스 p50의 적용 기준을 접힌 설명으로 명시했다."
+      ]
+    },
+    {
+      "version": "10.1.2",
+      "date": "2026-08-01",
+      "tag": "refactor",
+      "title": "매칭알람 단일 행 중심 UI 정리",
+      "changes": [
+        "[매칭알람] Vehicle Matching 제목과 미매칭 건수를 분리해 긴 제목의 줄바꿈을 제거하고, 안내 문구를 한 줄 요약으로 축소했다.",
+        "[매칭알람] PPID 및 미매칭 step 알람의 여러 세부 열을 상태 → 대상 → 판정/추천 → 근거 → 발견 → 작업 순으로 묶어 알람 한 건이 한 행에서 연속적으로 읽히도록 정리했다.",
+        "[매칭알람] function step 추천의 AI 상태·근거·적용·재검사를 한 줄로 배치하고, 긴 추천 사유·설비·lot 상세는 툴팁으로 유지해 정보 손실 없이 행 높이를 줄였다."
+      ]
+    },
+    {
+      "version": "10.1.1",
+      "date": "2026-08-01",
+      "tag": "fix",
+      "title": "SplitTable module 열 원천 고정 · plan 색 규약 변경 · lot 헤더 정리",
+      "changes": [
+        "[SplitTable] module 열의 원천을 Vehicle_matching.csv 의 module 열 하나로 고정. step_desc 로 공정 구간을 추측하던 classify_process_area 폴백을 제거해, module 열이 없는 환경에서 근거 없는 값이 생기고 열이 통째로 나타나던 문제를 없앴다. VM 은 step_desc → Vehicle_matching 으로 풀어 그대로 module 별로 나뉜다.",
+        "[SplitTable] INLINE 은 module 로 따로 묶지 않는다 — inline_matching.csv 에 module 이 없어 step_id → Vehicle_matching 으로 보강하던 v10.1.0 동작을 되돌리고 '—' 로만 표시. 추론 컬럼 경로(_inferred_stage_meta)도 같은 규칙.",
+        "[SplitTable] 추론 step 매칭의 module 우선 tier 는 area_guess(매칭 전용 추측값)로 유지 — 표시용 module 과 분리해서 M1 이 M2_OVL_M1 에 붙는 걸 계속 막는다.",
+        "[SplitTable] plan 색 규약 변경: plan 이 있는 셀은 왼쪽 파란선(기존 plan-only 주황 / mismatch 빨강 선), plan 과 다르게 진행된 셀은 칸 안쪽을 진한 빨강(#ef4444)으로 채우고 글자는 흰색. mismatch 의 inset 링은 아래 선택 표시 boxShadow 에 덮여 실제로 보이지 않던 죽은 스타일이라 배경으로 대체.",
+        "[SplitTable] 표 안의 글자색 인라인 스타일이 전부 무시되고 있었다 — `.splittable-grid td *` 에 `color: GRID_TEXT !important` 가 걸려 있어 mismatch 빨간 글씨·pending plan 주황 글씨가 실제로는 한 번도 적용된 적이 없다. mismatch 칸만 `td.stm-mismatch` 클래스로 흰 글씨 예외를 준다(메모 배지 제외).",
+        "[SplitTable] lot 이름 옆 `🔗 <source> · <col>@<ts_col>` 배지를 일반 사용자에게서 감췄다. '어느 캐시·어느 DB 경로와 연결됐는가'(LOT 최신 캐시 배지, FAB 연동 배지, 설정 > 고급의 Lot 컬럼 연결 조정)는 관리자 전용. 캐시 계층 구성 자체는 그대로다.",
+        "[SplitTable] 캐시관리 주요 Lot purpose 배지가 LOT ID(fab_lot_id) 입력값에도 매칭된다. 등록은 보통 lot 단위(A1003A.1)인데 ROOT LOT ID 만 보던 규칙이라 사실상 뜨지 않았다. 헤더에 fab_lot_id 도 함께 표기."
+      ]
+    },
     {
       "version": "10.1.0",
       "date": "2026-08-01",
