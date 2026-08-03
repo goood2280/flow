@@ -1,7 +1,20 @@
 {
-  "version": "10.3.1",
+  "version": "10.3.2",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.3.2",
+      "date": "2026-08-03",
+      "tag": "fix",
+      "title": "운영 배포 누락 API 복구·TEG 의존성/파일 연결·FAB CSV 인덱스 수정",
+      "changes": [
+        "[매칭채우기/운영] 프런트는 새 버전인데 신규 matching_fill 라우터 파일이 운영 볼륨에 생성되지 않으면 router glob에조차 잡히지 않아 기존 자가복구가 실행되지 않았다. 앱 기동 시 필수 신규 backend 소스 존재를 discovery 전에 검사하고 setup.py 번들에서 없는 파일만 복원한다. 서버 재시작 뒤 /api/matching-fill 라우트가 정상 등록된다.",
+        "[의존성] 설치 함수에는 있었지만 backend/requirements.txt에서 빠졌던 pandas·numpy·scipy·scikit-learn·boto3·pillow를 정식 의존성에 추가했다. extract 단독 배포도 pandas/numpy/polars/pyarrow/duckdb/pillow와 엑셀 모듈을 확인해 없는 것만 설치하므로, 개발 환경에서만 우연히 동작하고 운영 TEG API가 500이 되던 차이를 제거한다.",
+        "[TEG 위치 조회] 개발 Windows 설정의 절대경로·파일명 대소문자가 운영 Linux에 그대로 넘어오면 정확한 한 경로만 검사하고 chip layout 없음으로 판정했다. 현재 DB root의 동명 파일을 대소문자 무관하게 찾고, 개발용 *_test 설정이 없으면 운영 표준 Chip_Radius 파일 및 유효한 chip radius/layout 후보로 폴백한다. 설정 API도 설정 문자열이 아니라 실제 선택된 유효 파일 경로를 표시한다.",
+        "[FAB 랏 인덱스] FAB source discovery와 signature는 CSV를 데이터 파일로 인정하지만 디렉터리 scan은 parquet만 읽어, CSV 기반 운영 FAB가 파일은 있으면서 '읽을 수 있는 FAB 행 없음'으로 끝났다. 디렉터리 안 CSV 파티션도 스캔·병합하고, 여전히 실패하면 source·후보 경로·파일 수·누락 컬럼/배치 실패 이유를 캐시 이벤트에 노출한다.",
+        "[검증] TEG 경로 폴백, matching-fill API 계약, FAB CSV scan 및 실패 진단을 포함한 관련 회귀 테스트 50건 통과."
+      ]
+    },
     {
       "version": "10.3.1",
       "date": "2026-08-03",
