@@ -22,10 +22,34 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
 - 필수 SplitTable 캐시 작업 큐, 실행 중 작업과 피크 메모리 관측
 
-SplitTable 캐시는 완성 응답 RAM/압축 디스크 → `root_lot_id`별 pivot/lookup →
-WIP latest-lot 및 root별 FAB 인덱스 순으로 읽습니다. 제품 전체 RAM과 Root lot RAM
-예열은 사용하지 않습니다. 관리 화면의 수동 캐싱은 이 필수 공유 디스크 캐시 작업을
-일반 큐에 한 번 등록할 뿐이며, 검색 조건별 응답 캐시는 실제 검색 때 생성됩니다.
+수동으로 준비하는 제품별 필수 캐시는 ① 랏 lookup ② `root_lot_id`별 SplitTable pivot
+③ WIP latest-lot ④ root별 FAB latest 인덱스의 네 종류입니다. ET history는 ET 추적에서
+독립적으로 관리하며 SplitTable 필수 캐시 완료 조건에는 포함하지 않습니다.
+통합 캐싱은 실제 단계가 끝날 때까지 작업 큐에 남아 진행 상황과 중단 버튼을 제공하고,
+중단 시 현재 안전 배치까지만 마친 뒤 다음 제품·단계는 시작하지 않습니다. 제품 전체 RAM과
+Root lot RAM 예열은 사용하지 않습니다. 검색 조건별 완성 응답 캐시는 실제 검색 때만
+생기는 read-through 항목이므로 수동 전체 생성 대상에 넣지 않습니다.
+제품별 `root_lot_id`·LOT ID 목록과 KNOB별 입력 후보는 lookup 빌드 중 함께 계산해
+RAM+공유 디스크에 미리 게시합니다. SplitTable의 Root Lot 후보 요청은 이 목록만 읽고,
+캐시가 없거나 오래됐으면 원천·FAB·`lot-ids`를 동기 스캔하지 않고 lookup 빌드만 큐에
+넣어 즉시 응답합니다. 준비 중에도 사용자는 Root Lot을 직접 입력해 바로 조회할 수 있습니다.
+
+ET 추적과 Inform 등록은 사용자 입력 레코드를 먼저 내구 저장하고 화면 목록·상세에
+즉시 반영합니다. LOT 진행상태/wafer 확장, FAB·ROOT·WAFER 매핑, 다중 LOT별
+SplitTable 스냅샷, audit·지식 추출은 응답 이후에 보강한 뒤 화면이 완성 데이터를
+재조회합니다. 따라서 무거운 계산이 등록 버튼과 새 항목 표시를 붙잡지 않습니다.
+
+ET 측정 이력은 제품별 집계 history parquet를 공유합니다. 캐시가 없는 제품만 전체
+ET 원본을 한 번 읽어 초기 history를 만들고, 이후 스캔은 최신 원본 날짜 기준 최근
+3일만 재집계해 병합합니다. ET Tracker는 이 제품 history에서 LOT/wafer 패키지를
+찾아 이슈에 붙이며, 캐시 준비 실패 때만 기존 원본 조회로 폴백합니다.
+
+캐시관리의 제품별 상태는 전체 제품을 한 줄씩 표시합니다. 행을 누르면 lookup,
+SplitTable pivot, WIP latest-lot, FAB latest 인덱스의 최근 성공·실패·진행 상세가
+펼쳐지고, 목록은 고정 높이 안에서 스크롤되므로 제품 수가 많아도 캐시 이벤트 로그를
+아래로 밀어내지 않습니다.
+제품 목록은 현재 ML_TABLE 원본 카탈로그를 기준으로 제한합니다. 공유 이벤트 로그에
+남은 테스트·진단용 제품명은 상태 행을 만들지 않으므로 빈 실패 행이 누적되지 않습니다.
 
 ## 권장 서버 구성
 
@@ -48,7 +72,9 @@ WIP latest-lot 및 root별 FAB 인덱스 순으로 읽습니다. 제품 전체 R
 
 ### 2. 설치
 
-빈 폴더에 `setup.py`를 복사한 뒤 실행합니다.
+설치 폴더에 `setup.py`를 복사한 뒤 실행합니다. 현장에서 관리하는
+`requirements.txt`, `Dockerfile`, `.dockerignore`가 있으면 같은 폴더에 그대로 둡니다.
+이 파일들은 setup 번들에 포함되지 않으며 추출할 때 생성하거나 덮어쓰지 않습니다.
 
 ```bash
 python setup.py
@@ -57,7 +83,8 @@ python setup.py
 이 명령은 다음을 순서대로 수행합니다.
 
 1. 포함된 Flow 소스를 현재 폴더에 추출
-2. 백엔드 Python 의존성 설치
+2. 같은 폴더의 기존 `requirements.txt`로 백엔드 Python 의존성 설치
+   (`requirements.txt`가 없을 때만 Flow 최소 의존성 사용)
 3. 프런트엔드 npm 의존성 설치 및 production build
 
 소스만 먼저 풀려면 다음 명령을 사용합니다.
@@ -65,6 +92,21 @@ python setup.py
 ```bash
 python setup.py extract
 ```
+
+`extract`는 pip를 실행하지 않습니다. 의존성만 별도로 설치하려면
+`python setup.py install-deps`를 실행합니다. `pip freeze > requirements.txt`로 만든
+현장 파일도 그대로 사용할 수 있으며, 충돌 방지를 위해 아래 사내 패키지는 필요에 따라
+버전 표기를 제거한 형태로 유지합니다.
+
+```text
+botocore
+boto
+awscli
+bigdataquery
+```
+
+Docker 빌드는 setup이 새 파일을 만드는 방식이 아니라 설치 폴더에 이미 있는
+`Dockerfile`과 `.dockerignore`를 사용합니다.
 
 설치 후 서버를 실행합니다.
 
