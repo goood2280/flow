@@ -12,7 +12,7 @@
         "[대시보드/lot_type] FAB의 LOT_TYPE/lot_type 열을 대소문자 무관하게 매칭해 canonical latest 캐시에 항상 lot_type 이름으로 저장한다. match cache format을 v4, latest cache format을 v3으로 올려 기존 캐시가 새 필드를 포함한 캐시로 확실히 재생성되게 했다.",
         "[SplitTable/후보 속도] root_lot_id 전체 candidate index가 완성돼도 최초 후보 풀 구성에서 대형 FAB latest 캐시를 다시 unique 스캔하던 경로를 제거했다. 렌더 가능한 root의 authoritative 목록은 ML_TABLE lookup index 하나로 확정한다.",
         "[SplitTable/후보 안정성] FAB match·WIP latest·pivot 캐시가 백그라운드에서 파일을 계속 쓸 때마다 root 후보 풀 시그니처가 바뀌던 문제를 제거했다. lookup 빌드 완료 시 제품 후보 풀을 즉시 RAM+디스크에 예열하고, 제품명 대소문자 및 ML_TABLE_ 유무가 달라도 같은 풀을 재사용한다.",
-        "[SplitTable/FAB 없음 회색] FAB 조회가 정상 완료됐지만 검색 Root Lot 매칭이 0건이면 latest step 미확인과 구분해 fab_missing으로 응답하고, 모든 표시 공정을 모든 wafer에서 회색 처리한다. FAB 소스 미설정·조회 실패는 없음으로 오판하지 않는다. XLSX도 같은 판정을 쓰며, 구형 흰색 payload가 남지 않도록 SplitTable 디스크 응답 캐시를 v2로 갱신했다.",
+        "[SplitTable/FAB 없음 회색] FAB 조회가 정상 완료됐지만 검색 Root Lot 매칭이 0건이면 latest step 미확인과 구분해 fab_missing으로 응답한다. 회색은 미진행이면서 빈 공정 셀에만 적용하고, KNOB·INLINE·VM 실제값 또는 표시할 plan 값이 있는 셀은 기존 값·팔레트 색을 유지한다. 행 라벨·병합 보기·Split 체크·인폼 스냅샷·XLSX도 같은 판정을 쓴다. FAB 소스 미설정·조회 실패는 없음으로 오판하지 않으며, 구형 흰색 payload가 남지 않도록 SplitTable 디스크 응답 캐시를 v2로 갱신했다.",
         "[SplitTable/적용공정] 같은 step_desc에 여러 step_id가 연결된 경우 &로 합치지 않고 같은 셀 안 줄바꿈으로 표시한다. &는 ppid_knob의 동일 rule_order에 서로 다른 유효 step_desc가 둘 이상 있을 때 그 step_desc 블록 사이에만 표시하며, is_null 조건의 step_id는 항상 제외한다. 기존 not_null 제외 옵션은 독립적으로 유지한다."
       ]
     },
