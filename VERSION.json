@@ -1,7 +1,20 @@
 {
-  "version": "10.4.12",
+  "version": "10.4.13",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.13",
+      "date": "2026-08-04",
+      "tag": "fix",
+      "title": "캐시 세대 교체·10분 watchdog·대시보드 format v4 복구",
+      "changes": [
+        "[캐시 세대 교체] 필수 캐시를 다시 빌드하는 동안 이미 게시된 lookup·Pivot·WIP latest-lot·FAB latest 산출물을 준비 완료로 유지한다. 새 산출물이 완성되면 원자 교체하므로 제품별 준비 상태가 4/4에서 1/4로 되돌아가지 않는다.",
+        "[무갱신 자동 종료] 캐시 작업과 하위 빌더 진행 이벤트를 같은 job heartbeat로 연결하고, 기본 10분 동안 갱신이 없는 작업은 scan gate에 협력 취소를 요청한 뒤 stale_no_progress 실패로 종료한다.",
+        "[lookup 완료 정보] lookup 메타의 빌드 완료 시각·소요 시간·root 수를 제품별 캐시 상태에 반영해 다른 필수 캐시와 동일하게 성공 시각과 완료 내용을 표시한다.",
+        "[대시보드 format v4] 내부 WIP 스캔 결과만 만들고 canonical v4를 게시하지 않던 파이프라인을 수정했다. 제품별 match 입력을 모두 준비한 뒤 전체 제품 catalog로 format v4를 임시 파일에 생성해 원자 교체하고, 입력 실패 시 기존 게시본을 보존한다.",
+        "[검증] 캐시 상태·watchdog·format v4 게시 순서 및 실패 보존 회귀 테스트를 추가하고 관련 테스트 110건을 통과했다."
+      ]
+    },
     {
       "version": "10.4.12",
       "date": "2026-08-04",
