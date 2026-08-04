@@ -1,7 +1,19 @@
 {
-  "version": "10.4.16",
+  "version": "10.4.17",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.17",
+      "date": "2026-08-04",
+      "tag": "fix",
+      "title": "인폼 다중 LOT별 독립 생성과 스냅샷 범위 수정",
+      "changes": [
+        "[LOT별 인폼 생성] root_lot_id 검색 결과에서 여러 LOT_ID를 선택하면 선택 수만큼 독립 인폼을 생성하고 각 레코드의 lot_id와 fab_lot_id 스냅샷을 해당 선택값으로 저장한다.",
+        "[첫 LOT 데이터 혼합 제거] 다중 선택 시 root 전체가 담긴 첫 미리보기 embed를 첫 LOT에 재사용하지 않는다. 첫 LOT을 포함한 모든 대상이 자기 LOT_ID 범위로 SplitTable 스냅샷을 다시 생성한다.",
+        "[후처리 스냅샷 복구] 서버 내부에서 생성한 dict 스냅샷을 입력 모델 전용 정리 함수가 거부해 후속 LOT 첨부가 비던 오류를 수정했다. LOT별 표시 형식과 적용 공정 옵션도 후처리 요청에 유지한다.",
+        "[검증] 선택한 2개 LOT이 각각 다른 header group과 셀 내용을 갖는 회귀를 추가하고 인폼 테스트 110건, Python 컴파일 및 프런트 production build를 통과했다."
+      ]
+    },
     {
       "version": "10.4.16",
       "date": "2026-08-04",
