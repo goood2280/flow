@@ -1,7 +1,19 @@
 {
-  "version": "10.4.11",
+  "version": "10.4.12",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.12",
+      "date": "2026-08-04",
+      "tag": "fix",
+      "title": "lookup 빌드 잠금 대기와 FAB 제품 소스 재해석 수정",
+      "changes": [
+        "[lookup 잠금] 다른 프로세스가 같은 lookup 캐시를 빌드 중인 build_lock_held는 실패 횟수를 소모하지 않는다. 대용량 빌드가 기존 90초 재시도 창을 넘어도 기존 빌드의 fresh 산출물을 계속 기다리며, 캐시 이벤트도 실패가 아닌 기존 빌드 대기로 기록한다.",
+        "[FAB 워커 소스] API와 개발 워커의 DB mount가 다를 때 API가 빈 fab_source를 전달해도, 실제 빌드 워커가 제품명으로 자기 FAB DB를 다시 탐색한다. API에서 못 찾았다는 이유로 워커의 읽을 수 있는 FAB 범위를 빈 목록으로 고정하지 않는다.",
+        "[대소문자·대체 루트] FAB 인덱스 source signature도 실제 스캐너와 같은 case-insensitive/alias resolver를 사용한다. Linux에서 제품 폴더 대소문자가 다르거나 usable source가 base_root에 있을 때 source_file_count=0으로 잘못 판정하던 경로를 제거했다.",
+        "[검증] lookup 잠금 대기 상태·재시도 예산, 워커측 FAB 재해석, 대소문자 FAB signature 회귀를 추가하고 관련 FAB 인덱스·증분·latest partition·SplitTable 캐시 테스트 22건을 통과했다."
+      ]
+    },
     {
       "version": "10.4.11",
       "date": "2026-08-03",
