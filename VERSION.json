@@ -1,7 +1,19 @@
 {
-  "version": "10.4.21",
+  "version": "10.4.22",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.22",
+      "date": "2026-08-04",
+      "tag": "fix",
+      "title": "SplitTable 다운로드 적용공정 반영 · 통합은 KNOB/FAB/MASK만 · TAG 최상단",
+      "changes": [
+        "[적용 공정 정보가 다운로드에도 실린다] 화면에서 '적용 공정 정보'를 켜도 CSV/XLSX 는 항상 원래 항목명으로 나왔다. 이 옵션은 프런트에서만 처리하고 있어 다운로드 요청에 실리지 않았다 — 이제 step_labels/exclude_not_null 을 함께 보내고, 서버가 화면과 같은 규약(KNOB 은 rule_order 별 step_id, INLINE/VM 은 `step_id | item_id`)으로 항목명을 바꿔 내보낸다. 표시할 공정이 없는 매칭 행은 화면에서처럼 다운로드에서도 빠지고, TAG·관리 행은 원래 이름 그대로 남는다. XLSX 는 여러 step_id 가 줄바꿈으로 쌓이므로 항목 칸에 wrap 을 켠다.",
+        "[통합(병합)은 KNOB/FAB/MASK 에만] INLINE 을 같이 놓고 통합 표시를 켜면 INLINE 행까지 옆칸과 묶여, wafer 마다 다른 실측값이 몇 개인지 읽을 수 없었다. 병합 대상을 split 조건 열(KNOB/FAB/MASK)로 제한한다. INLINE/VM/TAG/관리 행은 wafer 별 칸을 그대로 유지한다. 화면·XLSX 내보내기·Inform 스냅샷(본문 메일 포함) 세 경로에 같은 규약을 적용했다.",
+        "[TAG 행이 항상 맨 위] TAG_* 는 엔지니어가 직접 만든 주석 열이라 공정 순서와 무관한데, 앞머리 번호를 KNOB 순번으로 해석해 표 중간에 끼어 있었다. 어떤 prefix 를 같이 보든 표 맨 위에 고정한다(TAG 끼리는 기존 번호 순 그대로). 화면과 CSV/XLSX 가 같은 순서다.",
+        "[검증] 다운로드 두 경로에서 적용공정 표기·행 제외·병합 범위·TAG 위치를 실제 산출물로 확인했고, 브라우저에서 KNOB 15/27 행 병합 · INLINE 0/24 · TAG 0/1 을 확인했다. splittable/inform/xlsx 관련 테스트 340건과 프런트 production build, smoke test 35건이 통과했다."
+      ]
+    },
     {
       "version": "10.4.21",
       "date": "2026-08-04",
