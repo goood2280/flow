@@ -1,7 +1,20 @@
 {
-  "version": "10.4.17",
+  "version": "10.4.18",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.18",
+      "date": "2026-08-04",
+      "tag": "fix",
+      "title": "FAB 인덱스 BUILD 임시폴더 제품 오인 방지",
+      "changes": [
+        "[원인 제거] FAB latest 인덱스의 이어받기용 `<제품>.build` 디렉터리를 제품 재검사 대상에서 제외했다. 임시폴더가 제품으로 다시 등록되어 `.BUILD.BUILD.BUILD`로 계속 증식하던 순환을 차단한다.",
+        "[다중 방어] 스윕 필터뿐 아니라 FAB 인덱스 enqueue·실제 builder·worker handler에서도 `.build`로 끝나는 가짜 제품을 거부한다.",
+        "[대기열 자동 정리] durable worker queue에 이미 남은 staging-product FAB 작업은 캐시 관리 조회와 worker janitor에서 자동 삭제한다. claimed 작업도 캐시 단일 슬롯을 기다리기 전에 invalid_staging_product로 즉시 종료한다.",
+        "[기존 산출물 보호] 정상 제품의 게시 완료 인덱스와 중단 후 이어받기용 staging 배치는 자동 삭제하지 않는다. 임시폴더는 제품 탐색에서만 제외해 정상 재개 기능을 유지한다.",
+        "[검증] staging 폴더 필터·enqueue 거부·잘못된 durable 작업 선택 삭제 회귀를 추가하고 worker/cache/scan gate 관련 테스트 66건과 Python 컴파일을 통과했다."
+      ]
+    },
     {
       "version": "10.4.17",
       "date": "2026-08-04",
