@@ -1,7 +1,18 @@
 {
-  "version": "10.4.24",
+  "version": "10.4.25",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.25",
+      "date": "2026-08-05",
+      "tag": "perf",
+      "title": "SplitTable 및 Inform Log 랏 리스트 로딩 속도 최적화",
+      "changes": [
+        "[성능] SplitTable 및 Inform Log에서 root_lot_id, lot_id 목록 로딩이 너무 느림 → 파켓 전체 스캔(Full Scan) 우회 조치",
+        "[성능] Pivot 캐시 빌드 시점에 1회만 고속 프로젝션(Projection)하여 랏 고유 목록을 _lot_catalog.json에 저장하도록 변경",
+        "[성능] 라우터(/lot-candidates, /lot-ids)에서 해당 카탈로그 캐시를 최우선으로 읽어오도록 수정하여 응답 속도를 0.01초 미만으로 단축함"
+      ]
+    },
     {
       "version": "10.4.24",
       "date": "2026-08-05",
