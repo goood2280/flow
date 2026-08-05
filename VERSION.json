@@ -1,7 +1,16 @@
 {
-  "version": "10.4.23",
+  "version": "10.4.24",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.24",
+      "date": "2026-08-05",
+      "tag": "feat",
+      "title": "파일탐색기 ppid_knob 자동 변환 기능 추가",
+      "changes": [
+        "[파일탐색기] ppid_knob.csv 편집 시 step_desc에 공정ID(AA100000 등)를 입력해도 자동으로 변환되기를 원함 → 파일 저장 시 step_desc 필드에 영문2자+숫자6자리 시작 패턴이 감지되면 Vehicle_matching.csv를 조회하여 매칭되는 step_desc로 자동 치환하도록 조치함. (미등록 ID는 원본 유지)"
+      ]
+    },
     {
       "version": "10.4.23",
       "date": "2026-08-05",
