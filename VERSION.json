@@ -1,7 +1,79 @@
 {
-  "version": "10.4.25",
+  "version": "10.4.32",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.32",
+      "date": "2026-08-08",
+      "tag": "fix",
+      "title": "대용량 FAB 검사의 개발 worker 전용 실행 강제",
+      "changes": [
+        "[운영 서버 보호] 스케줄러 시작 조건뿐 아니라 실제 제품 검사 진입점에서도 server_role=worker를 재검증하여 운영 API 서버에서는 강제 호출이나 다른 코드 경로로도 Parquet를 열지 않도록 차단",
+        "[Fail-closed] 역할 확인이 실패하거나 기본 api 역할이면 검사를 실행하지 않고 development_worker_only 결과를 반환하며, 수동 검사 요청은 공유 상태에 기록해 개발 worker가 처리",
+        "[실행 상태] 매칭알람 API에 현재 호스트의 검사 실행 가능 여부와 development_worker_only 정책을 노출"
+      ]
+    },
+    {
+      "version": "10.4.31",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "FAB 폴더설정 기반 split RO 검사와 step 예외 규칙",
+      "changes": [
+        "[검사 DB 범위] 이름에 FAB가 들어간 폴더를 임의 탐색하지 않고 파일탐색기 폴더설정의 DB 표시 매칭에서 FAB으로 지정된 원본 폴더만 제품별 순회",
+        "[split별 RO 판정] 매칭된 step_id의 function step에 연결된 ppid_knob split별 R 규칙(eq·contains·starts_with·ends_with·regex)을 적용하고 명시 Rule에 걸리지 않아 실제 RO로 빠지는 PPID unique만 알람 생성",
+        "[미매칭 step 예외] 제품 선택 범위와 PPID·EQP ID·EQP MODEL 열의 포함·시작·일치 조건을 조합해, 해당 step_id의 어느 FAB 행이라도 조건을 만족하면 step 전체를 알람에서 제외하는 관리 UI/API 추가"
+      ]
+    },
+    {
+      "version": "10.4.30",
+      "date": "2026-08-08",
+      "tag": "fix",
+      "title": "매칭알람 S3 전송 설정 카드 제거",
+      "changes": [
+        "[매칭알람 화면] Valve S3 알람을 더 이상 사용하지 않는데 남아 있던 알람 전송 설정/펼치기 카드를 제거하고 검사 요약과 신규 PPID·step 판정 영역만 표시"
+      ]
+    },
+    {
+      "version": "10.4.29",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "매칭알람을 개발 서버 FAB 직접 검사로 전환",
+      "changes": [
+        "[알람 원천 전환] Valve가 발행한 S3 알람을 소비하던 구조를 제거하고 개발 worker가 FAB 제품을 하나씩 순회해 Vehicle_matching.csv에 없는 step_id와 ppid_knob.csv 명시 룰에 없는 ppid를 직접 검출하도록 변경",
+        "[서버 부하 분리] 주기 FAB 스캔은 개발 worker 역할에서만 순차 실행하고 운영 API는 공유 상태만 조회함. 수동 검사는 운영 서버에서 실행하지 않고 개발 서버 요청으로 전달하며 검사 간격·최근/다음 제품·오류를 화면에 표시",
+        "[판정 반영] 신규 step은 제품에 연결된 vehicle과 함께 Vehicle_matching.csv에, 신규 ppid는 해당 function step의 다음 R 번호로 ppid_knob.csv에 반영하고 기존 파일 버전·캐시 갱신·판정 이력 흐름을 유지"
+      ]
+    },
+    {
+      "version": "10.4.28",
+      "date": "2026-08-08",
+      "tag": "fix",
+      "title": "flat_zone 90° 노치 왼쪽 방향 분리",
+      "changes": [
+        "[TEG 방향] 숫자 flat_zone 90°와 270°를 모두 같은 vertical로 축약해 90° 노치 왼쪽 제품에도 Vertical(R) 계산 안내와 방향 판정이 적용됨 → 90°는 v_L/Vertical(L)로 별도 보존하고 270°와 명시적 V/Vertical/v_R만 V(R)로 판정하도록 수정, 위치조회·체크·좌표생성 화면도 V(L)/V(R) 라벨로 구분"
+      ]
+    },
+    {
+      "version": "10.4.27",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "TEG 계산 로직 단계별 이해 도식 추가",
+      "changes": [
+        "[관리자 계산 로직] 수식과 설명만으로는 center fit·shot 크기·TEG 좌표·Vertical 역산·full shot 규칙을 직관적으로 이해하기 어려움 → 5개 단계마다 실제 좌표축, 반경, pitch/크기, 회전 방향, 0축 제외를 색상과 라벨로 연결한 반응형 SVG 도식을 추가"
+      ]
+    },
+    {
+      "version": "10.4.26",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "TEG full shot 축 제외 · 관리자 계산 설명 및 Inline map 설정",
+      "changes": [
+        "[TEG 위치 조회] full shot을 켜면 wafer를 채우는 격자에 x=0 또는 y=0인 축상 shot까지 표시됨 → 실제 layout과 synthetic 격자 모두 full shot 표시 시 0축 shot을 제외하고 추가 shot 개수는 synthetic 항목만 집계하도록 조치",
+        "[관리자 계산 설명] TEG 위치의 실center, shot width/height, y축 변환과 Vertical(R) 역산 근거를 화면에서 확인하기 어려움 → global admin 전용 계산 로직 소탭에 실제 최소자승 식·좌표 변환·방향 및 크기 판정·full shot 생성 규칙을 정리",
+        "[Inline map setting] 제품 map의 inline 위치 이름과 TABLE 기준을 관리할 저장소가 없음 → global admin 전용 소탭에서 shot 선택·위치명 입력·TABLE 저장/불러오기/삭제를 제공하고 DB root/credential/inline_map_settings.json에 원자 저장",
+        "[권한 보안] credential 폴더가 DB 공개 폴더 설정에 포함될 경우 일반 사용자가 기준 데이터를 탐색할 수 있음 → Inline API 조회·저장·삭제를 global admin dependency로 강제하고 파일탐색기에서는 credential을 설정과 무관하게 항상 숨기는 예약 폴더로 차단"
+      ]
+    },
     {
       "version": "10.4.25",
       "date": "2026-08-05",
