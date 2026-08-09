@@ -17,8 +17,9 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - root lot/wafer 기준 FAB 데이터 결합
 - WF MAP, TEG MAP, 공정 데이터 검사
 - ET 추적(일일 스캔·변경점 이슈·메일 발송)과 ET Index 다운로드
-- Valve 파이프라인 매칭알람 판정 — 미매칭 step / RO ppid 를 룰북 CSV에 반영
+- 개발 서버 FAB 매칭알람 검사 — 제품별 신규 step_id / ppid 를 찾아 룰북·매칭테이블 CSV에 반영
 - Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
+- 업무 차트생성에서 여러 DB의 read-only SQL 결과를 JOIN·미리보기·CSV 다운로드하고 동일 데이터로 차트 생성
 - 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
 - 필수 SplitTable 캐시 작업 큐, 실행 중 작업과 피크 메모리 관측
 
@@ -164,6 +165,42 @@ uvicorn app:app --host 0.0.0.0 --port 8080
 - API용 product/root/view RAM 캐시 비활성화
 - backup, mail, S3 등 운영 scheduler 비활성화
 - worker available memory와 process memory admission 통과 후 작업 실행
+
+## FAB 매칭알람 검사
+
+매칭알람은 Valve/S3에서 JSON 알람을 받지 않습니다. 개발 worker가 파일탐색기의
+폴더 설정에서 표시명이 정확히 `FAB`으로 지정된 DB만 찾아 제품 폴더를 하나씩
+순차 검사하고, 결과를 `FLOW_DATA_ROOT`의 공유 상태에 저장합니다. 수~수십 GB
+Parquet를 여는 실제 검사는 `FLOW_SERVER_ROLE=worker`인 개발 서버에서만 실행됩니다.
+운영 API 서버(`FLOW_SERVER_ROLE=api`)는 저장된 결과만 조회하며, 화면에서 수동
+검사를 요청해도 운영 서버가 원천을 읽지 않고 개발 worker에 다음 제품 검사를
+요청합니다. 역할이 없거나 판정에 실패한 경우에도 검사는 실행되지 않습니다.
+
+검사와 판정 기준은 다음과 같습니다.
+
+- 제품별 `step_id`가 `Vehicle_matching.csv`에 없으면 신규 step 알람으로 표시
+- 매칭된 step의 function step에 연결된 `ppid_knob.csv` split별 명시 Rule을 적용
+- `eq`, `contains`, `starts_with`, `ends_with`, `regex` 어느 Rule에도 맞지 않아
+  해당 split의 `RO`로 빠지는 PPID unique 값만 PPID 알람으로 표시
+- 신규 step 알람은 제품 범위와 PPID/EQP ID/EQP MODEL의 포함·시작·일치 조건으로
+  예외 처리 가능하며, 해당 step의 어느 행이라도 조건에 맞으면 step 전체를 제외
+
+알람 화면에서 PPID를 분류하면 해당 split의 RO 앞에 다음 Rule 번호로
+`ppid_knob.csv`에 추가하고, 신규 step을 매칭하면 제품·vehicle·step 정보를
+`Vehicle_matching.csv`에 추가합니다. 두 작업 모두 파일탐색기의 단일 파일 저장
+흐름을 사용해 버전 스냅샷과 변경 메모를 남기고, 매칭 캐시 갱신과 기존 파일
+동기화를 수행한 뒤 개발 worker의 재검사를 요청합니다. 알람 전송용 S3 bucket/prefix
+설정은 더 이상 사용하지 않습니다.
+
+DCOP 검사는 붙여넣은 테이블에 실제로 적용되는 규칙 번호·등급·조건을 결과 위에
+표시합니다. GPT OSS 120B가 연결된 경우 FAIL/WARNING 내용을 요약하고, 연결되지
+않았거나 호출이 실패하면 규칙별 건수와 행 번호(5개 이상은 `5행 이상`)를 표시합니다.
+
+매칭알람 화면 좌하단 톱니바퀴에서는 자동 검사 사용 여부와 제품 1개당 검사 간격을
+설정할 수 있습니다. `지금 다음 제품 검사`는 현재 커서의 제품을 우선 검사하도록
+공유 요청을 등록하며, 버튼을 누른 HTTP 요청 안에서 대용량 Parquet를 직접 읽지는
+않습니다. 신규 설치의 기본 간격은 제품당 2시간이며, 설정 변경과 수동 검사 요청은
+매칭알람 페이지 관리자 이상만 가능합니다.
 
 ## 자동 재시작 (프로세스 상시 기동)
 
