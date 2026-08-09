@@ -1,7 +1,416 @@
 {
-  "version": "10.4.32",
+  "version": "10.4.68",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.68",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "WF MAP 역방향 P10 Red 팔레트",
+      "changes": [
+        "[역방향 팔레트] WF MAP Palette에 P10 Red · Median Gray · P90 Blue를 추가하여 낮은 값을 빨강, 중앙값을 회색, 높은 값을 파랑으로 표시",
+        "[공통 스케일 유지] 정방향·역방향 모두 Trellis 전체가 공유하는 Low(P10)·Center(median)·High(P90) 위젯 기준을 동일하게 사용"
+      ]
+    },
+    {
+      "version": "10.4.67",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "WF MAP 데스크톱 5열 배치 보정",
+      "changes": [
+        "[5열 배치] 실제 1294px ChartBuilder 화면에서도 첫 행에 WF MAP 5개가 들어가도록 Trellis 패널 최소 폭을 210px로 보정",
+        "[가독성 유지] 10px 패널 간격과 공통 스케일 영역을 유지하면서 wafer SVG만 패널 폭에 맞춰 축소"
+      ]
+    },
+    {
+      "version": "10.4.66",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "WF MAP 5열 소형 Trellis와 측정 shot 전용 표시",
+      "changes": [
+        "[소형 Trellis] WF MAP 패널 최소 폭을 250px로 줄여 일반 ChartBuilder 폭에서 한 행에 약 5개 wafer가 배치되도록 조정",
+        "[측정 영역 집중] ChartBuilder WF MAP에서는 제품 전체 shot 격자 중 실제 조회·집계 값이 있는 shot만 색상 사각형으로 렌더링",
+        "[단일 MAP] 단일 wafer도 최대 약 480px로 제한하여 과도하게 크게 표시되지 않도록 변경",
+        "[영향 분리] TEG 위치조회 원본 WaferMap의 기존 전체 shot 표시는 유지하고 ChartBuilder 호출에서만 미측정 shot을 숨김"
+      ]
+    },
+    {
+      "version": "10.4.65",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "WF MAP 제품 alias와 표준 Chip_Radius 좌표 연동",
+      "changes": [
+        "[실동작 복구] TEG 위치조회 운영 설정에 해당 제품이 없을 때 표준 Chip_Radius.csv의 제품 Mask와 geometry를 안전한 WF MAP fallback으로 사용",
+        "[좌표 번역] ET raw shot 좌표를 Radius Plot과 동일한 회전·반전·offset 자동 매칭으로 제품의 보정 shot 좌표로 번역한 뒤 WF MAP에 표시",
+        "[제품 alias] PRODA와 VH_PRODA처럼 제품명 prefix가 다른 경우에도 동일 제품 MAP으로 연결"
+      ]
+    },
+    {
+      "version": "10.4.64",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "WF MAP Trellis와 공통 P10·Median·P90 스케일",
+      "changes": [
+        "[MAP 표시] 단일 root lot | wafer, 단일 root lot 전체, wafer별 Trellis, root_lot_id | wafer_id별 Trellis를 선택 가능하도록 확장",
+        "[공통 스케일] Trellis의 모든 wafer 패널이 동일한 Low·Center·High 컬러 기준을 공유하여 패널 간 값을 직접 비교 가능",
+        "[기본 분위수] 전체 표시 데이터의 P10을 파랑, median을 회색, P90을 빨강으로 자동 설정하고 범위 밖 값은 양 끝 색으로 고정",
+        "[스케일 위젯] Low(P10)·Center(median)·High(P90)를 각각 슬라이더와 숫자 입력으로 조절하고 팔레트도 선택 가능",
+        "[패널 보호] 패널이 많은 경우 정렬된 앞 25개를 표시하고 생략 사실을 화면에 안내"
+      ]
+    },
+    {
+      "version": "10.4.63",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "차트생성 상단 접이식 사용 가이드",
+      "changes": [
+        "[상단 정리] 차트생성 제목과 고정 설명 문구를 제거하여 Query 작업 공간을 더 위에서 바로 시작",
+        "[접이식 가이드] 같은 위치에 기본적으로 접힌 사용 가이드를 배치하고 Query·JOIN, Trend·Corr, Color·Trellis, Radius·WF MAP, 집계·피팅 사용법을 필요할 때만 펼쳐 확인"
+      ]
+    },
+    {
+      "version": "10.4.62",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "Corr marker를 Trend 스타일로 통일",
+      "changes": [
+        "[Corr marker] Corr / Scatter marker를 Trend와 동일한 7px 크기·연한 내부색·진한 회색 1.3px 테두리로 표시",
+        "[표현 분리] Corr marker만 통일하고 Corr 축 제목 크기와 선택형 1차 회귀·R² 동작은 기존 설정을 유지"
+      ]
+    },
+    {
+      "version": "10.4.61",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "Radius 피팅선 범례 중복 제거",
+      "changes": [
+        "[간결한 범례] Radius Plot 3차 피팅선은 Color 그룹과 같은 색을 유지하되 별도의 3차 fit 범례 항목은 숨겨 그룹별 점 범례만 표시",
+        "[차트 표현] 피팅선 자체와 R² hover는 그대로 유지하여 분석 정보는 보존하고 범례 중복만 제거"
+      ]
+    },
+    {
+      "version": "10.4.60",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "Corr 숫자 0 X축 보존",
+      "changes": [
+        "[X축 0] Corr·Trellis에서 x_label이 숫자 0일 때 falsy 값으로 판단해 tkout_time으로 대체하던 문제를 수정하여 shot_x=0을 정상적인 숫자 좌표로 유지",
+        "[회귀 표시] 1차 피팅선과 R²가 계산에 사용한 숫자 X축과 동일한 축 위에 정확히 표시되도록 보정"
+      ]
+    },
+    {
+      "version": "10.4.59",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "Radius·Corr 선택형 회귀와 Trellis 연동",
+      "changes": [
+        "[Radius 선택] Radius Plot에 피팅 없음·3차 회귀 선택기를 추가하고 기존 Color별 회귀를 사용자가 켜고 끌 수 있도록 변경",
+        "[Radius Trellis] Trellis 사용 시 패널마다, 그리고 패널 안의 Color 그룹마다 해당 데이터만으로 3차 회귀선을 독립 계산",
+        "[Corr 선택] Corr / Scatter에 피팅 없음·1차 회귀 + R² 선택기를 추가하여 회귀선과 R² 표시를 함께 제어",
+        "[Corr Trellis] Corr Trellis에서는 전체 데이터 R² 대신 각 패널 데이터로 다시 계산한 1차 피팅선과 R²를 패널별로 표시"
+      ]
+    },
+    {
+      "version": "10.4.58",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "Radius Plot 컬러별 3차 피팅",
+      "changes": [
+        "[3차 피팅] Radius Plot의 Chip Radius와 측정값 관계에 3차 다항 회귀선을 자동으로 겹쳐 표시",
+        "[컬러별 회귀] Color 열을 선택하면 각 컬러 그룹의 데이터만으로 독립적인 3차식을 계산하고 marker와 같은 색의 피팅선을 표시",
+        "[안전 조건] 유효 데이터 또는 서로 다른 radius가 4개 미만인 그룹은 불안정한 피팅선을 만들지 않고 생략하며 hover에 그룹과 R²를 표시",
+        "[집계 보존] shot별 집계에서도 Color와 Trellis 그룹을 섞지 않고 shot·Color·Trellis 조합별로 집계"
+      ]
+    },
+    {
+      "version": "10.4.57",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "제품별 Shot Radius Plot",
+      "changes": [
+        "[제품별 반경] ChartBuilder의 Radius Plot이 표준 Chip_Radius.csv에서 선택 제품과 일치하는 Mask의 shot_x·shot_y·Chip_Radius를 읽어 반경 분포를 구성",
+        "[좌표 정렬] 조회 결과의 shot 좌표와 보정 좌표 사이 회전·반전·offset 조합을 자동 탐색하고 실제 매칭 shot 수와 적용 변환을 화면에 표시",
+        "[분포 차트] Chip Radius(mm)를 X축, 선택 측정값을 Y축으로 그리며 Shot raw 또는 shot별 avg·median·p10·p90·min·max 집계를 지원",
+        "[조건 비교] Radius Plot에서도 JOIN 결과의 KNOB·FAB 등 필요한 열을 Color와 Trellis로 나눠 비교 가능"
+      ]
+    },
+    {
+      "version": "10.4.56",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "Bar 집계값·행 수 표시 분리",
+      "changes": [
+        "[막대 길이] 집계 Bar가 원본 행 수 count를 집계값보다 우선해 그리던 문제를 수정하여 선택한 median/avg/p10/p90/min/max 값으로 막대 길이를 결정",
+        "[행 수] 원본 행 수는 막대 값과 분리해 hover의 n 근거로만 유지"
+      ]
+    },
+    {
+      "version": "10.4.55",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "Bar 카테고리 집계 렌더링",
+      "changes": [
+        "[Bar 집계] 같은 X 카테고리의 raw 행이 겹쳐 줄무늬처럼 보이던 Bar를 카테고리별 대표값 하나로 집계",
+        "[집계 선택] 수직·수평 Bar에 avg/median/p10/p90/min/max 선택기를 추가하고 ET는 median, INLINE은 avg를 기본값으로 적용",
+        "[Bar hover] 각 막대의 집계값과 함께 집계에 사용된 원본 행 수 n을 표시"
+      ]
+    },
+    {
+      "version": "10.4.54",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "Box Plot·수평/수직 Bar·Trellis 컬러 헤더",
+      "changes": [
+        "[Box Plot] 선택한 X 그룹별 Y 분포를 box와 outlier로 표시하고 Color·Trellis 열을 함께 적용할 수 있는 Box Plot 차트 타입 추가",
+        "[Bar 방향] 기존 Bar를 Bar Vertical과 Bar Horizontal 두 타입으로 분리하고 수평형에서는 X/Y 축 제목과 hover 의미도 방향에 맞게 교환",
+        "[Trellis 헤더] 각 Trellis 패널 이름 셀에 서로 다른 파스텔 배경과 강조 하단선을 적용해 패널 이름과 경계를 빠르게 구분"
+      ]
+    },
+    {
+      "version": "10.4.53",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "차트 자동 제목 제거·주축 강조",
+      "changes": [
+        "[차트 제목] 차트생성에서 item과 chart type으로 자동 생성하던 Plotly 내부 제목을 제거해 플롯 영역을 간결하게 정리",
+        "[X/Y 주축] 내부 grid 색과 두께는 유지하고 바깥쪽 X축·Y축 기준선만 검은색 2px로 강조",
+        "[Trellis] 패널 식별 정보는 차트 내부 제목 대신 패널 상단 헤더로 분리해 축과 데이터 영역의 겹침을 방지"
+      ]
+    },
+    {
+      "version": "10.4.52",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "Trend 마커 테두리 미세 조정",
+      "changes": [
+        "[마커 테두리] Trend/Scatter 마커의 진한 회색 경계색은 유지하면서 두께를 1.7px에서 1.3px로 줄여 데이터 밀집 구간을 더 가볍게 표시"
+      ]
+    },
+    {
+      "version": "10.4.51",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "다중 Trellis 패널 안정 렌더링",
+      "changes": [
+        "[Trellis 렌더러] 여러 패널이 동시에 WebGL context를 점유해 일부 scatter가 비어 보일 수 있는 문제를 패널 전용 SVG scatter 렌더링으로 해결",
+        "[패널 UI] Trellis 패널은 compact 제목과 간소화된 도구 영역을 사용해 KNOB 범례와 측정점에 더 많은 공간을 배정"
+      ]
+    },
+    {
+      "version": "10.4.50",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "ML_TABLE 필요 열 선택·Color·Trellis",
+      "changes": [
+        "[ML_TABLE 열 선택] 차트생성의 SplitTable Query에서 KNOB/FAB/MASK/INLINE/VM prefix 또는 열 이름으로 ML_TABLE 스키마를 검색하고 필요한 열을 선택해 SELECT SQL에 반영",
+        "[복합 표현] JOIN 결과의 한 열은 Color 그룹으로, 다른 열은 Trellis 패널로 동시에 지정해 KNOB 색상과 FAB 조건별 패널 같은 조합을 지원",
+        "[Trellis] Trend·Corr scatter를 선택한 ML_TABLE 열 값별 독립 패널로 분할하고 패널별 point 수와 회귀 결과를 표시하며 최대 12개 패널로 안전하게 제한",
+        "[스키마 조회] 가상 SPLITTABLE DB의 ML_TABLE wide pivot cache도 columns/search에서 직접 검사하여 실제 KNOB/FAB 열 목록을 제공"
+      ]
+    },
+    {
+      "version": "10.4.49",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "차트생성 SplitTable KNOB JOIN·Color",
+      "changes": [
+        "[SplitTable DB] 제품별 SplitTable wide pivot cache를 차트생성의 SPLITTABLE 읽기 전용 DB로 노출하고 ML_TABLE 제품과 실제 KNOB_* 열을 SQL에서 선택 가능",
+        "[KNOB JOIN] ET·INLINE 측정 Query에 SplitTable Query를 root_lot_id·wafer_id 복합 key로 JOIN해 선택한 일부 knob를 최종 결과에 추가",
+        "[타입 정규화] DB별 wafer_id가 문자열 또는 숫자로 달라도 JOIN 직전에 양쪽 key를 문자열로 통일해 동일 wafer가 정상 매칭되도록 보강",
+        "[KNOB Color] JOIN 결과의 KNOB 열을 Color로 선택하면 knob 값별로 서로 다른 marker 색과 건수 포함 범례를 표시"
+      ]
+    },
+    {
+      "version": "10.4.48",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "Trend 마커 대비와 차트생성 1만 행 기본값",
+      "changes": [
+        "[마커 테두리] Trend scatter 테두리를 1px 중간 회색에서 1.7px 진한 회색으로 강화해 밀집 구간에서도 각 점을 분리",
+        "[마커 내부] 시리즈 색을 흰색과 혼합한 연한 색으로 바꾸고 테두리는 진하게 유지해 경계를 선명하게 표현",
+        "[1만 행] 차트생성 결과 기본·최대 한도와 백엔드 Query/JOIN 안전 한도, 프런트 차트 point 처리 범위를 모두 10,000행으로 통일",
+        "[다운로드] 10,000행 범위 안의 최종 JOIN 결과를 동일하게 CSV 다운로드할 수 있도록 유지"
+      ]
+    },
+    {
+      "version": "10.4.47",
+      "date": "2026-08-09",
+      "tag": "style",
+      "title": "Trend scatter 마커·축 가독성 개선",
+      "changes": [
+        "[마커 테두리] Trend scatter 마커에 중간 회색 1px 테두리를 적용해 점이 겹쳐도 경계가 구분되도록 개선",
+        "[마커 크기] Shot raw 마커를 5px에서 7px, Wafer 집계 마커를 8px에서 10px로 확대",
+        "[축 제목] Trend의 X축·Y축 제목 크기를 13px에서 16px로 확대하고 Corr 등 다른 차트 스타일은 기존대로 유지"
+      ]
+    },
+    {
+      "version": "10.4.46",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "Trend scatter와 shot·wafer 표시 단위",
+      "changes": [
+        "[Scatter Trend] 시간 Trend를 선으로 연결하지 않고 모든 측정값을 독립된 scatter point로 표시하도록 변경",
+        "[Shot raw] Shot raw 단위에서는 같은 tkout_time에 측정된 여러 shot 값을 겹치거나 나란한 여러 점으로 그대로 표시",
+        "[Wafer 집계] Wafer 집계를 선택하면 root_lot_id·wafer_id별 측정값을 하나로 묶어 wafer당 점 하나만 표시하고 avg·median·p10·p90·min·max를 선택 가능",
+        "[기본 집계] 데이터 소스가 ET이면 median, INLINE이면 avg를 Wafer 집계 기본값으로 유지"
+      ]
+    },
+    {
+      "version": "10.4.45",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "WF MAP lot·wafer 단위와 shot 집계 선택",
+      "changes": [
+        "[Map 단위] 차트생성 WF MAP에서 Root lot + wafer 또는 Root lot 전체를 선택하고 실제 조회 결과의 lot·wafer 목록 중 표시 대상을 고를 수 있도록 추가",
+        "[Shot 집계] 선택 범위 안에서 동일 shot에 여러 값이 존재하면 avg·median·p10·p90·min·max 중 원하는 방식으로 집계해 MAP 색상에 반영",
+        "[좌표 검증] chip_x_pos+chip_y_pos, shot_x+shot_y, x_pos+y_pos처럼 유효한 shot 좌표 쌍이 SQL 결과에 모두 있을 때만 WF MAP을 생성하고 일반 숫자 열을 좌표로 오인하지 않도록 강화",
+        "[SQL 호환] 표준 SQL의 기본 정렬인 ORDER BY tkout_time 형식을 ASC 생략 상태로 허용하고 실행 SQL에는 ORDER BY tkout_time ASC로 명확히 표시"
+      ]
+    },
+    {
+      "version": "10.4.44",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "차트생성 API 재기동·TEG 제품 WF MAP 연동",
+      "changes": [
+        "[API 정상화] 소스에는 존재하지만 8080의 오래된 프로세스에 반영되지 않아 API not found가 발생하던 차트생성 POST 경로를 최신 앱 프로세스로 재기동하고 인증·라우팅·SQL JOIN 계약 테스트로 확인",
+        "[제품 WF MAP] Flow-i와 차트생성의 WF MAP을 임의 원형 산점도가 아니라 TEG 위치조회의 동일 제품 shot geometry를 직접 재사용하도록 통일하고 실제 좌표와 매칭되는 측정값만 표시",
+        "[shot 집계] WF MAP raw 측정값은 좌표별로 다시 묶어 ET는 median, INLINE은 avg 기본 집계를 적용하고 제품명의 VH·VEHICLE 접두 차이도 같은 제품으로 해석",
+        "[차트생성 WF MAP] JOIN 결과에서 Shot X·Shot Y·Value 열을 선택해 WF MAP으로 전환할 수 있으며 chip_x_pos·chip_y_pos·value 열은 자동 선택",
+        "[색상 위젯] WF MAP을 흰 배경으로 표시하고 Color min·Color max 범위와 Blue→Red·Viridis·Gray palette를 화면에서 즉시 조절 가능",
+        "[안전한 미매칭] 제품명에 대응하는 TEG WF MAP이 없거나 INLINE subitem 좌표 매핑이 준비되지 않은 경우 가짜 좌표를 만들지 않고 필요한 설정을 명시"
+      ]
+    },
+    {
+      "version": "10.4.43",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "차트생성 가변 Query·복수 JOIN·Corr 확장",
+      "changes": [
+        "[가변 Query] 차트생성을 Query 1개로 시작해 최대 10개까지 자유롭게 추가하거나 같은 DB Query를 복제할 수 있도록 변경하여 1개 Trend, 동일·서로 다른 DB 2개 Corr, 3개 이상 조건 결합을 모두 지원",
+        "[복수 JOIN 키] root_lot_id 하나뿐 아니라 root_lot_id·wafer_id·step_id처럼 쉼표로 지정한 여러 열을 한 번에 JOIN하고 연결되지 않은 Query는 최종 차트·다운로드에서 빠진다는 경고를 표시",
+        "[조건 Color] INLINE·ET 측정값에 SplitTable·KNOB·FAB Query를 계속 JOIN한 뒤 추가된 split·knob·공정 열을 Color로 선택해 그룹별 scatter·trend를 표현",
+        "[Corr 분석] Corr/Scatter에서 숫자 X·Y의 Pearson correlation과 1차 fitting·R²를 계산해 차트와 함께 표시하고 같은 DB의 두 item은 Query 복제로 손쉽게 비교"
+      ]
+    },
+    {
+      "version": "10.4.42",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "업무 차트생성 SQL·JOIN 작업공간",
+      "changes": [
+        "[업무 탭] Flow-i의 차트 기능을 독립적으로 꺼내 쓸 수 있도록 업무 메뉴에 차트생성 탭을 추가하고 기존 Dashboard 또는 FileBrowser 권한 사용자도 바로 접근 가능하도록 연결",
+        "[다중 DB SQL] 최대 6개 DB·Product에 각각 read-only SELECT/WHERE/ORDER BY SQL과 조회 열을 지정하고, FileBrowser DuckDB 안전 검증 엔진으로 Query별 결과·실행 SQL·행 수를 확인",
+        "[JOIN 미리보기] Query 결과 사이에 inner·left·full·semi·anti JOIN을 순서대로 구성하고 중복 열에는 우측 Query ID prefix를 붙여 최종 데이터의 출처를 보존",
+        "[다운로드·차트] 같은 최종 JOIN 결과를 표로 미리보고 UTF-8 CSV로 다운로드하며 X·Y·Color 열과 scatter·line·bar 형식을 선택해 흰색 배경 차트로 생성"
+      ]
+    },
+    {
+      "version": "10.4.41",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "Flow-i SQL 우선 차트와 재현 데이터 제공",
+      "changes": [
+        "[SQL 우선] Flow-i의 차트·Trend·Wafer map 요청이 먼저 read-only SQL source orchestration을 거치도록 통일하고, DB가 모호하면 source 선택을 요청",
+        "[Trend 시간축] 각 DB의 tkout_time을 기본 x축으로 사용하며 없으면 이름에 time이 포함된 실제 열 후보를 제시해 사용자가 선택한 열을 SQL·차트·표 메타에 일관되게 반영",
+        "[차트 조회 필드] root_lot_id·wafer_id·시간·value를 기본 조회하고 shot 요청은 INLINE subitem_id 또는 ET chip_x_pos·chip_y_pos를 포함하며, INLINE 평균과 shot 조회에서 AVG·MED·STD·MIN·MAX·Q1·Q3 계열 요약행을 제외",
+        "[복사·재현] 모든 Flow-i 차트를 흰색 배경으로 출력하고 PNG 저장을 제공하며, 500행 이하는 차트 원본 표를 함께 표시하고 초과 데이터는 DB별 재현 SQL과 SQL 복사 버튼으로 제공"
+      ]
+    },
+    {
+      "version": "10.4.40",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "Flow-i INLINE 집계 정제와 Shot 좌표 매칭",
+      "changes": [
+        "[기본 집계] 엔지니어가 별도 집계 방식을 지정하지 않은 Flow-i 차트에서 ET는 median, INLINE은 avg를 유지하고 실제 결과 메타에도 소스별 집계 방식을 명시",
+        "[요약 행 제외] INLINE raw의 subitem_id에 포함된 AVG·AVERAGE·MEAN·MED·MEDIAN·STD·STDEV·MIN·MAX·Q1·Q3 사전 요약 행이 평균이나 shot 결과에 다시 섞이지 않도록 Polars와 DuckDB 집계 경로에서 공통 제외",
+        "[Shot 좌표 매칭] inline_matching.csv의 product·step_id·item_id별 matching_table을 TEG 위치조회 Inline map TABLE과 연결하여 등록된 subitem_id만 ET shot_x/shot_y 좌표로 변환하고 미등록 값은 shot 매칭에서 제외",
+        "[확장 가능한 룰북] inline_matching 편집·스키마·SplitTable 메타에 matching_table 열을 추가해 향후 제품과 항목별 룰북 및 Inline map TABLE 확장만으로 새 좌표 규칙이 적용되도록 구성"
+      ]
+    },
+    {
+      "version": "10.4.39",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "DCOP 적용 규칙 표시와 GPT OSS 검사 요약",
+      "changes": [
+        "[적용 규칙] DCOP 검사 테이블 위에서 실제 적용되는 규칙 번호·FAIL/WARNING 등급·대상 열·연산자·기준값을 확인할 수 있도록 표시",
+        "[GPT OSS 요약] GPT OSS 120B가 연결되어 있으면 검사 후 FAIL/WARNING의 규칙 번호·건수·핵심 내용을 구조화 응답으로 요약해 결과 테이블 위에 표시",
+        "[규칙 폴백] GPT OSS 120B가 미연결이거나 호출에 실패하면 규칙별 FAIL/WARNING 건수와 행 번호를 표시하고, 해당 행이 5개 이상이면 '5행 이상'으로 축약"
+      ]
+    },
+    {
+      "version": "10.4.38",
+      "date": "2026-08-09",
+      "tag": "fix",
+      "title": "매칭알람 기본 검사 간격 2시간",
+      "changes": [
+        "[기본 주기] 신규 설치 또는 저장된 주기 설정이 없는 경우 FAB 매칭알람의 제품 1개당 검사 간격을 5분에서 2시간으로 변경",
+        "[기존 설정 보존] 이미 사용자가 저장한 검사 간격은 변경하지 않고 설정 누락 시에만 2시간 기본값 적용"
+      ]
+    },
+    {
+      "version": "10.4.37",
+      "date": "2026-08-09",
+      "tag": "feat",
+      "title": "매칭알람 검사 주기 톱니바퀴와 수동 검사 요청",
+      "changes": [
+        "[검사 설정] 매칭알람 좌하단 톱니바퀴에서 자동 검사 사용 여부와 제품 1개당 검사 간격(최소 30초)을 저장할 수 있도록 추가",
+        "[수동 검사] 다음 제품, 요청 대기 상태, 현재 서버의 실행 가능 여부를 표시하고 지금 다음 제품 검사를 개발 worker에 요청하는 버튼 추가",
+        "[대용량 보호] 개발 worker에서 수동 버튼을 눌러도 HTTP 요청 안에서 FAB Parquet를 동기 검사하지 않고 백그라운드 스캐너에 요청만 등록하도록 변경",
+        "[권한] 검사 설정 저장과 수동 검사 요청을 admin 또는 매칭알람 페이지 관리자로 제한"
+      ]
+    },
+    {
+      "version": "10.4.36",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "Flow-i ET 측정시간 상세·장기 추이 인라인 조회",
+      "changes": [
+        "[Lot 측정시간] 'PROD_A AZ111 측정시간 확인' 질문을 ET 측정시간 탭의 PGM(pt) 집계에 직접 연결해 tkout_time−tkin_time 기준 총시간과 step·PGM 상세표를 Flow-i 안에 표시",
+        "[장기 추이] 'PROD_A 12개월간 ET 측정시간 추이' 질문에서 기간을 추출해 wafer별 step PGM 시간 합계의 월 평균 추이 차트와 기간 평균 시간이 큰 주요 DCOP 표를 함께 제공",
+        "[DCOP 근거] 주요 DCOP 표에 step_id/function step, 기간 평균·최신 월 평균시간, wafer 수, 평균 PGM 수, 주요 step_seq 의뢰 조합과 비율을 표시",
+        "[연속 대화·실행 분리] Lot이 빠지면 Root Lot ID만 묻고 다음 답변을 이어받으며, ET parquet 집계는 heavy 턴으로 분류해 개발 worker 우선 실행·운영 폴백 정책을 적용"
+      ]
+    },
+    {
+      "version": "10.4.35",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "Flow-i TEG Shot 인라인 조회와 ET 대화형 다운로드",
+      "changes": [
+        "[TEG 인라인] 'PROD_A TEG_D가 Shot 내 어디 있어?' 같은 질문을 TEG 탭의 map payload와 ShotZoom 렌더러로 직접 연결해 geometry·칩 격자·vehicle 표시 설정과 좌표 근거를 Flow-i 안에서 바로 표시",
+        "[ET 다운로드] 'PROD_A abs_window 5일치 다운로드' 요청을 reformatter alias·tkout_time 기간으로 해석하고 기존 격리 다운로드 대기열에 등록한 뒤 진행 단계와 완료 CSV 버튼을 대화 카드에서 제공",
+        "[Alias HITL] 정확한 ET alias가 없으면 실제 reformatter CSV 후보를 선택지로 제시하고 후속 턴을 이어가며, 같은 선택이 3회 확인되면 자동 적용하고 자동 적용 결과의 싫어요는 해당 사용자에게 매핑을 중단해 다시 확인",
+        "[실행·근거] TEG 조회와 ET 큐 등록은 운영 API에서 가볍게 처리하고 ET pivot·CSV 계산은 기존 1코어 격리 큐에서 수행하며, 응답에 사용한 TEG API·reformatter CSV·DB ET 경로를 함께 표시"
+      ]
+    },
+    {
+      "version": "10.4.34",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "Flow-i 간편 Semantic 학습과 재현 SQL 근거",
+      "changes": [
+        "[간편 학습] 관리자 Flow-i 학습 첫 화면에서 자연어 한 문장을 DB·제품·step_id·item_id 매핑으로 미리 해석하고, 재현 SQL을 확인한 뒤 저장하도록 단순화",
+        "[기본 지식] setup.py에 DB별 목적·데이터 단위·조인 키와 주요 단일 파일 설명을 포함하여 신규 설치 직후부터 출처 의미를 표시",
+        "[근거 조회] CA BCD를 PRODA/INLINE의 AA100040·CD2·fab_value 원본 값으로 기본 매핑하고, 정확 일치 필터·실제 참조 파일·읽기 전용 DuckDB SQL을 결과와 함께 제공",
+        "[LLM 보조] 규칙 기반 해석에서 빠진 필드만 연결된 GPT OSS 구조화 출력을 사용하며, 필수 값 검증과 관리자 승인 없이는 저장하지 않음"
+      ]
+    },
+    {
+      "version": "10.4.33",
+      "date": "2026-08-08",
+      "tag": "feat",
+      "title": "Flow-i 운영/개발 실행 분리와 대화형 결과 UX 개선",
+      "changes": [
+        "[실행 위치 정책] 현재위치·검색·SplitTable view·직전 결과 재표시는 운영 API에서 즉시 처리하고, 분석·차트·대용량 원본 처리 턴만 개발 worker 우선으로 위임하며 worker 불가 시 운영 경로로 안전하게 폴백",
+        "[응답 흐름] 기능 후보의 불필요한 적합/부적합 문구 대신 질문을 어떻게 이해했는지, 어떤 Unit AI/오케스트레이터와 실행 서버를 사용했는지, 어떤 캐시·DB·API를 근거로 삼았는지 3단 흐름으로 표시",
+        "[인라인 SplitTable] SplitTable 질문은 자동 페이지 이동을 하지 않고 홈 검색창 안에 실제 SplitTable view를 먼저 표시하며 전체화면 이동은 명시적 버튼으로만 제공",
+        "[연속 대화] 직전 표의 제한된 행·컬럼·출처를 대화 컨텍스트에 보존해 'raw data 줘' 같은 후속 질문이 이전 조건을 이어받아 표와 출처를 다시 제공",
+        "[피드백 간소화] 긴 태그·코멘트·관리자 교정 입력 UI를 제거하고 좋아요/싫어요 두 버튼만 유지"
+      ]
+    },
     {
       "version": "10.4.32",
       "date": "2026-08-08",
