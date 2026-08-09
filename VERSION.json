@@ -1,7 +1,32 @@
 {
-  "version": "10.4.79",
+  "version": "10.4.81",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.81",
+      "date": "2026-08-10",
+      "tag": "feat",
+      "title": "매칭알람 mask_info.csv 미등록 reticle 검사와 갱신",
+      "changes": [
+        "[미등록 reticle] FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값을 개발 worker 검사에서 찾아 매칭알람 화면에 표시",
+        "[제품 무관 병합] mask_info.csv가 reticle_id·mask 2열이라 알람 키를 reticle_id 하나로 잡고 여러 제품에서 발견된 같은 reticle을 근거만 합쳐 한 건으로 표시",
+        "[마스크 등록] mask 이름을 입력해 mask_info.csv에 reticle_id·mask 행을 추가하고 기존 reticle 중복 등록은 거부",
+        "[버전 관리] mask_info.csv 변경도 파일탐색기 버전 스냅샷·매칭 캐시 갱신·S3 동기화를 거치고 같은 배치에서 여러 건을 반영해도 파일 버전은 1개만 생성",
+        "[일괄 반영] step·PPID 판정과 같은 반영 대기 목록에서 마스크 등록을 함께 선택해 하나의 배치 ID로 반영"
+      ]
+    },
+    {
+      "version": "10.4.80",
+      "date": "2026-08-10",
+      "tag": "feat",
+      "title": "매칭알람 변경 일괄 반영과 배치 버전 관리",
+      "changes": [
+        "[일괄 반영] PPID 룰과 신규 step을 행마다 즉시 저장하던 흐름을 반영 대기 선택 후 여러 건을 한 번에 저장하는 방식으로 변경",
+        "[버전 묶음] 같은 CSV에 대한 여러 변경은 파일 버전 스냅샷을 한 번만 생성하고 Vehicle_matching.csv와 ppid_knob.csv에 걸친 변경은 공통 배치 ID로 연결",
+        "[의존 변경] 같은 배치의 신규 step 매칭을 먼저 계산한 뒤 해당 step의 PPID 룰을 적용해 step과 PPID를 함께 선택해도 한 번에 정상 반영",
+        "[판정 이력] 모든 반영 내역과 파일 버전 메모에 배치 ID를 기록하고 화면 판정 이력에서도 배치 식별값을 확인하도록 보강"
+      ]
+    },
     {
       "version": "10.4.79",
       "date": "2026-08-09",
