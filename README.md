@@ -159,7 +159,7 @@ uvicorn app:app --host 0.0.0.0 --port 8080
 
 접속 주소는 `http://<서버주소>:8080`입니다.
 
-초기 관리자 계정은 `hol / hol12345!`이며, 사내 반입 전에 반드시 비밀번호를 변경하거나 `FLOW_ADMIN_PW`를 지정하십시오.
+초기 관리자 계정은 `FLOW_ADMIN_PW`에 10자 이상의 비기본 비밀번호를 명시한 경우에만 `hol`로 생성됩니다. 값이 없거나 `1111`, `hol12345!`, `CHANGE_ME` 같은 기본값이면 계정을 자동 생성하지 않습니다.
 
 ## 운영 API 서버 설정
 
@@ -308,7 +308,7 @@ sudo nano /etc/systemd/system/flow.service
 | `WorkingDirectory` | `app.py`가 있는 backend 디렉터리 |
 | `ExecStart` | python3 절대경로 + 포트(개발서버 8080) |
 | `FLOW_DATA_ROOT` / `FLOW_DB_ROOT` | **운영서버와 같은 공유 경로** (다르면 위임이 동작하지 않음) |
-| `FLOW_ADMIN_PW` | 실제 비밀번호 (미설정 시 공개된 기본값이 시드됨) |
+| `FLOW_ADMIN_PW` | 초기 `hol` 관리자 비밀번호. 10자 이상의 비기본값 필수이며 미설정·취약값이면 계정을 생성하지 않음 |
 
 **A-3. 등록·기동**
 
