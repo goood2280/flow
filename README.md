@@ -200,6 +200,33 @@ uvicorn app:app --host 0.0.0.0 --port 8080
 
 포트는 운영서버와 다른 머신이므로 8080을 그대로 씁니다. `scripts/worker_watchdog.py`로 원격 기동도 함께 쓴다면 `--port`를 같은 값으로 맞춥니다(워치독 기본값은 8081).
 
+### Linux 개발서버: tmux + watchdog으로 상주 실행
+
+SSH 세션이 끊겨도 서버가 죽지 않도록, 원격 Linux 개발서버에서는 tmux 안에서
+`scripts/run_dev_worker_tmux.sh`로 띄웁니다. 이 스크립트는 uvicorn을 직접 실행하지
+않고 `scripts/worker_watchdog.py`를 통해 실행하며, uvicorn이 OOM/SIGKILL 또는
+오류로 죽으면 watchdog이 자동으로 재기동합니다.
+
+```bash
+tmux new -s flow-dev
+bash scripts/run_dev_worker_tmux.sh
+# 세션에서 빠져나가기(끊지 않고 detach): Ctrl-B D
+# 다시 붙기: tmux attach -t flow-dev
+```
+
+한 줄로 백그라운드 세션 생성 + attach:
+
+```bash
+tmux new-session -d -s flow-dev 'bash scripts/run_dev_worker_tmux.sh'
+tmux attach -t flow-dev
+```
+
+`FLOW_APP_ROOT`, `FLOW_DATA_ROOT`, `FLOW_DB_ROOT`, `FLOW_WORKER_PORT`,
+`FLOW_WORKER_CONCURRENCY`, `FLOW_WORKER_RESTART_DELAY_SEC`,
+`FLOW_WORKER_MAX_RESTART_DELAY_SEC`는 스크립트 안에 기본값이 있으므로 필요한 값만
+export 하고 실행하면 됩니다. 로그는 `$FLOW_DATA_ROOT/worker/control/worker_uvicorn.log`에
+쌓입니다.
+
 개발 worker 기본 정책:
 
 - 무거운 작업 동시 실행 1개
