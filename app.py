@@ -1,0 +1,124 @@
+"""Top-level uvicorn entrypoint shim — v8.6.x.
+
+목적: README/사용자가 단순히 다음 명령으로 실행할 수 있게 한다.
+
+    uvicorn app:app --host 0.0.0.0 --port 8080
+
+backend/ 내부에 실제 app.py 가 있고 routers 가 동적으로 import 되기 때문에,
+import 위치(working directory)에 따라 `Could not import module 'app'` 또는
+`No module named 'routers'` 에러가 발생할 수 있다. 이 shim 은:
+
+  1. 이 파일이 위치한 디렉토리(=flow/) 와 그 하위 backend/ 를 sys.path 앞에
+     추가한다 → 어디서 호출하든 `routers.*` import 가 안전하다.
+  2. backend.app 의 `app` 객체를 그대로 re-export 한다.
+
+이렇게 하면:
+  - cd flow && uvicorn app:app  ✓
+  - python -m uvicorn app:app           ✓ (flow 가 cwd)
+  - 과거 명령 `uvicorn app:app --app-dir backend` 도 그대로 동작 (backend/app.py 가 자체적으로 동작).
+"""
+import sys
+import types
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_BACKEND = _HERE / "backend"
+
+
+def _prepend_sys_path(path: Path) -> None:
+    raw = str(path)
+    sys.path[:] = [p for p in sys.path if p != raw]
+    sys.path.insert(0, raw)
+
+
+def _package_paths(module: object) -> list[Path]:
+    paths = getattr(module, "__path__", None)
+    if not paths:
+        return []
+    out = []
+    for raw in paths:
+        try:
+            out.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return out
+
+
+def _clear_package(package_name: str) -> None:
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(package_name + "."):
+            sys.modules.pop(name, None)
+
+
+def _bind_local_package(package_name: str, package_dir: Path) -> None:
+    package_dir = package_dir.resolve()
+    existing = sys.modules.get(package_name)
+    if existing is not None and package_dir in _package_paths(existing):
+        return
+    if existing is not None:
+        _clear_package(package_name)
+
+    init_file = package_dir / "__init__.py"
+    if init_file.exists():
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            package_name,
+            init_file,
+            submodule_search_locations=[str(package_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot locate package spec for {package_name}: {init_file}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[package_name] = module
+        spec.loader.exec_module(module)
+        return
+
+    module = types.ModuleType(package_name)
+    module.__package__ = package_name
+    module.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    sys.modules[package_name] = module
+
+
+# backend 디렉토리를 sys.path 앞에 두어 `routers.*`, `core.*` 가 import 되게 한다.
+for p in (_HERE, _BACKEND):
+    _prepend_sys_path(p)
+for package, package_dir in (
+    ("core", _BACKEND / "core"),
+    ("app_v2", _BACKEND / "app_v2"),
+    ("routers", _BACKEND / "routers"),
+):
+    if package_dir.is_dir():
+        _bind_local_package(package, package_dir)
+
+try:
+    from core.runtime_limits import apply_runtime_limits
+    apply_runtime_limits()
+except Exception:
+    pass
+
+# Working directory 와 무관하게 backend/app.py 를 "절대 파일 경로" 로 직접 로드한다.
+#
+# ⚠️ 순환 import 주의:
+#   이 파일 자체가 top-level `app` 모듈이다. uvicorn 이 `app:app` 을 import 하는 동안
+#   sys.modules["app"] 에는 "아직 초기화가 끝나지 않은" 이 shim 이 들어 있다.
+#   따라서 여기서 `import app` / `from app import app` 를 하면 부분 초기화된 자기 자신을
+#   다시 import 하게 되어
+#       cannot import name 'app' from partially initialized module 'app'
+#   순환 import 에러가 난다. (과거 fallback 코드가 바로 이 함정에 빠졌었다.)
+#
+#   backend/app.py 는 _BACKEND 절대경로로 로드하므로 cwd 와 무관하게 안전하며,
+#   backend/app.py 가 자체적으로 sys.path(_APP_ROOT/_BACKEND_ROOT) 를 세팅하기 때문에
+#   cwd 를 바꾸는 fallback 도 필요 없다. 로드가 실패하면 원인(진짜 에러)을 그대로 전파한다.
+import importlib.util
+
+_backend_app_py = _BACKEND / "app.py"
+_spec = importlib.util.spec_from_file_location("_flow_backend_app", _backend_app_py)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Cannot locate backend/app.py spec: {_backend_app_py}")
+_mod = importlib.util.module_from_spec(_spec)
+sys.modules["_flow_backend_app"] = _mod
+_spec.loader.exec_module(_mod)
+app = _mod.app
+
+__all__ = ["app"]

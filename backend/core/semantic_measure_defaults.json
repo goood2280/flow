@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "Default semantic measurement term examples. Operators can extend these in FLOW_DATA_ROOT/semantic/measurement_terms.json.",
+  "terms": [
+    {
+      "id": "measure_inline_proda_ca_bcd",
+      "term": "CA BCD",
+      "aliases": ["CA BCD", "CA_BCD", "CABCD"],
+      "source_type": "INLINE",
+      "product": "PRODA",
+      "step_id": "AA100040",
+      "item_id": "CD2",
+      "value_column": "fab_value",
+      "default_agg": "raw",
+      "target": null,
+      "spec_low": null,
+      "spec_high": null,
+      "evidence": [
+        {"type": "operator_seed", "label": "CA BCD is PRODA step AA100040 item CD2", "source": "bundled_setup_seed"}
+      ]
+    },
+    {
+      "id": "measure_et_pccb_chain",
+      "term": "PCCB Chain",
+      "aliases": ["PCCB Chain", "PCCB_CHAIN", "PC CB Chain"],
+      "source_type": "ET",
+      "product": "",
+      "step_id": "",
+      "item_id": "PCCB_CHAIN",
+      "value_column": "",
+      "default_agg": "median",
+      "target": null,
+      "spec_low": null,
+      "spec_high": null,
+      "evidence": [
+        {"type": "operator_seed", "label": "Flow-i default ET semantic measurement example", "source": "default_seed"}
+      ]
+    }
+  ]
+}

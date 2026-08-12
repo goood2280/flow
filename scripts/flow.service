@@ -1,0 +1,75 @@
+# flow systemd 유닛 — **개발서버용** (Linux)
+#
+# 운영서버는 Docker 로 뜨므로 이 파일이 필요 없다. 컨테이너 재시작 정책
+# (`--restart unless-stopped` 또는 compose 의 `restart: unless-stopped`) 이
+# 같은 역할을 한다. 이 유닛은 systemd 로 직접 띄우는 개발서버 전용이다.
+#
+# 왜 필요한가: 수동 `uvicorn` 은 프로세스가 죽으면 아무도 되살리지 않는다.
+# 개발서버는 무거운 작업을 넘겨받는 쪽이라 OOM 으로 죽을 여지가 가장 크고,
+# 죽어 있으면 운영서버의 위임이 조용히 로컬 폴백으로 떨어져 느려진다.
+#
+# ── 설치 (개발서버 셸에서) ────────────────────────────────────────────
+#   1) 아래 User/WorkingDirectory/Environment 를 이 서버 실제 값으로 고친다
+#   2) sudo cp scripts/flow.service /etc/systemd/system/flow.service
+#   3) sudo systemctl daemon-reload
+#   4) sudo systemctl enable --now flow
+#
+# ── 확인 ──────────────────────────────────────────────────────────────
+#   systemctl status flow
+#   journalctl -u flow -f
+#   curl -s localhost:8080/health
+#
+# ── 업데이트할 때 (중요) ──────────────────────────────────────────────
+# Restart=always 는 "예기치 못한 종료" 에만 반응한다. systemctl stop 으로 내린
+# 것은 의도된 정지로 보고 되살리지 않는다. 반대로 kill/pkill 로 죽이면 즉시
+# 되살아나므로, 구버전과 신버전 파일이 섞인 채로 앱이 뜬다.
+#
+#   sudo systemctl stop flow
+#   FLOW_SETUP_STRICT=1 python setup.py extract && python setup.py install-deps
+#   sudo systemctl start flow
+
+[Unit]
+Description=flow dev server (worker role)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ── 이 서버 값으로 수정 ────────────────────────────────────────────────
+User=flow
+Group=flow
+WorkingDirectory=/opt/flow/backend
+
+# 운영서버와 **같은** 공유 경로를 봐야 위임이 동작한다
+Environment="FLOW_DATA_ROOT=/config/work/sharedworkspace/flow-data"
+Environment="FLOW_DB_ROOT=/config/work/sharedworkspace/DB"
+
+# 개발서버 = worker 역할. env 가 server_role.json 보다 항상 우선한다.
+Environment="FLOW_SERVER_ROLE=worker"
+Environment="FLOW_WORKER_CONCURRENCY=1"
+Environment="FLOW_POLARS_MAX_THREADS=2"
+
+# 관리자 초기 비밀번호 — 반드시 실제 값으로. 미설정 시 공개된 기본값이 시드된다.
+Environment="FLOW_ADMIN_PW="
+# 로그가 journalctl 에 즉시 보이도록 버퍼링 해제
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/usr/bin/python3 -m uvicorn app:app --host 0.0.0.0 --port 8080
+# ────────────────────────────────────────────────────────────────────────
+
+# 죽으면 항상 되살린다 (정상 종료 포함).
+Restart=always
+RestartSec=5
+
+# 재시작 폭주 차단: 5분에 5번 넘게 죽으면 멈추고 사람이 보게 한다.
+# 설정 오류로 즉시 죽는 상태에서 무한 재시작하면 로그만 쌓이고 원인을 못 본다.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+KillMode=mixed
+TimeoutStopSec=30
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target

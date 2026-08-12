@@ -1,0 +1,429 @@
+"""Parser and formatter for the shareable ChartBuilder definition language.
+
+The format is intentionally small and line-oriented so engineers can paste it
+in chat or a ticket without needing JSON.  SQL remains the same read-only
+FileBrowser SQL fragment that ChartBuilder already accepts.
+
+시간 창(``RECENT_DAYS`` / ``DATE_COLUMN``)도 Query 블록이 가진다.  WHERE 조각은
+날짜 연산을 허용하지 않아 ``tkout_time >= 오늘 - 7일`` 을 SQL 로 쓸 수 없고,
+무엇보다 **저장된 차트는 자기 시간 창을 지니고 다녀야** Template Report 가 그저
+"저장된 대로 다시 실행"만 하면 된다.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+
+QUERY_HEADER_RE = re.compile(
+    r"^\s*(?:\[([A-Za-z][\w-]*)\]|(q\d+))\s*:?(.*)$",
+    re.IGNORECASE,
+)
+FIELD_RE = re.compile(
+    r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items"
+    r"|recent_days?|recent|days|date_column|date_col|time_column|time_col)\s*[:=]\s*(.*)$",
+    re.IGNORECASE,
+)
+CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
+CHART_FIELD_RE = re.compile(
+    r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else|highlight|width|height|size)\s*[:=]\s*(.*)$",
+    re.IGNORECASE,
+)
+MAX_ROWS_RE = re.compile(r"^\s*max[_\s-]*rows\s*[:=]\s*(\d+)\s*$", re.IGNORECASE)
+JOIN_RE = re.compile(
+    r"^\s*(?:join\s+)?([A-Za-z][\w-]*)\s+"
+    r"(left|inner|full|semi|anti)\s+(?:join\s+)?([A-Za-z][\w-]*)\s+on\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
+
+FIELD_ALIASES = {
+    "table": "root",
+    "db": "root",
+    "root": "root",
+    "product": "product",
+    "sql": "sql",
+    "query": "sql",
+    "select": "select_cols",
+    "select_col": "select_cols",
+    "select_cols": "select_cols",
+    "column": "select_cols",
+    "columns": "select_cols",
+    "reformatter": "apply_reformatter",
+    "apply_reformatter": "apply_reformatter",
+    "item": "reformatter_items",
+    "items": "reformatter_items",
+    "reformatter_item": "reformatter_items",
+    "reformatter_items": "reformatter_items",
+    # 시간 창은 차트 코드가 가진다 — 보고서 쪽에서 나중에 덧씌우지 않는다.
+    "recent": "runtime_recent_days",
+    "recent_day": "runtime_recent_days",
+    "recent_days": "runtime_recent_days",
+    "days": "runtime_recent_days",
+    "date_col": "runtime_date_column",
+    "date_column": "runtime_date_column",
+    "time_col": "runtime_date_column",
+    "time_column": "runtime_date_column",
+}
+DEFAULT_DATE_COLUMN = "tkout_time"
+MAX_RECENT_DAYS = 3650
+RECENT_DAYS_RE = re.compile(r"^(\d+)\s*(?:일|days?)?$", re.IGNORECASE)
+COLOR_RULE_IDENTIFIER = r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*)"
+COLOR_RULE_WITHIN_RE = re.compile(
+    rf"^{COLOR_RULE_IDENTIFIER}\s+WITHIN\s+(\d+)\s+DAYS?$", re.IGNORECASE
+)
+COLOR_RULE_EQUAL_RE = re.compile(
+    rf"^{COLOR_RULE_IDENTIFIER}\s*(?:=|==)\s*(?:'[^']*'|\"[^\"]*\"|.+)$"
+)
+JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
+CHART_TYPES = {"scatter", "line", "box", "bar", "bar_horizontal", "pie", "donut", "radius", "wafer_map"}
+
+
+class ChartBuilderDefinitionError(ValueError):
+    """Raised when a definition cannot be converted into a safe run request."""
+
+
+def _clean_query_id(value: Any, fallback: str = "") -> str:
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip())[:40]
+    return (text or fallback).casefold()
+
+
+def _field_name(value: str) -> str:
+    return FIELD_ALIASES.get(str(value or "").strip().casefold().replace("-", "_"), "")
+
+
+def _assign_field(source: dict[str, str], name: str, value: str, *, append_sql: bool = False) -> None:
+    field = _field_name(name)
+    if not field:
+        raise ChartBuilderDefinitionError(f"지원하지 않는 Query 항목입니다: {name}")
+    cleaned = str(value or "").strip()
+    if field == "apply_reformatter":
+        source[field] = cleaned.casefold() in {"1", "true", "yes", "y", "on", "사용", "적용"}
+        return
+    if field == "runtime_recent_days":
+        match = RECENT_DAYS_RE.match(cleaned)
+        if not match:
+            raise ChartBuilderDefinitionError("RECENT_DAYS는 날짜 수여야 합니다. 예: RECENT_DAYS = 7")
+        days = int(match.group(1))
+        if days > MAX_RECENT_DAYS:
+            raise ChartBuilderDefinitionError(f"RECENT_DAYS는 1~{MAX_RECENT_DAYS}일 사이여야 합니다.")
+        source[field] = days
+        return
+    if field == "sql" and append_sql and source.get("sql"):
+        source["sql"] = f"{source['sql']}\n{cleaned}".strip()
+    else:
+        source[field] = cleaned
+
+
+def _parse_inline_fields(rest: str, source: dict[str, str], line_number: int) -> None:
+    chunks = [chunk.strip() for chunk in str(rest or "").split("|") if chunk.strip()]
+    if not chunks:
+        return
+    for chunk in chunks:
+        match = FIELD_RE.match(chunk)
+        if not match:
+            raise ChartBuilderDefinitionError(
+                f"{line_number}행 Query 한 줄 형식은 'Q1 | TABLE=... | PRODUCT=... | SQL=...'처럼 작성해 주세요."
+            )
+        _assign_field(source, match.group(1), match.group(2))
+
+
+def _strip_source_prefix(value: str, source_id: str) -> str:
+    token = str(value or "").strip()
+    prefix = f"{source_id}."
+    return token[len(prefix):].strip() if token.casefold().startswith(prefix.casefold()) else token
+
+
+def _parse_join_keys(raw: str, left: str, right: str) -> tuple[str, str]:
+    expression = str(raw or "").strip()
+    if not expression:
+        raise ChartBuilderDefinitionError("JOIN ON 뒤에 연결 열을 입력해 주세요.")
+    if "=" in expression:
+        left_raw, right_raw = expression.split("=", 1)
+    else:
+        left_raw = right_raw = expression
+    left_keys = [_strip_source_prefix(item, left) for item in left_raw.split(",") if item.strip()]
+    right_keys = [_strip_source_prefix(item, right) for item in right_raw.split(",") if item.strip()]
+    if not left_keys or len(left_keys) != len(right_keys):
+        raise ChartBuilderDefinitionError("JOIN 양쪽 열 개수가 같아야 합니다.")
+    return ", ".join(left_keys), ", ".join(right_keys)
+
+
+def parse_chart_builder_definition(code: str) -> dict[str, Any]:
+    """Parse engineer-friendly text into ChartBuilder sources and joins."""
+    raw = str(code or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip():
+        raise ChartBuilderDefinitionError("전체 코드를 입력해 주세요.")
+
+    sources: list[dict[str, str]] = []
+    joins: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    chart: dict[str, Any] = {}
+    in_chart = False
+    active_field = ""
+    max_rows = 10000
+
+    for line_number, raw_line in enumerate(raw.split("\n"), start=1):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            if current is not None and active_field == "sql" and current.get("sql"):
+                current["sql"] += "\n"
+            continue
+        if stripped.startswith("#"):
+            continue
+
+        max_match = MAX_ROWS_RE.match(stripped)
+        if max_match:
+            max_rows = int(max_match.group(1))
+            active_field = ""
+            continue
+
+        join_match = JOIN_RE.match(stripped)
+        if join_match:
+            left = _clean_query_id(join_match.group(1))
+            how = join_match.group(2).casefold()
+            right = _clean_query_id(join_match.group(3))
+            left_on, right_on = _parse_join_keys(join_match.group(4), left, right)
+            joins.append({"left": left, "right": right, "left_on": left_on, "right_on": right_on, "how": how})
+            current = None
+            in_chart = False
+            active_field = ""
+            continue
+
+        chart_match = CHART_HEADER_RE.match(stripped)
+        if chart_match:
+            current = None
+            in_chart = True
+            active_field = ""
+            rest = chart_match.group(1).strip()
+            if rest:
+                if rest.startswith("|"):
+                    rest = rest[1:].strip()
+                for chunk in [part.strip() for part in rest.split("|") if part.strip()]:
+                    field_match = CHART_FIELD_RE.match(chunk)
+                    if not field_match:
+                        raise ChartBuilderDefinitionError(
+                            f"{line_number}행 CHART 한 줄 형식은 'CHART | TYPE=scatter | X=... | Y=...'처럼 작성해 주세요."
+                        )
+                    _assign_chart_field(chart, field_match.group(1), field_match.group(2))
+            continue
+
+        query_match = QUERY_HEADER_RE.match(stripped)
+        if query_match:
+            query_id = _clean_query_id(query_match.group(1) or query_match.group(2), f"q{len(sources) + 1}")
+            current = {
+                "id": query_id, "root": "", "product": "", "sql": "", "select_cols": "",
+                "apply_reformatter": False, "reformatter_items": "",
+                "runtime_recent_days": 0, "runtime_date_column": "",
+            }
+            sources.append(current)
+            in_chart = False
+            active_field = ""
+            rest = query_match.group(3).strip()
+            if rest:
+                if rest.startswith("|"):
+                    rest = rest[1:].strip()
+                _parse_inline_fields(rest, current, line_number)
+            continue
+
+        field_match = FIELD_RE.match(stripped)
+        if field_match:
+            if current is None:
+                raise ChartBuilderDefinitionError(f"{line_number}행 항목보다 먼저 Q1 같은 Query 이름이 필요합니다.")
+            active_field = _field_name(field_match.group(1))
+            _assign_field(current, field_match.group(1), field_match.group(2))
+            continue
+
+        chart_field_match = CHART_FIELD_RE.match(stripped)
+        if chart_field_match and in_chart:
+            _assign_chart_field(chart, chart_field_match.group(1), chart_field_match.group(2))
+            continue
+
+        if current is not None and active_field == "sql":
+            current["sql"] = f"{current.get('sql', '')}\n{stripped}".strip()
+            continue
+
+        raise ChartBuilderDefinitionError(f"{line_number}행을 해석하지 못했습니다: {stripped[:120]}")
+
+    if not sources:
+        raise ChartBuilderDefinitionError("Q1 이상의 Query 블록이 필요합니다.")
+    if len(sources) > 10:
+        raise ChartBuilderDefinitionError("Query는 최대 10개까지 사용할 수 있습니다.")
+    ids = [source["id"] for source in sources]
+    if len(set(ids)) != len(ids):
+        raise ChartBuilderDefinitionError("Query 이름이 중복되었습니다.")
+    for source in sources:
+        missing = [label for key, label in (("root", "TABLE"), ("product", "PRODUCT")) if not source.get(key)]
+        if missing:
+            raise ChartBuilderDefinitionError(f"{source['id']}: {', '.join(missing)} 값이 필요합니다.")
+        source["sql"] = source.get("sql", "").strip()
+        if source.get("apply_reformatter") and "ET" not in str(source.get("root") or "").upper():
+            raise ChartBuilderDefinitionError(f"{source['id']}: REFORMATTER는 ET DB Query에서만 사용할 수 있습니다.")
+        # 시간 창은 이 코드가 가진 값이 전부다. DATE_COLUMN 만 있으면 아무 조건도 걸리지
+        # 않으므로 조용히 흘려보내지 않고 여기서 잡는다.
+        recent_days = int(source.get("runtime_recent_days") or 0)
+        date_column = str(source.get("runtime_date_column") or "").strip()
+        if date_column and not recent_days:
+            raise ChartBuilderDefinitionError(
+                f"{source['id']}: DATE_COLUMN은 RECENT_DAYS와 함께 써야 시간 조건이 걸립니다."
+            )
+        source["runtime_recent_days"] = recent_days
+        source["runtime_date_column"] = (date_column or DEFAULT_DATE_COLUMN) if recent_days else ""
+    known = set(ids)
+    for join in joins:
+        if join["left"] not in known or join["right"] not in known:
+            raise ChartBuilderDefinitionError(f"JOIN Query 이름을 찾지 못했습니다: {join['left']} → {join['right']}")
+        if join["how"] not in JOIN_HOWS:
+            raise ChartBuilderDefinitionError(f"지원하지 않는 JOIN 방식입니다: {join['how']}")
+    if len(sources) > 1 and not joins:
+        raise ChartBuilderDefinitionError("Query가 여러 개이면 JOIN 문장을 하나 이상 작성해 주세요.")
+    if max_rows < 1 or max_rows > 10000:
+        raise ChartBuilderDefinitionError("MAX_ROWS는 1~10000 사이여야 합니다.")
+
+    _validate_chart(chart)
+    payload = {"sources": sources, "joins": joins, "max_rows": max_rows, "chart": chart}
+    payload["canonical_code"] = format_chart_builder_definition(**payload)
+    return payload
+
+
+def _source_dict(source: Any) -> dict[str, Any]:
+    if isinstance(source, dict):
+        return source
+    if hasattr(source, "model_dump"):
+        return source.model_dump()
+    if hasattr(source, "dict"):
+        return source.dict()
+    return {
+        key: getattr(source, key, "")
+        for key in (
+            "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items",
+            "runtime_recent_days", "runtime_date_column",
+        )
+    }
+
+
+def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
+    key = str(name or "").strip().casefold()
+    aliases = {
+        "chart_type": "type", "x_col": "x", "y_col": "y",
+        "color_col": "color", "trellis_col": "trellis",
+    }
+    key = aliases.get(key, key)
+    cleaned = str(value or "").strip()
+    if key == "color_rule":
+        chart.setdefault("color_rules", []).append(cleaned)
+    elif key == "size":
+        match = re.fullmatch(r"(\d+)\s*[x×,]\s*(\d+)", cleaned, re.IGNORECASE)
+        if not match:
+            raise ChartBuilderDefinitionError("CHART SIZE는 WIDTHxHEIGHT 형식이어야 합니다. 예: 1200x650")
+        chart["width"] = int(match.group(1))
+        chart["height"] = int(match.group(2))
+    elif key in {"width", "height"}:
+        if not cleaned.isdigit():
+            raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 픽셀 숫자여야 합니다.")
+        chart[key] = int(cleaned)
+    elif key == "highlight":
+        chart[key] = cleaned.casefold() not in {"0", "false", "no", "n", "off", "사용안함"}
+    else:
+        chart[key] = cleaned
+
+
+def _validate_chart(chart: dict[str, Any]) -> None:
+    if not chart:
+        return
+    chart_type = str(chart.get("type") or "").casefold()
+    if chart_type and chart_type not in CHART_TYPES:
+        raise ChartBuilderDefinitionError(f"지원하지 않는 CHART TYPE입니다: {chart_type}")
+    color = str(chart.get("color") or "").casefold()
+    rules = chart.get("color_rules") if isinstance(chart.get("color_rules"), list) else []
+    if rules and color not in {"custom", "__custom__"}:
+        chart["color"] = "custom"
+    for rule in rules:
+        raw_rule = str(rule or "").strip()
+        split = re.match(r"^(.*?)\s+then\s+(.+)$", raw_rule, re.IGNORECASE)
+        if not split:
+            raise ChartBuilderDefinitionError(f"COLOR_RULE에는 THEN 색상이 필요합니다: {rule}")
+        for condition in re.split(r"\s+AND\s+", split.group(1), flags=re.IGNORECASE):
+            within = COLOR_RULE_WITHIN_RE.fullmatch(condition.strip())
+            if within:
+                days = int(within.group(1))
+                if 1 <= days <= MAX_RECENT_DAYS:
+                    continue
+                raise ChartBuilderDefinitionError(
+                    f"COLOR_RULE WITHIN 날짜는 1~{MAX_RECENT_DAYS}일 사이여야 합니다: {condition.strip()}"
+                )
+            if COLOR_RULE_EQUAL_RE.fullmatch(condition.strip()):
+                continue
+            raise ChartBuilderDefinitionError(
+                "COLOR_RULE 조건은 열 = '값' 또는 시간열 WITHIN 7 DAYS 형식이어야 합니다: "
+                f"{condition.strip()}"
+            )
+    width = int(chart.get("width") or 0)
+    height = int(chart.get("height") or 0)
+    if width and not 320 <= width <= 2400:
+        raise ChartBuilderDefinitionError("CHART WIDTH는 320~2400px 사이여야 합니다.")
+    if height and not 240 <= height <= 1600:
+        raise ChartBuilderDefinitionError("CHART HEIGHT는 240~1600px 사이여야 합니다.")
+
+
+def format_chart_builder_definition(
+    sources: list[Any], joins: list[Any] | None = None, max_rows: int = 10000,
+    chart: dict[str, Any] | None = None, **_: Any
+) -> str:
+    """Return the canonical, copy-friendly representation of a run request."""
+    lines: list[str] = []
+    for index, raw_source in enumerate(sources or [], start=1):
+        source = _source_dict(raw_source)
+        source_id = _clean_query_id(source.get("id"), f"q{index}")
+        header = source_id.upper() if re.fullmatch(r"q\d+", source_id, re.IGNORECASE) else f"[{source_id}]"
+        lines.extend([
+            header,
+            f"TABLE = {str(source.get('root') or '').strip()}",
+            f"PRODUCT = {str(source.get('product') or '').strip()}",
+        ])
+        sql_lines = str(source.get("sql") or "").strip().splitlines() or [""]
+        lines.append(f"SQL = {sql_lines[0]}")
+        lines.extend(f"  {line}" for line in sql_lines[1:])
+        select_cols = str(source.get("select_cols") or "").strip()
+        if select_cols:
+            lines.append(f"SELECT_COLS = {select_cols}")
+        recent_days = max(0, min(MAX_RECENT_DAYS, int(source.get("runtime_recent_days") or 0)))
+        if recent_days:
+            date_column = str(source.get("runtime_date_column") or "").strip() or DEFAULT_DATE_COLUMN
+            lines.append(f"RECENT_DAYS = {recent_days}")
+            lines.append(f"DATE_COLUMN = {date_column}")
+        if bool(source.get("apply_reformatter")):
+            lines.append("REFORMATTER = true")
+            reformatter_items = str(source.get("reformatter_items") or "").strip()
+            if reformatter_items:
+                lines.append(f"ITEMS = {reformatter_items}")
+        lines.append("")
+
+    for raw_join in joins or []:
+        join = _source_dict(raw_join) if not isinstance(raw_join, dict) else raw_join
+        left = _clean_query_id(join.get("left"))
+        right = _clean_query_id(join.get("right"))
+        how = str(join.get("how") or "left").strip().upper()
+        left_on = ", ".join(item.strip() for item in str(join.get("left_on") or "").split(",") if item.strip())
+        right_on = ", ".join(item.strip() for item in str(join.get("right_on") or "").split(",") if item.strip())
+        on_clause = left_on if left_on == right_on else f"{left_on} = {right_on}"
+        lines.append(f"JOIN {left} {how} {right} ON {on_clause}")
+    if joins:
+        lines.append("")
+    chart = chart if isinstance(chart, dict) else {}
+    if chart:
+        lines.append("CHART")
+        for key, label in (("type", "TYPE"), ("x", "X"), ("y", "Y"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("width", "WIDTH"), ("height", "HEIGHT")):
+            value = str(chart.get(key) or "").strip()
+            if value:
+                lines.append(f"{label} = {value}")
+        for rule in chart.get("color_rules") or []:
+            if str(rule or "").strip():
+                lines.append(f"COLOR_RULE = {str(rule).strip()}")
+        if str(chart.get("color_else") or "").strip():
+            lines.append(f"COLOR_ELSE = {str(chart.get('color_else')).strip()}")
+        if chart.get("highlight") is not None:
+            lines.append(f"HIGHLIGHT = {'true' if bool(chart.get('highlight')) else 'false'}")
+        lines.append("")
+    lines.append(f"MAX_ROWS = {max(1, min(10000, int(max_rows or 10000)))}")
+    return "\n".join(lines).strip() + "\n"

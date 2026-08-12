@@ -1,0 +1,44 @@
+/*
+ * 자체 호스팅 웹폰트
+ * ==========================================================================
+ * 이 앱은 원래 웹폰트를 하나도 로드하지 않았다. global.css 와 각 페이지가
+ * "Pretendard" / "JetBrains Mono" 를 지정해 놨지만 실제로는 어디에도 없어서
+ * 전부 시스템 폴백으로 떨어졌고, 지정 방식마다 폴백 종착지가 달라
+ * (bare monospace → Courier New, --font-mono → Consolas) 탭마다 글씨체가
+ * 달라 보였다.
+ *
+ * 사내망에서는 CDN 을 못 쓰므로 파일을 저장소에 넣고 여기서 직접 선언한다.
+ * frontend/public/ 은 Vite 가 루트(/)로 서빙하고 _build_setup.py 의
+ * INCLUDE_DIRS 에도 들어 있어 배포 번들에 그대로 실린다.
+ *
+ * 라이선스: 둘 다 SIL Open Font License 1.1 — 임베드·재배포 가능.
+ *   Pretendard   v1.3.9  (orioncactus/pretendard)      2,057,688 B
+ *   JetBrains Mono v2.304 (JetBrains/JetBrainsMono)  Regular 92,164 B / Bold 94,588 B
+ *
+ * Pretendard 는 가변 폰트 한 장으로 weight 를 전부 커버한다 — Carbon 이 쓰는
+ * 400/600 두 단계를 위해 정적 파일 두 개를 받을 필요가 없다.
+ */
+
+@font-face {
+  font-family: "Pretendard Variable";
+  src: url("/fonts/PretendardVariable.woff2") format("woff2-variations");
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

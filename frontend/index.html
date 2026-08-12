@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>flow</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="theme-color" content="#FF5E00">
+<!-- v8.8.33 보안: 외부 CDN 폰트 제거 (사내망 전용 원칙). 시스템 폰트 fallback 만 사용. -->
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Pretendard Variable','Pretendard','Apple SD Gothic Neo','맑은 고딕','Malgun Gothic',system-ui,-apple-system,sans-serif}</style>
+<!-- 부팅 실패 진단. 번들이 로드되지 않으면 지금까지는 아무 것도 없는 흰 화면만 떴고,
+     운영서버에서 원인을 알 방법이 없었다. 자원 로드 실패/스크립트 예외를 잡아 화면에
+     그대로 보여준다. 앱이 정상 마운트되면 이 코드는 아무 것도 하지 않는다. -->
+<script>
+(function(){
+  var shown=false;
+  var PRE_STYLE='white-space:pre-wrap;word-break:break-all;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px;font-size:12px;color:#374151';
+  // 서버 셸에 접근할 수 없는 운영 환경(Docker)용 원격 진단. 부팅이 실패하면
+  // /deploy-info.json 으로 서버 dist 의 실제 상태를 받아 "서버 추출 실패인지,
+  // 프록시가 /assets/ 를 막는지, 프록시가 낡은 index.html 을 캐시하는지"를
+  // 화면에 판정으로 띄운다. 이 화면 캡처만으로 배포 문제를 특정할 수 있게 한다.
+  function diagnose(box,failedUrl){
+    var d=document.createElement('pre');
+    d.setAttribute('style',PRE_STYLE+';margin-top:10px');
+    d.textContent='서버 배포 상태 확인 중… (/deploy-info.json)';
+    box.appendChild(d);
+    var x=new XMLHttpRequest();
+    x.open('GET','/deploy-info.json?_='+Date.now());
+    x.onreadystatechange=function(){
+      if(x.readyState!==4)return;
+      var t=x.responseText||'';
+      if(x.status!==200){
+        d.textContent='서버 진단(/deploy-info.json) 실패: HTTP '+x.status+'\n판정: 백엔드까지 요청이 닿지 않습니다 — 프록시가 경로를 막고 있거나 컨테이너가 내려가 있습니다.';
+        return;
+      }
+      if(t.charAt(0)==='<'){
+        d.textContent='판정: 서버 백엔드가 /deploy-info.json 을 모르는 구버전입니다.\n→ 새 번들이 아직 서버에 배포되지 않았습니다. 이미지 재빌드(캐시 없이) 후 컨테이너를 재생성하세요.';
+        return;
+      }
+      var info;try{info=JSON.parse(t);}catch(_){d.textContent='서버 진단 응답 파싱 실패:\n'+t.slice(0,300);return;}
+      var rep=info.extract_report||{};
+      var lines=['── 서버 배포 진단 ──',
+        '서버 버전: '+(info.version||'?')+' / 마지막 extract: '+(rep.at||'기록 없음'),
+        '서버 index.html 참조: '+((info.index_refs||[]).join(', ')||'(없음)'),
+        '서버에 없는 참조 파일: '+((info.missing||[]).length?info.missing.join(', '):'없음'),
+        'extract 쓰기 실패: '+((rep.write_failures||[]).length?rep.write_failures.join('; '):'없음'),
+        '서버 디스크 여유: '+(info.disk_free_mb!=null?info.disk_free_mb+' MB':'?')];
+      var cc=info.can_create_in_assets;
+      if(cc)lines.push('assets 새 파일 생성: '+(cc.ok?'가능':('불가 — '+(cc.error||'?'))));
+      var sr=info.self_repair;
+      if(sr)lines.push('기동 시 자가복구('+(sr.at||'?')+'): 복원 '+((sr.repaired||[]).length)+'개, 실패 '+((sr.errors||[]).length)+'개'+((sr.errors||[]).length?('\n  '+sr.errors.join('\n  ')):''));
+      if(!rep.at){
+        lines.push('※ extract 기록이 없습니다 — 서버에서 extract 가 report 를 남기지 못했습니다(새 파일 생성 불가·중단 의심).');
+      }
+      var file=(failedUrl||'').split('/').pop();
+      if(file){
+        var present=(info.assets_present||[]).indexOf(file)>=0;
+        var referenced=((info.index_refs||[]).join('\n')).indexOf(file)>=0;
+        if(present){
+          lines.push('','판정: 서버에는 '+file+' 이 있습니다.\n→ 서버/배포 문제가 아니라 중간 프록시·캐시가 /assets/ 요청을 막거나 낡은 응답을 주고 있습니다. 이 화면에서 새로고침을 한 번 해보세요 — 방금 자가복구로 생겼다면 이번엔 뜹니다.');
+        }else if(referenced&&cc&&!cc.ok){
+          lines.push('','판정: 서버 dist 에 '+file+' 이 없고, 서빙 프로세스가 assets 에 새 파일을 만들 수 없습니다.\n→ 배포/캐시 문제가 아니라 서버 스토리지 권한(읽기전용·소유자 불일치·볼륨 마운트) 문제입니다. 위 오류 문구를 서버 관리자에게 전달하세요.');
+        }else if(referenced){
+          lines.push('','판정: 서버 dist 에 '+file+' 이 없습니다.\n→ extract 가 이 파일을 남기지 못했습니다. 위 자가복구 결과·쓰기 실패 목록을 확인하세요.');
+        }else{
+          lines.push('','판정: 브라우저가 받은 index.html 은 '+file+' 을 참조하지만 서버의 현재 배포는 다른 파일을 참조합니다.\n→ 프록시가 낡은 index.html 을 캐시하고 있거나, index.html 과 /assets/ 가 서로 다른 서버에서 오고 있습니다.');
+        }
+      }
+      d.textContent=lines.join('\n');
+    };
+    try{x.send();}catch(_){d.textContent='서버 진단 요청 실패(네트워크)';}
+  }
+  function show(kind,detail,failedUrl){
+    if(shown)return;
+    var root=document.getElementById('root');
+    if(!root)return;                        // <head> 파싱 중이면 아직 판단할 수 없다
+    if(root.firstChild)return;              // 앱이 이미 그려졌으면 건드리지 않는다
+    shown=true;
+    var box=document.createElement('div');
+    box.setAttribute('style','max-width:720px;margin:56px auto;padding:24px;border:1px solid #e5e7eb;border-radius:10px;font-size:14px;line-height:1.6;color:#111827');
+    var h=document.createElement('div');
+    h.setAttribute('style','font-size:16px;font-weight:700;margin-bottom:10px;color:#b91c1c');
+    h.textContent='화면을 불러오지 못했습니다';
+    var p=document.createElement('div');
+    p.setAttribute('style','margin-bottom:12px;color:#374151');
+    p.textContent=kind;
+    var pre=document.createElement('pre');
+    pre.setAttribute('style',PRE_STYLE);
+    pre.textContent=(detail||'')+'\n\nURL: '+location.href+'\nUA: '+navigator.userAgent;
+    box.appendChild(h);box.appendChild(p);box.appendChild(pre);
+    root.appendChild(box);
+    diagnose(box,failedUrl);
+  }
+  // 앱 파일 404 의 대부분은 "배포가 진행 중"인 짧은 창이다. vite build 는 dist 를 비우고
+  // 다시 쓰기 때문에 그 몇 초 사이에 들어온 접속은 멀쩡한 배포인데도 죽은 화면을 본다.
+  // 탭당 한 번만 자동 재시도하고(App.jsx 의 flow:chunk-reload 와 같은 1회 규칙),
+  // 그래도 실패할 때만 원인을 띄운다.
+  var RETRY_KEY='flow:boot-retry';
+  function mounted(){
+    var root=document.getElementById('root');
+    return !!(root&&root.firstChild);
+  }
+  function retryOnce(){
+    // 부팅 실패에만 쓴다. 앱이 이미 떠 있는데 뒤늦게 페이지 chunk 의 CSS 가 404 나는
+    // 경우까지 새로고침하면 멀쩡한 화면을 날린다 — 그건 App.jsx 가 이미 1회 처리한다.
+    if(mounted())return false;
+    try{
+      if(sessionStorage.getItem(RETRY_KEY)==='1')return false;
+      sessionStorage.setItem(RETRY_KEY,'1');
+    }catch(_){return false;}   // sessionStorage 가 막혀 있으면 무한 새로고침 위험 — 바로 진단
+    setTimeout(function(){location.reload();},1200);
+    return true;
+  }
+  // 정상 마운트되면 재시도 표시를 지운다. 안 지우면 다음 배포 때 자동 복구가 한 번도 안 걸린다.
+  var polls=0;
+  var mountPoll=setInterval(function(){
+    var root=document.getElementById('root');
+    if(root&&root.firstChild){
+      clearInterval(mountPoll);
+      try{sessionStorage.removeItem(RETRY_KEY);}catch(_){}
+    }else if(++polls>60){clearInterval(mountPoll);}
+  },500);
+  window.addEventListener('error',function(e){
+    var t=e&&e.target;
+    // favicon 같은 부수 자원 404 로 오진하지 않게 스크립트/스타일시트만 치명으로 본다.
+    if(t&&(t.tagName==='SCRIPT'||(t.tagName==='LINK'&&t.rel==='stylesheet'))){
+      if(retryOnce())return;   // 배포 중이었으면 이 재시도로 조용히 복구된다
+      show('앱 파일을 서버에서 받지 못했습니다(자동 재시도 후에도 실패). 아래 서버 배포 진단의 판정을 확인하세요.',
+           '로드 실패: '+(t.src||t.href||''),
+           t.src||t.href||'');
+    }else if(e&&e.message){
+      show('앱 시작 중 오류가 발생했습니다.', e.message+(e.filename?('\n'+e.filename+':'+e.lineno):''));
+    }
+  },true);
+  window.addEventListener('unhandledrejection',function(e){
+    var r=e&&e.reason;
+    show('앱 시작 중 처리되지 않은 오류가 발생했습니다.', String((r&&r.message)||r||''));
+  });
+  setTimeout(function(){
+    show('앱이 시작되지 않았습니다. 자바스크립트가 로드되지 않았거나 브라우저가 이 번들을 실행하지 못했습니다.','(15초 동안 아무 것도 렌더되지 않음)');
+  },15000);
+})();
+</script>
+</head><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>

@@ -1,0 +1,564 @@
+/*
+ * Carbon 레이어 — 전역 적용
+ * ==========================================================================
+ * IBM Carbon Design System 의 "구조"만 가져온다: 타입 스케일, 8px 간격,
+ * 32px 행 밀도, 각진 모서리, 2px 실선 포커스, 굵기 두 단계(400/600).
+ * 색은 한 줄도 재정의하지 않는다 — --brand/--accent(#E25822) 와 다크/라이트
+ * 전환은 useFlowShell.js 의 토큰 그대로다.
+ *
+ * 켜고 끄기: App.jsx 루트의 className "flow-app flow-carbon" 에서
+ *   " flow-carbon" 을 빼면 전부 원래대로 돌아간다. 이 파일은 그 클래스가
+ *   없으면 아무것도 하지 않는다.
+ *
+ * 제외 (의도적 고정 디자인):
+ *   - 로그인 화면 — .flow-app 바깥에서 렌더된다 (App.jsx). 자동 제외.
+ *   - pre / code / kbd / samp — DevGuide 코드블록, 콘솔 출력.
+ *   - .tbl / .flow-table 이 아닌 표 — TableMap 엑셀 그리드, 메일 미리보기.
+ *   - .flow-fixed 가 붙은 서브트리 — escape hatch. 고정 디자인 화면에서
+ *     Carbon 이 거슬리면 그 컨테이너에 className="flow-fixed" 만 달면 된다.
+ *
+ * 값 출처 (2026-08-01 확인)
+ *   타입: @carbon/type _styles.scss + _scale.scss (Yn = Yn-1 + (INT[(n-2)/4]+1)*2)
+ *   간격: @carbon/layout generated/_spacing.scss
+ *
+ * global.css 가 !important 로 걸어둔 규칙(radius 강제, letter-spacing 0,
+ * button nowrap)을 이기려면 특이도가 필요해서 선택자가 .flow-app.flow-carbon
+ * 으로 시작한다. main.jsx 에서 global.css 다음에 import 해야 한다.
+ */
+
+.flow-app.flow-carbon {
+  /* Carbon type scale — step 1 / 2 / 3 / 5 */
+  --cds-label-size: 12px;
+  --cds-label-lh: 16px;
+  --cds-label-ls: 0.32px;
+  --cds-body-size: 14px;
+  --cds-body-lh: 18px;
+  --cds-body-ls: 0.16px;
+  --cds-h02-size: 16px;
+  --cds-h02-lh: 24px;
+  --cds-h03-size: 20px;
+  --cds-h03-lh: 28px;
+
+  /* Carbon 2x grid */
+  --cds-sp-02: 4px;
+  --cds-sp-03: 8px;
+  --cds-sp-04: 12px;
+  --cds-sp-05: 16px;
+  --cds-sp-06: 24px;
+
+  /* 밀도 */
+  --cds-row: 32px;      /* data table 'small' */
+  --cds-control: 32px;
+
+  /* Carbon 원본은 각지다. 4px 로 바꾸면 flow 기존 느낌으로 절충된다. */
+  --cds-radius: 0px;
+
+  /* 서체 스택 — 아래 "0. 서체 통일" 참고. 한글 폴백을 명시해서
+     Latin 은 Segoe UI, 한글은 Malgun Gothic 으로 갈리는 걸 한 줄에서 정리한다. */
+  --font-sans: "Pretendard Variable", "Pretendard", "Inter", system-ui, -apple-system,
+               "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas,
+               "Liberation Mono", "D2Coding", monospace;
+}
+
+/* ==========================================================================
+ * 0. 서체 통일 — 탭마다 글씨체가 달라 보이던 원인
+ *
+ * 이 앱은 웹폰트를 하나도 로드하지 않는다 (index.html 에 @font-face 도 link 도
+ * 없고 public/ 에는 favicon 뿐이다). 그래서 지정한 서체는 전부 폴백으로
+ * 떨어지는데, 그 폴백이 지정 방식마다 달라진다:
+ *
+ *   fontFamily:"monospace"            (695곳) → 브라우저 기본 = Courier New
+ *   var(--font-mono)                          → JetBrains Mono 없음 → Consolas
+ *   fontFamily:"'JetBrains Mono',..."  (44곳) → Consolas
+ *   fontFamily:"'Segoe UI',Arial,..."   (2곳) → Segoe UI
+ *
+ * 결과적으로 한 앱 안에 monospace 가 두 종류로 갈렸다. 여기서 토큰 두 개로
+ * 모은다. 서체 파일을 새로 넣는 게 아니라 "무엇으로 폴백할지"를 하나로 맞추는
+ * 것이라 오프라인 사내망에서도 그대로 동작한다.
+ * ========================================================================== */
+.flow-app.flow-carbon [style*="monospace"]:not(.flow-fixed):not(.flow-fixed *) {
+  font-family: var(--font-mono) !important;
+}
+
+.flow-app.flow-carbon [style*="Segoe UI"]:not(.flow-fixed):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="Pretendard"]:not(.flow-fixed):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="sans-serif"]:not(.flow-fixed):not(.flow-fixed *) {
+  font-family: var(--font-sans) !important;
+}
+
+/* 지정이 아예 없는 곳도 같은 스택을 타게 한다 */
+.flow-app.flow-carbon,
+.flow-app.flow-carbon button,
+.flow-app.flow-carbon input,
+.flow-app.flow-carbon select,
+.flow-app.flow-carbon textarea {
+  font-family: var(--font-sans);
+}
+
+/* 숫자·ID·경로는 mono 로 통일 */
+.flow-app.flow-carbon .flow-mono,
+.flow-app.flow-carbon .mono-break,
+.flow-app.flow-carbon .chip,
+.flow-app.flow-carbon .av,
+.flow-app.flow-carbon code,
+.flow-app.flow-carbon kbd,
+.flow-app.flow-carbon samp {
+  font-family: var(--font-mono) !important;
+}
+
+/* ==========================================================================
+ * 1. 타이포 — 11/12/13/14/16/18px 로 흩어진 인라인 크기를 4단계로 수렴
+ *    React 는 style={{fontSize:12}} 를 "font-size: 12px" 로 렌더한다.
+ * ========================================================================== */
+.flow-app.flow-carbon [style*="font-size: 10px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 11px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 12px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 13px"]:not(pre):not(code):not(.flow-fixed *) {
+  font-size: var(--cds-label-size) !important;
+  line-height: var(--cds-label-lh) !important;
+  letter-spacing: var(--cds-label-ls) !important;
+}
+
+.flow-app.flow-carbon [style*="font-size: 14px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 15px"]:not(pre):not(code):not(.flow-fixed *) {
+  font-size: var(--cds-body-size) !important;
+  line-height: var(--cds-body-lh) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+}
+
+.flow-app.flow-carbon [style*="font-size: 16px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 17px"]:not(pre):not(code):not(.flow-fixed *) {
+  font-size: var(--cds-h02-size) !important;
+  line-height: var(--cds-h02-lh) !important;
+  letter-spacing: 0 !important;
+  font-weight: 600 !important;
+}
+
+.flow-app.flow-carbon [style*="font-size: 18px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 20px"]:not(pre):not(code):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-size: 22px"]:not(pre):not(code):not(.flow-fixed *) {
+  font-size: var(--cds-h03-size) !important;
+  line-height: var(--cds-h03-lh) !important;
+  letter-spacing: 0 !important;
+  font-weight: 400 !important;
+}
+
+/* Carbon 은 400 과 600 두 단계만 쓴다. 700~900 을 전부 600 으로 내린다. */
+.flow-app.flow-carbon [style*="font-weight: 700"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-weight: 800"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-weight: 850"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="font-weight: 900"]:not(.flow-fixed *) {
+  font-weight: 600 !important;
+}
+
+/* 공용 클래스의 굵기 인플레이션도 같이 내린다 */
+.flow-app.flow-carbon .card__title,
+.flow-app.flow-carbon .btn,
+.flow-app.flow-carbon .pill,
+.flow-app.flow-carbon .chip,
+.flow-app.flow-carbon .empty-state__title,
+.flow-app.flow-carbon .flow-title,
+.flow-app.flow-carbon .flow-nav-trigger,
+.flow-app.flow-carbon .flow-nav-menu-item,
+.flow-app.flow-carbon .flow-sidebar-title {
+  font-weight: 600 !important;
+  letter-spacing: var(--cds-body-ls) !important;
+}
+
+.flow-app.flow-carbon .btn,
+.flow-app.flow-carbon .pill,
+.flow-app.flow-carbon .chip {
+  font-weight: 400 !important;
+}
+
+/* 숫자·경로·ID — code-01 (mono + 0.32px tracking) */
+.flow-app.flow-carbon .flow-mono:not(.flow-fixed *),
+.flow-app.flow-carbon .mono-break:not(.flow-fixed *),
+.flow-app.flow-carbon .chip:not(.flow-fixed *) {
+  letter-spacing: var(--cds-label-ls) !important;
+}
+
+/* 한글 화면에서 대문자 변환은 얻는 게 없다 — Carbon 도 쓰지 않는다 */
+.flow-app.flow-carbon .flow-sidebar-title {
+  text-transform: none !important;
+}
+
+/* ==========================================================================
+ * 2. 모서리 — Carbon 은 각지다. global.css 의 radius 강제를 되돌린다.
+ * ========================================================================== */
+.flow-app.flow-carbon,
+.flow-app.flow-carbon *:not(.flow-fixed):not(.flow-fixed *),
+.flow-app.flow-carbon [style*="border-radius"]:not(.flow-fixed *),
+.flow-app.flow-carbon .rounded,
+.flow-app.flow-carbon .rounded-sm,
+.flow-app.flow-carbon .rounded-md,
+.flow-app.flow-carbon .rounded-lg,
+.flow-app.flow-carbon .rounded-xl,
+.flow-app.flow-carbon .rounded-2xl,
+.flow-app.flow-carbon .card,
+.flow-app.flow-carbon .flow-panel,
+.flow-app.flow-carbon .tablewrap,
+.flow-app.flow-carbon button,
+.flow-app.flow-carbon input,
+.flow-app.flow-carbon select,
+.flow-app.flow-carbon textarea {
+  border-radius: var(--cds-radius) !important;
+}
+
+/* 원형은 원형으로 남긴다 — 아바타, 상태 점, 토글 */
+.flow-app.flow-carbon .av,
+.flow-app.flow-carbon .dot2,
+.flow-app.flow-carbon .rounded-full,
+.flow-app.flow-carbon [style*="border-radius: 50%"],
+.flow-app.flow-carbon [style*="border-radius:50%"] {
+  border-radius: 50% !important;
+}
+
+/* ==========================================================================
+ * 3. 평면화 — Carbon 은 카드에 그림자를 쓰지 않는다.
+ *    떠 있는 것(드롭다운·모달)은 그대로 둔다.
+ * ========================================================================== */
+.flow-app.flow-carbon .card,
+.flow-app.flow-carbon .flow-panel,
+.flow-app.flow-carbon .tablewrap,
+.flow-app.flow-carbon [style*="box-shadow"]:not(.flow-fixed *) {
+  box-shadow: none !important;
+}
+
+.flow-app.flow-carbon .flow-nav-menu,
+.flow-app.flow-carbon .flow-modal,
+.flow-app.flow-carbon [role="dialog"] {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* ==========================================================================
+ * 4. 컨트롤 — Carbon 버튼은 각지고 32px 이고 굵지 않다(400)
+ * ========================================================================== */
+.flow-app.flow-carbon button:not(.flow-fixed *),
+.flow-app.flow-carbon .btn {
+  min-height: var(--cds-control) !important;
+  padding: 0 var(--cds-sp-04) !important;
+  font-size: var(--cds-body-size) !important;
+  line-height: var(--cds-body-lh) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+  transition: background 70ms cubic-bezier(0.2, 0, 0.38, 0.9),
+              border-color 70ms cubic-bezier(0.2, 0, 0.38, 0.9);
+}
+
+.flow-app.flow-carbon .btn--sm {
+  min-height: 24px !important;
+  padding: 0 var(--cds-sp-03) !important;
+}
+
+/* 카드형 버튼은 한 줄 강제에서 풀어준다 (global.css 의 nowrap 상속) */
+.flow-app.flow-carbon button[style*="display: grid"],
+.flow-app.flow-carbon button[style*="display: block"],
+.flow-app.flow-carbon button[style*="white-space: normal"] {
+  white-space: normal !important;
+  height: auto !important;
+}
+
+/* Carbon 입력은 테두리 대신 바닥선을 강조한다 */
+.flow-app.flow-carbon .input,
+.flow-app.flow-carbon .select,
+.flow-app.flow-carbon .filter,
+.flow-app.flow-carbon input:not([type="checkbox"]):not([type="radio"]):not(.flow-fixed *),
+.flow-app.flow-carbon select:not(.flow-fixed *) {
+  min-height: var(--cds-control) !important;
+  padding: 0 var(--cds-sp-04) !important;
+  border: 1px solid transparent !important;
+  border-bottom: 1px solid var(--text-secondary) !important;
+  background: var(--bg-hover) !important;
+  font-size: var(--cds-body-size) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+}
+
+.flow-app.flow-carbon .textarea,
+.flow-app.flow-carbon textarea:not(.flow-fixed *) {
+  padding: var(--cds-sp-03) var(--cds-sp-04) !important;
+  border: 1px solid transparent !important;
+  border-bottom: 1px solid var(--text-secondary) !important;
+  background: var(--bg-hover) !important;
+  font-size: var(--cds-body-size) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+}
+
+/* Carbon 시그니처: 2px 실선 포커스 (그림자 링이 아니다) */
+.flow-app.flow-carbon button:focus-visible,
+.flow-app.flow-carbon input:focus-visible,
+.flow-app.flow-carbon select:focus-visible,
+.flow-app.flow-carbon textarea:focus-visible,
+.flow-app.flow-carbon [tabindex]:focus-visible,
+.flow-app.flow-carbon [role="button"]:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: -2px !important;
+  box-shadow: none !important;
+}
+
+/* ==========================================================================
+ * 5. 표 — Carbon data table 'small' (32px 행, 세로선 없음)
+ *    공용 표 클래스에만 적용한다. TableMap 엑셀 그리드와 메일 미리보기의
+ *    표는 자체 구조라 여기 안 걸린다.
+ * ========================================================================== */
+.flow-app.flow-carbon table.tbl th,
+.flow-app.flow-carbon table.flow-table th {
+  height: var(--cds-row) !important;
+  padding: 0 var(--cds-sp-05) !important;
+  background: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border-bottom: 1px solid var(--line, var(--border)) !important;
+  font-size: var(--cds-body-size) !important;
+  line-height: var(--cds-body-lh) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+  font-weight: 600 !important;
+}
+
+.flow-app.flow-carbon table.tbl td,
+.flow-app.flow-carbon table.flow-table td {
+  height: var(--cds-row) !important;
+  padding: 0 var(--cds-sp-05) !important;
+  border-left: 0 !important;
+  border-right: 0 !important;
+  font-size: var(--cds-body-size) !important;
+  line-height: var(--cds-body-lh) !important;
+  letter-spacing: var(--cds-body-ls) !important;
+  font-weight: 400 !important;
+  vertical-align: middle !important;
+}
+
+/* ==========================================================================
+ * 6. 상태 배지 — Carbon tag 는 각지고 채워진 면, 굵지 않다
+ * ========================================================================== */
+.flow-app.flow-carbon .pill,
+.flow-app.flow-carbon .chip {
+  padding: 0 var(--cds-sp-03) !important;
+  border-color: transparent !important;
+  font-size: var(--cds-label-size) !important;
+  line-height: 20px !important;
+}
+
+/* ==========================================================================
+ * 7. 내비게이션 — 활성 탭은 면으로, 장식 없이
+ * ========================================================================== */
+.flow-app.flow-carbon .flow-nav {
+  height: 48px !important;
+  padding: 0 var(--cds-sp-05) !important;
+}
+
+.flow-app.flow-carbon .flow-nav-trigger {
+  height: var(--cds-control) !important;
+  padding: 0 var(--cds-sp-04) !important;
+  font-size: var(--cds-body-size) !important;
+}
+
+.flow-app.flow-carbon .flow-nav-trigger.is-active {
+  background: var(--brand-50) !important;
+  border-color: transparent !important;
+  box-shadow: inset 0 -2px 0 var(--brand) !important;
+}
+
+.flow-app.flow-carbon .flow-nav-menu-item.is-active {
+  box-shadow: inset 3px 0 0 var(--accent) !important;
+}
+
+.flow-app.flow-carbon .flow-toolbar {
+  padding: var(--cds-sp-03) var(--cds-sp-05) !important;
+  gap: var(--cds-sp-03) !important;
+}
+
+/* 사이드바/서피스 헤더의 그라데이션과 장식 막대 제거 — Carbon 헤더는 평평하다 */
+.flow-app.flow-carbon .flow-sidebar-header,
+.flow-app.flow-carbon .flow-surface-header {
+  background: var(--bg-secondary) !important;
+  box-shadow: inset 0 -1px 0 var(--border) !important;
+  min-height: 40px !important;
+  padding: var(--cds-sp-04) var(--cds-sp-05) !important;
+}
+
+.flow-app.flow-carbon .flow-sidebar-header::before,
+.flow-app.flow-carbon .flow-surface-header::before {
+  display: none !important;
+}
+
+/* ==========================================================================
+ * 8. 간격 — 8px 그리드로 수렴 (2/3/5/6/7/10/14 → 4/8/12/16)
+ * ========================================================================== */
+.flow-app.flow-carbon [style*="gap: 2px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 3px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 5px"]:not(.flow-fixed *) {
+  gap: var(--cds-sp-02) !important;
+}
+
+.flow-app.flow-carbon [style*="gap: 6px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 7px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 9px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 10px"]:not(.flow-fixed *) {
+  gap: var(--cds-sp-03) !important;
+}
+
+.flow-app.flow-carbon [style*="gap: 14px"]:not(.flow-fixed *),
+.flow-app.flow-carbon [style*="gap: 18px"]:not(.flow-fixed *) {
+  gap: var(--cds-sp-05) !important;
+}
+
+/* ==========================================================================
+ * 9. 카드·패널 — 선 하나로만 구분한다
+ * ========================================================================== */
+.flow-app.flow-carbon .card {
+  padding: var(--cds-sp-05) !important;
+}
+
+.flow-app.flow-carbon .empty-state {
+  padding: var(--cds-sp-06) var(--cds-sp-05) !important;
+}
+
+/* ========================================================================== 
+ * 10. 홈 기능 카드 — Carbon clickable tile
+ * ========================================================================== */
+.flow-app.flow-carbon .home-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--cds-sp-05);
+  margin-bottom: 32px;
+}
+
+.flow-app.flow-carbon button.home-feature-card {
+  position: relative;
+  min-width: 0;
+  min-height: 168px !important;
+  padding: var(--cds-sp-05) !important;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-sans) !important;
+  text-align: left;
+  white-space: normal !important;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.flow-app.flow-carbon button.home-feature-card:hover {
+  border-color: var(--text-secondary) !important;
+  background: var(--bg-hover);
+}
+
+.flow-app.flow-carbon button.home-feature-card:active {
+  background: var(--bg-tertiary);
+}
+
+.flow-app.flow-carbon button.home-feature-card:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: -2px !important;
+}
+
+.flow-app.flow-carbon .home-feature-card__topline {
+  min-height: 32px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cds-sp-03);
+}
+
+.flow-app.flow-carbon .home-feature-card__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-primary);
+  font-size: 24px;
+  line-height: 32px;
+}
+
+.flow-app.flow-carbon .home-feature-card__tag {
+  padding: 2px var(--cds-sp-03);
+  background: var(--brand-50);
+  color: var(--brand);
+  font-family: var(--font-sans);
+  font-size: var(--cds-label-size);
+  line-height: var(--cds-label-lh);
+  letter-spacing: var(--cds-label-ls);
+}
+
+.flow-app.flow-carbon .home-feature-card__content {
+  margin-top: var(--cds-sp-04);
+  padding-right: var(--cds-sp-06);
+  display: flex;
+  flex-direction: column;
+  gap: var(--cds-sp-02);
+}
+
+.flow-app.flow-carbon .home-feature-card__title {
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--cds-h02-size);
+  font-weight: 600;
+  line-height: var(--cds-h02-lh);
+  letter-spacing: 0;
+  word-break: keep-all;
+}
+
+.flow-app.flow-carbon .home-feature-card__description {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--cds-body-size);
+  font-weight: 400;
+  line-height: var(--cds-body-lh);
+  letter-spacing: var(--cds-body-ls);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.flow-app.flow-carbon .home-feature-card__arrow {
+  position: absolute;
+  right: var(--cds-sp-05);
+  bottom: var(--cds-sp-05);
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1;
+  transition: transform 70ms cubic-bezier(0.2, 0, 0.38, 0.9);
+}
+
+.flow-app.flow-carbon .home-feature-card:hover .home-feature-card__arrow,
+.flow-app.flow-carbon .home-feature-card:focus-visible .home-feature-card__arrow {
+  transform: translateX(4px);
+}
+
+@media (max-width: 900px) {
+  .flow-app.flow-carbon .home-feature-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .flow-app.flow-carbon .home-feature-grid {
+    grid-template-columns: 1fr;
+    gap: var(--cds-sp-03);
+  }
+
+  .flow-app.flow-carbon button.home-feature-card {
+    min-height: 144px !important;
+  }
+}
+
+/* ==========================================================================
+ * Flow-i 채팅 입력창 — 어두운 터미널 화면 안이라 회색을 유지한다.
+ *
+ * 위 4번의 `textarea:not(.flow-fixed *)` 규칙이 배경을 --bg-hover 로 !important
+ * 고정하는데, 라이트 테마에서 그 값은 #f5f5f5(거의 흰색)다. 그래서 My_Home 의
+ * 채팅 입력창에 인라인으로 준 회색이 덮여 입력창만 하얗게 떴다.
+ *
+ * 클래스를 두 번 적은 건 오타가 아니다 — 위 규칙과 특이도가 같아(0,3,1) 파일
+ * 순서에 따라 승패가 갈리는 걸 막으려고 한 단계 올린 것이다.
+ * ========================================================================== */
+.flow-app.flow-carbon textarea.flowi-chat-input.flowi-chat-input {
+  background: #3a3a3a !important;
+  color: #f5f5f5 !important;
+  border: 1px solid #525252 !important;
+  border-bottom: 1px solid #525252 !important;
+}

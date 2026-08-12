@@ -1,0 +1,47 @@
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Frontend dependency/cache directories (deployment dist remains tracked)
+frontend/node_modules/
+frontend/.vite/
+frontend/vite.config.js.timestamp-*.mjs
+
+# Runtime, dummy, and operational data roots
+data/
+flow-data/
+Fab/
+DB/
+Base/
+wafer_maps/
+logs/
+reports/
+
+# Machine-local role/state files
+.dev_worker
+.dev_worker.txt
+.standalone
+.standalone.txt
+server_role.json
+worker.marker
+standalone.marker
+extract_report.json
+
+# Local development logs
+*.log
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

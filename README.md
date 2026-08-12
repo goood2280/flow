@@ -16,6 +16,7 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - 제품별 SplitTable 검색, plan/actual 비교와 편집
 - root lot/wafer 기준 FAB 데이터 결합
 - WF MAP, TEG MAP, 공정 데이터 검사
+- TEG 위치 기반 full chip과 제품별 BIN/MSR TABLE·BIN 컬러를 적용하는 Yield Map
 - ET 추적(일일 스캔·변경점 이슈·메일 발송)과 ET Index 다운로드
 - 개발 서버 FAB 매칭알람 검사 — 제품별 신규 step_id / ppid 를 찾아 룰북·매칭테이블 CSV에 반영
 - 제품별 랏 배정·Hot grade 요청, PI 처리 상태·답변 및 작성자별 수정·삭제 이력 관리
@@ -458,7 +459,7 @@ Valve 파이프라인이 발행한 미매칭 step / RO ppid 알람을 읽어 엔
 
 `local_root` 에는 `{db_root}` / `{data_root}` / `{app_root}` 토큰을 쓸 수 있습니다. 설치마다 다른 드라이브 경로를 설정에 박지 않기 위한 것으로, 해석은 `FLOW_DB_ROOT` 체인을 그대로 따릅니다.
 
-미매칭 step 은 **function step 추천**이 함께 뜹니다. 같은 앞 영문자 계열에서 번호가 가까운 매칭 step 을 앞뒤로 뽑아 최근 며칠치 `ppid · eqp_id · eqp_model · area` unique 집합을 비교하고, 사내 LLM이 연결돼 있으면 그 근거로 최종 선택을 받습니다. **LLM이 없어도 동작합니다** — `AI 미적용`과 사유를 표시하고 step_id 숫자가 가장 가까운 step 의 function step 을 제시합니다. 반영은 사람이 확인 후 누릅니다.
+미매칭 step 은 **function step 추천**이 함께 뜹니다. 해당 step의 PPID와 같은 PPID를 쓰는 매칭 완료 `step_id`가 있으면 그 행의 `step_desc`를 가장 먼저 제시합니다. 동일 PPID 후보가 없을 때만 같은 앞 영문자 계열에서 번호가 가까운 매칭 step을 뽑아 최근 며칠치 `eqp_id · eqp_model · area`와 step 번호 근접도를 비교합니다. **LLM이 없어도 동작합니다** — 추천을 판정 입력칸에 적용한 뒤 사람이 확인하여 최종 반영합니다.
 
 데모·점검용 예시 알람은 실제 FAB raw 를 읽어 만듭니다.
 
