@@ -152,6 +152,47 @@ RECENT_DAYS = 7
     assert result["joined"]["rows"][0]["value"] == 1.0
 
 
+def test_definition_round_trips_linked_root_lot_and_wafer_filters():
+    parsed = parse_chart_builder_definition("""
+Q1
+TABLE = ET
+PRODUCT = P
+SQL = SELECT root_lot_id, wafer_id, value
+ROOT_LOTS = A1234, A5678
+WAFERS = 1, W2
+""")
+
+    source = parsed["sources"][0]
+    assert source["runtime_root_lot_ids"] == ["A1234", "A5678"]
+    assert source["runtime_wafer_ids"] == ["1", "W2"]
+    assert "ROOT_LOTS = A1234, A5678" in parsed["canonical_code"]
+    assert parse_chart_builder_definition(parsed["canonical_code"])["sources"][0]["runtime_wafer_ids"] == ["1", "W2"]
+
+
+def test_chart_builder_runtime_root_lot_and_wafer_filters_push_down(tmp_path, monkeypatch):
+    source = tmp_path / "linked_filters.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1234", "A1234", "A5678"],
+        "wafer_id": ["W1", "#2", "2"],
+        "value": [1.0, 2.0, 3.0],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="q1", root="ET", product="P",
+            sql="SELECT root_lot_id, wafer_id, value",
+            runtime_root_lot_ids=["A1234"], runtime_wafer_ids=["W2"],
+        )],
+        save_history=False,
+    ), object())
+
+    assert result["joined"]["row_count"] == 1
+    assert result["joined"]["rows"][0]["value"] == 2.0
+
+
 def test_definition_rejects_a_date_column_without_a_window():
     """DATE_COLUMN 만 적으면 아무 조건도 안 걸린다 — 조용히 흘리지 않는다."""
     try:
@@ -229,6 +270,34 @@ def test_chart_builder_accepts_a_single_trend_query(tmp_path, monkeypatch):
     assert result["joined"]["source_ids"] == ["trend"]
     assert result["sources"][0]["sql"].endswith("ORDER BY tkout_time ASC")
     assert result["max_rows"] == 10000
+
+
+def test_chart_builder_uses_full_shot_yield_as_a_virtual_corr_source(tmp_path, monkeypatch):
+    from core import yield_map
+
+    frame = pl.DataFrame({
+        "product": ["P", "P"], "root_lot_id": ["A", "A"], "lot_id": ["A", "A"],
+        "wafer_id": ["1", "1"], "shot_x": [0, 1], "shot_y": [0, 0],
+        "shot_yield": [75.0, 100.0], "good_die": [3, 4], "total_die": [4, 4],
+        "expected_die": [4, 4], "is_full_shot": [True, True],
+    })
+    monkeypatch.setattr(yield_map, "shot_yield_frame", lambda product: frame)
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="yield", root="YIELD_SHOT", product="P",
+            sql="SELECT root_lot_id, wafer_id, shot_x, shot_y, shot_yield WHERE shot_yield >= 80",
+        )],
+        chart={"type": "scatter", "x": "shot_yield", "y": "other_value"},
+        save_history=False,
+    ), object())
+
+    assert result["joined"]["row_count"] == 1
+    assert result["joined"]["rows"][0]["shot_yield"] == 100.0
+    assert result["sources"][0]["grain"] == "full_shot"
+    assert result["sources"][0]["virtual_source"] is True
 
 
 def test_chart_builder_definition_parses_multiline_sql_and_join():

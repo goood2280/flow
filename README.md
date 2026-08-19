@@ -236,6 +236,26 @@ export 하고 실행하면 됩니다. 로그는 `$FLOW_DATA_ROOT/worker/control/
 - backup, mail, S3 등 운영 scheduler 비활성화
 - worker available memory와 process memory admission 통과 후 작업 실행
 
+### 차트생성·Template Report (5코어 / 10GB)
+
+차트 데이터 조회는 기본적으로 동시에 2개까지만 실행하고, 동일한 Query/JOIN/필터 결과는
+3분 동안 최대 128MB까지 재사용합니다. Template Report도 같은 데이터 정의를 쓰는 차트를
+한 번만 조회한 뒤 차트 설정만 달리 적용하므로, 차트 수만큼 원천 파일을 반복 스캔하지
+않습니다. 필요하면 다음 환경 변수로 조정할 수 있습니다.
+
+```powershell
+$env:FLOW_CHART_BUILDER_CONCURRENCY="2"   # 1~5, 5코어/10GB 권장값 2
+$env:FLOW_DUCKDB_THREADS="2"               # 조회 2개 × 2 threads + API 여유 1코어
+$env:FLOW_CHART_BUILDER_CACHE_MB="128"    # 결과 JSON 캐시 총량
+$env:FLOW_CHART_BUILDER_CACHE_TTL_SEC="180"
+```
+
+차트생성의 연동 실행 필터에는 Root Lot ID·Wafer ID 목록과 공통 시간 열/최근 일수를
+지정할 수 있습니다. 목록은 저장 코드의 `ROOT_LOTS`, `WAFERS`로 남습니다.
+`root_lot_id`, `wafer_id`, `color` 3열 TSV/CSV를 붙여 넣으면 해당 조합의 색상 규칙도
+저장됩니다. Template Report의 공통 실행 컨텍스트에서 같은 목록·기간·색상을 입력하면
+Template을 수정하지 않고 포함된 모든 차트에 한꺼번에 적용됩니다.
+
 ## FAB 매칭알람 검사
 
 매칭알람은 Valve/S3에서 JSON 알람을 받지 않습니다. 개발 worker가 파일탐색기의

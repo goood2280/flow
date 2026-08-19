@@ -370,6 +370,37 @@ def test_template_variables_are_detected_and_repeat_expands_pages(tmp_path, monk
     assert run["charts"][0]["request"]["sources"][0]["product"] == "PRODA"
 
 
+def test_report_context_updates_all_chart_filters_time_and_color(tmp_path, monkeypatch):
+    saved = _save_split_template(tmp_path, monkeypatch)
+    context = template_report.TemplateRunContextReq(
+        root_lot_ids=["A1234", "A5678"],
+        wafer_ids=["1", "2"],
+        override_recent_days=True,
+        recent_days=14,
+        date_column="tkout_time",
+        color_rules=["root_lot_id = 'A1234' AND wafer_id = '1' THEN #dc2626"],
+        color_else="#cbd5e1",
+    )
+
+    run = template_report.prepare_run(
+        template_report.TemplateRunReq(
+            template_id=saved["id"],
+            bindings={"PRODUCT": "PRODA", "LOT": "A1234", "SPLIT": "S1"},
+            context=context,
+        ),
+        {"username": "viewer", "role": "user"},
+    )
+
+    request = run["charts"][0]["request"]
+    source = request["sources"][0]
+    assert source["runtime_root_lot_ids"] == ["A1234", "A5678"]
+    assert source["runtime_wafer_ids"] == ["1", "2"]
+    assert source["runtime_recent_days"] == 14
+    assert source["runtime_date_column"] == "tkout_time"
+    assert request["chart"]["color"] == "custom"
+    assert request["chart"]["color_rules"] == context.color_rules
+
+
 def test_slot_renders_once_at_its_declared_size(tmp_path, monkeypatch):
     """조건 비교는 ChartBuilder 코드가 만든다 — 템플릿은 슬롯을 복제하지 않는다."""
     saved = _save_split_template(tmp_path, monkeypatch)

@@ -1,0 +1,51 @@
+{
+  "feature": "filebrowser",
+  "source": "backend\\routers\\filebrowser.py",
+  "parts": [
+    {
+      "file": "00_bootstrap_and_single_file_cache.part.py",
+      "start_line": 1,
+      "end_line": 1348
+    },
+    {
+      "file": "10_settings_and_rule_drafts.part.py",
+      "start_line": 1349,
+      "end_line": 3065
+    },
+    {
+      "file": "20_validation_and_versioning.part.py",
+      "start_line": 3066,
+      "end_line": 4766
+    },
+    {
+      "file": "30_catalog_and_cache_routes.part.py",
+      "start_line": 4767,
+      "end_line": 5935
+    },
+    {
+      "file": "40_browse_and_preview.part.py",
+      "start_line": 5936,
+      "end_line": 6544
+    },
+    {
+      "file": "50_query_language.part.py",
+      "start_line": 6545,
+      "end_line": 11249
+    },
+    {
+      "file": "60_view_and_metadata_routes.part.py",
+      "start_line": 11250,
+      "end_line": 12363
+    },
+    {
+      "file": "70_chart_builder_and_downloads.part.py",
+      "start_line": 12364,
+      "end_line": 13059
+    },
+    {
+      "file": "80_settings_edit_and_version_routes.part.py",
+      "start_line": 13060,
+      "end_line": 13962
+    }
+  ]
+}

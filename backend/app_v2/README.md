@@ -22,8 +22,21 @@
 | `modules/tracker` | issue 생성/수정, legacy shape 호환, lot row normalize |
 | `modules/meetings` | meeting/session repository/service |
 | `modules/informs` | SplitTable embed payload builder |
+| `modules/filebrowser/router_parts` | FileBrowser legacy namespace를 보존한 역할별 소스 분리 |
+| `modules/splittable/router_parts` | SplitTable legacy namespace를 보존한 역할별 소스 분리 |
+| `modules/llm/router_parts` | LLM 도구/orchestration/chat/API 역할별 소스 분리 |
 
 기존 라우터와 병행 운영 중이므로 새 코드는 기존 응답 shape를 깨지 않는 방향으로 붙인다.
+
+## Legacy router source parts
+
+거대 라우터 3개는 `runtime/module_parts.py`를 통해 feature별 `router_parts/*.part.py`를
+파일명 순서대로 기존 public router namespace에서 실행한다. 이 단계에서는 endpoint,
+전역 cache, import 순서, 직접 helper import와 monkeypatch target을 바꾸지 않는다.
+
+part는 물리적인 책임 경계이자 충돌 완화 장치다. 독립 모듈로 import하지 않으며, 새 코드는
+일반 app_v2 module에 구현한다. 기존 코드를 실제 service/repository로 옮기는 작업은 호출자와
+테스트의 의존성까지 함께 바꾸는 후속 단계로 취급한다.
 
 ## Runtime
 

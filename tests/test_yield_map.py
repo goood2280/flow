@@ -70,3 +70,45 @@ def test_yield_map_does_not_fall_back_to_another_product_partition(tmp_path, mon
     db_root, source_id = _sample_source(tmp_path)
     monkeypatch.setattr(yield_map, "PATHS", SimpleNamespace(db_root=db_root, data_root=tmp_path))
     assert yield_map.source_files(source_id, "PROD_B") == []
+
+
+def test_yield_map_scans_full_shots_and_exports_chart_builder_grain(tmp_path, monkeypatch):
+    db_root = tmp_path / "DB"
+    source_id = "1.RAWDATA_DB_EDS/WAFER_BIN"
+    product_dir = db_root / source_id / "product=PROD_A"
+    product_dir.mkdir(parents=True)
+    (product_dir / "part.csv").write_text(
+        "chip_x_pos,chip_y_pos,BIN,lot_id,wafer_id\n"
+        "0,0,1,L1,1\n1,0,1,L1,1\n0,1,1,L1,1\n1,1,2,L1,1\n"
+        "2,0,1,L1,1\n3,0,1,L1,1\n2,1,1,L1,1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(yield_map, "PATHS", SimpleNamespace(db_root=db_root, data_root=tmp_path))
+    monkeypatch.setattr(yield_map, "CONFIG_PATH", tmp_path / "yield_map.json")
+    config = {
+        "source": source_id,
+        "fields": {"x": "chip_x_pos", "y": "chip_y_pos", "bin": "BIN", "lot": "lot_id", "wafer": "wafer_id"},
+        "bin_map": [{"bin": "1", "bin_color": "#00FF00"}, {"bin": "2", "bin_color": "#FF0000"}],
+        "shot_layout": {"enabled": True, "cols": 2, "rows": 2, "origin_x": 0, "origin_y": 0, "good_bins": ["1"]},
+    }
+    yield_map.save_product_config("PROD_A", config)
+
+    scan = yield_map.scan_shot_layout("PROD_A", config, lot_id="L1", wafer_id="1")
+    assert scan["full_shot_count"] == 1
+    assert scan["partial_shot_count"] == 1
+    assert scan["layout"]["expected_die"] == 4
+
+    result = yield_map.map_data("PROD_A", lot_id="L1", wafer_id="1")
+    assert result["full_shot_count"] == 1
+    assert result["partial_shot_count"] == 1
+    assert result["shot_rows"][0]["shot_yield"] == 75.0
+    assert result["rows"][3]["die_x_in_shot"] == 1
+    assert result["rows"][3]["die_y_in_shot"] == 1
+
+    chart = yield_map.shot_yield_frame("PROD_A")
+    assert chart.height == 1
+    assert chart.to_dicts()[0] == {
+        "product": "PROD_A", "root_lot_id": "L1", "lot_id": "L1", "wafer_id": "1",
+        "shot_x": 0, "shot_y": 0, "shot_yield": 75.0, "good_die": 3,
+        "total_die": 4, "expected_die": 4, "is_full_shot": True,
+    }

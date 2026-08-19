@@ -28,6 +28,15 @@ class ProductConfigReq(BaseModel):
     fields: dict = {}
     bin_map: list[dict] = []
     bin_colors: dict = {}
+    shot_layout: dict = {}
+
+
+class ShotScanReq(BaseModel):
+    source: str = ""
+    fields: dict = {}
+    shot_layout: dict = {}
+    lot_id: str = ""
+    wafer_id: str = ""
 
 
 @router.get("/bootstrap")
@@ -56,6 +65,19 @@ def config_put(product: str, req: ProductConfigReq, _user=Depends(_require_manag
     try:
         return {"ok": True, "product": product,
                 "config": _ym.save_product_config(product, req.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/scan/{product}")
+def scan(product: str, req: ShotScanReq, _user=Depends(_require_manager)):
+    """Preview product X/Y → full-shot grouping before saving the setup."""
+    try:
+        return {"ok": True, **_ym.scan_shot_layout(
+            product, req.model_dump(), lot_id=req.lot_id, wafer_id=req.wafer_id,
+        )}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

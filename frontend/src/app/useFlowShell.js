@@ -12,90 +12,6 @@ function tabFromPath(pathname = window.location.pathname) {
   return TAB_KEYS.has(key) ? key : "";
 }
 
-const darkV = {
-  "--bg-primary": "#1a1a1a",
-  "--bg-secondary": "#262626",
-  "--bg-card": "#2a2a2a",
-  "--bg-hover": "#333",
-  "--bg-tertiary": "#1a1a1a",
-  "--text-primary": "#e5e5e5",
-  "--text-secondary": "#a3a3a3",
-  "--border": "#333",
-  "--ink": "#e5e5e5",
-  "--muted": "#a3a3a3",
-  "--line": "#333",
-  "--brand": "#E25822",
-  "--brand-50": "rgba(226,88,34,0.16)",
-  "--brand-line": "rgba(239,107,58,0.42)",
-  "--accent": "#EF6B3A",
-  "--accent-dim": "#E25822",
-  "--accent-glow": "rgba(226,88,34,0.16)",
-  "--ok": "#22c55e",
-  "--ok-50": "rgba(34,197,94,0.14)",
-  "--ok-line": "rgba(34,197,94,0.38)",
-  "--info": "#3b82f6",
-  "--info-50": "rgba(59,130,246,0.16)",
-  "--info-line": "rgba(59,130,246,0.42)",
-  "--warn": "#f59e0b",
-  "--warn-50": "rgba(245,158,11,0.16)",
-  "--warn-line": "rgba(245,158,11,0.42)",
-  "--danger": "#ef4444",
-  "--danger-50": "rgba(239,68,68,0.16)",
-  "--danger-line": "rgba(239,68,68,0.42)",
-  "--bad": "#ef4444",
-  "--violet": "#8b5cf6",
-  "--violet-50": "rgba(139,92,246,0.16)",
-  "--violet-line": "rgba(139,92,246,0.42)",
-  "--pink": "#ec4899",
-  "--pink-50": "rgba(236,72,153,0.16)",
-  "--pink-line": "rgba(236,72,153,0.42)",
-  "--shadow-sm": "0 8px 18px rgba(0,0,0,0.18)",
-  "--shadow-md": "0 14px 30px rgba(0,0,0,0.24)",
-  "--shadow-lg": "0 24px 54px rgba(0,0,0,0.32)",
-};
-
-const lightV = {
-  "--bg-primary": "#fafafa",
-  "--bg-secondary": "#fff",
-  "--bg-card": "#fff",
-  "--bg-hover": "#f5f5f5",
-  "--bg-tertiary": "#f5f5f5",
-  "--text-primary": "#171717",
-  "--text-secondary": "#737373",
-  "--border": "#e5e5e5",
-  "--ink": "#171717",
-  "--muted": "#737373",
-  "--line": "#e5e5e5",
-  "--brand": "#E25822",
-  "--brand-50": "#FDF2EB",
-  "--brand-line": "#F4C4A8",
-  "--accent": "#E25822",
-  "--accent-dim": "#B94418",
-  "--accent-glow": "rgba(226,88,34,0.10)",
-  "--ok": "#16a34a",
-  "--ok-50": "#ECFDF3",
-  "--ok-line": "#BBF7D0",
-  "--info": "#2563eb",
-  "--info-50": "#EFF6FF",
-  "--info-line": "#BFDBFE",
-  "--warn": "#d97706",
-  "--warn-50": "#FFFBEB",
-  "--warn-line": "#FDE68A",
-  "--danger": "#dc2626",
-  "--danger-50": "#FEF2F2",
-  "--danger-line": "#FECACA",
-  "--bad": "#dc2626",
-  "--violet": "#7c3aed",
-  "--violet-50": "#F5F3FF",
-  "--violet-line": "#DDD6FE",
-  "--pink": "#db2777",
-  "--pink-50": "#FDF2F8",
-  "--pink-line": "#FBCFE8",
-  "--shadow-sm": "0 1px 2px rgba(15,23,42,0.06)",
-  "--shadow-md": "0 8px 20px rgba(15,23,42,0.08)",
-  "--shadow-lg": "0 18px 44px rgba(15,23,42,0.12)",
-};
-
 function useIdleLogout(onLogout, timeoutMs = 6 * 3600 * 1000) {
   const timer = useRef(null);
   useEffect(() => {
@@ -144,7 +60,13 @@ function mergeSessionUser(storedUser, sessionUser) {
 export function useFlowShell() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState(() => tabFromPath() || "home");
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(() => {
+    try {
+      return localStorage.getItem("hol_dark") === "true";
+    } catch (_) {
+      return false;
+    }
+  });
   const [notifs, setNotifs] = useState([]);
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
@@ -170,7 +92,6 @@ export function useFlowShell() {
   useIdleLogout(handleLogout);
 
   useEffect(() => {
-    setDark(localStorage.getItem("hol_dark") === "true");
     let cancelled = false;
     const onExpire = () => {
       setUser(null);
@@ -213,9 +134,7 @@ export function useFlowShell() {
   }, []);
 
   useEffect(() => {
-    Object.entries(dark ? darkV : lightV).forEach(([key, value]) => {
-      document.documentElement.style.setProperty(key, value);
-    });
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
 
   useEffect(() => {

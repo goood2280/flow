@@ -21,7 +21,8 @@ QUERY_HEADER_RE = re.compile(
 )
 FIELD_RE = re.compile(
     r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items"
-    r"|recent_days?|recent|days|date_column|date_col|time_column|time_col)\s*[:=]\s*(.*)$",
+    r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
+    r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
@@ -54,7 +55,8 @@ FIELD_ALIASES = {
     "items": "reformatter_items",
     "reformatter_item": "reformatter_items",
     "reformatter_items": "reformatter_items",
-    # 시간 창은 차트 코드가 가진다 — 보고서 쪽에서 나중에 덧씌우지 않는다.
+    # 시간 창은 저장 차트의 기본값이다. Template Report의 명시적 실행 컨텍스트만
+    # 원본 Template을 바꾸지 않고 이번 실행에 한해 이를 덮어쓸 수 있다.
     "recent": "runtime_recent_days",
     "recent_day": "runtime_recent_days",
     "recent_days": "runtime_recent_days",
@@ -63,6 +65,14 @@ FIELD_ALIASES = {
     "date_column": "runtime_date_column",
     "time_col": "runtime_date_column",
     "time_column": "runtime_date_column",
+    "root_lot": "runtime_root_lot_ids",
+    "root_lots": "runtime_root_lot_ids",
+    "root_lot_id": "runtime_root_lot_ids",
+    "root_lot_ids": "runtime_root_lot_ids",
+    "wafer": "runtime_wafer_ids",
+    "wafers": "runtime_wafer_ids",
+    "wafer_id": "runtime_wafer_ids",
+    "wafer_ids": "runtime_wafer_ids",
 }
 DEFAULT_DATE_COLUMN = "tkout_time"
 MAX_RECENT_DAYS = 3650
@@ -91,7 +101,7 @@ def _field_name(value: str) -> str:
     return FIELD_ALIASES.get(str(value or "").strip().casefold().replace("-", "_"), "")
 
 
-def _assign_field(source: dict[str, str], name: str, value: str, *, append_sql: bool = False) -> None:
+def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: bool = False) -> None:
     field = _field_name(name)
     if not field:
         raise ChartBuilderDefinitionError(f"지원하지 않는 Query 항목입니다: {name}")
@@ -108,13 +118,26 @@ def _assign_field(source: dict[str, str], name: str, value: str, *, append_sql: 
             raise ChartBuilderDefinitionError(f"RECENT_DAYS는 1~{MAX_RECENT_DAYS}일 사이여야 합니다.")
         source[field] = days
         return
+    if field in {"runtime_root_lot_ids", "runtime_wafer_ids"}:
+        values = []
+        seen = set()
+        for item in re.split(r"[,\n]+", cleaned):
+            item = item.strip()
+            key = item.casefold()
+            if item and key not in seen:
+                seen.add(key)
+                values.append(item[:160])
+        if len(values) > 200:
+            raise ChartBuilderDefinitionError("ROOT_LOTS/WAFERS는 각각 최대 200개까지 지정할 수 있습니다.")
+        source[field] = values
+        return
     if field == "sql" and append_sql and source.get("sql"):
         source["sql"] = f"{source['sql']}\n{cleaned}".strip()
     else:
         source[field] = cleaned
 
 
-def _parse_inline_fields(rest: str, source: dict[str, str], line_number: int) -> None:
+def _parse_inline_fields(rest: str, source: dict[str, Any], line_number: int) -> None:
     chunks = [chunk.strip() for chunk in str(rest or "").split("|") if chunk.strip()]
     if not chunks:
         return
@@ -154,7 +177,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
     if not raw.strip():
         raise ChartBuilderDefinitionError("전체 코드를 입력해 주세요.")
 
-    sources: list[dict[str, str]] = []
+    sources: list[dict[str, Any]] = []
     joins: list[dict[str, str]] = []
     current: dict[str, str] | None = None
     chart: dict[str, Any] = {}
@@ -215,6 +238,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
                 "id": query_id, "root": "", "product": "", "sql": "", "select_cols": "",
                 "apply_reformatter": False, "reformatter_items": "",
                 "runtime_recent_days": 0, "runtime_date_column": "",
+                "runtime_root_lot_ids": [], "runtime_wafer_ids": [],
             }
             sources.append(current)
             in_chart = False
@@ -259,8 +283,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
         source["sql"] = source.get("sql", "").strip()
         if source.get("apply_reformatter") and "ET" not in str(source.get("root") or "").upper():
             raise ChartBuilderDefinitionError(f"{source['id']}: REFORMATTER는 ET DB Query에서만 사용할 수 있습니다.")
-        # 시간 창은 이 코드가 가진 값이 전부다. DATE_COLUMN 만 있으면 아무 조건도 걸리지
-        # 않으므로 조용히 흘려보내지 않고 여기서 잡는다.
+        # DATE_COLUMN 만 있으면 아무 조건도 걸리지 않으므로 조용히 흘려보내지 않고 잡는다.
         recent_days = int(source.get("runtime_recent_days") or 0)
         date_column = str(source.get("runtime_date_column") or "").strip()
         if date_column and not recent_days:
@@ -298,6 +321,7 @@ def _source_dict(source: Any) -> dict[str, Any]:
         for key in (
             "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items",
             "runtime_recent_days", "runtime_date_column",
+            "runtime_root_lot_ids", "runtime_wafer_ids",
         )
     }
 
@@ -392,6 +416,12 @@ def format_chart_builder_definition(
             date_column = str(source.get("runtime_date_column") or "").strip() or DEFAULT_DATE_COLUMN
             lines.append(f"RECENT_DAYS = {recent_days}")
             lines.append(f"DATE_COLUMN = {date_column}")
+        root_lot_ids = [str(value).strip() for value in (source.get("runtime_root_lot_ids") or []) if str(value).strip()]
+        wafer_ids = [str(value).strip() for value in (source.get("runtime_wafer_ids") or []) if str(value).strip()]
+        if root_lot_ids:
+            lines.append(f"ROOT_LOTS = {', '.join(root_lot_ids[:200])}")
+        if wafer_ids:
+            lines.append(f"WAFERS = {', '.join(wafer_ids[:200])}")
         if bool(source.get("apply_reformatter")):
             lines.append("REFORMATTER = true")
             reformatter_items = str(source.get("reformatter_items") or "").strip()

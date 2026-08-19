@@ -1,0 +1,476 @@
+/* Shared application and page templates. */
+.flow-nav {
+  height: var(--nav-height);
+  flex: 0 0 var(--nav-height);
+}
+
+.flow-app__content {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.flow-page-host {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+}
+
+/* The content host is itself a flex child; 100% min-height would shrink the nav. */
+.flow-app__content.flow-page-host {
+  min-height: 0;
+}
+
+.flow-page-host--locked {
+  height: 100%;
+  overflow: hidden;
+}
+
+.flow-page,
+.flow-split-page,
+.ds-page {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  background: var(--surface-page);
+  color: var(--text-strong);
+}
+
+.ds-page--explorer,
+.flow-split-page {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.ds-page--analysis,
+.ds-page--workboard,
+.ds-page--workflow,
+.ds-page--admin {
+  display: flex;
+  flex-direction: column;
+}
+
+.flow-layout-sidebar {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+}
+
+.flow-layout-sidebar__header {
+  min-height: var(--page-header-height);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.flow-layout-sidebar__title {
+  color: var(--text-strong);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-bold);
+}
+
+.flow-layout-sidebar__body {
+  min-height: 0;
+  padding: var(--space-2);
+  overflow: auto;
+}
+
+.flow-layout-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.flow-page__content {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  padding: var(--space-4);
+  overflow: auto;
+}
+
+.flow-page__content--flush {
+  padding: 0;
+}
+
+.flow-two-col {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--flow-left-width, 260px) minmax(0, 1fr);
+  flex: 1;
+}
+
+.flow-two-col__left {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+}
+
+.flow-two-col__right {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ds-sidebar-item {
+  width: 100%;
+  min-height: var(--control-height-default);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ds-sidebar-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+.ds-sidebar-item[aria-current="page"] {
+  border-left-color: var(--accent);
+  background: var(--surface-selected);
+  color: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Home uses the same tokenized clickable-tile pattern as the rest of Flow. */
+.home-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.flow-app button.home-feature-card {
+  position: relative;
+  min-width: 0;
+  min-height: 168px;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--surface-radius);
+  background: var(--surface-panel);
+  color: var(--text-strong);
+  font-family: var(--font-sans);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.flow-app button.home-feature-card:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.flow-app button.home-feature-card:active {
+  background: var(--surface-subtle);
+}
+
+.home-feature-card__topline {
+  min-height: var(--control-height-default);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.home-feature-card__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-strong);
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-title);
+}
+
+.home-feature-card__tag {
+  padding: var(--radius-1) var(--space-2);
+  border-radius: var(--radius-1);
+  background: var(--surface-selected);
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.home-feature-card__content {
+  margin-top: var(--space-3);
+  padding-right: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.home-feature-card__title {
+  color: var(--text-strong);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-title);
+  word-break: keep-all;
+}
+
+.home-feature-card__description {
+  color: var(--text-muted);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+.home-feature-card__arrow {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  color: var(--accent);
+  font-size: var(--font-size-page-title);
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.home-feature-card:hover .home-feature-card__arrow,
+.home-feature-card:focus-visible .home-feature-card__arrow {
+  transform: translateX(var(--space-1));
+}
+
+/* Lot management uses the Explorer template and a theme-independent editable grid. */
+.lot-management__product-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.lot-management__toolbar-search {
+  width: min(260px, 100%);
+}
+
+.lot-management__toolbar-select {
+  width: min(220px, 100%);
+}
+
+.lot-management__version {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.lot-management__split-preview {
+  margin-bottom: var(--space-4);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--surface-radius);
+  background: var(--surface-panel);
+  scroll-margin-top: calc(var(--page-header-height) + var(--space-2));
+}
+
+.lot-management__split-preview-header {
+  min-height: var(--page-header-height);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lot-management__grid-frame {
+  overflow: auto;
+  border: 1px solid var(--data-grid-line);
+  border-radius: var(--surface-radius);
+  background: var(--data-grid-surface);
+}
+
+.lot-management__grid {
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--data-grid-ink);
+}
+
+.lot-management__grid th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-2);
+  border-right: 1px solid var(--data-grid-line);
+  border-bottom: 1px solid var(--data-grid-line);
+  background: var(--data-grid-header);
+  color: var(--data-grid-ink);
+  font-size: var(--font-size-caption);
+  text-align: left;
+}
+
+.lot-management__grid td {
+  border-right: 1px solid var(--data-grid-line);
+  border-bottom: 1px solid var(--data-grid-line);
+  color: var(--data-grid-ink);
+  vertical-align: top;
+}
+
+.lot-management__row-number {
+  color: var(--data-grid-muted);
+  font-size: var(--font-size-caption);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.lot-management__cell-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px var(--space-2);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--data-grid-ink);
+  font-size: var(--font-size-body);
+  box-sizing: border-box;
+}
+
+.lot-management__lot-editor {
+  position: relative;
+  min-width: 0;
+  min-height: 34px;
+  flex: 1;
+}
+
+.lot-management__lot-options {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid var(--data-grid-line);
+  border-radius: 0 0 var(--surface-radius) var(--surface-radius);
+  background: var(--data-grid-surface);
+  box-shadow: var(--shadow-flyout);
+}
+
+.lot-management__lot-option {
+  width: 100%;
+  min-height: 31px;
+  display: block;
+  padding: var(--space-1) var(--space-2);
+  overflow: hidden;
+  border: 0;
+  border-bottom: 1px solid var(--data-grid-line);
+  background: var(--data-grid-surface);
+  color: var(--data-grid-ink);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.lot-management__lot-option:hover {
+  background: var(--status-info-bg);
+}
+
+.lot-management__lot-empty {
+  padding: var(--space-2);
+  color: var(--data-grid-muted);
+  font-size: var(--font-size-caption);
+}
+
+.lot-management__computed-cell,
+.lot-management__readonly-cell {
+  min-height: 34px;
+  padding: var(--space-2);
+  box-sizing: border-box;
+  font-size: var(--font-size-body);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lot-management__computed-cell {
+  background: var(--data-grid-header);
+  color: var(--data-grid-muted);
+  font-family: var(--font-mono);
+}
+
+.lot-management__cell-actions {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.lot-management__footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+@media (max-width: 900px) {
+  .home-feature-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ds-page--explorer,
+  .flow-split-page {
+    grid-template-columns: minmax(168px, 200px) minmax(0, 1fr);
+  }
+
+  .flow-page__content {
+    padding: var(--space-3);
+  }
+}
+
+@media (max-width: 700px) {
+  .ds-page--explorer,
+  .flow-split-page {
+    height: auto;
+    min-height: 100%;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .flow-layout-sidebar {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .lot-management__version {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-feature-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-2);
+  }
+
+  .flow-app button.home-feature-card {
+    min-height: 144px;
+  }
+}

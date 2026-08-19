@@ -1,11 +1,13 @@
 // components/Modal.jsx v4.0.0 — reusable modal dialog with backdrop + ESC close.
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 
 export default function Modal({
   open = true, onClose, title, children,
   width = 420, zIndex = 9999, closeOnBackdrop = true,
   maxHeight = "90vh",
 }) {
+  const generatedTitleId = useId();
+  const titleId = title ? `flow-modal-${generatedTitleId.replace(/:/g, "")}` : undefined;
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => { if (e.key === "Escape" && onClose) onClose(); };
@@ -17,38 +19,28 @@ export default function Modal({
 
   return (
     <div
-      style={{
-        position: "fixed", inset: 0, zIndex, background: "rgba(0,0,0,0.6)",
-        display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
-      }}
+      className="ds-modal-backdrop"
+      role="presentation"
+      style={{ zIndex }}
       onClick={() => { if (closeOnBackdrop && onClose) onClose(); }}
     >
       <div
+        className="flow-modal ds-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--bg-secondary)", borderRadius: 12, padding: 20,
-          width: "100%", maxWidth: width, maxHeight, overflow: "auto",
-          border: "1px solid var(--border)",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-        }}
+        style={{ maxWidth: width, maxHeight }}
       >
         {title && (
-          <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-            marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid var(--border)",
-          }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--text-primary)" }}>
-              {title}
-            </div>
+          <div className="ds-modal__header">
+            <div className="ds-modal__title" id={titleId}>{title}</div>
             {onClose && (
-              <span onClick={onClose} style={{
-                cursor: "pointer", fontSize: 18, color: "var(--text-secondary)",
-                padding: "0 6px", lineHeight: 1,
-              }}>×</span>
+              <button type="button" className="ds-modal__close" onClick={onClose} aria-label="대화상자 닫기">×</button>
             )}
           </div>
         )}
-        {children}
+        <div className="ds-modal__body">{children}</div>
       </div>
     </div>
   );
@@ -61,21 +53,10 @@ export function ConfirmModal({
 }) {
   return (
     <Modal open={open} onClose={onCancel} title={title} width={360}>
-      <div style={{ fontSize: 14, color: "var(--text-primary)", lineHeight: 1.5, marginBottom: 16 }}>
-        {message}
-      </div>
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{
-          padding: "6px 14px", borderRadius: 6,
-          border: "1px solid var(--border)",
-          background: "transparent", color: "var(--text-secondary)",
-          fontSize: 14, cursor: "pointer",
-        }}>{cancelText}</button>
-        <button onClick={onConfirm} style={{
-          padding: "6px 14px", borderRadius: 6, border: "none",
-          background: danger ? "#ef4444" : "var(--accent)",
-          color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer",
-        }}>{confirmText}</button>
+      <div className="ds-modal__message">{message}</div>
+      <div className="ds-modal__actions">
+        <button type="button" className="ds-button ds-button--ghost" onClick={onCancel}>{cancelText}</button>
+        <button type="button" className={`ds-button ${danger ? "ds-button--danger" : "ds-button--primary"}`} onClick={onConfirm}>{confirmText}</button>
       </div>
     </Modal>
   );

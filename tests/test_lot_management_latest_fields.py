@@ -84,7 +84,14 @@ def test_vehicle_matching_step_desc_is_exact_and_unmatched_is_blank():
 
 
 def test_frontend_uses_context_palette_for_purpose_and_lot_id_backgrounds():
-    source = (Path(__file__).parents[1] / "frontend" / "src" / "pages" / "My_LotManagement.jsx").read_text(encoding="utf-8")
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "lotmanagement"
+        / "My_LotManagement.jsx"
+    ).read_text(encoding="utf-8")
 
     assert 'const COLORABLE_COLUMNS = new Set(["purpose", "lot_id"])' in source
     assert "openCellColorPicker(event,row.id,column.id)" in source
@@ -97,7 +104,14 @@ def test_frontend_uses_context_palette_for_purpose_and_lot_id_backgrounds():
 
 
 def test_frontend_searches_purpose_by_partial_case_insensitive_match():
-    source = (Path(__file__).parents[1] / "frontend" / "src" / "pages" / "My_LotManagement.jsx").read_text(encoding="utf-8")
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "lotmanagement"
+        / "My_LotManagement.jsx"
+    ).read_text(encoding="utf-8")
 
     assert 'type="search" value={purposeSearch}' in source
     assert 'placeholder="purpose 검색 (예: CS)"' in source

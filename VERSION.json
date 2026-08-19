@@ -1,7 +1,21 @@
 {
-  "version": "10.4.106",
+  "version": "10.4.107",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.107",
+      "date": "2026-08-19",
+      "tag": "refactor",
+      "title": "거대 라우터·페이지·LLM 구조 분리와 분석 화면 통합 개선",
+      "changes": [
+        "[라우터 구조] FileBrowser·SplitTable·LLM이 각각 수만 줄 단일 파일이라 AI·다중 개발 충돌과 회귀 범위가 컸음 → 기존 전역 상태와 직접 helper 참조 때문에 즉시 모듈 이동은 위험했음 → 공개 router namespace를 유지한 채 역할별 source part 9·9·10개로 분리하고 구조 계약 테스트를 추가",
+        "[페이지 구조] 실제 구현과 lazy route 진입점이 pages 폴더에 혼재해 기능 소유권과 확장 위치가 불명확했음 → 신규 AI 작업이 다시 거대 pages 파일에 누적되는 구조였음 → 29개 구현을 features/<feature>로 이관하고 기존 pages 경로는 2줄 호환 entrypoint로 유지하며 역방향 의존성 검사를 추가",
+        "[디자인 시스템] 탭 정의·레이아웃·컴포넌트 스타일이 여러 파일과 인라인 규칙으로 중복돼 화면 확장 시 일관성이 깨졌음 → 공통 토큰과 page metadata의 단일 기준이 없었음 → pageManifest, UI primitives, tokens·components·layouts·utilities 계층과 자동 디자인 검사를 도입",
+        "[차트·보고서] 연동 분석마다 Root Lot·Wafer·기간·색상 조건을 개별 차트에 반복 입력해야 했음 → 저장 정의와 보고서 실행 컨텍스트 사이 공통 필터 계약이 부족했음 → ChartBuilder 코드의 ROOT_LOTS·WAFERS 왕복과 Template Report 공통 실행 컨텍스트를 지원",
+        "[Yield Map] BIN die 좌표만 표시해 완전한 shot 단위 수율을 비교 분석하기 어려웠음 → shot 격자·원점·good BIN 계약과 ChartBuilder용 grain이 없었음 → Full Shot 스캔·완성도·수율 집계와 YIELD_SHOT 가상 source를 추가하고 불완전 shot은 수율 계산에서 제외",
+        "[검증] 대규모 파일 이동과 호환 loader 변경은 import·route·번들 누락을 조용히 만들 수 있었음 → 소스 경계와 배포 결과를 함께 검증하는 자동화가 부족했음 → 백엔드 185개 테스트, 41개 router 무실패 로드, 29개 페이지 구조 검사와 production build로 회귀 확인"
+      ]
+    },
     {
       "version": "10.4.106",
       "date": "2026-08-11",

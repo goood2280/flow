@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "design:check": "node scripts/check-design-system.mjs",
+    "structure:check": "node scripts/check-feature-boundaries.mjs",
+    "check": "npm run design:check && npm run structure:check && npm run build"
   },
   "dependencies": {
     "dagre": "^0.8.5",

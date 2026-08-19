@@ -7,9 +7,9 @@
    랏이 바뀌어도 차트를 새로 만들지 않는다.
 2. **반복** — 변수 하나(기본 ``LOT``)에 값을 여러 개 주면 페이지 묶음이 랏마다 반복된다.
 
-**시간 조건은 여기 없다.** ``RECENT_DAYS = 7`` 처럼 차트생성 코드가 가진 값을 그대로
-실행할 뿐이라, 같은 차트는 어디서 실행하든 같은 구간을 본다. 예전에는 이 화면의
-"최근 일수" 입력이 모든 Query 에 덧씌워져, 저장된 차트가 자기 구간을 잃었다.
+기본 실행은 ``RECENT_DAYS = 7``처럼 저장 차트가 가진 조건을 그대로 쓴다. 다만 보고서
+실행 컨텍스트를 켜면 root lot/wafer 목록과 시간 열·최근 일수를 모든 차트에 한 번만
+덧씌울 수 있다. 컨텍스트는 Template 자체를 변경하지 않는 실행 전용 값이다.
 
 A/B 비교는 템플릿이 슬롯을 복제하는 방식이 아니라 **ChartBuilder 코드 쪽에서** 만든다
 (조건 열을 COLOR/X 로 잡거나 조건별 차트를 따로 저장). ``stats`` 블록은 그렇게 만들어진
@@ -135,10 +135,21 @@ class TemplateSaveReq(BaseModel):
     options: TemplateOptionsReq | None = None
 
 
+class TemplateRunContextReq(BaseModel):
+    root_lot_ids: list[str] = []
+    wafer_ids: list[str] = []
+    override_recent_days: bool = False
+    recent_days: int = 0
+    date_column: str = "tkout_time"
+    color_rules: list[str] = []
+    color_else: str = "gray"
+
+
 class TemplateRunReq(BaseModel):
     template_id: str
     bindings: dict[str, str] = {}
     repeat_values: list[str] = []
+    context: TemplateRunContextReq | None = None
 
 
 class SplitBlockReq(BaseModel):
@@ -169,6 +180,7 @@ class ExportReq(BaseModel):
     template_id: str
     bindings: dict[str, str] = {}
     repeat_values: list[str] = []
+    context: TemplateRunContextReq | None = None
     images: list[ExportImageReq] = []
     tables: list[ExportTableReq] = []
 
@@ -639,11 +651,43 @@ def _run_params(template: dict, req) -> dict:
     if len(repeat_values) > MAX_REPEAT_VALUES:
         raise HTTPException(400, f"한 번에 실행할 값은 {MAX_REPEAT_VALUES}개까지입니다.")
 
+    raw_context = getattr(req, "context", None)
+    if hasattr(raw_context, "model_dump"):
+        raw_context = raw_context.model_dump()
+    elif hasattr(raw_context, "dict"):
+        raw_context = raw_context.dict()
+    raw_context = raw_context if isinstance(raw_context, dict) else {}
+
+    def _context_values(name: str) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_context.get(name) or []:
+            value = _clean_text(raw, 160)
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
+                values.append(value)
+            if len(values) >= 200:
+                break
+        return values
+
+    recent_days = max(0, min(3650, int(raw_context.get("recent_days") or 0)))
+    color_rules = [_clean_text(rule, 500) for rule in (raw_context.get("color_rules") or []) if _clean_text(rule, 500)][:300]
+    context = {
+        "root_lot_ids": _context_values("root_lot_ids"),
+        "wafer_ids": _context_values("wafer_ids"),
+        "override_recent_days": bool(raw_context.get("override_recent_days")),
+        "recent_days": recent_days,
+        "date_column": _clean_text(raw_context.get("date_column") or "tkout_time", 120) or "tkout_time",
+        "color_rules": color_rules,
+        "color_else": _clean_text(raw_context.get("color_else") or "gray", 80) or "gray",
+    }
     return {
         "bindings": bindings,
         "repeat_variable": repeat_variable,
         "repeat_values": repeat_values or [""],
         "options": options,
+        "context": context,
     }
 
 
@@ -654,17 +698,35 @@ def _resolve(text: str, bindings: dict, where: str) -> str:
         raise HTTPException(400, f"{where}: {exc}") from exc
 
 
-def _chart_request(definition: str, where: str) -> dict:
-    """저장된 코드를 그대로 실행 요청으로 옮긴다 — 시간 창도 코드가 가진 값 그대로."""
+def _chart_request(definition: str, where: str, context: dict | None = None) -> dict:
+    """저장 코드를 실행 요청으로 옮기고 선택된 공통 실행 컨텍스트만 덧씌운다."""
     try:
         parsed = parse_chart_builder_definition(definition)
     except ChartBuilderDefinitionError as exc:
         raise HTTPException(400, f"{where} Chart 코드 오류: {exc}") from exc
+    context = context or {}
+    sources = [dict(source) for source in (parsed.get("sources") or [])]
+    for source in sources:
+        if context.get("root_lot_ids"):
+            source["runtime_root_lot_ids"] = list(context["root_lot_ids"])
+        if context.get("wafer_ids"):
+            source["runtime_wafer_ids"] = list(context["wafer_ids"])
+        if context.get("override_recent_days"):
+            days = int(context.get("recent_days") or 0)
+            source["runtime_recent_days"] = days
+            source["runtime_date_column"] = str(context.get("date_column") or "tkout_time") if days else ""
+    chart = dict(parsed.get("chart") or {})
+    if context.get("color_rules"):
+        chart.update({
+            "color": "custom",
+            "color_rules": list(context["color_rules"]),
+            "color_else": str(context.get("color_else") or "gray"),
+        })
     return {
-        "sources": parsed.get("sources") or [],
+        "sources": sources,
         "joins": parsed.get("joins") or [],
         "max_rows": parsed.get("max_rows") or 10000,
-        "chart": parsed.get("chart") or {},
+        "chart": chart,
         "save_history": False,
     }
 
@@ -706,7 +768,7 @@ def _expand_deck(template: dict, params: dict) -> dict:
                     block.update({
                         "chart_id": str(slot.get("chart_id") or ""),
                         "chart_label": str(slot.get("chart_label") or slot.get("chart_name") or ""),
-                        "request": _chart_request(definition, where),
+                        "request": _chart_request(definition, where, params.get("context")),
                     })
                     charts.append(block)
                 elif kind == "text":
@@ -761,6 +823,7 @@ def prepare_run(req: TemplateRunReq, _user=Depends(current_user)):
         "bindings": params["bindings"],
         "repeat_variable": params["repeat_variable"],
         "repeat_values": [value for value in params["repeat_values"] if value],
+        "context": params["context"],
         "deck": deck,
         "charts": deck["charts"],
     }

@@ -3,10 +3,11 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 // 자체 호스팅 웹폰트 선언. 아래 스택들이 이 이름을 참조하므로 가장 먼저 온다.
 import './styles/fonts.css';
+import './styles/tokens.css';
 import './global.css';
-// Carbon 레이어. global.css 다음에 와야 radius/letter-spacing 강제를 이긴다.
-// 끄려면 App.jsx 루트의 className 에서 "flow-carbon" 을 빼면 된다.
-import './styles/carbon.css';
+import './styles/components.css';
+import './styles/layouts.css';
+import './styles/utilities.css';
 
 // v8.4.7: Global fetch monkey-patch — 모든 /api/* 호출에 X-Session-Token 자동 주입.
 // 여러 페이지가 각자 로컬 sf() 에서 raw fetch 를 쓰고 있어도 여기서 일괄로 해결.

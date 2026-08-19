@@ -1,0 +1,56 @@
+{
+  "feature": "llm",
+  "source": "backend\\routers\\llm.py",
+  "parts": [
+    {
+      "file": "00_bootstrap_models_and_shared_helpers.part.py",
+      "start_line": 1,
+      "end_line": 4534
+    },
+    {
+      "file": "10_chart_and_multisource_tools.part.py",
+      "start_line": 4535,
+      "end_line": 9112
+    },
+    {
+      "file": "20_semantic_and_cache_tools.part.py",
+      "start_line": 9113,
+      "end_line": 12593
+    },
+    {
+      "file": "30_workboard_and_app_writes.part.py",
+      "start_line": 12594,
+      "end_line": 14394
+    },
+    {
+      "file": "40_domain_lookup_tools.part.py",
+      "start_line": 14395,
+      "end_line": 16036
+    },
+    {
+      "file": "50_data_analysis_tools.part.py",
+      "start_line": 16037,
+      "end_line": 18117
+    },
+    {
+      "file": "60_splittable_filebrowser_inform_tools.part.py",
+      "start_line": 18118,
+      "end_line": 20480
+    },
+    {
+      "file": "70_orchestration_and_trace.part.py",
+      "start_line": 20481,
+      "end_line": 22909
+    },
+    {
+      "file": "80_chat_runtime.part.py",
+      "start_line": 22910,
+      "end_line": 25227
+    },
+    {
+      "file": "90_public_api.part.py",
+      "start_line": 25228,
+      "end_line": 26647
+    }
+  ]
+}

@@ -106,7 +106,9 @@ def test_tracker_scan_source_has_no_history_refresh_or_raw_db_fallback():
 
 
 def test_tracker_detail_ui_keeps_title_author_time_on_one_line_and_hides_old_hint():
-    source = (BACKEND.parent / "frontend" / "src" / "pages" / "My_Tracker.jsx").read_text(encoding="utf-8")
+    source = (
+        BACKEND.parent / "frontend" / "src" / "features" / "tracker" / "My_Tracker.jsx"
+    ).read_text(encoding="utf-8")
 
     assert '작성자 <strong style={{ color: "var(--text-primary)" }}>{selected.username}</strong> ·' in source
     assert 'flexWrap: "nowrap"' in source

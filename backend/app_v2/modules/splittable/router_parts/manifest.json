@@ -1,0 +1,51 @@
+{
+  "feature": "splittable",
+  "source": "backend\\routers\\splittable.py",
+  "parts": [
+    {
+      "file": "00_bootstrap_and_view_cache.part.py",
+      "start_line": 1,
+      "end_line": 2513
+    },
+    {
+      "file": "10_overlays_notes_and_products.part.py",
+      "start_line": 2514,
+      "end_line": 3703
+    },
+    {
+      "file": "20_sources_schema_and_rules.part.py",
+      "start_line": 3704,
+      "end_line": 6589
+    },
+    {
+      "file": "30_custom_columns_and_matching.part.py",
+      "start_line": 6590,
+      "end_line": 8197
+    },
+    {
+      "file": "40_product_and_match_caches.part.py",
+      "start_line": 8198,
+      "end_line": 10123
+    },
+    {
+      "file": "50_admin_scans_and_memory.part.py",
+      "start_line": 10124,
+      "end_line": 13566
+    },
+    {
+      "file": "60_lot_candidates_and_timing.part.py",
+      "start_line": 13567,
+      "end_line": 15649
+    },
+    {
+      "file": "70_pivot_fab_and_view.part.py",
+      "start_line": 15650,
+      "end_line": 18517
+    },
+    {
+      "file": "80_plan_history_and_exports.part.py",
+      "start_line": 18518,
+      "end_line": 19829
+    }
+  ]
+}

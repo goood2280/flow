@@ -57,7 +57,7 @@ export function uiLabel(value) {
 
 export const formControlStyle = {
   padding: "6px 10px",
-  borderRadius: uxRadii.sm,
+  borderRadius: "var(--control-radius)",
   border: `1px solid ${c.border}`,
   background: c.bg1,
   color: c.text,
@@ -129,23 +129,16 @@ export const statusPalette = {
 // size: "sm"|"md"
 export function Pill({ children, tone = "neutral", size = "sm", title, onClick, className = "", style = {} }) {
   const p = statusPalette[tone] || statusPalette.neutral;
-  const sizeMap = {
-    sm: { fontSize: 14, padding: "1px 6px", borderRadius: 3 },
-    md: { fontSize: 14, padding: "2px 8px", borderRadius: 4 },
-  };
   const toneClass = tone === "neutral" ? "" : ` pill--${tone}`;
   return (
     <span
-      className={`pill${toneClass}${className ? ` ${className}` : ""}`}
+      className={`pill pill--${size}${toneClass}${className ? ` ${className}` : ""}`}
       title={title}
       onClick={onClick}
       style={{
-        ...sizeMap[size],
         "--pill-bg": p.bg,
         "--pill-fg": p.fg,
-        fontWeight: 600,
         cursor: onClick ? "pointer" : undefined,
-        whiteSpace: "nowrap",
         ...style,
       }}
     >{children}</span>
@@ -154,14 +147,14 @@ export function Pill({ children, tone = "neutral", size = "sm", title, onClick, 
 
 export function Card({ title, right, children, padding = 16, className = "", style = {}, bodyStyle = {} }) {
   return (
-    <section className={`card${className ? ` ${className}` : ""}`} style={{ padding, ...style }}>
+    <section className={`card ds-card${className ? ` ${className}` : ""}`} style={style}>
       {(title || right) && (
-        <div className="card__head">
-          {title && <div className="card__title">{uiLabel(title)}</div>}
-          {right != null && <div className="card__right">{right}</div>}
+        <div className="card__head ds-card__header">
+          {title && <div className="card__title ds-card__title">{uiLabel(title)}</div>}
+          {right != null && <div className="card__right ds-card__actions">{right}</div>}
         </div>
       )}
-      <div style={bodyStyle}>{children}</div>
+      <div className="ds-card__body" style={{ padding, ...bodyStyle }}>{children}</div>
     </section>
   );
 }
@@ -176,21 +169,21 @@ export function Chip({ mono = true, title, children, className = "", style = {} 
 
 export function TableWrap({ maxHeight, children, className = "", style = {} }) {
   return (
-    <div className={`tablewrap${className ? ` ${className}` : ""}`} style={{ maxHeight, ...style }}>
+    <div className={`tablewrap ds-table-frame${className ? ` ${className}` : ""}`} style={{ maxHeight, ...style }}>
       {children}
     </div>
   );
 }
 
 export function Tbl({ children, className = "", style = {}, ...props }) {
-  return <table className={`tbl${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</table>;
+  return <table className={`tbl ds-data-table${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</table>;
 }
 
 export function Filter({ value = "", onChange, options = [], placeholder = "전체", className = "", style = {}, ...props }) {
   const hasValue = value !== "" && value !== null && value !== undefined;
   return (
     <select
-      className={`filter${hasValue ? " has-value" : ""}${className ? ` ${className}` : ""}`}
+      className={`filter ds-select${hasValue ? " has-value" : ""}${className ? ` ${className}` : ""}`}
       value={value}
       onChange={onChange}
       style={style}
@@ -207,15 +200,8 @@ export function Filter({ value = "", onChange, options = [], placeholder = "전�
 }
 
 export function Btn({ variant = "outline", size = "md", children, className = "", disabled, ...props }) {
-  const variantClass = variant === "primary" ? "btn--primary"
-    : variant === "danger" ? "btn--danger"
-    : variant === "ghost" ? "btn--ghost"
-    : "btn--outline";
-  const sizeClass = size === "sm" ? " btn--sm" : "";
   return (
-    <button className={`btn ${variantClass}${sizeClass}${className ? ` ${className}` : ""}`} disabled={disabled} {...props}>
-      {children}
-    </button>
+    <Button variant={variant} size={size} className={`btn${className ? ` ${className}` : ""}`} disabled={disabled} {...props}>{children}</Button>
   );
 }
 
@@ -230,15 +216,15 @@ export function Avatar({ name = "", tone, title, className = "", style = {} }) {
 }
 
 export function Input({ className = "", style = {}, ...props }) {
-  return <input className={`input${className ? ` ${className}` : ""}`} style={style} {...props} />;
+  return <input className={`input ds-input${className ? ` ${className}` : ""}`} style={style} {...props} />;
 }
 
 export function Select({ className = "", style = {}, children, ...props }) {
-  return <select className={`select${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</select>;
+  return <select className={`select ds-select${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</select>;
 }
 
 export function Textarea({ className = "", style = {}, ...props }) {
-  return <textarea className={`textarea${className ? ` ${className}` : ""}`} style={style} {...props} />;
+  return <textarea className={`textarea ds-textarea${className ? ` ${className}` : ""}`} style={style} {...props} />;
 }
 
 
@@ -247,7 +233,7 @@ export function Textarea({ className = "", style = {}, ...props }) {
 export function StatusDot({ tone = "ok", title }) {
   const p = statusPalette[tone] || statusPalette.neutral;
   return (
-    <span title={title} style={{ display: "inline-block", width: 8, height: 8, borderRadius: 8, background: p.fg, verticalAlign: "middle" }} />
+    <span className="ds-status-dot" title={title} style={{ "--status-dot-color": p.fg }} />
   );
 }
 
@@ -255,31 +241,20 @@ export function StatusDot({ tone = "ok", title }) {
 // ── Tab strip ──────────────────────────────────────────
 // SplitTable 의 splittable-tab 패턴 포팅.  active 항목은 accent-glow 배경.
 // items: [{k, l, badge?}], active: string, onChange: fn
-export function TabStrip({ items = [], active, onChange, right = null }) {
+export function TabStrip({ items = [], active, onChange, right = null, label = "하위 기능" }) {
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, rowGap: 2, alignItems: "center", borderBottom: `1px solid ${c.border}` }}>
+    <div className="ds-tabs" role="tablist" aria-label={label}>
       {items.map(({ k, l, badge }) => {
         const isA = active === k;
         return (
-          <span key={k} onClick={() => onChange && onChange(k)}
-                data-active={isA ? "1" : "0"}
-                style={{
-                  padding: "6px 12px", fontSize: 14,
-                  cursor: "pointer", userSelect: "none",
-                  whiteSpace: "nowrap",
-                  background: isA ? c.accentGlow : "transparent",
-                  color: isA ? c.accent : c.textSub,
-                  fontWeight: isA ? 600 : 400,
-                  borderBottom: isA ? `2px solid ${c.accent}` : "2px solid transparent",
-                  marginBottom: -1,
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                }}>
+          <button key={k} type="button" role="tab" className="ds-tab"
+                  aria-selected={isA} onClick={() => onChange && onChange(k)}>
             {uiLabel(l)}
             {badge != null && <Pill tone={isA ? "accent" : "neutral"} size="sm">{badge}</Pill>}
-          </span>
+          </button>
         );
       })}
-      {right && <span style={{ marginLeft: "auto" }}>{right}</span>}
+      {right && <span className="ds-tabs__actions">{right}</span>}
     </div>
   );
 }
@@ -287,56 +262,52 @@ export function TabStrip({ items = [], active, onChange, right = null }) {
 
 // ── PageHeader ─────────────────────────────────────────
 // 페이지 최상단 compact header (RootHeader 와 함께). left/center/right slot.
-export function PageHeader({ title, subtitle, right, style = {} }) {
+export function PageHeader({ title, subtitle, eyebrow, status, right, className = "", style = {} }) {
   return (
-    <div className="flow-surface-header" style={{
-      display: "flex", alignItems: "center", gap: 12,
-      padding: "8px 14px 8px 18px", borderBottom: `1px solid ${c.border}`,
-      background: c.bg2, minHeight: 34, ...style,
-    }}>
-      {title && <span style={{ fontSize: 14, fontWeight: 800, color: c.text }}>{uiLabel(title)}</span>}
-      {subtitle && <span style={{ fontSize: 14, color: c.textSub }}>{subtitle}</span>}
-      {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
-    </div>
+    <header className={`flow-surface-header ds-page-header${className ? ` ${className}` : ""}`} style={style}>
+      <div className="ds-page-header__copy">
+        {eyebrow && <span className="ds-page-header__eyebrow">{eyebrow}</span>}
+        {title && <h1 className="ds-page-header__title">{uiLabel(title)}</h1>}
+        {subtitle && <span className="ds-page-header__subtitle">{subtitle}</span>}
+      </div>
+      {status != null && <span className="ds-page-header__status">{status}</span>}
+      {right != null && <span className="ds-page-header__actions">{right}</span>}
+    </header>
   );
 }
 
 
 // ── PageShell / Toolbar / Panel ───────────────────────
 // SplitTable/FileBrowser 와 같은 full-height operational page frame.
-export function PageShell({ children, split = false, style = {} }) {
+export function PageShell({ children, split = false, layout, className = "", style = {} }) {
+  const resolvedLayout = layout || (split ? "explorer" : "standard");
   return (
-    <div className={split ? "flow-split-page" : "flow-page"} style={{
-      minHeight: split ? undefined : "calc(100vh - 52px)",
-      display: split ? "flex" : "block",
-      overflow: split ? "hidden" : "auto",
-      ...style,
-    }}>
+    <div className={`${split ? "flow-split-page" : "flow-page"} ds-page ds-page--${resolvedLayout}${className ? ` ${className}` : ""}`} style={style}>
       {children}
     </div>
   );
 }
 
-export function Toolbar({ children, right = null, style = {} }) {
+export function Toolbar({ children, right = null, className = "", style = {} }) {
   return (
-    <div className="flow-toolbar" style={style}>
+    <div className={`flow-toolbar ds-toolbar${className ? ` ${className}` : ""}`} style={style}>
       {children}
-      {right != null && <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>{right}</span>}
+      {right != null && <span className="ds-toolbar__actions">{right}</span>}
     </div>
   );
 }
 
-export function Panel({ title, subtitle, right, children, style = {}, bodyStyle = {} }) {
+export function Panel({ title, subtitle, right, children, className = "", style = {}, bodyStyle = {} }) {
   return (
-    <section className="flow-panel" style={{ overflow: "hidden", ...style }}>
+    <section className={`flow-panel ds-panel${className ? ` ${className}` : ""}`} style={style}>
       {(title || subtitle || right) && (
-        <div style={{ minHeight: 34, padding: "8px 12px", borderBottom: `1px solid ${c.border}`, display: "flex", alignItems: "center", gap: 10, background: c.bg2 }}>
-          {title && <span style={{ fontSize: 14, fontWeight: 800, color: c.accent }}>{uiLabel(title)}</span>}
-          {subtitle && <span style={{ fontSize: 14, color: c.textSub }}>{subtitle}</span>}
-          {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
+        <div className="ds-panel__header">
+          {title && <span className="ds-panel__title">{uiLabel(title)}</span>}
+          {subtitle && <span className="ds-panel__subtitle">{subtitle}</span>}
+          {right != null && <span className="ds-panel__actions">{right}</span>}
         </div>
       )}
-      <div style={{ padding: 12, ...bodyStyle }}>{children}</div>
+      <div className="ds-panel__body" style={bodyStyle}>{children}</div>
     </section>
   );
 }
@@ -344,16 +315,11 @@ export function Panel({ title, subtitle, right, children, style = {}, bodyStyle 
 
 // ── Banner ─────────────────────────────────────────────
 // 상단 알림 배너.  tone 색깔 사용.
-export function Banner({ tone = "info", children, onClose, style = {} }) {
-  const p = statusPalette[tone] || statusPalette.info;
+export function Banner({ tone = "info", children, onClose, className = "", style = {} }) {
   return (
-    <div style={{
-      padding: "8px 12px", fontSize: 14,
-      background: p.bg, color: p.fg, borderRadius: 4,
-      display: "flex", alignItems: "center", gap: 10, ...style,
-    }}>
-      <span style={{ flex: 1 }}>{children}</span>
-      {onClose && <span onClick={onClose} style={{ cursor: "pointer", fontSize: 14, fontWeight: 700 }}>×</span>}
+    <div className={`ds-banner${className ? ` ${className}` : ""}`} data-tone={tone} role="status" style={style}>
+      <span className="ds-banner__content">{children}</span>
+      {onClose && <button type="button" className="ds-banner__close" onClick={onClose} aria-label="알림 닫기">×</button>}
     </div>
   );
 }
@@ -362,15 +328,11 @@ export function Banner({ tone = "info", children, onClose, style = {} }) {
 // ── Two-Column Layout ─────────────────────────────────
 // FileBrowser 좌측 sidebar + 우측 content 표준 골격.
 // left: JSX, right: JSX, leftWidth: px (default 260)
-export function TwoCol({ left, right, leftWidth = 260, style = {} }) {
+export function TwoCol({ left, right, leftWidth = 260, className = "", style = {} }) {
   return (
-    <div style={{ display: "flex", flex: 1, minHeight: 0, ...style }}>
-      <div style={{
-        width: leftWidth, flexShrink: 0,
-        borderRight: `1px solid ${c.border}`,
-        background: c.bg2, overflow: "auto",
-      }}>{left}</div>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>{right}</div>
+    <div className={`flow-two-col${className ? ` ${className}` : ""}`} style={{ "--flow-left-width": typeof leftWidth === "number" ? `${leftWidth}px` : leftWidth, ...style }}>
+      <div className="flow-two-col__left">{left}</div>
+      <div className="flow-two-col__right">{right}</div>
     </div>
   );
 }
@@ -380,43 +342,32 @@ export function TwoCol({ left, right, leftWidth = 260, style = {} }) {
 // columns: [{key, label, width?, align?, render?(row)}]
 // rows: array of objects keyed by columns[].key
 // empty: string shown when rows is empty
-export function DataTable({ columns = [], rows = [], empty = "데이터 없음", rowStyle, onRowClick, maxHeight }) {
+export function DataTable({ columns = [], rows = [], empty = "데이터 없음", rowStyle, onRowClick, maxHeight, rowKey = "id", caption }) {
   if (!rows || rows.length === 0) {
-    return <div style={{ textAlign: "center", padding: 40, color: c.textSub, fontSize: 14 }}>{empty}</div>;
+    return <EmptyState title={empty} />;
   }
   return (
-    <div style={{ overflow: "auto", maxHeight: maxHeight }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+    <div className="ds-table-frame" style={{ maxHeight }}>
+      <table className="ds-data-table">
+        {caption && <caption className="u-sr-only">{caption}</caption>}
         <thead>
           <tr>
             {columns.map(col => (
-              <th key={col.key} style={{
-                textAlign: col.align || "left",
-                padding: "8px 10px",
-                borderBottom: `1px solid ${c.border}`,
-                color: c.textSub, fontSize: 14,
-                fontWeight: 600,
-                background: c.bg3, position: "sticky", top: 0, zIndex: 1,
-                width: col.width, whiteSpace: "nowrap",
-              }}>{uiLabel(col.label)}</th>
+              <th key={col.key} className={col.numeric || col.align === "right" ? "is-numeric" : ""} style={{ width: col.width }}>
+                {uiLabel(col.label)}
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} onClick={onRowClick ? () => onRowClick(row) : undefined}
+            <tr key={row?.[rowKey] ?? ri} onClick={onRowClick ? () => onRowClick(row) : undefined}
                 style={{
                   cursor: onRowClick ? "pointer" : undefined,
                   ...(rowStyle ? rowStyle(row) : {}),
                 }}>
               {columns.map(col => (
-                <td key={col.key} style={{
-                  padding: "6px 10px",
-                  borderBottom: `1px solid ${c.border}`,
-                  textAlign: col.align || "left",
-                  verticalAlign: "middle",
-                  color: c.text, fontSize: 14,
-                }}>
+                <td key={col.key} className={col.numeric || col.align === "right" ? "is-numeric" : ""}>
                   {col.render ? col.render(row) : row[col.key]}
                 </td>
               ))}
@@ -430,22 +381,12 @@ export function DataTable({ columns = [], rows = [], empty = "데이터 없음",
 
 
 // ── Button (primary / ghost) ─────────────────────────
-export function Button({ variant = "ghost", children, onClick, disabled, title, style = {} }) {
-  const base = {
-    padding: "5px 12px", borderRadius: 4, fontSize: 14,
-    fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.5 : 1, border: `1px solid ${c.accent}`,
-    whiteSpace: "nowrap",
-  };
-  const variants = {
-    primary: { background: c.accent, color: "#fff", border: `1px solid ${c.accent}` },
-    ghost: { background: "transparent", color: c.accent, border: `1px solid ${c.accent}` },
-    subtle: { background: "transparent", color: c.textSub, border: `1px solid ${c.border}` },
-    danger: { background: "transparent", color: c.bad, border: `1px solid ${c.bad}` },
-  };
+export function Button({ variant = "ghost", size = "default", children, className = "", style = {}, ...props }) {
+  const resolvedVariant = variant === "subtle" ? "ghost" : variant === "outline" ? "secondary" : variant;
   return (
-    <button onClick={disabled ? undefined : onClick} disabled={disabled} title={title}
-            style={{ ...base, ...variants[variant], ...style }}>
+    <button type="button"
+            className={`ds-button ds-button--${resolvedVariant}${size === "sm" || size === "compact" ? " ds-button--compact" : ""}${className ? ` ${className}` : ""}`}
+            style={style} {...props}>
       {children}
     </button>
   );
@@ -456,10 +397,7 @@ export function Button({ variant = "ghost", children, onClick, disabled, title, 
 // tone: "accent"(기본) | "muted"
 export function LinkBtn({ tone = "accent", children, style = {}, ...props }) {
   return (
-    <button {...props}
-      style={{ fontSize: 12, color: tone === "muted" ? c.textSub : c.accent,
-               background: "none", border: "none", cursor: "pointer", padding: 0,
-               textDecoration: "underline", whiteSpace: "nowrap", ...style }}>
+    <button type="button" {...props} className={`ds-link-button${tone === "muted" ? " u-muted" : ""}`} style={style}>
       {children}
     </button>
   );
@@ -467,22 +405,26 @@ export function LinkBtn({ tone = "accent", children, style = {}, ...props }) {
 
 
 // ── EmptyState ────────────────────────────────────────
-export function EmptyState({ icon = "○", title, hint }) {
+export function EmptyState({ icon = "○", title, hint, actions }) {
   return (
-    <div style={{ padding: "40px 20px", textAlign: "center", color: c.textSub, fontSize: 14 }}>
-      <div style={{ fontSize: 28, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontWeight: 600, color: c.text, fontSize: 14 }}>{title}</div>
-      {hint && <div style={{ marginTop: 4 }}>{hint}</div>}
+    <div className="empty-state ds-feedback" role="status">
+      <div className="ds-feedback__inner">
+        <div className="ds-feedback__icon" aria-hidden="true">{icon}</div>
+        <div className="empty-state__title ds-feedback__title">{title}</div>
+        {hint && <div className="ds-feedback__message">{hint}</div>}
+        {actions && <div className="ds-feedback__actions">{actions}</div>}
+      </div>
     </div>
   );
 }
 
-export function Field({ label, children, hint, style = {} }) {
+export function Field({ label, children, hint, required = false, error, className = "", style = {} }) {
   return (
-    <label style={{ display: "grid", gap: 4, ...style }}>
-      <span style={{ fontSize: 14, color: c.textSub, fontFamily: "monospace" }}>{label}</span>
+    <label className={`ds-form-field${className ? ` ${className}` : ""}`} style={style}>
+      <span className="ds-form-field__label">{label}{required && <span className="ds-form-field__required"> *</span>}</span>
       {children}
-      {hint && <span style={{ fontSize: 14, color: c.textSub }}>{hint}</span>}
+      {hint && !error && <span className="ds-form-field__help">{hint}</span>}
+      {error && <span className="ds-form-field__error">{error}</span>}
     </label>
   );
 }

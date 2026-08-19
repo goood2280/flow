@@ -5,7 +5,7 @@ import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
 import { ToastHost, toast } from "./components/Toast";
-import { PAGE_MAP } from "./app/pageRegistry";
+import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups } from "./app/pageManifest";
 import { useFlowShell } from "./app/useFlowShell";
 import { sf, postJson } from "./lib/api";
 
@@ -121,31 +121,6 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
       </div>}
     </div>
   );
-}
-
-/* 사이드바 그룹 — config.js TABS 의 `group` 과 별개로 여기 keys 에 적힌 탭만 그 그룹에
-   들어간다. 어느 그룹에도 없는 탭은 buildNavGroups 가 "기타" 로 몰아넣으므로, 새 탭을
-   만들면 config.js·pageRegistry·backend auth.py 와 함께 이 목록도 고쳐야 한다
-   (매칭 채우기가 데이터가 아니라 기타에 떠 있던 이유). */
-const NAV_GROUPS = [
-  { id: "home", label: "홈", keys: ["home"], direct: true },
-  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "lotmanage", "ramcache", "matchfill"] },
-  { id: "work", label: "업무", keys: ["chartbuilder", "templatereport", "autoreport", "lotrequest", "inform", "meeting", "calendar", "tracker", "valve", "teg", "yieldmap", "ettime", "reformatize", "dcop"] },
-  { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
-  { id: "admin", label: "관리", keys: ["admin", "devguide"] },
-];
-
-function buildNavGroups(visibleTabs) {
-  const byKey = new Map((visibleTabs || []).map(t => [t.key, t]));
-  const used = new Set();
-  const groups = NAV_GROUPS.map(group => {
-    const items = group.keys.map(k => byKey.get(k)).filter(Boolean);
-    items.forEach(item => used.add(item.key));
-    return { ...group, items };
-  }).filter(group => group.items.length > 0);
-  const extra = (visibleTabs || []).filter(t => !used.has(t.key));
-  if (extra.length) groups.push({ id: "extra", label: "기타", keys: extra.map(t => t.key), items: extra });
-  return groups;
 }
 
 function NavGroup({ group, activeKey, onNavigate }) {
@@ -593,10 +568,11 @@ export default function App() {
   if (!user) return <My_Login onLogin={handleLogin} />;
 
   const Page = PAGE_MAP[tab];
+  const pageDefinition = PAGE_BY_KEY[tab];
   const navGroups = buildNavGroups(visibleTabs);
 
   return (
-    <div className="flow-app flow-carbon">
+    <div className="flow-app">
       <nav className="flow-nav">
         {/* v8.3.3: nav brand logo — pixel glyph unified with home, compact (2px cell), subtle glow. */}
         <BrandLogo size="nav" onClick={()=>nav("home")} />
@@ -614,7 +590,11 @@ export default function App() {
         </div>
       </nav>
       <NoticeBanner user={user} />
-      <div style={{flex:1,minHeight:0,overflow:tab==="dashboard"?"hidden":"auto"}}>
+      <div
+        className={`flow-app__content flow-page-host${pageDefinition?.scrollMode === "locked" ? " flow-page-host--locked" : ""}`}
+        data-page-key={tab}
+        data-page-layout={pageDefinition?.layout || "standard"}
+      >
         {Page ? (
           <ErrorBoundary key={tab}>
             <Suspense fallback={<PageLoadingFallback tab={tab} />}>
