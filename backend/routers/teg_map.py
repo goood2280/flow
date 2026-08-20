@@ -268,33 +268,6 @@ def inspect(req: InspectReq, _user=Depends(current_user)):
                        name_overrides=req.name_overrides)
 
 
-class MainOverlayApplyReq(BaseModel):
-    vehicle: str
-    # [{group, tegs: [{teg, x, y}]}] — teg_check inspect 의 teg.main_groups 형식
-    groups: list
-    # 같은 그룹이 이미 반영돼 있으면 False 응답의 exists 로 알려주고,
-    # UI 확인 후 overwrite=True 로 재요청해야 덮어쓴다
-    overwrite: bool = False
-
-
-@router.get("/main-overlay")
-def main_overlay(vehicle: str = Query(...), _user=Depends(current_user)):
-    return {"ok": True, "overlays": _tm.get_main_overlays(vehicle)}
-
-
-@router.post("/main-overlay/apply")
-def main_overlay_apply(req: MainOverlayApplyReq, _user=Depends(current_user)):
-    return _tm.apply_main_overlays(req.vehicle, req.groups, overwrite=req.overwrite)
-
-
-@router.delete("/main-overlay")
-def main_overlay_delete(vehicle: str = Query(...), group: str = Query(...),
-                        _user=Depends(current_user)):
-    if not _tm.delete_main_overlay(vehicle, group):
-        raise HTTPException(404, f"overlay 없음: {vehicle} / {group}")
-    return {"ok": True}
-
-
 @router.get("/generate")
 def generate(vehicle: str = Query(...), include_all: bool = Query(False),
              _user=Depends(current_user)):

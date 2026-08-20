@@ -1814,23 +1814,13 @@ export default function My_TegMap({ user }) {
     return Math.round(Math.max(SHOT_ZOOM_MIN, Math.min(SHOT_ZOOM_MAX, box - reserved)));
   }, [shotBoxW, nCoord]);
 
-  // MAIN overlay — Mapfile 체크에서 역반영된 그룹 메타 {group: {applied_at, count}}
-  const mainOverlays = data?.main_overlays || {};
   // 일반 사용자 동시 선택 상한 (전체 렌더 시 502/브라우저 다운 방지). null = 관리자(무제한).
   const maxSel = data?.max_selection ?? null;
   // TEG 다중 선택 — 클릭으로 on/off 토글, 전체/해제 버튼.
-  // MAIN 그룹명(정답지에 MAIN 자체가 등록된 경우)을 토글하면 내부 TEG("그룹·이름")도 함께 토글.
   const toggleTeg = (name) => {
     const next = new Set(selectedTegs);
     const turnOn = !next.has(name);
     if (turnOn) next.add(name); else next.delete(name);
-    if (mainOverlays[name]) {
-      (data?.tegs || []).forEach(t => {
-        if (t.overlay_group === name) {
-          if (turnOn) next.add(t.teg); else next.delete(t.teg);
-        }
-      });
-    }
     if (turnOn && maxSel != null && next.size > maxSel) {
       toast.error(`일반 사용자는 TEG 를 최대 ${maxSel}개까지 선택할 수 있습니다. (관리자는 제한 없음)`);
       return;
@@ -2066,13 +2056,9 @@ export default function My_TegMap({ user }) {
                   {tegNames.map(n => {
                     const t = (data.tegs || []).find(x => x.teg === n) || {};
                     const on = selectedTegs.has(n);
-                    const ovG = t.overlay_group;
                     return (
                       <button key={n} onClick={() => toggleTeg(n)}
-                        title={(ovG
-                          ? `MAIN ${ovG} 내부 TEG — ${(mainOverlays[ovG]?.applied_at || "").slice(0, 16).replace("T", " ")} Mapfile 기준 반영 (설비 세팅 유래, 이상 가능성 참고)\n`
-                          : "")
-                          + `ebeam_x ${fmt(t.ebeam_x)} · ebeam_y ${fmt(t.ebeam_y)} mm (shot 센터 기준 TEG 좌하단)`
+                        title={`ebeam_x ${fmt(t.ebeam_x)} · ebeam_y ${fmt(t.ebeam_y)} mm (shot 센터 기준 TEG 좌하단)`
                           + `\n방향 ${directionLabel(t)} — ${isVertical(t) ? "세움" : "가로"} · `
                           + `${fmt(t.teg_w, 3)} × ${fmt(t.teg_h, 3)} mm\n${DIR_TIP}`}
                         style={{
@@ -2096,36 +2082,10 @@ export default function My_TegMap({ user }) {
                                          color: "#8a5fd0", border: "1px solid #8a5fd0",
                                          borderRadius: 4, padding: "0 4px" }}>{directionLabel(t)}</span>
                         )}
-                        {ovG && (
-                          <span style={{ marginLeft: isVertical(t) ? 4 : "auto", fontSize: 10,
-                                         flexShrink: 0,
-                                         color: "var(--warn)", border: "1px solid var(--warn)",
-                                         borderRadius: 4, padding: "0 4px" }}>Mapfile</span>
-                        )}
                       </button>
                     );
                   })}
                 </div>
-                {/* MAIN overlay 참고문 — 설비 Mapfile 세팅 유래 값이라 이상 가능성 안내 */}
-                {Object.keys(mainOverlays).length > 0 && (
-                  <div style={{ marginTop: 8, padding: "6px 8px", borderRadius: 6,
-                                background: "var(--warn-50)", fontSize: 11,
-                                lineHeight: 1.6, color: "var(--muted)" }}>
-                    <div style={{ fontWeight: 700, color: "var(--warn)" }}>
-                      ⓘ MAIN 내부 TEG — Mapfile 기준 반영
-                    </div>
-                    {Object.entries(mainOverlays).map(([g, m]) => (
-                      <div key={g}>
-                        {g}: {(m.applied_at || "").slice(0, 16).replace("T", " ") || "반영 시각 미상"} 반영
-                        · {m.count}개
-                      </div>
-                    ))}
-                    <div>
-                      TEG Mapfile 체크에서 가져온 설비 세팅 기준 값입니다 — 세팅 이상 가능성이
-                      있으니 참고용으로 확인하세요.
-                    </div>
-                  </div>
-                )}
                 {/* Mapfile 체크 대상 TEG 설정 — 관리자만 편집 가능 */}
                 <CheckTargetEditor vehicle={vehicle} canEdit={canEdit} />
               </div>

@@ -429,93 +429,6 @@ function NameCell({ r, ov, onPick }) {
   );
 }
 
-/* ── MAIN 그룹 → 위치조회 역반영 — MAIN 은 die 급 큰 사각형 블록, Mapfile 의
-   내부 TEG 행들을 ebeam 절대좌표로 원복해 위치 조회에 overlay 로 저장한다.
-   같은 그룹이 이미 반영돼 있으면 서버가 exists 를 돌려주고, 사용자 확인 후
-   overwrite=true 로 재요청 (다시 검사 시 "다시 반영할지" 묻는 계약). ── */
-function MainGroupSection({ vehicle, groups }) {
-  const [busy, setBusy] = useState(false);
-  const [applied, setApplied] = useState({});   // {group: applied_at} — 이번 세션 반영분
-
-  const apply = async (targets) => {
-    if (!vehicle) { toast.error("vehicle 을 먼저 선택하세요"); return; }
-    const payload = targets.map(g => ({ group: g.group, tegs: g.tegs }));
-    setBusy(true);
-    try {
-      let r = await postJson(API + "/main-overlay/apply",
-        { vehicle, groups: payload, overwrite: false });
-      if (!r.ok && (r.exists || []).length) {
-        const msg = "이미 위치조회에 반영된 MAIN 그룹이 있습니다:\n"
-          + r.exists.map(e => `  · ${e.group} (${e.applied_at || "반영 시각 미상"})`).join("\n")
-          + "\n\n이번 Mapfile 기준으로 다시 반영할까요?";
-        if (!window.confirm(msg)) { setBusy(false); return; }
-        r = await postJson(API + "/main-overlay/apply",
-          { vehicle, groups: payload, overwrite: true });
-      }
-      if (r.ok) {
-        toast.ok(`위치조회 반영 완료 — ${r.saved.join(", ")}`);
-        setApplied(prev => {
-          const next = { ...prev };
-          r.saved.forEach(g => { next[g] = r.applied_at; });
-          return next;
-        });
-      } else {
-        toast.error(r.error || "반영 실패");
-      }
-    } catch (e) { toast.error(String(e.message || e)); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ fontSize: 12, color: "var(--muted)" }}>
-        MAIN 은 die 급 블록으로, 내부 TEG 정보가 Mapfile 에 같은 그룹명으로 나열됩니다.
-        아래 그룹을 반영하면 TEG 위치 조회에서 해당 MAIN 을 고를 때 내부 TEG 위치·모양이 함께 표시됩니다.
-        <span style={{ color: "var(--warn)" }}> 설비 Mapfile 세팅에서 가져온 값이라 이상이 있을 수
-        있습니다 — 위치조회에 반영 시각이 참고문으로 표시됩니다.</span>
-      </div>
-      {groups.map(g => {
-        const at = applied[g.group] || g.applied_at;
-        return (
-          <div key={g.group} style={{ display: "flex", gap: 10, alignItems: "center",
-                                      flexWrap: "wrap", border: "1px solid var(--line)",
-                                      borderRadius: 6, padding: "6px 10px", fontSize: 13 }}>
-            <span style={{ fontWeight: 700, fontFamily: "monospace" }}>{g.group}</span>
-            <Pill tone="neutral" size="sm">내부 TEG {g.tegs.length}개</Pill>
-            {g.red > 0 && (
-              <Pill tone="danger" size="sm"
-                title={"자기 MAIN die 밖으로 나갔거나 다른 die 에 있는 내부 TEG:\n"
-                  + g.tegs.filter(t => t.light === "red")
-                      .map(t => `${t.teg} — ${t.light_reason}`).join("\n")}>
-                🔴 {g.red}
-              </Pill>
-            )}
-            {at ? (
-              <Pill tone="warn" size="sm" title="위치조회에 이미 반영된 그룹 — 다시 반영하면 덮어씁니다">
-                기존 반영 {String(at).slice(0, 16).replace("T", " ")}
-              </Pill>
-            ) : (
-              <Pill tone="neutral" size="sm">미반영</Pill>
-            )}
-            <span style={{ fontSize: 11, color: "var(--muted)", flex: 1, overflow: "hidden",
-                           textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {g.tegs.slice(0, 4).map(t => t.teg).join(", ")}{g.tegs.length > 4 ? " …" : ""}
-            </span>
-            <Button disabled={busy} onClick={() => apply([g])}>위치조회에 반영</Button>
-          </div>
-        );
-      })}
-      {groups.length > 1 && (
-        <div>
-          <Button variant="primary" disabled={busy} onClick={() => apply(groups)}>
-            전체 {groups.length}개 그룹 반영
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ── TEG 대조 섹션 — flat 선택 + 🟢/🔴/⚪ 대조표 + 맵 표시 ── */
 function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarkerV, markerVL, setMarkerVL, onMarkersApply,
                       nameOv, onPickName, pendingCount, onReapply, busy, view, setView }) {
@@ -538,8 +451,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       || String(a.teg).localeCompare(String(b.teg)));
     return out;
   }, [teg.main_groups]);
-  // 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다. 상태는 페이지가 들고 있다
-  // (아래 "MAIN 그룹 → 위치조회 반영" 카드도 같은 선택을 따라야 하므로).
+  // 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다.
   const seeTarget = view !== VIEW_MAIN;
   const seeMain = view !== VIEW_TARGET;
   // shot 배치도 — 기본은 **빨간불만**(지금 고쳐야 할 것). "전체 표시" 를 켜면
@@ -1059,9 +971,6 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   )}
                 </div>
               ))}
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                아래 "MAIN 그룹 → 위치조회 반영" 에서 이 내부 TEG 들을 위치 조회에 반영할 수 있습니다.
-              </div>
             </div>
           )}
         </MiniPanel>}
@@ -1516,11 +1425,6 @@ export default function TegCheck({ vehicle }) {
             )}
           </Card>
 
-          {view !== VIEW_TARGET && (res.teg.main_groups || []).length > 0 && (
-            <Card title={`MAIN 그룹 → 위치조회 반영 (${res.teg.main_groups.length})`}>
-              <MainGroupSection vehicle={vehicle} groups={res.teg.main_groups} />
-            </Card>
-          )}
         </>
       )}
     </div>

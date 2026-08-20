@@ -1,3 +1,6 @@
+import copy
+
+import pandas as pd
 import pytest
 
 from core import teg_check
@@ -6,6 +9,37 @@ from core import auth
 from fastapi import HTTPException
 from routers import filebrowser
 from routers import teg_map as teg_router
+
+
+def test_map_payload_ignores_legacy_mapfile_main_overlays(tmp_path, monkeypatch):
+    """위치 조회 목록은 Teg_location 만 사용하고 Mapfile 역반영 파일은 읽지 않는다."""
+    layout = pd.DataFrame([
+        {"vehicle": "P", "x": 0, "y": 0, "r": 0.0},
+    ])
+    tegs = pd.DataFrame([
+        {"vehicle": "P", "teg": "MAIN01", "ebeam_x": 1.0, "ebeam_y": 2.0,
+         "teg_w": 3.0, "teg_h": 0.1, "flat_zone": "h"},
+    ])
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg["vehicles"] = {}
+
+    (tmp_path / "main_overlays.json").write_text(
+        '{"P":{"MAIN01":{"applied_at":"2026-01-01T00:00:00+09:00",'
+        '"source":"mapfile-check","tegs":[{"teg":"INNER01","x":10,"y":20}]}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(teg_map, "teg_dir", lambda: tmp_path)
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_map, "load_layout", lambda: (layout, tmp_path / "Chip_Radius.csv"))
+    monkeypatch.setattr(teg_map, "load_tegs", lambda: (tegs, tmp_path / "Teg_location.csv"))
+    monkeypatch.setattr(teg_map, "load_main_chips", lambda: ({}, tmp_path / "Main_chip_info.csv"))
+
+    payload = teg_map.map_payload("P")
+
+    assert [item["teg"] for item in payload["tegs"]] == ["MAIN01"]
+    assert "main_overlays" not in payload
+    assert all("overlay_group" not in item for item in payload["tegs"])
 
 
 @pytest.mark.parametrize(

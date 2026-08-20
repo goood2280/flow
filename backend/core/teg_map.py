@@ -595,32 +595,8 @@ def save_cfg(patch: dict) -> dict:
         return cur
 
 
-# ────────────────────────────────────────── vehicle 그림 파일
-# ────────────────────────────────────────── MAIN overlay (Mapfile 역반영)
-# MAIN 은 개발제품 die 급의 큰 직사각형 블록 — Mapfile 에는 그 내부 TEG 들이
-# 같은 그룹명(MAIN02 등)으로 나열된다. TEG Mapfile 체크에서 원복한 내부 TEG
-# 절대좌표를 위치 조회에 역반영해 두는 저장소. **설비 Mapfile 세팅에서 가져온
-# 값이라 이상이 있을 수 있음** — applied_at 을 함께 저장해 UI 에 참고문으로 표시.
+# ────────────────────────────────────────── MAIN die helpers
 MAIN_RE = re.compile(r"(?<![A-Za-z])MAIN", re.IGNORECASE)   # 이름의 MAIN 판별
-MAIN_OVERLAY_NAME = "main_overlays.json"
-MAX_OVERLAY_GROUPS = 50          # vehicle 당 그룹 상한
-MAX_OVERLAY_TEGS = 2000          # 그룹당 내부 TEG 상한
-
-
-def _main_overlay_path() -> Path:
-    return teg_dir() / MAIN_OVERLAY_NAME
-
-
-def load_main_overlays() -> dict:
-    """전체 overlay — {vehicle: {group: {applied_at, source, tegs:[{teg,x,y}]}}}."""
-    with _LOCK:
-        raw = load_json(_main_overlay_path(), default={})
-    return raw if isinstance(raw, dict) else {}
-
-
-def get_main_overlays(vehicle: str) -> dict:
-    v = load_main_overlays().get(str(vehicle or "").strip())
-    return v if isinstance(v, dict) else {}
 
 
 _CHIP_NUM_RE = re.compile(r"^(.*?)(\d+)$")
@@ -672,8 +648,7 @@ def main_anchors(payload: dict, chips: dict | None = None) -> list[dict]:
 
     MAIN 은 die 급 블록이고, 그 TEG 좌표가 곧 die 의 좌하단이다. 크기는
     Main_chip_info.csv(µm→mm)에서만 온다 — 크기가 안 붙은 앵커는 die 로 그리지
-    않는다(teg_shape.anchor_cells). overlay 로 들어온 **내부** TEG("MAIN02·XXX")는
-    die 코너가 아니므로 뺀다.
+    않는다(teg_shape.anchor_cells).
     """
     veh = str(payload.get("vehicle") or "").strip()
     table = chips if chips is not None else load_main_chips()[0]
@@ -700,89 +675,6 @@ def main_anchors(payload: dict, chips: dict | None = None) -> list[dict]:
             a["w"], a["h"] = size
         out.append(a)
     return out
-
-
-def _clean_overlay_tegs(items: Any) -> list[dict]:
-    out: list[dict] = []
-    seen: set[str] = set()
-    for row in (items or []):
-        if not isinstance(row, dict):
-            continue
-        name = str(row.get("teg") or "").strip()
-        if not name or name in seen:
-            continue
-        try:
-            x = float(row.get("x"))
-            y = float(row.get("y"))
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(x) and math.isfinite(y)):
-            continue
-        seen.add(name)
-        out.append({"teg": name[:120], "x": x, "y": y})
-        if len(out) >= MAX_OVERLAY_TEGS:
-            break
-    return out
-
-
-def apply_main_overlays(vehicle: str, groups: list, overwrite: bool = False) -> dict:
-    """MAIN 그룹들을 vehicle overlay 로 저장.
-
-    overwrite=False 인데 같은 그룹이 이미 반영돼 있으면 저장하지 않고
-    {ok: False, exists: [{group, applied_at}]} 를 돌려준다 — UI 가
-    "다시 반영할지" 확인 후 overwrite=True 로 재요청하는 계약.
-    """
-    veh = str(vehicle or "").strip()
-    if not veh:
-        return {"ok": False, "error": "vehicle 이 비어 있습니다"}
-    cleaned: list[tuple[str, list[dict]]] = []
-    for g in (groups or []):
-        if not isinstance(g, dict):
-            continue
-        name = str(g.get("group") or "").strip()
-        tegs = _clean_overlay_tegs(g.get("tegs"))
-        if name and tegs:
-            cleaned.append((name[:120], tegs))
-    if not cleaned:
-        return {"ok": False, "error": "반영할 MAIN 그룹이 없습니다"}
-    from datetime import datetime as _dt
-    with _LOCK:
-        data = load_main_overlays()
-        cur = data.get(veh)
-        cur = dict(cur) if isinstance(cur, dict) else {}
-        exists = [{"group": n, "applied_at": (cur[n] or {}).get("applied_at", "")}
-                  for n, _ in cleaned if n in cur]
-        if exists and not overwrite:
-            return {"ok": False, "exists": exists}
-        now = _dt.now().astimezone().isoformat(timespec="seconds")
-        for n, tegs in cleaned:
-            cur[n] = {"applied_at": now, "source": "mapfile-check", "tegs": tegs}
-        # 그룹 상한 — 오래된 applied_at 부터 정리
-        if len(cur) > MAX_OVERLAY_GROUPS:
-            for drop in sorted(cur, key=lambda k: str(cur[k].get("applied_at") or ""))[
-                    :len(cur) - MAX_OVERLAY_GROUPS]:
-                cur.pop(drop, None)
-        data[veh] = cur
-        teg_dir().mkdir(parents=True, exist_ok=True)
-        save_json(_main_overlay_path(), data)
-    return {"ok": True, "saved": [n for n, _ in cleaned], "applied_at": now}
-
-
-def delete_main_overlay(vehicle: str, group: str) -> bool:
-    veh = str(vehicle or "").strip()
-    grp = str(group or "").strip()
-    with _LOCK:
-        data = load_main_overlays()
-        cur = data.get(veh)
-        if not isinstance(cur, dict) or grp not in cur:
-            return False
-        cur.pop(grp, None)
-        if cur:
-            data[veh] = cur
-        else:
-            data.pop(veh, None)
-        save_json(_main_overlay_path(), data)
-    return True
 
 
 def _safe_vehicle_stem(vehicle: str) -> str:
@@ -1472,81 +1364,12 @@ def map_payload(vehicle: str) -> dict:
                     counters[orig] = counters.get(orig, 0) + 1
                     t["teg"] = f"{orig}_{counters[orig]}"
 
-    # ── MAIN overlay 병합 — Mapfile 체크에서 역반영된 MAIN 내부 TEG.
-    #    이름은 "그룹·내부이름" 으로 접두해 Teg_location 실측 TEG 와 구분한다.
-    #    좌표는 raw ebeam 저장값 × 배율 (Teg_location 과 동일 규약), 크기는 기본값.
-    #    순서: 그룹이 Teg_location 에 있으면 **그 행 바로 뒤**, 없으면 목록 끝
-    #    (파일 순서를 흐트러뜨리지 않으면서 그룹과 내부 TEG 를 붙여 둔다).
-    overlays = get_main_overlays(veh)
-    overlay_meta = {}
-    ov_items: list[dict] = []
-    if overlays:
-        scale = float(cfg["ebeam_scale"])
-        dw, dh = float(cfg["teg_default_w"]), float(cfg["teg_default_h"])
-        taken = {t["teg"] for t in tegs}
-        for g in sorted(overlays):
-            meta = overlays[g] or {}
-            rows_g = meta.get("tegs") or []
-            # 그룹 자체를 가리키는 행 = 이름이 그룹과 같거나 "그룹_숫자"(자동 넘버링).
-            # 그런 행이 하나뿐이면 그게 die 블록 자체이므로 접미사를 떼고 그룹 이름으로
-            # 쓴다. 이 치유가 없으면 de2fd73a 이전에 적용된 overlay 가 "MAIN01_1" 로
-            # 남아 이름이 "MAIN01·MAIN01_1" 이 되고, `·` 가 붙은 이름은 main_anchors
-            # 에서 내부 TEG 로 걸러져 **die 앵커가 0 개 → 개발 격자가 통째로 안 그려진다.**
-            auto_re = re.compile(rf"^{re.escape(g)}(_\d+)?$")
-            block_rows = [r for r in rows_g
-                          if auto_re.match(str((r or {}).get("teg") or "").strip())]
-            block_row = block_rows[0] if len(block_rows) == 1 else None
-            n_added = 0
-            for row in rows_g:
-                try:
-                    ox, oy = float(row.get("x")), float(row.get("y"))
-                except (TypeError, ValueError):
-                    continue
-                inner = str(row.get("teg") or "").strip()
-                # 내부 TEG 가 하나뿐이라 이름이 그룹과 같으면 "MAIN02·MAIN02" 로 겹쳐 쓰지 않는다.
-                if row is block_row:
-                    inner = ""
-                name = g if (not inner or inner == g) else f"{g}·{inner}"
-                i = 2
-                base = name
-                while name in taken:
-                    name = f"{base}_{i}"
-                    i += 1
-                taken.add(name)
-                # overlay 는 크기 정보가 없어 기본 사이즈로 그린다 — 방향은 내부 TEG
-                # 이름(V_)으로 판정해 vertical 이면 기본 사이즈도 세운다.
-                fz = normalize_direction("", inner or g)
-                ow, oh = (dh, dw) if fz in ("v", "v_L") else (dw, dh)
-                ov_items.append({"teg": name, "teg_src": base,
-                                 "ebeam_x": ox * scale, "ebeam_y": oy * scale,
-                                 "teg_w": ow, "teg_h": oh, "flat_zone": fz,
-                                 "overlay_group": g})
-                n_added += 1
-            overlay_meta[g] = {"applied_at": str(meta.get("applied_at") or ""),
-                               "source": str(meta.get("source") or "mapfile-check"),
-                               "count": n_added}
-
-    if ov_items:
-        # 그룹 이름과 같은 Teg_location 행(teg_src 기준) 뒤에 그 그룹 항목을 끼운다.
-        by_group: dict[str, list[dict]] = {}
-        for it in ov_items:
-            by_group.setdefault(it["overlay_group"], []).append(it)
-        merged: list[dict] = []
-        for t in tegs:
-            merged.append(t)
-            for it in by_group.pop(str(t.get("teg_src") or t["teg"]), []):
-                merged.append(it)
-        for g in sorted(by_group):        # 파일에 없는 그룹은 목록 끝에
-            merged.extend(by_group[g])
-        tegs = merged
-
     vcfg = cfg["vehicles"].get(veh) or dict(DEFAULT_VEHICLE_CFG)
     has_image = bool(vcfg.get("image")) and (teg_dir() / Path(vcfg["image"]).name).is_file()
     profile = check_profile(cfg, veh)
     return {
         "ok": True,
         "vehicle": veh,
-        "main_overlays": overlay_meta,
         "geometry": {
             "fit": "radius" if geo else "none",
             **({"cx": round(geo["cx"], 6), "cy": round(geo["cy"], 6),

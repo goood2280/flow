@@ -900,9 +900,9 @@ def _shot_info(vehicle: str, extra_anchors: list[dict] | None = None) -> dict:
       · dev_grid — MAIN TEG 좌표(die 좌하단) + Main_chip_info 의 chip 크기
     checked=True 는 'shot 크기 fit 성공 + 판정할 die 셀을 얻었을 때'만.
 
-    개발 격자(dev_grid)의 앵커는 정답지·overlay 의 MAIN 이 1순위, 없으면 검사 중인
-    Mapfile 원문의 MAIN 행(extra_anchors)이다 — 아직 역반영(main-overlay)하지 않은
-    원문에서도 판정돼야 한다. **크기는 Main_chip_info.csv 에만 의존한다** — 그 제품
+    개발 격자(dev_grid)의 앵커는 Teg_location 의 MAIN 이 1순위, 없으면 검사 중인
+    Mapfile 원문의 MAIN 행(extra_anchors)이다. **크기는 Main_chip_info.csv 에만
+    의존한다** — 그 제품
     행이 없으면 die 를 그리지도, 겹침을 판정하지도 않는다.
     """
     out = {"available": False, "checked": False}
@@ -1070,7 +1070,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     # 그림 모드 die 사각형의 위치 기준 — MAIN 은 die 급 블록이고 이름 토큰이 없는
     # 행(꼬리표에 그룹 이름뿐)이 그 블록 자체다. 그 좌표가 die 좌하단이므로 그림에서
-    # 인식한 사각형을 여기에 맞춰 놓는다. 정답지·overlay 에 MAIN 이 있으면 그쪽 우선.
+    # 인식한 사각형을 여기에 맞춰 놓는다. Teg_location 에 MAIN 이 있으면 그쪽 우선.
     main_anchors = []
     for t in tegs_all:
         if not is_main(t["name"]) or _main_detail(t):
@@ -1168,7 +1168,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     #      module DUMMY1 (x, y) ! MAIN02, ,module_detail, LOT7
     #    그룹 = MAIN 이름(꼬리표 첫 토큰), 내부 TEG 이름 = 그 뒤 첫 유효 토큰
     #    (빈 토큰·그룹명 재등장·flat 마커 제외). 좌표는 일반 행과 동일하게
-    #    ebeam 절대좌표로 원복 — 위치 조회 역반영(main-overlay) 후보로 내보낸다.
+    #    ebeam 절대좌표로 원복해 Mapfile 체크 결과 안에서만 표시·판정한다.
     main_groups_map: dict[str, list[dict]] = {}
     for t in tegs_all:
         if not is_main(t["name"]):
@@ -1238,18 +1238,12 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     main_groups = []
     if main_groups_map:
-        try:
-            existing = _tm.get_main_overlays(veh) if veh else {}
-        except Exception:
-            existing = {}
         for g in sorted(main_groups_map):
-            prev = existing.get(g) or {}
             items = main_groups_map[g]
             main_groups.append({"group": g, "tegs": items,
                                 "chip_overlap": sum(1 for e in items if e.get("chip_overlap")),
                                 "red": sum(1 for e in items if e.get("light") == "red"),
-                                "yellow": sum(1 for e in items if e.get("light") == "yellow"),
-                                "applied_at": str(prev.get("applied_at") or "")})
+                                "yellow": sum(1 for e in items if e.get("light") == "yellow")})
 
     return {
         "ok": True,
@@ -1586,7 +1580,7 @@ def _grid_count(span: float, size: float, gap: float) -> int:
 def _main_anchor_map(vehicle: str) -> dict[str, dict]:
     """MAIN 이름 → die 앵커 {name, x, y, w, h} (mm, 좌표 = die 좌하단).
 
-    출처는 위치 조회 payload 의 MAIN TEG 다 (Teg_location + Mapfile 역반영 overlay).
+    출처는 위치 조회 payload 의 Teg_location MAIN TEG 다.
     크기는 Main_chip_info.csv 에서만 온다 — 크기가 없으면 격자를 만들 수 없다.
     """
     try:
