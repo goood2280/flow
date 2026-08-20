@@ -1,7 +1,19 @@
 {
-  "version": "10.4.107",
+  "version": "10.4.108",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.108",
+      "date": "2026-08-20",
+      "tag": "feat",
+      "title": "TEG 제품 geometry와 분석 화면 연동 개선",
+      "changes": [
+        "[TEG 제품 등록] 새 제품은 Chip_Radius 파일을 별도로 만들어야 해 좌표 오차와 등록 부담이 있었음 → 제품별 shot·chip·offset 원본을 보존하는 공통 정의가 없었음 → 붙여넣은 제품 정보를 TEG_Product_Info.csv에 저장하고 exact geometry로 full shot과 좌표를 계산하도록 개선",
+        "[TEG·Yield Map] 제품 좌표와 BIN/MSR 데이터를 함께 비교할 때 화면별 기준과 선택 상태가 어긋났음 → geometry 출처와 lot·wafer 연결 조건이 독립적으로 처리됐음 → 등록 geometry를 우선 사용하고 lot-wafer 쌍을 유지한 조회·필터 및 map 표시를 일관되게 연동",
+        "[차트·보고서] 같은 Root Lot에 여러 wafer가 있으면 독립 목록 필터가 존재하지 않는 조합까지 확장했음 → Root Lot과 Wafer의 행 단위 관계를 저장 정의가 잃었음 → runtime_lot_wafer_pairs 계약을 추가해 ChartBuilder와 Template Report가 실제 선택 조합만 실행하도록 보강",
+        "[캐시·S3] 장시간 lot 캐시 갱신 중 조회가 잠기고 일부 S3 경로·메타데이터 입력은 회귀 가능성이 있었음 → refresh 작업과 읽기 snapshot이 같은 lock을 공유하고 입력 정규화 방어가 부족했음 → refresh lock을 분리해 기존 snapshot을 계속 제공하고 S3·FileBrowser 경로 처리를 보강"
+      ]
+    },
     {
       "version": "10.4.107",
       "date": "2026-08-19",
