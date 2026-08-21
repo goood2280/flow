@@ -1,7 +1,38 @@
 {
-  "version": "10.4.108",
+  "version": "10.4.111",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.111",
+      "date": "2026-08-21",
+      "tag": "feat",
+      "title": "Template Report 고해상도 출력과 SplitTable PEMS 배포",
+      "changes": [
+        "[Template Report] 차트 글씨가 깨지지 않도록 고해상도·저용량 렌더링을 적용하고 IBM 스타일의 보고서와 마지막 Appendix에 template/report/chart 재생성 정보를 포함",
+        "[차트 재사용] 페이지 공통 범례 배치를 위해 legend만 별도로 생성할 수 있는 출력 방식을 추가",
+        "[SplitTable PEMS] root_lot_id 단독 조회에서 wafer 1~25를 고정 순서로 표시하고 값별 S0/S1 그룹 및 누락 wafer의 회색 S0 처리를 지원",
+        "[PEMS XLSX] 웹 PEMS와 동일한 항목·값·Split·wafer 1~25 구조와 색상을 XLSX에 반영해 Chrome 확장 프로그램 입력용 고정 포맷으로 제공",
+        "[배포] 현재 작업트리의 백엔드·프런트엔드·테스트·운영 스크립트 전체를 self-contained setup.py에 재번들링"
+      ]
+    },
+    {
+      "version": "10.4.110",
+      "date": "2026-08-21",
+      "tag": "fix",
+      "title": "SSO 전용 로그인 화면 하단 표기 정리",
+      "changes": [
+        "[로그인] SSO 전용 화면의 단일 로그인 버튼 아래에 희미한 flow 버전 표기가 남아 불필요한 시각 요소가 보였음 → 공용 로그인 카드 하단 표기가 인증 방식과 무관하게 항상 렌더링됐음 → 비밀번호 로그인이 활성화된 화면에서만 하단 제품·버전 표기를 표시하도록 조건을 추가"
+      ]
+    },
+    {
+      "version": "10.4.109",
+      "date": "2026-08-21",
+      "tag": "feat",
+      "title": "SSO 전용 로그인 화면 정리",
+      "changes": [
+        "[로그인] SSO 연결 뒤에도 사내 표기와 로컬 ID·비밀번호·가입·재설정 선택지가 함께 보여 인증 경로가 혼동됐음 → provider 이름과 비밀번호 로그인 노출 설정이 분리돼 있었음 → 버튼명을 SSO Login으로 단순화하고 FLOW_PASSWORD_LOGIN_ENABLED=false에서 로컬 로그인 관련 UI 전체가 숨겨지는 전용 화면을 검증"
+      ]
+    },
     {
       "version": "10.4.108",
       "date": "2026-08-20",
