@@ -1,7 +1,16 @@
 {
-  "version": "10.4.115",
+  "version": "10.4.116",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.116",
+      "date": "2026-08-26",
+      "tag": "fix",
+      "title": "랏관리 Vehicle Step 설명 정확 매칭",
+      "changes": [
+        "[Step 설명] Vehicle_matching.csv에 현재 step_id의 설명이 있어도 5분 메모 캐시 때문에 수정 직후 반영되지 않거나 다른 제품의 동일 step_id 설명이 전역 폴백으로 붙을 수 있었음 → 랏관리 조회마다 현재 Vehicle 매칭 파일로 색인을 만들고 정규화된 product+step_id가 정확히 일치하는 step_desc만 최우선 표시하며 미매칭일 때만 WIP function_step을 사용"
+      ]
+    },
     {
       "version": "10.4.115",
       "date": "2026-08-26",
