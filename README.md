@@ -22,6 +22,21 @@ DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함�
 - 제품별 랏 배정·Hot grade 요청, PI 처리 상태·답변 및 작성자별 수정·삭제 이력 관리
 - Inform Note와 랏 요청·답변의 게시판형 본문 — 이미지와 Excel 표를 Ctrl+V로 본문에 직접 삽입
 - Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
+
+### TEG 제품 노드와 접근 권한
+
+TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층으로 분류합니다. 신규 제품의 노드 경로는
+`TEG_Product_Info.csv`와 TEG 설정의 `product_nodes`에 저장되며, 기존 Chip_Radius 전용 제품도
+config 변경 또는 관리자 화면에서 이름과 분류를 수정할 수 있습니다. 제품 추가는 분류와 제품명을
+먼저 확정한 뒤 형상·TEG 정보를 입력하며, 이름 변경은 `Chip_Radius.csv`, `Teg_location.csv`,
+`Main_chip_info.csv`, `TEG_Product_Info.csv`와 제품별 Mapfile/Inline 설정에 함께 반영됩니다.
+최상위 노드별 `node_access` 규칙이 없으면 기존처럼
+공개되고, 규칙이 있으면 허용 사용자 또는 허용 부서가 일치하는 제품만 목록과 API에서 접근할
+수 있습니다. 관리자는 항상 전체 제품에 접근합니다.
+
+부서 권한은 현재 세션의 `department`, `departments`, `dept`, `department_name`, `org`,
+`org_name` 값과 비교합니다. 향후 SSO provider가 해당 값을 비민감 session claims로 넘기면
+별도 TEG 코드 변경 없이 부서별 제품 노드 권한에 적용됩니다.
 - 업무 차트생성에서 여러 DB의 read-only SQL 결과를 JOIN·미리보기·CSV 다운로드하고 동일 데이터로 차트 생성
 - 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
 - 필수 SplitTable 캐시 작업 큐, 실행 중 작업과 피크 메모리 관측
@@ -87,6 +102,25 @@ ET 측정 이력은 제품별 집계 history parquet를 공유합니다. 캐시�
 ET 원본을 한 번 읽어 초기 history를 만들고, 이후 스캔은 최신 원본 날짜 기준 최근
 3일만 재집계해 병합합니다. ET Tracker는 이 제품 history에서 LOT/wafer 패키지를
 찾아 이슈에 붙이며, 캐시 준비 실패 때만 기존 원본 조회로 폴백합니다.
+
+## 개발자 안내
+
+백엔드 진입점은 `backend/app.py`이며, HTTP API는 `backend/routers/`, 도메인 계산과
+파일 처리는 `backend/core/`에 둡니다. 프런트 페이지는
+`frontend/src/app/pageManifest.jsx`에 등록하고, 실제 구현은
+`frontend/src/features/` 아래 기능별 폴더에 둡니다.
+
+TEG 위치조회 좌표 계산은 `backend/core/teg_map.py`, Mapfile 검사는
+`backend/core/teg_check.py`가 담당합니다. 제품 정보가 있으면 Shot Size와 Map
+offset을 직접 사용하고, 없으면 `Chip_Radius`의 격자 좌표와 radius를 fit해 wafer
+중심·축별 배율·shot 크기를 구합니다. `Teg_location`의 ebeam 좌표는 shot center
+기준 TEG 좌하단이며, H/V(R)/V(L) 회전과 제품별 보정을 적용한 뒤 wafer 절대 좌표로
+변환합니다.
+
+변경 후에는 `cd frontend && npm run check`와 관련 `pytest`를 통과시킵니다. 배포본은
+main checkout에서 `python _build_setup.py`를 실행해 `frontend/dist`와 `setup.py`를
+현재 소스로 다시 만든 뒤 전달합니다. 운영 데이터와 코드 외 산출물은 저장소에 넣지
+않습니다.
 
 캐시관리의 제품별 상태는 전체 제품을 한 줄씩 표시합니다. 행을 누르면 lookup,
 SplitTable pivot, WIP latest-lot, FAB latest 인덱스의 최근 성공·실패·진행 상세가
@@ -250,11 +284,13 @@ $env:FLOW_CHART_BUILDER_CACHE_MB="128"    # 결과 JSON 캐시 총량
 $env:FLOW_CHART_BUILDER_CACHE_TTL_SEC="180"
 ```
 
-차트생성의 연동 실행 필터에는 Root Lot ID·Wafer ID 목록과 공통 시간 열/최근 일수를
-지정할 수 있습니다. 목록은 저장 코드의 `ROOT_LOTS`, `WAFERS`로 남습니다.
-`root_lot_id`, `wafer_id`, `color` 3열 TSV/CSV를 붙여 넣으면 해당 조합의 색상 규칙도
-저장됩니다. Template Report의 공통 실행 컨텍스트에서 같은 목록·기간·색상을 입력하면
-Template을 수정하지 않고 포함된 모든 차트에 한꺼번에 적용됩니다.
+차트생성과 Template Report의 `root_lot_id`, `wafer_id`, `color` 목록은 3열
+스프레드시트형 편집표를 사용합니다. 기본 10행을 표시하고 초과 행은 표 안에서 스크롤하며,
+Excel/Google Sheets에서 복사한 여러 셀을 선택한 셀부터 그대로 붙여 넣을 수 있습니다.
+각 행은 정확한 Root Lot/Wafer 조합으로 모든 Query를 필터링하고 해당 조합의 색상 규칙도
+저장합니다. 현재 결과에 없는 조합도 이후 데이터가 생기면 같은 색으로 표시됩니다.
+`tkout_time WITHIN N DAYS` 같은 시간 기준 색상은 목록과 분리된 수식 규칙으로 조절하며,
+Query별 조회 기간(`RECENT_DAYS`)과도 독립적입니다.
 
 ## FAB 매칭알람 검사
 
@@ -492,6 +528,7 @@ python scripts/seed_valve_alert_examples.py --write
 - 서로 다른 root lot 조회도 제품 전체가 아닌 root partition/pivot 파일 하나만 읽습니다.
 - 요청 중에는 root의 전체 wide frame을 RAM에 올리지 않고 필요한 prefix/custom 컬럼만 parquet projection으로 읽습니다.
 - lookup/pivot/FAB root index는 개발 worker가 우선 생성합니다.
+- 개발 worker에서 SplitTable을 조회하면 `FLOW_API_SERVER_URL`의 운영 API·예열 캐시를 먼저 시도하고, URL이 없거나 운영 API가 응답하지 않으면 공유 DB/캐시를 사용해 개발 worker에서 로컬 검색합니다.
 - 자동 lookup/pivot/FAB/view 캐시는 운영 API heartbeat가 살아 있을 때 worker가 꾸준히 처리합니다. API가 내려가면 큐에 보존하고, 복구 후 이어서 처리합니다.
 - 수동 캐싱은 normal 우선순위로 큐에 들어가며 worker가 없으면 운영 서버가 메모리 가드를 거쳐 한 작업씩 local fallback합니다.
 - pivot 생성은 root 1개씩 처리합니다.
@@ -517,6 +554,51 @@ python scripts/seed_valve_alert_examples.py --write
 - root RAM 유휴 예열의 현재 root와 향후 큐
 - API RSS, 작업 시작 이후 peak 증가량, 최소 host available memory
 - worker 현재/대기 task와 worker lifetime peak RSS
+
+## 사내 OIDC SSO 연결
+
+Flow의 OIDC 코드는 설정이 없을 때 비활성 상태로 등록됩니다. 아래 값을 운영 서버의
+환경변수 또는 Secret Manager에 넣고 서버를 재시작하면 로그인 화면에 `SSO Login`
+버튼이 자동으로 나타납니다. Client Secret은 `.env`, Git, 프런트 코드에 커밋하지 않습니다.
+
+```env
+FLOW_OIDC_ISSUER=https://sso.company.example/oidc
+FLOW_OIDC_CLIENT_ID=flow-client-id
+FLOW_OIDC_CLIENT_SECRET=secret-from-sso-team
+FLOW_OIDC_REDIRECT_URI=https://flow.company.example/api/auth/sso/oidc/callback
+FLOW_OIDC_USERNAME_CLAIM=preferred_username
+FLOW_OIDC_DEPARTMENT_CLAIM=department
+FLOW_OIDC_AUTO_PROVISION=false
+```
+
+Discovery 주소가 `ISSUER + /.well-known/openid-configuration` 규칙과 다르면
+`FLOW_OIDC_DISCOVERY_URL`을 별도로 지정합니다. IdP가 client secret을 POST body로만
+받는 경우 `FLOW_OIDC_CLIENT_AUTH_METHOD=client_secret_post`를 설정합니다. 기본값은
+`client_secret_basic`이며 ID token 서명 알고리즘은 RS256을 사용해야 합니다.
+
+초기 연결 중에는 기존 로그인을 함께 두는 것이 안전합니다. SSO 검증이 끝난 뒤 로그인
+화면에 SSO만 표시하려면 다음 값을 추가합니다.
+
+```env
+FLOW_PASSWORD_LOGIN_ENABLED=false
+```
+
+SSO 사용자의 식별자는 기존 `users.csv` 계정과 매칭되며 역할·탭·제품 노드 권한은 계속
+Flow가 관리합니다. 로그인에 성공할 때 OIDC `sub`와 부서 claim을 각각 `users.csv`의
+`sso_id`, `department` 컬럼에 동기화합니다. 관리자 → 권한의 권한 그룹에서 `기본 부서`에
+SSO 부서명을 연결하면, 개인 권한이나 직접 권한 그룹이 지정되지 않은 사용자는 해당 그룹의
+권한을 부서 기본값으로 즉시 상속합니다. 우선순위는 개인 지정 → 직접 그룹 → 부서 기본이며,
+기존 사용자의 비어 있지 않은 권한은 개인 지정으로 보존됩니다.
+
+기본값에서는 로컬 계정이 없는 SSO 사용자를 거부합니다.
+`FLOW_OIDC_AUTO_PROVISION=true`로 바꾸면 미등록 사용자는 권한이 없는 `pending` 계정으로
+생성되고 관리자 승인 후 접근할 수 있습니다. 부서 claim은 TEG 제품 대분류 권한에도
+사용됩니다.
+
+인증팀에는 위 callback URL을 Redirect URI로 정확히 등록해 달라고 요청하고, Flow 서버가
+Discovery/Token/JWKS endpoint에 HTTPS로 나갈 수 있는지 확인합니다. OIDC 임시 상태는
+10분짜리 HttpOnly/SameSite 쿠키로 검증하고 PKCE, state, nonce, issuer, audience, expiry,
+RS256 서명을 모두 검사합니다. Flow 세션 토큰은 callback query string에 넣지 않습니다.
 
 ## 업데이트와 데이터 보존
 
