@@ -1,7 +1,30 @@
 {
-  "version": "10.4.122",
+  "version": "10.4.124",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.124",
+      "date": "2026-08-27",
+      "tag": "feat",
+      "title": "TEG Mapfile 검증 Summary와 확인 기준 정리",
+      "changes": [
+        "[결과 우선 배치] Mapfile 검증 결과 제목 우측에 Horizontal/Vertical 자동 감지를 붙이고 바로 아래 Summary에서 이상·확인 필요 건수와 TEG 이름·판정 이유를 먼저 표시",
+        "[Shot 즉시 확인] Summary 안에서 TEG별 판정 목록과 빨강/노랑 Shot 형상을 나란히 보여 상세 결과를 펼치지 않아도 위치와 모양을 확인",
+        "[확인 필요 기준] S/L TEG는 ΔX·ΔY 각각 2 이내의 작은 좌표 차이를 노란 확인 필요로 판정하고, 정답지 정보가 없지만 IP/NO TEG가 아닌 자기 MAIN 내부 TEG도 Purpose와 이유를 함께 노란색으로 표시",
+        "[검증] TEG 좌표·MAIN 판정 회귀 테스트 30건과 프론트엔드 디자인·구조 검사 및 production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.123",
+      "date": "2026-08-27",
+      "tag": "fix",
+      "title": "TEG full shot 수량 표시와 full chip 경계 판정 정합화",
+      "changes": [
+        "[full shot 수량] 전체 wafer 격자를 펼친 뒤 추가 shot 수만 표시해 147mm 유효 영역과 전체 규모를 바로 비교할 수 없었음 → shot 네 꼭짓점이 147mm 안에 들어오는 수/화면의 전체 full shot 수를 20/30 형식으로 표시하고 범례에 두 숫자의 의미를 안내",
+        "[full chip 경계] die의 가장 먼 꼭짓점이 147mm 선에 정확히 닿는 경우에도 부동소수점 허용치로 포함되어 chip 수가 기대보다 많았음 → 네 꼭짓점이 경계선에 닿지 않고 모두 엄격히 안쪽인 die만 표시·집계",
+        "[검증] 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
     {
       "version": "10.4.122",
       "date": "2026-08-27",
