@@ -1,7 +1,20 @@
 {
-  "version": "10.4.128",
+  "version": "10.4.129",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.129",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "TEG 위치조회 Map offset µm와 실 Center 계산 복구",
+      "changes": [
+        "[원인] config의 Map offset(Odd) X/Y는 wafer 실 center 기준 µm 물리 거리인데 exact geometry 경로가 이를 shot 격자 center(cx/cy)로 직접 사용해 -1, 16470 같은 µm 값이 shot 좌표로 나타났음",
+        "[단위 변환] Map offset 원값은 µm로 보존하고 X는 cx=-offset_x_mm/shot_width_mm, Y는 WF MAP의 아래쪽 양수 축을 반영해 cy=offset_y_mm/shot_height_mm로 변환 → 위치조회·제품 목록 검증·Chip_Radius 생성이 하나의 공통 수식을 사용",
+        "[위치조회] config Map offset 원값과 단위를 별도로 표시하고 가장 가까운 shot은 정상 정수 격자로, 실 Center 차이는 X 우측/Y 위쪽 양수의 µm 값으로 표시",
+        "[이전 버전 비교] X=-1µm, Y=16470µm 재현에서 shot 좌표가 (0,0) 부근으로 유지되고 실 Center 차이가 -1/16470µm로 계산되며, 생성 Chip_Radius를 이전 fit 경로로 다시 읽어도 동일 geometry가 복원됨을 회귀 테스트로 검증",
+        "[검증] TEG 좌표·제품 geometry 회귀 테스트 32건, 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
     {
       "version": "10.4.128",
       "date": "2026-08-28",
