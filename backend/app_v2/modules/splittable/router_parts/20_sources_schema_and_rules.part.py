@@ -36,8 +36,20 @@ def list_products():
             continue
         seen.add(n)
         dedup.append(p)
-    dedup.sort(key=lambda p: (p.get("name") or ""))
-    return {"products": dedup}
+    product_order = _product_order.load_product_order()
+    dedup = _product_order.order_products(dedup, name=lambda p: p.get("name"), product_order=product_order)
+    return {"products": dedup, "product_order": product_order}
+
+
+@router.get("/product-order")
+def get_product_order():
+    return {"product_order": _product_order.load_product_order()}
+
+
+@router.post("/product-order")
+def save_product_order(req: dict, _perm=Depends(require_page_manager("splittable"))):
+    order = _product_order.save_product_order(req.get("product_order"))
+    return {"ok": True, "product_order": order}
 
 
 # v8.8.5: 사내 실데이터 구조 대응.

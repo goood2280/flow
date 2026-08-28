@@ -1,3 +1,6 @@
+import inspect
+from pathlib import Path
+
 from routers import llm
 from routers import dashboard
 
@@ -90,6 +93,24 @@ def test_plain_dashboard_prompt_means_current_wip_dashboard():
     assert llm._flowi_dashboard_wip_prompt("대시보드 보여줘") is True
     assert llm._flowi_dashboard_wip_prompt("show the WIP dashboard") is True
     assert llm._flowi_dashboard_wip_prompt("INLINE IOFF trend dashboard 보여줘") is False
+
+
+def test_wip_dashboard_defaults_to_step_desc_number_axis():
+    summary_axis = inspect.signature(dashboard.wip_split_summary).parameters["axis"].default
+    lots_axis = inspect.signature(dashboard.wip_split_lots).parameters["axis"].default
+    assert summary_axis.default == "step_desc"
+    assert lots_axis.default == "step_desc"
+
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "dashboard"
+        / "My_Dashboard.jsx"
+    ).read_text(encoding="utf-8")
+    assert 'const [axis, setAxis] = useState("step_desc")' in source
+    assert 'q.set("axis", a || "step_desc")' in source
 
 
 def test_wip_dashboard_tool_returns_inline_chart(monkeypatch):

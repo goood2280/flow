@@ -327,6 +327,35 @@ def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
     return result
 
 
+def _missing_ppid_knob_step_desc(
+    header: list[str],
+    data_rows: list[list[str]],
+    vehicle_matching_rows: list[dict],
+) -> list[dict]:
+    """Return non-empty ppid_knob step_desc values absent from Vehicle_matching.
+
+    Row numbers use CSV line numbers (header is line 1) so the warning can point
+    the editor directly to every affected row.
+    """
+    if "step_desc" not in header:
+        return []
+    step_desc_idx = header.index("step_desc")
+    known = {
+        str(row.get("step_desc") or "").strip()
+        for row in vehicle_matching_rows
+        if str(row.get("step_desc") or "").strip()
+    }
+    missing_by_value: dict[str, list[int]] = {}
+    for csv_row_number, row in enumerate(data_rows, start=2):
+        value = str(row[step_desc_idx] if step_desc_idx < len(row) else "").strip()
+        if value and value not in known:
+            missing_by_value.setdefault(value, []).append(csv_row_number)
+    return [
+        {"value": value, "rows": row_numbers}
+        for value, row_numbers in missing_by_value.items()
+    ]
+
+
 def _save_base_file(req: BaseFileSaveReq, request: Request):
     me, _ = _require_base_file_access(request, req.file, req.access_scope, manage=True)
 
@@ -375,6 +404,7 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
     data_rows, _ = _normalize_rows(data_rows, len(header), "")
 
     if Path(req.file).name.casefold() == "ppid_knob.csv" and "step_desc" in header:
+        vm_rows = []
         try:
             import re
             from core import fab_reference
@@ -391,6 +421,18 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
                         data_rows[r_idx][step_desc_idx] = vm_map[val]
         except Exception as e:
             logger.warning("Failed to auto-correct ppid_knob step_desc: %s", e)
+
+        missing_step_desc = _missing_ppid_knob_step_desc(header, data_rows, vm_rows)
+        if missing_step_desc and not req.confirm_missing_step_desc:
+            raise HTTPException(409, {
+                "error_code": "ppid_knob_step_desc_not_found",
+                "message": "Vehicle_matching.csv에 없는 step_desc가 있습니다.",
+                "file": req.file,
+                "reference_file": "Vehicle_matching.csv",
+                "missing_step_desc": missing_step_desc,
+                "missing_count": len(missing_step_desc),
+                "missing_row_count": sum(len(item["rows"]) for item in missing_step_desc),
+            })
 
     if len(data_rows) > BASE_FILE_EDIT_MAX_ROWS:
         raise HTTPException(413, f"Row count too large: {len(data_rows):,} rows (max {BASE_FILE_EDIT_MAX_ROWS:,})")

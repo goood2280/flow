@@ -560,6 +560,26 @@ def _chart_builder_runtime_values(values) -> list[str]:
     return out
 
 
+def _chart_builder_runtime_pairs(values) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in (values if isinstance(values, (list, tuple)) else []):
+        if not isinstance(raw, dict):
+            continue
+        root = str(raw.get("root_lot_id") or "").strip()[:160]
+        wafer = str(raw.get("wafer_id") or "").strip()[:160]
+        if not root or not wafer:
+            continue
+        wafer = re.sub(r"^(?:#|WAFER|WF|W)\s*", "", wafer, flags=re.I)
+        key = (root.casefold(), wafer.casefold())
+        if wafer and key not in seen:
+            seen.add(key)
+            out.append({"root_lot_id": root, "wafer_id": wafer})
+        if len(out) >= 200:
+            break
+    return out
+
+
 def _chart_builder_runtime_column(columns: list[str], requested: str) -> str:
     folded = str(requested or "").strip().casefold()
     return next((column for column in columns if str(column).casefold() == folded), "")
@@ -569,6 +589,23 @@ def _chart_builder_runtime_where(
     columns: list[str], source: ChartBuilderSourceReq, source_id: str, warnings: list[str],
 ) -> str:
     clauses: list[str] = []
+    pairs = _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs)
+    if pairs:
+        root_column = _chart_builder_runtime_column(columns, "root_lot_id")
+        wafer_column = _chart_builder_runtime_column(columns, "wafer_id")
+        if root_column and wafer_column:
+            root_expr = f"UPPER(TRIM(CAST({duckdb_engine.quote_ident(root_column)} AS VARCHAR)))"
+            wafer_expr = f"UPPER(TRIM(CAST({duckdb_engine.quote_ident(wafer_column)} AS VARCHAR)))"
+            for pattern in ("^#\\s*", "^WAFER\\s*", "^WF\\s*", "^W\\s*"):
+                wafer_expr = f"REGEXP_REPLACE({wafer_expr}, '{pattern}', '')"
+            pair_clauses = [
+                f"({root_expr} = {duckdb_engine.sql_literal(pair['root_lot_id'].upper())} "
+                f"AND {wafer_expr} = {duckdb_engine.sql_literal(pair['wafer_id'].upper())})"
+                for pair in pairs
+            ]
+            return f"({' OR '.join(pair_clauses)})"
+        missing = ", ".join(name for name, column in (("root_lot_id", root_column), ("wafer_id", wafer_column)) if not column)
+        warnings.append(f"{source_id}: 연동표 조합 필터 열({missing})이 없어 Root Lot/Wafer 개별 필터로 적용했습니다.")
     for requested, values, label in (
         ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
         ("wafer_id", source.runtime_wafer_ids, "Wafer"),
@@ -610,6 +647,22 @@ def _chart_builder_filter_frame(
             out = out.filter(parsed_time >= cutoff)
         else:
             warnings.append(f"{source_id}: 최근 {runtime_days}일 필터 열({requested_date_column})이 없어 원래 조건으로 조회했습니다.")
+    pairs = _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs)
+    if pairs:
+        root_column = _chart_builder_runtime_column(columns, "root_lot_id")
+        wafer_column = _chart_builder_runtime_column(columns, "wafer_id")
+        if root_column and wafer_column:
+            root_expr = pl.col(root_column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase()
+            wafer_expr = pl.col(wafer_column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase().str.replace(r"^(?:#|WAFER|WF|W)\s*", "")
+            pair_filter = None
+            for pair in pairs:
+                clause = (root_expr == pair["root_lot_id"].upper()) & (wafer_expr == pair["wafer_id"].upper())
+                pair_filter = clause if pair_filter is None else pair_filter | clause
+            if pair_filter is not None:
+                return out.filter(pair_filter)
+        else:
+            missing = ", ".join(name for name, column in (("root_lot_id", root_column), ("wafer_id", wafer_column)) if not column)
+            warnings.append(f"{source_id}: 연동표 조합 필터 열({missing})이 없어 Root Lot/Wafer 개별 필터로 적용했습니다.")
     for requested, values, label in (
         ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
         ("wafer_id", source.runtime_wafer_ids, "Wafer"),
@@ -667,6 +720,7 @@ def _chart_builder_yield_shot_frame(
         "yield_definition": "good_die / expected_die × 100",
         "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
         "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
+        "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
     }
 
 
@@ -741,6 +795,7 @@ def _chart_builder_reformatter_frame(
         "total_rows": int(view.get("total_rows") or shown.height),
         "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
         "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
+        "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
     }
     return shown, display_sql, warnings, meta
 
@@ -804,6 +859,12 @@ _CHART_ASSISTANT_FIELDS = {
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
 _CHART_ASSISTANT_JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
+_CHART_ASSISTANT_TYPE_CONVERSION_CONTRACT = {
+    "runtime_filters": "RECENT_DAYS and root_lot_id/wafer_id filters cast and normalize automatically; do not add CAST.",
+    "joins": "JOIN keys are converted to strings automatically when source dtypes differ.",
+    "color_rules": "Use root_lot_id/wafer_id equality directly and use 'tkout_time WITHIN N DAYS'; the UI normalizes string values.",
+    "manual_sql": "Only free-form numeric/temporal WHERE comparisons on string columns need CAST/TRY_CAST; execution normalizes to TRY_CAST.",
+}
 _CHART_ASSISTANT_COLORS = {
     "빨간색": "red", "빨강": "red", "red": "red",
     "파란색": "blue", "파랑": "blue", "blue": "blue",
@@ -915,6 +976,9 @@ Allowed operations:
 - {scope:'join', index:zero-based integer, field:left|right|left_on|right_on|how, value:any}
 If the request is ambiguous, return no operations and ask one short clarification in message.
 For a solid color set chart color='custom', color_rules=[], and color_else to the requested CSS color.
+For lot/wafer coloring, use direct root_lot_id/wafer_id equality in color_rules without CAST.
+For relative time coloring, use `tkout_time WITHIN N DAYS` without CAST.
+Runtime filters and JOIN keys already normalize string/numeric types automatically.
 JOIN how must be left, inner, full, semi, or anti. Use only supplied columns and query ids."""
         payload = {
             "instruction": str(instruction or "")[:2000],
@@ -925,6 +989,7 @@ JOIN how must be left, inner, full, semi, or anti. Use only supplied columns and
                 "max_rows": current.get("max_rows") or 10000,
             },
             "available_columns": columns[:200],
+            "type_conversion_contract": _CHART_ASSISTANT_TYPE_CONVERSION_CONTRACT,
             "response": {"message": "short Korean response", "operations": []},
         }
         out = llm_adapter.complete_json(

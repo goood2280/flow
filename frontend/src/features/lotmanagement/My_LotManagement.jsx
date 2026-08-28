@@ -1,10 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import Modal from "../../components/Modal";
 import Loading from "../../components/Loading";
+import { PageGearButton } from "../../components/PageGear";
+import ProductOrderEditor from "../../components/ProductOrderEditor";
 import { toast } from "../../components/Toast";
 import { Button, Input, PageHeader, PageShell, Pill, Select, Toolbar } from "../../components/ui";
 import { sf } from "../../lib/api";
-import My_SplitTable from "../splittable/My_SplitTable";
+import { useUserRole } from "../../lib/permissions";
+import { orderProductItems } from "../../lib/productOrder";
+
+const LazySplitTable = lazy(() => import("../splittable/My_SplitTable"));
 
 const API = "/api/lot-management";
 const SPLIT_API = "/api/splittable";
@@ -24,12 +29,16 @@ const DEFAULT_COLUMNS = [
 ];
 const COMPUTED_COLUMNS = new Set(["current_step_id", "step_desc", "qty"]);
 const COLORABLE_COLUMNS = new Set(["purpose", "lot_id"]);
+const TABLE_LOAD_TIMEOUT_MS = 20_000;
+const LOT_CANDIDATE_PREVIEW_LIMIT = 300;
+const LOT_CANDIDATE_SEARCH_LIMIT = 500;
 const buttonStyle = {padding:"6px 11px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:"pointer"};
 const uid = prefix => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
 const clone = value => JSON.parse(JSON.stringify(value));
 const changeTypeLabel = type => ({column_added:"열 추가",column_removed:"열 삭제",column_renamed:"열 이름 변경",row_added:"행 추가",row_removed:"행 삭제",cell_changed:"셀 변경",color_changed:"색상 변경"}[type] || type);
+const formatQty = value => Number(value) > 0 ? String(Number(value)) : "-";
 
-function LotIdEditor({ value, candidates, onChange, onCommit, onPaste }) {
+function LotIdEditor({ value, candidates, onChange, onCommit, onPaste, onSearch }) {
   const [open, setOpen] = useState(false);
   const query = String(value || "").trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -37,7 +46,7 @@ function LotIdEditor({ value, candidates, onChange, onCommit, onPaste }) {
     return rows.slice(0, 500);
   }, [candidates, query]);
   return <div className="lot-management__lot-editor">
-    <Input className="lot-management__cell-input" value={value || ""} onChange={e => {onChange(e.target.value);setOpen(true);}} onFocus={() => setOpen(true)} onBlur={() => {onCommit(value);setTimeout(() => setOpen(false), 120);}} onPaste={onPaste} autoComplete="off" aria-label="LOT ID"/>
+    <Input className="lot-management__cell-input" value={value || ""} onChange={e => {onChange(e.target.value);onSearch?.(e.target.value);setOpen(true);}} onFocus={() => {onSearch?.(value);setOpen(true);}} onBlur={() => {onCommit(value);setTimeout(() => setOpen(false), 120);}} onPaste={onPaste} autoComplete="off" aria-label="LOT ID"/>
     {open&&<div className="lot-management__lot-options">
       {filtered.length?filtered.map(lot => <button type="button" className="lot-management__lot-option" key={lot} onMouseDown={e => {e.preventDefault();onChange(lot);onCommit(lot);setOpen(false);}} title={lot}>{lot}</button>):<div className="lot-management__lot-empty">일치하는 LOT_ID가 없습니다.</div>}
     </div>}
@@ -52,7 +61,10 @@ function normalizeTable(raw, product) {
     product,
     version: Number(raw?.version || 0),
     columns,
-    rows: Array.isArray(raw?.rows) ? raw.rows : [],
+    rows: Array.isArray(raw?.rows) ? raw.rows.map(row => ({
+      ...row,
+      values:{...(row?.values || {}), qty:formatQty(row?.values?.qty)},
+    })) : [],
     colors: raw?.colors && typeof raw.colors === "object" ? raw.colors : {},
     updated_at: raw?.updated_at || "",
     updated_by: raw?.updated_by || "",
@@ -60,13 +72,36 @@ function normalizeTable(raw, product) {
   };
 }
 
+function withStatuses(rawTable, statuses) {
+  if (!rawTable || !statuses || typeof statuses !== "object") return rawTable;
+  return {...rawTable, rows:(rawTable.rows || []).map(row => {
+    const values = row?.values && typeof row.values === "object" ? row.values : {};
+    const lotId = String(values.lot_id || "").trim().toUpperCase();
+    if (!lotId) return row;
+    const status = statuses[lotId];
+    if (!status) return row;
+    return {...row, values:{...values, current_step_id:status.current_step_id || "", step_desc:status.step_desc || "", qty:formatQty(status.qty)}};
+  })};
+}
+
 export default function My_LotManagement({ user }) {
+  const role = useUserRole(user);
+  const canManage = role.canManagePage("lotmanage");
   const [products, setProducts] = useState([]);
+  const [productOrder, setProductOrder] = useState([]);
+  const [productOrderBusy, setProductOrderBusy] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [product, setProduct] = useState("");
   const [table, setTable] = useState(null);
   const [draft, setDraft] = useState(null);
   const [editing, setEditing] = useState(false);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState("");
+  const [productsReloadToken, setProductsReloadToken] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [tableError, setTableError] = useState("");
+  const [tableReloadToken, setTableReloadToken] = useState(0);
   const [saving, setSaving] = useState(false);
   const [versions, setVersions] = useState([]);
   const [showVersions, setShowVersions] = useState(false);
@@ -83,8 +118,12 @@ export default function My_LotManagement({ user }) {
   const [customColumns, setCustomColumns] = useState([]);
   const [customSearch, setCustomSearch] = useState("");
   const [lotCandidates, setLotCandidates] = useState([]);
+  const [lotCandidatePreview, setLotCandidatePreview] = useState([]);
   const [colorPicker, setColorPicker] = useState(null);
   const splitViewRef = useRef(null);
+  const candidateSearchTimerRef = useRef(null);
+  const candidateSearchControllerRef = useRef(null);
+  const candidateQueryRef = useRef("");
 
   useEffect(() => {
     if (!viewLot) return;
@@ -107,37 +146,141 @@ export default function My_LotManagement({ user }) {
     };
   }, [colorPicker]);
 
-  const loadCustoms = () => sf(`${SPLIT_API}/customs`).then(d => setCustoms(Array.isArray(d.customs) ? d.customs : [])).catch(() => setCustoms([]));
-  useEffect(() => {
-    Promise.all([sf(`${SPLIT_API}/products`), sf(`${SPLIT_API}/customs`)]).then(([p, c]) => {
-      const list = Array.isArray(p.products) ? p.products : [];
-      setProducts(list);
-      if (list.length) setProduct(list[0].name);
-      setCustoms(Array.isArray(c.customs) ? c.customs : []);
-    }).catch(e => toast.error(`제품 목록을 불러오지 못했습니다: ${e.message}`));
+  useEffect(() => () => {
+    window.clearTimeout(candidateSearchTimerRef.current);
+    candidateSearchControllerRef.current?.abort();
   }, []);
 
-  const loadTable = selected => {
-    if (!selected) return;
-    setLoading(true);
+  const loadCustoms = () => sf(`${SPLIT_API}/customs`).then(d => setCustoms(Array.isArray(d.customs) ? d.customs : [])).catch(() => setCustoms([]));
+  useEffect(() => {
+    let active = true;
+    setProductsLoading(true);
+    setProductsError("");
+    sf(`${SPLIT_API}/products`).then(p => {
+      if (!active) return;
+      const order = Array.isArray(p.product_order) ? p.product_order : [];
+      const list = orderProductItems((Array.isArray(p.products) ? p.products : [])
+        .map(item => typeof item === "string" ? {name:item} : item)
+        .filter(item => item?.name), order, item => item.name);
+      setProductOrder(order);
+      setProducts(list);
+      setProduct(current => list.some(item => item.name === current) ? current : (list[0]?.name || ""));
+    }).catch(e => {
+      if (!active) return;
+      const message = `제품 목록을 불러오지 못했습니다: ${e.message}`;
+      setProducts([]);
+      setProduct("");
+      setProductsError(message);
+      toast.error(message);
+    }).finally(() => { if (active) setProductsLoading(false); });
+    sf(`${SPLIT_API}/customs`)
+      .then(c => { if (active) setCustoms(Array.isArray(c.customs) ? c.customs : []); })
+      .catch(() => { if (active) setCustoms([]); });
+    return () => { active = false; };
+  }, [productsReloadToken]);
+
+  useEffect(() => {
+    setVersionDiffs({});
+    setOpenVersion(null);
     setEditing(false);
     setColorPicker(null);
     setPurposeSearch("");
     setViewLot("");
-    sf(`${API}/table?product=${encodeURIComponent(selected)}`)
-      .then(data => { const next = normalizeTable(data, selected); setTable(next); setDraft(clone(next)); })
-      .catch(e => toast.error(`랏 관리 표를 불러오지 못했습니다: ${e.message}`))
-      .finally(() => setLoading(false));
+    setTableError("");
+    setLotCandidates([]);
+    setLotCandidatePreview([]);
+    setStatusLoading(false);
+    candidateQueryRef.current = "";
+    window.clearTimeout(candidateSearchTimerRef.current);
+    candidateSearchControllerRef.current?.abort();
+    if (!product) {
+      setLoading(false);
+      setTable(null);
+      setDraft(null);
+      return undefined;
+    }
+
+    let active = true;
+    let timedOut = false;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, TABLE_LOAD_TIMEOUT_MS);
+    setLoading(true);
+    setTable(null);
+    setDraft(null);
+
+    sf(`${API}/table?product=${encodeURIComponent(product)}&include_status=false`, {signal:controller.signal})
+      .then(data => {
+        if (!active) return;
+        const next = normalizeTable(data, product);
+        setTable(next);
+        setDraft(clone(next));
+        const lotIds = [...new Set(next.rows.map(row => String(row.values?.lot_id || "").trim()).filter(Boolean))];
+        if (lotIds.length) {
+          setStatusLoading(true);
+          sf(`${API}/statuses`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({product, lot_ids:lotIds}), signal:controller.signal})
+            .then(result => {
+              if (!active) return;
+              const statuses = result?.statuses || {};
+              setTable(current => current?.product === product ? withStatuses(current, statuses) : current);
+              setDraft(current => current?.product === product ? withStatuses(current, statuses) : current);
+            })
+            .catch(() => {})
+            .finally(() => { if (active) setStatusLoading(false); });
+        }
+      })
+      .catch(e => {
+        if (!active) return;
+        const message = timedOut
+          ? "랏 관리 표 조회가 20초를 초과했습니다. 잠시 후 다시 시도해 주세요."
+          : `랏 관리 표를 불러오지 못했습니다: ${e.message}`;
+        setTableError(message);
+        toast.error(message);
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        if (active) setLoading(false);
+      });
+
+    sf(`${SPLIT_API}/lot-candidates?product=${encodeURIComponent(product)}&col=fab_lot_id&limit=${LOT_CANDIDATE_PREVIEW_LIMIT}`, {signal:controller.signal})
+      .then(d => {
+        if (!active) return;
+        const candidates = [...new Set((d.candidates || []).map(v => String(v || "").trim()).filter(Boolean))];
+        setLotCandidatePreview(candidates);
+        if (!candidateQueryRef.current) setLotCandidates(candidates);
+      })
+      .catch(() => { if (active && !controller.signal.aborted) setLotCandidates([]); });
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [product, tableReloadToken]);
+
+  const searchLotCandidates = rawQuery => {
+    const query = String(rawQuery || "").trim();
+    candidateQueryRef.current = query;
+    window.clearTimeout(candidateSearchTimerRef.current);
+    candidateSearchControllerRef.current?.abort();
+    if (!query) {
+      setLotCandidates(lotCandidatePreview);
+      return;
+    }
+    const selectedProduct = product;
+    candidateSearchTimerRef.current = window.setTimeout(() => {
+      const controller = new AbortController();
+      candidateSearchControllerRef.current = controller;
+      sf(`${SPLIT_API}/lot-candidates?product=${encodeURIComponent(selectedProduct)}&col=fab_lot_id&prefix=${encodeURIComponent(query)}&limit=${LOT_CANDIDATE_SEARCH_LIMIT}`, {signal:controller.signal})
+        .then(d => {
+          if (candidateQueryRef.current !== query || selectedProduct !== product) return;
+          setLotCandidates([...new Set((d.candidates || []).map(value => String(value || "").trim()).filter(Boolean))]);
+        })
+        .catch(() => {});
+    }, 180);
   };
-  useEffect(() => {
-    setVersionDiffs({});
-    setOpenVersion(null);
-    loadTable(product);
-    if (!product) { setLotCandidates([]); return; }
-    sf(`${SPLIT_API}/lot-candidates?product=${encodeURIComponent(product)}&col=fab_lot_id&limit=50000`)
-      .then(d => setLotCandidates([...new Set((d.candidates || []).map(v => String(v || "").trim()).filter(Boolean))]))
-      .catch(() => setLotCandidates([]));
-  }, [product]);
 
   const loadVersions = () => {
     if (!product) return;
@@ -157,14 +300,14 @@ export default function My_LotManagement({ user }) {
   };
 
   const updateCell = (rowId, columnId, value) => setDraft(cur => ({...cur, rows:cur.rows.map(row => row.id === rowId ? {...row, values:{...row.values, [columnId]:value}} : row)}));
-  const updateLotId = (rowId, value) => setDraft(cur => ({...cur, rows:cur.rows.map(row => row.id === rowId ? {...row, values:{...row.values, lot_id:value, current_step_id:"", step_desc:"", qty:""}} : row)}));
+  const updateLotId = (rowId, value) => setDraft(cur => ({...cur, rows:cur.rows.map(row => row.id === rowId ? {...row, values:{...row.values, lot_id:value, current_step_id:"", step_desc:"", qty:"-"}} : row)}));
   const refreshRowStatus = (rowId, rawLotId) => {
     const lotId = String(rawLotId || "").trim();
     if (!lotId) return updateLotId(rowId, "");
     sf(`${API}/lot-status?product=${encodeURIComponent(product)}&lot_id=${encodeURIComponent(lotId)}`)
       .then(status => setDraft(cur => ({...cur, rows:cur.rows.map(row => {
         if (row.id !== rowId || String(row.values?.lot_id || "").trim().toUpperCase() !== lotId.toUpperCase()) return row;
-        return {...row, values:{...row.values, current_step_id:status.current_step_id || "", step_desc:status.step_desc || "", qty:String(status.qty ?? 0)}};
+        return {...row, values:{...row.values, current_step_id:status.current_step_id || "", step_desc:status.step_desc || "", qty:formatQty(status.qty)}};
       })})))
       .catch(e => toast.error(`LOT 현재 정보를 불러오지 못했습니다: ${e.message}`));
   };
@@ -283,6 +426,18 @@ export default function My_LotManagement({ user }) {
       .then(() => toast.ok(`CUSTOM SET '${name}'을 저장했습니다.`))
       .catch(e => toast.error(`CUSTOM SET 저장 실패: ${e.message}`));
   };
+  const saveProductOrder = (next) => {
+    setProductOrderBusy(true);
+    return sf(`${API}/product-order`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({product_order:next})})
+      .then(result => {
+        const saved = result.product_order || next;
+        setProductOrder(saved);
+        setProducts(current => orderProductItems(current, saved, item => item.name));
+        toast.ok("제품 선택 순서를 저장했습니다.");
+      })
+      .catch(error => toast.error(`제품 순서 저장 실패: ${error.message || error}`))
+      .finally(() => setProductOrderBusy(false));
+  };
   const customPool = useMemo(() => schema.filter(c => c.toLowerCase().includes(customSearch.trim().toLowerCase())), [schema, customSearch]);
   const work = editing ? draft : table;
   const visibleRows = useMemo(() => {
@@ -310,21 +465,28 @@ export default function My_LotManagement({ user }) {
         status={editing ? <Pill tone="warn">편집 중</Pill> : <Pill tone="neutral">조회</Pill>}
       />
       <Toolbar>
-        <Input className="lot-management__toolbar-search" type="search" value={purposeSearch} onChange={e => setPurposeSearch(e.target.value)} placeholder="purpose 검색 (예: CS)" aria-label="purpose 검색" title="purpose에 입력한 문자가 포함된 LOT만 표시" autoComplete="off"/>
+        <Input className="lot-management__toolbar-search" type="search" value={purposeSearch} onChange={e => setPurposeSearch(e.target.value)} placeholder="purpose 검색 (예: CS)" aria-label="purpose 검색" title="purpose에 입력한 문자가 포함된 LOT만 표시" autoComplete="off" disabled={!work}/>
         <span className="u-muted">{visibleRows.length}건</span>
-        <Select className="lot-management__toolbar-select" value={selectedCustom} onChange={e => setSelectedCustom(e.target.value)} title="LOT View에 적용할 SplitTable CUSTOM SET">
+        {statusLoading&&<span className="u-muted">LOT 현황 갱신 중…</span>}
+        <Select className="lot-management__toolbar-select" value={selectedCustom} onChange={e => setSelectedCustom(e.target.value)} title="LOT View에 적용할 SplitTable CUSTOM SET" disabled={!product}>
           <option value="">CUSTOM SET 선택</option>{customs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
         </Select>
-        <Button variant="secondary" onClick={openCustomEditor}>CUSTOM SET 편집</Button>
+        <Button variant="secondary" onClick={openCustomEditor} disabled={!product}>CUSTOM SET 편집</Button>
         <span className="lot-management__version">{work?.version ? `v${work.version} · ${work.updated_by || "-"}` : "아직 저장되지 않음"}</span>
-        <Button variant="ghost" onClick={loadVersions}>버전 기록</Button>
+        <Button variant="ghost" onClick={loadVersions} disabled={!product}>버전 기록</Button>
         {editing ? <>
           <Button variant="primary" disabled={saving} onClick={save}>{saving ? "저장 중…" : "저장"}</Button>
           <Button variant="ghost" onClick={() => {setDraft(clone(table));setEditing(false);}}>취소</Button>
-        </> : <Button variant="primary" onClick={() => {setDraft(clone(table));setEditing(true);}}>편집</Button>}
+        </> : <Button variant="primary" disabled={!table || loading} onClick={() => {setDraft(clone(table));setEditing(true);}}>편집</Button>}
       </Toolbar>
-      {loading || !work ? <Loading text="랏 관리 표 로딩..."/> : <div className="flow-page__content">
-        {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => setViewLot("")}>닫기</Button></div><My_SplitTable key={`${product}:${viewLot}:${selectedCustom}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} embedded/></section>}
+      {productsLoading ? <Loading text="제품 목록 로딩..."/>
+        : productsError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">제품 목록을 불러오지 못했습니다</div><div className="ds-feedback__message">{productsError}</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+        : !product ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">표시할 제품이 없습니다</div><div className="ds-feedback__message">SplitTable 제품이 등록되면 랏 관리 표를 사용할 수 있습니다.</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>새로고침</Button></div></div>
+        : loading ? <Loading text="랏 관리 표 로딩..."/>
+        : tableError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표를 불러오지 못했습니다</div><div className="ds-feedback__message">{tableError}</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+        : !work ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표가 준비되지 않았습니다</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+        : <div className="flow-page__content">
+        {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => setViewLot("")}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} embedded/></Suspense></section>}
         <div className="lot-management__grid-frame">
           <table className="lot-management__grid">
             <thead><tr><th style={{width:42}}>#</th>{work.columns.map(column => <Fragment key={column.id}><th onDoubleClick={() => editing && renameColumn(column)} style={{minWidth:column.id==="comment"?260:170,cursor:editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)?"pointer":"default"}}>{column.label}{editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)&&<Button variant="danger" size="compact" className="u-push-right" onClick={() => deleteColumn(column)} aria-label={`${column.label} 열 삭제`}>×</Button>}</th>{column.id==="lot_id"&&<th title="SplitTable 보기" style={{width:72}}>View</th>}</Fragment>)}{editing&&<th style={{width:42}}/>}</tr></thead>
@@ -341,7 +503,7 @@ export default function My_LotManagement({ user }) {
                     {editing ? (computed
                       ? <div className="lot-management__computed-cell">{value}</div>
                       : <div className="u-inline">{column.id==="lot_id"
-                        ? <LotIdEditor value={value} candidates={lotCandidates} onChange={nextValue => updateLotId(row.id,nextValue)} onCommit={nextValue => refreshRowStatus(row.id,nextValue)} onPaste={e => pasteBlock(e,row.id,column.id)}/>
+                        ? <LotIdEditor value={value} candidates={lotCandidates} onChange={nextValue => updateLotId(row.id,nextValue)} onCommit={nextValue => refreshRowStatus(row.id,nextValue)} onPaste={e => pasteBlock(e,row.id,column.id)} onSearch={searchLotCandidates}/>
                         : <textarea className="lot-management__cell-input" value={value} onChange={e => updateCell(row.id,column.id,e.target.value)} onPaste={e => pasteBlock(e,row.id,column.id)} rows={1}/>}</div>)
                       : <div className="lot-management__readonly-cell">{value}</div>}
                   </td>
@@ -355,6 +517,14 @@ export default function My_LotManagement({ user }) {
         {editing&&<div className="lot-management__footer-actions"><Button variant="secondary" onClick={addRow}>＋ 행 추가</Button><Button variant="secondary" onClick={addColumn}>＋ 열 추가</Button><span className="u-muted">purpose 또는 lot_id 셀을 우클릭해 배경색을 선택하세요.</span></div>}
       </div>}
     </main>
+    {canManage&&<>
+      <PageGearButton onClick={() => setShowSettings(true)} title="랏 관리 설정" position="bottom-right" zIndex={97}/>
+      {showSettings&&<Modal open onClose={() => setShowSettings(false)} width={560} zIndex={2500}>
+        <div style={{fontWeight:900,fontSize:16,marginBottom:12}}>랏 관리 설정</div>
+        <ProductOrderEditor products={products.map(item => item.name)} productOrder={productOrder}
+          onSave={saveProductOrder} busy={productOrderBusy}/>
+      </Modal>}
+    </>}
     {colorPicker&&<div role="dialog" aria-label="셀 배경색 팔레트" onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()} style={{position:"fixed",left:colorPicker.left,top:colorPicker.top,zIndex:3000,width:190,padding:10,boxSizing:"border-box",border:"1px solid #9ca3af",borderRadius:8,background:"#ffffff",boxShadow:"0 8px 24px rgba(0,0,0,.24)"}}>
       <div style={{fontSize:12,fontWeight:800,color:"#374151",marginBottom:8}}>배경색 선택</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:6}}>{PALETTE.map(color => {

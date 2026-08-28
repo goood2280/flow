@@ -92,7 +92,7 @@ export function canAccessTab(user, userTabs, tabKey) {
   // (일반 요청자는 기존 탭 권한으로 진입.)
   if (tabKey === "lotrequest" && isPageAdmin(user, tabKey)) return true;
   if (tabConfig?.adminOnly && !isAdmin(user)) {
-    // strictAdmin: page-admin 위임으로도 노출 불가 (devguide 등).
+    // strictAdmin: page-admin 위임으로도 노출 불가.
     if (tabConfig?.strictAdmin || tabKey === "admin" || !isPageAdmin(user, tabKey)) return false;
     return true;
   }

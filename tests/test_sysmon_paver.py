@@ -15,6 +15,22 @@ def test_paver_ceiling_applies_to_cpu_or_ram():
     assert sysmon._paver_ceiling_breach({"cpu_percent": 89.9, "memory_percent": 89.9}) == ""
 
 
+def test_paver_cpu_workers_scale_past_old_eight_worker_ceiling(monkeypatch):
+    monkeypatch.setattr(sysmon, "effective_cpu_count", lambda: 32.0)
+
+    assert sysmon._paver_cpu_worker_count() == 32
+
+
+def test_paver_cpu_load_uses_full_workers_and_one_fractional_worker():
+    assert sysmon._paver_cpu_duties(8, 3.25) == [1.0, 1.0, 1.0, 0.25, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_paver_cpu_equivalents_move_gradually_toward_target():
+    assert sysmon._next_paver_cpu_equivalents(4.0, cpu_pct=60, target_pct=85, worker_count=12) == 4.75
+    assert sysmon._next_paver_cpu_equivalents(8.0, cpu_pct=88, target_pct=85, worker_count=12) < 8.0
+    assert sysmon._next_paver_cpu_equivalents(8.0, cpu_pct=85.5, target_pct=85, worker_count=12) == 8.0
+
+
 def test_manual_paver_starts_combined_cpu_and_ram_load(monkeypatch):
     started = {}
 
@@ -58,6 +74,31 @@ def test_manual_paver_does_not_start_at_safety_ceiling(monkeypatch):
     assert result["released"] is True
     assert result["released_mb"] == 64
     assert result["state"]["load_release_reason"].startswith("CPU 91.0%")
+
+
+def test_manual_paver_is_not_released_by_user_activity(monkeypatch):
+    stop_event = threading.Event()
+    monkeypatch.setattr(sysmon, "_load_stop", stop_event)
+    monkeypatch.setattr(sysmon, "_load_mode", "manual")
+    monkeypatch.setattr(sysmon, "_last_user_activity", 0.0)
+    monkeypatch.setattr(sysmon, "_paused_until", 0.0)
+    monkeypatch.setattr(sysmon, "_now", lambda: 1_000.0)
+
+    sysmon.mark_user_activity()
+
+    assert not stop_event.is_set()
+    assert sysmon._last_user_activity == 1_000.0
+    assert sysmon._paused_until == 1_000.0 + sysmon.PAUSE_AFTER_USER_SEC
+
+
+def test_automatic_idle_load_is_released_by_user_activity(monkeypatch):
+    stop_event = threading.Event()
+    monkeypatch.setattr(sysmon, "_load_stop", stop_event)
+    monkeypatch.setattr(sysmon, "_load_mode", "auto")
+
+    sysmon.mark_user_activity()
+
+    assert stop_event.is_set()
 
 
 def test_combined_worker_stops_and_records_cpu_ceiling(monkeypatch):

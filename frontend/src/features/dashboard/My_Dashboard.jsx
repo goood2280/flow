@@ -3,7 +3,11 @@ import Loading from "../../components/Loading";
 import { Button, statusPalette, buildSeriesColors, SERIES_COLOR_LIMIT } from "../../components/UXKit";
 import { WipStackedBar } from "../../components/PlotlyChart";
 import { PageGearButton } from "../../components/PageGear";
+import ProductOrderEditor from "../../components/ProductOrderEditor";
+import { toast } from "../../components/Toast";
 import { sf } from "../../lib/api";
+import { useUserRole } from "../../lib/permissions";
+import { mergeProductOrder } from "../../lib/productOrder";
 
 // v9.2 (2026-07-12): 대시보드 = WIP × Split 현황 단일 화면.
 // 기존 차트 보드(저장 차트 그리드/에디터/스케줄러 UI)는 퇴역 —
@@ -61,8 +65,8 @@ function useFoldHeight(ref, { min = 260, gap = 12, scale = 1 } = {}) {
 const WIP_BIN_CHOICES = [];
 // X축 기준 — step_id 숫자 구간 / step_desc 앞머리 숫자(예: FAB_1.0 STI → 1.0).
 const AXIS_CHOICES = [
-  { value: "step_id", label: "step_id 구간" },
   { value: "step_desc", label: "step_desc (앞 숫자)" },
+  { value: "step_id", label: "step_id 구간" },
 ];
 const NORM_CHOICES = [
   { value: "count", label: "물량" },
@@ -269,7 +273,7 @@ function SplitColSelect({ value, groups, onChange, style }) {
 
 // 대시보드 화면 설정 — 지금은 root_lot_id 제외 하나뿐이지만, 앞으로 늘어날
 // "이 화면을 어떻게 볼지" 항목의 단일 진입점이다.
-function SettingsMenu({ excludeRootPrefix, onChangeExclude, excludedWafers = 0 }) {
+function SettingsMenu({ excludeRootPrefix, onChangeExclude, excludedWafers = 0, canManage = false, products = [], productOrder = [], onSaveProductOrder, productOrderBusy = false }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(excludeRootPrefix);
   const boxRef = useRef(null);
@@ -313,7 +317,7 @@ function SettingsMenu({ excludeRootPrefix, onChangeExclude, excludedWafers = 0 }
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
-            position: "absolute", top: "calc(100% + 6px)", right: 0, width: 300, zIndex: 50,
+            position: "absolute", top: "calc(100% + 6px)", right: 0, width: 380, zIndex: 50,
             padding: "10px 12px 12px", ...cardStyle, boxShadow: "0 6px 18px rgba(0,0,0,.18)",
           }}
         >
@@ -346,25 +350,35 @@ function SettingsMenu({ excludeRootPrefix, onChangeExclude, excludedWafers = 0 }
               </div>
             )}
           </div>
+          {canManage && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              <ProductOrderEditor products={products} productOrder={productOrder}
+                onSave={onSaveProductOrder} busy={productOrderBusy}/>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function WipSplitPanel() {
+function WipSplitPanel({ user }) {
+  const role = useUserRole(user);
+  const canManage = role.canManagePage("dashboard");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [product, setProduct] = useState("");
   const [catalogProducts, setCatalogProducts] = useState([]);
+  const [productOrder, setProductOrder] = useState([]);
+  const [productOrderBusy, setProductOrderBusy] = useState(false);
   const [lotType, setLotType] = useState("ALL");
   const [binSize, setBinSize] = useState(30000);
   const [binInput, setBinInput] = useState("30000");
   const [splitCol, setSplitCol] = useState("");
   // 제품 '전체' — 서버가 split 조인을 건너뛰고 제품 자체를 색 구분 축으로 돌려준다.
   const isAllProducts = String(product || "").toUpperCase() === "ALL";
-  const [axis, setAxis] = useState("step_id");
+  const [axis, setAxis] = useState("step_desc");
   const [norm, setNorm] = useState("count");
   const [settings, setSettings] = useState(loadSettings);
   const excludeRootPrefix = settings.excludeRootPrefix;
@@ -401,7 +415,7 @@ function WipSplitPanel() {
     if (p) q.set("product", p);
     q.set("bin_size", String(b || 30000));
     if (s) q.set("split_col", s);
-    q.set("axis", a || "step_id");
+    q.set("axis", a || "step_desc");
     if (lt && lt !== "ALL") q.set("lot_type", lt);
     if (String(ex || "").trim()) q.set("exclude_root_prefix", String(ex).trim());
     sf(`${API}/wip-split?${q.toString()}`)
@@ -420,7 +434,9 @@ function WipSplitPanel() {
     // SplitTable·LOT 관리와 동일한 실제 ML_TABLE_* 파일 카탈로그를 제품 정본으로 쓴다.
     sf("/api/splittable/products").then(d => {
       const rows=(d.products||[]).map(p=>String(p?.name||"").replace(/^ML_TABLE_/i,"").trim()).filter(Boolean);
-      setCatalogProducts([...new Set(rows)].sort((a,b)=>a.localeCompare(b)));
+      const order=Array.isArray(d.product_order)?d.product_order:[];
+      setProductOrder(order);
+      setCatalogProducts(mergeProductOrder(rows,order));
     }).catch(()=>setCatalogProducts([]));
   }, []);
 
@@ -443,7 +459,7 @@ function WipSplitPanel() {
     return acc;
   }, [bins]);
   const grandTotal = data?.total_wafers || 0;
-  const availableProducts = useMemo(() => [...new Set([...(data?.products || EMPTY_ARR),...catalogProducts])].sort((a,b)=>String(a).localeCompare(String(b))), [data?.products,catalogProducts]);
+  const availableProducts = useMemo(() => mergeProductOrder([...(data?.products || EMPTY_ARR),...catalogProducts], productOrder), [data?.products,catalogProducts,productOrder]);
 
   // ── 차트용 계열 정리 ────────────────────────────────────────────────
   // 색은 20슬롯까지만 검증돼 있다(UXKit.categoricalSeries). 그보다 많으면 색을
@@ -535,6 +551,18 @@ function WipSplitPanel() {
     setSettings(s);
     saveSettings(s);
     fetchData(product, binSize, splitCol, axis, lotType, next);
+  };
+  const saveProductOrder = (next) => {
+    setProductOrderBusy(true);
+    return sf(`${API}/product-order`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({product_order:next})})
+      .then(result => {
+        const saved = result.product_order || next;
+        setProductOrder(saved);
+        setCatalogProducts(current => mergeProductOrder(current, saved));
+        toast.ok("제품 선택 순서를 저장했습니다.");
+      })
+      .catch(error => toast.error(`제품 순서 저장 실패: ${error.message || error}`))
+      .finally(() => setProductOrderBusy(false));
   };
 
   // 드릴다운 조회 — summary 와 같은 필터 파라미터에 bin/split 만 더한다.
@@ -664,6 +692,11 @@ function WipSplitPanel() {
             excludeRootPrefix={excludeRootPrefix}
             onChangeExclude={changeExclude}
             excludedWafers={data?.excluded_wafers ?? 0}
+            canManage={canManage}
+            products={availableProducts}
+            productOrder={productOrder}
+            onSaveProductOrder={saveProductOrder}
+            productOrderBusy={productOrderBusy}
           />
         </div>
       </div>
@@ -873,10 +906,10 @@ function WipSplitPanel() {
   );
 }
 
-export default function My_Dashboard() {
+export default function My_Dashboard({ user }) {
   return (
     <div style={{ padding: "12px 16px", background: "var(--bg-primary)", color: "var(--text-primary)", maxWidth: "none", margin: 0, height: "100%", minHeight: 0, overflow: "auto", boxSizing: "border-box" }}>
-      <WipSplitPanel />
+      <WipSplitPanel user={user} />
     </div>
   );
 }

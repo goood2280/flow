@@ -5,6 +5,18 @@ const EQUAL_RE=new RegExp(`^${IDENTIFIER}\\s*(?:=|==)\\s*(?:'([^']*)'|\"([^\"]*)
 
 function text(value){return value==null?"":String(value);}
 function columnName(value){return text(value).replace(/^`|`$/g,"");}
+function rowValue(row,column){
+  if(row&&Object.prototype.hasOwnProperty.call(row,column))return row[column];
+  const folded=text(column).toLowerCase();
+  const key=Object.keys(row||{}).find(name=>name.toLowerCase()===folded);
+  return key==null?undefined:row[key];
+}
+function matchValue(column,value){
+  const name=text(column).toLowerCase(),raw=text(value);
+  if(name==="root_lot_id"||name.endsWith("__root_lot_id"))return raw.trim().toUpperCase();
+  if(name==="wafer_id"||name.endsWith("__wafer_id"))return raw.trim().toUpperCase().replace(/^(?:#|WAFER|WF|W)\s*/,"");
+  return raw;
+}
 
 function parseCondition(raw){
   const part=text(raw).trim();
@@ -39,9 +51,9 @@ function parseTime(value){
 
 export function chartColorRuleMatches(row,rule,nowMs=Date.now()){
   return Boolean(rule&&!rule.error&&(rule.conditions||[]).every(condition=>{
-    if(condition.kind==="equals")return text(row?.[condition.column])===condition.value;
+    if(condition.kind==="equals")return matchValue(condition.column,rowValue(row,condition.column))===matchValue(condition.column,condition.value);
     if(condition.kind==="within_days"){
-      const timestamp=parseTime(row?.[condition.column]);
+      const timestamp=parseTime(rowValue(row,condition.column));
       return Number.isFinite(timestamp)&&timestamp>=nowMs-condition.days*DAY_MS;
     }
     return false;

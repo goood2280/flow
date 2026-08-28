@@ -48,6 +48,10 @@ STATE_PATH = PATHS.log_dir / "fab_matching_alerts_state.json"
 SCANNER_PATH = PATHS.log_dir / "fab_matching_alerts_scanner.json"
 SCANNER_BEAT_SECONDS = 10
 SCANNER_STALE_SECONDS = 60
+# 추천기는 한 번에 처리하는 건수에 상한이 있다. FAB 제품 검사 주기(기본 2시간)에
+# 묶어 두면 밀린 추천이 며칠씩 남으므로, 남은 건이 있을 때만 이 간격으로 다음
+# 배치를 이어서 실행한다.
+RECOMMENDATION_BATCH_INTERVAL_SECONDS = 60
 ACK_PATH = PATHS.data_root / "fab_matching_alert_acks.json"
 DECISIONS_PATH = PATHS.data_root / "fab_matching_alert_decisions.jsonl"
 
@@ -871,6 +875,48 @@ def _recommendations() -> dict[str, dict]:
         return {}
 
 
+def _run_recommendation_batch() -> dict:
+    """Recommend active unmatched steps without letting advisor errors kill the scanner."""
+    started_ts = time.time()
+    try:
+        from core import valve_step_advisor
+
+        # list_alerts() applies current acknowledgements, decisions and exception
+        # rules first, so the advisor never spends work on rows already handled.
+        current_alerts = list_alerts().get("alerts") or []
+        result = valve_step_advisor.recommend_pending(current_alerts)
+        if not isinstance(result, dict):
+            raise TypeError("추천 결과 형식이 올바르지 않습니다")
+        status = {
+            "ok": bool(result.get("ok")),
+            "enabled": bool(result.get("enabled", True)),
+            "last_run_ts": started_ts,
+            "finished_ts": time.time(),
+            "pending": int(result.get("pending") or 0),
+            "checked": int(result.get("checked") or 0),
+            "remaining": int(result.get("skipped") or 0),
+            "error": str(result.get("error") or ""),
+        }
+    except Exception as exc:
+        logger.exception("FAB matching recommendation batch failed")
+        result = {"ok": False, "checked": 0, "skipped": 0, "error": str(exc)}
+        status = {
+            "ok": False,
+            "enabled": True,
+            "last_run_ts": started_ts,
+            "finished_ts": time.time(),
+            "pending": 0,
+            "checked": 0,
+            "remaining": 0,
+            "error": str(exc),
+        }
+    with _lock:
+        state = _load_state()
+        state["recommendation_status"] = status
+        _save_state(state)
+    return result
+
+
 def list_alerts() -> dict:
     # 개발 worker 에서 페이지를 열기만 해도 죽은/미기동 스캐너가 되살아난다.
     # 운영 API 에서는 역할 게이트에 막혀 아무 일도 하지 않는다.
@@ -1026,6 +1072,7 @@ def list_alerts() -> dict:
             "scan_request_hint": _scan_request_hint(
                 requested, requested_ts, scanner_info, worker_enabled),
             "product_status": state.get("product_status") or {},
+            "recommendation": state.get("recommendation_status") or {},
         },
     }
 
@@ -1361,6 +1408,12 @@ def _loop_once() -> None:
         except Exception:
             logger.exception("FAB matching scan dispatch failed; running on owner")
             scan_next_product(force=requested)
+    # 새 FAB 스캐너가 추천 기록을 읽기만 하고 만들지는 않던 누락을 보완한다.
+    # advisor 자체의 max_alerts_per_run 상한은 그대로 지키고, backlog가 있을 때만
+    # idle 구간에서 다음 배치를 이어간다.
+    recommendation = _run_recommendation_batch()
+    recommendation_remaining = int(recommendation.get("skipped") or 0)
+    next_recommendation_ts = time.time() + RECOMMENDATION_BATCH_INTERVAL_SECONDS
     # Wake frequently enough for an API-side manual request, while the
     # normal interval is still measured from the last completed scan.
     deadline = time.time() + int(cfg.get("scan_interval_seconds") or DEFAULT_SCAN_INTERVAL_SECONDS)
@@ -1370,6 +1423,10 @@ def _loop_once() -> None:
         _scanner_beat(state="idle", next_scan_ts=deadline)
         if _load_state().get("scan_requested"):
             break
+        if recommendation_remaining and time.time() >= next_recommendation_ts:
+            recommendation = _run_recommendation_batch()
+            recommendation_remaining = int(recommendation.get("skipped") or 0)
+            next_recommendation_ts = time.time() + RECOMMENDATION_BATCH_INTERVAL_SECONDS
 
 
 def _loop() -> None:

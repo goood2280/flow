@@ -4,7 +4,7 @@
    설비 Mapfile 과 크로스체크할 기준표(좌표표)를 만든다.
 
    · 기준 PCHK 을 (0, 0) 으로 둔 상대좌표 (체크가 원복하는 그 좌표계)
-   · Horizontal / Vertical(R) / Vertical(L) 표를 따로 낸다 — Mapfile 은 flat 하나 기준이다
+   · Horizontal/Vertical(R)은 기본 표, Vertical(L)은 L 방향 데이터가 있을 때만 낸다
    · 미리보기는 두 flat 모두 **실제 배치 방향**(wafer 가 horizontal 일 때)으로 그린다.
      R/L vertical 모두 shot 을 돌리지 않고, V TEG 만 서 있는 모양으로 나온다
    · ⚙️ 설정의 TEG(module)별 오프셋도 되돌려 반영하고, 적용 여부를 열로 표시
@@ -27,10 +27,10 @@ const PREVIEW_SIZE = 380;
 const PREVIEW_MAX_ZOOM = 60;
 const CELL_SOURCE_LABEL = { grid: "칩 격자", image: "그림 die", dev_grid: "개발 격자 die" };
 
-function fmtN(v, d = 0) {
+function fmtN(v, d = 12) {
   if (v === null || v === undefined || Number.isNaN(v)) return "-";
   const n = Number(v);
-  return Number.isInteger(n) ? String(n) : n.toFixed(d || 3);
+  return Number.isInteger(n) ? String(n) : n.toFixed(d).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function _token() {
@@ -247,7 +247,8 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
       {block.pchk_in_shot === false && (
         <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8, fontWeight: 600 }}>
           ⚠ 기준 {block.pchk?.teg} 이(가) shot 밖입니다 — 설비가 찍는 점이라 shot 안에 있어야 정상입니다.
-          정답지의 ebeam 좌표나 shot 크기(Chip_Radius fit)를 확인하세요. 이 값이 틀리면 아래 좌표가 통째로 밀립니다.
+          정답지의 ebeam 좌표나 shot 크기(제품 입력값 또는 Chip_Radius fallback)를 확인하세요.
+          이 값이 틀리면 아래 좌표가 통째로 밀립니다.
         </div>
       )}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -505,7 +506,7 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
   );
 }
 
-function MainGridCard({ vehicle }) {
+function MainGridCard({ vehicle, refreshKey = 0 }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -539,6 +540,11 @@ function MainGridCard({ vehicle }) {
 
   // vehicle 이 바뀌면 선택 가능한 MAIN 목록만 먼저 받아 둔다
   useEffect(() => { setPicked([]); setTyped(""); setNames({}); load([]); }, [vehicle]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // 제품 형상/config 저장은 vehicle 문자열을 바꾸지 않는다. 부모가 refreshKey 를
+  // 올리면 현재 선택과 입력은 보존한 채 새 기준값으로 격자만 다시 계산한다.
+  useEffect(() => {
+    if (refreshKey > 0) load(wanted);
+  }, [refreshKey]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const onChange = useCallback((mainName, r, c, value) => {
     setNames(prev => ({ ...prev, [mainName]: { ...(prev[mainName] || {}), [`${r},${c}`]: value } }));
@@ -692,7 +698,7 @@ function MainGridCard({ vehicle }) {
   );
 }
 
-export default function TegGenerate({ vehicle }) {
+export default function TegGenerate({ vehicle, refreshKey = 0 }) {
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -717,7 +723,7 @@ export default function TegGenerate({ vehicle }) {
         : String(e.message || e));
     }
     finally { setBusy(false); }
-  }, [vehicle, includeAll]);
+  }, [vehicle, includeAll, refreshKey]);
   useEffect(() => { load(); }, [load]);
 
   // 그림 모드 vehicle 이면 미리보기 배경용 그림을 받아 둔다 (blob URL 은 정리)
@@ -735,7 +741,7 @@ export default function TegGenerate({ vehicle }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Card title="Mapfile용 좌표 생성 — 정답지 → 설비 좌표"
+      <Card title="Mapfile 좌표 생성 — 정답지 → 설비 좌표"
         right={
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <Pill tone={vehicle ? "ok" : "warn"}>{vehicle || "vehicle 미선택"}</Pill>
@@ -743,10 +749,13 @@ export default function TegGenerate({ vehicle }) {
           </div>
         }>
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-          Mapfile 체크 대상 TEG 가 <b>기준 PCHK = (0, 0)</b> 일 때 어떤 상대좌표가 되는지
+          Mapfile 검증 대상 TEG 가 <b>기준 PCHK = (0, 0)</b> 일 때 어떤 상대좌표가 되는지
           표로 보여줍니다. 셋업을 처음 올릴 때 설비 Mapfile 과 크로스체크하는 용도입니다.
-          Horizontal / Vertical(R) / Vertical(L)은 표가 따로이고, global 기준점과 제품별 ΔX/ΔY·TEG 오프셋을 반영해
+          Horizontal / Vertical(R)은 기본 표로 나오고, Vertical(L)은 L 방향 데이터가 있을 때만 나옵니다.
+          global 기준점과 제품별 ΔX/ΔY·TEG 오프셋을 반영해
           <b> 오프셋 적용</b> 열로 표시합니다.
+          <br />※ Shot Size·Map offset(Odd)은 아래 shot 미리보기 형상에 사용됩니다.
+          <b> Mapfile (x, y)는 DB Ebeam − 기준 PCHK − 제품별 ΔX/ΔY·TEG 보정</b>으로 계산됩니다.
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13,
@@ -759,6 +768,7 @@ export default function TegGenerate({ vehicle }) {
           {res && (
             <span style={{ fontSize: 11, color: "var(--muted)" }}>
               대상 {res.targets.total}개 ({res.targets.source === "config" ? "지정 대상" : "기본(H_/V_)"})
+              {res.geometry_source ? ` · shot 기준 ${res.geometry_source === "product_info" ? "저장 제품정보" : "Chip_Radius fallback"}` : ""}
               {res.ref_path ? ` · 정답지 ${res.ref_path}` : ""}
             </span>
           )}
@@ -773,14 +783,14 @@ export default function TegGenerate({ vehicle }) {
       )}
       {res && res.ref_ok && res.targets.total === 0 && (
         <EmptyState icon="⚠" title="체크 대상 TEG 가 없습니다"
-          hint="위치 조회 → TEG 목록 → 'Mapfile 체크 대상 TEG' 에서 지정하세요" />
+          hint="위치 조회 → TEG 목록 → 'Mapfile 검증 대상 TEG' 에서 지정하세요" />
       )}
       {res && res.ref_ok && (res.flats || []).map(b => (
         <FlatBlock key={b.flat} block={b} vehicle={res.vehicle} scale={res.scale}
           imgUrl={imgUrl} />
       ))}
 
-      {vehicle && <MainGridCard vehicle={vehicle} />}
+      {vehicle && <MainGridCard vehicle={vehicle} refreshKey={refreshKey} />}
     </div>
   );
 }

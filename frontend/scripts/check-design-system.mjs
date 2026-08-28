@@ -42,10 +42,15 @@ for (const entry of entries) {
 }
 
 const registeredPages = new Set(entries.map((entry) => `${entry.page}.jsx`));
+// Flow-i is intentionally parked outside the deploy manifest. Keep its source
+// available for backup/reference without treating it as a shippable page.
+const parkedPages = new Set(["My_Diagnosis.jsx"]);
 const pageFiles = fs.readdirSync(path.join(src, "pages"))
   .filter((name) => /^My_.+\.jsx$/.test(name) && name !== "My_Login.jsx");
 for (const file of pageFiles) {
-  if (!registeredPages.has(file)) errors.push(`${file} is not registered in pageManifest.jsx`);
+  if (!registeredPages.has(file) && !parkedPages.has(file)) {
+    errors.push(`${file} is not registered in pageManifest.jsx`);
+  }
 }
 
 for (const entry of entries.filter((item) => /\bdesignSystem:\s*true\b/.test(item.line))) {
@@ -92,7 +97,10 @@ for (const match of manifestSource.matchAll(/key:\s*"([^"]+)"[^\n]*subtabs:\s*\[
   }
   backendSubtabs.delete(match[1]);
 }
-for (const key of backendSubtabs.keys()) errors.push(`backend subtab '${key}' is missing from pageManifest.jsx`);
+const parkedSubtabs = new Set(["diagnosis"]);
+for (const key of backendSubtabs.keys()) {
+  if (!parkedSubtabs.has(key)) errors.push(`backend subtab '${key}' is missing from pageManifest.jsx`);
+}
 
 if (errors.length) {
   console.error("Design system checks failed:\n- " + errors.join("\n- "));

@@ -61,7 +61,7 @@ TOL = 1e-6                                        # 좌표 비교 허용오차 (
 # ΔX·ΔY 가 각각 이 값 이내로만 어긋나면 '확인필요'(△) — 완전 일치는 아니지만
 # 소수점 반올림·설비 세팅 차이 정도의 작은 오차일 수 있어 불일치와 구분한다.
 # 이 값을 넘으면 '불일치'(✕). 필요 시 여기서 임계값을 조정한다.
-WARN_TOL = 3.0
+WARN_TOL = 2.0
 MAIN_RE = _tm.MAIN_RE                                       # module 이름의 MAIN 판별
 
 # ────────────────────────────────────────── 파서
@@ -318,6 +318,26 @@ def is_main(name: str) -> bool:
     return bool(MAIN_RE.search(str(name or "")))
 
 
+def main_group_name(row: dict) -> str:
+    """Mapfile module 행에 포함된 MAIN 그룹 이름을 찾는다.
+
+    대표 ``name``만 보면 ``H_DVC01, MAIN01``처럼 내부 TEG 이름이 먼저 적힌
+    행을 S/L TEG로 오인할 수 있다. 꼬리표 전체와 파싱 후보 중 MAIN 토큰이 하나라도
+    있으면 그 행 전체를 MAIN 소속으로 본다.
+    """
+    tokens = [row.get("name"), *(row.get("candidates") or [])]
+    tokens.extend(str(row.get("tail") or "").split(","))
+    for token in tokens:
+        value = str(token or "").strip()
+        if value and is_main(value):
+            return value
+    return ""
+
+
+def is_main_row(row: dict) -> bool:
+    return bool(main_group_name(row))
+
+
 def build_marker_map(custom_markers: dict | None = None) -> dict[str, str]:
     """마커→flat 매핑 — 사용자 입력 마커를 내장(FLAT_MARKERS)보다 먼저 둔다.
 
@@ -561,6 +581,10 @@ def _name_tokens(t: dict) -> list[str]:
 
     순서 기반이 아니라 '이름 기반 정확 매칭' 을 위해, 이 토큰들을 순서대로 정답지의
     teg/top_cell 과 완전 일치 검사한다 (앞선 토큰 우선 — override/인식 이름이 먼저)."""
+    # MAIN 그룹 토큰이 함께 있는 행은 다른 후보가 Teg_location의 S/L 이름과
+    # 정확/확장 일치하더라도 S/L 매칭 대상으로 보내지 않는다.
+    if is_main_row(t):
+        return []
     out: list[str] = []
     for tok in [t.get("name")] + list(t.get("candidates") or []):
         s = str(tok or "").strip()
@@ -728,35 +752,33 @@ def _chip_cells(display: dict, W: float, H: float) -> list[dict]:
 
 
 def _overlaps_chip(cells: list[dict], x0: float, y0: float, w: float, h: float,
-                   eps: float = 1e-9) -> bool:
+                   eps: float = 1e-9, tol: float = 0.0) -> bool:
     """TEG 사각형이 칩 셀 위에 겹치는가 — TEG 는 칩 사이(스크라이브)에 있어야 정상.
 
     TEG 앵커 = 좌하단(Teg_location 규약), y 는 앵커에서 위(+h)로 뻗는다:
-    TEG 범위 x [x0, x0+w], y [y0, y0+h]. 경계가 정확히 맞닿는 것은 겹침으로 안 봄.
+    TEG 범위 x [x0, x0+w], y [y0, y0+h]. 경계가 정확히 맞닿거나 die 안쪽으로
+    ``tol`` 이하만 걸친 것은 허용하며 겹침으로 세지 않는다.
     """
     tx1, ty1 = x0 + w, y0 + h
-    for c in cells:
-        if (x0 < c["x"] + c["w"] - eps and tx1 > c["x"] + eps
-                and y0 < c["y"] + c["h"] - eps and ty1 > c["y"] + eps):
-            return True
-    return False
+    allowed = max(0.0, float(tol))
+    return any(_die_sep(c, x0, y0, tx1, ty1) < -(allowed + eps) for c in cells)
 
 
 def _die_relation(cells: list[dict], x0: float, y0: float, w: float, h: float,
-                  eps: float = 1e-9) -> tuple[dict | None, list[dict]]:
+                  eps: float = 1e-9, tol: float = 0.0) -> tuple[dict | None, list[dict]]:
     """TEG 사각형 ↔ die 셀 관계 → (완전히 품은 셀, 조금이라도 겹친 셀들).
 
     좌표 규약은 _overlaps_chip 과 같다 (mm, 좌표 = 셀/TEG 좌하단).
-    '걸침'(die 경계를 물고 있음) = 겹친 셀은 있는데 어느 셀에도 완전히 들어가지
-    않은 상태 — inside 가 None 이고 touched 가 비지 않은 경우다.
+    '걸침'(die 경계를 물고 있음) = 허용오차 ``tol``보다 깊게 겹친 셀은 있는데 어느
+    셀에도 완전히 들어가지 않은 상태 — inside 가 None 이고 touched 가 비지 않은 경우다.
     """
     tx1, ty1 = x0 + w, y0 + h
+    allowed = max(0.0, float(tol))
     inside: dict | None = None
     touched: list[dict] = []
     for c in cells:
         cx1, cy1 = c["x"] + c["w"], c["y"] + c["h"]
-        if not (x0 < cx1 - eps and tx1 > c["x"] + eps
-                and y0 < cy1 - eps and ty1 > c["y"] + eps):
+        if _die_sep(c, x0, y0, tx1, ty1) >= -(allowed + eps):
             continue
         touched.append(c)
         if (inside is None and x0 >= c["x"] - eps and tx1 <= cx1 + eps
@@ -786,25 +808,19 @@ def _die_sep(c: dict, x0: float, y0: float, x1: float, y1: float) -> float:
 
 def die_proximity(cells: list[dict], x0: float, y0: float, w: float, h: float,
                   tol: float = 0.0) -> tuple[str, list[dict]]:
-    """TEG ↔ die 관계를 허용오차 tol 로 3 단계로 가른다 → (상태, 관련 셀들).
+    """TEG ↔ die 관계를 겹침 허용오차 ``tol``로 판정한다 → (상태, 관련 셀들).
 
-    경계에서 tol 만큼은 들어가나 나가나 '경계 근처' 로 본다 — 설비 세팅의 소수점
-    차이로 살짝 물린 것까지 침범으로 잡으면 판정이 너무 타이트하다
-    (2026-07-29 사용자 요청).
-      · sep < -tol      → in   (tol 보다 깊이 박힘 — 진짜 침범)
-      · -tol ≤ sep ≤ tol → near (경계 ±tol — 확인필요)
-      · sep > tol       → out  (확실히 밖 — 문제없음)
-    가장 강한 관계를 돌려준다 (in > near > out). 두 번째 값은 그 상태를 만든 셀들.
+    경계선이 정확히 맞닿거나 die 안쪽으로 ``tol`` 이하만 걸친 것은 정상(out)이다.
+    ``tol``을 넘는 실제 침범만 in으로 돌려준다. DIE_NEAR 상수는 이전 응답 호환을
+    위해 남기지만 새 판정에서는 만들지 않는다.
     """
     x1, y1 = x0 + w, y0 + h
-    near: list[dict] = []
+    allowed = max(0.0, float(tol))
     for c in cells:
         sep = _die_sep(c, x0, y0, x1, y1)
-        if sep < -tol:
+        if sep < -(allowed + 1e-9):
             return DIE_IN, [c]
-        if sep <= tol:
-            near.append(c)
-    return (DIE_NEAR, near) if near else (DIE_OUT, [])
+    return DIE_OUT, []
 
 
 def _die_names(cells: list[dict]) -> str:
@@ -825,20 +841,23 @@ def row_light(row: dict) -> tuple[str, str]:
     사유에 둘 다 적는다 ("불일치 + die 침범") — 하나만 보고 고치면 나머지가 남는다
     (2026-07-29 사용자 요청).
       · 좌표 — ΔX·ΔY 가 WARN_TOL 초과면 불일치(red), 이내면 확인필요(yellow)
-      · 자리 — die 에 깊이 박혔으면 die 침범(red), 경계 ±die_tol 이면 경계 근처(yellow)
+      · 자리 — die_tol을 넘어 die 에 들어갔을 때만 die 침범(red). 경계 접촉과
+        die_tol 이내의 겹침은 허용한다.
     TEG 는 칩 사이 스크라이브에 있어야 하므로 좌표가 맞아 보여도 die 안이면 틀린 것이다.
     """
     st = row.get("status")
     die = row.get("die_state")
     registered = bool(row.get("ref_teg"))
+    # S/L TEG의 authoritative 목록은 Teg_location.csv다. 파일은 정상적으로
+    # 읽혔지만 같은 teg/top_cell을 찾지 못한 Mapfile module은 S/L로 추측하거나
+    # die 침범으로 판정하지 않고 MAIN 쪽 정보 누락으로 분류한다.
+    if st == "missing" and not registered:
+        return "red", "MAIN 정보없음"
     red: list[str] = []
     yellow: list[str] = []
     if st == "mismatch":
         red.append("불일치")
-    # A Mapfile-only module has no reference coordinate to compare, but its
-    # calculated rectangle can still be proven to sit inside a die.  Treat
-    # that independently verifiable placement problem as red as well.
-    if die == DIE_IN:
+    if registered and die == DIE_IN:
         red.append("die 침범")
     if st == "warning":
         yellow.append("확인필요")
@@ -858,15 +877,14 @@ def row_light(row: dict) -> tuple[str, str]:
 def main_die_light(cells: list[dict], group: str,
                    x0: float, y0: float, w: float, h: float,
                    tol: float = 0.0) -> tuple[str, str]:
-    """MAIN 내부 TEG(정답지 미등록)의 신호등 — 자기 MAIN die 에 있어야 정상.
+    """MAIN 내부 TEG 신호등 — 사각형 전체가 자기 MAIN 안에 있어야 정상.
 
-    정답지에 없어 좌표를 정밀 대조할 수는 없지만, 이름의 MAINxx 가 어느 die 인지
-    말해 주므로 "그 die 에 걸쳐 있는가"는 판정할 수 있다 (기본 TEG 크기 기준):
-      · 자기 MAINxx die 안 / 그 경계 ±tol → yellow (정밀 대조는 불가)
-      · 다른 MAIN die 안·경계 / 어느 die 에도 안 닿음 → red
-      · 그 이름의 die 셀 자체가 없으면(크기 미상·격자 모드 등) → gray (판정 불가)
+    · 자기 MAIN 안에 전체 포함 → yellow (정답지 미등록이라 위치 확인 성격)
+    · 자기 MAIN 경계를 넘음 / 여러 MAIN에 걸침 / 다른 MAIN 침범 / 완전 이탈 → red
+    · 자기 MAIN 셀이 없으면 → gray
 
-    자기 die 를 먼저 보므로 셀 순서에 판정이 흔들리지 않는다.
+    ``tol``은 소수점 오차만 허용하며, 깊게 겹친다는 이유로 경계 밖 TEG를 정상으로
+    보지 않는다. 이는 일반 S/L TEG의 스크라이브 침범 판정과 다른 MAIN 전용 규칙이다.
     """
     key = _tm.normalize_chip_name(group)
     own: list[dict] = []
@@ -876,18 +894,31 @@ def main_die_light(cells: list[dict], group: str,
             continue
         (own if _tm.normalize_chip_name(c["name"]) == key else other).append(c)
     if not key or not own:
-        return "gray", f"{group} die 없음 — 판정 불가"
-    own_state, _own_cells = die_proximity(own, x0, y0, w, h, tol)
-    if own_state == DIE_IN:
+        return "red", "MAIN 정보없음"
+
+    tx1, ty1 = x0 + w, y0 + h
+
+    def contains(c: dict) -> bool:
+        return (x0 >= c["x"] - tol and tx1 <= c["x"] + c["w"] + tol
+                and y0 >= c["y"] - tol and ty1 <= c["y"] + c["h"] + tol)
+
+    own_inside = [c for c in own if contains(c)]
+    _own_contained, own_touched = _die_relation(own, x0, y0, w, h, tol=tol)
+    other_contained, other_touched = _die_relation(other, x0, y0, w, h, tol=tol)
+    if own_inside and other_touched:
+        return "red", f"여러 MAIN({_die_names([*own_inside, *other_touched])})에 걸침"
+    if own_inside:
         return "yellow", f"{group} die 안"
-    if own_state == DIE_NEAR:
-        return "yellow", f"{group} die 경계 근처"
-    other_state, hit = die_proximity(other, x0, y0, w, h, tol)
-    if other_state == DIE_IN:
-        return "red", f"다른 die({_die_names(hit)}) 안"
-    if other_state == DIE_NEAR:
-        return "red", f"다른 die({_die_names(hit)}) 경계 근처"
-    return "red", f"{group} die 밖"
+    if own_touched and other_touched:
+        return "red", f"여러 MAIN({_die_names([*own_touched, *other_touched])})에 걸침"
+    if own_touched:
+        return "red", f"{group} 경계 넘어감"
+    if other_touched:
+        names = _die_names(other_touched)
+        if other_contained is not None:
+            return "red", f"다른 MAIN({names}) 안"
+        return "red", f"다른 MAIN({names}) 침범"
+    return "red", f"{group} 밖"
 
 
 def _shot_info(vehicle: str, extra_anchors: list[dict] | None = None) -> dict:
@@ -907,17 +938,36 @@ def _shot_info(vehicle: str, extra_anchors: list[dict] | None = None) -> dict:
     """
     out = {"available": False, "checked": False}
     try:
+        # 새 제품은 Chip_Radius fit 결과가 아니라 사용자가 붙여넣은 Shot Size를
+        # 직접 쓴다. product_geometry가 없을 때만 아래 map_payload geometry가 fallback.
+        exact = _tm.product_geometry(vehicle)
+    except Exception:
+        exact = None
+    try:
         p = _tm.map_payload(vehicle)
     except Exception:
         return out
     geo = p.get("geometry") or {}
-    if geo.get("fit") != "radius":
+    if exact:
+        W, H = float(exact["shot_w_mm"]), float(exact["shot_h_mm"])
+        geometry_source = "product_info"
+    elif geo.get("fit") == "radius":
+        W, H = float(geo["shot_w_mm"]), float(geo["shot_h_mm"])
+        geometry_source = "chip_radius"
+    else:
         return out
-    W, H = float(geo["shot_w_mm"]), float(geo["shot_h_mm"])
     display = p.get("display") or {}
     mode = display.get("mode", "none")
     out.update({"available": True, "shot_w_mm": W, "shot_h_mm": H,
+                "geometry_source": geometry_source,
                 "mode": mode, "cells": [], "cell_source": ""})
+    # MAIN 이름 판정은 일반 die 겹침 표시 방식과 분리한다. grid/image 모드의
+    # 일반 셀에는 이름이 없지만, Mapfile MAIN 앵커 + Main_chip_info 크기가 있으면
+    # 자기 MAIN 내부 여부는 언제나 판정할 수 있다.
+    named_anchors = _tm.main_anchors(p) or _sized_anchors(vehicle, extra_anchors)
+    main_cells, main_align = _teg_shape.anchor_cells(named_anchors)
+    out["main_cells"] = main_cells
+    out["main_align"] = main_align
     if mode == "grid":
         out["cells"] = _chip_cells(display, W, H)
         out["cell_source"] = "grid"
@@ -927,8 +977,7 @@ def _shot_info(vehicle: str, extra_anchors: list[dict] | None = None) -> dict:
         # 사각형으로 정상 TEG 를 'die 안' 이라고 보고하지 않는다.
         out["cell_source"] = mode
         path = _tm.image_path(vehicle)
-        anchors = _tm.main_anchors(p) or _sized_anchors(vehicle, extra_anchors)
-        det = _teg_shape.shot_cells_detail(path or "", W, H, anchors,
+        det = _teg_shape.shot_cells_detail(path or "", W, H, named_anchors,
                                            dev_grid=(mode == "dev_grid"))
         out["shape_reason"] = "no_image" if path is None else det["reason"]
         out["shape_source"] = det["source"]
@@ -1000,16 +1049,17 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     merged_custom = merge_custom_markers(custom_markers, chk.get("custom_markers"))
     marker_map = build_marker_map(merged_custom)
 
-    # module 이름에 MAIN 이 들어간 행은 기본 제외 (마커 판정은 전체에서 하되 검사는 비-MAIN 만)
+    # 대표 이름뿐 아니라 후보/꼬리표 어디든 MAIN 그룹이 있는 행은 S/L에서 제외한다.
     detected, why = detect_flat(tegs_all, marker_map)
-    tegs = [t for t in tegs_all if not is_main(t["name"])]
+    tegs = [t for t in tegs_all if not is_main_row(t)]
     n_excluded = len(tegs_all) - len(tegs)
     # 제외된 MAIN 행도 최소 정보로 노출 — 자동 인식이 엉뚱한 토큰(MAIN 포함)을
     # 집어 잘못 제외된 경우 UI 에서 이름 재지정으로 되살릴 수 있게 한다.
     main_rows = [{"idx": t["idx"], "name": t["name"], "auto_name": t["auto_name"],
+                  "main_group": main_group_name(t),
                   "x": t["x"], "y": t["y"],
                   "candidates": t["candidates"], "name_source": t["name_source"]}
-                 for t in tegs_all if is_main(t["name"])]
+                 for t in tegs_all if is_main_row(t)]
 
     # flat 강제 여부 — 강제 시 모든 TEG 에 적용, 아니면 TEG 별 마커로 개별 판정
     forced = flat if flat in FLATS else None
@@ -1053,9 +1103,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     # ── MAIN 행의 꼬리표에서 내부 TEG 이름 뽑기 (없으면 "" = MAIN 블록 자체 행)
     marker_upper = {mk.upper() for mk in marker_map}
 
-    def _main_detail(t: dict) -> str:
-        for tok in [tok.strip() for tok in t["tail"].split(",")][1:] if t["tail"] else []:
-            if not tok or tok == t["name"] or tok.upper() in marker_upper:
+    def _main_detail(t: dict, group: str = "") -> str:
+        group_key = str(group or main_group_name(t)).strip().casefold()
+        for tok in [tok.strip() for tok in t["tail"].split(",")] if t["tail"] else []:
+            if (not tok or tok.casefold() == group_key or is_main(tok)
+                    or tok.upper() in marker_upper):
                 continue
             return tok
         return ""
@@ -1073,10 +1125,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     # 인식한 사각형을 여기에 맞춰 놓는다. Teg_location 에 MAIN 이 있으면 그쪽 우선.
     main_anchors = []
     for t in tegs_all:
-        if not is_main(t["name"]) or _main_detail(t):
+        group = main_group_name(t)
+        if not group or _main_detail(t, group):
             continue
-        ax, ay = _main_xy(t, t["name"])
-        main_anchors.append({"name": t["name"], "x": ax * scale, "y": ay * scale})
+        ax, ay = _main_xy(t, group)
+        main_anchors.append({"name": group, "x": ax * scale, "y": ay * scale})
     shot = (_shot_info(veh, main_anchors) if veh
             else {"available": False, "checked": False})
 
@@ -1127,11 +1180,13 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # flat_used 가 v_R 이면 Vertical TEG — 기본 크기 사용 시 가로/세로 swap
         if cmp_["ref_w"] is None and used_t in ("v_R", "v_L"):
             tw, th = th, tw
-        overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th)
-                   if shot.get("checked") else None)
-        # die 관계는 허용오차(die_tol)를 둔 3단계 — 경계 ±tol 은 '근처'(확인필요).
+        # Teg_location에 등록된 S/L TEG만 스크라이브/die 침범을 판정한다.
+        # 미등록 module은 MAIN 정보 누락으로 보며 일반 die 판정을 섞지 않는다.
+        overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th, tol=die_tol_mm)
+                   if ref_teg and shot.get("checked") else None)
+        # 경계 접촉과 die_tol 이내 걸침은 정상. 허용오차를 넘는 침범만 경고한다.
         die_state = (die_proximity(shot["cells"], mm_x, mm_y, tw, th, die_tol_mm)[0]
-                     if shot.get("checked") else None)
+                     if ref_teg and shot.get("checked") else None)
         if overlap:
             summary["chip_overlap"] += 1
         # die 개수는 **신호등에 실제로 반영되는 행만** 센다 — 정답지에 없는 module 은
@@ -1146,6 +1201,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         rows.append({
             **t, "calc_x": _num(nx), "calc_y": _num(ny), **cmp_,
             "light": light, "light_reason": light_reason,
+            "teg_kind": ("sl" if ref_teg else
+                         "main_info_missing" if cmp_["status"] == "missing" else "unknown"),
             "flat_used": used_t, "flat_marker": t_marker,
             "coordinate_terms": {
                 "base": [_num(tdx), _num(tdy)],
@@ -1169,12 +1226,29 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     #    그룹 = MAIN 이름(꼬리표 첫 토큰), 내부 TEG 이름 = 그 뒤 첫 유효 토큰
     #    (빈 토큰·그룹명 재등장·flat 마커 제외). 좌표는 일반 행과 동일하게
     #    ebeam 절대좌표로 원복해 Mapfile 체크 결과 안에서만 표시·판정한다.
+    try:
+        main_purposes = _tm.load_main_chip_purposes()[0]
+    except Exception:
+        main_purposes = {}
+    try:
+        main_chips = _tm.load_main_chips()[0]
+    except Exception:
+        main_chips = {}
+    main_group_meta: dict[str, dict] = {}
     main_groups_map: dict[str, list[dict]] = {}
     for t in tegs_all:
-        if not is_main(t["name"]):
+        group = main_group_name(t)
+        if not group:
             continue
-        group = t["name"]
-        detail = _main_detail(t)
+        purpose = _tm.main_purpose_for(veh, group, main_purposes)
+        purpose_warning = _tm.is_main_purpose_warning(purpose)
+        main_info_missing = _tm.chip_size_for(veh, group, main_chips) is None
+        main_group_meta[group] = {
+            "purpose": purpose,
+            "purpose_warning": purpose_warning,
+            "main_info_missing": main_info_missing,
+        }
+        detail = _main_detail(t, group)
         nx, ny = _main_xy(t, detail or group)
         entry = main_groups_map.setdefault(group, [])
         auto = not detail
@@ -1193,12 +1267,16 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         dw, dh = float(cfg["teg_default_w"]), float(cfg["teg_default_h"])
         overlap = None
         if shot.get("checked"):
-            overlap = _overlaps_chip(shot["cells"], mm_x, mm_y, dw, dh)
+            overlap = _overlaps_chip(shot["cells"], mm_x, mm_y, dw, dh,
+                                     tol=die_tol_mm)
         # 신호등 — MAIN 내부 TEG 는 정답지에 없으므로 '자기 MAIN die 안인가'로 본다.
         # 블록 자체 행(auto: 이름 토큰 없음)은 die 좌하단 앵커라 판정 대상이 아니다.
         light, light_reason = ("gray", "")
-        if not auto and shot.get("checked"):
-            light, light_reason = main_die_light(shot["cells"], group, mm_x, mm_y,
+        main_cells = shot.get("main_cells") or shot.get("cells") or []
+        if not auto and purpose_warning:
+            light, light_reason = "red", f"purpose {_tm.normalize_main_purpose(purpose)} — TEG 배치 금지"
+        elif not auto:
+            light, light_reason = main_die_light(main_cells, group, mm_x, mm_y,
                                                  dw, dh, die_tol_mm)
         entry.append({"teg": detail, "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
                       "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
@@ -1225,6 +1303,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     #    전체 (MAIN 행 포함 — 완전 일치라 substring 오탐 없음).
     module_tokens: set[str] = set()
     for t in tegs_all:
+        if is_main_row(t):
+            continue
         if t.get("name"):
             module_tokens.add(str(t["name"]).strip())
         for c in t.get("candidates") or []:
@@ -1237,13 +1317,24 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         targets["warning"] = "체크할 TEG가 설정되어 있지 않습니다"
 
     main_groups = []
+    main_purpose_warnings = []
     if main_groups_map:
         for g in sorted(main_groups_map):
             items = main_groups_map[g]
-            main_groups.append({"group": g, "tegs": items,
+            meta = main_group_meta.get(g) or {
+                "purpose": "", "purpose_warning": False, "main_info_missing": True,
+            }
+            group_row = {"group": g, "tegs": items, **meta,
                                 "chip_overlap": sum(1 for e in items if e.get("chip_overlap")),
                                 "red": sum(1 for e in items if e.get("light") == "red"),
-                                "yellow": sum(1 for e in items if e.get("light") == "yellow")})
+                                "yellow": sum(1 for e in items if e.get("light") == "yellow")}
+            main_groups.append(group_row)
+            if meta["purpose_warning"]:
+                main_purpose_warnings.append({
+                    "group": g,
+                    "purpose": _tm.normalize_main_purpose(meta["purpose"]),
+                    "reason": "Main_chip_info.csv에서 TEG 배치 금지 purpose로 지정됨",
+                })
 
     return {
         "ok": True,
@@ -1277,6 +1368,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             "excluded_main": n_excluded,
             "main_rows": main_rows,
             "main_groups": main_groups,
+            "main_purpose_warnings": main_purpose_warnings,
             "targets": targets,
             "ref_ok": ref is not None,
             "ref_error": ref_err,
@@ -1294,6 +1386,12 @@ DEFAULT_MARKER = {"h": "H_PCHK", "v_R": "V_PCHK", "v_L": "VL_PCHK"}
 GEN_FORMATS = ("teg_map", "bracket")
 MAX_GEN_ROWS = 2000          # flat 당 생성 행 상한 (원문이 무한정 커지지 않게)
 MAX_PREVIEW_CELLS = 2000     # 미리보기 die 셀 상한 (그림 인식이 많이 잡혀도 브라우저 보호)
+GEN_DECIMALS = 12            # 붙여넣은 exact geometry/좌표의 유효 자릿수 보존
+
+
+def _gen_num(value: Any) -> float | int:
+    """Mapfile 생성 응답용 숫자. 계산은 원본 정밀도로 하고 출력 끝에서만 정리."""
+    return _num(round(float(value), GEN_DECIMALS))
 
 
 def _teg_dir_for_flat(flat: str) -> str:
@@ -1347,17 +1445,17 @@ def _gen_rect(flat: str, x: float, y: float, w_mm: float, h_mm: float,
     rx, ry = _unrotate(flat, x, y)
     w_raw = w_mm / scale if scale else w_mm
     h_raw = h_mm / scale if scale else h_mm
-    return {"x": round(rx, 4), "y": round(ry, 4),
-            "w": round(w_raw, 4), "h": round(h_raw, 4),
-            "w_mm": round(w_mm, 4), "h_mm": round(h_mm, 4)}
+    return {"x": round(rx, GEN_DECIMALS), "y": round(ry, GEN_DECIMALS),
+            "w": round(w_raw, GEN_DECIMALS), "h": round(h_raw, GEN_DECIMALS),
+            "w_mm": round(w_mm, GEN_DECIMALS), "h_mm": round(h_mm, GEN_DECIMALS)}
 
 
 def _origin_rect(x: float, y: float, w_mm: float, h_mm: float, scale: float) -> dict:
     """Rectangle whose x/y are already in the Horizontal-normalised real frame."""
-    return {"x": round(x, 4), "y": round(y, 4),
-            "w": round((w_mm / scale if scale else w_mm), 4),
-            "h": round((h_mm / scale if scale else h_mm), 4),
-            "w_mm": round(w_mm, 4), "h_mm": round(h_mm, 4)}
+    return {"x": round(x, GEN_DECIMALS), "y": round(y, GEN_DECIMALS),
+            "w": round((w_mm / scale if scale else w_mm), GEN_DECIMALS),
+            "h": round((h_mm / scale if scale else h_mm), GEN_DECIMALS),
+            "w_mm": round(w_mm, GEN_DECIMALS), "h_mm": round(h_mm, GEN_DECIMALS)}
 
 
 def _shot_frame(flat: str, dx: float, dy: float, scale: float,
@@ -1367,11 +1465,12 @@ def _shot_frame(flat: str, dx: float, dy: float, scale: float,
     shot 센터는 ebeam (0, 0) 이므로 PCHK 기준으로는 (-dx, -dy) 다. v_R 도 그림은
     돌리지 않으므로 h 와 같은 식을 쓴다.
     """
-    return {"cx": round(-dx, 4),
-            "cy": round(-dy, 4),
-            "w": round((shot_w_mm / scale if scale else shot_w_mm), 4),
-            "h": round((shot_h_mm / scale if scale else shot_h_mm), 4),
-            "w_mm": round(shot_w_mm, 4), "h_mm": round(shot_h_mm, 4)}
+    return {"cx": round(-dx, GEN_DECIMALS),
+            "cy": round(-dy, GEN_DECIMALS),
+            "w": round((shot_w_mm / scale if scale else shot_w_mm), GEN_DECIMALS),
+            "h": round((shot_h_mm / scale if scale else shot_h_mm), GEN_DECIMALS),
+            "w_mm": round(shot_w_mm, GEN_DECIMALS),
+            "h_mm": round(shot_h_mm, GEN_DECIMALS)}
 
 
 def build_mapfile(vehicle: str, include_all: bool = False,
@@ -1416,6 +1515,7 @@ def build_mapfile(vehicle: str, include_all: bool = False,
     shot_w = shot_h = 0.0
     shot_cells: list[dict] = []
     cell_source = ""
+    geometry_source = ""
     display = {"mode": "none", "has_image": False}
     try:
         info = _shot_info(veh) if veh else {"available": False}
@@ -1423,6 +1523,7 @@ def build_mapfile(vehicle: str, include_all: bool = False,
             shot_w, shot_h = float(info["shot_w_mm"]), float(info["shot_h_mm"])
             shot_cells = list(info.get("cells") or [])[:MAX_PREVIEW_CELLS]
             cell_source = info.get("cell_source") or ""
+            geometry_source = info.get("geometry_source") or ""
             # 그림 모드면 미리보기에 그림 자체도 깔 수 있게 알려 준다 (프론트가
             # /image 로 받아 shot 사각형에 맞춰 그린다 — 미리보기는 회전이 없어 1:1).
             display = {"mode": info.get("mode") or "none",
@@ -1431,8 +1532,16 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         pass
 
     known_markers = {k.upper() for k in build_marker_map(merged_custom)}
+    # Horizontal/Vertical(R)은 기존 화면 호환을 위해 기본 표를 유지한다.
+    # Vertical(L)은 실제 L 기준점 또는 L 방향 TEG가 있는 제품에만 만든다.
+    has_vertical_l = ("v_L" in pchk_bases or any(
+        c.get("dir") == "v_L"
+        for candidates in (ref or {}).values()
+        for c in candidates
+    ))
+    output_flats = tuple(f for f in FLATS if f != "v_L" or has_vertical_l)
     flats = []
-    for flat in FLATS:
+    for flat in output_flats:
         base = pchk_bases.get(flat)
         if base is not None:
             dx, dy, pchk_name = base[0], base[1], base[2]
@@ -1452,12 +1561,12 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         pchk = None
         if pchk_ref:
             c = pchk_ref[0]
-            pchk = {"teg": pchk_name, "ebeam_x": _num(c["x"]), "ebeam_y": _num(c["y"]),
+            pchk = {"teg": pchk_name, "ebeam_x": _gen_num(c["x"]), "ebeam_y": _gen_num(c["y"]),
                     "x": 0, "y": 0, "direction": c.get("dir", "h"),
                     "rect": _origin_rect(0, 0, c["w"], c["h"], scale),
                     "first_pad_point": {"x": 0.0, "y": 0.0}}
         else:
-            pchk = {"teg": pchk_name, "ebeam_x": _num(dx), "ebeam_y": _num(dy),
+            pchk = {"teg": pchk_name, "ebeam_x": _gen_num(dx), "ebeam_y": _gen_num(dy),
                     "x": 0, "y": 0, "direction": _teg_dir_for_flat(flat), "rect": None}
 
         want = _teg_dir_for_flat(flat)
@@ -1487,22 +1596,22 @@ def build_mapfile(vehicle: str, include_all: bool = False,
                 rows.append({
                     "teg": name, "base_teg": teg, "top_cell": c.get("top_cell", ""),
                     "direction": tdir,
-                    "ebeam_x": _num(c["x"]), "ebeam_y": _num(c["y"]),
-                    "x": _num(round(x, 4)), "y": _num(round(y, 4)),
+                    "ebeam_x": _gen_num(c["x"]), "ebeam_y": _gen_num(c["y"]),
+                    "x": _gen_num(x), "y": _gen_num(y),
                     "offset_applied": bool(rule),
-                    "offset_dx": _num(rule[0]) if rule else None,
-                    "offset_dy": _num(rule[1]) if rule else None,
+                    "offset_dx": _gen_num(rule[0]) if rule else None,
+                    "offset_dy": _gen_num(rule[1]) if rule else None,
                     "offset_note": (rule[2] if rule else ""),
                     "coordinate_terms": {
-                        "global_base": [_num(dx), _num(dy)],
-                        "product_flat": [_num(flat_correction[0]), _num(flat_correction[1])],
-                        "global_module": [_num(global_rule[0]), _num(global_rule[1])] if global_rule else [0, 0],
-                        "product_module": [_num(product_rule[0]), _num(product_rule[1])] if product_rule else [0, 0],
+                        "global_base": [_gen_num(dx), _gen_num(dy)],
+                        "product_flat": [_gen_num(flat_correction[0]), _gen_num(flat_correction[1])],
+                        "global_module": [_gen_num(global_rule[0]), _gen_num(global_rule[1])] if global_rule else [0, 0],
+                        "product_module": [_gen_num(product_rule[0]), _gen_num(product_rule[1])] if product_rule else [0, 0],
                     },
                     "rect": _origin_rect(c["x"] - dx, c["y"] - dy, c["w"], c["h"], scale),
                     "first_pad_point": {
-                        "x": _num(c["x"] - dx),
-                        "y": _num(c["y"] - dy),
+                        "x": _gen_num(c["x"] - dx),
+                        "y": _gen_num(c["y"] - dy),
                     },
                 })
                 if len(rows) >= MAX_GEN_ROWS:
@@ -1515,9 +1624,10 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         # die 셀도 PCHK 기준 상대좌표(원문 단위)로 옮긴다 — 셀은 shot 센터 기준 mm,
         # shot 센터의 PCHK 기준 좌표가 (-dx, -dy) 이므로 mm/scale 에서 base 를 뺀다.
         # 그림도 미리보기는 회전하지 않으므로 flat 에 상관없이 같은 식이다.
-        cells = [{"x": round(c["x"] / scale - dx, 4),
-                  "y": round(c["y"] / scale - dy, 4),
-                  "w": round(c["w"] / scale, 4), "h": round(c["h"] / scale, 4)}
+        cells = [{"x": round(c["x"] / scale - dx, GEN_DECIMALS),
+                  "y": round(c["y"] / scale - dy, GEN_DECIMALS),
+                  "w": round(c["w"] / scale, GEN_DECIMALS),
+                  "h": round(c["h"] / scale, GEN_DECIMALS)}
                  for c in shot_cells] if (shot and scale) else []
         # 기준 PCHK 은 shot 안에 있어야 정상이다 (설비가 그 자리를 찍는 점이므로).
         # 밖이면 정답지 ebeam 좌표나 shot 크기(Chip_Radius fit)가 잘못된 것이라
@@ -1528,10 +1638,10 @@ def build_mapfile(vehicle: str, include_all: bool = False,
                             and abs(0 - shot["cy"]) <= shot["h"] / 2)
         flats.append({
             "flat": flat, "label": FLAT_LABEL[flat], "marker": marker,
-            "base": {"dx": _num(dx), "dy": _num(dy), "ref_name": pchk_name, "source": src},
+            "base": {"dx": _gen_num(dx), "dy": _gen_num(dy), "ref_name": pchk_name, "source": src},
             "coordinate_terms": {
-                "global_base": [_num(dx), _num(dy)],
-                "product_flat": [_num(flat_correction[0]), _num(flat_correction[1])],
+                "global_base": [_gen_num(dx), _gen_num(dy)],
+                "product_flat": [_gen_num(flat_correction[0]), _gen_num(flat_correction[1])],
             },
             "pchk": pchk, "rows": rows, "skipped": skipped, "other_dir": other_dir,
             "offset_count": sum(1 for r in rows if r["offset_applied"]),
@@ -1546,7 +1656,7 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         "scale": scale,
         "targets": {"source": opts.get("source", "default"),
                     "total": len(opts.get("targets") or [])},
-        "display": display,
+        "display": display, "geometry_source": geometry_source,
         "flats": flats,
     }
 

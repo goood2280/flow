@@ -10,11 +10,10 @@ import SemanticLayerPanel from "../../components/agent/SemanticLayerPanel";
 import LlmTab from "../../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
-// v9.3.x: devguide 는 admin 전용 — 유저 탭 권한 목록에서 제외.
 // v9.4.x: flowi — Flow-i 채팅 사용 권한 (홈 채팅 + home agent orchestrate 게이트).
 // 이 목록은 _cleanTabs 의 화이트리스트다 — 여기 없는 탭 키는 권한 저장 시 조용히 버려지므로
 // backend core/auth.py 의 CANONICAL_PAGE_IDS 에 있는 사이드바 탭은 전부 실어둔다.
-const ALL_TABS=TABS.filter(tab=>!["home","admin","devguide"].includes(tab.key)).map(tab=>tab.key);
+const ALL_TABS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>tab.key);
 const BULK_GRID_COLUMNS=[
   {key:"name",label:"name"},
   {key:"username",label:"username"},
@@ -112,7 +111,7 @@ function _effectivePermissionText(u){
   const owner=_arr(groups.owner).length;
   const member=_arr(groups.member).length;
   const groupText=groups.all?"all":`owner ${owner} / member ${member}`;
-  return `role ${role} · tabs ${tabs} · page ${pages} · devguide ${eff.devguide?"Y":"N"} · groups ${groupText}`;
+  return `role ${role} · tabs ${tabs} · page ${pages} · groups ${groupText}`;
 }
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
@@ -333,7 +332,7 @@ export default function My_Admin({user}){
   // v9.5.x 권한 그룹 — 그룹탭(소셜)과 별개의 권한 전용 그룹. 그룹에 tabs 를 지정하고
   // 멤버를 넣으면 멤버의 권한이 그룹 권한으로 자동 적용된다 (perm_groups.json).
   const[permGroups,setPermGroups]=useState([]);
-  const[pgEdit,setPgEdit]=useState(null);   // {orig, name, tabs:[], members:[]}
+  const[pgEdit,setPgEdit]=useState(null);   // {orig, name, tabs:[], members:[], departments:[]}
   const[bulkUserRows,setBulkUserRows]=useState(()=>Array.from({length:8},_newBulkUserRow));
   const[bulkDefaultPassword,setBulkDefaultPassword]=useState("");
   const[bulkActiveCell,setBulkActiveCell]=useState({r:0,c:0});
@@ -441,20 +440,28 @@ export default function My_Admin({user}){
     const label=role==="admin"?"관리자로 승격":"일반 유저로 강등";
     if(!confirm(`${username} 을(를) ${label}하시겠습니까?\n\n변경 즉시 해당 유저의 세션이 종료되며(재로그인 필요), 재로그인 시 새 역할이 적용됩니다.`))return;
     sf("/api/admin/set-role",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,role})})
-      .then(d=>{toast.ok(`${username} → ${role==="admin"?"관리자":"일반 유저"}${d.revoked_sessions?` (세션 ${d.revoked_sessions}개 종료)`:""}`);load();})
+      .then(d=>{
+        const removed=_arr(d?.removed_from_permission_groups);
+        toast.ok(`${username} → ${role==="admin"?"관리자 (전체 권한)":"일반 유저 (권한 재지정 필요)"}${removed.length?` · 권한 그룹 [${removed.join(", ")}] 제외`:""}${d.revoked_sessions?` (세션 ${d.revoked_sessions}개 종료)`:""}`);
+        load();
+      })
       .catch(e=>toast.error("역할 변경 실패: "+(e.message||e)));
   };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then((d)=>{
     if(_arr(d?.removed_from_groups).length)toast.ok(`개별 권한 지정 — 권한 그룹 [${d.removed_from_groups.join(", ")}] 에서 제외되었습니다`);
     setEditPerm(null);load();setTab("perms");});};
+  const useDepartmentDefault=()=>{if(!editPerm)return;sf("/api/admin/use-department-default",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm})}).then((d)=>{
+    toast.ok(d.permission_source&&d.permission_source!=="department:"?"부서 기본 권한을 적용했습니다.":"연결된 부서 기본 권한이 없어 권한 없음으로 적용했습니다.");
+    setEditPerm(null);load();setTab("perms");
+  }).catch(e=>toast.error(e.message||"부서 기본 권한 적용 실패"));};
   const savePermGroup=()=>{
     if(!pgEdit)return;
     const name=String(pgEdit.name||"").trim();
     if(!name){toast.warn("그룹 이름을 입력하세요");return;}
     sf("/api/admin/perm-groups",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name,tabs:pgEdit.tabs||[],members:pgEdit.members||[],rename_from:pgEdit.orig||""})})
+      body:JSON.stringify({name,tabs:pgEdit.tabs||[],members:pgEdit.members||[],departments:pgEdit.departments||[],rename_from:pgEdit.orig||""})})
       .then(d=>{setPermGroups(d.groups||[]);setPgEdit(null);load();
-        toast.ok(`권한 그룹 저장됨 — 멤버 ${(pgEdit.members||[]).length}명에게 권한 적용`);})
+        toast.ok(`권한 그룹 저장됨 — 직접 멤버 ${(pgEdit.members||[]).length}명 · 기본 부서 ${(pgEdit.departments||[]).length}개`);})
       .catch(e=>toast.error(e.message||"권한 그룹 저장 실패"));
   };
   const deletePermGroup=(name)=>{
@@ -551,7 +558,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -559,6 +566,7 @@ export default function My_Admin({user}){
   // username → 권한 그룹명 (한 사용자는 하나의 권한 그룹에만 속함)
   const userPermGroup={};
   _arr(permGroups).forEach(g=>_arr(g.members).forEach(m=>{userPermGroup[m]=g.name;}));
+  const editPermUser=_arr(users).find(u=>u?.username===editPerm)||null;
   const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
   const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
@@ -628,12 +636,14 @@ export default function My_Admin({user}){
       {tab==="users"&&isAdmin&&<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:16,alignItems:"start"}}>
         <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
-            <thead><tr>{["이름","아이디","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+            <thead><tr>{["이름","아이디","SSO 고유번호","부서","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
             <tbody>{(Array.isArray(users)?users:[]).map((u,i)=><tr key={i}>
               <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:14}}>
                 <NameInlineEdit u={u} onSave={(nm)=>sf("/api/admin/set-name",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,name:nm})}).then(load).catch(e=>toast.error(e.message))}/>
               </td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{u.username}</td>
+              <td title={u.sso_id||""} style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:13,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.sso_id||"-"}</td>
+              <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{u.department||"-"}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.role}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}><Pill tone={u.status==="approved"?"ok":"warn"}>{u.status}</Pill></td>
               <td title={u.tabs||""} style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{u.tabs==="__all__"?"__all__":_tabTokensLabel(u.tabs)||"권한 없음"}</td>
@@ -729,17 +739,18 @@ export default function My_Admin({user}){
             <span style={{fontSize:13,color:"var(--text-secondary)"}}>
               그룹에 권한을 지정하고 사용자를 넣으면 그 권한으로 자동 조정됩니다 (그룹탭의 소셜 그룹과는 별개)
             </span>
-            {!pgEdit&&<Button variant="primary" style={{marginLeft:"auto"}} onClick={()=>setPgEdit({orig:"",name:"",tabs:[],members:[]})}>＋ 새 그룹</Button>}
+            {!pgEdit&&<Button variant="primary" style={{marginLeft:"auto"}} onClick={()=>setPgEdit({orig:"",name:"",tabs:[],members:[],departments:[]})}>＋ 새 그룹</Button>}
           </div>
           {!pgEdit&&(_arr(permGroups).length===0
             ?<div style={{fontSize:13,color:"var(--text-secondary)"}}>권한 그룹 없음 — "＋ 새 그룹" 으로 만들고 권한과 멤버를 지정하세요</div>
             :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
               <thead><tr>
-                {["그룹","권한","멤버",""].map((h,i)=><th key={i} style={{textAlign:"left",padding:"7px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)"}}>{h}</th>)}
+                {["그룹","기본 부서","권한","직접 멤버",""].map((h,i)=><th key={i} style={{textAlign:"left",padding:"7px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)"}}>{h}</th>)}
               </tr></thead>
               <tbody>{_arr(permGroups).map(g=>(
                 <tr key={g.name}>
                   <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontWeight:700}}>{g.name}</td>
+                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:13}}>{_arr(g.departments).length?g.departments.join(", "):<span style={{color:"var(--text-secondary)"}}>(없음)</span>}</td>
                   <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13}}>
                     {_arr(g.tabs).length?_arr(g.tabs).map(t=>_tabLabel(t.split(":")[0])+(t.includes(":")?`:${t.split(":")[1]}`:"")).join(", "):"(권한 없음)"}
                   </td>
@@ -748,7 +759,7 @@ export default function My_Admin({user}){
                     <span style={{color:"var(--text-secondary)"}}>{` — ${_arr(g.members).length}명`}</span>
                   </td>
                   <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",textAlign:"right"}}>
-                    <span onClick={()=>setPgEdit({orig:g.name,name:g.name,tabs:[..._arr(g.tabs)],members:[..._arr(g.members)]})} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14,marginRight:12}}>편집</span>
+                    <span onClick={()=>setPgEdit({orig:g.name,name:g.name,tabs:[..._arr(g.tabs)],members:[..._arr(g.members)],departments:[..._arr(g.departments)]})} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14,marginRight:12}}>편집</span>
                     <span onClick={()=>deletePermGroup(g.name)} style={{color:"var(--bad,#ef4444)",cursor:"pointer",fontSize:14}}>삭제</span>
                   </td>
                 </tr>))}
@@ -759,6 +770,12 @@ export default function My_Admin({user}){
               <span style={{color:"var(--text-secondary)",width:70}}>그룹 이름</span>
               <input value={pgEdit.name} onChange={e=>setPgEdit(p=>({...p,name:e.target.value}))}
                 placeholder="예: 공정팀, 조회전용" style={{padding:"7px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,outline:"none",width:240}}/>
+            </label>
+            <label style={{display:"flex",alignItems:"center",gap:10,fontSize:14}}>
+              <span style={{color:"var(--text-secondary)",width:70}}>기본 부서</span>
+              <input value={_arr(pgEdit.departments).join(", ")} onChange={e=>setPgEdit(p=>({...p,departments:e.target.value.split(",").map(v=>v.trim()).filter(Boolean)}))}
+                placeholder="예: 공정개발팀, 수율분석팀" style={{padding:"7px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,outline:"none",width:420}}/>
+              <span style={{fontSize:12,color:"var(--text-secondary)"}}>SSO 부서명과 일치하면 기본 권한 적용</span>
             </label>
             <div>
               <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:6}}>그룹 권한 — 멤버 전원에게 이 권한이 적용됩니다</div>
@@ -801,6 +818,7 @@ export default function My_Admin({user}){
             <thead><tr>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",position:"sticky",left:0,zIndex:1}}>이름</th>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>아이디</th>
+              <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>부서 · 권한 출처</th>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",minWidth:340}}>실제 적용 권한</th>
               {ALL_TABS.map(t=><th key={t} title={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{_tabLabel(t)}</th>)}
               <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}></th>
@@ -813,6 +831,10 @@ export default function My_Admin({user}){
                   {u.username}
                   {userPermGroup[u.username]&&<span title={`권한 그룹 '${userPermGroup[u.username]}' 소속 — 그룹 권한이 적용됨`}
                     style={{marginLeft:6,fontSize:12,padding:"1px 7px",borderRadius:9,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"'Pretendard',sans-serif",fontWeight:700}}>{userPermGroup[u.username]}</span>}
+                </td>
+                <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:13,whiteSpace:"nowrap"}}>
+                  <span>{u.department||"부서 없음"}</span>
+                  <span style={{marginLeft:6,color:"var(--text-secondary)"}}>({String(u.permission_source||"").startsWith("department:")?"부서 기본":String(u.permission_source||"").startsWith("group:")?"직접 그룹":u.permission_source==="individual"?"개인 지정":"미지정"})</span>
                 </td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
                 {ALL_TABS.map(t=>{const mark=_tabCellMark(ut,t);return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
@@ -827,6 +849,7 @@ export default function My_Admin({user}){
         {/* Edit single user permissions */}
         {editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:400}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>권한: {editPerm}</div>
+          <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>SSO 부서: {editPermUser?.department||"없음"} · 현재 출처: {editPermUser?.permission_source||"미지정"}</div>
           {userPermGroup[editPerm]&&<div style={{fontSize:13,color:"var(--warn,#f59e0b)",marginBottom:10}}>
             ⚠ 권한 그룹 '{userPermGroup[editPerm]}' 소속 — 개별 저장 시 그룹에서 제외되고 이 권한이 적용됩니다
           </div>}
@@ -843,6 +866,7 @@ export default function My_Admin({user}){
           </div>))}
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <Button variant="primary" onClick={savePerm} style={{padding:"8px 20px"}}>저장</Button>
+            <Button variant="subtle" onClick={useDepartmentDefault} style={{padding:"8px 16px"}}>부서 기본 권한 사용</Button>
             <Button variant="subtle" onClick={()=>{setEditPerm(null);}} style={{padding:"8px 16px"}}>취소</Button>
           </div></div>}
       </div>}
@@ -1126,8 +1150,6 @@ export default function My_Admin({user}){
       {/* Data Roots (admin only) — v8.3.0: soft-landing env abstraction */}
       {tab==="data_roots"&&isAdmin&&<DataRootsPanel/>}
 
-      {tab==="flowi_learning"&&isAdmin&&<FlowiLearningPanel/>}
-
       {/* v9.2.x: LLM 연결/설정 — 에이전트 탭에서 이관 (admin only) */}
       {tab==="llm_cfg"&&isAdmin&&<LlmTab isAdmin={isAdmin}/>}
 
@@ -1155,7 +1177,6 @@ const PAGE_IDS=[
   ["lotrequest","랏 배정/요청"],
   ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
   ["tablemap","테이블 맵"],
-  // v9.3.x: devguide 는 admin 전용 — 페이지 위임 대상에서 제외.
   ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],
 ];
 const PAGE_PRESETS=[
@@ -1485,8 +1506,42 @@ function BackupSchedulePanel(){
 // ── v8.8.14: Activity Dashboard ──
 // 최근 N일 활동 요약 + 기능(action prefix) 별 사용 현황. admin 이 "누가 뭘 쓰는지",
 // "어떤 기능이 활성화되어 있는지" 한눈에 파악할 수 있게.
+function ActiveUserBarChart({data,period}){
+  const rows=_entries(data).map(([key,value])=>({key,value:Number(value)||0}));
+  const maxValue=Math.max(0,...rows.map(row=>row.value));
+  const axisMax=Math.max(2,Math.ceil(maxValue/2)*2);
+  const middle=axisMax/2;
+  const label=(key)=>period==="daily"
+    ? String(key).slice(5).replace("-",".")
+    : String(key).replace("-",".");
+  const periodLabel=period==="daily"?"일":"월";
+  return(<div style={{display:"grid",gridTemplateColumns:"38px minmax(0,1fr)",gap:8}}>
+    <div aria-hidden="true" style={{height:250,display:"flex",flexDirection:"column",justifyContent:"space-between",alignItems:"flex-end",padding:"20px 0 28px",boxSizing:"border-box",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+      <span>{axisMax}</span><span>{middle}</span><span>0</span>
+    </div>
+    <div style={{overflowX:"auto",paddingBottom:2}}>
+      <div style={{height:250,minWidth:period==="daily"?780:660,position:"relative",borderBottom:"1px solid var(--border)"}}>
+        <div role="img" aria-label={`${periodLabel}별 활성 사용자 수 막대 차트`} style={{position:"absolute",inset:"20px 0 28px 0",display:"flex",alignItems:"flex-end",gap:period==="daily"?5:12,padding:"0 6px",boxSizing:"border-box"}}>
+          {[0,50,100].map(top=><div key={top} aria-hidden="true" style={{position:"absolute",left:0,right:0,top:top+"%",borderTop:"1px dashed var(--border)",opacity:top===100?0:0.75}}/>)}
+          {rows.map(row=>{
+            const pct=row.value?Math.max(2,100*row.value/axisMax):0;
+            return <div key={row.key} title={`${row.key} · 활성 사용자 ${row.value}명`} aria-label={`${row.key}, 활성 사용자 ${row.value}명`} style={{height:"100%",flex:"1 0 18px",minWidth:period==="daily"?18:38,position:"relative"}}>
+              {row.value>0&&<span style={{position:"absolute",left:"50%",bottom:`calc(${pct}% + 4px)`,transform:"translateX(-50%)",fontSize:12,fontWeight:700,color:"var(--text-primary)"}}>{row.value}</span>}
+              <div style={{position:"absolute",left:"50%",bottom:0,transform:"translateX(-50%)",width:"min(100%, 34px)",height:pct+"%",minHeight:row.value?4:0,borderRadius:"5px 5px 1px 1px",background:"var(--accent)",opacity:0.86,transition:"height .25s ease"}}/>
+              <span style={{position:"absolute",left:"50%",top:"calc(100% + 7px)",transform:"translateX(-50%)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{label(row.key)}</span>
+            </div>;
+          })}
+          {!rows.length&&<span style={{margin:"auto",color:"var(--text-secondary)",fontSize:14}}>표시할 활동 데이터가 없습니다.</span>}
+        </div>
+        {!!rows.length&&maxValue===0&&<div style={{position:"absolute",inset:"20px 0 28px",display:"grid",placeItems:"center",color:"var(--text-secondary)",fontSize:14,pointerEvents:"none"}}>해당 기간의 사용자 활동이 없습니다.</div>}
+      </div>
+    </div>
+  </div>);
+}
+
 function ActivityDashboardPanel(){
   const [days,setDays]=useState(7);
+  const [userPeriod,setUserPeriod]=useState("daily");
   const [summary,setSummary]=useState(null);
   const [features,setFeatures]=useState(null);
   const [err,setErr]=useState("");
@@ -1498,7 +1553,7 @@ function ActivityDashboardPanel(){
   useEffect(()=>{reload();},[days]);
   // 라벨 칸을 고정폭으로 못박아 바 시작점을 정렬한다. minWidth 만 주면 라벨이
   // 길어질 때(액션명) 칸이 늘어나 행마다 바 왼쪽이 어긋난다 — 넘치면 ellipsis + title.
-  const barItem=(label,val,max,color,labelW=120)=>(<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+  const barItem=(label,val,max,color,labelW=120)=>(<div key={String(label)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
     <span title={String(label)} style={{fontSize:14,flex:`0 0 ${labelW}px`,width:labelW,maxWidth:labelW,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</span>
     <div style={{flex:1,minWidth:0,height:14,background:"var(--bg-tertiary)",borderRadius:3,overflow:"hidden"}}>
       <div style={{width:(max>0?(100*val/max):0)+"%",height:"100%",background:color}}/>
@@ -1508,6 +1563,7 @@ function ActivityDashboardPanel(){
   const maxUser=summary?Math.max(0,...Object.values(_obj(summary.by_user))):0;
   const maxAct=summary?Math.max(0,...Object.values(_obj(summary.by_action))):0;
   const maxDay=summary?Math.max(0,...Object.values(_obj(summary.by_day))):0;
+  const activeUserData=userPeriod==="daily"?summary?.active_users_by_day:summary?.active_users_by_month;
   return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
     <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12}}>
       <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
@@ -1515,6 +1571,18 @@ function ActivityDashboardPanel(){
       {[1,7,30,90].map(d=>(<span key={d} onClick={()=>setDays(d)} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===d?"var(--accent-glow)":"transparent",color:days===d?"var(--accent)":"var(--text-secondary)",fontWeight:days===d?700:500,border:"1px solid "+(days===d?"var(--accent)":"var(--border)")}}>{d}일</span>))}
       {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
       {err&&<span style={{fontSize:14,color:BAD.fg}}>{err}</span>}
+    </div>
+    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:800}}>활성 사용자 수</div>
+          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:3}}>기간 내 한 번 이상 활동한 고유 사용자 · {userPeriod==="daily"?"최근 30일":"최근 12개월"}</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",padding:3,borderRadius:7,background:"var(--bg-tertiary)",border:"1px solid var(--border)"}}>
+          {[["daily","일별"],["monthly","월별"]].map(([key,text])=><button key={key} type="button" aria-pressed={userPeriod===key} onClick={()=>setUserPeriod(key)} style={{border:0,borderRadius:5,padding:"5px 13px",cursor:"pointer",fontSize:13,fontWeight:700,background:userPeriod===key?"var(--bg-secondary)":"transparent",color:userPeriod===key?"var(--accent)":"var(--text-secondary)",boxShadow:userPeriod===key?"0 1px 3px rgba(15,23,42,.12)":"none"}}>{text}</button>)}
+        </div>
+      </div>
+      {summary?<ActiveUserBarChart data={activeUserData} period={userPeriod}/>:<div style={{height:250,display:"grid",placeItems:"center",color:"var(--text-secondary)",fontSize:14}}>로딩…</div>}
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>유저별</div>
@@ -1552,7 +1620,7 @@ function ActivityDashboardPanel(){
         — 측정(히트/미스 속도)과 튜닝(쿼리 코어·검색 슬롯)이 같은 화면에 있어야 해서. */}
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-        <div style={{fontSize:14,fontWeight:700}}>최근 이벤트 (최대 1000건)</div>
+        <div style={{fontSize:14,fontWeight:700}}>최근 이벤트 (최대 3000건)</div>
         <div style={{fontSize:13,color:"var(--text-secondary)",fontFamily:"monospace"}}>
           저장 위치: {summary?.activity_storage?.relative_path||"flow-data/logs/activity.jsonl"}
           {summary?.activity_storage&&` · ${(Number(summary.activity_storage.size_bytes||0)/1024/1024).toFixed(1)} / ${(Number(summary.activity_storage.max_bytes||0)/1024/1024).toFixed(0)} MB`}
@@ -1602,7 +1670,7 @@ function normalizeFlowiDefaults(raw={}){
   };
 }
 
-export function FlowiQualityPanel(){
+function FlowiQualityPanel(){
   const[days,setDays]=useState(30);
   const[data,setData]=useState(null);
   const[err,setErr]=useState("");

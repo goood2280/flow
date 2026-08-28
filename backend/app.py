@@ -163,6 +163,7 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/auto_report_child.py",
     "backend/core/auto_report_history.py",
     "backend/routers/auto_report.py",
+    "backend/routers/dcop.py",
 )
 
 

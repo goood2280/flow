@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import zipfile
 
 import pytest
@@ -94,6 +95,140 @@ def test_template_run_replays_the_time_window_saved_in_the_chart_code(tmp_path, 
     assert request["chart"]["height"] == 650
 
 
+def test_template_slot_can_override_and_reuse_the_chart_generation_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(template_report, "STORE_FILE", tmp_path / "template_reports.json")
+    _seed_chart_history(tmp_path, monkeypatch)
+    edited = DEFINITION.replace("TYPE = scatter", "TYPE = line").replace("COLOR = root_lot_id", "COLOR = wafer_id")
+
+    result = template_report.save_template(
+        template_report.TemplateSaveReq(
+            name="Editable chart formula",
+            pages=[template_report.TemplatePageReq(
+                title="Edited trend",
+                slots=[template_report.TemplateSlotReq(
+                    position=1,
+                    chart_id="chart_demo_001",
+                    definition_code=edited,
+                )],
+            )],
+        ),
+        {"username": "engineer", "role": "user"},
+    )
+
+    saved = result["template"]
+    assert saved["pages"][0]["slots"][0]["definition_code"] == edited
+    run = template_report.prepare_run(
+        template_report.TemplateRunReq(template_id=saved["id"]),
+        {"username": "viewer", "role": "user"},
+    )
+    assert run["charts"][0]["request"]["chart"]["type"] == "line"
+
+
+def test_available_charts_include_copyable_generation_code(tmp_path, monkeypatch):
+    _seed_chart_history(tmp_path, monkeypatch)
+
+    charts = template_report.list_charts({"username": "viewer", "role": "user"})["charts"]
+
+    assert charts[0]["id"] == "chart_demo_001"
+    assert charts[0]["definition_code"] == DEFINITION
+
+
+def test_full_template_code_round_trip_includes_inline_chart_definition(tmp_path, monkeypatch):
+    monkeypatch.setattr(template_report, "STORE_FILE", tmp_path / "template_reports.json")
+    _seed_chart_history(tmp_path, monkeypatch)
+    code = json.dumps({
+        "$schema": "flow-template-report/v1",
+        "id": "",
+        "name": "AI generated process review",
+        "options": {"cover": False, "footer": True, "subtitle": "", "repeat_variable": "LOT"},
+        "variables": [{"name": "LOT", "label": "Root Lot", "default": "ADV-AB-001"}],
+        "pages": [{
+            "id": "page_1",
+            "title": "Process review",
+            "subtitle": "",
+            "slots": [{
+                "position": 1,
+                "kind": "chart",
+                "chart_id": "",
+                "chart_name": "AI inline trend",
+                "x": 4,
+                "y": 10,
+                "chart_width": 1200,
+                "chart_height": 650,
+                "definition_code": DEFINITION,
+            }],
+        }],
+    }, ensure_ascii=False)
+
+    parsed = template_report.parse_template_code(
+        template_report.TemplateCodeReq(code=code),
+        {"username": "engineer", "role": "user"},
+    )["template"]
+
+    slot = parsed["pages"][0]["slots"][0]
+    assert parsed["name"] == "AI generated process review"
+    assert slot["chart_id"] == "inline_p1_1"
+    assert slot["chart_name"] == "AI inline trend"
+    assert slot["definition_code"] == DEFINITION
+
+
+def test_full_template_code_reports_json_line_errors():
+    with pytest.raises(HTTPException) as exc_info:
+        template_report.parse_template_code(
+            template_report.TemplateCodeReq(code='{"name": "broken",\n"pages": [}'),
+            {"username": "engineer", "role": "user"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "JSON" in str(exc_info.value.detail)
+
+
+def test_template_ai_assistant_keeps_valid_code_when_company_llm_is_unavailable(tmp_path, monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(template_report, "STORE_FILE", tmp_path / "template_reports.json")
+    _seed_chart_history(tmp_path, monkeypatch)
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+    code = json.dumps({
+        "name": "AI ready template",
+        "pages": [{"title": "Review", "slots": [{
+            "position": 1,
+            "kind": "chart",
+            "chart_id": "chart_demo_001",
+            "chart_name": "Weekly ET trend",
+            "definition_code": DEFINITION,
+        }]}],
+    })
+
+    result = template_report.template_assistant(
+        template_report.TemplateAssistantReq(
+            instruction="trend와 box plot을 한 장에 배치해줘",
+            template_code=code,
+        ),
+        {"username": "engineer", "role": "user"},
+    )
+
+    assert result["changed"] is False
+    assert result["llm"]["available"] is False
+    assert result["template"]["pages"][0]["slots"][0]["definition_code"] == DEFINITION
+
+
+def test_blank_page_subtitle_defaults_to_run_date_and_username(tmp_path, monkeypatch):
+    saved = _save_demo_template(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        template_report,
+        "_default_page_subtitle",
+        lambda username: f"2026-08-20 {username}",
+    )
+
+    run = template_report.prepare_run(
+        template_report.TemplateRunReq(template_id=saved["id"]),
+        {"username": "viewer", "role": "user"},
+    )
+
+    assert run["deck"]["pages"][0]["subtitle"] == "2026-08-20 viewer"
+
+
 def test_template_run_reuses_tkout_time_highlight_rule_from_chart_code():
     definition = DEFINITION.replace(
         "COLOR = root_lot_id",
@@ -172,6 +307,11 @@ def test_template_names_are_unique_and_name_can_resolve_run(tmp_path, monkeypatc
 
 def test_template_pptx_is_wide_and_places_chart_image(tmp_path, monkeypatch):
     saved = _save_demo_template(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        template_report,
+        "_default_page_subtitle",
+        lambda username: f"2026-08-20 {username}",
+    )
     request = template_report.ExportReq(
         template_id=saved["id"],
         images=[template_report.ExportImageReq(
@@ -187,13 +327,23 @@ def test_template_pptx_is_wide_and_places_chart_image(tmp_path, monkeypatch):
 
     assert response.media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     assert round(deck.slide_width / deck.slide_height, 3) == round(16 / 9, 3)
-    # 표지 + 내용 1장
-    assert len(deck.slides) == 2
+    # 표지 + 내용 1장 + 맨 뒤 재생성 Appendix
+    assert len(deck.slides) == 3
     cover_text = " ".join(getattr(shape, "text", "") for shape in deck.slides[0].shapes)
     assert "Weekly ET report" in cover_text
     content = deck.slides[1]
     assert any(getattr(shape, "text", "") == "ET trend" for shape in content.shapes)
+    assert any(getattr(shape, "text", "") == "2026-08-20 viewer" for shape in content.shapes)
     assert len([shape for shape in content.shapes if shape.shape_type == 13]) == 1
+    assert "Weekly ET report" not in [getattr(shape, "text", "") for shape in content.shapes]
+    appendix_text = " ".join(getattr(shape, "text", "") for shape in deck.slides[-1].shapes)
+    assert "Template Report Info" in appendix_text
+    assert saved["id"] in appendix_text
+    assert "engineer" in appendix_text
+    assert "viewer" in appendix_text
+    appendix_tables = [shape.table for shape in deck.slides[-1].shapes if shape.has_table]
+    assert appendix_tables
+    assert appendix_tables[0].cell(1, 2).text == "chart_demo_001"
 
 
 def test_template_freeform_layout_is_saved_and_used_by_pptx(tmp_path, monkeypatch):
@@ -363,6 +513,7 @@ def test_template_variables_are_detected_and_repeat_expands_pages(tmp_path, monk
     pages = run["deck"]["pages"]
     assert len(pages) == 2
     assert [page["title"] for page in pages] == ["A1234 Split 비교", "A5678 Split 비교"]
+    assert [page["subtitle"] for page in pages] == ["PRODA", "PRODA"]
     sql_first = run["charts"][0]["request"]["sources"][0]["sql"]
     sql_second = run["charts"][1]["request"]["sources"][0]["sql"]
     assert "root_lot_id = 'A1234'" in sql_first and "split_cond = 'S1'" in sql_first
@@ -395,6 +546,7 @@ def test_report_context_updates_all_chart_filters_time_and_color(tmp_path, monke
     source = request["sources"][0]
     assert source["runtime_root_lot_ids"] == ["A1234", "A5678"]
     assert source["runtime_wafer_ids"] == ["1", "2"]
+    assert source["runtime_lot_wafer_pairs"] == [{"root_lot_id": "A1234", "wafer_id": "1"}]
     assert source["runtime_recent_days"] == 14
     assert source["runtime_date_column"] == "tkout_time"
     assert request["chart"]["color"] == "custom"
@@ -445,7 +597,7 @@ def test_variable_value_cannot_break_out_of_the_sql_literal(tmp_path, monkeypatc
     assert "쓸 수 없는 문자" in str(excinfo.value.detail)
 
 
-def test_pptx_has_navy_title_bar_cover_and_table_blocks(tmp_path, monkeypatch):
+def test_pptx_has_compact_header_cover_and_table_blocks(tmp_path, monkeypatch):
     saved = _save_split_template(tmp_path, monkeypatch, extra_slots=(
         template_report.TemplateSlotReq(
             position=2, kind="split", product="{{PRODUCT}}", lot="{{LOT}}",
@@ -472,18 +624,13 @@ def test_pptx_has_navy_title_bar_cover_and_table_blocks(tmp_path, monkeypatch):
     response = template_report.export_pptx(request, {"username": "viewer", "role": "user"})
     deck = Presentation(io.BytesIO(response.body))
 
-    assert len(deck.slides) == 2
+    assert len(deck.slides) == 3
     content = deck.slides[1]
-    navy = [
-        shape for shape in content.shapes
-        if shape.has_text_frame is not None and getattr(shape, "fill", None) is not None
-        and shape.shape_type == 1 and shape.fill.type == 1
-        and shape.fill.fore_color.rgb == template_report._navy()
-    ]
-    assert navy, "슬라이드 상단 네이비 타이틀 바가 있어야 한다"
-    assert navy[0].width == deck.slide_width
     texts = [getattr(shape, "text", "") for shape in content.shapes]
     assert "A1234 Split 비교" in texts
+    compact_title = next(shape for shape in content.shapes if getattr(shape, "text", "") == "A1234 Split 비교")
+    assert compact_title.top < template_report.TITLE_BAR_HEIGHT_IN * 914400
+    assert compact_title.text_frame.paragraphs[0].font.size.pt == 14
     assert "A1234 판정: 이상 없음" in texts
     assert "1 / 1" in texts
     tables = [shape for shape in content.shapes if shape.has_table]
@@ -514,9 +661,97 @@ def test_stats_block_points_at_its_source_chart_and_accepts_legacy_kind(tmp_path
     assert stats["stats"] == "n,mean,median,std"
 
 
+def test_common_legend_block_uses_chart_groups_and_exports_as_native_shapes(tmp_path, monkeypatch):
+    monkeypatch.setattr(template_report, "STORE_FILE", tmp_path / "template_reports.json")
+    _seed_chart_history(tmp_path, monkeypatch)
+    saved = template_report.save_template(
+        template_report.TemplateSaveReq(
+            name="Shared legend report",
+            pages=[template_report.TemplatePageReq(
+                title="Common legend",
+                slots=[
+                    template_report.TemplateSlotReq(position=1, chart_id="chart_demo_001"),
+                    template_report.TemplateSlotReq(
+                        position=2, kind="legend", source_position=1,
+                        x=70, y=8, width=26, height=11, title="Root Lot",
+                    ),
+                ],
+            )],
+        ),
+        {"username": "engineer", "role": "user"},
+    )["template"]
+
+    run = template_report.prepare_run(
+        template_report.TemplateRunReq(template_id=saved["id"]),
+        {"username": "viewer", "role": "user"},
+    )
+    legend = next(block for block in run["deck"]["pages"][0]["blocks"] if block["kind"] == "legend")
+    assert legend["source_key"] == "0:1"
+
+    response = template_report.export_pptx(
+        template_report.ExportReq(
+            template_id=saved["id"],
+            images=[template_report.ExportImageReq(key="0:1", chart_id="chart_demo_001", data_url=_png_data_url())],
+            tables=[template_report.ExportTableReq(
+                key="0:2", title="Root Lot", columns=["Label", "Color", "Count"],
+                rows=[["LOT-A", "#6366f1", "12"], ["LOT-B", "#f59e0b", "9"]],
+            )],
+        ),
+        {"username": "viewer", "role": "user"},
+    )
+    deck = Presentation(io.BytesIO(response.body))
+    content_text = " ".join(getattr(shape, "text", "") for shape in deck.slides[1].shapes)
+    assert "Root Lot" in content_text
+    assert "LOT-A (12)" in content_text
+    assert not any(shape.has_table for shape in deck.slides[1].shapes)
+
+
 def test_download_header_supports_korean_template_names():
     header = template_report._download_header("주간 ET 분석_7days.pptx")
 
     header.encode("latin-1")
     assert "filename*=UTF-8''" in header
     assert header.endswith(".pptx")
+
+
+def test_appendix_time_keeps_local_clock_without_timezone_label():
+    shown = template_report._format_report_time("2026-08-21T02:15:00+00:00")
+
+    assert len(shown) == 16
+    assert shown[4] == "-" and shown[7] == "-" and shown[10] == " " and shown[13] == ":"
+    assert "표준시" not in shown and "KST" not in shown and "UTC" not in shown
+
+
+def test_compact_appendix_fits_eighteen_chart_rows_on_first_info_page():
+    deck = Presentation()
+    deck.slide_width = int(template_report.SLIDE_WIDTH_IN * 914400)
+    deck.slide_height = int(template_report.SLIDE_HEIGHT_IN * 914400)
+    template = {
+        "id": "report_tpl_dense",
+        "name": "Dense chart inventory",
+        "pages": [{
+            "title": "Dense",
+            "slots": [
+                {
+                    "position": position, "kind": "chart", "chart_id": f"chart_{position:02d}",
+                    "chart_name": f"Chart {position:02d}", "definition_code": DEFINITION,
+                    "x": 4, "y": 12, "chart_width": 870, "chart_height": 390,
+                }
+                for position in range(1, 19)
+            ],
+        }],
+        "options": {"cover": False, "footer": True},
+        "created_by": "author", "created_at": "2026-08-20T00:00:00+00:00",
+        "updated_by": "author", "updated_at": "2026-08-21T00:00:00+00:00",
+    }
+    template_report._add_template_info_appendix(
+        deck, template, {"bindings": {}, "repeat_variable": "", "repeat_values": [], "context": {}},
+        report_user="viewer", report_generated_at="2026-08-21T02:15:00+00:00",
+    )
+
+    assert len(deck.slides) == 1
+    appendix = deck.slides[0]
+    inventory = next(shape for shape in appendix.shapes if shape.has_table)
+    footer = next(shape for shape in appendix.shapes if getattr(shape, "text", "") == "Appendix 1 / 1")
+    assert len(inventory.table.rows) == 19  # header + 18 charts
+    assert inventory.top + inventory.height < footer.top

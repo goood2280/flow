@@ -45,7 +45,9 @@ logger = logging.getLogger("flow.valve_step_advisor")
 STORE_PATH = PATHS.data_root / "valve_step_recommendations.json"
 # 추천 규칙이 달라지면 과거 보조 캐시만 다시 계산한다. 사용자 판정/CSV와는
 # 무관한 버전이며, 동일 PPID 우선 탐색을 도입한 버전이 2다.
-ALGORITHM_VERSION = 2
+# 3은 FAB 알람의 vehicle이 제품명으로 대체되는 복수-vehicle 제품에서도
+# Vehicle_matching.csv의 제품 범위 행을 올바르게 읽도록 한 버전이다.
+ALGORITHM_VERSION = 3
 
 # FAB raw 후보 루트 — 먼저 존재하는 것을 쓴다 (lot_step / splittable 과 같은 규약).
 FAB_ROOTS = ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB")
@@ -119,7 +121,7 @@ def put_record(rec: dict) -> None:
         _save_records(recs)
 
 
-def _stale(rec: dict, vehicle: str) -> bool:
+def _stale(rec: dict, vehicle: str, product: str = "") -> bool:
     """추천이 나온 기록은 절대 다시 안 본다. 단 "같은 계열 후보가 없어서" 못 낸
     기록은 매칭 테이블이 바뀌면 다시 본다 — 그때는 후보가 생겼을 수 있다."""
     try:
@@ -130,7 +132,7 @@ def _stale(rec: dict, vehicle: str) -> bool:
         return True
     if rec.get("method") != "none":
         return False
-    return rec.get("matched_fp") != matched_fingerprint(vehicle)
+    return rec.get("matched_fp") != matched_fingerprint(vehicle, product)
 
 
 def clear_record(vehicle: str, step_id: str) -> bool:
@@ -152,39 +154,58 @@ def split_step_id(step_id: str) -> tuple[str, int | None]:
     return m.group(1).upper(), int(m.group(2))
 
 
-def matched_steps(vehicle: str) -> list[dict]:
-    """Vehicle_matching.csv 에서 해당 vehicle 의 (step_id, step_desc) 목록."""
+def matched_steps(vehicle: str, product: str = "") -> list[dict]:
+    """Vehicle_matching.csv에서 알람 범위의 매칭 step 목록.
+
+    FAB 직접 검사는 한 제품에 vehicle이 여러 개면 알람의 ``vehicle``에
+    제품명을 넣는다. 그 경우 vehicle 일치만 보면 후보가 0개가 되므로,
+    product가 있으면 해당 제품 행을 우선하고 product가 빈 기존 행은
+    vehicle 일치일 때만 포함한다. 제품 범위 행이 전혀 없을 때만 기존
+    vehicle 일치로 폴백한다.
+    """
     fp = Path(PATHS.db_root) / "Vehicle_matching.csv"
     if not fp.exists():
         return []
-    out: list[dict] = []
+    rows: list[dict] = []
     try:
         with open(fp, "r", encoding="utf-8-sig", newline="") as f:
             for r in csv.DictReader(f):
-                if str(r.get("vehicle") or "").strip() != vehicle:
-                    continue
                 step_id = str(r.get("step_id") or "").strip()
                 desc = str(r.get("step_desc") or "").strip()
                 if step_id and desc:
-                    out.append({"step_id": step_id, "step_desc": desc,
-                                "product": str(r.get("product") or "").strip()})
+                    rows.append({"step_id": step_id, "step_desc": desc,
+                                 "product": str(r.get("product") or "").strip(),
+                                 "vehicle": str(r.get("vehicle") or "").strip()})
     except OSError as e:
         logger.warning("[step_advisor] Vehicle_matching.csv 읽기 실패: %s", e)
-    return out
+        return []
+
+    vehicle_key = vehicle.casefold()
+    product_key = product.casefold()
+    if product_key:
+        scoped = [
+            row for row in rows
+            if row["product"].casefold() == product_key
+            or (not row["product"] and row["vehicle"].casefold() == vehicle_key)
+        ]
+        if scoped:
+            return scoped
+    return [row for row in rows if row["vehicle"].casefold() == vehicle_key]
 
 
-def matched_fingerprint(vehicle: str) -> str:
+def matched_fingerprint(vehicle: str, product: str = "") -> str:
     """해당 vehicle 의 매칭 step 목록 지문 — "후보 없음" 기록의 재검사 조건."""
-    return ",".join(sorted(m["step_id"] for m in matched_steps(vehicle)))
+    return ",".join(sorted(m["step_id"] for m in matched_steps(vehicle, product)))
 
 
-def neighbor_candidates(vehicle: str, step_id: str, count: int) -> list[dict]:
+def neighbor_candidates(vehicle: str, step_id: str, count: int,
+                        product: str = "") -> list[dict]:
     """같은 영문 prefix 를 가진 매칭 step 중 숫자가 가장 가까운 앞/뒤 count 개씩."""
     prefix, num = split_step_id(step_id)
     if num is None:
         return []
     same: list[dict] = []
-    for m in matched_steps(vehicle):
+    for m in matched_steps(vehicle, product):
         p, n = split_step_id(m["step_id"])
         if n is None or p != prefix:
             continue
@@ -203,13 +224,7 @@ def matched_candidate_pool(vehicle: str, step_id: str, product: str = "") -> lis
     속한 행은 제외하되, product가 비어 있는 기존 매칭 행은 계속 후보로 둔다.
     """
     target_prefix, target_num = split_step_id(step_id)
-    rows = matched_steps(vehicle)
-    if product:
-        product_key = product.casefold()
-        scoped = [m for m in rows if not str(m.get("product") or "").strip()
-                  or str(m.get("product") or "").strip().casefold() == product_key]
-        if scoped:
-            rows = scoped
+    rows = matched_steps(vehicle, product)
 
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -514,7 +529,7 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         return {"ok": False, "error": "vehicle/step_id 없음"}
     if not force:
         cached = get_record(vehicle, step_id)
-        if cached and not _stale(cached, vehicle):
+        if cached and not _stale(cached, vehicle, str(alert.get("product") or "").strip()):
             return {**cached, "cached": True}
 
     cfg = settings()
@@ -524,7 +539,7 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
     if not product:
         product = next((m["product"] for m in matched_steps(vehicle) if m["product"]), "")
 
-    neighbors = neighbor_candidates(vehicle, step_id, cfg["neighbors"])
+    neighbors = neighbor_candidates(vehicle, step_id, cfg["neighbors"], product)
     # 기본 추천은 step 번호 계열보다 PPID를 먼저 본다. 같은 vehicle/product의
     # 매칭 완료 step 전체를 스캔한 뒤, target과 PPID가 겹치는 step만 후보로 좁힌다.
     pool = matched_candidate_pool(vehicle, step_id, product)
@@ -537,7 +552,8 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         "ts": time.time(), "cached": False,
     }
     if not pool and not neighbors:
-        have = sorted({split_step_id(m["step_id"])[0] for m in matched_steps(vehicle)})
+        have = sorted({split_step_id(m["step_id"])[0]
+                       for m in matched_steps(vehicle, product)})
         rec["reason"] = (
             f"Vehicle_matching.csv 에 {vehicle} 의 같은 계열"
             f"({split_step_id(step_id)[0]}…) 매칭 step 이 없어 비교 대상이 없습니다"
@@ -545,7 +561,7 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         rec["llm"] = {"applied": False, "error": "후보가 없어 AI 를 호출하지 않았습니다"}
         # 기록은 남기되 매칭 테이블 지문을 같이 박아 둔다 — 같은 계열 step 이
         # 등록되면 그때 다시 본다 (_stale). 그 전까지는 재탐색하지 않는다.
-        rec["matched_fp"] = matched_fingerprint(vehicle)
+        rec["matched_fp"] = matched_fingerprint(vehicle, product)
         put_record(rec)
         return rec
 
@@ -580,7 +596,8 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
     ]
     candidates = ppid_candidates or neighbors
     if not candidates:
-        have = sorted({split_step_id(m["step_id"])[0] for m in matched_steps(vehicle)})
+        have = sorted({split_step_id(m["step_id"])[0]
+                       for m in matched_steps(vehicle, product)})
         rec["reason"] = (
             f"{step_id}와 같은 PPID를 쓰는 매칭 완료 step이 없고, "
             f"같은 계열({split_step_id(step_id)[0]}…) 후보도 없습니다"
@@ -588,7 +605,7 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         rec["evidence"] = {**info, "target": {k: v for k, v in target_sig.items()
                                                 if k in SIGNATURE_WEIGHTS}}
         rec["llm"] = {"applied": False, "error": "후보가 없어 AI를 호출하지 않았습니다"}
-        rec["matched_fp"] = matched_fingerprint(vehicle)
+        rec["matched_fp"] = matched_fingerprint(vehicle, product)
         put_record(rec)
         return rec
 
@@ -649,7 +666,7 @@ def needs_recommendation(alert: dict, records: dict[str, dict] | None = None) ->
     recs = load_records() if records is None else records
     vehicle = str(alert.get("vehicle") or "")
     rec = recs.get(_key(vehicle, str(alert.get("step_id") or "")))
-    return rec is None or _stale(rec, vehicle)
+    return rec is None or _stale(rec, vehicle, str(alert.get("product") or "").strip())
 
 
 def recommend_pending(alerts: list[dict] | None = None, *, force: bool = False,

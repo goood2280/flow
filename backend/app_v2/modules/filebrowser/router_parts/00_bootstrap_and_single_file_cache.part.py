@@ -189,10 +189,12 @@ DEFAULT_FILEBROWSER_SETTINGS = {
     "preview_cache_enabled": True,
 }
 
-# credential은 DB root 아래에 있어도 인증정보/관리자 기준 데이터를 담는 예약 폴더다.
+# credential/teg_location은 DB root 아래에 있어도 인증정보·도메인 내부 설정을 담는
+# 예약 폴더다. teg_location의 기준 CSV 자체는 DB root의 단일 파일로 계속 보이지만,
+# 설정 JSON과 제품 이미지를 담는 소문자 teg_location/ 폴더는 탐색기에 노출하지 않는다.
 # 관리자 설정에서 표시 폴더로 추가해도 Files/DB 탐색 API에는 절대 노출하지 않는다.
 # 필요한 관리자 기능은 각 도메인의 require_admin API를 통해서만 접근한다.
-_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "credential"}
+_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "credential", "teg_location"}
 _RAW_DB_DISPLAY_RE = re.compile(r"^1\.RAWDATA_DB(?:_(.+))?$", re.IGNORECASE)
 
 

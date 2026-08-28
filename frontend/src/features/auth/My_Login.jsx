@@ -143,6 +143,7 @@ export default function My_Login({ onLogin }) {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
   const [formIn, setFormIn] = useState(true);  // v8.2.0: show form immediately
+  const [authProviders, setAuthProviders] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -156,10 +157,28 @@ export default function My_Login({ onLogin }) {
     return () => { active = false; };
   }, []);
 
+  // 서버가 활성화한 방식만 노출한다. OIDC 환경변수가 아직 없으면 password만,
+  // 연결 후에는 SSO 버튼도 표시한다. password provider를 끄면 SSO-only 화면이다.
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth/providers", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("providers")))
+      .then((data) => {
+        if (active) setAuthProviders(Array.isArray(data?.providers) ? data.providers : []);
+      })
+      .catch(() => {
+        // 구버전 백엔드/일시 오류에서는 기존 ID/PW 로그인을 잃지 않는다.
+        if (active) setAuthProviders([{ name: "password", kind: "password", label: "ID / PW" }]);
+      });
+    return () => { active = false; };
+  }, []);
+
   // 아이디는 앞뒤 공백만 걷어내고 그대로 보낸다. `hong` 과 `hong@사내도메인` 을
   // 같은 계정으로 보는 판정은 서버(core.auth.canonical_username)가 한다 — 프런트가
   // 도메인을 추측해서 잘라내면 서버 규칙과 어긋난다.
   const uid = u.trim();
+  const passwordEnabled = authProviders === null || authProviders.some((provider) => provider?.name === "password");
+  const ssoProviders = (authProviders || []).filter((provider) => provider?.kind === "sso" && provider?.start_url);
 
   const submit = async () => {
     setLoading(true); setMsg("");
@@ -218,6 +237,31 @@ export default function My_Login({ onLogin }) {
           opacity: formIn ? 1 : 0, transform: formIn ? "translateY(0)" : "translateY(10px)",
           transition: "opacity 0.5s ease, transform 0.5s ease",
         }}>
+          {mode === "login" && ssoProviders.map((provider) => (
+            <button
+              key={provider.name}
+              type="button"
+              onClick={() => window.location.assign(provider.start_url)}
+              style={{
+                width: "100%", padding: "12px", borderRadius: 3,
+                border: "1px solid #f97316", background: "rgba(249,115,22,0.08)",
+                color: "#f97316", fontSize: 14, fontWeight: 800, cursor: "pointer",
+                fontFamily: "'JetBrains Mono',monospace", letterSpacing: 1.2,
+              }}
+            >
+              {provider.label || "SSO"} Login
+            </button>
+          ))}
+
+          {mode === "login" && passwordEnabled && ssoProviders.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0", color: "#444", fontSize: 11 }}>
+              <span style={{ flex: 1, borderTop: "1px solid #242424" }} />
+              OR
+              <span style={{ flex: 1, borderTop: "1px solid #242424" }} />
+            </div>
+          )}
+
+          {passwordEnabled && <>
           {/* v8.8.27: register 모드면 NAME 을 맨 위에 배치 — 이름·아이디·비번 순으로 수집. */}
           {mode === "register" && <>
             <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>NAME</div>
@@ -263,6 +307,7 @@ export default function My_Login({ onLogin }) {
             }}>
             {loading ? "..." : mode === "login" ? "Sign In" : mode === "register" ? "Create Account" : "Send"}
           </button>
+          </>}
 
           {msg && <div style={{
             marginTop: 12, fontSize: 14, textAlign: "center", lineHeight: 1.6, padding: "8px 12px", borderRadius: 4,
@@ -272,6 +317,7 @@ export default function My_Login({ onLogin }) {
             border: `1px solid ${isOk ? "rgba(34,197,94,0.12)" : "rgba(248,113,113,0.12)"}`,
           }}>{msg}</div>}
 
+          {passwordEnabled && <>
           <div style={{ margin: "18px 0 14px", borderTop: "1px solid #1a1a1e" }} />
 
           {mode === "login" ? (
@@ -299,10 +345,19 @@ export default function My_Login({ onLogin }) {
               </span>
             </div>
           )}
+          </>}
 
-          <div style={{ marginTop: 14, textAlign: "center", fontSize: 14, fontFamily: "'JetBrains Mono',monospace", color: "#1e1e1e", letterSpacing: 1 }}>
-            flow{releaseVersion ? ` · v${releaseVersion}` : ""}
-          </div>
+          {authProviders !== null && !passwordEnabled && ssoProviders.length === 0 && (
+            <div style={{ color: "#fb7185", textAlign: "center", lineHeight: 1.6 }}>
+              사용할 수 있는 로그인 방식이 없습니다. 관리자에게 문의하세요.
+            </div>
+          )}
+
+          {passwordEnabled && (
+            <div style={{ marginTop: 14, textAlign: "center", fontSize: 14, fontFamily: "'JetBrains Mono',monospace", color: "#1e1e1e", letterSpacing: 1 }}>
+              flow{releaseVersion ? ` · v${releaseVersion}` : ""}
+            </div>
+          )}
         </div>
       </div>
     </div>

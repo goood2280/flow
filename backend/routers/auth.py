@@ -29,7 +29,15 @@ from core.mail import send_mail as _send_mail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-FIELDS = ["username","password_hash","role","status","created","tabs","email","name"]
+# ``sso_id`` is the provider-stable employee subject (OIDC ``sub``), while
+# ``department`` is the human-readable organization name supplied by SSO.
+# ``permission_source`` records why ``tabs`` has its current value so a later
+# SSO login can refresh a department default without overwriting an explicit
+# per-user or permission-group assignment.
+FIELDS = [
+    "username", "password_hash", "role", "status", "created", "tabs",
+    "email", "name", "sso_id", "department", "permission_source", "last_login",
+]
 
 class LoginReq(BaseModel):
     username: str
@@ -68,6 +76,7 @@ def hash_pw(pw: str) -> str:
 # 파이썬으로 전량 파싱하느라 GIL 을 쥐고 돌아, 계정과 동시 사용자가 늘수록 그대로
 # 직렬화됐다. core/utils.py 의 load_json_cached 와 같은 mtime+size 키를 쓴다.
 _USERS_CACHE_LOCK = threading.Lock()
+USERS_MUTATION_LOCK = threading.RLock()
 _USERS_CACHE_SIG: tuple | None = None
 _USERS_CACHE_ROWS: list[dict] | None = None
 
@@ -192,6 +201,24 @@ def write_users(users):
     invalidate_users_cache()
 
 
+def record_successful_login(username: str, when: datetime.datetime | None = None) -> bool:
+    """Persist the account lifecycle clock shared by password and SSO logins."""
+    target = str(username or "").strip()
+    if not target:
+        return False
+    stamp = (when or datetime.datetime.now()).isoformat(timespec="seconds")
+    with USERS_MUTATION_LOCK:
+        users = read_users()
+        changed = False
+        for user in users:
+            if str(user.get("username") or "").strip() == target:
+                user["last_login"] = stamp
+                changed = True
+        if changed:
+            write_users(users)
+        return changed
+
+
 @router.get("/providers")
 def providers():
     """사용 가능한 인증 수단 목록. 로그인 화면이 로그인 **전에** 호출한다.
@@ -255,10 +282,14 @@ def register(req: RegisterReq):
         "role": "user",
         "status": "pending",
         "created": datetime.datetime.now().isoformat(),
+        "last_login": "",
         # SSO 자동 프로비저닝(auth_providers.resolve_identity)과 같은 기본값을 쓴다.
         "tabs": auth_providers.DEFAULT_TABS,
         "email": typed_email,
         "name": human_name,
+        "sso_id": "",
+        "department": "",
+        "permission_source": "",
     })
     write_users(users)
     send_to_admins("New Registration", f"User '{name}' requests approval.", "approval")
@@ -296,6 +327,9 @@ def me(request: Request):
                 "role": u.get("role", "user"),
                 "name": u.get("name", ""),
                 "email": u.get("email", ""),
+                "sso_id": u.get("sso_id", ""),
+                "department": u.get("department", ""),
+                "permission_source": u.get("permission_source", ""),
                 "tabs": "__all__" if u.get("role") == "admin" else u.get("tabs", ""),
             }
     return {"authenticated": False}

@@ -101,7 +101,8 @@ class _Paths:
         # creating an empty fallback directory can hide a misconfigured real DB.
         if not self.users_csv.exists():
             self.users_csv.write_text(
-                "username,password_hash,role,status,created,tabs\n", encoding="utf-8")
+                "username,password_hash,role,status,created,tabs,email,name,sso_id,department,permission_source,last_login\n",
+                encoding="utf-8")
         if not self.shares_json.exists():
             self.shares_json.write_text("{}", encoding="utf-8")
 

@@ -12,7 +12,6 @@ import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
 import { Button, Card, Chip, EmptyState, PageHeader, Pill } from "../../components/UXKit";
-import FlowiPromptBox from "../../components/FlowiPromptBox";
 
 const API = "/api/calendar";
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -276,13 +275,6 @@ export default function My_Calendar({ user }) {
             </div>
           )}
         />
-        <div style={{ padding: "10px 16px 0" }}>
-          <FlowiPromptBox
-            defaultScope={{ kind: "meeting", date_window: ym(view), calendar_filter: meetingFilter }}
-            placeholder="Flow-i 변경점 질문"
-            maxRows={8}
-          />
-        </div>
         <div style={{ padding: "10px 16px 0" }}>
           <Card padding={10}>
             <div style={{ display: "flex", gap: 14, fontSize: 14, color: "var(--text-secondary)", flexWrap: "wrap" }}>

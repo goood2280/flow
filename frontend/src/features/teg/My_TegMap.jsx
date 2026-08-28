@@ -15,11 +15,13 @@
    - 설정 json·그림 파일은 파일탐색기 위치(DB root)의 teg_location/ 폴더에 저장.
 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { sf, putJson } from "../../lib/api";
+import { sf, postJson, putJson } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import Modal from "../../components/Modal";
 import PageGear from "../../components/PageGear";
+import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
-import { Button, Card, EmptyState, LinkBtn, PageHeader, Pill, Select, TabStrip } from "../../components/UXKit";
+import { Button, Card, EmptyState, LinkBtn, Pill, Select, TabStrip } from "../../components/UXKit";
 import TegCheck from "./TegCheck";
 import TegGenerate from "./TegGenerate";
 import My_FileBrowser from "../filebrowser/My_FileBrowser";
@@ -44,6 +46,17 @@ function fmt(v, d = 2) {
 // MAIN 계열 TEG 판별 — 앞이 글자가 아닌 곳의 MAIN (domain/remain 오탐 제외, 백엔드 is_main 과 동일).
 const MAIN_RE = /(?<![A-Za-z])MAIN/i;
 function isMainTeg(name) { return MAIN_RE.test(String(name || "")); }
+
+/* Teg_location의 업무 순서는 보존하되 MAIN 항목끼리만 이름 뒤 숫자의 자연순으로
+   보인다. 일반 TEG를 함께 정렬하면 파일에 정한 공정 순서가 깨지므로 MAIN이 있던
+   자리만 MAIN01, MAIN02, ... 순으로 치환한다. */
+function tegListNames(tegs) {
+  const names = (tegs || []).map(item => String(item?.teg || ""));
+  const mains = names.filter(isMainTeg).sort((left, right) =>
+    left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+  let mainIndex = 0;
+  return names.map(name => isMainTeg(name) ? mains[mainIndex++] : name);
+}
 
 /* TEG 방향 — 백엔드가 Teg_location direction 열(없으면 V_ 이름 접두)로 판정해
    내려준다. 크기(teg_w/teg_h)는 파일에 실제 배치 방향 그대로 들어 있어 vertical 은
@@ -98,6 +111,28 @@ function buildFullShots(data) {
   const geo = data?.geometry;
   const real = data?.shots || [];
   if (!geo || geo.fit !== "radius" || !real.length) return real;
+  const gridCols = Math.max(0, Math.trunc(Number(geo.grid_cols) || 0));
+  const gridRows = Math.max(0, Math.trunc(Number(geo.grid_rows) || 0));
+  if (gridCols > 0 && gridRows > 0) {
+    if (gridCols * gridRows > FULL_SHOT_MAX) return real;
+    const seen = new Set(real.map(s0 => gridKey(s0.x, s0.y)));
+    const out = [...real];
+    for (let x = 1; x <= gridCols; x += 1) {
+      for (let y = 1; y <= gridRows; y += 1) {
+        const key = gridKey(x, y);
+        if (seen.has(key)) continue;
+        const mmx = (x - geo.cx) * geo.kx;
+        const mmy = (y - geo.cy) * geo.ky;
+        out.push({
+          x, y, synthetic: true,
+          mm_x: Math.round(mmx * 1e4) / 1e4,
+          mm_y: Math.round(mmy * 1e4) / 1e4,
+          radius: Math.round(Math.hypot(mmx, mmy) * 1e4) / 1e4,
+        });
+      }
+    }
+    return out;
+  }
   const px = Math.abs(geo.pitch_x) || 0, py = Math.abs(geo.pitch_y) || 0;
   const stepX = px * Math.abs(geo.kx), stepY = py * Math.abs(geo.ky);   // mm 단위 격자 간격
   const W = Math.abs(geo.shot_w_mm), H = Math.abs(geo.shot_h_mm);
@@ -141,6 +176,14 @@ function buildFullShots(data) {
     }
   }
   return out;
+}
+
+function shotInsideWaferEdge(shot, geometry) {
+  const edge = Number(geometry?.wafer_edge_mm) || 147;
+  const halfW = Math.abs(Number(geometry?.shot_w_mm) || 0) / 2;
+  const halfH = Math.abs(Number(geometry?.shot_h_mm) || 0) / 2;
+  const mmX = Number(shot?.mm_x) || 0, mmY = Number(shot?.mm_y) || 0;
+  return Math.hypot(Math.abs(mmX) + halfW, Math.abs(mmY) + halfH) <= edge + 1e-9;
 }
 
 function _token() {
@@ -490,7 +533,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         V 행은 파일에 이미 세운 크기로 들어 있는 규약이라 다시 뒤집지 않습니다.
       </div>
 
-      <div style={sect}>TEG Mapfile 체크 — 오프셋</div>
+      <div style={sect}>Mapfile 검증 — 오프셋</div>
       <div style={row}>
         <span style={lab}>기본 오프셋 Horizontal</span>
         <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
@@ -538,8 +581,8 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         <input style={num} type="number" step="any" min="0" disabled={dis} value={chk.die_tol}
           onChange={e => setC({ die_tol: e.target.value })} />
         <span style={{ fontSize: 11, color: "var(--muted)" }}>
-          ebeam raw 단위 (ΔX/ΔY 와 같은 공간). die 경계에서 이만큼 들어가거나 나간 정도는
-          '침범'이 아니라 <b>경계 근처(확인필요)</b>로 봅니다. 0 이면 조금이라도 닿으면 침범.
+          ebeam raw 단위 (ΔX/ΔY 와 같은 공간). 경계선이 정확히 맞닿거나 die 안쪽으로
+          이 값 이하만 걸친 것은 <b>정상 허용</b>합니다. 이 값을 넘는 실제 침범만 경고합니다.
         </span>
       </div>
       <div style={{ ...row, marginBottom: 4 }}>
@@ -1204,7 +1247,7 @@ function CheckTargetEditor({ vehicle, canEdit }) {
     try {
       const r = await putJson(`${API}/check-targets`, { vehicle, targets: [...sel] });
       setData(r); setSel(new Set(r.targets || []));
-      toast.ok("Mapfile 체크 대상 저장됨");
+      toast.ok("Mapfile 검증 대상 저장됨");
     } catch (e) { toast.error(String(e.message || e)); }
     finally { setSaving(false); }
   };
@@ -1230,7 +1273,7 @@ function CheckTargetEditor({ vehicle, canEdit }) {
                  background: "none", border: "none", cursor: "pointer", color: "var(--text)",
                  padding: "7px 9px", fontSize: 12, fontWeight: 700, textAlign: "left" }}>
         <span style={{ color: "var(--muted)" }}>{open ? "▾" : "▸"}</span>
-        Mapfile 체크 대상 TEG
+        Mapfile 검증 대상 TEG
         <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 400, color: "var(--muted)" }}>
           {sel.size}개 {data ? (data.source === "config" ? "· 지정됨" : "· 기본") : ""}
         </span>
@@ -1238,7 +1281,7 @@ function CheckTargetEditor({ vehicle, canEdit }) {
       {open && (
         <div style={{ padding: "0 9px 9px" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.6, marginBottom: 6 }}>
-            체크한 TEG 가 "TEG Mapfile 체크" 대상입니다. 기본값 = 이름이 H_/V_ 로 시작하는 것 전부.
+            체크한 TEG 가 "Mapfile 검증" 대상입니다. 기본값 = 이름이 H_/V_ 로 시작하는 것 전부.
             {!canEdit && <span style={{ color: "var(--warn)" }}> · admin / teg 페이지 관리자만 변경·저장할 수 있습니다.</span>}
             {!data?.teg_ok && <span style={{ color: "#e05252" }}> · 이 vehicle 의 Teg_location 데이터가 없습니다.</span>}
           </div>
@@ -1315,7 +1358,9 @@ function buildFullChipDies(data, localCells) {
         Math.hypot(x, y), Math.hypot(x + w, y),
         Math.hypot(x, y + h), Math.hypot(x + w, y + h),
       );
-      if (maxD > edge + 1e-9) continue;
+      // 최외곽선에 정확히 닿는 die도 제외한다. 공정 유효 영역은 경계 포함(<=)이
+      // 아니라 네 꼭짓점이 모두 선 안쪽(<)에 여유를 두고 들어온 경우만 센다.
+      if (maxD >= edge - 1e-9) continue;
       dies.push({
         key: `${gridKey(shot.x, shot.y)}:${i}`,
         x, y, w, h, shotX: shot.x, shotY: shot.y,
@@ -1326,66 +1371,6 @@ function buildFullChipDies(data, localCells) {
   return { dies, overflow: false };
 }
 
-function CalculationDiagram({ kind }) {
-  const ink = "var(--text-primary)", muted = "var(--muted)", accent = "var(--accent)";
-  const blue = "#3e7bd6", green = "#2f9e63", red = "#e05252", gold = "#c78a1e", purple = "#8a5fd0";
-  const text = { fontSize: 11, fill: ink, fontFamily: "Pretendard, sans-serif" };
-  const small = { ...text, fontSize: 9, fill: muted };
-  const axis = <>
-    <line x1="28" y1="92" x2="412" y2="92" stroke={muted} strokeWidth="1" />
-    <line x1="220" y1="166" x2="220" y2="16" stroke={muted} strokeWidth="1" />
-    <path d="M412 92 l-7 -4 v8z M220 16 l-4 7 h8z" fill={muted} />
-  </>;
-  let drawing = null;
-  if (kind === "fit") drawing = <>
-    {axis}
-    {[[78,43],[145,61],[307,46],[350,126],[105,132],[280,139]].map(([x,y], i) =>
-      <g key={i}><rect x={x-18} y={y-11} width="36" height="22" rx="2" fill="rgba(62,123,214,.12)" stroke={blue}/><circle cx={x} cy={y} r="2.5" fill={blue}/></g>)}
-    <circle cx="234" cy="101" r="5" fill={red}/><text x="242" y="114" style={text}>fit center (cx, cy)</text>
-    <line x1="234" y1="101" x2="307" y2="46" stroke={red} strokeWidth="2" strokeDasharray="5 3" />
-    <text x="270" y="69" style={{...text, fill:red}}>Chip_Radius r</text>
-    <text x="397" y="108" style={small}>shot x</text><text x="228" y="26" style={small}>shot y</text>
-  </>;
-  if (kind === "size") drawing = <>
-    <rect x="76" y="42" width="112" height="82" fill="rgba(62,123,214,.10)" stroke={blue} strokeWidth="2" />
-    <rect x="230" y="42" width="112" height="82" fill="rgba(62,123,214,.10)" stroke={blue} strokeWidth="2" />
-    <circle cx="132" cy="83" r="4" fill={blue}/><circle cx="286" cy="83" r="4" fill={blue}/>
-    <line x1="132" y1="24" x2="286" y2="24" stroke={gold} strokeWidth="2"/><path d="M132 24 l8 -4 v8z M286 24 l-8 -4 v8z" fill={gold}/>
-    <text x="191" y="17" style={{...text, fill:gold}}>pitch_x × kx</text>
-    <line x1="76" y1="143" x2="188" y2="143" stroke={green} strokeWidth="2"/><path d="M76 143 l8 -4 v8z M188 143 l-8 -4 v8z" fill={green}/>
-    <text x="99" y="160" style={{...text, fill:green}}>shot width</text>
-    <line x1="57" y1="42" x2="57" y2="124" stroke={purple} strokeWidth="2"/><path d="M57 42 l-4 8 h8z M57 124 l-4 -8 h8z" fill={purple}/>
-    <text x="20" y="88" transform="rotate(-90 20 88)" style={{...text, fill:purple}}>shot height</text>
-    <circle cx="220" cy="92" r="5" fill={red}/><line x1="220" y1="92" x2="286" y2="83" stroke={red} strokeDasharray="4 3"/><text x="240" y="110" style={{...small, fill:red}}>Δcenter</text>
-  </>;
-  if (kind === "teg") drawing = <>
-    <circle cx="130" cy="90" r="70" fill="none" stroke={muted} strokeWidth="2"/><circle cx="130" cy="90" r="61" fill="none" stroke={gold} strokeDasharray="5 4"/>
-    <line x1="60" y1="90" x2="200" y2="90" stroke={muted}/><line x1="130" y1="20" x2="130" y2="160" stroke={muted}/>
-    <rect x="150" y="49" width="34" height="25" fill="rgba(62,123,214,.15)" stroke={blue}/><circle cx="167" cy="62" r="3" fill={blue}/>
-    <rect x="167" y="53" width="12" height="5" fill="rgba(47,158,99,.55)" stroke={green}/><circle cx="167" cy="58" r="2.5" fill={red}/>
-    <line x1="167" y1="62" x2="167" y2="58" stroke={green} strokeWidth="2"/><text x="185" y="54" style={{...small, fill:green}}>ebeam offset</text>
-    <line x1="130" y1="90" x2="167" y2="58" stroke={red} strokeDasharray="5 3"/><text x="140" y="82" style={{...small, fill:red}}>abs radius</text>
-    <g transform="translate(242 30)"><rect width="170" height="120" rx="6" fill="rgba(62,123,214,.06)" stroke={blue}/><line x1="85" y1="15" x2="85" y2="105" stroke={muted}/><line x1="25" y1="60" x2="145" y2="60" stroke={muted}/><rect x="102" y="39" width="42" height="10" fill="rgba(47,158,99,.55)" stroke={green}/><circle cx="102" cy="49" r="3" fill={red}/><text x="91" y="76" style={small}>shot center (0,0)</text><text x="108" y="33" style={{...small, fill:green}}>TEG 좌하단</text></g>
-  </>;
-  if (kind === "vertical") drawing = <>
-    <g transform="translate(28 24)"><line x1="68" y1="112" x2="68" y2="12" stroke={muted}/><line x1="18" y1="62" x2="140" y2="62" stroke={muted}/><rect x="80" y="50" width="48" height="12" fill="rgba(62,123,214,.45)" stroke={blue}/><text x="82" y="45" style={{...text, fill:blue}}>Horizontal</text><text x="120" y="78" style={small}>(x, y)</text></g>
-    <path d="M175 52 C220 8 270 15 292 53" fill="none" stroke={purple} strokeWidth="3"/><path d="M292 53 l-10 -2 5 -8z" fill={purple}/><text x="199" y="18" style={{...text, fill:purple}}>시계 90° 원복</text>
-    <g transform="translate(278 24)"><line x1="68" y1="112" x2="68" y2="12" stroke={muted}/><line x1="18" y1="62" x2="140" y2="62" stroke={muted}/><rect x="68" y="14" width="12" height="48" fill="rgba(138,95,208,.45)" stroke={purple}/><text x="86" y="35" style={{...text, fill:purple}}>Vertical(R)</text><text x="83" y="78" style={small}>(y, -x)</text></g>
-    <text x="105" y="155" style={text}>V(R) 비교: (x,y) → (y,-x)</text><text x="275" y="155" style={text}>역산: (X,Y) → (-Y,X)</text>
-    <text x="118" y="173" style={{...small, fill:red}}>90° = V(L, 노치 왼쪽) · 위 V(R) 식과 별도</text>
-  </>;
-  if (kind === "full") {
-    const cells = [];
-    for (let r=0; r<7; r++) for (let c=0; c<11; c++) {
-      const x=55+c*30, y=22+r*23, axisCell=c===5 || r===3;
-      cells.push(<rect key={`${r}-${c}`} x={x} y={y} width="28" height="21" fill={axisCell ? "transparent" : "rgba(62,123,214,.10)"} stroke={axisCell ? red : blue} strokeWidth={axisCell ? 1.2 : .7} strokeDasharray={axisCell ? "4 3" : "none"} opacity={axisCell ? .45 : 1}/>);
-    }
-    drawing=<>{cells}<circle cx="219" cy="91" r="82" fill="none" stroke={ink} strokeWidth="2"/><circle cx="219" cy="91" r="4" fill={red}/><text x="230" y="104" style={{...small, fill:red}}>anchor 근처 center</text><text x="60" y="174" style={{...text, fill:blue}}>점선/연장 격자 = synthetic shot</text><text x="273" y="174" style={{...text, fill:red}}>빨간 0축 = 표시 제외</text></>;
-  }
-  return <svg viewBox="0 0 440 180" role="img" aria-label={`${kind} 계산 도식`} style={{ width: "100%", maxHeight: 210, display: "block", margin: "4px 0 12px", borderRadius: 7, border: "1px solid var(--line)", background: "var(--bg-primary)" }}>{drawing}</svg>;
-}
-
-/* 관리자 전용: 실제 구현과 같은 계산식을 한곳에서 설명한다. */
 function LegacyReferenceFiles({ canEdit, onSaved }) {
   const [files, setFiles] = useState([]);
   const [kind, setKind] = useState("teg_location");
@@ -1483,70 +1468,100 @@ function ReferenceFiles({ user, canEdit, onSaved }) {
 }
 
 
-function CalculationGuide({ data }) {
-  const geo = data?.geometry;
-  const model = data?.coordinate_model || {};
-  const panel = { border: "1px solid var(--line)", borderRadius: 8, padding: 14, background: "var(--bg-card)", fontSize: 13, lineHeight: 1.75 };
-  const formula = { fontFamily: "monospace", color: "var(--accent)" };
-  const sections = [
-    ["1. Chip_Radius → 실center", "fit", <>
-      shot 격자좌표를 <span style={formula}>(x,y)</span>, wafer 중심을 <span style={formula}>(cx,cy)</span>,
-      격자→mm 배율을 <span style={formula}>(kx,ky)</span>로 두고
-      <span style={formula}> r²=kx²(x-cx)²+ky²(y-cy)²</span>를 선형 최소자승 fit합니다.
-      최소 6개 shot이 필요하고, 잔차가 큰 Chip_Radius 행은 최대 20%까지 제외해 재fit합니다.
-      {geo?.fit === "radius" && <small style={{ display: "block", color: "var(--muted)" }}>
-        현재 center=({fmt(geo.cx, 6)}, {fmt(geo.cy, 6)}), scale=({fmt(geo.kx, 6)}, {fmt(geo.ky, 6)}) mm/격자
-      </small>}
-    </>],
-    ["2. shot width / height · center 차이", "size", <>
-      축별 고유 shot 좌표의 양수 간격 중앙값을 pitch로 잡아
-      <span style={formula}> width=pitch_x×kx</span>, <span style={formula}>height=pitch_y×ky</span>로 계산합니다.
-      shot 실좌표는 <span style={formula}>mm_x=(x-cx)kx, mm_y=(y-cy)ky</span>입니다.
-      가장 radius가 작은 실제 shot의 center 차이를 <span style={formula}>Δx=mm_x×1000, Δy=-mm_y×1000 µm</span>로 표시합니다.
-      layout y가 아래쪽 양수라 화면 Cartesian y에는 음수가 붙습니다.
-      {geo?.fit === "radius" && <small style={{ display: "block", color: "var(--muted)" }}>
-        현재 shot={fmt(geo.shot_w_mm, 4)}×{fmt(geo.shot_h_mm, 4)} mm, pitch=({fmt(geo.pitch_x, 4)}, {fmt(geo.pitch_y, 4)})
-      </small>}
-    </>],
-    ["3. TEG 절대 위치 · edge 판정", "teg", <>
-      ebeam 좌표는 shot center (0,0) 기준 TEG 좌하단입니다.
-      <span style={formula}> abs_x=mm_x+ebeam_x, abs_y=-mm_y+ebeam_y</span>,
-      <span style={formula}> radius=√(abs_x²+abs_y²)</span>로 계산합니다. TEG 사각형 네 꼭짓점이
-      최외곽선 안에 모두 있는지 검사해 shot을 초록/빨강으로 표시합니다. SVG는 y가 아래로 증가하므로 렌더링 때만 다시 뒤집습니다.
-    </>],
-    ["4. R/L 회전과 동일 형상 기준", "vertical", <>
-      direction(flat_zone)을 먼저 읽어 V/Vertical/v_R/270°는 Vertical(R), H/Horizontal/0°/180°는 horizontal로 봅니다.
-      <span style={formula}> 90°는 Vertical(L, v_L)</span>로 별도 처리하고, 두 vertical 모두 Horizontal 표준 좌표로 정규화합니다.
-      값이 없으면 TEG 이름의 <span style={formula}>V_</span> 접두로 역산합니다.
-      파일의 teg_w/teg_h는 이미 실제 배치 방향이므로 다시 교환하지 않고, 크기 열 둘 다 없어 기본 가로 크기를 쓸 때만 vertical이면 width/height를 교환합니다.
-      <span style={formula}> R_H(u,v)=(u,v), R_R(u,v)=(v,-u), R_L(u,v)=(-v,u)</span>입니다.
-      PCHK와 대상 TEG는 같은 기준점 형상으로 보고, 다른 제품의 위치 차이는 제품 H/R/L ΔX·ΔY로 조정합니다.
-      w/h는 사각형 크기와 die 겹침에만 반영되고 좌표 원점을 이동시키지 않습니다.
-    </>],
-    ["5. 전체 보정 수식 · 현재 제품값", "teg", <>
-      검사 계산은 <span style={formula}>{model.formula?.inspect || "Ocalc=Obase+R(flat)·p+Cproduct+Kglobal+Kproduct"}</span>입니다.
-      좌표 생성은 이 식의 정확한 역함수를 사용합니다.
-      <small style={{ display: "block", color: "var(--muted)", whiteSpace: "pre-wrap" }}>
-        현재 global base: {JSON.stringify(model.global_flat_base || {})}{"\n"}
-        현재 제품 flat 보정: {JSON.stringify(model.product_flat_corrections || {})}{"\n"}
-        TEG 보정 규칙: global {model.global_module_count || 0}개 + product {model.product_module_count || 0}개{"\n"}
-        형상 정책: {model.shape_policy || "w/h는 크기·겹침에만 사용, 위치 차이는 제품 ΔX/ΔY로 보정"}
-      </small>
-    </>],
-    ["6. full shot", "full", <>
-      wafer 중심에 가장 가까운 실제 shot을 anchor로 동일 pitch 격자를 연장하고, shot 사각형이 wafer 원과 면적으로 겹치는 자리만 synthetic shot으로 만듭니다.
-      layout에 없는 자리는 점선이며, full shot에서는 <span style={formula}>shot x=0 또는 y=0</span>인 축상의 shot을 표시하지 않습니다.
-    </>],
-  ];
-  return <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 12 }}>
-    {sections.map(([title, kind, body]) => <div key={title} style={panel}><b style={{ display: "block", marginBottom: 6 }}>{title}</b><CalculationDiagram kind={kind}/>{body}</div>)}
+const PRODUCT_NODE_ADMIN_COLUMNS = ["current_product", "product_name", "node_path"];
+const NODE_ACCESS_ADMIN_COLUMNS = ["root_node", "users", "departments"];
+
+function splitAccessValues(value) {
+  return [...new Set(String(value || "").split(",").map(item => item.trim()).filter(Boolean))];
+}
+
+function ProductAccessAdmin({ onSaved }) {
+  const [productRows, setProductRows] = useState(() => normalizeSpreadsheetRows([], PRODUCT_NODE_ADMIN_COLUMNS));
+  const [originalProducts, setOriginalProducts] = useState({});
+  const [accessRows, setAccessRows] = useState(() => normalizeSpreadsheetRows([], NODE_ACCESS_ADMIN_COLUMNS));
+  const [knownUsers, setKnownUsers] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await sf(`${API}/product-access`);
+      setKnownUsers(result.users || []);
+      setOriginalProducts(Object.fromEntries((result.products || []).map(item => [item.vehicle, {
+        product_name: item.vehicle, node_path: item.node_path === "미분류" ? "" : item.node_path,
+      }])));
+      setProductRows(normalizeSpreadsheetRows((result.products || []).map(item => ({
+        current_product: item.vehicle, product_name: item.vehicle,
+        node_path: item.node_path === "미분류" ? "" : item.node_path,
+      })), PRODUCT_NODE_ADMIN_COLUMNS));
+      setAccessRows(normalizeSpreadsheetRows(Object.entries(result.node_access || {}).map(([root, rule]) => ({
+        root_node: root,
+        users: (rule.users || []).join(", "),
+        departments: (rule.departments || []).join(", "),
+      })), NODE_ACCESS_ADMIN_COLUMNS));
+    } catch (e) { setError(String(e.message || e)); }
+    finally { setBusy(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      const identityRows = productRows.filter(row => String(row.current_product || "").trim());
+      for (const row of identityRows) {
+        const currentProduct = String(row.current_product).trim();
+        const productName = String(row.product_name || "").trim();
+        const nodePath = String(row.node_path || "").trim();
+        const original = originalProducts[currentProduct] || {};
+        if (productName !== original.product_name || nodePath !== original.node_path) {
+          await putJson(`${API}/products/${encodeURIComponent(currentProduct)}/identity`, {
+            vehicle: productName, node_path: nodePath,
+          });
+        }
+      }
+      const node_access = Object.fromEntries(accessRows
+        .filter(row => String(row.root_node || "").trim())
+        .map(row => [String(row.root_node).trim(), {
+          users: splitAccessValues(row.users), departments: splitAccessValues(row.departments),
+        }]));
+      await putJson(`${API}/product-access`, { product_nodes: {}, node_access });
+      toast.ok("제품명·분류와 접근 권한을 저장했습니다");
+      await load();
+      if (onSaved) await onSaved();
+    } catch (e) { setError(String(e.message || e)); setBusy(false); }
+  };
+  return <div style={{ display: "grid", gap: 12 }}>
+    <Card title="제품 노드 · 관리자" right={<Pill tone="warn">SSO 부서 연동 준비</Pill>}>
+      <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 9 }}>
+        기존 제품명은 변경 대상을 찾는 키이므로 그대로 두고, 변경 제품명과 제품 분류를 수정합니다.
+        예: <b>2나노 / 2나노A</b>로 저장하면 선택 화면에는 <b>2나노 / 2나노A / 제품명</b>으로 표시됩니다.
+        제품명 변경은 Chip_Radius·Teg_location·Main_chip_info·제품 설정에도 함께 반영됩니다.
+      </div>
+      <SpreadsheetPasteGrid columns={PRODUCT_NODE_ADMIN_COLUMNS} rows={productRows} onChange={setProductRows}
+        columnLabels={{ current_product: "기존 제품명", product_name: "변경 제품명", node_path: "제품 분류" }}
+        ariaLabel="제품별 이름과 분류" minRows={10} maxRows={1000} maxHeight={365} />
+    </Card>
+    <Card title="최상위 노드 접근 권한 · 관리자">
+      <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 9 }}>
+        규칙 행이 없는 노드는 모든 TEG 사용자가 볼 수 있습니다. 행을 추가한 노드는 허용 사용자 또는 허용 부서 중 하나가 일치해야 보입니다.
+        값은 쉼표로 구분하며, 비어 있는 규칙 행은 관리자 외 전원 차단입니다. SSO 연결 후 department/dept/org claim이 허용 부서와 자동 비교됩니다.
+      </div>
+      <SpreadsheetPasteGrid columns={NODE_ACCESS_ADMIN_COLUMNS} rows={accessRows} onChange={setAccessRows}
+        ariaLabel="최상위 노드 접근 권한" minRows={10} maxRows={500} maxHeight={365} />
+      <div style={{ marginTop: 7, fontSize: 11, color: "var(--muted)" }}>현재 승인 사용자: {knownUsers.join(", ") || "없음"}</div>
+    </Card>
+    {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 7 }}>
+      <Button onClick={load} disabled={busy}>다시 불러오기</Button>
+      <Button variant="primary" onClick={save} disabled={busy}>{busy ? "저장 중…" : "제품·권한 저장"}</Button>
+    </div>
   </div>;
 }
+
 
 function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
   if (!data?.shots?.length) return <EmptyState icon="⌖" title="제품 map이 없습니다" hint="상단에서 제품을 선택해 주세요" />;
   const geo = data.geometry || {}, mmMode = geo.fit === "radius";
-  const size = 620, pad = 30, shots = data.shots;
+  const size = 620, pad = 30, shots = buildFullShots(data);
   let minX, maxX, minY, maxY, w, h;
   if (mmMode) {
     const R = Number(geo.wafer_radius_mm) || 150;
@@ -1567,7 +1582,9 @@ function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
       <b>WF MAP 미리보기</b>
       {tableName && <Pill tone="neutral">{tableName}</Pill>}
       <span style={{ color: "#3e7bd6", fontWeight: 700 }}>■ 설정 위치 {selected.size}</span>
-      {namedCount !== selected.size && <span style={{ color: "var(--warn)" }}>■ 이름 미입력 {selected.size - namedCount}</span>}
+      {namedCount !== selected.size && <span style={{ color: "var(--warn)" }}>■ subitem_id 미입력 {selected.size - namedCount}</span>}
+      {mmMode && <><span style={{ color: "#2f9e63", fontWeight: 700 }}>■ 147mm 이내</span>
+        <span style={{ color: "#e05252", fontWeight: 700 }}>■ 147mm 경계/외곽</span></>}
       <span style={{ color: "var(--muted)" }}>shot 클릭 → 선택/해제</span>
     </div>
     <svg viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${tableName || "Inline map"} WF MAP 위치 미리보기`}
@@ -1582,23 +1599,26 @@ function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
       {shots.map(s => {
         const key = gridKey(Number(s.x), Number(s.y)), p = pos(s), on = selected.has(key);
         const name = String(selected.get(key) || "").trim(), named = !!name;
+        const insideEdge = !mmMode || shotInsideWaferEdge(s, geo);
         const clipped = name.length > 20 ? `${name.slice(0, 19)}…` : name;
         const rows = clipped.length > 11 ? [clipped.slice(0, 11), clipped.slice(11)] : [clipped];
         const labelSize = Math.max(8, Math.min(12, shotPxH / (rows.length + 0.5), shotPxW / Math.max(5, Math.min(11, clipped.length || 5)) * 1.55));
         return <g key={key} onClick={() => onToggle(s)} style={{ cursor: "pointer" }}>
           <rect x={p.x - shotPxW / 2} y={p.y - shotPxH / 2} width={shotPxW} height={shotPxH} rx="1.5"
-            fill={on ? (named ? "rgba(62,123,214,.48)" : "rgba(199,138,30,.35)") : "rgba(62,123,214,.08)"}
-            stroke={on ? (named ? "#3e7bd6" : "#c78a1e") : "var(--muted)"} strokeWidth={on ? 2.2 : .7} />
+            fill={on ? (named ? (insideEdge ? "rgba(47,158,99,.50)" : "rgba(224,82,82,.48)") : "rgba(199,138,30,.35)")
+              : (insideEdge ? "rgba(47,158,99,.10)" : "rgba(224,82,82,.11)")}
+            stroke={on ? (named ? (insideEdge ? "#2f9e63" : "#e05252") : "#c78a1e") : (insideEdge ? "#2f9e63" : "#e05252")}
+            strokeDasharray={s.synthetic ? "4 2" : undefined} strokeWidth={on ? 2.2 : .7} />
           {on && <>
             <circle cx={p.x} cy={p.y - shotPxH / 2 + 4} r="2.6" fill={named ? "#3e7bd6" : "#c78a1e"} pointerEvents="none" />
             <text x={p.x} y={p.y - ((rows.length - 1) * labelSize) / 2} textAnchor="middle" dominantBaseline="middle"
               fontSize={labelSize} fontWeight="800" fill="var(--text-primary)" stroke="var(--bg-primary)" strokeWidth="3"
               paintOrder="stroke" strokeLinejoin="round" pointerEvents="none">
-              {(named ? rows : ["이름 입력"]).map((line, i) => <tspan key={i} x={p.x}
+              {(named ? rows : ["subitem_id"]).map((line, i) => <tspan key={i} x={p.x}
                 dy={i === 0 ? 0 : labelSize * 1.05}>{line}</tspan>)}
             </text>
           </>}
-          <title>{name ? `${name}\n` : ""}shot (${s.x}, ${s.y}){on && !named ? "\n이름을 입력해 주세요" : ""}</title>
+          <title>{name ? `${name}\n` : ""}shot (${s.x}, ${s.y}) · {insideEdge ? "147mm 이내" : "147mm 경계/외곽"}{s.synthetic ? " · full shot" : ""}{on && !named ? "\nsubitem_id를 입력해 주세요" : ""}</title>
         </g>;
       })}
     </svg>
@@ -1606,13 +1626,29 @@ function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
 }
 
 /* 관리자 전용 Inline ↔ ET 좌표 매칭 기준 TABLE 편집기. */
+const INLINE_SHOT_COLUMNS = ["shot_x", "shot_y", "subitem_id"];
+
+function formatInlineUpdatedAt(value) {
+  if (!value) return "변경 시각 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("ko-KR", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function InlineMapSetting({ data, vehicle, onVehicleChange }) {
   const [tables, setTables] = useState([]), [tableName, setTableName] = useState("");
+  const [comment, setComment] = useState("");
   const [selected, setSelected] = useState(new Map()), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [activeTableName, setActiveTableName] = useState(""), [dirty, setDirty] = useState(false);
   const draftVehicleRef = useRef(vehicle || "");
   const refresh = useCallback(async () => {
-    try { const r = await sf(`${API}/inline-map-settings`); setTables(r.tables || []); setError(""); }
+    try {
+      const settings = await sf(`${API}/inline-map-settings`);
+      setTables(settings.tables || []);
+      setError("");
+    }
     catch (e) { setError(String(e.message || e)); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
@@ -1622,6 +1658,7 @@ function InlineMapSetting({ data, vehicle, onVehicleChange }) {
     if (draftVehicleRef.current === vehicle) return;
     draftVehicleRef.current = vehicle;
     setTableName("");
+    setComment("");
     setActiveTableName("");
     setSelected(new Map());
     setDirty(false);
@@ -1631,33 +1668,51 @@ function InlineMapSetting({ data, vehicle, onVehicleChange }) {
     setSelected(prev => { const next = new Map(prev); next.has(key) ? next.delete(key) : next.set(key, ""); return next; });
     setDirty(true);
   };
-  const rename = (key, value) => { setSelected(prev => { const next = new Map(prev); next.set(key, value); return next; }); setDirty(true); };
-  const chosen = useMemo(() => (data?.shots || []).filter(s => selected.has(gridKey(Number(s.x), Number(s.y)))), [data, selected]);
+  const selectableShots = useMemo(() => buildFullShots(data), [data]);
+  const chosen = useMemo(() => selectableShots.filter(s => selected.has(gridKey(Number(s.x), Number(s.y)))), [selectableShots, selected]);
+  const shotRows = useMemo(() => chosen.map(s => ({
+    shot_x: String(s.x), shot_y: String(s.y),
+    subitem_id: String(selected.get(gridKey(Number(s.x), Number(s.y))) || ""),
+  })), [chosen, selected]);
+  const updateShotRows = rows => {
+    setSelected(prev => {
+      const next = new Map(prev);
+      chosen.forEach((shot, index) => {
+        const key = gridKey(Number(shot.x), Number(shot.y));
+        next.set(key, String(rows[index]?.subitem_id || ""));
+      });
+      return next;
+    });
+    setDirty(true);
+  };
   const load = table => {
     draftVehicleRef.current = table.vehicle;
     setTableName(table.table_name);
+    setComment(table.comment || "");
     setActiveTableName(table.table_name);
     setDirty(false);
-    setSelected(new Map((table.shots || []).map(s => [gridKey(s.shot_x, s.shot_y), s.name || ""])));
+    setSelected(new Map((table.shots || []).map(s => [gridKey(s.shot_x, s.shot_y), s.subitem_id || s.name || ""])));
     if (table.vehicle !== vehicle) onVehicleChange(table.vehicle);
   };
   const save = async () => {
-    const shots = chosen.map(s => ({ shot_x: Number(s.x), shot_y: Number(s.y), name: String(selected.get(gridKey(Number(s.x), Number(s.y))) || "").trim() }));
+    const shots = chosen.map(s => ({ shot_x: Number(s.x), shot_y: Number(s.y), subitem_id: String(selected.get(gridKey(Number(s.x), Number(s.y))) || "").trim() }));
     if (!vehicle) return toast.error("제품을 먼저 선택해 주세요");
     if (!tableName.trim()) return toast.error("TABLE 이름을 입력해 주세요");
-    if (!shots.length || shots.some(s => !s.name)) return toast.error("선택한 모든 shot의 이름을 입력해 주세요");
+    if (!shots.length || shots.some(s => !s.subitem_id)) return toast.error("선택한 모든 shot의 subitem_id를 입력해 주세요");
+    if (!comment.trim()) return toast.error("저장 comment를 입력해 주세요");
     setBusy(true);
     try {
       const cleanName = tableName.trim();
-      const r = await putJson(`${API}/inline-map-settings`, { table_name: cleanName, vehicle, shots });
+      const r = await putJson(`${API}/inline-map-settings`, { table_name: cleanName, vehicle, shots, comment: comment.trim() });
       const saved = (r.tables || []).find(t => t.table_name === cleanName);
       setTables(r.tables || []);
       setTableName(cleanName);
       setActiveTableName(cleanName);
-      setSelected(new Map(((saved && saved.shots) || shots).map(s => [gridKey(s.shot_x, s.shot_y), s.name || ""])));
+      setSelected(new Map(((saved && saved.shots) || shots).map(s => [gridKey(s.shot_x, s.shot_y), s.subitem_id || s.name || ""])));
+      setComment((saved && saved.comment) || comment.trim());
       setDirty(false);
       setError("");
-      toast.ok("Inline map 설정 저장됨 · WF MAP에 위치와 이름이 표시됩니다");
+      toast.ok("Inline map 설정 저장됨 · WF MAP에서 subitem_id가 shot 위치에 매칭됩니다");
     }
     catch (e) { setError(String(e.message || e)); toast.error(String(e.message || e)); }
     finally { setBusy(false); }
@@ -1667,51 +1722,390 @@ function InlineMapSetting({ data, vehicle, onVehicleChange }) {
     setBusy(true);
     try {
       const r = await sf(`${API}/inline-map-settings?table_name=${encodeURIComponent(table.table_name)}`, { method: "DELETE" });
-      setTables(r.tables || []); if (tableName === table.table_name) { setTableName(""); setActiveTableName(""); setSelected(new Map()); setDirty(false); } toast.ok("TABLE 삭제됨");
+      setTables(r.tables || []); if (tableName === table.table_name) { setTableName(""); setComment(""); setActiveTableName(""); setSelected(new Map()); setDirty(false); } toast.ok("TABLE 삭제됨");
     } catch (e) { setError(String(e.message || e)); toast.error(String(e.message || e)); }
     finally { setBusy(false); }
   };
+  const visibleTables = useMemo(() => tables.filter(table =>
+    String(table.vehicle || "").trim().toLowerCase() === String(vehicle || "").trim().toLowerCase()
+  ), [tables, vehicle]);
   return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
     {error && <div style={{ color: "var(--danger)", fontSize: 13 }}>{error}</div>}
     <Card title={`Inline map setting — ${vehicle || "제품 미선택"}`} right={<Pill tone="warn">global admin only · DB/credential</Pill>}>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>제품 map의 shot을 선택하고 위치 이름을 입력한 뒤 TABLE 이름으로 저장합니다. 이후 Inline 위치좌표와 ET 좌표 매칭 기준으로 사용합니다.</div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>제품 map의 shot을 선택하고 INLINE DB의 subitem_id를 입력한 뒤 TABLE 이름으로 저장합니다. WF MAP은 원천 shot 좌표 대신 이 매칭테이블을 기준으로 값을 배치합니다.</div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(360px,2fr) minmax(280px,1fr)", gap: 14, alignItems: "start" }}>
         <InlineShotPicker data={data} selected={selected} onToggle={toggle} tableName={tableName.trim()} />
         <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
           <b style={{ fontSize: 12 }}>TABLE 이름</b>
           <input value={tableName} onChange={e => { setTableName(e.target.value); setDirty(true); }} placeholder="예: INLINE_MAP_PROD_A" style={inputStyle} />
+          <b style={{ fontSize: 12, marginTop: 4 }}>저장 comment</b>
+          <textarea value={comment} onChange={e => { setComment(e.target.value); setDirty(true); }}
+            placeholder="변경 이유나 map 용도를 입력해 주세요" maxLength={1000}
+            style={{ ...inputStyle, minHeight: 64, resize: "vertical", fontFamily: "inherit" }} />
           <b style={{ fontSize: 12, marginTop: 4 }}>선택 shot ({chosen.length})</b>
-          <div style={{ maxHeight: 430, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
-            {chosen.map(s => { const key = gridKey(Number(s.x), Number(s.y)); return <div key={key} style={{ display: "grid", gridTemplateColumns: "90px 1fr 22px", gap: 5, alignItems: "center" }}>
-              <span style={{ fontFamily: "monospace", fontSize: 12 }}>({s.x}, {s.y})</span>
-              <input value={selected.get(key) || ""} onChange={e => rename(key, e.target.value)} placeholder="위치 이름" style={{ ...inputStyle, minWidth: 0 }} />
-              <button onClick={() => toggle(s)} title="선택 해제" style={{ border: 0, background: "transparent", color: "var(--danger)", cursor: "pointer" }}>×</button>
-            </div>; })}
-            {!chosen.length && <span style={{ color: "var(--muted)", fontSize: 12 }}>왼쪽 map에서 shot을 선택하세요.</span>}
-          </div>
+          {chosen.length ? <>
+            <div style={{ color: "var(--muted)", fontSize: 11, lineHeight: 1.5 }}>
+              첫 번째 subitem_id 셀을 선택한 뒤 Excel 이름 열을 붙여넣으면 아래 행에 한 번에 입력됩니다.
+              shot 해제는 왼쪽 map에서 다시 클릭하세요.
+            </div>
+            <SpreadsheetPasteGrid columns={INLINE_SHOT_COLUMNS} rows={shotRows} onChange={updateShotRows}
+              readOnlyColumns={["shot_x", "shot_y"]} minRows={chosen.length} maxRows={chosen.length}
+              columnLabels={{ shot_x: "shot X", shot_y: "shot Y", subitem_id: "포인트 이름 (subitem_id)" }}
+              aliases={{ x: "shot_x", y: "shot_y", name: "subitem_id", point_name: "subitem_id" }}
+              placeholders={{ subitem_id: "Excel 이름 열 붙여넣기" }} ariaLabel="선택 shot 포인트 이름"
+              maxHeight={430} minTableWidth={380} />
+          </> : <span style={{ color: "var(--muted)", fontSize: 12 }}>왼쪽 map에서 shot을 선택하세요.</span>}
           <Button variant="primary" disabled={busy} onClick={save}>{busy ? "저장 중…" : "TABLE 저장"}</Button>
           {activeTableName && <div style={{ fontSize: 11, color: dirty ? "var(--warn)" : "var(--ok)" }}>
-            {dirty ? `${activeTableName} · 저장되지 않은 변경 있음` : `${activeTableName} · 저장된 위치/이름 표시 중`}
+            {dirty ? `${activeTableName} · 저장되지 않은 변경 있음` : `${activeTableName} · 저장된 shot/subitem_id 표시 중`}
           </div>}
         </div>
       </div>
     </Card>
-    <Card title={`저장된 TABLE (${tables.length})`}>
+    <Card title={`저장된 TABLE (${visibleTables.length})`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {tables.map(table => <div key={table.table_name} style={{ display: "flex", alignItems: "center", gap: 8,
+        {visibleTables.map(table => <div key={table.table_name} style={{ display: "flex", alignItems: "center", gap: 10,
           border: `1px solid ${activeTableName === table.table_name ? "#3e7bd6" : "var(--line)"}`, borderRadius: 6, padding: "7px 9px",
           background: activeTableName === table.table_name ? "rgba(62,123,214,.08)" : "transparent" }}>
-          <b>{table.table_name}</b><Pill tone="neutral">{table.vehicle}</Pill><span style={{ color: "var(--muted)", fontSize: 12 }}>{table.shots?.length || 0} shots · {table.updated_by || "-"}</span>
-          <span style={{ marginLeft: "auto", display: "flex", gap: 5 }}><Button onClick={() => load(table)}>{table.vehicle === vehicle ? "불러오기" : `${table.vehicle} 선택`}</Button><Button variant="danger" disabled={busy} onClick={() => remove(table)}>삭제</Button></span>
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <b>{table.table_name}</b>
+              <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                {table.shots?.length || 0} shots · {table.updated_by || "작성자 없음"} · {formatInlineUpdatedAt(table.updated_at)}
+              </span>
+            </div>
+            <span style={{ color: table.comment ? "var(--text-primary)" : "var(--muted)", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {table.comment || "comment 없음"}
+            </span>
+          </div>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 5, flexShrink: 0 }}><Button onClick={() => load(table)}>불러오기</Button><Button variant="danger" disabled={busy} onClick={() => remove(table)}>삭제</Button></span>
         </div>)}
-        {!tables.length && <span style={{ color: "var(--muted)", fontSize: 12 }}>저장된 TABLE이 없습니다.</span>}
+        {!visibleTables.length && <span style={{ color: "var(--muted)", fontSize: 12 }}>이 제품에 저장된 TABLE이 없습니다.</span>}
       </div>
     </Card>
   </div>;
 }
 
+const PRODUCT_INFO_COLUMNS = ["Item", "X", "Y"];
+const TEG_LOCATION_COLUMNS = ["teg", "top_cell", "direction", "ebeam_X", "ebeam_Y", "teg_w", "teg_h"];
+
+function normalizedTegDirection(value) {
+  const key = String(value || "").trim().toLowerCase().replace(/\s+/g, "");
+  if (["h", "horizontal"].includes(key)) return "h";
+  if (["v(r)", "vr", "v_r", "vertical(r)"].includes(key)) return "v_R";
+  if (["v(l)", "vl", "v_l", "vertical(l)"].includes(key)) return "v_L";
+  return String(value || "").trim();
+}
+
+function ProductCreateModal({ open, onClose, onCreated }) {
+  const [step, setStep] = useState(1);
+  const [productRows, setProductRows] = useState(() => normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS));
+  const [preview, setPreview] = useState(null);
+  const [vehicle, setVehicle] = useState("");
+  const [nodePath, setNodePath] = useState("");
+  const [tegRows, setTegRows] = useState(() => normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
+  const [mainChip, setMainChip] = useState({ chip_name: "", chipsize_x: "", chipsize_y: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setStep(1); setProductRows(normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS)); setPreview(null); setVehicle(""); setNodePath("");
+    setTegRows(normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
+    setMainChip({ chip_name: "", chipsize_x: "", chipsize_y: "" });
+    setBusy(false); setError("");
+  }, [open]);
+  const text = useMemo(() => spreadsheetTextFromRows(productRows, PRODUCT_INFO_COLUMNS), [productRows]);
+  const tegPayload = useMemo(() => tegRows
+    .filter(row => TEG_LOCATION_COLUMNS.some(column => String(row?.[column] || "").trim()))
+    .map(row => ({
+      teg: row.teg,
+      top_cell: row.top_cell,
+      direction: normalizedTegDirection(row.direction),
+      ebeam_x: row.ebeam_X,
+      ebeam_y: row.ebeam_Y,
+      teg_w: row.teg_w,
+      teg_h: row.teg_h,
+    })), [tegRows]);
+  const inspect = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await postJson(`${API}/product-preview`, { text });
+      setPreview(result); setStep(3);
+    } catch (e) { setError(String(e.message || e)); }
+    finally { setBusy(false); }
+  };
+  const create = async () => {
+    setBusy(true); setError("");
+    try {
+      const result = await postJson(`${API}/products`, {
+        text, vehicle, node_path: nodePath, tegs: tegPayload,
+        main_chip: preview?.one_by_one ? mainChip : null,
+      });
+      toast.ok(`${result.vehicle} 제품 생성됨 · Chip_Radius ${result.shot_count} shots`);
+      if (onCreated) await onCreated(result);
+      onClose();
+    } catch (e) { setError(String(e.message || e)); }
+    finally { setBusy(false); }
+  };
+  const values = preview?.values || {};
+  const mainReady = !preview?.one_by_one || Object.values(mainChip).every(value => String(value || "").trim());
+  const valueRows = [
+    ["Chip Size(um)", values.chip_size_x_um, values.chip_size_y_um],
+    ["S/L Size(um)", values.sl_size_x_um, values.sl_size_y_um],
+    ["Shot", values.shot_cols, values.shot_rows],
+    ["Shot Size(um)", values.shot_size_x_um, values.shot_size_y_um],
+    ["Map offset(Odd)(um)", values.map_offset_odd_x, values.map_offset_odd_y],
+    ...(values.rc_cols && values.rc_rows ? [["R/C Count", values.rc_cols, values.rc_rows]] : []),
+  ];
+  const th = { padding: "6px 8px", textAlign: "left", borderBottom: "1px solid var(--line)", fontSize: 12 };
+  const td = { padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 12 };
+  return <Modal open={open} onClose={busy ? undefined : onClose} title="제품 추가" width={920} maxHeight="92vh">
+    {step === 1 ? <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "9px 11px", background: "var(--bg-hover)" }}>
+        <b style={{ display: "block", fontSize: 13, marginBottom: 3 }}>1. 제품 분류와 제품명</b>
+        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+          먼저 제품의 분류와 이름을 확정합니다. 다음 단계에서 만드는 Chip_Radius, Teg_location,
+          Main_chip_info, TEG_Product_Info에는 이 제품명이 동일한 조인 키로 들어갑니다.
+        </div>
+      </div>
+      <section style={{ display: "grid", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 12 }}>
+        <label style={{ fontSize: 12, fontWeight: 700 }}>제품 분류</label>
+        <input aria-label="제품 분류" value={nodePath} onChange={e => setNodePath(e.target.value)}
+          placeholder="예: 2나노 / 2나노A" style={{ ...inputStyle, width: "100%" }} />
+        <label style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>제품명 (vehicle)</label>
+        <input aria-label="제품명" value={vehicle} onChange={e => setVehicle(e.target.value)}
+          placeholder="예: VH_PRODUCT_A" style={{ ...inputStyle, width: "100%" }} />
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>
+          제품은 `{nodePath || "제품 분류"} / {vehicle || "제품명"}` 구조로 저장되며 접근 권한은 첫 분류 노드를 기준으로 적용됩니다.
+        </div>
+      </section>
+      {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
+      <div className="ds-modal__actions">
+        <Button onClick={onClose} disabled={busy}>취소</Button>
+        <Button variant="primary" onClick={() => { setError(""); setStep(2); }}
+          disabled={!vehicle.trim() || !nodePath.trim()}>제품 형상 입력 →</Button>
+      </div>
+    </div> : step === 2 ? <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "9px 11px", background: "var(--bg-hover)" }}>
+        <b style={{ display: "block", fontSize: 13, marginBottom: 3 }}>2. 제품 형상 붙여넣기</b>
+        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+          <b>{nodePath} / {vehicle}</b>의 YMS Photomap generator 표를 붙여넣어 주세요. Chip Size, S/L Size,
+          Shot, Shot Size, Map offset(Odd)를 읽어 wafer edge 안의 Shot과 radius를 계산합니다.
+          R/C Count가 있으면 full-shot 사각형의 X/Y 개수로 사용하고 좌상단을 (1, 1)로 잡습니다.
+          Map offset X/Y는 shot 번호가 아니라 wafer 실 center 기준 물리 거리(µm)로 해석합니다.
+          이 단계에서는 아직 파일을 저장하지 않습니다.
+        </div>
+      </div>
+      <SpreadsheetPasteGrid columns={PRODUCT_INFO_COLUMNS} rows={productRows} onChange={setProductRows}
+        ariaLabel="YMS Photomap 제품 정보" minRows={10} maxRows={200} maxHeight={365} />
+      {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
+      <div className="ds-modal__actions">
+        <Button onClick={() => { setStep(1); setError(""); }} disabled={busy}>← 제품 정보</Button>
+        <Button onClick={onClose} disabled={busy}>취소</Button>
+        <Button variant="primary" onClick={inspect} disabled={busy || !text.trim()}>{busy ? "계산 중…" : "Shot/Radius 계산 →"}</Button>
+      </div>
+    </div> : <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "9px 11px", background: "var(--bg-hover)" }}>
+        <b style={{ display: "block", fontSize: 13, marginBottom: 3 }}>3. 계산 결과와 TEG 정보 확인</b>
+        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+          <b>{nodePath} / {vehicle}</b>의 계산 결과와 Teg_location 정보를 확인해 주세요. 마지막 저장 버튼을 눌렀을 때만
+          Chip_Radius.csv와 관련 기준 파일에 함께 반영됩니다.
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, alignItems: "start" }}>
+        <section style={{ border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+          <b style={{ display: "block", marginBottom: 7 }}>인식한 제품 정보</b>
+          <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}><thead><tr>
+              <th style={th}>Item</th><th style={th}>x</th><th style={th}>y</th>
+            </tr></thead><tbody>{valueRows.map(row => <tr key={row[0]}>
+              <td style={td}>{row[0]}</td><td style={td}>{row[1]}</td><td style={td}>{row[2]}</td>
+            </tr>)}</tbody></table>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+            Chip_Radius.csv 추가 예정: {preview.shot_count} shots · Shot의 네 꼭짓점이 {preview.wafer_edge_mm}mm 안에
+            모두 들어오는 경우만 포함하며 경계에 딱 맞닿는 Shot도 포함합니다. · {preview.one_by_one
+              ? "Shot 1×1 · Main 정보 필수"
+              : `칩 격자 ${values.shot_cols}×${values.shot_rows} 자동 설정`}
+          </div>
+        </section>
+        <section style={{ display: "flex", flexDirection: "column", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+          <b style={{ fontSize: 12 }}>저장 대상</b>
+          <div style={{ fontSize: 12, lineHeight: 1.6 }}><b>제품 분류</b> · {nodePath}<br/><b>제품명</b> · {vehicle}</div>
+          {preview.one_by_one && <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10 }}>
+            <b style={{ display: "block", fontSize: 12, marginBottom: 3 }}>Shot 1×1 · Main 정보 필수</b>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 7 }}>chip_name과 X/Y 크기를 받아 Main_chip_info.csv에 추가합니다.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6 }}>
+              <input aria-label="Main chip_name" value={mainChip.chip_name} onChange={e => setMainChip(v => ({ ...v, chip_name: e.target.value }))}
+                placeholder="chip_name" style={{ ...inputStyle, width: "100%" }} />
+              <input aria-label="Main chipsize_x" type="number" step="any" value={mainChip.chipsize_x} onChange={e => setMainChip(v => ({ ...v, chipsize_x: e.target.value }))}
+                placeholder="chipsize_x" style={{ ...inputStyle, width: "100%" }} />
+              <input aria-label="Main chipsize_y" type="number" step="any" value={mainChip.chipsize_y} onChange={e => setMainChip(v => ({ ...v, chipsize_y: e.target.value }))}
+                placeholder="chipsize_y" style={{ ...inputStyle, width: "100%" }} />
+            </div>
+          </div>}
+          {!preview.one_by_one && <div style={{ fontSize: 11, color: "var(--muted)" }}>Shot이 1×1이 아니므로 Main_chip_info는 생성하지 않습니다.</div>}
+        </section>
+      </div>
+      <section style={{ display: "grid", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          <b style={{ fontSize: 12 }}>Teg_location 붙여넣기</b>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>Excel의 7열 표를 그대로 붙여넣으면 Teg_location.csv에 제품명과 함께 추가됩니다.</span>
+          <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800 }}>{tegPayload.length}개 입력</span>
+        </div>
+        <SpreadsheetPasteGrid columns={TEG_LOCATION_COLUMNS} rows={tegRows} onChange={setTegRows}
+          ariaLabel="Teg_location 추가 행" minRows={10} maxRows={200} maxHeight={365} />
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>
+          direction은 H, V(R), V(L)을 사용할 수 있습니다. ebeam/teg 크기 값은 기존 Teg_location.csv의 단위를 그대로 사용합니다.
+        </div>
+      </section>
+      {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
+      <div className="ds-modal__actions">
+        <Button onClick={() => { setStep(2); setError(""); }} disabled={busy}>← 제품 형상 수정</Button>
+        <Button onClick={onClose} disabled={busy}>취소</Button>
+        <Button variant="primary" onClick={create} disabled={busy || !vehicle.trim() || !nodePath.trim() || !tegPayload.length || !mainReady}>{busy ? "저장 중…" : "최종 저장 및 제품 생성"}</Button>
+      </div>
+    </div>}
+  </Modal>;
+}
+
+function ProductGeometryModal({ open, vehicle, onClose, onSaved }) {
+  const [rows, setRows] = useState(() => normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS));
+  const [preview, setPreview] = useState(null);
+  const [productName, setProductName] = useState("");
+  const [nodePath, setNodePath] = useState("");
+  const [originalIdentity, setOriginalIdentity] = useState({ productName: "", nodePath: "" });
+  const [busy, setBusy] = useState(false);
+  const [storedInfo, setStoredInfo] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setRows(normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS));
+    setPreview(null); setStoredInfo(null); setProductName(vehicle || ""); setNodePath("");
+    setOriginalIdentity({ productName: vehicle || "", nodePath: "" });
+    setBusy(true); setError("");
+    sf(`${API}/products/${encodeURIComponent(vehicle)}/geometry`).then(result => {
+      if (!active) return;
+      setStoredInfo(Boolean(result.exists));
+      const loadedName = String(result.vehicle || vehicle || "");
+      const loadedPath = String(result.node_path || "");
+      setProductName(loadedName); setNodePath(loadedPath);
+      setOriginalIdentity({ productName: loadedName, nodePath: loadedPath });
+      setRows(normalizeSpreadsheetRows(result.rows || [], PRODUCT_INFO_COLUMNS));
+    }).catch(e => {
+      if (active) setError(String(e.message || e));
+    }).finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, [open, vehicle]);
+  const text = useMemo(() => spreadsheetTextFromRows(rows, PRODUCT_INFO_COLUMNS), [rows]);
+  const identityDirty = productName.trim() !== originalIdentity.productName
+    || nodePath.trim() !== originalIdentity.nodePath;
+  const inspect = async () => {
+    setBusy(true); setError("");
+    try { setPreview(await postJson(`${API}/product-preview`, { text })); }
+    catch (e) { setPreview(null); setError(String(e.message || e)); }
+    finally { setBusy(false); }
+  };
+  const save = async () => {
+    if (!preview && !identityDirty) return;
+    setBusy(true); setError("");
+    try {
+      let result = null;
+      if (preview) {
+        result = await putJson(`${API}/products/${encodeURIComponent(vehicle)}/geometry`, { text });
+      }
+      if (identityDirty) {
+        result = await putJson(`${API}/products/${encodeURIComponent(vehicle)}/identity`, {
+          vehicle: productName.trim(), node_path: nodePath.trim(),
+        });
+      }
+      const savedVehicle = result?.vehicle || productName.trim() || vehicle;
+      toast.ok(preview
+        ? `${savedVehicle} config 변경됨 · Chip_Radius ${preview.shot_count} shots 재생성`
+        : `${savedVehicle} 제품명·분류 변경됨`);
+      if (onSaved) await onSaved(result);
+      onClose();
+    } catch (e) { setError(String(e.message || e)); }
+    finally { setBusy(false); }
+  };
+  const values = preview?.values || {};
+  const valueRows = [
+    ["Chip Size(um)", values.chip_size_x_um, values.chip_size_y_um],
+    ["S/L Size(um)", values.sl_size_x_um, values.sl_size_y_um],
+    ["Shot", values.shot_cols, values.shot_rows],
+    ["Shot Size(um)", values.shot_size_x_um, values.shot_size_y_um],
+    ["Map offset(Odd)(um)", values.map_offset_odd_x, values.map_offset_odd_y],
+    ...(values.rc_cols && values.rc_rows ? [["R/C Count", values.rc_cols, values.rc_rows]] : []),
+  ];
+  const cell = { padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 12 };
+  return <Modal open={open} onClose={busy ? undefined : onClose} title={`${vehicle || "제품"} config 변경`} width={900} maxHeight="92vh">
+    <div style={{ display: "grid", gap: 11 }}>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 7, padding: "9px 11px", background: "var(--bg-hover)" }}>
+        <b style={{ display: "block", fontSize: 13, marginBottom: 3 }}>제품명·분류와 Item / X / Y 변경</b>
+        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55 }}>
+          {storedInfo === true
+            ? "현재 TEG_Product_Info.csv에 저장된 값을 불러왔습니다. 필요한 셀을 바로 변경할 수 있습니다. "
+            : storedInfo === false
+              ? "아직 Item/X/Y 원본이 없는 제품입니다. YMS Photomap generator의 표를 붙여넣어 주세요. "
+              : "현재 저장 정보를 불러오는 중입니다. "}
+          Shot Size와 Map offset(Odd)을 µm 원값 그대로 저장합니다. Map offset은 shot 좌표가 아니라
+          wafer 실 center에서 기준 shot center까지의 X/Y 물리 거리입니다.
+          R/C Count는 full-shot X/Y 개수이며 좌상단 좌표는 (1, 1)입니다. 계산에 쓰지 않는 Item도 삭제하지 않고 함께 저장합니다.
+          저장 후 WF MAP의 shot 크기·실center는 Chip_Radius fit으로 다시 추정하지 않고 이 원값으로 계산합니다.
+        </div>
+      </div>
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 9, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+        <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 700 }}>
+          제품 분류
+          <input aria-label="변경할 제품 분류" value={nodePath}
+            onChange={e => { setNodePath(e.target.value); setError(""); }}
+            placeholder="예: 2나노 / 2나노A" style={{ ...inputStyle, width: "100%" }} />
+        </label>
+        <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 700 }}>
+          제품명 (vehicle)
+          <input aria-label="변경할 제품명" value={productName}
+            onChange={e => { setProductName(e.target.value); setError(""); }}
+            placeholder="예: VH_PRODUCT_A" style={{ ...inputStyle, width: "100%" }} />
+        </label>
+        <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+          제품명을 바꾸면 Chip_Radius, Teg_location, Main_chip_info, TEG_Product_Info와 제품별 Mapfile/Inline 설정의 vehicle도 함께 변경됩니다.
+        </div>
+      </section>
+      <SpreadsheetPasteGrid columns={PRODUCT_INFO_COLUMNS} rows={rows}
+        onChange={next => { setRows(next); setPreview(null); setError(""); }}
+        ariaLabel={`${vehicle} config Item X Y`} minRows={10} maxRows={200} maxHeight={365} />
+      {preview && <section style={{ border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+        <b style={{ display: "block", marginBottom: 7 }}>변경 내용 확인</b>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}><thead><tr>
+            {PRODUCT_INFO_COLUMNS.map(column => <th key={column} style={{ ...cell, textAlign: "left" }}>{column}</th>)}
+          </tr></thead><tbody>{valueRows.map(row => <tr key={row[0]}>
+            {row.map((value, index) => <td key={index} style={cell}>{value}</td>)}
+          </tr>)}</tbody></table>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+          이 제품의 기존 Chip_Radius 행을 교체하고 <b>{preview.shot_count}개 shot</b>을 다시 생성합니다.
+          chip_x_adj / chip_y_adj는 정수 격자로 저장하고 radius는 {preview.radius_decimals}자리 정밀도로 기록합니다.
+          TEG_Product_Info.csv와 Chip_Radius.csv 변경본은 모두 EDM 이력에 반영됩니다.
+        </div>
+      </section>}
+      {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
+      <div className="ds-modal__actions">
+        <Button onClick={onClose} disabled={busy}>취소</Button>
+        {!preview && <Button onClick={inspect} disabled={busy || !text.trim()}>{busy ? "계산 중…" : "형상 변경 계산"}</Button>}
+        {(preview || identityDirty) && <Button variant="primary" onClick={save}
+          disabled={busy || !productName.trim() || !nodePath.trim()}>
+          {busy ? "저장 중…" : preview ? "전체 config 저장" : "제품명·분류 저장"}
+        </Button>}
+      </div>
+    </div>
+  </Modal>;
+}
+
 export default function My_TegMap({ user }) {
   const [vehicles, setVehicles] = useState(null);   // null=로딩, []=없음
+  const [productCatalog, setProductCatalog] = useState([]);
   const [vehicle, setVehicle] = useState("");
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
@@ -1722,30 +2116,53 @@ export default function My_TegMap({ user }) {
   const [imgUrl, setImgUrl] = useState(null);
   const [imgShapes, setImgShapes] = useState(null); // /image/shapes 응답 (그림 격자 + 개발 격자)
   const [view, setView] = useState("map");   // map=위치 조회 | check=TEG Mapfile 체크
+  const [productOpen, setProductOpen] = useState(false);
+  const [geometryOpen, setGeometryOpen] = useState(false);
+  // 같은 vehicle 의 config/기준 파일이 바뀌어도 자식의 vehicle prop 은 그대로다.
+  // 명시적 revision 으로 Mapfile 생성 응답을 무효화한다.
+  const [referenceRevision, setReferenceRevision] = useState(0);
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
+  const isAdmin = user?.role === "admin";
   const tegPageTokens = Array.isArray(user?.tabs)
     ? user.tabs
     : String(user?.tabs || "").split(",");
   const canEditReferenceFiles = canEdit || tegPageTokens.some(token => String(token || "").trim().split(":")[0] === "teg");
+  useEffect(() => {
+    if (view === "files" || (!isAdmin && ["access", "inline"].includes(view))) setView("map");
+  }, [isAdmin, view]);
 
-  const loadVehicles = useCallback(async () => {
+  const loadVehicles = useCallback(async (preferred = "") => {
     try {
       const r = await sf(API + "/vehicles");
-      setVehicles(r.vehicles || []);
-      if ((r.vehicles || []).length && !vehicle) setVehicle(r.vehicles[0]);
+      const list = r.vehicles || [];
+      setProductCatalog(r.products || list.map(name => ({ vehicle: name, node_path: "미분류", root_node: "미분류" })));
+      setVehicles(list);
+      setVehicle(current => (preferred && list.includes(preferred))
+        ? preferred : (current && list.includes(current) ? current : (list[0] || "")));
     } catch (e) {
       setVehicles([]);
+      setProductCatalog([]);
       setErr(String(e.message || e));
     }
-  }, [vehicle]);
+  }, []);
+  const productGroups = useMemo(() => {
+    const groups = new Map();
+    for (const item of productCatalog) {
+      const path = item.node_path || "미분류";
+      if (!groups.has(path)) groups.set(path, []);
+      groups.get(path).push(item.vehicle);
+    }
+    return [...groups.entries()];
+  }, [productCatalog]);
   useEffect(() => { loadVehicles(); }, []);
 
-  const loadMap = useCallback(async () => {
-    if (!vehicle) return;
+  const loadMap = useCallback(async (requestedVehicle = vehicle) => {
+    const target = typeof requestedVehicle === "string" ? requestedVehicle : vehicle;
+    if (!target) return;
     setErr("");
     try {
-      const r = await sf(`${API}/map?vehicle=${encodeURIComponent(vehicle)}`);
+      const r = await sf(`${API}/map?vehicle=${encodeURIComponent(target)}`);
       setData(r);
       setSelectedShot(null);
       // 기본은 아무것도 선택하지 않는다 — 볼 TEG 를 직접 고르는 화면이고,
@@ -1795,7 +2212,7 @@ export default function My_TegMap({ user }) {
   }, [shotMode, gridView, imgShapes]);
   const showPicture = shotMode === "image" && !gridView;
 
-  const tegNames = useMemo(() => (data?.tegs || []).map(t => t.teg), [data]);
+  const tegNames = useMemo(() => tegListNames(data?.tegs), [data]);
   const tegColor = useCallback((name) => {
     const i = tegNames.indexOf(name);
     return TEG_COLORS[(i >= 0 ? i : 0) % TEG_COLORS.length];
@@ -1863,7 +2280,23 @@ export default function My_TegMap({ user }) {
     const shots = buildFullShots(data);
     return shots === data.shots ? data : { ...data, shots };
   }, [data, fullShot, fullChip]);
-  const addedShots = (mapData?.shots || []).filter(s0 => s0.synthetic).length;
+  const fullShotCounts = useMemo(() => {
+    const shots = mapData?.shots || [];
+    const edge = Number(mapData?.geometry?.wafer_edge_mm) || 0;
+    const width = Math.abs(Number(mapData?.geometry?.shot_w_mm)) || 0;
+    const height = Math.abs(Number(mapData?.geometry?.shot_h_mm)) || 0;
+    if (!shots.length || !(edge > 0) || !(width > 0) || !(height > 0)) {
+      return { inside: 0, total: shots.length };
+    }
+    const inside = shots.filter(shot => {
+      const farthestCorner = Math.hypot(
+        Math.abs(Number(shot.mm_x) || 0) + width / 2,
+        Math.abs(Number(shot.mm_y) || 0) + height / 2,
+      );
+      return farthestCorner <= edge + 1e-9;
+    }).length;
+    return { inside, total: shots.length };
+  }, [mapData]);
   const fullChipResult = useMemo(() => fullChip
     ? buildFullChipDies(mapData, fullChipCells)
     : { dies: [], overflow: false }, [fullChip, mapData, fullChipCells]);
@@ -1881,39 +2314,54 @@ export default function My_TegMap({ user }) {
 
   return (
     <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-      <PageHeader
-        title="TEG 위치 조회"
-        subtitle="chip layout(Chip_Radius)으로 wafer geometry 를 계산하고 Teg_location 의 TEG 를 WF MAP 위에 표시합니다"
-        right={
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Select value={vehicle} onChange={e => setVehicle(e.target.value)} style={{ minWidth: 150 }}>
-              {(vehicles || []).map(v => <option key={v} value={v}>{v}</option>)}
-            </Select>
-            <Button onClick={loadMap}>새로고침</Button>
-          </div>
-        }
-      />
+      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "nowrap", flex: "1 1 auto", minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>제품 선택</span>
+          <Select value={vehicle} onChange={e => setVehicle(e.target.value)}
+            style={{ width: 240, minWidth: 170, flex: "0 0 240px" }}>
+            {productGroups.map(([path, names]) => <optgroup key={path} label={path}>
+              {names.map(name => <option key={name} value={name}>{name}</option>)}
+            </optgroup>)}
+          </Select>
+          {canEditReferenceFiles && <Button variant="primary" onClick={() => setProductOpen(true)}>+ 제품 추가</Button>}
+          <Button onClick={() => loadMap()}>새로고침</Button>
+        </div>
+        {canEditReferenceFiles && data &&
+          <Button onClick={() => setGeometryOpen(true)}>config 변경</Button>}
+      </div>
+      <ProductCreateModal open={productOpen} onClose={() => setProductOpen(false)}
+        onCreated={async result => {
+          await loadVehicles(result.vehicle);
+          await loadMap(result.vehicle);
+          setReferenceRevision(value => value + 1);
+        }} />
+      <ProductGeometryModal open={geometryOpen} vehicle={vehicle}
+        onClose={() => setGeometryOpen(false)}
+        onSaved={async result => {
+          const target = result?.vehicle || vehicle;
+          await loadVehicles(target);
+          await loadMap(target);
+          setReferenceRevision(value => value + 1);
+        }} />
 
       <TabStrip active={view} onChange={setView}
-        items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "TEG Mapfile 체크" },
-                { k: "gen", l: "Mapfile용 좌표 생성" },
-                { k: "files", l: "기준 파일" },
-                ...(canEdit ? [{ k: "logic", l: "계산 로직" }] : []),
-                ...(user?.role === "admin" ? [
-                  { k: "inline", l: "Inline map setting" },
+        items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "Mapfile 검증" },
+                { k: "gen", l: "Mapfile 좌표 생성" },
+                ...(isAdmin ? [
+                  { k: "access", l: "제품 권한 · 관리자" },
+                  { k: "inline", l: "Inline map setting · 관리자" },
                 ] : [])]} />
 
-      {view === "check" && <TegCheck vehicle={vehicle} />}
-      {view === "gen" && <TegGenerate vehicle={vehicle} />}
-      {view === "files" && <ReferenceFiles user={user} canEdit={canEditReferenceFiles} onSaved={() => { loadVehicles(); loadMap(); }} />}
-      {view === "logic" && canEdit && <CalculationGuide data={data} />}
-      {view === "inline" && user?.role === "admin" &&
+      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} />}
+      {view === "gen" && <TegGenerate vehicle={vehicle} refreshKey={referenceRevision} />}
+      {view === "access" && isAdmin && <ProductAccessAdmin onSaved={loadVehicles} />}
+      {view === "inline" && isAdmin &&
         <InlineMapSetting data={data} vehicle={vehicle} onVehicleChange={setVehicle} />}
 
       {view === "map" && <>
       {vehicles && vehicles.length === 0 && (
-        <EmptyState icon="📐" title="chip layout 파일이 없습니다"
-          hint="파일탐색기 Files 위치(DB root)에 Mask/chip_x_adj/chip_y_adj/Chip_Radius 열이 있는 파일을 넣고, ⚙️ 설정에서 파일명을 지정하세요" />
+        <EmptyState icon="📐" title={isAdmin ? "등록된 제품이 없습니다" : "접근 가능한 제품이 없습니다"}
+          hint={isAdmin ? "왼쪽 상단의 제품 추가에서 Item/x/y 표를 붙여넣거나, fallback용 Chip_Radius 파일을 설정하세요" : "상위 제품 노드 권한을 관리자에게 요청해 주세요"} />
       )}
       {err && vehicles && vehicles.length > 0 && (
         <EmptyState icon="⚠" title="WF MAP 을 불러오지 못했습니다" hint={err} />
@@ -1937,25 +2385,25 @@ export default function My_TegMap({ user }) {
                   <input type="checkbox" checked={fullShot} disabled={geo?.fit !== "radius"}
                     onChange={e => toggleFullShot(e.target.checked)} />
                   full shot
-                  {fullShot && (addedShots > 0 ? (
-                    <span style={{ color: "var(--muted)" }}>+{addedShots}</span>
-                  ) : (
-                    <span style={{ color: "var(--muted)" }}
-                      title="더 채울 자리가 없거나(이미 wafer 를 덮음), shot 크기·pitch 로 계산한 격자가 너무 촘촘해 표시하지 않았습니다">
-                      추가 없음
-                    </span>
-                  ))}
+                  {fullShot && <span style={{ color: "var(--muted)" }}
+                    title={`최외곽 ${fmt(geo?.wafer_edge_mm, 0)}mm 안에 shot 전체가 들어오는 수 / full shot 전체 수`}>
+                    {fullShotCounts.inside}/{fullShotCounts.total}
+                  </span>}
                 </label>
-                <Button variant={fullChip ? "primary" : "subtle"}
-                  disabled={!fullChipAvailable}
-                  onClick={() => setFullChip(v => !v)}
+                <label style={{
+                  display: "flex", alignItems: "center", gap: 4, fontSize: 12,
+                  color: fullChipAvailable ? "var(--text-primary)" : "var(--muted)",
+                  cursor: fullChipAvailable ? "pointer" : "not-allowed",
+                }}
                   title={fullChipAvailable
-                    ? `칩/개발 격자의 die를 모든 shot에 펼치고 네 꼭짓점이 최외곽 ${fmt(geo?.wafer_edge_mm, 0)}mm 안인 die만 표시합니다.`
+                    ? `칩/개발 격자의 die를 모든 shot에 펼치고 네 꼭짓점이 최외곽 ${fmt(geo?.wafer_edge_mm, 0)}mm 선에 닿지 않고 모두 안쪽인 die만 표시합니다.`
                     : display.mode === "dev_grid"
                       ? "개발 격자 MAIN die가 없거나 Main_chip_info 크기를 확인 중입니다."
                       : "칩 격자 또는 개발 격자 제품에서만 사용할 수 있습니다."}>
+                  <input type="checkbox" checked={fullChip} disabled={!fullChipAvailable}
+                    onChange={e => setFullChip(e.target.checked)} />
                   full chip{fullChip ? ` ${fullChipResult.dies.length}` : ""}
-                </Button>
+                </label>
                 {geo?.fit === "radius" ? (
                   <Pill tone="ok" title={`wafer 중심 격자좌표 (${fmt(geo.cx, 3)}, ${fmt(geo.cy, 3)})`}>
                     shot {fmt(geo.shot_w_mm, 2)}×{fmt(geo.shot_h_mm, 2)} mm
@@ -1983,11 +2431,11 @@ export default function My_TegMap({ user }) {
               <span style={{ color: "#c78a1e", fontWeight: 700 }}> ■ 연노랑</span> = shot 이 걸치거나 밖.
               격자/그림은 shot 확대에서만 표시됩니다.
               {fullShot && (
-                <> <b>full shot</b>: 점선 = layout 파일에 없는 자리(격자 연장).
+                <> <b>full shot {fullShotCounts.inside}/{fullShotCounts.total}</b>: 앞 숫자는 shot 전체가 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm 안인 수, 뒤 숫자는 전체 격자 수입니다. 점선 = layout 파일에 없는 자리(격자 연장).
                   TEG 선택 시 판정색은 같고, 미선택 시 걸치는 자리는 색을 칠하지 않습니다.</>
               )}
               {fullChip && (
-                <> <b> full chip</b>: 칩/개발 격자의 die 중 네 꼭짓점이 모두 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm 안인
+                <> <b> full chip</b>: 칩/개발 격자의 die 중 네 꼭짓점이 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm 선에 닿지 않고 모두 안쪽인
                   {" "}{fullChipResult.dies.length}개만 표시합니다.
                   {fullChipResult.overflow && <> 화면 보호를 위해 최대 {FULL_CHIP_MAX}개까지만 표시했습니다.</>}
                 </>
@@ -2002,8 +2450,15 @@ export default function My_TegMap({ user }) {
                 {/* Chip_Radius 계산 정보 — shot 크기 + 가장 가까운 shot 실center 델타(µm) */}
                 {geo?.fit === "radius" && (
                     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 12, lineHeight: 1.7 }}>
-                      <div style={{ fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>Chip_Radius 계산 정보</div>
+                      <div style={{ fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>
+                        {data.layout_source === "product_info" ? "제품 추가 정보 계산" : "Chip_Radius 계산 정보"}
+                      </div>
                       <div>shot 크기: <b>{fmt(geo.shot_w_mm, 3)} × {fmt(geo.shot_h_mm, 3)} mm</b></div>
+                      {data.layout_source === "product_info" && (
+                        <div title="config에 저장된 Map offset(Odd) 원값 — wafer 실 center에서 기준 shot center까지의 물리 거리">
+                          config Map offset: <b>X {fmt(geo.map_offset_odd_x_um, 1)} · Y {fmt(geo.map_offset_odd_y_um, 1)} µm</b>
+                        </div>
+                      )}
                       {nearestShot && (
                         <>
                           <div>가장 가까운 샷: <b style={{ color: "#e05252" }}>({nearestShot.x}, {nearestShot.y})</b>
@@ -2013,9 +2468,15 @@ export default function My_TegMap({ user }) {
                           </div>
                         </>
                       )}
-                      <div title="fit 에 사용한 샷 수와 측정 radius − fit radius 최대 잔차">
-                        fit: <b>{geo.fit_used}개 샷</b> · 잔차 max <b>{fmt(geo.fit_max_residual_mm, 3)} mm</b>
-                      </div>
+                      {data.layout_source === "product_info" ? (
+                        <div title="Shot Size(mm)와 Map offset(Odd)(µm)을 단위 변환해 직접 계산합니다.">
+                          직접 계산: <b>{geo.fit_used}개 샷</b> · Shot Size(mm) / Map offset(µm)
+                        </div>
+                      ) : (
+                        <div title="fit 에 사용한 샷 수와 측정 radius − fit radius 최대 잔차">
+                          fit: <b>{geo.fit_used}개 샷</b> · 잔차 max <b>{fmt(geo.fit_max_residual_mm, 3)} mm</b>
+                        </div>
+                      )}
                       {(geo.fit_dropped || []).length > 0 && (
                         <div style={{ color: "#e05252", marginTop: 2 }}
                           title={"측정 Chip_Radius 가 fit 대비 크게 벗어나 자동 제외된 행 — 원본 CSV 값 확인 필요\n"
@@ -2126,7 +2587,11 @@ export default function My_TegMap({ user }) {
 
       <PageGear title="TEG 위치 조회 설정" canEdit={canEdit} position="bottom-right">
         <GearSettings vehicle={vehicle} canEdit={canEdit}
-          onSaved={() => { loadVehicles(); loadMap(); }} />
+          onSaved={async () => {
+            await loadVehicles(vehicle);
+            await loadMap(vehicle);
+            setReferenceRevision(value => value + 1);
+          }} />
       </PageGear>
     </div>
   );

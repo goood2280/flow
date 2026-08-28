@@ -22,8 +22,9 @@
   FLOW_WORKER_CACHE_BUDGET_FACTOR   worker(개발서버) 역할일 때 풀에 곱하는
                                     축소 계수 (기본 0.25 = 1/4). 개발서버는
                                     스플릿테이블 조회가 적어 캐시를 많이 들고
-                                    있을 이유가 없다 — 검색은 upstream_proxy 로
-                                    운영서버 캐시를 활용한다.
+                                    있을 이유가 없다 — 운영 연결 시에는
+                                    upstream_proxy 캐시를 우선 활용하고,
+                                    로컬 폴백 시에도 이 축소 예산 안에서 검색한다.
 """
 from __future__ import annotations
 

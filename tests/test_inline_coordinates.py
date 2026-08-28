@@ -1,7 +1,9 @@
 import csv
 import json
 
-from core.inline_coordinates import is_summary_subitem, load_coordinate_mapping, load_coordinate_rows
+from core.inline_coordinates import (
+    is_summary_subitem, load_coordinate_mapping, load_coordinate_rows, load_matching_rules,
+)
 
 
 def test_summary_subitems_are_excluded():
@@ -12,10 +14,10 @@ def test_summary_subitems_are_excluded():
 
 
 def test_matching_table_flattens_only_named_map_positions(tmp_path):
-    with (tmp_path / "inline_matching.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["product", "step_id", "item_id", "matching_table"])
+    with (tmp_path / "inline_shot_matching.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["product", "step_id", "item_id", "map_name"])
         writer.writeheader()
-        writer.writerow({"product": "PRODA", "step_id": "AA100001", "item_id": "CD1", "matching_table": "MAP_A"})
+        writer.writerow({"product": "PRODA", "step_id": "AA100001", "item_id": "CD1", "map_name": "MAP_A"})
     settings = tmp_path / "credential" / "inline_map_settings.json"
     settings.parent.mkdir()
     settings.write_text(json.dumps({"tables": [{
@@ -36,11 +38,35 @@ def test_matching_table_flattens_only_named_map_positions(tmp_path):
 
 
 def test_unknown_table_does_not_guess_coordinates(tmp_path):
-    (tmp_path / "inline_matching.csv").write_text(
-        "product,step_id,item_id,matching_table\nPRODA,AA100001,CD1,MISSING\n",
+    (tmp_path / "inline_shot_matching.csv").write_text(
+        "product,step_id,item_id,map_name\nPRODA,AA100001,CD1,MISSING\n",
         encoding="utf-8",
     )
     mapping = load_coordinate_mapping(tmp_path, products=["PRODA"], item_ids=["CD1"])
     assert mapping["configured"] is True
     assert mapping["missing_tables"] == ["MISSING"]
     assert mapping["rows"] == []
+
+
+def test_matching_rules_report_item_specific_table_availability(tmp_path):
+    # 기존 배포 파일도 계속 읽어 무중단으로 신규 파일로 이관할 수 있다.
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,matching_table\n"
+        "PRODA,S1,CD_A,MAP_A\nPRODA,S1,CD_B,MISSING\n",
+        encoding="utf-8",
+    )
+    settings = tmp_path / "credential" / "inline_map_settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"tables": [{
+        "table_name": "MAP_A", "vehicle": "VH_A",
+        "shots": [{"name": "SITE_1", "shot_x": 0, "shot_y": 1}],
+    }]}), encoding="utf-8")
+
+    rules = load_matching_rules(tmp_path, products=["proda"])
+
+    assert rules == [
+        {"product": "PRODA", "step_id": "S1", "item_id": "CD_A",
+         "matching_table": "MAP_A", "available": True, "vehicle": "VH_A", "shot_count": 1},
+        {"product": "PRODA", "step_id": "S1", "item_id": "CD_B",
+         "matching_table": "MISSING", "available": False, "vehicle": "", "shot_count": 0},
+    ]

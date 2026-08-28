@@ -33,6 +33,189 @@ const S3_STATUS_FULL_URL="/api/s3ingest/status-by-target?include_local=1";
 const S3_STATUS_SESSION_KEY="flow.filebrowser.s3Status.fast";
 const S3_STATUS_SESSION_MAX_AGE_MS=10*60*1000;
 const S3_LOCAL_STATUS_KEYS=["latest_item_at","latest_item_relpath","latest_item_age_hours","latest_item_stale_6h","latest_item_scan_error"];
+const sqlAutocompleteIdent=(name)=>{
+  const text=String(name||"").trim();
+  if(!text)return"";
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(text)?text:"`"+text.replace(/`/g,"``")+"`";
+};
+const sqlAutocompleteContext=(value,caret)=>{
+  const source=String(value||"");
+  const position=Math.max(0,Math.min(Number(caret)||0,source.length));
+  const before=source.slice(0,position);
+  const keywords=[...before.matchAll(/\b(SELECT|WHERE|ORDER\s+BY|GROUP\s+BY|LIMIT)\b/gi)];
+  const latest=keywords[keywords.length-1];
+  if(!latest)return null;
+  const clause=latest[1].replace(/\s+/g," ").toUpperCase();
+  if(clause!=="SELECT"&&clause!=="WHERE")return null;
+  const clauseText=before.slice((latest.index||0)+latest[0].length);
+  let singleQuoted=false;
+  for(let index=0;index<clauseText.length;index+=1){
+    if(clauseText[index]!=="'")continue;
+    if(singleQuoted&&clauseText[index+1]==="'"){index+=1;continue;}
+    singleQuoted=!singleQuoted;
+  }
+  if(singleQuoted)return null;
+  let start=position;
+  while(start>0&&/[A-Za-z0-9_$]/.test(source[start-1]))start-=1;
+  const token=source.slice(start,position);
+  if(token.length<3||!/^[A-Za-z_$]/.test(token))return null;
+  let end=position;
+  while(end<source.length&&/[A-Za-z0-9_$]/.test(source[end]))end+=1;
+  return{clause,token,start,end};
+};
+const sqlInputCaretPoint=(input,position)=>{
+  if(!input||typeof document==="undefined")return{left:8,top:34,width:320};
+  const computed=window.getComputedStyle(input);
+  const mirror=document.createElement("div");
+  [
+    "boxSizing","borderLeftWidth","borderRightWidth","paddingLeft","paddingRight","fontStyle",
+    "fontVariant","fontWeight","fontStretch","fontSize","fontFamily","lineHeight","letterSpacing",
+    "textTransform","textIndent","textDecoration","wordSpacing","tabSize","MozTabSize",
+  ].forEach(property=>{mirror.style[property]=computed[property];});
+  mirror.style.position="absolute";
+  mirror.style.visibility="hidden";
+  mirror.style.whiteSpace="pre";
+  mirror.style.top="0";
+  mirror.style.left="-9999px";
+  mirror.textContent=String(input.value||"").slice(0,position);
+  const marker=document.createElement("span");
+  marker.textContent="\u200b";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const point={left:marker.offsetLeft-input.scrollLeft,top:input.offsetHeight+3,width:input.clientWidth};
+  mirror.remove();
+  return point;
+};
+function FileBrowserSqlAutocomplete({value,onChange,onExecute,mode,root,product,file,accessScope,columns,disabled}){
+  const inputRef=useRef(null);
+  const[caret,setCaret]=useState(String(value||"").length);
+  const[focused,setFocused]=useState(false);
+  const[remoteColumns,setRemoteColumns]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[activeIndex,setActiveIndex]=useState(0);
+  const[suspendSearch,setSuspendSearch]=useState(false);
+  const[caretPoint,setCaretPoint]=useState({left:8,top:34,width:320});
+  const completion=sqlAutocompleteContext(value,caret);
+  const sourceReady=mode==="hive"?Boolean(root&&product):Boolean(file);
+  const canSearch=Boolean(focused&&!disabled&&!suspendSearch&&sourceReady&&completion);
+  const localMatches=useMemo(()=>{
+    if(!canSearch)return[];
+    const needle=completion.token.toLocaleLowerCase();
+    return [...new Set((columns||[]).map(column=>String(column||"").trim()).filter(Boolean))]
+      .filter(column=>column.toLocaleLowerCase().includes(needle))
+      .sort((left,right)=>{
+        const l=left.toLocaleLowerCase(),r=right.toLocaleLowerCase();
+        return Number(!l.startsWith(needle))-Number(!r.startsWith(needle))||l.localeCompare(r);
+      }).slice(0,80);
+  },[canSearch,columns,completion?.token]);
+  const suggestions=useMemo(()=>{
+    const seen=new Set();
+    return [...localMatches,...remoteColumns].filter(column=>{
+      const key=column.toLocaleLowerCase();
+      if(seen.has(key))return false;
+      seen.add(key);return true;
+    }).slice(0,80);
+  },[localMatches,remoteColumns]);
+  const listId="filebrowser-sql-column-suggestions";
+
+  useEffect(()=>{
+    if(!canSearch){setRemoteColumns([]);setLoading(false);return undefined;}
+    let alive=true;
+    // 검색어가 바뀌는 즉시 이전 원격 후보를 비워, 새 결과가 올 때까지 잠깐 섞여 보이지 않게 한다.
+    setRemoteColumns([]);
+    setLoading(true);
+    const timer=setTimeout(()=>{
+      const params={q:completion.token,limit:80,_ts:Date.now()};
+      if(mode==="hive"){params.root=root;params.product=product;}
+      else{params.file=file;if(accessScope)params.access_scope=accessScope;}
+      sf(API+"/columns/search"+qs(params)).then(response=>{
+        if(!alive)return;
+        const needle=completion.token.toLocaleLowerCase();
+        setRemoteColumns((response.columns||[]).map(column=>String(column||"").trim()).filter(Boolean)
+          .sort((left,right)=>Number(!left.toLocaleLowerCase().startsWith(needle))-Number(!right.toLocaleLowerCase().startsWith(needle))||left.localeCompare(right)));
+        setActiveIndex(0);
+      }).catch(()=>{if(alive)setRemoteColumns([]);}).finally(()=>{if(alive)setLoading(false);});
+    },180);
+    return()=>{alive=false;clearTimeout(timer);};
+  },[canSearch,mode,root,product,file,accessScope,completion?.token,completion?.clause]);
+
+  useEffect(()=>{setActiveIndex(index=>Math.min(index,Math.max(0,suggestions.length-1)));},[suggestions.length]);
+  const syncCaret=target=>{
+    const position=Number(target?.selectionStart)||0;
+    setCaret(position);
+    setCaretPoint(sqlInputCaretPoint(target,position));
+  };
+  const applySuggestion=column=>{
+    if(!completion||!column)return;
+    const inserted=sqlAutocompleteIdent(column);
+    const next=String(value||"").slice(0,completion.start)+inserted+String(value||"").slice(completion.end);
+    const nextCaret=completion.start+inserted.length;
+    onChange(next);
+    setRemoteColumns([]);
+    setSuspendSearch(true);
+    setCaret(nextCaret);
+    requestAnimationFrame(()=>{
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(nextCaret,nextCaret);
+      if(inputRef.current)syncCaret(inputRef.current);
+    });
+  };
+  // 결과가 0건이어도 패널을 유지해 "잠깐 나타났다 사라지는" 느낌을 없앤다.
+  const showPanel=canSearch;
+  const popupLeft=Math.max(4,Math.min(caretPoint.left,Math.max(4,caretPoint.width-250)));
+  const popupWidth=Math.max(230,Math.min(420,caretPoint.width-popupLeft-4));
+  return <div style={{position:"relative",flex:1,minWidth:0}}>
+    <input
+      ref={inputRef}
+      aria-label="파일탐색기 SQL"
+      aria-autocomplete="list"
+      aria-controls={showPanel?listId:undefined}
+      aria-expanded={showPanel}
+      aria-activedescendant={showPanel&&suggestions.length?`${listId}-${activeIndex}`:undefined}
+      value={value}
+      onChange={event=>{setSuspendSearch(false);onChange(event.target.value);syncCaret(event.target);}}
+      onFocus={event=>{setFocused(true);syncCaret(event.target);}}
+      onBlur={()=>setFocused(false)}
+      onClick={event=>syncCaret(event.target)}
+      onSelect={event=>syncCaret(event.target)}
+      onScroll={event=>syncCaret(event.target)}
+      onKeyUp={event=>{if(!["Tab","ArrowDown","ArrowUp","Escape"].includes(event.key))syncCaret(event.target);}}
+      onKeyDown={event=>{
+        if(canSearch&&suggestions.length&&event.key==="Tab"){
+          event.preventDefault();applySuggestion(suggestions[activeIndex]||suggestions[0]);return;
+        }
+        if(canSearch&&suggestions.length&&event.key==="ArrowDown"){
+          event.preventDefault();setActiveIndex(index=>(index+1)%suggestions.length);return;
+        }
+        if(canSearch&&suggestions.length&&event.key==="ArrowUp"){
+          event.preventDefault();setActiveIndex(index=>(index-1+suggestions.length)%suggestions.length);return;
+        }
+        if(showPanel&&event.key==="Escape"){
+          event.preventDefault();setSuspendSearch(true);setRemoteColumns([]);return;
+        }
+        if(event.key==="Enter"){
+          if(event.nativeEvent?.isComposing||event.keyCode===229)return;
+          onExecute();
+        }
+      }}
+      placeholder="예: SELECT lot_id, wafer_id WHERE product LIKE '%ABC%' ORDER BY tkout_time DESC"
+      disabled={disabled}
+      spellCheck={false}
+      style={{width:"100%",boxSizing:"border-box",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
+    />
+    {showPanel&&<div id={listId} role="listbox" aria-label="파일탐색기 SQL 열 자동완성" style={{position:"absolute",zIndex:50,left:popupLeft,top:caretPoint.top,width:popupWidth,border:"1px solid var(--accent)",borderRadius:6,background:"var(--bg-primary)",boxShadow:"0 10px 26px rgba(15,23,42,.24)",maxHeight:180,overflow:"auto"}}>
+      <div style={{position:"sticky",top:0,zIndex:1,display:"flex",alignItems:"center",gap:6,padding:"6px 9px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)"}}>
+        <b style={{color:"var(--accent)"}}>{completion?.clause}</b>
+        <span>열 검색 · Tab 자동완성</span>
+        {loading&&<span style={{marginLeft:"auto"}}>조회 중…</span>}
+      </div>
+      {suggestions.map((column,index)=><button key={column} id={`${listId}-${index}`} type="button" role="option" aria-selected={index===activeIndex}
+        onMouseEnter={()=>setActiveIndex(index)} onMouseDown={event=>{event.preventDefault();applySuggestion(column);}}
+        style={{display:"block",width:"100%",padding:"7px 9px",border:0,borderBottom:index<suggestions.length-1?"1px solid var(--border)":0,background:index===activeIndex?"var(--accent-glow)":"transparent",color:"var(--text-primary)",textAlign:"left",fontFamily:"monospace",fontSize:12,cursor:"pointer"}}>{column}</button>)}
+      {!suggestions.length&&<div style={{padding:"9px",fontSize:12,color:"var(--text-secondary)"}}>{loading?"일치하는 열 조회 중…":"일치하는 열이 없습니다."}</div>}
+    </div>}
+  </div>;
+}
 const readStoredS3Status=()=>{
   if(typeof window==="undefined"||!window.sessionStorage)return{};
   try{
@@ -2445,31 +2628,66 @@ export default function My_FileBrowser({
     if(note===null)return;
     setBaseSaveBusy("grid");
     setBaseVersionMsg("저장 중...");
-    const payload=JSON.stringify({
-      file:selBaseFile,
-      mode:"replace",
-      csv_text:csvText,
-      delimiter:saveDelimiter,
-      include_header:includeHeader,
-      note,
-      access_scope:accessScope,
-    });
     const candidates=[API+"/base-file/save",API+"/base-file-save"];
     let saved=false;
     let savedResult=null;
     let lastErr=null;
     let lastUrl="";
-    for(const p of candidates){
-      // API not-found 대비: /base-file-save alias도 순차 시도
-      lastUrl=p;
-      try{
-        savedResult=await sf(p,{method:"POST",headers:{"Content-Type":"application/json"},body:payload});
-        saved=true;
-        break;
-      }catch(e){
-        lastErr=e;
-        if(e.status!==404)break;
+    let confirmMissingStepDesc=false;
+    while(!saved){
+      lastErr=null;
+      const payload=JSON.stringify({
+        file:selBaseFile,
+        mode:"replace",
+        csv_text:csvText,
+        delimiter:saveDelimiter,
+        include_header:includeHeader,
+        note,
+        access_scope:accessScope,
+        confirm_missing_step_desc:confirmMissingStepDesc,
+      });
+      for(const p of candidates){
+        // API not-found 대비: /base-file-save alias도 순차 시도
+        lastUrl=p;
+        try{
+          savedResult=await sf(p,{method:"POST",headers:{"Content-Type":"application/json"},body:payload});
+          saved=true;
+          break;
+        }catch(e){
+          lastErr=e;
+          if(e.status!==404)break;
+        }
       }
+      if(saved)break;
+
+      const warningDetail=lastErr?.body?.detail;
+      if(lastErr?.status===409&&warningDetail?.error_code==="ppid_knob_step_desc_not_found"){
+        const missing=Array.isArray(warningDetail.missing_step_desc)?warningDetail.missing_step_desc:[];
+        const shown=missing.slice(0,10).map(item=>{
+          const rows=Array.isArray(item?.rows)?item.rows:[];
+          const rowLabel=rows.length?` (CSV ${rows.join(", ")}행)`:"";
+          return `- ${item?.value||"(빈 값)"}${rowLabel}`;
+        });
+        if(missing.length>10)shown.push(`- 외 ${missing.length-10}개`);
+        const proceed=window.confirm([
+          "⚠ Warning",
+          "",
+          "Vehicle_matching.csv의 step_desc에 없는 값이 있습니다.",
+          ...shown,
+          "",
+          "해당하는 step이 없는데 저장할까요?",
+          "",
+          "확인 = 그래도 저장 / 취소 = 편집으로 돌아가기",
+        ].join("\n"));
+        if(proceed){
+          confirmMissingStepDesc=true;
+          continue;
+        }
+        setBaseVersionMsg("저장 취소 · Vehicle_matching.csv에 없는 step_desc를 확인하세요.");
+        setBaseSaveBusy("");
+        return;
+      }
+      break;
     }
     if(!saved){
       if(lastErr?.status===404){
@@ -2721,10 +2939,9 @@ export default function My_FileBrowser({
         {/* SQL Bar */}
         <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",gap:8,alignItems:"center"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>SQL:</span>
-          <input value={sql} onChange={e=>setSqlFromInput(e.target.value)} placeholder="예: SELECT lot_id, wafer_id WHERE product LIKE '%ABC%' ORDER BY tkout_time DESC"
-            disabled={mode==="base"&&isBaseEditing}
-            style={{flex:1,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
-            onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;applySql();}}}/>
+          <FileBrowserSqlAutocomplete value={sql} onChange={setSqlFromInput} onExecute={applySql}
+            mode={mode} root={selRoot} product={selProd} file={mode==="base"?selBaseFile:selRootPq} accessScope={accessScope}
+            columns={data?.all_columns||data?.columns||[]} disabled={mode==="base"&&isBaseEditing}/>
           <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
           <button onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}} disabled={!data||mode==="base"&&isBaseEditing}

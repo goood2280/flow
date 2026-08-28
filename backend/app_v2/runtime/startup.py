@@ -169,6 +169,7 @@ def ensure_seed_admin(logger) -> None:
         "role": "admin",
         "status": "approved",
         "created": datetime.datetime.now().isoformat(),
+        "last_login": "",
         "tabs": "__all__",
     })
     write_users(users)

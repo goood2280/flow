@@ -27,7 +27,7 @@ FIELD_RE = re.compile(
 )
 CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
-    r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else|highlight|width|height|size)\s*[:=]\s*(.*)$",
+    r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else|highlight|show_legend|legend|width|height|size)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 MAX_ROWS_RE = re.compile(r"^\s*max[_\s-]*rows\s*[:=]\s*(\d+)\s*$", re.IGNORECASE)
@@ -83,6 +83,9 @@ COLOR_RULE_WITHIN_RE = re.compile(
 )
 COLOR_RULE_EQUAL_RE = re.compile(
     rf"^{COLOR_RULE_IDENTIFIER}\s*(?:=|==)\s*(?:'[^']*'|\"[^\"]*\"|.+)$"
+)
+LINKED_COLOR_CONDITION_RE = re.compile(
+    r"^`?(root_lot_id|wafer_id)`?\s*(?:=|==)\s*['\"]([^'\"]+)['\"]$", re.IGNORECASE
 )
 JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
 CHART_TYPES = {"scatter", "line", "box", "bar", "bar_horizontal", "pie", "donut", "radius", "wafer_map"}
@@ -238,7 +241,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
                 "id": query_id, "root": "", "product": "", "sql": "", "select_cols": "",
                 "apply_reformatter": False, "reformatter_items": "",
                 "runtime_recent_days": 0, "runtime_date_column": "",
-                "runtime_root_lot_ids": [], "runtime_wafer_ids": [],
+                "runtime_root_lot_ids": [], "runtime_wafer_ids": [], "runtime_lot_wafer_pairs": [],
             }
             sources.append(current)
             in_chart = False
@@ -304,6 +307,14 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
         raise ChartBuilderDefinitionError("MAX_ROWS는 1~10000 사이여야 합니다.")
 
     _validate_chart(chart)
+    linked_pairs = linked_chart_color_pairs(chart)
+    if linked_pairs:
+        linked_roots = list(dict.fromkeys(pair["root_lot_id"] for pair in linked_pairs))
+        linked_wafers = list(dict.fromkeys(pair["wafer_id"] for pair in linked_pairs))
+        for source in sources:
+            source["runtime_lot_wafer_pairs"] = [dict(pair) for pair in linked_pairs]
+            source["runtime_root_lot_ids"] = linked_roots
+            source["runtime_wafer_ids"] = linked_wafers
     payload = {"sources": sources, "joins": joins, "max_rows": max_rows, "chart": chart}
     payload["canonical_code"] = format_chart_builder_definition(**payload)
     return payload
@@ -321,7 +332,7 @@ def _source_dict(source: Any) -> dict[str, Any]:
         for key in (
             "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items",
             "runtime_recent_days", "runtime_date_column",
-            "runtime_root_lot_ids", "runtime_wafer_ids",
+            "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs",
         )
     }
 
@@ -330,7 +341,7 @@ def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
     key = str(name or "").strip().casefold()
     aliases = {
         "chart_type": "type", "x_col": "x", "y_col": "y",
-        "color_col": "color", "trellis_col": "trellis",
+        "color_col": "color", "trellis_col": "trellis", "legend": "show_legend",
     }
     key = aliases.get(key, key)
     cleaned = str(value or "").strip()
@@ -346,7 +357,7 @@ def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
         if not cleaned.isdigit():
             raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 픽셀 숫자여야 합니다.")
         chart[key] = int(cleaned)
-    elif key == "highlight":
+    elif key in {"highlight", "show_legend"}:
         chart[key] = cleaned.casefold() not in {"0", "false", "no", "n", "off", "사용안함"}
     else:
         chart[key] = cleaned
@@ -390,6 +401,36 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         raise ChartBuilderDefinitionError("CHART HEIGHT는 240~1600px 사이여야 합니다.")
 
 
+def linked_chart_color_pairs(chart: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Return exact root-lot/wafer pairs encoded by the three-column color table."""
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    rules = chart.get("color_rules") if isinstance(chart, dict) and isinstance(chart.get("color_rules"), list) else []
+    for rule in rules:
+        split = re.match(r"^(.*?)\s+then\s+(.+)$", str(rule or "").strip(), re.IGNORECASE)
+        if not split:
+            continue
+        conditions = re.split(r"\s+AND\s+", split.group(1), flags=re.IGNORECASE)
+        if len(conditions) != 2:
+            continue
+        values: dict[str, str] = {}
+        for condition in conditions:
+            match = LINKED_COLOR_CONDITION_RE.fullmatch(condition.strip())
+            if not match or match.group(1).casefold() in values:
+                values = {}
+                break
+            values[match.group(1).casefold()] = match.group(2).strip()
+        root = values.get("root_lot_id", "")
+        wafer = values.get("wafer_id", "")
+        key = (root.casefold(), wafer.casefold())
+        if root and wafer and key not in seen:
+            seen.add(key)
+            rows.append({"root_lot_id": root[:160], "wafer_id": wafer[:160]})
+        if len(rows) >= 200:
+            break
+    return rows
+
+
 def format_chart_builder_definition(
     sources: list[Any], joins: list[Any] | None = None, max_rows: int = 10000,
     chart: dict[str, Any] | None = None, **_: Any
@@ -418,9 +459,10 @@ def format_chart_builder_definition(
             lines.append(f"DATE_COLUMN = {date_column}")
         root_lot_ids = [str(value).strip() for value in (source.get("runtime_root_lot_ids") or []) if str(value).strip()]
         wafer_ids = [str(value).strip() for value in (source.get("runtime_wafer_ids") or []) if str(value).strip()]
-        if root_lot_ids:
+        linked_pairs = [pair for pair in (source.get("runtime_lot_wafer_pairs") or []) if isinstance(pair, dict) and str(pair.get("root_lot_id") or "").strip() and str(pair.get("wafer_id") or "").strip()]
+        if root_lot_ids and not linked_pairs:
             lines.append(f"ROOT_LOTS = {', '.join(root_lot_ids[:200])}")
-        if wafer_ids:
+        if wafer_ids and not linked_pairs:
             lines.append(f"WAFERS = {', '.join(wafer_ids[:200])}")
         if bool(source.get("apply_reformatter")):
             lines.append("REFORMATTER = true")
@@ -454,6 +496,8 @@ def format_chart_builder_definition(
             lines.append(f"COLOR_ELSE = {str(chart.get('color_else')).strip()}")
         if chart.get("highlight") is not None:
             lines.append(f"HIGHLIGHT = {'true' if bool(chart.get('highlight')) else 'false'}")
+        if chart.get("show_legend") is not None:
+            lines.append(f"SHOW_LEGEND = {'true' if bool(chart.get('show_legend')) else 'false'}")
         lines.append("")
     lines.append(f"MAX_ROWS = {max(1, min(10000, int(max_rows or 10000)))}")
     return "\n".join(lines).strip() + "\n"

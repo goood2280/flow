@@ -32,10 +32,17 @@ def list_roots(request: Request = None, all: bool = Query(False), fast: bool = Q
         if d.name.casefold() in hidden_db_dirs or _is_filebrowser_hidden_dir_name(d.name):
             continue
         whitelisted = is_visible_root(d.name)
+        # `1.RAWDATA_DB_*` is the physical DB naming contract used by the
+        # folder-display settings (for example `1.RAWDATA_DB_MSR` -> `MSR`).
+        # Keep such roots visible even while they are empty, mounted late, or
+        # contain a data extension that the bounded parquet/csv probe does not
+        # recognise yet.  Previously the settings panel discovered the folder
+        # but the non-fast DB inventory dropped it again when file_count == 0.
+        named_raw_db = bool(_RAW_DB_DISPLAY_RE.fullmatch(d.name))
         # Fast mode is the first-paint inventory: every allowed top-level
         # directory is shown without walking its products/partitions.
         file_count = 0 if fast else count_data_files(d, limit=2000)
-        if not all and not whitelisted and file_count == 0:
+        if not all and not whitelisted and not named_raw_db and file_count == 0:
             if not fast or not _looks_like_db_root_fast(d):
                 continue
         canon = canonical_name(d.name) if whitelisted else d.name
@@ -154,6 +161,7 @@ class ChartBuilderSourceReq(BaseModel):
     runtime_date_column: str = "tkout_time"
     runtime_root_lot_ids: list[str] = []
     runtime_wafer_ids: list[str] = []
+    runtime_lot_wafer_pairs: list[dict[str, str]] = []
 
 
 class ChartBuilderJoinReq(BaseModel):

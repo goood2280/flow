@@ -87,7 +87,13 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     date_column = next((column for column in all_columns if column.casefold() == requested_date_column.casefold()), "")
                     if date_column:
                         cutoff = (datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=runtime_days)).isoformat()
-                        normalized = _combine_where(normalized, f"CAST({date_column} AS TIMESTAMP) >= '{cutoff}'")
+                        # tkout_time is commonly persisted as VARCHAR.  TRY_CAST keeps
+                        # malformed/blank rows from aborting the whole query; those rows
+                        # simply become NULL and do not pass the recent-days predicate.
+                        # Use the filter-language quoting contract here; its normalizer
+                        # converts backticks to the target engine's identifier quoting.
+                        quoted_date_column = _quote_sql_filter_identifier(date_column)
+                        normalized = _combine_where(normalized, f"TRY_CAST({quoted_date_column} AS TIMESTAMP) >= '{cutoff}'")
                     else:
                         warnings.append(f"{source_id}: 최근 {runtime_days}일 필터 열({requested_date_column})이 없어 원래 조건으로 조회했습니다.")
                 runtime_where = _chart_builder_runtime_where(all_columns, source, source_id, warnings)
@@ -135,6 +141,7 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             "runtime_date_column": str(source.runtime_date_column or ""),
             "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
             "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
+            "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
             **source_meta,
         })
 
@@ -578,6 +585,7 @@ class BaseFileSaveReq(BaseModel):
     include_header: bool = True
     note: str = ""
     access_scope: str = ""
+    confirm_missing_step_desc: bool = False
 
 
 class FileBrowserSettingsReq(BaseModel):

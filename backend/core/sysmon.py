@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import math
 import os
 import random
 import threading
@@ -25,6 +26,7 @@ from typing import List, Optional
 
 from core.paths import PATHS
 from core.runtime_limits import (
+    effective_cpu_count,
     process_cpu_snapshot,
     process_memory_snapshot,
     system_memory_snapshot,
@@ -94,6 +96,51 @@ def _paver_ceiling_breach(sample: dict) -> str:
     if memory_pct >= PAVER_RELEASE_PCT:
         return f"RAM {memory_pct:.1f}%"
     return ""
+
+
+def _paver_cpu_worker_count() -> int:
+    """Return one controllable CPU burner per CPU available to this process.
+
+    The previous fixed ceiling of eight workers made an 85% host target
+    unreachable as soon as the server had more than about nine logical CPUs.
+    ``effective_cpu_count`` also honours a Linux cgroup CPU quota, unlike a raw
+    host-wide ``psutil.cpu_count`` result.
+    """
+    try:
+        return max(1, math.ceil(float(effective_cpu_count())))
+    except Exception:
+        try:
+            return max(1, int(_psutil.cpu_count(logical=True) or 1)) if _psutil is not None else 1
+        except Exception:
+            return 1
+
+
+def _paver_cpu_duties(worker_count: int, equivalent_cores: float) -> list[float]:
+    """Spread a fractional core target over full workers plus one partial worker."""
+    worker_count = max(1, int(worker_count or 1))
+    remaining = max(0.0, min(float(worker_count), float(equivalent_cores or 0.0)))
+    duties: list[float] = []
+    for _ in range(worker_count):
+        duty = max(0.0, min(1.0, remaining))
+        duties.append(duty)
+        remaining -= duty
+    return duties
+
+
+def _next_paver_cpu_equivalents(
+    current: float,
+    cpu_pct: float,
+    target_pct: float,
+    worker_count: int,
+) -> float:
+    """Adjust load by at most three quarters of a core per system sample."""
+    worker_count = max(1, int(worker_count or 1))
+    error = float(target_pct) - float(cpu_pct)
+    if -1.0 <= error <= 1.0:
+        delta = 0.0
+    else:
+        delta = max(-0.75, min(0.75, worker_count * error / 200.0))
+    return max(0.0, min(float(worker_count), float(current or 0.0) + delta))
 
 # ── 내부 상태 ────────────────────────────────────────────────────────
 _lock = threading.Lock()
@@ -312,15 +359,16 @@ def _window_peaked_above(threshold: float) -> bool:
 
 
 def mark_user_activity() -> None:
-    """사용자 활동 감지 — 부하 중이면 중단 신호, 30분 대기 창 설정."""
+    """사용자 활동 감지 — 자동 유휴 부하만 중단하고 30분 대기 창을 설정한다."""
     global _last_user_activity, _paused_until
     with _lock:
         _last_user_activity = _now()
         _paused_until = _last_user_activity + PAUSE_AFTER_USER_SEC
-        forced_schedule = _load_mode == "scheduled"
-    # 예약 실행은 관리자가 지정한 하루 1회 강제 부하다. 일반 화면 요청이 들어와도
-    # 멈추지 않되, 관리자 모니터의 중지 버튼은 stop_load()로 언제든 중단할 수 있다.
-    if not forced_schedule:
+        explicit_paver = _load_mode in {"manual", "scheduled"}
+    # 수동/예약 보도블럭은 관리자가 명시적으로 시작한 작업이다. 일반 화면 요청이
+    # 들어와도 유지하고, 관리자 모니터의 중지 버튼은 stop_load()로 언제든 중단한다.
+    # 사용자 활동으로 양보해야 하는 것은 백그라운드가 시작한 자동 유휴 부하뿐이다.
+    if not explicit_paver:
         _load_stop.set()
 
 
@@ -436,34 +484,59 @@ def get_state() -> dict:
 def _burn_cpu(
     stop_event: threading.Event,
     deadline: float,
-    run_gate: threading.Event | None = None,
+    duty_state: dict | None = None,
 ) -> None:
-    """CPU 부하. run_gate로 목표 사용률 부근에서 일시 정지할 수 있다."""
+    """CPU 부하. 전체 워커를 끄지 않고 공유 duty로 목표 사용률을 맞춘다."""
     try:
         import numpy as _np
         have_np = True
     except Exception:
         have_np = False
 
+    if have_np:
+        # NumPy is a required Flow dependency. A small single-threaded BLAS
+        # operation releases the GIL, so one Python thread can occupy one
+        # logical CPU. Reuse arrays to avoid allocation and RAM churn.
+        rng = _np.random.default_rng((threading.get_ident() ^ int(_now() * 1000)) & 0xFFFFFFFF)
+        a = rng.random((192, 192))
+        b = rng.random((192, 192))
+        out = _np.empty_like(a)
+        # Different slice lengths and phases keep all workers from entering the
+        # work/sleep portions together, which otherwise makes host CPU pulse.
+        batch_ops = 80 + (threading.get_ident() % 33)
+        if stop_event.wait(timeout=(threading.get_ident() % 47) / 1000.0):
+            return
+
     while not stop_event.is_set() and _now() < deadline:
-        if run_gate is not None and not run_gate.is_set():
+        duty = 1.0
+        if duty_state is not None:
+            try:
+                duty = max(0.0, min(1.0, float(duty_state.get("value", 1.0))))
+            except Exception:
+                duty = 1.0
+        if duty <= 0.0:
             if stop_event.wait(timeout=0.05):
                 return
             continue
+        # thread_time excludes time spent waiting to be scheduled. Using wall
+        # time here makes workers sleep too long once all cores are competing.
+        work_started = time.thread_time()
         if have_np:
-            # 적당히 CPU 를 끌어쓰는 연산 — numpy 있을 때.
             try:
-                a = _np.random.rand(400, 400)
-                b = _np.random.rand(400, 400)
-                _ = _np.linalg.svd(a @ b, full_matrices=False)
+                # Keep each work slice several milliseconds long. Sub-ms work
+                # followed by sub-ms Event.wait is effectively unthrottled on
+                # Windows because of timer granularity.
+                for _ in range(batch_ops):
+                    _np.matmul(a, b, out=out)
             except Exception:
                 have_np = False
                 continue
         else:
             # Pure Python fallback
             _ = sum(i * i for i in range(500_000))
-        # 너무 과하게 못 돌게 약간의 양보.
-        if stop_event.wait(timeout=0.01):
+        work_sec = max(0.0005, time.thread_time() - work_started)
+        rest_sec = min(0.25, work_sec * (1.0 - duty) / duty)
+        if rest_sec > 0 and stop_event.wait(timeout=rest_sec):
             return
 
 
@@ -557,25 +630,22 @@ def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRE
     _mem_hold = []
     logger.info(f"[sysmon] load generation start — {duration_sec}s planned mode={mode} target={target_pct}")
 
-    # 처음에는 두 워커만 돌리고, 목표치에 못 미칠 때 코어 수 범위에서 하나씩
-    # 늘린다. run_gate를 닫으면 워커가 즉시 양보하므로 90%까지 계속 치솟지 않는다.
-    max_workers = 2
-    if _psutil is not None:
-        try:
-            max_workers = max(2, min(8, _psutil.cpu_count(logical=True) or 2))
-        except Exception:
-            max_workers = 2
-    run_gate = threading.Event()
-    run_gate.set()
+    # 호스트(또는 cgroup quota)의 각 논리 CPU마다 워커를 하나 둔다. 워커 수를 8로
+    # 고정하면 다코어 서버에서 목표 자체가 불가능하다. 전체 워커를 같은 duty로
+    # 켜고 끄면 파형이 겹쳐 출렁이므로, N개는 연속 실행하고 한 개만 fractional
+    # duty로 돌리는 "equivalent cores" 방식으로 목표 부근을 평탄하게 유지한다.
+    cpu_worker_count = _paver_cpu_worker_count()
+    equivalent_cores = max(1.0, cpu_worker_count * 0.50)
+    duty_states = [{"value": duty} for duty in _paver_cpu_duties(cpu_worker_count, equivalent_cores)]
     aux_threads: List[threading.Thread] = []
 
-    def add_cpu_worker() -> None:
-        t = threading.Thread(target=_burn_cpu, args=(_load_stop, end, run_gate), daemon=True)
+    def add_cpu_worker(duty_state: dict) -> None:
+        t = threading.Thread(target=_burn_cpu, args=(_load_stop, end, duty_state), daemon=True)
         t.start()
         aux_threads.append(t)
 
-    for _ in range(min(2, max_workers)):
-        add_cpu_worker()
+    for duty_state in duty_states:
+        add_cpu_worker(duty_state)
     if memory:
         t = threading.Thread(target=_hold_memory_until, args=(_load_stop, end, float(target_pct or THRESHOLD_PCT)), daemon=True)
         t.start()
@@ -592,17 +662,16 @@ def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRE
             break
 
         cpu_pct = float(sample.get("cpu_percent") or 0.0)
-        if cpu_pct >= target_pct + 1.0:
-            run_gate.clear()
-        elif cpu_pct < target_pct - 2.0:
-            run_gate.set()
-            cpu_workers = len(aux_threads) - (1 if memory else 0)
-            if cpu_workers < max_workers:
-                add_cpu_worker()
+        equivalent_cores = _next_paver_cpu_equivalents(
+            equivalent_cores, cpu_pct, target_pct, cpu_worker_count,
+        )
+        for duty_state, duty in zip(duty_states, _paver_cpu_duties(cpu_worker_count, equivalent_cores)):
+            duty_state["value"] = duty
         if _load_stop.wait(timeout=0.2):
             break
 
-    run_gate.set()
+    for duty_state in duty_states:
+        duty_state["value"] = 0.0
     for t in aux_threads:
         t.join(timeout=2.0)
     stopped_early = _load_stop.is_set()

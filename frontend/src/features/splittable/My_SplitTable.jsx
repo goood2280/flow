@@ -2,9 +2,11 @@ import { useState, useEffect, useRef, Fragment } from "react";
 import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
 import { PageGearButton } from "../../components/PageGear";
+import ProductOrderEditor from "../../components/ProductOrderEditor";
 import { toast } from "../../components/Toast";
 import { authSrc, sf, dl } from "../../lib/api";
 import { allowedSubTabs, useUserRole } from "../../lib/permissions";
+import { orderProductItems } from "../../lib/productOrder";
 
 // v9.1.x: 소탭 단위 권한 — 허용된 소탭(view/history)만 노출.
 // 주의: localStorage(hol_user)는 로그인 후에 채워지므로 모듈 로드 시점이 아니라
@@ -12,7 +14,7 @@ import { allowedSubTabs, useUserRole } from "../../lib/permissions";
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
 import { statusPalette } from "../../components/UXKit";
-import SplitTableSnapshotView, { buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS, splitParamDisplayName } from "../../components/SplitTableSnapshotView";
+import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS, splitParamDisplayName } from "../../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
@@ -303,6 +305,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     return s;
   };
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState(initialProduct||"");
+  const[productOrder,setProductOrder]=useState([]);const[productOrderBusy,setProductOrderBusy]=useState(false);
   const[lotId,setLotId]=useState("");const[waferIds,setWaferIds]=useState("");
   const[lotSuggestions,setLotSuggestions]=useState([]);const[showLotDrop,setShowLotDrop]=useState(false);const[lotFilter,setLotFilter]=useState("");
   const[lotSuggestMsg,setLotSuggestMsg]=useState("");
@@ -324,6 +327,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[showSplitCheckView,setShowSplitCheckView]=useState(false);
   // v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 colSpan 으로 병합해 표시 (읽기 전용).
   const[showMergedView,setShowMergedView]=useState(false);
+  const[showPemsView,setShowPemsView]=useState(false);
   const[excludeNotNullStepMeta,setExcludeNotNullStepMeta]=useState(true);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   useEffect(()=>{
@@ -586,10 +590,22 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
   };
   const saveSourceConfig=(enabled)=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...enabled]})}).catch(()=>{});};
+  const saveProductOrder=(next)=>{
+    setProductOrderBusy(true);
+    return sf(API+"/product-order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_order:next})})
+      .then(d=>{
+        const saved=d.product_order||next;
+        setProductOrder(saved);
+        setProducts(current=>orderProductItems(current,saved,item=>item.name));
+        toast.ok("제품 선택 순서를 저장했습니다");
+      })
+      .catch(e=>toast.error("제품 순서 저장 실패: "+(e?.message||e)))
+      .finally(()=>setProductOrderBusy(false));
+  };
   useEffect(()=>{
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
-        const prods=prodRes.products||[];setProducts(prods);
+        const prods=prodRes.products||[];setProducts(prods);setProductOrder(prodRes.product_order||[]);
         const enabled=normalizeEnabledProducts(srcRes.enabled, prods);
         setEnabledSources(enabled);
         if(srcRes.lot_overrides) setLotOverrides(normalizeOverrideConfig(srcRes.lot_overrides));
@@ -956,13 +972,27 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const splitCheckDisabled=(!isCustomMode&&selPrefixes.some(isInlineVmSplitParam))
     ||(isCustomMode&&customCols.some(isInlineVmSplitParam))
     ||(Array.isArray(data?.rows)&&data.rows.some(row=>isInlineVmSplitParam(row?._param)||isInlineVmSplitParam(row?._display)));
+  const pemsRootOnly=Boolean(lotId.trim())&&!fabLotId.trim();
+  const pemsDisabled=!pemsRootOnly||splitCheckDisabled;
   const splitCheckViewActive=showSplitCheckView&&!splitCheckDisabled;
-  const mergedViewActive=showMergedView&&!splitCheckViewActive;
-  // 표시 형식 3종: cell(모든 칸 개별) / split(S0,S1.. 행 분리) / merged(좌측 동일값 병합).
-  const tableFormat=splitCheckViewActive?"split":(mergedViewActive?"merged":"cell");
+  const pemsViewActive=showPemsView&&!pemsDisabled&&!splitCheckViewActive;
+  const mergedViewActive=showMergedView&&!splitCheckViewActive&&!pemsViewActive;
+  // 표시 형식 4종: cell / split / merged / PEMS(root lot 전용 1..25 고정).
+  const tableFormat=splitCheckViewActive?"split":(pemsViewActive?"pems":(mergedViewActive?"merged":"cell"));
   const setTableFormat=(m)=>{
-    if(m==="split"){if(splitCheckDisabled)return;setShowMergedView(false);setShowSplitCheckView(true);return;}
+    if(m==="split"){if(splitCheckDisabled)return;setShowMergedView(false);setShowPemsView(false);setShowSplitCheckView(true);return;}
+    if(m==="pems"){
+      if(pemsDisabled)return;
+      setShowMergedView(false);setShowSplitCheckView(false);setShowPemsView(true);
+      // PEMS는 wafer 필터와 무관하게 물리 wafer 1..25 전체를 사용한다.
+      if(waferIds.trim()){
+        setWaferIds("");
+        if(data) setTimeout(()=>loadView({waferIds:""}),0);
+      }
+      return;
+    }
     setShowSplitCheckView(false);
+    setShowPemsView(false);
     setShowMergedView(m==="merged");
   };
   const splitCheckToggleTitle=splitCheckDisabled
@@ -972,10 +1002,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     {k:"cell",l:"기본",t:"모든 행/열을 개별 칸으로 표시"},
     {k:"split",l:"Split 체크",t:splitCheckToggleTitle,d:splitCheckDisabled},
     {k:"merged",l:"병합",t:"KNOB/FAB/MASK 행에서 왼쪽 값과 같은 칸을 하나로 병합해 표시 (읽기 전용). INLINE/VM/TAG 는 wafer별 값이라 병합하지 않습니다."},
+    {k:"pems",l:"PEMS",t:!pemsRootOnly?"PEMS는 lot_id가 아닌 root_lot_id 단독 조회에서만 사용할 수 있습니다":"wafer 1~25를 고정 표시하고 값별 S0/S1 그룹을 직접 표기합니다. 없는 wafer는 S0에 회색으로 표시합니다.",d:pemsDisabled},
   ];
   useEffect(()=>{
     if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
   },[splitCheckDisabled,showSplitCheckView]);
+  useEffect(()=>{
+    if(pemsDisabled&&showPemsView)setShowPemsView(false);
+  },[pemsDisabled,showPemsView]);
   const expireSessionFromPreflight=()=>{
     try{localStorage.removeItem("hol_user");}catch(_e){}
     window.dispatchEvent(new Event("flow:session-expired"));
@@ -1034,7 +1068,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     const effectiveCustomCols=cleanCustomColumns(opts.customCols ?? customCols);
     const effectiveCustomName=cleanCustomName(opts.customName ?? selCustom);
     const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
-    let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
+    const effectiveWaferIds=opts.waferIds ?? waferIds;
+    let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(effectiveWaferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
     if(prepAttempt>0)url+="&cache_first=true";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
@@ -1798,6 +1833,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           </div>
           {settingsTab==="basic"&&<div style={{display:"grid",gap:10,marginBottom:10}}>
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
+              <ProductOrderEditor products={products.map(p=>p.name)} productOrder={productOrder}
+                onSave={saveProductOrder} busy={productOrderBusy}/>
+            </div>
+            <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
               <div style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>기본 표시 설정</div>
               <div style={{display:"grid",gap:8,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
                 <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",color:"var(--text-primary)"}}>
@@ -2302,7 +2341,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+stepLabelQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":"");const fmtSuffix=splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":"");const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+stepLabelQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--ok-line)",background:"transparent",color:"var(--ok)",fontSize:14,cursor:"pointer"}} title={splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)")}>⬇ XLSX</button>
+            <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=pemsViewActive?"&display_mode=pems":(splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":""));const fmtSuffix=pemsViewActive?"_pems":(splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":""));const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+stepLabelQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--ok-line)",background:"transparent",color:"var(--ok)",fontSize:14,cursor:"pointer"}} title={pemsViewActive?"XLSX (PEMS 1~25 · S0/S1 표시 형식)":(splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)"))}>⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--info)",background:"transparent",color:"var(--info)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
@@ -2547,16 +2586,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const lotHeaderHeight = hasLotRow ? 24 : 0;
         const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
-        // split 체크 뷰가 활성일 때만 스냅샷 뷰 모델 생성
-        const splitCheckStView=!splitCheckViewActive?null:buildSplitCheckStView({
+        const splitLikeSource={
           ...data,
           rows:displayRows,
           root_lot_id:lotHeaderRoot,
           lot_id_label:lotHeaderLot,
           prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
-          display_mode:"split_check",
           row_labels:{...(data.row_labels||{}),parameter:"항목"},
-        },{
+        };
+        const splitLikeBuildOptions={
           valueForCell:(cell,row)=>{
             if(!cell)return "";
             const {effectiveCell}=effectiveCellFor(cell);
@@ -2572,7 +2610,16 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const lines=matchStepLines(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta});
             return lines.length?lines.join("\n"):"";
           },
-        });
+        };
+        // Split 체크와 PEMS는 같은 항목/값/S그룹 골격을 공유한다.
+        const splitCheckStView=!splitCheckViewActive?null:buildSplitCheckStView({
+          ...splitLikeSource,
+          display_mode:"split_check",
+        },splitLikeBuildOptions);
+        const pemsStView=!pemsViewActive?null:buildPemsStView({
+          ...splitLikeSource,
+          display_mode:"pems",
+        },splitLikeBuildOptions);
         return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
         {data.background_cache?.queued&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(30,64,175,0.95)",background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>{data.background_cache.message||"관련 캐시를 백그라운드에서 준비 중입니다."}</div>}
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
@@ -2602,12 +2649,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           .splittable-grid td.stm-cell { user-select: none; }
           .splittable-grid td.stm-module-edit .stm-module-hint { opacity: 0; transition: opacity 0.15s; }
           .splittable-grid td.stm-module-edit:hover .stm-module-hint { opacity: 1; }`}</style>
-        {splitCheckViewActive ? (
+        {splitCheckViewActive||pemsViewActive ? (
         <SplitTableSnapshotView
-          stView={splitCheckStView}
+          stView={pemsViewActive?pemsStView:splitCheckStView}
           product={selProd}
           showTitle={false}
-          emptyMessage="Split 체크로 표시할 값이 없습니다"
+          emptyMessage={pemsViewActive?"PEMS로 표시할 값이 없습니다":"Split 체크로 표시할 값이 없습니다"}
           maxHeight="none"
         />
         ) : (

@@ -59,8 +59,17 @@ def _require_teg_user(user=Depends(current_user)) -> dict:
     raise HTTPException(403, "TEG page permission required")
 
 
-def _config_payload() -> dict:
+def _require_product_access(user: dict, vehicle: str) -> None:
+    if not _tm.can_access_product(user, vehicle):
+        raise HTTPException(403, "이 제품 노드에 대한 접근 권한이 없습니다")
+
+
+def _config_payload(*, include_product_access: bool = False) -> dict:
     cfg = _tm.load_cfg()
+    visible_cfg = dict(cfg)
+    if not include_product_access:
+        visible_cfg.pop("product_nodes", None)
+        visible_cfg.pop("node_access", None)
     # 설정 파일명이 개발 경로나 대소문자 차이로 운영에서 그대로 존재하지 않아도
     # core가 찾아낸 실제 유효 layout 경로를 상태 화면에 보여준다.
     layout, lay_path = _tm.load_layout()
@@ -68,7 +77,7 @@ def _config_payload() -> dict:
     chip_path = _tm.resolve_path(cfg["main_chip_file"])
     return {
         "ok": True,
-        "config": cfg,
+        "config": visible_cfg,
         "layout_ok": layout is not None and not layout.empty,
         "teg_ok": teg_path.is_file(),
         "main_chip_ok": chip_path.is_file(),
@@ -81,8 +90,8 @@ def _config_payload() -> dict:
 
 
 @router.get("/config")
-def config_get(_user=Depends(current_user)):
-    return _config_payload()
+def config_get(user=Depends(current_user)):
+    return _config_payload(include_product_access=user.get("role") == "admin")
 
 
 class ConfigReq(BaseModel):
@@ -106,7 +115,7 @@ def config_put(req: ConfigReq, user=Depends(_require_manager)):
         raise HTTPException(400, f"설정값 오류: {e}")
     from core.audit import record_user as _audit_user
     _audit_user(user.get("username", ""), "teg-map:config_save")
-    return _config_payload()
+    return _config_payload(include_product_access=user.get("role") == "admin")
 
 
 class ReferenceFileSaveReq(BaseModel):
@@ -151,14 +160,161 @@ def reference_file_put(req: ReferenceFileSaveReq, user=Depends(_require_teg_user
     return out
 
 
+class ProductPreviewReq(BaseModel):
+    text: str
+
+
+class ProductTegReq(BaseModel):
+    teg: str
+    top_cell: str = ""
+    direction: str
+    ebeam_x: float
+    ebeam_y: float
+    teg_w: float
+    teg_h: float
+
+
+class ProductMainChipReq(BaseModel):
+    chip_name: str
+    chipsize_x: float
+    chipsize_y: float
+
+
+class ProductCreateReq(BaseModel):
+    text: str
+    vehicle: str
+    node_path: str
+    tegs: list[ProductTegReq]
+    main_chip: ProductMainChipReq | None = None
+
+
+class ProductIdentityReq(BaseModel):
+    vehicle: str
+    node_path: str
+
+
+@router.post("/product-preview")
+def product_preview(req: ProductPreviewReq, _user=Depends(_require_teg_user)):
+    try:
+        return _tm.product_info_preview(req.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/products")
+def product_create(req: ProductCreateReq, user=Depends(_require_teg_user)):
+    if not _tm.can_access_node_path(user, req.node_path):
+        raise HTTPException(403, "이 상위 제품 노드에 생성할 권한이 없습니다")
+    try:
+        out = _tm.create_product_from_table(
+            req.text, req.vehicle,
+            [item.model_dump() for item in req.tegs],
+            req.main_chip.model_dump() if req.main_chip else None,
+            user.get("username", ""),
+            req.node_path,
+        )
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    from core.audit import record_user as _audit_user
+    _audit_user(user.get("username", ""), "teg-map:product-create",
+                detail=f"vehicle={out['vehicle']} shots={out['shot_count']}", tab="teg")
+    return out
+
+
+@router.get("/products/{vehicle}/geometry")
+def product_geometry_get(vehicle: str, user=Depends(_require_teg_user)):
+    """현재 저장된 Item/X/Y config. legacy 제품은 exists=false."""
+    _require_product_access(user, vehicle)
+    try:
+        return _tm.product_info_payload(vehicle)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.put("/products/{vehicle}/geometry")
+def product_geometry_update(vehicle: str, req: ProductPreviewReq,
+                            user=Depends(_require_teg_user)):
+    """기존 제품의 Item/X/Y와 해당 Chip_Radius 행을 함께 갱신한다."""
+    _require_product_access(user, vehicle)
+    try:
+        out = _tm.update_product_from_table(
+            req.text, vehicle, user.get("username", ""),
+        )
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    from core.audit import record_user as _audit_user
+    _audit_user(user.get("username", ""), "teg-map:product-config-update",
+                detail=f"vehicle={out['vehicle']} shots={out['shot_count']}", tab="teg")
+    return out
+
+
+@router.put("/products/{vehicle}/identity")
+def product_identity_update(vehicle: str, req: ProductIdentityReq,
+                            user=Depends(_require_teg_user)):
+    """제품명 조인 키와 제품 분류를 모든 TEG 기준 파일/설정에 함께 갱신한다."""
+    _require_product_access(user, vehicle)
+    if not _tm.can_access_node_path(user, req.node_path):
+        raise HTTPException(403, "이 제품 분류에 저장할 권한이 없습니다")
+    try:
+        out = _tm.update_product_identity(
+            vehicle, req.vehicle, req.node_path, user.get("username", ""),
+        )
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    from core.audit import record_user as _audit_user
+    _audit_user(user.get("username", ""), "teg-map:product-identity-update",
+                detail=(f"vehicle={out['previous_vehicle']}->{out['vehicle']};"
+                        f"node={out['node_path']}"), tab="teg")
+    return out
+
+
 @router.get("/vehicles")
-def vehicles(_user=Depends(current_user)):
-    return {"ok": True, "vehicles": _tm.vehicles()}
+def vehicles(user=Depends(current_user)):
+    products = _tm.visible_product_catalog(user)
+    return {"ok": True, "vehicles": [item["vehicle"] for item in products],
+            "products": products}
+
+
+class NodeAccessRuleReq(BaseModel):
+    users: list[str] = []
+    departments: list[str] = []
+
+
+class ProductAccessReq(BaseModel):
+    product_nodes: dict[str, str] = {}
+    node_access: dict[str, NodeAccessRuleReq] = {}
+
+
+@router.get("/product-access")
+def product_access_get(_admin=Depends(require_admin)):
+    from routers.auth import read_users
+    users = [str(row.get("username") or "").strip() for row in read_users()
+             if row.get("status") == "approved" and str(row.get("username") or "").strip()]
+    cfg = _tm.load_cfg()
+    return {"ok": True, "products": _tm.product_catalog(),
+            "product_nodes": cfg.get("product_nodes") or {},
+            "node_access": cfg.get("node_access") or {},
+            "users": sorted(set(users), key=str.casefold)}
+
+
+@router.put("/product-access")
+def product_access_put(req: ProductAccessReq, admin=Depends(require_admin)):
+    cfg = _tm.save_cfg({
+        "product_nodes": req.product_nodes,
+        "node_access": {root: rule.model_dump() for root, rule in req.node_access.items()},
+    })
+    from core.audit import record_user as _audit_user
+    _audit_user(admin.get("username", ""), "teg-map:product-access-save",
+                detail=f"products={len(req.product_nodes)};roots={len(req.node_access)}", tab="teg")
+    return {"ok": True, "products": _tm.product_catalog(),
+            "product_nodes": cfg.get("product_nodes") or {},
+            "node_access": cfg.get("node_access") or {}}
 
 
 @router.get("/check-targets")
-def check_targets_get(vehicle: str = Query(...), _user=Depends(current_user)):
+def check_targets_get(vehicle: str = Query(...), user=Depends(current_user)):
     """vehicle 의 teg 목록 + 현재 Mapfile 체크 대상 TEG 선택 (읽기 — 누구나)."""
+    _require_product_access(user, vehicle)
     return _tm.teg_target_options(vehicle)
 
 
@@ -171,13 +327,15 @@ class CheckTargetsReq(BaseModel):
 class InlineMapShotReq(BaseModel):
     shot_x: float
     shot_y: float
-    name: str
+    subitem_id: str = ""
+    name: str = ""
 
 
 class InlineMapTableReq(BaseModel):
     table_name: str
     vehicle: str
     shots: list[InlineMapShotReq]
+    comment: str = ""
 
 
 @router.get("/inline-map-settings")
@@ -195,6 +353,7 @@ def inline_map_settings_put(req: InlineMapTableReq, admin=Depends(require_admin)
             req.vehicle,
             [item.model_dump() for item in req.shots],
             admin.get("username", ""),
+            req.comment,
         )
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
@@ -226,6 +385,7 @@ def check_targets_put(req: CheckTargetsReq, user=Depends(_require_manager)):
     veh = str(req.vehicle or "").strip()
     if not veh:
         raise HTTPException(400, "vehicle 이 비어 있습니다")
+    _require_product_access(user, veh)
     _tm.save_cfg({"check_targets": {veh: req.targets}})
     from core.audit import record_user as _audit_user
     _audit_user(user.get("username", ""), f"teg-map:check_targets:{veh}")
@@ -234,6 +394,7 @@ def check_targets_put(req: CheckTargetsReq, user=Depends(_require_manager)):
 
 @router.get("/map")
 def wf_map(vehicle: str = Query(...), user=Depends(current_user)):
+    _require_product_access(user, vehicle)
     try:
         payload = _tm.map_payload(vehicle)
     except FileNotFoundError as e:
@@ -261,32 +422,35 @@ class InspectReq(BaseModel):
 
 
 @router.post("/inspect")
-def inspect(req: InspectReq, _user=Depends(current_user)):
+def inspect(req: InspectReq, user=Depends(current_user)):
     if not req.text.strip():
         raise HTTPException(400, "원문(text)이 비어 있습니다")
+    _require_product_access(user, req.vehicle)
     return _tc.inspect(req.vehicle, req.text, req.flat, custom_markers=req.markers,
                        name_overrides=req.name_overrides)
 
 
 @router.get("/generate")
 def generate(vehicle: str = Query(...), include_all: bool = Query(False),
-             _user=Depends(current_user)):
+             user=Depends(current_user)):
     """Mapfile용 좌표 생성 — 체크 대상 TEG 를 기준 PCHK=(0,0) 상대좌표로 되돌린 **표**.
 
-    Mapfile 체크의 역방향(정답지 → 설비 좌표)이다. flat(Horizontal/Vertical(R))
-    별로 따로 만들며, include_all=True 면 direction 이 다른 TEG 도 함께 넣는다.
+    Mapfile 체크의 역방향(정답지 → 설비 좌표)이다. flat별로 따로 만들며
+    Vertical(L)은 실제 L 방향 데이터가 있을 때만 포함한다. include_all=True 면
+    direction 이 다른 TEG 도 함께 넣는다.
     설비 원문 문자열은 내보내지 않는다 — 좌표표만 돌려준다.
     """
     veh = str(vehicle or "").strip()
     if not veh:
         raise HTTPException(400, "vehicle 이 비어 있습니다")
+    _require_product_access(user, veh)
     return _tc.build_mapfile(veh, include_all=include_all)
 
 
 @router.get("/main-grid")
 def main_grid(vehicle: str = Query(...), mains: str = Query(""),
               gap_x: float = Query(0.0), gap_y: float = Query(0.0),
-              _user=Depends(current_user)):
+              user=Depends(current_user)):
     """MAIN die 안의 TEG 자리 생성 — die 를 기본 TEG 사이즈 격자로 나눈 표.
 
     MAIN 안의 TEG 는 정답지에 없어 좌표를 만들 근거가 없다. die 를 격자로 나눠
@@ -297,12 +461,14 @@ def main_grid(vehicle: str = Query(...), mains: str = Query(""),
     veh = str(vehicle or "").strip()
     if not veh:
         raise HTTPException(400, "vehicle 이 비어 있습니다")
+    _require_product_access(user, veh)
     names = [t.strip() for t in str(mains or "").split(",") if t.strip()]
     return _tc.build_main_grid(veh, names, gap_x=gap_x, gap_y=gap_y)
 
 
 @router.get("/radius")
-def radius(vehicle: str = Query(...), teg: str = Query(...), _user=Depends(current_user)):
+def radius(vehicle: str = Query(...), teg: str = Query(...), user=Depends(current_user)):
+    _require_product_access(user, vehicle)
     try:
         return _tm.teg_radius_table(vehicle, teg)
     except FileNotFoundError as e:
@@ -314,7 +480,8 @@ def radius(vehicle: str = Query(...), teg: str = Query(...), _user=Depends(curre
 
 
 @router.get("/image")
-def image_get(vehicle: str = Query(...), _user=Depends(current_user)):
+def image_get(vehicle: str = Query(...), user=Depends(current_user)):
+    _require_product_access(user, vehicle)
     p = _tm.image_path(vehicle)
     if p is None:
         raise HTTPException(404, "등록된 그림이 없습니다")
@@ -347,6 +514,7 @@ async def _read_upload_file(request: Request) -> tuple[str, bytes]:
 @router.post("/image")
 async def image_upload(request: Request, vehicle: str = Query(...),
                        user=Depends(_require_manager)):
+    _require_product_access(user, vehicle)
     filename, data = await _read_upload_file(request)
     ext = Path(filename).suffix.lower()
     old = _tm.image_path(vehicle)
@@ -365,6 +533,7 @@ async def image_upload(request: Request, vehicle: str = Query(...),
 
 @router.delete("/image")
 def image_delete(vehicle: str = Query(...), user=Depends(_require_manager)):
+    _require_product_access(user, vehicle)
     _teg_shape.invalidate(_tm.image_path(vehicle))
     _tm.delete_image(vehicle)
     return {"ok": True}
@@ -403,5 +572,6 @@ def _image_shapes(vehicle: str) -> dict:
 
 
 @router.get("/image/shapes")
-def image_shapes(vehicle: str = Query(...), _user=Depends(current_user)):
+def image_shapes(vehicle: str = Query(...), user=Depends(current_user)):
+    _require_product_access(user, vehicle)
     return _image_shapes(vehicle)

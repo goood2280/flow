@@ -1,7 +1,65 @@
 {
-  "version": "10.4.129",
+  "version": "10.4.134",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.134",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "MAIN 꼬리표가 있는 module의 S/L 오인식 차단",
+      "changes": [
+        "[MAIN 우선] 대표 module 이름뿐 아니라 전체 꼬리표와 이름 후보를 검사해 MAIN 토큰이 하나라도 있으면 행 전체를 MAIN 소속으로 분류",
+        "[확장 매칭 차단] MAIN 소속 행은 정확·01 제거·접두사 변환·분할 TEG 매칭에서 제외해 H_DVC01 같은 이름이 DEVICE_H01 계열 S/L TEG로 잡히지 않도록 수정",
+        "[세팅 현황 분리] MAIN 소속 행의 후보 토큰은 S/L Mapfile 세팅 여부 집계에도 사용하지 않도록 분리",
+        "[MAIN 그룹 복원] MAIN 토큰이 꼬리표 뒤에 있어도 그룹 이름과 내부 TEG 이름을 각각 추출해 MAIN 내부 판정은 유지"
+      ]
+    },
+    {
+      "version": "10.4.133",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "Mapfile 세팅 현황을 S/L TEG 전용으로 정리",
+      "changes": [
+        "[목적 명확화] Mapfile 세팅 현황은 Teg_location.csv에 정의된 S/L TEG가 모두 세팅됐는지만 확인하도록 안내 문구 추가",
+        "[MAIN 분리] MAIN 내부 항목이라 정답지에 없는 것이 정상인 Mapfile에만 있음/정답지 미등록 목록을 세팅 현황에서 제거"
+      ]
+    },
+    {
+      "version": "10.4.132",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "Mapfile TEG 분류 기준과 MAIN 정보 누락 표시 수정",
+      "changes": [
+        "[분류 기준] Teg_location.csv에서 teg/top_cell이 확인되는 항목만 S/L TEG로 판정하고 미등록 Mapfile module은 MAIN TEG 정보 누락으로 분리",
+        "[오판 방지] Teg_location 미등록 항목에는 일반 S/L die 침범 검사를 적용하지 않아 MAIN 항목이 S/L die 침범으로 표시되던 문제 수정",
+        "[누락 경고] 미등록 module과 Main_chip_info.csv에서 크기를 찾지 못한 명시적 MAIN 그룹을 MAIN 정보없음 빨간 상태로 표시",
+        "[화면 정리] Summary·상세 집계·Mapfile 세팅 현황·shot 배치도의 구분과 문구를 같은 MAIN 정보없음 기준으로 통일"
+      ]
+    },
+    {
+      "version": "10.4.131",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "TEG Shot 좌표 1-based R/C grid와 config 전체 보존",
+      "changes": [
+        "[좌표 기준] config의 R/C Count X/Y를 full-shot 사각형의 가로·세로 개수로 분리해 사용하고 full grid 좌상단을 (1,1), 우하단을 (X개수,Y개수)로 표시",
+        "[항목 분리] 기존 Shot 항목은 shot 내부 칩 배열 개수로 유지하고 R/C Count만 wafer full-shot 좌표 범위에 적용",
+        "[물리 위치 유지] 공개 shot 번호만 1-based로 평행 이동하고 Shot Size·Map offset으로 계산한 실제 shot 중심과 실 Center 차이는 동일하게 유지",
+        "[원문 보존] 계산에 필요한 행만 남기던 TEG_Product_Info 저장을 변경해 붙여넣은 모든 Item/X/Y 행을 순서대로 저장하고 config 재진입 시 그대로 복원"
+      ]
+    },
+    {
+      "version": "10.4.130",
+      "date": "2026-08-28",
+      "tag": "chore",
+      "title": "Flow-i 설치 번들 임시 분리",
+      "changes": [
+        "[로컬 보존] 현재 Flow-i 라우터·unit AI·학습 화면과 관련 소스를 backup/flowi-10.4.129에 별도 보존",
+        "[설치본 경량화] Flow-i 전용 백엔드 모듈·에이전트 화면·테스트를 setup.py 수집 대상에서 제외하고 workflow seed도 중단",
+        "[기동 안전] 기존 설치에 남은 Flow-i 라우터는 자동 discovery에서 제외하고 일반 LLM 상태·테스트·오류 설명·DCOP 요약만 작은 독립 라우터로 유지",
+        "[화면 정리] 홈은 일반 기능 바로가기 화면으로 교체하고 에이전트 메뉴와 Calendar·Tracker의 Flow-i 입력창을 숨김"
+      ]
+    },
     {
       "version": "10.4.129",
       "date": "2026-08-28",

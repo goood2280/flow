@@ -131,16 +131,22 @@ export function FlowPlotlyChart({
   const title = cfg.title || chart?.title || "";
   const axisXLabel = chartType === "bar_horizontal" ? yLabel : xLabel;
   const axisYLabel = chartType === "bar_horizontal" ? xLabel : yLabel;
-  const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 7);
+  const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 9);
   const isTrendScatter = Boolean(cfg.trend_grain || chart?.trend_grain);
   const emphasizeMarkers = Boolean(isTrendScatter || cfg.emphasize_markers || chart?.emphasize_markers);
   const useSvg = Boolean(cfg.use_svg || chart?.use_svg);
   const compact = Boolean(cfg.compact || chart?.compact);
   const hideTitle = Boolean(cfg.hide_title || chart?.hide_title);
   const emphasizeAxes = Boolean(cfg.emphasize_axes || chart?.emphasize_axes);
+  const axisTitleSize = Number(cfg.axis_title_size || chart?.axis_title_size || (isTrendScatter ? 18 : 16));
+  const axisLineWidth = Number(cfg.axis_line_width || chart?.axis_line_width || (emphasizeAxes ? 2 : 1));
+  const tickFontSize = Number(cfg.tick_font_size || chart?.tick_font_size || 11);
   // 아래에 눈금과 정렬된 표가 붙을 때는 x 눈금 글자를 끈다 — 표 머리글이 같은
   // 이름을 다시 쓰므로 그대로 두면 카테고리 이름이 두 줄로 겹쳐 보인다.
   const hideXTicks = Boolean(cfg.hide_x_ticks || chart?.hide_x_ticks);
+  // 저장 차트의 SHOW_LEGEND=false 계약. Template Report에서 공통 범례 블록을
+  // 따로 둘 때 각 차트 내부의 중복 범례만 감춘다.
+  const showLegend = cfg.show_legend !== false && chart?.show_legend !== false;
   const fit = chart?.fit || chart?.fit_params || cfg.fit_params || null;
   const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
   const fitLabel = fitOk && Number.isFinite(Number(fit.r2)) ? `R²=${Number(fit.r2).toFixed(4)}` : "";
@@ -226,7 +232,7 @@ export function FlowPlotlyChart({
           ...(rows.length && means.every((value) => value != null) ? { mean: means, boxmean: true } : {}),
           customdata: rows.map((row) => Number(row?.n || 0)),
           hovertemplate: `%{x}<br>${yLabel}<br>max %{upperfence}<br>q3 %{q3}<br>median %{median}<br>q1 %{q1}<br>min %{lowerfence}<br>n=%{customdata}<extra></extra>`,
-          marker: { color: seriesColor, opacity: 0.8, size: 5 },
+          marker: { color: seriesColor, opacity: 0.8, size: 7 },
           line: { color: seriesColor, width: 1.5 },
           fillcolor: lightenHex(seriesColor, 0.62),
         }],
@@ -261,7 +267,7 @@ export function FlowPlotlyChart({
           boxpoints: "outliers",
           jitter: 0.2,
           pointpos: 0,
-          marker: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], opacity: 0.72, size: 5 },
+          marker: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], opacity: 0.78, size: 7 },
           line: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], width: 1.5 },
           fillcolor: lightenHex(name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], 0.62),
         })),
@@ -296,7 +302,7 @@ export function FlowPlotlyChart({
             ? { color: dark ? "#6b7280" : "#374151", width: 1.3 }
             : { color: dark ? "#111111" : "#ffffff", width: 0.6 },
         },
-        line: { color: seriesColor, width: 1.6 },
+        line: { color: seriesColor, width: chartType === "line" ? 2.3 : 1.8 },
       };
     });
     if (cubicFit) {
@@ -427,7 +433,8 @@ export function FlowPlotlyChart({
           // 키 자체를 빼야 한다.
           ...(radial ? {} : {
             xaxis: {
-              title: { text: axisXLabel, font: { size: isTrendScatter ? 16 : 13, color: fg } },
+              title: { text: axisXLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
+              tickfont: { size: tickFontSize, color: fg },
               showticklabels: !hideXTicks,
               // 상자는 범주축에 균등 배치 — 그래야 아래 통계표 열과 자리가 맞는다.
               ...(chartType === "box" && categoryArray?.length
@@ -438,18 +445,19 @@ export function FlowPlotlyChart({
               color: fg,
               showline: emphasizeAxes,
               linecolor: emphasizeAxes ? "#000000" : fg,
-              linewidth: emphasizeAxes ? 2 : 1,
+              linewidth: axisLineWidth,
               mirror: false,
               automargin: true,
             },
             yaxis: {
-              title: { text: axisYLabel, font: { size: isTrendScatter ? 16 : 13, color: fg } },
+              title: { text: axisYLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
+              tickfont: { size: tickFontSize, color: fg },
               gridcolor: grid,
               zerolinecolor: grid,
               color: fg,
               showline: emphasizeAxes,
               linecolor: emphasizeAxes ? "#000000" : fg,
-              linewidth: emphasizeAxes ? 2 : 1,
+              linewidth: axisLineWidth,
               mirror: false,
               automargin: true,
             },
@@ -460,7 +468,7 @@ export function FlowPlotlyChart({
             x: 0,
             font: { size: 11, color: fg },
           },
-          showlegend: colorBy ? true : legendCounts.length > 1,
+          showlegend: showLegend && (colorBy ? true : legendCounts.length > 1),
           // 회귀 라벨은 그림 "안쪽" 오른쪽 위에 둔다 — 예전처럼 y=1.08 로 밖에
           // 내보내면 위 여백이 좁을 때 글자 윗줄이 카드에 잘려 나갔다.
           annotations: fitLabel ? [{

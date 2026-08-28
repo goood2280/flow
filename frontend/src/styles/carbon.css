@@ -12,7 +12,7 @@
  *
  * 제외 (의도적 고정 디자인):
  *   - 로그인 화면 — .flow-app 바깥에서 렌더된다 (App.jsx). 자동 제외.
- *   - pre / code / kbd / samp — DevGuide 코드블록, 콘솔 출력.
+ *   - pre / code / kbd / samp — 코드블록, 콘솔 출력.
  *   - .tbl / .flow-table 이 아닌 표 — TableMap 엑셀 그리드, 메일 미리보기.
  *   - .flow-fixed 가 붙은 서브트리 — escape hatch. 고정 디자인 화면에서
  *     Carbon 이 거슬리면 그 컨테이너에 className="flow-fixed" 만 달면 된다.

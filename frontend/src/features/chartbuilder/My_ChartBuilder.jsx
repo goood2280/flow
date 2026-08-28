@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import BoxStatsTable from "../../components/BoxStatsTable";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import TegValueWaferMap from "../../components/TegValueWaferMap";
@@ -6,11 +6,12 @@ import { toast } from "../../components/Toast";
 import { postJson, sf } from "../../lib/api";
 import { boxBucketsFromPoints, boxStatsAlignment } from "../../lib/boxStats";
 import { chartColorMap as buildChartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
-import { chartColorListRules, chartColorListTextFromRules, parseChartColorList } from "../../lib/chartColorList";
+import { chartColorListRules, chartColorListTextFromRules, parseChartColorList, partitionChartColorRules } from "../../lib/chartColorList";
 
 const card={border:"1px solid var(--border)",borderRadius:10,background:"var(--bg-secondary)",padding:14};
 const input={width:"100%",boxSizing:"border-box",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)",padding:"7px 9px",fontSize:13};
 const btn={border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-tertiary)",color:"var(--text-primary)",padding:"7px 11px",fontWeight:800,cursor:"pointer"};
+const CHART_BUILDER_TRANSFER_KEY="flow:chartbuilder:definition-transfer";
 const PIE_SLICE_LIMIT=12;
 const AGGREGATIONS=["avg","median","p10","p90","min","max"];
 // Trend 단위 — shot/wafer 는 점만 찍고(원 측정값의 산포를 그대로 보여준다),
@@ -57,13 +58,46 @@ const JOIN_HOWS=[
   {how:"semi",short:"오른쪽에 있는 왼쪽 행만",desc:"오른쪽에 key 가 있는 왼쪽 행만 남기고, 오른쪽 열은 붙이지 않습니다. 값은 필요 없고 '오른쪽에 존재하는가'로 거르기만 할 때 씁니다(행이 늘지 않습니다)."},
   {how:"anti",short:"오른쪽에 없는 왼쪽 행만",desc:"semi 의 반대로, 오른쪽에 key 가 없는 왼쪽 행만 남깁니다. 매칭 실패분을 뽑아 원인을 볼 때 씁니다."},
 ];
-function newSource(index){return{id:`q${index}`,root:"",product:"",sql:"",select_cols:"",apply_reformatter:false,reformatter_items:"",runtime_recent_days:"",runtime_date_column:"",runtime_root_lot_ids:[],runtime_wafer_ids:[]};}
+function newSource(index){return{id:`q${index}`,root:"",product:"",sql:"",select_cols:"",apply_reformatter:false,reformatter_items:"",runtime_recent_days:"",runtime_date_column:"",runtime_root_lot_ids:[],runtime_wafer_ids:[],runtime_lot_wafer_pairs:[]};}
 // 시간 창은 저장 차트의 기본값이고, Template Report의 명시적 실행 컨텍스트가 이번 실행에만 덮어쓸 수 있다.
 const DEFAULT_DATE_COLUMN="tkout_time";
 function recentDaysValue(source){const days=Number(text(source?.runtime_recent_days).trim());return Number.isFinite(days)&&days>0?Math.min(3650,Math.round(days)):0;}
 function text(v){return v==null?"":String(v);}
 function listValues(value){return text(value).split(/[,\n]+/).map(item=>item.trim()).filter((item,index,all)=>item&&all.findIndex(other=>other.toLowerCase()===item.toLowerCase())===index).slice(0,200);}
 function csvCell(v){const s=text(v);return /[",\n\r]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}
+const COLOR_LIST_COLUMNS=["root_lot_id","wafer_id","color"];
+const COLOR_LIST_MIN_ROWS=10;
+const COLOR_LIST_MAX_ROWS=200;
+function blankColorListRow(){return{root_lot_id:"",wafer_id:"",color:""};}
+function colorListHeaderIndex(cells){
+  const normalized=cells.map(cell=>text(cell).trim().toLowerCase().replace(/[\s-]+/g,"_"));
+  const aliases={root_lot_id:"root_lot_id",root_lot:"root_lot_id",rootlotid:"root_lot_id",lot:"root_lot_id",wafer_id:"wafer_id",wafer:"wafer_id",wf:"wafer_id",color:"color",colour:"color",색상:"color",색:"color"};
+  const names=normalized.map(name=>aliases[name]||"");
+  return COLOR_LIST_COLUMNS.every(name=>names.includes(name))?Object.fromEntries(COLOR_LIST_COLUMNS.map(name=>[name,names.indexOf(name)])):null;
+}
+function normalizeColorListRows(rows){
+  const next=(rows||[]).slice(0,COLOR_LIST_MAX_ROWS).map(row=>Object.fromEntries(COLOR_LIST_COLUMNS.map(name=>[name,text(row?.[name])])));
+  let last=next.length-1;
+  while(last>=0&&!COLOR_LIST_COLUMNS.some(name=>text(next[last]?.[name]).trim()))last-=1;
+  const target=Math.min(COLOR_LIST_MAX_ROWS,Math.max(COLOR_LIST_MIN_ROWS,last+2));
+  next.length=Math.min(next.length,target);
+  while(next.length<target)next.push(blankColorListRow());
+  return next;
+}
+function colorListRowsFromText(value){
+  const lines=text(value).replace(/\r\n?/g,"\n").split("\n").filter(line=>line.trim());
+  if(!lines.length)return normalizeColorListRows([]);
+  const split=line=>line.includes("\t")?line.split("\t"):line.split(",");
+  const first=split(lines[0]),header=colorListHeaderIndex(first),body=lines.slice(header?1:0);
+  return normalizeColorListRows(body.map(line=>{
+    const cells=split(line),indexes=header||{root_lot_id:0,wafer_id:1,color:2};
+    return Object.fromEntries(COLOR_LIST_COLUMNS.map(name=>[name,text(cells[indexes[name]]).trim()]));
+  }));
+}
+function colorListTextFromRows(rows){
+  const filled=(rows||[]).filter(row=>COLOR_LIST_COLUMNS.some(name=>text(row?.[name]).trim()));
+  return filled.length?[COLOR_LIST_COLUMNS.join("\t"),...filled.map(row=>COLOR_LIST_COLUMNS.map(name=>text(row?.[name]).trim()).join("\t"))].join("\n"):"";
+}
 const DEFINITION_EXAMPLE=`Q1
 TABLE = INLINE
 PRODUCT = PRODA
@@ -197,8 +231,9 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
       lines.push(`DATE_COLUMN = ${text(source.runtime_date_column).trim()||DEFAULT_DATE_COLUMN}`);
     }
     const rootLots=listValues(source.runtime_root_lot_ids||[]),wafers=listValues(source.runtime_wafer_ids||[]);
-    if(rootLots.length)lines.push(`ROOT_LOTS = ${rootLots.join(", ")}`);
-    if(wafers.length)lines.push(`WAFERS = ${wafers.join(", ")}`);
+    const linkedPairs=Array.isArray(source.runtime_lot_wafer_pairs)?source.runtime_lot_wafer_pairs.filter(pair=>text(pair?.root_lot_id).trim()&&text(pair?.wafer_id).trim()):[];
+    if(!linkedPairs.length&&rootLots.length)lines.push(`ROOT_LOTS = ${rootLots.join(", ")}`);
+    if(!linkedPairs.length&&wafers.length)lines.push(`WAFERS = ${wafers.join(", ")}`);
     if(source.apply_reformatter){
       lines.push("REFORMATTER = true");
       if(text(source.reformatter_items).trim())lines.push(`ITEMS = ${text(source.reformatter_items).trim()}`);
@@ -219,6 +254,7 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
     (chart.color_rules||[]).forEach(rule=>{if(text(rule).trim())lines.push(`COLOR_RULE = ${text(rule).trim()}`);});
     if(text(chart.color_else).trim())lines.push(`COLOR_ELSE = ${text(chart.color_else).trim()}`);
     if(chart.highlight!=null)lines.push(`HIGHLIGHT = ${chart.highlight?"true":"false"}`);
+    if(chart.show_legend!=null)lines.push(`SHOW_LEGEND = ${chart.show_legend?"true":"false"}`);
     lines.push("");
   }
   lines.push(`MAX_ROWS = ${Math.max(1,Math.min(10000,Number(maxRows)||10000))}`);
@@ -231,6 +267,215 @@ function historyTime(value){
 function sqlIdentifier(value){
   const name=text(value).trim();
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)?name:`\`${name.replace(/`/g,"``")}\``;
+}
+
+function sqlColumnCompletion(value,caret){
+  const source=text(value),position=Math.max(0,Math.min(Number(caret)||0,source.length));
+  const before=source.slice(0,position);
+  const keywords=[...before.matchAll(/\b(SELECT|WHERE|ORDER\s+BY|GROUP\s+BY|LIMIT)\b/gi)];
+  const latest=keywords[keywords.length-1];
+  if(!latest)return null;
+  const clause=latest[1].replace(/\s+/g," ").toUpperCase();
+  if(clause!=="SELECT"&&clause!=="WHERE")return null;
+  const clauseText=before.slice((latest.index||0)+latest[0].length);
+  let singleQuoted=false;
+  for(let index=0;index<clauseText.length;index+=1){
+    if(clauseText[index]!=="'")continue;
+    if(singleQuoted&&clauseText[index+1]==="'"){index+=1;continue;}
+    singleQuoted=!singleQuoted;
+  }
+  if(singleQuoted)return null;
+  let start=position;
+  while(start>0&&/[A-Za-z0-9_$]/.test(source[start-1]))start-=1;
+  const token=source.slice(start,position);
+  if(token.length<3||!/^[A-Za-z_$]/.test(token))return null;
+  let end=position;
+  while(end<source.length&&/[A-Za-z0-9_$]/.test(source[end]))end+=1;
+  return{clause,token,start,end};
+}
+
+function definitionSqlAutocompleteContext(value,caret){
+  const source=text(value),position=Math.max(0,Math.min(Number(caret)||0,source.length));
+  const before=source.slice(0,position);
+  const headers=[...before.matchAll(/(?:^|\n)[ \t]*(?:Q\d+|\[[^\]\n]+\])(?=[ \t]*(?:\n|\||$))/gi)];
+  const header=headers[headers.length-1];
+  if(!header)return null;
+  const blockStart=(header.index||0)+header[0].lastIndexOf("\n")+1;
+  const blockBefore=source.slice(blockStart,position);
+  const sqlAssignments=[...blockBefore.matchAll(/\bSQL\s*=\s*/gi)];
+  const sqlAssignment=sqlAssignments[sqlAssignments.length-1];
+  if(!sqlAssignment)return null;
+  const sqlStart=blockStart+(sqlAssignment.index||0)+sqlAssignment[0].length;
+  const sqlBeforeCaret=source.slice(sqlStart,position);
+  if(/\n(?![ \t])(?:[A-Z_][A-Z0-9_]*\s*=|JOIN\b|CHART\b|Q\d+\b|\[)/i.test(sqlBeforeCaret))return null;
+  const completion=sqlColumnCompletion(source.slice(sqlStart),position-sqlStart);
+  const table=blockBefore.match(/\bTABLE\s*=\s*([^\s|]+)/i)?.[1]||"";
+  const product=blockBefore.match(/\bPRODUCT\s*=\s*([^\s|]+)/i)?.[1]||"";
+  return completion?{
+    completion:{...completion,start:completion.start+sqlStart,end:completion.end+sqlStart},
+    root:table,
+    product,
+  }:null;
+}
+
+function definitionQueryAutocompleteContexts(value){
+  const source=text(value);
+  const headers=[...source.matchAll(/(?:^|\n)[ \t]*(Q\d+|\[([^\]\n]+)\])(?=[ \t]*(?:\n|\||$))/gi)];
+  return headers.map((header,index)=>{
+    const start=(header.index||0)+header[0].lastIndexOf("\n")+1;
+    const end=index+1<(headers.length)?(headers[index+1].index||source.length):source.length;
+    const block=source.slice(start,end);
+    return{
+      id:text(header[2]||header[1]).replace(/^\[|\]$/g,"").trim(),
+      root:block.match(/\bTABLE\s*=\s*([^\s|]+)/i)?.[1]||"",
+      product:block.match(/\bPRODUCT\s*=\s*([^\s|]+)/i)?.[1]||"",
+    };
+  });
+}
+
+function textareaCaretPoint(textarea,position){
+  if(!textarea||typeof document==="undefined")return{left:8,top:30,width:320};
+  const computed=window.getComputedStyle(textarea);
+  const mirror=document.createElement("div");
+  const properties=[
+    "boxSizing","width","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth",
+    "paddingTop","paddingRight","paddingBottom","paddingLeft","fontStyle","fontVariant","fontWeight",
+    "fontStretch","fontSize","fontFamily","lineHeight","letterSpacing","textTransform","textAlign",
+    "textIndent","textDecoration","wordSpacing","tabSize","MozTabSize",
+  ];
+  properties.forEach(property=>{mirror.style[property]=computed[property];});
+  mirror.style.position="absolute";
+  mirror.style.visibility="hidden";
+  mirror.style.whiteSpace="pre-wrap";
+  mirror.style.overflowWrap="break-word";
+  mirror.style.top="0";
+  mirror.style.left="-9999px";
+  mirror.style.height="auto";
+  mirror.textContent=text(textarea.value).slice(0,position);
+  if(textarea.value[position-1]==="\n")mirror.textContent+="\u200b";
+  const marker=document.createElement("span");
+  marker.textContent=text(textarea.value).slice(position)||"\u200b";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const lineHeight=Number.parseFloat(computed.lineHeight)||Number.parseFloat(computed.fontSize)*1.4||18;
+  const point={
+    left:marker.offsetLeft-textarea.scrollLeft,
+    top:marker.offsetTop-textarea.scrollTop+lineHeight+3,
+    width:textarea.clientWidth,
+  };
+  mirror.remove();
+  return point;
+}
+
+function SqlColumnAutocomplete({value,onChange,root,product,resolveContext,ariaLabel,rows=4,placeholder="",id,style={}}){
+  const textareaRef=useRef(null);
+  const[caret,setCaret]=useState(text(value).length);
+  const[focused,setFocused]=useState(false);
+  const[suggestions,setSuggestions]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[activeIndex,setActiveIndex]=useState(0);
+  const[suspendSearch,setSuspendSearch]=useState(false);
+  const[caretPoint,setCaretPoint]=useState({left:8,top:30,width:320});
+  const resolved=useMemo(()=>resolveContext?resolveContext(value,caret):null,[resolveContext,value,caret]);
+  const completion=resolved?.completion||sqlColumnCompletion(value,caret);
+  const activeRoot=resolved?.root||root;
+  const activeProduct=resolved?.product||product;
+  const canSearch=Boolean(focused&&!suspendSearch&&activeRoot&&activeProduct&&completion);
+  const listId=`${ariaLabel.replace(/[^A-Za-z0-9_-]+/g,"-").toLowerCase()}-columns`;
+
+  useEffect(()=>{
+    if(!canSearch){setSuggestions([]);setLoading(false);return undefined;}
+    let alive=true;
+    const timer=setTimeout(()=>{
+      setLoading(true);
+      sf(`/api/filebrowser/columns/search?root=${encodeURIComponent(activeRoot)}&product=${encodeURIComponent(activeProduct)}&q=${encodeURIComponent(completion.token)}&limit=80`)
+        .then(data=>{
+          if(!alive)return;
+          const needle=completion.token.toLocaleLowerCase();
+          const matches=(data.columns||[]).map(column=>String(column||"")).filter(Boolean)
+            .sort((left,right)=>{
+              const l=left.toLocaleLowerCase(),r=right.toLocaleLowerCase();
+              const lp=l.startsWith(needle)?0:1,rp=r.startsWith(needle)?0:1;
+              return lp-rp||l.localeCompare(r);
+            });
+          setSuggestions(matches);
+          setActiveIndex(0);
+        })
+        .catch(()=>{if(alive)setSuggestions([]);})
+        .finally(()=>{if(alive)setLoading(false);});
+    },180);
+    return()=>{alive=false;clearTimeout(timer);};
+  },[canSearch,activeRoot,activeProduct,completion?.token,completion?.clause]);
+
+  const syncCaret=target=>{
+    const position=Number(target?.selectionStart)||0;
+    setCaret(position);
+    setCaretPoint(textareaCaretPoint(target,position));
+  };
+  const applySuggestion=column=>{
+    if(!completion||!column)return;
+    const inserted=sqlIdentifier(column);
+    const next=text(value).slice(0,completion.start)+inserted+text(value).slice(completion.end);
+    const nextCaret=completion.start+inserted.length;
+    onChange(next);
+    setSuggestions([]);
+    setSuspendSearch(true);
+    setCaret(nextCaret);
+    requestAnimationFrame(()=>{
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCaret,nextCaret);
+    });
+  };
+  const handleKeyDown=event=>{
+    if(!canSearch||!suggestions.length)return;
+    if(event.key==="Tab"){
+      event.preventDefault();
+      applySuggestion(suggestions[activeIndex]||suggestions[0]);
+    }else if(event.key==="ArrowDown"){
+      event.preventDefault();
+      setActiveIndex(index=>(index+1)%suggestions.length);
+    }else if(event.key==="ArrowUp"){
+      event.preventDefault();
+      setActiveIndex(index=>(index-1+suggestions.length)%suggestions.length);
+    }else if(event.key==="Escape"){
+      event.preventDefault();
+      setSuggestions([]);
+    }
+  };
+  const showPanel=canSearch&&(loading||suggestions.length>0);
+  const popupLeft=Math.max(4,Math.min(caretPoint.left,Math.max(4,caretPoint.width-250)));
+  const popupWidth=Math.max(230,Math.min(420,caretPoint.width-popupLeft-4));
+  return <div style={{position:"relative"}}>
+    <textarea
+      ref={textareaRef}
+      id={id}
+      aria-label={ariaLabel}
+      aria-autocomplete="list"
+      aria-controls={showPanel?listId:undefined}
+      aria-expanded={showPanel}
+      value={value}
+      onChange={event=>{setSuspendSearch(false);onChange(event.target.value);syncCaret(event.target);}}
+      onFocus={event=>{setFocused(true);syncCaret(event.target);}}
+      onBlur={()=>setFocused(false)}
+      onClick={event=>syncCaret(event.target)}
+      onSelect={event=>syncCaret(event.target)}
+      onScroll={event=>syncCaret(event.target)}
+      onKeyUp={event=>{if(!["Tab","ArrowDown","ArrowUp","Escape"].includes(event.key))syncCaret(event.target);}}
+      onKeyDown={handleKeyDown}
+      rows={rows}
+      placeholder={placeholder}
+      spellCheck={false}
+      style={style}
+    />
+    {showPanel&&<div id={listId} role="listbox" aria-label={`${ariaLabel} 열 자동완성`} style={{position:"absolute",zIndex:40,left:popupLeft,top:caretPoint.top,width:popupWidth,border:"1px solid var(--accent)",borderRadius:6,background:"var(--bg-primary)",boxShadow:"0 10px 26px rgba(15,23,42,.24)",maxHeight:170,overflow:"auto"}}>
+      <div style={{position:"sticky",top:0,zIndex:1,display:"flex",alignItems:"center",gap:6,padding:"6px 9px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)"}}>
+        <b style={{color:"var(--accent)"}}>{completion?.clause}</b>
+        <span>열 검색 · Tab 자동완성</span>
+        {loading&&<span style={{marginLeft:"auto"}}>조회 중…</span>}
+      </div>
+      {suggestions.map((column,index)=><button key={column} type="button" role="option" aria-selected={index===activeIndex} onMouseDown={event=>{event.preventDefault();applySuggestion(column);}} style={{display:"block",width:"100%",padding:"7px 9px",border:0,borderBottom:index<suggestions.length-1?"1px solid var(--border)":0,background:index===activeIndex?"var(--accent-glow)":"transparent",color:"var(--text-primary)",textAlign:"left",fontFamily:"'JetBrains Mono',monospace",fontSize:12,cursor:"pointer"}}>{column}</button>)}
+    </div>}
+  </div>;
 }
 
 function shotCoordinatePairs(columns){
@@ -315,7 +560,7 @@ function linearFit(points){
   return{slope,intercept,r2:corr*corr,corr,equation:`y = ${slope.toFixed(4)}x ${intercept<0?"-":"+"} ${Math.abs(intercept).toFixed(4)}`};
 }
 
-function QueryCard({source,index,roots,onChange,onRemove,onClone}){
+function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onClone}){
   const[products,setProducts]=useState([]);
   const[reformatterItems,setReformatterItems]=useState([]);
   const[reformatterBusy,setReformatterBusy]=useState(false);
@@ -379,14 +624,14 @@ function QueryCard({source,index,roots,onChange,onRemove,onClone}){
         <select value={source.product} onChange={e=>set("product",e.target.value)} style={{...input,marginTop:4}}><option value="">선택</option>{products.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select>
       </label>
     </div>
-    <label style={{display:"block",fontSize:12,color:"var(--text-secondary)",marginTop:9}}>SQL <span style={{fontWeight:400}}>— FROM은 선택한 DB/Product로 자동 지정됩니다.</span>
-      <textarea value={source.sql} onChange={e=>set("sql",e.target.value)} rows={4} placeholder="SELECT root_lot_id, wafer_id, tkout_time, value WHERE item_id = 'CD1' ORDER BY tkout_time" style={{...input,marginTop:4,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
-    </label>
+    <div style={{display:"block",fontSize:12,color:"var(--text-secondary)",marginTop:9}}>SQL <span style={{fontWeight:400}}>— FROM은 선택한 DB/Product로 자동 지정됩니다.</span>
+      <SqlColumnAutocomplete value={source.sql} onChange={value=>set("sql",value)} root={source.root||autocompleteSource?.root||""} product={source.product||autocompleteSource?.product||""} ariaLabel={`Query ${index+1} SQL`} rows={4} placeholder="SELECT root_lot_id, wafer_id, tkout_time, value WHERE item_id = 'CD1' ORDER BY tkout_time" style={{...input,marginTop:4,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/>
+    </div>
     <label style={{display:"block",fontSize:12,color:"var(--text-secondary)",marginTop:9}}>선택 열(선택 사항)
       <input value={source.select_cols} onChange={e=>set("select_cols",e.target.value)} placeholder="root_lot_id, wafer_id, tkout_time, value" style={{...input,marginTop:4,fontFamily:"monospace"}}/>
     </label>
     {isYieldShot&&<div style={{marginTop:10,padding:10,border:"1px solid #86efac",borderRadius:7,background:"#f0fdf4",color:"#166534",fontSize:12,lineHeight:1.55}}>
-      <b>Full Shot 수율 가상 DB</b> · Yield Map의 제품별 X/Y Scan 설정에서 완전한 shot만 가져옵니다.<br/>
+      <b>Full Shot 수율 가상 DB</b> · WF MAP의 제품별 X/Y Scan 설정에서 완전한 shot만 가져옵니다.<br/>
       Corr/JOIN 권장 열: <code>root_lot_id, wafer_id, shot_x, shot_y, shot_yield</code><br/>
       예: <code>SELECT root_lot_id, wafer_id, shot_x, shot_y, shot_yield</code>
     </div>}
@@ -510,12 +755,9 @@ export default function My_ChartBuilder({user}){
   const[trellisCol,setTrellisCol]=useState("");
   const[customColorRules,setCustomColorRules]=useState("");
   const[customColorElse,setCustomColorElse]=useState("gray");
-  const[colorListText,setColorListText]=useState("");
-  const[commonRootLots,setCommonRootLots]=useState("");
-  const[commonWafers,setCommonWafers]=useState("");
-  const[commonRecentDays,setCommonRecentDays]=useState("");
-  const[commonDateColumn,setCommonDateColumn]=useState(DEFAULT_DATE_COLUMN);
+  const[colorListRows,setColorListRows]=useState(()=>normalizeColorListRows([]));
   const[highlightEnabled,setHighlightEnabled]=useState(true);
+  const[showLegend,setShowLegend]=useState(true);
   const[chartWidth,setChartWidth]=useState("");
   const[chartHeight,setChartHeight]=useState("");
   const[assistantPrompt,setAssistantPrompt]=useState("");
@@ -523,7 +765,7 @@ export default function My_ChartBuilder({user}){
   const[assistantReply,setAssistantReply]=useState(null);
   useEffect(()=>{sf("/api/filebrowser/roots?fast=true").then(d=>setRoots([
     ...(d.roots||[]),
-    {name:"YIELD_SHOT",display_name:"Yield Map · Full Shot",granularity:"shot",structure:"virtual"},
+    {name:"YIELD_SHOT",display_name:"WF MAP · Full Shot",granularity:"shot",structure:"virtual"},
   ])).catch(e=>toast.error(e.message));},[]);
   const loadHistory=(query=historySearch)=>{
     setHistoryBusy(true);
@@ -537,6 +779,11 @@ export default function My_ChartBuilder({user}){
   const joined=result?.joined||{};
   const columns=Array.isArray(joined.columns)?joined.columns:[];
   const rows=Array.isArray(joined.rows)?joined.rows:[];
+  const colorListText=useMemo(()=>colorListTextFromRows(colorListRows),[colorListRows]);
+  const colorListPreview=useMemo(()=>parseChartColorList(colorListText),[colorListText]);
+  const linkedColorRuleLines=useMemo(()=>colorListPreview.errors.length?[]:chartColorListRules(colorListPreview.rows),[colorListPreview]);
+  const formulaColorRuleLines=useMemo(()=>text(customColorRules).split(/\r?\n/).map(rule=>rule.trim()).filter(Boolean),[customColorRules]);
+  const combinedColorRuleLines=useMemo(()=>[...linkedColorRuleLines,...formulaColorRuleLines],[linkedColorRuleLines,formulaColorRuleLines]);
   const numericCols=useMemo(()=>columns.filter(c=>rows.slice(0,80).some(r=>text(r[c]).trim()!==""&&Number.isFinite(Number(r[c])))),[columns,rows]);
   const shotPairs=useMemo(()=>shotCoordinatePairs(columns),[columns]);
   const radiusSource=useMemo(()=>{
@@ -593,11 +840,30 @@ export default function My_ChartBuilder({user}){
     const match=roots.find(root=>[root.name,root.display_name,root.canonical].some(value=>text(value).trim().toLowerCase()===requested));
     return match?{...source,root:match.name}:source;
   };
+  const resolveDefinitionAutocomplete=(value,caret)=>{
+    const context=definitionSqlAutocompleteContext(value,caret);
+    if(!context)return null;
+    return{...context,root:resolveSourceRoot({root:context.root}).root};
+  };
+  const definitionAutocompleteSources=useMemo(()=>definitionQueryAutocompleteContexts(definitionCode).map(context=>{
+    const requested=text(context.root).trim().toLowerCase();
+    const match=roots.find(root=>[root.name,root.display_name,root.canonical].some(value=>text(value).trim().toLowerCase()===requested));
+    return{...context,root:match?.name||context.root};
+  }),[definitionCode,roots]);
+  const queryAutocompleteSource=(source,index)=>{
+    const id=text(source?.id).trim().toLowerCase();
+    return definitionAutocompleteSources.find(context=>text(context.id).trim().toLowerCase()===id)
+      ||definitionAutocompleteSources[index]
+      ||null;
+  };
   // 시간 창은 폼에서는 빈칸(=전체 기간)이고 요청·코드에서는 숫자다. 형태만 여기서 맞춘다.
   const formSource=source=>({...source,runtime_recent_days:recentDaysValue(source)||"",runtime_date_column:text(source?.runtime_date_column)});
-  const requestSource=(source,useCommon=true)=>{
+  const requestSource=(source,linkedRows=[])=>{
     const resolved=resolveSourceRoot(source),days=recentDaysValue(resolved);
-    return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:useCommon?listValues(commonRootLots):listValues(resolved.runtime_root_lot_ids||[]),runtime_wafer_ids:useCommon?listValues(commonWafers):listValues(resolved.runtime_wafer_ids||[])};
+    const pairs=(linkedRows||[]).map(row=>({root_lot_id:text(row.root_lot_id).trim(),wafer_id:text(row.wafer_id).trim()})).filter(row=>row.root_lot_id&&row.wafer_id);
+    const roots=pairs.length?listValues(pairs.map(row=>row.root_lot_id)):listValues(resolved.runtime_root_lot_ids||[]);
+    const wafers=pairs.length?listValues(pairs.map(row=>row.wafer_id)):listValues(resolved.runtime_wafer_ids||[]);
+    return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:roots,runtime_wafer_ids:wafers,runtime_lot_wafer_pairs:pairs};
   };
   const currentChartConfig=()=>({
     type:chartType,
@@ -605,32 +871,37 @@ export default function My_ChartBuilder({user}){
     y:yCol,
     color:colorCol==="__custom__"?"custom":colorCol,
     trellis:trellisCol,
-    color_rules:text(customColorRules).split(/\r?\n/).map(rule=>rule.trim()).filter(Boolean),
+    color_rules:combinedColorRuleLines,
     color_else:customColorElse,
     highlight:highlightEnabled,
+    show_legend:showLegend,
     width:text(chartWidth).trim()?Number(chartWidth):"",
     height:text(chartHeight).trim()?Number(chartHeight):"",
   });
   const applyChartConfig=(config={})=>{
     const hasConfig=config&&Object.keys(config).length>0;
+    const separated=partitionChartColorRules(hasConfig?(config.color_rules||[]):[]);
     setChartType(hasConfig&&config.type?text(config.type).toLowerCase():"scatter");
     setXCol(hasConfig?text(config.x):"");
     setYCol(hasConfig?text(config.y):"");
     setColorCol(hasConfig&&["custom","__custom__"].includes(text(config.color).toLowerCase())?"__custom__":hasConfig?text(config.color):"");
     setTrellisCol(hasConfig?text(config.trellis):"");
-    setCustomColorRules(hasConfig?(config.color_rules||[]).join("\n"):"");
-    setColorListText(hasConfig?chartColorListTextFromRules(config.color_rules||[]):"");
+    setCustomColorRules(separated.formulaRules.join("\n"));
+    setColorListRows(colorListRowsFromText(hasConfig?chartColorListTextFromRules(config.color_rules||[]):""));
     setCustomColorElse(hasConfig?text(config.color_else||"gray"):"gray");
     setHighlightEnabled(hasConfig?config.highlight!==false:true);
+    setShowLegend(hasConfig?config.show_legend!==false:true);
     setChartWidth(hasConfig&&config.width?text(config.width):"");
     setChartHeight(hasConfig&&config.height?text(config.height):"");
     setMapYCol("");setMapTarget("");
   };
   const run=async(config=null,options={})=>{
-    const activeSources=(config?.sources||sources).map(source=>requestSource(source,!config?.sources));
+    const activeChart=config?.chart??currentChartConfig();
+    const linkedRows=partitionChartColorRules(activeChart?.color_rules||[]).rows;
+    const activeSources=(config?.sources||sources).map(source=>requestSource(source,linkedRows));
     const activeJoins=activeSources.length>1?(config?.joins||joins):[];
     const activeMaxRows=config?.max_rows??maxRows;
-    const activeChart=config?.chart??currentChartConfig();
+    if(!config&&text(colorListText).trim()&&colorListPreview.errors.length){toast.error(colorListPreview.errors[0]);return;}
     if(activeSources.some(s=>!s.root||!s.product)){toast.error("각 Query의 DB와 Product를 선택해 주세요.");return;}
     const requestedWidth=Number(activeChart?.width||0),requestedHeight=Number(activeChart?.height||0);
     if(requestedWidth&&(requestedWidth<320||requestedWidth>2400)){toast.error("차트 Width는 320~2400px 사이로 입력해 주세요.");return;}
@@ -660,9 +931,6 @@ export default function My_ChartBuilder({user}){
     try{
       const parsed=await postJson("/api/filebrowser/chart-builder/parse",{code});
       setSources((parsed.sources||[newSource(1)]).map(source=>formSource(resolveSourceRoot(source))));
-      const parsedSources=parsed.sources||[];
-      setCommonRootLots((parsedSources[0]?.runtime_root_lot_ids||[]).join("\n"));
-      setCommonWafers((parsedSources[0]?.runtime_wafer_ids||[]).join("\n"));
       setJoins(parsed.joins||[]);
       setMaxRows(parsed.max_rows||10000);
       setDefinitionCode(parsed.canonical_code||code);
@@ -673,8 +941,31 @@ export default function My_ChartBuilder({user}){
     }catch(error){toast.error(error.message||String(error));}
     finally{setCodeBusy(false);}
   };
+  // Template Report 슬롯에서 "차트생성에서 수정"을 누르면 해당 슬롯의 실제 실행
+  // 코드를 그대로 받아 폼으로 연다. sessionStorage는 탭 전환 중 컴포넌트가 아직
+  // 마운트되지 않은 경우를, custom event는 이미 열린 화면을 각각 처리한다.
+  useEffect(()=>{
+    const consume=event=>{
+      let payload=event?.detail||null;
+      if(!payload){
+        try{payload=JSON.parse(window.sessionStorage.getItem(CHART_BUILDER_TRANSFER_KEY)||"null");}catch(_error){payload=null;}
+      }
+      const code=text(payload?.definition_code);
+      if(!code.trim())return;
+      try{window.sessionStorage.removeItem(CHART_BUILDER_TRANSFER_KEY);}catch(_error){}
+      setChartName(text(payload?.chart_name));
+      setDefinitionCode(code);
+      applyDefinition(false,code);
+      window.setTimeout(()=>document.getElementById("chart-builder-code")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
+      toast.ok("Template의 차트 생성식을 불러왔습니다. 수정 후 실행·저장하면 다시 사용할 수 있습니다.");
+    };
+    consume();
+    window.addEventListener("flow:chartbuilder-load-code",consume);
+    return()=>window.removeEventListener("flow:chartbuilder-load-code",consume);
+  },[]);
   const formToCode=()=>{
-    const activeSources=sources.map(requestSource);
+    if(text(colorListText).trim()&&colorListPreview.errors.length){toast.error(colorListPreview.errors[0]);return;}
+    const activeSources=sources.map(source=>requestSource(source,colorListPreview.rows));
     const code=definitionFromForm(activeSources,activeSources.length>1?joins:[],maxRows,currentChartConfig());
     setDefinitionCode(code);
     toast.ok("현재 Query/JOIN/차트 폼을 전체 코드로 만들었습니다.");
@@ -682,7 +973,8 @@ export default function My_ChartBuilder({user}){
   const askChartAssistant=async(promptOverride="")=>{
     const instruction=text(promptOverride||assistantPrompt).trim();
     if(!instruction){toast.warn("Assistant에게 바꿀 내용을 입력해 주세요.");return;}
-    const activeSources=sources.map(requestSource);
+    if(text(colorListText).trim()&&colorListPreview.errors.length){toast.error(colorListPreview.errors[0]);return;}
+    const activeSources=sources.map(source=>requestSource(source,colorListPreview.rows));
     const code=definitionFromForm(activeSources,activeSources.length>1?joins:[],maxRows,currentChartConfig());
     setAssistantBusy(true);
     try{
@@ -746,21 +1038,46 @@ export default function My_ChartBuilder({user}){
     setSources(old=>old.filter((_,i)=>i!==index));
     if(id)setJoins(old=>old.filter(join=>join.left!==id&&join.right!==id));
   };
-  const colorListPreview=useMemo(()=>parseChartColorList(colorListText),[colorListText]);
+  const replaceColorListRows=nextRows=>{
+    const normalized=normalizeColorListRows(nextRows);
+    setColorListRows(normalized);
+    if(normalized.some(row=>COLOR_LIST_COLUMNS.some(name=>text(row[name]).trim())))setColorCol("__custom__");
+    else setSources(old=>old.map(source=>({...source,runtime_root_lot_ids:[],runtime_wafer_ids:[],runtime_lot_wafer_pairs:[]})));
+  };
+  const updateColorListCell=(rowIndex,column,value)=>{
+    replaceColorListRows(colorListRows.map((row,index)=>index===rowIndex?{...row,[column]:value}:row));
+  };
+  const pasteColorList=(event,rowIndex,columnIndex)=>{
+    const raw=event.clipboardData?.getData("text/plain")||"";
+    if(!raw)return;
+    event.preventDefault();
+    const lines=raw.replace(/\r\n?/g,"\n").split("\n");
+    while(lines.length&&!lines[lines.length-1].trim())lines.pop();
+    if(!lines.length)return;
+    const split=line=>line.includes("\t")?line.split("\t"):line.split(",");
+    const first=split(lines[0]),header=colorListHeaderIndex(first);
+    const matrix=(header?lines.slice(1):lines).map(line=>{
+      const cells=split(line);
+      return header?COLOR_LIST_COLUMNS.map(name=>cells[header[name]]??""):cells;
+    });
+    const startColumn=header?0:columnIndex;
+    const next=colorListRows.map(row=>({...row}));
+    matrix.slice(0,COLOR_LIST_MAX_ROWS-rowIndex).forEach((cells,rowOffset)=>{
+      const targetIndex=rowIndex+rowOffset;
+      while(next.length<=targetIndex&&next.length<COLOR_LIST_MAX_ROWS)next.push(blankColorListRow());
+      cells.slice(0,COLOR_LIST_COLUMNS.length-startColumn).forEach((value,cellOffset)=>{
+        next[targetIndex][COLOR_LIST_COLUMNS[startColumn+cellOffset]]=text(value).trim();
+      });
+    });
+    replaceColorListRows(next);
+  };
   const applyColorList=()=>{
     if(colorListPreview.errors.length){toast.error(colorListPreview.errors[0]);return;}
-    if(!colorListPreview.rows.length){toast.warn("root_lot_id, wafer_id, color 목록을 붙여 넣어 주세요.");return;}
-    setCustomColorRules(chartColorListRules(colorListPreview.rows).join("\n"));
+    if(!colorListPreview.rows.length){toast.warn("root_lot_id, wafer_id, color 목록을 입력해 주세요.");return;}
     setColorCol("__custom__");
-    toast.ok(`${colorListPreview.rows.length}개 색상 지정을 차트에 적용했습니다.`);
+    toast.ok(`${colorListPreview.rows.length}개 조합을 컬러링 목록으로 적용했습니다.`);
   };
-  const applyCommonTime=()=>{
-    const days=Number(commonRecentDays||0);
-    if(!Number.isInteger(days)||days<0||days>3650){toast.error("공통 최근 일수는 1~3650 사이여야 합니다.");return;}
-    setSources(old=>old.map(source=>({...source,runtime_recent_days:days||"",runtime_date_column:days?(text(commonDateColumn).trim()||DEFAULT_DATE_COLUMN):""})));
-    toast.ok(days?`모든 Query를 ${text(commonDateColumn).trim()||DEFAULT_DATE_COLUMN} 기준 최근 ${days}일로 맞췄습니다.`:"모든 Query의 기간 제한을 해제했습니다.");
-  };
-  const parsedColorRules=useMemo(()=>parseChartColorRules(customColorRules),[customColorRules]);
+  const parsedColorRules=useMemo(()=>parseChartColorRules(combinedColorRuleLines),[combinedColorRuleLines]);
   const colorRuleError=parsedColorRules.find(rule=>rule.error)?.error||"";
   const customColorMap=useMemo(()=>buildChartColorMap(parsedColorRules,customColorElse),[parsedColorRules,customColorElse]);
   const colorLabel=colorCol==="__custom__"?"Custom Color":colorCol;
@@ -910,7 +1227,7 @@ export default function My_ChartBuilder({user}){
     const points=rows.slice(0,10000).map((r,i)=>({...r,x:numericX?Number(r[xCol]):i,x_label:r[xCol],y:Number(r[yCol]),color_value:rowColorValue(r),trellis_value:trellisCol?r[trellisCol]:""})).filter(p=>Number.isFinite(p.y)&&Number.isFinite(p.x));
     const fit=chartType==="scatter"&&numericX&&corrFitMode==="linear"?linearFit(points):null;
     return{chart_type:chartType,title:`${xCol} × ${yCol}`,x_label:xCol,y_label:yCol,color_by:colorLabel,color_map:chartColorMap,points,fit,corr:fit?.corr,emphasize_markers:chartType==="scatter",point_size:chartType==="scatter"?7:undefined};
-  },[rows,xCol,yCol,mapYCol,colorCol,colorLabel,customColorRules,customColorElse,trellisCol,chartType,result,shotPairs,rootLotCol,waferCol,mapScope,mapGroups,mapTarget,mapAggregation,trendGrain,trendAggregation,barAggregation,radiusAggregation,radiusFitMode,corrFitMode,pieBasis,radiusLayout,radiusMatcher,radiusBusy,radiusError]);
+  },[rows,xCol,yCol,mapYCol,colorCol,colorLabel,colorListText,customColorRules,customColorElse,trellisCol,chartType,result,shotPairs,rootLotCol,waferCol,mapScope,mapGroups,mapTarget,mapAggregation,trendGrain,trendAggregation,barAggregation,radiusAggregation,radiusFitMode,corrFitMode,pieBasis,radiusLayout,radiusMatcher,radiusBusy,radiusError]);
   const isPie=chartType==="pie"||chartType==="donut";
   // 상자별 통계는 그림과 같은 묶음(색 계열 × x 값)에서 낸다 — 표와 그림이 어긋나면 안 된다.
   const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(chart?.points)?boxBucketsFromPoints(chart.points,colorCol):[],[chartType,chart,colorCol]);
@@ -958,8 +1275,8 @@ export default function My_ChartBuilder({user}){
         <div>같은 이름의 열이 양쪽에 있으면 오른쪽 열은 <code style={{fontFamily:"'JetBrains Mono',monospace"}}>q2__열이름</code>처럼 query id가 앞에 붙습니다. wafer_id가 DB마다 숫자/문자로 달라도 JOIN 직전에 문자열로 맞춰 비교합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Trend / Corr</b> — Trend는 시간축 scatter, Corr는 X·Y scatter입니다. Corr는 같은 DB의 두 item 또는 서로 다른 DB 결과도 비교할 수 있습니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Color / Trellis</b> — JOIN한 KNOB·FAB 등의 열을 Color로 구분하거나 Trellis 패널로 나눠 봅니다.</div>
-        <div><b style={{color:"var(--text-primary)"}}>Custom Color / 시간 강조</b> — <code>열 = '값' THEN red</code>뿐 아니라 <code>tkout_time WITHIN 7 DAYS THEN #ef4444</code>를 지원합니다. 규칙은 위에서부터 첫 일치만 적용되고 나머지는 ELSE 색으로 표시됩니다. Plotly의 Box/Lasso Select 강조는 <code>HIGHLIGHT</code>로 별도 제어합니다.</div>
-        <div><b style={{color:"var(--text-primary)"}}>연동 필터</b> — Root Lot·Wafer 목록은 모든 Query에 함께 적용되고 저장 코드에는 <code>ROOT_LOTS</code>·<code>WAFERS</code>로 남습니다. 공통 기간 버튼으로 모든 Query의 <code>RECENT_DAYS</code>·<code>DATE_COLUMN</code>도 한 번에 맞출 수 있습니다.</div>
+        <div><b style={{color:"var(--text-primary)"}}>Custom Color / 시간 강조</b> — 연동표의 고정 색상과 <code>tkout_time WITHIN 7 DAYS THEN #ef4444</code> 같은 수식 규칙을 따로 관리합니다. 연동표가 먼저 적용되고, 일치하지 않은 행만 수식 규칙을 위에서부터 확인한 뒤 나머지는 ELSE 색으로 표시됩니다. Plotly의 Box/Lasso Select 강조는 <code>HIGHLIGHT</code>로 별도 제어합니다.</div>
+        <div><b style={{color:"var(--text-primary)"}}>연동 필터</b> — <code>root_lot_id</code>·<code>wafer_id</code>·<code>color</code> 3열 표를 붙여 넣습니다. 정확히 일치하는 Lot/Wafer 조합만 모든 Query에 적용되며, 색상 규칙은 저장 코드에 남아 현재 데이터가 없어도 다음 실행에서 같은 조합에 같은 색을 씁니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>기간</b> — Query마다 <code>RECENT_DAYS = 7</code>(선택 <code>DATE_COLUMN = tkout_time</code>)을 적으면 그 열 기준 최근 7일만 조회합니다. 저장값이 기본이며 Template Report 실행 컨텍스트에서 여러 차트의 기간을 한꺼번에 바꿀 수도 있습니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>조회와 강조의 차이</b> — <code>RECENT_DAYS</code>는 오래된 행을 조회 결과에서 제외하고, <code>WITHIN N DAYS</code>는 조회된 행을 지우지 않고 색만 바꿉니다. 시간 열은 반드시 SQL SELECT 결과에 포함되어야 하며, 최근 여부는 ChartBuilder 또는 Template Report를 실행하는 현재 시각에 다시 계산됩니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>차트 크기</b> — <code>CHART</code> 블록의 <code>WIDTH = 1200</code>, <code>HEIGHT = 650</code>으로 픽셀 크기를 지정합니다. 생략하면 화면 폭에 맞춰 자동 조정됩니다.</div>
@@ -989,9 +1306,9 @@ export default function My_ChartBuilder({user}){
         Query는 <code>Q1</code> 다음 줄에 <code>TABLE</code>·<code>PRODUCT</code>·<code>SQL</code>을 적고, 연결은 <code>JOIN q1 LEFT q2 ON root_lot_id, wafer_id</code>처럼 작성합니다.
         서로 다른 열은 <code>ON lot_id, wf_id = root_lot_id, wafer_id</code>로 씁니다. 한 줄 형식 <code>Q1 | TABLE=INLINE | PRODUCT=PRODA | SQL=SELECT ...</code>도 지원합니다.
         차트는 <code>CHART</code> 아래 <code>TYPE</code>·<code>X</code>·<code>Y</code>·<code>COLOR</code>·<code>TRELLIS</code>를 적으며, 생략하면 결과 열에서 기본 축을 자동 선택합니다.
-        기간은 Query의 <code>RECENT_DAYS = 30</code>로 적고, 최근 데이터 색상은 <code>COLOR_RULE = tkout_time WITHIN 7 DAYS THEN red</code>처럼 적습니다. 두 값 모두 저장되어 Template Report 실행에도 그대로 쓰입니다.
+        기간은 Query의 <code>RECENT_DAYS = 30</code>로 적고, 최근 데이터 색상은 별도 수식에 <code>COLOR_RULE = tkout_time WITHIN 7 DAYS THEN red</code>처럼 적습니다. 두 값 모두 저장되어 Template Report 실행에도 그대로 쓰입니다.
       </div>
-      <textarea aria-label="차트생성 전체 코드" value={definitionCode} onChange={event=>setDefinitionCode(event.target.value)} rows={16} spellCheck={false}
+      <SqlColumnAutocomplete id="chart-builder-definition-editor" ariaLabel="차트생성 전체 코드" value={definitionCode} onChange={setDefinitionCode} resolveContext={resolveDefinitionAutocomplete} rows={16}
         style={{...input,fontFamily:"'JetBrains Mono',monospace",fontSize:12,lineHeight:1.55,resize:"vertical",tabSize:2}}/>
       <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginTop:9}}>
         <button type="button" onClick={()=>applyDefinition(false)} disabled={codeBusy||busy} style={{...btn,background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}}>{codeBusy?"코드 확인 중…":"코드 → 폼 적용"}</button>
@@ -1000,40 +1317,39 @@ export default function My_ChartBuilder({user}){
         <button type="button" onClick={copyDefinition} style={btn}>코드 복사</button>
       </div>
     </section>
-    <section style={{...card,marginBottom:16}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:10}}>
-        <strong style={{fontSize:15}}>연동 실행 필터 · 모든 Query / Report 공용</strong>
-        <span style={{fontSize:11,color:"var(--text-secondary)"}}>붙여넣은 목록과 기간은 저장 차트 코드에 포함됩니다.</span>
-        <span style={{marginLeft:"auto",fontSize:10,fontWeight:900,color:"var(--ok)",border:"1px solid var(--ok-line)",borderRadius:999,padding:"3px 8px"}}>5코어 / 10GB · 최대 2개 조회</span>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(310px,1fr))",gap:10,alignItems:"start"}}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
-          <label style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)"}}>Root Lot ID 목록
-            <textarea aria-label="공통 Root Lot ID 목록" value={commonRootLots} onChange={event=>setCommonRootLots(event.target.value)} rows={6} placeholder={"A1234\nA5678"} style={{...input,marginTop:4,fontFamily:"monospace",resize:"vertical"}}/>
-          </label>
-          <label style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)"}}>Wafer ID 목록
-            <textarea aria-label="공통 Wafer ID 목록" value={commonWafers} onChange={event=>setCommonWafers(event.target.value)} rows={6} placeholder={"1\n2\n3"} style={{...input,marginTop:4,fontFamily:"monospace",resize:"vertical"}}/>
-          </label>
-          <div style={{gridColumn:"1 / -1",display:"grid",gridTemplateColumns:"120px minmax(150px,1fr) auto",gap:7,alignItems:"end"}}>
-            <label style={{fontSize:11,fontWeight:800,color:"var(--text-secondary)"}}>공통 최근 일수<input aria-label="공통 최근 일수" type="number" min="1" max="3650" value={commonRecentDays} onChange={event=>setCommonRecentDays(event.target.value)} placeholder="전체" style={{...input,marginTop:3}}/></label>
-            <label style={{fontSize:11,fontWeight:800,color:"var(--text-secondary)"}}>시간 열<input aria-label="공통 시간 열" value={commonDateColumn} onChange={event=>setCommonDateColumn(event.target.value)} placeholder={DEFAULT_DATE_COLUMN} style={{...input,marginTop:3,fontFamily:"monospace"}}/></label>
-            <button type="button" onClick={applyCommonTime} style={btn}>모든 Query에 적용</button>
-          </div>
-          <div style={{gridColumn:"1 / -1",fontSize:11,color:"var(--text-secondary)"}}>Root Lot {listValues(commonRootLots).length}개 · Wafer {listValues(commonWafers).length}개 · 빈 목록은 필터하지 않습니다.</div>
+    <details style={{...card,marginBottom:16,padding:0,overflow:"hidden"}}>
+      <summary style={{cursor:"pointer",padding:"11px 14px",fontSize:14,userSelect:"none"}}>
+        <span style={{display:"inline-flex",width:"calc(100% - 18px)",alignItems:"center",gap:8,flexWrap:"wrap",verticalAlign:"middle"}}>
+          <strong style={{fontSize:15}}>root_lot_id/wafer_id coloring list</strong>
+          <span style={{fontSize:11,color:"var(--text-secondary)"}}>모든 Query / Report 공용 · 3열 spreadsheet</span>
+          <span style={{marginLeft:"auto",fontSize:10,fontWeight:900,color:colorListPreview.errors.length?"var(--danger)":"var(--ok)",border:`1px solid ${colorListPreview.errors.length?"var(--danger-line)":"var(--ok-line)"}`,borderRadius:999,padding:"3px 8px"}}>{colorListPreview.errors.length?"입력 확인":`${colorListPreview.rows.length}개 조합`}</span>
+        </span>
+      </summary>
+      <div style={{padding:"12px 14px 14px",borderTop:"1px solid var(--border)",display:"grid",gap:10}}>
+        <div style={{overflow:"auto",maxHeight:365,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
+          <table aria-label="root_lot_id wafer_id coloring list" style={{width:"100%",minWidth:560,tableLayout:"fixed",borderCollapse:"separate",borderSpacing:0,fontSize:12}}>
+            <colgroup><col style={{width:42}}/><col/><col/><col style={{width:"34%"}}/></colgroup>
+            <thead><tr>
+              <th aria-label="행 번호" style={{position:"sticky",top:0,zIndex:2,padding:"8px 6px",textAlign:"center",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>#</th>
+              {COLOR_LIST_COLUMNS.map(name=><th key={name} style={{position:"sticky",top:0,zIndex:2,padding:"8px 9px",textAlign:"left",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{name}</th>)}
+            </tr></thead>
+            <tbody>{colorListRows.map((row,rowIndex)=><tr key={rowIndex}>
+              <th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:500,color:"var(--text-secondary)",background:"var(--bg-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{rowIndex+1}</th>
+              {COLOR_LIST_COLUMNS.map((name,columnIndex)=><td key={name} style={{position:"relative",padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>
+                {name==="color"&&text(row.color).trim()&&<span aria-hidden="true" style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",width:13,height:13,borderRadius:3,background:row.color,border:"1px solid #94a3b8",pointerEvents:"none"}}/>}
+                <input aria-label={`${rowIndex+1}행 ${name}`} value={row[name]} onChange={event=>updateColorListCell(rowIndex,name,event.target.value)} onPaste={event=>pasteColorList(event,rowIndex,columnIndex)} spellCheck={false} placeholder={rowIndex===0?name==="root_lot_id"?"A1234":name==="wafer_id"?"1":"#dc2626":""} style={{width:"100%",boxSizing:"border-box",border:0,borderRadius:0,outlineOffset:-2,background:"transparent",color:"var(--text-primary)",padding:name==="color"&&text(row.color).trim()?"7px 9px 7px 29px":"7px 9px",fontFamily:"monospace",fontSize:12}}/>
+              </td>)}
+            </tr>)}</tbody>
+          </table>
         </div>
-        <div style={{display:"grid",gap:7}}>
-          <label style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)"}}>색상 지정 목록 · TSV/CSV 붙여넣기
-            <textarea aria-label="Root Lot Wafer 색상 목록" value={colorListText} onChange={event=>setColorListText(event.target.value)} rows={7} placeholder={"root_lot_id\twafer_id\tcolor\nA1234\t1\t#dc2626\nA1234\t2\tblue"} style={{...input,marginTop:4,fontFamily:"monospace",resize:"vertical"}}/>
-          </label>
-          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-            <button type="button" onClick={applyColorList} style={{...btn,background:"var(--accent)",borderColor:"var(--accent)",color:"#fff"}}>색상 목록 적용</button>
-            <label style={{fontSize:11,fontWeight:800,color:"var(--text-secondary)"}}>기본색 <input aria-label="색상 목록 기본색" value={customColorElse} onChange={event=>setCustomColorElse(event.target.value)} style={{...input,width:110,display:"inline-block",marginLeft:5,padding:"5px 7px"}}/></label>
-            <span style={{fontSize:11,color:colorListPreview.errors.length?"var(--danger)":"var(--text-secondary)"}}>{colorListPreview.errors[0]||`${colorListPreview.rows.length}개 지정${colorListPreview.truncated?" · 앞 300개만 사용":""}`}</span>
-          </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <button type="button" onClick={applyColorList} style={{...btn,background:"var(--accent)",borderColor:"var(--accent)",color:"#fff"}}>목록 적용</button>
+          {!!colorListText&&<button type="button" onClick={()=>replaceColorListRows([])} style={btn}>표 비우기</button>}
+          <span style={{fontSize:11,color:colorListPreview.errors.length?"var(--danger)":"var(--text-secondary)"}}>{colorListPreview.errors[0]||`${colorListPreview.rows.length}개 조합 · 정확한 Lot/Wafer 조합에 컬러 적용${colorListPreview.truncated?" · 앞 200개만 사용":""}`}</span>
         </div>
       </div>
-    </section>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(390px,1fr))",gap:12}}>{sources.map((s,i)=><QueryCard key={`query-${i}`} source={s} index={i} roots={roots} onChange={next=>updateQuery(i,next)} onClone={()=>addQuery(s)} onRemove={sources.length>1?()=>removeQuery(i):null}/>)}</div>
+    </details>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(390px,1fr))",gap:12}}>{sources.map((s,i)=><QueryCard key={`query-${i}`} source={s} index={i} roots={roots} autocompleteSource={queryAutocompleteSource(s,i)} onChange={next=>updateQuery(i,next)} onClone={()=>addQuery(s)} onRemove={sources.length>1?()=>removeQuery(i):null}/>)}</div>
     <div style={{display:"flex",gap:8,margin:"10px 0 16px",flexWrap:"wrap",alignItems:"center"}}><button type="button" style={btn} onClick={()=>addQuery()} disabled={sources.length>=10}>＋ DB Query</button><span style={{fontSize:12,color:"var(--text-secondary)"}}>현재 {sources.length}개 · 최대 10개</span></div>
     {sources.length>1&&<div style={card}><strong style={{fontSize:14}}>JOIN 설정</strong>{joins.map((j,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"110px 1fr 28px 110px 1fr 110px 36px",gap:7,alignItems:"center",marginTop:9}}>
       <select value={j.left} onChange={e=>setJoins(v=>v.map((x,k)=>k===i?{...x,left:e.target.value}:x))} style={input}>{ids.map(id=><option key={id}>{id}</option>)}</select>
@@ -1115,20 +1431,21 @@ export default function My_ChartBuilder({user}){
               {!isPie&&<Field label="Color"><select aria-label="Color" value={colorCol} onChange={e=>setColorCol(e.target.value)} style={fieldInput}><option value="">없음</option><option value="__custom__">Custom 규칙</option>{columns.map(c=><option key={c}>{c}</option>)}</select></Field>}
               {!chartType.startsWith("bar")&&!isPie&&<Field label="Trellis"><select aria-label="Trellis" value={trellisCol} onChange={e=>setTrellisCol(e.target.value)} style={fieldInput}><option value="">없음</option>{columns.map(c=><option key={c}>{c}</option>)}</select></Field>}
               {!isPie&&<Field label="Highlight"><label style={{...fieldInput,display:"flex",alignItems:"center",gap:7,minHeight:31,cursor:"pointer"}}><input type="checkbox" checked={highlightEnabled} onChange={e=>setHighlightEnabled(e.target.checked)}/>Box / Lasso 선택 강조</label></Field>}
+              <Field label="Legend"><label style={{...fieldInput,display:"flex",alignItems:"center",gap:7,minHeight:31,cursor:"pointer"}}><input aria-label="차트 내부 Legend 표시" type="checkbox" checked={showLegend} onChange={e=>setShowLegend(e.target.checked)}/>차트 내부 표시</label></Field>
               {chartType==="radius"&&<Field label="피팅"><select aria-label="Radius 피팅" value={radiusFitMode} onChange={e=>setRadiusFitMode(e.target.value)} style={fieldInput}><option value="none">없음</option><option value="cubic">3차 회귀</option></select></Field>}
               {chartType==="scatter"&&<Field label="피팅"><select aria-label="Corr 피팅" value={corrFitMode} onChange={e=>setCorrFitMode(e.target.value)} style={fieldInput}><option value="none">없음</option><option value="linear">1차 회귀 + R²</option></select></Field>}
             </>}
           </div>
           {colorCol==="__custom__"&&<div style={{display:"grid",gridTemplateColumns:"minmax(320px,1fr) minmax(130px,220px)",gap:9,marginTop:10,alignItems:"start"}}>
-            <Field label="Custom Color 규칙 · 위에서부터 첫 일치"><textarea aria-label="Custom Color 규칙" value={customColorRules} onChange={e=>setCustomColorRules(e.target.value)} rows={4} placeholder={"tkout_time WITHIN 3 DAYS THEN #dc2626\ntkout_time WITHIN 7 DAYS THEN #f59e0b\nroot_lot_id = 'AAAAA' AND wafer_id = 'B1' THEN blue"} style={{...fieldInput,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/></Field>
+            <Field label="tkout_time / 수식 컬러링 · 연동표 다음 순서"><textarea aria-label="Custom Color 수식 규칙" value={customColorRules} onChange={e=>setCustomColorRules(e.target.value)} rows={4} placeholder={"tkout_time WITHIN 3 DAYS THEN #dc2626\ntkout_time WITHIN 7 DAYS THEN #f59e0b"} style={{...fieldInput,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/></Field>
             <Field label="ELSE 색상"><input aria-label="Custom Color ELSE" value={customColorElse} onChange={e=>setCustomColorElse(e.target.value)} placeholder="gray 또는 #9ca3af" style={fieldInput}/></Field>
-            <div style={{gridColumn:"1 / -1",fontSize:11,color:colorRuleError?"#b91c1c":"#475569"}}>{colorRuleError||`${parsedColorRules.filter(rule=>!rule.error).length}개 규칙 · 값 비교, AND, 시간열 WITHIN N DAYS를 지원합니다. 시간 규칙과 색은 저장 코드 그대로 Template Report에서 재사용됩니다.`}</div>
+            <div style={{gridColumn:"1 / -1",fontSize:11,color:colorRuleError?"#b91c1c":"#475569"}}>{colorRuleError||`연동표 ${linkedColorRuleLines.length}개 + 수식 ${formulaColorRuleLines.length}개 · 연동표가 먼저 적용되고, tkout_time 수식과 색은 별도로 저장되어 Template Report에서도 재사용됩니다.`}</div>
           </div>}
         </div>
         {chartType==="wafer_map"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(mapScope.startsWith("trellis_")?`${mapScope==="trellis_wafer"?"wafer":"root_lot_id | wafer_id"}별 패널에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계하고 공통 컬러 스케일을 적용합니다.`:`선택한 ${mapScope==="root_wafer"?"root lot·wafer":"root lot의 모든 wafer"}에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계합니다.`)}</div>}
         {chartType==="line"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(TREND_GRAINS.find(g=>g.key===trendGrain)?.desc||"")}</div>}
         {chartType==="radius"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(radiusBusy?"Chip_Radius.csv를 불러오는 중입니다.":`${radiusLayout?.file||"Chip_Radius.csv"} · ${radiusLayout?.mask||radiusSource?.product||"-"} · 좌표 ${chart?.radius_matched||0}/${chart?.radius_source_count||0} shot 매칭 · ${chart?.radius_mapping||""}`)}</div>}
-        {chart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{chart.error}</div>:chart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label}/></div>:chart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...chart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:chart&&<FlowPlotlyChart chart={chart} cfg={{...chart,width:chartWidth,height:chartHeight,hide_title:true,emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
+        {chart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{chart.error}</div>:chart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label}/></div>:chart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...chart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:chart&&<FlowPlotlyChart chart={chart} cfg={{...chart,width:chartWidth,height:chartHeight,hide_title:true,emphasize_axes:true,hide_x_ticks:boxStatsAligned,show_legend:showLegend}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
         {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={chart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
     </div>}
   </div>;

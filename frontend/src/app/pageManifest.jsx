@@ -4,7 +4,6 @@ export const PAGE_GROUPS = [
   { id: "main", label: "홈", direct: true },
   { id: "data", label: "데이터" },
   { id: "work", label: "업무" },
-  { id: "agent", label: "에이전트", direct: true },
   { id: "system", label: "관리" },
 ];
 
@@ -27,16 +26,12 @@ const definitions = [
   { key: "tracker", label: "ET 추적", icon: "📋", group: "work", layout: "workboard", helpId: "tracker", defaultEnabled: false, load: () => import("../pages/My_Tracker") },
   { key: "valve", label: "매칭알람", icon: "🚨", group: "work", layout: "workboard", helpId: "valve", defaultEnabled: false, load: () => import("../pages/My_ValveAlerts") },
   { key: "teg", label: "TEG 위치 조회", icon: "📐", group: "work", layout: "analysis", helpId: "teg", defaultEnabled: false, load: () => import("../pages/My_TegMap") },
-  { key: "yieldmap", label: "Yield Map", icon: "◫", group: "work", layout: "analysis", helpId: "yieldmap", defaultEnabled: false, load: () => import("../pages/My_YieldMap") },
+  { key: "yieldmap", label: "WF MAP", icon: "◫", group: "work", layout: "analysis", helpId: "yieldmap", defaultEnabled: false, load: () => import("../pages/My_YieldMap") },
   { key: "ettime", label: "ET 측정시간", icon: "⏱️", group: "work", layout: "analysis", helpId: "ettime", defaultEnabled: false, load: () => import("../pages/My_EtTime") },
   { key: "reformatize", label: "ET 다운로드", icon: "🧮", group: "work", layout: "workflow", helpId: "reformatize", defaultEnabled: false, load: () => import("../pages/My_Reformatize") },
   { key: "dcop", label: "양산DCOP 검사", icon: "✅", group: "work", layout: "workflow", helpId: "dcop", defaultEnabled: false, load: () => import("../pages/My_DcopCheck") },
 
-  { key: "diagnosis", label: "에이전트", icon: "🤖", group: "agent", layout: "analysis", helpId: "diagnosis", defaultEnabled: true, subtabs: [{ key: "catalog", label: "기능 카탈로그" }, { key: "runtime", label: "실행 추적" }, { key: "workflows", label: "Workflow 템플릿" }], load: () => import("../pages/My_Diagnosis") },
-
   { key: "admin", label: "관리자", icon: "⚙️", group: "system", layout: "admin", helpId: "admin", adminOnly: true, defaultEnabled: false, load: () => import("../pages/My_Admin") },
-  { key: "devguide", label: "개발자 가이드", icon: "📖", group: "system", layout: "admin", helpId: "devguide", adminOnly: true, strictAdmin: true, defaultEnabled: false, load: () => import("../pages/My_DevGuide") },
-
   /* Internal route: available to embedded/admin flows but intentionally absent from navigation. */
   { key: "tablemap", label: "테이블 맵", icon: "🗺️", group: "system", layout: "analysis", helpId: "tablemap", navigation: false, defaultEnabled: false, load: () => import("../pages/My_TableMap") },
   { key: "knowledge", label: "지식", icon: "📚", group: "agent", layout: "workboard", helpId: "knowledge", navigation: false, defaultEnabled: false, load: () => import("../pages/My_Knowledge") },

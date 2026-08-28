@@ -54,7 +54,11 @@ STEP_MAPPING_FILENAMES = (
     "step_function.csv",
 )
 
-_CACHE_LOCK = threading.Lock()
+# Keep the published cache snapshot independent from the long-running source
+# refresh.  A refresh can scan FAB parquet for minutes; readers must keep using
+# the last complete snapshot during that work instead of waiting for it.
+_CACHE_LOCK = threading.RLock()
+_CACHE_REFRESH_LOCK = threading.Lock()
 _CACHE_STATE: dict | None = None
 _CACHE_INDEX: dict | None = None
 _CACHE_INDEX_KEY: tuple[int, str, int] | None = None
@@ -446,20 +450,25 @@ def _build_cache_index(state: dict | None) -> dict:
 
 def _set_cache_state(state: dict) -> None:
     global _CACHE_STATE, _CACHE_INDEX, _CACHE_INDEX_KEY
-    _CACHE_STATE = state
-    _CACHE_INDEX = _build_cache_index(state)
-    _CACHE_INDEX_KEY = _cache_index_key(state)
+    index = _build_cache_index(state)
+    index_key = _cache_index_key(state)
+    with _CACHE_LOCK:
+        _CACHE_STATE = state
+        _CACHE_INDEX = index
+        _CACHE_INDEX_KEY = index_key
 
 
 def _cache_index_for(state: dict) -> dict:
     global _CACHE_INDEX, _CACHE_INDEX_KEY
     key = _cache_index_key(state)
-    if _CACHE_INDEX is not None and _CACHE_INDEX_KEY == key:
-        return _CACHE_INDEX
+    with _CACHE_LOCK:
+        if _CACHE_INDEX is not None and _CACHE_INDEX_KEY == key:
+            return _CACHE_INDEX
     index = _build_cache_index(state)
-    if _CACHE_STATE is not None and _cache_index_key(_CACHE_STATE) == key:
-        _CACHE_INDEX = index
-        _CACHE_INDEX_KEY = key
+    with _CACHE_LOCK:
+        if _CACHE_STATE is not None and _cache_index_key(_CACHE_STATE) == key:
+            _CACHE_INDEX = index
+            _CACHE_INDEX_KEY = key
     return index
 
 
@@ -1167,7 +1176,10 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
     global _CACHE_STATE, _CACHE_RUNNING, _CACHE_LAST_SKIPPED_BY_LOCK
     source_root_hint = _clean_source_root_hint(source_root) or lot_progress_cache_source_root()
     column_mapping = lot_progress_column_mapping()
-    with _CACHE_LOCK:
+    # Serialize refresh workers without taking the snapshot lock.  Hot readers
+    # continue serving _CACHE_STATE (or the last complete cache file) while the
+    # new snapshot is constructed and atomically published at the end.
+    with _CACHE_REFRESH_LOCK:
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
         fresh_state = _fresh_existing_cache_state(cache_path, source_root_hint, column_mapping, max_age_seconds)
@@ -1679,6 +1691,100 @@ def lot_progress_summaries(
         )
         out[key] = _lot_progress_summary_from_rows(rows, lot_id=lot_id)
     return out
+
+
+def canonical_lot_progress_summaries(
+    lot_ids,
+    *,
+    product: str = "",
+    limit: int = 500,
+) -> dict[str, dict]:
+    """Return LOT summaries from the canonical dashboard WIP parquet.
+
+    The WIP dashboard reads ``filebrowser_cache_parquet_file()``.  UI callers
+    that need to display the same current LOT/step must use this function
+    instead of the scanner-internal ``lot_wf_current.json`` cache; the two
+    caches have different owners and refresh schedules.
+    """
+    from core.latest_lot_cache_format import FORMAT_COLUMN, FORMAT_VERSION, normalize_product
+
+    requested: dict[str, str] = {}
+    for raw_lot_id in lot_ids or []:
+        lot_id = _safe_text(raw_lot_id)
+        key = _norm_key(lot_id)
+        if key and key not in requested:
+            requested[key] = lot_id
+    if not requested:
+        return {}
+
+    empty = {
+        key: _lot_progress_summary_from_rows([], lot_id=lot_id)
+        for key, lot_id in requested.items()
+    }
+    path = filebrowser_cache_parquet_file()
+    if not path.is_file():
+        return empty
+
+    try:
+        import polars as pl  # type: ignore
+
+        schema = pl.read_parquet_schema(path)
+        names = list(schema.keys()) if hasattr(schema, "keys") else list(schema)
+        required = {FORMAT_COLUMN, "product", "root_lot_id", "lot_id", "wafer_id", "step_id"}
+        if not required.issubset(names):
+            return empty
+
+        lf = pl.scan_parquet(path)
+        version_rows = lf.select(
+            pl.col(FORMAT_COLUMN).cast(pl.Int64, strict=False).alias(FORMAT_COLUMN)
+        ).head(1).collect()
+        if version_rows.is_empty() or version_rows.item(0, 0) != FORMAT_VERSION:
+            return empty
+
+        lot_key = (
+            pl.col("lot_id").cast(pl.Utf8, strict=False).fill_null("")
+            .str.strip_chars().str.to_uppercase()
+        )
+        # Lot Management stores the current FAB lot_id, not root_lot_id.
+        # Matching a requested lot against both columns can combine sibling
+        # FAB lots under the same root and over-count Qty.
+        predicate = lot_key.is_in(list(requested))
+        product_key = normalize_product(product)
+        if product_key:
+            cache_product = (
+                pl.col("product").cast(pl.Utf8, strict=False).fill_null("")
+                .str.strip_chars().str.replace(r"(?i)^ML_TABLE_", "")
+                .str.to_uppercase()
+            )
+            predicate &= cache_product == product_key
+
+        selected = [
+            name for name in (
+                "product", "root_lot_id", "wafer_id", "lot_id", "step_id",
+                "function_step", "tkout_time", "update_time",
+            )
+            if name in names
+        ]
+        rows = lf.filter(predicate).select(selected).collect().to_dicts()
+    except Exception as exc:
+        logger.warning("canonical WIP cache read failed: %s (%s)", path, exc)
+        return empty
+
+    rows_by_key: dict[str, list[dict]] = {key: [] for key in requested}
+    for raw_row in rows:
+        row = dict(raw_row)
+        # The canonical writer stamps one cache update_time on every row.
+        # tkout_time is the actual per-wafer move time and must decide the
+        # displayed current step.
+        row["update_time"] = _safe_text(row.get("tkout_time") or row.get("update_time"))
+        lot_key_value = _norm_key(row.get("lot_id"))
+        if lot_key_value in rows_by_key and len(rows_by_key[lot_key_value]) < max(1, min(int(limit), 500)):
+            rows_by_key[lot_key_value].append(row)
+
+    return {
+        key: _lot_progress_summary_from_rows(rows_by_key[key], lot_id=lot_id)
+        for key, lot_id in requested.items()
+    }
 
 
 def lot_id_candidates(

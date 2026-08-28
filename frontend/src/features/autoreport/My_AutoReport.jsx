@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { dl, postJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
-import { Banner, Button, DataTable, EmptyState, PageHeader, Panel, Pill } from "../../components/UXKit";
+import { Banner, Button, DataTable, EmptyState, Panel, Pill } from "../../components/UXKit";
 
 // Hyphen-free compatibility path avoids older reverse-proxy normalization
 // issues; the backend also keeps /api/auto-report for existing clients.
@@ -113,14 +113,18 @@ export default function My_AutoReport() {
 
   return (
     <div style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)" }}>
-      <PageHeader
-        title="Auto report"
-        subtitle="ET · INLINE · FAB 기반 PPT 생성"
-        right={<span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <Pill tone={execution.server_role === "worker" ? "info" : "muted"}>{execution.server_role === "worker" ? "개발 서버" : "운영 서버"}</Pill>
-          <Pill tone={execution.worker_alive ? "ok" : "warn"}>{execution.worker_alive ? "개발 worker 연결" : "개발 worker 대기"}</Pill>
-        </span>}
-      />
+      <Banner tone="warn" style={{ borderRadius: 0, borderBottom: "1px solid var(--warn-line)", lineHeight: 1.45 }}>
+        <span style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span>
+            <b>주의사항</b> · 운영 서버는 요청을 큐에 전달하며, 실제 PPT 생성은 개발 서버 worker에서 순서대로 수행됩니다.
+            제품·LOT·STEP key를 확인한 후 요청해 주세요.
+          </span>
+          <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <Pill tone={execution.server_role === "worker" ? "info" : "muted"}>{execution.server_role === "worker" ? "개발 서버" : "운영 서버"}</Pill>
+            <Pill tone={execution.worker_alive ? "ok" : "warn"}>{execution.worker_alive ? "개발 worker 연결" : "개발 worker 대기"}</Pill>
+          </span>
+        </span>
+      </Banner>
 
       <main style={{ padding: 16, display: "grid", gap: 14 }}>
         {error && <Banner tone="bad">{error}</Banner>}

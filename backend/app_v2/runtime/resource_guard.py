@@ -226,7 +226,8 @@ async def _try_upstream_proxy(request: Request) -> Response | None:
 
     운영의 예열된 RAM 캐시를 활용해 개발서버가 자체 캐시 없이도 빠르게
     응답한다 (cache_budget worker 축소 계수와 한 쌍). 실패/비대상이면 None —
-    호출측이 기존 로컬 경로를 그대로 탄다. 블로킹 urllib 호출은 스레드로
+    SplitTable GET은 기존 로컬 경로를 그대로 타고, 운영 전용 AI POST는 호출측이
+    503을 반환한다. 블로킹 urllib 호출은 스레드로
     내려 이벤트 루프를 막지 않는다."""
     try:
         from core import upstream_proxy
@@ -456,21 +457,16 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             # 사용자 활동 시각을 남긴다.
             _request_priority.note_api_request(path)
             # 개발 워커에서 브라우저로 직접 실행한 AI SQL·unit AI·차트
-            # Assistant와 운영 캐시 read는 항상 운영 API로 한 홉 전달한다.
-            # 운영 연결 실패 시 워커에서 조용히 별도 실행하지 않는다.
+            # Assistant와 SplitTable read는 먼저 운영 API의 예열 캐시를 시도한다.
+            # SplitTable은 연결 실패 시 로컬 검색하고, AI POST만 운영 전용으로 유지한다.
+            proxied = await _try_upstream_proxy(request)
+            if proxied is not None:
+                return proxied
             operating_required = _requires_operating_server(request)
             if operating_required:
-                proxied = await _try_upstream_proxy(request)
-                if proxied is not None:
-                    return proxied
-                is_ai = request.method.upper() == "POST"
                 return JSONResponse(
                     {
-                        "detail": (
-                            "단일 AI 실행은 운영서버에서 처리합니다. 운영서버 연결을 확인한 뒤 다시 시도하세요."
-                            if is_ai else
-                            "SplitTable 검색은 운영서버에서 처리합니다. 운영서버 연결을 확인한 뒤 다시 시도하세요."
-                        ),
+                        "detail": "단일 AI 실행은 운영서버에서 처리합니다. 운영서버 연결을 확인한 뒤 다시 시도하세요.",
                         "error_code": "operating_server_required",
                     },
                     status_code=503,

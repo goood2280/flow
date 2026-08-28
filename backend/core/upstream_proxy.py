@@ -8,15 +8,18 @@ API 로 그대로 프록시해 운영의 예열된 캐시를 활용하고, 개�
 동작 조건 (전부 만족 시에만):
   - server_role() == "worker" (관리자 탭에서 런타임 변경 가능 — 매 요청 확인)
   - FLOW_API_SERVER_URL 설정 (예: http://prod-host:8080)
-개발 워커의 SplitTable 조회와 브라우저 단일-AI POST(AI SQL, unit AI,
-ChartBuilder Assistant)는 운영서버 전용이다. FLOW_API_SERVER_URL이 없거나
-운영서버가 응답하지 않으면 개발서버에서 로컬 실행하지 않고 503 재시도 응답을 낸다.
+개발 워커의 SplitTable 조회는 FLOW_API_SERVER_URL이 있으면 운영서버의
+예열 캐시를 우선 사용하되, URL이 없거나 운영서버가 응답하지 않으면
+개발서버의 공유 DB/캐시로 로컬 검색한다. 브라우저 단일-AI POST(AI SQL,
+unit AI, ChartBuilder Assistant)는 인증·실행 이력을 운영에 모으기 위해
+기존처럼 운영서버 전용이며, 연결 실패 시 503을 반환한다.
 
 인증: 세션 토큰 저장소({data_root}/sessions/tokens.json)가 서버 간 공유라
 개발서버로 들어온 x-session-token 을 그대로 전달하면 운영서버가 동일하게
 검증한다 — 별도 자격증명 불필요.
 
-운영서버 다운/타임아웃/5xx 면 None 을 반환해 호출측이 503을 만든다. 연결
+운영서버 다운/타임아웃/5xx 면 None 을 반환한다. 호출측은 SplitTable
+GET은 로컬 검색으로 폴백하고, 운영 전용 AI POST만 503을 만든다. 연결
 실패 후에는 쿨다운(기본 60초) 동안 프록시 시도 자체를 건너뛰어 운영서버가
 죽어 있을 때 매 검색에 연결 대기 지연이 붙는 것을 막는다. 4xx 는 결정적
 응답(잘못된 파라미터·인증 실패)이므로 그대로 통과시킨다.
@@ -135,7 +138,10 @@ def enabled() -> bool:
 
 def requires_operating(path: str, method: str, incoming_headers) -> bool:
     """개발 워커에서 로컬 실행을 금지해야 하는 운영 소유 요청인가."""
-    if not _supported_proxy_request(path, method):
+    # SplitTable GET은 운영 캐시를 우선할 뿐 로컬 폴백이 허용된다.
+    # LLM credential·breaker·실행 이력을 운영에 모아야 하는 AI POST만 필수다.
+    if str(method or "").upper() != "POST" or not any(
+            str(path or "").startswith(prefix) for prefix in ai_proxy_paths()):
         return False
     try:
         if incoming_headers is not None and incoming_headers.get(LOOP_GUARD_HEADER):
@@ -215,15 +221,16 @@ def forward(
             with _LOCK:
                 _STATS["passthrough_4xx"] = int(_STATS.get("passthrough_4xx") or 0) + 1
             return int(exc.code), body, content_type or "application/json"
-        # 5xx — 개발 로컬 계산은 금지하고 쿨다운 뒤 운영 재시도.
+        # 5xx — 쿨다운 뒤 운영을 재시도한다. 그 사이 SplitTable GET은
+        # 호출측이 로컬로 계속하고, AI POST는 503을 반환한다.
         _record_failure("fallback_5xx", f"HTTP {exc.code} from {base}")
-        logger.warning("upstream proxy %s -> HTTP %s — operating server required", path, exc.code)
+        logger.warning("upstream proxy %s -> HTTP %s — upstream unavailable", path, exc.code)
         return None
     except Exception as exc:
         elapsed = time.perf_counter() - started
         _record_failure("fallback_error", f"{type(exc).__name__}: {exc}")
         logger.warning(
-            "upstream proxy %s failed after %.1fs (%s) — operating server required (cooldown %.0fs)",
+            "upstream proxy %s failed after %.1fs (%s) — upstream unavailable (cooldown %.0fs)",
             path, elapsed, type(exc).__name__, _cooldown_sec(),
         )
         return None
@@ -242,6 +249,8 @@ def status() -> dict:
     return {
         "enabled": enabled(),
         "operating_required": operating_required,
+        "ai_operating_required": operating_required,
+        "splittable_local_fallback": True,
         "configuration_ready": bool(api_base_url()),
         "api_base_url": api_base_url(),
         "paths": list(proxy_paths()),

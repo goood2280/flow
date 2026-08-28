@@ -27,6 +27,7 @@ from core.utils import (
 )
 from core.runtime_limits import dashboard_scheduler_enabled
 from core.auth import require_page_manager
+from core import product_order as _product_order
 from app_v2.shared.source_adapter import resolve_column
 from core.dashboard_join import (
     apply_chart_defaults,
@@ -56,6 +57,17 @@ FAB_PROGRESS_SETTINGS_DEFAULTS = {
     "sample_lots": FAB_PROGRESS_DEFAULT_SAMPLE_LOTS,
     "days": FAB_PROGRESS_DEFAULT_DAYS,
 }
+
+
+@router.get("/product-order")
+def get_product_order():
+    return {"product_order": _product_order.load_product_order()}
+
+
+@router.post("/product-order")
+def save_product_order(req: dict, _perm=Depends(require_page_manager("dashboard"))):
+    order = _product_order.save_product_order(req.get("product_order"))
+    return {"ok": True, "product_order": order}
 
 
 def _dashboard_sections_config() -> dict:
@@ -2950,9 +2962,9 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
         bin_size = max(1, min(100000, int(bin_size or 1000)))
     except Exception:
         bin_size = 1000
-    axis = str(axis or "step_id").strip().lower()
+    axis = str(axis or "step_desc").strip().lower()
     if axis not in ("step_id", "step_desc"):
-        axis = "step_id"
+        axis = "step_desc"
 
     # 물량 귀속은 latest-lot product 기준 — 위 헬퍼 주석 참조.
     raw_product = _wip_split_product_expr(cur.columns)
@@ -3204,7 +3216,7 @@ def wip_split_summary(
     product: str = Query(""),
     bin_size: int = Query(1000),
     split_col: str = Query(""),
-    axis: str = Query("step_id"),
+    axis: str = Query("step_desc"),
     exclude_root_prefix: str = Query(""),
     lot_type: str = Query(""),
 ):
@@ -3216,8 +3228,8 @@ def wip_split_summary(
     split 값 분포를 반환한다.
 
     axis:
-      - step_id (기본): step_id 마지막 6자리 숫자를 bin_size 간격으로 binning.
-      - step_desc: latest cache 의 step_id 를 Vehicle_matching.csv 로 매핑한
+      - step_id: step_id 마지막 6자리 숫자를 bin_size 간격으로 binning.
+      - step_desc (기본): latest cache 의 step_id 를 Vehicle_matching.csv 로 매핑한
         step_desc 의 앞머리 숫자로 그룹 (예: "FAB_1.0 STI" → "1.0").
         존재하는 숫자 그룹을 전부 나열하며 구간으로 묶지 않는다.
         CSV/function_step 어디에도 못 푼 step 은 근사 매칭: 영문 prefix 가
@@ -3327,7 +3339,7 @@ def wip_split_lots(
     product: str = Query(""),
     bin_size: int = Query(1000),
     split_col: str = Query(""),
-    axis: str = Query("step_id"),
+    axis: str = Query("step_desc"),
     bin: str = Query(...),
     split: str = Query(""),
     limit: int = Query(3000),

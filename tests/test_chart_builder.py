@@ -67,6 +67,35 @@ def test_chart_assistant_join_change_is_validated_and_requests_rerun():
     assert "JOIN q1 INNER q2" in changed["canonical_code"]
 
 
+def test_chart_assistant_llm_receives_automatic_type_conversion_contract(monkeypatch):
+    from core import llm_adapter
+
+    captured = {}
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def complete_json(prompt, *, system, **kwargs):
+        captured["prompt"] = prompt
+        captured["system"] = system
+        return {"ok": True, "obj": {"message": "변경 없음", "operations": []}}
+
+    monkeypatch.setattr(llm_adapter, "complete_json", complete_json)
+    operations, message, info = filebrowser._chart_assistant_llm_operations(
+        "문자열 wafer와 tkout_time 컬러링이 맞는지 확인해줘",
+        parse_chart_builder_definition(ASSISTANT_CHART_CODE),
+        ["root_lot_id", "wafer_id", "tkout_time", "value"],
+    )
+
+    assert operations == []
+    assert message == "변경 없음"
+    assert info["used"] is True
+    assert "Runtime filters and JOIN keys already normalize" in captured["system"]
+    payload = __import__("json").loads(captured["prompt"])
+    contract = payload["type_conversion_contract"]
+    assert "do not add CAST" in contract["runtime_filters"]
+    assert "tkout_time WITHIN N DAYS" in contract["color_rules"]
+    assert "TRY_CAST" in contract["manual_sql"]
+
+
 def test_saved_chart_names_are_unique_and_searchable(tmp_path, monkeypatch):
     monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: tmp_path / "chart_history.jsonl")
     request = filebrowser.ChartBuilderRunReq(
@@ -116,6 +145,38 @@ def test_chart_builder_runtime_recent_days_filters_raw_source(tmp_path, monkeypa
 
     assert result["joined"]["row_count"] == 1
     assert result["joined"]["rows"][0]["value"] == 1.0
+
+
+def test_chart_builder_runtime_filters_cast_string_time_and_numeric_wafer(tmp_path, monkeypatch):
+    """VARCHAR time and numeric wafer keys use the same safe comparison contract."""
+    source = tmp_path / "typed_runtime_filters.parquet"
+    today = dt.datetime.now(dt.timezone.utc).date()
+    pl.DataFrame({
+        "root_lot_id": ["A1234", "A1234", "A1234"],
+        "wafer_id": [1, 2, 1],
+        "tkout_time": [str(today - dt.timedelta(days=2)), str(today - dt.timedelta(days=2)), "not-a-date"],
+        "value": [11.0, 12.0, 99.0],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="q1",
+            root="ET",
+            product="P",
+            sql="SELECT root_lot_id, wafer_id, tkout_time, value",
+            runtime_recent_days=7,
+            runtime_date_column="tkout_time",
+            runtime_lot_wafer_pairs=[{"root_lot_id": "a1234", "wafer_id": "W1"}],
+        )],
+        save_history=False,
+    ), object())
+
+    assert result["joined"]["row_count"] == 1
+    assert str(result["joined"]["rows"][0]["wafer_id"]) == "1"
+    assert result["joined"]["rows"][0]["value"] == 11.0
 
 
 def test_definition_time_window_filters_the_raw_source_and_survives_a_round_trip(tmp_path, monkeypatch):
@@ -191,6 +252,36 @@ def test_chart_builder_runtime_root_lot_and_wafer_filters_push_down(tmp_path, mo
 
     assert result["joined"]["row_count"] == 1
     assert result["joined"]["rows"][0]["value"] == 2.0
+
+
+def test_chart_builder_linked_color_table_filters_exact_lot_wafer_pairs(tmp_path, monkeypatch):
+    source = tmp_path / "linked_pair_filters.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1234", "A1234", "B5678", "B5678"],
+        "wafer_id": ["W1", "W2", "W1", "#2"],
+        "value": [11.0, 12.0, 21.0, 22.0],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="q1", root="ET", product="P",
+            sql="SELECT root_lot_id, wafer_id, value",
+            runtime_root_lot_ids=["A1234", "B5678"],
+            runtime_wafer_ids=["1", "2"],
+            runtime_lot_wafer_pairs=[
+                {"root_lot_id": "A1234", "wafer_id": "1"},
+                {"root_lot_id": "B5678", "wafer_id": "2"},
+            ],
+        )],
+        save_history=False,
+    ), object())
+
+    assert [(row["root_lot_id"], row["value"]) for row in result["joined"]["rows"]] == [
+        ("A1234", 11.0), ("B5678", 22.0),
+    ]
 
 
 def test_definition_rejects_a_date_column_without_a_window():
@@ -363,6 +454,7 @@ COLOR_RULE = root_lot_id = 'AAAAA' AND wafer_id = 'BB' THEN red
 COLOR_RULE = root_lot_id = 'AAAAA' AND wafer_id = 'B1' THEN blue
 COLOR_ELSE = gray
 HIGHLIGHT = true
+SHOW_LEGEND = false
 WIDTH = 1280
 HEIGHT = 720
 MAX_ROWS = 300
@@ -370,6 +462,10 @@ MAX_ROWS = 300
 
     assert parsed["sources"][0]["apply_reformatter"] is True
     assert parsed["sources"][0]["reformatter_items"] == "VTH_INDEX, VTH_DELTA"
+    assert parsed["sources"][0]["runtime_lot_wafer_pairs"] == [
+        {"root_lot_id": "AAAAA", "wafer_id": "BB"},
+        {"root_lot_id": "AAAAA", "wafer_id": "B1"},
+    ]
     assert parsed["chart"] == {
         "type": "scatter",
         "x": "tkout_time",
@@ -381,12 +477,15 @@ MAX_ROWS = 300
         ],
         "color_else": "gray",
         "highlight": True,
+        "show_legend": False,
         "width": 1280,
         "height": 720,
     }
     assert "REFORMATTER = true" in parsed["canonical_code"]
     assert "CHART\nTYPE = scatter" in parsed["canonical_code"]
+    assert "SHOW_LEGEND = false" in parsed["canonical_code"]
     assert "WIDTH = 1280\nHEIGHT = 720" in parsed["canonical_code"]
+    assert parse_chart_builder_definition(parsed["canonical_code"])["sources"][0]["runtime_lot_wafer_pairs"] == parsed["sources"][0]["runtime_lot_wafer_pairs"]
 
 
 def test_chart_builder_definition_preserves_tkout_time_within_color_rules():
@@ -415,6 +514,7 @@ MAX_ROWS = 10000
         "tkout_time WITHIN 3 DAYS THEN #dc2626",
         "tkout_time WITHIN 7 DAYS THEN #f59e0b",
     ]
+    assert parsed["sources"][0]["runtime_lot_wafer_pairs"] == []
     assert "COLOR_RULE = tkout_time WITHIN 7 DAYS THEN #f59e0b" in parsed["canonical_code"]
     assert parse_chart_builder_definition(parsed["canonical_code"])["chart"] == parsed["chart"]
 

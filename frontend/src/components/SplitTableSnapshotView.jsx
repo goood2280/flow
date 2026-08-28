@@ -198,6 +198,109 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
   };
 }
 
+// PEMS 표시: root lot 의 wafer 축을 물리 wafer 번호 1..25로 고정하고,
+// Split 체크와 같은 S0/S1... 그룹에 체크 대신 그룹명을 직접 표시한다.
+// 조회 결과에 없는 wafer(또는 값이 비어 있는 wafer)는 S0에 포함하되 회색으로 남긴다.
+export function buildPemsStView(matrix, { valueForCell, displayForValue, labelForParam } = {}) {
+  const source = matrix || {};
+  const sourceHeaders = Array.isArray(source.headers) ? source.headers : [];
+  const sourceRows = Array.isArray(source.rows) ? source.rows : [];
+  const normalizeWafer = value => String(value ?? "").replace(/^(?:#|WAFER|WF|W)\s*/i, "").replace(/^0+(?=\d)/, "");
+  const sourceIndexByWafer = new Map();
+  sourceHeaders.forEach((header, ci) => {
+    const wafer = normalizeWafer(source?.wafer_keys?.[ci] ?? header);
+    if (wafer && !sourceIndexByWafer.has(wafer)) sourceIndexByWafer.set(wafer, ci);
+  });
+
+  const headers = Array.from({ length: 25 }, (_, idx) => String(idx + 1));
+  const waferKeys = Array.from({ length: 25 }, (_, idx) => String(idx + 1));
+  const missingWaferIndices = waferKeys
+    .map((wafer, ci) => sourceIndexByWafer.has(wafer) ? null : ci)
+    .filter(ci => ci != null);
+  const rootNotReached = new Set(Array.isArray(source?.step_progress?.not_reached) ? source.step_progress.not_reached.map(String) : []);
+  const byWafer = Object.fromEntries(Object.entries(source?.step_progress?.by_wafer || {}).map(([wafer, meta]) => [
+    normalizeWafer(wafer),
+    new Set(Array.isArray(meta?.not_reached) ? meta.not_reached.map(String) : []),
+  ]));
+  const hasWaferProgress = Object.keys(byWafer).length > 0;
+
+  const pemsRows = sourceRows.flatMap(row => {
+    const cells = row?._cells || {};
+    const param = String(row?._param || "");
+    const perWafer = waferKeys.map(wafer => {
+      const sourceIndex = sourceIndexByWafer.get(wafer);
+      const missingWafer = sourceIndex == null;
+      const cell = missingWafer ? {} : (cells[String(sourceIndex)] || cells[sourceIndex] || {});
+      const progressNotReached = missingWafer
+        ? true
+        : (hasWaferProgress ? byWafer[wafer]?.has(param) === true : rootNotReached.has(param));
+      const rawValue = missingWafer
+        ? ""
+        : (valueForCell ? valueForCell(cell, row, sourceIndex) : (hasStValue(cell?.plan) ? cell.plan : cell?.actual));
+      if (!hasStValue(rawValue)) {
+        return { raw: "", display: "", missing_wafer: missingWafer, not_reached: true };
+      }
+      const raw = String(rawValue);
+      const displayRaw = displayForValue ? displayForValue(rawValue, row, cell, sourceIndex) : raw;
+      return { raw, display: String(displayRaw ?? raw), missing_wafer: missingWafer, not_reached: progressNotReached };
+    });
+    const order = [];
+    const seen = new Set();
+    perWafer.forEach(item => {
+      if (!item.raw || seen.has(item.raw)) return;
+      seen.add(item.raw);
+      order.push(item);
+    });
+    // 실제 값이 하나도 없어도 PEMS 에서는 S0 행이 있어야 25개 wafer가 모두 보인다.
+    if (!order.length) order.push({ raw: "", display: "" });
+
+    return order.map((item, idx) => {
+      const label = `S${idx}`;
+      const splitCells = {};
+      perWafer.forEach((value, ci) => {
+        // 빈 값과 조회 결과에 없는 wafer는 항상 S0 소속이다.
+        const belongs = idx === 0 ? (!value.raw || value.raw === item.raw) : value.raw === item.raw;
+        splitCells[String(ci)] = {
+          actual: belongs ? label : "",
+          plan: "",
+          split_check: true,
+          pems: true,
+          missing_wafer: !!value.missing_wafer,
+          not_reached: !!(value.missing_wafer || value.not_reached),
+        };
+      });
+      return {
+        _param: String(row?._param || row?._display || ""),
+        _display: String(row?._display || row?._param || ""),
+        _split_value: item.display,
+        _split_label: label,
+        _prefix_cells: [
+          (labelForParam && labelForParam(row?._param, row?._display))
+            || splitParamDisplayName(row?._display || row?._param || "", row?._param),
+          item.display, label,
+        ],
+        _cells: splitCells,
+        _not_reached_all: perWafer.every(value => value.not_reached),
+      };
+    });
+  });
+
+  return {
+    ...source,
+    headers,
+    wafer_keys: waferKeys,
+    rows: pemsRows,
+    header_groups: [],
+    wafer_fab_list: [],
+    lot_id_label: "",
+    hide_lot_id_row: true,
+    pems_missing_wafer_indices: missingWaferIndices,
+    prefix_columns: SPLIT_CHECK_PREFIX_COLUMNS,
+    display_mode: "pems",
+    row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
+  };
+}
+
 function inferProductFromEmbed(embed, product, source) {
   const p = String(product || "").trim();
   if (p) return p;
@@ -227,7 +330,8 @@ export default function SplitTableSnapshotView({
   const headers = st?.headers || [];
   const rawPrefixColumns = Array.isArray(st?.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
   const snapshotMode = String(st?.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || "");
-  const splitCheckMode = snapshotMode === "split_check" && rawPrefixColumns.length >= 3;
+  const pemsMode = snapshotMode === "pems" && rawPrefixColumns.length >= 3;
+  const splitCheckMode = (snapshotMode === "split_check" || pemsMode) && rawPrefixColumns.length >= 3;
   // 병합 표시 — 서버가 행마다 _merged_runs(연속 동일값 구간)를 실어 준다.
   const mergedMode = snapshotMode === "merged";
   const stepLabels = !!(st?.step_labels || embed?.step_labels);
@@ -252,7 +356,7 @@ export default function SplitTableSnapshotView({
   const paramRowLabel = rowLabels.parameter || "항목";
   const visiblePrefixColumns = splitCheckMode ? prefixColumns : [paramRowLabel];
   const hasRootRow = hasLotContext;
-  const hasLotRow = hasLotContext || headerGroups.length > 0;
+  const hasLotRow = !pemsMode && (hasLotContext || headerGroups.length > 0);
   const rootHeaderHeight = hasRootRow ? 32 : 0;
   const lotHeaderHeight = hasLotRow ? 24 : 0;
   const waferTop = rootHeaderHeight + lotHeaderHeight;
@@ -316,6 +420,7 @@ export default function SplitTableSnapshotView({
   const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: ST_GRID_TEXT });
   const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === 0 ? 700 : 600, whiteSpace: "pre-line" });
   const notReachedStyle = { background: "rgba(107,114,128,0.45)" };
+  const pemsMissingWaferIndices = new Set(Array.isArray(st?.pems_missing_wafer_indices) ? st.pems_missing_wafer_indices.map(Number) : []);
 
   return (
     <div style={shellStyle}>
@@ -360,7 +465,8 @@ export default function SplitTableSnapshotView({
                 <th key={`${label}-${i}`} style={prefixHeadStyle(i)}>{label}</th>
               ))}
               {headers.map((h, i) => (
-                <th key={i} style={waferHeadStyle}>{h}</th>
+                <th key={i} title={pemsMissingWaferIndices.has(i) ? "데이터가 없는 wafer · S0로 표시" : undefined}
+                  style={{ ...waferHeadStyle, ...(pemsMissingWaferIndices.has(i) ? notReachedStyle : {}) }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -421,7 +527,9 @@ export default function SplitTableSnapshotView({
                     const hasActual = hasStValue(cell.actual);
                     const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
                     const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
-                    const cellNotReached = (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
+                    const cellNotReached = pemsMode
+                      ? (cell.not_reached === true || pemsMissingWaferIndices.has(ci))
+                      : (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
                     return (
                       <td key={ci} style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}), ...(cellNotReached ? notReachedStyle : {}) }}>
                         {/* 진한 빨강 배경 위라 글자는 흰색이다 (stPlanStyle 과 한 쌍). */}

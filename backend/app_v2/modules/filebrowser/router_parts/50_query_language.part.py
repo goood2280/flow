@@ -3470,9 +3470,14 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "Prefer SQL syntax: =, !=, >, >=, <, <=, LIKE, NOT LIKE, IN (...), "
                 "IS NULL, IS NOT NULL, AND, OR. In WHERE only, you may use "
                 "CAST(column AS DOUBLE|FLOAT|BIGINT|INTEGER|INT|DATE|TIMESTAMP|DATETIME|TIME) "
-                "for string-stored numeric or temporal columns. Treat contains/들어간 row-value requests as "
+                "for string-stored numeric or temporal columns. When schema dtype or samples show a numeric "
+                "or temporal value stored as string, always use CAST/TRY_CAST before range, arithmetic-like, "
+                "or date comparison; the server normalizes either spelling to safe TRY_CAST. Do not cast "
+                "root_lot_id or wafer_id for plain equality/list matching because Flow normalizes those keys "
+                "as strings. Treat contains/들어간 row-value requests as "
                 "LIKE '%value%', recent N days as a rolling timestamp predicate, time-named columns as "
-                "TIMESTAMP, and wafer_id/wf_id as BIGINT. A request for column names containing a token "
+                "TIMESTAMP, and wafer_id/wf_id as BIGINT only for explicit numeric range/order semantics. "
+                "A request for column names containing a token "
                 "is display projection and must return an empty sql filter."
             ))
             ask = json.dumps({

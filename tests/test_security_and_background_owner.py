@@ -77,13 +77,16 @@ def test_bulk_user_creation_always_starts_without_permissions(monkeypatch):
     assert written[0][0]["tabs"] == ""
 
 
-def test_permission_group_list_prunes_deleted_users(monkeypatch):
+def test_permission_group_list_prunes_deleted_users_and_admins(monkeypatch):
     groups = [
-        {"name": "engineers", "tabs": ["dashboard"], "members": ["active", "deleted"]},
-        {"name": "empty", "tabs": [], "members": ["deleted"]},
+        {"name": "engineers", "tabs": ["dashboard"], "members": ["active", "admin01", "deleted"]},
+        {"name": "empty", "tabs": [], "members": ["admin01", "deleted"]},
     ]
     saved = []
-    monkeypatch.setattr(admin, "read_users", lambda: [{"username": "active", "role": "user"}])
+    monkeypatch.setattr(admin, "read_users", lambda: [
+        {"username": "active", "role": "user"},
+        {"username": "admin01", "role": "admin"},
+    ])
     monkeypatch.setattr(admin, "_load_perm_groups", lambda: [dict(g, members=list(g["members"])) for g in groups])
     monkeypatch.setattr(admin, "_save_perm_groups", lambda value: saved.append(value))
 
@@ -94,6 +97,98 @@ def test_permission_group_list_prunes_deleted_users(monkeypatch):
         {"name": "empty", "tabs": [], "members": []},
     ]
     assert saved == [result["groups"]]
+
+
+def test_promoting_user_removes_groups_and_grants_all_permissions(monkeypatch):
+    rows = [{"username": "promoted", "role": "user", "tabs": "dashboard", "permission_source": "group:engineers"}]
+    written = []
+    audited = []
+    monkeypatch.setattr(admin, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(admin, "write_users", lambda value: written.append(value))
+    monkeypatch.setattr(admin, "_remove_from_perm_groups", lambda username: ["engineers"])
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: audited.append((args, kwargs)))
+    monkeypatch.setattr(auth_core, "revoke_user_tokens", lambda username: 2)
+
+    result = admin.set_role(
+        admin.SetRoleReq(username="promoted", role="admin"),
+        object(),
+        _admin={"role": "admin"},
+    )
+
+    assert written[0][0]["role"] == "admin"
+    assert written[0][0]["tabs"] == "__all__"
+    assert written[0][0]["permission_source"] == "admin"
+    assert result["removed_from_permission_groups"] == ["engineers"]
+    assert result["revoked_sessions"] == 2
+    assert result["unchanged"] is False
+    assert audited
+
+
+def test_saving_existing_admin_repairs_stale_permission_state(monkeypatch):
+    rows = [{"username": "admin01", "role": "admin", "tabs": "dashboard", "permission_source": "group:legacy"}]
+    written = []
+    monkeypatch.setattr(admin, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(admin, "write_users", lambda value: written.append(value))
+    monkeypatch.setattr(admin, "_remove_from_perm_groups", lambda username: ["legacy"])
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(auth_core, "revoke_user_tokens", lambda username: 1)
+
+    result = admin.set_role(
+        admin.SetRoleReq(username="admin01", role="admin"),
+        object(),
+        _admin={"role": "admin"},
+    )
+
+    assert written[0][0]["tabs"] == "__all__"
+    assert written[0][0]["permission_source"] == "admin"
+    assert result["removed_from_permission_groups"] == ["legacy"]
+    assert result["unchanged"] is False
+
+
+def test_demoting_admin_clears_admin_permissions_and_stale_groups(monkeypatch):
+    rows = [
+        {"username": "admin01", "role": "admin", "tabs": "__all__", "permission_source": "admin"},
+        {"username": "admin02", "role": "admin", "tabs": "__all__", "permission_source": "admin"},
+    ]
+    written = []
+    monkeypatch.setattr(admin, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(admin, "write_users", lambda value: written.append(value))
+    monkeypatch.setattr(admin, "_remove_from_perm_groups", lambda username: ["legacy"])
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(auth_core, "revoke_user_tokens", lambda username: 1)
+
+    result = admin.set_role(
+        admin.SetRoleReq(username="admin01", role="user"),
+        object(),
+        _admin={"role": "admin"},
+    )
+
+    demoted = written[0][0]
+    assert (demoted["role"], demoted["tabs"], demoted["permission_source"]) == ("user", "", "")
+    assert result["removed_from_permission_groups"] == ["legacy"]
+
+
+def test_admin_tab_edit_preserves_all_permissions_and_removes_groups(monkeypatch):
+    rows = [{"username": "admin01", "role": "admin", "tabs": "dashboard", "permission_source": "group:legacy"}]
+    written = []
+    monkeypatch.setattr(admin, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(admin, "write_users", lambda value: written.append(value))
+    monkeypatch.setattr(admin, "_remove_from_perm_groups", lambda username: ["legacy"])
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
+
+    result = admin.set_tabs(
+        admin.PermReq(username="admin01", tabs=["dashboard"]),
+        object(),
+        _admin={"role": "admin"},
+    )
+
+    assert written[0][0]["tabs"] == "__all__"
+    assert written[0][0]["permission_source"] == "admin"
+    assert result == {
+        "ok": True,
+        "admin_all_permissions": True,
+        "removed_from_groups": ["legacy"],
+    }
 
 
 def test_delete_user_removes_permission_group_membership(monkeypatch):
@@ -129,6 +224,27 @@ def test_delete_user_removes_permission_group_membership(monkeypatch):
         "ok": True,
         "removed_from_permission_groups": ["engineers", "reviewers"],
     }
+
+
+def test_department_default_never_overwrites_individual_or_explicit_group_permissions():
+    users = [
+        {"username": "fresh", "role": "user", "department": "Process Team", "tabs": "", "permission_source": ""},
+        {"username": "legacy", "role": "user", "department": "Process Team", "tabs": "inform", "permission_source": ""},
+        {"username": "individual", "role": "user", "department": "Process Team", "tabs": "", "permission_source": "individual"},
+        {"username": "manual", "role": "user", "department": "Process Team", "tabs": "", "permission_source": ""},
+    ]
+    groups = [
+        {"name": "dept-default", "tabs": ["dashboard"], "members": [], "departments": ["process team"]},
+        {"name": "manual-group", "tabs": ["tracker"], "members": ["manual"], "departments": []},
+    ]
+
+    changed = admin._apply_department_permission_defaults(users, groups)
+
+    assert changed == 3
+    assert (users[0]["tabs"], users[0]["permission_source"]) == ("dashboard", "department:dept-default")
+    assert (users[1]["tabs"], users[1]["permission_source"]) == ("inform", "individual")
+    assert (users[2]["tabs"], users[2]["permission_source"]) == ("", "individual")
+    assert (users[3]["tabs"], users[3]["permission_source"]) == ("tracker", "group:manual-group")
 
 
 def test_seed_admin_requires_explicit_non_default_password(monkeypatch):

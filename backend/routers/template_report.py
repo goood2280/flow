@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import io
+import json
 import math
 import re
 import threading
@@ -36,7 +37,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core.auth import current_user
-from core.chart_builder_definition import ChartBuilderDefinitionError, parse_chart_builder_definition
+from core.chart_builder_definition import ChartBuilderDefinitionError, linked_chart_color_pairs, parse_chart_builder_definition
 from core.paths import PATHS
 from core.report_variables import (
     ReportVariableError,
@@ -71,16 +72,24 @@ DEFAULT_CHART_HEIGHT = 650
 # 차트가 아닌 블록(표·글)은 ChartBuilder 크기가 없어 슬라이드 비율로 직접 잡는다.
 DEFAULT_BLOCK_WIDTH_PCT = 46.0
 DEFAULT_BLOCK_HEIGHT_PCT = 26.0
-SLOT_KINDS = ("chart", "split", "text", "stats")
+SLOT_KINDS = ("chart", "split", "text", "stats", "legend")
 # 예전 템플릿의 A/B 전용 통계표 — 지금은 그룹 통계표 하나로 합쳤다.
 LEGACY_SLOT_KINDS = {"ab_stats": "stats"}
 
 # ─ 슬라이드 디자인 상수 — HOL Auto Report 와 같은 값 ──────────────────────────
 SLIDE_WIDTH_IN = 13.333333
 SLIDE_HEIGHT_IN = 7.5
-TITLE_BAR_HEIGHT_IN = 0.62
+TITLE_BAR_HEIGHT_IN = 0.42
 COVER_BAR_HEIGHT_IN = 0.45
-REPORT_NAVY = (31, 73, 125)
+# Flow Web의 IBM Carbon 레이어와 같은 중립 면 + 오렌지 포인트.
+REPORT_ACCENT = (226, 88, 34)
+REPORT_TEXT = (23, 23, 23)
+REPORT_MUTED = (115, 115, 115)
+REPORT_PAGE = (250, 250, 250)
+REPORT_PANEL = (255, 255, 255)
+REPORT_SUBTLE = (245, 245, 245)
+REPORT_BORDER = (229, 229, 229)
+REPORT_BORDER_STRONG = (163, 163, 163)
 REPORT_FONT = "Malgun Gothic"
 MAX_TABLE_ROWS = 26
 MAX_TABLE_COLUMNS = 24
@@ -94,6 +103,12 @@ class TemplateSlotReq(BaseModel):
     y: float | None = None
     width: float | None = None
     height: float | None = None
+    chart_width: int | None = None
+    chart_height: int | None = None
+    chart_name: str = ""
+    # Template 안에서 저장 차트의 생성식을 복사해 직접 수정할 수 있다.
+    # chart_id는 원본/계보를 가리키고 definition_code는 이 슬롯이 실제 실행할 코드다.
+    definition_code: str = ""
     title: str = ""
     # kind=text
     text: str = ""
@@ -102,7 +117,7 @@ class TemplateSlotReq(BaseModel):
     lot: str = ""
     columns: str = ""
     display_mode: str = "matrix"
-    # kind=stats
+    # kind=stats / legend — 같은 페이지의 chart position을 가리킨다.
     source_position: int = 0
     stats: str = ""
 
@@ -133,6 +148,15 @@ class TemplateSaveReq(BaseModel):
     pages: list[TemplatePageReq]
     variables: list[TemplateVariableReq] = []
     options: TemplateOptionsReq | None = None
+
+
+class TemplateCodeReq(BaseModel):
+    code: str
+
+
+class TemplateAssistantReq(BaseModel):
+    instruction: str
+    template_code: str
 
 
 class TemplateRunContextReq(BaseModel):
@@ -392,8 +416,8 @@ def _slot_value(slot, key):
 def _slot_layout(slot: dict | TemplateSlotReq) -> dict[str, float | int]:
     """좌상단 좌표 + 블록 크기.
 
-    chart 블록의 크기는 ChartBuilder 원본 크기로 고정이고(사용자는 위치만 옮긴다),
-    표·글 블록은 크기 자체가 배치 정보라 입력값을 쓴다.
+    chart 블록은 기본적으로 ChartBuilder 크기를 쓰되 Template에서 크기를 덮어쓸 수
+    있다. 표·글 블록은 슬라이드 비율 입력값을 쓴다.
     """
     kind = _slot_kind(slot)
     position = int(_slot_value(slot, "position") or 1)
@@ -465,6 +489,7 @@ def list_charts(_user=Depends(current_user)):
             "label": label or source_text or str(row.get("name") or row.get("history_id")),
             "source_text": source_text,
             "chart": chart,
+            "definition_code": str(row.get("definition_code") or "")[:100_000],
             "variables": extract_variables(str(row.get("definition_code") or "")),
             "row_count": int(row.get("row_count") or 0),
             **_code_time_window(row.get("definition_code")),
@@ -483,16 +508,39 @@ def _save_slot(slot: TemplateSlotReq, page_index: int, history: dict, history_by
     }
     if kind == "chart":
         chart_ref = _clean_text(slot.chart_id, 120)
-        if not chart_ref:
+        if not chart_ref and not str(slot.definition_code or "").strip():
             raise HTTPException(400, f"{page_index + 1}페이지 {position}번 차트를 선택해 주세요.")
+        if not chart_ref:
+            chart_ref = f"inline_p{page_index + 1}_{position}"
         history_row = history.get(chart_ref) or history_by_name.get(chart_ref.casefold())
         chart_id = str((history_row or {}).get("history_id") or chart_ref)
         old_slot = old_slots.get(chart_id) or old_slots.get(chart_ref) or {}
-        definition = str((history_row or {}).get("definition_code") or old_slot.get("definition_code") or "")
-        if not definition:
+        raw_definition = str(
+            slot.definition_code
+            or (history_row or {}).get("definition_code")
+            or old_slot.get("definition_code")
+            or ""
+        )
+        # 코드 복붙 왕복 시 마지막 개행까지 보존한다. 제어문자만 제거한다.
+        definition = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", raw_definition)[:100_000]
+        if not definition.strip():
             raise HTTPException(400, f"Chart ID 또는 Name을 찾지 못했습니다: {chart_ref}")
-        chart_name = str((history_row or {}).get("name") or old_slot.get("chart_name") or chart_id)
-        layout = _slot_layout({"position": position, "kind": kind, "x": slot.x, "y": slot.y, "definition_code": definition})
+        try:
+            parse_chart_builder_definition(definition)
+        except ChartBuilderDefinitionError as exc:
+            raise HTTPException(400, f"{page_index + 1}페이지 {position}번 차트 생성식 오류: {exc}") from exc
+        chart_name = _clean_text(
+            (history_row or {}).get("name")
+            or slot.chart_name
+            or old_slot.get("chart_name")
+            or f"Chart {position}",
+            120,
+        )
+        layout = _slot_layout({
+            "position": position, "kind": kind, "x": slot.x, "y": slot.y,
+            "chart_width": slot.chart_width, "chart_height": slot.chart_height,
+            "definition_code": definition,
+        })
         return {
             **common,
             **{key: layout[key] for key in ("x", "y", "chart_width", "chart_height")},
@@ -523,11 +571,14 @@ def _save_slot(slot: TemplateSlotReq, page_index: int, history: dict, history_by
             "columns": _clean_text(slot.columns, 2000),
             "display_mode": "split_check" if str(slot.display_mode or "").strip() == "split_check" else "matrix",
         })
-    elif kind == "stats":
+    elif kind in {"stats", "legend"}:
         source = int(slot.source_position or 0)
         if source < 1:
-            raise HTTPException(400, f"{page_index + 1}페이지 {position}번 통계표는 대상 차트 번호가 필요합니다.")
-        block.update({"source_position": source, "stats": _clean_text(slot.stats, 200) or "n,mean,median,std"})
+            label = "통계표" if kind == "stats" else "범례"
+            raise HTTPException(400, f"{page_index + 1}페이지 {position}번 {label}는 대상 차트 번호가 필요합니다.")
+        block["source_position"] = source
+        if kind == "stats":
+            block["stats"] = _clean_text(slot.stats, 200) or "n,mean,median,std"
     return block
 
 
@@ -572,9 +623,11 @@ def save_template(req: TemplateSaveReq, user=Depends(current_user)):
                     raise HTTPException(400, f"{page_index + 1}페이지의 차트 위치가 올바르지 않습니다.")
                 positions.add(position)
                 slots.append(_save_slot(slot, page_index, history, history_by_name, old_slots))
+            chart_positions = {int(slot["position"]) for slot in slots if slot["kind"] == "chart"}
             for slot in slots:
-                if slot["kind"] == "stats" and int(slot["source_position"]) not in positions:
-                    raise HTTPException(400, f"{page_index + 1}페이지 통계표가 가리키는 차트 번호가 없습니다.")
+                if slot["kind"] in {"stats", "legend"} and int(slot["source_position"]) not in chart_positions:
+                    label = "통계표" if slot["kind"] == "stats" else "범례"
+                    raise HTTPException(400, f"{page_index + 1}페이지 {label}가 가리키는 차트 번호가 없습니다.")
             pages.append({
                 "id": _clean_text(page.id, 80) or f"page_{uuid.uuid4().hex[:10]}",
                 "title": _clean_text(page.title, 180) or f"Page {page_index + 1}",
@@ -630,8 +683,177 @@ def delete_template(template_id: str, user=Depends(current_user)):
     return {"ok": True, "id": template_id}
 
 
+# ── 전체 Template 코드 ───────────────────────────────────────────────────────
+def _template_request_from_code(code: str) -> TemplateSaveReq:
+    raw = str(code or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    if not raw:
+        raise HTTPException(400, "Template 전체 코드를 입력해 주세요.")
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Template JSON {exc.lineno}행 {exc.colno}열 오류: {exc.msg}") from exc
+    if isinstance(obj, dict) and isinstance(obj.get("template"), dict):
+        obj = obj["template"]
+    if not isinstance(obj, dict):
+        raise HTTPException(400, "Template 코드는 JSON object여야 합니다.")
+    try:
+        return TemplateSaveReq(**obj)
+    except Exception as exc:
+        raise HTTPException(400, f"Template 코드 구조 오류: {exc}") from exc
+
+
+def _normalize_code_template(req: TemplateSaveReq, user: dict | None = None) -> dict:
+    name = _clean_text(req.name, 120)
+    if not name:
+        raise HTTPException(400, "Template 이름이 필요합니다.")
+    if not req.pages or len(req.pages) > MAX_PAGES:
+        raise HTTPException(400, f"페이지는 1~{MAX_PAGES}개까지 작성할 수 있습니다.")
+    history = _chart_history()
+    history_by_name = _chart_history_by_name(history)
+    pages = []
+    for page_index, page in enumerate(req.pages):
+        if len(page.slots) > MAX_CHARTS_PER_PAGE:
+            raise HTTPException(400, f"페이지당 블록은 {MAX_CHARTS_PER_PAGE}개까지 작성할 수 있습니다.")
+        positions: set[int] = set()
+        slots = []
+        for slot in page.slots:
+            position = int(slot.position)
+            if position < 1 or position > 1000 or position in positions:
+                raise HTTPException(400, f"{page_index + 1}페이지의 블록 번호가 올바르지 않습니다.")
+            positions.add(position)
+            slots.append(_save_slot(slot, page_index, history, history_by_name, {}))
+        chart_positions = {int(slot["position"]) for slot in slots if slot["kind"] == "chart"}
+        for slot in slots:
+            if slot["kind"] in {"stats", "legend"} and int(slot["source_position"]) not in chart_positions:
+                label = "통계표" if slot["kind"] == "stats" else "범례"
+                raise HTTPException(400, f"{page_index + 1}페이지 {label}가 가리키는 차트 번호가 없습니다.")
+        pages.append({
+            "id": _clean_text(page.id, 80) or f"page_{page_index + 1}",
+            "title": _clean_text(page.title, 180) or f"Page {page_index + 1}",
+            "subtitle": _clean_text(page.subtitle, 180),
+            "slots": sorted(slots, key=lambda item: item["position"]),
+        })
+    options = (req.options or TemplateOptionsReq()).model_dump()
+    variables = [
+        {
+            "name": normalize_name(item.name),
+            "label": _clean_text(item.label, 80) or normalize_name(item.name),
+            "default": _clean_text(item.default, 200),
+        }
+        for item in (req.variables or [])
+        if normalize_name(item.name)
+    ]
+    row = {
+        "id": _clean_text(req.id, 120),
+        "name": name,
+        "pages": pages,
+        "variables": variables,
+        "options": options,
+        "created_by": str((user or {}).get("username") or ""),
+        "created_at": "",
+        "updated_by": str((user or {}).get("username") or ""),
+        "updated_at": "",
+    }
+    return _public_template(row)
+
+
+@router.post("/code/parse")
+def parse_template_code(req: TemplateCodeReq, user=Depends(current_user)):
+    """Validate full JSON code without saving it, then return a canonical draft."""
+    return {"ok": True, "template": _normalize_code_template(_template_request_from_code(req.code), user)}
+
+
+@router.post("/assistant")
+def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
+    """Let the configured company LLM create/edit full Template code, then validate it."""
+    instruction = _clean_multiline(req.instruction, 3000)
+    if not instruction:
+        raise HTTPException(400, "AI에게 만들거나 수정할 Template 내용을 입력해 주세요.")
+    current = _normalize_code_template(_template_request_from_code(req.template_code), user)
+    try:
+        from core import llm_adapter
+
+        if not llm_adapter.is_available():
+            return {
+                "ok": True,
+                "changed": False,
+                "message": "연결된 사내 AI가 없어 현재 코드는 그대로 유지했습니다. 전체 코드는 직접 편집할 수 있습니다.",
+                "template": current,
+                "llm": {"available": False, "used": False},
+            }
+        system = """You create or edit a Flow semiconductor Template Report as one JSON object.
+Return only an object with keys message and template. Preserve all unrelated fields.
+The template must contain name, options, variables, and 1-30 pages. Each page contains title, subtitle, and slots.
+Allowed slot kinds: chart, split, text. A chart slot must contain position, x, y, chart_width, chart_height, chart_name, and a complete valid definition_code in Flow ChartBuilder DSL. chart_id may reference an existing id or be blank for an inline chart.
+Layout uses a 1920x1080 design: x/y are percentages and chart_width/chart_height are pixels. Every slot must stay inside the slide.
+ChartBuilder DSL uses Q1/TABLE/PRODUCT/SQL, optional JOIN, then CHART with TYPE/X/Y/COLOR/TRELLIS/WIDTH/HEIGHT and MAX_ROWS.
+Prefer readable one-page semiconductor meeting reports with bold axes and chart diversity when requested. Never invent database secrets or unsupported slot kinds."""
+        available = list_charts(user).get("charts", [])[:40]
+        payload = {
+            "instruction": instruction,
+            "current_template": current,
+            "available_charts": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "label": item.get("label"),
+                    "chart": item.get("chart"),
+                    "definition_code": str(item.get("definition_code") or "")[:12_000],
+                }
+                for item in available
+            ],
+        }
+        out = llm_adapter.complete_json(
+            json.dumps(payload, ensure_ascii=False),
+            system=system,
+            timeout=45,
+            max_retries=1,
+            schema={
+                "keys": ["message", "template"],
+                "required": ["message", "template"],
+                "properties": {"message": {}, "template": {}},
+            },
+        )
+        obj = out.get("obj") if isinstance(out.get("obj"), dict) else {}
+        candidate = obj.get("template") if isinstance(obj.get("template"), dict) else None
+        if not out.get("ok") or not candidate:
+            return {
+                "ok": True,
+                "changed": False,
+                "message": str(obj.get("message") or out.get("error") or "AI가 유효한 Template 코드를 만들지 못했습니다."),
+                "template": current,
+                "llm": {"available": True, "used": False},
+            }
+        normalized = _normalize_code_template(TemplateSaveReq(**candidate), user)
+        return {
+            "ok": True,
+            "changed": normalized != current,
+            "message": _clean_text(obj.get("message") or "AI가 Template 전체 코드를 만들었습니다.", 500),
+            "template": normalized,
+            "llm": {"available": True, "used": True},
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"AI Template 생성 실패: {exc}") from exc
+
+
 # ── 실행(전개) ────────────────────────────────────────────────────────────────
-def _run_params(template: dict, req) -> dict:
+def _default_page_subtitle(username: str) -> str:
+    """빈 우측 표기에 쓸 실행 시점 라벨 (로컬 날짜 + 로그인 사용자)."""
+    stamp = dt.datetime.now().astimezone().strftime("%Y-%m-%d")
+    clean_username = _clean_text(username, 120)
+    return f"{stamp} {clean_username}".strip()
+
+
+def _run_params(template: dict, req, user: dict | None = None) -> dict:
     options = _template_options(template)
     try:
         bindings = validate_bindings(getattr(req, "bindings", None) or {})
@@ -682,12 +904,20 @@ def _run_params(template: dict, req) -> dict:
         "color_rules": color_rules,
         "color_else": _clean_text(raw_context.get("color_else") or "gray", 80) or "gray",
     }
+    username = _clean_text(
+        (user or {}).get("username")
+        or template.get("updated_by")
+        or template.get("created_by")
+        or "",
+        120,
+    )
     return {
         "bindings": bindings,
         "repeat_variable": repeat_variable,
         "repeat_values": repeat_values or [""],
         "options": options,
         "context": context,
+        "default_page_subtitle": _default_page_subtitle(username),
     }
 
 
@@ -722,6 +952,17 @@ def _chart_request(definition: str, where: str, context: dict | None = None) -> 
             "color_rules": list(context["color_rules"]),
             "color_else": str(context.get("color_else") or "gray"),
         })
+    context_pairs = linked_chart_color_pairs(chart) if context.get("color_rules") else []
+    for source in sources:
+        if context_pairs:
+            source["runtime_lot_wafer_pairs"] = [dict(pair) for pair in context_pairs]
+            if not context.get("root_lot_ids"):
+                source["runtime_root_lot_ids"] = list(dict.fromkeys(pair["root_lot_id"] for pair in context_pairs))
+            if not context.get("wafer_ids"):
+                source["runtime_wafer_ids"] = list(dict.fromkeys(pair["wafer_id"] for pair in context_pairs))
+        elif context.get("root_lot_ids") or context.get("wafer_ids"):
+            # An explicit report scope replaces any exact pairs saved in the chart.
+            source["runtime_lot_wafer_pairs"] = []
     return {
         "sources": sources,
         "joins": parsed.get("joins") or [],
@@ -780,18 +1021,20 @@ def _expand_deck(template: dict, params: dict) -> dict:
                         "columns": _resolve(str(slot.get("columns") or ""), bindings, where),
                         "display_mode": str(slot.get("display_mode") or "matrix"),
                     })
-                elif kind == "stats":
+                elif kind in {"stats", "legend"}:
                     source = int(slot.get("source_position") or 0)
                     block.update({
                         "source_position": source,
-                        "stats": str(slot.get("stats") or "n,mean,median,std"),
                         "source_key": f"{page_index}:{source}",
                     })
+                    if kind == "stats":
+                        block["stats"] = str(slot.get("stats") or "n,mean,median,std")
                 blocks.append(block)
+            page_subtitle = _resolve(str(page.get("subtitle") or ""), bindings, where)
             pages_out.append({
                 "index": page_index,
                 "title": _resolve(str(page.get("title") or f"Page {page_index + 1}"), bindings, where),
-                "subtitle": _resolve(str(page.get("subtitle") or ""), bindings, where),
+                "subtitle": page_subtitle if page_subtitle.strip() else params["default_page_subtitle"],
                 "repeat_value": repeat_value,
                 "blocks": blocks,
             })
@@ -809,13 +1052,17 @@ def _expand_deck(template: dict, params: dict) -> dict:
         "footer": options["footer"],
         "pages": pages_out,
         "charts": charts,
+        "bindings": dict(params.get("bindings") or {}),
+        "repeat_variable": str(params.get("repeat_variable") or ""),
+        "repeat_values": [str(value) for value in (params.get("repeat_values") or []) if str(value)],
+        "context": dict(params.get("context") or {}),
     }
 
 
 @router.post("/run")
-def prepare_run(req: TemplateRunReq, _user=Depends(current_user)):
+def prepare_run(req: TemplateRunReq, user=Depends(current_user)):
     template = _template_or_404(req.template_id)
-    params = _run_params(template, req)
+    params = _run_params(template, req, user)
     deck = _expand_deck(template, params)
     return {
         "ok": True,
@@ -905,10 +1152,27 @@ def _download_header(filename: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(cleaned)}"
 
 
-def _navy():
+def _rgb(value):
     from pptx.dml.color import RGBColor
 
-    return RGBColor(*REPORT_NAVY)
+    return RGBColor(*value)
+
+
+def _accent():
+    return _rgb(REPORT_ACCENT)
+
+
+def _text_color():
+    return _rgb(REPORT_TEXT)
+
+
+def _muted_color():
+    return _rgb(REPORT_MUTED)
+
+
+def _navy():
+    """Legacy helper kept for older callers; Flow's brand accent is now orange."""
+    return _accent()
 
 
 def _add_bar(slide, top_in: float, height_in: float, width_emu):
@@ -917,7 +1181,7 @@ def _add_bar(slide, top_in: float, height_in: float, width_emu):
 
     bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(top_in), width_emu, Inches(height_in))
     bar.fill.solid()
-    bar.fill.fore_color.rgb = _navy()
+    bar.fill.fore_color.rgb = _accent()
     bar.line.fill.background()
     bar.shadow.inherit = False
     return bar
@@ -939,21 +1203,25 @@ def _write(text_frame, text: str, *, size: int, bold: bool, color, align, font: 
 
 
 def _add_title_bar(slide, deck_width_emu, title: str, subtitle: str):
-    """상단 네이비 바 + 흰 제목 — HOL Auto Report 슬라이드 헤더와 같은 규약."""
+    """내부 회의용 얇은 헤더. 제목보다 차트와 축의 가독성을 우선한다."""
     from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-    from pptx.util import Inches
+    from pptx.util import Inches, Pt
 
-    _add_bar(slide, 0.0, TITLE_BAR_HEIGHT_IN, deck_width_emu)
-    title_box = slide.shapes.add_textbox(Inches(0.28), Inches(0.05), Inches(9.4), Inches(TITLE_BAR_HEIGHT_IN - 0.1))
+    title_box = slide.shapes.add_textbox(Inches(0.24), Inches(0.03), Inches(9.5), Inches(TITLE_BAR_HEIGHT_IN - 0.07))
     title_box.text_frame.word_wrap = False
     title_box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-    _write(title_box.text_frame, title, size=22, bold=True, color=RGBColor(255, 255, 255), align=PP_ALIGN.LEFT)
+    _write(title_box.text_frame, title, size=14, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
     if subtitle:
-        sub_box = slide.shapes.add_textbox(Inches(9.75), Inches(0.05), Inches(3.3), Inches(TITLE_BAR_HEIGHT_IN - 0.1))
+        sub_box = slide.shapes.add_textbox(Inches(9.8), Inches(0.04), Inches(3.25), Inches(TITLE_BAR_HEIGHT_IN - 0.08))
         sub_box.text_frame.word_wrap = False
         sub_box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-        _write(sub_box.text_frame, subtitle, size=11, bold=False, color=RGBColor(0xD6, 0xE3, 0xF3), align=PP_ALIGN.RIGHT)
+        _write(sub_box.text_frame, subtitle, size=9, bold=False, color=_muted_color(), align=PP_ALIGN.RIGHT)
+    divider = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.22), Inches(TITLE_BAR_HEIGHT_IN - 0.015), Inches(SLIDE_WIDTH_IN - 0.44), Pt(0.8))
+    divider.fill.solid()
+    divider.fill.fore_color.rgb = _accent()
+    divider.line.fill.background()
 
 
 def _add_footer(slide, left_text: str, right_text: str):
@@ -961,10 +1229,11 @@ def _add_footer(slide, left_text: str, right_text: str):
     from pptx.enum.text import PP_ALIGN
     from pptx.util import Inches
 
-    grey = RGBColor(0x70, 0x7A, 0x8A)
-    left_box = slide.shapes.add_textbox(Inches(0.3), Inches(SLIDE_HEIGHT_IN - 0.34), Inches(8.5), Inches(0.26))
-    left_box.text_frame.word_wrap = False
-    _write(left_box.text_frame, left_text, size=9, bold=False, color=grey, align=PP_ALIGN.LEFT)
+    grey = _muted_color()
+    if str(left_text or "").strip():
+        left_box = slide.shapes.add_textbox(Inches(0.3), Inches(SLIDE_HEIGHT_IN - 0.34), Inches(8.5), Inches(0.26))
+        left_box.text_frame.word_wrap = False
+        _write(left_box.text_frame, left_text, size=9, bold=False, color=grey, align=PP_ALIGN.LEFT)
     right_box = slide.shapes.add_textbox(Inches(9.5), Inches(SLIDE_HEIGHT_IN - 0.34), Inches(3.5), Inches(0.26))
     right_box.text_frame.word_wrap = False
     _write(right_box.text_frame, right_text, size=9, bold=False, color=grey, align=PP_ALIGN.RIGHT)
@@ -979,8 +1248,8 @@ def _add_cover(deck, title: str, subtitle: str, meta: str):
 
     slide = deck.slides.add_slide(deck.slide_layouts[6])
     slide.background.fill.solid()
-    slide.background.fill.fore_color.rgb = RGBColor(255, 255, 255)
-    grey = RGBColor(0x60, 0x6A, 0x7A)
+    slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
+    grey = _muted_color()
     _add_bar(slide, 0.0, COVER_BAR_HEIGHT_IN, deck.slide_width)
     _add_bar(slide, SLIDE_HEIGHT_IN - COVER_BAR_HEIGHT_IN, COVER_BAR_HEIGHT_IN, deck.slide_width)
 
@@ -990,11 +1259,11 @@ def _add_cover(deck, title: str, subtitle: str, meta: str):
     title_box = slide.shapes.add_textbox(Inches(0.6), Inches(2.55), Inches(SLIDE_WIDTH_IN - 1.2), Inches(1.5))
     title_box.text_frame.word_wrap = True
     title_box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-    _write(title_box.text_frame, title, size=44, bold=True, color=_navy(), align=PP_ALIGN.CENTER)
+    _write(title_box.text_frame, title, size=44, bold=True, color=_text_color(), align=PP_ALIGN.CENTER)
 
     line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(SLIDE_WIDTH_IN / 2 - 2.2), Inches(4.18), Inches(4.4), Pt(2.5))
     line.fill.solid()
-    line.fill.fore_color.rgb = _navy()
+    line.fill.fore_color.rgb = _accent()
     line.line.fill.background()
     line.shadow.inherit = False
 
@@ -1010,7 +1279,7 @@ def _add_cover(deck, title: str, subtitle: str, meta: str):
 
 
 def _set_cell_border(cell):
-    """표 칸의 4변 선 — python-pptx 기본 API에 없어 XML로 직접 넣는다."""
+    """Carbon data table처럼 세로선 없이 아래 구분선만 둔다."""
     from pptx.oxml.xmlchemy import OxmlElement
 
     tcPr = cell._tc.get_or_add_tcPr()
@@ -1018,18 +1287,15 @@ def _set_cell_border(cell):
     for tag in ("lnL", "lnR", "lnT", "lnB"):
         for element in tcPr.findall(ns + tag):
             tcPr.remove(element)
-    index = 0
-    for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
-        line = OxmlElement(tag)
-        line.set("w", "9525")
-        line.set("cmpd", "sng")
-        fill = OxmlElement("a:solidFill")
-        color = OxmlElement("a:srgbClr")
-        color.set("val", "9AA7B8")
-        fill.append(color)
-        line.append(fill)
-        tcPr.insert(index, line)
-        index += 1
+    line = OxmlElement("a:lnB")
+    line.set("w", "6350")
+    line.set("cmpd", "sng")
+    fill = OxmlElement("a:solidFill")
+    color = OxmlElement("a:srgbClr")
+    color.set("val", "E5E5E5")
+    fill.append(color)
+    line.append(fill)
+    tcPr.insert(0, line)
 
 
 def _add_table(slide, rect: dict, table: dict):
@@ -1055,7 +1321,7 @@ def _add_table(slide, rect: dict, table: dict):
     if title:
         label = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(width), Inches(0.26))
         label.text_frame.word_wrap = False
-        _write(label.text_frame, title, size=12, bold=True, color=_navy(), align=PP_ALIGN.LEFT)
+        _write(label.text_frame, title, size=12, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
         y += 0.3
         height = max(0.4, height - 0.3)
 
@@ -1080,7 +1346,7 @@ def _add_table(slide, rect: dict, table: dict):
         cell = grid.cell(0, index)
         cell.text = str(name)
         cell.fill.solid()
-        cell.fill.fore_color.rgb = _navy()
+        cell.fill.fore_color.rgb = _rgb(REPORT_SUBTLE)
         cell.vertical_anchor = MSO_ANCHOR.MIDDLE
         cell.margin_left = cell.margin_right = Inches(0.02)
         cell.margin_top = cell.margin_bottom = Inches(0.0)
@@ -1089,10 +1355,10 @@ def _add_table(slide, rect: dict, table: dict):
             paragraph.font.size = Pt(font_size)
             paragraph.font.bold = True
             paragraph.font.name = REPORT_FONT
-            paragraph.font.color.rgb = RGBColor(255, 255, 255)
+            paragraph.font.color.rgb = _text_color()
             paragraph.alignment = PP_ALIGN.CENTER
     for row_index, row in enumerate(rows, start=1):
-        stripe = RGBColor(0xF2, 0xF5, 0xFA) if row_index % 2 == 0 else RGBColor(255, 255, 255)
+        stripe = _rgb(REPORT_PAGE) if row_index % 2 == 0 else _rgb(REPORT_PANEL)
         for column_index, value in enumerate(row):
             cell = grid.cell(row_index, column_index)
             cell.text = str(value)
@@ -1107,7 +1373,7 @@ def _add_table(slide, rect: dict, table: dict):
                 paragraph.font.size = Pt(font_size)
                 paragraph.font.bold = column_index == 0
                 paragraph.font.name = REPORT_FONT
-                paragraph.font.color.rgb = RGBColor(0x1A, 0x1A, 0x1A)
+                paragraph.font.color.rgb = _text_color()
                 paragraph.alignment = PP_ALIGN.LEFT if column_index == 0 else PP_ALIGN.CENTER
     if note:
         # PowerPoint 는 글자가 길면 행을 스스로 늘린다. 머리글이 두 줄이 되는 경우까지
@@ -1130,7 +1396,7 @@ def _add_text_block(slide, rect: dict, title: str, text: str):
     if title:
         label = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(width), Inches(0.26))
         label.text_frame.word_wrap = False
-        _write(label.text_frame, title, size=12, bold=True, color=_navy(), align=PP_ALIGN.LEFT)
+        _write(label.text_frame, title, size=12, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
         y += 0.3
         height = max(0.3, height - 0.3)
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(width), Inches(height))
@@ -1138,12 +1404,265 @@ def _add_text_block(slide, rect: dict, title: str, text: str):
     _write(box.text_frame, text, size=12, bold=False, color=RGBColor(0x1F, 0x29, 0x37), align=PP_ALIGN.LEFT)
 
 
+def _ppt_rgb(value: str, fallback=(99, 102, 241)):
+    from pptx.dml.color import RGBColor
+
+    raw = str(value or "").strip().casefold()
+    named = {
+        "red": (239, 68, 68), "blue": (59, 130, 246), "green": (16, 185, 129),
+        "orange": (245, 158, 11), "yellow": (234, 179, 8), "purple": (139, 92, 246),
+        "pink": (236, 72, 153), "gray": (148, 163, 184), "grey": (148, 163, 184),
+        "black": (15, 23, 42), "white": (255, 255, 255),
+    }
+    if raw in named:
+        return RGBColor(*named[raw])
+    match = re.fullmatch(r"#?([0-9a-f]{6})", raw)
+    if match:
+        token = match.group(1)
+        return RGBColor(int(token[0:2], 16), int(token[2:4], 16), int(token[4:6], 16))
+    return RGBColor(*fallback)
+
+
+def _add_legend(slide, rect: dict, table: dict):
+    """공통 범례를 PPT 도형으로 그린다. PNG보다 선명하고 파일도 작다."""
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Inches
+
+    x = SLIDE_WIDTH_IN * float(rect["x"]) / 100
+    y = SLIDE_HEIGHT_IN * float(rect["y"]) / 100
+    width = SLIDE_WIDTH_IN * float(rect["width"]) / 100
+    height = SLIDE_HEIGHT_IN * float(rect["height"]) / 100
+    title = str(table.get("title") or _block_label(rect) or "Legend")
+    if title:
+        title_box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(width), Inches(0.24))
+        title_box.text_frame.word_wrap = False
+        _write(title_box.text_frame, title, size=11, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
+        y += 0.28
+        height = max(0.25, height - 0.28)
+
+    rows = [list(row) for row in (table.get("rows") or [])][:24]
+    if not rows:
+        return
+    columns = 1 if width < 2.2 else (2 if width < 4.4 else 3)
+    cell_width = width / columns
+    row_count = math.ceil(len(rows) / columns)
+    row_height = min(0.28, height / max(1, row_count))
+    for index, row in enumerate(rows):
+        column = index % columns
+        line = index // columns
+        item_x = x + column * cell_width
+        item_y = y + line * row_height
+        label = str(row[0] if row else "")
+        color = str(row[1] if len(row) > 1 else "")
+        count = str(row[2] if len(row) > 2 else "").strip()
+        swatch = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(item_x), Inches(item_y + 0.045), Inches(0.14), Inches(0.14)
+        )
+        swatch.fill.solid()
+        swatch.fill.fore_color.rgb = _ppt_rgb(color)
+        swatch.line.fill.background()
+        text_box = slide.shapes.add_textbox(
+            Inches(item_x + 0.19), Inches(item_y), Inches(max(0.2, cell_width - 0.21)), Inches(row_height)
+        )
+        text_box.text_frame.word_wrap = False
+        text_box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+        shown = f"{label} ({count})" if count else label
+        _write(text_box.text_frame, shown, size=9, bold=False, color=_text_color(), align=PP_ALIGN.LEFT)
+
+
+def _format_report_time(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "—"
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return raw[:40]
+
+
+def _short_json(value, limit: int = 260) -> str:
+    if value in (None, "", [], {}):
+        return "—"
+    rendered = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    return rendered if len(rendered) <= limit else rendered[:limit - 1] + "…"
+
+
+def _context_summary(value: dict | None) -> str:
+    context = value if isinstance(value, dict) else {}
+    lots = context.get("root_lot_ids") or []
+    wafers = context.get("wafer_ids") or []
+    if context.get("override_recent_days"):
+        period = f"{int(context.get('recent_days') or 0)}d / {context.get('date_column') or 'tkout_time'}"
+    else:
+        period = "saved chart window"
+    colors = len(context.get("color_rules") or [])
+    return f"lots {_short_json(lots, 74)} · wafers {_short_json(wafers, 74)} · period {period} · color rules {colors}"
+
+
+def _appendix_chart_rows(template: dict) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for page_index, page in enumerate(template.get("pages") or [], start=1):
+        for slot in page.get("slots") or []:
+            if _slot_kind(slot) != "chart":
+                continue
+            layout = _slot_layout(slot)
+            chart = {}
+            try:
+                chart = dict(parse_chart_builder_definition(str(slot.get("definition_code") or "")).get("chart") or {})
+            except ChartBuilderDefinitionError:
+                pass
+            chart_bits = [str(chart.get("type") or "chart")]
+            if chart.get("x") or chart.get("y"):
+                chart_bits.append(f"{chart.get('x') or '—'} → {chart.get('y') or '—'}")
+            if chart.get("color"):
+                chart_bits.append(f"color: {chart['color']}")
+            if chart.get("trellis"):
+                chart_bits.append(f"trellis: {chart['trellis']}")
+            chart_bits.append("legend: off" if chart.get("show_legend") is False else "legend: on")
+            rows.append([
+                f"{page_index} · {int(slot.get('position') or 1)}",
+                str(slot.get("chart_name") or slot.get("chart_label") or slot.get("chart_id") or "Chart")[:70],
+                str(slot.get("chart_id") or "inline")[:80],
+                " · ".join(chart_bits)[:150] +
+                f" | x {float(layout['x']):.1f}%, y {float(layout['y']):.1f}%, {int(layout['chart_width'])}×{int(layout['chart_height'])}px",
+            ])
+    return rows
+
+
+def _add_appendix_chart_table(slide, rows: list[list[str]], *, top: float):
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Inches, Pt
+
+    columns = ["Page · Pos", "Chart Name", "Chart ID", "Chart / Layout"]
+    left, width = 0.36, SLIDE_WIDTH_IN - 0.72
+    row_height = 0.24
+    shape = slide.shapes.add_table(
+        len(rows) + 1, len(columns), Inches(left), Inches(top), Inches(width), Inches(row_height * (len(rows) + 1))
+    )
+    grid = shape.table
+    widths = (0.10, 0.22, 0.25, 0.43)
+    for index, ratio in enumerate(widths):
+        grid.columns[index].width = Inches(width * ratio)
+    for row in grid.rows:
+        row.height = Inches(row_height)
+    for column_index, name in enumerate(columns):
+        cell = grid.cell(0, column_index)
+        cell.text = name
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = _rgb(REPORT_SUBTLE)
+        cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+        _set_cell_border(cell)
+        for paragraph in cell.text_frame.paragraphs:
+            paragraph.font.size = Pt(8)
+            paragraph.font.bold = True
+            paragraph.font.name = REPORT_FONT
+            paragraph.font.color.rgb = _text_color()
+            paragraph.alignment = PP_ALIGN.LEFT
+    for row_index, row in enumerate(rows, start=1):
+        stripe = _rgb(REPORT_PAGE) if row_index % 2 == 0 else _rgb(REPORT_PANEL)
+        for column_index, value in enumerate(row):
+            cell = grid.cell(row_index, column_index)
+            cell.text = str(value)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = stripe
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.margin_left = cell.margin_right = Inches(0.04)
+            cell.margin_top = cell.margin_bottom = Inches(0.0)
+            cell.text_frame.word_wrap = False
+            _set_cell_border(cell)
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.font.size = Pt(8)
+                paragraph.font.bold = column_index == 0
+                paragraph.font.name = REPORT_FONT
+                paragraph.font.color.rgb = _text_color()
+                paragraph.alignment = PP_ALIGN.LEFT
+
+
+def _add_info_card(slide, *, x: float, y: float, width: float, title: str, lines: list[str]):
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Inches
+
+    card = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(width), Inches(1.28))
+    card.fill.solid()
+    card.fill.fore_color.rgb = _rgb(REPORT_PANEL)
+    card.line.color.rgb = _rgb(REPORT_BORDER)
+    card.shadow.inherit = False
+    accent = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(0.045), Inches(1.28))
+    accent.fill.solid()
+    accent.fill.fore_color.rgb = _accent()
+    accent.line.fill.background()
+    title_box = slide.shapes.add_textbox(Inches(x + 0.14), Inches(y + 0.07), Inches(width - 0.25), Inches(0.20))
+    _write(title_box.text_frame, title, size=10, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
+    body = slide.shapes.add_textbox(Inches(x + 0.14), Inches(y + 0.31), Inches(width - 0.25), Inches(0.88))
+    body.text_frame.word_wrap = True
+    body.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    _write(body.text_frame, "\n".join(lines), size=8, bold=False, color=_text_color(), align=PP_ALIGN.LEFT)
+
+
+def _add_template_info_appendix(deck, template: dict, deck_spec: dict, *, report_user: str, report_generated_at: str):
+    """항상 보고서 맨 뒤에 재생성 정보만 담은 별도 Appendix를 붙인다."""
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches
+
+    chart_rows = _appendix_chart_rows(template)
+    first_count, continuation_count = 18, 24
+    chunks = [chart_rows[:first_count]]
+    remaining = chart_rows[first_count:]
+    while remaining:
+        chunks.append(remaining[:continuation_count])
+        remaining = remaining[continuation_count:]
+    total = len(chunks)
+    blank = deck.slide_layouts[6]
+    for index, rows in enumerate(chunks):
+        slide = deck.slides.add_slide(blank)
+        slide.background.fill.solid()
+        slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
+        heading = "Template Report Info" if total == 1 else f"Template Report Info ({index + 1}/{total})"
+        _add_title_bar(slide, deck.slide_width, heading, "Appendix · Reproduction metadata")
+        if index == 0:
+            options = template.get("options") or {}
+            _add_info_card(slide, x=0.36, y=0.57, width=6.22, title="Template", lines=[
+                f"Name / ID  {template.get('name') or 'Template Report'} / {template.get('id') or '—'}",
+                f"Created  {template.get('created_by') or '—'} · {_format_report_time(template.get('created_at'))}",
+                f"Updated  {template.get('updated_by') or '—'} · {_format_report_time(template.get('updated_at'))}",
+                f"Pages / options  {len(template.get('pages') or [])} · cover {bool(options.get('cover', True))} · footer {bool(options.get('footer', True))}",
+            ])
+            _add_info_card(slide, x=6.74, y=0.57, width=6.22, title="Report / Recreate", lines=[
+                f"Generated  {report_user or '—'} · {_format_report_time(report_generated_at)}",
+                f"Bindings  {_short_json(deck_spec.get('bindings'))}",
+                f"Repeat  {deck_spec.get('repeat_variable') or '—'} = {_short_json(deck_spec.get('repeat_values'))}",
+                f"Context  {_context_summary(deck_spec.get('context'))}",
+                f"Recreate  Open Template ID above → apply inputs → Run → export PPTX",
+            ])
+            table_top = 1.98
+        else:
+            table_top = 0.62
+        label = slide.shapes.add_textbox(Inches(0.36), Inches(table_top), Inches(12.61), Inches(0.23))
+        _write(label.text_frame, "Included charts · use the Template ID and Chart IDs below to reproduce this report", size=9, bold=True, color=_text_color(), align=PP_ALIGN.LEFT)
+        if rows:
+            _add_appendix_chart_table(slide, rows, top=table_top + 0.25)
+        else:
+            empty = slide.shapes.add_textbox(Inches(0.36), Inches(table_top + 0.28), Inches(12.61), Inches(0.5))
+            _write(empty.text_frame, "No chart blocks are included in this template.", size=9, bold=False, color=_muted_color(), align=PP_ALIGN.LEFT)
+        _add_footer(slide, "", f"Appendix {index + 1} / {total}")
+
+
 def _block_label(block: dict) -> str:
     return str(block.get("title") or "").strip()
 
 
 def _pptx_bytes(template: dict, images: dict[str, bytes], *,
-                deck_spec: dict | None = None, tables: dict[str, dict] | None = None) -> bytes:
+                deck_spec: dict | None = None, tables: dict[str, dict] | None = None,
+                report_user: str = "", report_generated_at: str = "") -> bytes:
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.util import Inches
@@ -1174,7 +1693,7 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
     for page in pages:
         slide = deck.slides.add_slide(blank)
         slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = RGBColor(255, 255, 255)
+        slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
         for block in page.get("blocks") or []:
             key = str(block.get("key") or "")
             kind = str(block.get("kind") or "chart")
@@ -1193,30 +1712,43 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
                 table = tables.get(key)
                 if not table:
                     continue
-                _add_table(slide, block, {**table, "title": table.get("title") or _block_label(block)})
+                rendered = {**table, "title": table.get("title") or _block_label(block)}
+                if kind == "legend":
+                    _add_legend(slide, block, rendered)
+                else:
+                    _add_table(slide, block, rendered)
         # TITLE stays above freely placed charts, matching the browser editor's z-order.
         _add_title_bar(slide, deck.slide_width, str(page.get("title") or ""), str(page.get("subtitle") or ""))
         if deck_spec.get("footer"):
             _add_footer(
                 slide,
-                str(template.get("name") or ""),
+                "",
                 f"{page.get('index', 0) + 1} / {total}",
             )
+    _add_template_info_appendix(
+        deck,
+        template,
+        deck_spec,
+        report_user=report_user or str(template.get("updated_by") or template.get("created_by") or ""),
+        report_generated_at=report_generated_at or dt.datetime.now(dt.timezone.utc).isoformat(),
+    )
     out = io.BytesIO()
     deck.save(out)
     return out.getvalue()
 
 
 @router.post("/export/pptx")
-def export_pptx(req: ExportReq, _user=Depends(current_user)):
+def export_pptx(req: ExportReq, user=Depends(current_user)):
     template = _template_or_404(req.template_id)
-    params = _run_params(template, req)
+    params = _run_params(template, req, user)
     deck_spec = _expand_deck(template, params)
     payload = _pptx_bytes(
         template,
         _decode_images(req.images),
         deck_spec=deck_spec,
         tables=_decode_tables(req.tables),
+        report_user=str(user.get("username") or ""),
+        report_generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
     )
     stamp = dt.datetime.now().strftime("%Y%m%d")
     filename = safe_filename(f"{template.get('name') or 'template_report'}_{stamp}.pptx")

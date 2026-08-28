@@ -101,6 +101,34 @@ EXCLUDE_PARTS = {
     'archive', 'reference', 'backup',
 }
 
+# Flow-i is parked locally under backup/flowi-* until the feature can be used
+# again. Keep the deployable installer free of its router graph, unit agents,
+# UI, and tests; backup/ is already excluded above and remains local-only.
+FLOWI_EXCLUDE_PREFIXES = (
+    'backend/app_v2/modules/llm/',
+    'backend/app_v2/modules/agent_runtime/',
+    'backend/app_v2/modules/semantic_learning/',
+    'backend/core/flowi_units/',
+    'frontend/src/features/diagnosis/',
+)
+FLOWI_EXCLUDE_FILES = {
+    'backend/core/flowi_fewshots.py',
+    'backend/core/flowi_file_docs.py',
+    'backend/core/flowi_gate.py',
+    'backend/core/flowi_multisource.py',
+    'backend/core/flowi_progress.py',
+    'backend/core/flowi_workflow_catalog.py',
+    'backend/core/flowi_workflow_defaults.json',
+    'backend/core/home_memory.py',
+    'backend/core/home_orchestrator.py',
+    'backend/routers/agent.py',
+    'backend/routers/flowi_learning.py',
+    'backend/routers/home_agent.py',
+    'frontend/src/components/FlowiPromptBox.jsx',
+    'frontend/src/pages/My_Diagnosis.jsx',
+    'tests/test_flowi_chart_sql_contract.py',
+}
+
 
 def gather_files():
     seen = set()
@@ -115,6 +143,12 @@ def gather_files():
         }:
             return
         if p in seen or not p.is_file():
+            return
+        try:
+            rel = p.relative_to(ROOT).as_posix()
+        except ValueError:
+            return
+        if rel in FLOWI_EXCLUDE_FILES or rel.startswith(FLOWI_EXCLUDE_PREFIXES):
             return
         seen.add(p)
         out.append(p)
@@ -1054,63 +1088,6 @@ def _seed_filebrowser_agent_prompts() -> None:
     print(f"[seed] FileBrowser agent prompts installed: {dst}")
 
 
-def _seed_flowi_workflows() -> None:
-    """Install or merge default Flow-i workflow templates into runtime data."""
-    src = ROOT / 'backend' / 'core' / 'flowi_workflow_defaults.json'
-    if not src.is_file():
-        return
-    try:
-        defaults_payload = json.loads(src.read_text(encoding='utf-8'))
-    except Exception as e:
-        print(f"[seed] WARN Flow-i workflow defaults unreadable: {e}")
-        return
-    defaults = [row for row in defaults_payload.get('workflows', []) if isinstance(row, dict) and row.get('id')]
-    if not defaults:
-        return
-    flow_root = Path(os.environ.get('FLOW_DATA_ROOT') or (ROOT / 'data' / 'flow-data')).resolve()
-    dst = flow_root / 'flowi_workflows.json'
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
-    if dst.exists():
-        try:
-            existing = json.loads(dst.read_text(encoding='utf-8'))
-        except Exception:
-            existing = {}
-        workflows = existing.get('workflows') if isinstance(existing, dict) else []
-        by_id = {str(row.get('id') or ''): row for row in workflows if isinstance(row, dict) and row.get('id')}
-        added = 0
-        for row in defaults:
-            workflow_id = str(row.get('id') or '')
-            if workflow_id and workflow_id not in by_id:
-                by_id[workflow_id] = row
-                added += 1
-        if not added:
-            print(f"[seed] Flow-i workflows preserved: {dst}")
-            return
-        payload = dict(existing) if isinstance(existing, dict) else {}
-        payload['version'] = int(payload.get('version') or defaults_payload.get('version') or 1)
-        payload['default_target_count'] = int(payload.get('default_target_count') or defaults_payload.get('default_target_count') or 50)
-        payload['description'] = payload.get('description') or defaults_payload.get('description') or ''
-        payload['updated_at'] = now
-        payload['updated_by'] = 'setup.py'
-        payload['workflows'] = sorted(by_id.values(), key=lambda w: (-int(w.get('priority') or 0), str(w.get('id') or '')))
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\\n', encoding='utf-8')
-        print(f"[seed] Flow-i workflows merged: +{added} -> {dst}")
-        return
-    payload = {
-        'version': int(defaults_payload.get('version') or 1),
-        'default_target_count': int(defaults_payload.get('default_target_count') or 50),
-        'description': defaults_payload.get('description') or '',
-        'created_at': now,
-        'updated_at': now,
-        'updated_by': 'setup.py',
-        'workflows': sorted(defaults, key=lambda w: (-int(w.get('priority') or 0), str(w.get('id') or ''))),
-    }
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\\n', encoding='utf-8')
-    print(f"[seed] Flow-i workflows installed: {dst}")
-
-
 def _seed_semantic_measure_terms() -> None:
     """Install or merge default semantic measurement term templates."""
     src = ROOT / 'backend' / 'core' / 'semantic_measure_defaults.json'
@@ -1381,10 +1358,6 @@ def extract(argv: list = None) -> int:
         _seed_filebrowser_agent_prompts()
     except Exception as e:
         print(f"[seed] WARN FileBrowser agent prompts install failed: {e}")
-    try:
-        _seed_flowi_workflows()
-    except Exception as e:
-        print(f"[seed] WARN Flow-i workflows install failed: {e}")
     try:
         _seed_semantic_measure_terms()
     except Exception as e:

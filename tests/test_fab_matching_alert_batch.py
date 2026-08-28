@@ -1,7 +1,30 @@
 import csv
+import json
 from types import SimpleNamespace
 
 from core import fab_matching_alerts as alerts
+from core import valve_step_advisor
+
+
+def test_unnecessary_decision_can_be_cancelled_back_to_active(tmp_path, monkeypatch):
+    ack_path = tmp_path / "acks.json"
+    decisions_path = tmp_path / "decisions.jsonl"
+    source = {"id": "step-undo", "type": "unmatched_step", "product": "P1", "step_id": "S1"}
+    monkeypatch.setattr(alerts, "ACK_PATH", ack_path)
+    monkeypatch.setattr(alerts, "DECISIONS_PATH", decisions_path)
+    monkeypatch.setattr(alerts, "_find_alert", lambda alert_id: source if alert_id == source["id"] else None)
+
+    marked = alerts.hold_alert(source["id"], "반영불필요", username="first-user")
+    assert marked["status"] == "반영불필요"
+    assert json.loads(ack_path.read_text("utf-8"))[source["id"]]["status"] == "반영불필요"
+
+    cancelled = alerts.hold_alert(source["id"], "active", username="second-user")
+
+    assert cancelled["status"] == "active"
+    assert json.loads(ack_path.read_text("utf-8")) == {}
+    history = alerts.list_decisions()
+    assert [row["action"] for row in history] == ["active", "반영불필요"]
+    assert history[0]["by"] == "second-user"
 
 
 def _write_csv(path, columns, rows):
@@ -180,6 +203,46 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(alerts, "_scanner_local", {})
     # 이 테스트들은 worker 역할을 흉내내므로, 진짜 검사 스레드가 뜨지 않게 막는다.
     monkeypatch.setattr(alerts, "_ensure_scheduler_running", lambda: False)
+
+
+def test_recommendation_batch_uses_current_fab_alerts_and_saves_status(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    source = {"id": "fab-step|P1|S1", "type": "unmatched_step", "vehicle": "P1",
+              "product": "P1", "step_id": "S1", "status": "active"}
+    received = []
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": [source]})
+    monkeypatch.setattr(
+        valve_step_advisor,
+        "recommend_pending",
+        lambda rows: received.extend(rows) or {
+            "ok": True, "enabled": True, "pending": 11,
+            "checked": 10, "skipped": 1, "records": [],
+        },
+    )
+
+    result = alerts._run_recommendation_batch()
+
+    assert received == [source]
+    assert result["checked"] == 10 and result["skipped"] == 1
+    status = alerts._load_state()["recommendation_status"]
+    assert status["ok"] is True and status["pending"] == 11
+    assert status["checked"] == 10 and status["remaining"] == 1
+    assert status["finished_ts"] >= status["last_run_ts"]
+
+
+def test_recommendation_batch_records_error_without_raising(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": []})
+
+    def _fail(_rows):
+        raise RuntimeError("advisor unavailable")
+
+    monkeypatch.setattr(valve_step_advisor, "recommend_pending", _fail)
+
+    result = alerts._run_recommendation_batch()
+
+    assert result["ok"] is False
+    assert "advisor unavailable" in alerts._load_state()["recommendation_status"]["error"]
 
 
 def test_scan_request_is_cleared_even_when_no_products_are_found(tmp_path, monkeypatch):

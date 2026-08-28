@@ -560,6 +560,56 @@ def _build_split_check_export_rows(
     return rows
 
 
+def _build_pems_export_rows(
+    selected: list[str],
+    value_maps: dict[str, tuple[dict[int, str], dict[int, str]]],
+    col_rename: dict[str, str] | None = None,
+) -> tuple[list[list[str]], list[str]]:
+    """Build the browser PEMS matrix for physical wafers 1..25.
+
+    Every wafer belongs to one S group per parameter. Empty/missing wafer
+    values are deliberately assigned to S0 so a Chrome extension can consume
+    the sheet without having to infer omitted physical wafer columns.
+    """
+    rows: list[list[str]] = []
+    param_keys: list[str] = []
+    rename = col_rename or {}
+    wafer_count = 25
+    for column in selected or []:
+        import re as _re
+        raw_display_name = str(rename.get(column, column) or column)
+        display_name = _re.sub(r"^[A-Za-z]+_", "", raw_display_name)
+        if str(column or "").upper().startswith("KNOB_"):
+            display_name = _re.sub(r"_Split$", "", display_name, flags=_re.I)
+        display_name = display_name.strip() or raw_display_name
+        actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
+        values_by_idx: dict[int, str] = {}
+        order: list[str] = []
+        seen: set[str] = set()
+        for idx in range(wafer_count):
+            plan_value = plan_by_idx.get(idx, "")
+            actual_value = actual_by_idx.get(idx, "")
+            value = plan_value if _export_has_value(plan_value) else actual_value
+            if not _export_has_value(value):
+                continue
+            text = str(value)
+            values_by_idx[idx] = text
+            if text not in seen:
+                seen.add(text)
+                order.append(text)
+        if not order:
+            order.append("")
+        for split_idx, value in enumerate(order):
+            label = f"S{split_idx}"
+            marks = [
+                label if (values_by_idx.get(idx, "") == value or (split_idx == 0 and idx not in values_by_idx)) else ""
+                for idx in range(wafer_count)
+            ]
+            rows.append([display_name, value, label, *marks])
+            param_keys.append(str(column))
+    return rows, param_keys
+
+
 def _split_check_export_param_keys(
     selected: list[str],
     wafer_count: int,
@@ -660,6 +710,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     UI 의 그룹 헤더와 동일하게 표시.
     v8.8.33: custom_cols 추가 — save 없이 체크만 한 ad-hoc 컬럼.
     v8.8.34: display_mode=split_check 이면 화면의 Split 체크 표시 행 형식으로 export.
+    PEMS: root lot 전용 1..25 고정 열 + S0/S1 직접 표기 형식으로 export.
     """
     openpyxl_error = None
     try:
@@ -669,9 +720,15 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     except Exception as e:
         openpyxl_error = e
 
-    lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
+    requested_display_mode = str(display_mode or "").strip().lower()
+    pems_requested = requested_display_mode == "pems"
+    if pems_requested and not str(root_lot_id or "").strip():
+        raise HTTPException(400, "PEMS export requires root_lot_id")
+    # PEMS는 물리 wafer 1..25 전체가 계약이므로 전달된 wafer 필터를 무시한다.
+    effective_wafer_ids = "" if pems_requested else wafer_ids
+    lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=effective_wafer_ids)
     lot_col, wf_col = _detect_lot_wafer(lf, product)
-    lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids)
+    lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, effective_wafer_ids)
     df = lf.collect()
 
     all_data_cols = _view_data_columns(df.columns, lot_col, wf_col)
@@ -714,21 +771,35 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             if w not in wf2fab and f and f not in ("None","null"):
                 wf2fab[w] = f
     wf_uniq = [w for w in dict.fromkeys(wf_vals) if w is not None and w != "None" and w != "null"]
-    wf_sorted = sorted(wf_uniq, key=lambda w: (wf2fab.get(w, "~"), w))
-    wf_idx = {v: i for i, v in enumerate(wf_sorted)}
+
+    pems_mode = pems_requested and _split_check_export_supported(selected)
+    if pems_requested and not pems_mode:
+        raise HTTPException(400, "PEMS export does not support INLINE/VM columns")
+    if pems_mode:
+        wf_sorted = list(range(1, 26))
+        wf_idx = {str(w): i for i, w in enumerate(wf_sorted)}
+    else:
+        wf_sorted = sorted(wf_uniq, key=lambda w: (wf2fab.get(w, "~"), w))
+        wf_idx = {v: i for i, v in enumerate(wf_sorted)}
 
     plans = _load_plan_data(product).get("plans", {})
     tag_values = _custom_tag_values_for_root(product, root_lot_id)
     management_values = _management_row_values_for_root(product, root_lot_id)
     split_check_mode = (
-        str(display_mode or "").strip().lower() == "split_check"
+        requested_display_mode == "split_check"
         and _split_check_export_supported(selected)
     )
     # v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 셀 병합해 export (UI 병합 표시와 동일).
     merged_mode = (
-        str(display_mode or "").strip().lower() == "merged"
-        and not split_check_mode
+        requested_display_mode == "merged"
+        and not split_check_mode and not pems_mode
     )
+
+    def _export_wafer_index(wafer) -> int | None:
+        if pems_mode:
+            normalized = _normalize_wafer_id(wafer)
+            return wf_idx.get(normalized) if normalized else None
+        return wf_idx.get(wafer)
 
     def _xlsx_value_maps_for_col(col_name: str) -> tuple[dict[int, str], dict[int, str]]:
         actual_by_idx: dict[int, str] = {}
@@ -747,7 +818,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             vals = df[col_name].to_list()
             for i, v in enumerate(vals):
                 wk = wf_vals[i] if i < len(wf_vals) else None
-                idx = wf_idx.get(wk)
+                idx = _export_wafer_index(wk)
                 if idx is None:
                     continue
                 sv = str(v) if _export_has_value(v) else ""
@@ -778,10 +849,31 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         product, root_lot_id, selected, wf_sorted, fab_present=fab_present)
     not_reached_cells = _step_progress_not_reached_cells(step_progress, selected, wf_sorted)
     value_maps = {col_name: _xlsx_value_maps_for_col(col_name) for col_name in selected}
-    not_reached_cells = _exclude_populated_not_reached_cells(not_reached_cells, value_maps)
+    pems_missing_wafer_indices: set[int] = set()
+    if pems_mode:
+        source_wafers = {_normalize_wafer_id(w) for w in wf_uniq}
+        source_wafers.discard("")
+        pems_missing_wafer_indices = {idx for idx in range(25) if str(idx + 1) not in source_wafers}
+        # 웹 PEMS와 동일: 실제 wafer가 없거나 해당 항목 값이 비어 있으면 S0로
+        # 표기하면서 회색을 유지한다. step_progress 미진행 셀도 값 유무와 무관하게 회색이다.
+        for raw_param in selected:
+            actual_by_idx, plan_by_idx = value_maps.get(raw_param, ({}, {}))
+            for idx in range(25):
+                wafer = str(idx + 1)
+                has_value = _export_has_value(plan_by_idx.get(idx)) or _export_has_value(actual_by_idx.get(idx))
+                if wafer not in source_wafers or not has_value:
+                    not_reached_cells.add((str(raw_param), idx))
+    else:
+        not_reached_cells = _exclude_populated_not_reached_cells(not_reached_cells, value_maps)
     split_check_rows: list[list[str]] = []
     split_check_param_keys: list[str] = []
-    if split_check_mode:
+    if pems_mode:
+        split_check_rows, split_check_param_keys = _build_pems_export_rows(
+            selected,
+            value_maps,
+            col_rename,
+        )
+    elif split_check_mode:
         split_check_rows = _build_split_check_export_rows(
             selected,
             len(wf_sorted),
@@ -789,6 +881,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             col_rename,
         )
         split_check_param_keys = _split_check_export_param_keys(selected, len(wf_sorted), value_maps)
+    split_like_mode = split_check_mode or pems_mode
 
     if openpyxl_error is not None:
         try:
@@ -803,19 +896,19 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
         download_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         n_wafers = len(wf_sorted)
-        prefix_count = len(SPLIT_CHECK_XLSX_PREFIX_COLUMNS) if split_check_mode else 1
-        last_col = max(prefix_count + n_wafers, prefix_count + 1) if split_check_mode else prefix_count + n_wafers
+        prefix_count = len(SPLIT_CHECK_XLSX_PREFIX_COLUMNS) if split_like_mode else 1
+        last_col = max(prefix_count + n_wafers, prefix_count + 1) if split_like_mode else prefix_count + n_wafers
         rows = [["downloaded_at", download_ts], ["username", username or ""]]
         merges = []
 
-        if split_check_mode:
+        if split_like_mode:
             root_row = ["root_lot_id", "", "", root_lot_id or "", *["" for _ in range(max(0, n_wafers - 1))]]
             rows.append(root_row)
             merges.append((3, 1, 3, prefix_count))
             if n_wafers > 1:
                 merges.append((3, prefix_count + 1, 3, last_col))
 
-            has_fab_row = bool(fab_col and wf_sorted)
+            has_fab_row = bool(not pems_mode and fab_col and wf_sorted)
             if has_fab_row:
                 fab_row = ["fab_lot_id", "", "", *["" for _ in wf_sorted]]
                 cur = None
@@ -838,7 +931,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 rows.append(fab_row)
 
             header_row_no = len(rows) + 1
-            rows.append([*SPLIT_CHECK_XLSX_PREFIX_COLUMNS, *[f"#{w}" for w in wf_sorted]])
+            wafer_headers = [str(w) if pems_mode else f"#{w}" for w in wf_sorted]
+            rows.append([*SPLIT_CHECK_XLSX_PREFIX_COLUMNS, *wafer_headers])
             data_start_row = header_row_no + 1
             rows.extend(split_check_rows)
             merges.extend(_split_check_param_merges(split_check_rows, data_start_row))
@@ -892,11 +986,11 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                             start = j
 
         data = build_workbook([{"title": product[:31], "rows": rows, "merges": merges}])
-        fmt_suffix = "_split_check" if split_check_mode else ("_merged" if merged_mode else "")
+        fmt_suffix = "_pems" if pems_mode else ("_split_check" if split_check_mode else ("_merged" if merged_mode else ""))
         fname = f"{product}_{root_lot_id or 'all'}{fmt_suffix}.xlsx"
         _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
                                   f"xlsx{fmt_suffix}",
-                                  len(split_check_rows) if split_check_mode else len(selected),
+                                  len(split_check_rows) if split_like_mode else len(selected),
                                   len(wf_sorted), len(data), selected)
         return StreamingResponse(
             iter([data]),
@@ -935,7 +1029,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 top=box, bottom=box,
             )
 
-    if split_check_mode:
+    if split_like_mode:
         prefix_count = len(SPLIT_CHECK_XLSX_PREFIX_COLUMNS)
         n_wafers = len(wf_sorted)
         first_wafer_col = prefix_count + 1
@@ -987,7 +1081,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         for col_idx in range(root_value_col, (prefix_count + n_wafers if n_wafers else root_value_col) + 1):
             _style_cell(ws.cell(row=3, column=col_idx), fill=hdr_fill, font=Font(color="FBBF24", bold=True, name="Consolas", size=13), alignment=center)
 
-        has_fab_row = bool(fab_col and wf_sorted)
+        has_fab_row = bool(not pems_mode and fab_col and wf_sorted)
         header_row = 5 if has_fab_row else 4
         if has_fab_row:
             ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=prefix_count)
@@ -1014,8 +1108,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             c = ws.cell(row=header_row, column=i, value=label)
             _style_cell(c, fill=param_fill, font=white, alignment=center)
         for i, w in enumerate(wf_sorted):
-            c = ws.cell(row=header_row, column=first_wafer_col + i, value=f"#{w}")
-            _style_cell(c, fill=param_fill, font=white, alignment=center)
+            c = ws.cell(row=header_row, column=first_wafer_col + i, value=str(w) if pems_mode else f"#{w}")
+            _style_cell(c, fill=not_reached_fill if i in pems_missing_wafer_indices else param_fill, font=white, alignment=center)
 
         data_start = header_row + 1
         for r_idx, row in enumerate(split_check_rows, start=data_start):
@@ -1058,9 +1152,10 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         buf.seek(0)
 
         from fastapi.responses import StreamingResponse
-        fname = f"{product}_{root_lot_id or 'all'}_split_check.xlsx"
+        fmt_name = "pems" if pems_mode else "split_check"
+        fname = f"{product}_{root_lot_id or 'all'}_{fmt_name}.xlsx"
         _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
-                                  "xlsx_split_check", len(split_check_rows),
+                                  f"xlsx_{fmt_name}", len(split_check_rows),
                                   len(wf_sorted), buf.getbuffer().nbytes, selected)
         return StreamingResponse(
             iter([buf.getvalue()]),

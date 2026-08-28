@@ -719,9 +719,13 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
           "role": role,
           "status": "approved",
           "created": dt.datetime.now().isoformat(),
+          "last_login": "",
           "tabs": tabs,
           "email": email,
           "name": name,
+          "sso_id": "",
+          "department": "",
+          "permission_source": "",
       }
       users.append(user_row)
       existing.add(key)
@@ -744,7 +748,28 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
+            if str(u.get("role") or "user").strip() == "admin":
+                changed = (u.get("tabs") != "__all__" or u.get("permission_source") != "admin")
+                u["tabs"] = "__all__"
+                u["permission_source"] = "admin"
+                if changed:
+                    write_users(users)
+                removed = _remove_from_perm_groups(req.username)
+                _audit(
+                    request,
+                    "admin:set-tabs",
+                    detail=f"user={req.username} admin=all removed={','.join(removed) or '(없음)'}",
+                    tab="admin",
+                )
+                return {
+                    "ok": True,
+                    "admin_all_permissions": True,
+                    "removed_from_groups": removed,
+                }
             u["tabs"] = ",".join(tokens)
+            # An explicit save must continue to win over an SSO department
+            # default, including when the explicit selection is "no tabs".
+            u["permission_source"] = "individual"
             write_users(users)
             # 개별 지정은 권한 그룹보다 우선 — 속해 있던 권한 그룹에서 자동 제외
             # (그룹에 남겨두면 다음 그룹 저장 때 그룹 권한이 다시 덮어쓰므로).
@@ -765,7 +790,8 @@ class SetRoleReq(BaseModel):
 @router.post("/set-role")
 def set_role(req: SetRoleReq, request: Request, _admin=Depends(require_admin)):
     """admin 이 특정 유저의 역할(admin/user)을 변경. 강등/승격 모두 지원.
-    - 'admin' 이면 전체 권한, 'user' 면 일반 유저(탭 권한/페이지 위임에 따름).
+    - 'admin' 이면 모든 권한 그룹에서 제외하고 전체 권한을 명시적으로 저장한다.
+    - 'user' 로 강등하면 관리자 전체 권한을 제거해 이후 그룹/개별 권한으로 다시 지정한다.
     - 변경 즉시 해당 유저의 세션 토큰을 무효화해 재로그인 시 새 역할이 적용된다.
     - 마지막 남은 admin 을 강등하면 잠금되므로 차단한다."""
     from core.auth import revoke_user_tokens
@@ -776,19 +802,49 @@ def set_role(req: SetRoleReq, request: Request, _admin=Depends(require_admin)):
     for u in users:
         if u["username"] == req.username:
             old_role = str(u.get("role") or "user").strip() or "user"
-            if old_role == new_role:
-                return {"ok": True, "username": req.username, "role": new_role, "unchanged": True}
             # 마지막 admin 강등 방지 (전체 잠금 방지).
             if old_role == "admin" and new_role != "admin":
                 admin_count = sum(1 for x in users if str(x.get("role") or "").strip() == "admin")
                 if admin_count <= 1:
                     raise HTTPException(400, "마지막 관리자는 강등할 수 없습니다. 다른 관리자를 먼저 지정하세요.")
+
+            old_tabs = str(u.get("tabs") or "")
+            old_source = str(u.get("permission_source") or "")
             u["role"] = new_role
-            write_users(users)
-            revoked = revoke_user_tokens(req.username)  # 즉시 반영 — 기존 admin 세션 강제 종료
+            if new_role == "admin":
+                u["tabs"] = "__all__"
+                u["permission_source"] = "admin"
+            elif old_role == "admin":
+                # 관리자에게만 유효한 전체 권한이 일반 계정에 남지 않도록
+                # 최소 권한 상태로 되돌린 뒤 명시적인 재지정을 기다린다.
+                u["tabs"] = ""
+                u["permission_source"] = ""
+
+            changed = (
+                old_role != new_role
+                or old_tabs != str(u.get("tabs") or "")
+                or old_source != str(u.get("permission_source") or "")
+            )
+            if changed:
+                write_users(users)
+
+            # 역할 변경은 그룹 파일 정리의 성공 여부와 무관하게 즉시 세션에
+            # 반영되어야 한다. 먼저 기존 토큰을 폐기하고 보조 권한을 정리한다.
+            revoked = revoke_user_tokens(req.username) if changed else 0
+            # 기존 데이터가 이미 엉킨 경우와 관리자 강등 모두에서 오래된
+            # 그룹 권한을 남기지 않는다. 권한 그룹 편집은 이후 명시적으로 한다.
+            removed = _remove_from_perm_groups(req.username) if (new_role == "admin" or old_role == "admin") else []
             _audit(request, "admin:set-role",
-                   detail=f"user={req.username};{old_role}->{new_role};revoked={revoked}", tab="admin")
-            return {"ok": True, "username": req.username, "role": new_role, "revoked_sessions": revoked}
+                   detail=(f"user={req.username};{old_role}->{new_role};revoked={revoked};"
+                           f"removed_groups={','.join(removed) or '(없음)'};changed={changed}"), tab="admin")
+            return {
+                "ok": True,
+                "username": req.username,
+                "role": new_role,
+                "revoked_sessions": revoked,
+                "removed_from_permission_groups": removed,
+                "unchanged": not changed and not removed,
+            }
     raise HTTPException(404)
 
 
@@ -818,8 +874,29 @@ def get_user_tabs(request: Request, username: str = Query(...)):
 # 그룹탭(소셜 그룹, data_root/groups/groups.json)과는 별개의 권한 전용 그룹.
 # 그룹에 tabs 권한을 지정하고 사용자를 멤버로 넣으면 그 사용자의 users.csv
 # tabs 가 그룹 권한으로 즉시 덮어써진다(materialize). 한 사용자는 하나의
-# 권한 그룹에만 속한다. 개별 set-tabs 로 권한을 따로 지정하면 그룹에서 빠진다.
+# 권한 그룹에만 속한다. 권한 그룹에는 SSO 부서명을 연결할 수도 있으며, 개인 또는
+# 명시 그룹 권한이 없는 사용자는 그 부서의 기본 권한을 자동 상속한다.
+# 개별 set-tabs 로 권한을 따로 지정하면 그룹에서 빠지고 부서 기본값보다 우선한다.
 PERM_GROUPS_FILE = PATHS.data_root / "perm_groups.json"
+
+
+def _department_key(value: Any) -> str:
+    """Case-insensitive key while preserving the SSO/display spelling in files."""
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def _clean_departments(values: Any) -> list[str]:
+    if isinstance(values, str):
+        values = values.replace("\r", "\n").replace(",", "\n").split("\n")
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        label = " ".join(str(value or "").strip().split())
+        key = _department_key(label)
+        if label and key not in seen:
+            seen.add(key)
+            out.append(label)
+    return out
 
 
 def _load_perm_groups() -> list:
@@ -834,7 +911,8 @@ def _load_perm_groups() -> list:
             continue
         tabs = [str(t or "").strip() for t in (g.get("tabs") or []) if str(t or "").strip()]
         members = [str(m or "").strip() for m in (g.get("members") or []) if str(m or "").strip()]
-        out.append({"name": name, "tabs": tabs, "members": members})
+        departments = _clean_departments(g.get("departments") or [])
+        out.append({"name": name, "tabs": tabs, "members": members, "departments": departments})
     return out
 
 
@@ -843,15 +921,24 @@ def _save_perm_groups(groups: list) -> None:
 
 
 def _prune_perm_groups_for_users(users: list) -> tuple[list, dict[str, list[str]]]:
-    """Remove permission-group members that are no longer present in users.csv.
+    """Remove missing users and admins from permission-group membership.
 
-    users.csv is the account source of truth.  Returning the removed usernames and
-    group names lets deletion/audit callers report exactly what was cleaned up.
+    users.csv is the account and role source of truth. Admins always have full
+    access independently of groups, so retaining them as members creates two
+    conflicting permission sources. Returning removed usernames and group names
+    lets deletion/audit callers report exactly what was cleaned up.
     """
     existing = {
         str(u.get("username") or "").strip()
         for u in users
         if isinstance(u, dict) and str(u.get("username") or "").strip()
+    }
+    admins = {
+        str(u.get("username") or "").strip()
+        for u in users
+        if isinstance(u, dict)
+        and str(u.get("username") or "").strip()
+        and str(u.get("role") or "user").strip() == "admin"
     }
     groups = _load_perm_groups()
     removed: dict[str, list[str]] = {}
@@ -859,7 +946,7 @@ def _prune_perm_groups_for_users(users: list) -> tuple[list, dict[str, list[str]
     for group in groups:
         kept: list[str] = []
         for username in group["members"]:
-            if username in existing:
+            if username in existing and username not in admins:
                 kept.append(username)
                 continue
             removed.setdefault(username, []).append(group["name"])
@@ -883,10 +970,82 @@ def _remove_from_perm_groups(username: str) -> list:
     return removed
 
 
+def _apply_department_permission_defaults(
+    users: list,
+    groups: list | None = None,
+    *,
+    only_username: str = "",
+) -> int:
+    """Materialize explicit-group and SSO-department permissions into users.csv rows.
+
+    Precedence is deliberately stable: admin > explicit individual > explicit
+    permission-group member > department default. Legacy non-empty ``tabs`` rows
+    are treated as individual assignments so enabling this feature never silently
+    replaces an existing user's access.
+    """
+    groups = groups if groups is not None else _load_perm_groups()
+    member_groups: dict[str, dict] = {}
+    department_groups: dict[str, dict] = {}
+    for group in groups:
+        for username in group.get("members") or []:
+            member_groups[str(username)] = group
+        for department in group.get("departments") or []:
+            key = _department_key(department)
+            if key:
+                department_groups[key] = group
+
+    changed = 0
+    for user in users:
+        username = str(user.get("username") or "").strip()
+        if only_username and username != only_username:
+            continue
+        if str(user.get("role") or "user") == "admin":
+            continue
+
+        before = (str(user.get("tabs") or ""), str(user.get("permission_source") or ""))
+        explicit_group = member_groups.get(username)
+        if explicit_group is not None:
+            user["tabs"] = ",".join(explicit_group.get("tabs") or [])
+            user["permission_source"] = f"group:{explicit_group.get('name') or ''}"
+        else:
+            source = str(user.get("permission_source") or "").strip()
+            # A user removed from an explicit group keeps the last materialized
+            # access as an individual assignment, matching the legacy behavior.
+            if source.startswith("group:"):
+                source = "individual"
+                user["permission_source"] = source
+            elif not source and str(user.get("tabs") or "").strip():
+                source = "individual"
+                user["permission_source"] = source
+
+            if source.startswith("department:") or not source:
+                department = _department_key(user.get("department"))
+                default_group = department_groups.get(department)
+                if default_group is not None:
+                    user["tabs"] = ",".join(default_group.get("tabs") or [])
+                    user["permission_source"] = f"department:{default_group.get('name') or ''}"
+                elif source.startswith("department:"):
+                    # Department changed or its mapping was removed: do not retain
+                    # permissions inherited from the old department.
+                    user["tabs"] = ""
+                    user["permission_source"] = "department:"
+
+        after = (str(user.get("tabs") or ""), str(user.get("permission_source") or ""))
+        if after != before:
+            changed += 1
+    return changed
+
+
+def apply_sso_department_permissions(users: list, username: str) -> int:
+    """Runtime hook used by the SSO provider after claims are synced to a row."""
+    return _apply_department_permission_defaults(users, only_username=username)
+
+
 class PermGroupReq(BaseModel):
     name: str
     tabs: list = []
     members: List[str] = []
+    departments: List[str] = []
     rename_from: str = ""   # 그룹 이름 변경 시 기존 이름
 
 
@@ -924,26 +1083,28 @@ def perm_groups_save(req: PermGroupReq, request: Request, _admin=Depends(require
             raise HTTPException(400, f"admin 계정({m})은 권한 그룹에 넣을 수 없습니다 — 항상 전체 권한")
         members.append(m)
     old_name = str(req.rename_from or "").strip() or name
+    departments = _clean_departments(req.departments)
     current_groups, _ = _prune_perm_groups_for_users(users)
     groups = [g for g in current_groups if g["name"] not in (name, old_name)]
     # 한 사용자는 하나의 권한 그룹에만 — 다른 그룹에서 자동 제거.
     for g in groups:
         g["members"] = [m for m in g["members"] if m not in members]
-    groups.append({"name": name, "tabs": tokens, "members": members})
+        # 한 부서도 하나의 기본 권한 그룹에만 연결한다.
+        claimed = {_department_key(value) for value in departments}
+        g["departments"] = [
+            value for value in (g.get("departments") or [])
+            if _department_key(value) not in claimed
+        ]
+    groups.append({"name": name, "tabs": tokens, "members": members, "departments": departments})
     groups.sort(key=lambda g: g["name"])
     _save_perm_groups(groups)
-    # 멤버 권한 실적용 — users.csv tabs 를 그룹 권한으로 덮어쓴다.
+    # 명시 멤버 + 부서 기본 대상에게 실적용. 개인 권한은 건드리지 않는다.
     csv_tabs = ",".join(tokens)
-    applied = 0
-    for m in members:
-        u = by_name.get(m)
-        if u is not None and u.get("tabs") != csv_tabs:
-            u["tabs"] = csv_tabs
-            applied += 1
+    applied = _apply_department_permission_defaults(users, groups)
     if applied:
         write_users(users)
     _audit(request, "admin:perm-group-save",
-           detail=f"group={name} tabs={csv_tabs or '(없음)'} members={','.join(members) or '(없음)'} applied={applied}",
+           detail=f"group={name} tabs={csv_tabs or '(없음)'} members={','.join(members) or '(없음)'} departments={','.join(departments) or '(없음)'} applied={applied}",
            tab="admin")
     return {"ok": True, "applied": applied, "groups": _load_perm_groups()}
 
@@ -956,8 +1117,33 @@ def perm_groups_delete(req: PermGroupDeleteReq, request: Request, _admin=Depends
     if len(remain) == len(groups):
         raise HTTPException(404, f"권한 그룹 없음: {name}")
     _save_perm_groups(remain)
+    users = read_users()
+    applied = _apply_department_permission_defaults(users, remain)
+    if applied:
+        write_users(users)
     _audit(request, "admin:perm-group-delete", detail=f"group={name} (멤버 권한은 유지)", tab="admin")
-    return {"ok": True, "groups": remain}
+    return {"ok": True, "groups": remain, "applied": applied}
+
+
+@router.post("/use-department-default")
+def use_department_default(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
+    """Clear an explicit override and immediately re-apply the user's SSO department default."""
+    users = read_users()
+    for user in users:
+        if user.get("username") != req.username:
+            continue
+        removed = _remove_from_perm_groups(req.username)
+        user["permission_source"] = "department:"
+        applied = _apply_department_permission_defaults(users, only_username=req.username)
+        write_users(users)
+        _audit(
+            request,
+            "admin:use-department-default",
+            detail=f"user={req.username};department={user.get('department') or '(없음)'};removed={','.join(removed) or '(없음)'}",
+            tab="admin",
+        )
+        return {"ok": True, "applied": applied, "tabs": user.get("tabs") or "", "permission_source": user.get("permission_source") or ""}
+    raise HTTPException(404)
 
 
 # ── Messaging ──
@@ -1158,8 +1344,6 @@ def get_settings(request: Request):
         },
     }
     adm = _load_admin_settings()
-    # v9.3.x: DevGuide 는 admin 전용 (devguide_user 위임 목록 폐기).
-    merged["devguide_allowed"] = me.get("role") == "admin"
     # v8.7.0: backup 설정 admin 에게 노출.
     if me.get("role") == "admin":
         try:
@@ -1658,7 +1842,9 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
       - by_action: { action: count } (top 30)
       - by_tab:    { tab: count }
       - by_day:    { "YYYY-MM-DD": count }
-      - recent:    최근 1000건 (내림차순)
+      - active_users_by_day:   최근 30일의 일별 순 사용자 수
+      - active_users_by_month: 최근 12개월의 월별 순 사용자 수
+      - recent:    최근 3000건 (내림차순)
     """
     import datetime as _dt, collections
     try:
@@ -1674,7 +1860,12 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
     by_action = collections.Counter()
     by_tab = collections.Counter()
     by_day = collections.Counter()
+    active_users_by_day: dict[str, set[str]] = collections.defaultdict(set)
+    active_users_by_month: dict[str, set[str]] = collections.defaultdict(set)
     filtered: list = []
+    now = _dt.datetime.now()
+    active_day_start = now.date() - _dt.timedelta(days=29)
+    active_month_start_index = now.year * 12 + now.month - 12
     for r in rows:
         ts = (r.get("timestamp") or r.get("time") or "").strip()
         try:
@@ -1683,10 +1874,20 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
                 dt = dt.replace(tzinfo=None)
         except Exception:
             continue
+        # 활동 사용자 차트는 요약 기간과 독립적으로 최근 30일/12개월을 고정 제공한다.
+        # 그래야 대시보드의 1·7·30·90일 이벤트 필터를 바꿔도 월별 차트가 한 달짜리로
+        # 축소되지 않는다. 인증되지 않은 시스템 기록은 사용자 수에서 제외한다.
+        username = str(r.get("username") or r.get("actor") or "").strip()
+        is_authenticated_user = bool(username and username.lower() != "anonymous")
+        if is_authenticated_user and active_day_start <= dt.date() <= now.date():
+            active_users_by_day[dt.strftime("%Y-%m-%d")].add(username)
+        month_index = dt.year * 12 + dt.month - 1
+        if is_authenticated_user and active_month_start_index <= month_index <= (now.year * 12 + now.month - 1):
+            active_users_by_month[dt.strftime("%Y-%m")].add(username)
         if dt < cutoff:
             continue
         filtered.append(r)
-        u = (r.get("username") or r.get("actor") or "anonymous") or "anonymous"
+        u = username or "anonymous"
         by_user[u] += 1
         a = (r.get("action") or "") or "(unknown)"
         by_action[a] += 1
@@ -1694,6 +1895,15 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         by_tab[t] += 1
         by_day[dt.strftime("%Y-%m-%d")] += 1
     filtered.sort(key=lambda r: r.get("timestamp") or r.get("time") or "", reverse=True)
+    daily_user_counts = {}
+    for offset in range(30):
+        key = (active_day_start + _dt.timedelta(days=offset)).strftime("%Y-%m-%d")
+        daily_user_counts[key] = len(active_users_by_day.get(key, set()))
+    monthly_user_counts = {}
+    for offset in range(12):
+        index = active_month_start_index + offset
+        key = f"{index // 12:04d}-{index % 12 + 1:02d}"
+        monthly_user_counts[key] = len(active_users_by_month.get(key, set()))
     return {
         "window_days": days,
         "total": len(filtered),
@@ -1701,7 +1911,9 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         "by_action": dict(by_action.most_common(30)),
         "by_tab": dict(by_tab.most_common()),
         "by_day": dict(sorted(by_day.items())),
-        "recent": filtered[:1000],
+        "active_users_by_day": daily_user_counts,
+        "active_users_by_month": monthly_user_counts,
+        "recent": filtered[:3000],
         "activity_storage": {
             "path": str(ACTIVITY_LOG),
             "relative_path": "flow-data/logs/activity.jsonl",

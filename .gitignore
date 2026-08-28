@@ -26,6 +26,7 @@ Base/
 wafer_maps/
 logs/
 reports/
+backup/
 
 # Machine-local role/state files
 .dev_worker

@@ -7,12 +7,13 @@ import threading
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.audit import record as audit_record
-from core.auth import current_user
+from core.auth import current_user, require_page_manager
 from core.paths import PATHS
+from core import product_order as _product_order
 from core.utils import load_json, save_json
 
 
@@ -45,6 +46,17 @@ MAX_ROWS = 5000
 VERSION_CAP = 50
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+
+
+@router.get("/product-order")
+def get_product_order():
+    return {"product_order": _product_order.load_product_order()}
+
+
+@router.post("/product-order")
+def save_product_order(req: dict, _perm=Depends(require_page_manager("lotmanage"))):
+    order = _product_order.save_product_order(req.get("product_order"))
+    return {"ok": True, "product_order": order}
 
 
 def _now() -> str:
@@ -151,10 +163,22 @@ def _clean_rows(raw: Any, column_ids: set[str]) -> list[dict]:
 
 
 def _latest_status_by_lot(product: str, lot_ids: list[str]) -> dict[str, dict]:
-    from core.lot_progress_cache import lot_progress_summaries
+    from core.lot_progress_cache import canonical_lot_progress_summaries
 
-    summaries = lot_progress_summaries(lot_ids, product=product, refresh_if_missing=False)
+    # Keep this source identical to Dashboard > WIP.  The legacy scanner JSON
+    # cache has a separate owner/refresh cycle and can be empty while the
+    # dashboard's canonical latest-lot parquet already has the LOT.
+    summaries = canonical_lot_progress_summaries(lot_ids, product=product)
     return _attach_step_descriptions(summaries, product)
+
+
+def _summary_qty(summary: dict | None) -> int | None:
+    """Return a positive unique-wafer count, or None for the UI dash."""
+    try:
+        count = int((summary or {}).get("wafer_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    return count if count > 0 else None
 
 
 def _attach_step_descriptions(
@@ -163,15 +187,37 @@ def _attach_step_descriptions(
     *,
     index: tuple[dict, dict] | None = None,
 ) -> dict[str, dict]:
-    """Attach exact Vehicle_matching step_desc values; unmatched steps stay blank."""
-    from core.lot_wip import describe_step, step_desc_index
+    """Attach the exact product + step_id value from Vehicle_matching.csv."""
+    from core import fab_reference
+    from core.latest_lot_cache_format import normalize_product
+    from core.lot_wip import step_desc_index
 
-    step_index = index if index is not None else step_desc_index()
+    # Lot Management must reflect a newly edited Vehicle_matching.csv on the
+    # next table load.  Bypass lot_wip's five-minute memo and build the small
+    # index from the current master file.  Do not use the global step-only
+    # fallback when a product is known: the same step_id may have a different
+    # description in another product.
+    step_index = (
+        index
+        if index is not None
+        else step_desc_index(rows=fab_reference.vehicle_matching_rows())
+    )
+    by_product_step, by_step = step_index
+    product_key = normalize_product(product)
     out = {}
     for lot_id, raw_summary in (summaries or {}).items():
         summary = dict(raw_summary or {})
         step_id = str(summary.get("step_id") or "").strip()
-        summary["step_desc"] = describe_step(step_id, product, index=step_index).get("step_desc") or ""
+        step_key = step_id.upper()
+        vehicle_entry = (
+            by_product_step.get((product_key, step_key), {})
+            if product_key
+            else by_step.get(step_key, {})
+        )
+        summary["step_desc"] = (
+            str(vehicle_entry.get("step_desc") or "").strip()
+            or str(summary.get("func_step") or "").strip()
+        )
         out[lot_id] = summary
     return out
 
@@ -199,7 +245,8 @@ def _with_latest_cache_fields(doc: dict) -> dict:
         summary = summaries.get(lot_id.upper()) or {}
         values["current_step_id"] = str(summary.get("step_id") or "")
         values["step_desc"] = str(summary.get("step_desc") or "")
-        values["qty"] = str(int(summary.get("wafer_count") or 0)) if lot_id else ""
+        qty = _summary_qty(summary)
+        values["qty"] = str(qty) if qty is not None else "-"
         next_row["values"] = values
         rows.append(next_row)
     result["rows"] = rows
@@ -297,10 +344,55 @@ class RollbackRequest(BaseModel):
     note: str = ""
 
 
+class StatusBatchRequest(BaseModel):
+    product: str
+    lot_ids: list[str] = Field(default_factory=list)
+
+
 @router.get("/table")
-def get_table(request: Request, product: str = Query(...)):
+def get_table(
+    request: Request,
+    product: str = Query(...),
+    include_status: bool = Query(True),
+):
     current_user(request)
-    return _with_latest_cache_fields(_load(product))
+    doc = _load(product)
+    # The current-WIP cache can be expensive to hydrate on the first request
+    # after a process restart.  Lot Management asks for the persisted table
+    # first, then fills these read-only fields through /statuses so the whole
+    # page does not wait for that cold cache read.
+    return _with_latest_cache_fields(doc) if include_status else doc
+
+
+@router.post("/statuses")
+def get_statuses(req: StatusBatchRequest, request: Request):
+    current_user(request)
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product is required")
+    lot_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_lot_id in req.lot_ids[:MAX_ROWS]:
+        lot_id = str(raw_lot_id or "").strip()
+        key = lot_id.upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        lot_ids.append(lot_id)
+    try:
+        summaries = _latest_status_by_lot(product, lot_ids)
+    except Exception:
+        summaries = {}
+    statuses = {}
+    for lot_id in lot_ids:
+        key = lot_id.upper()
+        summary = summaries.get(key) or {}
+        statuses[key] = {
+            "current_step_id": str(summary.get("step_id") or ""),
+            "step_desc": str(summary.get("step_desc") or ""),
+            "qty": _summary_qty(summary),
+        }
+    return {"product": product, "statuses": statuses}
 
 
 @router.get("/lot-status")
@@ -308,7 +400,7 @@ def get_lot_status(request: Request, product: str = Query(...), lot_id: str = Qu
     current_user(request)
     clean_lot_id = str(lot_id or "").strip()
     if not clean_lot_id:
-        return {"product": product, "lot_id": "", "current_step_id": "", "step_desc": "", "qty": 0}
+        return {"product": product, "lot_id": "", "current_step_id": "", "step_desc": "", "qty": None}
     try:
         summary = _latest_status_by_lot(product, [clean_lot_id]).get(clean_lot_id.upper()) or {}
     except Exception:
@@ -318,7 +410,7 @@ def get_lot_status(request: Request, product: str = Query(...), lot_id: str = Qu
         "lot_id": clean_lot_id,
         "current_step_id": str(summary.get("step_id") or ""),
         "step_desc": str(summary.get("step_desc") or ""),
-        "qty": int(summary.get("wafer_count") or 0),
+        "qty": _summary_qty(summary),
     }
 
 

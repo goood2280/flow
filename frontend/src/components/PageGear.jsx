@@ -57,7 +57,7 @@ export function PageGearButton({ title = "설정", canEdit = true, position = "b
   );
 }
 
-export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-left" }) {
+export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-left", width = 360 }) {
   const [open, setOpen] = useState(false);
   const drawerRef = useRef(null);
   useEffect(() => {
@@ -80,7 +80,7 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
           }} />
           <div ref={drawerRef} style={{
             position: "fixed", top: 48, right: 0, bottom: 0,
-            width: 360, background: "var(--bg-secondary)",
+            width, maxWidth: "calc(100vw - 24px)", background: "var(--bg-secondary)",
             borderLeft: "1px solid var(--border)",
             boxShadow: "-4px 0 16px rgba(0,0,0,0.3)",
             zIndex: 50, display: "flex", flexDirection: "column",

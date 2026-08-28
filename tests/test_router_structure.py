@@ -11,9 +11,21 @@ from scripts.split_router_source import _top_level_starts
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROUTER_CONTRACTS = {
     "filebrowser": {"part_count": 9, "route_count": 50},
-    "splittable": {"part_count": 9, "route_count": 90},
-    "llm": {"part_count": 10, "route_count": 31},
+    "splittable": {"part_count": 9, "route_count": 92},
 }
+
+
+def test_parked_flowi_keeps_only_feature_neutral_llm_routes():
+    module = importlib.import_module("routers.llm")
+    paths = {route.path for route in module.router.routes}
+
+    assert paths == {
+        "/api/llm/error/explain",
+        "/api/llm/status",
+        "/api/llm/test",
+        "/api/llm/dcop/summary",
+    }
+    assert not any("/flowi/" in path for path in paths)
 
 
 @pytest.mark.parametrize(("feature", "contract"), ROUTER_CONTRACTS.items())

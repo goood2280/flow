@@ -1523,7 +1523,7 @@ def status() -> dict:
         "watchdog": wd_meta,
         "start_request_pending": start_request_pending(),
         "stats": stats,
-        # worker 역할의 SplitTable 검색 운영서버 위임 상태 (core/upstream_proxy).
+        # worker 역할의 SplitTable 운영 캐시 우선/로컬 폴백 상태 (core/upstream_proxy).
         "upstream_proxy": _upstream_proxy_status(),
     }
 

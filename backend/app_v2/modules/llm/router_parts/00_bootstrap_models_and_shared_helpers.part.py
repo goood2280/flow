@@ -421,12 +421,6 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "description": "DB 테이블과 컬럼 관계를 그래프로 보고 연결 맥락을 확인합니다.",
         "prompt": "테이블 맵에서 내가 찾는 lot/step/item 컬럼의 연결 경로를 어떻게 확인하면 좋을지 알려줘.",
     },
-    {
-        "key": "devguide",
-        "title": "개발 가이드",
-        "description": "Flow 구조, API, 운영 규칙을 확인하는 가벼운 문서 진입점입니다.",
-        "prompt": "개발 가이드에서 이 기능을 이해하려면 어떤 문서와 API를 먼저 보면 좋을지 알려줘.",
-    },
 ]
 FLOWI_REGISTERED_UNIT_ACTIONS = {
     "filebrowser.scopes",
@@ -469,7 +463,6 @@ FLOWI_FEATURE_ALIASES = {
     "meeting": ["meeting", "회의", "아젠다", "회의록", "action item", "액션아이템"],
     "calendar": ["calendar", "캘린더", "일정", "변경점", "change", "schedule"],
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
-    "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
 FLOWI_CORE_AGENT_FEATURES = ("filebrowser", "splittable", "inform", "dashboard")
 FLOWI_CORE_FEATURE_TERMS = {
@@ -489,7 +482,6 @@ FLOWI_CORE_FEATURE_TERMS = {
 # v9.5.x: ettime 은 "ET 측정시간" 탭으로 부활 — archived 목록에서 제거.
 FLOWI_ARCHIVED_TABS = {"waferlayout"}
 FLOWI_ADMIN_ONLY_FEATURES = {"tablemap", "admin"}
-FLOWI_RESTRICTED_FEATURES = {"devguide": "devguide_allowed"}
 FLOWI_UNIT_ACTIONS = {
     "filebrowser": {
         "intent": "filebrowser_guidance",
@@ -601,12 +593,6 @@ FLOWI_UNIT_ACTIONS = {
         "action": "open_tablemap",
         "needs": ["source table/column", "target table/column"],
         "outputs": ["relation path", "column match table"],
-    },
-    "devguide": {
-        "intent": "devguide_guidance",
-        "action": "open_devguide",
-        "needs": ["feature/API/topic"],
-        "outputs": ["doc entry", "API references"],
     },
 }
 
@@ -988,11 +974,6 @@ def _tabs_for_user(username: str, role: str) -> set[str] | str:
     return tabs
 
 
-def _devguide_allowed(username: str, role: str, tabs: set[str] | str) -> bool:
-    # v9.3.x: DevGuide 는 global admin 전용 (devguide_user 위임 목록 폐기).
-    return role == "admin"
-
-
 def _allowed_flowi_feature_keys(me: dict) -> set[str]:
     username = me.get("username") or "user"
     role = me.get("role") or "user"
@@ -1001,8 +982,6 @@ def _allowed_flowi_feature_keys(me: dict) -> set[str]:
     for item in FLOWI_FEATURE_ENTRYPOINTS:
         key = item.get("key") or ""
         if key in FLOWI_ADMIN_ONLY_FEATURES and role != "admin":
-            continue
-        if key in FLOWI_RESTRICTED_FEATURES and not _devguide_allowed(username, role, tabs):
             continue
         if tabs == "__all__" or key in tabs:
             out.add(key)

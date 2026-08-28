@@ -3,7 +3,10 @@ import PageGear from "../../components/PageGear";
 import { Button, EmptyState, Input, PageHeader, Pill, Select } from "../../components/UXKit";
 import { sf } from "../../lib/api";
 
+// 서버 영속 저장소 도입 전 브라우저에 저장하던 키. 서버 파일이 아직 없으면 이
+// 값을 한 번 자동 이관하고, 이후에도 API 장애 시 임시 사본으로만 유지한다.
 const SETTINGS_KEY = "flow:dcop-check:settings:v1";
+const SETTINGS_API = "/api/dcop/settings";
 const PAGE_SIZE = 100;
 const INPUT_PAGE_SIZE = 40;
 const INITIAL_GRID_ROWS = 3;
@@ -131,6 +134,10 @@ function loadSettings() {
     if (saved && Array.isArray(saved.rules)) return { ...DEFAULT_SETTINGS, ...saved };
   } catch (_) {}
   return DEFAULT_SETTINGS;
+}
+
+function saveLocalSettings(settings) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
 }
 
 function uniqueHeaders(rawHeaders) {
@@ -493,6 +500,57 @@ function ruleConditionText(rule) {
   return [target || "열 이름 미설정", operatorLabel(rule.operator), comparison].filter(Boolean).join(" · ");
 }
 
+function ruleDisplayState(rule, headers, hasTable) {
+  if (!rule.enabled) return { label: "미사용", tone: "neutral", missing: [] };
+  if (!isRuleConfigured(rule)) return { label: "설정 필요", tone: "warn", missing: [] };
+  if (!hasTable) return { label: "입력 대기", tone: "neutral", missing: [] };
+  const missing = missingRuleColumns(rule, headers);
+  return missing.length
+    ? { label: "건너뜀", tone: "warn", missing }
+    : { label: "적용", tone: "ok", missing: [] };
+}
+
+function RuleOverview({ numberedRules, headers, hasTable }) {
+  const configuredCount = numberedRules.filter(({ rule }) => isRuleConfigured(rule)).length;
+  const appliedCount = hasTable
+    ? numberedRules.filter(({ rule }) => ruleAppliesTo(rule, headers)).length
+    : 0;
+  return (
+    <section style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", padding: "12px 14px", display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <strong>설정된 규칙</strong>
+        <Pill tone="neutral">전체 {numberedRules.length}개</Pill>
+        {configuredCount !== numberedRules.length && <Pill tone="warn">실행 가능 {configuredCount}개</Pill>}
+        {hasTable && <Pill tone="ok">현재 표 적용 {appliedCount}개</Pill>}
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+        {hasTable
+          ? "저장된 규칙 전체입니다. 현재 표에 필요한 열이 없는 규칙은 건너뜀으로 표시됩니다."
+          : "붙여넣기 전에도 저장된 규칙 전체를 확인할 수 있습니다. 표를 입력하면 각 규칙의 적용 여부가 표시됩니다."}
+      </div>
+      {numberedRules.length ? (
+        <div style={{ display: "grid" }}>
+          {numberedRules.map(({ rule, index }, position) => {
+            const state = ruleDisplayState(rule, headers, hasTable);
+            return <div key={rule.id} style={{ display: "grid", gap: 4, padding: "8px 2px", borderBottom: position < numberedRules.length - 1 ? "1px solid var(--border)" : "none" }}>
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <b style={{ fontSize: 12, minWidth: 60, flexShrink: 0 }}>규칙 {index + 1}번</b>
+                <Pill tone={rule.severity === "fail" ? "bad" : "warn"}>{String(rule.severity || "fail").toUpperCase()}</Pill>
+                <Pill tone={state.tone}>{state.label}</Pill>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{ruleConditionText(rule)}</span>
+              </div>
+              <div style={{ paddingLeft: 68, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                {rule.message.trim() || defaultMessage(rule)}
+                {state.missing.length > 0 && <> · 현재 표에 없는 열: <b>{state.missing.join(", ")}</b></>}
+              </div>
+            </div>;
+          })}
+        </div>
+      ) : <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>저장된 검사 규칙이 없습니다.</span>}
+    </section>
+  );
+}
+
 function xmlEscape(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -542,7 +600,7 @@ const tableCell = {
   textOverflow: "ellipsis",
 };
 
-function RuleEditor({ settings, setSettings, headers }) {
+function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSave }) {
   const updateRule = (id, patch) => setSettings((current) => ({
     ...current,
     rules: current.rules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule),
@@ -565,127 +623,148 @@ function RuleEditor({ settings, setSettings, headers }) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <datalist id="dcop-header-options">
-        {headers.map((header) => <option key={header} value={header} />)}
-      </datalist>
-      <div style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>
-        아래 조건은 모두 <b>위반 조건</b>입니다. 위반한 행에 지정한 판정과 상세 내용이 들어가며, 여러 규칙이 맞으면 FAIL이 WARNING보다 우선합니다.
-        <br />
-        규칙은 <b>열 이름</b>으로 세웁니다. 붙여넣은 표에 같은 이름의 열이 들어오면 그 열을 검사하고, 없으면 이번 검사만 건너뜁니다(규칙은 그대로 유지).
-        앞뒤 공백·대소문자만 다른 이름은 같은 열로 봅니다.
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-tertiary)", fontSize: 12 }}>
+        <b>규칙 저장소</b>
+        <span style={{ color: storeState.status === "error" ? "var(--danger)" : storeState.status === "saved" ? "var(--ok)" : "var(--text-secondary)" }}>
+          {storeState.message}
+        </span>
+        {storeState.status === "error" && canEdit && <button type="button" onClick={onSave} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer" }}>다시 저장</button>}
       </div>
-      {settings.rules.map((rule, index) => (
-        <div key={rule.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <b style={{ fontSize: 13 }}>규칙 {index + 1}</b>
-            <label style={{ marginLeft: "auto", fontSize: 12 }}><input type="checkbox" checked={rule.enabled} onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })} /> 사용</label>
-            <button type="button" onClick={() => duplicateRule(rule)} style={{ border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer" }}>복제</button>
-            <button type="button" onClick={() => removeRule(rule.id)} style={{ border: 0, background: "transparent", color: "var(--danger)", cursor: "pointer" }}>삭제</button>
-          </div>
-          {MULTI_COLUMN_OPERATORS.has(rule.operator) ? (
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 12, fontWeight: 700 }}>
-                {rule.operator === "order_asc"
-                  ? "순서를 검사할 열 이름 (쉼표 구분, 입력한 순서대로 A≤B≤C 비교)"
-                  : rule.operator === "blank"
-                    ? "필수값 여부를 검사할 열 이름 (쉼표 구분, 하나라도 비어 있으면 위반)"
-                    : "유일성을 검사할 열 이름 조합 (쉼표 구분)"}
-              </div>
-              <Input
-                value={uniqueColumnsText(rule)}
-                list="dcop-header-options"
-                placeholder={rule.operator === "order_asc" ? "예: START_TIME, END_TIME" : rule.operator === "blank" ? "예: PRODUCT, STEP_ID, DCOP_NAME" : "예: PRODUCT, STEP_ID"}
-                onChange={(e) => setUniqueColumnsText(rule, e.target.value)}
-              />
-              {headers.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {headers.map((header) => {
-                    const checked = parseColumnList(uniqueColumnsText(rule))
-                      .some((item) => normalizeHeaderName(item) === normalizeHeaderName(header));
-                    return <button
-                      key={header}
-                      type="button"
-                      aria-pressed={checked}
-                      title="현재 표의 열 이름을 넣거나 뺍니다"
-                      onClick={() => toggleUniqueColumn(rule, header)}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 8px", borderRadius: 4, border: checked ? "1px solid var(--accent)" : "1px solid var(--border)", background: checked ? "var(--accent-glow)" : "var(--bg-secondary)", color: checked ? "var(--accent)" : "var(--text-primary)", fontSize: 12, cursor: "pointer" }}
-                    >
-                      <span aria-hidden="true">{checked ? "✓" : "＋"}</span>
-                      {header}
-                    </button>;
-                  })}
-                </div>
-              )}
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                {rule.operator === "order_asc"
-                  ? (parseColumnList(uniqueColumnsText(rule)).join(" ≤ ") || "열 이름을 두 개 이상 입력하세요 (입력한 순서로 비교합니다).")
-                  : (parseColumnList(uniqueColumnsText(rule)).join(" + ") || "열 이름을 한 개 이상 입력하세요.")}
-              </div>
-              {rule.operator === "blank" && parseColumnList(uniqueColumnsText(rule)).length > 0 && (
-                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                  지정한 열 중 하나라도 값이 비어 있으면 위반으로 표시합니다.
-                </div>
-              )}
-            </div>
-          ) : (
-            <Input
-              value={rule.column}
-              list="dcop-header-options"
-              placeholder="검사할 열 이름 (예: DCOP_NAME)"
-              onChange={(e) => updateRule(rule.id, { column: e.target.value, message: "" })}
-            />
-          )}
-          <Select value={rule.operator} onChange={(e) => {
-            const operator = e.target.value;
-            const seeded = MULTI_COLUMN_OPERATORS.has(operator) && String(rule.column || "").trim() ? [rule.column.trim()] : [];
-            updateRule(rule.id, {
-              operator,
-              value: "",
-              compareColumn: "",
-              uniqueColumns: seeded,
-              uniqueColumnsText: seeded.join(", "),
-              message: "",
-            });
-          }}>
-            {OPERATORS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </Select>
-          {rule.operator === "comma_count_equals_column" && (
-            <Input
-              value={rule.compareColumn || ""}
-              list="dcop-header-options"
-              placeholder="쉼표 개수+1과 비교할 열 이름"
-              onChange={(e) => updateRule(rule.id, { compareColumn: e.target.value })}
-            />
-          )}
-          {VALUE_OPERATORS.has(rule.operator) && (
-            <Input
-              value={rule.value}
-              inputMode={["max_length", "max_decimal_places", "gt", "gte", "lt", "lte"].includes(rule.operator) ? "decimal" : undefined}
-              placeholder={rule.operator === "max_length" ? "최대 글자 수 (예: 40)" : rule.operator === "max_decimal_places" ? "최대 소수 자릿수 (예: 10)" : rule.operator === "allowed_values" ? "허용값 (예: N,Y)" : "기준값"}
-              onChange={(e) => updateRule(rule.id, { value: e.target.value })}
-            />
-          )}
-          <Select value={rule.severity} onChange={(e) => updateRule(rule.id, { severity: e.target.value })}>
-            <option value="warning">WARNING</option>
-            <option value="fail">FAIL</option>
-          </Select>
-          <Input value={rule.message} placeholder={defaultMessage(rule)} onChange={(e) => updateRule(rule.id, { message: e.target.value })} />
-          {!isRuleConfigured(rule) ? (
-            <div style={{ fontSize: 12, color: "var(--warn)" }}>열 이름과 필요한 기준값을 입력해야 이 규칙이 실행됩니다.</div>
-          ) : missingRuleColumns(rule, headers).length > 0 && (
-            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              현재 표에 <b>{missingRuleColumns(rule, headers).join(", ")}</b> 열이 없어 이번 검사에서는 건너뜁니다. 규칙은 그대로 유지됩니다.
-            </div>
-          )}
+      <fieldset disabled={!canEdit || storeState.status === "loading"} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: "grid", gap: 12 }}>
+        <datalist id="dcop-header-options">
+          {headers.map((header) => <option key={header} value={header} />)}
+        </datalist>
+        <div style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>
+          아래 조건은 모두 <b>위반 조건</b>입니다. 위반한 행에 지정한 판정과 상세 내용이 들어가며, 여러 규칙이 맞으면 FAIL이 WARNING보다 우선합니다.
+          <br />
+          규칙은 <b>열 이름</b>으로 세웁니다. 붙여넣은 표에 같은 이름의 열이 들어오면 그 열을 검사하고, 없으면 이번 검사만 건너뜁니다(규칙은 그대로 유지).
+          앞뒤 공백·대소문자만 다른 이름은 같은 열로 봅니다.
         </div>
-      ))}
-      <Button variant="primary" onClick={addRule}>＋ 검사 규칙 추가</Button>
+        {settings.rules.map((rule, index) => (
+          <div key={rule.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <b style={{ fontSize: 13 }}>규칙 {index + 1}</b>
+              <label style={{ marginLeft: "auto", fontSize: 12 }}><input type="checkbox" checked={rule.enabled} onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })} /> 사용</label>
+              <button type="button" onClick={() => duplicateRule(rule)} style={{ border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer" }}>복제</button>
+              <button type="button" onClick={() => removeRule(rule.id)} style={{ border: 0, background: "transparent", color: "var(--danger)", cursor: "pointer" }}>삭제</button>
+            </div>
+            {MULTI_COLUMN_OPERATORS.has(rule.operator) ? (
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>
+                  {rule.operator === "order_asc"
+                    ? "순서를 검사할 열 이름 (쉼표 구분, 입력한 순서대로 A≤B≤C 비교)"
+                    : rule.operator === "blank"
+                      ? "필수값 여부를 검사할 열 이름 (쉼표 구분, 하나라도 비어 있으면 위반)"
+                      : "유일성을 검사할 열 이름 조합 (쉼표 구분)"}
+                </div>
+                <Input
+                  value={uniqueColumnsText(rule)}
+                  list="dcop-header-options"
+                  placeholder={rule.operator === "order_asc" ? "예: START_TIME, END_TIME" : rule.operator === "blank" ? "예: PRODUCT, STEP_ID, DCOP_NAME" : "예: PRODUCT, STEP_ID"}
+                  onChange={(e) => setUniqueColumnsText(rule, e.target.value)}
+                />
+                {headers.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {headers.map((header) => {
+                      const checked = parseColumnList(uniqueColumnsText(rule))
+                        .some((item) => normalizeHeaderName(item) === normalizeHeaderName(header));
+                      return <button
+                        key={header}
+                        type="button"
+                        aria-pressed={checked}
+                        title="현재 표의 열 이름을 넣거나 뺍니다"
+                        onClick={() => toggleUniqueColumn(rule, header)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 8px", borderRadius: 4, border: checked ? "1px solid var(--accent)" : "1px solid var(--border)", background: checked ? "var(--accent-glow)" : "var(--bg-secondary)", color: checked ? "var(--accent)" : "var(--text-primary)", fontSize: 12, cursor: "pointer" }}
+                      >
+                        <span aria-hidden="true">{checked ? "✓" : "＋"}</span>
+                        {header}
+                      </button>;
+                    })}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                  {rule.operator === "order_asc"
+                    ? (parseColumnList(uniqueColumnsText(rule)).join(" ≤ ") || "열 이름을 두 개 이상 입력하세요 (입력한 순서로 비교합니다).")
+                    : (parseColumnList(uniqueColumnsText(rule)).join(" + ") || "열 이름을 한 개 이상 입력하세요.")}
+                </div>
+                {rule.operator === "blank" && parseColumnList(uniqueColumnsText(rule)).length > 0 && (
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    지정한 열 중 하나라도 값이 비어 있으면 위반으로 표시합니다.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Input
+                value={rule.column}
+                list="dcop-header-options"
+                placeholder="검사할 열 이름 (예: DCOP_NAME)"
+                onChange={(e) => updateRule(rule.id, { column: e.target.value, message: "" })}
+              />
+            )}
+            <Select value={rule.operator} onChange={(e) => {
+              const operator = e.target.value;
+              const seeded = MULTI_COLUMN_OPERATORS.has(operator) && String(rule.column || "").trim() ? [rule.column.trim()] : [];
+              updateRule(rule.id, {
+                operator,
+                value: "",
+                compareColumn: "",
+                uniqueColumns: seeded,
+                uniqueColumnsText: seeded.join(", "),
+                message: "",
+              });
+            }}>
+              {OPERATORS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </Select>
+            {rule.operator === "comma_count_equals_column" && (
+              <Input
+                value={rule.compareColumn || ""}
+                list="dcop-header-options"
+                placeholder="쉼표 개수+1과 비교할 열 이름"
+                onChange={(e) => updateRule(rule.id, { compareColumn: e.target.value })}
+              />
+            )}
+            {VALUE_OPERATORS.has(rule.operator) && (
+              <Input
+                value={rule.value}
+                inputMode={["max_length", "max_decimal_places", "gt", "gte", "lt", "lte"].includes(rule.operator) ? "decimal" : undefined}
+                placeholder={rule.operator === "max_length" ? "최대 글자 수 (예: 40)" : rule.operator === "max_decimal_places" ? "최대 소수 자릿수 (예: 10)" : rule.operator === "allowed_values" ? "허용값 (예: N,Y)" : "기준값"}
+                onChange={(e) => updateRule(rule.id, { value: e.target.value })}
+              />
+            )}
+            <Select value={rule.severity} onChange={(e) => updateRule(rule.id, { severity: e.target.value })}>
+              <option value="warning">WARNING</option>
+              <option value="fail">FAIL</option>
+            </Select>
+            <Input value={rule.message} placeholder={defaultMessage(rule)} onChange={(e) => updateRule(rule.id, { message: e.target.value })} />
+            {!isRuleConfigured(rule) ? (
+              <div style={{ fontSize: 12, color: "var(--warn)" }}>열 이름과 필요한 기준값을 입력해야 이 규칙이 실행됩니다.</div>
+            ) : missingRuleColumns(rule, headers).length > 0 && (
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                현재 표에 <b>{missingRuleColumns(rule, headers).join(", ")}</b> 열이 없어 이번 검사에서는 건너뜁니다. 규칙은 그대로 유지됩니다.
+              </div>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="primary" onClick={addRule}>＋ 검사 규칙 추가</Button>
+          <Button onClick={onSave}>flow-data에 저장</Button>
+        </div>
+      </fieldset>
     </div>
   );
 }
 
-export default function MyDcopCheck() {
-  const [settings, setSettings] = useState(loadSettings);
+export default function MyDcopCheck({ user }) {
+  const legacySettingsRef = useRef(null);
+  if (legacySettingsRef.current === null) legacySettingsRef.current = loadSettings();
+  const assumedCanEdit = user?.role === "admin" || (user?.page_manager || []).includes("dcop");
+  const [settings, setSettings] = useState(legacySettingsRef.current);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [canEdit, setCanEdit] = useState(assumedCanEdit);
+  const [storeState, setStoreState] = useState({ status: "loading", message: "flow-data에서 불러오는 중..." });
+  const saveTimerRef = useRef(null);
+  const saveQueueRef = useRef(Promise.resolve());
+  const lastSavedRef = useRef("");
   const [draftGrid, setDraftGrid] = useState(blankGrid);
   const [table, setTable] = useState({ headers: [], rows: [] });
   const [results, setResults] = useState([]);
@@ -702,9 +781,96 @@ export default function MyDcopCheck() {
   }, [draftGrid]);
   const ruleHeaders = table.headers.length ? table.headers : draftHeaders;
 
+  const enqueueSave = (snapshot) => {
+    const serialized = JSON.stringify(snapshot);
+    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(() => {
+      setStoreState({ status: "saving", message: "flow-data에 저장 중..." });
+      return sf(SETTINGS_API, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: snapshot }),
+      }).then((response) => {
+        lastSavedRef.current = serialized;
+        setStoreState({
+          status: "saved",
+          message: response.updated_at ? `flow-data 저장됨 · ${response.updated_at.slice(0, 19).replace("T", " ")}` : "flow-data에 저장됨",
+        });
+        return response;
+      }).catch((error) => {
+        setStoreState({ status: "error", message: `flow-data 저장 실패 · ${error.message || "연결 오류"}` });
+        throw error;
+      });
+    });
+    return saveQueueRef.current;
+  };
+
+  const saveNow = () => {
+    if (!canEdit || !settingsReady) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    enqueueSave(settings).catch(() => {});
+  };
+
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }, [settings]);
+    let active = true;
+    const legacy = legacySettingsRef.current;
+    sf(SETTINGS_API).then(async (response) => {
+      if (!active) return;
+      const serverCanEdit = Boolean(response.can_edit);
+      setCanEdit(serverCanEdit);
+      if (!response.exists && serverCanEdit && legacy.rules.length > 0) {
+        setStoreState({ status: "saving", message: "기존 브라우저 규칙을 flow-data로 이관 중..." });
+        try {
+          const migrated = await sf(SETTINGS_API, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ settings: legacy }),
+          });
+          if (!active) return;
+          const next = migrated.settings || legacy;
+          setSettings(next);
+          saveLocalSettings(next);
+          lastSavedRef.current = JSON.stringify(next);
+          setStoreState({ status: "saved", message: "기존 브라우저 규칙을 flow-data로 이관함" });
+        } catch (error) {
+          if (!active) return;
+          lastSavedRef.current = JSON.stringify(legacy);
+          setStoreState({ status: "error", message: `규칙 이관 실패 · ${error.message || "연결 오류"}` });
+        }
+      } else if (!response.exists && !serverCanEdit && legacy.rules.length > 0) {
+        // 관리자가 아직 공용 파일을 만들지 않은 상태에서 일반 사용자가 먼저 열어도
+        // 과거 브라우저 규칙을 빈 서버 응답으로 덮어쓰지 않는다.
+        setSettings(legacy);
+        lastSavedRef.current = JSON.stringify(legacy);
+        setStoreState({ status: "local", message: "기존 브라우저 규칙 유지 · DCOP 관리자가 flow-data로 이관해야 함" });
+      } else {
+        const next = response.settings && Array.isArray(response.settings.rules) ? response.settings : DEFAULT_SETTINGS;
+        setSettings(next);
+        saveLocalSettings(next);
+        lastSavedRef.current = JSON.stringify(next);
+        setStoreState({
+          status: "saved",
+          message: serverCanEdit ? "flow-data 공용 규칙을 불러옴" : "flow-data 공용 규칙 · 읽기 전용",
+        });
+      }
+      if (active) setSettingsReady(true);
+    }).catch((error) => {
+      if (!active) return;
+      lastSavedRef.current = JSON.stringify(legacy);
+      setSettingsReady(true);
+      setStoreState({ status: "error", message: `flow-data 규칙을 불러오지 못함 · 브라우저 임시 사본 사용 · ${error.message || "연결 오류"}` });
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    saveLocalSettings(settings);
+    if (!settingsReady || !canEdit) return undefined;
+    const serialized = JSON.stringify(settings);
+    if (serialized === lastSavedRef.current) return undefined;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => enqueueSave(settings).catch(() => {}), 500);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [settings, settingsReady, canEdit]);
 
   const summary = useMemo(() => results.reduce((acc, row) => {
     acc[row.severity] += 1;
@@ -784,6 +950,7 @@ export default function MyDcopCheck() {
       />
 
       <div style={{ padding: 16, display: "grid", gap: 12 }}>
+        <RuleOverview numberedRules={numberedRules} headers={table.headers} hasTable={table.rows.length > 0} />
         {!table.rows.length ? (
           <section style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6, padding: 16 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>작성한 DCOP 붙여넣기</div>
@@ -806,35 +973,6 @@ export default function MyDcopCheck() {
                 </>
               ) : (
                 <span><strong>{table.rows.length.toLocaleString()}행 · {table.headers.length.toLocaleString()}열</strong>을 불러왔습니다. 톱니바퀴에서 조건을 설정하고 검사를 실행하세요.</span>
-              )}
-            </section>
-
-            <section style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", padding: "12px 14px", display: "grid", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <strong>적용 규칙</strong>
-                <Pill tone="neutral">{appliedRules.length}개</Pill>
-                {skippedRules.length > 0 && <Pill tone="warn">건너뜀 {skippedRules.length}개</Pill>}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-                현재 표에 설정된 규칙 목록입니다. 각 규칙에 이상이 발생한 행에는 규칙에 지정한 FAIL 또는 WARNING이 표시됩니다.
-              </div>
-              {appliedRules.length ? (
-                <div style={{ display: "grid" }}>
-                  {appliedRules.map(({ rule, index }, position) => (
-                    <div key={rule.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px", borderBottom: position < appliedRules.length - 1 ? "1px solid var(--border)" : "none" }}>
-                      <b style={{ fontSize: 12, minWidth: 60, flexShrink: 0 }}>규칙 {index + 1}번</b>
-                      <Pill tone={rule.severity === "fail" ? "bad" : "warn"}>{rule.severity.toUpperCase()}</Pill>
-                      <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{ruleConditionText(rule)}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>현재 표에 있는 열 이름과 일치하는 규칙이 없습니다.</span>}
-              {skippedRules.length > 0 && (
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                  이번 표에 없는 열이라 건너뛴 규칙:{" "}
-                  {skippedRules.map(({ rule, index }) =>
-                    `규칙 ${index + 1}번(${missingRuleColumns(rule, table.headers).join(", ")})`).join(" · ")}
-                </div>
               )}
             </section>
 
@@ -889,8 +1027,15 @@ export default function MyDcopCheck() {
         )}
       </div>
 
-      <PageGear title="DCOP 검사 조건" position="bottom-left">
-        <RuleEditor settings={settings} setSettings={setSettings} headers={ruleHeaders} />
+      <PageGear title="DCOP 검사 조건" canEdit={canEdit && settingsReady} position="bottom-left">
+        <RuleEditor
+          settings={settings}
+          setSettings={setSettings}
+          headers={ruleHeaders}
+          canEdit={canEdit && settingsReady}
+          storeState={storeState}
+          onSave={saveNow}
+        />
       </PageGear>
     </div>
   );

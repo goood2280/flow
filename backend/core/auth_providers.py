@@ -21,7 +21,7 @@ SSO provider 추가 방법
     class OidcAuthProvider(AuthProvider):
         name = "oidc"
         kind = "sso"
-        label = "사내 SSO"
+        label = "SSO"
         def enabled(self) -> bool:
             return bool(os.environ.get("FLOW_OIDC_CLIENT_ID"))
         def start_url(self) -> str:
@@ -48,6 +48,7 @@ SSO 사용자도 users.csv 에 행이 있어야 role/tabs/status 를 관리할 �
 from __future__ import annotations
 
 import datetime
+import os
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -120,9 +121,28 @@ class AuthProvider:
             raise HTTPException(401, "Invalid credentials")
 
         users = auth_router.read_users()
+        identity_claims = dict(claims or {})
+
+        def _claim_label(value: Any) -> str:
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    label = " ".join(str(item or "").strip().split())
+                    if label:
+                        return label
+                return ""
+            return " ".join(str(value or "").strip().split())
+
+        sso_id = _claim_label(identity_claims.get("sub")) if self.kind == "sso" else ""
+        department = ""
+        if self.kind == "sso":
+            for claim_name in ("department", "department_name", "dept", "org_name", "org"):
+                department = _claim_label(identity_claims.get(claim_name))
+                if department:
+                    break
         # `hong` / `hong@corp.com` 은 같은 계정 (routers.auth.find_user_rows).
         row = auth_router._find_user_by_username(users, login_id)
 
+        changed = False
         if row is None:
             if not auto_provision:
                 raise HTTPException(403, "No local account for this identity")
@@ -133,11 +153,39 @@ class AuthProvider:
                 "role": "user",
                 "status": "pending",
                 "created": datetime.datetime.now().isoformat(),
+                "last_login": "",
                 "tabs": DEFAULT_TABS,
                 "email": (email or "").strip(),
                 "name": (name or "").strip(),
+                "sso_id": sso_id,
+                "department": department,
+                "permission_source": "",
             }
             users.append(row)
+            changed = True
+        elif self.kind == "sso":
+            # Refresh non-secret SSO directory metadata on every successful
+            # callback. Missing claims do not erase a previously known value.
+            for field_name, value in (("sso_id", sso_id), ("department", department)):
+                if value and str(row.get(field_name) or "") != value:
+                    row[field_name] = value
+                    changed = True
+            if name and not str(row.get("name") or "").strip():
+                row["name"] = str(name).strip()
+                changed = True
+            if email and not str(row.get("email") or "").strip():
+                row["email"] = str(email).strip()
+                changed = True
+
+        if self.kind == "sso":
+            # Delayed import keeps the provider independent at startup while
+            # reusing the Admin permission-group source of truth at login time.
+            from routers import admin as admin_router
+
+            if admin_router.apply_sso_department_permissions(users, str(row.get("username") or login_id)):
+                changed = True
+
+        if changed:
             auth_router.write_users(users)
 
         return AuthIdentity(
@@ -148,7 +196,7 @@ class AuthProvider:
             tabs=row.get("tabs", "") or "",
             name=row.get("name", "") or "",
             email=row.get("email", "") or "",
-            claims=dict(claims or {}),
+            claims=identity_claims,
         )
 
     def describe(self) -> dict:
@@ -166,6 +214,10 @@ class PasswordAuthProvider(AuthProvider):
     name = "password"
     kind = "password"
     label = "ID / PW"
+
+    def enabled(self) -> bool:
+        raw = str(os.environ.get("FLOW_PASSWORD_LOGIN_ENABLED", "true") or "").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
 
     def authenticate(self, credential: Any) -> AuthIdentity:
         from routers import auth as auth_router
@@ -253,6 +305,14 @@ def start_session(identity: AuthIdentity, *, audit: bool = True) -> dict:
         auth_method=identity.provider,
         claims=identity.claims,
     )
+    # Password and SSO must advance the same inactivity clock. Failure to write
+    # this auxiliary timestamp must not invalidate an authenticated session;
+    # the auth:login audit record remains a migration fallback.
+    try:
+        from routers import auth as auth_router
+        auth_router.record_successful_login(identity.username)
+    except Exception:
+        pass
     if audit:
         try:
             _audit_user(
@@ -279,6 +339,10 @@ def start_session(identity: AuthIdentity, *, audit: bool = True) -> dict:
 def login_with(provider_name: str, credential: Any) -> dict:
     """provider 이름으로 인증 후 세션 시작. 라우터가 쓰는 단축 경로."""
     return start_session(get_provider(provider_name).authenticate(credential))
+
+
+# 환경변수가 없으면 비활성 provider 로만 등록된다. import 시 네트워크 요청은 없다.
+from core import oidc_provider as _oidc_provider  # noqa: E402,F401
 
 
 __all__: Iterable[str] = (

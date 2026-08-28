@@ -264,7 +264,6 @@ CANONICAL_PAGE_IDS = (
     "tablemap",
     "groups",
     "messages",
-    "devguide",
     # Existing Agent tab key. Kept canonical for live deployments.
     "diagnosis",
     "knowledge",
@@ -455,11 +454,6 @@ def _user_tabs(user: dict) -> list[str] | str:
     return out
 
 
-def _devguide_allowed(username: str, role: str) -> bool:
-    # v9.3.x: DevGuide 는 global admin 전용 (devguide_user 위임 목록 폐기).
-    return role == "admin"
-
-
 def _group_permissions(username: str, role: str) -> dict:
     if role == "admin":
         return {"all": True, "owner": [], "member": []}
@@ -498,7 +492,6 @@ def effective_permissions(user: dict) -> dict:
         "tabs": _user_tabs(user or {}),
         "subtabs": user_subtabs(user or {}),
         "page_manager": manager_pages,
-        "devguide": _devguide_allowed(username, role),
         "groups": _group_permissions(username, role),
     }
 

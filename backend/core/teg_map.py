@@ -32,6 +32,9 @@ Auto Report 의 WF MAP geometry(My_Function._wafer_circle_params)와 같은 수�
 from __future__ import annotations
 
 import datetime
+import csv
+import io
+import json
 import logging
 import math
 import os
@@ -54,6 +57,25 @@ CFG_NAME = "teg_map.json"
 DIR_NAME = "teg_location"
 INLINE_MAP_DIR_NAME = "credential"
 INLINE_MAP_FILE_NAME = "inline_map_settings.json"
+INLINE_SHOT_MATCHING_FILE_NAME = "inline_shot_matching.csv"
+INLINE_SHOT_MATCHING_COLUMNS = ("product", "step_id", "item_id", "map_name")
+PRODUCT_INFO_FILE_NAME = "TEG_Product_Info.csv"
+
+PRODUCT_GEOMETRY_COLUMNS = (
+    "vehicle",
+    "chip_size_x_um", "chip_size_y_um",
+    "sl_size_x_um", "sl_size_y_um",
+    "shot_cols", "shot_rows",
+    "shot_size_x_um", "shot_size_y_um",
+    "map_offset_odd_x", "map_offset_odd_y",
+)
+PRODUCT_OPTIONAL_COLUMNS = ("rc_cols", "rc_rows", "raw_config_json")
+PRODUCT_INFO_COLUMNS = (*PRODUCT_GEOMETRY_COLUMNS, "node_path", *PRODUCT_OPTIONAL_COLUMNS)
+
+# 새 제품의 Chip_Radius와 exact geometry 응답은 화면 표시용 4자리 반올림을
+# 거치지 않는다. CSV에는 고정 12자리로 저장해 이후 fit fallback으로 읽더라도
+# 원래 Shot Size / Map offset(Odd)에 최대한 가깝게 복원되게 한다.
+PRODUCT_RADIUS_DECIMALS = 12
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -91,8 +113,8 @@ DEFAULT_CHECK_CFG = {
     # first-pad rules describe geometry and therefore override global defaults.
     "products": {},
     # die 겹침 허용오차 — **ebeam raw 단위**(ΔX/ΔY 와 같은 공간, ebeam_scale 로 mm 환산).
-    # die 경계에서 이 값 안쪽으로 들어가거나 바깥으로 나간 정도는 '경계 근처'(확인필요)
-    # 로 본다. 0 이면 예전처럼 조금이라도 닿으면 침범.
+    # 경계선 접촉과 die 안쪽으로 이 값 이하만 걸친 것은 정상으로 허용한다.
+    # 0 이어도 선 접촉은 정상이고, 실제 면적이 겹칠 때만 침범이다.
     "die_tol": 3.0,
 }
 
@@ -121,6 +143,12 @@ DEFAULT_CFG = {
     # 위치 조회 페이지에서 관리자(page manager 'teg')가 편집. vehicle 키가 없으면
     # 기본값(teg 이름이 H_/V_ 로 시작하는 것 전부)을 대상으로 본다.
     "check_targets": {},
+    # 제품 계층: {vehicle: "2나노 / 2나노A"}. 신규 제품은 Product Info CSV에도
+    # 같은 경로를 저장하고, 이 맵은 기존 Chip_Radius 전용 제품의 분류를 보완한다.
+    "product_nodes": {},
+    # 최상위 노드 접근 규칙. 키가 없으면 기존 호환을 위해 공개, 키가 있으면
+    # users/departments 중 하나와 일치해야 한다. admin은 항상 전체 접근한다.
+    "node_access": {},
     # 설정 스키마 버전 — v2: teg 기본 3000×100µm, ebeam 기본 µm 배율(0.001)
     "cfg_version": 2,
 }
@@ -147,6 +175,69 @@ def inline_map_settings_path() -> Path:
     return roots.get_db_root() / INLINE_MAP_DIR_NAME / INLINE_MAP_FILE_NAME
 
 
+def inline_shot_matching_path() -> Path:
+    """Inline ITEM → map 연결표 (DB root)."""
+    return roots.get_db_root() / INLINE_SHOT_MATCHING_FILE_NAME
+
+
+def _clean_inline_matching_rows(rows: Any) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for index, raw in enumerate(rows if isinstance(rows, list) else [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        row = {
+            column: str(raw.get(column) or "").strip()[:200]
+            for column in INLINE_SHOT_MATCHING_COLUMNS
+        }
+        if not any(row.values()):
+            continue
+        missing = [column for column, value in row.items() if not value]
+        if missing:
+            raise ValueError(f"Inline shot matching {index}행의 {', '.join(missing)} 값이 비어 있습니다")
+        key = tuple(row[column].casefold() for column in INLINE_SHOT_MATCHING_COLUMNS)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(row)
+    return cleaned
+
+
+def load_inline_shot_matching() -> dict:
+    path = inline_shot_matching_path()
+    with _INLINE_MAP_LOCK:
+        rows: list[dict[str, str]] = []
+        if path.is_file():
+            try:
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    rows = _clean_inline_matching_rows(list(csv.DictReader(handle)))
+            except (OSError, UnicodeError, csv.Error) as exc:
+                raise ValueError(f"{path.name}을 읽을 수 없습니다: {exc}") from exc
+        return {
+            "columns": list(INLINE_SHOT_MATCHING_COLUMNS),
+            "rows": rows,
+            "path": str(path),
+        }
+
+
+def _save_inline_shot_matching_rows(rows: list[dict[str, str]]) -> None:
+    path = inline_shot_matching_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=INLINE_SHOT_MATCHING_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temp, path)
+    finally:
+        try:
+            if temp.exists():
+                temp.unlink()
+        except OSError:
+            pass
+
+
 def _clean_inline_table(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -163,16 +254,22 @@ def _clean_inline_table(raw: Any) -> dict | None:
             x, y = float(item.get("shot_x")), float(item.get("shot_y"))
         except (TypeError, ValueError):
             continue
-        name = str(item.get("name") or "").strip()[:200]
+        subitem_id = str(item.get("subitem_id") or item.get("name") or "").strip()[:200]
         key = (round(x, 6), round(y, 6))
-        if not name or not all(math.isfinite(v) for v in key) or key in seen:
+        if not subitem_id or not all(math.isfinite(v) for v in key) or key in seen:
             continue
         seen.add(key)
-        shots.append({"shot_x": key[0], "shot_y": key[1], "name": name})
+        shots.append({
+            "shot_x": key[0], "shot_y": key[1],
+            "subitem_id": subitem_id,
+            # v1 UI/저장 파일 호환. 신규 소비자는 subitem_id를 authoritative로 쓴다.
+            "name": subitem_id,
+        })
     return {
         "table_name": table_name,
         "vehicle": vehicle,
         "shots": shots,
+        "comment": str(raw.get("comment") or "").strip()[:1000],
         "updated_at": str(raw.get("updated_at") or ""),
         "updated_by": str(raw.get("updated_by") or "")[:200],
     }
@@ -195,12 +292,85 @@ def load_inline_map_settings() -> dict:
         return {"version": 1, "tables": tables}
 
 
-def save_inline_map_table(table_name: str, vehicle: str, shots: list[dict], username: str) -> dict:
+def full_shots_for_payload(payload: dict) -> list[dict]:
+    """화면의 full-shot 격자와 같은 규칙으로 wafer에 면적이 겹치는 shot을 만든다."""
+    geometry = payload.get("geometry") or {}
+    real = list(payload.get("shots") or [])
+    if geometry.get("fit") != "radius" or not real:
+        return real
+    grid_cols = int(geometry.get("grid_cols") or 0)
+    grid_rows = int(geometry.get("grid_rows") or 0)
+    if grid_cols > 0 and grid_rows > 0:
+        if grid_cols * grid_rows > 6000:
+            return real
+        key_of = lambda x, y: (round(float(x), 6), round(float(y), 6))
+        seen = {key_of(shot.get("x"), shot.get("y")) for shot in real}
+        out = list(real)
+        cx, cy = float(geometry.get("cx") or 0), float(geometry.get("cy") or 0)
+        kx, ky = float(geometry.get("kx") or 0), float(geometry.get("ky") or 0)
+        for x in range(1, grid_cols + 1):
+            for y in range(1, grid_rows + 1):
+                if key_of(x, y) in seen:
+                    continue
+                mm_x, mm_y = (x - cx) * kx, (y - cy) * ky
+                out.append({
+                    "x": x, "y": y, "synthetic": True,
+                    "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
+                    "radius": round(math.hypot(mm_x, mm_y), 4),
+                })
+        return out
+    pitch_x = abs(float(geometry.get("pitch_x") or 0))
+    pitch_y = abs(float(geometry.get("pitch_y") or 0))
+    kx = abs(float(geometry.get("kx") or 0))
+    ky = abs(float(geometry.get("ky") or 0))
+    shot_w = abs(float(geometry.get("shot_w_mm") or 0))
+    shot_h = abs(float(geometry.get("shot_h_mm") or 0))
+    radius = float(geometry.get("wafer_radius_mm") or 0)
+    step_x, step_y = pitch_x * kx, pitch_y * ky
+    if min(pitch_x, pitch_y, step_x, step_y, shot_w, shot_h, radius) <= 0:
+        return real
+    if math.pi * radius * radius / (step_x * step_y) > 6000:
+        return real
+
+    anchor = min(real, key=lambda shot: float(shot.get("radius", math.inf)))
+    nx = math.ceil((radius + shot_w) / step_x) + 1
+    ny = math.ceil((radius + shot_h) / step_y) + 1
+    key_of = lambda x, y: (round(float(x), 6), round(float(y), 6))
+    seen = {key_of(shot.get("x"), shot.get("y")) for shot in real}
+    out = [shot for shot in real
+           if abs(float(shot.get("x") or 0)) > 1e-9 and abs(float(shot.get("y") or 0)) > 1e-9]
+    cx, cy = float(geometry.get("cx") or 0), float(geometry.get("cy") or 0)
+    touch_tolerance = 0.01
+    for i in range(-nx, nx + 1):
+        for j in range(-ny, ny + 1):
+            x = round(float(anchor["x"]) + i * pitch_x, 6)
+            y = round(float(anchor["y"]) + j * pitch_y, 6)
+            key = key_of(x, y)
+            if key in seen or abs(x) <= 1e-9 or abs(y) <= 1e-9:
+                continue
+            mm_x = (x - cx) * float(geometry["kx"])
+            mm_y = (y - cy) * float(geometry["ky"])
+            dx = max(0.0, abs(mm_x) - shot_w / 2)
+            dy = max(0.0, abs(mm_y) - shot_h / 2)
+            if math.hypot(dx, dy) >= radius - touch_tolerance:
+                continue
+            seen.add(key)
+            out.append({
+                "x": x, "y": y, "synthetic": True,
+                "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
+                "radius": round(math.hypot(mm_x, mm_y), 4),
+            })
+    return out
+
+
+def save_inline_map_table(table_name: str, vehicle: str, shots: list[dict], username: str,
+                          comment: str = "") -> dict:
     """TABLE 이름을 키로 제품별 shot 위치/이름을 원자적으로 upsert 한다."""
     cleaned = _clean_inline_table({
         "table_name": table_name,
         "vehicle": vehicle,
         "shots": shots,
+        "comment": comment,
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "updated_by": username,
     })
@@ -208,13 +378,15 @@ def save_inline_map_table(table_name: str, vehicle: str, shots: list[dict], user
         raise ValueError("TABLE 이름과 제품(vehicle)이 필요합니다")
     if not cleaned["shots"]:
         raise ValueError("이름을 입력한 shot을 1개 이상 선택해 주세요")
+    if not cleaned["comment"]:
+        raise ValueError("저장 comment를 입력해 주세요")
 
     # 화면에 존재하지 않는 좌표를 저장하지 않는다. 이후 ET 좌표 매칭의 기준 데이터이므로
     # 수기 요청이나 오래 열린 브라우저가 잘못된 위치를 밀어 넣는 것을 서버에서 차단한다.
     payload = map_payload(cleaned["vehicle"])
     available = {
         (round(float(s["x"]), 6), round(float(s["y"]), 6))
-        for s in payload.get("shots", [])
+        for s in [*(payload.get("shots") or []), *full_shots_for_payload(payload)]
     }
     invalid = [s for s in cleaned["shots"] if (s["shot_x"], s["shot_y"]) not in available]
     if invalid:
@@ -238,6 +410,13 @@ def delete_inline_map_table(table_name: str) -> dict:
     if not name:
         raise ValueError("TABLE 이름이 필요합니다")
     with _INLINE_MAP_LOCK:
+        references = [row for row in load_inline_shot_matching().get("rows", [])
+                      if row["map_name"].casefold() == name.casefold()]
+        if references:
+            raise ValueError(
+                f"inline_shot_matching.csv에서 {len(references)}개 행이 사용하는 map입니다. "
+                "연결 행을 먼저 삭제해 주세요"
+            )
         current = load_inline_map_settings()
         tables = [t for t in current["tables"] if t["table_name"].casefold() != name.casefold()]
         if len(tables) == len(current["tables"]):
@@ -412,6 +591,60 @@ def _clean_vehicles(raw: Any) -> dict:
     return out
 
 
+def clean_node_path(value: Any) -> str:
+    """`2나노 - 2나노A`, `2나노/2나노A`를 정규화한 상위 노드 경로."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parts = re.split(r"\s*(?:/|>|→|\s+-\s+)\s*", raw)
+    cleaned: list[str] = []
+    for part in parts[:12]:
+        name = re.sub(r"\s+", " ", str(part or "").strip())[:120]
+        if name and name.casefold() not in {item.casefold() for item in cleaned}:
+            cleaned.append(name)
+    return " / ".join(cleaned)[:1000]
+
+
+def _clean_product_nodes(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for vehicle, path in list(raw.items())[:10000]:
+        name = str(vehicle or "").strip()[:200]
+        node_path = clean_node_path(path)
+        if name and node_path:
+            out[name] = node_path
+    return out
+
+
+def _clean_access_values(raw: Any) -> list[str]:
+    values = raw if isinstance(raw, (list, tuple, set)) else str(raw or "").split(",")
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in list(values)[:2000]:
+        text = str(value or "").strip()[:200]
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _clean_node_access(raw: Any) -> dict[str, dict[str, list[str]]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, list[str]]] = {}
+    for root, rule in list(raw.items())[:1000]:
+        root_name = clean_node_path(root).split(" / ")[0] if clean_node_path(root) else ""
+        if not root_name or not isinstance(rule, dict):
+            continue
+        out[root_name] = {
+            "users": _clean_access_values(rule.get("users")),
+            "departments": _clean_access_values(rule.get("departments")),
+        }
+    return out
+
+
 MAX_CHECK_TARGETS = 5000        # vehicle 당 체크 대상 TEG 상한
 
 
@@ -505,6 +738,8 @@ def load_cfg() -> dict:
     out["vehicles"] = _clean_vehicles(cfg.get("vehicles"))
     out["check"] = _clean_check(cfg.get("check"))
     out["check_targets"] = _clean_check_targets(cfg.get("check_targets"))
+    out["product_nodes"] = _clean_product_nodes(cfg.get("product_nodes"))
+    out["node_access"] = _clean_node_access(cfg.get("node_access"))
     return out
 
 
@@ -589,6 +824,22 @@ def save_cfg(patch: dict) -> dict:
                 else:
                     merged[key] = _clean_target_list(names)
             cur["check_targets"] = merged
+        if "product_nodes" in patch:
+            merged = dict(cur.get("product_nodes") or {})
+            incoming = patch["product_nodes"] if isinstance(patch["product_nodes"], dict) else {}
+            for vehicle, node_path in incoming.items():
+                key = str(vehicle or "").strip()[:200]
+                if not key:
+                    continue
+                cleaned = clean_node_path(node_path)
+                if cleaned:
+                    merged[key] = cleaned
+                else:
+                    merged.pop(key, None)
+            cur["product_nodes"] = merged
+        if "node_access" in patch:
+            # 이 설정은 전체 교체다. 행을 지우면 해당 최상위 노드는 다시 공개된다.
+            cur["node_access"] = _clean_node_access(patch["node_access"])
         path = _cfg_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         save_json(path, cur)
@@ -600,6 +851,7 @@ MAIN_RE = re.compile(r"(?<![A-Za-z])MAIN", re.IGNORECASE)   # 이름의 MAIN 판
 
 
 _CHIP_NUM_RE = re.compile(r"^(.*?)(\d+)$")
+MAIN_PURPOSE_WARNINGS = frozenset({"IP", "NO TEG"})
 
 
 def normalize_chip_name(name: str) -> str:
@@ -618,6 +870,37 @@ def normalize_chip_name(name: str) -> str:
     if base.endswith("m"):          # MAIN_M01 → MAIN01 (M = 도면 번호 접두)
         base = base[:-1]
     return f"{base}{int(num)}"
+
+
+def normalize_main_purpose(value: Any) -> str:
+    """Main_chip_info purpose 비교용 정규화 값.
+
+    ``NO_TEG``/``NO-TEG``/여러 공백도 운영자가 의도한 ``NO TEG``로 본다.
+    """
+    return re.sub(r"[\s_-]+", " ", str(value or "").strip().upper())
+
+
+def is_main_purpose_warning(value: Any) -> bool:
+    """TEG가 있으면 안 되는 MAIN purpose인지."""
+    return normalize_main_purpose(value) in MAIN_PURPOSE_WARNINGS
+
+
+def main_purpose_for(vehicle: str, name: str, purposes: dict | None = None) -> str:
+    """MAIN 이름 → purpose. chip_size_for와 같은 이름 매칭 순서를 쓴다."""
+    table = purposes if purposes is not None else load_main_chip_purposes()[0]
+    rows = table.get(str(vehicle or "").strip()) or {}
+    if not rows:
+        return ""
+    key = str(name or "").strip().lower()
+    for chip_name, purpose in rows.items():
+        if str(chip_name).strip().lower() == key:
+            return str(purpose or "").strip()
+    nkey = normalize_chip_name(name)
+    if nkey:
+        for chip_name, purpose in rows.items():
+            if normalize_chip_name(chip_name) == nkey:
+                return str(purpose or "").strip()
+    return str(next(iter(rows.values())) or "").strip() if len(rows) == 1 else ""
 
 
 def chip_size_for(vehicle: str, name: str, chips: dict | None = None) -> tuple[float, float] | None:
@@ -833,8 +1116,402 @@ def _find_col(df, *cands) -> str | None:
     return None
 
 
+def product_info_path() -> Path:
+    """붙여넣기로 등록한 제품 geometry 원본(EDM 단일 CSV)."""
+    return resolve_path(PRODUCT_INFO_FILE_NAME)
+
+
+def _paste_cells(line: str) -> list[str]:
+    """Excel TSV를 우선하고 CSV/공백 정렬 표도 받아 한 행의 셀로 나눈다."""
+    raw = str(line or "").strip()
+    if not raw:
+        return []
+    if "\t" in raw:
+        return [cell.strip() for cell in raw.split("\t")]
+    try:
+        cells = next(csv.reader(io.StringIO(raw), skipinitialspace=True))
+    except Exception:
+        cells = [raw]
+    if len(cells) >= 3:
+        return [cell.strip() for cell in cells]
+    # 화면/메일에서 복사한 공백 정렬 표: 끝의 숫자 두 개만 x/y로 보고 앞은 Item.
+    match = re.match(
+        r"^(.*?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
+        r"\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*$",
+        raw,
+    )
+    return [match.group(1).strip(), match.group(2), match.group(3)] if match else cells
+
+
+def _product_item_key(label: str) -> str | None:
+    """계산에 쓰는 Item을 찾는다. 원문 행 보존은 별도 저장 경로가 담당한다."""
+    text = str(label or "").strip().casefold().replace("μ", "u").replace("µ", "u")
+    text = re.sub(r"\s+", " ", text)
+    compact = re.sub(r"\s+", "", text)
+    # 크기 항목은 현업 표마다 Item/RETICLE/Design 같은 설명과 µ/μ/u 단위가
+    # 붙으므로 단위 표기와 관계없이 핵심 이름 포함 여부로 찾는다.
+    if "chipsize" in compact:
+        return "chip_size"
+    if "s/lsize" in compact or "slsize" in compact:
+        return "sl_size"
+    if "shotsize" in compact:
+        return "shot_size"
+    if compact in {"r/ccount", "rccount", "row/columncount", "rowcolumncount"}:
+        return "rc_count"
+    # 아래 두 값은 비슷한 다른 항목과 섞이지 않도록 지정된 이름만 허용한다.
+    unitless = re.sub(r"\((?:u)?m\)$", "", compact)
+    if unitless == "shot":
+        return "shot"
+    if re.fullmatch(r"mapoffset\(odd\)(?:\((?:u?m|㎛)\))?", compact):
+        return "map_offset_odd"
+    return None
+
+
+def parse_product_info_table(text: str) -> dict[str, float | int]:
+    """Item/x/y 표에서 제품 geometry에 필요한 다섯 쌍을 읽고 검증한다.
+
+    ``Map offset(Odd)`` X/Y는 shot 격자 번호가 아니라 wafer 실 center에서
+    기준 shot center까지의 물리 거리(µm)다. 저장은 원값을 보존하고 geometry를
+    만들 때만 :func:`_product_geometry_values`에서 격자 위상으로 변환한다.
+    """
+    values: dict[str, tuple[float, float]] = {}
+    duplicates: list[str] = []
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        cells = _paste_cells(line)
+        if len(cells) < 3:
+            continue
+        key = _product_item_key(cells[0])
+        if key is None:
+            continue
+        try:
+            x = float(str(cells[-2]).strip().replace(",", ""))
+            y = float(str(cells[-1]).strip().replace(",", ""))
+        except (TypeError, ValueError):
+            raise ValueError(f"{cells[0]}의 x, y가 숫자가 아닙니다")
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError(f"{cells[0]}의 x, y가 유효한 숫자가 아닙니다")
+        if key in values:
+            duplicates.append(str(cells[0]).strip())
+        values[key] = (x, y)
+    if duplicates:
+        raise ValueError("같은 제품 항목이 여러 번 있습니다: " + ", ".join(duplicates[:5]))
+    required = ("chip_size", "sl_size", "shot", "shot_size", "map_offset_odd")
+    missing = [name for name in required if name not in values]
+    if missing:
+        labels = {
+            "chip_size": "Chip Size(um)", "sl_size": "S/L Size(um)",
+            "shot": "Shot", "shot_size": "Shot Size(um)",
+            "map_offset_odd": "Map offset(Odd)",
+        }
+        raise ValueError("필수 Item을 찾지 못했습니다: " + ", ".join(labels[name] for name in missing))
+    for key in ("chip_size", "shot_size"):
+        if values[key][0] <= 0 or values[key][1] <= 0:
+            raise ValueError(f"{key} x, y는 0보다 커야 합니다")
+    if values["sl_size"][0] < 0 or values["sl_size"][1] < 0:
+        raise ValueError("S/L Size x, y는 0 이상이어야 합니다")
+    cols, rows = values["shot"]
+    if cols < 1 or rows < 1 or not cols.is_integer() or not rows.is_integer():
+        raise ValueError("Shot x, y는 1 이상의 정수(칩 격자 개수)여야 합니다")
+    out: dict[str, float | int] = {
+        "chip_size_x_um": values["chip_size"][0],
+        "chip_size_y_um": values["chip_size"][1],
+        "sl_size_x_um": values["sl_size"][0],
+        "sl_size_y_um": values["sl_size"][1],
+        "shot_cols": int(cols), "shot_rows": int(rows),
+        "shot_size_x_um": values["shot_size"][0],
+        "shot_size_y_um": values["shot_size"][1],
+        "map_offset_odd_x": values["map_offset_odd"][0],
+        "map_offset_odd_y": values["map_offset_odd"][1],
+    }
+    if "rc_count" in values:
+        rc_cols, rc_rows = values["rc_count"]
+        if (rc_cols < 1 or rc_rows < 1
+                or not rc_cols.is_integer() or not rc_rows.is_integer()):
+            raise ValueError("R/C Count x, y는 1 이상의 정수(full-shot X/Y 개수)여야 합니다")
+        out["rc_cols"] = int(rc_cols)
+        out["rc_rows"] = int(rc_rows)
+    return out
+
+
+def _product_info_raw_rows(text: str) -> list[dict[str, str]]:
+    """사용자가 붙여넣은 Item/X/Y의 비어 있지 않은 모든 행을 순서대로 보존한다."""
+    rows: list[dict[str, str]] = []
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        cells = _paste_cells(line)
+        if not cells or not any(str(cell or "").strip() for cell in cells):
+            continue
+        cells = [str(cell or "").strip() for cell in cells]
+        if (not rows and len(cells) >= 3
+                and cells[0].casefold() == "item"
+                and cells[1].casefold() == "x" and cells[2].casefold() == "y"):
+            continue
+        cells += [""] * (3 - len(cells))
+        rows.append({"Item": cells[0], "X": cells[1], "Y": cells[2]})
+    return rows
+
+
+def _product_geometry_values(info: dict[str, Any]) -> dict[str, float]:
+    """제품 원값을 WF MAP 내부 geometry 단위로 변환한다.
+
+    Product Info의 Map offset은 µm 물리 좌표이고 화면의 실center 차이와 같은
+    Cartesian 부호다(+X=오른쪽, +Y=위쪽). WF MAP 내부는 정수 shot index와
+    아래쪽이 +인 ``mm_y``를 쓰므로 다음처럼 분수 격자 center로 바꾼다.
+
+      shot(0, 0).mm_x = offset_x_mm
+      shot(0, 0).mm_y = -offset_y_mm
+      cx = -offset_x_mm / shot_w_mm
+      cy =  offset_y_mm / shot_h_mm
+
+    이 변환을 하지 않고 µm 원값을 cx/cy에 직접 넣으면 ``(-1, 16470)`` 같은
+    값이 shot 좌표로 오인된다.
+    """
+    shot_w_mm = float(info["shot_size_x_um"]) / 1000.0
+    shot_h_mm = float(info["shot_size_y_um"]) / 1000.0
+    offset_x_um = float(info["map_offset_odd_x"])
+    offset_y_um = float(info["map_offset_odd_y"])
+    if not all(math.isfinite(value) for value in (
+            shot_w_mm, shot_h_mm, offset_x_um, offset_y_um)):
+        raise ValueError("Shot Size와 Map offset(Odd)은 유효한 숫자여야 합니다")
+    if shot_w_mm <= 0 or shot_h_mm <= 0:
+        raise ValueError("Shot Size x, y는 0보다 커야 합니다")
+    offset_x_mm = offset_x_um / 1000.0
+    offset_y_mm = offset_y_um / 1000.0
+    out = {
+        "shot_w_mm": shot_w_mm,
+        "shot_h_mm": shot_h_mm,
+        "offset_x_um": offset_x_um,
+        "offset_y_um": offset_y_um,
+        "offset_x_mm": offset_x_mm,
+        "offset_y_mm": offset_y_mm,
+        "cx": -offset_x_mm / shot_w_mm,
+        "cy": offset_y_mm / shot_h_mm,
+    }
+    try:
+        rc_cols = int(float(info.get("rc_cols")))
+        rc_rows = int(float(info.get("rc_rows")))
+    except (TypeError, ValueError, OverflowError):
+        rc_cols = rc_rows = 0
+    if rc_cols > 0 and rc_rows > 0:
+        # R/C Count는 full-shot 사각형의 X/Y 개수다. 내부 물리 격자의 위상은
+        # 그대로 두고, 그 사각형의 좌상단을 공개 좌표 (1, 1)로 평행 이동한다.
+        origin_x = math.floor(out["cx"] - (rc_cols - 1) / 2.0)
+        origin_y = math.floor(out["cy"] - (rc_rows - 1) / 2.0)
+        out.update({
+            "rc_cols": rc_cols,
+            "rc_rows": rc_rows,
+            "grid_origin_x": origin_x,
+            "grid_origin_y": origin_y,
+            "display_cx": out["cx"] - origin_x + 1,
+            "display_cy": out["cy"] - origin_y + 1,
+        })
+    return out
+
+
+def _product_shots(info: dict[str, Any], wafer_edge_mm: float) -> list[dict[str, float]]:
+    """명시 geometry로 147 mm edge 안에 *전체가* 들어오는 shot만 만든다.
+
+    Chip_Radius 값은 shot 중심과 wafer 중심 사이 거리다. 포함 여부는 중심점만
+    보지 않고 직사각형 shot의 네 꼭짓점 중 가장 먼 점까지 edge 안인지 검사한다.
+    """
+    terms = _product_geometry_values(info)
+    sx, sy = terms["shot_w_mm"], terms["shot_h_mm"]
+    cx, cy = terms["cx"], terms["cy"]
+    radius = float(wafer_edge_mm)
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError("wafer edge 반경은 0보다 커야 합니다")
+    has_rc_grid = bool(terms.get("rc_cols") and terms.get("rc_rows"))
+    if has_rc_grid:
+        xmin, xmax = 1, int(terms["rc_cols"])
+        ymin, ymax = 1, int(terms["rc_rows"])
+        physical_x = lambda value: int(terms["grid_origin_x"]) + value - 1
+        physical_y = lambda value: int(terms["grid_origin_y"]) + value - 1
+    else:
+        xmin, xmax = math.floor(cx - radius / sx), math.ceil(cx + radius / sx)
+        ymin, ymax = math.floor(cy - radius / sy), math.ceil(cy + radius / sy)
+        physical_x = lambda value: value
+        physical_y = lambda value: value
+    estimate = max(1, xmax - xmin + 1) * max(1, ymax - ymin + 1)
+    if estimate > REFERENCE_MAX_ROWS:
+        raise ValueError(f"Shot Size가 너무 작아 제품 map이 {estimate:,}칸을 넘습니다")
+    rows: list[dict[str, float]] = []
+    for x in range(xmin, xmax + 1):
+        for y in range(ymin, ymax + 1):
+            internal_x, internal_y = physical_x(x), physical_y(y)
+            mm_x = (internal_x - cx) * sx
+            mm_y = (internal_y - cy) * sy
+            # 축별로 중심에서 더 먼 쪽 꼭짓점이 직사각형 네 꼭짓점 중 wafer
+            # 중심에서 가장 멀다. 이 점까지 edge 안이면 full shot 전체가 들어온다.
+            farthest_corner = math.hypot(abs(mm_x) + sx / 2.0,
+                                         abs(mm_y) + sy / 2.0)
+            if farthest_corner <= radius + 1e-10:
+                rows.append({
+                    "x": float(x), "y": float(y),
+                    "r": round(math.hypot(mm_x, mm_y), PRODUCT_RADIUS_DECIMALS),
+                })
+    if not rows:
+        raise ValueError(f"wafer {radius:g}mm 안에 전체가 들어오는 shot이 없습니다")
+    return rows
+
+
+def load_product_info():
+    """제품 추가 원본 CSV → 정규화 DataFrame. 잘못된 행은 제품 단위로 제외한다."""
+    import pandas as pd
+    path = product_info_path()
+    if not path.is_file():
+        return pd.DataFrame(columns=PRODUCT_INFO_COLUMNS), path
+    try:
+        df = _read_table(path)
+    except Exception as exc:
+        logger.warning("TEG product info 읽기 실패 %s: %s", path, exc)
+        return pd.DataFrame(columns=PRODUCT_INFO_COLUMNS), path
+    lookup = {str(c).strip().casefold(): c for c in df.columns}
+    if any(col.casefold() not in lookup for col in PRODUCT_GEOMETRY_COLUMNS):
+        logger.warning("TEG product info 필수 열 누락: %s", list(df.columns))
+        return pd.DataFrame(columns=PRODUCT_INFO_COLUMNS), path
+    out = pd.DataFrame({
+        col: (df[lookup[col.casefold()]] if col.casefold() in lookup else "")
+        for col in PRODUCT_INFO_COLUMNS
+    })
+    out["vehicle"] = out["vehicle"].fillna("").astype(str).str.strip()
+    out["node_path"] = out["node_path"].fillna("").astype(str).map(clean_node_path)
+    for col in (*PRODUCT_GEOMETRY_COLUMNS[1:], "rc_cols", "rc_rows"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=list(PRODUCT_GEOMETRY_COLUMNS)).drop_duplicates("vehicle", keep="last")
+    out = out[out["vehicle"] != ""]
+    return out, path
+
+
+def product_geometry(vehicle: str) -> dict[str, float | str] | None:
+    """등록 제품의 exact geometry. 없으면 호출부가 Chip_Radius fit으로 fallback한다."""
+    info_df, _ = load_product_info()
+    key = str(vehicle or "").strip().casefold()
+    if not key or info_df.empty:
+        return None
+    matched = info_df[info_df["vehicle"].astype(str).str.casefold() == key]
+    if matched.empty:
+        return None
+    info = matched.iloc[-1]
+    terms = _product_geometry_values(info)
+    return {
+        "source": "product_info",
+        "vehicle": str(info["vehicle"]),
+        "cx": terms.get("display_cx", terms["cx"]),
+        "cy": terms.get("display_cy", terms["cy"]),
+        "kx": terms["shot_w_mm"], "ky": terms["shot_h_mm"],
+        "shot_w_mm": terms["shot_w_mm"], "shot_h_mm": terms["shot_h_mm"],
+        "map_offset_odd_x_um": terms["offset_x_um"],
+        "map_offset_odd_y_um": terms["offset_y_um"],
+        "grid_cols": int(terms.get("rc_cols") or 0),
+        "grid_rows": int(terms.get("rc_rows") or 0),
+    }
+
+
+def product_info_payload(vehicle: str) -> dict[str, Any]:
+    """config 변경 창에 채울 현재 Item/X/Y 원본을 반환한다.
+
+    아직 Chip_Radius fit만 쓰는 제품은 ``exists=False``와 빈 행을 반환한다.
+    TEG_Product_Info에 저장된 제품은 원래 단위(크기·offset=µm, Shot=격자 개수)를 그대로 돌려줘
+    화면에서 열자마자 현재 설정을 확인하고 수정할 수 있게 한다.
+    """
+    requested = str(vehicle or "").strip()
+    if not requested:
+        raise ValueError("vehicle을 입력해 주세요")
+    info_df, path = load_product_info()
+    matched = (info_df[
+        info_df["vehicle"].astype(str).str.strip().str.casefold() == requested.casefold()
+    ] if not info_df.empty else info_df)
+    if matched.empty:
+        catalog_row = next((row for row in product_catalog()
+                            if row["vehicle"].casefold() == requested.casefold()), None)
+        node_path = "" if not catalog_row or catalog_row["node_path"] == "미분류" else catalog_row["node_path"]
+        return {
+            "ok": True, "vehicle": requested, "exists": False,
+            "values": {}, "rows": [], "node_path": node_path, "path": str(path),
+        }
+    row = matched.iloc[-1]
+    def display_number(value: Any) -> int | float:
+        number = float(value)
+        return int(number) if number.is_integer() else number
+    values = {
+        "chip_size_x_um": display_number(row["chip_size_x_um"]),
+        "chip_size_y_um": display_number(row["chip_size_y_um"]),
+        "sl_size_x_um": display_number(row["sl_size_x_um"]),
+        "sl_size_y_um": display_number(row["sl_size_y_um"]),
+        "shot_cols": int(row["shot_cols"]),
+        "shot_rows": int(row["shot_rows"]),
+        "shot_size_x_um": display_number(row["shot_size_x_um"]),
+        "shot_size_y_um": display_number(row["shot_size_y_um"]),
+        "map_offset_odd_x": display_number(row["map_offset_odd_x"]),
+        "map_offset_odd_y": display_number(row["map_offset_odd_y"]),
+    }
+    if row.get("rc_cols") == row.get("rc_cols") and row.get("rc_rows") == row.get("rc_rows"):
+        values["rc_cols"] = int(row["rc_cols"])
+        values["rc_rows"] = int(row["rc_rows"])
+    rows: list[dict[str, Any]] = []
+    raw_json = str(row.get("raw_config_json") or "").strip()
+    if raw_json and raw_json.casefold() != "nan":
+        try:
+            loaded_rows = json.loads(raw_json)
+            if isinstance(loaded_rows, list):
+                rows = [
+                    {"Item": str(item.get("Item") or ""),
+                     "X": str(item.get("X") or ""), "Y": str(item.get("Y") or "")}
+                    for item in loaded_rows if isinstance(item, dict)
+                ]
+        except (TypeError, ValueError):
+            rows = []
+    if not rows:
+        rows = [
+        {"Item": "Chip Size(um)", "X": values["chip_size_x_um"], "Y": values["chip_size_y_um"]},
+        {"Item": "S/L Size(um)", "X": values["sl_size_x_um"], "Y": values["sl_size_y_um"]},
+        {"Item": "Shot", "X": values["shot_cols"], "Y": values["shot_rows"]},
+        {"Item": "Shot Size(um)", "X": values["shot_size_x_um"], "Y": values["shot_size_y_um"]},
+        {"Item": "Map offset(Odd)(um)", "X": values["map_offset_odd_x"], "Y": values["map_offset_odd_y"]},
+        ]
+        if values.get("rc_cols") and values.get("rc_rows"):
+            rows.append({"Item": "R/C Count", "X": values["rc_cols"], "Y": values["rc_rows"]})
+    return {
+        "ok": True, "vehicle": str(row["vehicle"]), "exists": True,
+        "values": values, "rows": rows, "node_path": clean_node_path(row.get("node_path")),
+        "path": str(path),
+    }
+
+
+def _generated_product_layout(cfg: dict):
+    """TEG_Product_Info 제품을 직접 geometry로 펼친 primary layout."""
+    import pandas as pd
+    info_df, path = load_product_info()
+    frames = []
+    for _, info in info_df.iterrows():
+        try:
+            shots = _product_shots(
+                info.to_dict(), float(cfg.get("wafer_edge_mm", DEFAULT_CFG["wafer_edge_mm"]))
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning("TEG product geometry 제외 vehicle=%s: %s", info.get("vehicle"), exc)
+            continue
+        frame = pd.DataFrame(shots)
+        frame["vehicle"] = str(info["vehicle"])
+        frame["layout_source"] = "product_info"
+        terms = _product_geometry_values(info)
+        frame["defined_cx"] = terms.get("display_cx", terms["cx"])
+        frame["defined_cy"] = terms.get("display_cy", terms["cy"])
+        frame["defined_kx"] = terms["shot_w_mm"]
+        frame["defined_ky"] = terms["shot_h_mm"]
+        frame["defined_grid_cols"] = int(terms.get("rc_cols") or 0)
+        frame["defined_grid_rows"] = int(terms.get("rc_rows") or 0)
+        frame["defined_offset_x_um"] = terms["offset_x_um"]
+        frame["defined_offset_y_um"] = terms["offset_y_um"]
+        frames.append(frame)
+    return (pd.concat(frames, ignore_index=True) if frames else
+            pd.DataFrame(columns=("vehicle", "x", "y", "r", "layout_source",
+                                  "defined_cx", "defined_cy", "defined_kx", "defined_ky",
+                                  "defined_grid_cols", "defined_grid_rows",
+                                  "defined_offset_x_um", "defined_offset_y_um"))), path
+
+
 def load_layout():
-    """chip layout 파일 → (DataFrame[vehicle,x,y,r], 경로). 없으면 (None, 경로)."""
+    """제품 정의를 primary로, Chip_Radius 계열 파일을 fallback으로 합친 layout."""
     import pandas as pd
     cfg = load_cfg()
     configured = resolve_path(cfg["layout_file"])
@@ -858,6 +1535,8 @@ def load_layout():
     except OSError:
         pass
 
+    fallback = None
+    fallback_path = configured
     for path in candidates:
         if not path.is_file():
             continue
@@ -884,8 +1563,18 @@ def load_layout():
             if path != configured:
                 logger.warning("configured chip layout unavailable; fallback selected: %s → %s",
                                configured, path)
-            return out, path
-    return None, configured
+            out["layout_source"] = "chip_radius"
+            fallback, fallback_path = out, path
+            break
+
+    primary, primary_path = _generated_product_layout(cfg)
+    if not primary.empty:
+        primary_names = {str(v).casefold() for v in primary["vehicle"].dropna().tolist()}
+        if fallback is not None:
+            fallback = fallback[~fallback["vehicle"].astype(str).str.casefold().isin(primary_names)]
+            primary = pd.concat([primary, fallback], ignore_index=True, sort=False)
+        return primary, fallback_path if fallback_path.is_file() else primary_path
+    return (fallback, fallback_path) if fallback is not None else (None, configured)
 
 
 def load_main_chips():
@@ -924,6 +1613,35 @@ def load_main_chips():
         if w <= 0 or h <= 0 or not (math.isfinite(w) and math.isfinite(h)):
             continue
         out.setdefault(veh, {})[name] = (w, h)
+    return out, path
+
+
+def load_main_chip_purposes():
+    """MAIN purpose 표 → ({vehicle: {chip_name: purpose}}, 경로).
+
+    ``purpose``는 선택 열이다. 기존 파일처럼 열이 없으면 빈 표를 돌려 기존 판정에
+    영향을 주지 않는다. IP/NO TEG 해석은 is_main_purpose_warning에서 담당한다.
+    """
+    cfg = load_cfg()
+    path = resolve_path(cfg["main_chip_file"])
+    if not path.is_file():
+        return {}, path
+    try:
+        df = _read_table(path)
+    except Exception as e:
+        logger.warning(f"MAIN chip purpose 파일 읽기 실패 {path}: {e}")
+        return {}, path
+    vc = _find_col(df, "vehicle", "mask")
+    nc = _find_col(df, "chip_name", "chipname", "chip", "main")
+    pc = _find_col(df, "purpose")
+    if not (vc and nc and pc):
+        return {}, path
+    out: dict[str, dict[str, str]] = {}
+    for veh, name, purpose in zip(df[vc].fillna("").astype(str).str.strip(),
+                                  df[nc].fillna("").astype(str).str.strip(),
+                                  df[pc].fillna("").astype(str).str.strip()):
+        if veh and name:
+            out.setdefault(veh, {})[name] = purpose
     return out, path
 
 
@@ -1266,6 +1984,242 @@ def vehicles() -> list[str]:
     return sorted(lay["vehicle"].dropna().unique().tolist())
 
 
+def _catalog_column(columns: list[str], *candidates: str) -> str | None:
+    """Column lookup for the lightweight product catalog path (no pandas import)."""
+    lookup = {str(column).strip().casefold(): str(column) for column in columns}
+    for candidate in candidates:
+        if candidate.casefold() in lookup:
+            return lookup[candidate.casefold()]
+    for candidate in candidates:
+        needle = candidate.casefold()
+        for normalized, original in lookup.items():
+            if needle in normalized:
+                return original
+    return None
+
+
+def _catalog_layout_vehicles(path: Path) -> list[str] | None:
+    """Read only the product keys needed by the selector.
+
+    The old selector called ``load_layout()``, which imports pandas and expands
+    every product into its full shot geometry before returning a few names.
+    CSV is the normal operational format, so keep that hot path in the standard
+    library. Parquet/Excel remain supported through the existing reader.
+    """
+    if not path.is_file():
+        return None
+    if path.suffix.casefold() == ".csv":
+        try:
+            with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+                reader = csv.DictReader(stream)
+                columns = [str(column) for column in (reader.fieldnames or [])]
+                vehicle_col = _catalog_column(columns, "mask", "vehicle")
+                x_col = _catalog_column(columns, "chip_x_adj", "chip_x")
+                y_col = _catalog_column(columns, "chip_y_adj", "chip_y")
+                if not (vehicle_col and x_col and y_col):
+                    return None
+                rows: dict[str, str] = {}
+                for row in reader:
+                    vehicle = str(row.get(vehicle_col) or "").strip()
+                    try:
+                        x = float(str(row.get(x_col) or "").strip())
+                        y = float(str(row.get(y_col) or "").strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if vehicle and math.isfinite(x) and math.isfinite(y):
+                        rows.setdefault(vehicle.casefold(), vehicle)
+                return list(rows.values()) or None
+        except OSError:
+            return None
+
+    try:
+        frame = _read_table(path)
+    except Exception as exc:
+        logger.warning("TEG 제품 목록 파일 읽기 실패 %s: %s", path, exc)
+        return None
+    vehicle_col = _find_col(frame, "mask", "vehicle")
+    x_col = _find_col(frame, "chip_x_adj", "chip_x")
+    y_col = _find_col(frame, "chip_y_adj", "chip_y")
+    if not (vehicle_col and x_col and y_col):
+        return None
+    import pandas as pd
+    valid = pd.to_numeric(frame[x_col], errors="coerce").notna() & pd.to_numeric(frame[y_col], errors="coerce").notna()
+    names = frame.loc[valid, vehicle_col].fillna("").astype(str).str.strip()
+    return list(dict.fromkeys(name for name in names if name)) or None
+
+
+def _catalog_product_info(cfg: dict) -> dict[str, dict[str, str]]:
+    """Return renderable Product Info rows keyed by case-folded vehicle."""
+    path = product_info_path()
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+            reader = csv.DictReader(stream)
+            columns = [str(column) for column in (reader.fieldnames or [])]
+            lookup = {column.casefold(): column for column in columns}
+            if any(column.casefold() not in lookup for column in PRODUCT_GEOMETRY_COLUMNS):
+                return {}
+            out: dict[str, dict[str, str]] = {}
+            radius = float(cfg.get("wafer_edge_mm", DEFAULT_CFG["wafer_edge_mm"]))
+            for row in reader:
+                vehicle = str(row.get(lookup["vehicle"]) or "").strip()
+                if not vehicle:
+                    continue
+                try:
+                    values = {
+                        column: float(str(row.get(lookup[column.casefold()]) or "").strip())
+                        for column in PRODUCT_GEOMETRY_COLUMNS[1:]
+                    }
+                except (TypeError, ValueError):
+                    continue
+                if not all(math.isfinite(value) for value in values.values()):
+                    continue
+                try:
+                    terms = _product_geometry_values(values)
+                except ValueError:
+                    continue
+                shot_x = terms["shot_w_mm"]
+                shot_y = terms["shot_h_mm"]
+                if radius <= 0 or shot_x <= 0 or shot_y <= 0:
+                    continue
+                # Nearest integer shot centre is also the best possible full-shot
+                # fit. Reject the same impossible products that load_layout omits.
+                cx = terms["cx"]
+                cy = terms["cy"]
+                nearest_x = round(cx)
+                nearest_y = round(cy)
+                farthest_corner = math.hypot(
+                    abs((nearest_x - cx) * shot_x) + shot_x / 2.0,
+                    abs((nearest_y - cy) * shot_y) + shot_y / 2.0,
+                )
+                estimate = (
+                    math.ceil(cx + radius / shot_x) - math.floor(cx - radius / shot_x) + 1
+                ) * (
+                    math.ceil(cy + radius / shot_y) - math.floor(cy - radius / shot_y) + 1
+                )
+                if estimate > REFERENCE_MAX_ROWS or farthest_corner > radius + 1e-10:
+                    continue
+                node_col = lookup.get("node_path")
+                out[vehicle.casefold()] = {
+                    "vehicle": vehicle,
+                    "node_path": clean_node_path(row.get(node_col) if node_col else ""),
+                }
+            return out
+    except OSError as exc:
+        logger.warning("TEG Product Info 목록 읽기 실패 %s: %s", path, exc)
+        return {}
+
+
+def _catalog_fallback_vehicles(cfg: dict) -> list[str]:
+    """Find the first usable layout source without expanding shot geometry."""
+    candidates: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    add(resolve_path(cfg["layout_file"]))
+    add(resolve_path(DEFAULT_CFG["layout_file"]))
+    for path in candidates:
+        names = _catalog_layout_vehicles(path)
+        if names:
+            return names
+
+    # Preserve the legacy soft-landing search, but only pay for a DB-root scan
+    # when both the configured and standard files are unusable.
+    try:
+        for path in sorted(roots.get_db_root().iterdir()):
+            name = path.name.casefold()
+            if (path.is_file() and path.suffix.casefold() in (".csv", ".parquet", ".xlsx", ".xls")
+                    and (("chip" in name and "radius" in name)
+                         or ("chip" in name and "layout" in name))):
+                add(path)
+    except OSError:
+        return []
+    for path in candidates[2:]:
+        names = _catalog_layout_vehicles(path)
+        if names:
+            return names
+    return []
+
+
+def product_catalog() -> list[dict[str, str]]:
+    """모든 제품의 노드 경로. 목록 조회에서는 전체 shot geometry를 만들지 않는다."""
+    cfg = load_cfg()
+    configured = {str(k).casefold(): clean_node_path(v)
+                  for k, v in (cfg.get("product_nodes") or {}).items()}
+    product_info = _catalog_product_info(cfg)
+    names = {str(vehicle).casefold(): str(vehicle) for vehicle in _catalog_fallback_vehicles(cfg)}
+    # Product Info is primary in load_layout too, including its original casing.
+    names.update({key: row["vehicle"] for key, row in product_info.items()})
+    rows = []
+    for key, vehicle in names.items():
+        node_path = configured.get(key) or product_info.get(key, {}).get("node_path") or "미분류"
+        root_node = node_path.split(" / ", 1)[0]
+        rows.append({
+            "vehicle": str(vehicle),
+            "node_path": node_path,
+            "root_node": root_node,
+            "full_path": f"{node_path} / {vehicle}",
+        })
+    return sorted(rows, key=lambda row: (row["node_path"].casefold(), row["vehicle"].casefold()))
+
+
+def user_departments(user: dict | None) -> list[str]:
+    """현재/향후 SSO 세션의 부서 claim을 권한 비교용 문자열 목록으로 정리."""
+    user = user if isinstance(user, dict) else {}
+    claims = user.get("claims") if isinstance(user.get("claims"), dict) else {}
+    values: list[Any] = []
+    for source in (user, claims):
+        for key in ("department", "departments", "dept", "department_name", "org", "org_name"):
+            value = source.get(key)
+            if isinstance(value, (list, tuple, set)):
+                values.extend(value)
+            elif value not in (None, ""):
+                values.extend(str(value).split(","))
+    return _clean_access_values(values)
+
+
+def can_access_root_node(user: dict | None, root_node: str, rules: dict | None = None) -> bool:
+    user = user if isinstance(user, dict) else {}
+    if user.get("role") == "admin":
+        return True
+    rules = rules if isinstance(rules, dict) else (load_cfg().get("node_access") or {})
+    rule = next((value for root, value in rules.items()
+                 if str(root).casefold() == str(root_node or "").strip().casefold()), None)
+    if rule is None:
+        return True
+    username = str(user.get("username") or "").strip().casefold()
+    allowed_users = {str(value).casefold() for value in rule.get("users") or []}
+    allowed_departments = {str(value).casefold() for value in rule.get("departments") or []}
+    departments = {value.casefold() for value in user_departments(user)}
+    return bool((username and username in allowed_users) or departments.intersection(allowed_departments))
+
+
+def can_access_node_path(user: dict | None, node_path: str) -> bool:
+    cleaned = clean_node_path(node_path)
+    return bool(cleaned and can_access_root_node(user, cleaned.split(" / ", 1)[0]))
+
+
+def _can_access_catalog_row(user: dict, row: dict[str, str], rules: dict) -> bool:
+    return can_access_root_node(user, row["root_node"], rules)
+
+
+def can_access_product(user: dict | None, vehicle: str) -> bool:
+    """admin 전체 허용, 규칙 없는 대분류 공개, 규칙이 있으면 사용자/부서 일치."""
+    user = user if isinstance(user, dict) else {}
+    row = next((item for item in product_catalog()
+                if item["vehicle"].casefold() == str(vehicle or "").strip().casefold()), None)
+    return bool(row and _can_access_catalog_row(user, row, load_cfg().get("node_access") or {}))
+
+
+def visible_product_catalog(user: dict | None) -> list[dict[str, str]]:
+    user = user if isinstance(user, dict) else {}
+    rules = load_cfg().get("node_access") or {}
+    return [row for row in product_catalog() if _can_access_catalog_row(user, row, rules)]
+
+
 def map_payload(vehicle: str) -> dict:
     """vehicle 의 WF MAP 전체 payload — geometry + shot 목록 + TEG 목록 + 표시 설정."""
     cfg = load_cfg()
@@ -1282,10 +2236,28 @@ def map_payload(vehicle: str) -> dict:
     ys = grp["y"].tolist()
     rs = grp["r"].tolist()
 
-    geo, fit_diag = fit_geometry_diagnosed(xs, ys, rs)
+    source = str(sub["layout_source"].iloc[0]) if "layout_source" in sub.columns else "chip_radius"
+    if source == "product_info":
+        first = sub.iloc[0]
+        geo = {
+            "cx": float(first["defined_cx"]), "cy": float(first["defined_cy"]),
+            "kx": float(first["defined_kx"]), "ky": float(first["defined_ky"]),
+            "map_offset_odd_x_um": float(first["defined_offset_x_um"]),
+            "map_offset_odd_y_um": float(first["defined_offset_y_um"]),
+            "grid_cols": int(first.get("defined_grid_cols") or 0),
+            "grid_rows": int(first.get("defined_grid_rows") or 0),
+        }
+        fit_diag = {
+            "used": len(grp), "dropped": [], "max_residual_mm": 0.0,
+            "note": "제품 추가 정보(Shot Size / Map offset(Odd)) 직접 계산",
+        }
+    else:
+        geo, fit_diag = fit_geometry_diagnosed(xs, ys, rs)
     pitch_x = _grid_pitch(xs)
     pitch_y = _grid_pitch(ys)
 
+    exact_geometry = source == "product_info"
+    output_decimals = PRODUCT_RADIUS_DECIMALS if exact_geometry else 4
     shots = []
     for x, y, r in zip(xs, ys, rs):
         s: dict[str, Any] = {"x": x, "y": y}
@@ -1294,9 +2266,9 @@ def map_payload(vehicle: str) -> dict:
         if geo:
             mmx = (x - geo["cx"]) * geo["kx"]
             mmy = (y - geo["cy"]) * geo["ky"]
-            s["mm_x"] = round(mmx, 4)
-            s["mm_y"] = round(mmy, 4)
-            s["radius"] = round(math.hypot(mmx, mmy), 4)
+            s["mm_x"] = round(mmx, output_decimals)
+            s["mm_y"] = round(mmy, output_decimals)
+            s["radius"] = round(math.hypot(mmx, mmy), output_decimals)
         shots.append(s)
 
     tegs = []
@@ -1372,10 +2344,21 @@ def map_payload(vehicle: str) -> dict:
         "vehicle": veh,
         "geometry": {
             "fit": "radius" if geo else "none",
-            **({"cx": round(geo["cx"], 6), "cy": round(geo["cy"], 6),
-                "kx": round(geo["kx"], 6), "ky": round(geo["ky"], 6),
-                "shot_w_mm": round(pitch_x * geo["kx"], 4),
-                "shot_h_mm": round(pitch_y * geo["ky"], 4)} if geo else {}),
+            **({"cx": round(geo["cx"], PRODUCT_RADIUS_DECIMALS if exact_geometry else 6),
+                "cy": round(geo["cy"], PRODUCT_RADIUS_DECIMALS if exact_geometry else 6),
+                "kx": round(geo["kx"], PRODUCT_RADIUS_DECIMALS if exact_geometry else 6),
+                "ky": round(geo["ky"], PRODUCT_RADIUS_DECIMALS if exact_geometry else 6),
+                # product_info의 kx/ky 자체가 붙여넣은 Shot Size다. 격자 pitch를
+                # 다시 곱하거나 Chip_Radius를 fit하지 않고 원본값을 그대로 쓴다.
+                "shot_w_mm": round(geo["kx"] if exact_geometry else pitch_x * geo["kx"],
+                                     PRODUCT_RADIUS_DECIMALS if exact_geometry else 4),
+                "shot_h_mm": round(geo["ky"] if exact_geometry else pitch_y * geo["ky"],
+                                     PRODUCT_RADIUS_DECIMALS if exact_geometry else 4),
+                **({"map_offset_odd_x_um": round(geo["map_offset_odd_x_um"], PRODUCT_RADIUS_DECIMALS),
+                    "map_offset_odd_y_um": round(geo["map_offset_odd_y_um"], PRODUCT_RADIUS_DECIMALS),
+                    "grid_cols": int(geo.get("grid_cols") or 0),
+                    "grid_rows": int(geo.get("grid_rows") or 0)}
+                   if exact_geometry else {})} if geo else {}),
             "pitch_x": pitch_x,
             "pitch_y": pitch_y,
             "wafer_radius_mm": float(cfg["wafer_radius_mm"]),
@@ -1389,6 +2372,7 @@ def map_payload(vehicle: str) -> dict:
         "shots": shots,
         "tegs": tegs,
         "display": {**vcfg, "has_image": has_image},
+        "layout_source": source,
         "coordinate_model": {
             "normalised_frame": "Horizontal; PCHK and target TEG share one origin convention",
             "shape_policy": "teg_w/teg_h affect rectangles and overlap only; shape position differences use product ΔX/ΔY",
@@ -1416,6 +2400,7 @@ def teg_radius_table(vehicle: str, teg: str) -> dict:
     t = tsel[0]
     if payload["geometry"]["fit"] != "radius":
         raise ValueError("Chip_Radius fit 불가 — 실좌표(mm)를 계산할 수 없습니다")
+    decimals = PRODUCT_RADIUS_DECIMALS if payload.get("layout_source") == "product_info" else 4
     rows = []
     for s in payload["shots"]:
         ax = s["mm_x"] + t["ebeam_x"]
@@ -1423,8 +2408,8 @@ def teg_radius_table(vehicle: str, teg: str) -> dict:
         ay = -s["mm_y"] + t["ebeam_y"]
         rows.append({
             "shot_x": s["x"], "shot_y": s["y"],
-            "abs_x": round(ax, 4), "abs_y": round(ay, 4),
-            "radius": round(math.hypot(ax, ay), 4),
+            "abs_x": round(ax, decimals), "abs_y": round(ay, decimals),
+            "radius": round(math.hypot(ax, ay), decimals),
         })
     rows.sort(key=lambda r: r["radius"])
     return {"ok": True, "vehicle": payload["vehicle"], "teg": t["teg"],
@@ -1556,6 +2541,26 @@ def _validate_reference_rows(kind: str, columns: list[str], rows: list[list[str]
         raise ValueError("기준 파일 검증 실패: " + "; ".join(errors))
 
 
+def _snapshot_edm_file(path: Path, username: str, note: str,
+                       backup: Path | None = None) -> dict | None:
+    """FileBrowser와 같은 EDM 단일파일 버전 저장소에 변경본을 남긴다."""
+    try:
+        from routers import filebrowser as _fb
+        relative = path.resolve().relative_to(roots.get_db_root().resolve()).as_posix()
+        meta = _fb._snapshot_base_file_version(
+            path, relative, actor=str(username or ""), action="edit",
+            note=str(note or "TEG product edit"),
+            diff_previous=backup if backup and backup.is_file() else None,
+        )
+        if meta:
+            _fb._archive_base_file_every_n_edits(path, meta)
+        return meta
+    except Exception as exc:
+        # 원본 저장 성공을 EDM 보조 이력 문제로 되돌리지는 않되 운영 로그에는 남긴다.
+        logger.warning("TEG EDM version snapshot skipped file=%s: %s", path, exc)
+        return None
+
+
 def save_reference_file(kind: str, columns: list[str], rows: list[list[Any]], username: str,
                         note: str = "", expected_modified_ns: int | None = None) -> dict:
     key = str(kind or "").strip().lower()
@@ -1599,9 +2604,529 @@ def save_reference_file(kind: str, columns: list[str], rows: list[list[Any]], us
                 temp.unlink()
         except OSError:
             pass
+    version = _snapshot_edm_file(path, username, note, backup)
     logger.info("TEG reference saved kind=%s rows=%d actor=%s note=%s", key, len(frame), username, note)
     return {"ok": True, "kind": key, "path": str(path), "rows": len(frame), "cols": len(cols),
-            "backup": str(backup) if backup else ""}
+            "backup": str(backup) if backup else "", "version": version}
+
+
+def product_info_preview(text: str) -> dict:
+    info = parse_product_info_table(text)
+    edge = float(load_cfg()["wafer_edge_mm"])
+    shots = _product_shots(info, edge)
+    one_by_one = info["shot_cols"] == 1 and info["shot_rows"] == 1
+    return {
+        "ok": True, "values": info, "shot_count": len(shots),
+        "wafer_edge_mm": edge, "radius_decimals": PRODUCT_RADIUS_DECIMALS,
+        "one_by_one": one_by_one,
+        "display": {
+            "mode": "none" if one_by_one else "grid",
+            "cols": info["shot_cols"], "rows": info["shot_rows"],
+            "chip_w": info["chip_size_x_um"] / 1000.0,
+            "chip_h": info["chip_size_y_um"] / 1000.0,
+            "gap_x": info["sl_size_x_um"] / 1000.0,
+            "gap_y": info["sl_size_y_um"] / 1000.0,
+        },
+    }
+
+
+def _append_frame_rows(kind: str, additions: list[dict[str, Any]], username: str,
+                       note: str, replace_vehicle: str = "") -> dict:
+    """기존 열 순서를 보존하고 기준 CSV에 행을 추가한다.
+
+    ``replace_vehicle``가 있으면 그 제품의 기존 행을 먼저 제거한다. 기존
+    Chip_Radius 기반 제품을 명시 geometry로 전환할 때 낡은 radius 행과 새 행이
+    섞이지 않게 하는 원자적 제품 단위 교체 경로다.
+    """
+    import pandas as pd
+    path = reference_file_path(kind)
+    if path.is_file():
+        frame = _read_table(path)
+        columns = [str(c) for c in frame.columns]
+    else:
+        columns = (["vehicle", "teg", "top_cell", "direction", "ebeam_x", "ebeam_y", "teg_w", "teg_h"]
+                   if kind == "teg_location" else
+                   ["vehicle", "chip_name", "chipsize_x", "chipsize_y", "purpose"]
+                   if kind == "main_chip_info" else
+                   ["Mask", "chip_x_adj", "chip_y_adj", "Chip_Radius"])
+        frame = pd.DataFrame(columns=columns)
+
+    def exact(*names: str) -> str | None:
+        lookup = {str(c).strip().casefold(): str(c) for c in columns}
+        return next((lookup[name.casefold()] for name in names if name.casefold() in lookup), None)
+
+    if kind == "teg_location":
+        optional = (("top_cell", ("top_cell", "topcell")),
+                    ("direction", ("direction", "flat_zone", "flatzone", "flat")),
+                    ("teg_w", ("teg_w",)), ("teg_h", ("teg_h",)))
+        for canonical, aliases in optional:
+            if exact(*aliases) is None:
+                columns.append(canonical)
+                frame[canonical] = ""
+    rows: list[dict[str, Any]] = []
+    for addition in additions:
+        row = {column: "" for column in columns}
+        for key, value in addition.items():
+            aliases = {
+                "vehicle": ("vehicle", "mask"), "teg": ("teg",),
+                "top_cell": ("top_cell", "topcell"),
+                "direction": ("direction", "flat_zone", "flatzone", "flat"),
+                "ebeam_x": ("ebeam_x",), "ebeam_y": ("ebeam_y",),
+                "teg_w": ("teg_w",), "teg_h": ("teg_h",),
+                "chip_name": ("chip_name",), "chipsize_x": ("chipsize_x",),
+                "chipsize_y": ("chipsize_y",), "purpose": ("purpose",),
+                "chip_x_adj": ("chip_x_adj", "chip_x"),
+                "chip_y_adj": ("chip_y_adj", "chip_y"),
+                "chip_radius": ("chip_radius", "radius"),
+            }.get(key, (key,))
+            target = exact(*aliases)
+            if target is not None:
+                row[target] = value
+        rows.append(row)
+    if replace_vehicle:
+        vehicle_column = exact("vehicle", "mask")
+        if vehicle_column is None:
+            raise ValueError(f"{kind} 파일에 vehicle/Mask 열이 없습니다")
+        vehicle_key = str(replace_vehicle).strip().casefold()
+        frame = frame[
+            frame[vehicle_column].fillna("").astype(str).str.strip().str.casefold() != vehicle_key
+        ]
+    combined = pd.concat([frame.reindex(columns=columns), pd.DataFrame(rows, columns=columns)],
+                         ignore_index=True)
+    serialised = [["" if pd.isna(value) else str(value) for value in row]
+                  for row in combined.itertuples(index=False, name=None)]
+    return save_reference_file(kind, columns, serialised, username, note)
+
+
+def _save_product_info_row(vehicle: str, info: dict[str, Any], node_path: str,
+                           username: str, note: str, replace_vehicle: str = "",
+                           raw_text: str = "") -> dict:
+    import pandas as pd
+    path = product_info_path()
+    current, _ = load_product_info()
+    def number_text(value: Any) -> str:
+        number = float(value)
+        return str(int(number)) if number.is_integer() else format(number, ".15g")
+    def optional_number_text(key: str) -> str:
+        try:
+            number = float(info.get(key))
+        except (TypeError, ValueError):
+            return ""
+        return number_text(number) if math.isfinite(number) and number > 0 else ""
+    raw_config_json = ""
+    if raw_text:
+        raw_config_json = json.dumps(
+            _product_info_raw_rows(raw_text), ensure_ascii=False, separators=(",", ":"),
+        )
+    else:
+        stored_raw = str(info.get("raw_config_json") or "").strip()
+        if stored_raw.casefold() != "nan":
+            raw_config_json = stored_raw
+    row = {"vehicle": vehicle,
+           **{key: number_text(info[key]) for key in PRODUCT_GEOMETRY_COLUMNS[1:]},
+           "rc_cols": optional_number_text("rc_cols"),
+           "rc_rows": optional_number_text("rc_rows"),
+           "raw_config_json": raw_config_json,
+           "node_path": clean_node_path(node_path)}
+    addition = pd.DataFrame([row], columns=PRODUCT_INFO_COLUMNS)
+    if not current.empty:
+        vehicle_keys = {
+            str(value).strip().casefold()
+            for value in (vehicle, replace_vehicle)
+            if str(value or "").strip()
+        }
+        current = current[
+            ~current["vehicle"].fillna("").astype(str).str.strip().str.casefold().isin(vehicle_keys)
+        ]
+    frame = (addition if current.empty else
+             pd.concat([current.reindex(columns=PRODUCT_INFO_COLUMNS), addition], ignore_index=True))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = None
+    if path.is_file():
+        history = teg_dir() / "reference_versions" / "product_info"
+        history.mkdir(parents=True, exist_ok=True)
+        backup = history / f"{stamp}_{path.name}"
+        shutil.copy2(path, backup)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp.csv")
+    try:
+        frame.to_csv(temp, index=False, encoding="utf-8-sig", lineterminator="\n")
+        os.replace(temp, path)
+    finally:
+        try:
+            if temp.exists():
+                temp.unlink()
+        except OSError:
+            pass
+    version = _snapshot_edm_file(path, username, note, backup)
+    return {"path": str(path), "rows": len(frame), "backup": str(backup) if backup else "",
+            "version": version}
+
+
+def _casefold_mapping_key(mapping: dict, vehicle: str) -> str | None:
+    target = str(vehicle or "").strip().casefold()
+    return next((str(key) for key in mapping if str(key).strip().casefold() == target), None)
+
+
+def _restore_file_bytes(path: Path, content: bytes | None) -> None:
+    """제품 식별자 다중 파일 갱신 실패 시 호출하는 원본 복구 경로."""
+    if content is None:
+        try:
+            path.unlink(missing_ok=True)
+        except TypeError:  # Python 3.7 호환 배포 환경
+            if path.exists():
+                path.unlink()
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.rollback")
+    try:
+        with open(temp, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            if temp.exists():
+                temp.unlink()
+        except OSError:
+            pass
+
+
+def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
+                            username: str) -> dict:
+    """제품명/분류를 모든 TEG 기준 파일과 제품별 설정에 함께 반영한다.
+
+    vehicle은 여러 CSV와 JSON의 조인 키다. 한 파일만 바꾸면 위치 조회나 Mapfile
+    체크가 조용히 끊기므로, 먼저 전체 변경본과 충돌을 검증한 뒤 저장한다. 저장 중
+    하나라도 실패하면 이 호출이 건드린 파일은 호출 전 bytes로 복구한다.
+    """
+    requested = str(current_vehicle or "").strip()
+    new_vehicle = str(vehicle or "").strip()[:200]
+    clean_path = clean_node_path(node_path)
+    if not requested:
+        raise ValueError("변경할 제품명이 비어 있습니다")
+    if not new_vehicle:
+        raise ValueError("제품명을 입력해 주세요")
+    if not clean_path:
+        raise ValueError("제품 분류를 입력해 주세요 (예: 2나노 / 2나노A)")
+
+    catalog = product_catalog()
+    current = next((row for row in catalog
+                    if row["vehicle"].casefold() == requested.casefold()), None)
+    if current is None:
+        raise ValueError(f"등록된 제품이 아닙니다: {requested}")
+    old_vehicle = str(current["vehicle"]).strip()
+    rename = old_vehicle != new_vehicle
+    if rename and any(row is not current and row["vehicle"].casefold() == new_vehicle.casefold()
+                      for row in catalog):
+        raise ValueError(f"이미 등록된 제품명입니다: {new_vehicle}")
+
+    # 모든 기준 파일을 먼저 읽어 변경 위치와 새 이름 충돌을 검증한다. 검증이 끝나기
+    # 전에는 디스크를 건드리지 않는다.
+    reference_updates: list[tuple[str, dict, list[list[str]], int]] = []
+    for kind in REFERENCE_FILE_KEYS:
+        path = reference_file_path(kind)
+        if not path.is_file():
+            continue
+        payload = read_reference_file(kind)
+        lookup = {str(column).strip().casefold(): index
+                  for index, column in enumerate(payload["columns"])}
+        vehicle_index = next((lookup[name] for name in ("vehicle", "mask") if name in lookup), None)
+        if vehicle_index is None:
+            raise ValueError(f"{path.name} 파일에 vehicle/Mask 열이 없습니다")
+        rows = [list(row) for row in payload["rows"]]
+        old_indexes = [index for index, row in enumerate(rows)
+                       if str(row[vehicle_index]).strip().casefold() == old_vehicle.casefold()]
+        if rename and any(
+            str(row[vehicle_index]).strip().casefold() == new_vehicle.casefold()
+            for index, row in enumerate(rows) if index not in old_indexes
+        ):
+            raise ValueError(f"{path.name}에 새 제품명 {new_vehicle} 행이 이미 있습니다")
+        if rename and old_indexes:
+            for index in old_indexes:
+                rows[index][vehicle_index] = new_vehicle
+            reference_updates.append((kind, payload, rows, len(old_indexes)))
+
+    info_df, info_path = load_product_info()
+    info_match = (info_df[
+        info_df["vehicle"].astype(str).str.strip().str.casefold() == old_vehicle.casefold()
+    ] if not info_df.empty else info_df)
+    if rename and not info_df.empty:
+        collision = info_df[
+            (info_df["vehicle"].astype(str).str.strip().str.casefold() == new_vehicle.casefold())
+            & (info_df["vehicle"].astype(str).str.strip().str.casefold() != old_vehicle.casefold())
+        ]
+        if not collision.empty:
+            raise ValueError(f"{PRODUCT_INFO_FILE_NAME}에 새 제품명 {new_vehicle} 행이 이미 있습니다")
+
+    cfg = load_cfg()
+    inline = load_inline_map_settings()
+    inline_matching = load_inline_shot_matching()
+    changed_inline = rename and any(
+        str(table.get("vehicle") or "").strip().casefold() == old_vehicle.casefold()
+        for table in inline.get("tables", [])
+    )
+    changed_inline_matching = rename and any(
+        str(row.get("product") or "").strip().casefold() == old_vehicle.casefold()
+        for row in inline_matching.get("rows", [])
+    )
+    affected_paths = {reference_file_path(kind) for kind, *_ in reference_updates}
+    if not info_match.empty:
+        affected_paths.add(info_path)
+    affected_paths.add(_cfg_path())
+    if changed_inline:
+        affected_paths.add(inline_map_settings_path())
+    if changed_inline_matching:
+        affected_paths.add(inline_shot_matching_path())
+    originals = {path: path.read_bytes() if path.is_file() else None for path in affected_paths}
+
+    note = (f"TEG 제품명·분류 변경: {old_vehicle} → {new_vehicle} / {clean_path}"
+            if rename else f"TEG 제품 분류 변경: {old_vehicle} / {clean_path}")
+    files: dict[str, Any] = {}
+    try:
+        with _LOCK:
+            for kind, payload, rows, count in reference_updates:
+                result = save_reference_file(
+                    kind, payload["columns"], rows, username, note,
+                    expected_modified_ns=payload["source_modified_ns"],
+                )
+                files[kind] = {**result, "updated_rows": count}
+
+            if not info_match.empty:
+                info = info_match.iloc[-1].to_dict()
+                files["product_info"] = _save_product_info_row(
+                    new_vehicle, info, clean_path, username, note,
+                    replace_vehicle=old_vehicle,
+                )
+
+            vehicle_patch: dict[str, Any] = {}
+            target_key = _casefold_mapping_key(cfg.get("vehicles") or {}, old_vehicle)
+            if rename and target_key is not None:
+                vehicle_patch[target_key] = None
+                vehicle_patch[new_vehicle] = (cfg.get("vehicles") or {})[target_key]
+
+            target_key = _casefold_mapping_key(cfg.get("check_targets") or {}, old_vehicle)
+            target_patch: dict[str, Any] = {}
+            if rename and target_key is not None:
+                target_patch[target_key] = None
+                target_patch[new_vehicle] = (cfg.get("check_targets") or {})[target_key]
+
+            node_patch = {new_vehicle: clean_path}
+            target_key = _casefold_mapping_key(cfg.get("product_nodes") or {}, old_vehicle)
+            if rename and target_key is not None:
+                node_patch[target_key] = ""
+
+            check = cfg.get("check") or _clean_check({})
+            products = dict(check.get("products") or {})
+            target_key = _casefold_mapping_key(products, old_vehicle)
+            if rename and target_key is not None:
+                products[new_vehicle] = products.pop(target_key)
+                check = {**check, "products": products}
+
+            patch: dict[str, Any] = {"product_nodes": node_patch}
+            if vehicle_patch:
+                patch["vehicles"] = vehicle_patch
+            if target_patch:
+                patch["check_targets"] = target_patch
+            if rename and target_key is not None:
+                patch["check"] = check
+            save_cfg(patch)
+
+            if changed_inline:
+                tables = []
+                for table in inline.get("tables", []):
+                    if str(table.get("vehicle") or "").strip().casefold() == old_vehicle.casefold():
+                        table = {**table, "vehicle": new_vehicle,
+                                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                                 "updated_by": str(username or "")[:200]}
+                    tables.append(table)
+                inline_path = inline_map_settings_path()
+                inline_path.parent.mkdir(parents=True, exist_ok=True)
+                save_json(inline_path, {"version": 1, "tables": tables}, indent=2)
+
+            if changed_inline_matching:
+                matching_rows = []
+                for row in inline_matching.get("rows", []):
+                    if str(row.get("product") or "").strip().casefold() == old_vehicle.casefold():
+                        row = {**row, "product": new_vehicle}
+                    matching_rows.append(row)
+                _save_inline_shot_matching_rows(matching_rows)
+    except Exception:
+        for path, content in originals.items():
+            try:
+                _restore_file_bytes(path, content)
+            except Exception as restore_error:
+                logger.error("TEG 제품 식별자 롤백 실패 path=%s error=%s", path, restore_error)
+        raise
+
+    return {
+        "ok": True, "changed": rename or current.get("node_path") != clean_path,
+        "previous_vehicle": old_vehicle, "vehicle": new_vehicle,
+        "node_path": clean_path, "files": files,
+        "inline_tables_updated": changed_inline,
+        "inline_matching_updated": changed_inline_matching,
+    }
+
+
+def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]],
+                              main_chip: dict[str, Any] | None, username: str,
+                              node_path: str = "") -> dict:
+    """제품 geometry를 등록하고 Teg_location/Main_chip_info를 아래로 append한다."""
+    veh = str(vehicle or "").strip()[:200]
+    if not veh:
+        raise ValueError("vehicle을 입력해 주세요")
+    clean_path = clean_node_path(node_path)
+    if not clean_path:
+        raise ValueError("제품의 상위 노드 경로를 입력해 주세요 (예: 2나노 / 2나노A)")
+    info = parse_product_info_table(text)
+    preview = product_info_preview(text)
+    existing = {str(name).casefold() for name in vehicles()}
+    if veh.casefold() in existing:
+        raise ValueError(f"이미 등록된 제품입니다: {veh}")
+    clean_tegs: list[dict[str, Any]] = []
+    if not isinstance(tegs, list) or not tegs:
+        raise ValueError("Teg_location에 추가할 TEG를 1개 이상 입력해 주세요")
+    for index, raw in enumerate(tegs, 1):
+        raw = raw if isinstance(raw, dict) else {}
+        name = str(raw.get("teg") or "").strip()[:200]
+        if not name:
+            raise ValueError(f"TEG {index}행의 teg를 입력해 주세요")
+        direction = str(raw.get("direction") or "").strip()[:40]
+        if not direction:
+            raise ValueError(f"TEG {index}행의 direction을 입력해 주세요")
+        numbers: dict[str, float] = {}
+        for key in ("ebeam_x", "ebeam_y", "teg_w", "teg_h"):
+            try:
+                number = float(raw.get(key))
+            except (TypeError, ValueError):
+                raise ValueError(f"TEG {index}행의 {key}가 숫자가 아닙니다")
+            if not math.isfinite(number) or (key in ("teg_w", "teg_h") and number <= 0):
+                raise ValueError(f"TEG {index}행의 {key}가 유효하지 않습니다")
+            numbers[key] = number
+        clean_tegs.append({
+            "vehicle": veh, "teg": name,
+            "top_cell": str(raw.get("top_cell") or "").strip()[:300],
+            "direction": direction, **numbers,
+        })
+
+    clean_main = None
+    if preview["one_by_one"]:
+        raw = main_chip if isinstance(main_chip, dict) else {}
+        chip_name = str(raw.get("chip_name") or "").strip()[:200]
+        if not chip_name:
+            raise ValueError("Shot 1×1 제품은 chip_name을 입력해 주세요")
+        sizes = {}
+        for key in ("chipsize_x", "chipsize_y"):
+            try:
+                number = float(raw.get(key))
+            except (TypeError, ValueError):
+                raise ValueError(f"{key}가 숫자가 아닙니다")
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError(f"{key}는 0보다 커야 합니다")
+            sizes[key] = number
+        clean_main = {"vehicle": veh, "chip_name": chip_name, **sizes}
+
+    note = f"TEG 제품 추가: {veh}"
+    shots = _product_shots(info, float(preview["wafer_edge_mm"]))
+    radius_rows = [{
+        "vehicle": veh,
+        "chip_x_adj": str(int(shot["x"])) if float(shot["x"]).is_integer() else str(shot["x"]),
+        "chip_y_adj": str(int(shot["y"])) if float(shot["y"]).is_integer() else str(shot["y"]),
+        "chip_radius": f"{float(shot['r']):.{PRODUCT_RADIUS_DECIMALS}f}",
+    } for shot in shots]
+    with _LOCK:
+        # 참조행을 먼저 검증/append하고 제품 geometry는 마지막에 공개한다.
+        teg_result = _append_frame_rows("teg_location", clean_tegs, username, note)
+        main_result = (_append_frame_rows("main_chip_info", [clean_main], username, note)
+                       if clean_main is not None else None)
+        radius_result = _append_frame_rows("chip_radius", radius_rows, username, note)
+        product_result = _save_product_info_row(
+            veh, info, clean_path, username, note, raw_text=text,
+        )
+        display = preview["display"]
+        save_cfg({"vehicles": {veh: {**DEFAULT_VEHICLE_CFG, **display}},
+                  "product_nodes": {veh: clean_path}})
+    return {
+        "ok": True, "vehicle": veh, "values": info,
+        "shot_count": preview["shot_count"], "one_by_one": preview["one_by_one"],
+        "display": display, "node_path": clean_path,
+        "files": {"product_info": product_result, "chip_radius": radius_result,
+                  "teg_location": teg_result,
+                  "main_chip_info": main_result},
+    }
+
+
+def update_product_from_table(text: str, vehicle: str, username: str) -> dict:
+    """기존 제품의 Item/X/Y 명시 geometry와 Chip_Radius를 함께 갱신한다.
+
+    Chip_Radius fit 기반 제품의 최초 전환과 이미 TEG_Product_Info에 등록된 제품의
+    재변경을 모두 지원한다. 두 CSV 모두 기존 파일 교체·EDM snapshot 경로를 사용한다.
+    """
+    requested = str(vehicle or "").strip()
+    if not requested:
+        raise ValueError("vehicle을 입력해 주세요")
+    layout, _ = load_layout()
+    if layout is None or layout.empty:
+        raise ValueError("등록된 제품 layout이 없습니다")
+    matched = layout[
+        layout["vehicle"].astype(str).str.strip().str.casefold() == requested.casefold()
+    ]
+    if matched.empty:
+        raise ValueError(f"등록된 제품이 아닙니다: {requested}")
+    veh = str(matched.iloc[0]["vehicle"]).strip()
+    sources = {str(value or "chip_radius") for value in matched.get(
+        "layout_source", ["chip_radius"]
+    )}
+    previous_source = next(iter(sources), "chip_radius")
+
+    info = parse_product_info_table(text)
+    preview = product_info_preview(text)
+    shots = _product_shots(info, float(preview["wafer_edge_mm"]))
+    radius_rows = [{
+        "vehicle": veh,
+        "chip_x_adj": str(int(shot["x"])) if float(shot["x"]).is_integer() else str(shot["x"]),
+        "chip_y_adj": str(int(shot["y"])) if float(shot["y"]).is_integer() else str(shot["y"]),
+        "chip_radius": f"{float(shot['r']):.{PRODUCT_RADIUS_DECIMALS}f}",
+    } for shot in shots]
+    catalog_row = next((row for row in product_catalog()
+                        if row["vehicle"].casefold() == veh.casefold()), None)
+    node_path = "" if not catalog_row or catalog_row["node_path"] == "미분류" else catalog_row["node_path"]
+    note = f"TEG 제품 config 변경: {veh}"
+
+    with _LOCK:
+        # Chip_Radius를 먼저 교체하고 exact geometry를 마지막에 공개한다. 어느 시점에도
+        # 한 제품의 구/신 radius 행이 함께 남지 않는다.
+        radius_result = _append_frame_rows(
+            "chip_radius", radius_rows, username, note, replace_vehicle=veh,
+        )
+        product_result = _save_product_info_row(
+            veh, info, node_path, username, note, raw_text=text,
+        )
+        cfg = load_cfg()
+        current_display = {
+            **DEFAULT_VEHICLE_CFG,
+            **((cfg.get("vehicles") or {}).get(veh) or {}),
+        }
+        calculated_display = dict(preview["display"])
+        # 그림/개발 격자를 쓰던 제품은 표시 모드를 보존하되, 새 Item 표에서 받은
+        # 칩 개수·크기·간격은 갱신한다. 기본/grid 제품은 계산된 모드로 전환한다.
+        mode = (current_display.get("mode") if current_display.get("mode") in ("image", "dev_grid")
+                else calculated_display.get("mode", "none"))
+        display = {**current_display, **calculated_display, "mode": mode}
+        save_cfg({"vehicles": {veh: display}})
+
+    return {
+        "ok": True, "vehicle": veh, "values": info,
+        "shot_count": len(shots), "one_by_one": preview["one_by_one"],
+        "display": display, "previous_layout_source": previous_source,
+        "layout_source": "product_info",
+        "files": {"product_info": product_result, "chip_radius": radius_result},
+    }
+
+
+# 내부 호출 호환. 이제는 기존 Product Info 제품도 같은 경로에서 재변경할 수 있다.
+update_legacy_product_from_table = update_product_from_table
 
 
 def candidate_files() -> list[str]:

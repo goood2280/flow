@@ -487,7 +487,7 @@ function RecoCell({ alert, busy, onApply, onRecheck }) {
     return (
       <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}>
         <span style={{ color: "var(--muted)", fontSize: 12 }}>
-          {skipped ? "검사 대상 아님" : "미검사"}
+          {skipped ? "검사 대상 아님" : "추천 대기"}
         </span>
         {!skipped && (
           <Button style={compactButtonStyle} disabled={disabled} onClick={() => onRecheck(alert)}>추천</Button>
@@ -522,7 +522,8 @@ function RecoCell({ alert, busy, onApply, onRecheck }) {
 
 function HoldButtons({ alert, busy, onAck }) {
   if (alert.status !== "active") {
-    return <Button style={compactButtonStyle} disabled={busy} onClick={() => onAck(alert.id, "active")} title="다시 판정 대기로 되돌리기">해제</Button>;
+    const cancelLabel = alert.status === "반영불필요" ? "불필요 취소" : "보류 취소";
+    return <Button style={compactButtonStyle} disabled={busy} onClick={() => onAck(alert.id, "active")} title="취소하고 다시 판정 대기로 되돌리기">{cancelLabel}</Button>;
   }
   return (
     <Button style={compactButtonStyle} disabled={busy} onClick={() => onAck(alert.id, "반영불필요")} title="반영 불필요 — 재알람 억제 (해제로 복귀 가능)">불필요</Button>
@@ -597,6 +598,20 @@ export default function My_ValveAlerts({ user }) {
     })
     : decisions,
   [decisions, selectedProduct]);
+  const alertsById = useMemo(
+    () => new Map(alerts.map(alert => [alert.id, alert])),
+    [alerts]);
+  // decisions는 최신순이다. 같은 알람을 불필요→취소→불필요로 여러 번 바꿔도
+  // 판정 이력에서는 현재 상태를 만든 가장 최근 ACK 한 건만 취소할 수 있어야 한다.
+  const latestAckByAlert = useMemo(() => {
+    const latest = new Map();
+    for (const decision of decisions) {
+      if (decision.type === "ack" && decision.alert_id && !latest.has(decision.alert_id)) {
+        latest.set(decision.alert_id, decision);
+      }
+    }
+    return latest;
+  }, [decisions]);
   useEffect(() => {
     if (selectedProduct && !products.some(product => productMatches(product, selectedProduct))) {
       setSelectedProduct("");
@@ -623,6 +638,14 @@ export default function My_ValveAlerts({ user }) {
       setBusy("");
     }
   };
+
+  const forceScan = () =>
+    act("__force_scan__", async () => {
+      const result = await postJson(API + "/poll", {});
+      const message = result.message || "개발 worker에 다음 제품 강제 검사를 요청했습니다";
+      if (result.scanner_alive === false) toast.error(message);
+      else toast.ok(message);
+    });
 
   const queueClassify = (a) => {
     const v = inputs[a.id] || {};
@@ -683,7 +706,7 @@ export default function My_ValveAlerts({ user }) {
   const ack = (id, status) =>
     act(id, async () => {
       await postJson(API + "/ack", { id, status, note: (inputs[id]?.note || "").trim() });
-      toast(status === "active" ? "억제 해제됨" : `상태 기록: ${status}`);
+      toast(status === "active" ? "불필요 처리가 취소되어 판정 대기로 돌아갔습니다" : `상태 기록: ${status}`);
     });
 
   // 추천 → 판정 입력칸 채우기 (반영은 사람이 누른다)
@@ -739,7 +762,7 @@ export default function My_ValveAlerts({ user }) {
             onChange={event => setSelectedProduct(event.target.value)}
             placeholder={`전체 제품 (${alerts.length})`}
             options={products.map(product => ({ value: product, label: `${product} (${productCounts[product] || 0})` }))}
-            style={{ minWidth: 220 }}
+            style={{ width: "18ch", minWidth: "18ch", maxWidth: "100%", flex: "0 1 18ch" }}
           />
           <Pill tone={visibleActive ? "danger" : "ok"}>판정 대기 {visibleActive}건</Pill>
           <span style={{ color: "var(--muted)", fontSize: 12 }}>
@@ -764,6 +787,18 @@ export default function My_ValveAlerts({ user }) {
                 ? <Pill tone="warn">{data.scanner.scanning.product} 검사 중</Pill>
                 : <Pill tone="ok">검사기 대기</Pill>)
               : <Pill tone="danger">검사기 미기동</Pill>}
+          {data.scanner?.scanner_alive !== undefined && (
+            <Button
+              style={compactButtonStyle}
+              disabled={!canManage || !!busy || !!data.scanner?.scanning?.product}
+              onClick={forceScan}
+              title={data.scanner?.scanning?.product
+                ? "현재 제품 검사가 끝난 뒤 실행할 수 있습니다"
+                : "자동 검사 대기 시간을 건너뛰고 다음 제품을 즉시 검사합니다"}
+            >
+              {busy === "__force_scan__" ? "실행 요청 중…" : "강제 실행"}
+            </Button>
+          )}
           {!!data.scanner?.scan_request_hint && (
             <span style={{ color: "var(--muted)", fontSize: 12 }}>{data.scanner.scan_request_hint}</span>
           )}
@@ -856,9 +891,8 @@ export default function My_ValveAlerts({ user }) {
                       <Pill tone={statusTone(a)} style={{ fontSize: 12 }}>{statusLabel(a)}</Pill>
                     </td>
                     <td style={{ ...nowrapCell, fontWeight: 700 }}>{a.product || a.vehicle || "-"}</td>
-                    <td style={nowrapCell}>
-                      <b>{a.vehicle}</b>
-                      <span style={{ ...inlineMetaStyle, fontFamily: "monospace" }}> · {a.step_id}</span>
+                    <td style={{ ...nowrapCell, fontFamily: "monospace" }}>
+                      <b>{a.step_id || "-"}</b>
                     </td>
                     <td style={nowrapCell}>
                       <RecoCell alert={a} busy={busy === a.id}
@@ -967,8 +1001,14 @@ export default function My_ValveAlerts({ user }) {
           <ScrollTable
             rows={visibleDecisions}
             minWidth={820}
-            columns={["일시", "제품", "배치", "알람", "판정", "내용", "파일", "판정자"]}
-            renderRow={(d, i) => (
+            columns={["일시", "제품", "배치", "알람", "판정", "내용", "파일", "판정자", "작업"]}
+            renderRow={(d, i) => {
+              const currentAlert = alertsById.get(d.alert_id);
+              const canCancelUnnecessary = canManage
+                && d.action === "반영불필요"
+                && latestAckByAlert.get(d.alert_id) === d
+                && currentAlert?.status === "반영불필요";
+              return (
                   <tr key={i}>
                     <td style={nowrapCell}>{fmtTs(d.ts)}</td>
                     <td style={compactCell} title={alertProducts(d).join(", ")}>
@@ -996,8 +1036,20 @@ export default function My_ValveAlerts({ user }) {
                     </td>
                     <td style={{ ...cellStyle, fontFamily: "monospace", fontSize: 11 }}>{d.file || "-"}</td>
                     <td style={cellStyle}>{d.by}</td>
+                    <td style={nowrapCell}>
+                      {canCancelUnnecessary ? (
+                        <Button style={compactButtonStyle} disabled={busy === d.alert_id}
+                          onClick={() => ack(d.alert_id, "active")}
+                          title="불필요 판정을 취소하고 다시 판정 대기로 되돌리기">
+                          불필요 취소
+                        </Button>
+                      ) : d.type === "ack" && d.action === "active" ? (
+                        <span style={{ color: "var(--muted)", fontSize: 12 }}>취소됨</span>
+                      ) : "-"}
+                    </td>
                   </tr>
-            )}
+              );
+            }}
           />
         )}
         <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>

@@ -48,6 +48,7 @@ from core import latest_lot_partitions as _latest_lot_partitions
 from core import lot_list_cache as _lot_list_cache
 from core import matching_cache as _matching_cache
 from core import ml_table_lookup as _ml_table_lookup
+from core import product_order as _product_order
 from core import search_timing_log as _search_timing_log
 from core import s3_sync as _s3
 from core.utils import (

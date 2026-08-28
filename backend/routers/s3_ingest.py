@@ -55,8 +55,10 @@ ALLOWED_FLAG_WITH_VALUE = {
 S3_URL_RE = re.compile(r"^s3://[\w\-\.]+(/[\w\-\.\/\*\?\=]*)?$")
 ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 # v8.7.9: allow multi-segment paths (DB/1.RAWDATA/제품명) + Korean/Unicode letter chars.
-# Forbid absolute paths and traversal (leading '/', '..', backslashes).
-TARGET_RE = re.compile(r"^[\w\-\.][\w\-\.\/]{0,254}$", re.UNICODE)
+# Folder names may contain ordinary spaces (for example `Auto report`).  Path
+# separators and traversal are still validated segment-by-segment below.
+TARGET_SEGMENT_RE = re.compile(r"^[\w\-\. ]+$", re.UNICODE)
+TARGET_MAX_LENGTH = 255
 # Endpoint-url validation: http(s) scheme, no shell metachars
 ENDPOINT_URL_RE = re.compile(r"^https?://[\w\-\.\:/]{1,256}$")
 AWS_KEY_ID_RE = re.compile(r"^[A-Z0-9]{16,32}$")
@@ -617,11 +619,26 @@ def _validate_endpoint_url(url: str):
 
 
 def _validate_target(target: str):
-    """v8.7.9: target may be multi-segment (DB/1.RAWDATA/제품명). Reject traversal."""
-    if not target or not TARGET_RE.match(target):
-        raise HTTPException(400, f"invalid target: {target!r}")
-    if "\\" in target or ".." in target.split("/"):
+    """Validate a db_root-relative target, including names with spaces."""
+    raw = str(target or "")
+    parts = raw.split("/")
+    if "\\" in raw or ".." in parts:
         raise HTTPException(400, f"target must not contain '..' or backslash: {target!r}")
+    if (
+        not raw
+        or len(raw) > TARGET_MAX_LENGTH
+        or raw != raw.strip()
+        or raw.startswith("/")
+        or raw.endswith("/")
+        or any(
+            not part
+            or part == "."
+            or part != part.strip()
+            or not TARGET_SEGMENT_RE.fullmatch(part)
+            for part in parts
+        )
+    ):
+        raise HTTPException(400, f"invalid target: {target!r}")
 
 
 def _validate_profile(name: str):

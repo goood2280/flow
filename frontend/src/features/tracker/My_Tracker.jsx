@@ -4,7 +4,6 @@ import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
 import { Button, Card, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../../components/UXKit";
-import FlowiPromptBox from "../../components/FlowiPromptBox";
 import { authSrc, sf as apiSf } from "../../lib/api";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
 const API = "/api/tracker";
@@ -1665,13 +1664,6 @@ export default function My_Tracker({ user }) {
 
       {/* Main */}
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
-        <div style={{ marginBottom: 12 }}>
-          <FlowiPromptBox
-            defaultScope={{ kind: "tracker", issue_id: selected?.id || "", status: filter || "all" }}
-            placeholder="Flow-i 이슈 질문"
-            maxRows={8}
-          />
-        </div>
         {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} />}
         {viewTab === "gantt" ? <GanttChart issues={issues} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
           : selected ? (<Card padding={0}>
