@@ -1,7 +1,54 @@
 {
-  "version": "10.4.124",
+  "version": "10.4.128",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.128",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "TEG 검증 Wafer Map 가독성과 S/L 표시 간소화",
+      "changes": [
+        "[S/L 표시] 허용 범위의 작은 좌표 차이인 S/L 노란불까지 간단 Summary와 기본 Shot 배치도에 개별 표시되어 이상 항목이 묻혔음 → S/L 노란불은 상세 체크리스트에 판정을 보존하고 간단 화면에서는 숨김",
+        "[Wafer Map 크기] Pattern Wafer Map의 기본 셀 크기 21px가 상단 결과 영역을 과도하게 차지했음 → 기본값을 약 절반인 10px로 줄이고 사용자가 기존 크기 조절 슬라이더로 다시 확대할 수 있게 유지",
+        "[격자 가독성] Pattern site와 TEG 강조 사각형이 격자선 뒤에 그려져 셀 경계를 가렸음 → SVG 격자선을 마지막 레이어로 이동하고 선 대비를 높여 강조 영역 위에서도 경계가 보이도록 조정",
+        "[검증] 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.127",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "Mapfile 검증 config 즉시 반영과 die 허용오차 정합화",
+      "changes": [
+        "[검증 기준] config 변경으로 저장한 정확한 Shot Width/Height 제품정보를 Mapfile 좌표 생성뿐 아니라 검증에서도 Chip_Radius 계산값보다 우선 사용하고, 결과 화면에 config 제품정보 우선 기준임을 표시",
+        "[저장 후 재검증] config 저장 뒤 기존 Mapfile 검증 탭이 이전 응답을 계속 표시했음 → 현재 붙여넣은 원문을 새 config revision으로 자동 재검사해 shot 형상·실center·좌표 보정 변경을 즉시 반영",
+        "[die 경계] 경계선이 정확히 맞닿거나 config의 die 겹침 허용오차 이내로만 걸친 경우에도 경계 근처 경고 또는 chip_overlap으로 잡혔음 → 면적 침범이 허용오차를 넘을 때만 경고하도록 일반 TEG·MAIN 인접 die·요약 집계를 통일",
+        "[검증] TEG 좌표·검증 회귀 테스트 31건, 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.126",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "TEG MAIN 목록 자연순 정렬과 내부 폴더 숨김",
+      "changes": [
+        "[MAIN 목록] TEG 목록이 Teg_location 원순서를 그대로 써 MAIN10이 MAIN2보다 앞설 수 있었음 → 일반 TEG의 공정 순서는 유지하고 MAIN 항목이 있던 자리만 이름 뒤 숫자의 자연순으로 정렬",
+        "[내부 폴더] Mapfile 설정 JSON과 제품 이미지를 저장하는 DB root의 teg_location 폴더가 DB/Files 탐색기에 노출됐음 → 공통 예약 폴더로 지정해 일반·관리자 all 목록과 직접 하위 탐색에서 모두 숨김",
+        "[검증] FileBrowser·TEG 좌표 회귀 테스트 40건, 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.125",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "TEG config 저장 후 Mapfile 좌표 즉시 재계산",
+      "changes": [
+        "[원인] 같은 제품의 Shot Size·Map offset 또는 Mapfile 설정을 저장해도 vehicle 문자열이 바뀌지 않아 위치 조회와 Mapfile 좌표 생성 컴포넌트가 이전 API 응답을 계속 표시했음",
+        "[재계산] 제품 추가·config 변경·설정 저장 직후 현재 제품의 WF MAP을 다시 읽고 Mapfile 좌표 생성 및 MAIN 내부 격자 응답을 revision으로 무효화해 새 기준값으로 즉시 계산",
+        "[계산 기준 안내] Shot Size·Map offset은 WF MAP shot 형상·실center 계산용이고 Mapfile 좌표는 DB Ebeam·PCHK·제품 ΔX/ΔY·TEG 보정으로 계산된다는 입력원 차이를 좌표 생성 화면에 명시",
+        "[검증] TEG 좌표 회귀 테스트 30건, 프론트엔드 디자인·구조 검사와 production build 통과"
+      ]
+    },
     {
       "version": "10.4.124",
       "date": "2026-08-27",
