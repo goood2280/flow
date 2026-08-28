@@ -308,11 +308,23 @@ def full_shots_for_payload(payload: dict) -> list[dict]:
         out = list(real)
         cx, cy = float(geometry.get("cx") or 0), float(geometry.get("cy") or 0)
         kx, ky = float(geometry.get("kx") or 0), float(geometry.get("ky") or 0)
+        # R/C Count는 wafer 밖까지 포함하는 사각 격자 크기일 뿐이다. 원 밖으로
+        # 완전히 벗어난 셀까지 그리지 않도록 아래 pitch 경로와 같은 규칙
+        # (shot 사각형이 wafer 원과 겹치는지)으로 걸러낸다.
+        shot_w = abs(float(geometry.get("shot_w_mm") or 0))
+        shot_h = abs(float(geometry.get("shot_h_mm") or 0))
+        radius = float(geometry.get("wafer_radius_mm") or 0)
+        touch_tolerance = 0.01
         for x in range(1, grid_cols + 1):
             for y in range(1, grid_rows + 1):
                 if key_of(x, y) in seen:
                     continue
                 mm_x, mm_y = (x - cx) * kx, (y - cy) * ky
+                if radius > 0:
+                    dx = max(0.0, abs(mm_x) - shot_w / 2)
+                    dy = max(0.0, abs(mm_y) - shot_h / 2)
+                    if math.hypot(dx, dy) >= radius - touch_tolerance:
+                        continue
                 out.append({
                     "x": x, "y": y, "synthetic": True,
                     "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
@@ -1156,7 +1168,11 @@ def _product_item_key(label: str) -> str | None:
         return "sl_size"
     if "shotsize" in compact:
         return "shot_size"
-    if compact in {"r/ccount", "rccount", "row/columncount", "rowcolumncount"}:
+    # 현업 표에는 `Item R/C Count`, `RETICLE R/C Count`처럼 설명 접두사가
+    # 붙기도 한다. 포함 여부로 찾아 raw 원문에는 값이 있는데 rc_cols/rows가
+    # 비어 중앙 (0,0) 좌표로 폴백하는 일을 막는다.
+    if any(token in compact for token in (
+            "r/ccount", "rccount", "row/columncount", "rowcolumncount")):
         return "rc_count"
     # 아래 두 값은 비슷한 다른 항목과 섞이지 않도록 지정된 이름만 허용한다.
     unitless = re.sub(r"\((?:u)?m\)$", "", compact)
@@ -1250,6 +1266,34 @@ def _product_info_raw_rows(text: str) -> list[dict[str, str]]:
     return rows
 
 
+def _product_info_raw_rc_count(value: Any) -> tuple[int, int] | None:
+    """저장된 raw_config_json에서 R/C Count를 복구한다.
+
+    10.4.131 초기 저장본처럼 원문 행은 보존됐지만 구조화 rc_cols/rc_rows가
+    비어 있는 제품도 config를 다시 붙여넣지 않고 1-based 좌표로 전환한다.
+    """
+    try:
+        rows = json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict) or _product_item_key(row.get("Item")) != "rc_count":
+            continue
+        try:
+            cols = float(str(row.get("X") or "").strip().replace(",", ""))
+            rows_count = float(str(row.get("Y") or "").strip().replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+        if (math.isfinite(cols) and math.isfinite(rows_count)
+                and cols >= 1 and rows_count >= 1
+                and cols.is_integer() and rows_count.is_integer()):
+            return int(cols), int(rows_count)
+        return None
+    return None
+
+
 def _product_geometry_values(info: dict[str, Any]) -> dict[str, float]:
     """제품 원값을 WF MAP 내부 geometry 단위로 변환한다.
 
@@ -1294,8 +1338,15 @@ def _product_geometry_values(info: dict[str, Any]) -> dict[str, float]:
     if rc_cols > 0 and rc_rows > 0:
         # R/C Count는 full-shot 사각형의 X/Y 개수다. 내부 물리 격자의 위상은
         # 그대로 두고, 그 사각형의 좌상단을 공개 좌표 (1, 1)로 평행 이동한다.
-        origin_x = math.floor(out["cx"] - (rc_cols - 1) / 2.0)
-        origin_y = math.floor(out["cy"] - (rc_rows - 1) / 2.0)
+        #
+        # 반올림은 **가장 가까운 정수**로 한다. 예전의 math.floor 는 Map offset이
+        # 조금이라도 음수쪽이면(cx = -0.00025 → cx-6 = -6.00025) 격자 전체를 한 칸
+        # 밀어버려, wafer에 실제로 걸치는 마지막 열이 공개 좌표를 못 받고 반대편
+        # 첫 열은 원 밖이라 빈 칸으로 남았다 (13열 제품에서 실측 확인).
+        # ceil(v - 0.5) 는 정확히 .5 인 경우(짝수 R/C Count + offset 0)에는 floor 와
+        # 같은 값을 주므로 짝수 격자의 기존 tie-break 는 그대로 보존된다.
+        origin_x = math.ceil(out["cx"] - (rc_cols - 1) / 2.0 - 0.5)
+        origin_y = math.ceil(out["cy"] - (rc_rows - 1) / 2.0 - 0.5)
         out.update({
             "rc_cols": rc_cols,
             "rc_rows": rc_rows,
@@ -1376,6 +1427,15 @@ def load_product_info():
     out["node_path"] = out["node_path"].fillna("").astype(str).map(clean_node_path)
     for col in (*PRODUCT_GEOMETRY_COLUMNS[1:], "rc_cols", "rc_rows"):
         out[col] = pd.to_numeric(out[col], errors="coerce")
+    # raw 원문에 R/C Count가 있으면 구조화 열보다 늦게라도 복구한다. 명시 열이
+    # 이미 있으면 그것이 authoritative이며 raw 값으로 덮어쓰지 않는다.
+    recovered_rc = out["raw_config_json"].map(_product_info_raw_rc_count)
+    out["rc_cols"] = out["rc_cols"].fillna(
+        recovered_rc.map(lambda pair: pair[0] if pair else math.nan)
+    )
+    out["rc_rows"] = out["rc_rows"].fillna(
+        recovered_rc.map(lambda pair: pair[1] if pair else math.nan)
+    )
     out = out.dropna(subset=list(PRODUCT_GEOMETRY_COLUMNS)).drop_duplicates("vehicle", keep="last")
     out = out[out["vehicle"] != ""]
     return out, path

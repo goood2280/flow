@@ -1,7 +1,19 @@
 {
-  "version": "10.4.134",
+  "version": "10.4.135",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.135",
+      "date": "2026-08-28",
+      "tag": "fix",
+      "title": "R/C Count full shot이 wafer 원에 걸치는 샷만 그리도록 수정",
+      "changes": [
+        "[원 겹침 판정] R/C Count로 만든 full shot 격자가 R×C 사각형 전체를 그리던 것을 수정 — shot 사각형이 wafer 원과 실제로 겹치는 자리만 그린다. 기존 pitch 기반 경로와 같은 규칙이며 backend(full_shots_for_payload)와 화면(buildFullShots) 양쪽에 동일 적용",
+        "[격자 원점 보정] Map offset이 조금이라도 음수쪽이면 math.floor가 격자를 한 칸 밀어, wafer에 실제로 걸치는 마지막 열이 좌표를 못 받고 반대편 첫 열은 원 밖이라 빈 칸으로 남던 문제 수정 (13열 제품 실측 확인). 짝수 R/C Count의 기존 tie-break는 그대로 유지",
+        "[좌표 정밀도] Mapfile 생성 좌표의 반올림 기준을 소수점 12자리에서 2자리로 변경 — 12자리는 float64 상대 정밀도를 넘는 절대 기준이라 소수점 한자리 정답지끼리 빼도 86419.79999999999 같은 꼬리가 남았다",
+        "[크기 값 분리] mm 단위 TEG·shot 크기는 0.1mm 이하도 있어 2자리로 뭉개면 미리보기 사각형이 사라지므로 별도 자릿수(6자리)로 분리"
+      ]
+    },
     {
       "version": "10.4.134",
       "date": "2026-08-28",

@@ -117,12 +117,23 @@ function buildFullShots(data) {
     if (gridCols * gridRows > FULL_SHOT_MAX) return real;
     const seen = new Set(real.map(s0 => gridKey(s0.x, s0.y)));
     const out = [...real];
+    // R/C Count는 wafer 밖까지 포함하는 사각 격자 크기일 뿐이다. 원 밖으로
+    // 완전히 벗어난 셀까지 그리지 않도록 아래 pitch 경로와 같은 규칙
+    // (shot 사각형이 wafer 원과 겹치는지)으로 걸러낸다.
+    const gW = Math.abs(Number(geo.shot_w_mm) || 0);
+    const gH = Math.abs(Number(geo.shot_h_mm) || 0);
+    const gR = Number(geo.wafer_radius_mm) || 0;
     for (let x = 1; x <= gridCols; x += 1) {
       for (let y = 1; y <= gridRows; y += 1) {
         const key = gridKey(x, y);
         if (seen.has(key)) continue;
         const mmx = (x - geo.cx) * geo.kx;
         const mmy = (y - geo.cy) * geo.ky;
+        if (gR > 0) {
+          const dx = Math.max(0, Math.abs(mmx) - gW / 2);
+          const dy = Math.max(0, Math.abs(mmy) - gH / 2);
+          if (Math.hypot(dx, dy) >= gR - FULL_SHOT_TOUCH_TOL) continue;
+        }
         out.push({
           x, y, synthetic: true,
           mm_x: Math.round(mmx * 1e4) / 1e4,

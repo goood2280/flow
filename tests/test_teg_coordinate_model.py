@@ -470,7 +470,7 @@ def test_product_paste_parser_matches_size_names_with_micro_units_and_prefixes()
 
 
 def test_rc_count_maps_full_grid_to_one_based_top_left_coordinates():
-    pasted = PRODUCT_PASTE + "R/C Count\t13\t17\n"
+    pasted = PRODUCT_PASTE + "Item R/C Count\t13\t17\n"
 
     preview = teg_map.product_info_preview(pasted)
     assert preview["values"]["rc_cols"] == 13
@@ -479,6 +479,12 @@ def test_rc_count_maps_full_grid_to_one_based_top_left_coordinates():
     terms = teg_map._product_geometry_values(preview["values"])
     shots = teg_map._product_shots(preview["values"], preview["wafer_edge_mm"])
     assert all(1 <= shot["x"] <= 13 and 1 <= shot["y"] <= 17 for shot in shots)
+
+    # The 13x17 rectangle must sit on the physical columns that actually reach
+    # the wafer, i.e. -6..+6 for this geometry. math.floor here used to shift the
+    # whole grid to -7..+5, which left display column 1 permanently empty and gave
+    # physical column +6 no public coordinate at all.
+    assert (terms["grid_origin_x"], terms["grid_origin_y"]) == (-6, -8)
 
     payload = {
         "shots": shots,
@@ -493,8 +499,55 @@ def test_rc_count_maps_full_grid_to_one_based_top_left_coordinates():
         },
     }
     full = teg_map.full_shots_for_payload(payload)
-    assert len(full) == 13 * 17
-    assert {(shot["x"], shot["y"]) for shot in full} >= {(1, 1), (13, 17)}
+    coords = {(shot["x"], shot["y"]) for shot in full}
+    # R/C Count is just the rectangular grid size; cells whose shot rectangle
+    # falls entirely outside the wafer circle must not be drawn. The four
+    # corners of a 13x17 rectangle never reach a 150mm circle.
+    assert (1, 1) not in coords and (13, 17) not in coords
+    assert (13, 1) not in coords and (1, 17) not in coords
+    # ...but every column and every row of the declared R/C rectangle must still
+    # carry at least one shot. This is what pins the grid origin: an off-by-one
+    # leaves an entire edge column/row empty.
+    assert {x for x, _ in coords} == {float(i) for i in range(1, 14)}
+    assert {y for _, y in coords} == {float(i) for i in range(1, 18)}
+    # Independently counted from the geometry (13x17 grid, 24x18mm shots,
+    # 150mm radius): 28 of the 221 cells lie fully outside the wafer.
+    assert len(full) == 13 * 17 - 28
+
+    radius = payload["geometry"]["wafer_radius_mm"]
+    shot_w, shot_h = terms["shot_w_mm"], terms["shot_h_mm"]
+    for shot in full:
+        if not shot.get("synthetic"):
+            continue
+        dx = max(0.0, abs(shot["mm_x"]) - shot_w / 2)
+        dy = max(0.0, abs(shot["mm_y"]) - shot_h / 2)
+        assert math.hypot(dx, dy) < radius
+
+
+def test_product_info_recovers_rc_count_from_preserved_raw_config(tmp_path, monkeypatch):
+    path = tmp_path / teg_map.PRODUCT_INFO_FILE_NAME
+    pd.DataFrame([{
+        "vehicle": "P",
+        "chip_size_x_um": 5000, "chip_size_y_um": 4000,
+        "sl_size_x_um": 400, "sl_size_y_um": 300,
+        "shot_cols": 4, "shot_rows": 3,
+        "shot_size_x_um": 24000, "shot_size_y_um": 18000,
+        "map_offset_odd_x": 6, "map_offset_odd_y": 8,
+        "node_path": "",
+        "raw_config_json": '[{"Item":"Item R/C Count","X":"13","Y":"17"}]',
+    }]).to_csv(path, index=False)
+    monkeypatch.setattr(teg_map, "product_info_path", lambda: path)
+
+    products, _ = teg_map.load_product_info()
+    row = products.iloc[0]
+
+    assert row["rc_cols"] == 13
+    assert row["rc_rows"] == 17
+    geometry = teg_map.product_geometry("P")
+    assert geometry["grid_cols"] == 13
+    assert geometry["grid_rows"] == 17
+    assert geometry["cx"] > 1
+    assert geometry["cy"] > 1
 
 
 def test_map_offset_um_is_converted_to_fractional_grid_center_not_shot_index():
@@ -1045,10 +1098,49 @@ def test_build_mapfile_omits_vertical_l_without_l_reference(monkeypatch):
 
     payload = teg_check.build_mapfile("P")
     assert [block["flat"] for block in payload["flats"]] == ["h", "v_R"]
-    assert payload["flats"][0]["rows"][0]["x"] == pytest.approx(0.123456789013)
+    # Mapfile output coordinates are rounded to GEN_DECIMALS (2). The old
+    # 12-decimal-place rounding exceeded float64's relative precision, so
+    # subtracting two one-decimal reference values left visible artifacts
+    # (98765.4 - 12345.6 -> 86419.79999999999).
+    assert payload["flats"][0]["rows"][0]["x"] == pytest.approx(0.12)
     assert payload["geometry_source"] == "product_info"
+    # Sizes in mm keep the finer GEN_MM_DECIMALS — a TEG can be 0.1mm tall and
+    # would collapse to zero at 2 decimals.
     assert payload["flats"][0]["shot"]["w_mm"] == pytest.approx(24.0)
     assert payload["flats"][0]["shot"]["h_mm"] == pytest.approx(18.0)
+
+
+def test_mapfile_coordinates_have_no_float_subtraction_artifacts(monkeypatch):
+    """정답지가 소수점 한자리면 생성 좌표에도 1e-10 같은 꼬리가 붙으면 안 된다.
+
+    PCHK(12345.6)와 TEG(98765.4)는 둘 다 소수점 한자리인데, 예전 GEN_DECIMALS=12
+    는 '소수점 12자리' 절대 기준이라 float64 상대 정밀도를 넘어
+    98765.4 - 12345.6 = 86419.79999999999 를 그대로 통과시켰다.
+    """
+    check = teg_map._clean_check({})
+    ref = {
+        "H_PCHK": [{"x": 12345.6, "y": 7890.1, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+        "H_TEG": [{"x": 98765.4, "y": 54321.9, "w": 1.0, "h": 1.0,
+                   "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": check, "ebeam_scale": 1.0, "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "teg_target_options", lambda vehicle: {
+        "targets": ["H_TEG"], "source": "config",
+        "tegs": [{"teg": "H_TEG", "direction": "h"}],
+    })
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle: {
+        "available": False, "geometry_source": "none", "mode": "none", "cells": [],
+    })
+
+    row = teg_check.build_mapfile("P")["flats"][0]["rows"][0]
+    # Exact equality, not approx — the whole point is that no tail survives.
+    assert row["x"] == 86419.8
+    assert row["y"] == 46431.8
+    assert repr(row["x"]) == "86419.8"
 
 
 def test_shot_info_prefers_exact_product_geometry_over_chip_radius_payload(monkeypatch):

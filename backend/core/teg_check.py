@@ -1386,7 +1386,17 @@ DEFAULT_MARKER = {"h": "H_PCHK", "v_R": "V_PCHK", "v_L": "VL_PCHK"}
 GEN_FORMATS = ("teg_map", "bracket")
 MAX_GEN_ROWS = 2000          # flat 당 생성 행 상한 (원문이 무한정 커지지 않게)
 MAX_PREVIEW_CELLS = 2000     # 미리보기 die 셀 상한 (그림 인식이 많이 잡혀도 브라우저 보호)
-GEN_DECIMALS = 12            # 붙여넣은 exact geometry/좌표의 유효 자릿수 보존
+# Mapfile 출력 좌표 자릿수. 예전 값 12 는 **소수점 12자리**라는 절대 기준이라
+# float64 의 상대 정밀도를 넘었다 — 좌표가 1e4~1e6 이면 1 ULP 가 이미 1e-11 이라
+# 정답지의 소수점 한자리 값끼리 빼도 아티팩트가 그대로 남았다
+# (98765.4 - 12345.6 = 86419.79999999999 → round(_, 12) 이 못 지움).
+# 좌표·오프셋은 원문 단위(ebeam raw)의 큰 수이고 정답지 입력이 소수점 한자리라
+# 2 자리면 충분하고도 남는다.
+GEN_DECIMALS = 2
+# 크기(mm)는 좌표와 달리 0.1mm 이하도 있다(teg_default_h 기본 0.1, 설정 하한 0.001).
+# 여기에 2 자리를 쓰면 사각형이 0 으로 뭉개져 미리보기에서 사라진다. 크기는
+# 뺄셈으로 만들어지지 않아 아티팩트 원인도 아니므로 따로 둔다.
+GEN_MM_DECIMALS = 6
 
 
 def _gen_num(value: Any) -> float | int:
@@ -1446,16 +1456,16 @@ def _gen_rect(flat: str, x: float, y: float, w_mm: float, h_mm: float,
     w_raw = w_mm / scale if scale else w_mm
     h_raw = h_mm / scale if scale else h_mm
     return {"x": round(rx, GEN_DECIMALS), "y": round(ry, GEN_DECIMALS),
-            "w": round(w_raw, GEN_DECIMALS), "h": round(h_raw, GEN_DECIMALS),
-            "w_mm": round(w_mm, GEN_DECIMALS), "h_mm": round(h_mm, GEN_DECIMALS)}
+            "w": round(w_raw, GEN_MM_DECIMALS), "h": round(h_raw, GEN_MM_DECIMALS),
+            "w_mm": round(w_mm, GEN_MM_DECIMALS), "h_mm": round(h_mm, GEN_MM_DECIMALS)}
 
 
 def _origin_rect(x: float, y: float, w_mm: float, h_mm: float, scale: float) -> dict:
     """Rectangle whose x/y are already in the Horizontal-normalised real frame."""
     return {"x": round(x, GEN_DECIMALS), "y": round(y, GEN_DECIMALS),
-            "w": round((w_mm / scale if scale else w_mm), GEN_DECIMALS),
-            "h": round((h_mm / scale if scale else h_mm), GEN_DECIMALS),
-            "w_mm": round(w_mm, GEN_DECIMALS), "h_mm": round(h_mm, GEN_DECIMALS)}
+            "w": round((w_mm / scale if scale else w_mm), GEN_MM_DECIMALS),
+            "h": round((h_mm / scale if scale else h_mm), GEN_MM_DECIMALS),
+            "w_mm": round(w_mm, GEN_MM_DECIMALS), "h_mm": round(h_mm, GEN_MM_DECIMALS)}
 
 
 def _shot_frame(flat: str, dx: float, dy: float, scale: float,
@@ -1467,10 +1477,10 @@ def _shot_frame(flat: str, dx: float, dy: float, scale: float,
     """
     return {"cx": round(-dx, GEN_DECIMALS),
             "cy": round(-dy, GEN_DECIMALS),
-            "w": round((shot_w_mm / scale if scale else shot_w_mm), GEN_DECIMALS),
-            "h": round((shot_h_mm / scale if scale else shot_h_mm), GEN_DECIMALS),
-            "w_mm": round(shot_w_mm, GEN_DECIMALS),
-            "h_mm": round(shot_h_mm, GEN_DECIMALS)}
+            "w": round((shot_w_mm / scale if scale else shot_w_mm), GEN_MM_DECIMALS),
+            "h": round((shot_h_mm / scale if scale else shot_h_mm), GEN_MM_DECIMALS),
+            "w_mm": round(shot_w_mm, GEN_MM_DECIMALS),
+            "h_mm": round(shot_h_mm, GEN_MM_DECIMALS)}
 
 
 def build_mapfile(vehicle: str, include_all: bool = False,
@@ -1626,8 +1636,8 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         # 그림도 미리보기는 회전하지 않으므로 flat 에 상관없이 같은 식이다.
         cells = [{"x": round(c["x"] / scale - dx, GEN_DECIMALS),
                   "y": round(c["y"] / scale - dy, GEN_DECIMALS),
-                  "w": round(c["w"] / scale, GEN_DECIMALS),
-                  "h": round(c["h"] / scale, GEN_DECIMALS)}
+                  "w": round(c["w"] / scale, GEN_MM_DECIMALS),
+                  "h": round(c["h"] / scale, GEN_MM_DECIMALS)}
                  for c in shot_cells] if (shot and scale) else []
         # 기준 PCHK 은 shot 안에 있어야 정상이다 (설비가 그 자리를 찍는 점이므로).
         # 밖이면 정답지 ebeam 좌표나 shot 크기(Chip_Radius fit)가 잘못된 것이라
