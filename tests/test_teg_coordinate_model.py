@@ -550,6 +550,50 @@ def test_product_info_recovers_rc_count_from_preserved_raw_config(tmp_path, monk
     assert geometry["cy"] > 1
 
 
+def test_stored_rc_count_wins_and_is_never_mixed_with_recovered_pair(tmp_path, monkeypatch):
+    """R/C Count는 한 쌍이다 — 저장값이 우선이고, 두 출처를 섞으면 안 된다.
+
+    rc_cols/rc_rows 를 각각 fillna 하면 한쪽만 저장된 행에서 저장값과 raw 복구값이
+    한 쌍으로 합쳐져, 어느 출처에도 없던 격자 크기(13x30 / 20x17)가 만들어졌다.
+    """
+    raw = '[{"Item":"Item R/C Count","X":"20","Y":"30"}]'
+    base = {
+        "chip_size_x_um": 5000, "chip_size_y_um": 4000,
+        "sl_size_x_um": 400, "sl_size_y_um": 300,
+        "shot_cols": 4, "shot_rows": 3,
+        "shot_size_x_um": 24000, "shot_size_y_um": 18000,
+        "map_offset_odd_x": 6, "map_offset_odd_y": 8,
+        "node_path": "",
+    }
+    path = tmp_path / teg_map.PRODUCT_INFO_FILE_NAME
+    pd.DataFrame([
+        {"vehicle": "BOTH", "rc_cols": 13, "rc_rows": 17, "raw_config_json": raw, **base},
+        {"vehicle": "ONLY_COLS", "rc_cols": 13, "rc_rows": "", "raw_config_json": raw, **base},
+        {"vehicle": "ONLY_ROWS", "rc_cols": "", "rc_rows": 17, "raw_config_json": raw, **base},
+        {"vehicle": "NEITHER", "rc_cols": "", "rc_rows": "", "raw_config_json": raw, **base},
+        {"vehicle": "HALF_NO_RAW", "rc_cols": 13, "rc_rows": "", "raw_config_json": "", **base},
+    ]).to_csv(path, index=False)
+    monkeypatch.setattr(teg_map, "product_info_path", lambda: path)
+
+    products, _ = teg_map.load_product_info()
+    rc = {row["vehicle"]: (row["rc_cols"], row["rc_rows"]) for _, row in products.iterrows()}
+
+    # 저장된 쌍이 온전하면 raw(20x30)로 덮어쓰지 않는다.
+    assert rc["BOTH"] == (13, 17)
+    # 반쪽만 저장된 행은 raw 쌍을 통째로 쓴다 — 섞인 13x30 / 20x17 이 나오면 안 된다.
+    assert rc["ONLY_COLS"] == (20, 30)
+    assert rc["ONLY_ROWS"] == (20, 30)
+    assert rc["NEITHER"] == (20, 30)
+    # 복구할 raw 가 없으면 남은 반쪽을 지우지 않는다 — 저장 시 다른 제품 행까지
+    # 다시 쓰는 경로에서 CSV의 값이 영구히 사라지기 때문이다.
+    assert rc["HALF_NO_RAW"][0] == 13
+    assert rc["HALF_NO_RAW"][1] != rc["HALF_NO_RAW"][1]   # NaN
+    # 그 반쪽은 geometry 로는 쓰이지 않는다 (쌍이 아니므로 무시).
+    assert "rc_cols" not in teg_map._product_geometry_values(
+        {**base, "rc_cols": 13, "rc_rows": float("nan")}
+    )
+
+
 def test_map_offset_um_is_converted_to_fractional_grid_center_not_shot_index():
     info = {
         "shot_size_x_um": 24000,

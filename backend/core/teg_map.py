@@ -1427,14 +1427,25 @@ def load_product_info():
     out["node_path"] = out["node_path"].fillna("").astype(str).map(clean_node_path)
     for col in (*PRODUCT_GEOMETRY_COLUMNS[1:], "rc_cols", "rc_rows"):
         out[col] = pd.to_numeric(out[col], errors="coerce")
-    # raw 원문에 R/C Count가 있으면 구조화 열보다 늦게라도 복구한다. 명시 열이
-    # 이미 있으면 그것이 authoritative이며 raw 값으로 덮어쓰지 않는다.
+    # R/C Count는 Item 한 행의 X/Y 한 쌍이다. **저장된 구조화 열이 authoritative**
+    # 이며, 둘 다 있으면 raw 원문 값으로 덮어쓰지 않는다.
+    #
+    # 두 열을 각각 fillna 하면 안 된다 — rc_cols만 저장되고 rc_rows가 빈 행에서
+    # 저장값과 raw 복구값이 한 쌍으로 섞여, 어느 쪽에도 없던 격자 크기가
+    # 만들어진다. 쌍이 온전히 저장돼 있을 때만 저장값을 쓰고, 아니면 raw 원문의
+    # 쌍을 통째로 쓴다 (10.4.131 초기 저장본처럼 구조화 열만 비어 있는 제품 복구).
+    # 복구는 raw에 온전한 쌍이 있을 때만 한다. 한쪽만 저장된 행을 NaN으로 밀어
+    # 버리면, 저장 시 다른 제품 행까지 함께 다시 쓰는 _save_product_info_row 를
+    # 거치며 그 값이 CSV에서 영구히 지워진다. 남은 반쪽은 그대로 두고 downstream
+    # (_product_geometry_values)이 쌍이 아니라 무시하게 둔다.
     recovered_rc = out["raw_config_json"].map(_product_info_raw_rc_count)
-    out["rc_cols"] = out["rc_cols"].fillna(
-        recovered_rc.map(lambda pair: pair[0] if pair else math.nan)
+    stored_pair = out["rc_cols"].notna() & out["rc_rows"].notna()
+    use_recovered = (~stored_pair) & recovered_rc.notna()
+    out["rc_cols"] = out["rc_cols"].where(
+        ~use_recovered, recovered_rc.map(lambda pair: pair[0] if pair else math.nan)
     )
-    out["rc_rows"] = out["rc_rows"].fillna(
-        recovered_rc.map(lambda pair: pair[1] if pair else math.nan)
+    out["rc_rows"] = out["rc_rows"].where(
+        ~use_recovered, recovered_rc.map(lambda pair: pair[1] if pair else math.nan)
     )
     out = out.dropna(subset=list(PRODUCT_GEOMETRY_COLUMNS)).drop_duplicates("vehicle", keep="last")
     out = out[out["vehicle"] != ""]
