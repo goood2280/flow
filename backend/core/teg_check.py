@@ -1386,22 +1386,58 @@ DEFAULT_MARKER = {"h": "H_PCHK", "v_R": "V_PCHK", "v_L": "VL_PCHK"}
 GEN_FORMATS = ("teg_map", "bracket")
 MAX_GEN_ROWS = 2000          # flat 당 생성 행 상한 (원문이 무한정 커지지 않게)
 MAX_PREVIEW_CELLS = 2000     # 미리보기 die 셀 상한 (그림 인식이 많이 잡혀도 브라우저 보호)
-# Mapfile 출력 좌표 자릿수. 예전 값 12 는 **소수점 12자리**라는 절대 기준이라
-# float64 의 상대 정밀도를 넘었다 — 좌표가 1e4~1e6 이면 1 ULP 가 이미 1e-11 이라
-# 정답지의 소수점 한자리 값끼리 빼도 아티팩트가 그대로 남았다
-# (98765.4 - 12345.6 = 86419.79999999999 → round(_, 12) 이 못 지움).
-# 좌표·오프셋은 원문 단위(ebeam raw)의 큰 수이고 정답지 입력이 소수점 한자리라
-# 2 자리면 충분하고도 남는다.
-GEN_DECIMALS = 2
+# Mapfile 출력 좌표 자릿수.
+#
+# 생성 좌표는 정답지(Teg_location) 값과 설정 오프셋의 덧셈·뺄셈일 뿐이다.
+# 소수점 N 자리 값끼리 더하고 빼면 결과도 N 자리를 넘을 수 없다 — 그보다 긴
+# 꼬리는 전부 float64 이진 표현의 부산물이다. 그래서 자릿수를 상수로 박지 않고
+# **그 제품 입력값의 최대 소수 자릿수**로 정한다 (_coord_decimals).
+#
+# 예전 값 12 는 '소수점 12자리' 라는 절대 기준이라 float64 의 상대 정밀도를
+# 넘었다 — 좌표가 1e4~1e5 면 1 ULP 가 이미 1e-11 이라
+# 98765.4 - 12345.6 = 86419.79999999999 가 그대로 통과했다.
+GEN_DECIMALS = 2          # 입력 자릿수를 구하지 못했을 때의 기본값
+GEN_DECIMALS_MAX = 6      # 상한 — 설정값 하나가 오염돼도 꼬리가 번지지 않게
 # 크기(mm)는 좌표와 달리 0.1mm 이하도 있다(teg_default_h 기본 0.1, 설정 하한 0.001).
 # 여기에 2 자리를 쓰면 사각형이 0 으로 뭉개져 미리보기에서 사라진다. 크기는
 # 뺄셈으로 만들어지지 않아 아티팩트 원인도 아니므로 따로 둔다.
 GEN_MM_DECIMALS = 6
 
 
-def _gen_num(value: Any) -> float | int:
+def _decimal_places(value: Any) -> int:
+    """값의 최단 왕복 표기(repr) 기준 소수 자릿수. 셀 수 없으면 0.
+
+    repr 은 그 float 로 되돌아오는 가장 짧은 표기라, 파일에 12345.6 이라고
+    적혀 있으면 '12345.6' 이 되어 1 을 돌려준다. nan/inf 는 '.' 도 'e' 도 없어
+    자연히 0 이다.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    text = repr(number)
+    if "e" in text or "E" in text:      # 1e-05 처럼 지수 표기면 상한으로 본다
+        return GEN_DECIMALS_MAX
+    _, _, frac = text.partition(".")
+    return len(frac.rstrip("0"))
+
+
+def _coord_decimals(values) -> int:
+    """좌표 계산에 들어가는 입력들의 최대 소수 자릿수 (GEN_DECIMALS_MAX 상한).
+
+    결과 좌표는 이 자릿수를 넘을 수 없다 — 넘으면 float 부산물이다.
+    """
+    dp = 0
+    for value in values:
+        dp = max(dp, _decimal_places(value))
+        if dp >= GEN_DECIMALS_MAX:
+            return GEN_DECIMALS_MAX
+    return dp
+
+
+def _gen_num(value: Any, decimals: int | None = None) -> float | int:
     """Mapfile 생성 응답용 숫자. 계산은 원본 정밀도로 하고 출력 끝에서만 정리."""
-    return _num(round(float(value), GEN_DECIMALS))
+    return _num(round(float(value), GEN_DECIMALS if decimals is None else decimals))
 
 
 def _teg_dir_for_flat(flat: str) -> str:
@@ -1517,6 +1553,30 @@ def build_mapfile(vehicle: str, include_all: bool = False,
     pchk_bases = pchk_base_offsets(ref, merged_custom)
     coord_ctx = coordinate_context(chk, veh)
     rules = coord_ctx["rules"]
+    # 생성 좌표의 자릿수 = 이 제품 입력값의 최대 소수 자릿수. 정답지가 소수점
+    # 한자리면 결과도 한자리를 넘을 수 없다 (GEN_DECIMALS 주석 참고).
+    # pchk_bases 는 ref 에서 나오므로 ref 만 훑으면 함께 덮인다.
+    coord_dp = _coord_decimals([
+        value
+        for candidates in (ref or {}).values()
+        for candidate in candidates
+        for value in (candidate.get("x"), candidate.get("y"))
+    ] + [
+        value
+        for pair in (chk.get("flat_offsets") or {}).values()
+        for value in tuple(pair)[:2]
+    ] + [
+        value for rule in rules.values() for value in tuple(rule)[:2]
+    ] + [
+        value
+        for pair in (coord_ctx.get("flat_corrections") or {}).values()
+        for value in tuple(pair)[:2]
+    ])
+
+    def gen(value: Any) -> float | int:
+        """이 제품의 입력 자릿수로 정리한 출력 좌표."""
+        return _gen_num(value, coord_dp)
+
     opts = _tm.teg_target_options(veh) if veh else {"targets": [], "source": "default",
                                                     "tegs": []}
     # shot 크기 + die 셀 — 미리보기 배경용. Mapfile 체크의 shot 확대와 **같은 출처**
@@ -1571,12 +1631,12 @@ def build_mapfile(vehicle: str, include_all: bool = False,
         pchk = None
         if pchk_ref:
             c = pchk_ref[0]
-            pchk = {"teg": pchk_name, "ebeam_x": _gen_num(c["x"]), "ebeam_y": _gen_num(c["y"]),
+            pchk = {"teg": pchk_name, "ebeam_x": gen(c["x"]), "ebeam_y": gen(c["y"]),
                     "x": 0, "y": 0, "direction": c.get("dir", "h"),
                     "rect": _origin_rect(0, 0, c["w"], c["h"], scale),
                     "first_pad_point": {"x": 0.0, "y": 0.0}}
         else:
-            pchk = {"teg": pchk_name, "ebeam_x": _gen_num(dx), "ebeam_y": _gen_num(dy),
+            pchk = {"teg": pchk_name, "ebeam_x": gen(dx), "ebeam_y": gen(dy),
                     "x": 0, "y": 0, "direction": _teg_dir_for_flat(flat), "rect": None}
 
         want = _teg_dir_for_flat(flat)
@@ -1606,22 +1666,22 @@ def build_mapfile(vehicle: str, include_all: bool = False,
                 rows.append({
                     "teg": name, "base_teg": teg, "top_cell": c.get("top_cell", ""),
                     "direction": tdir,
-                    "ebeam_x": _gen_num(c["x"]), "ebeam_y": _gen_num(c["y"]),
-                    "x": _gen_num(x), "y": _gen_num(y),
+                    "ebeam_x": gen(c["x"]), "ebeam_y": gen(c["y"]),
+                    "x": gen(x), "y": gen(y),
                     "offset_applied": bool(rule),
-                    "offset_dx": _gen_num(rule[0]) if rule else None,
-                    "offset_dy": _gen_num(rule[1]) if rule else None,
+                    "offset_dx": gen(rule[0]) if rule else None,
+                    "offset_dy": gen(rule[1]) if rule else None,
                     "offset_note": (rule[2] if rule else ""),
                     "coordinate_terms": {
-                        "global_base": [_gen_num(dx), _gen_num(dy)],
-                        "product_flat": [_gen_num(flat_correction[0]), _gen_num(flat_correction[1])],
-                        "global_module": [_gen_num(global_rule[0]), _gen_num(global_rule[1])] if global_rule else [0, 0],
-                        "product_module": [_gen_num(product_rule[0]), _gen_num(product_rule[1])] if product_rule else [0, 0],
+                        "global_base": [gen(dx), gen(dy)],
+                        "product_flat": [gen(flat_correction[0]), gen(flat_correction[1])],
+                        "global_module": [gen(global_rule[0]), gen(global_rule[1])] if global_rule else [0, 0],
+                        "product_module": [gen(product_rule[0]), gen(product_rule[1])] if product_rule else [0, 0],
                     },
                     "rect": _origin_rect(c["x"] - dx, c["y"] - dy, c["w"], c["h"], scale),
                     "first_pad_point": {
-                        "x": _gen_num(c["x"] - dx),
-                        "y": _gen_num(c["y"] - dy),
+                        "x": gen(c["x"] - dx),
+                        "y": gen(c["y"] - dy),
                     },
                 })
                 if len(rows) >= MAX_GEN_ROWS:
@@ -1648,10 +1708,10 @@ def build_mapfile(vehicle: str, include_all: bool = False,
                             and abs(0 - shot["cy"]) <= shot["h"] / 2)
         flats.append({
             "flat": flat, "label": FLAT_LABEL[flat], "marker": marker,
-            "base": {"dx": _gen_num(dx), "dy": _gen_num(dy), "ref_name": pchk_name, "source": src},
+            "base": {"dx": gen(dx), "dy": gen(dy), "ref_name": pchk_name, "source": src},
             "coordinate_terms": {
-                "global_base": [_gen_num(dx), _gen_num(dy)],
-                "product_flat": [_gen_num(flat_correction[0]), _gen_num(flat_correction[1])],
+                "global_base": [gen(dx), gen(dy)],
+                "product_flat": [gen(flat_correction[0]), gen(flat_correction[1])],
             },
             "pchk": pchk, "rows": rows, "skipped": skipped, "other_dir": other_dir,
             "offset_count": sum(1 for r in rows if r["offset_applied"]),
@@ -1782,6 +1842,12 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
         x0, y0 = float(hit["x"]), float(hit["y"])
         cols, rows = _grid_count(w, tw, gx), _grid_count(h, th, gy)
         px, py = tw + gx, th + gy
+        # 칸 좌표도 입력 자릿수를 넘지 않게 한다 — die 앵커(정답지 MAIN 좌표),
+        # 격자 pitch(기본 TEG 사이즈 + gap), flat 기준점이 이 좌표의 전부다.
+        cell_dp = _coord_decimals([
+            x0 / scale, y0 / scale, px / scale, py / scale,
+            *(b["dx"] for b in bases.values()), *(b["dy"] for b in bases.values()),
+        ])
         rem_x = round(w - (cols * tw + max(0, cols - 1) * gx), 6) if cols else round(w, 6)
         rem_y = round(h - (rows * th + max(0, rows - 1) * gy), 6) if rows else round(h, 6)
         truncated = cols * rows > MAX_GRID_CELLS
@@ -1793,12 +1859,13 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
                 mmx, mmy = x0 + c * px, y0 + r * py
                 rx, ry = mmx / scale, mmy / scale
                 cell = {"r": r, "c": c,
-                        "mm_x": round(mmx, 4), "mm_y": round(mmy, 4),
-                        "x": _num(round(rx, 4)), "y": _num(round(ry, 4))}
+                        "mm_x": round(mmx, GEN_MM_DECIMALS),
+                        "mm_y": round(mmy, GEN_MM_DECIMALS),
+                        "x": _gen_num(rx, cell_dp), "y": _gen_num(ry, cell_dp)}
                 for flat in GRID_FLATS:
                     b = bases[flat]
                     fx, fy = inverse_transform("", rx, ry, flat, b["dx"], b["dy"])
-                    cell[flat] = {"x": _num(round(fx, 4)), "y": _num(round(fy, 4))}
+                    cell[flat] = {"x": _gen_num(fx, cell_dp), "y": _gen_num(fy, cell_dp)}
                 cells.append(cell)
         out_mains.append({
             "name": found_name, "found": True,

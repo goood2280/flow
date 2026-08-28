@@ -27,10 +27,18 @@ const PREVIEW_SIZE = 380;
 const PREVIEW_MAX_ZOOM = 60;
 const CELL_SOURCE_LABEL = { grid: "칩 격자", image: "그림 die", dev_grid: "개발 격자 die" };
 
+/* 좌표 표시 — 백엔드가 보낸 값보다 더 정밀한 자리를 화면이 만들어내면 안 된다.
+   예전 구현은 toFixed(12) 로 찍고 뒤의 0 만 잘라냈는데, 1e4~1e5 크기 좌표에서
+   소수점 12자리는 이미 float64 정밀도 아래라 이진 표현의 꼬리가 그대로 드러났다.
+   게다가 그 꼬리는 0 으로 끝나지 않아 잘려나가지도 않았다:
+     86419.8 -> "86419.800000000003",  99999.9 -> "99999.899999999994"
+   d 자리로 반올림한 뒤 String() 의 최단 왕복 표기를 쓴다. 자릿수 상한은 그대로
+   두고(백엔드가 정답지 자릿수에 맞춰 이미 정리해서 보낸다) 표기만 고친다. */
 function fmtN(v, d = 12) {
-  if (v === null || v === undefined || Number.isNaN(v)) return "-";
+  if (v === null || v === undefined || v === "") return "-";
   const n = Number(v);
-  return Number.isInteger(n) ? String(n) : n.toFixed(d).replace(/0+$/, "").replace(/\.$/, "");
+  if (!Number.isFinite(n)) return "-";
+  return String(Number(n.toFixed(d)));
 }
 
 function _token() {

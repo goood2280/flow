@@ -1142,11 +1142,11 @@ def test_build_mapfile_omits_vertical_l_without_l_reference(monkeypatch):
 
     payload = teg_check.build_mapfile("P")
     assert [block["flat"] for block in payload["flats"]] == ["h", "v_R"]
-    # Mapfile output coordinates are rounded to GEN_DECIMALS (2). The old
-    # 12-decimal-place rounding exceeded float64's relative precision, so
-    # subtracting two one-decimal reference values left visible artifacts
-    # (98765.4 - 12345.6 -> 86419.79999999999).
-    assert payload["flats"][0]["rows"][0]["x"] == pytest.approx(0.12)
+    # Output precision follows the reference data: this H_TEG x carries 13
+    # decimals, so the GEN_DECIMALS_MAX cap (6) applies. The old fixed
+    # 12-decimal-place rounding exceeded float64's relative precision and let
+    # artifacts through (98765.4 - 12345.6 -> 86419.79999999999).
+    assert payload["flats"][0]["rows"][0]["x"] == pytest.approx(0.123457)
     assert payload["geometry_source"] == "product_info"
     # Sizes in mm keep the finer GEN_MM_DECIMALS — a TEG can be 0.1mm tall and
     # would collapse to zero at 2 decimals.
@@ -1185,6 +1185,51 @@ def test_mapfile_coordinates_have_no_float_subtraction_artifacts(monkeypatch):
     assert row["x"] == 86419.8
     assert row["y"] == 46431.8
     assert repr(row["x"]) == "86419.8"
+
+
+@pytest.mark.parametrize("ref_x, ref_y, pchk_x, pchk_y", [
+    (98765.4, 54321.9, 12345.6, 7890.1),        # 소수점 1자리
+    (98765.45, 54321.95, 12345.65, 7890.15),    # 소수점 2자리
+    (350.0, 470.0, 100.0, 200.0),               # 정수
+    (98765.4, 54321.0, 12345.6, 7890.0),        # 한쪽만 소수점
+])
+def test_generated_coordinates_never_exceed_teg_location_decimal_length(
+        monkeypatch, ref_x, ref_y, pchk_x, pchk_y):
+    """생성 좌표는 Teg_location 의 최대 소수 자릿수를 넘을 수 없다.
+
+    좌표는 정답지 값과 오프셋의 덧셈·뺄셈뿐이라 수학적으로 자릿수가 늘 수 없다.
+    더 긴 꼬리가 보이면 그건 전부 float64 이진 표현의 부산물이다.
+    """
+    check = teg_map._clean_check({})
+    ref = {
+        "H_PCHK": [{"x": pchk_x, "y": pchk_y, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+        "H_TEG": [{"x": ref_x, "y": ref_y, "w": 1.0, "h": 1.0,
+                   "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": check, "ebeam_scale": 1.0, "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "teg_target_options", lambda vehicle: {
+        "targets": ["H_TEG"], "source": "config",
+        "tegs": [{"teg": "H_TEG", "direction": "h"}],
+    })
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle: {
+        "available": False, "geometry_source": "none", "mode": "none", "cells": [],
+    })
+
+    source_dp = max(teg_check._decimal_places(value)
+                    for value in (ref_x, ref_y, pchk_x, pchk_y))
+    block = teg_check.build_mapfile("P")["flats"][0]
+    emitted = [block["rows"][0][axis] for axis in ("x", "y")]
+    emitted += [block["rows"][0]["ebeam_x"], block["rows"][0]["ebeam_y"]]
+    emitted += [block["base"]["dx"], block["base"]["dy"]]
+
+    for value in emitted:
+        assert teg_check._decimal_places(value) <= source_dp, (
+            f"{value!r} has more decimals than Teg_location's {source_dp}"
+        )
 
 
 def test_shot_info_prefers_exact_product_geometry_over_chip_radius_payload(monkeypatch):
