@@ -175,6 +175,123 @@ def test_explicit_main_group_without_main_chip_info_is_red(monkeypatch):
     assert group["tegs"][1]["light_reason"] == "MAIN 정보없음"
 
 
+@pytest.mark.parametrize("module_name, ref_name", [
+    ("H_QAF01", "QAF01H"),      # flat 표기가 뒤로
+    ("H_QAB03", "QA03HB"),      # flat 이 가운데 + 글자·숫자 순서 뒤바뀜
+    ("H_DFM01", "DFMSL01"),     # SL 이 중간에 낌
+    ("H_SRAM24", "SRAM24"),     # flat 접두사만 다름
+    ("V_QAB03", "QA03VB"),      # Vertical 도 같은 규칙
+])
+def test_alias_matching_treats_notation_variants_as_the_same_teg(
+        monkeypatch, module_name, ref_name):
+    """표기만 다른 같은 TEG 는 정상(초록)으로 잡혀야 한다.
+
+    flat(H/V)·SL 의 위치와 글자·숫자 순서가 달라도 같은 TEG 다. 같은 TEG 이므로
+    좌표 비교를 정상 수행한다 — 확장체크(이름만 검증)가 아니다.
+    """
+    ref = {
+        ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0})
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect("P", f"#teg-map\nmodule {module_name} (100.5,200.5) !\n",
+                               flat="h")
+    row = result["teg"]["rows"][0]
+
+    assert row["ref_teg"] == ref_name
+    assert row["match_rule"] == "alias"
+    assert row["status"] == "match"
+    assert row["light"] == "green"
+
+
+@pytest.mark.parametrize("module_name, ref_name", [
+    ("H_QAB03", "QAB30"),       # 숫자가 다르면 다른 TEG
+    ("H_SRAM24", "SRAM25"),
+    ("H_DFM01", "DFN01"),
+])
+def test_alias_matching_keeps_different_tegs_apart(monkeypatch, module_name, ref_name):
+    """헐거운 규칙이 엉뚱한 TEG 를 집으면 안 된다 — 특히 숫자가 다르면 별개다."""
+    ref = {ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                       "dir": "h", "top_cell": ""}]}
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0})
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect("P", f"#teg-map\nmodule {module_name} (100.5,200.5) !\n",
+                               flat="h")
+
+    assert result["teg"]["rows"][0]["ref_teg"] is None
+
+
+def test_alias_matching_refuses_ambiguous_keys():
+    """한 alias 키에 정답지 TEG 가 둘이면 매칭하지 않는다 (오매칭보다 미등록이 낫다)."""
+    ref = {
+        "QAB03": [{"x": 1.0, "y": 1.0, "w": 1.0, "h": 1.0, "dir": "h", "top_cell": ""}],
+        "QA03B": [{"x": 2.0, "y": 2.0, "w": 1.0, "h": 1.0, "dir": "h", "top_cell": ""}],
+    }
+    assert teg_check.alias_key("QAB03") == teg_check.alias_key("QA03B")
+    row = {"name": "H_QAB03", "candidates": ["H_QAB03"], "tail": ""}
+    assert teg_check.resolve_ref_teg_alias(row, ref, {}) == (None, None, None)
+
+
+def test_date_tokens_never_become_teg_names():
+    """꼬리표 앞의 작업 날짜가 TEG 이름으로 잡히면 안 된다."""
+    assert teg_check.is_date_token("2026-08-28")
+    assert teg_check.is_date_token("2026.08.28")
+    assert teg_check.is_date_token("2026/08/28")
+    # 순수 숫자는 날짜로 보지 않는다 — 숫자로만 된 TEG 이름을 잃지 않기 위해서다.
+    assert not teg_check.is_date_token("20260828")
+    assert not teg_check.is_date_token("SRAM24")
+
+    parsed = teg_check.parse_teg([
+        "#teg-map",
+        "module SRAM24 (100.5,200.5) ! 2026-08-28, MAIN01, DFM01",
+    ])
+    row = parsed[0]
+    assert row["name"] == "SRAM24"          # 날짜가 아니라 module 뒤 이름
+    assert "2026-08-28" not in row["candidates"]
+
+
+def test_main_inner_teg_name_skips_a_leading_date(monkeypatch):
+    """MAIN 행 꼬리표 앞에 날짜가 있으면 MAIN 뒤 이름을 내부 TEG 로 잡는다."""
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: ({}, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0})
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips",
+                        lambda: ({"P": {"MAIN01": (9.0, 6.0)}}, None))
+
+    result = teg_check.inspect(
+        "P", "#teg-map\nmodule DUMMY (140.5,240.5) ! 2026-08-28,MAIN01,INNER01\n",
+        flat="h")
+
+    group = result["teg"]["main_groups"][0]
+    assert group["group"] == "MAIN01"
+    assert group["tegs"][0]["teg"] == "INNER01"
+
+
 def test_main_token_anywhere_blocks_sl_exact_and_reorder_matching(monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})

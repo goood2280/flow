@@ -58,7 +58,11 @@ function ViewToggle({ value, onChange }) {
   );
 }
 const CELL_SOURCE_LABEL = { grid: "칩 격자", image: "그림 die", dev_grid: "개발 격자 die" };
-const MATCH_RULE_LABELS = { "01strip": "01제거", "reorder": "접두사변환", "split": "분할TEG" };
+const MATCH_RULE_LABELS = {
+  "01strip": "01제거", "reorder": "접두사변환", "split": "분할TEG",
+  // flat(H/V)·SL 위치와 글자·숫자 순서만 다른 같은 TEG (H_QAF01 ↔ QAF01H).
+  alias: "표기차이",
+};
 
 function compactNameList(values, limit = 3) {
   const names = [...new Set((values || []).map(v => String(v || "").trim()).filter(Boolean))];

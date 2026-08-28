@@ -269,6 +269,18 @@ def parse_sites(lines: list[str]) -> list[dict]:
 
 MAX_NAME_CANDIDATES = 6   # 행별 이름 후보 표시 상한 (module 토큰 + 꼬리표 토큰)
 
+# 꼬리표 맨 앞에 작업 날짜를 적어 두는 Mapfile 이 있다. 그대로 두면 그 날짜가
+# TEG 이름으로 잡힌다. **구분자가 들어간 날짜 표기만** 걸러낸다 — 순수 숫자까지
+# 버리면 숫자로만 된 멀쩡한 TEG 이름을 잃는다.
+DATE_TOKEN_RE = re.compile(
+    r"^\s*\d{2,4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,4}\s*$"
+)
+
+
+def is_date_token(value: str) -> bool:
+    """'2026-08-28', '2026.08.28' 처럼 TEG 이름일 수 없는 날짜 표기인가."""
+    return bool(DATE_TOKEN_RE.match(str(value or "")))
+
 
 def parse_teg(lines: list[str]) -> list[dict]:
     """#teg-map → [{idx, name, x, y, tail, candidates, name_source}, ...]
@@ -298,13 +310,30 @@ def parse_teg(lines: list[str]) -> list[dict]:
         # 'module' 뒤 단어로 폴백) > module~( 이름 > 'module' 뒤 단어.
         name = tail.split(",")[0].strip() if tail else mod_token
         source = "tail0" if tail else "module"
+        # 꼬리표 첫 토큰이 날짜면 TEG 이름일 수 없다. MAIN 행은 'module' 바로 뒤
+        # 이름을, 그것도 날짜면 MAIN 토큰 **뒤** 첫 토큰을 쓴다.
+        if is_date_token(name):
+            after_main: list[str] = []
+            for i, tok in enumerate(tail_tokens):
+                if is_main(tok):
+                    after_main = tail_tokens[i + 1:]
+                    break
+            fallback = [mod_token, *after_main,
+                        *(tok for tok in tail_tokens if not is_main(tok))]
+            picked = next((tok for tok in fallback
+                           if tok and not is_date_token(tok) and not is_main(tok)), "")
+            if picked:
+                name = picked
+                source = "module" if picked == mod_token else "tail_after_main"
         if not name:   # 이름이 비면 'module' 뒤 단어로 폴백
             mw = MODULE_WORD_RE.search(s)
             name = mw.group(1).strip(" ,:=\t") if mw else ""
             source = "word" if name else source
         candidates: list[str] = []
         for v in ([mod_token] if mod_token else []) + tail_tokens:
-            if v and v not in candidates:
+            # 날짜는 이름 후보에서도 뺀다 — 재지정 목록에 떠 봐야 고를 일이 없고,
+            # 정답지 매칭 후보로 돌면 오매칭 위험만 는다.
+            if v and v not in candidates and not is_date_token(v):
                 candidates.append(v)
         out.append({"idx": len(out), "name": name, "auto_name": name,
                     "x": _num(m.group(2)), "y": _num(m.group(3)), "tail": tail,
@@ -690,6 +719,83 @@ def resolve_ref_teg_reorder(t: dict, ref: dict[str, list[dict]] | None,
             teg = tc_to_teg.get(reordered)
             if teg is not None:
                 return teg, "top_cell", tok
+    return None, None, None
+
+
+# 이름에 끼어들지만 TEG 를 구분하지 않는 토큰 — flat 표기와 scribe lane 표기.
+# 정답지와 Mapfile 이 이걸 서로 다른 자리에 적어도 같은 TEG 다.
+_ALIAS_NOISE_RE = re.compile(r"(?i)\bSL\b|SL(?=\d)|[_\-.\s]")
+_ALIAS_FLAT_LETTERS = "HV"
+
+
+def alias_key(name: str) -> tuple[str, str] | None:
+    """이름 → (영문자 시퀀스, 숫자 시퀀스). 표기 순서가 달라도 같은 키가 나온다.
+
+    정답지와 설비 Mapfile 이 같은 TEG 를 다른 표기로 적는 경우가 많다.
+    구분자·flat 표기(H/V)·SL 을 걷어내고 남은 글자와 숫자를 각각 **순서대로**
+    모아 비교한다. 숫자는 그대로 두므로 03 과 30 은 서로 다른 TEG 로 남는다.
+
+        H_QAF01 · QAF01H            → ("QAF", "01")
+        H_QAB03 · QA03HB            → ("QAB", "03")
+        H_DFM01 · DFMSL01           → ("DFM", "01")
+        H_SRAM24 · SRAM24           → ("SRAM", "24")
+
+    글자나 숫자가 하나도 없으면 None — 너무 헐거운 키로 오매칭하지 않는다.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return None
+    text = _ALIAS_NOISE_RE.sub("", text)
+    letters = "".join(ch for ch in text if ch.isalpha()).upper()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    # flat 표기(H/V)는 정답지·Mapfile 이 서로 다른 자리에 적어 식별에 못 쓴다.
+    letters = letters.translate({ord(c): None for c in _ALIAS_FLAT_LETTERS})
+    if not letters or not digits:
+        # 숫자가 없는 이름(H_PCHK 등)은 이 규칙의 대상이 아니다 — 글자만으로는
+        # H/V 를 지운 뒤 서로 다른 TEG 가 같은 키가 되기 쉽다.
+        return None
+    return letters, digits
+
+
+def _alias_index(ref: dict[str, list[dict]] | None,
+                 tc_to_teg: dict[str, str] | None) -> dict[tuple[str, str], str | None]:
+    """정답지 이름 → alias 키 색인. 한 키에 서로 다른 teg 가 걸리면 None(모호)."""
+    index: dict[tuple[str, str], str | None] = {}
+    def put(name: str, teg: str) -> None:
+        key = alias_key(name)
+        if key is None:
+            return
+        if key in index and index[key] != teg:
+            index[key] = None          # 모호 — 이 키로는 매칭하지 않는다
+        else:
+            index.setdefault(key, teg)
+    for teg in (ref or {}):
+        put(teg, teg)
+    for top_cell, teg in (tc_to_teg or {}).items():
+        put(top_cell, teg)
+    return index
+
+
+def resolve_ref_teg_alias(t: dict, ref: dict[str, list[dict]] | None,
+                          tc_to_teg: dict[str, str] | None,
+                          index: dict[tuple[str, str], str | None] | None = None,
+                          ) -> tuple[str | None, str | None, str | None]:
+    """표기 차이 재매칭 — flat/SL 위치와 글자·숫자 순서가 달라도 같은 TEG 로 본다.
+
+    같은 TEG 의 다른 표기이므로 좌표 비교는 정상 수행한다(확장체크 아님).
+    한 alias 키에 정답지 TEG 가 둘 이상 걸리면 매칭하지 않는다 — 헐거운 규칙이
+    엉뚱한 TEG 를 집는 것보다 '미등록' 으로 남기는 편이 안전하다.
+    """
+    if not ref:
+        return None, None, None
+    index = _alias_index(ref, tc_to_teg) if index is None else index
+    for tok in _name_tokens(t):
+        key = alias_key(tok)
+        if key is None:
+            continue
+        teg = index.get(key)
+        if teg:
+            return teg, ("teg" if teg in ref else "top_cell"), tok
     return None, None, None
 
 
@@ -1104,10 +1210,16 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     marker_upper = {mk.upper() for mk in marker_map}
 
     def _main_detail(t: dict, group: str = "") -> str:
+        """MAIN 행의 내부 TEG 이름 — 꼬리표를 순서대로 훑어 첫 유효 토큰.
+
+        순서를 바꾸지 않는다. 꼬리표 첫 토큰이 이미 내부 TEG 이름인 표기도 있고
+        (H_DVC01,MAIN01,…), MAIN 토큰 뒤에 오는 표기도 있다(MAIN02,SRAM35).
+        날짜만 건너뛰면 앞에 작업 날짜가 붙은 행도 자연히 MAIN 뒤 이름을 집는다.
+        """
         group_key = str(group or main_group_name(t)).strip().casefold()
         for tok in [tok.strip() for tok in t["tail"].split(",")] if t["tail"] else []:
             if (not tok or tok.casefold() == group_key or is_main(tok)
-                    or tok.upper() in marker_upper):
+                    or is_date_token(tok) or tok.upper() in marker_upper):
                 continue
             return tok
         return ""
@@ -1137,6 +1249,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     summary = {"match": 0, "warning": 0, "mismatch": 0, "extended": 0, "missing": 0,
                "total": len(tegs), "chip_overlap": 0, "die_in": 0, "die_near": 0,
                "light": {"red": 0, "yellow": 0, "purple": 0, "green": 0, "gray": 0}}
+    # 표기 차이 재매칭용 색인은 정답지 기준이라 한 번만 만든다.
+    alias_index = _alias_index(ref, tc_to_teg)
     for t in tegs:
         # TEG 별 flat: 강제값 > 자기 꼬리표 마커 > 전역 기본. 오프셋도 flat 에 맞춰 선택.
         t_flat, t_marker = teg_flat(t["tail"], marker_map)
@@ -1152,11 +1266,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             if ref_teg is not None:
                 extended = True
                 match_rule = "01strip"
-        # 접두사_이름 → 이름접두사01 변환 재매칭 (H_AAA01 → AAA01H01)
+        # 접두사_이름 → 이름접두사01 변환 재매칭 (H_AAA01 → AAA01H01).
+        # 같은 TEG 를 다르게 적은 것뿐이라 좌표 비교를 정상 수행한다(초록).
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok = resolve_ref_teg_reorder(t, ref, tc_to_teg)
             if ref_teg is not None:
-                extended = True
                 match_rule = "reorder"
         # 분할 TEG 재매칭 — _1, _2 등 접미사 제거 후 base name 으로 정답지 검색
         if ref_teg is None and ref is not None:
@@ -1164,6 +1278,14 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             if ref_teg is not None:
                 match_rule = "split"
             # 같은 TEG 의 분할이므로 위치 비교 정상 수행 (extended 아님)
+        # 표기 차이 재매칭 — flat(H/V)·SL 위치와 글자·숫자 순서만 다른 같은 TEG.
+        # H_QAF01↔QAF01H, H_QAB03↔QA03HB, H_DFM01↔DFMSL01, H_SRAM24↔SRAM24.
+        # 이것도 같은 TEG 이므로 좌표를 정상 비교한다(초록). MAIN 소속 행은
+        # _name_tokens 가 빈 목록을 주므로 자동으로 대상에서 빠진다.
+        if ref_teg is None and ref is not None:
+            ref_teg, msrc, mtok = resolve_ref_teg_alias(t, ref, tc_to_teg, alias_index)
+            if ref_teg is not None:
+                match_rule = "alias"
         detail = _transform_detail(used_t, ref_teg or t["name"])
         nx, ny = transform(t["name"], t["x"], t["y"], used_t, tdx, tdy, rules,
                            flat_correction=detail["flat_correction"])
