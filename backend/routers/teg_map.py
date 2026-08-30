@@ -10,6 +10,8 @@ DB root 의 teg_location/ 폴더에 저장.
   GET    /api/teg-map/vehicles            layout 의 vehicle 목록
   GET    /api/teg-map/check-targets?vehicle=  Mapfile 체크 대상 TEG + teg 목록
   PUT    /api/teg-map/check-targets       Mapfile 체크 대상 TEG 저장 (manager)
+  GET    /api/teg-map/extension-macros     전 제품 공통 확장 이름 매칭 규칙
+  PUT    /api/teg-map/extension-macros     전 제품 공통 확장 이름 매칭 규칙 저장 (manager)
   GET    /api/teg-map/map?vehicle=        WF MAP payload (geometry+shots+tegs+표시설정)
   POST   /api/teg-map/inspect             설비 원문 검사 (파싱+flat 변환+Teg_location 대조)
   GET    /api/teg-map/generate?vehicle=   Mapfile용 좌표 생성 (정답지 → PCHK=(0,0) 상대좌표 표)
@@ -322,6 +324,40 @@ class CheckTargetsReq(BaseModel):
     vehicle: str
     # 명시적 대상 목록. None 이면 해당 vehicle 설정을 지우고 기본값(H_/V_)으로 되돌림.
     targets: list[str] | None = None
+
+
+class ExtensionMacrosReq(BaseModel):
+    macros: dict
+
+
+def _extension_macros_payload() -> dict:
+    cfg = _tm.load_cfg()
+    check = cfg.get("check") or {}
+    macros = check.get("extension_macros") or {
+        "builtins": dict(_tm.DEFAULT_EXTENSION_MACRO_BUILTINS), "rules": [],
+    }
+    return {"ok": True, "scope": "global", "macros": macros,
+            "builtin_rules": [dict(rule) for rule in _tm.DEFAULT_EXTENSION_MACRO_RULES]}
+
+
+@router.get("/extension-macros")
+def extension_macros_get(user=Depends(current_user)):
+    return _extension_macros_payload()
+
+
+@router.put("/extension-macros")
+def extension_macros_put(req: ExtensionMacrosReq, user=Depends(_require_manager)):
+    try:
+        cleaned = _tm.clean_extension_macros(req.macros, strict=True)
+        cfg = _tm.load_cfg()
+        check = dict(cfg.get("check") or {})
+        check["extension_macros"] = cleaned
+        _tm.save_cfg({"check": check})
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"확장 매크로 설정 오류: {exc}") from exc
+    from core.audit import record_user as _audit_user
+    _audit_user(user.get("username", ""), "teg-map:extension-macros:global")
+    return _extension_macros_payload()
 
 
 class InlineMapShotReq(BaseModel):

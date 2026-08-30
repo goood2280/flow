@@ -587,8 +587,15 @@ def coordinate_context(check: dict, vehicle: str) -> dict:
     product_rules = _sum_module_rules([], product.get("modules") or [])
     rules = _sum_module_rules(check.get("modules") or [], product.get("modules") or [])
     corrections = {f: tuple((product.get("flat_corrections") or {}).get(f, [0.0, 0.0])) for f in FLATS}
+    global_macros = check.get("extension_macros") or {}
+    macro_builtins = {
+        **_tm.DEFAULT_EXTENSION_MACRO_BUILTINS,
+        **(global_macros.get("builtins") or {}),
+    }
+    macro_rules = list(global_macros.get("rules") or [])
     return {"product": product, "rules": rules, "global_rules": global_rules,
-            "product_rules": product_rules, "flat_corrections": corrections}
+            "product_rules": product_rules, "flat_corrections": corrections,
+            "extension_macros": {"builtins": macro_builtins, "rules": macro_rules}}
 
 
 def _status_of(ddx: float, ddy: float) -> str:
@@ -665,6 +672,44 @@ def resolve_ref_teg_extended(t: dict, ref: dict[str, list[dict]] | None,
             if teg is not None:
                 return teg, "top_cell", tok
     return None, None, None
+
+
+def resolve_ref_teg_macro(t: dict, ref: dict[str, list[dict]] | None,
+                          tc_to_teg: dict[str, str] | None,
+                          rules: list[dict] | None,
+                          ) -> tuple[str | None, str | None, str | None, str | None]:
+    """사용자 확장 매크로로 Mapfile 표기를 정답지 이름으로 변환해 재매칭한다.
+
+    규칙은 위에서부터 적용하며 ``pattern``은 module 토큰 전체에 매칭한다.
+    치환식은 UI 친화적인 ``$1``/``${name}`` 문법을 받는다. 변환 결과가 실제
+    Teg_location의 teg/top_cell과 정확히 일치할 때만 채택한다.
+    """
+    if not ref:
+        return None, None, None, None
+    tc_to_teg = tc_to_teg or {}
+    for rule in rules or []:
+        pattern = str(rule.get("pattern") or "")
+        replacement = _tm.extension_macro_replacement(rule.get("replacement"))
+        if not pattern:
+            continue
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            continue
+        for tok in _name_tokens(t):
+            match = compiled.fullmatch(tok)
+            if match is None:
+                continue
+            try:
+                candidate = match.expand(replacement).strip()
+            except (re.error, IndexError):
+                continue
+            if candidate in ref:
+                return candidate, "teg", tok, str(rule.get("name") or "사용자 매크로")
+            teg = tc_to_teg.get(candidate)
+            if teg is not None:
+                return teg, "top_cell", tok, str(rule.get("name") or "사용자 매크로")
+    return None, None, None, None
 
 
 _SPLIT_SUFFIX_RE = re.compile(r"^(.+)_(\d+)$")
@@ -936,6 +981,7 @@ def _die_names(cells: list[dict]) -> str:
 # ────────────────────────────────────────── 신호등 판정
 # 화면(TegCheck.jsx)이 색을 다시 계산하지 않도록 행마다 light 를 붙여 내보낸다.
 #   red    — 고쳐야 함
+#   orange — MAIN 크기/위치 정보가 없어 확인 필요
 #   yellow — 확인 필요 (정답지로 정밀 대조는 못 하지만 자리는 맞음 / 작은 오차)
 #   purple — 이름 변환 규칙으로 매칭 (위치가 아닌 이름 검증)
 #   green  — 정상
@@ -958,7 +1004,7 @@ def row_light(row: dict) -> tuple[str, str]:
     # 읽혔지만 같은 teg/top_cell을 찾지 못한 Mapfile module은 S/L로 추측하거나
     # die 침범으로 판정하지 않고 MAIN 쪽 정보 누락으로 분류한다.
     if st == "missing" and not registered:
-        return "red", "MAIN 정보없음"
+        return "orange", "MAIN 정보없음"
     red: list[str] = []
     yellow: list[str] = []
     if st == "mismatch":
@@ -1000,7 +1046,7 @@ def main_die_light(cells: list[dict], group: str,
             continue
         (own if _tm.normalize_chip_name(c["name"]) == key else other).append(c)
     if not key or not own:
-        return "red", "MAIN 정보없음"
+        return "orange", "MAIN 정보없음"
 
     tx1, ty1 = x0 + w, y0 + h
 
@@ -1248,9 +1294,15 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     rows = []
     summary = {"match": 0, "warning": 0, "mismatch": 0, "extended": 0, "missing": 0,
                "total": len(tegs), "chip_overlap": 0, "die_in": 0, "die_near": 0,
-               "light": {"red": 0, "yellow": 0, "purple": 0, "green": 0, "gray": 0}}
-    # 표기 차이 재매칭용 색인은 정답지 기준이라 한 번만 만든다.
-    alias_index = _alias_index(ref, tc_to_teg)
+               "light": {"red": 0, "orange": 0, "yellow": 0,
+                         "purple": 0, "green": 0, "gray": 0}}
+    extension_macros = coord_ctx["extension_macros"]
+    macro_builtins = extension_macros["builtins"]
+    builtin_alias_rules = [
+        dict(rule) for rule in _tm.DEFAULT_EXTENSION_MACRO_RULES
+        if str(rule.get("key") or "").startswith("alias_")
+        and macro_builtins.get(str(rule.get("key")), True)
+    ]
     for t in tegs:
         # TEG 별 flat: 강제값 > 자기 꼬리표 마커 > 전역 기본. 오프셋도 flat 에 맞춰 선택.
         t_flat, t_marker = teg_flat(t["tail"], marker_map)
@@ -1261,31 +1313,36 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         ref_teg, msrc, mtok = resolve_ref_teg(t, ref, tc_to_teg)
         extended = False
         match_rule = "exact" if ref_teg is not None else None
-        if ref_teg is None and ref is not None:
+        match_rule_label = None
+        if ref_teg is None and ref is not None and macro_builtins.get("01strip", True):
             ref_teg, msrc, mtok = resolve_ref_teg_extended(t, ref, tc_to_teg)
             if ref_teg is not None:
                 extended = True
                 match_rule = "01strip"
         # 접두사_이름 → 이름접두사01 변환 재매칭 (H_AAA01 → AAA01H01).
         # 같은 TEG 를 다르게 적은 것뿐이라 좌표 비교를 정상 수행한다(초록).
-        if ref_teg is None and ref is not None:
+        if ref_teg is None and ref is not None and macro_builtins.get("reorder", True):
             ref_teg, msrc, mtok = resolve_ref_teg_reorder(t, ref, tc_to_teg)
             if ref_teg is not None:
                 match_rule = "reorder"
         # 분할 TEG 재매칭 — _1, _2 등 접미사 제거 후 base name 으로 정답지 검색
-        if ref_teg is None and ref is not None:
+        if ref_teg is None and ref is not None and macro_builtins.get("split", True):
             ref_teg, msrc, mtok = resolve_ref_teg_split(t, ref, tc_to_teg)
             if ref_teg is not None:
                 match_rule = "split"
             # 같은 TEG 의 분할이므로 위치 비교 정상 수행 (extended 아님)
-        # 표기 차이 재매칭 — flat(H/V)·SL 위치와 글자·숫자 순서만 다른 같은 TEG.
-        # H_QAF01↔QAF01H, H_QAB03↔QA03HB, H_DFM01↔DFMSL01, H_SRAM24↔SRAM24.
-        # 이것도 같은 TEG 이므로 좌표를 정상 비교한다(초록). MAIN 소속 행은
-        # _name_tokens 가 빈 목록을 주므로 자동으로 대상에서 빠진다.
+        # 나머지 내장 표기 변환도 1행 1정규식/치환식으로 순서대로 적용한다.
         if ref_teg is None and ref is not None:
-            ref_teg, msrc, mtok = resolve_ref_teg_alias(t, ref, tc_to_teg, alias_index)
+            ref_teg, msrc, mtok, match_rule_label = resolve_ref_teg_macro(
+                t, ref, tc_to_teg, builtin_alias_rules)
             if ref_teg is not None:
-                match_rule = "alias"
+                match_rule = "macro"
+        # 사용자 매크로는 화면의 내장 행 다음 순서로 적용한다.
+        if ref_teg is None and ref is not None:
+            ref_teg, msrc, mtok, match_rule_label = resolve_ref_teg_macro(
+                t, ref, tc_to_teg, extension_macros.get("rules"))
+            if ref_teg is not None:
+                match_rule = "macro"
         detail = _transform_detail(used_t, ref_teg or t["name"])
         nx, ny = transform(t["name"], t["x"], t["y"], used_t, tdx, tdy, rules,
                            flat_correction=detail["flat_correction"])
@@ -1336,6 +1393,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             "ref_teg": ref_teg, "match_source": msrc, "match_token": mtok,
             "extended": extended,
             "match_rule": match_rule,
+            "match_rule_label": match_rule_label,
             "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
             "teg_w": round(tw, 4), "teg_h": round(th, 4),
             "chip_overlap": overlap, "die_state": die_state,
@@ -1449,6 +1507,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             group_row = {"group": g, "tegs": items, **meta,
                                 "chip_overlap": sum(1 for e in items if e.get("chip_overlap")),
                                 "red": sum(1 for e in items if e.get("light") == "red"),
+                                "orange": sum(1 for e in items if e.get("light") == "orange"),
                                 "yellow": sum(1 for e in items if e.get("light") == "yellow")}
             main_groups.append(group_row)
             if meta["purpose_warning"]:
@@ -1862,7 +1921,8 @@ def build_mapfile(vehicle: str, include_all: bool = False,
 #   · 격자 앵커 = die 좌하단 (MAIN TEG 좌표 규약과 같다)
 #   · 한 칸 = 기본 TEG 사이즈(⚙️ 설정 teg_default_w/h). 칸 사이 거리(gap)를 주면
 #     pitch = 기본 사이즈 + gap 으로 벌어진다 — die 크기가 기본 사이즈로 딱
-#     떨어지지 않을 때 gap 을 조절해 맞춘다 (남는 길이는 remainder 로 알려 준다).
+#     떨어지지 않을 때도 남는 길이를 양쪽에 절반씩 나눠 격자 전체를 중앙에 둔다
+#     (남는 길이는 remainder, 한쪽 여백은 edge_margin 으로 알려 준다).
 #   · 칸 좌표는 **Horizontal 기준만** 낸다 — MAIN die 는 Vertical(R) 표의 대상이
 #     아니다(사용자 확인, 2026-07-29).
 #   · TEG(module)별 오프셋은 적용하지 않는다 — 이름을 나중에 붙이는 자리라
@@ -1906,7 +1966,8 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
 
     반환: {ok, vehicle, scale, teg, gap, available, flats, mains: [...]}
       mains[i] = {name, found, error?, x, y, w, h, cols, rows, pitch_x, pitch_y,
-                  remainder_x, remainder_y, exact, truncated, cells}
+                  remainder_x, remainder_y, edge_margin_x, edge_margin_y,
+                  exact, truncated, cells}
       cells[j] = {r, c, x, y(=DB Ebeam raw), mm_x, mm_y, h:{x,y}}
     """
     veh = str(vehicle or "").strip()
@@ -1964,21 +2025,25 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
         x0, y0 = float(hit["x"]), float(hit["y"])
         cols, rows = _grid_count(w, tw, gx), _grid_count(h, th, gy)
         px, py = tw + gx, th + gy
-        # 칸 좌표도 입력 자릿수를 넘지 않게 한다 — die 앵커(정답지 MAIN 좌표),
-        # 격자 pitch(기본 TEG 사이즈 + gap), flat 기준점이 이 좌표의 전부다.
-        cell_dp = _coord_decimals([
-            x0 / scale, y0 / scale, px / scale, py / scale,
-            *(b["dx"] for b in bases.values()), *(b["dy"] for b in bases.values()),
-        ])
         rem_x = round(w - (cols * tw + max(0, cols - 1) * gx), 6) if cols else round(w, 6)
         rem_y = round(h - (rows * th + max(0, rows - 1) * gy), 6) if rows else round(h, 6)
+        edge_x = rem_x / 2.0 if cols else 0.0
+        edge_y = rem_y / 2.0 if rows else 0.0
+        grid_x0, grid_y0 = x0 + edge_x, y0 + edge_y
+        # 칸 좌표도 입력 자릿수를 넘지 않게 한다 — die 앵커(정답지 MAIN 좌표),
+        # 중앙 정렬된 격자 시작점, pitch(기본 TEG 사이즈 + gap), flat 기준점이
+        # 이 좌표의 전부다.
+        cell_dp = _coord_decimals([
+            grid_x0 / scale, grid_y0 / scale, px / scale, py / scale,
+            *(b["dx"] for b in bases.values()), *(b["dy"] for b in bases.values()),
+        ])
         truncated = cols * rows > MAX_GRID_CELLS
         if truncated and cols > 0:
             rows = max(1, MAX_GRID_CELLS // cols)
         cells: list[dict] = []
         for r in range(rows):
             for c in range(cols):
-                mmx, mmy = x0 + c * px, y0 + r * py
+                mmx, mmy = grid_x0 + c * px, grid_y0 + r * py
                 rx, ry = mmx / scale, mmy / scale
                 cell = {"r": r, "c": c,
                         "mm_x": round(mmx, GEN_MM_DECIMALS),
@@ -1995,6 +2060,7 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
             "cols": cols, "rows": rows,
             "pitch_x": round(px, 4), "pitch_y": round(py, 4),
             "remainder_x": rem_x, "remainder_y": rem_y,
+            "edge_margin_x": round(edge_x, 6), "edge_margin_y": round(edge_y, 6),
             "exact": abs(rem_x) < 1e-6 and abs(rem_y) < 1e-6,
             "truncated": truncated, "cells": cells,
         })

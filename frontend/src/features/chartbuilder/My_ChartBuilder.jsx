@@ -276,7 +276,7 @@ function sqlColumnCompletion(value,caret){
   const latest=keywords[keywords.length-1];
   if(!latest)return null;
   const clause=latest[1].replace(/\s+/g," ").toUpperCase();
-  if(clause!=="SELECT"&&clause!=="WHERE")return null;
+  if(!["SELECT","WHERE","ORDER BY","GROUP BY"].includes(clause))return null;
   const clauseText=before.slice((latest.index||0)+latest[0].length);
   let singleQuoted=false;
   for(let index=0;index<clauseText.length;index+=1){
@@ -288,7 +288,7 @@ function sqlColumnCompletion(value,caret){
   let start=position;
   while(start>0&&/[A-Za-z0-9_$]/.test(source[start-1]))start-=1;
   const token=source.slice(start,position);
-  if(token.length<3||!/^[A-Za-z_$]/.test(token))return null;
+  if(token.length<1||!/^[A-Za-z_$]/.test(token))return null;
   let end=position;
   while(end<source.length&&/[A-Za-z0-9_$]/.test(source[end]))end+=1;
   return{clause,token,start,end};
@@ -392,9 +392,12 @@ function SqlColumnAutocomplete({value,onChange,root,product,resolveContext,ariaL
         .then(data=>{
           if(!alive)return;
           const needle=completion.token.toLocaleLowerCase();
-          const matches=(data.columns||[]).map(column=>String(column||"")).filter(Boolean)
+          const virtual=new Set((data.virtual_columns||[]).map(column=>String(column||"")));
+          const matches=(data.columns||[]).map(column=>({
+            name:String(column||""),dtype:String(data.dtypes?.[column]||""),virtual:virtual.has(String(column||"")),
+          })).filter(column=>column.name)
             .sort((left,right)=>{
-              const l=left.toLocaleLowerCase(),r=right.toLocaleLowerCase();
+              const l=left.name.toLocaleLowerCase(),r=right.name.toLocaleLowerCase();
               const lp=l.startsWith(needle)?0:1,rp=r.startsWith(needle)?0:1;
               return lp-rp||l.localeCompare(r);
             });
@@ -412,7 +415,8 @@ function SqlColumnAutocomplete({value,onChange,root,product,resolveContext,ariaL
     setCaret(position);
     setCaretPoint(textareaCaretPoint(target,position));
   };
-  const applySuggestion=column=>{
+  const applySuggestion=suggestion=>{
+    const column=typeof suggestion==="string"?suggestion:suggestion?.name;
     if(!completion||!column)return;
     const inserted=sqlIdentifier(column);
     const next=text(value).slice(0,completion.start)+inserted+text(value).slice(completion.end);
@@ -473,7 +477,11 @@ function SqlColumnAutocomplete({value,onChange,root,product,resolveContext,ariaL
         <span>열 검색 · Tab 자동완성</span>
         {loading&&<span style={{marginLeft:"auto"}}>조회 중…</span>}
       </div>
-      {suggestions.map((column,index)=><button key={column} type="button" role="option" aria-selected={index===activeIndex} onMouseDown={event=>{event.preventDefault();applySuggestion(column);}} style={{display:"block",width:"100%",padding:"7px 9px",border:0,borderBottom:index<suggestions.length-1?"1px solid var(--border)":0,background:index===activeIndex?"var(--accent-glow)":"transparent",color:"var(--text-primary)",textAlign:"left",fontFamily:"'JetBrains Mono',monospace",fontSize:12,cursor:"pointer"}}>{column}</button>)}
+      {suggestions.map((column,index)=><button key={column.name} type="button" role="option" aria-selected={index===activeIndex} onMouseDown={event=>{event.preventDefault();applySuggestion(column);}} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"7px 9px",border:0,borderBottom:index<suggestions.length-1?"1px solid var(--border)":0,background:index===activeIndex?"var(--accent-glow)":"transparent",color:"var(--text-primary)",textAlign:"left",fontSize:12,cursor:"pointer"}}>
+        <code style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800}}>{column.name}</code>
+        {column.virtual&&<span style={{padding:"1px 5px",borderRadius:10,background:"#dcfce7",color:"#166534",fontSize:10,fontWeight:900}}>TEG map</span>}
+        {column.dtype&&<span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:10}}>{column.dtype}</span>}
+      </button>)}
     </div>}
   </div>;
 }
@@ -566,11 +574,14 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
   const[reformatterBusy,setReformatterBusy]=useState(false);
   const[columnSearch,setColumnSearch]=useState("KNOB_");
   const[schemaColumns,setSchemaColumns]=useState([]);
+  const[schemaDtypes,setSchemaDtypes]=useState({});
+  const[schemaAssist,setSchemaAssist]=useState({});
   const[selectedColumns,setSelectedColumns]=useState([]);
   const[columnBusy,setColumnBusy]=useState(false);
   const isSplitTable=String(source.root||"").toUpperCase()==="SPLITTABLE";
   const isYieldShot=String(source.root||"").toUpperCase()==="YIELD_SHOT";
   const isEt=String(source.root||"").toUpperCase().includes("ET");
+  const isInline=String(source.root||"").toUpperCase().includes("INLINE")&&!isSplitTable;
   useEffect(()=>{
     if(!source.root){setProducts([]);return;}
     let alive=true;
@@ -580,20 +591,21 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
   useEffect(()=>{
     setSelectedColumns([]);
     setSchemaColumns([]);
-    if(isSplitTable)setColumnSearch("KNOB_");
+    setSchemaDtypes({});setSchemaAssist({});
+    setColumnSearch(isSplitTable?"KNOB_":"");
   },[source.root,source.product,isSplitTable]);
   useEffect(()=>{
-    if(!isSplitTable||!source.product){setSchemaColumns([]);return undefined;}
+    if(!source.root||!source.product){setSchemaColumns([]);setSchemaDtypes({});setSchemaAssist({});return undefined;}
     let alive=true;
     const timer=setTimeout(()=>{
       setColumnBusy(true);
       sf(`/api/filebrowser/columns/search?root=${encodeURIComponent(source.root)}&product=${encodeURIComponent(source.product)}&q=${encodeURIComponent(columnSearch)}&limit=500`)
-        .then(data=>{if(alive)setSchemaColumns(data.columns||[]);})
-        .catch(()=>{if(alive)setSchemaColumns([]);})
+        .then(data=>{if(alive){setSchemaColumns(data.columns||[]);setSchemaDtypes(data.dtypes||{});setSchemaAssist(data.assist||{});}})
+        .catch(()=>{if(alive){setSchemaColumns([]);setSchemaDtypes({});setSchemaAssist({});}})
         .finally(()=>{if(alive)setColumnBusy(false);});
     },180);
     return()=>{alive=false;clearTimeout(timer);};
-  },[isSplitTable,source.root,source.product,columnSearch]);
+  },[source.root,source.product,columnSearch]);
   useEffect(()=>{
     if(!isEt||!source.product||!source.apply_reformatter){setReformatterItems([]);return undefined;}
     let alive=true;setReformatterBusy(true);
@@ -605,9 +617,21 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
   },[isEt,source.product,source.apply_reformatter]);
   const set=(key,value)=>onChange({...source,[key]:value});
   const toggleColumn=(column)=>setSelectedColumns(old=>old.includes(column)?old.filter(value=>value!==column):[...old,column]);
-  const applyColumns=()=>{
-    const columns=["ROOT_LOT_ID","WAFER_ID",...selectedColumns.filter(c=>!["ROOT_LOT_ID","WAFER_ID"].includes(c))];
+  const actualColumn=name=>schemaColumns.find(column=>column.toLowerCase()===name.toLowerCase())||((schemaAssist.virtual_columns||[]).find(column=>column.toLowerCase()===name.toLowerCase()))||"";
+  const applyColumns=(requested=selectedColumns)=>{
+    const keys=[actualColumn("root_lot_id"),actualColumn("wafer_id")].filter(Boolean);
+    const columns=[...keys,...requested.filter(c=>!keys.some(key=>key.toLowerCase()===c.toLowerCase()))];
     set("sql",`SELECT ${columns.map(sqlIdentifier).join(", ")}`);
+  };
+  const applyRecipe=kind=>{
+    const preferred=kind==="inline_map"
+      ?["root_lot_id","wafer_id","step_id","process_id","item_id","subitem_id","value","shot_x","shot_y"]
+      :kind==="trend"
+        ?["root_lot_id","wafer_id","tkout_time","item_id","value"]
+        :["root_lot_id","wafer_id","shot_x","shot_y","value"];
+    const picked=[];
+    preferred.forEach(name=>{const column=actualColumn(name);if(column&&!picked.includes(column))picked.push(column);});
+    if(picked.length)applyColumns(picked);
   };
   return <div style={card}>
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
@@ -634,6 +658,16 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
       <b>Full Shot 수율 가상 DB</b> · WF MAP의 제품별 X/Y Scan 설정에서 완전한 shot만 가져옵니다.<br/>
       Corr/JOIN 권장 열: <code>root_lot_id, wafer_id, shot_x, shot_y, shot_yield</code><br/>
       예: <code>SELECT root_lot_id, wafer_id, shot_x, shot_y, shot_yield</code>
+    </div>}
+    {isInline&&<div style={{marginTop:10,padding:10,border:"1px solid #86efac",borderRadius:7,background:"#f0fdf4",color:"#166534",fontSize:12,lineHeight:1.55}}>
+      <b>TEG Inline map 좌표 자동 보강</b> · 원본 <code>step_id + item_id + subitem_id</code>를 TEG 위치조회의 Inline map setting과 연결해 결과에 <code>shot_x/shot_y</code>를 붙입니다.<br/>
+      {schemaAssist.inline_maps?.length
+        ?`${schemaAssist.inline_maps.filter(row=>row.available).length}/${schemaAssist.inline_maps.length}개 연결 사용 가능 · ${schemaAssist.inline_maps.map(row=>`${row.item_id} → ${row.map_name}${row.available?"":" (map 없음)"}`).join(" · ")}`
+        :"현재 제품에 연결 규칙이 없습니다. inline_shot_matching.csv 설정 후 좌표가 자동으로 활성화됩니다."}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:7}}>
+        <button type="button" onClick={()=>applyRecipe("inline_map")} style={{...btn,padding:"5px 8px",background:"#fff",color:"#166534",borderColor:"#86efac"}}>Inline WF MAP 기본열 넣기</button>
+        <button type="button" onClick={()=>applyRecipe("join")} style={{...btn,padding:"5px 8px",background:"#fff",color:"#166534",borderColor:"#86efac"}}>Shot Corr/JOIN 기본열 넣기</button>
+      </div>
     </div>}
     {/* 시간 창 — 저장 코드(RECENT_DAYS)의 기본값이며 Report 실행 컨텍스트에서 일괄 변경할 수 있다. */}
     <div style={{display:"grid",gridTemplateColumns:"minmax(120px,1fr) minmax(160px,1.4fr)",gap:9,marginTop:9}}>
@@ -663,18 +697,20 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
         {!!reformatterItems.length&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:7,maxHeight:82,overflow:"auto"}}>{reformatterItems.slice(0,80).map(item=><button type="button" key={item.alias} onClick={()=>{const current=text(source.reformatter_items).split(",").map(v=>v.trim()).filter(Boolean);if(!current.includes(item.alias))set("reformatter_items",[...current,item.alias].join(", "));}} style={{...btn,padding:"3px 6px",fontSize:10}}>{item.category?.toUpperCase()} · {item.alias}</button>)}</div>}
       </>}
     </div>}
-    {isSplitTable&&source.product&&<div style={{marginTop:10,padding:10,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
+    {source.product&&<div style={{marginTop:10,padding:10,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
-        <strong style={{fontSize:12}}>ML_TABLE 필요 열</strong>
-        {["KNOB_","FAB_","MASK_","INLINE_","VM_",""] .map(prefix=><button type="button" key={prefix||"all"} onClick={()=>setColumnSearch(prefix)} style={{...btn,padding:"4px 7px",fontSize:11,background:columnSearch===prefix?"var(--accent)":"var(--bg-tertiary)",color:columnSearch===prefix?"#fff":"var(--text-primary)"}}>{prefix||"전체"}</button>)}
-        <input aria-label="ML_TABLE 열 검색" value={columnSearch} onChange={e=>setColumnSearch(e.target.value)} placeholder="KNOB_, FAB_ 또는 열 이름" style={{...input,width:210,marginLeft:"auto"}}/>
+        <strong style={{fontSize:12}}>열 도우미</strong>
+        {isSplitTable&&["KNOB_","FAB_","MASK_","INLINE_","VM_",""] .map(prefix=><button type="button" key={prefix||"all"} onClick={()=>setColumnSearch(prefix)} style={{...btn,padding:"4px 7px",fontSize:11,background:columnSearch===prefix?"var(--accent)":"var(--bg-tertiary)",color:columnSearch===prefix?"#fff":"var(--text-primary)"}}>{prefix||"전체"}</button>)}
+        <button type="button" onClick={()=>applyRecipe("trend")} style={{...btn,padding:"4px 7px",fontSize:11}}>Trend 기본열</button>
+        <button type="button" onClick={()=>applyRecipe("join")} style={{...btn,padding:"4px 7px",fontSize:11}}>Corr/JOIN 기본열</button>
+        <input aria-label={`Query ${index+1} 열 검색`} value={columnSearch} onChange={e=>setColumnSearch(e.target.value)} placeholder="열 이름 검색" style={{...input,width:210,marginLeft:"auto"}}/>
       </div>
       <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:8,maxHeight:120,overflow:"auto"}}>
-        {columnBusy?<span style={{fontSize:12,color:"var(--text-secondary)"}}>열 조회 중…</span>:schemaColumns.length?schemaColumns.map(column=><button type="button" key={column} title={column} onClick={()=>toggleColumn(column)} style={{...btn,padding:"4px 7px",fontSize:11,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",background:selectedColumns.includes(column)?"var(--accent-glow)":"var(--bg-tertiary)",borderColor:selectedColumns.includes(column)?"var(--accent)":"var(--border)"}}>{selectedColumns.includes(column)?"✓ ":"＋ "}{column}</button>):<span style={{fontSize:12,color:"var(--text-secondary)"}}>일치하는 열이 없습니다.</span>}
+        {columnBusy?<span style={{fontSize:12,color:"var(--text-secondary)"}}>열 조회 중…</span>:schemaColumns.length?schemaColumns.map(column=><button type="button" key={column} title={`${column}${schemaDtypes[column]?` · ${schemaDtypes[column]}`:""}`} onClick={()=>toggleColumn(column)} style={{...btn,padding:"4px 7px",fontSize:11,maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",background:selectedColumns.includes(column)?"var(--accent-glow)":"var(--bg-tertiary)",borderColor:selectedColumns.includes(column)?"var(--accent)":"var(--border)"}}>{selectedColumns.includes(column)?"✓ ":"＋ "}{column}{schemaAssist.virtual_columns?.includes(column)?" · TEG map":""}</button>):<span style={{fontSize:12,color:"var(--text-secondary)"}}>일치하는 열이 없습니다.</span>}
       </div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
-        <span style={{fontSize:11,color:"var(--text-secondary)",flex:1}}>선택 {selectedColumns.length}개 · JOIN key인 ROOT_LOT_ID, WAFER_ID는 자동 포함됩니다.</span>
-        <button type="button" disabled={!selectedColumns.length} onClick={applyColumns} style={{...btn,padding:"5px 9px"}}>선택 열 SQL 반영</button>
+        <span style={{fontSize:11,color:"var(--text-secondary)",flex:1}}>선택 {selectedColumns.length}개 · Root Lot/Wafer 열이 있으면 자동 포함됩니다. SQL에서 열 이름 한 글자를 입력하고 <b>Tab</b>을 누르면 자동완성됩니다.</span>
+        <button type="button" disabled={!selectedColumns.length} onClick={()=>applyColumns()} style={{...btn,padding:"5px 9px"}}>선택 열 SQL 반영</button>
       </div>
     </div>}
   </div>;
@@ -792,15 +828,16 @@ export default function My_ChartBuilder({user}){
       ||sourcesOut.find(source=>Array.isArray(source.columns)&&shotPairs.some(pair=>source.columns.includes(pair.x)&&source.columns.includes(pair.y)))
       ||sourcesOut.find(source=>source.product)||null;
   },[result,xCol,mapYCol,shotPairs]);
+  const radiusProduct=radiusSource?.inline_coordinate_mapping?.vehicles?.[0]||radiusSource?.product||"";
   useEffect(()=>{
-    if(!["radius","wafer_map"].includes(chartType)||!radiusSource?.product){setRadiusLayout(null);setRadiusError("");setRadiusBusy(false);return undefined;}
+    if(!["radius","wafer_map"].includes(chartType)||!radiusProduct){setRadiusLayout(null);setRadiusError("");setRadiusBusy(false);return undefined;}
     let alive=true;setRadiusBusy(true);setRadiusError("");
-    sf(`/api/filebrowser/chart-builder/radius-layout?product=${encodeURIComponent(radiusSource.product)}`)
+    sf(`/api/filebrowser/chart-builder/radius-layout?product=${encodeURIComponent(radiusProduct)}`)
       .then(data=>{if(alive)setRadiusLayout(data);})
       .catch(error=>{if(alive){setRadiusLayout(null);setRadiusError(error.message||String(error));}})
       .finally(()=>{if(alive)setRadiusBusy(false);});
     return()=>{alive=false;};
-  },[chartType,radiusSource?.product]);
+  },[chartType,radiusProduct]);
   const radiusMatcher=useMemo(()=>{
     if(!["radius","wafer_map"].includes(chartType)||!xCol||!mapYCol||!radiusLayout?.rows?.length)return null;
     return radiusCoordinateMatcher(rows,xCol,mapYCol,radiusLayout.rows);
@@ -1119,7 +1156,8 @@ export default function My_ChartBuilder({user}){
           const groups=panelShots.get(key);if(groups)addShot(groups,r);
         });
         const panels=mapGroups.map(group=>({key:group.key,label:group.label,points:shotPoints(panelShots.get(group.key)||new Map())})).filter(panel=>panel.points.length);
-        return{chart_type:"wafer_map",title:`${yCol} WF MAP Trellis (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:source?.product||"",points:[],panels,aggregation:mapAggregation,map_scope:mapScope};
+        const mapVehicle=source?.inline_coordinate_mapping?.vehicles?.[0]||source?.product||"";
+        return{chart_type:"wafer_map",title:`${yCol} WF MAP Trellis (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points:[],panels,aggregation:mapAggregation,map_scope:mapScope};
       }
       const selected=mapGroups.find(group=>group.key===mapTarget);
       if(!selected)return{chart_type:"wafer_map",error:"표시할 root lot 또는 wafer를 선택해 주세요."};
@@ -1129,7 +1167,8 @@ export default function My_ChartBuilder({user}){
         addShot(groups,r);
       });
       const points=shotPoints(groups);
-      return{chart_type:"wafer_map",title:`${selected.label} · ${yCol} WF MAP (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:source?.product||"",points,aggregation:mapAggregation,map_scope:mapScope,map_target:selected};
+      const mapVehicle=source?.inline_coordinate_mapping?.vehicles?.[0]||source?.product||"";
+      return{chart_type:"wafer_map",title:`${selected.label} · ${yCol} WF MAP (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points,aggregation:mapAggregation,map_scope:mapScope,map_target:selected};
     }
     if(chartType==="radius"){
       const validPair=shotPairs.find(pair=>pair.x===xCol&&pair.y===mapYCol);
@@ -1240,23 +1279,23 @@ export default function My_ChartBuilder({user}){
   return <div style={{padding:"20px 24px 60px",maxWidth:1500,margin:"0 auto",color:"var(--text-primary)"}}>
     <section style={{...card,marginBottom:16,borderColor:"var(--accent)",background:"linear-gradient(135deg,var(--bg-secondary),var(--accent-glow))"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
-        <strong style={{fontSize:15}}>✨ 차트 AI Assistant</strong>
-        <span style={{fontSize:11,padding:"3px 7px",borderRadius:99,border:"1px solid var(--ok-line)",background:"var(--ok-50)",color:"var(--ok)",fontWeight:800}}>운영 API 직접 실행</span>
-        <span style={{fontSize:12,color:"var(--text-secondary)"}}>현재 Query·JOIN·차트 설정에서 요청한 부분만 바꿉니다.</span>
+        <strong style={{fontSize:15}}>🧭 차트 어시스트</strong>
+        <span style={{fontSize:11,padding:"3px 7px",borderRadius:99,border:"1px solid var(--ok-line)",background:"var(--ok-50)",color:"var(--ok)",fontWeight:800}}>AI 없이 규칙 우선</span>
+        <span style={{fontSize:12,color:"var(--text-secondary)"}}>차트 종류·축·범례·색·크기·Trellis·JOIN은 운영 API 규칙으로 바로 바꿉니다. 규칙 밖 요청만 연결된 AI를 시도합니다.</span>
       </div>
       <div style={{display:"flex",gap:8,alignItems:"stretch"}}>
-        <textarea aria-label="차트 AI Assistant 요청" value={assistantPrompt} onChange={event=>setAssistantPrompt(event.target.value)} rows={2}
+        <textarea aria-label="차트 어시스트 요청" value={assistantPrompt} onChange={event=>setAssistantPrompt(event.target.value)} rows={2}
           onKeyDown={event=>{if(event.key==="Enter"&&!event.shiftKey){if(event.nativeEvent?.isComposing||event.keyCode===229)return;event.preventDefault();askChartAssistant();}}}
-          placeholder="예: 차트 높이와 넓이를 조금 키워줘 · 파란색으로 바꿔줘 · split으로 trellis 바꿔줘 · 첫 JOIN을 inner로 바꿔줘"
+          placeholder="예: 기본 차트 자동 추천 · X축은 tkout_time, Y축은 value · 범례 숨겨줘 · 첫 JOIN을 inner로"
           style={{...input,resize:"vertical",lineHeight:1.5,flex:1}}/>
         <button type="button" onClick={()=>askChartAssistant()} disabled={assistantBusy||busy||codeBusy}
           style={{...btn,minWidth:96,background:"var(--accent)",borderColor:"var(--accent)",color:"#fff",opacity:(assistantBusy||busy||codeBusy)?0.65:1}}>{assistantBusy?"수정 중…":"바꿔줘"}</button>
       </div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
-        {["차트 높이·넓이 20% 키워줘","파란색으로 바꿔줘","Trellis 해제해줘","첫 JOIN을 inner로 바꿔줘"].map(example=><button type="button" key={example} onClick={()=>askChartAssistant(example)} disabled={assistantBusy||busy||codeBusy} style={{...btn,padding:"4px 8px",fontSize:11,fontWeight:700}}>{example}</button>)}
+        {["기본 차트 자동 추천해줘","scatter로 바꾸고 X축은 shot_x, Y축은 value로","범례 숨겨줘","Trellis 해제해줘","첫 JOIN을 inner로 바꿔줘"].map(example=><button type="button" key={example} onClick={()=>askChartAssistant(example)} disabled={assistantBusy||busy||codeBusy} style={{...btn,padding:"4px 8px",fontSize:11,fontWeight:700}}>{example}</button>)}
       </div>
       {assistantReply&&<div style={{marginTop:9,padding:"8px 10px",borderRadius:7,border:`1px solid ${assistantReply.ok===false?"var(--danger-line)":"var(--border)"}`,background:"var(--bg-primary)",fontSize:12,lineHeight:1.55,color:assistantReply.ok===false?"var(--danger)":"var(--text-primary)"}}>
-        <b>Assistant</b> · {assistantReply.message}
+        <b>어시스트</b> <span style={{marginRight:5,color:"var(--text-secondary)"}}>· {assistantReply.llm?.used?"연결 AI 사용":"로컬 규칙 적용"}</span>· {assistantReply.message}
         {assistantReply.requires_rerun&&<span style={{marginLeft:7,color:"var(--accent)",fontWeight:800}}>JOIN 변경 · 자동 재조회</span>}
         {!!assistantReply.warnings?.length&&<div style={{marginTop:3,color:"var(--warn)"}}>{assistantReply.warnings.join(" · ")}</div>}
       </div>}
@@ -1394,7 +1433,17 @@ export default function My_ChartBuilder({user}){
     </details>
     {result&&<div style={{display:"grid",gap:12}}>
       {(result.warnings||[]).map((w,i)=><div key={i} style={{padding:"8px 10px",border:"1px solid var(--warn-line)",background:"var(--warn-50)",color:"var(--warn)",borderRadius:7,fontSize:13}}>{w}</div>)}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:8}}>{(result.sources||[]).map(s=><details key={s.id} style={card}><summary style={{cursor:"pointer",fontWeight:900}}>{s.id} · {s.root}/{s.product} · {s.row_count.toLocaleString()}행</summary><pre style={{whiteSpace:"pre-wrap",fontSize:11,margin:"9px 0 0",color:"var(--text-secondary)"}}>{s.sql}</pre></details>)}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:8}}>{(result.sources||[]).map(s=>{
+        const mapping=s.inline_coordinate_mapping;
+        return <details key={s.id} style={card}><summary style={{cursor:"pointer",fontWeight:900}}>{s.id} · {s.root}/{s.product} · {s.row_count.toLocaleString()}행</summary>
+          {mapping&&<div style={{marginTop:9,padding:"7px 9px",borderRadius:6,border:`1px solid ${mapping.applied?"#86efac":"var(--warn-line)"}`,background:mapping.applied?"#f0fdf4":"var(--warn-50)",color:mapping.applied?"#166534":"var(--warn)",fontSize:11,lineHeight:1.55}}>
+            <b>TEG Inline map</b> · {mapping.applied?`${Number(mapping.matched_rows||0).toLocaleString()}/${Number((mapping.matched_rows||0)+(mapping.unmatched_rows||0)).toLocaleString()}행 매칭 (${Number(mapping.match_rate||0).toFixed(2)}%)`:mapping.configured?"사용 가능한 좌표 없음":"연결 규칙 없음"}
+            {!!mapping.map_names?.length&&<><br/>TABLE {mapping.map_names.join(", ")}</>}
+            {!!mapping.vehicles?.length&&<> · 제품 map {mapping.vehicles.join(", ")}</>}
+          </div>}
+          <pre style={{whiteSpace:"pre-wrap",fontSize:11,margin:"9px 0 0",color:"var(--text-secondary)"}}>{s.sql}</pre>
+        </details>;
+      })}</div>
       <DataTable title={`JOIN 결과 · ${Number(joined.row_count||0).toLocaleString()}행`} columns={columns} rows={rows.slice(0,500)}/>
       {rows.length>0&&<div style={{...card,background:"#fff",color:"#111827"}}>
         {/* 차트 설정 — 어떤 열이 X·Y·Color·Trellis 로 갔고 집계가 무엇인지 한눈에 보이게

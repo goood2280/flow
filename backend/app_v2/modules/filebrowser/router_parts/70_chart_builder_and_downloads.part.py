@@ -97,11 +97,19 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     else:
                         warnings.append(f"{source_id}: 최근 {runtime_days}일 필터 열({requested_date_column})이 없어 원래 조건으로 조회했습니다.")
                 runtime_where = _chart_builder_runtime_where(all_columns, source, source_id, warnings)
-                selected = [c.strip() for c in str(selected_text or "").split(",") if c.strip() in set(all_columns)]
+                requested_columns = [c.strip() for c in str(selected_text or "").split(",") if c.strip()]
+                selected = [c for c in requested_columns if c in set(all_columns)]
                 if not selected:
                     selected = list(all_columns[:120])
                     if len(all_columns) > 120:
                         warnings.append(f"{source_id}: 전체 {len(all_columns)}열 중 앞 120열만 조회했습니다. SELECT 열을 지정해 주세요.")
+                visible_selected = list(selected)
+                hidden_inline_columns: list[str] = []
+                if _chart_builder_is_inline_root(source_root):
+                    for column in _chart_builder_inline_required_columns(all_columns):
+                        if column not in selected:
+                            selected.append(column)
+                            hidden_inline_columns.append(column)
                 active_sort, _ = _resolve_view_sort_spec(sort_spec, all_columns)
                 where = _combine_where(
                     _combine_where(_normalize_view_sql_filter(normalized, all_columns, schema), runtime_where),
@@ -115,7 +123,22 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     order_by=active_sort.get("column") or "",
                     descending=_sort_descending(active_sort),
                 )
-                display_sql = _build_ai_sql_display_sql(selected, normalized, active_sort)
+                display_sql = _build_ai_sql_display_sql(visible_selected, normalized, active_sort)
+                if _chart_builder_is_inline_root(source_root):
+                    df, inline_meta = _chart_builder_attach_inline_coordinates(
+                        df, source, source_id, warnings,
+                    )
+                    source_meta.update(inline_meta)
+                    removable = [column for column in hidden_inline_columns if column in df.columns]
+                    if removable:
+                        df = df.drop(removable)
+                    mapping_status = source_meta.get("inline_coordinate_mapping") or {}
+                    if mapping_status.get("applied"):
+                        display_columns = list(visible_selected)
+                        for column in ("shot_x", "shot_y", "inline_map_name", "inline_vehicle"):
+                            if column in df.columns and column not in display_columns:
+                                display_columns.append(column)
+                        display_sql = _build_ai_sql_display_sql(display_columns, normalized, active_sort)
             except HTTPException:
                 raise
             except Exception as exc:
@@ -231,10 +254,23 @@ def _chart_builder_cache_limits() -> tuple[int, int, float]:
 
 
 def _chart_builder_cache_key(req: ChartBuilderRunReq) -> str:
+    inline_mapping_signature = []
+    if any(_chart_builder_is_inline_root(source.root) for source in (req.sources or [])):
+        for path in (
+            PATHS.base_root / inline_coordinates.DEFAULT_RULEBOOK_NAME,
+            PATHS.base_root / inline_coordinates.LEGACY_RULEBOOK_NAME,
+            PATHS.base_root / "credential" / "inline_map_settings.json",
+        ):
+            try:
+                stat = path.stat()
+                inline_mapping_signature.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
+            except OSError:
+                inline_mapping_signature.append((path.name, 0, 0))
     payload = {
         "sources": [_chart_builder_model_dict(source) for source in (req.sources or [])],
         "joins": [_chart_builder_model_dict(join) for join in (req.joins or [])],
         "max_rows": max(1, min(10000, int(req.max_rows or 10000))),
+        "inline_mapping_signature": inline_mapping_signature,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

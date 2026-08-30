@@ -130,6 +130,51 @@ def _schema_for_product_source(root: str, product: str) -> tuple[dict[str, str],
     return _schema_for_data_file(fp), size
 
 
+_CHART_BUILDER_INLINE_VIRTUAL_SCHEMA = {
+    "shot_x": "Float64 · TEG Inline map",
+    "shot_y": "Float64 · TEG Inline map",
+    "inline_map_name": "String · TEG Inline map",
+    "inline_vehicle": "String · TEG product",
+}
+
+
+def _chart_builder_is_inline_root(root: str) -> bool:
+    """True only for the raw INLINE DB, never for SplitTable INLINE columns."""
+    token = re.sub(r"[^A-Z0-9]+", "_", str(root or "").strip().upper()).strip("_")
+    return bool(token and "INLINE" in token and token not in {"SPLITTABLE", "YIELD_SHOT"})
+
+
+def _chart_builder_inline_assist(root: str, product: str) -> dict:
+    if not _chart_builder_is_inline_root(root):
+        return {}
+    try:
+        rules = inline_coordinates.load_matching_rules(
+            PATHS.base_root,
+            products=[product] if str(product or "").strip() else (),
+        )
+    except Exception:
+        rules = []
+    return {
+        "kind": "inline",
+        "virtual_columns": list(_CHART_BUILDER_INLINE_VIRTUAL_SCHEMA),
+        "recommended_columns": [
+            "root_lot_id", "wafer_id", "step_id", "item_id", "subitem_id", "value",
+            "shot_x", "shot_y",
+        ],
+        "inline_maps": [
+            {
+                "step_id": str(rule.get("step_id") or ""),
+                "item_id": str(rule.get("item_id") or ""),
+                "map_name": str(rule.get("matching_table") or ""),
+                "vehicle": str(rule.get("vehicle") or ""),
+                "available": bool(rule.get("available")),
+                "shot_count": int(rule.get("shot_count") or 0),
+            }
+            for rule in rules[:100]
+        ],
+    }
+
+
 @router.get("/columns/search")
 def search_columns(request: Request, root: str = Query(""), product: str = Query(""),
                    file: str = Query(""), q: str = Query(""),
@@ -155,7 +200,13 @@ def search_columns(request: Request, root: str = Query(""), product: str = Query
         schema, source_size = _schema_for_product_source(root, product)
     else:
         raise HTTPException(400, "Specify file or root+product")
-    columns = list(schema.keys())
+    assist = _chart_builder_inline_assist(root, product) if root and product and not file else {}
+    virtual_schema = {
+        name: dtype for name, dtype in _CHART_BUILDER_INLINE_VIRTUAL_SCHEMA.items()
+        if name not in schema
+    } if assist else {}
+    completion_schema = {**schema, **virtual_schema}
+    columns = list(completion_schema.keys())
     needle = str(q or "").strip().casefold()
     matches = [c for c in columns if not needle or needle in c.casefold()]
     try:
@@ -171,7 +222,9 @@ def search_columns(request: Request, root: str = Query(""), product: str = Query
     return {
         "ok": True,
         "columns": page,
-        "dtypes": {c: schema.get(c, "") for c in page},
+        "dtypes": {c: completion_schema.get(c, "") for c in page},
+        "virtual_columns": [c for c in page if c in virtual_schema],
+        "assist": assist,
         "query": q,
         "offset": offset,
         "limit": limit,
@@ -396,11 +449,46 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
 
 
 def _chart_builder_radius_layout(product: str) -> dict:
+    def teg_layout() -> dict:
+        from core import teg_map as _teg_map
+        payload = _teg_map.map_payload(product)
+        shots = _teg_map.full_shots_for_payload(payload)
+        rows = []
+        seen = set()
+        for shot in shots:
+            try:
+                x = float(shot.get("x"))
+                y = float(shot.get("y"))
+                radius = float(shot.get("radius", shot.get("r")))
+            except (TypeError, ValueError):
+                continue
+            key = (round(x, 6), round(y, 6))
+            if key in seen or not all(math.isfinite(value) for value in (x, y, radius)):
+                continue
+            seen.add(key)
+            rows.append({"shot_x": key[0], "shot_y": key[1], "radius": round(radius, 8)})
+        if not rows:
+            raise LookupError(f"TEG 위치조회에 {product} shot geometry가 없습니다")
+        rows.sort(key=lambda row: (row["shot_y"], row["shot_x"]))
+        return {
+            "ok": True,
+            "product": str(product),
+            "mask": str(payload.get("vehicle") or product),
+            "file": "TEG 위치조회",
+            "rows": rows,
+            "row_count": len(rows),
+            "geometry": payload.get("geometry") or {},
+            "geometry_source": "teg_map",
+        }
+
     root = _db_root()
     path = next((candidate for candidate in root.iterdir()
                  if candidate.is_file() and candidate.name.casefold() == "chip_radius.csv"), None)
     if path is None:
-        raise HTTPException(404, f"Chip_Radius.csv 파일을 찾을 수 없습니다: {root}")
+        try:
+            return teg_layout()
+        except Exception as exc:
+            raise HTTPException(404, f"Chip_Radius.csv 또는 TEG 위치조회 geometry를 찾을 수 없습니다: {exc}") from exc
     try:
         frame = pl.read_csv(path, infer_schema_length=2000, encoding="utf8-lossy")
     except Exception as exc:
@@ -421,7 +509,10 @@ def _chart_builder_radius_layout(product: str) -> dict:
     wanted = product_key(product)
     matched_mask = next((mask for mask in masks if product_key(mask) == wanted), None)
     if matched_mask is None:
-        raise HTTPException(404, f"Chip_Radius.csv에 {product} 제품 Mask가 없습니다")
+        try:
+            return teg_layout()
+        except Exception as exc:
+            raise HTTPException(404, f"Chip_Radius.csv와 TEG 위치조회에 {product} 제품 geometry가 없습니다") from exc
     layout = (
         frame.filter(pl.col(mask_col).cast(pl.String, strict=False) == str(matched_mask))
         .select([
@@ -435,7 +526,10 @@ def _chart_builder_radius_layout(product: str) -> dict:
         .sort(["shot_y", "shot_x"])
     )
     if layout.is_empty():
-        raise HTTPException(404, f"Chip_Radius.csv의 {matched_mask} shot 정보가 비어 있습니다")
+        try:
+            return teg_layout()
+        except Exception as exc:
+            raise HTTPException(404, f"Chip_Radius.csv의 {matched_mask} shot 정보가 비어 있습니다") from exc
     geometry = {}
     try:
         from core.teg_map import fit_geometry_diagnosed
@@ -452,6 +546,7 @@ def _chart_builder_radius_layout(product: str) -> dict:
         "rows": serialize_rows(layout.to_dicts()),
         "row_count": layout.height,
         "geometry": geometry,
+        "geometry_source": "chip_radius",
     }
 
 
@@ -685,6 +780,200 @@ def _chart_builder_filter_frame(
     return out
 
 
+def _chart_builder_inline_required_columns(columns: list[str]) -> list[str]:
+    """Raw columns required for authoritative TEG Inline-map enrichment."""
+    required: list[str] = []
+    for aliases in (
+        ("step_id", "process_id"),
+        ("item_id", "rawitem_id", "item"),
+        ("subitem_id", "shot_id"),
+    ):
+        column = next((_chart_builder_runtime_column(columns, alias) for alias in aliases
+                       if _chart_builder_runtime_column(columns, alias)), "")
+        if column and column not in required:
+            required.append(column)
+    return required
+
+
+def _chart_builder_safe_rename(frame: pl.DataFrame, source: str, wanted: str) -> tuple[pl.DataFrame, str]:
+    if source not in frame.columns:
+        return frame, ""
+    candidate = wanted
+    suffix = 2
+    while candidate in frame.columns and candidate != source:
+        candidate = f"{wanted}_{suffix}"
+        suffix += 1
+    return (frame if candidate == source else frame.rename({source: candidate})), candidate
+
+
+def _chart_builder_attach_inline_coordinates(
+    frame: pl.DataFrame,
+    source: ChartBuilderSourceReq,
+    source_id: str,
+    warnings: list[str],
+) -> tuple[pl.DataFrame, dict]:
+    """Attach TEG Inline-map shot coordinates to a raw INLINE query result.
+
+    The rulebook selects the map with product/step/item and the map table owns
+    subitem_id -> shot coordinates. Raw INLINE shot columns are kept only as
+    audit evidence; the new shot_x/shot_y columns are always the TEG mapping.
+    """
+    if not _chart_builder_is_inline_root(source.root):
+        return frame, {}
+    meta = {
+        "inline_coordinate_mapping": {
+            "configured": False,
+            "applied": False,
+            "matched_rows": 0,
+            "unmatched_rows": int(frame.height),
+            "ambiguous_keys": 0,
+            "map_names": [],
+            "vehicles": [],
+        }
+    }
+    status = meta["inline_coordinate_mapping"]
+    try:
+        rules = inline_coordinates.load_matching_rules(
+            PATHS.base_root,
+            products=[source.product] if str(source.product or "").strip() else (),
+        )
+        mapping = inline_coordinates.load_coordinate_mapping(
+            PATHS.base_root,
+            products=[source.product] if str(source.product or "").strip() else (),
+        )
+    except Exception as exc:
+        warnings.append(f"{source_id}: TEG Inline map 설정을 읽지 못했습니다: {exc}")
+        return frame, meta
+
+    status["configured"] = bool(mapping.get("configured"))
+    status["map_names"] = list(mapping.get("configured_tables") or [])
+    status["missing_maps"] = list(mapping.get("missing_tables") or [])
+    if not status["configured"]:
+        warnings.append(
+            f"{source_id}: Inline shot 매칭 규칙이 없어 원본 결과만 표시합니다. "
+            "inline_shot_matching.csv에서 제품·STEP·ITEM을 TEG Inline map에 연결해 주세요."
+        )
+        return frame, meta
+
+    columns = list(frame.columns)
+    step_col = next((_chart_builder_runtime_column(columns, name) for name in ("step_id", "process_id")
+                     if _chart_builder_runtime_column(columns, name)), "")
+    item_col = next((_chart_builder_runtime_column(columns, name) for name in ("item_id", "rawitem_id", "item")
+                     if _chart_builder_runtime_column(columns, name)), "")
+    subitem_col = next((_chart_builder_runtime_column(columns, name) for name in ("subitem_id", "shot_id")
+                        if _chart_builder_runtime_column(columns, name)), "")
+    missing = [label for label, column in (("step_id/process_id", step_col), ("subitem_id", subitem_col)) if not column]
+    if missing:
+        status["reason"] = "missing_source_columns"
+        warnings.append(f"{source_id}: TEG Inline map 좌표를 붙일 원본 열이 없습니다: {', '.join(missing)}")
+        return frame, meta
+
+    rule_items = sorted({str(rule.get("item_id") or "").strip() for rule in rules if rule.get("item_id")}, key=str.casefold)
+    constant_item = ""
+    if not item_col:
+        requested = {
+            token.casefold() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_$]*", str(source.sql or ""))
+        }
+        candidates = [item for item in rule_items if item.casefold() in requested]
+        if len(candidates) == 1:
+            constant_item = candidates[0]
+        elif len(rule_items) == 1:
+            constant_item = rule_items[0]
+        else:
+            status["reason"] = "ambiguous_wide_item"
+            warnings.append(
+                f"{source_id}: item_id 열이 없고 연결된 Inline ITEM이 여러 개라 좌표 TABLE을 고를 수 없습니다. "
+                "조회할 ITEM 열 하나를 SQL SELECT에 포함해 주세요."
+            )
+            return frame, meta
+
+    vehicle_by_table = {
+        str(rule.get("matching_table") or "").strip().casefold(): str(rule.get("vehicle") or "").strip()
+        for rule in rules if rule.get("matching_table")
+    }
+    coordinate_by_key: dict[tuple[str, str, str], dict] = {}
+    ambiguous: set[tuple[str, str, str]] = set()
+    for row in mapping.get("rows") or []:
+        key = tuple(inline_coordinates.normalize_key(row.get(name)) for name in ("step_id", "item_id", "subitem_id"))
+        map_name = str(row.get("matching_table") or "").strip()
+        candidate = {
+            "__flow_inline_step": key[0],
+            "__flow_inline_item": key[1],
+            "__flow_inline_subitem": key[2],
+            "shot_x": float(row["shot_x"]),
+            "shot_y": float(row["shot_y"]),
+            "inline_map_name": map_name,
+            "inline_vehicle": vehicle_by_table.get(map_name.casefold(), ""),
+        }
+        old = coordinate_by_key.get(key)
+        if old and (old["shot_x"], old["shot_y"], old["inline_map_name"].casefold()) != (
+            candidate["shot_x"], candidate["shot_y"], candidate["inline_map_name"].casefold(),
+        ):
+            ambiguous.add(key)
+        else:
+            coordinate_by_key[key] = candidate
+    for key in ambiguous:
+        coordinate_by_key.pop(key, None)
+    status["ambiguous_keys"] = len(ambiguous)
+    if not coordinate_by_key:
+        status["reason"] = "no_usable_coordinates"
+        detail = ", ".join(status.get("missing_maps") or [])
+        warnings.append(
+            f"{source_id}: 연결된 TEG Inline map에 사용할 수 있는 subitem 좌표가 없습니다"
+            f"{f' ({detail})' if detail else ''}."
+        )
+        return frame, meta
+
+    # Preserve raw coordinates for audit, then reserve canonical names for the
+    # TEG map. Case-insensitive raw column names are handled as well.
+    raw_coordinate_columns: dict[str, str] = {}
+    for canonical in ("shot_x", "shot_y"):
+        raw = _chart_builder_runtime_column(list(frame.columns), canonical)
+        if raw:
+            frame, renamed = _chart_builder_safe_rename(frame, raw, f"raw_inline_{canonical}")
+            raw_coordinate_columns[canonical] = renamed
+    status["raw_coordinate_columns"] = raw_coordinate_columns
+
+    map_frame = pl.DataFrame(list(coordinate_by_key.values()))
+    working = frame.with_row_index("__flow_inline_row_order").with_columns([
+        pl.col(step_col).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase().alias("__flow_inline_step"),
+        (pl.col(item_col).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase()
+         if item_col else pl.lit(constant_item.casefold())).alias("__flow_inline_item"),
+        pl.col(subitem_col).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase().alias("__flow_inline_subitem"),
+    ])
+    working = (
+        working.join(
+            map_frame,
+            on=["__flow_inline_step", "__flow_inline_item", "__flow_inline_subitem"],
+            how="left",
+        )
+        .sort("__flow_inline_row_order")
+        .drop(["__flow_inline_row_order", "__flow_inline_step", "__flow_inline_item", "__flow_inline_subitem"])
+    )
+    matched = working.filter(pl.col("shot_x").is_not_null() & pl.col("shot_y").is_not_null()).height
+    unmatched = int(working.height - matched)
+    status.update({
+        "applied": True,
+        "matched_rows": int(matched),
+        "unmatched_rows": unmatched,
+        "match_rate": round((matched * 100.0 / working.height), 2) if working.height else 0.0,
+        "vehicles": sorted({value for value in working["inline_vehicle"].drop_nulls().to_list() if str(value).strip()}, key=str.casefold),
+    })
+    if unmatched:
+        sample = (
+            working.filter(pl.col("shot_x").is_null())
+            .select(pl.col(subitem_col).cast(pl.String, strict=False)).drop_nulls().unique().head(8).to_series().to_list()
+        )
+        status["unmatched_subitems"] = [str(value) for value in sample]
+        warnings.append(
+            f"{source_id}: TEG Inline map 좌표 매칭 {matched:,}/{working.height:,}행 "
+            f"({status['match_rate']:.2f}%), 미매칭 {unmatched:,}행은 shot 차트에서 제외됩니다."
+        )
+    elif working.height:
+        warnings.append(f"{source_id}: TEG Inline map 좌표 {matched:,}행을 모두 매칭했습니다.")
+    return working, meta
+
+
 def _chart_builder_yield_shot_frame(
     source: ChartBuilderSourceReq, *, max_rows: int,
 ) -> tuple[pl.DataFrame, str, list[str], dict]:
@@ -855,7 +1144,8 @@ _CHART_ASSISTANT_TYPES = {
     "scatter", "line", "box", "bar", "bar_horizontal", "pie", "donut", "radius", "wafer_map",
 }
 _CHART_ASSISTANT_FIELDS = {
-    "type", "x", "y", "color", "trellis", "width", "height", "highlight", "color_rules", "color_else",
+    "type", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
+    "color_rules", "color_else",
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
 _CHART_ASSISTANT_JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
@@ -928,6 +1218,57 @@ def _chart_assistant_deterministic_operations(
         set_chart("height", round(int(chart.get("height") or 600) * (1.2 if grow else 0.8)))
 
     mentioned_columns = [column for column in columns if str(column).casefold() in folded]
+    chart_type = ""
+    for labels, value in (
+        (("wafer map", "wf map", "웨이퍼 맵", "웨이퍼맵"), "wafer_map"),
+        (("radius", "반경"), "radius"),
+        (("scatter", "corr", "상관", "산점"), "scatter"),
+        (("trend", "line", "트렌드", "추이", "선 그래프"), "line"),
+        (("box", "박스", "상자"), "box"),
+        (("horizontal bar", "가로 막대"), "bar_horizontal"),
+        (("donut", "도넛"), "donut"),
+        (("pie", "파이"), "pie"),
+        (("bar", "막대"), "bar"),
+    ):
+        if any(label in folded for label in labels):
+            chart_type = value
+            break
+    if chart_type:
+        set_chart("type", chart_type)
+
+    def mentioned_axis(axis: str) -> str:
+        for column in columns:
+            escaped = re.escape(str(column))
+            if re.search(rf"(?:{axis}\s*축?|{axis}\s*=)\s*(?:을|를|은|는|:)?\s*{escaped}(?![A-Za-z0-9_])", prompt, re.I):
+                return str(column)
+            if re.search(rf"(?<![A-Za-z0-9_]){escaped}\s*(?:을|를|은|는)?\s*{axis}\s*(?:축|로)", prompt, re.I):
+                return str(column)
+        return ""
+
+    x_axis = mentioned_axis("x")
+    y_axis = mentioned_axis("y")
+    if x_axis:
+        set_chart("x", x_axis)
+    if y_axis:
+        set_chart("y", y_axis)
+
+    auto_context = any(word in folded for word in ("자동 추천", "자동 설정", "추천해", "알아서", "기본 차트"))
+    if auto_context:
+        by_fold = {str(column).casefold(): str(column) for column in columns}
+        time_col = next((by_fold[name] for name in ("tkout_time", "tkin_time", "time", "date") if name in by_fold), "")
+        value_col = next((by_fold[name] for name in ("value", "item_value", "measurement_value", "shot_yield") if name in by_fold), "")
+        numeric_guess = value_col or next((str(column) for column in columns if str(column).casefold() not in {
+            "root_lot_id", "lot_id", "wafer_id", "item_id", "subitem_id", "step_id", "tkout_time", "tkin_time",
+        }), "")
+        if "shot_x" in by_fold and "shot_y" in by_fold and numeric_guess:
+            set_chart("type", "wafer_map")
+            set_chart("x", by_fold["shot_x"])
+            set_chart("y", numeric_guess)
+        elif time_col and numeric_guess:
+            set_chart("type", "line")
+            set_chart("x", time_col)
+            set_chart("y", numeric_guess)
+
     if "trellis" in folded or "트렐리스" in folded:
         if any(word in folded for word in ("없애", "해제", "끄기", "빼줘")):
             set_chart("trellis", "")
@@ -946,6 +1287,13 @@ def _chart_assistant_deterministic_operations(
             set_chart("color", "")
         elif len(mentioned_columns) == 1:
             set_chart("color", mentioned_columns[0])
+
+    legend_context = "legend" in folded or "범례" in folded
+    if legend_context:
+        set_chart("show_legend", not any(word in folded for word in ("없애", "숨겨", "끄기", "빼줘")))
+    highlight_context = "highlight" in folded or "하이라이트" in folded or "강조 선택" in folded
+    if highlight_context:
+        set_chart("highlight", not any(word in folded for word in ("없애", "해제", "끄기", "빼줘")))
 
     join_context = "join" in folded or "조인" in folded
     if join_context:
@@ -972,7 +1320,7 @@ def _chart_assistant_llm_operations(
         system = """You edit an existing Flow ChartBuilder definition by returning a minimal patch.
 Never rewrite unrelated settings and never invent a column, query id, or join.
 Allowed operations:
-- {scope:'chart', field:type|x|y|color|trellis|width|height|highlight|color_rules|color_else, value:any}
+- {scope:'chart', field:type|x|y|color|trellis|width|height|highlight|show_legend|color_rules|color_else, value:any}
 - {scope:'join', index:zero-based integer, field:left|right|left_on|right_on|how, value:any}
 If the request is ambiguous, return no operations and ask one short clarification in message.
 For a solid color set chart color='custom', color_rules=[], and color_else to the requested CSS color.
@@ -1067,7 +1415,7 @@ def _chart_assistant_apply_operations(
                 except Exception:
                     warnings.append("Height는 240~1600 숫자로 입력해 주세요.")
                     continue
-            elif field == "highlight":
+            elif field in {"highlight", "show_legend"}:
                 value = value if isinstance(value, bool) else str(value or "").strip().lower() in {"1", "true", "yes", "on"}
             elif field == "color_rules":
                 if not isinstance(value, list):

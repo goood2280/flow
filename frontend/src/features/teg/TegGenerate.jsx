@@ -14,7 +14,8 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
-import { Button, Card, DataTable, EmptyState, Pill } from "../../components/UXKit";
+import { Banner, Button, Card, DataTable, EmptyState, Field, Input, Panel, Pill } from "../../components/UXKit";
+import "./TegGenerate.css";
 
 const API = "/api/teg-map";
 const PCHK_COLOR = "#dc2626";
@@ -308,8 +309,8 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
    ══════════════════════════════════════════════════════════════════════════ */
 const GRID_SIZE = 480;                 // MAIN 미리보기 SVG 크기
 /* 격자 입력표 — 선으로 칸을 구분한다 (엑셀처럼 보이고, 붙여넣기도 엑셀 블록 그대로) */
-const GRID_TH = { border: "1px solid var(--line)", background: "var(--bg-soft, rgba(128,128,128,0.08))",
-                  fontSize: 10, color: "var(--muted)", fontWeight: 600, padding: "2px 4px",
+const GRID_TH = { border: "1px solid var(--line)", background: "var(--surface-subtle)",
+                  fontSize: "var(--font-size-caption)", color: "var(--muted)", fontWeight: 600, padding: "2px 4px",
                   textAlign: "center", position: "sticky", top: 0 };
 const GRID_TD = { border: "1px solid var(--line)", padding: 0 };
 
@@ -319,13 +320,11 @@ const GRID_TD = { border: "1px solid var(--line)", padding: 0 };
 const GridCell = memo(function GridCell({ mainName, r, c, value, onChange, onPasteBlock }) {
   return (
     <input value={value || ""} spellCheck={false}
+      className="teg-main-grid__cell-input"
       onChange={e => onChange(mainName, r, c, e.target.value)}
       onPaste={e => onPasteBlock(e, mainName, r, c)}
       title={`행 ${r + 1} · 열 ${c + 1} — 엑셀 블록 붙여넣기 가능`}
-      style={{ width: "100%", minWidth: 58, boxSizing: "border-box", background: "transparent",
-               fontFamily: "monospace", fontSize: 11, padding: "3px 4px",
-               border: "none", outline: "none",
-               fontWeight: value ? 700 : 400, textAlign: "center" }} />
+      style={{ fontWeight: value ? 700 : 400 }} />
   );
 });
 
@@ -361,13 +360,13 @@ function MainGridPreview({ main, names }) {
               <g key={`${cell.r},${cell.c}`}>
                 <rect x={x} y={yTop} width={Math.max(0.6 / zoom, cw)}
                   height={Math.max(0.6 / zoom, ch)}
-                  fill={nm ? "rgba(17,24,39,0.06)" : "none"} stroke="#111827"
+                  fill={nm ? "var(--surface-selected)" : "none"} stroke="var(--text-strong)"
                   strokeWidth={(nm ? 1.4 : 0.5) / zoom}
                   strokeDasharray={nm ? undefined : `${2 / zoom} ${2 / zoom}`} />
                 {nm && fs * zoom >= 2.5 && (
                   <text x={x + cw / 2} y={yTop + ch / 2} fontSize={fs}
                     textAnchor="middle" dominantBaseline="central"
-                    fill="#111827" fontWeight={700}>{nm}</text>
+                    fill="var(--text-strong)" fontWeight={700}>{nm}</text>
                 )}
               </g>
             );
@@ -404,23 +403,29 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
   };
 
   return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
-                    marginBottom: 8 }}>
-        <span style={{ fontWeight: 700, fontFamily: "monospace" }}>{main.name}</span>
+    <Panel className="teg-main-result" title={main.name}
+      subtitle={`die ${fmtN(main.w, 3)}×${fmtN(main.h, 3)} mm`}
+      right={
+        <span className="teg-main-result__actions">
+          <Button onClick={() => onClear(main.name)} disabled={!named.length}>이름 지우기</Button>
+          <Button onClick={copy} disabled={!named.length}>표 복사</Button>
+          <Button disabled={!named.length}
+            onClick={() => downloadText(`${main.name}_inner_teg.csv`, asText(","))}>
+            CSV 다운로드
+          </Button>
+        </span>
+      }>
+      <div className="teg-main-result__summary">
         <Pill tone="neutral" size="sm">
-          die {fmtN(main.w, 3)}×{fmtN(main.h, 3)} mm
+          격자 {main.cols}열 × {main.rows}행 · 칸 {fmtN(main.cell_w, 3)}×{fmtN(main.cell_h, 3)} mm
         </Pill>
-        <Pill tone="neutral" size="sm">
-          격자 {main.cols}열 × {main.rows}행 (칸 {fmtN(main.cell_w, 3)}×{fmtN(main.cell_h, 3)} mm)
-        </Pill>
-        <Pill tone={named.length ? "ok" : "neutral"} size="sm">이름 {named.length}</Pill>
+        <Pill tone={named.length ? "ok" : "neutral"} size="sm">입력 TEG {named.length}</Pill>
         {main.exact ? (
-          <Pill tone="ok" size="sm" title="die 크기가 칸으로 딱 나눠집니다">딱 맞음</Pill>
+          <Pill tone="ok" size="sm" title="die 크기가 칸으로 딱 나눠집니다">크기 딱 맞음</Pill>
         ) : (
           <Pill tone="warn" size="sm"
-            title="남는 길이 — TEG 사이 거리(gap)를 조절해 0 에 맞추세요">
-            남음 X {fmtN(main.remainder_x, 3)} · Y {fmtN(main.remainder_y, 3)} mm
+            title="남는 길이를 양쪽에 절반씩 나눠 격자 전체를 MAIN 중앙에 배치합니다">
+            양쪽 여백 X {fmtN(main.edge_margin_x, 3)}씩 · Y {fmtN(main.edge_margin_y, 3)}씩 mm
           </Pill>
         )}
         {main.truncated && (
@@ -432,37 +437,27 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
             들어가는 칸이 없습니다
           </Pill>
         )}
-        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Button onClick={() => onClear(main.name)} disabled={!named.length}>이름 지우기</Button>
-          <Button onClick={copy} disabled={!named.length}>표 복사</Button>
-          <Button disabled={!named.length}
-            onClick={() => downloadText(`${main.name}_inner_teg.csv`, asText(","))}>
-            CSV 다운로드
-          </Button>
-        </span>
       </div>
 
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div>
+      <div className="teg-main-result__workspace">
+        <div className="teg-main-result__preview">
           <MainGridPreview main={main} names={names} />
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4,
-                        maxWidth: GRID_SIZE }}>
+          <div className="teg-main-result__caption">
             <span style={{ color: DIE_COLOR, fontWeight: 700 }}>▢</span> MAIN die ·
             <span style={{ fontWeight: 700 }}> ▪</span> TEG 자리(검정 테두리, 이름을 적으면
             사각형 가운데에 표시) · 휠/드래그로 확대·이동
           </div>
         </div>
 
-        <div style={{ flex: "1 1 420px", minWidth: 320 }}>
+        <div className="teg-main-result__editor">
           {/* 격자 입력 — 화면 위가 die 위쪽이 되도록 행을 역순으로 그린다.
               선으로 구분된 표이고, 엑셀에서 복사한 블록을 그대로 붙여넣을 수 있다. */}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+          <div className="teg-main-result__hint">
             칸에 TEG 이름을 적으면 아래 표와 그림에 좌표가 함께 나옵니다 (아래쪽 행 = die 아래쪽).
             <b> 엑셀에서 복사한 블록을 칸에 붙여넣으면</b> 그 칸을 좌상단으로 여러 칸이 한 번에 채워집니다.
           </div>
-          <div style={{ overflow: "auto", maxHeight: 260, border: "1px solid var(--line)",
-                        borderRadius: 6 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <div className="teg-main-grid__frame">
+            <table className="teg-main-grid__table">
               <thead>
                 <tr>
                   <th style={GRID_TH}></th>
@@ -481,7 +476,7 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
                         <td key={`${cell.r},${cell.c}`}
                           style={{ ...GRID_TD,
                                    background: names[`${cell.r},${cell.c}`]
-                                     ? "rgba(17,24,39,0.05)" : "transparent" }}>
+                                     ? "var(--surface-selected)" : "transparent" }}>
                           <GridCell mainName={main.name} r={cell.r} c={cell.c}
                             value={names[`${cell.r},${cell.c}`]}
                             onChange={onChange} onPasteBlock={onPasteBlock} />
@@ -495,7 +490,7 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
           </div>
 
           {named.length > 0 && (
-            <div style={{ marginTop: 8 }}>
+            <div className="teg-main-result__table">
               <DataTable maxHeight={220} rows={named}
                 columns={[
                   { key: "name", label: "TEG" },
@@ -510,7 +505,7 @@ function MainGridBlock({ main, flats, names, onChange, onClear, onPasteBlock }) 
           )}
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -590,100 +585,105 @@ function MainGridCard({ vehicle, refreshKey = 0 }) {
     p.includes(name) ? p.filter(x => x !== name) : [...p, name]);
 
   return (
-    <Card title="MAIN 내부 TEG 좌표 생성"
+    <Card title="MAIN 내부 TEG 좌표 생성" className="teg-main-card"
       right={
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <div className="teg-main-card__header-actions">
           <Pill tone={wanted.length ? "ok" : "neutral"} size="sm">MAIN {wanted.length}</Pill>
           <Button variant="primary" disabled={busy || !vehicle} onClick={() => load(wanted)}>
             {busy ? "생성 중…" : "격자 만들기"}
           </Button>
         </div>
       }>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-        MAIN(die 급 블록) 안의 TEG 는 정답지에 없어 좌표를 만들 근거가 없습니다. die 를
-        <b> 기본 TEG 사이즈</b>({data ? `${fmtN(data.teg.w, 3)}×${fmtN(data.teg.h, 3)} mm` : "⚙️ 설정"})
-        로 x·y 각각 나눠 자리를 만들고, 칸에 이름을 적으면 그 자리의 Mapfile 상대좌표(Horizontal 기준)가
-        나옵니다. 딱 떨어지지 않으면 <b>TEG 사이 거리</b>를 넣어 맞추세요. 여러 MAIN 을 동시에 다룰 수 있습니다.
-        <br />※ 이 좌표에는 ⚙️ 설정의 TEG(module)별 오프셋이 적용되지 않습니다 — 이름을 나중에
-        붙이는 자리라 규칙을 미리 고를 수 없습니다.
-      </div>
+      <Banner tone="info" className="teg-main-card__intro">
+        <div>
+          <b>MAIN die를 TEG 크기의 격자로 나눠 내부 좌표를 만듭니다.</b>
+          <span>
+            기본 TEG {data ? `${fmtN(data.teg.w, 3)}×${fmtN(data.teg.h, 3)} mm` : "⚙️ 설정"} ·
+            칸에 이름을 입력하면 Horizontal 기준 Mapfile 상대좌표가 계산됩니다.
+          </span>
+        </div>
+        <span className="teg-main-card__notice">
+          TEG 이름을 나중에 붙이는 방식이므로 ⚙️ 설정의 module별 오프셋은 적용되지 않습니다.
+        </span>
+      </Banner>
 
       {/* MAIN 선택 — 이름 오름차순 목록에서 여러 개를 체크한다 (스크롤) */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap",
-                    marginBottom: 8 }}>
-        <div style={{ minWidth: 220 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 12, fontWeight: 700 }}>MAIN 선택</span>
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>
+      <div className="teg-main-setup">
+        <section className="teg-main-setup__section teg-main-setup__section--list">
+          <div className="teg-main-setup__heading">
+            <div>
+              <b>MAIN 선택</b>
+              <span>
               {available.length}개 · 이름순 · 여러 개 선택 가능
-            </span>
+              </span>
+            </div>
             {picked.length > 0 && (
-              <button onClick={() => setPicked([])}
-                style={{ fontSize: 11, color: "var(--accent)", background: "none",
-                         border: "1px solid var(--line)", borderRadius: 4, cursor: "pointer",
-                         padding: "0 5px" }}>선택 해제</button>
+              <Button size="compact" onClick={() => setPicked([])}>선택 해제</Button>
             )}
           </div>
           {available.length ? (
-            <div style={{ border: "1px solid var(--line)", borderRadius: 6, maxHeight: 168,
-                          overflowY: "auto" }}>
+            <div className="teg-main-picker">
               {available.map(a => (
                 <label key={a.name}
+                  className={`teg-main-picker__item${picked.includes(a.name) ? " is-selected" : ""}`}
                   title={a.sized ? "" : "Main_chip_info.csv 에 이 MAIN 의 chip 크기가 없어 격자를 만들 수 없습니다"}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 8px",
-                           borderBottom: "1px solid var(--line)", fontSize: 12,
-                           fontFamily: "monospace", opacity: a.sized ? 1 : 0.45,
+                  style={{ opacity: a.sized ? 1 : 0.45,
                            cursor: a.sized ? "pointer" : "not-allowed" }}>
                   <input type="checkbox" disabled={!a.sized}
+                    aria-label={a.name}
                     checked={picked.includes(a.name)}
                     onChange={() => toggle(a.name)} />
-                  <span style={{ fontWeight: picked.includes(a.name) ? 700 : 400 }}>{a.name}</span>
+                  <span>{a.name}</span>
                   {!a.sized && (
-                    <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "inherit" }}>
-                      크기 없음
-                    </span>
+                    <Pill tone="warn" size="sm" style={{ marginLeft: "auto" }}>크기 없음</Pill>
                   )}
                 </label>
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            <div className="teg-main-setup__empty">
               MAIN 으로 이름 붙은 TEG 를 찾지 못했습니다 — 오른쪽에 직접 입력해 보세요
             </div>
           )}
-        </div>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-          <span style={{ fontWeight: 700 }}>직접 입력</span>
-          <input value={typed} onChange={e => setTyped(e.target.value)} spellCheck={false}
-            placeholder="쉼표로 여러 개"
-            style={{ width: 200, fontFamily: "monospace", fontSize: 12 }} />
-        </label>
+        </section>
+
+        <section className="teg-main-setup__section teg-main-setup__section--fields">
+          <Field label="직접 입력"
+            hint="목록에 없는 MAIN은 쉼표로 구분해 여러 개 입력할 수 있습니다.">
+            <Input value={typed} onChange={e => setTyped(e.target.value)} spellCheck={false}
+              placeholder="예: MAIN01, MAIN02" className="flow-mono" />
+          </Field>
+          <div className="ds-form-field">
+            <span className="ds-form-field__label">TEG 사이 거리 (mm)</span>
+            <div className="teg-main-gap-fields">
+              <div className="teg-main-gap-field">
+                <span>X</span>
+                <Input type="number" step="0.01" min="0" value={gapX}
+                  onChange={e => setGapX(e.target.value)} inputMode="decimal"
+                  aria-label="X 간격 (mm)" />
+              </div>
+              <div className="teg-main-gap-field">
+                <span>Y</span>
+                <Input type="number" step="0.01" min="0" value={gapY}
+                  onChange={e => setGapY(e.target.value)} inputMode="decimal"
+                  aria-label="Y 간격 (mm)" />
+              </div>
+            </div>
+            <span className="ds-form-field__help">
+              기본 TEG 크기에 더해지는 X·Y 간격입니다. 변경 후 격자를 다시 만드세요.
+            </span>
+          </div>
+        </section>
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
-                    marginBottom: 10 }}>
-        <span style={{ fontSize: 12, fontWeight: 700 }}>TEG 사이 거리 (mm)</span>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-          X <input type="number" step="0.01" min="0" value={gapX}
-            onChange={e => setGapX(e.target.value)} style={{ width: 84 }} />
-        </label>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-          Y <input type="number" step="0.01" min="0" value={gapY}
-            onChange={e => setGapY(e.target.value)} style={{ width: 84 }} />
-        </label>
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>
-          칸 간격 = 기본 TEG 사이즈 + 이 거리. 바꾼 뒤 "격자 만들기" 를 누르세요.
-        </span>
-      </div>
-
-      {err && <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8 }}>⚠ {err}</div>}
+      {err && <Banner tone="danger">⚠ {err}</Banner>}
       {data && !data.ref_ok && (
-        <div style={{ fontSize: 12, color: "var(--warn)", marginBottom: 8 }}>
+        <Banner tone="warn">
           ⚠ 정답지를 읽지 못해 기준 PCHK 대신 ⚙️ 설정 오프셋을 씁니다 — {data.ref_error}
-        </div>
+        </Banner>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div className="teg-main-results">
         {(data?.mains || []).map(m => m.found ? (
           <MainGridBlock key={m.name}
             main={{ ...m, cell_w: data.teg.w, cell_h: data.teg.h }}
@@ -698,8 +698,12 @@ function MainGridCard({ vehicle, refreshKey = 0 }) {
         ))}
       </div>
       {data && !(data.mains || []).length && (
-        <div style={{ fontSize: 12, color: "var(--muted)" }}>
-          MAIN 을 고르고 "격자 만들기" 를 누르세요.
+        <div className="teg-main-card__empty" role="status">
+          <span aria-hidden="true">＋</span>
+          <div>
+            <b>생성할 MAIN을 선택하세요</b>
+            <small>MAIN을 고른 뒤 오른쪽 위의 “격자 만들기”를 누르면 입력 격자와 좌표 미리보기가 열립니다.</small>
+          </div>
         </div>
       )}
     </Card>

@@ -320,6 +320,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         // 화면에서 편집하지 않지만 저장 시 함께 돌려보내야 한다 — 빼면 서버가
         // 기본값으로 덮어써 사용자 지정 flat 마커가 조용히 지워진다.
         custom_markers: c0.custom_markers || {},
+        extension_macros: c0.extension_macros || {},
         modules: (c0.modules || []).map(m => ({ ...m })),
         product_modules: (pc0.modules || []).map(m => ({ ...m })),
         products: c0.products || {},
@@ -361,6 +362,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           pchk_first_pad_default: [0, 0],
           die_tol: Math.max(0, Number(chk.die_tol) || 0),
           custom_markers: chk.custom_markers || {},
+          extension_macros: chk.extension_macros || {},
           modules: (chk.modules || [])
             .filter(m => String(m.name || "").trim())
             .map(m => ({
@@ -2363,7 +2365,7 @@ export default function My_TegMap({ user }) {
                   { k: "inline", l: "Inline map setting · 관리자" },
                 ] : [])]} />
 
-      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} />}
+      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} canEdit={canEdit} />}
       {view === "gen" && <TegGenerate vehicle={vehicle} refreshKey={referenceRevision} />}
       {view === "access" && isAdmin && <ProductAccessAdmin onSaved={loadVehicles} />}
       {view === "inline" && isAdmin &&

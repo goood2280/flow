@@ -42,6 +42,8 @@ export default function SpreadsheetPasteGrid({
   placeholders={},
   colorColumn="",
   readOnlyColumns=[],
+  pinnedRows=[],
+  renderPinnedCell,
   showRowNumbers=true,
   disabled=false,
   minRows=DEFAULT_MIN_ROWS,
@@ -51,6 +53,7 @@ export default function SpreadsheetPasteGrid({
 }){
   const names=(columns||[]).map(String);
   const readOnly=new Set((readOnlyColumns||[]).map(String));
+  const pinned=(pinnedRows||[]).slice(0,maxRows);
   const commit=next=>onChange?.(normalizeSpreadsheetRows(next,names,{minRows,maxRows}));
   const updateCell=(rowIndex,column,value)=>{if(!readOnly.has(column))commit(rows.map((row,index)=>index===rowIndex?{...row,[column]:value}:row));};
   const paste=(event,rowIndex,columnIndex)=>{
@@ -86,11 +89,20 @@ export default function SpreadsheetPasteGrid({
         {showRowNumbers&&<th aria-label="행 번호" style={{position:"sticky",top:0,zIndex:2,padding:"8px 6px",textAlign:"center",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>#</th>}
         {names.map(name=><th key={name} style={{position:"sticky",top:0,zIndex:2,padding:"8px 9px",textAlign:"left",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{columnLabels[name]||name}</th>)}
       </tr></thead>
-      <tbody>{rows.map((row,rowIndex)=><tr key={rowIndex}>
-        {showRowNumbers&&<th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:500,color:"var(--text-secondary)",background:"var(--bg-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{rowIndex+1}</th>}
+      <tbody>
+      {pinned.map((row,rowIndex)=><tr key={`pinned-${row.__key||rowIndex}`}>
+        {showRowNumbers&&<th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:600,color:"var(--accent)",background:"var(--surface-selected)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{rowIndex+1}</th>}
+        {names.map(name=><td key={name} style={{padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",background:"var(--surface-selected)"}}>
+          {renderPinnedCell
+            ? renderPinnedCell({row,rowIndex,column:name})
+            : <div style={{padding:"7px 9px",color:"var(--text-secondary)",fontFamily:"monospace",fontSize:12}}>{text(row?.[name])}</div>}
+        </td>)}
+      </tr>)}
+      {rows.map((row,rowIndex)=><tr key={rowIndex}>
+        {showRowNumbers&&<th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:500,color:"var(--text-secondary)",background:"var(--bg-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{pinned.length+rowIndex+1}</th>}
         {names.map((name,columnIndex)=><td key={name} style={{position:"relative",padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>
           {name===colorColumn&&text(row[name]).trim()&&<span aria-hidden="true" style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",width:13,height:13,borderRadius:3,background:row[name],border:"1px solid #94a3b8",pointerEvents:"none"}}/>}
-          <input aria-label={`${rowIndex+1}행 ${columnLabels[name]||name}`} value={row[name]||""} disabled={disabled} readOnly={readOnly.has(name)} onChange={event=>updateCell(rowIndex,name,event.target.value)} onPaste={event=>paste(event,rowIndex,columnIndex)} spellCheck={false} placeholder={rowIndex===0?text(placeholders[name]):""} style={{width:"100%",boxSizing:"border-box",border:0,borderRadius:0,outlineOffset:-2,background:readOnly.has(name)?"var(--bg-secondary)":"transparent",color:readOnly.has(name)?"var(--text-secondary)":"var(--text-primary)",padding:name===colorColumn&&text(row[name]).trim()?"7px 9px 7px 29px":"7px 9px",fontFamily:"monospace",fontSize:12}}/>
+          <input aria-label={`${pinned.length+rowIndex+1}행 ${columnLabels[name]||name}`} value={row[name]||""} disabled={disabled} readOnly={readOnly.has(name)} onChange={event=>updateCell(rowIndex,name,event.target.value)} onPaste={event=>paste(event,rowIndex,columnIndex)} spellCheck={false} placeholder={rowIndex===0?text(placeholders[name]):""} style={{width:"100%",boxSizing:"border-box",border:0,borderRadius:0,outlineOffset:-2,background:readOnly.has(name)?"var(--bg-secondary)":"transparent",color:readOnly.has(name)?"var(--text-secondary)":"var(--text-primary)",padding:name===colorColumn&&text(row[name]).trim()?"7px 9px 7px 29px":"7px 9px",fontFamily:"monospace",fontSize:12}}/>
         </td>)}
       </tr>)}</tbody>
     </table>

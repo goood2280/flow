@@ -99,6 +99,51 @@ DEFAULT_VEHICLE_CFG = {
 # flat 키는 저장값 기준 "h"/"v_R" (UI 표기는 Horizontal / Vertical(R)).
 # 모듈별 오프셋은 항상 Horizontal(TEG) 관점으로 입력, 양수 = 빼기.
 CHECK_FLATS = ("h", "v_R", "v_L")
+DEFAULT_EXTENSION_MACRO_RULES = (
+    {"key": "01strip", "name": "끝의 01 제거", "pattern": r"^(.+)01$",
+     "replacement": "$1", "note": "이름만 확장 확인 · TEGA01 → TEGA"},
+    {"key": "reorder", "name": "H_/V_ 접두사 재배치",
+     "pattern": r"^([A-Za-z])_(.+)$", "replacement": "${2}${1}01",
+     "note": "H_AAA01 → AAA01H01"},
+    {"key": "split", "name": "분할 번호 제거", "pattern": r"^(.+)_(\d+)$",
+     "replacement": "$1", "note": "TEGA_1 → TEGA"},
+    {"key": "alias_flat_suffix", "name": "H/V 접두사를 뒤로 이동",
+     "pattern": r"^([HV])_([A-Za-z]+\d+)$", "replacement": "${2}${1}",
+     "note": "H_QAF01 → QAF01H"},
+    {"key": "alias_tail_letter", "name": "끝 영문자를 H/V 뒤로 이동",
+     "pattern": r"^([HV])_([A-Za-z]+)([A-Za-z])(\d+)$",
+     "replacement": "${2}${4}${1}${3}", "note": "H_QAB03 → QA03HB · V_QAB03 → QA03VB"},
+    {"key": "alias_dfm_sl", "name": "DFM의 H/V를 SL로 변환",
+     "pattern": r"^[HV]_(DFM)(\d+)$", "replacement": "${1}SL${2}",
+     "note": "H_DFM01 → DFMSL01"},
+    {"key": "alias_sram_flat", "name": "SRAM의 H/V 접두사 제거",
+     "pattern": r"^[HV]_(SRAM\d+)$", "replacement": "$1",
+     "note": "H_SRAM24 → SRAM24"},
+)
+DEFAULT_EXTENSION_MACRO_BUILTINS = {
+    rule["key"]: True for rule in DEFAULT_EXTENSION_MACRO_RULES
+}
+LEGACY_ALIAS_BUILTIN_KEYS = tuple(
+    rule["key"] for rule in DEFAULT_EXTENSION_MACRO_RULES
+    if str(rule["key"]).startswith("alias_")
+)
+_MACRO_GROUP_RE = re.compile(r"\$\{([A-Za-z_]\w*|\d+)\}|\$(\d+)")
+# 짧은 TEG 이름만 대상으로 해도 중첩 반복 정규식은 백트래킹이 폭발할 수 있다.
+# 사용자 매크로에 필요한 단순 캡처/문자군은 허용하되 `(a+)+` 류는 저장하지 않는다.
+_UNSAFE_MACRO_PATTERN_RE = re.compile(
+    r"\((?:[^()\\]|\\.)*[*+](?:[^()\\]|\\.)*\)\s*(?:[*+]|\{\d)")
+
+
+def extension_macro_replacement(value: Any) -> str:
+    """UI의 `$1`/`${name}` 치환식을 Python `re` 치환식으로 바꾼다."""
+    text = str(value or "")
+    return _MACRO_GROUP_RE.sub(lambda match: rf"\g<{match.group(1) or match.group(2)}>", text)
+
+
+def extension_macro_pattern_is_safe(pattern: str) -> bool:
+    return not bool(_UNSAFE_MACRO_PATTERN_RE.search(str(pattern or "")))
+
+
 DEFAULT_CHECK_CFG = {
     # flat 별 기본 (dx, dy). V_ 계열(Vertical(R)) 기본 offset y' = 10.
     "flat_offsets": {"h": [0.0, 0.0], "v_R": [0.0, 10.0], "v_L": [0.0, 0.0]},
@@ -112,6 +157,12 @@ DEFAULT_CHECK_CFG = {
     # Per-product additions/overrides. Product calibration is additive; exact
     # first-pad rules describe geometry and therefore override global defaults.
     "products": {},
+    # Mapfile module 표기와 Teg_location 이름을 같은 S/L TEG 로 보는 전 제품 공통 규칙.
+    # 기본 규칙은 코드/설치 번들에 포함되고 사용자 추가 규칙은 flow-data 설정에 저장한다.
+    "extension_macros": {
+        "builtins": dict(DEFAULT_EXTENSION_MACRO_BUILTINS),
+        "rules": [],
+    },
     # die 겹침 허용오차 — **ebeam raw 단위**(ΔX/ΔY 와 같은 공간, ebeam_scale 로 mm 환산).
     # 경계선 접촉과 die 안쪽으로 이 값 이하만 걸친 것은 정상으로 허용한다.
     # 0 이어도 선 접촉은 정상이고, 실제 면적이 겹칠 때만 침범이다.
@@ -474,6 +525,10 @@ def _clean_check(raw: Any) -> dict:
         "pchk_first_pad_default": list(DEFAULT_CHECK_CFG["pchk_first_pad_default"]),
         "first_pad_modules": [],
         "products": {},
+        "extension_macros": {
+            "builtins": dict(DEFAULT_EXTENSION_MACRO_BUILTINS),
+            "rules": [],
+        },
         # 기준 PCHK 이 내장 마커(H_PCHK/H_PRBCHK 등)로 안 잡히는 설비 표기 —
         # 사용자 지정 flat 마커. teg_check 가 내장보다 먼저 매칭한다.
         "custom_markers": {f: [] for f in CHECK_FLATS},
@@ -550,12 +605,65 @@ def _clean_check(raw: Any) -> dict:
                             "note": str(item.get("note", "") or "").strip()[:500]})
         return cleaned
 
+    def _extension_macros(value: Any, *, strict: bool = False) -> dict:
+        cleaned = {
+            "builtins": dict(DEFAULT_EXTENSION_MACRO_BUILTINS),
+            "rules": [],
+        }
+        if not isinstance(value, dict):
+            return cleaned
+        builtins = value.get("builtins")
+        if isinstance(builtins, dict):
+            for key in DEFAULT_EXTENSION_MACRO_BUILTINS:
+                if key in builtins:
+                    cleaned["builtins"][key] = bool(builtins[key])
+            # 구버전의 복합 alias 토글을 새 1행 1규칙 매크로들로 이어받는다.
+            if "alias" in builtins:
+                for key in LEGACY_ALIAS_BUILTIN_KEYS:
+                    if key not in builtins:
+                        cleaned["builtins"][key] = bool(builtins["alias"])
+        rules = value.get("rules")
+        if not isinstance(rules, list):
+            return cleaned
+        for index, item in enumerate(rules[:200], start=1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()[:80]
+            pattern = str(item.get("pattern") or "").strip()[:300]
+            replacement = str(item.get("replacement") or "").strip()[:300]
+            note = str(item.get("note") or "").strip()[:500]
+            if not any((name, pattern, replacement, note)):
+                continue
+            if not name or not pattern:
+                if strict:
+                    raise ValueError(f"확장 매크로 {index}행의 이름과 Mapfile 정규식은 필수입니다")
+                continue
+            if not extension_macro_pattern_is_safe(pattern):
+                if strict:
+                    raise ValueError(f"확장 매크로 {index}행은 중첩 반복 정규식을 사용할 수 없습니다")
+                continue
+            try:
+                compiled = re.compile(pattern)
+                compiled.sub(extension_macro_replacement(replacement), "")
+            except re.error as exc:
+                if strict:
+                    raise ValueError(f"확장 매크로 {index}행 정규식/치환식 오류: {exc}") from exc
+                continue
+            cleaned["rules"].append({
+                "name": name,
+                "pattern": pattern,
+                "replacement": replacement,
+                "note": note,
+            })
+        return cleaned
+
     mods = raw.get("modules")
     if isinstance(mods, list):
         out["modules"] = _modules(mods)
     out["first_pad_default"] = _pair(raw.get("first_pad_default"), out["first_pad_default"])
     out["pchk_first_pad_default"] = _pair(raw.get("pchk_first_pad_default"), out["pchk_first_pad_default"])
     out["first_pad_modules"] = _first_pad_rules(raw.get("first_pad_modules"))
+    out["extension_macros"] = _extension_macros(raw.get("extension_macros"))
     products = raw.get("products")
     if isinstance(products, dict):
         for vehicle, value in list(products.items())[:2000]:
@@ -578,6 +686,36 @@ def _clean_check(raw: Any) -> dict:
                 product["pchk_first_pad_default"] = _pair(value.get("pchk_first_pad_default"), [0.0, 0.0])
             out["products"][name] = product
     return out
+
+
+def clean_extension_macros(raw: Any, *, strict: bool = False) -> dict:
+    """외부 API용 확장 매크로 정리·검증.
+
+    `_clean_check`의 전체 설정 계약을 재사용하되 strict 저장에서는 빈 필수값과
+    잘못된 정규식을 조용히 버리지 않고 사용자에게 오류로 돌려준다.
+    """
+    holder = {"extension_macros": raw}
+    if strict:
+        # strict 검증은 `_clean_check` 내부와 같은 제한을 직접 적용한다. 전체 설정
+        # 정리는 기존 호환을 위해 관대한 동작을 유지해야 하므로 API 저장만 엄격하다.
+        rules = (raw or {}).get("rules") if isinstance(raw, dict) else []
+        for index, item in enumerate(rules if isinstance(rules, list) else [], start=1):
+            if not isinstance(item, dict):
+                continue
+            values = [str(item.get(key) or "").strip()
+                      for key in ("name", "pattern", "replacement", "note")]
+            if not any(values):
+                continue
+            if not values[0] or not values[1]:
+                raise ValueError(f"확장 매크로 {index}행의 이름과 Mapfile 정규식은 필수입니다")
+            if not extension_macro_pattern_is_safe(values[1][:300]):
+                raise ValueError(f"확장 매크로 {index}행은 중첩 반복 정규식을 사용할 수 없습니다")
+            try:
+                compiled = re.compile(values[1][:300])
+                compiled.sub(extension_macro_replacement(values[2][:300]), "")
+            except re.error as exc:
+                raise ValueError(f"확장 매크로 {index}행 정규식/치환식 오류: {exc}") from exc
+    return _clean_check(holder)["extension_macros"]
 
 
 def check_profile(cfg: dict, vehicle: str) -> dict:

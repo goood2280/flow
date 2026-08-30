@@ -48,6 +48,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
 from core import duckdb_engine
+from core import inline_coordinates
 from core import filebrowser_query_queue as _sql_queue
 from core import filebrowser_cache as _fbcache
 from core import matching_cache as _matching_cache

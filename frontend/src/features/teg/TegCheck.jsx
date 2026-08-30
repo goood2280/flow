@@ -7,10 +7,11 @@
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { postJson } from "../../lib/api";
+import { postJson, putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
-import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, Textarea } from "../../components/UXKit";
+import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
 
 const API = "/api/teg-map";
 
@@ -21,13 +22,13 @@ const MAX_CELLS = 400000;    // 렌더 상한 (w*h)
 const GRID_LINE_MAX = 6000;  // 이 이상이면 격자선 생략
 
 const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended: "🟣", missing: "⚪", noref: "—" };
-const LIGHT_ICON = { red: "🔴", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
+const LIGHT_ICON = { red: "🔴", orange: "🟠", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
 const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)", v_L: "Vertical(L)" };
 
 // 조회되어야 할 TEG 목록 신호등 — 색상 차순 정렬 기준(작을수록 위): 빨강 → 미등록 → 노랑 → 초록.
-const LIGHT_COLORS = { red: "#dc2626", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63",
+const LIGHT_COLORS = { red: "#dc2626", orange: "#f97316", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63",
                        purple: "#7c3aed", dim: "#cbd5e1" };
-const LIGHT_RANK = { red: 0, gray: 1, yellow: 2, purple: 3, green: 4, dim: 5 };
+const LIGHT_RANK = { red: 0, orange: 1, gray: 2, yellow: 3, purple: 4, green: 5, dim: 6 };
 const RED_EDGE = "#991b1b";   // shot 확대의 빨간불 테두리 (진한 빨강)
 // 결과 화면에서 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다 (기본)
 const VIEW_ALL = "all", VIEW_TARGET = "target", VIEW_MAIN = "main";
@@ -62,7 +63,17 @@ const MATCH_RULE_LABELS = {
   "01strip": "01제거", "reorder": "접두사변환", "split": "분할TEG",
   // flat(H/V)·SL 위치와 글자·숫자 순서만 다른 같은 TEG (H_QAF01 ↔ QAF01H).
   alias: "표기차이",
+  macro: "사용자 매크로",
 };
+
+function mainIssueRank(item) {
+  const reason = String(item?.light_reason || "");
+  if (/여러 MAIN|다른 MAIN.*(?:침범|안)$/.test(reason)) return 0;
+  if (/경계 넘어감| 밖$/.test(reason)) return 1;
+  if (/^purpose\s+/i.test(reason)) return 2;
+  if (reason === "MAIN 정보없음" || item?.light === "orange") return 3;
+  return item?.light === "yellow" ? 4 : 5;
+}
 
 function compactNameList(values, limit = 3) {
   const names = [...new Set((values || []).map(v => String(v || "").trim()).filter(Boolean))];
@@ -461,7 +472,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       if (!t.light) return;                    // die 블록 자체 행 — 판정 대상 아님
       out.push({ ...t, group: g.group, purpose: g.purpose || "", key: `${g.group}-${i}` });
     }));
-    out.sort((a, b) => (LIGHT_RANK[a.light] - LIGHT_RANK[b.light])
+    out.sort((a, b) => (mainIssueRank(a) - mainIssueRank(b))
+      || (LIGHT_RANK[a.light] - LIGHT_RANK[b.light])
       || String(a.teg).localeCompare(String(b.teg)));
     return out;
   }, [teg.main_groups]);
@@ -470,40 +482,38 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const seeTarget = view !== VIEW_MAIN;
   const seeMain = view !== VIEW_TARGET;
   const mainHasAttention = mainInfoMissingRows.length > 0 || mainInfoMissingGroups.length > 0
-    || mainChecklist.some(t => t.light === "red" || t.light === "yellow");
+    || mainChecklist.some(t => ["red", "orange", "yellow"].includes(t.light));
   const mainIssueCount = mainInfoMissingRows.length + mainInfoMissingGroups.length
     + mainChecklist.filter(t => t.light === "red" && t.light_reason !== "MAIN 정보없음").length;
   const mainInsideCount = mainChecklist.filter(t => t.light === "yellow" && / die 안$/.test(t.light_reason || "")).length;
   const mainBoundaryCount = mainChecklist.filter(t => t.light === "yellow" && /경계/.test(t.light_reason || "")).length;
-  const combinedIssues = [
-    ...(seeTarget ? bad.map(row => ({
-      ...row,
-      issue_name: row.name,
-      issue_scope: "S/L TEG",
-      issue_reason: row.light_reason,
-    })) : []),
-    ...(seeMain ? mainInfoMissingRows.map(row => ({
-      ...row,
-      issue_name: row.name,
-      issue_scope: "MAIN TEG",
-      issue_reason: "MAIN 정보없음",
-    })) : []),
-    ...(seeMain ? mainInfoMissingGroups.map(group => ({
-      ...group,
-      light: "red",
-      issue_name: group.group,
-      issue_scope: "MAIN",
-      issue_reason: "MAIN 정보없음",
-    })) : []),
-    ...(seeMain ? mainChecklist
-      .filter(row => row.light === "red" && row.light_reason !== "MAIN 정보없음")
-      .map(row => ({
+  const mainRedIssues = seeMain ? mainChecklist
+    .filter(row => row.light === "red" && row.light_reason !== "MAIN 정보없음")
+    .map(row => ({
       ...row,
       issue_name: row.teg,
       issue_scope: `MAIN · ${row.group}`,
       issue_reason: row.light_reason,
-    })) : []),
-  ];
+      summary_section: "main",
+    })).sort((a, b) => mainIssueRank(a) - mainIssueRank(b)) : [];
+  const mainInfoIssues = seeMain ? [
+    ...mainInfoMissingRows.map(row => ({
+      ...row, light: "orange", issue_name: row.name, issue_scope: "MAIN TEG",
+      issue_reason: "MAIN 정보없음", summary_section: "main",
+    })),
+    ...mainInfoMissingGroups.map(group => ({
+      ...group, light: "orange", issue_name: group.group, issue_scope: "MAIN",
+      issue_reason: "MAIN 정보없음", summary_section: "main",
+    })),
+  ] : [];
+  const slIssues = seeTarget ? bad.map(row => ({
+    ...row,
+    issue_name: row.name,
+    issue_scope: "S/L TEG",
+    issue_reason: row.light_reason,
+    summary_section: "sl",
+  })) : [];
+  const combinedIssues = [...mainRedIssues, ...slIssues];
   const warningIssues = [
     // S/L 노란불은 허용 범위의 작은 차이라 간단 요약에서 개별 표시하지 않는다.
     // 판정 자체는 상세 대상 체크리스트에 그대로 남긴다.
@@ -512,6 +522,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       issue_name: row.teg,
       issue_scope: `MAIN · ${row.group}`,
       issue_reason: `정답지 정보 없음 · Purpose ${row.purpose || "미지정"} · 자기 MAIN 내부`,
+      summary_section: "main",
     })) : []),
   ];
   const coordinateIssues = teg.rows.filter(row => row.status === "mismatch");
@@ -525,36 +536,39 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     purposeIssueMap.get(key).names.push(row.teg);
   });
   const placementIssues = mainChecklist.filter(row => row.light === "red" && !/^purpose\s+/i.test(row.light_reason || ""));
-  const topErrorMessages = [...purposeIssueMap.values()].map(item => ({
-    key: `purpose-${item.group}-${item.purpose}`,
-    text: `Purpose가 ${item.purpose}인 ${item.group} Chip 내에 TEG가 있습니다 (${compactNameList(item.names)}).`,
-  }));
+  const topErrorMessages = [];
   const mainInfoMissingNames = [
     ...mainInfoMissingRows.map(row => row.name),
     ...mainInfoMissingGroups.map(group => group.group),
   ];
-  if (mainInfoMissingNames.length) {
-    topErrorMessages.push({
-      key: "main-info-missing",
-      text: `MAIN 정보가 없는 항목이 ${mainInfoMissingNames.length}건 있습니다 (${compactNameList(mainInfoMissingNames)}).`,
-    });
-  }
   [
+    ["other-overlap", /다른 MAIN.* 침범$/, "다른 MAIN을 침범한 TEG"],
+    ["other-inside", /다른 MAIN.* 안$/, "자기 MAIN이 아닌 다른 MAIN 안에 있는 TEG"],
     ["multi", /여러 MAIN/, "여러 MAIN에 걸친 TEG"],
     ["boundary", /경계 넘어감/, "자기 MAIN 경계를 넘어간 TEG"],
-    ["other-inside", /다른 MAIN.* 안$/, "다른 MAIN 안에 들어간 TEG"],
-    ["other-overlap", /다른 MAIN.* 침범$/, "다른 MAIN을 침범한 TEG"],
     ["outside", / 밖$/, "자기 MAIN 밖에 있는 TEG"],
   ].forEach(([key, pattern, label]) => {
     const rows = placementIssues.filter(row => pattern.test(row.light_reason || ""));
     if (rows.length) {
       topErrorMessages.push({
-        key,
+        key, light: "red",
         text: `${label}가 ${rows.length}건 있습니다 (${compactNameList(rows.map(row => row.teg))}).`,
       });
     }
   });
-  const summaryRows = [...combinedIssues, ...warningIssues];
+  [...purposeIssueMap.values()].forEach(item => topErrorMessages.push({
+    key: `purpose-${item.group}-${item.purpose}`, light: "red",
+    text: `Purpose가 ${item.purpose}인 ${item.group} Chip 내에 TEG가 있습니다 (${compactNameList(item.names)}).`,
+  }));
+  if (mainInfoMissingNames.length) {
+    topErrorMessages.push({
+      key: "main-info-missing", light: "orange",
+      text: `MAIN 정보가 없는 항목이 ${mainInfoMissingNames.length}건 있습니다 (${compactNameList(mainInfoMissingNames)}).`,
+    });
+  }
+  // Summary의 상세 순서도 상단 문장과 같다: MAIN 배치 이상 → MAIN 정보없음 →
+  // 한 줄 간격 → S/L TEG. 자기 MAIN 안의 노란 항목은 아래 상세 패널에서 확인한다.
+  const summaryRows = [...mainRedIssues, ...mainInfoIssues, ...slIssues];
   const hasShotIssue = (seeTarget && bad.length > 0)
     || (seeMain && mainHasAttention);
   // shot 배치도 — 기본은 **빨간불만**(지금 고쳐야 할 것). "전체 표시" 를 켜면
@@ -578,7 +592,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         ...mainChecklist,
       ]
         // 정답지 정보는 없지만 비-IP 자기 MAIN 내부인 노랑도 즉시 비교할 수 있게 한다.
-        .filter(t => shotAll || t.light === "red" || t.light === "yellow")
+        .filter(t => shotAll || t.light === "red" || t.light === "orange" || t.light === "yellow")
         .map(t => ({ ...t, name: t.teg, w: t.teg_w, h: t.teg_h })))
     : []), [mainChecklist, mainInfoMissingRows, seeMain, shotAll]);
   const shotItems = useMemo(
@@ -619,7 +633,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       const dir = dirOf(t);
       let light, label;
       if (row) {
-        const rl = row.match_rule && row.match_rule !== "exact" ? MATCH_RULE_LABELS[row.match_rule] : null;
+        const rl = row.match_rule && row.match_rule !== "exact"
+          ? (row.match_rule_label || MATCH_RULE_LABELS[row.match_rule]) : null;
         light = row.light || "gray";
         label = `${row.light_reason || "판정 불가"}${rl ? `(${rl})` : ""}`;
       } else if (t.matched) {
@@ -694,7 +709,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       } },
     { key: "matched", label: "매칭 TEG", render: r => {
         if (!r.ref_teg) return "";
-        const ruleLabel = r.match_rule && MATCH_RULE_LABELS[r.match_rule];
+        const ruleLabel = r.match_rule && (r.match_rule_label || MATCH_RULE_LABELS[r.match_rule]);
         const tag = ruleLabel || (r.match_source === "top_cell" ? "top_cell" : "");
         const seq = r.ref_seq != null ? ` #${r.ref_seq}/${r.ref_total}` : "";
         const ruleDesc = ruleLabel
@@ -725,7 +740,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       ) },
     { key: "issue_scope", label: "구분" },
     { key: "issue_reason", label: "결과", render: r => (
-        <span style={{ color: r.light === "red" ? "var(--danger)" : "var(--warn)",
+        <span style={{ color: LIGHT_COLORS[r.light] || "var(--warn)",
                        fontWeight: 700 }}>{r.issue_reason || ""}</span>
       ) },
     { key: "delta", label: "좌표 차이", align: "right", render: r =>
@@ -760,17 +775,25 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
           <strong style={{ fontSize: 14, marginRight: 2 }}>Summary</strong>
           <Pill tone={combinedIssues.length ? "danger" : "ok"}>🔴 이상 {combinedIssues.length}</Pill>
+          <Pill tone={mainInfoIssues.length ? "warn" : "neutral"}>🟠 MAIN 정보없음 {mainInfoIssues.length}</Pill>
           <Pill tone={warningIssues.length ? "warn" : "neutral"}>🟡 확인 필요 {warningIssues.length}</Pill>
+        </div>
+
+        <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55,
+                      padding: "7px 9px", marginBottom: 9, borderRadius: 6,
+                      background: "var(--bg-primary)", border: "1px solid var(--line)" }}>
+          주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
+          이상으로 표시된 항목은 원문과 실제 배치를 눈으로 확인하고, 이 결과는 크로스체크 용도로 사용해 주세요.
         </div>
 
         {topErrorMessages.map(item => (
           <div key={item.key} role="alert" style={{ fontSize: 12, fontWeight: 700,
-                                                    color: "var(--danger)", lineHeight: 1.55 }}>
-            🔴 {item.text}
+                                                    color: LIGHT_COLORS[item.light || "red"], lineHeight: 1.55 }}>
+            {item.light === "orange" ? "🟠" : "🔴"} {item.text}
           </div>
         ))}
         <div role={coordinateIssueNames.length ? "alert" : undefined}
-          style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.55,
+          style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.55, marginTop: 14,
                    color: coordinateIssueNames.length ? "var(--danger)" : "var(--ok)" }}>
           {coordinateIssueNames.length ? "🔴" : "🟢"} S/L TEG 좌표에 이상이 보이는 TEG가 {coordinateIssueNames.length}건입니다
           {coordinateIssueNames.length ? ` (${compactNameList(coordinateIssueNames)}).` : "."}
@@ -786,10 +809,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               </div>
               <div style={{ border: "1px solid var(--line)", borderRadius: 8,
                             overflow: "auto", maxHeight: 300, background: "var(--bg-primary)" }}>
-                {summaryRows.map((item, i) => (
+                {summaryRows.map((item, i) => {
+                  const sectionBreak = item.summary_section === "sl"
+                    && (i === 0 || summaryRows[i - 1]?.summary_section !== "sl");
+                  return (
                   <div key={`${item.issue_scope}-${item.issue_name}-${i}`}
                     style={{ display: "grid", gridTemplateColumns: "18px minmax(110px, 0.7fr) minmax(180px, 1.5fr)",
                              gap: 7, alignItems: "center", padding: "7px 9px",
+                             marginTop: sectionBreak && i > 0 ? 10 : 0,
+                             borderTop: sectionBreak && i > 0 ? "1px solid var(--line)" : "none",
                              borderBottom: i < summaryRows.length - 1 ? "1px solid var(--line)" : "none",
                              fontSize: 12 }}>
                     <TrafficLight color={item.light} />
@@ -797,7 +825,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       <div style={{ fontFamily: "monospace", fontWeight: 800 }}>{item.issue_name}</div>
                       <div style={{ fontSize: 10, color: "var(--muted)" }}>{item.issue_scope}</div>
                     </div>
-                    <div style={{ minWidth: 0, color: item.light === "red" ? "var(--danger)" : "var(--warn)",
+                    <div style={{ minWidth: 0, color: LIGHT_COLORS[item.light] || "var(--warn)",
                                   fontWeight: 700 }}>
                       {item.issue_reason || "확인 필요"}
                       {item.dx !== null && item.dx !== undefined && (
@@ -807,7 +835,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
             {res.shot?.available && hasShotIssue && (
@@ -920,7 +949,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             {mainBoundaryCount > 0 && <Pill tone="warn">🟡 MAIN 경계 {mainBoundaryCount}</Pill>}
           </>}
           {seeMain && (mainInfoMissingRows.length + mainInfoMissingGroups.length) > 0 && (
-            <Pill tone="danger">🔴 MAIN 정보없음 {mainInfoMissingRows.length + mainInfoMissingGroups.length}</Pill>
+            <Pill tone="warn">🟠 MAIN 정보없음 {mainInfoMissingRows.length + mainInfoMissingGroups.length}</Pill>
           )}
         </div>
       )}
@@ -979,7 +1008,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <>
               <LightSummary items={[
                 { light: "red", label: "확인 필요", n: mainChecklist.filter(it => it.light === "red").length,
-                  title: "MAIN 정보없음, purpose IP/NO TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
+                  title: "purpose IP/NO TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
+                { light: "orange", label: "MAIN 정보없음", n: mainChecklist.filter(it => it.light === "orange").length,
+                  title: "MAIN 크기·위치 정보가 없어 눈으로 확인 필요" },
                 { light: "yellow", label: "MAIN die 안", n: mainChecklist.filter(it => it.light === "yellow").length,
                   title: "자기 MAIN die 안·경계 근처 — MAIN 내부 TEG 는 원래 die 안에 있으므로 정상" },
                 { light: "gray", label: "판정 불가", n: mainChecklist.filter(it => it.light === "gray").length },
@@ -1005,7 +1036,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 ))}
               </div>
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                정답지 미등록 · 노랑=자기 MAIN die 안·경계 · 빨강=purpose IP/NO TEG 또는 다른 die·die 밖 · 회색=판정 불가
+                정답지 미등록 · 빨강=다른 MAIN 침범·자기 MAIN 밖·배치 금지 · 주황=MAIN 정보없음 ·
+                노랑=자기 MAIN die 안·경계 · 회색=판정 불가
               </div>
             </>
           )}
@@ -1041,7 +1073,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 <ChipRow label="확장체크로 매칭" color="var(--violet)"
                   items={extMatchedTargets.map(t => ({
                     key: t.teg,
-                    text: `${t.teg} (${MATCH_RULE_LABELS[t.row?.match_rule] || "확장"})`,
+                    text: `${t.teg} (${t.row?.match_rule_label || MATCH_RULE_LABELS[t.row?.match_rule] || "확장"})`,
                     title: t.row ? `${t.row.match_token} → ${t.row.ref_teg}` : "",
                   }))} />
               )}
@@ -1076,7 +1108,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       </Pill>
                     )}
                     {g.main_info_missing && (
-                      <Pill tone="danger" size="sm">🔴 MAIN 정보없음</Pill>
+                      <Pill tone="warn" size="sm">🟠 MAIN 정보없음</Pill>
                     )}
                     {g.red > 0 && (
                       <Pill tone="danger" size="sm"
@@ -1089,6 +1121,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       <Pill tone="warn" size="sm"
                         title={`${g.group} die 안 — 정답지에 없어 좌표 정밀 대조는 못 합니다`}>
                         🟡 {g.yellow}
+                      </Pill>
+                    )}
+                    {g.orange > 0 && (
+                      <Pill tone="warn" size="sm"
+                        title="MAIN 크기·위치 정보가 없어 판정할 수 없습니다">
+                        🟠 {g.orange}
                       </Pill>
                     )}
                   </div>
@@ -1401,7 +1439,176 @@ function TargetChecklist({ checklist, total, source, shotChecked }) {
   );
 }
 
-export default function TegCheck({ vehicle, refreshKey = 0 }) {
+const EXTENSION_MACRO_COLUMNS = ["name", "pattern", "replacement", "note"];
+const EXTENSION_BUILTINS = [
+  { __key: "01strip", name: "끝의 01 제거", pattern: "^(.+)01$", replacement: "$1",
+    note: "이름만 확장 확인 · TEGA01 → TEGA" },
+  { __key: "reorder", name: "H_/V_ 접두사 재배치", pattern: "^([A-Za-z])_(.+)$",
+    replacement: "${2}${1}01", note: "H_AAA01 → AAA01H01" },
+  { __key: "split", name: "분할 번호 제거", pattern: "^(.+)_(\\d+)$", replacement: "$1",
+    note: "TEGA_1 → TEGA" },
+  { __key: "alias_flat_suffix", name: "H/V 접두사를 뒤로 이동",
+    pattern: "^([HV])_([A-Za-z]+\\d+)$", replacement: "${2}${1}", note: "H_QAF01 → QAF01H" },
+  { __key: "alias_tail_letter", name: "끝 영문자를 H/V 뒤로 이동",
+    pattern: "^([HV])_([A-Za-z]+)([A-Za-z])(\\d+)$", replacement: "${2}${4}${1}${3}",
+    note: "H_QAB03 → QA03HB · V_QAB03 → QA03VB" },
+  { __key: "alias_dfm_sl", name: "DFM의 H/V를 SL로 변환",
+    pattern: "^[HV]_(DFM)(\\d+)$", replacement: "${1}SL${2}", note: "H_DFM01 → DFMSL01" },
+  { __key: "alias_sram_flat", name: "SRAM의 H/V 접두사 제거",
+    pattern: "^[HV]_(SRAM\\d+)$", replacement: "$1", note: "H_SRAM24 → SRAM24" },
+];
+
+function ExtensionMacroSettings({ canEdit, onSaved }) {
+  const [macros, setMacros] = useState(null);
+  const [builtinRules, setBuiltinRules] = useState(EXTENSION_BUILTINS);
+  const [rows, setRows] = useState(() => normalizeSpreadsheetRows([], EXTENSION_MACRO_COLUMNS));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setMacros(null);
+    sf(`${API}/extension-macros`)
+      .then(result => {
+        if (!active) return;
+        const next = result.macros || { builtins: {}, rules: [] };
+        setBuiltinRules((result.builtin_rules || EXTENSION_BUILTINS).map(rule => ({
+          ...rule, __key: rule.__key || rule.key,
+        })));
+        setMacros(next);
+        setRows(normalizeSpreadsheetRows(next.rules || [], EXTENSION_MACRO_COLUMNS,
+          { minRows: 10, maxRows: 200 }));
+      })
+      .catch(error => { if (active) toast.error(String(error.message || error)); });
+    return () => { active = false; };
+  }, []);
+
+  const setBuiltin = (key, enabled) => setMacros(current => ({
+    ...(current || {}), builtins: { ...(current?.builtins || {}), [key]: enabled },
+  }));
+
+  const userRuleCount = rows.filter(row =>
+    EXTENSION_MACRO_COLUMNS.some(key => String(row[key] || "").trim())).length;
+  const renderBuiltinCell = ({ row, column }) => {
+    if (column === "name") {
+      const enabled = macros?.builtins?.[row.__key] !== false;
+      return (
+        <label title={`${row.name} 내장 확장 매크로 ${enabled ? "사용 중" : "사용 안 함"}`}
+          style={{ minHeight: 31, display: "flex", alignItems: "center", gap: 6,
+                   padding: "4px 8px", cursor: canEdit ? "pointer" : "default" }}>
+          <input type="checkbox" disabled={!canEdit || busy} checked={enabled}
+            onChange={event => setBuiltin(row.__key, event.target.checked)} />
+          <Pill tone={enabled ? "accent" : "neutral"} size="sm">내장</Pill>
+          <b>{row.name}</b>
+        </label>
+      );
+    }
+    return (
+      <div style={{ minHeight: 31, display: "flex", alignItems: "center", padding: "4px 8px",
+                    color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 12,
+                    lineHeight: 1.45, whiteSpace: "pre-line" }}>
+        {row[column]}
+      </div>
+    );
+  };
+
+  const save = async () => {
+    if (!macros) return;
+    const rules = rows
+      .map(row => Object.fromEntries(EXTENSION_MACRO_COLUMNS.map(key => [key, String(row[key] || "").trim()])))
+      .filter(row => Object.values(row).some(Boolean));
+    setBusy(true);
+    try {
+      const result = await putJson(`${API}/extension-macros`, {
+        macros: { builtins: macros.builtins || {}, rules },
+      });
+      const next = result.macros || { builtins: {}, rules: [] };
+      setBuiltinRules((result.builtin_rules || EXTENSION_BUILTINS).map(rule => ({
+        ...rule, __key: rule.__key || rule.key,
+      })));
+      setMacros(next);
+      setRows(normalizeSpreadsheetRows(next.rules || [], EXTENSION_MACRO_COLUMNS,
+        { minRows: 10, maxRows: 200 }));
+      toast.ok("전 제품 공통 확장 매크로를 저장했습니다");
+      onSaved?.();
+    } catch (error) {
+      toast.error(String(error.message || error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!macros) return <div style={{ color: "var(--muted)", fontSize: 12 }}>확장 매크로를 불러오는 중…</div>;
+
+  return (
+    <Card title="확장 매크로 설정 — 전 제품 공통"
+      right={<Pill tone={canEdit ? "warn" : "neutral"}>{canEdit ? "편집 가능" : "읽기 전용"}</Pill>}>
+      <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 10 }}>
+        MAIN이 적힌 행은 항상 MAIN으로 판정합니다. 그 외 행의 <b>기본 판정은 Mapfile 이름과 정답지 이름의 완전 일치</b>입니다.
+        완전 일치하지 않을 때만 모든 제품에 공통인 내장·사용자 확장 매크로를 위 행부터 적용합니다.
+        정규식은 이름 전체를 대상으로 하며 치환식에는 $1 또는 ${"${name}"}을 사용할 수 있습니다.
+        예: <code>^H_(.+)$</code> → <code>${"${1}"}H01</code>.
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+        <b style={{ fontSize: 12 }}>확장 매크로</b>
+        <Pill tone="neutral" size="sm">내장 {builtinRules.length} · 사용자 {userRuleCount}</Pill>
+      </div>
+      <div style={{ marginBottom: 9, padding: "9px 11px", border: "1px solid var(--border)",
+                    borderRadius: 7, background: "var(--bg-soft, rgba(128,128,128,0.06))",
+                    color: "var(--text-secondary)", fontSize: 11, lineHeight: 1.65 }}>
+        <b style={{ display: "block", marginBottom: 3, color: "var(--text-primary)", fontSize: 12 }}>
+          작성 가이드
+        </b>
+        <div>
+          <b>매크로 이름</b>에는 알아보기 쉬운 이름을 적고, <b>Mapfile 규칙 / 정규식</b>에는
+          변환 전 module 이름 전체와 일치하는 규칙을 적습니다. 바뀌는 부분은 괄호로 묶고,
+          <b> 정답지 변환 / 매칭</b>에서 <code>$1</code> 또는 <code>${"${name}"}</code>으로 다시 사용합니다.
+          변환 결과와 완전히 같은 TEG 또는 top_cell 이름이 정답지에 있을 때만 매칭됩니다.
+          각 행은 <b>정규식 1개 → 정답지 치환식 1개</b>이며, <b>설명</b>에는 이 규칙이 필요한 표기 차이를 적습니다.
+        </div>
+        <div style={{ marginTop: 4 }}>
+          예: Mapfile의 <code>H_ALPHA</code>를 정답지 <code>ALPHAH01</code>로 찾으려면
+          정규식 <code>^H_(.+)$</code>, 치환식 <code>${"${1}"}H01</code>을 입력합니다.
+        </div>
+        <div style={{ marginTop: 6, padding: "6px 8px", borderLeft: "3px solid var(--accent)",
+                      background: "var(--bg-primary)" }}>
+          <b>내장 확장 매크로 읽는 법 — <code>H_AAA01 → AAA01H01</code></b>
+          <div><code>^([A-Za-z])_(.+)$</code>에서 <code>^</code>·<code>$</code>는 이름의 처음·끝,
+            <code> ([A-Za-z])</code>는 첫 영문자 <code>H</code>를 <code>$1</code>로,
+            <code> (.+)</code>는 밑줄 뒤 <code>AAA01</code>을 <code>$2</code>로 잡는다는 뜻입니다.</div>
+          <div>치환식 <code>${"${2}"}${"${1}"}01</code>은
+            <code> $2(AAA01) + $1(H) + 글자 01</code>을 이어 붙여 <code>AAA01H01</code>을 만듭니다.</div>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <b><code>H_DFM01 → DFMSL01</code> 읽는 법:</b>
+          정규식 <code>^[HV]_(DFM)(\d+)$</code>이 <code>$1=DFM</code>, <code>$2=01</code>을 잡고,
+          정답지 치환식 <code>${"${1}"}SL${"${2}"}</code>이 <code>DFMSL01</code>을 만듭니다.
+          정답지에 <code>DFMSL01</code>이 정확히 있을 때만 같은 TEG로 매칭합니다.
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <b>AI에게 물어보기:</b> 변환 전·후 이름 예시를 2~3쌍 주고
+          “flow 확장 매크로 표에 넣을 매크로 이름, Mapfile 정규식, 정답지 치환식, 설명을 만들어줘”라고 요청하면
+          빈 행에 붙여 넣을 값을 작성해 줍니다.
+          예: “<code>H_ALPHA → ALPHAH01</code>, <code>H_BETA → BETAH01</code>를 변환하는 flow 확장 매크로를 만들어줘.”
+        </div>
+      </div>
+      <SpreadsheetPasteGrid columns={EXTENSION_MACRO_COLUMNS} rows={rows} onChange={setRows}
+        pinnedRows={builtinRules} renderPinnedCell={renderBuiltinCell}
+        disabled={!canEdit || busy} minRows={10} maxRows={200} maxHeight={365} minTableWidth={760}
+        ariaLabel="S/L TEG 확장 이름 매크로"
+        columnLabels={{ name: "매크로 이름", pattern: "Mapfile 규칙 / 정규식", replacement: "정답지 변환 / 매칭", note: "설명" }}
+        aliases={{ macro: "name", regex: "pattern", replace: "replacement", description: "note" }}
+        placeholders={{ name: "예: H 표기 변환", pattern: "^H_(.+)$", replacement: "${1}H01", note: "담당자별 표기 변형" }} />
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 9 }}>
+        {canEdit && <Button variant="primary" disabled={busy} onClick={save}>
+          {busy ? "저장 중…" : "확장 매크로 저장"}
+        </Button>}
+      </div>
+    </Card>
+  );
+}
+
+export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
   // 원문은 비제어(uncontrolled) — 수만 줄 붙여넣기 시 키 입력/paste 마다
   // 페이지 전체가 리렌더되던 버벅임 제거. 값은 ref 로만 추적, 검사 시점에 읽는다.
   const textRef = useRef("");
@@ -1423,6 +1630,7 @@ export default function TegCheck({ vehicle, refreshKey = 0 }) {
   const [nameOv, setNameOv] = useState({});
   // 결과 화면에서 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다(기본)
   const [view, setView] = useState(VIEW_ALL);
+  const [subView, setSubView] = useState("inspect");
 
   const parseMarkers = (s) => String(s || "").split(",").map(t => t.trim()).filter(Boolean);
 
@@ -1490,6 +1698,16 @@ export default function TegCheck({ vehicle, refreshKey = 0 }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <TabStrip active={subView} onChange={setSubView} label="Mapfile 검증 하위 기능"
+        items={[
+          { k: "inspect", l: "검증" },
+          { k: "macros", l: "확장 매크로 설정" },
+        ]} />
+
+      {subView === "macros" ? (
+        <ExtensionMacroSettings canEdit={canEdit}
+          onSaved={() => { if (textRef.current.trim()) run(flat); }} />
+      ) : <>
       <Card title="Mapfile 원문 입력"
         right={<Pill tone={vehicle ? "ok" : "warn"}>{vehicle || "vehicle 미선택"}</Pill>}>
         {res && !showInput ? (
@@ -1611,6 +1829,7 @@ export default function TegCheck({ vehicle, refreshKey = 0 }) {
 
         </>
       )}
+      </>}
     </div>
   );
 }

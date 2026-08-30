@@ -58,6 +58,29 @@ def test_chart_assistant_applies_common_visual_tweaks_without_query_rerun():
     assert "TRELLIS = split" in trellised["canonical_code"]
 
 
+def test_chart_assistant_sets_chart_type_axes_and_visibility_without_llm():
+    changed = _assistant("scatter로 바꾸고 X축은 wafer_id, Y축은 value로. 범례 숨겨줘")
+
+    assert changed["chart"]["type"] == "scatter"
+    assert changed["chart"]["x"] == "wafer_id"
+    assert changed["chart"]["y"] == "value"
+    assert changed["chart"]["show_legend"] is False
+    assert changed["llm"]["used"] is False
+
+
+def test_chart_assistant_recommends_wafer_map_from_shot_columns_without_llm():
+    result = filebrowser._chart_builder_assistant_plan(filebrowser.ChartBuilderAssistantReq(
+        instruction="기본 차트 자동 추천해줘",
+        definition_code=ASSISTANT_CHART_CODE,
+        columns=["root_lot_id", "wafer_id", "shot_x", "shot_y", "value"],
+    ))
+
+    assert result["chart"]["type"] == "wafer_map"
+    assert result["chart"]["x"] == "shot_x"
+    assert result["chart"]["y"] == "value"
+    assert result["llm"]["used"] is False
+
+
 def test_chart_assistant_join_change_is_validated_and_requests_rerun():
     changed = _assistant("첫 JOIN을 inner로 바꿔줘")
 
@@ -342,6 +365,62 @@ def test_chart_builder_runs_two_read_only_queries_and_joins(tmp_path, monkeypatc
     assert history[0]["username"] == "tester"
     assert history[0]["row_count"] == 1
     assert "JOIN et INNER inline ON root_lot_id, wafer_id" in history[0]["definition_code"]
+
+
+def test_chart_builder_enriches_inline_subitems_with_authoritative_teg_coordinates(tmp_path, monkeypatch):
+    source = tmp_path / "inline.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A", "A"],
+        "wafer_id": ["1", "1"],
+        "step_id": ["STEP1", "STEP1"],
+        "item_id": ["CD1", "CD1"],
+        "subitem_id": ["SITE_1", "UNMAPPED"],
+        "shot_x": [999, 998],
+        "shot_y": [999, 998],
+        "value": [10.5, 20.5],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(filebrowser.inline_coordinates, "load_matching_rules", lambda *args, **kwargs: [{
+        "product": "P", "step_id": "STEP1", "item_id": "CD1",
+        "matching_table": "MAP_A", "available": True, "vehicle": "VH_P", "shot_count": 1,
+    }])
+    monkeypatch.setattr(filebrowser.inline_coordinates, "load_coordinate_mapping", lambda *args, **kwargs: {
+        "configured": True,
+        "configured_tables": ["MAP_A"],
+        "missing_tables": [],
+        "rows": [{
+            "product": "p", "step_id": "step1", "item_id": "cd1", "subitem_id": "site_1",
+            "shot_x": -2.0, "shot_y": 3.0, "matching_table": "MAP_A",
+        }],
+    })
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="inline", root="INLINE", product="P",
+            # The mapping keys are deliberately omitted. ChartBuilder must read
+            # them internally, attach coordinates, then hide those helper cols.
+            sql="SELECT root_lot_id, wafer_id, shot_x, shot_y, value",
+        )],
+        save_history=False,
+    ), object())
+
+    rows = result["joined"]["rows"]
+    assert rows[0]["shot_x"] == -2.0
+    assert rows[0]["shot_y"] == 3.0
+    assert rows[0]["raw_inline_shot_x"] == 999
+    assert rows[0]["raw_inline_shot_y"] == 999
+    assert rows[0]["inline_map_name"] == "MAP_A"
+    assert rows[0]["inline_vehicle"] == "VH_P"
+    assert rows[1]["shot_x"] is None
+    assert "step_id" not in result["joined"]["columns"]
+    mapping = result["sources"][0]["inline_coordinate_mapping"]
+    assert mapping["applied"] is True
+    assert mapping["matched_rows"] == 1
+    assert mapping["unmatched_rows"] == 1
+    assert mapping["match_rate"] == 50.0
+    assert mapping["vehicles"] == ["VH_P"]
 
 
 def test_chart_builder_accepts_a_single_trend_query(tmp_path, monkeypatch):

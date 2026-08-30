@@ -110,7 +110,7 @@ def test_mapfile_main_inside_is_yellow_and_forbidden_purpose_is_red(monkeypatch)
     }]
 
 
-def test_teg_location_unregistered_module_is_red_main_info_missing_not_die_intrusion(monkeypatch):
+def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_intrusion(monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})
     cfg["ebeam_scale"] = 0.001
@@ -139,13 +139,13 @@ def test_teg_location_unregistered_module_is_red_main_info_missing_not_die_intru
     row = result["teg"]["rows"][0]
     assert row["status"] == "missing"
     assert row["teg_kind"] == "main_info_missing"
-    assert row["light"] == "red"
+    assert row["light"] == "orange"
     assert row["light_reason"] == "MAIN 정보없음"
     assert row["die_state"] is None
     assert row["chip_overlap"] is None
 
 
-def test_explicit_main_group_without_main_chip_info_is_red(monkeypatch):
+def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})
     cfg["ebeam_scale"] = 0.001
@@ -171,23 +171,22 @@ def test_explicit_main_group_without_main_chip_info_is_red(monkeypatch):
 
     group = result["teg"]["main_groups"][0]
     assert group["main_info_missing"] is True
-    assert group["tegs"][1]["light"] == "red"
+    assert group["tegs"][1]["light"] == "orange"
     assert group["tegs"][1]["light_reason"] == "MAIN 정보없음"
 
 
-@pytest.mark.parametrize("module_name, ref_name", [
-    ("H_QAF01", "QAF01H"),      # flat 표기가 뒤로
-    ("H_QAB03", "QA03HB"),      # flat 이 가운데 + 글자·숫자 순서 뒤바뀜
-    ("H_DFM01", "DFMSL01"),     # SL 이 중간에 낌
-    ("H_SRAM24", "SRAM24"),     # flat 접두사만 다름
-    ("V_QAB03", "QA03VB"),      # Vertical 도 같은 규칙
+@pytest.mark.parametrize("module_name, ref_name, rule_name", [
+    ("H_QAF01", "QAF01H", "H/V 접두사를 뒤로 이동"),
+    ("H_QAB03", "QA03HB", "끝 영문자를 H/V 뒤로 이동"),
+    ("H_DFM01", "DFMSL01", "DFM의 H/V를 SL로 변환"),
+    ("H_SRAM24", "SRAM24", "SRAM의 H/V 접두사 제거"),
+    ("V_QAB03", "QA03VB", "끝 영문자를 H/V 뒤로 이동"),
 ])
-def test_alias_matching_treats_notation_variants_as_the_same_teg(
-        monkeypatch, module_name, ref_name):
-    """표기만 다른 같은 TEG 는 정상(초록)으로 잡혀야 한다.
+def test_each_builtin_macro_maps_one_pattern_to_one_reference_name(
+        monkeypatch, module_name, ref_name, rule_name):
+    """각 내장 매크로는 정규식 하나와 정답지 치환식 하나로 매칭한다.
 
-    flat(H/V)·SL 의 위치와 글자·숫자 순서가 달라도 같은 TEG 다. 같은 TEG 이므로
-    좌표 비교를 정상 수행한다 — 확장체크(이름만 검증)가 아니다.
+    변환 결과와 같은 정답지 이름이 있을 때만 채택하고 좌표 비교를 정상 수행한다.
     """
     ref = {
         ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
@@ -209,7 +208,8 @@ def test_alias_matching_treats_notation_variants_as_the_same_teg(
     row = result["teg"]["rows"][0]
 
     assert row["ref_teg"] == ref_name
-    assert row["match_rule"] == "alias"
+    assert row["match_rule"] == "macro"
+    assert row["match_rule_label"] == rule_name
     assert row["status"] == "match"
     assert row["light"] == "green"
 
@@ -251,6 +251,120 @@ def test_alias_matching_refuses_ambiguous_keys():
     assert teg_check.resolve_ref_teg_alias(row, ref, {}) == (None, None, None)
 
 
+@pytest.mark.parametrize(("module_name", "pattern", "replacement", "ref_name"), [
+    ("H_ALPHA", r"^H_(.+)$", "${1}H01", "ALPHAH01"),
+    ("DOE_SRAM24", r"^[A-Z]+_(SRAM\d+)$", "$1", "SRAM24"),
+])
+def test_user_extension_macro_maps_operator_variations_to_reference_name(
+        module_name, pattern, replacement, ref_name):
+    row = {"name": module_name, "candidates": [module_name], "tail": ""}
+    ref = {ref_name: [{"x": 1.0, "y": 2.0, "w": 0.1, "h": 0.1,
+                       "dir": "h", "top_cell": ""}]}
+    rules = [{"name": "담당자 표기", "pattern": pattern,
+              "replacement": replacement, "note": ""}]
+
+    assert teg_check.resolve_ref_teg_macro(row, ref, {}, rules) == (
+        ref_name, "teg", module_name, "담당자 표기",
+    )
+
+
+def test_extension_macro_config_preserves_builtin_switches_and_rejects_bad_regex():
+    cleaned = teg_map.clean_extension_macros({
+        "builtins": {"01strip": False, "alias": True},
+        "rules": [{"name": "H 변환", "pattern": r"^H_(.+)$",
+                   "replacement": "${1}H01", "note": "variation"}],
+    }, strict=True)
+
+    assert cleaned["builtins"]["01strip"] is False
+    assert cleaned["builtins"]["reorder"] is True
+    assert all(cleaned["builtins"][key] is True
+               for key in teg_map.LEGACY_ALIAS_BUILTIN_KEYS)
+    assert "alias" not in cleaned["builtins"]
+    assert cleaned["rules"][0]["replacement"] == "${1}H01"
+    with pytest.raises(ValueError, match="정규식/치환식 오류"):
+        teg_map.clean_extension_macros({
+            "rules": [{"name": "broken", "pattern": "([", "replacement": "$1"}],
+        }, strict=True)
+    with pytest.raises(ValueError, match="중첩 반복"):
+        teg_map.clean_extension_macros({
+            "rules": [{"name": "unsafe", "pattern": r"(A+)+$", "replacement": "$1"}],
+        }, strict=True)
+
+
+def test_main_token_takes_priority_over_exact_and_global_macro_matching():
+    row = {
+        "name": "H_ALPHA",
+        "candidates": ["H_ALPHA", "MAIN01"],
+        "tail": "H_ALPHA,MAIN01,H_PCHK",
+    }
+    ref = {
+        "H_ALPHA": [{"x": 1.0, "y": 2.0}],
+        "ALPHAH01": [{"x": 1.0, "y": 2.0}],
+    }
+    rules = [{"name": "담당자 H 표기", "pattern": r"^H_(.+)$",
+              "replacement": "${1}H01", "note": ""}]
+
+    assert teg_check.is_main_row(row) is True
+    assert teg_check.resolve_ref_teg(row, ref, {}) == (None, None, None)
+    assert teg_check.resolve_ref_teg_macro(row, ref, {}, rules) == (None, None, None, None)
+
+
+def test_global_extension_macros_are_saved_under_db_root_teg_location(tmp_path, monkeypatch):
+    monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    macros = {
+        "builtins": {"reorder": False},
+        "rules": [{"name": "공통 표기", "pattern": r"^OP_(.+)$",
+                   "replacement": "$1", "note": "전 제품"}],
+    }
+
+    teg_map.save_cfg({"check": {"extension_macros": macros}})
+
+    path = tmp_path / "teg_location" / "teg_map.json"
+    stored = teg_map.load_json(path, {})
+    assert path.is_file()
+    assert stored["check"]["extension_macros"]["rules"][0]["name"] == "공통 표기"
+    assert stored["check"]["extension_macros"]["builtins"]["reorder"] is False
+    assert all("extension_macros" not in product
+               for product in stored["check"]["products"].values())
+
+
+def test_inspect_applies_global_macro_to_every_product_and_reports_its_name(monkeypatch):
+    check = teg_map._clean_check({
+        "extension_macros": {
+            "builtins": {"reorder": False},
+            "rules": [{"name": "담당자 H 표기", "pattern": r"^H_(.+)$",
+                       "replacement": "${1}H01", "note": ""}],
+        },
+    })
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg.update({"check": check, "ebeam_scale": 1.0,
+                "teg_default_w": 0.1, "teg_default_h": 0.1})
+    ref = {"ALPHAH01": [{"x": 10.0, "y": 20.0, "w": 0.1, "h": 0.1,
+                           "dir": "h", "top_cell": ""}]}
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    for vehicle in ("P", "OTHER_PRODUCT"):
+        result = teg_check.inspect(
+            vehicle, "#teg-map\nmodule H_ALPHA (10,20) ! H_ALPHA,H_PCHK\n", flat="h",
+        )
+        row = result["teg"]["rows"][0]
+
+        assert row["ref_teg"] == "ALPHAH01"
+        assert row["match_rule"] == "macro"
+        assert row["match_rule_label"] == "담당자 H 표기"
+        assert row["light"] == "green"
+
+
 def test_date_tokens_never_become_teg_names():
     """꼬리표 앞의 작업 날짜가 TEG 이름으로 잡히면 안 된다."""
     assert teg_check.is_date_token("2026-08-28")
@@ -267,6 +381,26 @@ def test_date_tokens_never_become_teg_names():
     row = parsed[0]
     assert row["name"] == "SRAM24"          # 날짜가 아니라 module 뒤 이름
     assert "2026-08-28" not in row["candidates"]
+
+
+def test_main_grid_with_zero_gap_is_centered_inside_die(monkeypatch):
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg.update({"ebeam_scale": 1.0, "teg_default_w": 2.0, "teg_default_h": 2.0})
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (None, {}, "", "missing"))
+    monkeypatch.setattr(teg_check, "_main_anchor_map", lambda vehicle: {
+        "MAIN01": {"name": "MAIN01", "x": 10.0, "y": 20.0, "w": 5.0, "h": 5.0},
+    })
+
+    result = teg_check.build_main_grid("P", ["MAIN01"], gap_x=0, gap_y=0)
+
+    main = result["mains"][0]
+    assert (main["cols"], main["rows"]) == (2, 2)
+    assert (main["edge_margin_x"], main["edge_margin_y"]) == (0.5, 0.5)
+    assert [(cell["mm_x"], cell["mm_y"]) for cell in main["cells"]] == [
+        (10.5, 20.5), (12.5, 20.5), (10.5, 22.5), (12.5, 22.5),
+    ]
 
 
 def test_main_inner_teg_name_skips_a_leading_date(monkeypatch):
