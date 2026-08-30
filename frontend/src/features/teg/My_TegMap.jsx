@@ -27,6 +27,7 @@ import TegGenerate from "./TegGenerate";
 import My_FileBrowser from "../filebrowser/My_FileBrowser";
 
 const API = "/api/teg-map";
+const MAPFILE_DEPARTMENT_COLUMNS = ["match", "label"];
 
 const TEG_COLORS = [
   "#e05252", "#3e7bd6", "#2f9e63", "#c78a1e", "#8a5fd0",
@@ -317,6 +318,11 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         p_v_dx: (pfo.v_R || [0, 0])[0], p_v_dy: (pfo.v_R || [0, 0])[1],
         p_vl_dx: (pfo.v_L || [0, 0])[0], p_vl_dy: (pfo.v_L || [0, 0])[1],
         die_tol: c0.die_tol ?? 3.0,
+        mapfile_department_rows: normalizeSpreadsheetRows(
+          (c0.mapfile_departments || []).map(value => typeof value === "string"
+            ? { match: value, label: value }
+            : { match: value?.match || "", label: value?.label || value?.match || "" }),
+          MAPFILE_DEPARTMENT_COLUMNS, { minRows: 4, maxRows: 100 }),
         // 화면에서 편집하지 않지만 저장 시 함께 돌려보내야 한다 — 빼면 서버가
         // 기본값으로 덮어써 사용자 지정 flat 마커가 조용히 지워진다.
         custom_markers: c0.custom_markers || {},
@@ -361,6 +367,12 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           first_pad_default: [0, 0],
           pchk_first_pad_default: [0, 0],
           die_tol: Math.max(0, Number(chk.die_tol) || 0),
+          mapfile_departments: (chk.mapfile_department_rows || [])
+            .map(row => ({
+              match: String(row.match || "").trim(),
+              label: String(row.label || row.match || "").trim(),
+            }))
+            .filter(row => row.match),
           custom_markers: chk.custom_markers || {},
           extension_macros: chk.extension_macros || {},
           modules: (chk.modules || [])
@@ -547,6 +559,23 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
       </div>
 
       <div style={sect}>Mapfile 검증 — 오프셋</div>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+          <b style={{ color: "var(--text-primary)" }}>Mapfile 부서 구분</b> — 포함값은 TEG 이름 또는 top_cell에서 찾고,
+          표시명은 세팅 안 됨 목록의 그룹 제목으로 사용합니다. 예: <code>DVC → DVC_TEAM</code>, <code>SRAM → SRAM_A</code>.
+        </div>
+        <SpreadsheetPasteGrid columns={MAPFILE_DEPARTMENT_COLUMNS}
+          rows={chk.mapfile_department_rows || []}
+          onChange={rows => setC({ mapfile_department_rows: rows })}
+          disabled={dis} minRows={4} maxRows={100} maxHeight={190} minTableWidth={420}
+          columnLabels={{ match: "포함값", label: "표시명" }}
+          placeholders={{ match: "DVC", label: "DVC_TEAM" }}
+          aliases={{ keyword: "match", department: "label", name: "label" }}
+          ariaLabel="Mapfile 부서 구분" />
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 5 }}>
+          위에서 먼저 일치한 행을 사용하며 표시명이 비어 있으면 포함값을 그대로 표시합니다.
+        </div>
+      </div>
       <div style={row}>
         <span style={lab}>기본 오프셋 Horizontal</span>
         <span style={{ fontSize: 12, color: "var(--muted)" }}>x'</span>
@@ -1095,7 +1124,7 @@ export function ShotZoom({ data, selectedTegs, tegColor, imgUrl, dieCells, showP
    5개 이상이면 공간이 부족하므로 기존대로 배치도만 표시.
    표시 조건·폭은 shot 확대 크기 계산과 공유한다 (한쪽만 바뀌면 배치가 어긋난다). ── */
 const COORD_PANEL_MAX = 5;   // 이 개수 이상이면 패널을 접는다
-const COORD_PANEL_W = 190;   // 패널 폭 (shot 확대에 남길 공간 계산용)
+const COORD_PANEL_W = 230;   // 제목과 (ebeam_x,ebeam_y)가 한 줄에 보이는 폭
 
 function coordPanelCount(data, selectedTegs) {
   return (data?.tegs || []).filter(t => selectedTegs.has(t.teg)).length;
@@ -1108,13 +1137,11 @@ function TegCoordInfo({ data, selectedTegs, tegColor }) {
     <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "8px 10px",
                   fontSize: 12, lineHeight: 1.7, width: COORD_PANEL_W, flexShrink: 0,
                   alignSelf: "flex-start" }}>
-      <div style={{ fontWeight: 700, color: "var(--muted)" }}>TEG 좌표 — ebeam_x / ebeam_y (mm)</div>
-      <div style={{ fontSize: 11, color: "var(--muted)" }} title={DIR_TIP}>
-        크기는 Teg_location 값 그대로 (V 는 파일에 이미 세운 크기)
+      <div style={{ fontWeight: 700, color: "var(--muted)", whiteSpace: "nowrap" }}>
+        TEG 좌표 — (ebeam_x,ebeam_y)
       </div>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}
-        title="좌표체계 주의: 격자좌표(chip_x/y_adj)·Mapfile 상대좌표가 아닌 ebeam 좌표계입니다">
-        shot 센터 기준 TEG 좌하단 (ebeam 좌표계)
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+        shot 좌하단 좌표기준
       </div>
       {tegList.map(t => (
         <div key={t.teg} style={{ marginBottom: 4 }}>
@@ -1124,13 +1151,13 @@ function TegCoordInfo({ data, selectedTegs, tegColor }) {
                            whiteSpace: "nowrap", maxWidth: 160 }} title={t.teg}>{t.teg}</span>
           </div>
           <div style={{ color: "var(--muted)", marginLeft: 17 }}>
-            ebeam_x {fmt(t.ebeam_x, 3)} · ebeam_y {fmt(t.ebeam_y, 3)}
+            ({fmt(t.ebeam_x, 3)},{fmt(t.ebeam_y, 3)})
           </div>
-          <div style={{ color: "var(--muted)", marginLeft: 17 }} title={DIR_TIP}>
-            방향 <b style={{ color: isVertical(t) ? "var(--warn)" : "var(--text-primary)" }}>
-              {isVertical(t) ? "V (세움)" : "H (가로)"}
+          <div style={{ color: "var(--muted)", marginLeft: 17 }}>
+            <b style={{ color: isVertical(t) ? "var(--warn)" : "var(--text-primary)" }}>
+              {directionLabel(t)}
             </b>
-            {" · "}{fmt(t.teg_w, 3)} × {fmt(t.teg_h, 3)} mm
+            {" · 사이즈 "}{fmt(Number(t.teg_w) * 1000, 1)} × {fmt(Number(t.teg_h) * 1000, 1)}
           </div>
         </div>
       ))}
@@ -2417,20 +2444,11 @@ export default function My_TegMap({ user }) {
                     onChange={e => setFullChip(e.target.checked)} />
                   full chip{fullChip ? ` ${fullChipResult.dies.length}` : ""}
                 </label>
-                {geo?.fit === "radius" ? (
-                  <Pill tone="ok" title={`wafer 중심 격자좌표 (${fmt(geo.cx, 3)}, ${fmt(geo.cy, 3)})`}>
-                    shot {fmt(geo.shot_w_mm, 2)}×{fmt(geo.shot_h_mm, 2)} mm
-                  </Pill>
-                ) : (
+                {geo?.fit !== "radius" && (
                   <Pill tone="warn" title={geo?.fit_note || ""}>
                     Chip_Radius fit 불가 — 격자 좌표로만 표시{geo?.fit_note ? ` (${geo.fit_note})` : ""}
                   </Pill>
                 )}
-                <Pill tone="neutral">
-                  {display.mode === "grid" ? `칩 격자 ${display.cols}×${display.rows}` :
-                    display.mode === "image" ? "그림" :
-                    display.mode === "dev_grid" ? "개발 격자" : "기본"}
-                </Pill>
               </div>
             }>
             {/* 범례 — maxWidth 없이 두면 flex 아이템(카드)이 이 한 줄의 max-content 폭으로
@@ -2532,9 +2550,9 @@ export default function My_TegMap({ user }) {
                     const on = selectedTegs.has(n);
                     return (
                       <button key={n} onClick={() => toggleTeg(n)}
-                        title={`ebeam_x ${fmt(t.ebeam_x)} · ebeam_y ${fmt(t.ebeam_y)} mm (shot 센터 기준 TEG 좌하단)`
-                          + `\n방향 ${directionLabel(t)} — ${isVertical(t) ? "세움" : "가로"} · `
-                          + `${fmt(t.teg_w, 3)} × ${fmt(t.teg_h, 3)} mm\n${DIR_TIP}`}
+                        title={`(${fmt(t.ebeam_x)},${fmt(t.ebeam_y)}) · shot 좌하단 좌표기준`
+                          + `\n${directionLabel(t)} · 사이즈 ${fmt(Number(t.teg_w) * 1000, 1)}`
+                          + ` × ${fmt(Number(t.teg_h) * 1000, 1)}`}
                         style={{
                           display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
                           border: "none", borderLeft: `3px solid ${on ? tegColor(n) : "transparent"}`,

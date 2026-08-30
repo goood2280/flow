@@ -163,6 +163,9 @@ DEFAULT_CHECK_CFG = {
         "builtins": dict(DEFAULT_EXTENSION_MACRO_BUILTINS),
         "rules": [],
     },
+    # Mapfile 세팅 안 된 S/L TEG를 이름 포함값으로 묶는 전 제품 공통 구분.
+    # [{"match":"DVC","label":"DVC_TEAM"}] -> H_DVC11은 DVC_TEAM 그룹.
+    "mapfile_departments": [],
     # die 겹침 허용오차 — **ebeam raw 단위**(ΔX/ΔY 와 같은 공간, ebeam_scale 로 mm 환산).
     # 경계선 접촉과 die 안쪽으로 이 값 이하만 걸친 것은 정상으로 허용한다.
     # 0 이어도 선 접촉은 정상이고, 실제 면적이 겹칠 때만 침범이다.
@@ -529,6 +532,7 @@ def _clean_check(raw: Any) -> dict:
             "builtins": dict(DEFAULT_EXTENSION_MACRO_BUILTINS),
             "rules": [],
         },
+        "mapfile_departments": [],
         # 기준 PCHK 이 내장 마커(H_PCHK/H_PRBCHK 등)로 안 잡히는 설비 표기 —
         # 사용자 지정 flat 마커. teg_check 가 내장보다 먼저 매칭한다.
         "custom_markers": {f: [] for f in CHECK_FLATS},
@@ -553,6 +557,21 @@ def _clean_check(raw: Any) -> dict:
                     if token and token.upper() not in {s.upper() for s in seen}:
                         seen.append(token)
                 out["custom_markers"][f] = seen
+    departments = raw.get("mapfile_departments")
+    if isinstance(departments, (list, tuple)):
+        seen_departments: set[str] = set()
+        for value in departments[:100]:
+            if isinstance(value, dict):
+                match = str(value.get("match") or value.get("key") or "").strip()[:80]
+                label = str(value.get("label") or value.get("name") or match).strip()[:80]
+            else:
+                # 구버전 ["DVC", "SRAM"] 형식은 판정값=표시명으로 자동 호환.
+                match = str(value or "").strip()[:80]
+                label = match
+            folded = match.casefold()
+            if match and folded not in seen_departments:
+                seen_departments.add(folded)
+                out["mapfile_departments"].append({"match": match, "label": label or match})
     fo = raw.get("flat_offsets")
     if isinstance(fo, dict):
         for f in CHECK_FLATS:

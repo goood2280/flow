@@ -124,7 +124,7 @@ def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_in
     monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
         "available": True, "checked": True,
         "cells": [{"name": "DIE01", "x": 0, "y": 0, "w": 10, "h": 10}],
-        "main_cells": [],
+        "main_cells": [{"name": "MAIN_M01", "x": 0, "y": 0, "w": 10, "h": 10}],
     })
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
@@ -140,7 +140,8 @@ def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_in
     assert row["status"] == "missing"
     assert row["teg_kind"] == "main_info_missing"
     assert row["light"] == "orange"
-    assert row["light_reason"] == "MAIN 정보없음"
+    assert row["main_group"] == "MAIN_M01"
+    assert row["light_reason"] == "MAIN 정보없음 · 소속 MAIN_M01"
     assert row["die_state"] is None
     assert row["chip_overlap"] is None
 
@@ -172,7 +173,7 @@ def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
     group = result["teg"]["main_groups"][0]
     assert group["main_info_missing"] is True
     assert group["tegs"][1]["light"] == "orange"
-    assert group["tegs"][1]["light_reason"] == "MAIN 정보없음"
+    assert group["tegs"][1]["light_reason"] == "MAIN 정보없음 · 소속 MAIN_M01"
 
 
 @pytest.mark.parametrize("module_name, ref_name, rule_name", [
@@ -212,6 +213,62 @@ def test_each_builtin_macro_maps_one_pattern_to_one_reference_name(
     assert row["match_rule_label"] == rule_name
     assert row["status"] == "match"
     assert row["light"] == "green"
+
+
+@pytest.mark.parametrize(("ref_name", "module_name"), [
+    ("H_QAF01", "QAF01H"),
+    ("H_QAB06", "QA06HB"),
+    ("V_QAB03", "QA03VB"),
+    ("H_DFM01", "DFMSL01"),
+    ("H_SRAM24", "SRAM24"),
+])
+def test_reverse_alias_notations_match_reference_and_check_coordinates(
+        monkeypatch, ref_name, module_name):
+    """내장 표기 매크로의 역방향도 같은 TEG로 보고 실제 좌표를 검사한다."""
+    ref = {
+        ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0})
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect(
+        "P", f"#teg-map\nmodule {module_name} (101.5,201.5) !\n", flat="h")
+    row = result["teg"]["rows"][0]
+
+    assert row["ref_teg"] == ref_name
+    assert row["match_rule"] == "alias"
+    assert row["extended"] is False
+    assert row["status"] == "warning"
+    assert row["dx"] == 1.0
+    assert row["dy"] == 1.0
+    assert row["light"] == "yellow"
+    assert result["teg"]["criteria"]["sl_coordinate_tolerance"] == 2.0
+
+
+def test_remaining_builtin_name_rules_still_resolve():
+    """01 제거·접두사 재배치·분할 번호 제거 규칙도 계속 동작한다."""
+    extended_ref = {"TEGA": [{"x": 1.0, "y": 2.0}]}
+    reordered_ref = {"AAA01H01": [{"x": 1.0, "y": 2.0}]}
+    split_ref = {"TEGA": [{"x": 1.0, "y": 2.0}]}
+
+    assert teg_check.resolve_ref_teg_extended(
+        {"name": "TEGA01", "candidates": ["TEGA01"], "tail": ""},
+        extended_ref, {}) == ("TEGA", "teg", "TEGA01")
+    assert teg_check.resolve_ref_teg_reorder(
+        {"name": "H_AAA01", "candidates": ["H_AAA01"], "tail": ""},
+        reordered_ref, {}) == ("AAA01H01", "teg", "H_AAA01")
+    assert teg_check.resolve_ref_teg_split(
+        {"name": "TEGA_1", "candidates": ["TEGA_1"], "tail": ""},
+        split_ref, {}) == ("TEGA", "teg", "TEGA_1")
 
 
 @pytest.mark.parametrize("module_name, ref_name", [
@@ -597,6 +654,12 @@ def test_product_xy_is_applied_after_r_l_normalisation(flat, expected):
 
 def test_product_config_keeps_l_map_and_shape_rules():
     check = teg_map._clean_check({
+        "mapfile_departments": [
+            {"match": "DVC", "label": "DVC_TEAM"},
+            {"match": "SRAM", "label": "SRAM_A"},
+            "dvc",
+            "",
+        ],
         "first_pad_default": [1, 2],
         "pchk_first_pad_default": [5, 6],
         "first_pad_modules": [{"name": "V_PCHK", "dx": 3, "dy": 4}],
@@ -608,12 +671,25 @@ def test_product_config_keeps_l_map_and_shape_rules():
         }},
     })
     product = check["products"]["PROD_A"]
+    assert check["mapfile_departments"] == [
+        {"match": "DVC", "label": "DVC_TEAM"},
+        {"match": "SRAM", "label": "SRAM_A"},
+    ]
     assert product["flat_corrections"]["v_L"] == [5.0, 6.0]
     assert product["first_pad_default"] == [7.0, 8.0]
     assert product["first_pad_modules"][0]["name"] == "SPECIAL"
     assert product["modules"][0]["flat"] == "v_L"
     assert teg_map.normalize_direction("", "VL_PCHK") == "v_L"
     assert teg_map.normalize_direction("", "V_L_SPECIAL") == "v_L"
+
+
+def test_legacy_mapfile_department_names_keep_same_display_label():
+    check = teg_map._clean_check({"mapfile_departments": ["DVC", "SRAM"]})
+
+    assert check["mapfile_departments"] == [
+        {"match": "DVC", "label": "DVC"},
+        {"match": "SRAM", "label": "SRAM"},
+    ]
 
 
 def test_teg_reference_file_allowlist_validates_and_saves_with_conflict_guard(tmp_path, monkeypatch):
@@ -1436,6 +1512,94 @@ def test_mapfile_coordinates_have_no_float_subtraction_artifacts(monkeypatch):
     assert row["x"] == 86419.8
     assert row["y"] == 46431.8
     assert repr(row["x"]) == "86419.8"
+
+
+def test_inspect_rounds_like_generator_and_applies_canonical_config_to_alias(monkeypatch):
+    """생성 좌표를 별칭으로 올려도 같은 config로 0차이 판정해야 한다.
+
+    정답지 H_QAB06을 Mapfile에서 QA06HB로 적으면 과거 검증은 모듈 보정을
+    QA06HB 키로만 찾아 H_QAB06 config를 누락했고, float 뺄셈 꼬리도 그대로
+    ΔX/ΔY에 노출했다.
+    """
+    check = teg_map._clean_check({
+        "modules": [{"flat": "h", "name": "H_QAB06", "dx": 0.1, "dy": -0.2}],
+        "products": {"P": {
+            "flat_corrections": {"h": [0.2, -0.1]},
+            "modules": [{"flat": "h", "name": "H_QAB06", "dx": 0.2, "dy": 0.0}],
+        }},
+    })
+    ref = {
+        "H_PCHK": [{"x": 12345.6, "y": 7890.1, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+        "H_QAB06": [{"x": 98765.4, "y": 54321.9, "w": 1.0, "h": 1.0,
+                     "dir": "h", "top_cell": ""}],
+    }
+    cfg = {"check": check, "ebeam_scale": 1.0,
+           "teg_default_w": 3.0, "teg_default_h": 0.1}
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check._tm, "teg_target_options", lambda vehicle: {
+        "targets": ["H_QAB06"], "source": "config",
+        "tegs": [{"teg": "H_QAB06", "direction": "h"}],
+    })
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "config", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    generated = teg_check.build_mapfile("P")["flats"][0]["rows"][0]
+    assert teg_check._coordinate_decimals(ref, check, teg_check.coordinate_context(check, "P")) == 1
+    assert generated["x"] == 86419.9
+    assert generated["y"] == 46431.7
+
+    result = teg_check.inspect(
+        "P",
+        f"#teg-map\nmodule QA06HB ({generated['x']},{generated['y']}) ! QA06HB,H_PCHK\n",
+        flat="h",
+    )
+    row = result["teg"]["rows"][0]
+
+    assert row["ref_teg"] == "H_QAB06"
+    assert row["coordinate_terms"]["config_name"] == "H_QAB06"
+    assert row["coordinate_terms"]["global_module"] == [0.1, -0.2]
+    assert row["coordinate_terms"]["product_module"] == [0.2, 0]
+    assert row["coordinate_terms"]["flat_correction"] == [0.2, -0.1]
+    assert row["calc_x"] == 98765.4
+    assert row["calc_y"] == 54321.9
+    assert row["dx"] == 0
+    assert row["dy"] == 0
+    assert row["status"] == "match"
+
+
+def test_inspect_preserves_real_mapfile_fraction_beyond_integer_config(monkeypatch):
+    """입력 자체가 더 세밀하면 config 자릿수로 뭉개지 않고 실제 차이를 보존한다."""
+    check = teg_map._clean_check({})
+    ref = {"H_TEG": [{"x": 10.0, "y": 20.0, "w": 1.0, "h": 1.0,
+                      "dir": "h", "top_cell": ""}]}
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": check, "ebeam_scale": 1.0, "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    row = teg_check.inspect(
+        "P", "#teg-map\nmodule H_TEG (10.25,20.5) ! H_TEG,H_PCHK\n", flat="h",
+    )["teg"]["rows"][0]
+
+    assert row["dx"] == 0.25
+    assert row["dy"] == 0.5
+    assert row["status"] == "warning"
 
 
 @pytest.mark.parametrize("ref_x, ref_y, pchk_x, pchk_y", [

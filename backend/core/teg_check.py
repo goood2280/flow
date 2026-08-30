@@ -845,7 +845,8 @@ def resolve_ref_teg_alias(t: dict, ref: dict[str, list[dict]] | None,
 
 
 def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
-             x: float, y: float, extended: bool = False) -> dict:
+             x: float, y: float, extended: bool = False,
+             decimals: int | None = None) -> dict:
     """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h, ref_seq}.
 
     ref_teg = resolve_ref_teg(_extended) 로 결정된 정답지 teg (없으면 미등록).
@@ -870,6 +871,12 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
                    key=lambda i: abs(cands[i]["x"] - x) + abs(cands[i]["y"] - y))
     c = cands[best_idx]
     ddx, ddy = x - c["x"], y - c["y"]
+    # Mapfile 좌표 생성과 같은 입력 정밀도로 차이를 정리한다. 예를 들어
+    # 86419.8 + 12345.6 은 float64 에서 98765.40000000001 이 될 수 있지만,
+    # 좌표 원천이 소수점 한 자리라면 실제 ΔX 는 0 이다.
+    if decimals is not None:
+        ddx = float(_gen_num(ddx, decimals))
+        ddy = float(_gen_num(ddy, decimals))
     # 확장체크(TEGA01→TEGA)는 서로 다른 die 라 좌표는 다를 수 있어 위치 판정 대신
     # 'extended'(이름 검증) 로 표시한다. ΔX·ΔY 는 참고용으로 계산해 함께 노출.
     status = "extended" if extended else _status_of(ddx, ddy)
@@ -978,6 +985,36 @@ def _die_names(cells: list[dict]) -> str:
     return ", ".join(dict.fromkeys(str(c.get("name") or "?") for c in cells))
 
 
+def main_membership(cells: list[dict], x0: float, y0: float, w: float, h: float,
+                    tol: float = 0.0) -> str:
+    """정답지 미등록 행이 어느 MAIN chip 영역에 있는지 이름을 돌려준다.
+
+    TEG 전체가 허용오차 안에서 한 MAIN에 들어오면 그 MAIN을 우선한다. 경계를
+    물어 전체 포함이 아니면 중심점, 마지막으로 실제 겹친 MAIN 이름을 사용한다.
+    여러 MAIN에 걸치면 쉼표로 모두 노출해 임의로 하나를 숨기지 않는다.
+    """
+    named = [cell for cell in (cells or []) if str(cell.get("name") or "").strip()]
+    if not named:
+        return ""
+    allowed = max(0.0, float(tol))
+    x1, y1 = x0 + w, y0 + h
+    contained = [cell for cell in named
+                 if x0 >= cell["x"] - allowed
+                 and x1 <= cell["x"] + cell["w"] + allowed
+                 and y0 >= cell["y"] - allowed
+                 and y1 <= cell["y"] + cell["h"] + allowed]
+    if contained:
+        return _die_names(contained)
+    cx, cy = x0 + w / 2.0, y0 + h / 2.0
+    centered = [cell for cell in named
+                if cell["x"] - allowed <= cx <= cell["x"] + cell["w"] + allowed
+                and cell["y"] - allowed <= cy <= cell["y"] + cell["h"] + allowed]
+    if centered:
+        return _die_names(centered)
+    _inside, touched = _die_relation(named, x0, y0, w, h, tol=allowed)
+    return _die_names(touched) if touched else ""
+
+
 # ────────────────────────────────────────── 신호등 판정
 # 화면(TegCheck.jsx)이 색을 다시 계산하지 않도록 행마다 light 를 붙여 내보낸다.
 #   red    — 고쳐야 함
@@ -1004,7 +1041,9 @@ def row_light(row: dict) -> tuple[str, str]:
     # 읽혔지만 같은 teg/top_cell을 찾지 못한 Mapfile module은 S/L로 추측하거나
     # die 침범으로 판정하지 않고 MAIN 쪽 정보 누락으로 분류한다.
     if st == "missing" and not registered:
-        return "orange", "MAIN 정보없음"
+        group = str(row.get("main_group") or "").strip()
+        return ("orange", f"MAIN 정보없음 · 소속 {group}" if group
+                else "MAIN 정보없음 · 소속 MAIN 판정 불가")
     red: list[str] = []
     yellow: list[str] = []
     if st == "mismatch":
@@ -1046,7 +1085,7 @@ def main_die_light(cells: list[dict], group: str,
             continue
         (own if _tm.normalize_chip_name(c["name"]) == key else other).append(c)
     if not key or not own:
-        return "orange", "MAIN 정보없음"
+        return "orange", f"MAIN 정보없음 · 소속 {group or 'MAIN 판정 불가'}"
 
     tx1, ty1 = x0 + w, y0 + h
 
@@ -1236,6 +1275,9 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     dx, dy = _offset(used)   # 표시용 전역 오프셋
     coord_ctx = coordinate_context(chk, veh)
     rules = coord_ctx["rules"]
+    # 좌표 생성과 검증이 동일한 config 입력 집합으로 출력 정밀도를 정한다.
+    # 개별 Mapfile 행이 이보다 더 세밀하면 아래 행 루프에서 그 자릿수까지 보존한다.
+    coord_dp = _coordinate_decimals(ref, chk, coord_ctx)
 
     def _transform_detail(f: str, target_name: str) -> dict:
         base = pchk_bases.get(f)
@@ -1296,6 +1338,10 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                "total": len(tegs), "chip_overlap": 0, "die_in": 0, "die_near": 0,
                "light": {"red": 0, "orange": 0, "yellow": 0,
                          "purple": 0, "green": 0, "gray": 0}}
+    # 정답지 기준 양방향 표기 색인은 한 번만 만든다. 확장 매크로는 방향이 있는
+    # 치환식이라 H_QAB06 -> QA06HB 는 처리해도 역방향 QA06HB -> H_QAB06 은
+    # 처리하지 못한다. 매크로가 못 찾은 행만 이 색인으로 같은 TEG 여부를 확인한다.
+    alias_index = _alias_index(ref, tc_to_teg)
     extension_macros = coord_ctx["extension_macros"]
     macro_builtins = extension_macros["builtins"]
     builtin_alias_rules = [
@@ -1308,50 +1354,78 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         t_flat, t_marker = teg_flat(t["tail"], marker_map)
         used_t = forced or t_flat or detected or "h"
         tdx, tdy = _offset(used_t)
+        # 꼬리표의 H_PCHK/V_PCHK 등은 flat 판정용 마커이지 TEG 별칭이 아니다.
+        # Mapfile 본명이 정답지와 다른 표기일 때 마커가 먼저 exact match 되어 행을
+        # PCHK로 오인하지 않도록 이름 매칭 후보에서만 제외한다. module 본명 자체가
+        # PCHK인 기준 행은 t["name"]으로 계속 정상 매칭된다.
+        match_t = {
+            **t,
+            "candidates": [tok for tok in (t.get("candidates") or [])
+                           if str(tok or "").strip().upper() not in marker_upper],
+        }
         # 순서 기반이 아니라 이름 기반 정확 매칭 — 후보 토큰 중 정답지 teg/top_cell 과
         # 완전 일치하는 걸 찾아 그 teg 로 대조. 없으면 '01' 제외 재매칭(확장체크).
-        ref_teg, msrc, mtok = resolve_ref_teg(t, ref, tc_to_teg)
+        ref_teg, msrc, mtok = resolve_ref_teg(match_t, ref, tc_to_teg)
         extended = False
         match_rule = "exact" if ref_teg is not None else None
         match_rule_label = None
         if ref_teg is None and ref is not None and macro_builtins.get("01strip", True):
-            ref_teg, msrc, mtok = resolve_ref_teg_extended(t, ref, tc_to_teg)
+            ref_teg, msrc, mtok = resolve_ref_teg_extended(match_t, ref, tc_to_teg)
             if ref_teg is not None:
                 extended = True
                 match_rule = "01strip"
         # 접두사_이름 → 이름접두사01 변환 재매칭 (H_AAA01 → AAA01H01).
         # 같은 TEG 를 다르게 적은 것뿐이라 좌표 비교를 정상 수행한다(초록).
         if ref_teg is None and ref is not None and macro_builtins.get("reorder", True):
-            ref_teg, msrc, mtok = resolve_ref_teg_reorder(t, ref, tc_to_teg)
+            ref_teg, msrc, mtok = resolve_ref_teg_reorder(match_t, ref, tc_to_teg)
             if ref_teg is not None:
                 match_rule = "reorder"
         # 분할 TEG 재매칭 — _1, _2 등 접미사 제거 후 base name 으로 정답지 검색
         if ref_teg is None and ref is not None and macro_builtins.get("split", True):
-            ref_teg, msrc, mtok = resolve_ref_teg_split(t, ref, tc_to_teg)
+            ref_teg, msrc, mtok = resolve_ref_teg_split(match_t, ref, tc_to_teg)
             if ref_teg is not None:
                 match_rule = "split"
             # 같은 TEG 의 분할이므로 위치 비교 정상 수행 (extended 아님)
         # 나머지 내장 표기 변환도 1행 1정규식/치환식으로 순서대로 적용한다.
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok, match_rule_label = resolve_ref_teg_macro(
-                t, ref, tc_to_teg, builtin_alias_rules)
+                match_t, ref, tc_to_teg, builtin_alias_rules)
             if ref_teg is not None:
                 match_rule = "macro"
         # 사용자 매크로는 화면의 내장 행 다음 순서로 적용한다.
         if ref_teg is None and ref is not None:
             ref_teg, msrc, mtok, match_rule_label = resolve_ref_teg_macro(
-                t, ref, tc_to_teg, extension_macros.get("rules"))
+                match_t, ref, tc_to_teg, extension_macros.get("rules"))
             if ref_teg is not None:
                 match_rule = "macro"
+        # 양방향 표기 차이 재매칭 — flat(H/V)·SL 위치와 글자·숫자 순서만 다른
+        # 같은 TEG는 확장체크가 아니라 실제 정답지 좌표로 정상 비교한다.
+        # 예: 정답지 H_QAB06 <-> Mapfile QA06HB.
+        if ref_teg is None and ref is not None:
+            ref_teg, msrc, mtok = resolve_ref_teg_alias(
+                match_t, ref, tc_to_teg, alias_index)
+            if ref_teg is not None:
+                match_rule = "alias"
         detail = _transform_detail(used_t, ref_teg or t["name"])
-        nx, ny = transform(t["name"], t["x"], t["y"], used_t, tdx, tdy, rules,
-                           flat_correction=detail["flat_correction"])
-        cmp_ = _compare(ref, ref_teg, nx, ny, extended=extended)
+        # 생성은 정답지 TEG 이름으로 모듈 config를 적용한다. 검증에서도 Mapfile
+        # 별칭(QA06HB 등)에 정확 규칙이 없으면 매칭된 정답지 이름(H_QAB06 등)의
+        # 규칙으로 폴백해야 생성↔검증이 정확히 역방향이 된다.
+        config_name = t["name"]
+        if ((used_t, config_name) not in rules and ref_teg
+                and (used_t, ref_teg) in rules):
+            config_name = ref_teg
+        raw_nx, raw_ny = transform(
+            config_name, t["x"], t["y"], used_t, tdx, tdy, rules,
+            flat_correction=detail["flat_correction"],
+        )
+        row_dp = max(coord_dp, _coord_decimals((t["x"], t["y"])))
+        nx, ny = _gen_num(raw_nx, row_dp), _gen_num(raw_ny, row_dp)
+        cmp_ = _compare(ref, ref_teg, nx, ny, extended=extended, decimals=row_dp)
         if cmp_["status"] in summary:
             summary[cmp_["status"]] += 1
-        rule = rules.get((used_t, t["name"]))
-        global_rule = coord_ctx["global_rules"].get((used_t, t["name"]))
-        product_rule = coord_ctx["product_rules"].get((used_t, t["name"]))
+        rule = rules.get((used_t, config_name))
+        global_rule = coord_ctx["global_rules"].get((used_t, config_name))
+        product_rule = coord_ctx["product_rules"].get((used_t, config_name))
         # 설비 계산값의 실좌표(mm) + TEG 크기(mm) — 정답지에 없으면 기본 크기
         mm_x, mm_y = nx * scale, ny * scale
         tw = cmp_["ref_w"] if cmp_["ref_w"] is not None else float(cfg["teg_default_w"])
@@ -1359,6 +1433,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # flat_used 가 v_R 이면 Vertical TEG — 기본 크기 사용 시 가로/세로 swap
         if cmp_["ref_w"] is None and used_t in ("v_R", "v_L"):
             tw, th = th, tw
+        main_group = main_membership(
+            shot.get("main_cells") or [], mm_x, mm_y, tw, th, die_tol_mm)
         # Teg_location에 등록된 S/L TEG만 스크라이브/die 침범을 판정한다.
         # 미등록 module은 MAIN 정보 누락으로 보며 일반 die 판정을 섞지 않는다.
         overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th, tol=die_tol_mm)
@@ -1375,19 +1451,26 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             summary["die_in"] += 1
         elif ref_teg and die_state == DIE_NEAR:
             summary["die_near"] += 1
-        light, light_reason = row_light({**cmp_, "ref_teg": ref_teg, "die_state": die_state})
+        light, light_reason = row_light({**cmp_, "ref_teg": ref_teg,
+                                         "die_state": die_state,
+                                         "main_group": main_group})
         summary["light"][light] = summary["light"].get(light, 0) + 1
         rows.append({
             **t, "calc_x": _num(nx), "calc_y": _num(ny), **cmp_,
             "light": light, "light_reason": light_reason,
             "teg_kind": ("sl" if ref_teg else
                          "main_info_missing" if cmp_["status"] == "missing" else "unknown"),
+            "main_group": main_group,
             "flat_used": used_t, "flat_marker": t_marker,
             "coordinate_terms": {
-                "base": [_num(tdx), _num(tdy)],
-                "flat_correction": [_num(detail["flat_correction"][0]), _num(detail["flat_correction"][1])],
-                "global_module": [_num(global_rule[0]), _num(global_rule[1])] if global_rule else [0, 0],
-                "product_module": [_num(product_rule[0]), _num(product_rule[1])] if product_rule else [0, 0],
+                "base": [_gen_num(tdx, row_dp), _gen_num(tdy, row_dp)],
+                "flat_correction": [_gen_num(detail["flat_correction"][0], row_dp),
+                                    _gen_num(detail["flat_correction"][1], row_dp)],
+                "global_module": [_gen_num(global_rule[0], row_dp),
+                                  _gen_num(global_rule[1], row_dp)] if global_rule else [0, 0],
+                "product_module": [_gen_num(product_rule[0], row_dp),
+                                   _gen_num(product_rule[1], row_dp)] if product_rule else [0, 0],
+                "config_name": config_name,
             },
             # 이름 기반 매칭 결과 — 대조한 정답지 teg 와 매칭 근거(teg/top_cell/확장 토큰)
             "ref_teg": ref_teg, "match_source": msrc, "match_token": mtok,
@@ -1546,6 +1629,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         "teg": {
             "rows": rows,
             "summary": summary,
+            "criteria": {
+                "sl_coordinate_tolerance": WARN_TOL,
+                "main_chip_tolerance": _num(die_tol_mm),
+            },
+            "mapfile_departments": list(chk.get("mapfile_departments") or []),
             "excluded_main": n_excluded,
             "main_rows": main_rows,
             "main_groups": main_groups,
@@ -1614,6 +1702,35 @@ def _coord_decimals(values) -> int:
         if dp >= GEN_DECIMALS_MAX:
             return GEN_DECIMALS_MAX
     return dp
+
+
+def _coordinate_decimals(ref: dict[str, list[dict]] | None,
+                         check: dict, coord_ctx: dict) -> int:
+    """생성·검증에 공통으로 쓰는 좌표 입력 정밀도.
+
+    Teg_location, flat 기본값, 제품 보정, 전역/제품 모듈 보정 중 가장 긴 소수
+    자릿수를 사용한다. 두 경로가 이 입력 집합을 공유해야 같은 config로 생성한
+    Mapfile을 다시 검사했을 때 float64 연산 꼬리가 좌표 차이로 나타나지 않는다.
+    """
+    product = coord_ctx.get("product") or {}
+    return _coord_decimals([
+        value
+        for candidates in (ref or {}).values()
+        for candidate in candidates
+        for value in (candidate.get("x"), candidate.get("y"))
+    ] + [
+        value
+        for pair in (check.get("flat_offsets") or {}).values()
+        for value in tuple(pair)[:2]
+    ] + [
+        value
+        for item in list(check.get("modules") or []) + list(product.get("modules") or [])
+        for value in (item.get("dx"), item.get("dy"))
+    ] + [
+        value
+        for pair in (coord_ctx.get("flat_corrections") or {}).values()
+        for value in tuple(pair)[:2]
+    ])
 
 
 def _gen_num(value: Any, decimals: int | None = None) -> float | int:
@@ -1737,22 +1854,7 @@ def build_mapfile(vehicle: str, include_all: bool = False,
     # 생성 좌표의 자릿수 = 이 제품 입력값의 최대 소수 자릿수. 정답지가 소수점
     # 한자리면 결과도 한자리를 넘을 수 없다 (GEN_DECIMALS 주석 참고).
     # pchk_bases 는 ref 에서 나오므로 ref 만 훑으면 함께 덮인다.
-    coord_dp = _coord_decimals([
-        value
-        for candidates in (ref or {}).values()
-        for candidate in candidates
-        for value in (candidate.get("x"), candidate.get("y"))
-    ] + [
-        value
-        for pair in (chk.get("flat_offsets") or {}).values()
-        for value in tuple(pair)[:2]
-    ] + [
-        value for rule in rules.values() for value in tuple(rule)[:2]
-    ] + [
-        value
-        for pair in (coord_ctx.get("flat_corrections") or {}).values()
-        for value in tuple(pair)[:2]
-    ])
+    coord_dp = _coordinate_decimals(ref, chk, coord_ctx)
 
     def gen(value: Any) -> float | int:
         """이 제품의 입력 자릿수로 정리한 출력 좌표."""

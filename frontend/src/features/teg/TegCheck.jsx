@@ -71,8 +71,30 @@ function mainIssueRank(item) {
   if (/여러 MAIN|다른 MAIN.*(?:침범|안)$/.test(reason)) return 0;
   if (/경계 넘어감| 밖$/.test(reason)) return 1;
   if (/^purpose\s+/i.test(reason)) return 2;
-  if (reason === "MAIN 정보없음" || item?.light === "orange") return 3;
+  if (/MAIN 정보없음/.test(reason) || item?.light === "orange") return 3;
   return item?.light === "yellow" ? 4 : 5;
+}
+
+function groupMissingTargetsByDepartment(targets, departments) {
+  const seen = new Set();
+  const groups = (departments || []).map(value => typeof value === "string"
+    ? { match: value, label: value }
+    : { match: value?.match || "", label: value?.label || value?.match || "" })
+    .map(value => ({ match: String(value.match || "").trim(),
+                     label: String(value.label || value.match || "").trim() }))
+    .filter(value => {
+    const key = value.match.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key); return true;
+  }).map(value => ({ name: value.label || value.match, match: value.match,
+                     key: value.match.toLowerCase(), items: [] }));
+  const other = [];
+  (targets || []).forEach(target => {
+    const haystack = [target.teg, ...(target.top_cell || [])].join("\n").toLowerCase();
+    const group = groups.find(item => haystack.includes(item.key));
+    (group ? group.items : other).push(target);
+  });
+  return { configured: groups.length > 0, groups, other };
 }
 
 function compactNameList(values, limit = 3) {
@@ -483,12 +505,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const seeMain = view !== VIEW_TARGET;
   const mainHasAttention = mainInfoMissingRows.length > 0 || mainInfoMissingGroups.length > 0
     || mainChecklist.some(t => ["red", "orange", "yellow"].includes(t.light));
-  const mainIssueCount = mainInfoMissingRows.length + mainInfoMissingGroups.length
-    + mainChecklist.filter(t => t.light === "red" && t.light_reason !== "MAIN 정보없음").length;
-  const mainInsideCount = mainChecklist.filter(t => t.light === "yellow" && / die 안$/.test(t.light_reason || "")).length;
-  const mainBoundaryCount = mainChecklist.filter(t => t.light === "yellow" && /경계/.test(t.light_reason || "")).length;
+  const mainRedCount = mainChecklist.filter(t => t.light === "red").length;
+  const mainOrangeCount = mainInfoMissingRows.length + mainInfoMissingGroups.length
+    + mainChecklist.filter(t => t.light === "orange").length;
+  const mainYellowCount = mainChecklist.filter(t => t.light === "yellow").length;
+  const mainGrayCount = mainChecklist.filter(t => t.light === "gray").length;
   const mainRedIssues = seeMain ? mainChecklist
-    .filter(row => row.light === "red" && row.light_reason !== "MAIN 정보없음")
+    .filter(row => row.light === "red")
     .map(row => ({
       ...row,
       issue_name: row.teg,
@@ -498,12 +521,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     })).sort((a, b) => mainIssueRank(a) - mainIssueRank(b)) : [];
   const mainInfoIssues = seeMain ? [
     ...mainInfoMissingRows.map(row => ({
-      ...row, light: "orange", issue_name: row.name, issue_scope: "MAIN TEG",
-      issue_reason: "MAIN 정보없음", summary_section: "main",
+      ...row, light: "orange", issue_name: row.name,
+      issue_scope: row.main_group ? `MAIN · ${row.main_group}` : "MAIN TEG",
+      issue_reason: row.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가", summary_section: "main",
     })),
     ...mainInfoMissingGroups.map(group => ({
       ...group, light: "orange", issue_name: group.group, issue_scope: "MAIN",
-      issue_reason: "MAIN 정보없음", summary_section: "main",
+      issue_reason: `MAIN 정보없음 · 소속 ${group.group}`, summary_section: "main",
     })),
   ] : [];
   const slIssues = seeTarget ? bad.map(row => ({
@@ -538,7 +562,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const placementIssues = mainChecklist.filter(row => row.light === "red" && !/^purpose\s+/i.test(row.light_reason || ""));
   const topErrorMessages = [];
   const mainInfoMissingNames = [
-    ...mainInfoMissingRows.map(row => row.name),
+    ...mainInfoMissingRows.map(row => row.main_group
+      ? `${row.name}(${row.main_group})` : `${row.name}(소속 판정 불가)`),
     ...mainInfoMissingGroups.map(group => group.group),
   ];
   [
@@ -657,6 +682,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const lightCounts = checklist.reduce((acc, it) => {
     acc[it.light] = (acc[it.light] || 0) + 1; return acc;
   }, {});
+  const slCoordinateTolerance = Number(teg.criteria?.sl_coordinate_tolerance ?? 2);
   // 미설정 세분화: 확장체크 통과 / 다른 방향(판정 불가) / 진짜 미설정
   const { extMatchedTargets, otherDirTargets, trulyMissingTargets } = useMemo(() => {
     const ext = [], otherDir = [], truly = [];
@@ -672,6 +698,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     });
     return { extMatchedTargets: ext, otherDirTargets: otherDir, trulyMissingTargets: truly };
   }, [missingTargets, rowByRefTeg, flatDir]);
+  const missingDepartmentGroups = useMemo(
+    () => groupMissingTargetsByDepartment(trulyMissingTargets, teg.mapfile_departments),
+    [trulyMissingTargets, teg.mapfile_departments]);
   // 수천 행 대비: 이름 검색 필터 + 점진 렌더 (한 번에 전부 그리면 메인스레드 블로킹)
   const [rowFilter, setRowFilter] = useState("");
   const [rowLimit, setRowLimit] = useState(300);
@@ -725,7 +754,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         );
       } },
     { key: "ref", label: "DB Ebeam (x,y)", render: r =>
-        r.status === "missing" ? "MAIN 정보없음" : r.status === "noref" ? "-" : `(${r.ref_x},${r.ref_y})` },
+        r.status === "missing" ? (r.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가")
+          : r.status === "noref" ? "-" : `(${r.ref_x},${r.ref_y})` },
     { key: "dx", label: "ΔX", align: "right", render: r => fmtN(r.dx) },
     { key: "dy", label: "ΔY", align: "right", render: r => fmtN(r.dy) },
     ...(res.shot?.checked ? [{
@@ -919,38 +949,55 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           (Mapfile 행 기준 수치는 뒤의 회색 문장에 부수적으로 적는다.) ── */}
       {showTechnical && teg.ref_ok && ((seeTarget && targets.total > 0)
         || (seeMain && (mainChecklist.length > 0 || mainInfoMissingRows.length > 0 || mainInfoMissingGroups.length > 0))) && (
-        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center",
-                      padding: "11px 12px", border: "1px solid var(--line)", borderRadius: 8,
-                      background: "var(--bg-primary)" }}>
-          <strong style={{ marginRight: 2 }}>상세 집계</strong>
-          <Pill tone={combinedIssues.length ? "danger" : "ok"}
-            title={`대상 TEG ${seeTarget ? bad.length : 0} · MAIN ${seeMain ? mainIssueCount : 0}`}>
-            🔴 전체 이상 {combinedIssues.length}
-          </Pill>
-          {seeTarget && targets.total > 0 && <>
-          <Pill tone={lightCounts.green ? "ok" : "neutral"}>🟢 정상 {lightCounts.green || 0}</Pill>
-          <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
-            title="ΔX·ΔY 가 각각 2 이내 — 소수점·세팅 차이 정도의 작은 오차">
-            🟡 확인필요 {lightCounts.yellow || 0}
-          </Pill>
-          {lightCounts.purple > 0 && (
-            <Pill tone="warn" title="이름 변환 규칙으로 매칭한 것 — 위치가 아닌 이름 검증">
-              🟣 확장 {lightCounts.purple}
-            </Pill>
-          )}
-          {lightCounts.gray > 0 && (
-            <Pill tone="danger" title="대상인데 이 Mapfile 의 module name 에 없음 — 세팅 누락 후보">
-              ⚪ 미설정 {lightCounts.gray}
-            </Pill>
-          )}
-          </>}
-          {seeMain && mainChecklist.length > 0 && <>
-            {mainInsideCount > 0 && <Pill tone="warn">🟡 MAIN 확인필요 {mainInsideCount}</Pill>}
-            {mainBoundaryCount > 0 && <Pill tone="warn">🟡 MAIN 경계 {mainBoundaryCount}</Pill>}
-          </>}
-          {seeMain && (mainInfoMissingRows.length + mainInfoMissingGroups.length) > 0 && (
-            <Pill tone="warn">🟠 MAIN 정보없음 {mainInfoMissingRows.length + mainInfoMissingGroups.length}</Pill>
-          )}
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ padding: "9px 11px", border: "1px solid var(--line)", borderRadius: 8,
+                        background: "var(--surface-2)", fontSize: 11, lineHeight: 1.6,
+                        color: "var(--muted)" }}>
+            <div><b style={{ color: "var(--text-primary)" }}>🟡 S/L TEG 확인필요</b> — 정답지에 설정된 좌표와 Mapfile 환산 좌표의
+              ΔX·ΔY가 각각 {slCoordinateTolerance} 이내인 작은 차이로, 양호로 예상되는 항목입니다.</div>
+            <div><b style={{ color: "var(--text-primary)" }}>🟡 MAIN TEG 확인필요</b> — 해당 Mapfile 행에 <code>MAIN~~</code>로 적힌
+              MAIN 내부에 TEG 전체가 존재하며, Main_chip_info의 Main chip 영역과 경계 오차가 설정된 허용범위 이내인 항목입니다.</div>
+          </div>
+          <div style={{ display: "grid", gap: 8, padding: "11px 12px",
+                        border: "1px solid var(--line)", borderRadius: 8,
+                        background: "var(--bg-primary)" }}>
+            <strong>상세 집계</strong>
+            {seeTarget && targets.total > 0 && (
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                <strong style={{ minWidth: 70, fontSize: 12 }}>S/L TEG</strong>
+                <Pill tone={lightCounts.red ? "danger" : "neutral"}>🔴 이상 {lightCounts.red || 0}개</Pill>
+                <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
+                  title={`ΔX·ΔY가 각각 ${slCoordinateTolerance} 이내 — 양호로 예상되는 작은 차이`}>
+                  🟡 확인필요 {lightCounts.yellow || 0}개
+                </Pill>
+                <Pill tone={lightCounts.green ? "ok" : "neutral"}>🟢 정상 {lightCounts.green || 0}개</Pill>
+                {lightCounts.purple > 0 && (
+                  <Pill tone="warn" title="이름 변환 규칙으로 매칭한 것 — 위치가 아닌 이름 검증">
+                    🟣 확장 {lightCounts.purple}개
+                  </Pill>
+                )}
+                {lightCounts.gray > 0 && (
+                  <Pill tone="danger" title="대상인데 이 Mapfile의 module name에 없음 — 세팅 누락 후보">
+                    ⚪ 미설정 {lightCounts.gray}개
+                  </Pill>
+                )}
+              </div>
+            )}
+            {seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) && (
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center",
+                            paddingTop: seeTarget && targets.total > 0 ? 8 : 0,
+                            borderTop: seeTarget && targets.total > 0 ? "1px solid var(--line)" : "none" }}>
+                <strong style={{ minWidth: 70, fontSize: 12 }}>MAIN TEG</strong>
+                <Pill tone={mainRedCount ? "danger" : "neutral"}>🔴 이상 {mainRedCount}개</Pill>
+                <Pill tone={mainYellowCount ? "warn" : "neutral"}
+                  title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
+                  🟡 확인필요 {mainYellowCount}개
+                </Pill>
+                {mainOrangeCount > 0 && <Pill tone="warn">🟠 MAIN 정보없음 {mainOrangeCount}개</Pill>}
+                {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1063,12 +1110,37 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   text: t.matched_by === "top_cell" ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
                   title: `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
                 }))} />
-              <ChipRow label="세팅 안 됨" color="var(--danger)"
-                empty="없음 — 대상 TEG 가 모두 Mapfile 에 있습니다"
-                items={trulyMissingTargets.map(t => ({
-                  key: t.teg, text: t.teg,
-                  title: t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음",
-                }))} />
+              {missingDepartmentGroups.configured ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6,
+                              padding: "7px 8px", border: "1px solid var(--line)", borderRadius: 6 }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                    세팅 안 됨 · 부서 구분: {missingDepartmentGroups.groups.map(group => group.name).join(" · ")}
+                  </div>
+                  {missingDepartmentGroups.groups.map(group => (
+                    <ChipRow key={group.key} label={`${group.name} · 세팅 안 됨`} color="var(--danger)"
+                      hint={group.name !== group.match ? `포함값: ${group.match}` : undefined}
+                      empty={`없음 — ${group.name} 대상 TEG가 모두 Mapfile에 있습니다`}
+                      items={group.items.map(t => ({
+                        key: t.teg, text: t.teg,
+                        title: t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음",
+                      }))} />
+                  ))}
+                  {missingDepartmentGroups.other.length > 0 && (
+                    <ChipRow label="기타 · 세팅 안 됨" color="var(--danger)"
+                      items={missingDepartmentGroups.other.map(t => ({
+                        key: t.teg, text: t.teg,
+                        title: t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음",
+                      }))} />
+                  )}
+                </div>
+              ) : (
+                <ChipRow label="세팅 안 됨" color="var(--danger)"
+                  empty="없음 — 대상 TEG 가 모두 Mapfile 에 있습니다"
+                  items={trulyMissingTargets.map(t => ({
+                    key: t.teg, text: t.teg,
+                    title: t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음",
+                  }))} />
+              )}
               {extMatchedTargets.length > 0 && (
                 <ChipRow label="확장체크로 매칭" color="var(--violet)"
                   items={extMatchedTargets.map(t => ({
@@ -1370,7 +1442,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       </div>
                       <div style={{ color: "var(--muted)" }}>
                         ebeam_x/y: {r.ref_x !== null && r.ref_x !== undefined
-                          ? `(${r.ref_x}, ${r.ref_y})` : "MAIN 정보없음"}
+                          ? `(${r.ref_x}, ${r.ref_y})`
+                          : (r.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가")}
                       </div>
                       <div style={{ color: "var(--muted)" }}>
                         계산값: ({r.calc_x}, {r.calc_y})
@@ -1617,7 +1690,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showInput, setShowInput] = useState(true);
-  const [showWafer, setShowWafer] = useState(false);
+  const [showWafer, setShowWafer] = useState(true);
   const [flat, setFlat] = useState(null);          // null = 자동 감지
   const [selPattern, setSelPattern] = useState(null);
   const [px, setPx] = useState(10);                // 작은 맵 셀 기본 크기 — 이전 21px의 약 절반
@@ -1649,7 +1722,8 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
           name_overrides: Object.keys(ov).length ? ov : null });
       setRes(r);
       setShowInput(false);
-      setShowWafer(false);
+      // 새 검증 결과는 Wafer Map을 바로 확인할 수 있게 기본 펼침 상태로 연다.
+      setShowWafer(true);
       lastTextRef.current = text;
       if (textChanged) setNameOv({});
       if (flatOverride === undefined) { setSelPattern(null); setMapSel({}); }
