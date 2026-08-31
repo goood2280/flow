@@ -482,7 +482,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const { summary } = teg;
   // 신호등은 백엔드 판정(row.light)을 그대로 쓴다. Teg_location에 있는 항목만
   // S/L TEG이며, 없는 module은 MAIN 정보 누락으로 분리한다.
-  const mainInfoMissingRows = teg.rows.filter(r => r.teg_kind === "main_info_missing");
+  const mainInfoMissingRows = teg.rows.filter(r =>
+    r.teg_kind === "main_info_missing" && !r.ref_teg);
   const slRows = teg.rows.filter(r => r.teg_kind !== "main_info_missing");
   const bad = slRows.filter(r => r.light === "red");
   const extended = teg.rows.filter(r => r.status === "extended");
@@ -1179,21 +1180,26 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             MAIN {(teg.main_groups || []).length}그룹
           </span>}>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {mainInfoMissingRows.length > 0 && (
-              <div style={{ padding: "7px 8px", border: "1px solid var(--warn)", borderRadius: 6,
-                            background: "rgba(245, 158, 11, 0.08)" }}>
-                <div style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800, marginBottom: 4 }}>
-                  MAIN 정보 누락 TEG
-                </div>
+            {mainInfoIssues.length > 0 && (
+              <details style={{ padding: "7px 8px", border: "1px solid var(--warn)", borderRadius: 6,
+                                background: "rgba(245, 158, 11, 0.08)" }}>
+                <summary style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800,
+                                  cursor: "pointer", userSelect: "none" }}>
+                  🟠 MAIN 정보누락 TEG {mainInfoIssues.length}개
+                </summary>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  {mainInfoMissingRows.map(row => (
-                    <TokenChip key={`missing-${row.idx}`} color="var(--warn)"
-                      title={row.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가"}>
-                      {row.name} · {row.main_group || "소속 MAIN 판정 불가"}
-                    </TokenChip>
-                  ))}
+                  {mainInfoIssues.map((item, index) => {
+                    const owner = item.group || item.main_group || "소속 MAIN 판정 불가";
+                    const label = owner === item.issue_name ? item.issue_name : `${item.issue_name} · ${owner}`;
+                    return (
+                      <TokenChip key={`missing-${item.issue_name}-${owner}-${index}`} color="var(--warn)"
+                        title={item.issue_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가"}>
+                        {label}
+                      </TokenChip>
+                    );
+                  })}
                 </div>
-              </div>
+              </details>
             )}
             {!(teg.main_groups || []).length && (
               <div style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -1247,19 +1253,6 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       ))}
                       {g.red > 20 && (
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>+{g.red - 20}</span>
-                      )}
-                    </div>
-                  )}
-                  {g.orange > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3 }}>
-                      {g.tegs.filter(t => t.light === "orange").slice(0, 20).map(t => (
-                        <TokenChip key={`orange-${t.teg}`} color="var(--warn)"
-                          title={`(${t.x}, ${t.y}) — ${t.light_reason}`}>
-                          {t.teg} · {g.group}
-                        </TokenChip>
-                      ))}
-                      {g.orange > 20 && (
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>+{g.orange - 20}</span>
                       )}
                     </div>
                   )}

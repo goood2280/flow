@@ -79,33 +79,33 @@ def test_mapfile_main_inside_is_yellow_and_forbidden_purpose_is_red(monkeypatch)
     monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (None, {}, "", "정답지 없음"))
     monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
         "available": True, "checked": False, "cells": [],
-        "main_cells": [{"name": "MAIN_M01", "x": 0, "y": 0, "w": 9, "h": 6}],
+        "main_cells": [{"name": "MAIN01", "x": 0, "y": 0, "w": 9, "h": 6}],
     })
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
     })
-    purposes = {"P": {"MAIN_M01": ""}}
+    purposes = {"P": {"MAIN01": ""}}
     monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: (purposes, None))
     source = (
         "#teg-map\n"
-        "module MAIN_BLOCK (0,0) ! MAIN_M01,H_PCHK\n"
-        "module INNER_A (1000,1000) ! MAIN_M01,INNER_A,H_PCHK\n"
+        "module MAIN_BLOCK (0,0) ! MAIN01,H_PCHK\n"
+        "module INNER_A (1000,1000) ! MAIN01,INNER_A,H_PCHK\n"
     )
 
     normal = teg_check.inspect("P", source, flat="h")
     normal_group = normal["teg"]["main_groups"][0]
     assert normal_group["tegs"][1]["light"] == "yellow"
-    assert normal_group["tegs"][1]["light_reason"] == "MAIN_M01 die 안"
+    assert normal_group["tegs"][1]["light_reason"] == "MAIN01 die 안"
     assert normal["teg"]["main_purpose_warnings"] == []
 
-    purposes["P"]["MAIN_M01"] = "IP"
+    purposes["P"]["MAIN01"] = "IP"
     forbidden = teg_check.inspect("P", source, flat="h")
     forbidden_group = forbidden["teg"]["main_groups"][0]
     assert forbidden_group["purpose_warning"] is True
     assert forbidden_group["tegs"][1]["light"] == "red"
     assert "purpose IP" in forbidden_group["tegs"][1]["light_reason"]
     assert forbidden["teg"]["main_purpose_warnings"] == [{
-        "group": "MAIN_M01", "purpose": "IP",
+        "group": "MAIN01", "purpose": "IP",
         "reason": "Main_chip_info.csv에서 TEG 배치 금지 purpose로 지정됨",
     }]
 
@@ -124,7 +124,7 @@ def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_in
     monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
         "available": True, "checked": True,
         "cells": [{"name": "DIE01", "x": 0, "y": 0, "w": 10, "h": 10}],
-        "main_cells": [{"name": "MAIN_M01", "x": 0, "y": 0, "w": 10, "h": 10}],
+        "main_cells": [{"name": "MAIN01", "x": 0, "y": 0, "w": 10, "h": 10}],
     })
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
@@ -140,8 +140,8 @@ def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_in
     assert row["status"] == "missing"
     assert row["teg_kind"] == "main_info_missing"
     assert row["light"] == "orange"
-    assert row["main_group"] == "MAIN_M01"
-    assert row["light_reason"] == "MAIN 정보없음 · 소속 MAIN_M01"
+    assert row["main_group"] == "MAIN01"
+    assert row["light_reason"] == "MAIN 정보없음 · 소속 MAIN01"
     assert row["die_state"] is None
     assert row["chip_overlap"] is None
 
@@ -164,17 +164,17 @@ def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
     monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
     source = (
         "#teg-map\n"
-        "module MAIN_BLOCK (0,0) ! MAIN_M01,H_PCHK\n"
-        "module INNER_A (1000,1000) ! MAIN_M01,INNER_A,H_PCHK\n"
+        "module MAIN_BLOCK (0,0) ! MAIN01,H_PCHK\n"
+        "module INNER_A (1000,1000) ! MAIN01,INNER_A,H_PCHK\n"
     )
 
     result = teg_check.inspect("P", source, flat="h")
 
     group = result["teg"]["main_groups"][0]
     assert group["main_info_missing"] is True
-    assert group["tegs"][1]["main_group"] == "MAIN_M01"
+    assert group["tegs"][1]["main_group"] == "MAIN01"
     assert group["tegs"][1]["light"] == "orange"
-    assert group["tegs"][1]["light_reason"] == "MAIN 정보없음 · 소속 MAIN_M01"
+    assert group["tegs"][1]["light_reason"] == "MAIN 정보없음 · 소속 MAIN01"
 
 
 @pytest.mark.parametrize("module_name, ref_name, rule_name", [
@@ -418,9 +418,11 @@ def test_inspect_applies_global_macro_to_every_product_and_reports_its_name(monk
         row = result["teg"]["rows"][0]
 
         assert row["ref_teg"] == "ALPHAH01"
+        assert row["teg_kind"] == "sl"
         assert row["match_rule"] == "macro"
         assert row["match_rule_label"] == "담당자 H 표기"
         assert row["light"] == "green"
+        assert result["teg"]["main_groups"] == []
 
 
 def test_date_tokens_never_become_teg_names():
@@ -439,6 +441,40 @@ def test_date_tokens_never_become_teg_names():
     row = parsed[0]
     assert row["name"] == "SRAM24"          # 날짜가 아니라 module 뒤 이름
     assert "2026-08-28" not in row["candidates"]
+
+
+def test_main_marker_requires_two_digits_and_asb_main_remains_sl_teg(monkeypatch):
+    """MAIN+숫자 두 자리가 아닌 일반 TEG는 MAIN으로 빼면 안 된다."""
+    check = teg_map._clean_check({})
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg.update({"check": check, "ebeam_scale": 1.0,
+                "teg_default_w": 0.1, "teg_default_h": 0.1})
+    ref = {"ASb_MAIN": [{"x": 10.0, "y": 20.0, "w": 0.1, "h": 0.1,
+                         "dir": "h", "top_cell": ""}]}
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    assert teg_check.is_main("MAIN01") is True
+    assert teg_check.is_main("MAIN_M01") is False
+    assert teg_check.is_main("MAIN_BLOCK") is False
+    assert teg_check.is_main("ASb_MAIN") is False
+    result = teg_check.inspect(
+        "P", "#teg-map\nmodule ASb_MAIN (10,20) ! ASb_MAIN,H_PCHK\n", flat="h",
+    )
+    row = result["teg"]["rows"][0]
+    assert row["ref_teg"] == "ASb_MAIN"
+    assert row["teg_kind"] == "sl"
+    assert row["light"] == "green"
+    assert result["teg"]["excluded_main"] == 0
+    assert result["teg"]["main_groups"] == []
 
 
 def test_main_grid_with_zero_gap_is_centered_inside_die(monkeypatch):
@@ -593,31 +629,31 @@ def test_mapfile_mixed_main_purposes_keep_ip_red_and_normal_inside_yellow(monkey
         "checked": False,
         "cells": [],
         "main_cells": [
-            {"name": "MAIN_M01", "x": 0, "y": 0, "w": 9, "h": 6},
-            {"name": "MAIN_M02", "x": 12, "y": 0, "w": 9, "h": 6},
+            {"name": "MAIN01", "x": 0, "y": 0, "w": 9, "h": 6},
+            {"name": "MAIN02", "x": 12, "y": 0, "w": 9, "h": 6},
         ],
     })
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
     })
     monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({
-        "P": {"MAIN_M01": "IP", "MAIN_M02": "LOGIC"},
+        "P": {"MAIN01": "IP", "MAIN02": "LOGIC"},
     }, None))
     source = (
         "#teg-map\n"
-        "module MAIN_1 (0,0) ! MAIN_M01,H_PCHK\n"
-        "module INNER_IP (1000,1000) ! MAIN_M01,INNER_IP,H_PCHK\n"
-        "module MAIN_2 (12000,0) ! MAIN_M02,H_PCHK\n"
-        "module INNER_NORMAL (13000,1000) ! MAIN_M02,INNER_NORMAL,H_PCHK\n"
+        "module MAIN_1 (0,0) ! MAIN01,H_PCHK\n"
+        "module INNER_IP (1000,1000) ! MAIN01,INNER_IP,H_PCHK\n"
+        "module MAIN_2 (12000,0) ! MAIN02,H_PCHK\n"
+        "module INNER_NORMAL (13000,1000) ! MAIN02,INNER_NORMAL,H_PCHK\n"
     )
 
     result = teg_check.inspect("P", source, flat="h")
     groups = {group["group"]: group for group in result["teg"]["main_groups"]}
 
-    assert groups["MAIN_M01"]["tegs"][1]["light"] == "red"
-    assert groups["MAIN_M01"]["tegs"][1]["light_reason"] == "purpose IP — TEG 배치 금지"
-    assert groups["MAIN_M02"]["tegs"][1]["light"] == "yellow"
-    assert groups["MAIN_M02"]["tegs"][1]["light_reason"] == "MAIN_M02 die 안"
+    assert groups["MAIN01"]["tegs"][1]["light"] == "red"
+    assert groups["MAIN01"]["tegs"][1]["light_reason"] == "purpose IP — TEG 배치 금지"
+    assert groups["MAIN02"]["tegs"][1]["light"] == "yellow"
+    assert groups["MAIN02"]["tegs"][1]["light_reason"] == "MAIN02 die 안"
 
 
 @pytest.mark.parametrize(

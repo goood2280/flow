@@ -343,8 +343,8 @@ def parse_teg(lines: list[str]) -> list[dict]:
 
 
 def is_main(name: str) -> bool:
-    """module 이름에 MAIN 이 들어가면 검사 대상에서 제외 (domain 등 오탐 방지)."""
-    return bool(MAIN_RE.search(str(name or "")))
+    """정확히 MAIN + 숫자 두 자리인 이름만 MAIN 그룹/TEG로 판정한다."""
+    return bool(MAIN_RE.search(str(name or "").strip()))
 
 
 def main_group_name(row: dict) -> str:

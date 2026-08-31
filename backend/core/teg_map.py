@@ -1016,7 +1016,9 @@ def save_cfg(patch: dict) -> dict:
 
 
 # ────────────────────────────────────────── MAIN die helpers
-MAIN_RE = re.compile(r"(?<![A-Za-z])MAIN", re.IGNORECASE)   # 이름의 MAIN 판별
+# MAIN die/그룹은 정확히 MAIN + 숫자 두 자리(MAIN01, MAIN02, ...)만 인정한다.
+# ASb_MAIN, MAIN_BLOCK, MAIN_M01처럼 이 규약과 다른 일반 TEG는 MAIN이 아니다.
+MAIN_RE = re.compile(r"^MAIN\d{2}$", re.IGNORECASE)
 
 
 _CHIP_NUM_RE = re.compile(r"^(.*?)(\d+)$")

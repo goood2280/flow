@@ -1,7 +1,19 @@
 {
-  "version": "10.4.142",
+  "version": "10.4.143",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.143",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "MAIN 접두 판정과 정보누락 목록 접힘 정리",
+      "changes": [
+        "[MAIN 판정] ASb_MAIN처럼 이름에 MAIN이 포함된 일반 TEG가 MAIN 그룹으로 제외됨 → MAIN 포함 위치를 넓게 찾는 정규식 사용 → 정확히 MAIN 뒤 숫자 두 자리인 MAIN01·MAIN02 계열만 MAIN으로 판정",
+        "[확장 매크로] 확장 매크로로 Teg_location의 S/L 정답 TEG에 매칭된 행이 MAIN 정보누락 후보에 남을 우려 → 누락 목록이 teg_kind만 확인함 → ref_teg가 확인된 행은 명시적으로 제외하고 S/L 분류·MAIN 그룹 비포함을 회귀 테스트로 고정",
+        "[정보누락 UI] ③ MAIN 안의 TEG 종류에서 주황 TEG 이름이 항상 펼쳐져 목록이 길어짐 → 그룹별 누락 이름을 즉시 나열함 → 소속 MAIN 표시는 유지하면서 MAIN 정보누락 TEG 전체를 기본 접힌 details 목록으로 통합",
+        "[검증] MAIN 접두 경계와 매크로 S/L 우선순위 변경의 회귀 위험 → ASb_MAIN 정확 매칭과 사용자 확장 매크로 결과 확인 필요 → TEG 좌표 테스트 71건, Python 컴파일, 디자인·구조 검사와 Vite production build 통과"
+      ]
+    },
     {
       "version": "10.4.142",
       "date": "2026-08-31",

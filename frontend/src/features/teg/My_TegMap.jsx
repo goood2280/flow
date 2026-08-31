@@ -44,9 +44,9 @@ function fmt(v, d = 2) {
   return Number(v).toFixed(d);
 }
 
-// MAIN 계열 TEG 판별 — 앞이 글자가 아닌 곳의 MAIN (domain/remain 오탐 제외, 백엔드 is_main 과 동일).
-const MAIN_RE = /(?<![A-Za-z])MAIN/i;
-function isMainTeg(name) { return MAIN_RE.test(String(name || "")); }
+// MAIN 계열은 정확히 MAIN + 숫자 두 자리(MAIN01, MAIN02, ...)만 인정한다.
+const MAIN_RE = /^MAIN\d{2}$/i;
+function isMainTeg(name) { return MAIN_RE.test(String(name || "").trim()); }
 
 /* Teg_location의 업무 순서는 보존하되 MAIN 항목끼리만 이름 뒤 숫자의 자연순으로
    보인다. 일반 TEG를 함께 정렬하면 파일에 정한 공정 순서가 깨지므로 MAIN이 있던
