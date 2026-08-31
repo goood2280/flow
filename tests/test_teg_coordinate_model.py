@@ -20,6 +20,19 @@ def test_sl_coordinate_warning_is_limited_to_two_raw_units_per_axis():
     assert teg_check._status_of(0, -2.01) == "mismatch"
 
 
+def test_extension_name_match_uses_normal_sl_coordinate_lights():
+    ref = {"TEGA": [{"x": 10.0, "y": 20.0, "w": 0.1, "h": 0.1}]}
+
+    matched = teg_check._compare(ref, "TEGA", 10.0, 20.0, extended=True)
+    warning = teg_check._compare(ref, "TEGA", 12.0, 20.0, extended=True)
+    mismatch = teg_check._compare(ref, "TEGA", 12.01, 20.0, extended=True)
+
+    assert matched["status"] == "match"
+    assert teg_check.row_light({**matched, "ref_teg": "TEGA"}) == ("green", "위치 확인")
+    assert warning["status"] == "warning"
+    assert mismatch["status"] == "mismatch"
+
+
 def test_map_payload_ignores_legacy_mapfile_main_overlays(tmp_path, monkeypatch):
     """위치 조회 목록은 Teg_location 만 사용하고 Mapfile 역반영 파일은 읽지 않는다."""
     layout = pd.DataFrame([
@@ -216,6 +229,44 @@ def test_each_builtin_macro_maps_one_pattern_to_one_reference_name(
     assert row["light"] == "green"
 
 
+@pytest.mark.parametrize(("module_name", "ref_name", "rule_name", "flat"), [
+    ("V_PCHK", "V_PRBCHK", "PCHK를 PRBCHK로 인식", "v_R"),
+    ("H_PCHK", "H_PRBCHK", "PCHK를 PRBCHK로 인식", "h"),
+    ("V_PRBCHK", "V_PCHK", "PRBCHK를 PCHK로 인식", "v_R"),
+    ("H_PRBCHK", "H_PCHK", "PRBCHK를 PCHK로 인식", "h"),
+])
+def test_pchk_and_prbchk_are_builtin_aliases_not_main_info_missing(
+        monkeypatch, module_name, ref_name, rule_name, flat):
+    """PCHK/PRBCHK 표기 차이는 같은 기준 TEG로 대조하고 MAIN 누락으로 보내지 않는다."""
+    ref = {
+        ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                    "dir": flat, "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0})
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect(
+        "P", f"#teg-map\nmodule {module_name} (0,0) ! {module_name}\n",
+    )
+    row = result["teg"]["rows"][0]
+
+    assert result["flat"]["used"] == flat
+    assert row["ref_teg"] == ref_name
+    assert row["match_rule"] == "macro"
+    assert row["match_rule_label"] == rule_name
+    assert row["status"] == "match"
+    assert row["teg_kind"] == "sl"
+    assert row["light"] == "green"
+
+
 @pytest.mark.parametrize(("ref_name", "module_name"), [
     ("H_QAF01", "QAF01H"),
     ("H_QAB06", "QA06HB"),
@@ -406,7 +457,10 @@ def test_inspect_applies_global_macro_to_every_product_and_reports_its_name(monk
         "available": False, "checked": False, "cells": [], "main_cells": [],
     })
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
-        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+        "source": "default",
+        "items": [{"teg": "ALPHAH01", "top_cell": [], "direction": "h",
+                   "matched": False, "matched_by": None, "matched_module": None}],
+        "matched": 0, "missing": 1, "total": 1,
     })
     monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
     monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
@@ -422,6 +476,13 @@ def test_inspect_applies_global_macro_to_every_product_and_reports_its_name(monk
         assert row["match_rule"] == "macro"
         assert row["match_rule_label"] == "담당자 H 표기"
         assert row["light"] == "green"
+        assert result["teg"]["targets"]["matched"] == 1
+        assert result["teg"]["targets"]["missing"] == 0
+        target = result["teg"]["targets"]["items"][0]
+        assert target["matched"] is True
+        assert target["matched_module"] == "H_ALPHA"
+        assert target["match_rule"] == "macro"
+        assert target["match_rule_label"] == "담당자 H 표기"
         assert result["teg"]["main_groups"] == []
 
 
@@ -720,6 +781,19 @@ def test_product_config_keeps_l_map_and_shape_rules():
     assert teg_map.normalize_direction("", "V_L_SPECIAL") == "v_L"
 
 
+def test_vehicle_wafer_edge_uses_147_default_and_product_override():
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["vehicles"] = {
+        "P146": teg_map._clean_vehicle_cfg({"wafer_edge_mm": 146}),
+        "INHERIT": teg_map._clean_vehicle_cfg({"mode": "grid"}),
+    }
+
+    assert teg_map.vehicle_wafer_edge_mm(cfg, "P146") == 146
+    assert teg_map.vehicle_wafer_edge_mm(cfg, "p146") == 146
+    assert teg_map.vehicle_wafer_edge_mm(cfg, "INHERIT") == 147
+    assert teg_map.vehicle_wafer_edge_mm(cfg, "UNKNOWN") == 147
+
+
 def test_legacy_mapfile_department_names_keep_same_display_label():
     check = teg_map._clean_check({"mapfile_departments": ["DVC", "SRAM"]})
 
@@ -820,6 +894,19 @@ def test_product_paste_parser_uses_named_rows_and_requires_odd_offset():
         teg_map.parse_product_info_table(PRODUCT_PASTE.replace("Map offset(Odd)", "Map offset(Even)"))
 
 
+def test_product_preview_uses_the_selected_products_wafer_edge(monkeypatch):
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["vehicles"] = {"P146": teg_map._clean_vehicle_cfg({"wafer_edge_mm": 146})}
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: cfg)
+
+    standard = teg_map.product_info_preview(PRODUCT_PASTE)
+    adjusted = teg_map.product_info_preview(PRODUCT_PASTE, "P146")
+
+    assert standard["wafer_edge_mm"] == 147
+    assert adjusted["wafer_edge_mm"] == 146
+    assert adjusted["shot_count"] < standard["shot_count"]
+
+
 def test_product_paste_parser_matches_size_names_with_micro_units_and_prefixes():
     pasted = (PRODUCT_PASTE
               .replace("RETICLE Chip Size(um)", "Item RETICLE Chip Size(μm)")
@@ -859,33 +946,58 @@ def test_rc_count_maps_full_grid_to_one_based_top_left_coordinates():
             "pitch_x": 1, "pitch_y": 1,
             "shot_w_mm": terms["shot_w_mm"], "shot_h_mm": terms["shot_h_mm"],
             "wafer_radius_mm": 150,
+            "wafer_edge_mm": 147,
             "grid_cols": 13, "grid_rows": 17,
         },
     }
     full = teg_map.full_shots_for_payload(payload)
     coords = {(shot["x"], shot["y"]) for shot in full}
-    # R/C Count is just the rectangular grid size; cells whose shot rectangle
-    # falls entirely outside the wafer circle must not be drawn. The four
-    # corners of a 13x17 rectangle never reach a 150mm circle.
+    # R/C Count is just the rectangular grid size. Corner cells are fully
+    # outside 147mm, while edge-crossing cells that are not fully contained
+    # must remain in full shot.
     assert (1, 1) not in coords and (13, 17) not in coords
     assert (13, 1) not in coords and (1, 17) not in coords
-    # ...but every column and every row of the declared R/C rectangle must still
-    # carry at least one shot. This is what pins the grid origin: an off-by-one
-    # leaves an entire edge column/row empty.
-    assert {x for x, _ in coords} == {float(i) for i in range(1, 14)}
-    assert {y for _, y in coords} == {float(i) for i in range(1, 18)}
-    # Independently counted from the geometry (13x17 grid, 24x18mm shots,
-    # 150mm radius): 28 of the 221 cells lie fully outside the wafer.
-    assert len(full) == 13 * 17 - 28
+    assert len(full) > len(shots) == preview["shot_count"]
 
-    radius = payload["geometry"]["wafer_radius_mm"]
+    radius = payload["geometry"]["wafer_edge_mm"]
     shot_w, shot_h = terms["shot_w_mm"], terms["shot_h_mm"]
+    has_edge_crossing_shot = False
     for shot in full:
-        if not shot.get("synthetic"):
-            continue
-        dx = max(0.0, abs(shot["mm_x"]) - shot_w / 2)
-        dy = max(0.0, abs(shot["mm_y"]) - shot_h / 2)
-        assert math.hypot(dx, dy) < radius
+        mm_x = shot.get("mm_x", (shot["x"] - terms["display_cx"]) * shot_w)
+        mm_y = shot.get("mm_y", (shot["y"] - terms["display_cy"]) * shot_h)
+        dx = max(0.0, abs(mm_x) - shot_w / 2)
+        dy = max(0.0, abs(mm_y) - shot_h / 2)
+        assert math.hypot(dx, dy) <= radius + 1e-9
+        if math.hypot(abs(mm_x) + shot_w / 2,
+                      abs(mm_y) + shot_h / 2) > radius:
+            has_edge_crossing_shot = True
+    assert has_edge_crossing_shot
+
+
+def test_full_shot_uses_147mm_intersection_not_150mm_or_full_containment():
+    payload = {
+        "shots": [
+            # 20mm shot spans x=130..150: crosses the 147mm circle and must stay.
+            {"x": 7, "y": 1, "mm_x": 140, "mm_y": 0, "radius": 140},
+            # Spans x=147..167: exactly touches the 147mm circle and must stay.
+            {"x": 7.5, "y": 1, "mm_x": 157, "mm_y": 0, "radius": 157},
+            # Spans x=148..168: intersects 150mm but is fully outside 147mm.
+            {"x": 8, "y": 1, "mm_x": 158, "mm_y": 0, "radius": 158},
+        ],
+        "geometry": {
+            "fit": "radius", "cx": 0, "cy": 1, "kx": 20, "ky": 20,
+            "pitch_x": 1, "pitch_y": 1, "shot_w_mm": 20, "shot_h_mm": 20,
+            "wafer_radius_mm": 150, "wafer_edge_mm": 147,
+            "grid_cols": 8, "grid_rows": 1,
+        },
+    }
+
+    full = teg_map.full_shots_for_payload(payload)
+    coords = {(shot["x"], shot["y"]) for shot in full}
+
+    assert (7, 1) in coords
+    assert (7.5, 1) in coords
+    assert (8, 1) not in coords
 
 
 def test_product_info_recovers_rc_count_from_preserved_raw_config(tmp_path, monkeypatch):
@@ -1115,7 +1227,8 @@ def test_product_catalog_reads_names_without_building_full_layout(tmp_path, monk
 def test_product_info_geometry_is_primary_and_chip_radius_is_fallback(tmp_path, monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg.update({"layout_file": "Chip_Radius.csv", "teg_file": "Teg_location.csv",
-                "main_chip_file": "Main_chip_info.csv", "vehicles": {},
+                "main_chip_file": "Main_chip_info.csv",
+                "vehicles": {"NEW": teg_map._clean_vehicle_cfg({"wafer_edge_mm": 146})},
                 "check": teg_map._clean_check({})})
     (tmp_path / "Chip_Radius.csv").write_text(
         "Mask,chip_x_adj,chip_y_adj,Chip_Radius\nNEW,9,9,1\nOLD,0,0,0\n",
@@ -1143,6 +1256,7 @@ def test_product_info_geometry_is_primary_and_chip_radius_is_fallback(tmp_path, 
     assert payload["geometry"]["map_offset_odd_y_um"] == 8
     assert payload["geometry"]["shot_w_mm"] == 24
     assert payload["geometry"]["shot_h_mm"] == 18
+    assert payload["geometry"]["wafer_edge_mm"] == 146
 
 
 def test_create_one_by_one_product_appends_reference_csvs_and_edm_versions(tmp_path, monkeypatch):

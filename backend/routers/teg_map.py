@@ -164,6 +164,7 @@ def reference_file_put(req: ReferenceFileSaveReq, user=Depends(_require_teg_user
 
 class ProductPreviewReq(BaseModel):
     text: str
+    vehicle: str = ""
 
 
 class ProductTegReq(BaseModel):
@@ -198,7 +199,7 @@ class ProductIdentityReq(BaseModel):
 @router.post("/product-preview")
 def product_preview(req: ProductPreviewReq, _user=Depends(_require_teg_user)):
     try:
-        return _tm.product_info_preview(req.text)
+        return _tm.product_info_preview(req.text, req.vehicle)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

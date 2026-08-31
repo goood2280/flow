@@ -226,7 +226,7 @@ def recommendations(_user=Depends(current_user)):
 
 @router.post("/recommend")
 def recommend(req: RecommendReq, _user=Depends(current_user)):
-    """추천 실행. AI 연결이 없어도 step_id 근접도만으로 결과를 돌려준다."""
+    """추천 실행. 동일 area 안에서 FAB PPID/EQP 우선순위로 결과를 돌려준다."""
     from core import valve_step_advisor as _adv
     if not req.id:
         return _adv.recommend_pending(_va.list_alerts().get("alerts") or [], force=req.force)

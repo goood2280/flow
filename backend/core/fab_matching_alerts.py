@@ -372,6 +372,7 @@ def _scan_file(path: Path) -> tuple[list[dict], list[dict]]:
     grouped = selected.group_by(["step_id", "ppid"]).agg([
         pl.len().alias("rows"),
         pl.col("lot_id").filter(pl.col("lot_id") != "").n_unique().alias("n_lots"),
+        pl.col("lot_id").filter(pl.col("lot_id") != "").first().alias("lot_id"),
         pl.col("root_lot_id").filter(pl.col("root_lot_id") != "").first().alias("root_lot_id"),
         pl.col("wafer_id").filter(pl.col("wafer_id") != "").first().alias("wafer_id"),
         pl.col("eqp_id").filter(pl.col("eqp_id") != "").unique().alias("eqp_ids"),
@@ -382,6 +383,7 @@ def _scan_file(path: Path) -> tuple[list[dict], list[dict]]:
     by_reticle = selected.filter(pl.col("reticle_id") != "").group_by("reticle_id").agg([
         pl.len().alias("rows"),
         pl.col("lot_id").filter(pl.col("lot_id") != "").n_unique().alias("n_lots"),
+        pl.col("lot_id").filter(pl.col("lot_id") != "").first().alias("lot_id"),
         pl.col("root_lot_id").filter(pl.col("root_lot_id") != "").first().alias("root_lot_id"),
         pl.col("wafer_id").filter(pl.col("wafer_id") != "").first().alias("wafer_id"),
         pl.col("eqp_id").filter(pl.col("eqp_id") != "").first().alias("eqp_id"),
@@ -428,7 +430,7 @@ def scan_fab_product(product: dict,
                 continue
             bucket = reticles.setdefault(_norm(reticle_id), {
                 "reticle_id": reticle_id, "rows": 0, "n_lots": 0,
-                "root_lot_id": "", "wafer_id": "", "eqp_id": "", "eqp_model": "",
+                "lot_id": "", "root_lot_id": "", "wafer_id": "", "eqp_id": "", "eqp_model": "",
                 "area": "",
                 "_step_ids": set(), "_ppids": set(), "latest_event_time": "",
             })
@@ -440,7 +442,7 @@ def scan_fab_product(product: dict,
             for value in (row.get("ppids") or []):
                 if str(value or "").strip():
                     bucket["_ppids"].add(str(value).strip())
-            for field in ("root_lot_id", "wafer_id", "eqp_id", "eqp_model", "area"):
+            for field in ("lot_id", "root_lot_id", "wafer_id", "eqp_id", "eqp_model", "area"):
                 if not bucket[field] and row.get(field):
                     bucket[field] = str(row[field])
             event_time = str(row.get("latest_event_time") or "")
@@ -452,7 +454,7 @@ def scan_fab_product(product: dict,
             key = (step_id, ppid)
             current = merged.setdefault(key, {
                 "step_id": step_id, "ppid": ppid, "rows": 0, "n_lots": 0,
-                "root_lot_id": "", "wafer_id": "", "eqp_id": "", "eqp_model": "",
+                "lot_id": "", "root_lot_id": "", "wafer_id": "", "eqp_id": "", "eqp_model": "",
                 "area": "",
                 "_eqp_ids": set(), "_eqp_models": set(), "_areas": set(),
                 "latest_event_time": "",
@@ -464,7 +466,7 @@ def scan_fab_product(product: dict,
                 for value in (row.get(source) or []):
                     if str(value or "").strip():
                         current[target].add(str(value).strip())
-            for field in ("root_lot_id", "wafer_id"):
+            for field in ("lot_id", "root_lot_id", "wafer_id"):
                 if not current[field] and row.get(field):
                     current[field] = str(row[field])
             event_time = str(row.get("latest_event_time") or "")
@@ -612,7 +614,7 @@ def _alerts_for_product(product: dict, observations: list[dict],
     for row in observations:
         step_id = row["step_id"]
         agg = by_step.setdefault(step_id, {
-            "rows": 0, "n_lots": 0, "root_lot_id": "", "wafer_id": "",
+            "rows": 0, "n_lots": 0, "lot_id": "", "root_lot_id": "", "wafer_id": "",
             "eqp_id": "", "eqp_model": "", "area": "", "latest_event_time": "",
             "ppids": set(), "eqp_ids": set(), "eqp_models": set(), "areas": set(),
         })
@@ -622,7 +624,7 @@ def _alerts_for_product(product: dict, observations: list[dict],
             agg["ppids"].add(str(row["ppid"]))
         for field in ("eqp_ids", "eqp_models", "areas"):
             agg[field].update(str(v) for v in (row.get(field) or []) if str(v or "").strip())
-        for field in ("root_lot_id", "wafer_id", "eqp_id", "eqp_model", "area"):
+        for field in ("lot_id", "root_lot_id", "wafer_id", "eqp_id", "eqp_model", "area"):
             if not agg[field] and row.get(field):
                 agg[field] = row[field]
         if str(row.get("latest_event_time") or "") > agg["latest_event_time"]:
@@ -630,7 +632,7 @@ def _alerts_for_product(product: dict, observations: list[dict],
 
     def common(alert_id: str, step_id: str, evidence: dict) -> dict:
         prior = old.get(alert_id) or {}
-        example = {k: evidence.get(k) for k in ("root_lot_id", "wafer_id") if evidence.get(k)}
+        example = {k: evidence.get(k) for k in ("lot_id", "root_lot_id", "wafer_id") if evidence.get(k)}
         return {
             "id": alert_id,
             "vehicle": vehicle,
@@ -652,6 +654,37 @@ def _alerts_for_product(product: dict, observations: list[dict],
     def _values(evidence: dict, field: str) -> list[str]:
         return sorted(evidence.get(field) or [], key=str.casefold)[:_EVIDENCE_VALUE_LIMIT]
 
+    def _match_hint(step_id: str, evidence: dict) -> dict:
+        """FAB 스캔 프로세스가 가진 동일-area 매칭 step 근거를 웹 추천에 동봉한다."""
+        def node(candidate_id: str, candidate: dict) -> dict:
+            return {
+                "step_id": candidate_id,
+                "rows": int(candidate.get("rows") or 0),
+                "values": {
+                    "ppid": _values(candidate, "ppids"),
+                    "eqp_id": _values(candidate, "eqp_ids"),
+                    "eqp_model": _values(candidate, "eqp_models"),
+                    "area": _values(candidate, "areas"),
+                },
+            }
+
+        target_areas = set(evidence.get("areas") or [])
+        candidates = []
+        for candidate_id in sorted(step_map, key=str.casefold):
+            if candidate_id == step_id:
+                continue
+            candidate = by_step.get(candidate_id)
+            if not candidate:
+                continue
+            if not target_areas.intersection(candidate.get("areas") or []):
+                continue
+            candidates.append(node(candidate_id, candidate))
+        return {
+            **node(step_id, evidence),
+            "cols": ["ppid", "eqp_id", "eqp_model", "area"],
+            "neighbors": candidates,
+        }
+
     for step_id, evidence in sorted(by_step.items()):
         if step_id not in step_map:
             matched_exception = _exception_matches(product["product"], evidence, exception_rules)
@@ -665,7 +698,8 @@ def _alerts_for_product(product: dict, observations: list[dict],
                            "eqp_ids": _values(evidence, "eqp_ids"),
                            "eqp_models": _values(evidence, "eqp_models"),
                            "areas": _values(evidence, "areas"),
-                           "ppids": _values(evidence, "ppids")})
+                           "ppids": _values(evidence, "ppids"),
+                           "match_hint": _match_hint(step_id, evidence)})
 
     for evidence in sorted(reticle_observations,
                            key=lambda r: _norm(r.get("reticle_id"))):
@@ -870,7 +904,15 @@ def _decided_ids() -> dict[str, dict]:
 def _recommendations() -> dict[str, dict]:
     try:
         from core import valve_step_advisor
-        return valve_step_advisor.load_records()
+        records = valve_step_advisor.load_records()
+        # 알고리즘 교체 직후 백그라운드 재검사가 끝날 때까지 과거 추천을 그대로
+        # 보여주면 사용자는 이미 폐기된 값을 새 결과로 오해한다. 현재 버전만 붙이고
+        # 나머지는 화면에서 "추천 대기"로 둔다.
+        return {
+            key: record for key, record in records.items()
+            if int(record.get("algorithm_version") or 0)
+            == valve_step_advisor.ALGORITHM_VERSION
+        }
     except Exception:
         return {}
 
@@ -942,6 +984,7 @@ def list_alerts() -> dict:
                     "product": alert.get("product"),
                     "rows": int(alert.get("rows") or 0),
                     "n_lots": int(alert.get("n_lots") or 0),
+                    "examples": list(alert.get("examples") or []),
                     "first_seen_ts": alert.get("first_seen_ts"),
                     "last_seen_ts": alert.get("last_seen_ts"),
                     "latest_event_time": alert.get("latest_event_time"),
@@ -963,6 +1006,7 @@ def list_alerts() -> dict:
                 "product": alert.get("product"),
                 "rows": int(alert.get("rows") or 0),
                 "n_lots": int(alert.get("n_lots") or 0),
+                "examples": list(alert.get("examples") or []),
                 "first_seen_ts": alert.get("first_seen_ts"),
                 "last_seen_ts": alert.get("last_seen_ts"),
                 "latest_event_time": alert.get("latest_event_time"),

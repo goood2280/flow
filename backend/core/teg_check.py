@@ -850,12 +850,13 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
     """계산 좌표 ↔ 정답지(대상 teg) 대조 → {status, ref_x, ref_y, dx, dy, ref_w, ref_h, ref_seq}.
 
     ref_teg = resolve_ref_teg(_extended) 로 결정된 정답지 teg (없으면 미등록).
-    status: match | warning | mismatch | extended(확장체크로 매칭) |
+    status: match | warning | mismatch |
             missing(정답지에 일치 이름 없음) | noref(정답지 자체 없음)
       · match   — ΔX·ΔY 모두 0 (완전 일치)
       · warning — ΔX·ΔY 가 각각 WARN_TOL 이내 (확인필요, 작은 오차)
       · mismatch— 그 이상 (불일치)
-      · extended— '01' 제외 재매칭으로 정답지 teg 를 찾음 (위치가 아닌 이름 검증)
+    확장 매크로로 정답지 TEG를 찾은 경우도 같은 S/L TEG이므로 좌표를 정상 대조한다.
+    어떤 이름 변환을 썼는지는 호출부의 extended/match_rule 메타데이터로 따로 보존한다.
     동명 후보가 여러 개면 가장 가까운 행 기준. ref_w/ref_h 는 TEG 크기(mm).
     ref_seq: 동명 TEG 중 매칭된 순번(1-based). 후보가 1 개면 None.
     ref_total: 동명 TEG 전체 개수 (후보가 1 개면 None).
@@ -877,9 +878,9 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
     if decimals is not None:
         ddx = float(_gen_num(ddx, decimals))
         ddy = float(_gen_num(ddy, decimals))
-    # 확장체크(TEGA01→TEGA)는 서로 다른 die 라 좌표는 다를 수 있어 위치 판정 대신
-    # 'extended'(이름 검증) 로 표시한다. ΔX·ΔY 는 참고용으로 계산해 함께 노출.
-    status = "extended" if extended else _status_of(ddx, ddy)
+    # 확장 매크로로 이름을 찾았더라도 S/L 위치 판정은 일반 TEG와 같은 기준을 쓴다.
+    # 좌표까지 맞으면 정상(초록), 차이가 있으면 노랑/빨강으로 드러나야 한다.
+    status = _status_of(ddx, ddy)
     n = len(cands)
     return {"status": status,
             "ref_x": _num(c["x"]), "ref_y": _num(c["y"]),
@@ -1576,6 +1577,25 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 module_tokens.add(str(c).strip())
     targets = _tm.target_verification(veh, module_tokens) if veh else {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0}
+    # target_verification은 원문 이름의 완전일치만 안다. 위 좌표 대조에서 확장
+    # 매크로로 정답지 S/L TEG까지 연결된 행도 실제 Mapfile 세팅이므로 matched에
+    # 합쳐 상단 신호등과 하단 "세팅됨" 집계가 같은 기준을 쓰게 한다.
+    rows_by_ref = {str(row.get("ref_teg")): row for row in rows if row.get("ref_teg")}
+    for item in targets.get("items") or []:
+        if item.get("matched"):
+            continue
+        matched_row = rows_by_ref.get(str(item.get("teg") or ""))
+        if not matched_row:
+            continue
+        item.update({
+            "matched": True,
+            "matched_by": matched_row.get("match_source") or "macro",
+            "matched_module": matched_row.get("match_token") or matched_row.get("name"),
+            "match_rule": matched_row.get("match_rule"),
+            "match_rule_label": matched_row.get("match_rule_label"),
+        })
+    targets["matched"] = sum(1 for item in targets.get("items") or [] if item.get("matched"))
+    targets["missing"] = targets.get("total", 0) - targets["matched"]
     if veh and targets["total"] == 0:
         targets["no_targets"] = True
         targets["warning"] = "체크할 TEG가 설정되어 있지 않습니다"

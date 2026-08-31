@@ -1,7 +1,20 @@
 {
-  "version": "10.4.147",
+  "version": "10.4.148",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.148",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "TEG 확장 매칭 정합화와 파일 수정버전 20개 표시",
+      "changes": [
+        "[PCHK 기준 별칭] Mapfile의 V_PCHK/H_PCHK와 Teg_location의 V_PRBCHK/H_PRBCHK가 같은 기준 TEG인데 이름 완전일치 실패 시 미등록·MAIN 정보없음으로 분류됨 → H/V 양방향 PCHK↔PRBCHK 규칙을 기본 확장 매크로에 포함해 같은 기준 좌표로 대조",
+        "[S/L 확장 매칭] 확장 매크로로 정답지 TEG를 찾은 항목이 보라색 확장체크와 별도 세팅 목록에 남음 → 일반 S/L과 동일하게 좌표 일치·허용오차·불일치를 초록·노랑·빨강으로 판정하고 상세 Mapfile 현황의 세팅됨에 통합",
+        "[Vertical 확대 샷] Vertical map의 TEG 이름이 가로로 작게 눌려 확대해도 읽기 어려움 → Vertical(R/L) 방향으로 라벨을 회전하고 회전 후 사각형 크기로 글자 크기를 다시 계산해 TEG 내부에 표시",
+        "[파일 수정버전] 서버는 최근 20개를 보존·반환하지만 FileBrowser 초기값과 응답 폴백이 30으로 남아 화면 분모가 달라질 수 있음 → 두 프론트 기본값을 서버 한도 20으로 통일",
+        "[배포 정합] 현재 로컬의 TEG·매칭알람·Function Step 추천 소스와 production asset을 다시 검증하고 setup.py를 같은 소스에서 재생성 → 관련 Python 테스트 109건과 디자인·구조 검사·Vite production build 통과"
+      ]
+    },
     {
       "version": "10.4.147",
       "date": "2026-08-31",

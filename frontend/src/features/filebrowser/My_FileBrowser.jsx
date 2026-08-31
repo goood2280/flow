@@ -962,7 +962,7 @@ export default function My_FileBrowser({
   const deleteBaseEditRowRef=useRef(()=>{});
   const openBaseEditRowMenuRef=useRef(()=>{});
   const[baseVersions,setBaseVersions]=useState([]);
-  const[baseVersionCap,setBaseVersionCap]=useState(30);
+  const[baseVersionCap,setBaseVersionCap]=useState(20);
   const[baseVersioned,setBaseVersioned]=useState(false);
   const[baseVersionLoading,setBaseVersionLoading]=useState(false);
   const[baseVersionMsg,setBaseVersionMsg]=useState("");
@@ -1106,7 +1106,7 @@ export default function My_FileBrowser({
     return sf(API+"/base-file/versions?file="+encodeURIComponent(file)+(accessScope?"&access_scope="+encodeURIComponent(accessScope):""))
       .then(d=>{
         setBaseVersions(d.versions||[]);
-        setBaseVersionCap(d.cap||30);
+        setBaseVersionCap(d.cap||20);
         setBaseVersioned(!!d.versioned);
         setBaseCurrentProfile(d.current_profile||null);
         setBaseVersionMsg("");

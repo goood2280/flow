@@ -421,15 +421,23 @@ function ShotView({ shot, items, size = 560 }) {
             const wpx = Math.max(1.5 / zoom, (t.w || 0) * s);
             const hpx = Math.max(1.5 / zoom, (t.h || 0) * s);
             const label = String(t.name || "");
-            // 이름이 사각형 안에 들어가는 글자 크기 (평균 글자폭 ≈ 0.58em)
-            const fs = Math.min(hpx * 0.62, (wpx * 0.92) / Math.max(1, label.length * 0.58));
+            // Vertical map은 TEG 자체가 반시계/시계 방향으로 선 상태다. 이름도 같은
+            // 방향으로 돌리고, 회전 뒤의 가로·세로를 기준으로 크기를 맞춰 좁은 폭에
+            // 눌려 지나치게 작아지지 않게 한다 (평균 글자폭 ≈ 0.58em).
+            const labelAngle = t.flat_used === "v_R" ? -90 : t.flat_used === "v_L" ? 90 : 0;
+            const labelWidth = labelAngle ? hpx : wpx;
+            const labelHeight = labelAngle ? wpx : hpx;
+            const fs = Math.min(labelHeight * 0.62,
+              (labelWidth * 0.92) / Math.max(1, label.length * 0.58));
+            const labelX = x + wpx / 2, labelY = yBottom - hpx / 2;
             return (
               <g key={t.key}>
                 <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
                   fill={fill} stroke={stroke} strokeWidth={1.6 / zoom} />
                 {label && fs * zoom >= 2.5 && (
-                  <text x={x + wpx / 2} y={yBottom - hpx / 2} fontSize={fs}
+                  <text x={labelX} y={labelY} fontSize={fs}
                     textAnchor="middle" dominantBaseline="central"
+                    transform={labelAngle ? `rotate(${labelAngle} ${labelX} ${labelY})` : undefined}
                     fill={text} fontWeight={700}>{label}</text>
                 )}
               </g>
@@ -639,14 +647,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const [showTechnical, setShowTechnical] = useState(false);
   const [checklistColorSort, setChecklistColorSort] = useState(true);
   const targets = teg.targets || { items: [], matched: 0, missing: 0, total: 0, source: "default" };
-  const missingTargets = targets.items.filter(t => !t.matched);
-  const matchedTargets = targets.items.filter(t => t.matched);
   // 이 Mapfile 의 flat → Teg_location direction. 방향이 다른 대상 TEG 는 애초에
   // 이 원문에 없는 게 정상이라 '미설정' 이 아니라 '판정 불가' 로 가른다.
   const flatDir = res.flat.used === "v_R" ? "v" : res.flat.used === "v_L" ? "v_L" : "h";
   // ── "조회되어야 할 TEG 목록" 체크리스트 — 체크 대상 TEG 각각의 신호등.
   //    신호등은 백엔드 판정(row.light)을 그대로 쓴다: 빨강=좌표 불일치 또는 die 침범,
-  //    노랑=확인필요, 보라=확장체크, 초록=위치확인. 대상 목록엔 있으나 mapfile 에
+  //    노랑=확인필요, 초록=위치확인(확장 매크로 포함). 대상 목록엔 있으나 mapfile 에
   //    없으면 회색(미등록). 같은 teg 여러 행이면 최악(빨강 우선)을 대표로 쓴다.
   const rowByRefTeg = useMemo(() => {
     const m = {};
@@ -657,6 +663,19 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     });
     return m;
   }, [teg.rows]);
+  // 확장 매크로로 ref_teg까지 연결된 항목도 실제 Mapfile 세팅이다. 백엔드가 matched로
+  // 합치지만 이전 응답/캐시에서도 같은 화면 계약을 유지하도록 여기서도 보완한다.
+  const matchedTargets = targets.items.filter(t => t.matched || rowByRefTeg[t.teg])
+    .map(t => {
+      const row = rowByRefTeg[t.teg];
+      return {
+        ...t, row,
+        matched_module: t.matched_module || row?.match_token || row?.name,
+        match_rule: t.match_rule || row?.match_rule,
+        match_rule_label: t.match_rule_label || row?.match_rule_label,
+      };
+    });
+  const missingTargets = targets.items.filter(t => !t.matched && !rowByRefTeg[t.teg]);
   // 대상 TEG 의 방향 — 정답지 direction 열이 1순위, 없으면 이름 접두(H_/V_) 폴백.
   const dirOf = (t) => (["v", "v_L", "h"].includes(t.direction))
     ? t.direction
@@ -693,20 +712,17 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     acc[it.light] = (acc[it.light] || 0) + 1; return acc;
   }, {});
   const slCoordinateTolerance = Number(teg.criteria?.sl_coordinate_tolerance ?? 2);
-  // 미설정 세분화: 확장체크 통과 / 다른 방향(판정 불가) / 진짜 미설정
-  const { extMatchedTargets, otherDirTargets, trulyMissingTargets } = useMemo(() => {
-    const ext = [], otherDir = [], truly = [];
+  // 미설정 세분화: 다른 방향(판정 불가) / 진짜 미설정. 확장 매칭은 세팅됨에 포함한다.
+  const { otherDirTargets, trulyMissingTargets } = useMemo(() => {
+    const otherDir = [], truly = [];
     missingTargets.forEach(t => {
-      const row = rowByRefTeg[t.teg];
-      if (row) {
-        ext.push({ ...t, row });
-      } else if (dirOf(t) !== flatDir) {
+      if (dirOf(t) !== flatDir) {
         otherDir.push(t);
       } else {
         truly.push(t);
       }
     });
-    return { extMatchedTargets: ext, otherDirTargets: otherDir, trulyMissingTargets: truly };
+    return { otherDirTargets: otherDir, trulyMissingTargets: truly };
   }, [missingTargets, rowByRefTeg, flatDir]);
   const missingDepartmentGroups = useMemo(
     () => groupMissingTargetsByDepartment(trulyMissingTargets, teg.mapfile_departments),
@@ -1040,8 +1056,6 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 title: "ΔX·ΔY 가 2 초과이거나 die 안에 깊이 들어감" },
               { light: "yellow", label: "확인필요", n: lightCounts.yellow || 0,
                 title: "ΔX·ΔY 각 2 이내 또는 die 경계 근처" },
-              { light: "purple", label: "확장체크", n: lightCounts.purple || 0,
-                title: "이름 변환 규칙으로 매칭 — 위치가 아닌 이름 검증" },
               { light: "green", label: "정상", n: lightCounts.green || 0 },
               { light: "gray", label: "미설정", n: lightCounts.gray || 0,
                 title: "대상인데 이 Mapfile 의 module name 에 없음" },
@@ -1123,8 +1137,11 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               <ChipRow label="세팅됨" color="var(--ok)" collapsed
                 items={matchedTargets.map(t => ({
                   key: t.teg,
-                  text: t.matched_by === "top_cell" ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
-                  title: `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
+                  text: t.matched_module && t.matched_module !== t.teg
+                    ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
+                  title: t.match_rule && t.match_rule !== "exact"
+                    ? `확장 매크로(${t.match_rule_label || MATCH_RULE_LABELS[t.match_rule] || t.match_rule}): ${t.matched_module} → ${t.teg}`
+                    : `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
                 }))} />
               {missingDepartmentGroups.configured ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6,
@@ -1155,14 +1172,6 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   items={trulyMissingTargets.map(t => ({
                     key: t.teg, text: t.teg,
                     title: t.top_cell?.length ? `top_cell: ${t.top_cell.join(", ")}` : "top_cell 없음",
-                  }))} />
-              )}
-              {extMatchedTargets.length > 0 && (
-                <ChipRow label="확장체크로 매칭" color="var(--violet)"
-                  items={extMatchedTargets.map(t => ({
-                    key: t.teg,
-                    text: `${t.teg} (${t.row?.match_rule_label || MATCH_RULE_LABELS[t.row?.match_rule] || "확장"})`,
-                    title: t.row ? `${t.row.match_token} → ${t.row.ref_teg}` : "",
                   }))} />
               )}
               {otherDirTargets.length > 0 && (
@@ -1508,7 +1517,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
 }
 
 /* ── 대상 TEG 판정 체크리스트 — 정답지 체크 대상 TEG 각각의 신호등.
-   초록=위치확인 · 보라=확장체크 · 노랑=확인필요 · 빨강=불일치 ·
+   초록=위치확인(확장 매크로 포함) · 노랑=확인필요 · 빨강=불일치 ·
    회색=Mapfile 미설정 · 연회색=방향이 달라 이 Mapfile 로는 판정 불가. ── */
 function TargetChecklist({ checklist, total, source, shotChecked }) {
   const cell = { display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
@@ -1547,7 +1556,7 @@ function TargetChecklist({ checklist, total, source, shotChecked }) {
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
         {source === "config" ? "지정 대상" : "기본(H_/V_)"} {total}개 · 초록=위치확인 ·
-        보라=확장체크 · 노랑=확인필요 · 빨강=불일치 · 회색=미설정 · 연회색=방향 달라 판정 불가
+        노랑=확인필요 · 빨강=불일치 · 회색=미설정 · 연회색=방향 달라 판정 불가
       </div>
     </>
   );
@@ -1555,6 +1564,12 @@ function TargetChecklist({ checklist, total, source, shotChecked }) {
 
 const EXTENSION_MACRO_COLUMNS = ["name", "pattern", "replacement", "note"];
 const EXTENSION_BUILTINS = [
+  { __key: "alias_pchk_to_prbchk", name: "PCHK를 PRBCHK로 인식",
+    pattern: "^([HV])_PCHK$", replacement: "${1}_PRBCHK",
+    note: "같은 기준 TEG 별칭 · V_PCHK → V_PRBCHK / H_PCHK → H_PRBCHK" },
+  { __key: "alias_prbchk_to_pchk", name: "PRBCHK를 PCHK로 인식",
+    pattern: "^([HV])_PRBCHK$", replacement: "${1}_PCHK",
+    note: "같은 기준 TEG 별칭 · V_PRBCHK → V_PCHK / H_PRBCHK → H_PCHK" },
   { __key: "01strip", name: "끝의 01 제거", pattern: "^(.+)01$", replacement: "$1",
     note: "이름만 확장 확인 · TEGA01 → TEGA" },
   { __key: "reorder", name: "H_/V_ 접두사 재배치", pattern: "^([A-Za-z])_(.+)$",

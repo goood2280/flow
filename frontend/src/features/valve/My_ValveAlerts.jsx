@@ -9,6 +9,7 @@ import { sf, postJson, putJson } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import { Button, Card, EmptyState, Filter, LinkBtn, Pill } from "../../components/UXKit";
 import PageGear from "../../components/PageGear";
+import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import { canManagePage } from "../../lib/permissions";
 
 const API = "/api/valve-alerts";
@@ -470,12 +471,97 @@ function decisionTitle(a) {
   return a.decision ? `${a.decision.by} · ${fmtTs(a.decision.ts)}` : "";
 }
 
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+async function copyCsv(rows, columns) {
+  const filled = rows.filter(row => columns.some(column => String(row?.[column] ?? "").trim()));
+  const text = [columns, ...filled.map(row => columns.map(column => row?.[column] ?? ""))]
+    .map(row => row.map(csvCell).join(",")).join("\n");
+  await navigator.clipboard.writeText(text);
+}
+
+function CsvPastePanel({ title, columns, sourceRows, aliases, columnLabels, disabled, onImport }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState(() => normalizeSpreadsheetRows([], columns));
+  const importRows = () => {
+    const filled = rows.filter(row => columns.some(column => String(row?.[column] ?? "").trim()));
+    if (!filled.length) { toast.error("붙여넣은 CSV 행이 없습니다"); return; }
+    const result = onImport(filled) || {};
+    if (result.matched) {
+      toast.ok(`${title}: ${result.matched}건을 반영 대기에 넣었습니다`);
+      setRows(normalizeSpreadsheetRows([], columns));
+      setOpen(false);
+    } else {
+      toast.error(result.message || "현재 알람과 일치하는 행이 없습니다");
+    }
+  };
+  const copy = async () => {
+    try {
+      await copyCsv(sourceRows, columns);
+      toast.ok(`${title}: ${sourceRows.length}행을 CSV로 복사했습니다`);
+    } catch (error) {
+      toast.error(`클립보드 복사 실패: ${String(error?.message || error)}`);
+    }
+  };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <Button style={compactButtonStyle} disabled={!sourceRows.length} onClick={copy}>CSV 복사</Button>
+        <Button style={compactButtonStyle} disabled={disabled} onClick={() => setOpen(value => !value)}>
+          {open ? "붙여넣기 닫기" : "CSV 붙여넣기"}
+        </Button>
+        <span style={{ color: "var(--muted)", fontSize: 12 }}>
+          헤더가 있는 CSV 또는 Excel 셀 범위를 그대로 붙여넣을 수 있습니다.
+        </span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+          <SpreadsheetPasteGrid
+            ariaLabel={`${title} CSV 붙여넣기`}
+            columns={columns}
+            rows={rows}
+            onChange={setRows}
+            aliases={aliases}
+            columnLabels={columnLabels}
+            disabled={disabled}
+            minRows={10}
+            maxRows={500}
+            maxHeight={330}
+            minTableWidth={Math.max(420, columns.length * 190)}
+          />
+          <div><Button variant="primary" disabled={disabled} onClick={importRows}>붙여넣은 행 반영 대기</Button></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiscoveryCell({ alert }) {
+  const example = (alert.examples || [])[0] || {};
+  const lotId = example.lot_id || example.root_lot_id || alert.lot_id || alert.root_lot_id || "-";
+  const waferId = example.wafer_id || alert.wafer_id || "-";
+  return (
+    <>
+      <div>{alert.n_lots} lot · {alert.rows} row</div>
+      <div style={{ ...inlineMetaStyle, fontFamily: "monospace" }}>
+        예: lot_id {lotId} · wafer_id {waferId}
+      </div>
+      <div style={inlineMetaStyle}>{fmtTs(alert.first_seen_ts)}</div>
+    </>
+  );
+}
+
 /* 미매칭 step 의 function step 추천 (backend/core/valve_step_advisor.py).
-   - AI(GPT OSS 120B)가 붙어 있으면 근거를 정리해 최종 선택을 받고,
-   - 붙어 있지 않으면 "AI 미적용"을 띄우고 FAB 시그니처/step_id 근접도만으로 고른다.
+   - 동일 AREA를 필수 조건으로 두고 PPID → EQP → 설비모델 순으로 고르며,
+   - step_desc는 선택된 step_id의 Vehicle_matching.csv 행에서 가져온다.
    판정 입력칸에 값을 넣어주는 보조일 뿐, 반영은 사람이 누른다. */
 const METHOD_LABEL = {
-  ai: "AI 판단", ppid: "동일 PPID", signature: "FAB 근거", distance: "step_id 근접", none: "근거 없음",
+  ai: "AI 판단", ppid: "동일 PPID", eqp_id: "동일 EQP",
+  eqp_model: "동일 설비모델", area: "동일 AREA",
+  signature: "FAB 근거", distance: "step_id 근접", none: "근거 없음",
 };
 
 function RecoCell({ alert, busy, onApply, onRecheck }) {
@@ -504,9 +590,7 @@ function RecoCell({ alert, busy, onApply, onRecheck }) {
       style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap", minWidth: 330 }}
     >
       <span style={{ fontWeight: 600 }}>{r.step_desc || "—"}</span>
-      <Pill tone={aiOn ? "ok" : "warn"} style={{ fontSize: 11, padding: "1px 5px" }}>
-        {aiOn ? `AI ${pct}%` : "AI 미적용"}
-      </Pill>
+      {aiOn && <Pill tone="ok" style={{ fontSize: 11, padding: "1px 5px" }}>AI {pct}%</Pill>}
       <span style={{ fontSize: 11, color: "var(--muted)" }}>
         {METHOD_LABEL[r.method] || r.method}{picked}
       </span>
@@ -621,11 +705,65 @@ export default function My_ValveAlerts({ user }) {
   const extraCols = useMemo(
     () => (data?.alert_cols || []).filter(c => c !== "eqp_id" && c !== "eqp_model"),
     [data]);
-  const fmtExamples = (a) => (a.examples || [])
-    .map(e => [e.root_lot_id, e.wafer_id].filter(Boolean).join("·")).join(", ");
-
   const setInput = (id, patch) =>
     setInputs(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+
+  const roCsvRows = useMemo(() => roAlerts.map(alert => ({
+    feature_name: alert.feature_name || "",
+    ppid: alert.ppid || "",
+    category: inputs[alert.id]?.category || "",
+  })), [roAlerts, inputs]);
+  const stepCsvRows = useMemo(() => umAlerts.map(alert => ({
+    step_id: alert.step_id || "",
+    step_desc: inputs[alert.id]?.step_desc ?? alert.step_desc ?? "",
+  })), [umAlerts, inputs]);
+  const maskCsvRows = useMemo(() => maskAlerts.map(alert => ({
+    reticle_id: alert.reticle_id || "",
+    mask: inputs[alert.id]?.mask || "",
+  })), [maskAlerts, inputs]);
+
+  const importCsvRows = (type, rows) => {
+    const norm = value => String(value || "").trim().toLocaleLowerCase();
+    const patches = new Map();
+    for (const row of rows) {
+      let targets = [];
+      let patch = {};
+      if (type === "ro_ppid") {
+        const ppid = norm(row.ppid);
+        const feature = norm(row.feature_name);
+        const category = String(row.category || "").trim();
+        if (!ppid || !category) continue;
+        targets = roAlerts.filter(alert => norm(alert.ppid) === ppid
+          && (!feature || norm(alert.feature_name) === feature));
+        patch = { category, feature_name: String(row.feature_name || "").trim() };
+      } else if (type === "unmatched_step") {
+        const stepId = norm(row.step_id);
+        const stepDesc = String(row.step_desc || "").trim();
+        if (!stepId || !stepDesc) continue;
+        targets = umAlerts.filter(alert => norm(alert.step_id) === stepId);
+        patch = { step_desc: stepDesc };
+      } else {
+        const reticleId = norm(row.reticle_id);
+        const mask = String(row.mask || "").trim();
+        if (!reticleId || !mask) continue;
+        targets = maskAlerts.filter(alert => norm(alert.reticle_id) === reticleId);
+        patch = { mask };
+      }
+      targets.filter(alert => !alert.decision).forEach(alert => patches.set(alert.id, patch));
+    }
+    if (!patches.size) return { matched: 0, message: "필수 값이 없거나 현재 표시된 알람과 일치하지 않습니다" };
+    setInputs(prev => {
+      const next = { ...prev };
+      patches.forEach((patch, id) => { next[id] = { ...(next[id] || {}), ...patch }; });
+      return next;
+    });
+    setQueued(prev => {
+      const next = { ...prev };
+      patches.forEach((_patch, id) => { next[id] = true; });
+      return next;
+    });
+    return { matched: patches.size };
+  };
 
   const act = async (id, fn) => {
     setBusy(id);
@@ -720,7 +858,7 @@ export default function My_ValveAlerts({ user }) {
       const r = await postJson(API + "/recommend", { id: a.id, force });
       const rec = (r.records || [])[0] || {};
       if (rec.step_desc) {
-        toast.ok(`추천: ${rec.step_desc}` + (rec.llm?.applied ? "" : " (AI 미적용)"));
+        toast.ok(`추천: ${rec.step_desc}${rec.picked_step_id ? ` · 근거 step_id ${rec.picked_step_id}` : ""}`);
       } else {
         toast(rec.reason || "추천할 근거를 찾지 못했습니다");
       }
@@ -826,6 +964,15 @@ export default function My_ValveAlerts({ user }) {
         title="PPID 룰북 (ppid_knob.csv)"
         right={<Pill tone={roAlerts.length ? "danger" : "neutral"}>RO PPID · {roAlerts.length}건</Pill>}
       >
+        <CsvPastePanel
+          title="PPID 룰북"
+          columns={["feature_name", "ppid", "category"]}
+          sourceRows={roCsvRows}
+          aliases={{ value: "ppid", "기능명": "feature_name", "분류": "category" }}
+          columnLabels={{ feature_name: "feature_name", ppid: "ppid (value)", category: "category" }}
+          disabled={!canManage || !!busy}
+          onImport={rows => importCsvRows("ro_ppid", rows)}
+        />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : roAlerts.length === 0 ? (
           <EmptyState title="RO ppid 알람 없음" hint="knob 매핑에 없는 ppid 가 발견되면 여기에 표시됩니다" />
         ) : (
@@ -844,10 +991,7 @@ export default function My_ValveAlerts({ user }) {
                       <span style={inlineMetaStyle}> · {a.step_id} · {a.step_desc || "-"}</span>
                     </td>
                     <td style={{ ...nowrapCell, fontFamily: "monospace", fontWeight: 700 }}>{a.ppid}</td>
-                    <td style={compactCell} title={a.split}>
-                      <span>{a.n_lots} lot · {a.rows} row</span>
-                      <span style={inlineMetaStyle}> · {fmtTs(a.first_seen_ts)} · {a.split}</span>
-                    </td>
+                    <td style={compactCell} title={a.split}><DiscoveryCell alert={a} /></td>
                     <td style={nowrapCell}>
                       <input style={inputStyle} placeholder="예: KNOB_NEW"
                         aria-label={`${a.ppid} KNOB 분류`}
@@ -873,11 +1017,20 @@ export default function My_ValveAlerts({ user }) {
         right={<Pill tone={umAlerts.length ? "danger" : "neutral"}>미매칭 step · {umAlerts.length}건</Pill>}
       >
         <div
-          title="추천 function step은 같은 PPID를 쓰는 매칭 완료 step의 step_desc를 우선 제시합니다. 같은 PPID가 없을 때는 FAB의 eqp_id·eqp_model·area와 step_id 근접도를 비교하며, 최종 반영은 사용자가 확인합니다."
+          title="추천 function step은 동일 area의 매칭 완료 step만 후보로 두고, FAB의 동일 PPID → 동일 eqp_id → 동일 eqp_model → step_id 근접 순서로 선택합니다. step_desc는 선택된 step_id의 Vehicle_matching.csv 값이며, 최종 반영은 사용자가 확인합니다."
           style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
         >
-          동일 PPID의 매칭 완료 step_desc를 우선 추천합니다. 적용 후 ‘매칭 추가’로 확정하세요.
+          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 적용 후 ‘매칭 추가’로 확정하세요.
         </div>
+        <CsvPastePanel
+          title="Vehicle 매칭테이블"
+          columns={["step_id", "step_desc"]}
+          sourceRows={stepCsvRows}
+          aliases={{ "스텝": "step_id", "function_step": "step_desc", "판정_step": "step_desc" }}
+          columnLabels={{ step_id: "step_id", step_desc: "step_desc" }}
+          disabled={!canManage || !!busy}
+          onImport={rows => importCsvRows("unmatched_step", rows)}
+        />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : umAlerts.length === 0 ? (
           <EmptyState title="미매칭 step 알람 없음" hint="vehicle_matching 에 없는 step 이 발견되면 여기에 표시됩니다" />
         ) : (
@@ -907,18 +1060,13 @@ export default function My_ValveAlerts({ user }) {
                         (a.areas || []).length && `area ${a.areas.join(", ")}`,
                         (a.ppids || []).length && `ppid ${a.ppids.join(", ")}`,
                         ...extraCols.map(c => `${c} ${a[c] || "-"}`),
-                        fmtExamples(a) && `lot·wafer ${fmtExamples(a)}`,
                       ].filter(Boolean).join("\n")}
                     >
                       {a.eqp_id || "eqp -"}{a.eqp_model ? ` (${a.eqp_model})` : ""}
                       {a.area ? ` · area ${a.area}` : ""}
                       {extraCols.map(c => <span key={c}> · {c} {a[c] || "-"}</span>)}
-                      {fmtExamples(a) && <span style={inlineMetaStyle}> · {fmtExamples(a)}</span>}
                     </td>
-                    <td style={nowrapCell}>
-                      {a.n_lots} lot · {a.rows} row
-                      <span style={inlineMetaStyle}> · {fmtTs(a.first_seen_ts)}</span>
-                    </td>
+                    <td style={nowrapCell}><DiscoveryCell alert={a} /></td>
                     <td style={nowrapCell}>
                       <input style={{ ...inputStyle, minWidth: 150 }}
                         aria-label={`${a.vehicle} ${a.step_id} 판정 step`}
@@ -947,6 +1095,15 @@ export default function My_ValveAlerts({ user }) {
           FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값입니다.
           mask_info.csv는 제품 구분 없이 reticle_id·mask 2열이라 같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
         </div>
+        <CsvPastePanel
+          title="마스크 룰북"
+          columns={["reticle_id", "mask"]}
+          sourceRows={maskCsvRows}
+          aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
+          columnLabels={{ reticle_id: "reticle_id", mask: "mask" }}
+          disabled={!canManage || !!busy}
+          onImport={rows => importCsvRows("missing_reticle", rows)}
+        />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : maskAlerts.length === 0 ? (
           <EmptyState title="미등록 reticle 알람 없음" hint="mask_info.csv에 없는 reticle_id 가 발견되면 여기에 표시됩니다" />
         ) : (
@@ -969,10 +1126,7 @@ export default function My_ValveAlerts({ user }) {
                         {steps.slice(0, 3).join(", ") || "-"}
                         {steps.length > 3 && <span style={inlineMetaStyle}> 외 {steps.length - 3}</span>}
                       </td>
-                      <td style={compactCell}>
-                        <span>{a.n_lots} lot · {a.rows} row</span>
-                        <span style={inlineMetaStyle}> · {fmtTs(a.first_seen_ts)}</span>
-                      </td>
+                      <td style={compactCell}><DiscoveryCell alert={a} /></td>
                       <td style={nowrapCell}>
                         <input style={inputStyle} placeholder="예: MASK_A_v1"
                           aria-label={`${a.reticle_id} mask 이름`}

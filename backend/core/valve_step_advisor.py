@@ -5,25 +5,22 @@
 그 후보를 자동으로 좁혀 준다.
 
 판단 근거 (사람이 하는 것과 같은 순서):
-  1. step_id 는 앞 영문 prefix 가 같으면 같은 계열이고 숫자가 가까울수록 같은
-     공정 구간일 확률이 높다 — `AA100002` 는 `AA100000` 쪽이다.
-  2. 숫자만으로는 부족하다. **FAB 최근 며칠치**에서 그 step_id 가 실제로 쓴
-     `eqp_id · eqp_model · area · ppid` unique 집합을 뽑고, 앞뒤 매칭 step 들의
-     집합과 겹치는 정도를 본다.
-     · 같은 ppid 를 쓰는 step 이 있으면 그 step 의 function step 일 확률이 가장 높다.
-     · 새 ppid 라면 eqp_id / eqp_model / area 가 같은 쪽을 본다.
+  1. **FAB 최근 며칠치**에서 미매칭 step_id 와 매칭 완료 step_id 가 실제로 쓴
+     `ppid · eqp_id · eqp_model · area` unique 집합을 뽑는다.
+  2. 후보는 반드시 미매칭 step 과 `area`가 겹치는 매칭 완료 step 으로 제한한다.
+  3. 그 안에서 `동일 ppid → 동일 eqp_id → 동일 eqp_model → step_id 근접` 순서로
+     첫 근거가 있는 단계만 사용한다. 선택한 step_id 의 `step_desc`는 반드시
+     `Vehicle_matching.csv` 행에서 가져온다.
      근거는 두 갈래다 — ① 로컬 FAB raw DB 스캔(개발 PC 등 raw 가 있는 환경),
      ② **Valve 가 매칭알람에 실어 보낸 `match_hint`**(`signatures_from_alert`).
      flow 서버에 FAB raw 가 없는 것이 정상이므로 실환경 근거는 보통 ②다.
-  3. 위 근거를 정리해 사내 LLM(GPT OSS 120B)에게 최종 선택과 사유를 받는다.
-
-**LLM 이 없어도 동작한다.** 연결이 없거나 실패하면 `llm.applied=False` 와 사유를
-남기고, 근거 점수(혹은 근거조차 없으면 step_id 숫자 거리)만으로 고른 결과를 그대로
-추천한다 — 화면에는 "AI 미적용"으로 표시된다.
+**LLM 이 없어도 동작한다.** 위 우선순위는 규칙으로 고정하며 LLM이 추천 step을
+바꾸지 않는다. AI 연결 여부는 추천값 옆에 별도 경고 태그로 표시하지 않는다.
 
 검사 대상은 **판정 대기 중인 미매칭 step 뿐**이다 (반영불필요/미확인예정/판정 완료
 제외). 한 번 검사한 step 은 `data/flow-data/valve_step_recommendations.json` 에
-기록해 같은 알람이 다시 와도 재탐색하지 않는다 (`force=True` 또는 clear 로만 재검사).
+기록해 같은 알람이 다시 와도 재탐색하지 않는다. 다만 알고리즘 버전이나
+`Vehicle_matching.csv` 지문이 바뀌면 자동 재검사한다 (`force=True`로도 강제 가능).
 """
 from __future__ import annotations
 
@@ -47,7 +44,9 @@ STORE_PATH = PATHS.data_root / "valve_step_recommendations.json"
 # 무관한 버전이며, 동일 PPID 우선 탐색을 도입한 버전이 2다.
 # 3은 FAB 알람의 vehicle이 제품명으로 대체되는 복수-vehicle 제품에서도
 # Vehicle_matching.csv의 제품 범위 행을 올바르게 읽도록 한 버전이다.
-ALGORITHM_VERSION = 3
+# 4는 동일 PPID가 실제 관측된 step_id와 그 행의 step_desc 연결을 검증했다.
+# 5는 area를 필수 게이트로 두고 PPID→EQP_ID→EQP_MODEL→근접 순서를 고정한다.
+ALGORITHM_VERSION = 5
 
 # FAB raw 후보 루트 — 먼저 존재하는 것을 쓴다 (lot_step / splittable 과 같은 규약).
 FAB_ROOTS = ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB")
@@ -122,16 +121,13 @@ def put_record(rec: dict) -> None:
 
 
 def _stale(rec: dict, vehicle: str, product: str = "") -> bool:
-    """추천이 나온 기록은 절대 다시 안 본다. 단 "같은 계열 후보가 없어서" 못 낸
-    기록은 매칭 테이블이 바뀌면 다시 본다 — 그때는 후보가 생겼을 수 있다."""
+    """알고리즘 또는 Vehicle 매칭 목록이 바뀐 추천 기록은 다시 계산한다."""
     try:
         cached_version = int(rec.get("algorithm_version") or 0)
     except (TypeError, ValueError):
         cached_version = 0
     if cached_version != ALGORITHM_VERSION:
         return True
-    if rec.get("method") != "none":
-        return False
     return rec.get("matched_fp") != matched_fingerprint(vehicle, product)
 
 
@@ -194,8 +190,10 @@ def matched_steps(vehicle: str, product: str = "") -> list[dict]:
 
 
 def matched_fingerprint(vehicle: str, product: str = "") -> str:
-    """해당 vehicle 의 매칭 step 목록 지문 — "후보 없음" 기록의 재검사 조건."""
-    return ",".join(sorted(m["step_id"] for m in matched_steps(vehicle, product)))
+    """해당 범위의 step_id→step_desc 지문 — 매칭 수정 시 추천 재검사 조건."""
+    return ",".join(sorted(
+        f"{m['step_id']}={m['step_desc']}" for m in matched_steps(vehicle, product)
+    ))
 
 
 def neighbor_candidates(vehicle: str, step_id: str, count: int,
@@ -226,17 +224,27 @@ def matched_candidate_pool(vehicle: str, step_id: str, product: str = "") -> lis
     target_prefix, target_num = split_step_id(step_id)
     rows = matched_steps(vehicle, product)
 
-    out: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    # 같은 product 범위에서 하나의 step_id가 서로 다른 step_desc로 중복돼 있으면
+    # 어느 쪽도 추천하지 않는다. PPID 관측 step_id가 맞더라도 매칭 CSV 자체가
+    # 모순이면 step_desc를 임의로 고르면 안 된다.
+    grouped: dict[str, list[dict]] = {}
     for item in rows:
         candidate_id = str(item.get("step_id") or "").strip()
         step_desc = str(item.get("step_desc") or "").strip()
         if not candidate_id or not step_desc or candidate_id == step_id:
             continue
-        key = (candidate_id, step_desc)
-        if key in seen:
+        grouped.setdefault(candidate_id, []).append(item)
+
+    out: list[dict] = []
+    for candidate_id, items in grouped.items():
+        descs = {str(item.get("step_desc") or "").strip() for item in items}
+        if len(descs) != 1:
+            logger.warning(
+                "[step_advisor] Vehicle_matching.csv 모순: %s/%s %s -> %s",
+                product or vehicle, vehicle, candidate_id, sorted(descs),
+            )
             continue
-        seen.add(key)
+        item = items[0]
         prefix, number = split_step_id(candidate_id)
         # 숫자를 읽지 못하는 후보도 동일 PPID 검색에서는 버리지 않는다. 숫자
         # 근접도는 동률 정렬에만 쓰이므로 해석 불가 후보에는 큰 거리를 준다.
@@ -413,16 +421,66 @@ def score_candidates(target_sig: dict, candidates: list[dict],
         total = (SIG_WEIGHT * sig_score + PROX_WEIGHT * prox) if wsum else prox
         shared_ppid = sorted(set(target_sig.get("ppid") or [])
                              & set(sig.get("ppid") or []))
+        shared_eqp_id = sorted(set(target_sig.get("eqp_id") or [])
+                               & set(sig.get("eqp_id") or []))
+        shared_eqp_model = sorted(set(target_sig.get("eqp_model") or [])
+                                  & set(sig.get("eqp_model") or []))
+        shared_area = sorted(set(target_sig.get("area") or [])
+                             & set(sig.get("area") or []))
         scored.append({
             "step_id": c["step_id"], "step_desc": c["step_desc"],
             "delta": c["delta"], "rows": sig.get("rows", 0),
             "similarity": sims, "sig_score": round(sig_score, 4),
             "proximity": round(prox, 4), "score": round(total, 4),
-            "shared_ppid": shared_ppid[:5],
+            "shared_ppid": shared_ppid[:5], "shared_ppid_count": len(shared_ppid),
+            "shared_eqp_id": shared_eqp_id[:5],
+            "shared_eqp_id_count": len(shared_eqp_id),
+            "shared_eqp_model": shared_eqp_model[:5],
+            "shared_eqp_model_count": len(shared_eqp_model),
+            "shared_area": shared_area[:5], "shared_area_count": len(shared_area),
+            "mapping_verified": True, "mapping_source": "Vehicle_matching.csv",
             "has_evidence": bool(wsum),
         })
     scored.sort(key=lambda x: (-x["score"], abs(x["delta"])))
     return scored
+
+
+def select_candidate_tier(target_sig: dict, candidates: list[dict],
+                          sigs: dict[str, dict]) -> tuple[str, list[dict]]:
+    """동일 area 후보 안에서 고정 우선순위의 첫 매칭 단계와 후보를 반환한다."""
+    target_areas = set(target_sig.get("area") or [])
+    if not target_areas:
+        return "none", []
+    area_candidates = [
+        candidate for candidate in candidates
+        if target_areas & set((sigs.get(candidate["step_id"]) or {}).get("area") or [])
+    ]
+    if not area_candidates:
+        return "none", []
+    for column in ("ppid", "eqp_id", "eqp_model"):
+        target_values = set(target_sig.get(column) or [])
+        if not target_values:
+            continue
+        matched = [
+            candidate for candidate in area_candidates
+            if target_values & set(
+                (sigs.get(candidate["step_id"]) or {}).get(column) or [])
+        ]
+        if matched:
+            return column, matched
+    return "area", area_candidates
+
+
+def _tier_sort_key(candidate: dict, method: str) -> tuple:
+    """현재 단계의 겹침 수를 우선하고, 이후 단계와 숫자 거리를 동률 기준으로 쓴다."""
+    columns = ("ppid", "eqp_id", "eqp_model")
+    start = columns.index(method) if method in columns else len(columns)
+    overlap = tuple(
+        -int(candidate.get(f"shared_{column}_count") or 0)
+        for column in columns[start:]
+    )
+    return (*overlap, abs(int(candidate.get("delta") or 0)),
+            str(candidate.get("step_id") or ""))
 
 
 # ────────────────────────────────────────── LLM (있으면 최종 선택, 없어도 동작)
@@ -549,6 +607,7 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         "alert_id": alert.get("id") or f"um|{vehicle}|{step_id}",
         "step_desc": "", "confidence": 0.0, "method": "none", "reason": "",
         "candidates": [], "evidence": {}, "llm": {"applied": False, "error": ""},
+        "matched_fp": matched_fingerprint(vehicle, product),
         "ts": time.time(), "cached": False,
     }
     if not pool and not neighbors:
@@ -589,67 +648,55 @@ def recommend(alert: dict, *, force: bool = False, use_llm: bool | None = None) 
         if combined:
             target_sig[col] = combined
 
-    target_ppids = set(target_sig.get("ppid") or [])
-    ppid_candidates = [
-        c for c in pool
-        if target_ppids & set((sigs.get(c["step_id"]) or {}).get("ppid") or [])
-    ]
-    candidates = ppid_candidates or neighbors
+    method, candidates = select_candidate_tier(target_sig, pool, sigs)
     if not candidates:
-        have = sorted({split_step_id(m["step_id"])[0]
-                       for m in matched_steps(vehicle, product)})
+        target_areas = sorted(set(target_sig.get("area") or []), key=str.casefold)
         rec["reason"] = (
-            f"{step_id}와 같은 PPID를 쓰는 매칭 완료 step이 없고, "
-            f"같은 계열({split_step_id(step_id)[0]}…) 후보도 없습니다"
-            + (f" — 등록된 계열: {', '.join(have)}" if have else ""))
+            f"{step_id}의 FAB area 근거가 없어 추천하지 않습니다"
+            if not target_areas else
+            f"{step_id}와 동일 area({', '.join(target_areas)})인 매칭 완료 step이 없습니다"
+        )
         rec["evidence"] = {**info, "target": {k: v for k, v in target_sig.items()
-                                                if k in SIGNATURE_WEIGHTS}}
-        rec["llm"] = {"applied": False, "error": "후보가 없어 AI를 호출하지 않았습니다"}
-        rec["matched_fp"] = matched_fingerprint(vehicle, product)
+                                                if k in SIGNATURE_WEIGHTS},
+                           "area_required": True}
+        rec["llm"] = {"applied": False,
+                      "error": "동일 area 후보가 없어 AI를 호출하지 않았습니다"}
         put_record(rec)
         return rec
 
     scored = score_candidates(target_sig, candidates, sigs)
+    scored.sort(key=lambda item: _tier_sort_key(item, method))
     rec["candidates"] = scored
     rec["evidence"] = {**info, "target": {k: v for k, v in target_sig.items()
-                                          if k in SIGNATURE_WEIGHTS}}
-    has_evidence = any(c["has_evidence"] for c in scored)
+                                          if k in SIGNATURE_WEIGHTS},
+                       "area_required": True, "selected_tier": method}
     top = scored[0]
-    has_ppid_match = bool(ppid_candidates)
     rec.update({"step_desc": top["step_desc"], "confidence": round(top["score"], 3),
-                "method": "ppid" if has_ppid_match else
-                          ("signature" if has_evidence else "distance")})
-    nearest = min(scored, key=lambda c: abs(c["delta"]))
+                "method": method, "picked_step_id": top["step_id"]})
+    shared_field = {
+        "ppid": "shared_ppid", "eqp_id": "shared_eqp_id",
+        "eqp_model": "shared_eqp_model", "area": "shared_area",
+    }[method]
+    shared_values = top.get(shared_field) or []
+    label = {"ppid": "PPID", "eqp_id": "eqp_id",
+             "eqp_model": "eqp_model", "area": "area"}[method]
     rec["reason"] = (
-        f"{top['step_id']}의 매칭된 function step을 추천합니다"
-        f"(동일 PPID {', '.join(top['shared_ppid'])})"
-        if has_ppid_match else
-        f"{top['step_id']} 와 FAB 시그니처가 가장 비슷합니다"
-        f"({'공통 ppid ' + ', '.join(top['shared_ppid']) if top['shared_ppid'] else 'ppid 겹침 없음'}"
-        f", 유사도 {top['sig_score']})"
-        if has_evidence else
-        f"FAB 근거를 찾지 못해 step_id 숫자가 가장 가까운 {nearest['step_id']} 로 추천합니다"
-        f"({info.get('error') or '해당 step 의 최근 데이터 없음'})")
-
-    if use_llm and not has_ppid_match:
-        llm = _ask_llm(alert, target_sig, scored, info, sigs)
-        rec["llm"] = llm
-        if llm["applied"]:
-            picked = next((c for c in scored if c["step_desc"] == llm["step_desc"]), None)
-            rec.update({"step_desc": llm["step_desc"], "method": "ai",
-                        "confidence": round(llm["confidence"], 3),
-                        "reason": llm["reason"] or rec["reason"]})
-            if picked:
-                rec["picked_step_id"] = picked["step_id"]
-    else:
-        rec["llm"] = {"applied": False, "error": (
-            "동일 PPID 매칭을 우선 적용해 AI를 호출하지 않았습니다"
-            if has_ppid_match else "AI 사용 안 함 설정")}
-    if rec["method"] != "ai":
-        rec["picked_step_id"] = top["step_id"] if has_evidence else nearest["step_id"]
-        if not has_evidence:
-            rec["step_desc"] = nearest["step_desc"]
-            rec["confidence"] = round(nearest["proximity"], 3)
+        f"동일 area {', '.join(top['shared_area'])} 후보 중 동일 {label} "
+        f"{', '.join(shared_values)}가 실제 관측된 step_id {top['step_id']}의 "
+        f"Vehicle_matching.csv step_desc {top['step_desc']}를 추천합니다"
+        if method != "area" else
+        f"동일 PPID·eqp_id·eqp_model 후보가 없어 동일 area "
+        f"{', '.join(top['shared_area'])} 안에서 가장 가까운 step_id {top['step_id']}의 "
+        f"Vehicle_matching.csv step_desc {top['step_desc']}를 추천합니다"
+    )
+    rec["llm"] = {"applied": False,
+                  "error": "FAB 규칙 우선순위로 결정해 AI를 호출하지 않았습니다"}
+    rec["mapping_evidence"] = {
+        "step_id": top["step_id"],
+        "step_desc": top["step_desc"],
+        "source": "Vehicle_matching.csv",
+        "verified": True,
+    }
     put_record(rec)
     return rec
 

@@ -146,13 +146,14 @@ def test_missing_reticle_alerts_skip_known_reticles(tmp_path, monkeypatch):
 
     observations = [
         {"step_id": "S1", "ppid": "PP_A", "rows": 4, "n_lots": 2, "root_lot_id": "L1",
-         "wafer_id": "W1", "eqp_id": "E1", "eqp_model": "M1", "latest_event_time": "2026-01-01"},
+         "lot_id": "L1.1", "wafer_id": "W1", "eqp_id": "E1", "eqp_model": "M1",
+         "latest_event_time": "2026-01-01"},
     ]
     reticle_observations = [
-        {"reticle_id": "RAA001", "rows": 4, "n_lots": 2, "root_lot_id": "L1", "wafer_id": "W1",
+        {"reticle_id": "RAA001", "rows": 4, "n_lots": 2, "lot_id": "L1.1", "root_lot_id": "L1", "wafer_id": "W1",
          "eqp_id": "E1", "eqp_model": "M1", "latest_event_time": "2026-01-01",
          "step_ids": ["S1"], "ppids": ["PP_A"]},
-        {"reticle_id": "RAA002", "rows": 6, "n_lots": 3, "root_lot_id": "L2", "wafer_id": "W2",
+        {"reticle_id": "RAA002", "rows": 6, "n_lots": 3, "lot_id": "L2.7", "root_lot_id": "L2", "wafer_id": "W2",
          "eqp_id": "E1", "eqp_model": "M1", "latest_event_time": "2026-01-02",
          "step_ids": ["S1", "S2"], "ppids": ["PP_A", "PP_B"]},
     ]
@@ -167,6 +168,64 @@ def test_missing_reticle_alerts_skip_known_reticles(tmp_path, monkeypatch):
     assert only["id"] == "fab-reticle|RAA002"
     assert only["rows"] == 6 and only["n_lots"] == 3
     assert only["step_ids"] == ["S1", "S2"] and only["ppids"] == ["PP_A", "PP_B"]
+    assert only["examples"] == [{"lot_id": "L2.7", "root_lot_id": "L2", "wafer_id": "W2"}]
+
+
+def test_unmatched_step_alert_includes_lot_and_wafer_example(tmp_path, monkeypatch):
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
+               ["vehicle", "product", "step_id", "step_desc"], [])
+    _write_csv(tmp_path / alerts.PPID_KNOB_FILE,
+               ["feature_name", "function_step", "rule_order", "operator", "value", "category"], [])
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "load_cfg", lambda: {"step_exceptions": []})
+
+    produced = alerts._alerts_for_product(
+        {"product": "P1", "path": str(tmp_path), "root": "FAB"},
+        [{"step_id": "S_NEW", "ppid": "PP_A", "rows": 2, "n_lots": 1,
+          "lot_id": "LOT.3", "root_lot_id": "LOT", "wafer_id": "17",
+          "eqp_ids": ["E1"], "eqp_models": ["M1"], "areas": ["ETCH"]}],
+        [], [],
+    )
+
+    step_alert = next(row for row in produced if row["type"] == "unmatched_step")
+    assert step_alert["examples"] == [
+        {"lot_id": "LOT.3", "root_lot_id": "LOT", "wafer_id": "17"}]
+
+
+def test_unmatched_step_alert_carries_same_area_matching_step_signatures(tmp_path, monkeypatch):
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
+               ["vehicle", "product", "step_id", "step_desc"], [
+                   {"vehicle": "V1", "product": "P1", "step_id": "S_MATCH",
+                    "step_desc": "ETCH_FUNC"},
+                   {"vehicle": "V1", "product": "P1", "step_id": "S_OTHER_AREA",
+                    "step_desc": "PHOTO_FUNC"},
+               ])
+    _write_csv(tmp_path / alerts.PPID_KNOB_FILE,
+               ["feature_name", "function_step", "rule_order", "operator", "value", "category"], [])
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "load_cfg", lambda: {"step_exceptions": []})
+
+    def observed(step_id, ppid, eqp_id, area):
+        return {"step_id": step_id, "ppid": ppid, "rows": 2, "n_lots": 1,
+                "eqp_ids": [eqp_id], "eqp_models": ["MODEL_A"], "areas": [area],
+                "eqp_id": eqp_id, "eqp_model": "MODEL_A", "area": area}
+
+    produced = alerts._alerts_for_product(
+        {"product": "P1", "path": str(tmp_path), "root": "FAB"},
+        [
+            observed("S_NEW", "PP_SHARED", "EQP_A", "ETCH"),
+            observed("S_MATCH", "PP_SHARED", "EQP_A", "ETCH"),
+            observed("S_OTHER_AREA", "PP_SHARED", "EQP_A", "PHOTO"),
+        ],
+        [], [],
+    )
+
+    step_alert = next(row for row in produced if row["type"] == "unmatched_step")
+    assert step_alert["match_hint"]["values"]["area"] == ["ETCH"]
+    assert [row["step_id"] for row in step_alert["match_hint"]["neighbors"]] == ["S_MATCH"]
+    assert step_alert["match_hint"]["neighbors"][0]["values"]["ppid"] == ["PP_SHARED"]
 
 
 def test_list_alerts_merges_same_reticle_across_products(monkeypatch):
@@ -203,6 +262,19 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(alerts, "_scanner_local", {})
     # 이 테스트들은 worker 역할을 흉내내므로, 진짜 검사 스레드가 뜨지 않게 막는다.
     monkeypatch.setattr(alerts, "_ensure_scheduler_running", lambda: False)
+
+
+def test_recommendations_hide_records_from_old_algorithm(monkeypatch):
+    monkeypatch.setattr(valve_step_advisor, "load_records", lambda: {
+        "V1|OLD": {"algorithm_version": valve_step_advisor.ALGORITHM_VERSION - 1,
+                    "step_desc": "OLD_DESC"},
+        "V1|NEW": {"algorithm_version": valve_step_advisor.ALGORITHM_VERSION,
+                    "step_desc": "NEW_DESC"},
+    })
+
+    records = alerts._recommendations()
+
+    assert list(records) == ["V1|NEW"]
 
 
 def test_recommendation_batch_uses_current_fab_alerts_and_saves_status(tmp_path, monkeypatch):

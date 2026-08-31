@@ -93,6 +93,8 @@ DEFAULT_VEHICLE_CFG = {
     "gap_x": 0.0,       # 칩 사이 간격 mm (좌우)
     "gap_y": 0.0,       # 칩 사이 간격 mm (위아래)
     "image": "",        # teg_location/ 폴더 안 그림 파일명
+    # 제품별 wafer 유효 최외곽 반경(mm). None이면 전역 wafer_edge_mm(기본 147)을 사용.
+    "wafer_edge_mm": None,
 }
 
 # TEG Mapfile 체크(core/teg_check) 설정 — flat 별 기본 오프셋·모듈(TEG)별 오프셋.
@@ -100,6 +102,12 @@ DEFAULT_VEHICLE_CFG = {
 # 모듈별 오프셋은 항상 Horizontal(TEG) 관점으로 입력, 양수 = 빼기.
 CHECK_FLATS = ("h", "v_R", "v_L")
 DEFAULT_EXTENSION_MACRO_RULES = (
+    {"key": "alias_pchk_to_prbchk", "name": "PCHK를 PRBCHK로 인식",
+     "pattern": r"^([HV])_PCHK$", "replacement": "${1}_PRBCHK",
+     "note": "같은 기준 TEG 별칭 · V_PCHK → V_PRBCHK / H_PCHK → H_PRBCHK"},
+    {"key": "alias_prbchk_to_pchk", "name": "PRBCHK를 PCHK로 인식",
+     "pattern": r"^([HV])_PRBCHK$", "replacement": "${1}_PCHK",
+     "note": "같은 기준 TEG 별칭 · V_PRBCHK → V_PCHK / H_PRBCHK → H_PCHK"},
     {"key": "01strip", "name": "끝의 01 제거", "pattern": r"^(.+)01$",
      "replacement": "$1", "note": "이름만 확장 확인 · TEGA01 → TEGA"},
     {"key": "reorder", "name": "H_/V_ 접두사 재배치",
@@ -347,11 +355,35 @@ def load_inline_map_settings() -> dict:
 
 
 def full_shots_for_payload(payload: dict) -> list[dict]:
-    """화면의 full-shot 격자와 같은 규칙으로 wafer에 면적이 겹치는 shot을 만든다."""
+    """기존 격자를 연장해 제품 유효 반경과 겹치거나 닿는 full shot을 만든다."""
     geometry = payload.get("geometry") or {}
     real = list(payload.get("shots") or [])
     if geometry.get("fit") != "radius" or not real:
         return real
+    shot_w = abs(float(geometry.get("shot_w_mm") or 0))
+    shot_h = abs(float(geometry.get("shot_h_mm") or 0))
+    edge = float(geometry.get("wafer_edge_mm") or geometry.get("wafer_radius_mm") or 0)
+    if min(shot_w, shot_h, edge) <= 0:
+        return real
+
+    # 원과 정확히 한 점/선으로 닿는 shot도 full shot이다. 좌표 연산의 float 오차만
+    # 흡수하고 실제 147mm 밖의 shot을 더 포함하지 않도록 나노미터 수준만 허용한다.
+    edge_tolerance = 1e-9
+
+    def intersects_edge(shot: dict) -> bool:
+        try:
+            mm_x = (float(shot.get("mm_x")) if shot.get("mm_x") is not None
+                    else (float(shot.get("x")) - float(geometry.get("cx") or 0))
+                    * float(geometry.get("kx") or 0))
+            mm_y = (float(shot.get("mm_y")) if shot.get("mm_y") is not None
+                    else (float(shot.get("y")) - float(geometry.get("cy") or 0))
+                    * float(geometry.get("ky") or 0))
+        except (TypeError, ValueError):
+            return False
+        dx = max(0.0, abs(mm_x) - shot_w / 2)
+        dy = max(0.0, abs(mm_y) - shot_h / 2)
+        return math.hypot(dx, dy) <= edge + edge_tolerance
+
     grid_cols = int(geometry.get("grid_cols") or 0)
     grid_rows = int(geometry.get("grid_rows") or 0)
     if grid_cols > 0 and grid_rows > 0:
@@ -359,26 +391,20 @@ def full_shots_for_payload(payload: dict) -> list[dict]:
             return real
         key_of = lambda x, y: (round(float(x), 6), round(float(y), 6))
         seen = {key_of(shot.get("x"), shot.get("y")) for shot in real}
-        out = list(real)
+        out = [shot for shot in real if intersects_edge(shot)]
         cx, cy = float(geometry.get("cx") or 0), float(geometry.get("cy") or 0)
         kx, ky = float(geometry.get("kx") or 0), float(geometry.get("ky") or 0)
-        # R/C Count는 wafer 밖까지 포함하는 사각 격자 크기일 뿐이다. 원 밖으로
-        # 완전히 벗어난 셀까지 그리지 않도록 아래 pitch 경로와 같은 규칙
-        # (shot 사각형이 wafer 원과 겹치는지)으로 걸러낸다.
-        shot_w = abs(float(geometry.get("shot_w_mm") or 0))
-        shot_h = abs(float(geometry.get("shot_h_mm") or 0))
-        radius = float(geometry.get("wafer_radius_mm") or 0)
-        touch_tolerance = 0.01
+        # R/C Count는 wafer 밖까지 포함할 수 있는 사각 격자 크기다. 기존처럼
+        # shot 사각형과 원의 교차·접촉을 쓰되 판정 반경만 150mm가 아닌 edge로 쓴다.
         for x in range(1, grid_cols + 1):
             for y in range(1, grid_rows + 1):
                 if key_of(x, y) in seen:
                     continue
                 mm_x, mm_y = (x - cx) * kx, (y - cy) * ky
-                if radius > 0:
-                    dx = max(0.0, abs(mm_x) - shot_w / 2)
-                    dy = max(0.0, abs(mm_y) - shot_h / 2)
-                    if math.hypot(dx, dy) >= radius - touch_tolerance:
-                        continue
+                dx = max(0.0, abs(mm_x) - shot_w / 2)
+                dy = max(0.0, abs(mm_y) - shot_h / 2)
+                if math.hypot(dx, dy) > edge + edge_tolerance:
+                    continue
                 out.append({
                     "x": x, "y": y, "synthetic": True,
                     "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
@@ -389,24 +415,22 @@ def full_shots_for_payload(payload: dict) -> list[dict]:
     pitch_y = abs(float(geometry.get("pitch_y") or 0))
     kx = abs(float(geometry.get("kx") or 0))
     ky = abs(float(geometry.get("ky") or 0))
-    shot_w = abs(float(geometry.get("shot_w_mm") or 0))
-    shot_h = abs(float(geometry.get("shot_h_mm") or 0))
-    radius = float(geometry.get("wafer_radius_mm") or 0)
     step_x, step_y = pitch_x * kx, pitch_y * ky
-    if min(pitch_x, pitch_y, step_x, step_y, shot_w, shot_h, radius) <= 0:
+    if min(pitch_x, pitch_y, step_x, step_y) <= 0:
         return real
-    if math.pi * radius * radius / (step_x * step_y) > 6000:
+    if math.pi * edge * edge / (step_x * step_y) > 6000:
         return real
 
     anchor = min(real, key=lambda shot: float(shot.get("radius", math.inf)))
-    nx = math.ceil((radius + shot_w) / step_x) + 1
-    ny = math.ceil((radius + shot_h) / step_y) + 1
+    nx = math.ceil((edge + shot_w) / step_x) + 1
+    ny = math.ceil((edge + shot_h) / step_y) + 1
     key_of = lambda x, y: (round(float(x), 6), round(float(y), 6))
     seen = {key_of(shot.get("x"), shot.get("y")) for shot in real}
     out = [shot for shot in real
-           if abs(float(shot.get("x") or 0)) > 1e-9 and abs(float(shot.get("y") or 0)) > 1e-9]
+           if abs(float(shot.get("x") or 0)) > 1e-9
+           and abs(float(shot.get("y") or 0)) > 1e-9
+           and intersects_edge(shot)]
     cx, cy = float(geometry.get("cx") or 0), float(geometry.get("cy") or 0)
-    touch_tolerance = 0.01
     for i in range(-nx, nx + 1):
         for j in range(-ny, ny + 1):
             x = round(float(anchor["x"]) + i * pitch_x, 6)
@@ -418,7 +442,7 @@ def full_shots_for_payload(payload: dict) -> list[dict]:
             mm_y = (y - cy) * float(geometry["ky"])
             dx = max(0.0, abs(mm_x) - shot_w / 2)
             dy = max(0.0, abs(mm_y) - shot_h / 2)
-            if math.hypot(dx, dy) >= radius - touch_tolerance:
+            if math.hypot(dx, dy) > edge + edge_tolerance:
                 continue
             seen.add(key)
             out.append({
@@ -505,6 +529,7 @@ def _clean_vehicle_cfg(raw: Any) -> dict | None:
         ("cols", 1, 100, int), ("rows", 1, 100, int),
         ("chip_w", 0.0, 1000.0, float), ("chip_h", 0.0, 1000.0, float),
         ("gap_x", 0.0, 1000.0, float), ("gap_y", 0.0, 1000.0, float),
+        ("wafer_edge_mm", 0.001, 1000.0, float),
     ):
         try:
             v = cast(raw.get(k, DEFAULT_VEHICLE_CFG[k]))
@@ -758,6 +783,23 @@ def _clean_vehicles(raw: Any) -> dict:
         if cleaned is not None:
             out[str(veh).strip()] = cleaned
     return out
+
+
+def vehicle_wafer_edge_mm(cfg: dict, vehicle: str) -> float:
+    """제품별 최외곽 반경. 미설정 제품은 전역 기본값(기본 147 mm)을 상속한다."""
+    fallback = float((cfg or {}).get("wafer_edge_mm", DEFAULT_CFG["wafer_edge_mm"]))
+    target = str(vehicle or "").strip().casefold()
+    vehicles_cfg = (cfg or {}).get("vehicles") or {}
+    product_cfg = next(
+        (value for key, value in vehicles_cfg.items()
+         if str(key).strip().casefold() == target and isinstance(value, dict)),
+        {},
+    )
+    try:
+        value = float(product_cfg.get("wafer_edge_mm"))
+    except (TypeError, ValueError):
+        return fallback
+    return value if math.isfinite(value) and value > 0 else fallback
 
 
 def clean_node_path(value: Any) -> str:
@@ -1518,7 +1560,7 @@ def _product_geometry_values(info: dict[str, Any]) -> dict[str, float]:
 
 
 def _product_shots(info: dict[str, Any], wafer_edge_mm: float) -> list[dict[str, float]]:
-    """명시 geometry로 147 mm edge 안에 *전체가* 들어오는 shot만 만든다.
+    """명시 geometry로 제품별 edge 안에 *전체가* 들어오는 shot만 만든다.
 
     Chip_Radius 값은 shot 중심과 wafer 중심 사이 거리다. 포함 여부는 중심점만
     보지 않고 직사각형 shot의 네 꼭짓점 중 가장 먼 점까지 edge 안인지 검사한다.
@@ -1657,6 +1699,7 @@ def product_info_payload(vehicle: str) -> dict[str, Any]:
         return {
             "ok": True, "vehicle": requested, "exists": False,
             "values": {}, "rows": [], "node_path": node_path, "path": str(path),
+            "wafer_edge_mm": vehicle_wafer_edge_mm(load_cfg(), requested),
         }
     row = matched.iloc[-1]
     def display_number(value: Any) -> int | float:
@@ -1704,6 +1747,7 @@ def product_info_payload(vehicle: str) -> dict[str, Any]:
         "ok": True, "vehicle": str(row["vehicle"]), "exists": True,
         "values": values, "rows": rows, "node_path": clean_node_path(row.get("node_path")),
         "path": str(path),
+        "wafer_edge_mm": vehicle_wafer_edge_mm(load_cfg(), str(row["vehicle"])),
     }
 
 
@@ -1715,7 +1759,7 @@ def _generated_product_layout(cfg: dict):
     for _, info in info_df.iterrows():
         try:
             shots = _product_shots(
-                info.to_dict(), float(cfg.get("wafer_edge_mm", DEFAULT_CFG["wafer_edge_mm"]))
+                info.to_dict(), vehicle_wafer_edge_mm(cfg, str(info.get("vehicle") or ""))
             )
         except (TypeError, ValueError) as exc:
             logger.warning("TEG product geometry 제외 vehicle=%s: %s", info.get("vehicle"), exc)
@@ -2291,11 +2335,11 @@ def _catalog_product_info(cfg: dict) -> dict[str, dict[str, str]]:
             if any(column.casefold() not in lookup for column in PRODUCT_GEOMETRY_COLUMNS):
                 return {}
             out: dict[str, dict[str, str]] = {}
-            radius = float(cfg.get("wafer_edge_mm", DEFAULT_CFG["wafer_edge_mm"]))
             for row in reader:
                 vehicle = str(row.get(lookup["vehicle"]) or "").strip()
                 if not vehicle:
                     continue
+                radius = vehicle_wafer_edge_mm(cfg, vehicle)
                 try:
                     values = {
                         column: float(str(row.get(lookup[column.casefold()]) or "").strip())
@@ -2457,6 +2501,7 @@ def map_payload(vehicle: str) -> dict:
     if lay is None:
         raise FileNotFoundError(f"chip layout 파일 없음/무효: {lay_path}")
     veh = str(vehicle).strip()
+    wafer_edge_mm = vehicle_wafer_edge_mm(cfg, veh)
     sub = lay[lay["vehicle"] == veh]
     if sub.empty:
         raise LookupError(f"layout 에 vehicle 없음: {vehicle}")
@@ -2592,7 +2637,7 @@ def map_payload(vehicle: str) -> dict:
             "pitch_x": pitch_x,
             "pitch_y": pitch_y,
             "wafer_radius_mm": float(cfg["wafer_radius_mm"]),
-            "wafer_edge_mm": float(cfg["wafer_edge_mm"]),
+            "wafer_edge_mm": wafer_edge_mm,
             # Chip_Radius 오입력 진단 — 이상치로 제외된 행과 fit 잔차를 UI 에 노출.
             "fit_used": fit_diag.get("used", 0),
             "fit_dropped": fit_diag.get("dropped", []),
@@ -2840,9 +2885,9 @@ def save_reference_file(kind: str, columns: list[str], rows: list[list[Any]], us
             "backup": str(backup) if backup else "", "version": version}
 
 
-def product_info_preview(text: str) -> dict:
+def product_info_preview(text: str, vehicle: str = "") -> dict:
     info = parse_product_info_table(text)
-    edge = float(load_cfg()["wafer_edge_mm"])
+    edge = vehicle_wafer_edge_mm(load_cfg(), vehicle)
     shots = _product_shots(info, edge)
     one_by_one = info["shot_cols"] == 1 and info["shot_rows"] == 1
     return {
@@ -3210,7 +3255,7 @@ def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]
     if not clean_path:
         raise ValueError("제품의 상위 노드 경로를 입력해 주세요 (예: 2나노 / 2나노A)")
     info = parse_product_info_table(text)
-    preview = product_info_preview(text)
+    preview = product_info_preview(text, veh)
     existing = {str(name).casefold() for name in vehicles()}
     if veh.casefold() in existing:
         raise ValueError(f"이미 등록된 제품입니다: {veh}")
@@ -3311,7 +3356,7 @@ def update_product_from_table(text: str, vehicle: str, username: str) -> dict:
     previous_source = next(iter(sources), "chip_radius")
 
     info = parse_product_info_table(text)
-    preview = product_info_preview(text)
+    preview = product_info_preview(text, veh)
     shots = _product_shots(info, float(preview["wafer_edge_mm"]))
     radius_rows = [{
         "vehicle": veh,

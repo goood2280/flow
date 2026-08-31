@@ -2,10 +2,10 @@
    - chip layout(Mask, chip_x_adj, chip_y_adj, Chip_Radius) 파일로 wafer geometry fit:
      Chip_Radius = shot 센터 ↔ wafer 원점 거리(mm) → shot 크기(mm)·wafer 중심을 최소자승으로 산출.
    - Teg_location(vehicle,teg,ebeam_x,ebeam_y = shot 센터 기준 TEG 좌하단) 을 겹쳐
-     여러 TEG 를 wafer 전체 / shot 확대 뷰로 동시 표시. wafer 원(150mm)과 최외곽선(147mm) 함께 표시.
+     여러 TEG 를 wafer 전체 / shot 확대 뷰로 동시 표시. wafer 원과 제품별 최외곽선을 함께 표시.
    - TEG 다중 선택: 체크박스로 여러 TEG 를 동시에 선택/비교 가능. 전체/해제 버튼 제공.
    - 동명 TEG 자동 넘버링: 백엔드에서 같은 이름이 2 개 이상이면 _1, _2, … 접미사를 자동 부여.
-   - shot 색: 선택 TEG 전체가 최외곽(147mm) 안이면 초록, 라인에 걸치면 빨강.
+   - shot 색: 선택 TEG 전체가 제품별 최외곽 안이면 초록, 라인에 걸치면 빨강.
    - full shot 체크박스: layout 파일에 있는 shot 만 보는 게 기본. 켜면 같은 shot 크기로
      격자를 연장해 wafer 를 빠짐없이 덮는 자리까지 표시(점선) — 실제 노광 시 최외곽에
      걸리는 shot 에서 TEG 가 어디 놓이는지 보기 위한 것.
@@ -90,15 +90,13 @@ function waferTegCartesianPosition(shot, teg) {
 }
 
 /* ── full shot 격자 ──
-   chip layout 파일에는 보통 최외곽(147mm) 안에 온전히 들어오는 shot 만 들어 있다.
-   "full shot" 모드는 그 격자(pitch)를 그대로 연장해 **같은 shot 크기로 wafer 를
-   빠짐없이 덮는** 자리까지 만들어 낸다 — 실제로 노광하면 어디에 shot 이 놓이고
-   그때 TEG 가 최외곽에 걸리는지 보기 위한 것이다.
+   chip layout 파일의 격자(pitch)를 이전과 같이 연장하되, 판정 원만 wafer 150mm가
+   아니라 제품별 최외곽(기본 147mm)을 쓴다. shot 사각형이 이 원 안에 걸리거나
+   경계에 정확히 닿으면 남기고, 147mm 밖에 완전히 떨어진 shot만 제외한다.
    - 격자 위상은 실제 shot 하나를 앵커로 삼아 유지한다 (파일의 격자와 정확히 겹침).
-   - wafer 원(wafer_radius_mm)과 **면으로** 겹치는 자리만 남긴다. 꼭짓점만 스치는
-     자리는 넣지 않는다 (겹침 깊이 TOUCH_TOL 이하 = 사실상 점 접촉).
+    - 제품 최외곽 원(wafer_edge_mm)과 겹치거나 정확히 닿는 자리까지 남긴다.
    - 파일에 없어 새로 만든 자리는 synthetic:true — 화면에서 점선으로 구분한다. */
-const FULL_SHOT_TOUCH_TOL = 0.01;    // mm — 이보다 얕게 걸치면 "점으로 스침"으로 보고 제외
+const FULL_SHOT_EDGE_EPS = 1e-9;     // mm — 경계 접촉을 포함하기 위한 float 오차 허용치
 // 안전 상한 — pitch 를 잘못 잡았거나 shot 이 비상식적으로 작으면 격자가 폭발한다.
 // wafer 를 덮는 데 필요한 shot 수(≈ πR²/격자면적)를 먼저 어림해 넘으면 그냥 원래
 // 목록을 돌려준다 (화면이 수만 개 사각형으로 굳는 것을 막는다).
@@ -117,13 +115,10 @@ function buildFullShots(data) {
   if (gridCols > 0 && gridRows > 0) {
     if (gridCols * gridRows > FULL_SHOT_MAX) return real;
     const seen = new Set(real.map(s0 => gridKey(s0.x, s0.y)));
-    const out = [...real];
-    // R/C Count는 wafer 밖까지 포함하는 사각 격자 크기일 뿐이다. 원 밖으로
-    // 완전히 벗어난 셀까지 그리지 않도록 아래 pitch 경로와 같은 규칙
-    // (shot 사각형이 wafer 원과 겹치는지)으로 걸러낸다.
     const gW = Math.abs(Number(geo.shot_w_mm) || 0);
     const gH = Math.abs(Number(geo.shot_h_mm) || 0);
-    const gR = Number(geo.wafer_radius_mm) || 0;
+    const gR = Number(geo.wafer_edge_mm || geo.wafer_radius_mm) || 0;
+    const out = real.filter(s0 => shotIntersectsWaferEdge(s0, geo));
     for (let x = 1; x <= gridCols; x += 1) {
       for (let y = 1; y <= gridRows; y += 1) {
         const key = gridKey(x, y);
@@ -133,7 +128,7 @@ function buildFullShots(data) {
         if (gR > 0) {
           const dx = Math.max(0, Math.abs(mmx) - gW / 2);
           const dy = Math.max(0, Math.abs(mmy) - gH / 2);
-          if (Math.hypot(dx, dy) >= gR - FULL_SHOT_TOUCH_TOL) continue;
+          if (Math.hypot(dx, dy) > gR + FULL_SHOT_EDGE_EPS) continue;
         }
         out.push({
           x, y, synthetic: true,
@@ -148,7 +143,7 @@ function buildFullShots(data) {
   const px = Math.abs(geo.pitch_x) || 0, py = Math.abs(geo.pitch_y) || 0;
   const stepX = px * Math.abs(geo.kx), stepY = py * Math.abs(geo.ky);   // mm 단위 격자 간격
   const W = Math.abs(geo.shot_w_mm), H = Math.abs(geo.shot_h_mm);
-  const R = Number(geo.wafer_radius_mm) || 0;
+  const R = Number(geo.wafer_edge_mm || geo.wafer_radius_mm) || 0;
   if (!(stepX > 0) || !(stepY > 0) || !(W > 0) || !(H > 0) || !(R > 0)) return real;
 
   // 앵커 = 실제 shot 중 wafer 중심에 가장 가까운 것 (격자 위상 기준점)
@@ -164,7 +159,9 @@ function buildFullShots(data) {
   const seen = new Set(real.map(s0 => gridKey(s0.x, s0.y)));
   // full shot에서는 x=0 또는 y=0 축상의 shot을 그리지 않는다. 실제 layout shot도
   // 같은 표시 규칙을 적용하되 seen에는 남겨 synthetic shot으로 다시 생기지 않게 한다.
-  const out = real.filter(s0 => Math.abs(Number(s0.x)) > 1e-9 && Math.abs(Number(s0.y)) > 1e-9);
+  const out = real.filter(s0 => Math.abs(Number(s0.x)) > 1e-9
+    && Math.abs(Number(s0.y)) > 1e-9
+    && shotIntersectsWaferEdge(s0, geo));
   for (let i = -nx; i <= nx; i++) {
     for (let j = -ny; j <= ny; j++) {
       const x = Math.round((anchor.x + i * px) * 1e6) / 1e6;
@@ -174,10 +171,10 @@ function buildFullShots(data) {
       if (Math.abs(x) <= 1e-9 || Math.abs(y) <= 1e-9) continue;
       const mmx = (x - geo.cx) * geo.kx;
       const mmy = (y - geo.cy) * geo.ky;
-      // shot 사각형과 wafer 원의 겹침 — 사각형에서 원 중심까지의 최단거리로 판정
+      // shot 사각형과 147mm 원의 겹침 — 사각형에서 원 중심까지의 최단거리로 판정
       const dx = Math.max(0, Math.abs(mmx) - W / 2);
       const dy = Math.max(0, Math.abs(mmy) - H / 2);
-      if (Math.hypot(dx, dy) >= R - FULL_SHOT_TOUCH_TOL) continue;
+      if (Math.hypot(dx, dy) > R + FULL_SHOT_EDGE_EPS) continue;
       seen.add(k);
       out.push({
         x, y, synthetic: true,
@@ -190,12 +187,35 @@ function buildFullShots(data) {
   return out;
 }
 
-function shotInsideWaferEdge(shot, geometry) {
-  const edge = Number(geometry?.wafer_edge_mm) || 147;
+function shotIntersectsWaferEdge(shot, geometry) {
+  const edge = Number(geometry?.wafer_edge_mm || geometry?.wafer_radius_mm) || 147;
   const halfW = Math.abs(Number(geometry?.shot_w_mm) || 0) / 2;
   const halfH = Math.abs(Number(geometry?.shot_h_mm) || 0) / 2;
-  const mmX = Number(shot?.mm_x) || 0, mmY = Number(shot?.mm_y) || 0;
-  return Math.hypot(Math.abs(mmX) + halfW, Math.abs(mmY) + halfH) <= edge + 1e-9;
+  const mmX = shot?.mm_x != null
+    ? Number(shot.mm_x)
+    : (Number(shot?.x) - Number(geometry?.cx || 0)) * Number(geometry?.kx || 0);
+  const mmY = shot?.mm_y != null
+    ? Number(shot.mm_y)
+    : (Number(shot?.y) - Number(geometry?.cy || 0)) * Number(geometry?.ky || 0);
+  if (![edge, halfW, halfH, mmX, mmY].every(Number.isFinite)) return false;
+  const dx = Math.max(0, Math.abs(mmX) - halfW);
+  const dy = Math.max(0, Math.abs(mmY) - halfH);
+  return Math.hypot(dx, dy) <= edge + FULL_SHOT_EDGE_EPS;
+}
+
+function shotInsideWaferEdge(shot, geometry) {
+  const edge = Number(geometry?.wafer_edge_mm || geometry?.wafer_radius_mm) || 147;
+  const halfW = Math.abs(Number(geometry?.shot_w_mm) || 0) / 2;
+  const halfH = Math.abs(Number(geometry?.shot_h_mm) || 0) / 2;
+  const mmX = shot?.mm_x != null
+    ? Number(shot.mm_x)
+    : (Number(shot?.x) - Number(geometry?.cx || 0)) * Number(geometry?.kx || 0);
+  const mmY = shot?.mm_y != null
+    ? Number(shot.mm_y)
+    : (Number(shot?.y) - Number(geometry?.cy || 0)) * Number(geometry?.ky || 0);
+  if (![edge, halfW, halfH, mmX, mmY].every(Number.isFinite)) return false;
+  return Math.hypot(Math.abs(mmX) + halfW, Math.abs(mmY) + halfH)
+    <= edge + FULL_SHOT_EDGE_EPS;
 }
 
 function _token() {
@@ -295,8 +315,11 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         teg_default_w_um: Math.round((Number(r.config.teg_default_w) || 0) * 1000),
         teg_default_h_um: Math.round((Number(r.config.teg_default_h) || 0) * 1000),
       });
+      const storedVehicleCfg = ((r.config.vehicles || {})[vehicle] || {});
       const v0 = { mode: "none", cols: 1, rows: 1, chip_w: 0, chip_h: 0, gap_x: 0, gap_y: 0, image: "",
-        ...((r.config.vehicles || {})[vehicle] || {}) };
+        ...storedVehicleCfg,
+        wafer_edge_mm: Number(storedVehicleCfg.wafer_edge_mm)
+          || Number(r.config.wafer_edge_mm) || 147 };
       // 칩 크기·칩 사이 간격 모두 서버 mm ↔ UI µm 변환.
       setVcfg({
         ...v0,
@@ -402,7 +425,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         };
       }
       if (vehicle && vcfg) {
-        const { gap_x_um, gap_y_um, chip_w_um, chip_h_um, ...vrest } = vcfg;
+        const { gap_x_um, gap_y_um, chip_w_um, chip_h_um, wafer_edge_mm, ...vrest } = vcfg;
         patch.vehicles = {
           [vehicle]: {
             ...vrest,
@@ -413,6 +436,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
             chip_h: (Number(chip_h_um) || 0) / 1000,
             gap_x: (Number(gap_x_um) || 0) / 1000,
             gap_y: (Number(gap_y_um) || 0) / 1000,
+            wafer_edge_mm: Number(wafer_edge_mm) || 147,
           },
         };
       }
@@ -534,7 +558,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         <span style={{ fontSize: 11, color: "var(--muted)" }}>기본 0.001 = ebeam µm 단위 · Chip_Radius 는 mm 단위 (mm ebeam 파일이면 1)</span>
       </div>
       <div style={row}>
-        <span style={lab}>wafer 반경 / 최외곽 (mm)</span>
+        <span style={lab}>wafer 반경 / 기본 최외곽 (mm)</span>
         <input style={num} type="number" step="any" disabled={dis} value={cfg.wafer_radius_mm}
           onChange={e => set({ wafer_radius_mm: e.target.value })} />
         <span style={{ color: "var(--muted)" }}>/</span>
@@ -683,7 +707,21 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         <Button disabled={dis} onClick={() => deleteList("product_modules", i)}>삭제</Button>
       </div>)}
 
-      <div style={sect}>shot 표시 방식 — {vehicle || "(vehicle 선택)"}</div>
+      <div style={sect}>제품별 wafer · shot 설정 — {vehicle || "(vehicle 선택)"}</div>
+      <div style={row}>
+        <span style={lab}>제품 최외곽 반경 (mm)</span>
+        <input style={num} type="number" step="any" min="0.001"
+          max={Number(cfg.wafer_radius_mm) || 150} disabled={dis || !vehicle}
+          value={vcfg.wafer_edge_mm ?? 147}
+          onChange={e => setV({ wafer_edge_mm: e.target.value })} />
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>
+          기본 147 · WF MAP, full shot, full chip 판정에 함께 적용
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: -2, marginBottom: 8 }}>
+        이 제품만 146 mm처럼 다르게 설정할 수 있습니다. full shot은 이 반경의 원과 겹치거나 경계에 닿는 shot을 표시합니다.
+      </div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 8 }}>shot 표시 방식</div>
       <div style={row}>
         {[["none", "기본", "TEG 만 표시"],
           ["image", "그림", "붙여넣은 그림 (shot 확대에서 그림/격자 전환 가능)"],
@@ -817,7 +855,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
 }
 
 /* ── wafer 전체 SVG — shot 사각형 + wafer 원/최외곽선 + TEG 마커.
-   그림/칩 격자는 shot 확대 뷰에서만 표시. shot 색: 선택 TEG 전체가 최외곽(147mm)
+   그림/칩 격자는 shot 확대 뷰에서만 표시. shot 색: 선택 TEG 전체가 제품별 최외곽
    안에 온전히 들어오면 초록, 하나라도 라인에 걸치거나 밖이면 빨강.
    data.shots 에 synthetic:true 가 섞여 들어오면(full shot 격자) 점선으로 그린다. ── */
 export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotClick, nearestShot, shotValues=null, valueColor=null, valueLabel="value", light=false, hideUnmeasured=false, fullChipDies=null }) {
@@ -857,7 +895,7 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
 
   const tegList = data.tegs.filter(t => selectedTegs.has(t.teg));
 
-  // shot 별 최외곽(147mm) 판정 — 선택 TEG 사각형의 네 꼭짓점 중 하나라도
+  // shot 별 제품 최외곽 판정 — 선택 TEG 사각형의 네 꼭짓점 중 하나라도
   // edge 원 밖이면 "걸림"(빨강), 전부 안이면 초록. TEG 미선택 시엔 shot 영역
   // 자체로 판정: 전부 안=연파랑, 걸치거나 밖=연노랑.
   const edgeMm = mmMode ? (geo.wafer_edge_mm || 0) : 0;
@@ -1138,10 +1176,10 @@ function TegCoordInfo({ data, selectedTegs, tegColor }) {
                   fontSize: 12, lineHeight: 1.7, width: COORD_PANEL_W, flexShrink: 0,
                   alignSelf: "flex-start" }}>
       <div style={{ fontWeight: 700, color: "var(--muted)", whiteSpace: "nowrap" }}>
-        TEG 좌표 — (ebeam_x,ebeam_y)
+        TEG 좌표 — (ebeam_x,ebeam_y) µm
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
-        shot 좌하단 좌표기준
+        shot 좌하단 좌표 기준
       </div>
       {tegList.map(t => (
         <div key={t.teg} style={{ marginBottom: 4 }}>
@@ -1151,7 +1189,7 @@ function TegCoordInfo({ data, selectedTegs, tegColor }) {
                            whiteSpace: "nowrap", maxWidth: 160 }} title={t.teg}>{t.teg}</span>
           </div>
           <div style={{ color: "var(--muted)", marginLeft: 17 }}>
-            ({fmt(t.ebeam_x, 3)},{fmt(t.ebeam_y, 3)})
+            ({fmt(Number(t.ebeam_x) * 1000, 3)},{fmt(Number(t.ebeam_y) * 1000, 3)}) µm
           </div>
           <div style={{ color: "var(--muted)", marginLeft: 17 }}>
             <b style={{ color: isVertical(t) ? "var(--warn)" : "var(--text-primary)" }}>
@@ -1623,8 +1661,8 @@ function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
       {tableName && <Pill tone="neutral">{tableName}</Pill>}
       <span style={{ color: "#3e7bd6", fontWeight: 700 }}>■ 설정 위치 {selected.size}</span>
       {namedCount !== selected.size && <span style={{ color: "var(--warn)" }}>■ subitem_id 미입력 {selected.size - namedCount}</span>}
-      {mmMode && <><span style={{ color: "#2f9e63", fontWeight: 700 }}>■ 147mm 이내</span>
-        <span style={{ color: "#e05252", fontWeight: 700 }}>■ 147mm 경계/외곽</span></>}
+      {mmMode && <><span style={{ color: "#2f9e63", fontWeight: 700 }}>■ {fmt(geo.wafer_edge_mm, 1)}mm 이내</span>
+        <span style={{ color: "#e05252", fontWeight: 700 }}>■ {fmt(geo.wafer_edge_mm, 1)}mm 경계/외곽</span></>}
       <span style={{ color: "var(--muted)" }}>shot 클릭 → 선택/해제</span>
     </div>
     <svg viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${tableName || "Inline map"} WF MAP 위치 미리보기`}
@@ -1658,7 +1696,7 @@ function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
                 dy={i === 0 ? 0 : labelSize * 1.05}>{line}</tspan>)}
             </text>
           </>}
-          <title>{name ? `${name}\n` : ""}shot (${s.x}, ${s.y}) · {insideEdge ? "147mm 이내" : "147mm 경계/외곽"}{s.synthetic ? " · full shot" : ""}{on && !named ? "\nsubitem_id를 입력해 주세요" : ""}</title>
+          <title>{name ? `${name}\n` : ""}shot (${s.x}, ${s.y}) · {insideEdge ? `${fmt(geo.wafer_edge_mm, 1)}mm 이내` : `${fmt(geo.wafer_edge_mm, 1)}mm 경계/외곽`}{s.synthetic ? " · full shot" : ""}{on && !named ? "\nsubitem_id를 입력해 주세요" : ""}</title>
         </g>;
       })}
     </svg>
@@ -1869,7 +1907,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
   const inspect = async () => {
     setBusy(true); setError("");
     try {
-      const result = await postJson(`${API}/product-preview`, { text });
+      const result = await postJson(`${API}/product-preview`, { text, vehicle });
       setPreview(result); setStep(3);
     } catch (e) { setError(String(e.message || e)); }
     finally { setBusy(false); }
@@ -2043,7 +2081,7 @@ function ProductGeometryModal({ open, vehicle, onClose, onSaved }) {
     || nodePath.trim() !== originalIdentity.nodePath;
   const inspect = async () => {
     setBusy(true); setError("");
-    try { setPreview(await postJson(`${API}/product-preview`, { text })); }
+    try { setPreview(await postJson(`${API}/product-preview`, { text, vehicle })); }
     catch (e) { setPreview(null); setError(String(e.message || e)); }
     finally { setBusy(false); }
   };
@@ -2313,33 +2351,31 @@ export default function My_TegMap({ user }) {
   useEffect(() => {
     if (!fullChipAvailable) setFullChip(false);
   }, [fullChipAvailable, vehicle]);
-  // full shot — 파일에 있는 shot 은 그대로 두고, 같은 크기로 wafer 를 덮는 자리를 덧붙인다.
-  // 지도와 radius 표가 같은 목록을 보게 한 곳에서 만들어 둘 다에 넘긴다.
-  const mapData = useMemo(() => {
-    if (!data || (!fullShot && !fullChip)) return data;
+  // full chip도 full shot과 같은 147mm 교차 shot 격자를 쓰고, 그 안에서 die를
+  // 다시 edge 완전 포함으로 거른다.
+  const extendedShotData = useMemo(() => {
+    if (!data || !fullChip) return data;
     const shots = buildFullShots(data);
     return shots === data.shots ? data : { ...data, shots };
-  }, [data, fullShot, fullChip]);
+  }, [data, fullChip]);
+  // full shot 화면은 제품별 edge 원과 겹치거나 정확히 닿는 shot을 사용한다.
+  const mapData = useMemo(() => {
+    if (!data) return data;
+    if (!fullShot) return extendedShotData;
+    const shots = buildFullShots(data);
+    return shots === data.shots ? data : { ...data, shots };
+  }, [data, extendedShotData, fullShot]);
   const fullShotCounts = useMemo(() => {
     const shots = mapData?.shots || [];
-    const edge = Number(mapData?.geometry?.wafer_edge_mm) || 0;
-    const width = Math.abs(Number(mapData?.geometry?.shot_w_mm)) || 0;
-    const height = Math.abs(Number(mapData?.geometry?.shot_h_mm)) || 0;
-    if (!shots.length || !(edge > 0) || !(width > 0) || !(height > 0)) {
-      return { inside: 0, total: shots.length };
-    }
-    const inside = shots.filter(shot => {
-      const farthestCorner = Math.hypot(
-        Math.abs(Number(shot.mm_x) || 0) + width / 2,
-        Math.abs(Number(shot.mm_y) || 0) + height / 2,
-      );
-      return farthestCorner <= edge + 1e-9;
-    }).length;
-    return { inside, total: shots.length };
+    const geometry = mapData?.geometry;
+    return {
+      inside: shots.filter(shot => shotInsideWaferEdge(shot, geometry)).length,
+      total: shots.length,
+    };
   }, [mapData]);
   const fullChipResult = useMemo(() => fullChip
-    ? buildFullChipDies(mapData, fullChipCells)
-    : { dies: [], overflow: false }, [fullChip, mapData, fullChipCells]);
+    ? buildFullChipDies(extendedShotData, fullChipCells)
+    : { dies: [], overflow: false }, [fullChip, extendedShotData, fullChipCells]);
   const toggleFullShot = (on) => {
     setFullShot(on);
     if (!on && selectedShot?.synthetic) setSelectedShot(null);
@@ -2419,14 +2455,14 @@ export default function My_TegMap({ user }) {
                   cursor: geo?.fit === "radius" ? "pointer" : "not-allowed",
                 }}
                   title={geo?.fit === "radius"
-                    ? "layout 파일에 없는 자리까지 같은 shot 크기로 격자를 연장해 wafer 전체를 덮어 표시합니다."
-                      + " 추가된 자리는 점선입니다 (꼭짓점만 스치는 자리는 제외)."
+                    ? `같은 shot 크기로 격자를 연장하고 제품 최외곽 ${fmt(geo?.wafer_edge_mm, 1)}mm 원과 겹치거나 경계에 정확히 닿는 shot까지 표시합니다.`
+                      + " 추가된 자리는 점선입니다."
                     : "Chip_Radius fit 이 되어야 shot 크기를 알 수 있어 사용할 수 없습니다"}>
                   <input type="checkbox" checked={fullShot} disabled={geo?.fit !== "radius"}
                     onChange={e => toggleFullShot(e.target.checked)} />
                   full shot
                   {fullShot && <span style={{ color: "var(--muted)" }}
-                    title={`최외곽 ${fmt(geo?.wafer_edge_mm, 0)}mm 안에 shot 전체가 들어오는 수 / full shot 전체 수`}>
+                      title={`shot 전체가 제품 최외곽 ${fmt(geo?.wafer_edge_mm, 1)}mm 안인 수 / 경계 접촉·교차를 포함한 full shot 전체 수`}>
                     {fullShotCounts.inside}/{fullShotCounts.total}
                   </span>}
                 </label>
@@ -2455,7 +2491,7 @@ export default function My_TegMap({ user }) {
                 부풀어 shot 확대 쪽이 밀리고 옆이 통째로 빈다. 지도 폭에 맞춰 접는다. */}
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, maxWidth: 640 }}>
               shot 클릭 → 확대 뷰. 실선 원 = wafer {fmt(geo?.wafer_radius_mm, 0)}mm,
-              점선 원 = 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm.
+              점선 원 = 제품 최외곽 {fmt(geo?.wafer_edge_mm, 1)}mm.
               <br />
               TEG 선택 시: <span style={{ color: "#2f9e63", fontWeight: 700 }}>■ 초록</span> = TEG 전체가 최외곽 안,
               <span style={{ color: "#e05252", fontWeight: 700 }}> ■ 빨강</span> = TEG 가 걸림.
@@ -2463,8 +2499,7 @@ export default function My_TegMap({ user }) {
               <span style={{ color: "#c78a1e", fontWeight: 700 }}> ■ 연노랑</span> = shot 이 걸치거나 밖.
               격자/그림은 shot 확대에서만 표시됩니다.
               {fullShot && (
-                <> <b>full shot {fullShotCounts.inside}/{fullShotCounts.total}</b>: 앞 숫자는 shot 전체가 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm 안인 수, 뒤 숫자는 전체 격자 수입니다. 점선 = layout 파일에 없는 자리(격자 연장).
-                  TEG 선택 시 판정색은 같고, 미선택 시 걸치는 자리는 색을 칠하지 않습니다.</>
+                <> <b>full shot {fullShotCounts.inside}/{fullShotCounts.total}</b>: 앞 숫자는 shot 전체가 제품 최외곽 {fmt(geo?.wafer_edge_mm, 1)}mm 안에 들어온 수, 뒤 숫자는 경계에 닿거나 교차하는 자리까지 포함한 전체 수입니다. 점선 = layout 파일에 없는 자리(격자 연장).</>
               )}
               {fullChip && (
                 <> <b> full chip</b>: 칩/개발 격자의 die 중 네 꼭짓점이 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm 선에 닿지 않고 모두 안쪽인
@@ -2551,7 +2586,7 @@ export default function My_TegMap({ user }) {
                     const on = selectedTegs.has(n);
                     return (
                       <button key={n} onClick={() => toggleTeg(n)}
-                        title={`(${fmt(t.ebeam_x)},${fmt(t.ebeam_y)}) · shot 좌하단 좌표기준`
+                        title={`(${fmt(Number(t.ebeam_x) * 1000, 3)},${fmt(Number(t.ebeam_y) * 1000, 3)}) µm · shot 좌하단 좌표 기준`
                           + `\n${directionLabel(t)} · 사이즈 ${fmt(Number(t.teg_w) * 1000, 1)}`
                           + ` × ${fmt(Number(t.teg_h) * 1000, 1)}`}
                         style={{
