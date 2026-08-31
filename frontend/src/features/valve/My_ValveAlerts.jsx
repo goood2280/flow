@@ -9,7 +9,7 @@ import { sf, postJson, putJson } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import { Button, Card, EmptyState, Filter, LinkBtn, Pill } from "../../components/UXKit";
 import PageGear from "../../components/PageGear";
-import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
+import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import { canManagePage } from "../../lib/permissions";
 
 const API = "/api/valve-alerts";
@@ -46,7 +46,8 @@ function alertForProduct(alert, selectedProduct) {
   };
 }
 
-function statusTone(a) {
+function statusTone(a, queued = false) {
+  if (queued) return "warn";
   if (a.decision) return "ok";
   if (a.status === "반영완료") return "ok";
   if (a.status === "미확인예정") return "warn";
@@ -54,7 +55,8 @@ function statusTone(a) {
   return "danger";
 }
 
-function statusLabel(a) {
+function statusLabel(a, queued = false) {
+  if (queued) return "반영대기";
   if (a.status === "active" && a.decision) return "반영완료";
   return a.status === "active" ? "판정 대기" : a.status;
 }
@@ -471,70 +473,44 @@ function decisionTitle(a) {
   return a.decision ? `${a.decision.by} · ${fmtTs(a.decision.ts)}` : "";
 }
 
-function csvCell(value) {
-  const text = String(value ?? "");
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-async function copyCsv(rows, columns) {
-  const filled = rows.filter(row => columns.some(column => String(row?.[column] ?? "").trim()));
-  const text = [columns, ...filled.map(row => columns.map(column => row?.[column] ?? ""))]
-    .map(row => row.map(csvCell).join(",")).join("\n");
-  await navigator.clipboard.writeText(text);
-}
-
-function CsvPastePanel({ title, columns, sourceRows, aliases, columnLabels, disabled, onImport }) {
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState(() => normalizeSpreadsheetRows([], columns));
-  const importRows = () => {
-    const filled = rows.filter(row => columns.some(column => String(row?.[column] ?? "").trim()));
-    if (!filled.length) { toast.error("붙여넣은 CSV 행이 없습니다"); return; }
-    const result = onImport(filled) || {};
-    if (result.matched) {
-      toast.ok(`${title}: ${result.matched}건을 반영 대기에 넣었습니다`);
-      setRows(normalizeSpreadsheetRows([], columns));
-      setOpen(false);
-    } else {
-      toast.error(result.message || "현재 알람과 일치하는 행이 없습니다");
-    }
-  };
+function DecisionSpreadsheet({ title, columns, sourceRows, aliases, columnLabels,
+                               editableColumn, disabled, onRowsChange }) {
+  const rows = useMemo(() => normalizeSpreadsheetRows(sourceRows, columns, {
+    minRows: sourceRows.length,
+    maxRows: sourceRows.length,
+  }), [sourceRows, columns]);
   const copy = async () => {
     try {
-      await copyCsv(sourceRows, columns);
-      toast.ok(`${title}: ${sourceRows.length}행을 CSV로 복사했습니다`);
+      await navigator.clipboard.writeText(spreadsheetTextFromRows(sourceRows, columns));
+      toast.ok(`${title}: ${sourceRows.length}행을 스프레드시트 형식으로 복사했습니다`);
     } catch (error) {
       toast.error(`클립보드 복사 실패: ${String(error?.message || error)}`);
     }
   };
+  if (!sourceRows.length) return null;
   return (
-    <div style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 12, display: "grid", gap: 8 }}>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <Button style={compactButtonStyle} disabled={!sourceRows.length} onClick={copy}>CSV 복사</Button>
-        <Button style={compactButtonStyle} disabled={disabled} onClick={() => setOpen(value => !value)}>
-          {open ? "붙여넣기 닫기" : "CSV 붙여넣기"}
-        </Button>
+        <Button style={compactButtonStyle} onClick={copy}>표 복사</Button>
         <span style={{ color: "var(--muted)", fontSize: 12 }}>
-          헤더가 있는 CSV 또는 Excel 셀 범위를 그대로 붙여넣을 수 있습니다.
+          읽기 전용 열로 대상을 확인하고 <b>{columnLabels[editableColumn] || editableColumn}</b> 열에
+          Excel 값을 한 열로 붙여넣으세요. 값이 있는 행은 즉시 반영대기가 됩니다.
         </span>
       </div>
-      {open && (
-        <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-          <SpreadsheetPasteGrid
-            ariaLabel={`${title} CSV 붙여넣기`}
-            columns={columns}
-            rows={rows}
-            onChange={setRows}
-            aliases={aliases}
-            columnLabels={columnLabels}
-            disabled={disabled}
-            minRows={10}
-            maxRows={500}
-            maxHeight={330}
-            minTableWidth={Math.max(420, columns.length * 190)}
-          />
-          <div><Button variant="primary" disabled={disabled} onClick={importRows}>붙여넣은 행 반영 대기</Button></div>
-        </div>
-      )}
+      <SpreadsheetPasteGrid
+        ariaLabel={`${title} 일괄 분류 스프레드시트`}
+        columns={columns}
+        rows={rows}
+        onChange={onRowsChange}
+        aliases={aliases}
+        columnLabels={columnLabels}
+        readOnlyColumns={columns.filter(column => column !== editableColumn)}
+        disabled={disabled}
+        minRows={sourceRows.length}
+        maxRows={sourceRows.length}
+        maxHeight={360}
+        minTableWidth={Math.max(620, columns.length * 175)}
+      />
     </div>
   );
 }
@@ -566,7 +542,7 @@ const METHOD_LABEL = {
 
 function RecoCell({ alert, busy, onApply, onRecheck }) {
   const r = alert.recommendation;
-  const disabled = busy || !!alert.decision;
+  const disabled = busy || !!alert.decision || alert.status !== "active";
   // 반영불필요/미확인예정 건은 자동 검사 대상이 아니다 (판정 대기 건만 본다).
   const skipped = alert.status !== "active";
   if (!r) {
@@ -708,62 +684,64 @@ export default function My_ValveAlerts({ user }) {
   const setInput = (id, patch) =>
     setInputs(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
 
-  const roCsvRows = useMemo(() => roAlerts.map(alert => ({
+  const editableRoAlerts = useMemo(
+    () => roAlerts.filter(alert => alert.status === "active" && !alert.decision),
+    [roAlerts]);
+  const editableStepAlerts = useMemo(
+    () => umAlerts.filter(alert => alert.status === "active" && !alert.decision),
+    [umAlerts]);
+  const editableMaskAlerts = useMemo(
+    () => maskAlerts.filter(alert => alert.status === "active" && !alert.decision),
+    [maskAlerts]);
+  const roCsvRows = useMemo(() => editableRoAlerts.map(alert => ({
+    status: queued[alert.id] ? "반영대기" : "입력대기",
+    product: alert.product || alert.vehicle || "",
     feature_name: alert.feature_name || "",
     ppid: alert.ppid || "",
     category: inputs[alert.id]?.category || "",
-  })), [roAlerts, inputs]);
-  const stepCsvRows = useMemo(() => umAlerts.map(alert => ({
+  })), [editableRoAlerts, inputs, queued]);
+  const stepCsvRows = useMemo(() => editableStepAlerts.map(alert => ({
+    status: queued[alert.id] ? "반영대기" : "입력대기",
+    product: alert.product || alert.vehicle || "",
     step_id: alert.step_id || "",
     step_desc: inputs[alert.id]?.step_desc ?? alert.step_desc ?? "",
-  })), [umAlerts, inputs]);
-  const maskCsvRows = useMemo(() => maskAlerts.map(alert => ({
+  })), [editableStepAlerts, inputs, queued]);
+  const maskCsvRows = useMemo(() => editableMaskAlerts.map(alert => ({
+    status: queued[alert.id] ? "반영대기" : "입력대기",
+    products: alertProducts(alert).join(", "),
     reticle_id: alert.reticle_id || "",
     mask: inputs[alert.id]?.mask || "",
-  })), [maskAlerts, inputs]);
+  })), [editableMaskAlerts, inputs, queued]);
 
-  const importCsvRows = (type, rows) => {
-    const norm = value => String(value || "").trim().toLocaleLowerCase();
-    const patches = new Map();
-    for (const row of rows) {
-      let targets = [];
-      let patch = {};
-      if (type === "ro_ppid") {
-        const ppid = norm(row.ppid);
-        const feature = norm(row.feature_name);
-        const category = String(row.category || "").trim();
-        if (!ppid || !category) continue;
-        targets = roAlerts.filter(alert => norm(alert.ppid) === ppid
-          && (!feature || norm(alert.feature_name) === feature));
-        patch = { category, feature_name: String(row.feature_name || "").trim() };
-      } else if (type === "unmatched_step") {
-        const stepId = norm(row.step_id);
-        const stepDesc = String(row.step_desc || "").trim();
-        if (!stepId || !stepDesc) continue;
-        targets = umAlerts.filter(alert => norm(alert.step_id) === stepId);
-        patch = { step_desc: stepDesc };
-      } else {
-        const reticleId = norm(row.reticle_id);
-        const mask = String(row.mask || "").trim();
-        if (!reticleId || !mask) continue;
-        targets = maskAlerts.filter(alert => norm(alert.reticle_id) === reticleId);
-        patch = { mask };
-      }
-      targets.filter(alert => !alert.decision).forEach(alert => patches.set(alert.id, patch));
-    }
-    if (!patches.size) return { matched: 0, message: "필수 값이 없거나 현재 표시된 알람과 일치하지 않습니다" };
+  const updateDecisionValues = (targetAlerts, rows, field) => {
     setInputs(prev => {
       const next = { ...prev };
-      patches.forEach((patch, id) => { next[id] = { ...(next[id] || {}), ...patch }; });
+      targetAlerts.forEach((alert, index) => {
+        next[alert.id] = { ...(next[alert.id] || {}), [field]: rows[index]?.[field] ?? "" };
+      });
       return next;
     });
     setQueued(prev => {
       const next = { ...prev };
-      patches.forEach((_patch, id) => { next[id] = true; });
+      targetAlerts.forEach((alert, index) => {
+        if (String(rows[index]?.[field] || "").trim()) next[alert.id] = true;
+        else delete next[alert.id];
+      });
       return next;
     });
-    return { matched: patches.size };
   };
+
+  const updateDecisionValue = (alert, field, value) => {
+    setInput(alert.id, { [field]: value });
+    setQueued(prev => {
+      const next = { ...prev };
+      if (String(value || "").trim()) next[alert.id] = true;
+      else delete next[alert.id];
+      return next;
+    });
+  };
+
+  const clearDecisionValue = (alert, field) => updateDecisionValue(alert, field, "");
 
   const act = async (id, fn) => {
     setBusy(id);
@@ -785,27 +763,7 @@ export default function My_ValveAlerts({ user }) {
       else toast.ok(message);
     });
 
-  const queueClassify = (a) => {
-    const v = inputs[a.id] || {};
-    const category = (v.category || "").trim();
-    if (!category) { toast.error("분류할 KNOB 카테고리를 입력하세요"); return; }
-    setQueued(prev => ({ ...prev, [a.id]: !prev[a.id] }));
-  };
-
-  const queueMatchStep = (a) => {
-    const v = inputs[a.id] || {};
-    const step_desc = (v.step_desc ?? a.step_desc ?? "").trim();
-    if (!step_desc) { toast.error("step_desc 를 입력하세요"); return; }
-    setQueued(prev => ({ ...prev, [a.id]: !prev[a.id] }));
-  };
-
-  const queueAddMask = (a) => {
-    const v = inputs[a.id] || {};
-    if (!(v.mask || "").trim()) { toast.error("mask 이름을 입력하세요"); return; }
-    setQueued(prev => ({ ...prev, [a.id]: !prev[a.id] }));
-  };
-
-  const queuedAlerts = useMemo(() => visibleAlerts.filter(a => queued[a.id]), [visibleAlerts, queued]);
+  const queuedAlerts = useMemo(() => alerts.filter(a => queued[a.id]), [alerts, queued]);
   const applyBatch = () => {
     if (!queuedAlerts.length) { toast.error("일괄 반영할 항목을 선택하세요"); return; }
     const changes = [];
@@ -815,7 +773,8 @@ export default function My_ValveAlerts({ user }) {
         const category = (v.category || "").trim();
         if (!category) { toast.error(`${a.ppid}: KNOB 분류를 입력하세요`); return; }
         changes.push({ type: "classify_ppid", id: a.id, category,
-          feature_name: (v.feature_name || "").trim(), note: (v.note || "").trim() });
+          feature_name: (v.feature_name ?? a.feature_name ?? "").trim(),
+          note: (v.note || "").trim() });
       } else if (a.type === "missing_reticle") {
         const mask = (v.mask || "").trim();
         if (!mask) { toast.error(`${a.reticle_id}: mask 이름을 입력하세요`); return; }
@@ -841,16 +800,29 @@ export default function My_ValveAlerts({ user }) {
     });
   };
 
+  const clearQueuedValues = () => {
+    setInputs(prev => {
+      const next = { ...prev };
+      queuedAlerts.forEach(alert => {
+        const field = alert.type === "ro_ppid" ? "category"
+          : alert.type === "missing_reticle" ? "mask" : "step_desc";
+        next[alert.id] = { ...(next[alert.id] || {}), [field]: "" };
+      });
+      return next;
+    });
+    setQueued({});
+  };
+
   const ack = (id, status) =>
     act(id, async () => {
       await postJson(API + "/ack", { id, status, note: (inputs[id]?.note || "").trim() });
       toast(status === "active" ? "불필요 처리가 취소되어 판정 대기로 돌아갔습니다" : `상태 기록: ${status}`);
     });
 
-  // 추천 → 판정 입력칸 채우기 (반영은 사람이 누른다)
+  // 추천 → 판정 입력칸 채우기 + 자동 반영대기. 실제 CSV 저장은 일괄반영에서만 한다.
   const applyReco = (a, step_desc) => {
-    setInput(a.id, { step_desc });
-    toast(`추천 반영: ${step_desc} — 확인 후 '매칭 추가'를 누르세요`);
+    updateDecisionValue(a, "step_desc", step_desc);
+    toast(`추천 반영: ${step_desc} — 반영대기에 추가했습니다`);
   };
 
   const recheck = (a, force = false) =>
@@ -945,18 +917,18 @@ export default function My_ValveAlerts({ user }) {
 
       <Card
         title="매칭 변경 일괄 반영"
-        right={<Pill tone={queuedAlerts.length ? "warn" : "neutral"}>선택 {queuedAlerts.length}건</Pill>}
+        right={<Pill tone={queuedAlerts.length ? "warn" : "neutral"}>반영대기 {queuedAlerts.length}건</Pill>}
       >
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ color: "var(--muted)", fontSize: 12 }}>
-            각 행을 반영 대기에 넣은 뒤 한 번에 저장합니다. 같은 CSV의 변경은 버전 1개로, 여러 CSV는 같은 배치 ID로 기록됩니다.
+            분류 값을 입력하거나 Excel 열을 붙여넣으면 자동으로 반영대기가 됩니다. 일괄반영 시 같은 CSV는 버전 1개로, 여러 CSV는 같은 배치 ID로 기록됩니다.
           </span>
           <input style={{ ...inputStyle, minWidth: 260, flex: 1 }} placeholder="배치 메모(선택)"
             value={batchNote} onChange={e => setBatchNote(e.target.value)} />
           <Button variant="primary" disabled={!queuedAlerts.length || busy === "__batch__"} onClick={applyBatch}>
             {busy === "__batch__" ? "일괄 반영 중…" : `${queuedAlerts.length}건 일괄 반영`}
           </Button>
-          {!!queuedAlerts.length && <Button disabled={busy === "__batch__"} onClick={() => setQueued({})}>선택 초기화</Button>}
+          {!!queuedAlerts.length && <Button disabled={busy === "__batch__"} onClick={clearQueuedValues}>대기값 초기화</Button>}
         </div>
       </Card>
 
@@ -964,14 +936,15 @@ export default function My_ValveAlerts({ user }) {
         title="PPID 룰북 (ppid_knob.csv)"
         right={<Pill tone={roAlerts.length ? "danger" : "neutral"}>RO PPID · {roAlerts.length}건</Pill>}
       >
-        <CsvPastePanel
+        <DecisionSpreadsheet
           title="PPID 룰북"
-          columns={["feature_name", "ppid", "category"]}
+          columns={["status", "product", "feature_name", "ppid", "category"]}
           sourceRows={roCsvRows}
           aliases={{ value: "ppid", "기능명": "feature_name", "분류": "category" }}
-          columnLabels={{ feature_name: "feature_name", ppid: "ppid (value)", category: "category" }}
+          columnLabels={{ status: "상태", product: "제품", feature_name: "기능명", ppid: "미매칭 PPID", category: "KNOB 분류" }}
+          editableColumn="category"
           disabled={!canManage || !!busy}
-          onImport={rows => importCsvRows("ro_ppid", rows)}
+          onRowsChange={rows => updateDecisionValues(editableRoAlerts, rows, "category")}
         />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : roAlerts.length === 0 ? (
           <EmptyState title="RO ppid 알람 없음" hint="knob 매핑에 없는 ppid 가 발견되면 여기에 표시됩니다" />
@@ -983,7 +956,7 @@ export default function My_ValveAlerts({ user }) {
             renderRow={a => (
                   <tr key={a.id}>
                     <td style={nowrapCell} title={decisionTitle(a)}>
-                      <Pill tone={statusTone(a)} style={{ fontSize: 12 }}>{statusLabel(a)}</Pill>
+                      <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
                     </td>
                     <td style={{ ...nowrapCell, fontWeight: 700 }}>{a.product || a.vehicle || "-"}</td>
                     <td style={compactCell} title={[a.vehicle, a.step_id, a.step_desc].filter(Boolean).join(" · ")}>
@@ -996,14 +969,14 @@ export default function My_ValveAlerts({ user }) {
                       <input style={inputStyle} placeholder="예: KNOB_NEW"
                         aria-label={`${a.ppid} KNOB 분류`}
                         value={inputs[a.id]?.category ?? ""}
-                        onChange={e => setInput(a.id, { category: e.target.value })}
-                        disabled={!!a.decision} />
+                        onChange={e => updateDecisionValue(a, "category", e.target.value)}
+                        disabled={!canManage || !!a.decision || a.status !== "active"} />
                     </td>
                     <td style={nowrapCell}>
-                      <Button style={compactButtonStyle} variant={queued[a.id] ? "primary" : undefined}
-                        disabled={!!busy || !!a.decision} onClick={() => queueClassify(a)}>
-                        {queued[a.id] ? "대기 해제" : "반영 대기"}
-                      </Button>{" "}
+                      {queued[a.id]
+                        ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
+                            onClick={() => clearDecisionValue(a, "category")}>입력 취소</Button>
+                        : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
                       <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
                     </td>
                   </tr>
@@ -1020,16 +993,17 @@ export default function My_ValveAlerts({ user }) {
           title="추천 function step은 동일 area의 매칭 완료 step만 후보로 두고, FAB의 동일 PPID → 동일 eqp_id → 동일 eqp_model → step_id 근접 순서로 선택합니다. step_desc는 선택된 step_id의 Vehicle_matching.csv 값이며, 최종 반영은 사용자가 확인합니다."
           style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
         >
-          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 적용 후 ‘매칭 추가’로 확정하세요.
+          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 적용하면 반영대기에 들어가며 일괄반영에서 저장됩니다.
         </div>
-        <CsvPastePanel
+        <DecisionSpreadsheet
           title="Vehicle 매칭테이블"
-          columns={["step_id", "step_desc"]}
+          columns={["status", "product", "step_id", "step_desc"]}
           sourceRows={stepCsvRows}
           aliases={{ "스텝": "step_id", "function_step": "step_desc", "판정_step": "step_desc" }}
-          columnLabels={{ step_id: "step_id", step_desc: "step_desc" }}
+          columnLabels={{ status: "상태", product: "제품", step_id: "미매칭 step_id", step_desc: "판정 function step" }}
+          editableColumn="step_desc"
           disabled={!canManage || !!busy}
-          onImport={rows => importCsvRows("unmatched_step", rows)}
+          onRowsChange={rows => updateDecisionValues(editableStepAlerts, rows, "step_desc")}
         />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : umAlerts.length === 0 ? (
           <EmptyState title="미매칭 step 알람 없음" hint="vehicle_matching 에 없는 step 이 발견되면 여기에 표시됩니다" />
@@ -1041,7 +1015,7 @@ export default function My_ValveAlerts({ user }) {
             renderRow={a => (
                   <tr key={a.id}>
                     <td style={nowrapCell} title={decisionTitle(a)}>
-                      <Pill tone={statusTone(a)} style={{ fontSize: 12 }}>{statusLabel(a)}</Pill>
+                      <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
                     </td>
                     <td style={{ ...nowrapCell, fontWeight: 700 }}>{a.product || a.vehicle || "-"}</td>
                     <td style={{ ...nowrapCell, fontFamily: "monospace" }}>
@@ -1071,14 +1045,14 @@ export default function My_ValveAlerts({ user }) {
                       <input style={{ ...inputStyle, minWidth: 150 }}
                         aria-label={`${a.vehicle} ${a.step_id} 판정 step`}
                         value={inputs[a.id]?.step_desc ?? a.step_desc ?? ""}
-                        onChange={e => setInput(a.id, { step_desc: e.target.value })}
-                        disabled={!!a.decision} />
+                        onChange={e => updateDecisionValue(a, "step_desc", e.target.value)}
+                        disabled={!canManage || !!a.decision || a.status !== "active"} />
                     </td>
                     <td style={nowrapCell}>
-                      <Button style={compactButtonStyle} variant={queued[a.id] ? "primary" : undefined}
-                        disabled={!!busy || !!a.decision} onClick={() => queueMatchStep(a)}>
-                        {queued[a.id] ? "대기 해제" : "반영 대기"}
-                      </Button>{" "}
+                      {queued[a.id]
+                        ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
+                            onClick={() => clearDecisionValue(a, "step_desc")}>입력 취소</Button>
+                        : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
                       <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
                     </td>
                   </tr>
@@ -1095,14 +1069,15 @@ export default function My_ValveAlerts({ user }) {
           FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값입니다.
           mask_info.csv는 제품 구분 없이 reticle_id·mask 2열이라 같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
         </div>
-        <CsvPastePanel
+        <DecisionSpreadsheet
           title="마스크 룰북"
-          columns={["reticle_id", "mask"]}
+          columns={["status", "products", "reticle_id", "mask"]}
           sourceRows={maskCsvRows}
           aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
-          columnLabels={{ reticle_id: "reticle_id", mask: "mask" }}
+          columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", mask: "mask 이름" }}
+          editableColumn="mask"
           disabled={!canManage || !!busy}
-          onImport={rows => importCsvRows("missing_reticle", rows)}
+          onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "mask")}
         />
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : maskAlerts.length === 0 ? (
           <EmptyState title="미등록 reticle 알람 없음" hint="mask_info.csv에 없는 reticle_id 가 발견되면 여기에 표시됩니다" />
@@ -1117,7 +1092,7 @@ export default function My_ValveAlerts({ user }) {
                   return (
                     <tr key={a.id}>
                       <td style={nowrapCell} title={decisionTitle(a)}>
-                        <Pill tone={statusTone(a)} style={{ fontSize: 12 }}>{statusLabel(a)}</Pill>
+                        <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
                       </td>
                       <td style={{ ...nowrapCell, fontFamily: "monospace", fontWeight: 700 }}>{a.reticle_id}</td>
                       <td style={compactCell} title={products.join(", ")}>{products.join(", ") || "-"}</td>
@@ -1131,14 +1106,14 @@ export default function My_ValveAlerts({ user }) {
                         <input style={inputStyle} placeholder="예: MASK_A_v1"
                           aria-label={`${a.reticle_id} mask 이름`}
                           value={inputs[a.id]?.mask ?? ""}
-                          onChange={e => setInput(a.id, { mask: e.target.value })}
-                          disabled={!!a.decision} />
+                          onChange={e => updateDecisionValue(a, "mask", e.target.value)}
+                          disabled={!canManage || !!a.decision || a.status !== "active"} />
                       </td>
                       <td style={nowrapCell}>
-                        <Button style={compactButtonStyle} variant={queued[a.id] ? "primary" : undefined}
-                          disabled={!!busy || !!a.decision} onClick={() => queueAddMask(a)}>
-                          {queued[a.id] ? "대기 해제" : "반영 대기"}
-                        </Button>{" "}
+                        {queued[a.id]
+                          ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
+                              onClick={() => clearDecisionValue(a, "mask")}>입력 취소</Button>
+                          : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
                         <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
                       </td>
                     </tr>

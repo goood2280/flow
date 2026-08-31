@@ -193,6 +193,7 @@ def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
 @pytest.mark.parametrize("module_name, ref_name, rule_name", [
     ("H_QAF01", "QAF01H", "H/V 접두사를 뒤로 이동"),
     ("H_QAB03", "QA03HB", "끝 영문자를 H/V 뒤로 이동"),
+    ("QA04HB", "H_QAB04", "뒤의 H/V와 영문자를 접두사로 복원"),
     ("H_DFM01", "DFMSL01", "DFM의 H/V를 SL로 변환"),
     ("H_SRAM24", "SRAM24", "SRAM의 H/V 접두사 제거"),
     ("V_QAB03", "QA03VB", "끝 영문자를 H/V 뒤로 이동"),
@@ -267,15 +268,15 @@ def test_pchk_and_prbchk_are_builtin_aliases_not_main_info_missing(
     assert row["light"] == "green"
 
 
-@pytest.mark.parametrize(("ref_name", "module_name"), [
-    ("H_QAF01", "QAF01H"),
-    ("H_QAB06", "QA06HB"),
-    ("V_QAB03", "QA03VB"),
-    ("H_DFM01", "DFMSL01"),
-    ("H_SRAM24", "SRAM24"),
+@pytest.mark.parametrize(("ref_name", "module_name", "expected_rule"), [
+    ("H_QAF01", "QAF01H", "alias"),
+    ("H_QAB06", "QA06HB", "macro"),
+    ("V_QAB03", "QA03VB", "macro"),
+    ("H_DFM01", "DFMSL01", "alias"),
+    ("H_SRAM24", "SRAM24", "alias"),
 ])
 def test_reverse_alias_notations_match_reference_and_check_coordinates(
-        monkeypatch, ref_name, module_name):
+        monkeypatch, ref_name, module_name, expected_rule):
     """내장 표기 매크로의 역방향도 같은 TEG로 보고 실제 좌표를 검사한다."""
     ref = {
         ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
@@ -297,7 +298,7 @@ def test_reverse_alias_notations_match_reference_and_check_coordinates(
     row = result["teg"]["rows"][0]
 
     assert row["ref_teg"] == ref_name
-    assert row["match_rule"] == "alias"
+    assert row["match_rule"] == expected_rule
     assert row["extended"] is False
     assert row["status"] == "warning"
     assert row["dx"] == 1.0
@@ -358,6 +359,46 @@ def test_alias_matching_refuses_ambiguous_keys():
     assert teg_check.alias_key("QAB03") == teg_check.alias_key("QA03B")
     row = {"name": "H_QAB03", "candidates": ["H_QAB03"], "tail": ""}
     assert teg_check.resolve_ref_teg_alias(row, ref, {}) == (None, None, None)
+
+
+def test_reverse_tail_macro_resolves_qa04hb_even_when_alias_key_is_ambiguous(monkeypatch):
+    """QA04HB는 유사 키가 겹쳐도 기본 매크로로 H_QAB04를 정확히 선택한다."""
+    ref = {
+        "H_QAB04": [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                      "dir": "h", "top_cell": ""}],
+        # flat/글자 위치를 모두 걷어낸 기존 alias 키는 H_QAB04와 같아 모호하다.
+        "H_QA04B": [{"x": 300.5, "y": 400.5, "w": 1.0, "h": 1.0,
+                      "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "config",
+        "items": [{"teg": "H_QAB04", "matched": False}],
+        "matched": 0, "missing": 1, "total": 1,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect(
+        "P", "#teg-map\nmodule QA04HB (100.5,200.5) ! H_PCHK\n", flat="h")
+    row = result["teg"]["rows"][0]
+    target = result["teg"]["targets"]["items"][0]
+
+    assert row["ref_teg"] == "H_QAB04"
+    assert row["match_rule"] == "macro"
+    assert row["match_rule_label"] == "뒤의 H/V와 영문자를 접두사로 복원"
+    assert row["status"] == "match"
+    assert row["light"] == "green"
+    assert row["light_reason"] == "위치 확인"
+    assert target["matched"] is True
+    assert target["matched_module"] == "QA04HB"
+    assert result["teg"]["targets"]["matched"] == 1
+    assert result["teg"]["targets"]["missing"] == 0
 
 
 @pytest.mark.parametrize(("module_name", "pattern", "replacement", "ref_name"), [
