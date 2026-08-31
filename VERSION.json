@@ -1,7 +1,19 @@
 {
-  "version": "10.4.143",
+  "version": "10.4.144",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.144",
+      "date": "2026-08-31",
+      "tag": "feat",
+      "title": "매칭알람 CSV 일괄입력과 Function Step 근거 정합화",
+      "changes": [
+        "[CSV 일괄입력] PPID·Vehicle·마스크 룰을 행별로만 입력해야 함 → 표 형태의 대량 판정 경로가 없음 → 각 카드에서 헤더 포함 CSV/Excel 범위를 복사·붙여넣고 검토 후 배치 반영하도록 공용 스프레드시트 그리드 연결",
+        "[발견 예시] 발견 열에 lot·row 건수만 있어 실제 원본을 바로 확인할 수 없음 → 스캔 집계가 lot_id를 건수로만 소비함 → lot_id·root_lot_id·wafer_id 한 쌍을 알람 근거에 보존하고 모든 발견 열에 예시로 표시",
+        "[추천 정합] 같은 PPID 후보가 여러 개면 다른 시그니처 점수가 선택을 뒤집고 step_desc 출처가 불명확함 → PPID 관측 step과 매칭 CSV 행 연결이 기록되지 않음 → 공유 PPID 수를 우선하고 picked step_id의 step_desc를 검증하며 알고리즘·CSV 지문 변경 시 캐시 재계산",
+        "[추천 표시] AI가 적용되지 않은 정상 규칙 추천에도 경고성 태그가 붙음 → AI 연결 여부가 판정 품질 표시처럼 노출됨 → AI 미적용 태그를 제거하고 실제 PPID step_id·Vehicle_matching.csv 근거를 표시"
+      ]
+    },
     {
       "version": "10.4.143",
       "date": "2026-08-31",
