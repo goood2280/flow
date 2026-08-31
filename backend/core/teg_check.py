@@ -55,8 +55,12 @@ FLATS = ("h", "v_R", "v_L")                     # 저장 키
 PCHK_REF_NAMES = {
     "h": ["H_PCHK", "H_PRBCHK"],
     "v_R": ["V_PCHK", "V_PRBCHK"],
-    "v_L": ["VL_PCHK", "V_L_PCHK", "L_PCHK", "VL_PRBCHK", "V_L_PRBCHK", "L_PRBCHK"],
+    # 90도 Map은 정답지에서 VL_/V_L_/L_ 전용 이름을 쓰기도 하지만, V_PCHK/
+    # V_PRBCHK 이름을 그대로 두고 flat_zone=90으로만 구분하는 파일도 있다.
+    "v_L": ["VL_PCHK", "V_L_PCHK", "L_PCHK", "VL_PRBCHK", "V_L_PRBCHK", "L_PRBCHK",
+            "V_PCHK", "V_PRBCHK"],
 }
+GENERIC_PCHK_NAMES = ("PCHK", "PRBCHK")
 TOL = 1e-6                                        # 좌표 비교 허용오차 (이 이내면 완전 일치)
 # ΔX·ΔY 가 각각 이 값 이내로만 어긋나면 '확인필요'(△) — 완전 일치는 아니지만
 # 소수점 반올림·설비 세팅 차이 정도의 작은 오차일 수 있어 불일치와 구분한다.
@@ -73,6 +77,10 @@ MODULE_RE = re.compile(
 )
 MODULE_FALLBACK_RE = re.compile(rf"^\s*(.+?)\s*\(\s*({NUM})\s*,\s*({NUM})\s*\)")
 MODULE_WORD_RE = re.compile(r"\bmodule\b\s*[,:=]?\s*([^\s(,:=]+)", re.IGNORECASE)  # 'module' 뒤 단어
+MAPFILE_ORIENTATION_RE = re.compile(
+    rf"\b(?P<key>flat\s*[-_]?\s*position|rotation)\b\s*(?:[:=]\s*)?(?P<angle>{NUM})",
+    re.IGNORECASE,
+)
 
 # ── 새 Mapfile 양식(대괄호 섹션) — 기존(#wafer-map / <SITES> / #teg-map)과 함께 자동 처리.
 #   [TEST_POINT]          = 웨이퍼 맵 (맵 문자 행)
@@ -408,6 +416,50 @@ def teg_flat(tail: str, markers: dict[str, str] | None = None) -> tuple[str | No
     return None, None
 
 
+def parse_mapfile_orientation(lines: list[str]) -> dict | None:
+    """Mapfile의 방향 메타데이터를 flat으로 변환한다.
+
+    설비 양식에 따라 ``Flat-position`` 또는 ``ROTATION``을 쓰며 기준은 동일하다:
+    0°=Horizontal, 270°=Vertical(R), 90°=Vertical(L). 두 항목이 모두 있으면
+    Mapfile 고유 항목인 Flat-position을 우선한다.
+    """
+    found: dict[str, dict] = {}
+    for line in lines:
+        for match in MAPFILE_ORIENTATION_RE.finditer(str(line or "")):
+            raw_key = match.group("key")
+            key = "flat_position" if raw_key.lower().replace("_", "-").replace(" ", "-").startswith("flat-") else "rotation"
+            angle_value = float(match.group("angle"))
+            rounded = int(round(angle_value))
+            if abs(angle_value - rounded) > TOL:
+                continue
+            angle = rounded % 360
+            flat = {0: "h", 270: "v_R", 90: "v_L"}.get(angle)
+            if flat is None:
+                continue
+            found.setdefault(key, {
+                "flat": flat,
+                "angle": angle,
+                "source": "Flat-position" if key == "flat_position" else "ROTATION",
+            })
+    return found.get("flat_position") or found.get("rotation")
+
+
+def generic_pchk_marker(row: dict) -> str | None:
+    """방향 접두어 없는 PCHK/PRBCHK (0,0) 기준 행이면 그 마커명을 반환한다."""
+    try:
+        if abs(float(row.get("x") or 0)) > TOL or abs(float(row.get("y") or 0)) > TOL:
+            return None
+    except (TypeError, ValueError):
+        return None
+    tokens = [row.get("name"), *(row.get("candidates") or [])]
+    tokens.extend(str(row.get("tail") or "").split(","))
+    for token in tokens:
+        value = str(token or "").strip().upper()
+        if value in GENERIC_PCHK_NAMES:
+            return value
+    return None
+
+
 def detect_flat(tegs: list[dict], markers: dict[str, str] | None = None) -> tuple[str | None, str | None]:
     """전체 TEG 중 첫 마커로 전역 기본 flat 판정 (마커 없는 TEG·표시용)."""
     for t in tegs:
@@ -549,18 +601,29 @@ def pchk_base_offsets(ref: dict[str, list[dict]] | None,
     """
     if not ref:
         return {}
-    by_upper: dict[str, tuple[str, dict]] = {}
+    by_upper: dict[str, list[tuple[str, dict]]] = {}
     for name, cands in ref.items():
-        if cands:
-            by_upper.setdefault(str(name).strip().upper(), (str(name), cands[0]))
+        for candidate in cands or []:
+            by_upper.setdefault(str(name).strip().upper(), []).append((str(name), candidate))
     out: dict[str, tuple[float, float, str]] = {}
     for flat in FLATS:
-        names = [str(m).strip() for m in ((custom_markers or {}).get(flat) or []) if str(m).strip()]
+        custom_names = [str(m).strip() for m in ((custom_markers or {}).get(flat) or []) if str(m).strip()]
+        names = list(custom_names)
         names += PCHK_REF_NAMES.get(flat, [])
         for nm in names:
-            hit = by_upper.get(nm.upper())
+            hits = by_upper.get(nm.upper()) or []
+            matching = []
+            for hit in hits:
+                ref_name, candidate = hit
+                candidate_flat = _tm.normalize_direction(candidate.get("dir"), ref_name)
+                candidate_flat = "v_R" if candidate_flat == "v" else candidate_flat
+                if candidate_flat == flat:
+                    matching.append(hit)
+            # 사용자 지정 이름은 flat 자체를 설정에서 이미 명시했다. 오래된 정답지에
+            # direction 열이 없어서 이름만으로 방향 판정이 안 되는 경우 첫 행을 폴백.
+            hit = (matching or (hits if nm in custom_names else []))
             if hit:
-                ref_name, c0 = hit
+                ref_name, c0 = hit[0]
                 out[flat] = (float(c0["x"]), float(c0["y"]), ref_name)
                 break
     return out
@@ -1242,7 +1305,30 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     marker_map = build_marker_map(merged_custom)
 
     # 대표 이름뿐 아니라 후보/꼬리표 어디든 MAIN 그룹이 있는 행은 S/L에서 제외한다.
+    # 최신 Mapfile은 H_/V_ 접두어 대신 PCHK (0,0) 하나와 Flat-position/ROTATION으로
+    # 방향을 명시한다. 이 경우 메타데이터가 어느 정답지 PCHK를 쓸지 결정한다.
+    orientation = parse_mapfile_orientation(lines)
+    generic_markers = list(dict.fromkeys(
+        marker for marker in (generic_pchk_marker(t) for t in tegs_all) if marker
+    ))
+    orientation_anchor_flat = orientation["flat"] if orientation and generic_markers else None
     detected, why = detect_flat(tegs_all, marker_map)
+    if orientation_anchor_flat:
+        detected = orientation_anchor_flat
+        why = (f"{generic_markers[0]} (0,0) · {orientation['source']} "
+               f"= {orientation['angle']}°")
+    elif detected is None and orientation:
+        detected = orientation["flat"]
+        why = f"{orientation['source']} = {orientation['angle']}°"
+    markers_present: dict[str, list[str]] = {f: [] for f in FLATS}
+    if orientation_anchor_flat:
+        markers_present[orientation_anchor_flat].extend(generic_markers)
+    else:
+        for t in tegs_all:
+            marker_flat, marker_name = teg_flat(t.get("tail") or "", marker_map)
+            if (marker_flat in markers_present and marker_name
+                    and marker_name not in markers_present[marker_flat]):
+                markers_present[marker_flat].append(marker_name)
     tegs = [t for t in tegs_all if not is_main_row(t)]
     n_excluded = len(tegs_all) - len(tegs)
     # 제외된 MAIN 행도 최소 정보로 노출 — 자동 인식이 엉뚱한 토큰(MAIN 포함)을
@@ -1255,7 +1341,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     # flat 강제 여부 — 강제 시 모든 TEG 에 적용, 아니면 TEG 별 마커로 개별 판정
     forced = flat if flat in FLATS else None
-    used = forced or detected or "h"   # 전역 기본 (마커 없는 TEG·표시용)
+    used = forced or orientation_anchor_flat or detected or "h"   # 전역 기본 (마커 없는 TEG·표시용)
     flat_offsets = chk["flat_offsets"]
 
     ref, tc_to_teg, ref_path, ref_err = (
@@ -1297,6 +1383,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     # ── MAIN 행의 꼬리표에서 내부 TEG 이름 뽑기 (없으면 "" = MAIN 블록 자체 행)
     marker_upper = {mk.upper() for mk in marker_map}
+    marker_upper.update(generic_markers)
 
     def _main_detail(t: dict, group: str = "") -> str:
         """MAIN 행의 내부 TEG 이름 — 꼬리표를 순서대로 훑어 첫 유효 토큰.
@@ -1315,7 +1402,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     def _main_xy(t: dict, name: str) -> tuple[float, float]:
         t_flat, _mk = teg_flat(t["tail"], marker_map)
-        used_t = forced or t_flat or detected or "h"
+        used_t = forced or orientation_anchor_flat or t_flat or detected or "h"
         tdx, tdy = _offset(used_t)
         detail = _transform_detail(used_t, name)
         return transform(name, t["x"], t["y"], used_t, tdx, tdy, rules,
@@ -1353,7 +1440,10 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     for t in tegs:
         # TEG 별 flat: 강제값 > 자기 꼬리표 마커 > 전역 기본. 오프셋도 flat 에 맞춰 선택.
         t_flat, t_marker = teg_flat(t["tail"], marker_map)
-        used_t = forced or t_flat or detected or "h"
+        generic_marker = generic_pchk_marker(t)
+        used_t = forced or orientation_anchor_flat or t_flat or detected or "h"
+        if generic_marker and orientation_anchor_flat:
+            t_marker = generic_marker
         tdx, tdy = _offset(used_t)
         # 꼬리표의 H_PCHK/V_PCHK 등은 flat 판정용 마커이지 TEG 별칭이 아니다.
         # Mapfile 본명이 정답지와 다른 표기일 때 마커가 먼저 exact match 되어 행을
@@ -1366,10 +1456,15 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         }
         # 순서 기반이 아니라 이름 기반 정확 매칭 — 후보 토큰 중 정답지 teg/top_cell 과
         # 완전 일치하는 걸 찾아 그 teg 로 대조. 없으면 '01' 제외 재매칭(확장체크).
-        ref_teg, msrc, mtok = resolve_ref_teg(match_t, ref, tc_to_teg)
+        anchor_base = pchk_bases.get(used_t) if generic_marker else None
+        if anchor_base:
+            ref_teg, msrc, mtok = anchor_base[2], "pchk_marker", generic_marker
+        else:
+            ref_teg, msrc, mtok = resolve_ref_teg(match_t, ref, tc_to_teg)
         extended = False
-        match_rule = "exact" if ref_teg is not None else None
-        match_rule_label = None
+        match_rule = ("pchk_anchor" if anchor_base else
+                      "exact" if ref_teg is not None else None)
+        match_rule_label = "기준마커(0,0)" if anchor_base else None
         if ref_teg is None and ref is not None and macro_builtins.get("01strip", True):
             ref_teg, msrc, mtok = resolve_ref_teg_extended(match_t, ref, tc_to_teg)
             if ref_teg is not None:
@@ -1580,8 +1675,33 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     # target_verification은 원문 이름의 완전일치만 안다. 위 좌표 대조에서 확장
     # 매크로로 정답지 S/L TEG까지 연결된 행도 실제 Mapfile 세팅이므로 matched에
     # 합쳐 상단 신호등과 하단 "세팅됨" 집계가 같은 기준을 쓰게 한다.
+    # PCHK/PRBCHK 기준 TEG는 일반 module 행이 아니라 다른 TEG의 꼬리표 마커로만
+    # 나타나는 Mapfile이 많다. 같은 flat 마커가 하나라도 감지되면 그 기준점은
+    # Mapfile에서 당연히 (0,0)으로 세팅된 것이므로 이름 별칭과 무관하게 세팅됨이다.
     rows_by_ref = {str(row.get("ref_teg")): row for row in rows if row.get("ref_teg")}
     for item in targets.get("items") or []:
+        target_name = str(item.get("teg") or "").strip().casefold()
+        target_direction = _tm.normalize_direction(item.get("direction"), item.get("teg") or "")
+        target_direction = "v_R" if target_direction == "v" else target_direction
+        if target_name.upper() in GENERIC_PCHK_NAMES:
+            anchor_flat = used
+        elif (target_direction in FLATS
+              and target_name in {str(name).casefold()
+                                  for name in PCHK_REF_NAMES.get(target_direction, [])}):
+            anchor_flat = target_direction
+        else:
+            anchor_flat = next((f for f, names in PCHK_REF_NAMES.items()
+                                if target_name in {str(name).casefold() for name in names}), None)
+        anchor_markers = markers_present.get(anchor_flat, []) if anchor_flat else []
+        if anchor_markers:
+            item.update({
+                "matched": True,
+                "matched_by": "pchk_marker",
+                "matched_module": anchor_markers[0],
+                "match_rule": "pchk_anchor",
+                "match_rule_label": "기준마커(0,0)",
+            })
+            continue
         if item.get("matched"):
             continue
         matched_row = rows_by_ref.get(str(item.get("teg") or ""))
@@ -1628,6 +1748,9 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         "patterns": patterns,
         "flat": {
             "detected": detected, "why": why, "used": used,
+            "marker": (markers_present.get(detected) or [None])[0] if detected else None,
+            "markers": {f: list(markers_present.get(f) or []) for f in FLATS},
+            "orientation": dict(orientation) if orientation else None,
             # 기준 PCHK 마커가 안 잡혔고 flat 강제도 없음 — 프론트가 사용자에게
             # 기준 마커(또는 flat 수동 선택) 입력을 요구해야 하는 상태.
             "needs_input": bool(detected is None and forced is None),

@@ -586,7 +586,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
       <div style={{ marginBottom: 10 }}>
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
           <b style={{ color: "var(--text-primary)" }}>Mapfile 부서 구분</b> — 포함값은 TEG 이름 또는 top_cell에서 찾고,
-          표시명은 세팅 안 됨 목록의 그룹 제목으로 사용합니다. 예: <code>DVC → DVC_TEAM</code>, <code>SRAM → SRAM_A</code>.
+          표시명은 세팅됨·세팅 안 됨 목록의 그룹 제목으로 사용합니다. 예: <code>DVC → DVC_TEAM</code>, <code>SRAM → SRAM_A</code>.
         </div>
         <SpreadsheetPasteGrid columns={MAPFILE_DEPARTMENT_COLUMNS}
           rows={chk.mapfile_department_rows || []}
@@ -597,7 +597,8 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           aliases={{ keyword: "match", department: "label", name: "label" }}
           ariaLabel="Mapfile 부서 구분" />
         <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 5 }}>
-          위에서 먼저 일치한 행을 사용하며 표시명이 비어 있으면 포함값을 그대로 표시합니다.
+          한 부서에 포함값이 여러 개면 쉼표로 입력하거나 같은 표시명을 여러 행에 반복하세요.
+          위에서 먼저 일치한 포함값을 사용하며 표시명이 비어 있으면 첫 포함값을 그대로 표시합니다.
         </div>
       </div>
       <div style={row}>

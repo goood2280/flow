@@ -64,6 +64,7 @@ const MATCH_RULE_LABELS = {
   // flat(H/V)·SL 위치와 글자·숫자 순서만 다른 같은 TEG (H_QAF01 ↔ QAF01H).
   alias: "표기차이",
   macro: "사용자 매크로",
+  pchk_anchor: "기준마커(0,0)",
 };
 
 function mainIssueRank(item) {
@@ -75,26 +76,43 @@ function mainIssueRank(item) {
   return item?.light === "yellow" ? 4 : 5;
 }
 
-function groupMissingTargetsByDepartment(targets, departments) {
-  const seen = new Set();
-  const groups = (departments || []).map(value => typeof value === "string"
-    ? { match: value, label: value }
-    : { match: value?.match || "", label: value?.label || value?.match || "" })
-    .map(value => ({ match: String(value.match || "").trim(),
-                     label: String(value.label || value.match || "").trim() }))
-    .filter(value => {
-    const key = value.match.toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key); return true;
-  }).map(value => ({ name: value.label || value.match, match: value.match,
-                     key: value.match.toLowerCase(), items: [] }));
+function groupTargetsByDepartment(targets, departments) {
+  const seenMatches = new Set();
+  const groups = [];
+  const groupsByLabel = new Map();
+  const rules = [];
+  (departments || []).forEach(value => {
+    const raw = typeof value === "string"
+      ? { match: value, label: value }
+      : { match: value?.match || "", label: value?.label || value?.match || "" };
+    const matches = String(raw.match || "").split(/[,;\n]+/)
+      .map(match => match.trim()).filter(Boolean);
+    const name = String(raw.label || matches[0] || "").trim();
+    const labelKey = name.toLowerCase();
+    if (!matches.length || !labelKey) return;
+    const uniqueMatches = matches.filter(match => !seenMatches.has(match.toLowerCase()));
+    if (!uniqueMatches.length) return;
+    let group = groupsByLabel.get(labelKey);
+    if (!group) {
+      group = { name, key: `department-${groups.length}`, matches: [], items: [] };
+      groupsByLabel.set(labelKey, group);
+      groups.push(group);
+    }
+    uniqueMatches.forEach(match => {
+      const matchKey = match.toLowerCase();
+      if (seenMatches.has(matchKey)) return;
+      seenMatches.add(matchKey);
+      group.matches.push(match);
+      rules.push({ key: matchKey, group });
+    });
+  });
   const other = [];
   (targets || []).forEach(target => {
     const haystack = [target.teg, ...(target.top_cell || [])].join("\n").toLowerCase();
-    const group = groups.find(item => haystack.includes(item.key));
+    const group = rules.find(rule => haystack.includes(rule.key))?.group;
     (group ? group.items : other).push(target);
   });
-  return { configured: groups.length > 0, groups, other };
+  return { configured: rules.length > 0, groups, other };
 }
 
 function compactNameList(values, limit = 3) {
@@ -692,7 +710,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         light = row.light || "gray";
         label = `${row.light_reason || "판정 불가"}${rl ? `(${rl})` : ""}`;
       } else if (t.matched) {
-        light = "green"; label = "확인";
+        light = "green";
+        label = t.match_rule === "pchk_anchor"
+          ? `기준마커 ${t.matched_module || ""} · Mapfile (0,0)` : "확인";
       } else if (dir !== flatDir) {
         // 반대 방향 TEG — 이 Mapfile(flat 하나 기준)에는 없는 게 정상이다.
         light = "dim"; label = `${dir === "v_L" ? "Vertical(L)" : dir === "v" ? "Vertical(R)" : "Horizontal"} — 판정 불가`;
@@ -725,13 +745,23 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     return { otherDirTargets: otherDir, trulyMissingTargets: truly };
   }, [missingTargets, rowByRefTeg, flatDir]);
   const missingDepartmentGroups = useMemo(
-    () => groupMissingTargetsByDepartment(trulyMissingTargets, teg.mapfile_departments),
+    () => groupTargetsByDepartment(trulyMissingTargets, teg.mapfile_departments),
     [trulyMissingTargets, teg.mapfile_departments]);
+  const matchedDepartmentGroups = useMemo(
+    () => groupTargetsByDepartment(matchedTargets, teg.mapfile_departments),
+    [matchedTargets, teg.mapfile_departments]);
   // 수천 행 대비: 이름 검색 필터 + 점진 렌더 (한 번에 전부 그리면 메인스레드 블로킹)
   const [rowFilter, setRowFilter] = useState("");
   const [rowLimit, setRowLimit] = useState(300);
   useEffect(() => { setRowLimit(300); }, [teg]);
   const flatUsed = res.flat.used;
+  const markerForUsedFlat = (res.flat.markers?.[flatUsed] || [])[0]
+    || (res.flat.detected === flatUsed ? res.flat.marker : "");
+  const pchkBaseForUsedFlat = res.pchk_base?.flats?.[flatUsed] || null;
+  const pchkRefName = pchkBaseForUsedFlat?.ref_name || res.pchk_base?.ref_name || "";
+  const pchkBaseX = pchkBaseForUsedFlat?.dx ?? res.offset?.dx;
+  const pchkBaseY = pchkBaseForUsedFlat?.dy ?? res.offset?.dy;
+  const orientation = res.flat.orientation;
 
   const q = rowFilter.trim().toLowerCase();
   const filteredRows = useMemo(() => (q
@@ -972,6 +1002,25 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       </div>
       )}
 
+      <div aria-label="기준 마커 판정" title={res.flat.why || "기준 마커 미인식"}
+        style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+                 padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8,
+                 background: "var(--surface-2)", fontSize: 12 }}>
+        <b>기준 마커 판정</b>
+        <Pill tone={markerForUsedFlat ? "ok" : "warn"}>
+          Mapfile {markerForUsedFlat || "미인식"}
+        </Pill>
+        {orientation && (
+          <Pill tone="neutral">{orientation.source} {orientation.angle}°</Pill>
+        )}
+        <span>{FLAT_LABELS[flatUsed] || flatUsed} · Mapfile 기준좌표 <b>(0, 0)</b></span>
+        <span style={{ color: pchkRefName ? "var(--text-primary)" : "var(--warn)" }}>
+          {pchkRefName
+            ? <>정답지 <b>{pchkRefName}</b> · DB Ebeam <b>({fmtN(pchkBaseX)}, {fmtN(pchkBaseY)})</b></>
+            : <>정답지 기준 PCHK/PRBCHK 없음 · 설정 기준점 ({fmtN(pchkBaseX)}, {fmtN(pchkBaseY)})</>}
+        </span>
+      </div>
+
       {/* 기준 PCHK 마커 미인식 → 사용자 지정 마커 입력 (쉼표로 여러 개) */}
       {res.flat.needs_input && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
@@ -1134,15 +1183,49 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <ChipRow label="세팅됨" color="var(--ok)" collapsed
-                items={matchedTargets.map(t => ({
-                  key: t.teg,
-                  text: t.matched_module && t.matched_module !== t.teg
-                    ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
-                  title: t.match_rule && t.match_rule !== "exact"
-                    ? `확장 매크로(${t.match_rule_label || MATCH_RULE_LABELS[t.match_rule] || t.match_rule}): ${t.matched_module} → ${t.teg}`
-                    : `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
-                }))} />
+              {matchedDepartmentGroups.configured ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6,
+                              padding: "7px 8px", border: "1px solid var(--line)", borderRadius: 6 }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                    세팅됨 · 부서 구분: {matchedDepartmentGroups.groups.map(group => group.name).join(" · ")}
+                  </div>
+                  {matchedDepartmentGroups.groups.map(group => (
+                    <ChipRow key={group.key} label={`${group.name} · 세팅됨`} color="var(--ok)" collapsed
+                      hint={(group.matches.length > 1 || group.name !== group.matches[0])
+                        ? `포함값: ${group.matches.join(", ")}` : undefined}
+                      empty={`없음 — ${group.name} 대상 TEG 중 Mapfile에 세팅된 항목이 없습니다`}
+                      items={group.items.map(t => ({
+                        key: t.teg,
+                        text: t.matched_module && t.matched_module !== t.teg
+                          ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
+                        title: t.match_rule && t.match_rule !== "exact"
+                          ? `확장 매크로(${t.match_rule_label || MATCH_RULE_LABELS[t.match_rule] || t.match_rule}): ${t.matched_module} → ${t.teg}`
+                          : `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
+                      }))} />
+                  ))}
+                  {matchedDepartmentGroups.other.length > 0 && (
+                    <ChipRow label="기타 · 세팅됨" color="var(--ok)" collapsed
+                      items={matchedDepartmentGroups.other.map(t => ({
+                        key: t.teg,
+                        text: t.matched_module && t.matched_module !== t.teg
+                          ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
+                        title: t.match_rule && t.match_rule !== "exact"
+                          ? `확장 매크로(${t.match_rule_label || MATCH_RULE_LABELS[t.match_rule] || t.match_rule}): ${t.matched_module} → ${t.teg}`
+                          : `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
+                      }))} />
+                  )}
+                </div>
+              ) : (
+                <ChipRow label="세팅됨" color="var(--ok)" collapsed
+                  items={matchedTargets.map(t => ({
+                    key: t.teg,
+                    text: t.matched_module && t.matched_module !== t.teg
+                      ? `${t.teg} ⟵ ${t.matched_module}` : t.teg,
+                    title: t.match_rule && t.match_rule !== "exact"
+                      ? `확장 매크로(${t.match_rule_label || MATCH_RULE_LABELS[t.match_rule] || t.match_rule}): ${t.matched_module} → ${t.teg}`
+                      : `Mapfile module "${t.matched_module}" 와 ${t.matched_by === "top_cell" ? "top_cell" : "teg"} 완전 일치`,
+                  }))} />
+              )}
               {missingDepartmentGroups.configured ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6,
                               padding: "7px 8px", border: "1px solid var(--line)", borderRadius: 6 }}>
@@ -1151,7 +1234,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   </div>
                   {missingDepartmentGroups.groups.map(group => (
                     <ChipRow key={group.key} label={`${group.name} · 세팅 안 됨`} color="var(--danger)"
-                      hint={group.name !== group.match ? `포함값: ${group.match}` : undefined}
+                      hint={(group.matches.length > 1 || group.name !== group.matches[0])
+                        ? `포함값: ${group.matches.join(", ")}` : undefined}
                       empty={`없음 — ${group.name} 대상 TEG가 모두 Mapfile에 있습니다`}
                       items={group.items.map(t => ({
                         key: t.teg, text: t.teg,

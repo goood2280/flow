@@ -268,6 +268,132 @@ def test_pchk_and_prbchk_are_builtin_aliases_not_main_info_missing(
     assert row["light"] == "green"
 
 
+@pytest.mark.parametrize(("marker_name", "target_name", "flat"), [
+    ("H_PCHK", "H_PRBCHK", "h"),
+    ("H_PRBCHK", "H_PCHK", "h"),
+    ("V_PCHK", "V_PRBCHK", "v_R"),
+    ("V_PRBCHK", "V_PCHK", "v_R"),
+])
+def test_pchk_tail_marker_counts_as_zero_anchor_target_setting(
+        monkeypatch, marker_name, target_name, flat):
+    """다른 module 꼬리표의 PCHK/PRBCHK도 Mapfile (0,0) 기준점 세팅이다."""
+    ref = {
+        target_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                       "dir": flat, "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "config",
+        "items": [{"teg": target_name, "top_cell": [], "direction": flat,
+                   "matched": False, "matched_by": None, "matched_module": None}],
+        "matched": 0, "missing": 1, "total": 1,
+    })
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect(
+        "P", f"#teg-map\nmodule DUT (10,20) ! DUT,{marker_name}\n")
+    target = result["teg"]["targets"]["items"][0]
+
+    assert result["flat"]["used"] == flat
+    assert result["flat"]["marker"] == marker_name
+    assert result["flat"]["markers"][flat] == [marker_name]
+    assert target["matched"] is True
+    assert target["matched_by"] == "pchk_marker"
+    assert target["matched_module"] == marker_name
+    assert target["match_rule"] == "pchk_anchor"
+    assert target["match_rule_label"] == "기준마커(0,0)"
+    assert result["teg"]["targets"]["matched"] == 1
+    assert result["teg"]["targets"]["missing"] == 0
+    assert result["pchk_base"]["flats"][flat] == {
+        "dx": 100.5, "dy": 200.5, "ref_name": target_name,
+    }
+
+
+@pytest.mark.parametrize(("orientation_line", "flat", "ref_name"), [
+    ("Flat-position = 0", "h", "H_PRBCHK"),
+    ("ROTATION = 270", "v_R", "V_PCHK"),
+    # Vertical(L)도 정답지 이름은 V_PCHK/V_PRBCHK를 유지하고 direction=90으로만
+    # 구분할 수 있다.
+    ("Flat-position = 90", "v_L", "V_PRBCHK"),
+])
+def test_generic_zero_pchk_uses_mapfile_orientation_to_select_reference_anchor(
+        monkeypatch, orientation_line, flat, ref_name):
+    """PCHK (0,0)는 방향 메타데이터에 맞는 정답지 PCHK/PRBCHK 기준점이다."""
+    ref = {
+        ref_name: [{"x": 100.5, "y": 200.5, "w": 1.0, "h": 1.0,
+                    "dir": flat, "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: {
+        "check": teg_map._clean_check({}), "ebeam_scale": 1.0,
+        "teg_default_w": 3.0, "teg_default_h": 0.1,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda v, n: {
+        "source": "config",
+        "items": [{"teg": ref_name, "top_cell": [], "direction": flat,
+                   "matched": False, "matched_by": None, "matched_module": None}],
+        "matched": 0, "missing": 1, "total": 1,
+    })
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": False, "checked": False, "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+
+    result = teg_check.inspect(
+        "P", f"{orientation_line}\n#teg-map\nPCHK (0,0) ! PCHK\n")
+    row = result["teg"]["rows"][0]
+    target = result["teg"]["targets"]["items"][0]
+
+    assert result["flat"]["used"] == flat
+    assert result["flat"]["marker"] == "PCHK"
+    assert result["flat"]["markers"][flat] == ["PCHK"]
+    assert result["flat"]["orientation"]["flat"] == flat
+    assert result["flat"]["needs_input"] is False
+    assert result["pchk_base"]["flats"][flat] == {
+        "dx": 100.5, "dy": 200.5, "ref_name": ref_name,
+    }
+    assert row["ref_teg"] == ref_name
+    assert row["match_rule"] == "pchk_anchor"
+    assert row["match_rule_label"] == "기준마커(0,0)"
+    assert row["calc_x"] == 100.5
+    assert row["calc_y"] == 200.5
+    assert row["status"] == "match"
+    assert row["light"] == "green"
+    assert target["matched"] is True
+    assert target["matched_module"] == "PCHK"
+    assert target["match_rule"] == "pchk_anchor"
+    assert result["teg"]["targets"]["missing"] == 0
+
+
+def test_mapfile_flat_position_has_priority_and_duplicate_v_pchk_uses_matching_direction():
+    orientation = teg_check.parse_mapfile_orientation([
+        "ROTATION = 270",
+        "Flat-position = 0",
+    ])
+    assert orientation == {"flat": "h", "angle": 0, "source": "Flat-position"}
+
+    ref = {
+        "V_PCHK": [
+            {"x": 10, "y": 20, "dir": "v_R"},
+            {"x": 30, "y": 40, "dir": "v_L"},
+        ],
+    }
+    bases = teg_check.pchk_base_offsets(ref)
+    assert bases["v_R"] == (10.0, 20.0, "V_PCHK")
+    assert bases["v_L"] == (30.0, 40.0, "V_PCHK")
+
+
 @pytest.mark.parametrize(("ref_name", "module_name", "expected_rule"), [
     ("H_QAF01", "QAF01H", "alias"),
     ("H_QAB06", "QA06HB", "macro"),
