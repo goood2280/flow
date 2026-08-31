@@ -1,7 +1,18 @@
 {
-  "version": "10.4.145",
+  "version": "10.4.146",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.146",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "매칭알람 Function Step 계단식 추천 복구",
+      "changes": [
+        "[FAB 추천 근거] 미매칭 step 값만 알람에 남아 웹 프로세스가 매칭 완료 step의 실제 PPID·EQP를 비교하지 못함 → FAB 스캔 시 동일 area 매칭 step 시그니처를 match_hint에 동봉해 후보 근거가 끊기지 않게 수정",
+        "[추천 우선순위] 가중 점수와 AI가 서로 다른 근거를 섞어 다른 area step까지 선택할 수 있음 → 동일 area를 필수 게이트로 두고 동일 PPID → eqp_id → eqp_model → step_id 근접 순서의 첫 매칭 단계만 사용",
+        "[매칭 출처·재검사] 추천 step_desc 출처와 매칭 수정 반영이 불명확함 → 선택 step_id의 Vehicle_matching.csv step_desc만 반환하고 step_desc까지 지문화해 테이블 변경과 알고리즘 교체 시 캐시를 재검사"
+      ]
+    },
     {
       "version": "10.4.145",
       "date": "2026-08-31",
