@@ -604,12 +604,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const purposeIssueMap = new Map();
   mainChecklist.forEach(row => {
     const match = String(row.light_reason || "").match(/^purpose\s+(.+?)\s+—/i);
-    if (!match) return;
-    const key = `${row.group}\u0000${match[1]}`;
-    if (!purposeIssueMap.has(key)) purposeIssueMap.set(key, { group: row.group, purpose: match[1], names: [] });
+    if (!row.purpose_forbidden && !match) return;
+    const purpose = String(row.purpose || match?.[1] || "").trim();
+    if (!purpose) return;
+    const key = `${row.group}\u0000${purpose}`;
+    if (!purposeIssueMap.has(key)) purposeIssueMap.set(key, { group: row.group, purpose, names: [] });
     purposeIssueMap.get(key).names.push(row.teg);
   });
-  const placementIssues = mainChecklist.filter(row => row.light === "red" && !/^purpose\s+/i.test(row.light_reason || ""));
+  const placementIssues = mainChecklist.filter(row => row.light === "red"
+    && !row.purpose_forbidden && !/^purpose\s+/i.test(row.light_reason || ""));
   const topErrorMessages = [];
   const mainInfoMissingNames = [...new Set(mainInfoIssues.map(item =>
     `${item.issue_name}(${item.group || item.main_group || "소속 판정 불가"})`))];
@@ -1206,7 +1209,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <>
               <LightSummary items={[
                 { light: "red", label: "확인 필요", n: mainChecklist.filter(it => it.light === "red").length,
-                  title: "purpose IP/NO TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
+                  title: "purpose 값이 있는 구간의 TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
                 { light: "orange", label: "MAIN 정보없음", n: mainChecklist.filter(it => it.light === "orange").length,
                   title: "MAIN 크기·위치 정보가 없어 눈으로 확인 필요" },
                 { light: "yellow", label: "MAIN die 안", n: mainChecklist.filter(it => it.light === "yellow").length,
@@ -1596,9 +1599,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               정답지에 있는 TEG 는 ΔX·ΔY 가 2 를 넘거나 die 안에 깊이 들어가면 빨간불이고,
               둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(⚙️ 설정
               die_tol, ebeam raw 단위)은 노란불 '경계 근처' 입니다.
-              정답지 정보가 없는 <b>MAINxx</b> TEG 는 Purpose가 IP/NO TEG가 아니고 자기 MAIN 안에
+              정답지 정보가 없는 <b>MAINxx</b> TEG 는 Purpose가 비어 있고 자기 MAIN 안에
               전부 들어오면 노란불, 자기 MAIN 경계를 넘거나 다른 MAIN을 침범하면 빨간불입니다.
-              Main_chip_info의 purpose가 <b>IP/NO TEG</b>이면
+              Main_chip_info의 purpose에 <b>값이 하나라도 있으면</b>
               위치와 관계없이 빨간불입니다 (기본 TEG 사이즈 기준).
               {res.shot.checked ? (
                 <>

@@ -79,7 +79,10 @@ def test_main_chip_purpose_loader_and_name_normalization(tmp_path, monkeypatch):
     assert teg_map.normalize_main_purpose(" no-teg ") == "NO TEG"
     assert teg_map.is_main_purpose_warning("no teg") is True
     assert teg_map.is_main_purpose_warning("IP") is True
-    assert teg_map.is_main_purpose_warning("LOGIC") is False
+    assert teg_map.is_main_purpose_warning("LOGIC") is True
+    assert teg_map.is_main_purpose_warning("reserved area") is True
+    assert teg_map.is_main_purpose_warning("") is False
+    assert teg_map.is_main_purpose_warning("   ") is False
 
 
 def test_mapfile_main_inside_is_yellow_and_forbidden_purpose_is_red(monkeypatch):
@@ -111,16 +114,23 @@ def test_mapfile_main_inside_is_yellow_and_forbidden_purpose_is_red(monkeypatch)
     assert normal_group["tegs"][1]["light_reason"] == "MAIN01 die 안"
     assert normal["teg"]["main_purpose_warnings"] == []
 
-    purposes["P"]["MAIN01"] = "IP"
+    purposes["P"]["MAIN01"] = "LOGIC"
     forbidden = teg_check.inspect("P", source, flat="h")
     forbidden_group = forbidden["teg"]["main_groups"][0]
     assert forbidden_group["purpose_warning"] is True
     assert forbidden_group["tegs"][1]["light"] == "red"
-    assert "purpose IP" in forbidden_group["tegs"][1]["light_reason"]
+    assert forbidden_group["tegs"][1]["purpose_forbidden"] is True
+    assert "purpose LOGIC" in forbidden_group["tegs"][1]["light_reason"]
     assert forbidden["teg"]["main_purpose_warnings"] == [{
-        "group": "MAIN01", "purpose": "IP",
-        "reason": "Main_chip_info.csv에서 TEG 배치 금지 purpose로 지정됨",
+        "group": "MAIN01", "purpose": "LOGIC",
+        "reason": "Main_chip_info.csv purpose 값이 있어 TEG 배치 금지",
+        "teg_count": 1,
+        "tegs": ["INNER_A"],
     }]
+
+    anchor_only = teg_check.inspect("P", source.splitlines()[0] + "\n" + source.splitlines()[1] + "\n", flat="h")
+    assert anchor_only["teg"]["main_groups"][0]["purpose_warning"] is True
+    assert anchor_only["teg"]["main_purpose_warnings"] == []
 
 
 def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_intrusion(monkeypatch):
@@ -948,7 +958,7 @@ def test_shot_partial_and_complete_exit_are_separate_errors_even_when_delta_is_z
     assert result["teg"]["summary"]["shot_outside"] == 1
 
 
-def test_mapfile_mixed_main_purposes_keep_ip_red_and_normal_inside_yellow(monkeypatch):
+def test_mapfile_mixed_main_purposes_keep_value_red_and_blank_inside_yellow(monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})
     cfg["ebeam_scale"] = 0.001
@@ -969,7 +979,7 @@ def test_mapfile_mixed_main_purposes_keep_ip_red_and_normal_inside_yellow(monkey
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
     })
     monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({
-        "P": {"MAIN01": "IP", "MAIN02": "LOGIC"},
+        "P": {"MAIN01": "LOGIC", "MAIN02": ""},
     }, None))
     source = (
         "#teg-map\n"
@@ -983,7 +993,7 @@ def test_mapfile_mixed_main_purposes_keep_ip_red_and_normal_inside_yellow(monkey
     groups = {group["group"]: group for group in result["teg"]["main_groups"]}
 
     assert groups["MAIN01"]["tegs"][1]["light"] == "red"
-    assert groups["MAIN01"]["tegs"][1]["light_reason"] == "purpose IP — TEG 배치 금지"
+    assert groups["MAIN01"]["tegs"][1]["light_reason"] == "purpose LOGIC — TEG 배치 금지"
     assert groups["MAIN02"]["tegs"][1]["light"] == "yellow"
     assert groups["MAIN02"]["tegs"][1]["light_reason"] == "MAIN02 die 안"
 

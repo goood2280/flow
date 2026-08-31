@@ -1067,7 +1067,6 @@ MAIN_RE = re.compile(r"^MAIN\d{2}$", re.IGNORECASE)
 
 
 _CHIP_NUM_RE = re.compile(r"^(.*?)(\d+)$")
-MAIN_PURPOSE_WARNINGS = frozenset({"IP", "NO TEG"})
 
 
 def normalize_chip_name(name: str) -> str:
@@ -1097,8 +1096,8 @@ def normalize_main_purpose(value: Any) -> str:
 
 
 def is_main_purpose_warning(value: Any) -> bool:
-    """TEG가 있으면 안 되는 MAIN purpose인지."""
-    return normalize_main_purpose(value) in MAIN_PURPOSE_WARNINGS
+    """MAIN purpose가 지정돼 TEG를 배치하면 안 되는 구간인지."""
+    return bool(normalize_main_purpose(value))
 
 
 def main_purpose_for(vehicle: str, name: str, purposes: dict | None = None) -> str:
@@ -1897,7 +1896,8 @@ def load_main_chip_purposes():
     """MAIN purpose 표 → ({vehicle: {chip_name: purpose}}, 경로).
 
     ``purpose``는 선택 열이다. 기존 파일처럼 열이 없으면 빈 표를 돌려 기존 판정에
-    영향을 주지 않는다. IP/NO TEG 해석은 is_main_purpose_warning에서 담당한다.
+    영향을 주지 않는다. 값이 있는 모든 purpose의 배치 금지 판정은
+    is_main_purpose_warning에서 담당한다.
     """
     cfg = load_cfg()
     path = resolve_path(cfg["main_chip_file"])

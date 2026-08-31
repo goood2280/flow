@@ -1714,6 +1714,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                       "teg_w": round(dw, 4), "teg_h": round(dh, 4),
                       "light": None if auto else light,
                       "light_reason": "" if auto else light_reason,
+                      "purpose_forbidden": bool(not auto and purpose_warning),
                       "_auto": auto})
     # 자동 이름이 그룹에 하나뿐이면 `_1` 을 떼고 그룹 이름 그대로 쓴다 —
     # 넘버링은 구분이 필요한 2 개 이상일 때만 의미가 있다.
@@ -1805,11 +1806,14 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                                 "orange": sum(1 for e in items if e.get("light") == "orange"),
                                 "yellow": sum(1 for e in items if e.get("light") == "yellow")}
             main_groups.append(group_row)
-            if meta["purpose_warning"]:
+            forbidden_tegs = [e["teg"] for e in items if e.get("purpose_forbidden")]
+            if forbidden_tegs:
                 main_purpose_warnings.append({
                     "group": g,
                     "purpose": _tm.normalize_main_purpose(meta["purpose"]),
-                    "reason": "Main_chip_info.csv에서 TEG 배치 금지 purpose로 지정됨",
+                    "reason": "Main_chip_info.csv purpose 값이 있어 TEG 배치 금지",
+                    "teg_count": len(forbidden_tegs),
+                    "tegs": forbidden_tegs,
                 })
 
     return {

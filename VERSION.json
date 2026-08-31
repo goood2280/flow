@@ -1,7 +1,19 @@
 {
-  "version": "10.4.154",
+  "version": "10.4.155",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.155",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "MAIN purpose 값 구간의 TEG 배치 금지 알림 확대",
+      "changes": [
+        "[판정 확대] Main_chip_info.csv의 purpose가 IP/NO TEG일 때만 TEG 배치 금지로 보던 목록식 판정을 제거하고, 공백이 아닌 purpose 값이 하나라도 있으면 해당 MAIN 구간을 모두 배치 금지로 판정",
+        "[별도 이상 알림] purpose 구간 안에 실제 내부 TEG가 있을 때만 MAIN·purpose·TEG 이름과 건수를 별도 이상으로 반환하고, 각 상세 행에 purpose_forbidden 상태를 넣어 die 경계·다른 MAIN 침범 등 위치 이상과 분리",
+        "[화면 안내] 상단 이상 문장과 상세 도움말을 전체 purpose 값 규칙으로 갱신하고 기존 사유 문자열 응답도 계속 분류하는 하위 호환 유지",
+        "[회귀 검증] LOGIC·임의 purpose도 금지, 빈 purpose는 정상, purpose만 있고 내부 TEG가 없으면 이상 알림을 만들지 않는 테스트 추가"
+      ]
+    },
     {
       "version": "10.4.154",
       "date": "2026-08-31",
