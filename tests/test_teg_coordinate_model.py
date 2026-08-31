@@ -172,6 +172,7 @@ def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
 
     group = result["teg"]["main_groups"][0]
     assert group["main_info_missing"] is True
+    assert group["tegs"][1]["main_group"] == "MAIN_M01"
     assert group["tegs"][1]["light"] == "orange"
     assert group["tegs"][1]["light_reason"] == "MAIN 정보없음 · 소속 MAIN_M01"
 

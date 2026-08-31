@@ -1541,7 +1541,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         elif not auto:
             light, light_reason = main_die_light(main_cells, group, mm_x, mm_y,
                                                  dw, dh, die_tol_mm)
-        entry.append({"teg": detail, "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
+        entry.append({"teg": detail, "main_group": group,
+                      "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
                       "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
                       "teg_w": round(dw, 4), "teg_h": round(dh, 4),
                       "light": None if auto else light,

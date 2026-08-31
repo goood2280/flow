@@ -2410,7 +2410,7 @@ export default function My_TegMap({ user }) {
       {data && (
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
           {/* 좌: wafer 전체 */}
-          <Card title={`WF MAP — ${data.vehicle}`}
+          <Card title={data.vehicle}
             right={
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <label style={{
@@ -2456,6 +2456,7 @@ export default function My_TegMap({ user }) {
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, maxWidth: 640 }}>
               shot 클릭 → 확대 뷰. 실선 원 = wafer {fmt(geo?.wafer_radius_mm, 0)}mm,
               점선 원 = 최외곽 {fmt(geo?.wafer_edge_mm, 0)}mm.
+              <br />
               TEG 선택 시: <span style={{ color: "#2f9e63", fontWeight: 700 }}>■ 초록</span> = TEG 전체가 최외곽 안,
               <span style={{ color: "#e05252", fontWeight: 700 }}> ■ 빨강</span> = TEG 가 걸림.
               미선택 시: <span style={{ color: "#3e7bd6", fontWeight: 700 }}>■ 연파랑</span> = shot 전체가 안,

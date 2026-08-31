@@ -500,14 +500,20 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     return out;
   }, [teg.main_groups]);
   const mainInfoMissingGroups = (teg.main_groups || []).filter(g => g.main_info_missing);
+  const mainOrangeChecklist = mainChecklist.filter(t => t.light === "orange");
+  // MAIN 크기 정보가 없으면 내부 TEG 각각이 주황으로 잡힌다. 같은 그룹 자체까지
+  // 한 건으로 더 세면 Summary/상세 집계/③ 패널의 수가 서로 달라지므로, 내부 판정
+  // 대상이 하나도 없는 빈 그룹만 그룹 단위 1건으로 보완한다.
+  const mainInfoMissingGroupFallbacks = mainInfoMissingGroups.filter(group =>
+    !(group.tegs || []).some(item => item.light === "orange"));
   // 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다.
   const seeTarget = view !== VIEW_MAIN;
   const seeMain = view !== VIEW_TARGET;
   const mainHasAttention = mainInfoMissingRows.length > 0 || mainInfoMissingGroups.length > 0
     || mainChecklist.some(t => ["red", "orange", "yellow"].includes(t.light));
   const mainRedCount = mainChecklist.filter(t => t.light === "red").length;
-  const mainOrangeCount = mainInfoMissingRows.length + mainInfoMissingGroups.length
-    + mainChecklist.filter(t => t.light === "orange").length;
+  const mainOrangeCount = mainInfoMissingRows.length + mainOrangeChecklist.length
+    + mainInfoMissingGroupFallbacks.length;
   const mainYellowCount = mainChecklist.filter(t => t.light === "yellow").length;
   const mainGrayCount = mainChecklist.filter(t => t.light === "gray").length;
   const mainRedIssues = seeMain ? mainChecklist
@@ -521,11 +527,17 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     })).sort((a, b) => mainIssueRank(a) - mainIssueRank(b)) : [];
   const mainInfoIssues = seeMain ? [
     ...mainInfoMissingRows.map(row => ({
-      ...row, light: "orange", issue_name: row.name,
+      ...row, light: "orange", issue_name: row.name, group: row.main_group || "",
       issue_scope: row.main_group ? `MAIN · ${row.main_group}` : "MAIN TEG",
       issue_reason: row.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가", summary_section: "main",
     })),
-    ...mainInfoMissingGroups.map(group => ({
+    ...mainOrangeChecklist.map(row => ({
+      ...row, light: "orange", issue_name: row.teg,
+      issue_scope: `MAIN · ${row.group}`,
+      issue_reason: row.light_reason || `MAIN 정보없음 · 소속 ${row.group}`,
+      summary_section: "main",
+    })),
+    ...mainInfoMissingGroupFallbacks.map(group => ({
       ...group, light: "orange", issue_name: group.group, issue_scope: "MAIN",
       issue_reason: `MAIN 정보없음 · 소속 ${group.group}`, summary_section: "main",
     })),
@@ -561,11 +573,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   });
   const placementIssues = mainChecklist.filter(row => row.light === "red" && !/^purpose\s+/i.test(row.light_reason || ""));
   const topErrorMessages = [];
-  const mainInfoMissingNames = [
-    ...mainInfoMissingRows.map(row => row.main_group
-      ? `${row.name}(${row.main_group})` : `${row.name}(소속 판정 불가)`),
-    ...mainInfoMissingGroups.map(group => group.group),
-  ];
+  const mainInfoMissingNames = [...new Set(mainInfoIssues.map(item =>
+    `${item.issue_name}(${item.group || item.main_group || "소속 판정 불가"})`))];
   [
     ["other-overlap", /다른 MAIN.* 침범$/, "다른 MAIN을 침범한 TEG"],
     ["other-inside", /다른 MAIN.* 안$/, "자기 MAIN이 아닌 다른 MAIN 안에 있는 TEG"],
@@ -776,6 +785,46 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     { key: "delta", label: "좌표 차이", align: "right", render: r =>
         r.dx === null || r.dx === undefined ? "-" : `ΔX ${fmtN(r.dx)} · ΔY ${fmtN(r.dy)}` },
   ];
+  // 상단 Summary와 상세 집계가 같은 수·같은 분류를 사용하도록 단일 렌더 경로로 둔다.
+  const aggregateTrafficRows = () => (
+    <>
+      {seeTarget && targets.total > 0 && (
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+          <strong style={{ minWidth: 70, fontSize: 12 }}>S/L TEG</strong>
+          <Pill tone={lightCounts.red ? "danger" : "neutral"}>🔴 이상 {lightCounts.red || 0}개</Pill>
+          <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
+            title={`ΔX·ΔY가 각각 ${slCoordinateTolerance} 이내 — 양호로 예상되는 작은 차이`}>
+            🟡 확인필요 {lightCounts.yellow || 0}개
+          </Pill>
+          <Pill tone={lightCounts.green ? "ok" : "neutral"}>🟢 정상 {lightCounts.green || 0}개</Pill>
+          {lightCounts.purple > 0 && (
+            <Pill tone="warn" title="이름 변환 규칙으로 매칭한 것 — 위치가 아닌 이름 검증">
+              🟣 확장 {lightCounts.purple}개
+            </Pill>
+          )}
+          {lightCounts.gray > 0 && (
+            <Pill tone="danger" title="대상인데 이 Mapfile의 module name에 없음 — 세팅 누락 후보">
+              ⚪ 미설정 {lightCounts.gray}개
+            </Pill>
+          )}
+        </div>
+      )}
+      {seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) && (
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center",
+                      paddingTop: seeTarget && targets.total > 0 ? 8 : 0,
+                      borderTop: seeTarget && targets.total > 0 ? "1px solid var(--line)" : "none" }}>
+          <strong style={{ minWidth: 70, fontSize: 12 }}>MAIN TEG</strong>
+          <Pill tone={mainRedCount ? "danger" : "neutral"}>🔴 이상 {mainRedCount}개</Pill>
+          <Pill tone={mainYellowCount ? "warn" : "neutral"}
+            title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
+            🟡 확인필요 {mainYellowCount}개
+          </Pill>
+          <Pill tone={mainOrangeCount ? "warn" : "neutral"}>🟠 MAIN 정보없음 {mainOrangeCount}개</Pill>
+          {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -798,21 +847,21 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       )}
       <div aria-label="Summary" style={{ padding: 12, borderRadius: 8,
                                          border: `1px solid ${combinedIssues.length
-                                           ? "var(--danger)" : warningIssues.length ? "var(--warn)" : "var(--border)"}`,
+                                           ? "var(--danger)" : (mainInfoIssues.length || warningIssues.length)
+                                             ? "var(--warn)" : "var(--border)"}`,
                                          background: combinedIssues.length
                                            ? "rgba(220, 38, 38, 0.05)"
-                                           : warningIssues.length ? "rgba(217, 154, 26, 0.06)" : "var(--surface-2)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 8 }}>
-          <strong style={{ fontSize: 14, marginRight: 2 }}>Summary</strong>
-          <Pill tone={combinedIssues.length ? "danger" : "ok"}>🔴 이상 {combinedIssues.length}</Pill>
-          <Pill tone={mainInfoIssues.length ? "warn" : "neutral"}>🟠 MAIN 정보없음 {mainInfoIssues.length}</Pill>
-          <Pill tone={warningIssues.length ? "warn" : "neutral"}>🟡 확인 필요 {warningIssues.length}</Pill>
+                                           : (mainInfoIssues.length || warningIssues.length)
+                                             ? "rgba(217, 154, 26, 0.06)" : "var(--surface-2)" }}>
+        <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
+          <strong style={{ fontSize: 14 }}>Summary</strong>
+          {aggregateTrafficRows()}
         </div>
 
-        <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55,
+        <div style={{ fontSize: 12, color: "var(--warn)", fontWeight: 800, lineHeight: 1.55,
                       padding: "7px 9px", marginBottom: 9, borderRadius: 6,
-                      background: "var(--bg-primary)", border: "1px solid var(--line)" }}>
-          주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
+                      background: "rgba(245, 158, 11, 0.12)", border: "1px solid var(--warn)" }}>
+          ⚠ 주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
           이상으로 표시된 항목은 원문과 실제 배치를 눈으로 확인하고, 이 결과는 크로스체크 용도로 사용해 주세요.
         </div>
 
@@ -962,41 +1011,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                         border: "1px solid var(--line)", borderRadius: 8,
                         background: "var(--bg-primary)" }}>
             <strong>상세 집계</strong>
-            {seeTarget && targets.total > 0 && (
-              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-                <strong style={{ minWidth: 70, fontSize: 12 }}>S/L TEG</strong>
-                <Pill tone={lightCounts.red ? "danger" : "neutral"}>🔴 이상 {lightCounts.red || 0}개</Pill>
-                <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
-                  title={`ΔX·ΔY가 각각 ${slCoordinateTolerance} 이내 — 양호로 예상되는 작은 차이`}>
-                  🟡 확인필요 {lightCounts.yellow || 0}개
-                </Pill>
-                <Pill tone={lightCounts.green ? "ok" : "neutral"}>🟢 정상 {lightCounts.green || 0}개</Pill>
-                {lightCounts.purple > 0 && (
-                  <Pill tone="warn" title="이름 변환 규칙으로 매칭한 것 — 위치가 아닌 이름 검증">
-                    🟣 확장 {lightCounts.purple}개
-                  </Pill>
-                )}
-                {lightCounts.gray > 0 && (
-                  <Pill tone="danger" title="대상인데 이 Mapfile의 module name에 없음 — 세팅 누락 후보">
-                    ⚪ 미설정 {lightCounts.gray}개
-                  </Pill>
-                )}
-              </div>
-            )}
-            {seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) && (
-              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center",
-                            paddingTop: seeTarget && targets.total > 0 ? 8 : 0,
-                            borderTop: seeTarget && targets.total > 0 ? "1px solid var(--line)" : "none" }}>
-                <strong style={{ minWidth: 70, fontSize: 12 }}>MAIN TEG</strong>
-                <Pill tone={mainRedCount ? "danger" : "neutral"}>🔴 이상 {mainRedCount}개</Pill>
-                <Pill tone={mainYellowCount ? "warn" : "neutral"}
-                  title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
-                  🟡 확인필요 {mainYellowCount}개
-                </Pill>
-                {mainOrangeCount > 0 && <Pill tone="warn">🟠 MAIN 정보없음 {mainOrangeCount}개</Pill>}
-                {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
-              </div>
-            )}
+            {aggregateTrafficRows()}
           </div>
         </div>
       )}
@@ -1163,17 +1178,37 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           right={<span style={{ fontSize: 11, color: "var(--muted)" }}>
             MAIN {(teg.main_groups || []).length}그룹
           </span>}>
-          {!(teg.main_groups || []).length ? (
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>
-              이 Mapfile 에 MAIN 그룹이 없습니다.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {mainInfoMissingRows.length > 0 && (
+              <div style={{ padding: "7px 8px", border: "1px solid var(--warn)", borderRadius: 6,
+                            background: "rgba(245, 158, 11, 0.08)" }}>
+                <div style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800, marginBottom: 4 }}>
+                  MAIN 정보 누락 TEG
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {mainInfoMissingRows.map(row => (
+                    <TokenChip key={`missing-${row.idx}`} color="var(--warn)"
+                      title={row.light_reason || "MAIN 정보없음 · 소속 MAIN 판정 불가"}>
+                      {row.name} · {row.main_group || "소속 MAIN 판정 불가"}
+                    </TokenChip>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!(teg.main_groups || []).length && (
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                이 Mapfile 에 명시된 MAIN 그룹이 없습니다.
+              </div>
+            )}
+            {(teg.main_groups || []).length > 0 && (
+              <>
               {teg.main_groups.map(g => (
                 <div key={g.group}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 700, fontFamily: "monospace", fontSize: 12 }}>{g.group}</span>
-                    <Pill tone="neutral" size="sm">내부 TEG {g.tegs.length}종</Pill>
+                    <Pill tone="neutral" size="sm">
+                      내부 TEG {(g.tegs || []).filter(t => t.light).length}종
+                    </Pill>
                     {g.purpose && (
                       <Pill tone={g.purpose_warning ? "danger" : "neutral"} size="sm">
                         purpose {g.purpose}
@@ -1197,14 +1232,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                     )}
                     {g.orange > 0 && (
                       <Pill tone="warn" size="sm"
-                        title="MAIN 크기·위치 정보가 없어 판정할 수 없습니다">
+                        title={`${g.group}의 MAIN 크기·위치 정보가 없어 판정할 수 없습니다`}>
                         🟠 {g.orange}
                       </Pill>
                     )}
                   </div>
-                  {/* 이름은 빨간불만 적는다 — 나머지는 "그 MAIN 이 들어있다" 로 충분하다
-                      (정상 TEG 이름을 다 늘어놓으면 정작 고칠 것이 묻힌다). */}
-                  {g.red > 0 ? (
+                  {g.red > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3 }}>
                       {g.tegs.filter(t => t.light === "red").slice(0, 20).map(t => (
                         <TokenChip key={t.teg} color="var(--danger)"
@@ -1216,7 +1249,21 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>+{g.red - 20}</span>
                       )}
                     </div>
-                  ) : g.purpose_warning ? (
+                  )}
+                  {g.orange > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3 }}>
+                      {g.tegs.filter(t => t.light === "orange").slice(0, 20).map(t => (
+                        <TokenChip key={`orange-${t.teg}`} color="var(--warn)"
+                          title={`(${t.x}, ${t.y}) — ${t.light_reason}`}>
+                          {t.teg} · {g.group}
+                        </TokenChip>
+                      ))}
+                      {g.orange > 20 && (
+                        <span style={{ fontSize: 11, color: "var(--muted)" }}>+{g.orange - 20}</span>
+                      )}
+                    </div>
+                  )}
+                  {g.red === 0 && g.orange === 0 && (g.purpose_warning ? (
                     <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 3,
                                   fontWeight: 700 }}>
                       {g.group}은(는) {g.purpose} 용도라 TEG 배치 금지입니다
@@ -1225,11 +1272,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                     <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
                       {g.group} 이(가) 들어가 있습니다 — 빨간불 없음
                     </div>
-                  )}
+                  ))}
                 </div>
               ))}
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </MiniPanel>}
       </div>
 
