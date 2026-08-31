@@ -844,6 +844,110 @@ def test_die_contact_and_configured_overlap_tolerance_are_allowed():
     assert teg_check._overlaps_chip(cells, 9.996, 1.0, 0.1, 0.1, tol=0.003)
 
 
+def test_vertical_teg_in_horizontal_map_is_separate_direction_error_and_pchk_skips_die(
+        monkeypatch):
+    """Δ=0이어도 B/H Map에 Vertical TEG가 섞이면 방향 오류, PCHK는 die 제외다."""
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg["ebeam_scale"] = 1.0
+    cfg["teg_default_w"] = 0.1
+    cfg["teg_default_h"] = 0.1
+    ref = {
+        "H_PCHK": [{"x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1,
+                    "dir": "h", "top_cell": ""}],
+        "V_TEG": [{"x": 1.0, "y": 1.0, "w": 0.1, "h": 1.0,
+                   "dir": "v", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": True, "checked": True, "shot_w_mm": 20.0, "shot_h_mm": 20.0,
+        "cells": [{"name": "DIE01", "x": -0.5, "y": -0.5, "w": 1.0, "h": 1.0}],
+        "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+    source = (
+        "#teg-map\n"
+        "!*\n"
+        "module H_PCHK (0,0) ! H_PCHK\n"
+        "module V_TEG (1,1) ! V_TEG,H_PCHK\n"
+        "!*\n"
+    )
+
+    result = teg_check.inspect("P", source)
+    rows = {row["ref_teg"]: row for row in result["teg"]["rows"]}
+    pchk = rows["H_PCHK"]
+    vertical = rows["V_TEG"]
+
+    assert pchk["die_state"] == teg_check.DIE_EXCLUDED
+    assert pchk["die_check_reason"] == "PCHK/PRBCHK 기준행은 die 검사 제외"
+    assert pchk["light"] == "green"
+    assert vertical["dx"] == 0
+    assert vertical["dy"] == 0
+    assert vertical["flat_used"] == "h"
+    assert vertical["expected_flat"] == "v_R"
+    assert vertical["direction_mismatch"] is True
+    assert vertical["direction_reason"] == (
+        "방향 오류 · Vertical(R) TEG가 Horizontal Map에 포함")
+    assert vertical["light"] == "red"
+    assert vertical["light_reason"] == vertical["direction_reason"]
+    assert result["teg"]["summary"]["direction_mismatch"] == 1
+
+
+def test_shot_partial_and_complete_exit_are_separate_errors_even_when_delta_is_zero(
+        monkeypatch):
+    """좌표가 정답지와 같아도 shot 경계 걸침과 완전 이탈은 별도 상세 오류다."""
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg["ebeam_scale"] = 1.0
+    cfg["teg_default_w"] = 1.0
+    cfg["teg_default_h"] = 1.0
+    ref = {
+        "H_PCHK": [{"x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1,
+                    "dir": "h", "top_cell": ""}],
+        "H_PART": [{"x": 9.5, "y": 0.0, "w": 1.0, "h": 1.0,
+                    "dir": "h", "top_cell": ""}],
+        "H_OUT": [{"x": 12.0, "y": 0.0, "w": 1.0, "h": 1.0,
+                   "dir": "h", "top_cell": ""}],
+    }
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref",
+                        lambda vehicle: (ref, {}, "Teg_location.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": True, "checked": False, "shot_w_mm": 20.0, "shot_h_mm": 20.0,
+        "cells": [], "main_cells": [],
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
+    source = (
+        "#teg-map\n!*\n"
+        "module H_PCHK (0,0) ! H_PCHK\n"
+        "module H_PART (9.5,0) ! H_PART,H_PCHK\n"
+        "module H_OUT (12,0) ! H_OUT,H_PCHK\n"
+        "!*\n"
+    )
+
+    result = teg_check.inspect("P", source)
+    rows = {row["ref_teg"]: row for row in result["teg"]["rows"]}
+
+    assert rows["H_PART"]["dx"] == 0
+    assert rows["H_PART"]["shot_state"] == teg_check.SHOT_PARTIAL
+    assert rows["H_PART"]["light_reason"] == "shot 경계 벗어남"
+    assert rows["H_OUT"]["dx"] == 0
+    assert rows["H_OUT"]["shot_state"] == teg_check.SHOT_OUT
+    assert rows["H_OUT"]["light_reason"] == "shot 완전 이탈"
+    assert result["teg"]["summary"]["shot_partial"] == 1
+    assert result["teg"]["summary"]["shot_outside"] == 1
+
+
 def test_mapfile_mixed_main_purposes_keep_ip_red_and_normal_inside_yellow(monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})

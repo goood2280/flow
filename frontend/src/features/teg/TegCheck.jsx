@@ -174,7 +174,7 @@ function ChipRow({ label, color = "var(--muted)", items = [], empty, hint, colla
 }
 
 /* die 관계 한 칸 — 경계 접촉과 허용오차 이내 겹침은 정상(out), 초과 침범만 in. */
-function DieState({ state }) {
+function DieState({ state, reason = "" }) {
   if (state === "in") {
     return <span style={{ color: "var(--danger)", fontWeight: 700 }}
       title="TEG 사각형이 die 안에 깊이 들어감 — TEG 는 칩 사이 스크라이브에 있어야 합니다">
@@ -190,6 +190,12 @@ function DieState({ state }) {
   if (state === "out") {
     return <span style={{ color: "var(--ok)", fontWeight: 700 }}
       title="die 밖(칩 사이 스크라이브) — 문제 없음">die 밖</span>;
+  }
+  if (state === "excluded") {
+    return <span style={{ color: "var(--muted)", fontWeight: 700 }}
+      title={reason || "PCHK/PRBCHK 기준행은 die 침범 검사 대상이 아닙니다"}>
+      검사 제외
+    </span>;
   }
   return "";
 }
@@ -569,10 +575,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       issue_reason: `MAIN 정보없음 · 소속 ${group.group}`, summary_section: "main",
     })),
   ] : [];
+  const directionIssues = slRows.filter(row => row.direction_mismatch);
+  const shotOutsideIssues = slRows.filter(row => row.shot_state === "outside");
+  const shotPartialIssues = slRows.filter(row => row.shot_state === "partial");
   const slIssues = seeTarget ? bad.map(row => ({
     ...row,
     issue_name: row.name,
-    issue_scope: "S/L TEG",
+    issue_scope: row.direction_mismatch ? "S/L TEG · Map 방향 오류"
+      : row.shot_state === "outside" ? "S/L TEG · shot 완전 이탈"
+        : row.shot_state === "partial" ? "S/L TEG · shot 경계" : "S/L TEG",
     issue_reason: row.light_reason,
     summary_section: "sl",
   })) : [];
@@ -621,6 +632,24 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     key: `purpose-${item.group}-${item.purpose}`, light: "red",
     text: `Purpose가 ${item.purpose}인 ${item.group} Chip 내에 TEG가 있습니다 (${compactNameList(item.names)}).`,
   }));
+  if (directionIssues.length) {
+    topErrorMessages.push({
+      key: "sl-direction", light: "red",
+      text: `Map 방향과 맞지 않는 TEG가 ${directionIssues.length}건 있습니다 (${compactNameList(directionIssues.map(row => row.name))}).`,
+    });
+  }
+  if (shotOutsideIssues.length) {
+    topErrorMessages.push({
+      key: "sl-shot-outside", light: "red",
+      text: `shot을 완전히 벗어난 TEG가 ${shotOutsideIssues.length}건 있습니다 (${compactNameList(shotOutsideIssues.map(row => row.name))}).`,
+    });
+  }
+  if (shotPartialIssues.length) {
+    topErrorMessages.push({
+      key: "sl-shot-partial", light: "red",
+      text: `shot 경계를 걸쳐 벗어난 TEG가 ${shotPartialIssues.length}건 있습니다 (${compactNameList(shotPartialIssues.map(row => row.name))}).`,
+    });
+  }
   if (mainInfoMissingNames.length) {
     topErrorMessages.push({
       key: "main-info-missing", light: "orange",
@@ -782,6 +811,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       render: r => <span title={r.flat_marker ? `마커: ${r.flat_marker}` : '마커 없음'}>
         {r.flat_used === 'h' ? 'H' : r.flat_used === 'v_R' ? 'V(R)' : r.flat_used === 'v_L' ? 'V(L)' : r.flat_used}
       </span> },
+    { key: "placement", label: "Map/shot", render: r => {
+        const items = [];
+        if (r.direction_mismatch) items.push(r.direction_reason || "Map 방향 오류");
+        if (r.shot_state === "outside") items.push("shot 완전 이탈");
+        if (r.shot_state === "partial") items.push("shot 경계 벗어남");
+        return items.length
+          ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>{items.join(" · ")}</span>
+          : "정상";
+      } },
     { key: "orig", label: "Mapfile (x,y)", render: r => `(${r.x},${r.y})` },
     { key: "calc_x", label: "환산X", align: "right" },
     { key: "calc_y", label: "환산Y", align: "right" },
@@ -815,7 +853,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     { key: "dx", label: "ΔX", align: "right", render: r => fmtN(r.dx) },
     { key: "dy", label: "ΔY", align: "right", render: r => fmtN(r.dy) },
     ...(res.shot?.checked ? [{
-      key: "chip", label: "die", render: r => <DieState state={r.die_state} />,
+      key: "chip", label: "die", render: r => (
+        <DieState state={r.die_state} reason={r.die_check_reason} />
+      ),
     }] : []),
     { key: "note", label: "비고", render: r => r.rule_note || "" },
   ];
@@ -1115,6 +1155,38 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <TargetChecklist checklist={checklist} total={targets.total}
             source={targets.source} shotChecked={res.shot?.checked} />
         </MiniPanel>}
+
+        {seeTarget && (directionIssues.length > 0 || shotOutsideIssues.length > 0
+          || shotPartialIssues.length > 0) && (
+          <MiniPanel title="①-1 Map 방향·shot 이탈 상세"
+            right={<Pill tone="danger" size="sm">
+              {directionIssues.length + shotOutsideIssues.length + shotPartialIssues.length}건
+            </Pill>}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <ChipRow label="Map 방향 오류" color="var(--danger)"
+                hint={`현재 ${FLAT_LABELS[res.flat.used]} Map과 정답지 TEG 방향이 다릅니다`}
+                empty="없음"
+                items={directionIssues.map(row => ({
+                  key: `direction-${row.idx}`, text: row.name,
+                  title: `${row.direction_reason} · ΔX ${fmtN(row.dx)} · ΔY ${fmtN(row.dy)}`,
+                }))} />
+              <ChipRow label="shot 완전 이탈" color="var(--danger)"
+                hint="TEG 사각형 전체가 shot 범위 밖에 있습니다"
+                empty="없음"
+                items={shotOutsideIssues.map(row => ({
+                  key: `shot-out-${row.idx}`, text: row.name,
+                  title: `환산 (${fmtN(row.calc_x)}, ${fmtN(row.calc_y)}) · ${row.light_reason}`,
+                }))} />
+              <ChipRow label="shot 경계 벗어남" color="var(--danger)"
+                hint="TEG 사각형 일부가 shot 경계를 넘어갑니다"
+                empty="없음"
+                items={shotPartialIssues.map(row => ({
+                  key: `shot-partial-${row.idx}`, text: row.name,
+                  title: `환산 (${fmtN(row.calc_x)}, ${fmtN(row.calc_y)}) · ${row.light_reason}`,
+                }))} />
+            </div>
+          </MiniPanel>
+        )}
 
         {/* MAIN 내부 TEG 도 대상 TEG 판정과 같은 신호등 목록으로 본다 —
             정답지에 없어 좌표 대조는 못 하고 '자기 MAIN die 에 있는가'만 본다. */}
@@ -1585,7 +1657,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       {res.shot?.checked && (
                         <div style={{ fontWeight: 600 }}>
                           {CELL_SOURCE_LABEL[res.shot.cell_source] || "die"}:{" "}
-                          <DieState state={r.die_state} />
+                          <DieState state={r.die_state} reason={r.die_check_reason} />
                         </div>
                       )}
                     </div>

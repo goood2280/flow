@@ -1,7 +1,19 @@
 {
-  "version": "10.4.153",
+  "version": "10.4.154",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.154",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "Map 방향 오류와 shot 이탈 상세 판정",
+      "changes": [
+        "[Map 방향 오류] 정답지와 Mapfile 환산 좌표의 ΔX·ΔY가 0이어도 Horizontal Map에 Vertical TEG가 섞인 실제 배치 오류는 좌표 일치만으로 정상 처리됨 → 선택된 정답지 행의 direction과 현재 Map 방향을 독립 비교해 방향 오류로 빨간 판정",
+        "[shot 이탈 구분] TEG가 shot을 벗어나도 die 침범·좌표 불일치와 한 사유에 섞여 원인을 찾기 어려움 → TEG 사각형 일부가 경계를 넘은 shot 경계 벗어남과 전체가 밖인 shot 완전 이탈을 별도 상태·집계로 분리",
+        "[상세 결과] Map 방향 오류, shot 완전 이탈, shot 경계 벗어남을 별도 상세 패널과 전체 행 Map/shot 열에 표시하고 상단 이상 문장에도 각각의 TEG 이름을 노출",
+        "[PCHK 제외] PCHK/PRBCHK는 Mapfile의 0,0 기준행이라 die 침범 검사 의미가 없음 → 좌표·방향 기준 기능은 유지하면서 die 열은 검사 제외로 표시"
+      ]
+    },
     {
       "version": "10.4.153",
       "date": "2026-08-31",

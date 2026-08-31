@@ -926,11 +926,13 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
     """
     if ref is None:
         return {"status": "noref", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
-                "ref_w": None, "ref_h": None, "ref_seq": None, "ref_total": None}
+                "ref_w": None, "ref_h": None, "ref_dir": None,
+                "ref_seq": None, "ref_total": None}
     cands = ref.get(ref_teg) if ref_teg else None
     if not cands:
         return {"status": "missing", "ref_x": None, "ref_y": None, "dx": None, "dy": None,
-                "ref_w": None, "ref_h": None, "ref_seq": None, "ref_total": None}
+                "ref_w": None, "ref_h": None, "ref_dir": None,
+                "ref_seq": None, "ref_total": None}
     best_idx = min(range(len(cands)),
                    key=lambda i: abs(cands[i]["x"] - x) + abs(cands[i]["y"] - y))
     c = cands[best_idx]
@@ -949,6 +951,7 @@ def _compare(ref: dict[str, list[dict]] | None, ref_teg: str | None,
             "ref_x": _num(c["x"]), "ref_y": _num(c["y"]),
             "dx": _num(ddx), "dy": _num(ddy),
             "ref_w": c["w"], "ref_h": c["h"],
+            "ref_dir": c.get("dir", "h"),
             "ref_seq": best_idx + 1 if n > 1 else None,
             "ref_total": n if n > 1 else None}
 
@@ -1010,6 +1013,8 @@ def _die_relation(cells: list[dict], x0: float, y0: float, w: float, h: float,
 
 
 DIE_IN, DIE_NEAR, DIE_OUT = "in", "near", "out"
+DIE_EXCLUDED = "excluded"
+SHOT_IN, SHOT_PARTIAL, SHOT_OUT = "inside", "partial", "outside"
 
 
 def _die_sep(c: dict, x0: float, y0: float, x1: float, y1: float) -> float:
@@ -1043,6 +1048,26 @@ def die_proximity(cells: list[dict], x0: float, y0: float, w: float, h: float,
         if sep < -(allowed + 1e-9):
             return DIE_IN, [c]
     return DIE_OUT, []
+
+
+def shot_relation(shot_w: float, shot_h: float,
+                  x0: float, y0: float, w: float, h: float,
+                  eps: float = 1e-9) -> str:
+    """TEG 사각형이 shot 안/경계 걸침/완전 밖인지 구분한다.
+
+    shot과 TEG 모두 shot 센터 기준 mm, 좌하단 앵커 규약이다. die 침범과 섞지 않고
+    별도 상태로 내보내 Map 방향 오류나 큰 좌표 이탈을 상세 결과에서 바로 찾게 한다.
+    """
+    half_w, half_h = float(shot_w) / 2.0, float(shot_h) / 2.0
+    sx0, sy0, sx1, sy1 = -half_w, -half_h, half_w, half_h
+    x1, y1 = x0 + w, y0 + h
+    if (x0 >= sx0 - eps and x1 <= sx1 + eps
+            and y0 >= sy0 - eps and y1 <= sy1 + eps):
+        return SHOT_IN
+    # 면적 교집합이 없으면 완전 이탈. 경계선에만 닿은 것도 shot 밖으로 본다.
+    if x1 <= sx0 + eps or x0 >= sx1 - eps or y1 <= sy0 + eps or y0 >= sy1 - eps:
+        return SHOT_OUT
+    return SHOT_PARTIAL
 
 
 def _die_names(cells: list[dict]) -> str:
@@ -1096,7 +1121,7 @@ def row_light(row: dict) -> tuple[str, str]:
       · 좌표 — ΔX·ΔY 가 WARN_TOL 초과면 불일치(red), 이내면 확인필요(yellow)
       · 자리 — die_tol을 넘어 die 에 들어갔을 때만 die 침범(red). 경계 접촉과
         die_tol 이내의 겹침은 허용한다.
-    TEG 는 칩 사이 스크라이브에 있어야 하므로 좌표가 맞아 보여도 die 안이면 틀린 것이다.
+    PCHK/PRBCHK 기준행은 die 검사에서 제외한다.
     """
     st = row.get("status")
     die = row.get("die_state")
@@ -1110,6 +1135,14 @@ def row_light(row: dict) -> tuple[str, str]:
                 else "MAIN 정보없음 · 소속 MAIN 판정 불가")
     red: list[str] = []
     yellow: list[str] = []
+    direction_reason = str(row.get("direction_reason") or "").strip()
+    shot_state = row.get("shot_state")
+    if direction_reason:
+        red.append(direction_reason)
+    if shot_state == SHOT_OUT:
+        red.append("shot 완전 이탈")
+    elif shot_state == SHOT_PARTIAL:
+        red.append("shot 경계 벗어남")
     if st == "mismatch":
         red.append("불일치")
     if registered and die == DIE_IN:
@@ -1424,6 +1457,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
     rows = []
     summary = {"match": 0, "warning": 0, "mismatch": 0, "extended": 0, "missing": 0,
                "total": len(tegs), "chip_overlap": 0, "die_in": 0, "die_near": 0,
+               "direction_mismatch": 0, "shot_outside": 0, "shot_partial": 0,
                "light": {"red": 0, "orange": 0, "yellow": 0,
                          "purple": 0, "green": 0, "gray": 0}}
     # 정답지 기준 양방향 표기 색인은 한 번만 만든다. 확장 매크로는 방향이 있는
@@ -1529,15 +1563,45 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # flat_used 가 v_R 이면 Vertical TEG — 기본 크기 사용 시 가로/세로 swap
         if cmp_["ref_w"] is None and used_t in ("v_R", "v_L"):
             tw, th = th, tw
+        ref_flat = cmp_.get("ref_dir")
+        ref_flat = "v_R" if ref_flat == "v" else ref_flat
+        direction_mismatch = bool(ref_teg and ref_flat in FLATS and ref_flat != used_t)
+        flat_names = {"h": "Horizontal", "v_R": "Vertical(R)", "v_L": "Vertical(L)"}
+        direction_reason = (f"방향 오류 · {flat_names.get(ref_flat, ref_flat)} TEG가 "
+                            f"{flat_names.get(used_t, used_t)} Map에 포함"
+                            if direction_mismatch else "")
+        if direction_mismatch:
+            summary["direction_mismatch"] += 1
+        shot_state = None
+        if ref_teg and shot.get("available") and shot.get("shot_w_mm") and shot.get("shot_h_mm"):
+            shot_state = shot_relation(
+                shot["shot_w_mm"], shot["shot_h_mm"], mm_x, mm_y, tw, th)
+            if shot_state == SHOT_OUT:
+                summary["shot_outside"] += 1
+            elif shot_state == SHOT_PARTIAL:
+                summary["shot_partial"] += 1
         main_group = main_membership(
             shot.get("main_cells") or [], mm_x, mm_y, tw, th, die_tol_mm)
         # Teg_location에 등록된 S/L TEG만 스크라이브/die 침범을 판정한다.
-        # 미등록 module은 MAIN 정보 누락으로 보며 일반 die 판정을 섞지 않는다.
-        overlap = (_overlaps_chip(shot["cells"], mm_x, mm_y, tw, th, tol=die_tol_mm)
-                   if ref_teg and shot.get("checked") else None)
-        # 경계 접촉과 die_tol 이내 걸침은 정상. 허용오차를 넘는 침범만 경고한다.
-        die_state = (die_proximity(shot["cells"], mm_x, mm_y, tw, th, die_tol_mm)[0]
-                     if ref_teg and shot.get("checked") else None)
+        # PCHK/PRBCHK는 Mapfile 좌표계의 원점이므로 die 검증 대상에서 제외한다.
+        is_pchk_anchor = bool(
+            generic_marker
+            or (ref_teg and str(ref_teg).strip().casefold()
+                == str(detail["pchk_name"]).strip().casefold())
+            or (ref_teg and str(ref_teg).strip().casefold() in {
+                str(name).casefold() for name in PCHK_REF_NAMES.get(used_t, [])
+            })
+        )
+        die_state = None
+        die_check_reason = ""
+        if ref_teg and shot.get("checked"):
+            if is_pchk_anchor:
+                die_state = DIE_EXCLUDED
+                die_check_reason = "PCHK/PRBCHK 기준행은 die 검사 제외"
+            else:
+                die_state = die_proximity(
+                    shot["cells"], mm_x, mm_y, tw, th, die_tol_mm)[0]
+        overlap = True if die_state == DIE_IN else False if die_state is not None else None
         if overlap:
             summary["chip_overlap"] += 1
         # die 개수는 **신호등에 실제로 반영되는 행만** 센다 — 정답지에 없는 module 은
@@ -1549,6 +1613,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             summary["die_near"] += 1
         light, light_reason = row_light({**cmp_, "ref_teg": ref_teg,
                                          "die_state": die_state,
+                                         "direction_reason": direction_reason,
+                                         "shot_state": shot_state,
                                          "main_group": main_group})
         summary["light"][light] = summary["light"].get(light, 0) + 1
         rows.append({
@@ -1576,6 +1642,11 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
             "teg_w": round(tw, 4), "teg_h": round(th, 4),
             "chip_overlap": overlap, "die_state": die_state,
+            "die_check_reason": die_check_reason,
+            "direction_mismatch": direction_mismatch,
+            "expected_flat": ref_flat,
+            "direction_reason": direction_reason,
+            "shot_state": shot_state,
             "rule_note": (rule[2] or f"모듈 오프셋 ({_num(rule[0])}, {_num(rule[1])})") if rule else "",
         })
 
