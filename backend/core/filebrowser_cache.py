@@ -110,13 +110,23 @@ def memory_cache_budget_bytes() -> int:
     """
     raw = os.environ.get("FLOW_PREVIEW_MEMORY_CACHE_GB", "")
     if raw not in (None, ""):
-        # 운영자 명시 핀 — 전체 캐시 풀 상한을 적용하지 않는다.
         try:
             gb = float(raw)
         except Exception:
             gb = _default_memory_cache_gb()
         gb = max(0.0, min(64.0, gb))
-        return int(gb * 1024 * 1024 * 1024)
+        budget = int(gb * 1024 * 1024 * 1024)
+        try:
+            from core import cache_budget
+
+            # 명시 핀도 전체 안전 풀은 우회하지 않는다. 개발 역할의 자동 축소만
+            # 빼서 운영자가 지정한 값과 화면 표시가 어긋나지 않게 한다.
+            budget = cache_budget.capped(
+                "filebrowser_preview", budget, explicit=True
+            )
+        except Exception:
+            pass
+        return budget
     gb = max(0.0, min(64.0, _default_memory_cache_gb()))
     budget = int(gb * 1024 * 1024 * 1024)
     try:

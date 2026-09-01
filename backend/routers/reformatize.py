@@ -121,13 +121,13 @@ def _env_cache_mb(name: str, default_mb: float, budget_name: str = "") -> int:
         mb = default_mb
         pinned = False
     budget = int(max(0.0, min(65536.0, mb)) * 1024 * 1024)
-    # 운영자 env 핀이 없을 때만 전체 캐시 풀 상한 적용 — 개별 예산 합이
-    # 호스트 메모리를 넘지 않게 한다.
-    if not pinned and budget_name:
+    # 운영자 env 핀도 전체 안전 풀은 우회하지 않는다. explicit=True 는 개발
+    # 역할의 자동 축소만 제외하고 호스트 총량 기반 상한은 그대로 적용한다.
+    if budget_name:
         try:
             from core import cache_budget
 
-            budget = cache_budget.capped(budget_name, budget)
+            budget = cache_budget.capped(budget_name, budget, explicit=pinned)
         except Exception:
             pass
     return budget

@@ -4,8 +4,8 @@
 자체 적응형 예산을 갖지만, 개별 예산의 합이 호스트 메모리를 넘어설 수 있었다
 (예: 10GB 호스트에서 root 2~6GB + preview ~1.6GB + reformatize ~1.5GB + view
 ~1.5GB → 캐시만으로 OOM 사정권). 이 모듈은 호스트 총 메모리 × 총량 비율
-(기본 45%)을 단일 풀로 두고, 캐시별 고정 지분(share)으로 나눠 개별 예산에
-상한(cap)을 건다.
+(기본 45%)을 단일 풀로 두고, 안정 운용 목표 계수(기본 80%)로 여유를 확보한
+뒤 캐시별 고정 지분(share)으로 나눠 개별 예산에 상한(cap)을 건다.
 
 계약:
   - cap_bytes(name) → 해당 캐시가 가질 수 있는 최대 바이트. 0 = 상한 없음
@@ -19,6 +19,10 @@
   FLOW_CACHE_TOTAL_BUDGET_FRACTION  캐시 풀 = 호스트 총량 × 이 값 (기본 0.45,
                                     0.1~0.8 클램프). 0 에 가깝게 줄이면 모든
                                     적응형 캐시가 함께 줄어든다.
+  FLOW_CACHE_MEMORY_TARGET_RATIO    위 캐시 풀에 곱하는 안정 운용 목표 계수
+                                    (기본 0.80, 0.5~1.0 클램프). 기존 캐시
+                                    용량의 약 80%를 유지해 프로세스·요청 순간
+                                    메모리용 headroom을 남긴다.
   FLOW_WORKER_CACHE_BUDGET_FACTOR   worker(개발서버) 역할일 때 풀에 곱하는
                                     축소 계수 (기본 0.25 = 1/4). 개발서버는
                                     스플릿테이블 조회가 적어 캐시를 많이 들고
@@ -33,6 +37,7 @@ import threading
 import time
 
 _POOL_FRACTION_DEFAULT = 0.45
+_MEMORY_TARGET_RATIO_DEFAULT = 0.80
 _POOL_MEMO_TTL_SEC = 60.0
 _POOL_MEMO_LOCK = threading.Lock()
 # key: "auto"(역할 축소 적용) | "explicit"(역할 축소 미적용) → (monotonic ts, pool_bytes)
@@ -89,6 +94,21 @@ def _pool_fraction() -> float:
     except Exception:
         pass
     return _POOL_FRACTION_DEFAULT
+
+
+def memory_target_ratio() -> float:
+    """기존 캐시 풀 대비 실제 운용 목표 비율.
+
+    캐시 저장 형식과 hit 경로는 건드리지 않고 모든 조정 대상 캐시의 상한만
+    같은 비율로 줄인다. 잘못된 env 값은 안정적인 기본 0.80으로 복귀한다.
+    """
+    raw = os.environ.get("FLOW_CACHE_MEMORY_TARGET_RATIO", "")
+    if raw not in (None, ""):
+        try:
+            return max(0.5, min(1.0, float(raw)))
+        except Exception:
+            pass
+    return _MEMORY_TARGET_RATIO_DEFAULT
 
 
 def worker_budget_factor() -> float:
@@ -165,7 +185,9 @@ def pool_bytes(*, ignore_role_factor: bool = False) -> int:
     except Exception:
         total_bytes = 0.0
     factor = 1.0 if ignore_role_factor else worker_budget_factor()
-    pool = int(total_bytes * _pool_fraction() * factor) if total_bytes > 0 else 0
+    pool = int(
+        total_bytes * _pool_fraction() * factor * memory_target_ratio()
+    ) if total_bytes > 0 else 0
     with _POOL_MEMO_LOCK:
         _POOL_MEMO[key] = (now, pool)
     return pool
@@ -205,6 +227,7 @@ def overview() -> dict:
     return {
         "pool_bytes": pool,
         "pool_fraction": _pool_fraction(),
+        "memory_target_ratio": memory_target_ratio(),
         "worker_budget_factor": worker_budget_factor(),
         "caps": {name: cap_bytes(name) for name in SHARES},
         # 명시 예산일 때 적용되는 상한 — 화면에서 "설정값이 왜 깎였나"를 설명한다.

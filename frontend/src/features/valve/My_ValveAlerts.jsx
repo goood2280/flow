@@ -46,21 +46,6 @@ function alertForProduct(alert, selectedProduct) {
   };
 }
 
-function statusTone(a, queued = false) {
-  if (queued) return "warn";
-  if (a.decision) return "ok";
-  if (a.status === "반영완료") return "ok";
-  if (a.status === "미확인예정") return "warn";
-  if (a.status === "반영불필요") return "neutral";
-  return "danger";
-}
-
-function statusLabel(a, queued = false) {
-  if (queued) return "반영대기";
-  if (a.status === "active" && a.decision) return "반영완료";
-  return a.status === "active" ? "판정 대기" : a.status;
-}
-
 const cellStyle = { padding: "7px 8px", borderBottom: "1px solid var(--line)", verticalAlign: "middle", fontSize: 13, textAlign: "left" };
 // th 는 브라우저 기본이 center 라 td(left)와 어긋나 보인다 — 명시적으로 left 통일.
 const headStyle = { ...cellStyle, fontWeight: 600, color: "var(--muted)", whiteSpace: "nowrap" };
@@ -469,10 +454,6 @@ function PipelineHealth({ vehicles, loading }) {
   );
 }
 
-function decisionTitle(a) {
-  return a.decision ? `${a.decision.by} · ${fmtTs(a.decision.ts)}` : "";
-}
-
 function DecisionSpreadsheet({ title, columns, sourceRows, aliases, columnLabels,
                                editableColumn, disabled, onRowsChange }) {
   const rows = useMemo(() => normalizeSpreadsheetRows(sourceRows, columns, {
@@ -515,19 +496,11 @@ function DecisionSpreadsheet({ title, columns, sourceRows, aliases, columnLabels
   );
 }
 
-function DiscoveryCell({ alert }) {
+function discoveryText(alert) {
   const example = (alert.examples || [])[0] || {};
   const lotId = example.lot_id || example.root_lot_id || alert.lot_id || alert.root_lot_id || "-";
   const waferId = example.wafer_id || alert.wafer_id || "-";
-  return (
-    <>
-      <div>{alert.n_lots} lot · {alert.rows} row</div>
-      <div style={{ ...inlineMetaStyle, fontFamily: "monospace" }}>
-        예: lot_id {lotId} · wafer_id {waferId}
-      </div>
-      <div style={inlineMetaStyle}>{fmtTs(alert.first_seen_ts)}</div>
-    </>
-  );
+  return `${alert.n_lots || 0} lot · ${alert.rows || 0} row · lot_id ${lotId} · wafer_id ${waferId} · ${fmtTs(alert.first_seen_ts)}`;
 }
 
 /* 미매칭 step 의 function step 추천 (backend/core/valve_step_advisor.py).
@@ -540,54 +513,22 @@ const METHOD_LABEL = {
   signature: "FAB 근거", distance: "step_id 근접", none: "근거 없음",
 };
 
-function RecoCell({ alert, busy, onApply, onRecheck }) {
+function recommendationText(alert) {
   const r = alert.recommendation;
-  const disabled = busy || !!alert.decision || alert.status !== "active";
-  // 반영불필요/미확인예정 건은 자동 검사 대상이 아니다 (판정 대기 건만 본다).
-  const skipped = alert.status !== "active";
-  if (!r) {
-    return (
-      <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}>
-        <span style={{ color: "var(--muted)", fontSize: 12 }}>
-          {skipped ? "검사 대상 아님" : "추천 대기"}
-        </span>
-        {!skipped && (
-          <Button style={compactButtonStyle} disabled={disabled} onClick={() => onRecheck(alert)}>추천</Button>
-        )}
-      </div>
-    );
-  }
-  const aiOn = !!r.llm?.applied;
-  const pct = Math.round((Number(r.confidence) || 0) * 100);
+  if (!r) return "추천 대기";
+  const confidence = r.llm?.applied ? ` · AI ${Math.round((Number(r.confidence) || 0) * 100)}%` : "";
   const picked = r.picked_step_id ? ` · ${r.picked_step_id}` : "";
-  return (
-    <div
-      title={[r.reason, !aiOn && r.llm?.error].filter(Boolean).join("\n")}
-      style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap", minWidth: 330 }}
-    >
-      <span style={{ fontWeight: 600 }}>{r.step_desc || "—"}</span>
-      {aiOn && <Pill tone="ok" style={{ fontSize: 11, padding: "1px 5px" }}>AI {pct}%</Pill>}
-      <span style={{ fontSize: 11, color: "var(--muted)" }}>
-        {METHOD_LABEL[r.method] || r.method}{picked}
-      </span>
-      {r.step_desc && (
-        <Button style={compactButtonStyle} disabled={disabled} onClick={() => onApply(alert, r.step_desc)}
-          title="판정 입력칸에 채우기">적용</Button>
-      )}
-      <Button style={compactButtonStyle} disabled={disabled} onClick={() => onRecheck(alert, true)}
-        title="근거를 다시 모아 추천을 새로 받는다">재검사</Button>
-    </div>
-  );
+  return `${r.step_desc || "-"} · ${METHOD_LABEL[r.method] || r.method || "근거 없음"}${picked}${confidence}`;
 }
 
-function HoldButtons({ alert, busy, onAck }) {
-  if (alert.status !== "active") {
-    const cancelLabel = alert.status === "반영불필요" ? "불필요 취소" : "보류 취소";
-    return <Button style={compactButtonStyle} disabled={busy} onClick={() => onAck(alert.id, "active")} title="취소하고 다시 판정 대기로 되돌리기">{cancelLabel}</Button>;
-  }
-  return (
-    <Button style={compactButtonStyle} disabled={busy} onClick={() => onAck(alert.id, "반영불필요")} title="반영 불필요 — 재알람 억제 (해제로 복귀 가능)">불필요</Button>
-  );
+function matchingEvidenceText(alert, extraCols) {
+  return [
+    alert.eqp_id && `eqp_id ${alert.eqp_id}`,
+    alert.eqp_model && `eqp_model ${alert.eqp_model}`,
+    alert.area && `area ${alert.area}`,
+    (alert.ppids || []).length && `ppid ${(alert.ppids || []).join(", ")}`,
+    ...extraCols.map(column => alert[column] && `${column} ${alert[column]}`),
+  ].filter(Boolean).join(" · ");
 }
 
 export default function My_ValveAlerts({ user }) {
@@ -681,9 +622,6 @@ export default function My_ValveAlerts({ user }) {
   const extraCols = useMemo(
     () => (data?.alert_cols || []).filter(c => c !== "eqp_id" && c !== "eqp_model"),
     [data]);
-  const setInput = (id, patch) =>
-    setInputs(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
-
   const editableRoAlerts = useMemo(
     () => roAlerts.filter(alert => alert.status === "active" && !alert.decision),
     [roAlerts]);
@@ -697,19 +635,26 @@ export default function My_ValveAlerts({ user }) {
     status: queued[alert.id] ? "반영대기" : "입력대기",
     product: alert.product || alert.vehicle || "",
     feature_name: alert.feature_name || "",
+    step: [alert.step_id, alert.step_desc].filter(Boolean).join(" · "),
     ppid: alert.ppid || "",
+    discovery: discoveryText(alert),
     category: inputs[alert.id]?.category || "",
   })), [editableRoAlerts, inputs, queued]);
   const stepCsvRows = useMemo(() => editableStepAlerts.map(alert => ({
     status: queued[alert.id] ? "반영대기" : "입력대기",
     product: alert.product || alert.vehicle || "",
     step_id: alert.step_id || "",
+    recommendation: recommendationText(alert),
+    evidence: matchingEvidenceText(alert, extraCols),
+    discovery: discoveryText(alert),
     step_desc: inputs[alert.id]?.step_desc ?? alert.step_desc ?? "",
-  })), [editableStepAlerts, inputs, queued]);
+  })), [editableStepAlerts, extraCols, inputs, queued]);
   const maskCsvRows = useMemo(() => editableMaskAlerts.map(alert => ({
     status: queued[alert.id] ? "반영대기" : "입력대기",
     products: alertProducts(alert).join(", "),
     reticle_id: alert.reticle_id || "",
+    step_ids: (alert.step_ids || (alert.step_id ? [alert.step_id] : [])).join(", "),
+    discovery: discoveryText(alert),
     mask: inputs[alert.id]?.mask || "",
   })), [editableMaskAlerts, inputs, queued]);
 
@@ -730,18 +675,6 @@ export default function My_ValveAlerts({ user }) {
       return next;
     });
   };
-
-  const updateDecisionValue = (alert, field, value) => {
-    setInput(alert.id, { [field]: value });
-    setQueued(prev => {
-      const next = { ...prev };
-      if (String(value || "").trim()) next[alert.id] = true;
-      else delete next[alert.id];
-      return next;
-    });
-  };
-
-  const clearDecisionValue = (alert, field) => updateDecisionValue(alert, field, "");
 
   const act = async (id, fn) => {
     setBusy(id);
@@ -817,23 +750,6 @@ export default function My_ValveAlerts({ user }) {
     act(id, async () => {
       await postJson(API + "/ack", { id, status, note: (inputs[id]?.note || "").trim() });
       toast(status === "active" ? "불필요 처리가 취소되어 판정 대기로 돌아갔습니다" : `상태 기록: ${status}`);
-    });
-
-  // 추천 → 판정 입력칸 채우기 + 자동 반영대기. 실제 CSV 저장은 일괄반영에서만 한다.
-  const applyReco = (a, step_desc) => {
-    updateDecisionValue(a, "step_desc", step_desc);
-    toast(`추천 반영: ${step_desc} — 반영대기에 추가했습니다`);
-  };
-
-  const recheck = (a, force = false) =>
-    act(a.id, async () => {
-      const r = await postJson(API + "/recommend", { id: a.id, force });
-      const rec = (r.records || [])[0] || {};
-      if (rec.step_desc) {
-        toast.ok(`추천: ${rec.step_desc}${rec.picked_step_id ? ` · 근거 step_id ${rec.picked_step_id}` : ""}`);
-      } else {
-        toast(rec.reason || "추천할 근거를 찾지 못했습니다");
-      }
     });
 
   return (
@@ -934,191 +850,70 @@ export default function My_ValveAlerts({ user }) {
 
       <Card
         title="PPID 룰북 (ppid_knob.csv)"
-        right={<Pill tone={roAlerts.length ? "danger" : "neutral"}>RO PPID · {roAlerts.length}건</Pill>}
+        right={<Pill tone={editableRoAlerts.length ? "danger" : "neutral"}>RO PPID · {editableRoAlerts.length}건</Pill>}
       >
-        <DecisionSpreadsheet
-          title="PPID 룰북"
-          columns={["status", "product", "feature_name", "ppid", "category"]}
-          sourceRows={roCsvRows}
-          aliases={{ value: "ppid", "기능명": "feature_name", "분류": "category" }}
-          columnLabels={{ status: "상태", product: "제품", feature_name: "기능명", ppid: "미매칭 PPID", category: "KNOB 분류" }}
-          editableColumn="category"
-          disabled={!canManage || !!busy}
-          onRowsChange={rows => updateDecisionValues(editableRoAlerts, rows, "category")}
-        />
-        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : roAlerts.length === 0 ? (
-          <EmptyState title="RO ppid 알람 없음" hint="knob 매핑에 없는 ppid 가 발견되면 여기에 표시됩니다" />
+        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableRoAlerts.length === 0 ? (
+          <EmptyState title="판정 대기 RO ppid 없음" hint="knob 매핑에 없는 ppid가 발견되면 여기에 표시됩니다" />
         ) : (
-          <ScrollTable
-            rows={roAlerts}
-            minWidth={1120}
-            columns={["상태", "제품", "대상", "미매칭 PPID", "발견", "KNOB 분류", "작업"]}
-            renderRow={a => (
-                  <tr key={a.id}>
-                    <td style={nowrapCell} title={decisionTitle(a)}>
-                      <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
-                    </td>
-                    <td style={{ ...nowrapCell, fontWeight: 700 }}>{a.product || a.vehicle || "-"}</td>
-                    <td style={compactCell} title={[a.vehicle, a.step_id, a.step_desc].filter(Boolean).join(" · ")}>
-                      <b>{a.feature_name || a.split || "-"}</b>
-                      <span style={inlineMetaStyle}> · {a.step_id} · {a.step_desc || "-"}</span>
-                    </td>
-                    <td style={{ ...nowrapCell, fontFamily: "monospace", fontWeight: 700 }}>{a.ppid}</td>
-                    <td style={compactCell} title={a.split}><DiscoveryCell alert={a} /></td>
-                    <td style={nowrapCell}>
-                      <input style={inputStyle} placeholder="예: KNOB_NEW"
-                        aria-label={`${a.ppid} KNOB 분류`}
-                        value={inputs[a.id]?.category ?? ""}
-                        onChange={e => updateDecisionValue(a, "category", e.target.value)}
-                        disabled={!canManage || !!a.decision || a.status !== "active"} />
-                    </td>
-                    <td style={nowrapCell}>
-                      {queued[a.id]
-                        ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
-                            onClick={() => clearDecisionValue(a, "category")}>입력 취소</Button>
-                        : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
-                      <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
-                    </td>
-                  </tr>
-            )}
+          <DecisionSpreadsheet
+            title="PPID 룰북"
+            columns={["status", "product", "feature_name", "step", "ppid", "discovery", "category"]}
+            sourceRows={roCsvRows}
+            aliases={{ value: "ppid", "기능명": "feature_name", "분류": "category" }}
+            columnLabels={{ status: "상태", product: "제품", feature_name: "기능명", step: "대상 step", ppid: "미매칭 PPID", discovery: "발견 근거", category: "KNOB 분류" }}
+            editableColumn="category"
+            disabled={!canManage || !!busy}
+            onRowsChange={rows => updateDecisionValues(editableRoAlerts, rows, "category")}
           />
         )}
       </Card>
 
       <Card
         title="매칭테이블 (Vehicle_matching.csv)"
-        right={<Pill tone={umAlerts.length ? "danger" : "neutral"}>미매칭 step · {umAlerts.length}건</Pill>}
+        right={<Pill tone={editableStepAlerts.length ? "danger" : "neutral"}>미매칭 step · {editableStepAlerts.length}건</Pill>}
       >
         <div
           title="추천 function step은 동일 area의 매칭 완료 step만 후보로 두고, FAB의 동일 PPID → 동일 eqp_id → 동일 eqp_model → step_id 근접 순서로 선택합니다. step_desc는 선택된 step_id의 Vehicle_matching.csv 값이며, 최종 반영은 사용자가 확인합니다."
           style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
         >
-          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 적용하면 반영대기에 들어가며 일괄반영에서 저장됩니다.
+          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 추천을 확인해 판정 function step 열에 입력하면 반영대기에 들어갑니다.
         </div>
-        <DecisionSpreadsheet
-          title="Vehicle 매칭테이블"
-          columns={["status", "product", "step_id", "step_desc"]}
-          sourceRows={stepCsvRows}
-          aliases={{ "스텝": "step_id", "function_step": "step_desc", "판정_step": "step_desc" }}
-          columnLabels={{ status: "상태", product: "제품", step_id: "미매칭 step_id", step_desc: "판정 function step" }}
-          editableColumn="step_desc"
-          disabled={!canManage || !!busy}
-          onRowsChange={rows => updateDecisionValues(editableStepAlerts, rows, "step_desc")}
-        />
-        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : umAlerts.length === 0 ? (
-          <EmptyState title="미매칭 step 알람 없음" hint="vehicle_matching 에 없는 step 이 발견되면 여기에 표시됩니다" />
+        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableStepAlerts.length === 0 ? (
+          <EmptyState title="판정 대기 미매칭 step 없음" hint="vehicle_matching에 없는 step이 발견되면 여기에 표시됩니다" />
         ) : (
-          <ScrollTable
-            rows={umAlerts}
-            minWidth={1340}
-            columns={["상태", "제품", "대상", "추천 function step", "근거", "발견", "판정 step", "작업"]}
-            renderRow={a => (
-                  <tr key={a.id}>
-                    <td style={nowrapCell} title={decisionTitle(a)}>
-                      <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
-                    </td>
-                    <td style={{ ...nowrapCell, fontWeight: 700 }}>{a.product || a.vehicle || "-"}</td>
-                    <td style={{ ...nowrapCell, fontFamily: "monospace" }}>
-                      <b>{a.step_id || "-"}</b>
-                    </td>
-                    <td style={nowrapCell}>
-                      <RecoCell alert={a} busy={busy === a.id}
-                        onApply={applyReco} onRecheck={recheck} />
-                    </td>
-                    <td
-                      style={{ ...compactCell, fontFamily: "monospace", fontSize: 11 }}
-                      title={[
-                        // 예외 규칙에 그대로 쓸 수 있게 후보값 전체를 툴팁에 편다.
-                        (a.eqp_models || []).length && `eqp_model ${a.eqp_models.join(", ")}`,
-                        (a.eqp_ids || []).length && `eqp_id ${a.eqp_ids.join(", ")}`,
-                        (a.areas || []).length && `area ${a.areas.join(", ")}`,
-                        (a.ppids || []).length && `ppid ${a.ppids.join(", ")}`,
-                        ...extraCols.map(c => `${c} ${a[c] || "-"}`),
-                      ].filter(Boolean).join("\n")}
-                    >
-                      {a.eqp_id || "eqp -"}{a.eqp_model ? ` (${a.eqp_model})` : ""}
-                      {a.area ? ` · area ${a.area}` : ""}
-                      {extraCols.map(c => <span key={c}> · {c} {a[c] || "-"}</span>)}
-                    </td>
-                    <td style={nowrapCell}><DiscoveryCell alert={a} /></td>
-                    <td style={nowrapCell}>
-                      <input style={{ ...inputStyle, minWidth: 150 }}
-                        aria-label={`${a.vehicle} ${a.step_id} 판정 step`}
-                        value={inputs[a.id]?.step_desc ?? a.step_desc ?? ""}
-                        onChange={e => updateDecisionValue(a, "step_desc", e.target.value)}
-                        disabled={!canManage || !!a.decision || a.status !== "active"} />
-                    </td>
-                    <td style={nowrapCell}>
-                      {queued[a.id]
-                        ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
-                            onClick={() => clearDecisionValue(a, "step_desc")}>입력 취소</Button>
-                        : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
-                      <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
-                    </td>
-                  </tr>
-            )}
+          <DecisionSpreadsheet
+            title="Vehicle 매칭테이블"
+            columns={["status", "product", "step_id", "recommendation", "evidence", "discovery", "step_desc"]}
+            sourceRows={stepCsvRows}
+            aliases={{ "스텝": "step_id", "function_step": "step_desc", "판정_step": "step_desc" }}
+            columnLabels={{ status: "상태", product: "제품", step_id: "미매칭 step_id", recommendation: "추천 function step", evidence: "추천 근거", discovery: "발견 근거", step_desc: "판정 function step" }}
+            editableColumn="step_desc"
+            disabled={!canManage || !!busy}
+            onRowsChange={rows => updateDecisionValues(editableStepAlerts, rows, "step_desc")}
           />
         )}
       </Card>
 
       <Card
         title="마스크 룰북 (mask_info.csv)"
-        right={<Pill tone={maskAlerts.length ? "danger" : "neutral"}>미등록 reticle · {maskAlerts.length}건</Pill>}
+        right={<Pill tone={editableMaskAlerts.length ? "danger" : "neutral"}>미등록 reticle · {editableMaskAlerts.length}건</Pill>}
       >
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
           FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값입니다.
           mask_info.csv는 제품 구분 없이 reticle_id·mask 2열이라 같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
         </div>
-        <DecisionSpreadsheet
-          title="마스크 룰북"
-          columns={["status", "products", "reticle_id", "mask"]}
-          sourceRows={maskCsvRows}
-          aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
-          columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", mask: "mask 이름" }}
-          editableColumn="mask"
-          disabled={!canManage || !!busy}
-          onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "mask")}
-        />
-        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : maskAlerts.length === 0 ? (
-          <EmptyState title="미등록 reticle 알람 없음" hint="mask_info.csv에 없는 reticle_id 가 발견되면 여기에 표시됩니다" />
+        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableMaskAlerts.length === 0 ? (
+          <EmptyState title="판정 대기 미등록 reticle 없음" hint="mask_info.csv에 없는 reticle_id가 발견되면 여기에 표시됩니다" />
         ) : (
-          <ScrollTable
-            rows={maskAlerts}
-            minWidth={1000}
-            columns={["상태", "RETICLE ID", "발견 제품", "발견 step", "발견", "mask 이름", "작업"]}
-            renderRow={a => {
-                  const products = (a.products || [a.product]).filter(Boolean);
-                  const steps = a.step_ids || (a.step_id ? [a.step_id] : []);
-                  return (
-                    <tr key={a.id}>
-                      <td style={nowrapCell} title={decisionTitle(a)}>
-                        <Pill tone={statusTone(a, queued[a.id])} style={{ fontSize: 12 }}>{statusLabel(a, queued[a.id])}</Pill>
-                      </td>
-                      <td style={{ ...nowrapCell, fontFamily: "monospace", fontWeight: 700 }}>{a.reticle_id}</td>
-                      <td style={compactCell} title={products.join(", ")}>{products.join(", ") || "-"}</td>
-                      <td style={{ ...compactCell, fontFamily: "monospace", fontSize: 11 }}
-                        title={steps.join(", ")}>
-                        {steps.slice(0, 3).join(", ") || "-"}
-                        {steps.length > 3 && <span style={inlineMetaStyle}> 외 {steps.length - 3}</span>}
-                      </td>
-                      <td style={compactCell}><DiscoveryCell alert={a} /></td>
-                      <td style={nowrapCell}>
-                        <input style={inputStyle} placeholder="예: MASK_A_v1"
-                          aria-label={`${a.reticle_id} mask 이름`}
-                          value={inputs[a.id]?.mask ?? ""}
-                          onChange={e => updateDecisionValue(a, "mask", e.target.value)}
-                          disabled={!canManage || !!a.decision || a.status !== "active"} />
-                      </td>
-                      <td style={nowrapCell}>
-                        {queued[a.id]
-                          ? <Button style={compactButtonStyle} disabled={!!busy || !!a.decision || a.status !== "active"}
-                              onClick={() => clearDecisionValue(a, "mask")}>입력 취소</Button>
-                          : <span style={inlineMetaStyle}>값 입력 시 자동 대기</span>}{" "}
-                        <HoldButtons alert={a} busy={busy === a.id} onAck={ack} />
-                      </td>
-                    </tr>
-                  );
-            }}
+          <DecisionSpreadsheet
+            title="마스크 룰북"
+            columns={["status", "products", "reticle_id", "step_ids", "discovery", "mask"]}
+            sourceRows={maskCsvRows}
+            aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
+            columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", step_ids: "발견 step", discovery: "발견 근거", mask: "mask 이름" }}
+            editableColumn="mask"
+            disabled={!canManage || !!busy}
+            onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "mask")}
           />
         )}
       </Card>

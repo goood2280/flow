@@ -121,6 +121,15 @@ function compactNameList(values, limit = 3) {
   return names.length > limit ? `${shown} 외 ${names.length - limit}건` : shown;
 }
 
+/* 빨간 신호 문장 안의 건수만 빨간색 bold로 강조한다. 나머지 설명은 검정색으로
+   유지해 신호 색과 본문 가독성을 분리한다. */
+function RedCountText({ text }) {
+  return String(text || "").split(/(\d+(?:개|건))/g).map((part, i) =>
+    /^\d+(?:개|건)$/.test(part)
+      ? <strong key={`${part}-${i}`} style={{ color: "var(--danger)", fontWeight: 900 }}>{part}</strong>
+      : <span key={`${part}-${i}`}>{part}</span>);
+}
+
 /* monospace 테두리 칩 — 대상 TEG 나열용 (색 = 테두리+글자 공용) */
 function TokenChip({ color = "var(--muted)", title, children }) {
   return (
@@ -626,42 +635,45 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     const rows = placementIssues.filter(row => pattern.test(row.light_reason || ""));
     if (rows.length) {
       topErrorMessages.push({
-        key, light: "red",
+        key, light: "red", summary_section: "main",
         text: `${label}가 ${rows.length}건 있습니다 (${compactNameList(rows.map(row => row.teg))}).`,
       });
     }
   });
   [...purposeIssueMap.values()].forEach(item => topErrorMessages.push({
-    key: `purpose-${item.group}-${item.purpose}`, light: "red",
+    key: `purpose-${item.group}-${item.purpose}`, light: "red", summary_section: "main",
     text: `Purpose가 ${item.purpose}인 ${item.group} Chip 내에 TEG가 있습니다 (${compactNameList(item.names)}).`,
   }));
   if (directionIssues.length) {
     topErrorMessages.push({
-      key: "sl-direction", light: "red",
+      key: "sl-direction", light: "red", summary_section: "sl",
       text: `Map 방향과 맞지 않는 TEG가 ${directionIssues.length}건 있습니다 (${compactNameList(directionIssues.map(row => row.name))}).`,
     });
   }
   if (shotOutsideIssues.length) {
     topErrorMessages.push({
-      key: "sl-shot-outside", light: "red",
+      key: "sl-shot-outside", light: "red", summary_section: "sl",
       text: `shot을 완전히 벗어난 TEG가 ${shotOutsideIssues.length}건 있습니다 (${compactNameList(shotOutsideIssues.map(row => row.name))}).`,
     });
   }
   if (shotPartialIssues.length) {
     topErrorMessages.push({
-      key: "sl-shot-partial", light: "red",
+      key: "sl-shot-partial", light: "red", summary_section: "sl",
       text: `shot 경계를 걸쳐 벗어난 TEG가 ${shotPartialIssues.length}건 있습니다 (${compactNameList(shotPartialIssues.map(row => row.name))}).`,
     });
   }
   if (mainInfoMissingNames.length) {
     topErrorMessages.push({
-      key: "main-info-missing", light: "orange",
+      key: "main-info-missing", light: "orange", summary_section: "main",
       text: `MAIN 정보가 없는 항목이 ${mainInfoMissingNames.length}건 있습니다 (${compactNameList(mainInfoMissingNames)}).`,
     });
   }
-  // Summary의 상세 순서도 상단 문장과 같다: MAIN 배치 이상 → MAIN 정보없음 →
-  // 한 줄 간격 → S/L TEG. 자기 MAIN 안의 노란 항목은 아래 상세 패널에서 확인한다.
-  const summaryRows = [...mainRedIssues, ...mainInfoIssues, ...slIssues];
+  // Summary는 카테고리 단위로 완전히 분리한다. 각 카테고리의 집계 바로 아래에
+  // 그 카테고리의 이상 행만 이어져 S/L과 MAIN이 한 목록에서 섞이지 않는다.
+  const slTopErrorMessages = topErrorMessages.filter(item => item.summary_section === "sl");
+  const mainTopErrorMessages = topErrorMessages.filter(item => item.summary_section === "main");
+  const slSummaryRows = slIssues;
+  const mainSummaryRows = [...mainRedIssues, ...mainInfoIssues];
   const hasShotIssue = (seeTarget && bad.length > 0)
     || (seeMain && mainHasAttention);
   // shot 배치도 — 기본은 **빨간불만**(지금 고쳐야 할 것). "전체 표시" 를 켜면
@@ -869,19 +881,21 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       ) },
     { key: "issue_scope", label: "구분" },
     { key: "issue_reason", label: "결과", render: r => (
-        <span style={{ color: LIGHT_COLORS[r.light] || "var(--warn)",
-                       fontWeight: 700 }}>{r.issue_reason || ""}</span>
+        <span style={{ color: r.light === "red" ? "var(--text-primary)"
+                         : (LIGHT_COLORS[r.light] || "var(--warn)"),
+                       fontWeight: r.light === "red" ? 600 : 700 }}>{r.issue_reason || ""}</span>
       ) },
     { key: "delta", label: "좌표 차이", align: "right", render: r =>
         r.dx === null || r.dx === undefined ? "-" : `ΔX ${fmtN(r.dx)} · ΔY ${fmtN(r.dy)}` },
   ];
-  // 상단 Summary와 상세 집계가 같은 수·같은 분류를 사용하도록 단일 렌더 경로로 둔다.
-  const aggregateTrafficRows = () => (
-    <>
-      {seeTarget && targets.total > 0 && (
+  // 상단 Summary와 상세 집계가 같은 수·같은 분류를 사용하도록 카테고리별
+  // 렌더 함수를 공유한다. 빨간 신호의 설명은 검정, 건수만 빨간 bold다.
+  const slTrafficRow = () => seeTarget && targets.total > 0 ? (
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-          <strong style={{ minWidth: 70, fontSize: 12 }}>S/L TEG</strong>
-          <Pill tone={lightCounts.red ? "danger" : "neutral"}>🔴 이상 {lightCounts.red || 0}개</Pill>
+          <Pill tone={lightCounts.red ? "danger" : "neutral"}>
+            <span style={{ color: "var(--text-primary)" }}>🔴 이상 </span>
+            <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{lightCounts.red || 0}개</strong>
+          </Pill>
           <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
             title={`ΔX·ΔY가 각각 ${slCoordinateTolerance} 이내 — 양호로 예상되는 작은 차이`}>
             🟡 확인필요 {lightCounts.yellow || 0}개
@@ -898,13 +912,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             </Pill>
           )}
         </div>
-      )}
-      {seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) && (
-        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center",
-                      paddingTop: seeTarget && targets.total > 0 ? 8 : 0,
-                      borderTop: seeTarget && targets.total > 0 ? "1px solid var(--line)" : "none" }}>
-          <strong style={{ minWidth: 70, fontSize: 12 }}>MAIN TEG</strong>
-          <Pill tone={mainRedCount ? "danger" : "neutral"}>🔴 이상 {mainRedCount}개</Pill>
+      ) : null;
+  const mainTrafficRow = () => seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) ? (
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+          <Pill tone={mainRedCount ? "danger" : "neutral"}>
+            <span style={{ color: "var(--text-primary)" }}>🔴 이상 </span>
+            <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{mainRedCount}개</strong>
+          </Pill>
           <Pill tone={mainYellowCount ? "warn" : "neutral"}
             title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
             🟡 확인필요 {mainYellowCount}개
@@ -912,9 +926,53 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <Pill tone={mainOrangeCount ? "warn" : "neutral"}>🟠 MAIN 정보없음 {mainOrangeCount}개</Pill>
           {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
         </div>
-      )}
-    </>
-  );
+      ) : null;
+  const aggregateTrafficRows = () => <>{slTrafficRow()}{mainTrafficRow()}</>;
+
+  const renderSummaryMessages = messages => messages.map(item => (
+    <div key={item.key} role="alert"
+      style={{ fontSize: 12, fontWeight: 600, color: item.light === "red"
+        ? "var(--text-primary)" : LIGHT_COLORS[item.light || "orange"], lineHeight: 1.55 }}>
+      {item.light === "orange" ? "🟠" : "🔴"}{" "}
+      {item.light === "red" ? <RedCountText text={item.text} /> : item.text}
+    </div>
+  ));
+
+  const renderSummaryIssueRows = (rows, category) => rows.length > 0 ? (
+    <div style={{ minWidth: 0, marginTop: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5, color: "var(--text-primary)" }}>
+        {category} TEG별 판정 ·{" "}
+        <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{rows.length}건</strong>
+      </div>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 8,
+                    overflow: "auto", maxHeight: 300, background: "var(--bg-primary)" }}>
+        {rows.map((item, i) => (
+          <div key={`${item.issue_scope}-${item.issue_name}-${i}`}
+            style={{ display: "grid", gridTemplateColumns: "18px minmax(110px, 0.7fr) minmax(180px, 1.5fr)",
+                     gap: 7, alignItems: "center", padding: "7px 9px",
+                     borderBottom: i < rows.length - 1 ? "1px solid var(--line)" : "none",
+                     fontSize: 12 }}>
+            <TrafficLight color={item.light} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: "monospace", fontWeight: 800 }}>{item.issue_name}</div>
+              <div style={{ fontSize: 10, color: "var(--muted)" }}>{item.issue_scope}</div>
+            </div>
+            <div style={{ minWidth: 0,
+                          color: item.light === "red" ? "var(--text-primary)"
+                            : (LIGHT_COLORS[item.light] || "var(--warn)"),
+                          fontWeight: item.light === "red" ? 600 : 700 }}>
+              {item.issue_reason || "확인 필요"}
+              {item.dx !== null && item.dx !== undefined && (
+                <span style={{ display: "block", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>
+                  ΔX {fmtN(item.dx)} · ΔY {fmtN(item.dy)}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -943,79 +1001,63 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                                            ? "rgba(220, 38, 38, 0.05)"
                                            : (mainInfoIssues.length || warningIssues.length)
                                              ? "rgba(217, 154, 26, 0.06)" : "var(--surface-2)" }}>
-        <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
-          <strong style={{ fontSize: 14 }}>Summary</strong>
-          {aggregateTrafficRows()}
-        </div>
+        <strong style={{ display: "block", fontSize: 14, marginBottom: 10 }}>Summary</strong>
+
+        {seeTarget && targets.total > 0 && (
+          <section aria-label="S/L TEG Summary"
+            style={{ padding: 11, border: "1px solid var(--line)", borderRadius: 8,
+                     background: "var(--bg-primary)" }}>
+            <div style={{ display: "flex", gap: 7, alignItems: "baseline", marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>카테고리</span>
+              <strong style={{ fontSize: 14 }}>S/L TEG</strong>
+            </div>
+            {slTrafficRow()}
+            <div style={{ display: "grid", gap: 2, marginTop: 9 }}>
+              {renderSummaryMessages(slTopErrorMessages)}
+              <div role={coordinateIssueNames.length ? "alert" : undefined}
+                style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.55,
+                         color: coordinateIssueNames.length ? "var(--text-primary)" : "var(--ok)" }}>
+                {coordinateIssueNames.length ? "🔴" : "🟢"}{" "}
+                S/L TEG 좌표에 이상이 보이는 TEG가{" "}
+                {coordinateIssueNames.length
+                  ? <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{coordinateIssueNames.length}건</strong>
+                  : <strong>0건</strong>}입니다
+                {coordinateIssueNames.length ? ` (${compactNameList(coordinateIssueNames)}).` : "."}
+              </div>
+            </div>
+            {renderSummaryIssueRows(slSummaryRows, "S/L")}
+          </section>
+        )}
+
+        {seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) && (
+          <section aria-label="MAIN TEG Summary"
+            style={{ padding: 11, marginTop: 12, border: "1px solid var(--line)", borderRadius: 8,
+                     background: "var(--bg-primary)" }}>
+            <div style={{ display: "flex", gap: 7, alignItems: "baseline", marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>카테고리</span>
+              <strong style={{ fontSize: 14 }}>MAIN TEG</strong>
+            </div>
+            {mainTrafficRow()}
+            <div style={{ display: "grid", gap: 2, marginTop: 9 }}>
+              {renderSummaryMessages(mainTopErrorMessages)}
+            </div>
+            {renderSummaryIssueRows(mainSummaryRows, "MAIN")}
+          </section>
+        )}
 
         <div style={{ fontSize: 12, color: "var(--warn)", fontWeight: 800, lineHeight: 1.55,
-                      padding: "7px 9px", marginBottom: 9, borderRadius: 6,
+                      padding: "7px 9px", marginTop: 12, borderRadius: 6,
                       background: "rgba(245, 158, 11, 0.12)", border: "1px solid var(--warn)" }}>
           ⚠ 주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
           이상으로 표시된 항목은 원문과 실제 배치를 눈으로 확인하고, 이 결과는 크로스체크 용도로 사용해 주세요.
         </div>
 
-        {topErrorMessages.map(item => (
-          <div key={item.key} role="alert" style={{ fontSize: 12, fontWeight: 700,
-                                                    color: LIGHT_COLORS[item.light || "red"], lineHeight: 1.55 }}>
-            {item.light === "orange" ? "🟠" : "🔴"} {item.text}
-          </div>
-        ))}
-        <div role={coordinateIssueNames.length ? "alert" : undefined}
-          style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.55, marginTop: 14,
-                   color: coordinateIssueNames.length ? "var(--danger)" : "var(--ok)" }}>
-          {coordinateIssueNames.length ? "🔴" : "🟢"} S/L TEG 좌표에 이상이 보이는 TEG가 {coordinateIssueNames.length}건입니다
-          {coordinateIssueNames.length ? ` (${compactNameList(coordinateIssueNames)}).` : "."}
-        </div>
-
-        {summaryRows.length > 0 && (
-          <div style={{ display: "grid", gap: 12, marginTop: 10,
-                        gridTemplateColumns: res.shot?.available && hasShotIssue
-                          ? "minmax(300px, 1fr) minmax(340px, 420px)" : "1fr" }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
-                TEG별 판정 · {summaryRows.length}건
-              </div>
-              <div style={{ border: "1px solid var(--line)", borderRadius: 8,
-                            overflow: "auto", maxHeight: 300, background: "var(--bg-primary)" }}>
-                {summaryRows.map((item, i) => {
-                  const sectionBreak = item.summary_section === "sl"
-                    && (i === 0 || summaryRows[i - 1]?.summary_section !== "sl");
-                  return (
-                  <div key={`${item.issue_scope}-${item.issue_name}-${i}`}
-                    style={{ display: "grid", gridTemplateColumns: "18px minmax(110px, 0.7fr) minmax(180px, 1.5fr)",
-                             gap: 7, alignItems: "center", padding: "7px 9px",
-                             marginTop: sectionBreak && i > 0 ? 10 : 0,
-                             borderTop: sectionBreak && i > 0 ? "1px solid var(--line)" : "none",
-                             borderBottom: i < summaryRows.length - 1 ? "1px solid var(--line)" : "none",
-                             fontSize: 12 }}>
-                    <TrafficLight color={item.light} />
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontFamily: "monospace", fontWeight: 800 }}>{item.issue_name}</div>
-                      <div style={{ fontSize: 10, color: "var(--muted)" }}>{item.issue_scope}</div>
-                    </div>
-                    <div style={{ minWidth: 0, color: LIGHT_COLORS[item.light] || "var(--warn)",
-                                  fontWeight: 700 }}>
-                      {item.issue_reason || "확인 필요"}
-                      {item.dx !== null && item.dx !== undefined && (
-                        <span style={{ display: "block", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>
-                          ΔX {fmtN(item.dx)} · ΔY {fmtN(item.dy)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  );
-                })}
-              </div>
+        {res.shot?.available && hasShotIssue && (
+          <div style={{ minWidth: 0, maxWidth: 420, marginTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
+              Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요
             </div>
-            {res.shot?.available && hasShotIssue && (
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
-                  Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요
-                </div>
-                <ShotView shot={res.shot} items={shotItems} size={400} />
-              </div>
-            )}
+            <ShotView shot={res.shot} items={shotItems} size={400} />
           </div>
         )}
       </div>

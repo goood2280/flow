@@ -909,6 +909,90 @@ def test_vertical_teg_in_horizontal_map_is_separate_direction_error_and_pchk_ski
     assert result["teg"]["summary"]["direction_mismatch"] == 1
 
 
+def test_mixed_anomaly_payload_keeps_each_reason_distinct(monkeypatch):
+    """한 Mapfile의 복합 이상이 각 원인별 판정으로 동시에 남아야 한다."""
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg["check"]["die_tol"] = 0.0
+    cfg["ebeam_scale"] = 1.0
+    cfg["teg_default_w"] = 3.0
+    cfg["teg_default_h"] = 1.0
+    ref = {
+        "H_PCHK": [{"x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1,
+                    "dir": "h", "top_cell": ""}],
+        "H_OK": [{"x": 1.0, "y": 7.0, "w": 1.0, "h": 1.0,
+                  "dir": "h", "top_cell": ""}],
+        "H_COORD_BAD": [{"x": 3.0, "y": 7.0, "w": 1.0, "h": 1.0,
+                         "dir": "h", "top_cell": ""}],
+        "H_OVER_MAIN": [{"x": -7.0, "y": -3.0, "w": 1.0, "h": 1.0,
+                         "dir": "h", "top_cell": ""}],
+        "V_WRONG_DIR": [{"x": -6.0, "y": 7.0, "w": 1.0, "h": 1.0,
+                         "dir": "v", "top_cell": ""}],
+        "H_SHOT_PART": [{"x": 9.5, "y": 6.0, "w": 1.0, "h": 1.0,
+                         "dir": "h", "top_cell": ""}],
+        "H_SHOT_OUT": [{"x": 12.0, "y": 6.0, "w": 1.0, "h": 1.0,
+                        "dir": "h", "top_cell": ""}],
+    }
+    main_cells = [
+        {"name": "MAIN01", "x": -8.0, "y": -4.0, "w": 8.0, "h": 8.0},
+        {"name": "MAIN02", "x": 2.0, "y": -4.0, "w": 8.0, "h": 8.0},
+    ]
+    monkeypatch.setattr(teg_check._tm, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        teg_check, "load_ref", lambda vehicle: (ref, {}, "Teg_location.csv", ""),
+    )
+    monkeypatch.setattr(teg_check, "_shot_info", lambda vehicle, extra_anchors=None: {
+        "available": True, "checked": True,
+        "shot_w_mm": 20.0, "shot_h_mm": 20.0,
+        "cells": main_cells, "main_cells": main_cells,
+    })
+    monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
+        "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
+    })
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({
+        "P": {"MAIN01": (8.0, 8.0), "MAIN02": (8.0, 8.0)},
+    }, None))
+    source = (
+        "#teg-map\n"
+        "module H_PCHK (0,0) ! H_PCHK\n"
+        "module H_OK (1,7) ! H_OK,H_PCHK\n"
+        "module H_COORD_BAD (8,7) ! H_COORD_BAD,H_PCHK\n"
+        "module H_OVER_MAIN (-7,-3) ! H_OVER_MAIN,H_PCHK\n"
+        "module V_WRONG_DIR (-6,7) ! V_WRONG_DIR,H_PCHK\n"
+        "module H_SHOT_PART (9.5,6) ! H_SHOT_PART,H_PCHK\n"
+        "module H_SHOT_OUT (12,6) ! H_SHOT_OUT,H_PCHK\n"
+        "module INNER_OWN (-7,-3) ! MAIN01,INNER_OWN,H_PCHK\n"
+        "module INNER_OTHER (3,-3) ! MAIN01,INNER_OTHER,H_PCHK\n"
+        "module INNER_MULTI (-0.5,-3) ! MAIN01,INNER_MULTI,H_PCHK\n"
+    )
+
+    result = teg_check.inspect("P", source)
+    rows = {row["ref_teg"]: row for row in result["teg"]["rows"]}
+    main_rows = {
+        row["teg"]: row
+        for group in result["teg"]["main_groups"]
+        for row in group["tegs"]
+    }
+
+    assert rows["H_OK"]["light"] == "green"
+    assert rows["H_COORD_BAD"]["light_reason"] == "불일치"
+    assert rows["H_OVER_MAIN"]["light_reason"] == "die 침범"
+    assert rows["V_WRONG_DIR"]["light_reason"] == (
+        "방향 오류 · Vertical(R) TEG가 Horizontal Map에 포함"
+    )
+    assert rows["H_SHOT_PART"]["light_reason"] == "shot 경계 벗어남"
+    assert rows["H_SHOT_OUT"]["light_reason"] == "shot 완전 이탈"
+    assert main_rows["INNER_OWN"]["light_reason"] == "MAIN01 die 안"
+    assert main_rows["INNER_OTHER"]["light_reason"] == "다른 MAIN(MAIN02) 안"
+    assert main_rows["INNER_MULTI"]["light_reason"] == (
+        "여러 MAIN(MAIN01, MAIN02)에 걸침"
+    )
+    assert result["teg"]["summary"]["direction_mismatch"] == 1
+    assert result["teg"]["summary"]["shot_partial"] == 1
+    assert result["teg"]["summary"]["shot_outside"] == 1
+
+
 def test_shot_partial_and_complete_exit_are_separate_errors_even_when_delta_is_zero(
         monkeypatch):
     """좌표가 정답지와 같아도 shot 경계 걸침과 완전 이탈은 별도 상세 오류다."""

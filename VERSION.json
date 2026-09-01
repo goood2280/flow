@@ -1,7 +1,30 @@
 {
-  "version": "10.4.155",
+  "version": "10.4.157",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.157",
+      "date": "2026-08-31",
+      "tag": "perf",
+      "title": "캐시 메모리 80% 안정 운용 목표",
+      "changes": [
+        "[메모리 목표] 캐시 형식·hit 경로·disk fallback을 바꾸지 않고 전역 캐시 풀에 기본 0.80 안정 계수를 적용해 기존 대비 약 20%의 프로세스·요청 순간 메모리 여유 확보",
+        "[상한 일관성] FileBrowser preview와 Reformatize의 개별 env 고정값도 개발 역할 자동 축소만 제외할 뿐 호스트 총량 기반 전역 상한과 80% 안정 계수는 우회하지 못하도록 통일",
+        "[운영 가시성] 캐시 종합 현황에 memory_target_ratio를 노출하고 FLOW_CACHE_MEMORY_TARGET_RATIO(0.5~1.0)로 긴급 조정 가능하며 잘못된 값은 안전 기본 0.80으로 복귀",
+        "[연속성] 기존 LRU·singleflight·disk cache fallback과 캐시 생성 동시성 제한을 유지해 용량 축소가 동기 재생성 폭증이나 응답 경로 변경으로 이어지지 않도록 구성"
+      ]
+    },
+    {
+      "version": "10.4.156",
+      "date": "2026-08-31",
+      "tag": "fix",
+      "title": "매칭알람 스프레드시트 단일 보기",
+      "changes": [
+        "[중복 보기] PPID·Vehicle·마스크 알람마다 스프레드시트와 기존 상세 표가 함께 보여 같은 판정 행이 두 번 노출됨 → 상시 스프레드시트 도입 뒤 상세 표 렌더가 남아 있었음 → 판정 대기 건은 스프레드시트만 표시하고 카드 건수와 빈 상태도 같은 대기 목록을 기준으로 통일",
+        "[판정 근거] 상세 표를 제거하면 대상 step·추천·설비/PPID·발견 lot/wafer 근거도 함께 사라질 수 있음 → 기존 상세 셀에만 근거가 묶여 있었음 → 추천 function step, 추천 근거, 발견 근거, 대상 step을 읽기 전용 스프레드시트 열로 옮기고 판정 열만 편집 가능하게 유지",
+        "[검증] 보기 통합 과정에서 Excel 붙여넣기·자동 반영대기·배치 저장 계약이 흔들릴 위험 → 공용 SpreadsheetPasteGrid와 기존 updateDecisionValues 경로는 유지하고 디자인·기능 경계 검사 및 Vite production build로 검증"
+      ]
+    },
     {
       "version": "10.4.155",
       "date": "2026-08-31",
