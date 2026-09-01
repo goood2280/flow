@@ -142,7 +142,10 @@ def _read_disk(key: str, sig: str) -> dict | None:
     if str(raw.get("sig") or "") != str(sig or ""):
         return None
     values = raw.get("values")
-    if not isinstance(values, list) or not values:
+    complete = bool(raw.get("complete"))
+    # 완성된 0건과 아직 준비 중인 0건은 다르다. 전자는 정상 캐시 hit이고,
+    # 후자만 miss 로 돌려 빌드/재폴링을 이어간다.
+    if not isinstance(values, list) or (not values and not complete):
         return None
     meta = raw.get("meta")
     return {
@@ -152,7 +155,7 @@ def _read_disk(key: str, sig: str) -> dict | None:
         "sig": str(raw.get("sig") or ""),
         "values": [str(v) for v in values],
         "meta": dict(meta) if isinstance(meta, dict) else {},
-        "complete": bool(raw.get("complete")),
+        "complete": complete,
         "built_at": str(raw.get("built_at") or ""),
         "built_epoch": float(raw.get("built_epoch") or 0.0),
     }
@@ -242,11 +245,12 @@ def get(product: str, sig: str, kind: str = "root") -> dict | None:
 
 def put(product: str, sig: str, values: list, *, kind: str = "root",
         meta: dict | None = None, complete: bool = True) -> dict:
-    """빌드 결과를 보관한다. **빈 목록은 캐시하지 않는다.**
+    """빌드 결과를 보관한다. **미완성 빈 목록만 캐시하지 않는다.**
 
-    빈 결과는 "이 제품에 lot 이 없다"가 아니라 대개 lookup 캐시 빌드 중이라는
-    뜻이고(프런트가 `lookup_cache.queued` 를 보고 재폴링한다), 그걸 굳혀두면
-    빌드가 끝나도 빈 드롭다운이 남는다.
+    ``complete=False``인 빈 결과는 대개 lookup 빌드 중이므로 굳히지 않는다.
+    반대로 ``complete=True``인 빈 결과는 "이 제품에 lot이 없음"이라는 정상적인
+    최종 상태다. 이를 버리면 모든 요청이 같은 pool을 다시 만들고 UI도 영원히
+    준비 중으로 남는다.
     """
     clean = [str(v) for v in (values or []) if str(v or "").strip()]
     entry = {
@@ -260,7 +264,7 @@ def put(product: str, sig: str, values: list, *, kind: str = "root",
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "built_epoch": time.time(),
     }
-    if not clean:
+    if not clean and not complete:
         return _public(entry, "")
     with _LOCK:
         _remember_locked(entry)

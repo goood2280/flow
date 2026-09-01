@@ -39,9 +39,9 @@ def test_batch_groups_versions_and_resolves_ppid_from_new_step(tmp_path, monkeyp
     knob_path = tmp_path / alerts.PPID_KNOB_FILE
     _write_csv(vehicle_path, ["vehicle", "product", "step_id", "step_desc"], [])
     _write_csv(knob_path,
-               ["feature_name", "function_step", "rule_order", "operator", "value", "category"],
+               ["feature_name", "function_step", "rule_order", "operator", "value", "category", "use"],
                [{"feature_name": "KNOB_A", "function_step": "ETCH", "rule_order": "RO",
-                 "operator": "", "value": "", "category": "RO"}])
+                 "operator": "", "value": "", "category": "RO", "use": "true"}])
 
     source_alerts = [
         {"id": "step-1", "type": "unmatched_step", "vehicle": "V1", "product": "P1", "step_id": "S1"},
@@ -80,6 +80,7 @@ def test_batch_groups_versions_and_resolves_ppid_from_new_step(tmp_path, monkeyp
     added = [row for row in knob_rows if row["rule_order"] != "RO"]
     assert [(row["rule_order"], row["value"], row["category"]) for row in added] == [
         ("R1", "PP_A", "A"), ("R2", "PP_B", "B")]
+    assert [row["use"] for row in added] == ["true", "true"]
 
 
 def test_batch_adds_mask_info_rows_and_versions_the_file(tmp_path, monkeypatch):

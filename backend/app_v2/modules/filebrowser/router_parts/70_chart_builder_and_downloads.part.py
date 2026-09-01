@@ -633,6 +633,7 @@ class FileBrowserSettingsReq(BaseModel):
     preview_max_rows: int = LATEST_PREVIEW_ROWS
     schema_column_page_size: int = DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
     csv_rules: dict = {}
+    file_descriptions: dict[str, str] = {}
     hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
     db_name_aliases: dict[str, str] = {}
     versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]

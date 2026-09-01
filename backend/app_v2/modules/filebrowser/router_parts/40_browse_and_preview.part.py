@@ -1,4 +1,5 @@
 @router.get("/base-file-view")
+@_track_filebrowser_sql_execution("base")
 def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                    select_cols: str = Query(""),

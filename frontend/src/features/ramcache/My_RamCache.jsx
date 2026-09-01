@@ -349,6 +349,7 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
   const lookup = queues?.lookup_build || {};
   const rootPrefetch = queues?.root_prefetch || {};
   const externalQueued = Number(worker.depth || 0) + (lookup.queued || []).length
+    + (lookup.retrying || []).length
     + Number(rootPrefetch.depth || 0)
     + Number(queues?.match_cache?.queued || 0) + Number(queues?.product_ram?.queued || 0);
   const stopTarget = matchCache.running ? String(matchCache.current || "") : "";
@@ -441,7 +442,9 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
         color: "var(--text-secondary)", fontFamily: "monospace" }}>
         <span>개발 워커: 실행 {(worker.running || []).length} / 대기 {worker.depth || 0}</span>
         <span>worker 실사용 RAM {Number(worker.load?.mem_effective_gb || 0).toFixed(2)}GB</span>
-        <span>lookup: {lookup.current || "-"} / 대기 {(lookup.queued || []).length}</span>
+        <span>lookup: {lookup.current || "-"} / 대기 {(lookup.queued || []).length}
+          {(lookup.retrying || []).length > 0 ? ` / 재시도 ${(lookup.retrying || []).length}` : ""}</span>
+        {lookup.paused && <span style={{ color: "var(--warn)" }}>lookup 일시정지: {lookup.pause_reason || "resource guard"}</span>}
         <span>Root 유휴 예열: {rootPrefetch.current_root || "-"} / 대기 {rootPrefetch.depth || 0}</span>
         <span>FAB 대기 {queues?.match_cache?.queued || 0}</span>
         <span>제품 RAM 대기 {queues?.product_ram?.queued || 0}</span>

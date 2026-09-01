@@ -320,6 +320,7 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
 
 
 @router.get("/root-parquet-view")
+@_track_filebrowser_sql_execution("rootpq")
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                       select_cols: str = Query(""),

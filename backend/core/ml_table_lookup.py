@@ -2851,30 +2851,52 @@ def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
                 lock_pid = int(owner_meta.get("pid") or 0)
             except Exception:
                 lock_pid = 0
-            # worker 재시작 후 heartbeat owner가 새 PID로 바뀐 경우에도, 같은
-            # 머신의 새 worker는 이전 PID를 검사해 OOM 고아 lock을 즉시 회수한다.
-            orphaned_local_process_lock = bool(
+            same_host_owner = bool(
                 lock_host
                 and lock_host.casefold() == socket.gethostname().casefold()
                 and lock_pid > 0
-                and lock_pid != os.getpid()
-                and not _local_pid_alive(lock_pid)
             )
+            local_owner_active = bool(
+                same_host_owner and _local_pid_alive(lock_pid)
+            )
+            # worker 재시작 후 heartbeat owner가 새 PID로 바뀐 경우에도, 같은
+            # 머신의 새 worker는 이전 PID를 검사해 OOM 고아 lock을 즉시 회수한다.
+            orphaned_local_process_lock = bool(
+                same_host_owner
+                and lock_pid != os.getpid()
+                and not local_owner_active
+            )
+            worker_owner_active = False
             if lock_owner_id and lock_owner_id != owner_id:
                 try:
                     from core import worker_dispatch as _wd
 
                     hb = _wd.heartbeat_meta(fresh_read=True)
                     hb_owner = str(hb.get("owner") or "")
+                    worker_owner_active = bool(
+                        hb_owner
+                        and lock_owner_id == hb_owner
+                        and _wd.worker_alive(fresh_read=True)
+                    )
                     orphaned_worker_lock = bool(
                         hb_owner
                         and lock_owner_id == hb_owner
-                        and not _wd.worker_alive(fresh_read=True)
+                        and not worker_owner_active
                     )
                 except Exception:
                     orphaned_worker_lock = False
-            if attempt == 0 and (
+                    worker_owner_active = False
+            # Age is only a fallback for an owner whose liveness cannot be
+            # verified.  A wide lookup build can legitimately exceed 30 min;
+            # reclaiming a live owner's old lock starts two writers against
+            # the same `.build` directory.
+            age_expired = bool(
                 age > BUILD_LOCK_STALE_SECONDS
+                and not local_owner_active
+                and not worker_owner_active
+            )
+            if attempt == 0 and (
+                age_expired
                 or orphaned_worker_lock
                 or orphaned_local_process_lock
             ):
@@ -2906,6 +2928,31 @@ def _release_build_lock(fd: int | None, lock_fp: Path) -> None:
         lock_fp.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+def _start_build_lock_heartbeat(lock_fp: Path) -> tuple[threading.Event, threading.Thread]:
+    """Keep a long-running lookup build lease fresh without recreating it.
+
+    ``os.utime`` fails when another owner has removed the file; unlike
+    ``Path.touch`` it cannot accidentally recreate an already released lock.
+    """
+    stop = threading.Event()
+    interval = max(5.0, min(60.0, BUILD_LOCK_STALE_SECONDS / 3.0))
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            try:
+                os.utime(lock_fp, None)
+            except OSError:
+                return
+
+    thread = threading.Thread(
+        target=_beat,
+        name="ml-table-lookup-build-lock-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
 
 
 def _normalize_product(product: str) -> str:
@@ -3015,6 +3062,8 @@ def _job_status_for(fp: Path) -> str:
     if snap.get("running") and str(snap.get("current") or "") == target:
         return "running"
     if target in [str(p) for p in snap.get("queued") or []]:
+        return "queued"
+    if target in [str(p) for p in snap.get("retrying") or []]:
         return "queued"
     return ""
 
@@ -3714,6 +3763,7 @@ def build_lookup_cache(fp: Path, *, force: bool = False) -> dict[str, Any]:
             "cache_dir": status.get("cache_dir") or "",
             "meta": status.get("meta") or {},
         }
+    heartbeat_stop, heartbeat_thread = _start_build_lock_heartbeat(lock_fp)
     try:
         status = cache_status(fp)
         if not force and lookup_artifacts_fresh(fp, status):
@@ -3728,6 +3778,8 @@ def build_lookup_cache(fp: Path, *, force: bool = False) -> dict[str, Any]:
                 "reason": "cancelled_by_admin", "error": "",
                 "cache_dir": str(cache_dir_for(fp))}
     finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
         _release_build_lock(lock_fd, lock_fp)
 
 
@@ -3909,9 +3961,11 @@ def _worker_loop() -> None:
                     label=f"ml_lookup:{fp.stem}",
                     # 관리자 요청 빌드는 idle 을 기다리지 않는다 (immediate).
                     local_idle_only=not immediate,
-                    # 자동 lookup 캐시는 worker가 잠시 바쁘거나 끊겨도 운영 API에서
-                    # 수백 MB parquet를 펼치지 않는다. 공유 큐에서 복귀 후 계속한다.
-                    local_fallback=bool(immediate),
+                    # 자동 lookup도 worker가 오프라인이면 운영 API의 idle lane에서
+                    # 이어받는다. lookup은 검색의 선행 산출물이라 worker 복귀까지
+                    # 무기한 비워둘 수 없다. scan gate + shared build lock이 중복
+                    # 실행을 막는다.
+                    local_fallback=True,
                     durable=not immediate,
                     priority="normal" if immediate else "maintenance",
                     dedupe_key=f"ml_lookup:{fp.stem}",

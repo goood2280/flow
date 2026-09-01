@@ -557,6 +557,27 @@ def _normalize_csv_rules(raw_rules) -> dict[str, dict]:
     return out
 
 
+def _normalize_file_descriptions(raw_descriptions) -> dict[str, str]:
+    if not isinstance(raw_descriptions, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_file, raw_description in list(raw_descriptions.items())[:5000]:
+        key = _clean_rule_file_key(str(raw_file or ""))
+        description = str(raw_description or "").strip()[:500]
+        if description:
+            out[key] = description
+    return out
+
+
+def _file_description_for(file: str, fallback: str = "", settings: dict | None = None) -> str:
+    settings = settings or _load_filebrowser_settings()
+    needle = str(file or "").strip().replace("\\", "/").casefold()
+    for key, description in (settings.get("file_descriptions") or {}).items():
+        if str(key or "").replace("\\", "/").casefold() == needle:
+            return str(description or "").strip() or str(fallback or "")
+    return str(fallback or "")
+
+
 def _normalize_filebrowser_settings(raw) -> dict:
     data = copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
     if not isinstance(raw, dict):
@@ -597,6 +618,7 @@ def _normalize_filebrowser_settings(raw) -> dict:
         raise HTTPException(400, "schema_column_page_size must be an integer")
     data["schema_column_page_size"] = max(1, min(MAX_SCHEMA_COLUMN_PAGE_SIZE, schema_page))
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
+    data["file_descriptions"] = _normalize_file_descriptions(raw.get("file_descriptions") or {})
     data["db_name_aliases"] = _normalize_db_name_aliases(raw.get("db_name_aliases") or {})
     data["auto_s3_upload_on_save"] = bool(raw.get("auto_s3_upload_on_save", data.get("auto_s3_upload_on_save", False)))
     data["preview_cache_enabled"] = bool(raw.get("preview_cache_enabled", data.get("preview_cache_enabled", True)))

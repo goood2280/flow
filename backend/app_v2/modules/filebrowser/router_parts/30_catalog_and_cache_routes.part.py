@@ -872,6 +872,9 @@ def base_dir_children(path: str = Query(""), request: Request = None):
         )
         truncated = truncated or cut
         for item in found:
+            item = dict(item)
+            if item.get("kind") != "dir":
+                item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
             key = str(item.get("path") or "").lower()
             if key and key not in seen:
                 seen.add(key)
@@ -886,7 +889,7 @@ def base_dir_children(path: str = Query(""), request: Request = None):
     }
 
 
-def _base_files_fast_payload(base_root: Path, db_root: Path, folder_names: set[str]) -> dict:
+def _base_files_fast_payload(base_root: Path, db_root: Path, folder_names: set[str], settings: dict) -> dict:
     """Return only first-level Files inventory; never recurse into folders."""
     files: list[dict] = []
     dirs: list[dict] = []
@@ -957,6 +960,8 @@ def _base_files_fast_payload(base_root: Path, db_root: Path, folder_names: set[s
             })
             seen_files.add(name.casefold())
     files.sort(key=lambda item: (item.get("order", 999), item["name"].casefold()))
+    for item in files:
+        item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
     dirs.sort(key=lambda item: item["name"].casefold())
     return {
         "files": dirs + files,
@@ -981,10 +986,12 @@ def base_files(request: Request = None, fast: bool = Query(False)):
     settings = _load_filebrowser_settings()
     single_file_folders = _single_file_folder_names(settings)
     versioned_dirs = _versioned_single_file_dir_names(settings)
+    description_sig = tuple(sorted((settings.get("file_descriptions") or {}).items()))
     if fast:
         cache_key = (
             "base_files_fast",
             tuple(sorted(single_file_folders)),
+            description_sig,
             _path_sig(base_root),
             _path_sig(db_root),
         )
@@ -993,7 +1000,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
             return cached
         return _list_cache_set(
             cache_key,
-            _base_files_fast_payload(base_root, db_root, single_file_folders),
+            _base_files_fast_payload(base_root, db_root, single_file_folders, settings),
         )
     _ensure_single_file_cache_dirs(base_root, db_root)
     if hasattr(PATHS, "cache_dir") and hasattr(PATHS, "db_cache_dir"):
@@ -1010,6 +1017,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
         "base_files",
         tuple(sorted(single_file_folders)),
         tuple(sorted(versioned_dirs)),
+        description_sig,
         _path_sig(base_root),
         _path_sig(_db_root()),
         _single_file_folder_sigs(base_root, single_file_folders),
@@ -1164,6 +1172,8 @@ def base_files(request: Request = None, fast: bool = Query(False)):
                 "order": meta["order"],
             })
             seen_names.add(f.name.lower())
+    for item in files:
+        item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
     deduped_dirs = {}
     for d in dirs:

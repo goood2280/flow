@@ -1,7 +1,21 @@
 {
-  "version": "10.4.160",
+  "version": "10.4.161",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.161",
+      "date": "2026-09-01",
+      "tag": "fix",
+      "title": "lookup 캐시 오프라인 복구·빈 결과·장기 빌드 안전성 보강",
+      "changes": [
+        "[워커 오프라인 복구] durable lookup 작업이 죽은 개발 워커 큐에서 같은 task id로 무기한 대기하던 경로를 운영 API의 idle 로컬 lane 폴백으로 전환하고, 미클레임 중복 큐를 회수한 뒤 scan gate와 공유 build lock으로 중복 실행 방지",
+        "[상태 전이] 지연 재시도 timer를 queued 상태와 관리 화면 재시도 건수로 노출하고, 산출물·실행 큐 없이 start 기록만 남은 고아 running 상태는 stale로 수렴시켜 7일 동안 진행 중으로 고정되지 않도록 수정",
+        "[빈 lookup] candidate index가 정상 완료됐지만 후보가 0건인 결과를 complete=true로 RAM·디스크에 저장하고 API도 준비 완료 빈 목록으로 반환해 재폴링·재빌드 루프와 불필요한 원천 fallback 차단",
+        "[장기·동시 빌드] 30분을 넘는 정상 lookup 빌드 lock에 heartbeat를 추가하고 동일 host PID/worker heartbeat가 살아 있으면 age만으로 회수하지 않아 같은 .build 디렉터리의 이중 writer 경쟁 방지",
+        "[원자적 메타데이터] Pivot format marker·root fingerprint·lot catalog를 임시 파일 후 replace로 게시해 다른 서버가 부분 JSON을 읽고 정상 캐시를 missing/stale로 오판하는 구간 제거",
+        "[검증] 캐시·lookup·worker·router 회귀 테스트 49건과 프런트 디자인·구조·production build 통과"
+      ]
+    },
     {
       "version": "10.4.160",
       "date": "2026-09-01",

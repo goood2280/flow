@@ -999,13 +999,13 @@ def _root_lot_pool(product: str) -> dict:
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
     sig = _root_lot_pool_sig(canonical)
     cached = _lot_list_cache.get(canonical, sig)
-    if cached is not None and cached.get("values") and cached.get("complete"):
+    if cached is not None and cached.get("complete"):
         return cached
     provisional = _root_lot_provisional_get(canonical)
     if provisional is not None:
         return provisional
     values, meta, complete = _build_root_lot_pool(canonical)
-    if not values or not complete:
+    if not complete:
         out = {"values": values, "meta": meta, "complete": False, "cached": ""}
         if values:
             # 빌드가 끝날 때까지 프런트가 2초마다 재확인한다. 그 사이 매번
@@ -1111,10 +1111,10 @@ def _fab_lot_pool(product: str) -> dict:
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
     sig = _fab_lot_pool_sig(canonical)
     cached = _lot_list_cache.get(canonical, sig, kind="fab")
-    if cached is not None and cached.get("values") and cached.get("complete"):
+    if cached is not None and cached.get("complete"):
         return cached
     values, meta, complete = _build_fab_lot_pool(canonical)
-    if not values or not complete:
+    if not complete:
         return {"values": values, "meta": meta, "complete": False, "cached": ""}
     return _lot_list_cache.put(
         canonical, sig, values, kind="fab", meta=meta, complete=True)
@@ -1351,8 +1351,8 @@ def get_lot_candidates(
         # 잠정 목록(빌드 중 파티션 스냅샷)도 그대로 내려준다. 종전에는 완성본만
         # 내보내 인덱스가 나올 때까지 드롭다운이 비어 있었다. `complete=False`
         # 를 함께 알려 프런트가 완성본으로 교체할 때까지 재확인을 이어간다.
-        if pool.get("values"):
-            values = pool["values"]
+        if pool.get("complete") or pool.get("values"):
+            values = pool.get("values") or []
             needle = str(prefix or "").strip().upper()
             if needle:
                 values = [v for v in values if needle in str(v).upper()]
@@ -1385,8 +1385,8 @@ def get_lot_candidates(
         # RAM/디스크에 이미 게시돼 있으면 prefix 입력도 서버 스캔 없이 필터한다.
         if not root_scope:
             pool = _fab_lot_pool(product)
-            if pool.get("complete") and pool.get("values"):
-                values = pool["values"]
+            if pool.get("complete"):
+                values = pool.get("values") or []
                 needle = str(prefix or "").strip().upper()
                 if needle:
                     values = [value for value in values if needle in str(value).upper()]

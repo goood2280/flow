@@ -1391,10 +1391,14 @@ def _cache_queue_snapshot() -> dict:
             "running": bool(lookup_raw.get("running")),
             "current": Path(str(lookup_raw.get("current") or "")).name,
             "queued": [Path(str(value)).name for value in (lookup_raw.get("queued") or [])],
+            "retrying": [Path(str(value)).name for value in (lookup_raw.get("retrying") or [])],
+            "paused": bool(lookup_raw.get("paused")),
+            "pause_reason": str(lookup_raw.get("pause_reason") or ""),
             "last_error": str(lookup_raw.get("last_error") or ""),
         }
     except Exception:
-        lookup = {"running": False, "current": "", "queued": [], "last_error": ""}
+        lookup = {"running": False, "current": "", "queued": [], "retrying": [],
+                  "paused": False, "pause_reason": "", "last_error": ""}
     try:
         root_prefetch = _ml_table_lookup.root_ram_prefetch_snapshot(limit=50)
     except Exception:
@@ -1547,6 +1551,17 @@ def _product_cache_status_snapshot(*, nonblocking: bool = False) -> dict:
                 # 반대 방향의 어긋남: 빌드 로그는 성공인데 산출물이 없다.
                 item["state"] = "stale"
                 item["message"] = "빌드 기록은 성공이지만 산출물이 준비되지 않았습니다"
+            elif (
+                not item["ready"]
+                and item.get("state") == "running"
+                and item.get("artifact_state") != "building"
+                and item.get("stalled")
+            ):
+                # 프로세스 강제 종료처럼 start 이벤트만 남은 경우를 7일 동안
+                # '진행 중'으로 고정하지 않는다. 실제 산출물/빌드 큐가 모두
+                # 멈췄고 진행 heartbeat도 stale이면 미완료 상태로 되돌린다.
+                item["state"] = "stale"
+                item["message"] = "시작 기록 뒤 완료 신호가 없고 현재 실행 중인 빌드도 없습니다"
         row["ready_count"] = int(actual.get("ready_count") or 0)
         row["total"] = int(actual.get("total") or 4)
         # 개별 kind 상태를 산출물 기준으로 고쳤으니 제품 요약도 다시 만든다.

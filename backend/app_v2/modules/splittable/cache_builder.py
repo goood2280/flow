@@ -97,10 +97,33 @@ def _cache_format_matches(out_dir: Path) -> bool:
         return False
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Publish cache metadata as one filesystem generation.
+
+    Readers use these files as readiness/fingerprint authorities.  A direct
+    ``write_text`` can expose a truncated JSON document to another server and
+    spuriously turn a healthy cache into missing/stale.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _write_cache_format_marker(out_dir: Path) -> None:
     try:
-        (out_dir / _CACHE_FORMAT_MARKER).write_text(
-            json.dumps({"format": _CACHE_FORMAT_VERSION}), "utf-8"
+        _write_json_atomic(
+            out_dir / _CACHE_FORMAT_MARKER,
+            {"format": _CACHE_FORMAT_VERSION},
         )
     except Exception:
         pass
@@ -178,9 +201,9 @@ def _load_root_fingerprints(out_dir: Path) -> dict | None:
 
 def _save_root_fingerprints(out_dir: Path, fingerprints: dict) -> None:
     try:
-        (out_dir / _ROOT_FINGERPRINT_FILE).write_text(
-            json.dumps({"format": _CACHE_FORMAT_VERSION, "roots": fingerprints}),
-            "utf-8",
+        _write_json_atomic(
+            out_dir / _ROOT_FINGERPRINT_FILE,
+            {"format": _CACHE_FORMAT_VERSION, "roots": fingerprints},
         )
     except Exception:
         pass
@@ -489,9 +512,7 @@ def build_pivoted_cache_for_product(
             if catalog_cols:
                 cat_df = lf.select([pl.col(c).drop_nulls().unique() for c in catalog_cols]).collect()
                 catalog = {c: cat_df[c].drop_nulls().to_list() for c in catalog_cols}
-                import json
-                with open(out_dir / "_lot_catalog.json", "w", encoding="utf-8") as f:
-                    json.dump(catalog, f, ensure_ascii=False)
+                _write_json_atomic(out_dir / "_lot_catalog.json", catalog)
         except Exception as e:
             logger.warning(f"Failed to build lot catalog for {canonical}: {e}")
 

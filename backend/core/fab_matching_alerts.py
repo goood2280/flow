@@ -1304,7 +1304,7 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
             new_row.update({"feature_name": feature, fs_col: step_desc, "rule_order": rule_order,
                             "operator": "eq", "value": ppid, "category": category})
             if "use" in knob_columns:
-                new_row["use"] = "Y"
+                new_row["use"] = "true"
             if ro_position is not None:
                 knob_rows.insert(ro_position, new_row)
             elif same_indexes:

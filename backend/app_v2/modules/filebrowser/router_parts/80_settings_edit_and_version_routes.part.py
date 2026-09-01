@@ -186,6 +186,48 @@ def filebrowser_sql_history(request: Request, limit: int = Query(50, ge=1, le=20
     }
 
 
+@router.get("/sql/execution-history")
+def filebrowser_sql_execution_history(
+    request: Request,
+    scope: str = Query(""),
+    root: str = Query(""),
+    product: str = Query(""),
+    file: str = Query(""),
+    history_id: str = Query(""),
+    limit: int = Query(100, ge=1, le=200),
+    access_scope: str = Query(""),
+):
+    """Return newest actual SQL executions for one selected DB product/file."""
+    _require_filebrowser_user(request)
+    normalized_scope = _normalize_ai_sql_history_scope(scope)
+    root = _cache_safe_text(root, 160)
+    product = _cache_safe_text(product, 160)
+    file = _cache_safe_text(file, 300)
+    history_id = _cache_safe_text(history_id, 80)
+    if history_id and not re.fullmatch(r"fb_sql_exec_[0-9a-f]{12}", history_id, flags=re.I):
+        raise HTTPException(400, "Invalid SQL history key")
+    if normalized_scope == "base" and file and access_scope:
+        _require_base_file_access(request, file, access_scope)
+    if normalized_scope == "db_product" and not (root and product):
+        return {"ok": True, "history": [], "limit": limit}
+    if normalized_scope in {"rootpq", "base"} and not file:
+        return {"ok": True, "history": [], "limit": limit}
+
+    def _visible(entry: dict) -> bool:
+        if not isinstance(entry, dict) or entry.get("event") != "execution":
+            return False
+        if history_id and str(entry.get("history_id") or "").casefold() != history_id.casefold():
+            return False
+        if str(entry.get("scope") or "") != normalized_scope:
+            return False
+        if normalized_scope == "db_product":
+            return str(entry.get("root") or "") == root and str(entry.get("product") or "") == product
+        return str(entry.get("file") or "") == file
+
+    entries = jsonl_read(_filebrowser_sql_execution_history_path(), limit=limit, filter_fn=_visible)
+    return {"ok": True, "history": list(reversed(entries)), "limit": limit}
+
+
 @router.post("/sql/feedback")
 def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
     me = _require_filebrowser_user(request)
@@ -269,7 +311,7 @@ def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:settings:save",
         "tab": "filebrowser",
-        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')} csv_download_max_rows={settings.get('csv_download_max_rows')} csv_download_max_bytes={settings.get('csv_download_max_bytes')}",
+        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} file_descriptions={len(settings.get('file_descriptions') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')} csv_download_max_rows={settings.get('csv_download_max_rows')} csv_download_max_bytes={settings.get('csv_download_max_bytes')}",
     })
     return {
         **settings,

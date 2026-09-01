@@ -4440,6 +4440,7 @@ def _download_duckdb_csv(
 
 
 @router.get("/view")
+@_track_filebrowser_sql_execution("db_product")
 def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(LATEST_PREVIEW_ROWS),
                  cols: int = Query(20, ge=1, le=200),

@@ -414,135 +414,133 @@
 }
 
 /* ========================================================================== 
- * 10. 홈 기능 카드 — Carbon clickable tile
+ * 10. 홈 기능 카드 — phone-style app launcher
  * ========================================================================== */
 .flow-app.flow-carbon .home-feature-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--cds-sp-05);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--cds-sp-06) var(--cds-sp-04);
   margin-bottom: 32px;
 }
 
+.flow-app.flow-carbon button.home-feature-favorite {
+  min-height: 28px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: transparent;
+  color: var(--text-disabled);
+  font-size: 20px;
+}
+
+.flow-app.flow-carbon button.home-feature-favorite:hover,
+.flow-app.flow-carbon button.home-feature-favorite:focus-visible {
+  background: var(--bg-hover);
+  color: var(--status-warning);
+}
+
+.flow-app.flow-carbon button.home-feature-favorite.is-favorite {
+  color: var(--status-warning);
+}
+
 .flow-app.flow-carbon button.home-feature-card {
-  position: relative;
   min-width: 0;
-  min-height: 168px !important;
-  padding: var(--cds-sp-05) !important;
+  min-height: 116px !important;
+  padding: var(--cds-sp-03) var(--cds-sp-02) !important;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   justify-content: flex-start;
-  border: 1px solid var(--border) !important;
-  border-radius: 0 !important;
-  background: var(--bg-card);
+  gap: var(--cds-sp-03);
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--font-sans) !important;
-  text-align: left;
+  text-align: center;
   white-space: normal !important;
   cursor: pointer;
-  overflow: hidden;
 }
 
 .flow-app.flow-carbon button.home-feature-card:hover {
-  border-color: var(--text-secondary) !important;
-  background: var(--bg-hover);
+  background: var(--bg-tertiary);
 }
 
 .flow-app.flow-carbon button.home-feature-card:active {
-  background: var(--bg-tertiary);
+  transform: scale(0.97);
 }
 
 .flow-app.flow-carbon button.home-feature-card:focus-visible {
   outline: 2px solid var(--accent) !important;
-  outline-offset: -2px !important;
+  outline-offset: 2px !important;
 }
 
 .flow-app.flow-carbon .home-feature-card__topline {
-  min-height: 32px;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--cds-sp-03);
+  align-items: center;
+  justify-content: center;
 }
 
 .flow-app.flow-carbon .home-feature-card__icon {
-  display: inline-flex;
+  width: 64px;
+  height: 64px;
+  display: flex;
   align-items: center;
+  justify-content: center;
+  border: 1px solid var(--status-info-border);
+  border-radius: 18px;
+  background: var(--status-info-bg);
   color: var(--text-primary);
-  font-size: 24px;
-  line-height: 32px;
-}
-
-.flow-app.flow-carbon .home-feature-card__tag {
-  padding: 2px var(--cds-sp-03);
-  background: var(--brand-50);
-  color: var(--brand);
-  font-family: var(--font-sans);
-  font-size: var(--cds-label-size);
-  line-height: var(--cds-label-lh);
-  letter-spacing: var(--cds-label-ls);
+  font-size: 30px;
+  line-height: 1;
+  box-shadow: var(--shadow-app-icon);
+  transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
 .flow-app.flow-carbon .home-feature-card__content {
-  margin-top: var(--cds-sp-04);
-  padding-right: var(--cds-sp-06);
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: var(--cds-sp-02);
+  align-items: center;
 }
 
 .flow-app.flow-carbon .home-feature-card__title {
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: var(--cds-h02-size);
-  font-weight: 600;
-  line-height: var(--cds-h02-lh);
-  letter-spacing: 0;
-  word-break: keep-all;
-}
-
-.flow-app.flow-carbon .home-feature-card__description {
-  color: var(--text-secondary);
-  font-family: var(--font-sans);
   font-size: var(--cds-body-size);
-  font-weight: 400;
+  font-weight: 600;
   line-height: var(--cds-body-lh);
   letter-spacing: var(--cds-body-ls);
   word-break: keep-all;
-  overflow-wrap: anywhere;
-}
-
-.flow-app.flow-carbon .home-feature-card__arrow {
-  position: absolute;
-  right: var(--cds-sp-05);
-  bottom: var(--cds-sp-05);
-  color: var(--accent);
-  font-family: var(--font-sans);
-  font-size: 20px;
-  font-weight: 400;
-  line-height: 1;
-  transition: transform 70ms cubic-bezier(0.2, 0, 0.38, 0.9);
-}
-
-.flow-app.flow-carbon .home-feature-card:hover .home-feature-card__arrow,
-.flow-app.flow-carbon .home-feature-card:focus-visible .home-feature-card__arrow {
-  transform: translateX(4px);
 }
 
 @media (max-width: 900px) {
   .flow-app.flow-carbon .home-feature-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 560px) {
   .flow-app.flow-carbon .home-feature-grid {
-    grid-template-columns: 1fr;
-    gap: var(--cds-sp-03);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--cds-sp-05) var(--cds-sp-02);
   }
 
   .flow-app.flow-carbon button.home-feature-card {
-    min-height: 144px !important;
+    min-height: 96px !important;
+    padding-inline: 0 !important;
+  }
+
+  .flow-app.flow-carbon .home-feature-card__icon {
+    width: 54px;
+    height: 54px;
+    border-radius: 15px;
+    font-size: 26px;
+  }
+
+  .flow-app.flow-carbon .home-feature-card__title {
+    font-size: 12px;
+    line-height: 16px;
   }
 }
 

@@ -198,7 +198,7 @@ function FileBrowserSqlAutocomplete({value,onChange,onExecute,mode,root,product,
           onExecute();
         }
       }}
-      placeholder="예: SELECT lot_id, wafer_id WHERE product LIKE '%ABC%' ORDER BY tkout_time DESC"
+      placeholder="SQL 고유키 또는 SQL식을 입력하세요 · 예: root_lot_id = 'A1000'"
       disabled={disabled}
       spellCheck={false}
       style={{width:"100%",boxSizing:"border-box",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
@@ -914,7 +914,7 @@ export default function My_FileBrowser({
   const[sampleLoading,setSampleLoading]=useState(false);const viewSeqRef=useRef(0);const viewAbortRef=useRef(null);
   const viewSessionRef=useRef(globalThis.crypto?.randomUUID?.()||(`fb-${Date.now()}-${Math.random()}`));
   const activeViewQueryRef=useRef("");
-  const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[mode,setMode]=useState(embedded?"base":"hive");
+  const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[showSqlHistory,setShowSqlHistory]=useState(false);const[sqlHistory,setSqlHistory]=useState([]);const[sqlHistoryLoading,setSqlHistoryLoading]=useState(false);const[sqlHistoryError,setSqlHistoryError]=useState("");const[mode,setMode]=useState(embedded?"base":"hive");
   const[selRootPq,setSelRootPq]=useState("");
   // v4.1: scope switcher — "DB" (hive-flat) or "Base" (single-file rulebook/wide parquet).
   // `scopes` keyed array from /api/filebrowser/scopes; `scope` = active key.
@@ -1195,7 +1195,7 @@ export default function My_FileBrowser({
     if(nextOpen&&!s3AllowedTabs.includes(s3Tab))setS3Tab(s3AllowedTabs[0]||"folder");
     setS3Open(nextOpen);
   };
-  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},hidden_db_dirs:["reformatter"],db_name_aliases:{},versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},file_descriptions:{},hidden_db_dirs:["reformatter"],db_name_aliases:{},versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
   const[fbAutoS3Upload,setFbAutoS3Upload]=useState(false);
   const[fbThresholdMb,setFbThresholdMb]=useState("10");
   const[fbDownloadMb,setFbDownloadMb]=useState("100");
@@ -1206,6 +1206,8 @@ export default function My_FileBrowser({
   const[fbSettingsMsg,setFbSettingsMsg]=useState("");
   const[fbSettingsLoading,setFbSettingsLoading]=useState(false);
   const[fbSelectedFile,setFbSelectedFile]=useState("");
+  const[fbDescriptionFile,setFbDescriptionFile]=useState("");
+  const[fbDescriptionText,setFbDescriptionText]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
   const[fbValidation,setFbValidation]=useState(null);
   const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key 검증로직과 저장 시 정렬로직 초안 만들어줘");
@@ -1231,7 +1233,13 @@ export default function My_FileBrowser({
     ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer",fbCacheStatus.lot_progress],
   ];
 
-  const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
+  const settingsBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir");
+  const csvBaseFiles=settingsBaseFiles.filter(f=>(f?.ext||"").toLowerCase()==="csv");
+  const selectDescriptionFile=(file,settings=fbSettings)=>{
+    const key=String(file||"");
+    setFbDescriptionFile(key);
+    setFbDescriptionText(String((settings?.file_descriptions||{})[key]||""));
+  };
   const selectFileRule=(file,settings=fbSettings)=>{
     const key=String(file||"");
     setFbSelectedFile(key);
@@ -1243,15 +1251,17 @@ export default function My_FileBrowser({
     if(!isFileBrowserAdmin)return;
     setFbSettingsLoading(true);
     try{
+      let localBaseFiles=settingsBaseFiles;
       let localCsvFiles=csvBaseFiles;
-      if(!localCsvFiles.length){
+      if(!localBaseFiles.length){
         const bf=await sf(API+"/base-files?fast=1&_ts="+Date.now()).catch(()=>({files:[]}));
         const files=bf.files||[];
         setBaseFiles(files);
+        localBaseFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir");
         localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
       }
       const d=await sf(API+"/settings");
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??100,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["reformatter"],db_name_aliases:d.db_name_aliases||{},versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??100,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||{},hidden_db_dirs:d.hidden_db_dirs||["reformatter"],db_name_aliases:d.db_name_aliases||{},versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
@@ -1263,6 +1273,9 @@ export default function My_FileBrowser({
       const currentCsv=(selBaseMeta&&(selBaseMeta.ext||"").toLowerCase()==="csv")?String(selBaseMeta.path||selBaseMeta.name||""):"";
       const target=fbSelectedFile||currentCsv||localCsvFiles[0]?.path||localCsvFiles[0]?.name||"";
       if(target)selectFileRule(target,settings);
+      const currentFile=selBaseMeta?String(selBaseMeta.path||selBaseMeta.name||""):"";
+      const descriptionTarget=fbDescriptionFile||currentFile||localBaseFiles[0]?.path||localBaseFiles[0]?.name||"";
+      if(descriptionTarget)selectDescriptionFile(descriptionTarget,settings);
       setFbSettingsMsg("");
     }catch(e){
       setFbSettingsMsg(e.message||"설정 로드 실패");
@@ -1272,11 +1285,18 @@ export default function My_FileBrowser({
   };
   const saveFilebrowserSettings=async(section="file")=>{
     const isFileSection=section==="file";
+    const isDescriptionSection=section==="description";
     const nextRules={...(fbSettings.csv_rules||{})};
     if(isFileSection&&fbSelectedFile){
       const rule=formToRule(fbRuleForm);
       if(Object.keys(rule).length)nextRules[fbSelectedFile]=rule;
       else delete nextRules[fbSelectedFile];
+    }
+    const nextDescriptions={...(fbSettings.file_descriptions||{})};
+    if(isDescriptionSection&&fbDescriptionFile){
+      const description=String(fbDescriptionText||"").trim();
+      if(description)nextDescriptions[fbDescriptionFile]=description;
+      else delete nextDescriptions[fbDescriptionFile];
     }
     const thresholdBytes=isFileSection
       ? Math.max(0,Math.round(Number(fbThresholdMb||0)*1048576))
@@ -1289,8 +1309,8 @@ export default function My_FileBrowser({
       const downloadRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number.isFinite(parsedRows)?Math.round(parsedRows):500000));
       const parsedBytes=Math.round(Number(fbDownloadMb||100)*1048576);
       const downloadBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number.isFinite(parsedBytes)?parsedBytes:100000000));
-      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_download_max_bytes:downloadBytes,sql_query_max_source_bytes:fbSettings.sql_query_max_source_bytes,preview_max_columns:fbSettings.preview_max_columns,preview_max_rows:fbSettings.preview_max_rows,schema_column_page_size:fbSettings.schema_column_page_size,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs,db_name_aliases:fbDbNameAliases,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_download_max_bytes:d.csv_download_max_bytes??downloadBytes,sql_query_max_source_bytes:d.sql_query_max_source_bytes??fbSettings.sql_query_max_source_bytes,preview_max_columns:d.preview_max_columns??fbSettings.preview_max_columns,preview_max_rows:d.preview_max_rows??fbSettings.preview_max_rows,schema_column_page_size:d.schema_column_page_size??fbSettings.schema_column_page_size,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,db_name_aliases:d.db_name_aliases||fbDbNameAliases,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
+      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_download_max_bytes:downloadBytes,sql_query_max_source_bytes:fbSettings.sql_query_max_source_bytes,preview_max_columns:fbSettings.preview_max_columns,preview_max_rows:fbSettings.preview_max_rows,schema_column_page_size:fbSettings.schema_column_page_size,csv_rules:nextRules,file_descriptions:nextDescriptions,hidden_db_dirs:hiddenDbDirs,db_name_aliases:fbDbNameAliases,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_download_max_bytes:d.csv_download_max_bytes??downloadBytes,sql_query_max_source_bytes:d.sql_query_max_source_bytes??fbSettings.sql_query_max_source_bytes,preview_max_columns:d.preview_max_columns??fbSettings.preview_max_columns,preview_max_rows:d.preview_max_rows??fbSettings.preview_max_rows,schema_column_page_size:d.schema_column_page_size??fbSettings.schema_column_page_size,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||nextDescriptions,hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,db_name_aliases:d.db_name_aliases||fbDbNameAliases,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
@@ -1300,11 +1320,12 @@ export default function My_FileBrowser({
       setFbDbNameAliases(settings.db_name_aliases||{});
       setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
       selectFileRule(fbSelectedFile,settings);
-      setFbSettingsMsg(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료");
+      if(fbDescriptionFile)selectDescriptionFile(fbDescriptionFile,settings);
+      setFbSettingsMsg(isDescriptionSection?"파일 설명 저장 완료":(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료"));
       sf(API+"/roots?fast=1&_ts="+Date.now()).then(r=>setRoots(fileBrowserRoots(r.roots))).catch(()=>{});
       sf(API+"/base-files?fast=1&_ts="+Date.now()).then(r=>setBaseFiles(r.files||[])).catch(()=>{});
     }catch(e){
-      setFbSettingsMsg(e.message||(isFileSection?"파일 설정 저장 실패":"폴더 설정 저장 실패"));
+      setFbSettingsMsg(e.message||(isDescriptionSection?"파일 설명 저장 실패":(isFileSection?"파일 설정 저장 실패":"폴더 설정 저장 실패")));
     }finally{
       setFbSettingsLoading(false);
     }
@@ -1921,18 +1942,39 @@ export default function My_FileBrowser({
     sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
   };
 
+  const currentSqlHistoryTargetParams=()=>{
+    if(mode==="hive"&&selRoot&&selProd)return{scope:"db_product",root:selRoot,product:selProd};
+    if(mode==="rootpq"&&selRootPq)return{scope:"rootpq",file:selRootPq};
+    if(mode==="base"&&selBaseFile)return withAccess({scope:"base",file:selBaseFile});
+    return null;
+  };
+
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
   const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined,aggregateOverride=undefined)=>{
     const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
+    if(mode==="base"&&isBaseEditing){
+      setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
+      return;
+    }
+    const historyKey=String(activeSql||"").trim();
+    if(/^fb_sql_exec_[0-9a-f]{12}$/i.test(historyKey)){
+      const targetParams=currentSqlHistoryTargetParams();
+      if(!targetParams){setError("먼저 DB나 파일을 선택하세요.");return;}
+      setLoading(true);setError("");
+      sf(API+"/sql/execution-history"+qs({...targetParams,history_id:historyKey,limit:1,_ts:Date.now()})).then(d=>{
+        const resolved=String(d.history?.[0]?.sql||"").trim();
+        if(!resolved)throw new Error("현재 DB/파일에서 해당 SQL 고유키를 찾을 수 없습니다.");
+        setSqlFromInput(resolved);
+        setLoading(false);
+        applySql(resolved,undefined,sortOverride,aggregateOverride);
+      }).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      return;
+    }
     const parsedSql=splitDisplaySql(activeSql);
     const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:parsedSql.selectedColumns;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     setSelectedCols(activeSelectedCols);
-    if(mode==="base"&&isBaseEditing){
-      setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
-      return;
-    }
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
@@ -1946,6 +1988,24 @@ export default function My_FileBrowser({
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
   };
+
+  useEffect(()=>{
+    if(!showSqlHistory)return undefined;
+    const targetParams=currentSqlHistoryTargetParams();
+    if(!targetParams){
+      setSqlHistory([]);setSqlHistoryError("");setSqlHistoryLoading(false);
+      return undefined;
+    }
+    const params={...targetParams,limit:100,_ts:Date.now()};
+    let alive=true;
+    setSqlHistoryLoading(true);setSqlHistoryError("");
+    sf(API+"/sql/execution-history"+qs(params)).then(d=>{
+      if(alive)setSqlHistory(Array.isArray(d.history)?d.history:[]);
+    }).catch(e=>{
+      if(alive){setSqlHistory([]);setSqlHistoryError(e.message||String(e));}
+    }).finally(()=>{if(alive)setSqlHistoryLoading(false);});
+    return()=>{alive=false;};
+  },[showSqlHistory,mode,selRoot,selProd,selRootPq,selBaseFile,accessScope]);
 
   const draftAiSql=async()=>{
     const prompt=String(aiSqlPrompt||"").trim();
@@ -2944,8 +3004,6 @@ export default function My_FileBrowser({
             columns={data?.all_columns||data?.columns||[]} disabled={mode==="base"&&isBaseEditing}/>
           <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
-          <button onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}} disabled={!data||mode==="base"&&isBaseEditing}
-            style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!data||mode==="base"&&isBaseEditing?"default":"pointer",opacity:!data||mode==="base"&&isBaseEditing?0.5:1}}>AI SQL</button>
           {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
         </div>
@@ -2954,11 +3012,16 @@ export default function My_FileBrowser({
           <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{aggregateLabel(aggregateSpec)}</span>
           <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
         </div>}
-        {/* SQL Guide */}
+        {/* SQL Guide / Execution History */}
         <div style={{padding:"0 16px"}}>
-          <div onClick={()=>setShowGuide(!showGuide)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"4px 0"}}>
-            {showGuide?"▼":"▶"} SQL 가이드(예시)</div>
-          {showGuide&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"8px 12px",marginBottom:8,border:"1px solid var(--border)",fontSize:14,fontFamily:"monospace",lineHeight:1.8,color:"var(--text-secondary)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:24}}>
+            <div onClick={()=>{const next=!showGuide;setShowGuide(next);if(next)setShowSqlHistory(false);}} style={{fontSize:13,color:"var(--accent)",cursor:"pointer",padding:"3px 0"}}>
+              {showGuide?"▼":"▶"} SQL 가이드(예시)</div>
+            <div onClick={()=>{const next=!showSqlHistory;setShowSqlHistory(next);if(next)setShowGuide(false);}} style={{fontSize:13,color:"var(--accent)",cursor:"pointer",padding:"3px 0"}}>
+              {showSqlHistory?"▼":"▶"} SQL 이력</div>
+          </div>
+          <div style={{display:(showGuide||showSqlHistory)?"grid":"none",gridTemplateColumns:showGuide&&showSqlHistory?"minmax(0,1fr) minmax(0,1fr)":"minmax(0,1fr)",gap:8,marginBottom:8}}>
+          {showGuide&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"7px 10px",border:"1px solid var(--border)",fontSize:12,fontFamily:"monospace",lineHeight:1.6,color:"var(--text-secondary)",minWidth:0}}>
             <div>SELECT lot_id, wafer_id WHERE root_lot_id = 'A1000' <span style={{color:"var(--accent)"}}>— 표시 열 + 조건</span></div>
             <div>SELECT lot_id, wafer_id WHERE item_id = 'IOFF' ORDER BY value DESC <span style={{color:"var(--accent)"}}>— 표시 열 + 조건 + 정렬</span></div>
             <div>root_lot_id = 'A1000' <span style={{color:"var(--accent)"}}>— 조건만</span></div>
@@ -2972,6 +3035,33 @@ export default function My_FileBrowser({
             <div>tkout_time IS NOT NULL <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
             <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, 실행 → 조회 적용, + WHERE → 조건 템플릿 삽입</div>
           </div>}
+          {showSqlHistory&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"7px 10px",border:"1px solid var(--border)",fontSize:12,color:"var(--text-secondary)",minWidth:0,maxHeight:280,overflow:"auto"}}>
+            {sqlHistoryLoading&&<div style={{padding:"8px 0"}}>SQL 이력을 불러오는 중...</div>}
+            {!sqlHistoryLoading&&sqlHistoryError&&<div style={{padding:"8px 0",color:FB_BAD.fg}}>{sqlHistoryError}</div>}
+            {!sqlHistoryLoading&&!sqlHistoryError&&sqlHistory.length===0&&<div style={{padding:"8px 0"}}>{(mode==="hive"&&selRoot&&selProd)||(mode==="rootpq"&&selRootPq)||(mode==="base"&&selBaseFile)?"이 DB/파일에서 실행한 SQL 이력이 없습니다.":"먼저 DB나 파일을 선택하세요."}</div>}
+            {!sqlHistoryLoading&&!sqlHistoryError&&sqlHistory.map(h=>{
+              const at=h.timestamp?new Date(h.timestamp).toLocaleString():"-";
+              const detail=`${h.sql||"-"}${!h.ok&&h.error?` · ${h.error}`:""}`;
+              return <div key={h.history_id||`${h.timestamp}-${h.username}`} style={{padding:"4px 0",borderBottom:"1px solid var(--border)",display:"grid",gap:2,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,minWidth:0,whiteSpace:"nowrap",fontSize:11}}>
+                  <span style={{display:"inline-flex",alignItems:"center",gap:7,minWidth:0}}>
+                    <span style={{fontWeight:900,color:h.ok?FB_OK.fg:FB_BAD.fg,flexShrink:0}}>{h.ok?"성공":"실패"}</span>
+                    <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis"}} title="SQL 이력 고유키">{h.history_id||"-"}</span>
+                  </span>
+                  <span style={{display:"inline-flex",alignItems:"center",justifyContent:"flex-end",gap:7,minWidth:0,marginLeft:"auto",overflow:"hidden"}}>
+                    <span style={{color:"var(--text-primary)",fontWeight:700,flexShrink:0}}>{h.username||"-"}</span>
+                    <span style={{overflow:"hidden",textOverflow:"ellipsis"}} title={at}>{at}</span>
+                    {Number.isFinite(h.duration_ms)&&<span style={{flexShrink:0}}>{h.duration_ms.toLocaleString()}ms</span>}
+                    {h.ok&&Number.isFinite(h.rows_returned)&&<span style={{flexShrink:0}}>{h.rows_returned.toLocaleString()}행</span>}
+                  </span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:11,whiteSpace:"nowrap"}}>
+                  <code style={{overflow:"hidden",textOverflow:"ellipsis",color:h.ok?"var(--text-primary)":FB_BAD.fg,fontFamily:"monospace"}} title={detail}>{detail}</code>
+                </div>
+              </div>;
+            })}
+          </div>}
+          </div>
         </div>
 
         {/* Error display */}
@@ -3000,19 +3090,18 @@ export default function My_FileBrowser({
               <input value={baseVersionFilter} onChange={e=>setBaseVersionFilter(e.target.value)} placeholder="filter actor/action/note" style={{marginLeft:"auto",padding:"3px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:170}}/>
               <button onClick={()=>loadBaseVersions(selBaseFile)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>새로고침</button>
             </div>
-            {baseCurrentProfile&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:8,fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-              <span>현재 {baseCurrentVersion||"-"}</span>
+            {baseCurrentProfile&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:6,fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
               <span>{baseCurrentProfile.rows??"-"}행 / {baseCurrentProfile.columns??"-"}열</span>
               <span>size={formatSize(baseCurrentProfile.size)}</span>
               <span>modified={(baseCurrentProfile.modified_at||"").replace("T"," ").slice(0,16)||"-"}</span>
             </div>}
             {baseVersioned&&baseVersions.length===0&&<div style={{fontSize:12,color:"var(--text-secondary)"}}>아직 저장된 이전 버전이 없습니다. 다음 저장부터 수정 전 snapshot 이 남습니다.</div>}
-            {baseVersions.length>0&&<div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:150,overflow:"auto"}}>
+            {baseVersions.length>0&&<div style={{display:"flex",flexDirection:"column",gap:2,maxHeight:150,overflow:"auto"}}>
               {baseVersions.filter(v=>{
                 const q=baseVersionFilter.trim().toLowerCase();
                 if(!q)return true;
                 return [v.version,v.actor,v.action,v.note,v.created_at].some(x=>String(x||"").toLowerCase().includes(q));
-              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 96px 72px 136px 82px 58px 70px",gap:8,alignItems:"center",fontSize:12,padding:"5px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
+              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 96px 72px 136px 82px 58px 70px",gap:8,alignItems:"center",fontSize:12,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
                 <span style={{fontFamily:"monospace",fontWeight:900,color:String(v.version||"").startsWith("legacy_")?"#a855f7":"var(--accent)"}} title={v.storage_version||v.version}>{String(v.version||"-").startsWith("legacy_")?"legacy":v.version}</span>
                 <span style={{color:"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${v.version} · ${v.action||"edit"}`}>{v.note||v.action||"edit"}</span>
                 <span style={{color:"#eab308",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}} title={JSON.stringify(v.change_summary||{})}>{versionChangeLabel(v.change_summary)}</span>
@@ -3020,8 +3109,8 @@ export default function My_FileBrowser({
                 <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{formatSize(v.size)}</span>
                 <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{(v.created_at||"").replace("T"," ").slice(0,16)||"-"}</span>
                 <span style={{color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.actor||"-"}</span>
-                <button onClick={()=>previewBaseVersion(v.version)} style={{padding:"3px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>보기</button>
-                <button onClick={()=>rollbackBaseVersion(v.version)} disabled={!isFileBrowserAdmin} style={{padding:"3px 7px",borderRadius:4,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:isFileBrowserAdmin?FB_BAD.fg:"var(--text-secondary)",fontSize:12,cursor:isFileBrowserAdmin?"pointer":"not-allowed"}}>롤백</button>
+                <button onClick={()=>previewBaseVersion(v.version)} style={{padding:"1px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>보기</button>
+                <button onClick={()=>rollbackBaseVersion(v.version)} disabled={!isFileBrowserAdmin} style={{padding:"1px 7px",borderRadius:4,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:isFileBrowserAdmin?FB_BAD.fg:"var(--text-secondary)",fontSize:12,cursor:isFileBrowserAdmin?"pointer":"not-allowed"}}>롤백</button>
               </div>)}
             </div>}
             {baseVersionPreview&&<div style={{marginTop:10,border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",background:"var(--bg-primary)"}}>
@@ -3104,9 +3193,6 @@ export default function My_FileBrowser({
                   style={{fontSize:14,fontWeight:700,fontFamily:"monospace",padding:"3px 10px",borderRadius:4,background:bg,color:fg,letterSpacing:0.5}}>{label}</span>;
               })()}
               <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
-              {mode==="base"&&baseCurrentVersion&&<span title={`현재 EDM version: ${baseCurrentVersion}`} style={{fontSize:12,fontWeight:800,color:"var(--accent)",background:"var(--accent-glow)",border:"1px solid var(--accent)",borderRadius:4,padding:"3px 7px",fontFamily:"monospace",flexShrink:0}}>
-                현재 {baseCurrentVersion}
-              </span>}
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
                     ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}{sampleLoading&&<span style={{color:"var(--accent)",fontWeight:700}}> · 샘플 행 불러오는 중…</span>}</>
@@ -3523,6 +3609,25 @@ export default function My_FileBrowser({
               </div>}
               {s3Tab==="file"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,240px) 1fr",gap:14,fontSize:14}}>
                 <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                    <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>Files 설명</div>
+                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                      파일
+                      <select value={fbDescriptionFile} onChange={e=>selectDescriptionFile(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}>
+                        <option value="">파일 선택</option>
+                        {settingsBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
+                      </select>
+                    </label>
+                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                      설명
+                      <textarea value={fbDescriptionText} onChange={e=>setFbDescriptionText(e.target.value.slice(0,500))} rows={3} maxLength={500} disabled={!fbDescriptionFile} placeholder="파일의 용도, 원천, 갱신 주기 등을 입력하세요." style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,lineHeight:1.4}}/>
+                    </label>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,fontSize:11,color:"var(--text-secondary)"}}>
+                      <span>Files 목록에서 파일에 커서를 올리면 표시됩니다.</span>
+                      <span>{fbDescriptionText.length}/500</span>
+                    </div>
+                    <button onClick={()=>saveFilebrowserSettings("description")} disabled={!fbDescriptionFile||fbSettingsLoading} style={{padding:"7px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:!fbDescriptionFile||fbSettingsLoading?"default":"pointer",opacity:!fbDescriptionFile||fbSettingsLoading?0.5:1}}>설명 저장</button>
+                  </div>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                     CSV 전체 표시 기준 (MB)
                     <input type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>

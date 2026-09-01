@@ -162,6 +162,7 @@ FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
 FILEBROWSER_AGENT_PROMPTS_FILE = "filebrowser_agent_prompts.json"
 FILEBROWSER_AI_SQL_FEEDBACK_FILE = "filebrowser_ai_sql_feedback.jsonl"
 FILEBROWSER_AI_SQL_HISTORY_FILE = "filebrowser_ai_sql_history.jsonl"
+FILEBROWSER_SQL_EXECUTION_HISTORY_FILE = "filebrowser_sql_execution_history.jsonl"
 CHART_BUILDER_HISTORY_FILE = "chart_builder_history.jsonl"
 _CHART_BUILDER_HISTORY_LOCK = threading.Lock()
 _CHART_BUILDER_CACHE_LOCK = threading.Lock()
@@ -183,12 +184,107 @@ DEFAULT_FILEBROWSER_SETTINGS = {
     "preview_max_rows": LATEST_PREVIEW_ROWS,
     "schema_column_page_size": DEFAULT_SCHEMA_COLUMN_PAGE_SIZE,
     "csv_rules": {},
+    "file_descriptions": {},
     "hidden_db_dirs": ["reformatter"],
     "db_name_aliases": {},
     "versioned_single_file_dirs": ["reformatter"],
     "auto_s3_upload_on_save": False,
     "preview_cache_enabled": True,
 }
+
+
+def _filebrowser_sql_execution_history_path() -> Path:
+    return PATHS.data_root / FILEBROWSER_SQL_EXECUTION_HISTORY_FILE
+
+
+def _record_filebrowser_sql_execution(
+    request: Request | None,
+    *,
+    scope: str,
+    root: str = "",
+    product: str = "",
+    file: str = "",
+    sql: str = "",
+    ok: bool,
+    duration_ms: int = 0,
+    status_code: int = 200,
+    error: str = "",
+    result: dict | None = None,
+) -> None:
+    """Best-effort audit for a user-triggered FileBrowser SQL execution."""
+    sql_text = str(sql or "").strip()
+    if not sql_text:
+        return
+    try:
+        me = current_user(request) if request is not None else {}
+        payload = result if isinstance(result, dict) else {}
+        entry = {
+            "event": "execution",
+            "history_id": f"fb_sql_exec_{uuid.uuid4().hex[:12]}",
+            "username": _cache_safe_text((me or {}).get("username"), 80),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "scope": str(scope or "").strip().casefold(),
+            "root": _cache_safe_text(root, 160),
+            "product": _cache_safe_text(product, 160),
+            "file": _cache_safe_text(file, 300),
+            "sql": _cache_safe_text(sql_text, 4000),
+            "ok": bool(ok),
+            "status_code": int(status_code or (200 if ok else 500)),
+            "duration_ms": max(0, int(duration_ms or 0)),
+            "rows_returned": int(payload.get("showing") or len(payload.get("data") or [])),
+            "total_rows": payload.get("total_rows") if isinstance(payload.get("total_rows"), int) else None,
+            "error": _cache_safe_text(error, 600),
+        }
+        jsonl_append(_filebrowser_sql_execution_history_path(), entry, max_lines=5000)
+    except Exception as exc:
+        logger.warning("filebrowser sql execution history append failed: %s", exc)
+
+
+def _track_filebrowser_sql_execution(scope: str):
+    """Decorate view routes so HTTP success/failure is captured server-side."""
+    def decorate(func):
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            sql_text = str(kwargs.get("sql") or "").strip()
+            should_record = bool(
+                sql_text
+                and not bool(kwargs.get("meta_only", True))
+                and int(kwargs.get("page", 0) or 0) == 0
+            )
+            if not should_record:
+                return func(*args, **kwargs)
+            started = time.perf_counter()
+            try:
+                result = func(*args, **kwargs)
+            except Exception as exc:
+                _record_filebrowser_sql_execution(
+                    kwargs.get("request"),
+                    scope=scope,
+                    root=kwargs.get("root") or "",
+                    product=kwargs.get("product") or "",
+                    file=kwargs.get("file") or "",
+                    sql=sql_text,
+                    ok=False,
+                    duration_ms=round((time.perf_counter() - started) * 1000),
+                    status_code=int(getattr(exc, "status_code", 500) or 500),
+                    error=getattr(exc, "detail", "") or str(exc),
+                )
+                raise
+            _record_filebrowser_sql_execution(
+                kwargs.get("request"),
+                scope=scope,
+                root=kwargs.get("root") or "",
+                product=kwargs.get("product") or "",
+                file=kwargs.get("file") or "",
+                sql=sql_text,
+                ok=True,
+                duration_ms=round((time.perf_counter() - started) * 1000),
+                status_code=200,
+                result=result,
+            )
+            return result
+        return wrapped
+    return decorate
 
 # credential/teg_location은 DB root 아래에 있어도 인증정보·도메인 내부 설정을 담는
 # 예약 폴더다. teg_location의 기준 CSV 자체는 DB root의 단일 파일로 계속 보이지만,

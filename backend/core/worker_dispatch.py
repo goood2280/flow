@@ -7,8 +7,9 @@
 원칙:
   - 외부 브로커(Redis/RabbitMQ) 없이 shared workspace 파일만 사용.
   - 개발서버는 언제든 꺼질 수 있다 → heartbeat 기반 헬스체크. 사용자 동기 작업은
-    기존처럼 로컬 폴백할 수 있지만, 자동 캐시 작업은 durable 큐에 남겨 운영 API의
-    CPU/메모리를 침범하지 않고 worker 복귀 뒤 계속한다.
+    기존처럼 로컬 폴백한다. 자동 캐시는 기본적으로 durable 큐에 남기되, 호출자가
+    local_fallback=True 로 명시한 종류는 worker 오프라인 시 운영 API의 idle 창에서
+    이어받는다.
   - 오프로드 가능한 작업은 "결과가 shared workspace 파일로 남는 것"만.
     프로세스 RAM 캐시는 API 응답을 서빙하는 운영서버가 소유하며 worker의
     오프로드/백그라운드 예열 대상이 아니다.
@@ -746,6 +747,35 @@ def _find_deduped_task(dedupe_key: str) -> tuple[str, Path] | None:
     return None
 
 
+def _discard_unclaimed_deduped_task(dedupe_key: str) -> int:
+    """Remove an unclaimed duplicate before an API-side fallback.
+
+    A worker may come back between the health check and this unlink.  Its
+    atomic queue->claimed rename wins that race, and the shared cache build
+    lock still prevents overlapping writers.  Claimed tasks are never
+    removed here.
+    """
+    key = str(dedupe_key or "").strip()
+    if not key:
+        return 0
+    removed = 0
+    try:
+        candidates = list(_queue_dir().glob("*.task.json"))
+    except Exception:
+        return 0
+    for fp in candidates:
+        task = _read_json(fp)
+        if str(task.get("dedupe_key") or "") != key:
+            continue
+        try:
+            fp.unlink()
+            removed += 1
+        except OSError:
+            # The worker may have claimed it concurrently.
+            pass
+    return removed
+
+
 def _submit(
     task_type: str,
     payload: dict,
@@ -1036,10 +1066,28 @@ def run_heavy(
       않는다 (local_fn 자체의 예외는 그대로 전파 — 기존 호출부 동작 유지)."""
     name = label or task_type
 
-    # Automatic shared-cache maintenance is a durable queue, not a
-    # synchronous RPC. Persist it even while the worker is offline and return
-    # immediately so the production API never starts an overlapping fallback.
+    # Automatic shared-cache maintenance is normally a durable queue, not a
+    # synchronous RPC.  A small subset (notably ML lookup) explicitly opts in
+    # to idle local fallback because the lookup is itself the read path's
+    # prerequisite; leaving it queued behind an offline worker makes lookup
+    # unavailable indefinitely.  The shared build lock closes the worker
+    # recovery race.
     if durable and server_role() == "api":
+        alive = worker_alive(fresh_read=True)
+        if local_fallback and (not offload_enabled() or not alive):
+            _discard_unclaimed_deduped_task(dedupe_key)
+            _bump("local_fallback")
+            reason = (
+                "worker offload is disabled"
+                if not offload_enabled()
+                else "development worker is offline"
+            )
+            logger.info("durable worker unavailable — running %s in local idle lane (%s)",
+                        name, reason)
+            return _run_local_heavy(
+                task_type, name, local_fn, idle_only=local_idle_only,
+                product=str((payload or {}).get("product") or ""),
+            )
         existing = _find_deduped_task(dedupe_key)
         if _queue_depth() >= max_queue_depth() and existing is None:
             return {"ok": False, "queued": False, "deferred": True, "error": "worker queue is full"}
@@ -1058,7 +1106,7 @@ def run_heavy(
         return {
             "ok": True, "queued": True, "deferred": True,
             "task_id": task_id, "deduped": deduped,
-            "worker_alive": worker_alive(fresh_read=True),
+            "worker_alive": alive,
         }
 
     def _local_or_deferred(reason: str):

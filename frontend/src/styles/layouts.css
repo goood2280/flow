@@ -154,106 +154,261 @@
   font-weight: var(--font-weight-medium);
 }
 
-/* Home uses the same tokenized clickable-tile pattern as the rest of Flow. */
+/* Home app launcher. The compact icon-first layout mirrors a phone home screen. */
+.home-page {
+  width: 100%;
+  max-width: 1040px;
+  min-height: calc(100vh - 52px);
+  margin: 0 auto;
+  padding: 32px 32px 96px;
+  box-sizing: border-box;
+}
+
+.home-welcome {
+  margin: 8px 0 24px;
+}
+
+.home-welcome__title {
+  color: var(--text-strong);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
 .home-feature-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-5) var(--space-3);
   margin-bottom: var(--space-6);
 }
 
-.flow-app button.home-feature-card {
+.home-feature-item {
   position: relative;
   min-width: 0;
-  min-height: 168px;
-  padding: var(--space-4);
+}
+
+.flow-app button.home-feature-card {
+  width: 100%;
+  min-width: 0;
+  min-height: 116px;
+  padding: var(--space-2) var(--space-1);
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   justify-content: flex-start;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--surface-radius);
-  background: var(--surface-panel);
+  gap: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-3);
+  background: transparent;
   color: var(--text-strong);
   font-family: var(--font-sans);
-  text-align: left;
+  text-align: center;
   white-space: normal;
   cursor: pointer;
 }
 
-.flow-app button.home-feature-card:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-hover);
+.flow-app button.home-feature-favorite {
+  position: absolute;
+  z-index: 1;
+  top: 2px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-disabled);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
 }
 
-.flow-app button.home-feature-card:active {
+.flow-app button.home-feature-favorite:hover,
+.flow-app button.home-feature-favorite:focus-visible {
+  background: var(--surface-hover);
+  color: var(--status-warning);
+}
+
+.flow-app button.home-feature-favorite:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.flow-app button.home-feature-favorite.is-favorite {
+  color: var(--status-warning);
+}
+
+.home-feature-favorite__icon {
+  width: 19px;
+  height: 19px;
+  display: block;
+  overflow: visible;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.flow-app button.home-feature-card:hover {
   background: var(--surface-subtle);
 }
 
+.flow-app button.home-feature-card:active {
+  transform: scale(0.97);
+}
+
+.flow-app button.home-feature-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .home-feature-card__topline {
-  min-height: var(--control-height-default);
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
 }
 
 .home-feature-card__icon {
-  display: inline-flex;
+  width: 64px;
+  height: 64px;
+  display: flex;
   align-items: center;
+  justify-content: center;
+  border: 1px solid var(--status-info-border);
+  border-radius: 18px;
+  background: var(--status-info-bg);
   color: var(--text-strong);
-  font-size: var(--font-size-page-title);
-  line-height: var(--line-height-title);
+  font-size: 30px;
+  line-height: 1;
+  box-shadow: var(--shadow-app-icon);
+  transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
-.home-feature-card__tag {
-  padding: var(--radius-1) var(--space-2);
-  border-radius: var(--radius-1);
-  background: var(--surface-selected);
-  color: var(--accent);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-caption);
+.home-feature-card__glyph {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", var(--font-sans);
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+.home-wafer-glyph {
+  width: 38px;
+  height: 38px;
+  display: block;
+  overflow: visible;
+}
+
+.home-wafer-glyph__surface {
+  fill: var(--surface-panel);
+}
+
+.home-wafer-glyph__shot {
+  fill: var(--status-info-border);
+  stroke: var(--status-info);
+  stroke-width: 0.65;
+}
+
+.home-wafer-glyph__outline {
+  fill: none;
+  stroke: var(--text-strong);
+  stroke-width: 1.35;
+  stroke-linejoin: round;
+}
+
+.home-wafer-glyph__notch {
+  fill: var(--surface-panel);
+  stroke: var(--text-strong);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-template-report-glyph {
+  width: 39px;
+  height: 39px;
+  display: block;
+  overflow: visible;
+}
+
+.home-template-report-glyph__template {
+  fill: var(--status-violet-bg);
+  stroke: var(--status-violet);
+  stroke-width: 1.15;
+  stroke-dasharray: 2 1.3;
+}
+
+.home-template-report-glyph__report {
+  fill: var(--surface-panel);
+  stroke: var(--text-strong);
+  stroke-width: 1.15;
+}
+
+.home-template-report-glyph__heading,
+.home-template-report-glyph__body {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.05;
+  stroke-linecap: round;
+}
+
+.home-template-report-glyph__step {
+  fill: var(--status-violet-border);
+  stroke: var(--status-violet);
+  stroke-width: 0.75;
+}
+
+.home-template-report-glyph__number {
+  fill: var(--status-violet);
+  font-family: var(--font-sans);
+  font-size: 6px;
+  font-weight: var(--font-weight-bold);
+}
+
+.home-feature-item[data-tone="violet"] .home-feature-card__icon {
+  border-color: var(--status-violet-border);
+  background: var(--status-violet-bg);
+}
+
+.home-feature-item[data-tone="green"] .home-feature-card__icon {
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+}
+
+.home-feature-item[data-tone="amber"] .home-feature-card__icon {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.home-feature-item[data-tone="pink"] .home-feature-card__icon {
+  border-color: var(--status-pink-border);
+  background: var(--status-pink-bg);
+}
+
+.home-feature-card:hover .home-feature-card__icon,
+.home-feature-card:focus-visible .home-feature-card__icon {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-app-icon-hover);
 }
 
 .home-feature-card__content {
-  margin-top: var(--space-3);
-  padding-right: var(--space-5);
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  align-items: center;
 }
 
 .home-feature-card__title {
   color: var(--text-strong);
-  font-size: var(--font-size-title);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--line-height-title);
-  word-break: keep-all;
-}
-
-.home-feature-card__description {
-  color: var(--text-muted);
   font-size: var(--font-size-body);
-  font-weight: var(--font-weight-regular);
+  font-weight: var(--font-weight-medium);
   line-height: var(--line-height-body);
-  overflow-wrap: anywhere;
   word-break: keep-all;
-}
-
-.home-feature-card__arrow {
-  position: absolute;
-  right: var(--space-4);
-  bottom: var(--space-4);
-  color: var(--accent);
-  font-size: var(--font-size-page-title);
-  line-height: 1;
-  transition: transform 120ms ease;
-}
-
-.home-feature-card:hover .home-feature-card__arrow,
-.home-feature-card:focus-visible .home-feature-card__arrow {
-  transform: translateX(var(--space-1));
 }
 
 /* Lot management uses the Explorer template and a theme-independent editable grid. */
@@ -430,7 +585,7 @@
 
 @media (max-width: 900px) {
   .home-feature-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .ds-page--explorer,
@@ -465,12 +620,37 @@
 }
 
 @media (max-width: 560px) {
+  .home-page {
+    padding: 24px 16px 72px;
+  }
+
+  .home-welcome {
+    margin-bottom: 18px;
+  }
+
+  .home-welcome__title {
+    font-size: 18px;
+  }
+
   .home-feature-grid {
-    grid-template-columns: 1fr;
-    gap: var(--space-2);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--space-4) var(--space-1);
   }
 
   .flow-app button.home-feature-card {
-    min-height: 144px;
+    min-height: 96px;
+    padding-inline: 0;
+  }
+
+  .home-feature-card__icon {
+    width: 54px;
+    height: 54px;
+    border-radius: 15px;
+    font-size: 26px;
+  }
+
+  .home-feature-card__title {
+    font-size: 12px;
+    line-height: 16px;
   }
 }

@@ -91,6 +91,8 @@
 
   --shadow-flyout: 0 8px 24px rgb(15 23 42 / 14%);
   --shadow-modal: 0 20px 54px rgb(15 23 42 / 20%);
+  --shadow-app-icon: 0 5px 12px rgb(15 23 42 / 10%);
+  --shadow-app-icon-hover: 0 8px 18px rgb(15 23 42 / 16%);
 
   /* Backwards-compatible aliases while legacy pages migrate. */
   --bg-primary: var(--surface-page);
@@ -178,4 +180,6 @@
 
   --shadow-flyout: 0 8px 24px rgb(0 0 0 / 32%);
   --shadow-modal: 0 20px 54px rgb(0 0 0 / 42%);
+  --shadow-app-icon: 0 5px 12px rgb(0 0 0 / 24%);
+  --shadow-app-icon-hover: 0 8px 18px rgb(0 0 0 / 34%);
 }

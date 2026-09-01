@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import polars as pl
@@ -161,3 +162,114 @@ def test_fab_lot_bounded_pool_is_cached_when_identity_index_is_truncated(monkeyp
     assert values == ["LOT_A", "LOT_B", "LOT_C"]
     assert meta["truncated"] is True
     assert meta["exhaustive"] is False
+
+
+class _EmptyPoolCache:
+    def __init__(self):
+        self.value = None
+        self.put_calls = 0
+
+    def get(self, *_args, **_kwargs):
+        return self.value
+
+    def put(self, _product, _sig, values, **kwargs):
+        self.put_calls += 1
+        self.value = {
+            "values": list(values),
+            "meta": kwargs.get("meta") or {},
+            "complete": bool(kwargs.get("complete")),
+            "cached": "memory",
+        }
+        return self.value
+
+
+def test_complete_empty_root_pool_is_cached_and_not_rebuilt(monkeypatch):
+    from routers import splittable
+
+    cache = _EmptyPoolCache()
+    builds = []
+    monkeypatch.setattr(splittable, "_lot_list_cache", cache)
+    monkeypatch.setattr(splittable, "_root_lot_pool_sig", lambda _product: "sig")
+    monkeypatch.setattr(splittable, "_root_lot_provisional_get", lambda _product: None)
+    monkeypatch.setattr(splittable, "_root_lot_provisional_drop", lambda _product="": None)
+    monkeypatch.setattr(
+        splittable,
+        "_build_root_lot_pool",
+        lambda product: builds.append(product) or ([], {"match_mode": "lookup_cache_roots"}, True),
+    )
+
+    first = splittable._root_lot_pool("ML_TABLE_EMPTY")
+    second = splittable._root_lot_pool("ML_TABLE_EMPTY")
+
+    assert first["complete"] is True
+    assert first["values"] == []
+    assert second == first
+    assert builds == ["ML_TABLE_EMPTY"]
+    assert cache.put_calls == 1
+
+
+def test_complete_empty_lot_list_survives_disk_round_trip(monkeypatch, tmp_path):
+    from core import lot_list_cache
+
+    monkeypatch.setattr(lot_list_cache, "_cache_dir", lambda: tmp_path)
+    lot_list_cache.clear()
+    try:
+        written = lot_list_cache.put(
+            "ML_TABLE_EMPTY", "sig-empty", [], complete=True,
+            meta={"match_mode": "lookup_cache_roots"},
+        )
+        assert written["complete"] is True
+        assert written["values"] == []
+
+        # RAM을 비워 디스크 계층을 실제로 통과시킨다.
+        with lot_list_cache._LOCK:
+            lot_list_cache._RAM.clear()
+            lot_list_cache._RAM_BYTES = 0
+        loaded = lot_list_cache.get("ML_TABLE_EMPTY", "sig-empty")
+        assert loaded is not None
+        assert loaded["complete"] is True
+        assert loaded["values"] == []
+        assert loaded["cached"] == "disk"
+    finally:
+        lot_list_cache.clear()
+
+
+def test_complete_empty_root_lookup_response_does_not_report_preparing(monkeypatch):
+    from routers import splittable
+
+    monkeypatch.setattr(
+        splittable,
+        "_root_lot_pool",
+        lambda _product: {
+            "values": [],
+            "complete": True,
+            "cached": "disk",
+            "meta": {"match_mode": "lookup_cache_roots", "source": "mltable_lookup"},
+        },
+    )
+
+    result = splittable.get_lot_candidates(
+        product="ML_TABLE_EMPTY",
+        col="root_lot_id",
+        prefix="",
+        limit=30,
+        source="auto",
+        root_lot_id="",
+    )
+
+    assert result["candidates"] == []
+    assert result["complete"] is True
+    assert result["match_mode"] == "lookup_cache_roots"
+
+
+def test_pivot_readiness_metadata_is_written_atomically(tmp_path):
+    from app_v2.modules.splittable import cache_builder
+
+    target = tmp_path / ".root_fingerprints.json"
+    cache_builder._write_json_atomic(target, {"format": 2, "roots": {"A": [1, 2]}})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "format": 2,
+        "roots": {"A": [1, 2]},
+    }
+    assert list(tmp_path.glob("*.tmp")) == []
