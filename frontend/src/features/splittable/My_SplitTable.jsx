@@ -973,7 +973,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     ||(isCustomMode&&customCols.some(isInlineVmSplitParam))
     ||(Array.isArray(data?.rows)&&data.rows.some(row=>isInlineVmSplitParam(row?._param)||isInlineVmSplitParam(row?._display)));
   const pemsRootOnly=Boolean(lotId.trim())&&!fabLotId.trim();
-  const pemsDisabled=!pemsRootOnly||splitCheckDisabled;
+  // PEMS 는 KNOB split 을 물리 wafer 1..25 기준 S0/S1 그룹으로 읽는 표시다.
+  // MASK/FAB/INLINE/VM 을 섞으면 같은 S 그룹 의미가 없어지고, custom set은
+  // prefix 선택의 출처가 불명확하므로 KNOB 단독 선택에서만 허용한다.
+  const pemsKnobOnly=!isCustomMode&&selPrefixes.length===1&&String(selPrefixes[0]||"").toUpperCase()==="KNOB";
+  const pemsDisabled=!pemsRootOnly||!pemsKnobOnly;
   const splitCheckViewActive=showSplitCheckView&&!splitCheckDisabled;
   const pemsViewActive=showPemsView&&!pemsDisabled&&!splitCheckViewActive;
   const mergedViewActive=showMergedView&&!splitCheckViewActive&&!pemsViewActive;
@@ -1002,7 +1006,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     {k:"cell",l:"기본",t:"모든 행/열을 개별 칸으로 표시"},
     {k:"split",l:"Split 체크",t:splitCheckToggleTitle,d:splitCheckDisabled},
     {k:"merged",l:"병합",t:"KNOB/FAB/MASK 행에서 왼쪽 값과 같은 칸을 하나로 병합해 표시 (읽기 전용). INLINE/VM/TAG 는 wafer별 값이라 병합하지 않습니다."},
-    {k:"pems",l:"PEMS",t:!pemsRootOnly?"PEMS는 lot_id가 아닌 root_lot_id 단독 조회에서만 사용할 수 있습니다":"wafer 1~25를 고정 표시하고 값별 S0/S1 그룹을 직접 표기합니다. 없는 wafer는 S0에 회색으로 표시합니다.",d:pemsDisabled},
+    {k:"pems",l:"PEMS",t:!pemsRootOnly?"PEMS는 lot_id가 아닌 root_lot_id 단독 조회에서만 사용할 수 있습니다":(!pemsKnobOnly?"PEMS는 KNOB만 단독 선택했을 때 사용할 수 있습니다":"wafer 1~25를 고정 표시하고 값별 S0/S1 그룹을 직접 표기합니다. 없는 wafer는 S0에 회색으로 표시합니다."),d:pemsDisabled},
   ];
   useEffect(()=>{
     if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
@@ -2399,6 +2403,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const hasWaferStepProgress=Object.keys(waferStepProgress).length>0;
         const waferKeyAt=(ci)=>String(data?.wafer_keys?.[ci]??data?.headers?.[ci]??"").replace(/^(?:#|WAFER|WF|W)\s*/i,"").replace(/^0+(?=\d)/,"");
         const waferProgressAt=(ci)=>waferStepProgress[waferKeyAt(ci)]||null;
+        // 최신 진행 step 회색 표시는 KNOB 행의 진행 순서에만 의미가 있다.
+        // MASK/FAB/INLINE/VM/TAG 행은 자체적인 진행 순서가 없으므로, 빈 행이라는
+        // 이유만으로 회색을 칠하면 다른 prefix를 함께 선택했을 때 오판이 된다.
+        const isKnobProgressRow=(param)=>{
+          const value=String(param||"").trim().toUpperCase();
+          return value==="KNOB"||value.startsWith("KNOB_");
+        };
         const NOT_REACHED_BG="rgba(107,114,128,0.45)";
         // 라벨 셀은 sticky 라 반투명이면 스크롤 시 아래 셀이 비친다 — 불투명 혼색 사용.
         const NOT_REACHED_LABEL_BG="color-mix(in srgb, var(--bg-secondary) 60%, #6b7280)";
@@ -2717,6 +2728,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             // 표시할 plan 값이 있으면 그 셀의 값/팔레트 색을 보존한다.
             // 위 lastFilledRowByCol / rowHasNoSplit 주석 참조.
             const cellNotReachedAt=(ci)=>{
+              if(!isKnobProgressRow(rowParam))return false;
               if(hasValue(cellDisplayValueAt(ci)))return false;
               // 이 wafer 열에서 더 뒤 step 에 split 이 채워져 있으면 여긴 아직 회색이 아니다.
               if(ri<lastFilledRowByCol[ci])return false;

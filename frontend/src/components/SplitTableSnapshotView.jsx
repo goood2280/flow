@@ -94,9 +94,13 @@ function buildNotReachedLookup(st) {
   const hasWafer = Object.keys(byWafer).length > 0;
   const headers = st?.headers || [];
   const keyAt = ci => normalize(st?.wafer_keys?.[ci] ?? headers[ci] ?? "");
+  const isKnobProgressParam = param => {
+    const value = String(param || "").trim().toUpperCase();
+    return value === "KNOB" || value.startsWith("KNOB_");
+  };
   const cell = (param, ci) => {
     const name = String(param || "");
-    if (!name) return false;
+    if (!name || !isKnobProgressParam(name)) return false;
     if (!hasWafer) return root.has(name);
     return byWafer[keyAt(ci)]?.has(name) === true;
   };
@@ -104,7 +108,7 @@ function buildNotReachedLookup(st) {
     cell,
     row: (param) => {
       const name = String(param || "");
-      if (!name) return false;
+      if (!name || !isKnobProgressParam(name)) return false;
       if (!hasWafer) return root.has(name);
       return headers.length > 0 && headers.every((_, ci) => cell(name, ci));
     },
@@ -527,6 +531,9 @@ export default function SplitTableSnapshotView({
                     const hasActual = hasStValue(cell.actual);
                     const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
                     const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
+                    // PEMS 는 미진행/누락 wafer도 S0/S1 그룹 라벨을 유지해야 한다.
+                    // 따라서 값(S0 등)이 들어 있어도 회색 배경을 덮어쓴다. 일반
+                    // Split 체크/스냅샷은 실제 값이 있는 셀을 회색 처리하지 않는다.
                     const cellNotReached = pemsMode
                       ? (cell.not_reached === true || pemsMissingWaferIndices.has(ci))
                       : (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
