@@ -95,6 +95,10 @@ DEFAULT_VEHICLE_CFG = {
     "image": "",        # teg_location/ 폴더 안 그림 파일명
     # 제품별 wafer 유효 최외곽 반경(mm). None이면 전역 wafer_edge_mm(기본 147)을 사용.
     "wafer_edge_mm": None,
+    # Teg_location에 teg_w/teg_h가 없을 때 쓰는 제품별 기본 크기(mm).
+    # None이면 기존 전역 teg_default_w/h를 상속한다.
+    "teg_default_w": None,
+    "teg_default_h": None,
 }
 
 # TEG Mapfile 체크(core/teg_check) 설정 — flat 별 기본 오프셋·모듈(TEG)별 오프셋.
@@ -533,6 +537,8 @@ def _clean_vehicle_cfg(raw: Any) -> dict | None:
         ("chip_w", 0.0, 1000.0, float), ("chip_h", 0.0, 1000.0, float),
         ("gap_x", 0.0, 1000.0, float), ("gap_y", 0.0, 1000.0, float),
         ("wafer_edge_mm", 0.001, 1000.0, float),
+        ("teg_default_w", 0.001, 1000.0, float),
+        ("teg_default_h", 0.001, 1000.0, float),
     ):
         try:
             v = cast(raw.get(k, DEFAULT_VEHICLE_CFG[k]))
@@ -803,6 +809,37 @@ def vehicle_wafer_edge_mm(cfg: dict, vehicle: str) -> float:
     except (TypeError, ValueError):
         return fallback
     return value if math.isfinite(value) and value > 0 else fallback
+
+
+def vehicle_teg_default_size(cfg: dict, vehicle: str) -> tuple[float, float]:
+    """제품별 TEG 기본 크기(mm). 미설정 축은 기존 전역값을 상속한다.
+
+    제품 키는 화면/CSV의 대소문자 차이로 설정이 끊기지 않게 case-insensitive로
+    찾는다. 구버전 teg_map.json에는 제품별 키가 없으므로 그대로 전역값을 쓴다.
+    """
+    config = cfg or {}
+    def _global_value(key: str) -> float:
+        try:
+            value = float(config.get(key, DEFAULT_CFG[key]))
+        except (TypeError, ValueError):
+            value = float(DEFAULT_CFG[key])
+        return value if math.isfinite(value) and value > 0 else float(DEFAULT_CFG[key])
+
+    fallbacks = (_global_value("teg_default_w"), _global_value("teg_default_h"))
+    target = str(vehicle or "").strip().casefold()
+    product_cfg = next(
+        (value for key, value in (config.get("vehicles") or {}).items()
+         if str(key).strip().casefold() == target and isinstance(value, dict)),
+        {},
+    )
+    resolved: list[float] = []
+    for key, fallback in zip(("teg_default_w", "teg_default_h"), fallbacks):
+        try:
+            value = float(product_cfg.get(key))
+        except (TypeError, ValueError):
+            value = fallback
+        resolved.append(value if math.isfinite(value) and value > 0 else fallback)
+    return resolved[0], resolved[1]
 
 
 def clean_node_path(value: Any) -> str:
@@ -1965,7 +2002,7 @@ def normalize_direction(value: Any, teg_name: str = "") -> str:
 
 
 def teg_size(raw_w: Any, raw_h: Any, scale: float, cfg: dict,
-             direction: str) -> tuple[float, float]:
+             direction: str, vehicle: str = "") -> tuple[float, float]:
     """Teg_location 한 행의 TEG 크기 (mm) → (w, h).
 
     **파일의 teg_w/teg_h 는 실제 배치 방향 그대로다.** vertical TEG 는 파일에
@@ -1979,8 +2016,9 @@ def teg_size(raw_w: Any, raw_h: Any, scale: float, cfg: dict,
     def _has(v) -> bool:
         return v is not None and v == v      # NaN 제외
     has_w, has_h = _has(raw_w), _has(raw_h)
-    w = float(raw_w) * scale if has_w else float(cfg["teg_default_w"])
-    h = float(raw_h) * scale if has_h else float(cfg["teg_default_h"])
+    default_w, default_h = vehicle_teg_default_size(cfg, vehicle)
+    w = float(raw_w) * scale if has_w else default_w
+    h = float(raw_h) * scale if has_h else default_h
     # 한쪽만 있는 행은 파일 값을 존중한다 — 섞어서 스왑하면 더 틀어진다.
     if direction in ("v", "v_L") and not has_w and not has_h:
         w, h = h, w
@@ -2565,7 +2603,7 @@ def map_payload(vehicle: str) -> dict:
             # 파일의 teg_w/teg_h 는 실제 배치 방향 그대로(vertical 은 이미 스왑된 값).
             # 열이 없어 기본 사이즈로 채울 때만 vertical 이면 세운다 — teg_size 참고.
             fz = normalize_direction(row.get("flat_zone"), row["teg"])
-            tw, th = teg_size(row["teg_w"], row["teg_h"], scale, cfg, fz)
+            tw, th = teg_size(row["teg_w"], row["teg_h"], scale, cfg, fz, veh)
             item = {
                 "teg": row["teg"],
                 "src_row": src_row,   # 이 vehicle 안에서의 파일 행 순번 (0-based)

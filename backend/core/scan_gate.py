@@ -222,7 +222,16 @@ def _public(task: dict[str, Any] | None, *, now: float | None = None) -> dict[st
     if not task:
         return None
     now = time.monotonic() if now is None else now
-    started = task.get("started_at")
+    # Queue tasks use started_at; exclusive() tasks use started_mono.  Reading
+    # only the former made every worker/off-thread cache build appear to have
+    # elapsed for 0 seconds in the cache-management queue.
+    started = task.get("started_at") or task.get("started_mono")
+    enqueued = task.get("enqueued_mono")
+    waited = (
+        float(task.get("waited_sec") or 0.0)
+        if enqueued is None
+        else float((started or now) - float(enqueued or now))
+    )
     return {
         "id": task.get("id") or "",
         "kind": task.get("kind") or "",
@@ -231,7 +240,7 @@ def _public(task: dict[str, Any] | None, *, now: float | None = None) -> dict[st
         "source": task.get("source") or "",
         "enqueued_at": task.get("enqueued_iso") or "",
         "started_at": task.get("started_iso") or "",
-        "waited_sec": round(float((started or now) - float(task.get("enqueued_mono") or now)), 1),
+        "waited_sec": round(max(0.0, waited), 1),
         "elapsed_sec": round(float(now - started), 1) if started else 0.0,
     }
 

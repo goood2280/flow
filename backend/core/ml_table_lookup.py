@@ -2991,6 +2991,15 @@ def _job_snapshot() -> dict[str, Any]:
     with _BUILD_LOCK:
         state = dict(_BUILD_STATE)
         state["queued"] = list(_BUILD_QUEUE)
+        # A delayed retry is still live work.  Without exposing it, the manual
+        # cache pipeline sees an empty queue plus last_error and can either wait
+        # for the full six-hour stage timeout or report the build as abandoned
+        # even though a retry timer is about to re-enqueue it.
+        state["retrying"] = [
+            key for key, timer in _BUILD_RETRY_TIMERS.items()
+            if timer is not None and timer.is_alive()
+        ]
+        state["retry_counts"] = dict(_BUILD_RETRY_COUNTS)
     state["queued"] = [str(p) for p in state.get("queued") or []]
     return state
 
@@ -3753,7 +3762,8 @@ def _cancel_build_retry(fp: Path) -> None:
 
 
 def _schedule_build_retry(
-    fp: Path, *, immediate: bool = False, consume_attempt: bool = True
+    fp: Path, *, immediate: bool = False, consume_attempt: bool = True,
+    local_only: bool = False,
 ) -> bool:
     """짧은 지연 뒤 실패한 lookup build를 제한 횟수만큼 재등록한다.
 
@@ -3792,7 +3802,10 @@ def _schedule_build_retry(
         def _retry() -> None:
             with _BUILD_LOCK:
                 _BUILD_RETRY_TIMERS.pop(key, None)
-            enqueue_build(path, immediate=immediate)
+            # A retry must preserve where the operator asked the build to run.
+            # Dropping local_only here silently moved a manual local build to
+            # the development worker after its first transient failure.
+            enqueue_build(path, immediate=immediate, local_only=local_only)
 
         timer = threading.Timer(delay, _retry)
         timer.daemon = True
@@ -3906,13 +3919,28 @@ def _worker_loop() -> None:
                 ) or {}
             fresh_after = lookup_artifacts_fresh(fp)
             if not fresh_after:
-                reason = str(
-                    res.get("error")
-                    or res.get("reason")
-                    or cache_status(fp).get("status")
-                    or "lookup_build_not_fresh"
+                # durable 자동 빌드는 API가 worker queue에 영속 등록한 뒤 즉시
+                # 돌아온다. 이때 cache_status(fp)는 현재 coordinator loop 때문에
+                # "running"을 돌려주지만, 그것은 실패 사유가 아니라 원격 작업의
+                # 정상 대기 상태다. 과거에는 이 running을 실패로 3회 차감해 모든
+                # 제품이 "running · 재시도 없음"으로 끝났다.
+                worker_task_pending = bool(
+                    res.get("ok")
+                    and res.get("queued")
+                    and res.get("deferred")
+                    and res.get("task_id")
                 )
-                waiting_on_build = reason == "build_lock_held"
+                reason = (
+                    "worker_task_queued"
+                    if worker_task_pending
+                    else str(
+                        res.get("error")
+                        or res.get("reason")
+                        or cache_status(fp).get("status")
+                        or "lookup_build_not_fresh"
+                    )
+                )
+                waiting_on_build = worker_task_pending or reason == "build_lock_held"
                 with _BUILD_LOCK:
                     _BUILD_STATE["last_error"] = "" if waiting_on_build else reason
                     _BUILD_STATE["last_source"] = str(fp.resolve())
@@ -3921,25 +3949,40 @@ def _worker_loop() -> None:
                     fp,
                     immediate=immediate,
                     consume_attempt=not waiting_on_build,
+                    local_only=local_only,
                 )
-                if retry:
+                if retry and not waiting_on_build:
                     logger.warning(
                         "ML_TABLE lookup cache not fresh after build; retry scheduled source=%s reason=%s",
                         fp, reason,
+                    )
+                elif retry:
+                    logger.info(
+                        "ML_TABLE lookup cache build pending; completion check scheduled "
+                        "source=%s reason=%s task_id=%s",
+                        fp, reason, res.get("task_id") or "",
                     )
                 # 여기가 "큐에는 넣었는데 캐시가 안 생긴" 경로다. 예전에는
                 # logger.warning 뿐이라 화면에서는 아무 일도 없던 것과 구분이
                 # 안 됐다 — 워커 오프로드 대기/메모리 대기 초과가 전부 침묵했다.
                 if waiting_on_build and retry:
+                    waiting_message = (
+                        f"lookup 캐시 워커 빌드 완료 대기: {fp.stem}"
+                        if worker_task_pending
+                        else f"lookup 캐시 기존 빌드 완료 대기: {fp.stem}"
+                    )
                     _emit_build_event(
                         fp.stem,
-                        f"lookup 캐시 기존 빌드 완료 대기: {fp.stem}",
+                        waiting_message,
                         ok=True,
                         phase="skip",
                         detail={
                             "reason": reason,
                             "retry_scheduled": True,
                             "waiting_for_existing_build": True,
+                            "worker_task_pending": worker_task_pending,
+                            "task_id": str(res.get("task_id") or ""),
+                            "deduped": bool(res.get("deduped")),
                         },
                     )
                 else:
@@ -3965,8 +4008,24 @@ def _worker_loop() -> None:
             _warm_root_ram_after_lookup_build(fp)
         except Exception as exc:
             logger.warning("ML_TABLE lookup cache build failed source=%s: %s", fp, exc, exc_info=True)
-            _emit_build_event(fp.stem, f"lookup 캐시 빌드 실패: {fp.stem} — {exc}",
-                              ok=False, phase="fail", detail={"error": str(exc)})
+            # Exceptions used to be the one failure path that never scheduled
+            # the documented limited retry.  A transient filesystem/worker
+            # error therefore left the product failed until the next scheduler
+            # cycle or another manual click.
+            retry = _schedule_build_retry(
+                fp,
+                immediate=immediate,
+                consume_attempt=True,
+                local_only=local_only,
+            )
+            _emit_build_event(
+                fp.stem,
+                f"lookup 캐시 빌드 실패: {fp.stem} — {exc}"
+                + (" · 재시도 예약함" if retry else " · 재시도 없음"),
+                ok=False,
+                phase="fail",
+                detail={"error": str(exc), "retry_scheduled": bool(retry)},
+            )
             with _BUILD_LOCK:
                 _BUILD_STATE["last_error"] = str(exc)
                 _BUILD_STATE["last_source"] = str(fp.resolve())

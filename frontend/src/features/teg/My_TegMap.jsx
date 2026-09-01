@@ -309,12 +309,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
     try {
       const r = await sf(API + "/config");
       setInfo(r);
-      // TEG 기본 사이즈는 서버에 mm 로 저장 — UI 는 µm 로 편집.
-      setCfg({
-        ...r.config,
-        teg_default_w_um: Math.round((Number(r.config.teg_default_w) || 0) * 1000),
-        teg_default_h_um: Math.round((Number(r.config.teg_default_h) || 0) * 1000),
-      });
+      setCfg(r.config);
       const storedVehicleCfg = ((r.config.vehicles || {})[vehicle] || {});
       const v0 = { mode: "none", cols: 1, rows: 1, chip_w: 0, chip_h: 0, gap_x: 0, gap_y: 0, image: "",
         ...storedVehicleCfg,
@@ -327,6 +322,11 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         chip_h_um: Math.round((Number(v0.chip_h) || 0) * 1000),
         gap_x_um: Math.round((Number(v0.gap_x) || 0) * 1000),
         gap_y_um: Math.round((Number(v0.gap_y) || 0) * 1000),
+        // 제품별 값이 없는 구버전 설정은 전역 기본값을 그대로 상속한다.
+        teg_default_w_um: Math.round((Number(storedVehicleCfg.teg_default_w)
+          || Number(r.config.teg_default_w) || 3) * 1000),
+        teg_default_h_um: Math.round((Number(storedVehicleCfg.teg_default_h)
+          || Number(r.config.teg_default_h) || 0.1) * 1000),
       });
       // TEG Mapfile 체크 오프셋 — 편집 편의를 위해 평탄화
       const c0 = r.config.check || {};
@@ -370,9 +370,6 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         ebeam_scale: Number(cfg.ebeam_scale) || 0.001,
         wafer_radius_mm: Number(cfg.wafer_radius_mm) || 150.0,
         wafer_edge_mm: Number(cfg.wafer_edge_mm) || 147.0,
-        // µm 입력 → mm 저장 (기본 3000×100 µm)
-        teg_default_w: (Number(cfg.teg_default_w_um) || 3000) / 1000,
-        teg_default_h: (Number(cfg.teg_default_h_um) || 100) / 1000,
       };
       if (chk) {
         const productsWithoutFirstPad = Object.fromEntries(Object.entries(chk.products || {}).map(([key, value]) => {
@@ -425,7 +422,8 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
         };
       }
       if (vehicle && vcfg) {
-        const { gap_x_um, gap_y_um, chip_w_um, chip_h_um, wafer_edge_mm, ...vrest } = vcfg;
+        const { gap_x_um, gap_y_um, chip_w_um, chip_h_um, wafer_edge_mm,
+          teg_default_w_um, teg_default_h_um, ...vrest } = vcfg;
         patch.vehicles = {
           [vehicle]: {
             ...vrest,
@@ -437,6 +435,9 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
             gap_x: (Number(gap_x_um) || 0) / 1000,
             gap_y: (Number(gap_y_um) || 0) / 1000,
             wafer_edge_mm: Number(wafer_edge_mm) || 147,
+            // 현재 선택 제품에만 저장. 기존 전역값은 구버전 제품의 fallback으로 유지한다.
+            teg_default_w: (Number(teg_default_w_um) || 3000) / 1000,
+            teg_default_h: (Number(teg_default_h_um) || 100) / 1000,
           },
         };
       }
@@ -566,15 +567,15 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
           onChange={e => set({ wafer_edge_mm: e.target.value })} />
       </div>
 
-      <div style={sect}>TEG 기본 사이즈 (µm) — teg_w/teg_h 열이 없을 때</div>
+      <div style={sect}>제품별 TEG 기본 사이즈 (µm) — teg_w/teg_h 열이 없을 때</div>
       <div style={row}>
-        <span style={lab}>가로 × 세로 (µm)</span>
-        <input style={num} type="number" step="any" min="1" disabled={dis} value={cfg.teg_default_w_um}
-          onChange={e => set({ teg_default_w_um: e.target.value })} />
+        <span style={lab}>{vehicle || "현재 제품"} 가로 × 세로</span>
+        <input style={num} type="number" step="any" min="1" disabled={dis} value={vcfg.teg_default_w_um}
+          onChange={e => setV({ teg_default_w_um: e.target.value })} />
         <span style={{ color: "var(--muted)" }}>×</span>
-        <input style={num} type="number" step="any" min="1" disabled={dis} value={cfg.teg_default_h_um}
-          onChange={e => set({ teg_default_h_um: e.target.value })} />
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>기본 3000×100 µm</span>
+        <input style={num} type="number" step="any" min="1" disabled={dis} value={vcfg.teg_default_h_um}
+          onChange={e => setV({ teg_default_h_um: e.target.value })} />
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>이 제품에만 저장</span>
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: -2, marginBottom: 6 }}>
         가로(Horizontal) 기준으로 입력하세요 — direction=V 인 TEG 는 이 값을 세워서

@@ -1159,6 +1159,37 @@ def test_vehicle_wafer_edge_uses_147_default_and_product_override():
     assert teg_map.vehicle_wafer_edge_mm(cfg, "UNKNOWN") == 147
 
 
+def test_vehicle_teg_default_size_inherits_global_and_overrides_each_product():
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg.update({"teg_default_w": 3.0, "teg_default_h": 0.1})
+    cfg["vehicles"] = {
+        "WIDE": teg_map._clean_vehicle_cfg({
+            "teg_default_w": 4.2, "teg_default_h": 0.25,
+        }),
+        "WIDTH_ONLY": teg_map._clean_vehicle_cfg({"teg_default_w": 2.4}),
+    }
+
+    assert teg_map.vehicle_teg_default_size(cfg, "wide") == (4.2, 0.25)
+    assert teg_map.vehicle_teg_default_size(cfg, "WIDTH_ONLY") == (2.4, 0.1)
+    assert teg_map.vehicle_teg_default_size(cfg, "UNKNOWN") == (3.0, 0.1)
+    assert teg_map.teg_size(None, None, 1.0, cfg, "h", "WIDE") == (4.2, 0.25)
+    assert teg_map.teg_size(None, None, 1.0, cfg, "v", "WIDE") == (0.25, 4.2)
+
+
+def test_vehicle_teg_default_size_round_trips_in_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+
+    teg_map.save_cfg({"vehicles": {"P": {
+        "teg_default_w": 5.5,
+        "teg_default_h": 0.35,
+    }}})
+
+    saved = teg_map.load_cfg()
+    assert saved["vehicles"]["P"]["teg_default_w"] == 5.5
+    assert saved["vehicles"]["P"]["teg_default_h"] == 0.35
+    assert teg_map.vehicle_teg_default_size(saved, "P") == (5.5, 0.35)
+
+
 def test_legacy_mapfile_department_names_keep_same_display_label():
     check = teg_map._clean_check({"mapfile_departments": ["DVC", "SRAM"]})
 
@@ -1793,7 +1824,8 @@ def test_product_identity_rename_propagates_to_all_teg_references_and_settings(t
 
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg.update({
-        "vehicles": {"OLD": {**teg_map.DEFAULT_VEHICLE_CFG, "mode": "grid"}},
+        "vehicles": {"OLD": {**teg_map.DEFAULT_VEHICLE_CFG, "mode": "grid",
+                               "teg_default_w": 4.5, "teg_default_h": 0.2}},
         "product_nodes": {"OLD": ""},
         "check_targets": {"OLD": ["T0"]},
         "check": teg_map._clean_check({
@@ -1837,6 +1869,7 @@ def test_product_identity_rename_propagates_to_all_teg_references_and_settings(t
     saved = teg_map.load_cfg()
     assert "OLD" not in saved["vehicles"]
     assert saved["vehicles"]["NEW"]["mode"] == "grid"
+    assert teg_map.vehicle_teg_default_size(saved, "NEW") == (4.5, 0.2)
     assert saved["product_nodes"] == {"NEW": "2나노 / 2나노A"}
     assert saved["check_targets"] == {"NEW": ["T0"]}
     assert "OLD" not in saved["check"]["products"]

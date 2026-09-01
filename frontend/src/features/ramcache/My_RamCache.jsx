@@ -256,6 +256,14 @@ function cacheTaskForProduct(scanQueue, product) {
     || null;
 }
 
+function cacheTaskIsActive(scanQueue, taskId) {
+  const wanted = String(taskId || "");
+  if (!wanted) return false;
+  return [scanQueue?.current, ...(scanQueue?.pending || [])]
+    .filter(Boolean)
+    .some(task => String(task.id || "") === wanted);
+}
+
 /** 진행 중인 job의 현재 단계 라벨 — 상태 요약 줄에서 "어디까지"를 짧게 보여주는 데 쓴다. */
 function currentStageLabel(job) {
   const st = (job?.stages || []).find(s => s.id === job.current_stage);
@@ -627,7 +635,6 @@ export default function My_RamCache({ user }) {
   const [budgetSaving, setBudgetSaving] = useState(false);
   // 관리자 전용 — 캐시 수동 스캔 (통합)
   const [unifiedScanBusy, setUnifiedScanBusy] = useState(false);
-  const [productCacheStatus, setProductCacheStatus] = useState(null);
   const [rootLotCacheStatus, setRootLotCacheStatus] = useState(null);
   const [queryWorkersStatus, setQueryWorkersStatus] = useState(null);
   const [queryWorkersDraft, setQueryWorkersDraft] = useState(3);
@@ -808,7 +815,6 @@ export default function My_RamCache({ user }) {
         setCacheJobs(d.jobs || []); setCacheQueues(d.queues || null);
         setScanQueue(d.scan_queue || null); setCacheProgress(d.progress || null);
         setProductStatus(d.product_status || null); setCacheMilestones(d.milestones || []);
-        setUnifiedScanBusy((d.jobs || []).some(job => job.status === "running"));
       })
       .then(() => setCacheLoadError(""))
       // 실패해도 마지막으로 받은 값을 지우지 않는다. 예전에는 전부 null 로
@@ -824,11 +830,6 @@ export default function My_RamCache({ user }) {
     sf(API + "/search-timings" + qs({ hours, limit: 200, origin: scope === "all" ? "" : "__self__" }))
       .then(setTiming)
       .catch(() => setTiming(null));
-  }, []);
-  const reloadProductCacheStatus = useCallback((prod) => {
-    return sf(API + "/product-cache/status" + qs({ product: prod }))
-      .then(d => setProductCacheStatus(d))
-      .catch(() => setProductCacheStatus(null));
   }, []);
   const reloadRootLotCacheStatus = useCallback((prod) => {
     return sf(API + "/root-lot-cache/status" + qs({ product: prod }))
@@ -861,7 +862,10 @@ export default function My_RamCache({ user }) {
     return () => clearTimeout(timer);
   }, [canManage, unifiedScanBusy, cacheJobs, cacheEventLogFilter, loadCacheEventLog, pollTick]);
   useEffect(() => {
-    if (!selProd) return;
+    // Product-detail endpoints can scan/cache root metadata.  The jobs and
+    // speed tabs need only the lightweight overview, so do not make the hidden
+    // product panel generate cache work on every product selection/poll.
+    if (!selProd || mainTab !== "products") return;
     loadPriority(selProd);
     loadContents(selProd);
     loadBudgets(selProd);
@@ -869,12 +873,11 @@ export default function My_RamCache({ user }) {
     const t = setTimeout(() => {
       loadLotStatus(selProd);
       if (canManage) {
-        reloadProductCacheStatus(selProd);
         reloadRootLotCacheStatus(selProd);
       }
     }, 750);
     return () => clearTimeout(t);
-  }, [selProd, canManage, loadPriority, loadLotStatus, loadContents, loadBudgets, reloadProductCacheStatus, reloadRootLotCacheStatus]);
+  }, [selProd, mainTab, canManage, loadPriority, loadLotStatus, loadContents, loadBudgets, reloadRootLotCacheStatus]);
 
   // 통합 스캔/전체 셋업 공용 — 시작 요청 후 진행 로그를 실시간 폴링한다.
   // 탭 이탈(언마운트) 시 정리는 공용 훅이 보장한다 — 이전엔 최대 1시간 동안
@@ -886,8 +889,13 @@ export default function My_RamCache({ user }) {
       .then(r => {
         // 스캔은 서버당 하나만 돈다. 다른 스캔이 진행 중이면 거절이 아니라
         // 대기열에 들어가고, 앞 작업이 끝나면(실패해도) 이어서 실행된다.
-        if (r.ok === false) toast.warn(r.detail || "스캔을 시작할 수 없습니다.");
-        else if (r.duplicate) toast.warn(r.detail || "같은 스캔이 이미 대기 중입니다.");
+        if (r.ok === false) {
+          toast.warn(r.detail || "스캔을 시작할 수 없습니다.");
+          setUnifiedScanBusy(false);
+          loadCacheEventLog("");
+          return;
+        }
+        if (r.duplicate) toast.warn(r.detail || "같은 스캔이 이미 대기 중입니다.");
         else if (r.ahead > 0) toast.warn(`다른 스캔이 진행 중 — 대기열 ${r.ahead + 1}번째로 등록했습니다. `
           + "앞 작업이 끝나는 대로(실패해도) 이어서 실행됩니다.");
         else if (r.queued) toast.ok(okMsg);
@@ -899,16 +907,16 @@ export default function My_RamCache({ user }) {
         // 모두 보이도록 '전체' 로 전환한다(단계 마커=scan, 적재 진행=cache_op,
         // 예열 요약=warmup 을 한 로그에서 시간순으로 본다).
         const scanLogFilter = "";
+        const requestedTaskId = String(r.id || "");
         setCacheEventLogFilter(scanLogFilter);
         loadCacheEventLog(scanLogFilter);
         const finishPolling = () => {
           scanPoll.stop();
           setUnifiedScanBusy(false);
           loadCacheEventLog(scanLogFilter);
-          reloadProductCacheStatus(selProd);
-          reloadRootLotCacheStatus(selProd);
+          if (mainTab === "products") reloadRootLotCacheStatus(selProd);
           loadOverview();
-          if (selProd) loadContents(selProd);
+          if (mainTab === "products" && selProd) loadContents(selProd);
         };
         let ticks = 0;
         // 폴링 자체(타이머 정리·연속 실패 중단·상한)는 공용 훅이 맡는다.
@@ -920,21 +928,44 @@ export default function My_RamCache({ user }) {
             ticks += 1;
             loadCacheEventLog(scanLogFilter);
             if (ticks % 2 === 0) {   // 5초마다 현황/상태도 갱신
-              reloadProductCacheStatus(selProd);
-              reloadRootLotCacheStatus(selProd);
+              if (mainTab === "products") reloadRootLotCacheStatus(selProd);
               loadOverview();
-              if (selProd) loadContents(selProd);
+              if (mainTab === "products" && selProd) loadContents(selProd);
             }
             setCacheJobs(st.jobs || []); setCacheQueues(st.queues || null);
             setScanQueue(st.scan_queue || null);
-            if (!st.running) {
+            // scan-status.running is server-global.  If an automatic product
+            // task is queued behind this manual request, waiting for the whole
+            // server gate to become idle keeps this button spinning for hours
+            // and can report the later task's result as ours.  Follow the task
+            // id returned by submit; older servers without an id retain the
+            // legacy global-running fallback.
+            const requestedActive = requestedTaskId
+              ? cacheTaskIsActive(st.scan_queue, requestedTaskId)
+              : !!st.running;
+            if (!requestedActive) {
               // 끝났으면 성공/실패를 반드시 알린다 — 예전엔 조용히 멈춰
               // 실패해도 화면상 '그냥 끝난' 것처럼 보였다.
-              const failed = (st.last_stages || []).filter(x => x.status === "failed");
-              if (st.last_status === "failed" || failed.length) {
+              const requestedJob = requestedTaskId
+                ? (st.jobs || []).find(job => String(job.task_id || "") === requestedTaskId)
+                : null;
+              const requestedLast = requestedTaskId && st.scan_queue?.last?.id === requestedTaskId
+                ? st.scan_queue.last : null;
+              const stages = requestedJob?.stages || st.last_stages || [];
+              const failed = stages.filter(x => x.status === "failed");
+              const cancelled = !!(requestedLast?.canceled || requestedJob?.detail?.cancelled);
+              const failedStatus = requestedJob?.status === "failed"
+                || (!requestedTaskId && st.last_status === "failed")
+                || (requestedLast?.ok === false && !cancelled);
+              if (cancelled) {
+                toast.info("캐시 작업이 중단되었습니다");
+              } else if (failedStatus || failed.length) {
                 toast.error("캐시 작업 실패 — "
                   + (failed.length
-                    ? failed.map(x => `${x.label}${x.error ? `: ${x.error}` : ""}`).join(" / ")
+                    ? failed.map(x => {
+                        const error = x.error || x.detail?.error || "";
+                        return `${x.label}${error ? `: ${error}` : ""}`;
+                      }).join(" / ")
                     : "자세한 사유는 아래 캐시 이벤트 로그를 확인하세요"));
               } else {
                 toast.ok("캐시 작업 완료");
@@ -1066,10 +1097,12 @@ export default function My_RamCache({ user }) {
 
   const refreshAll = () => {
     loadOverview();
-    if (selProd) { loadPriority(selProd); loadContents(selProd); loadBudgets(selProd); }
+    if (mainTab === "products" && selProd) {
+      loadPriority(selProd); loadContents(selProd); loadBudgets(selProd); loadLotStatus(selProd);
+    }
     if (canManage) {
       loadQueryWorkers();
-      reloadProductCacheStatus(selProd); reloadRootLotCacheStatus(selProd);
+      if (mainTab === "products") reloadRootLotCacheStatus(selProd);
       loadCacheEventLog(cacheEventLogFilter);
     }
   };
@@ -1085,6 +1118,7 @@ export default function My_RamCache({ user }) {
           <TabStrip active={mainTab} onChange={setMainTab}
             items={[
               { k: "jobs", l: "캐싱 진행·스케줄" },
+              { k: "products", l: "제품별 Root Lot RAM" },
               { k: "speed_config", l: "검색 속도 & 설정" },
             ]} />
         </div>

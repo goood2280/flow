@@ -560,10 +560,26 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
                         snapshot = _ml_table_lookup.build_queue_snapshot()
                         current = str(snapshot.get("current") or "")
                         queued = {str(value) for value in (snapshot.get("queued") or [])}
+                        retrying = {str(value) for value in (snapshot.get("retrying") or [])}
                         active = bool(snapshot.get("running") and current == target)
+                        # A definitive failed attempt with no queued/running/
+                        # delayed retry must end this stage now.  Previously the
+                        # manual scan sat until the six-hour stage timeout even
+                        # though the lookup coordinator had already exhausted
+                        # its retry budget and exposed the exact error.
+                        failed = bool(
+                            not active
+                            and target not in queued
+                            and target not in retrying
+                            and str(snapshot.get("last_source") or "") == target
+                            and str(snapshot.get("last_error") or "")
+                        )
+                        if failed:
+                            raise RuntimeError(str(snapshot.get("last_error") or "lookup build failed"))
                         return (
                             not active
                             and target not in queued
+                            and target not in retrying
                             and _ml_table_lookup.cache_status(source).get("status") == "fresh"
                         )
                     finished = _wait_for(
@@ -1560,7 +1576,11 @@ def _product_cache_status_snapshot(*, nonblocking: bool = False) -> dict:
     status["failed_count"] = sum(1 for row in status.get("products") or [] if row.get("state") == "failed")
     status["running_count"] = sum(1 for row in status.get("products") or [] if row.get("state") == "running")
     with _PRODUCT_CACHE_STATUS_LOCK:
-        _PRODUCT_CACHE_STATUS_SNAPSHOT.update({"at": now, "value": status})
+        # TTL starts when the expensive all-product artifact walk finishes, not
+        # when it starts.  If the walk itself exceeds ten seconds, storing the
+        # old start timestamp makes the fresh result immediately stale and the
+        # next admin-page poll launches another full walk forever.
+        _PRODUCT_CACHE_STATUS_SNAPSHOT.update({"at": time.monotonic(), "value": status})
     return status
 
 

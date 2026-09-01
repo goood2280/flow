@@ -574,7 +574,7 @@ def load_ref(vehicle: str) -> tuple[dict[str, list[dict]] | None, dict[str, str]
     for _, row in sub.iterrows():
         teg = str(row["teg"]).strip()
         fz = _tm.normalize_direction(row.get("flat_zone"), teg)
-        tw, th = _tm.teg_size(row["teg_w"], row["teg_h"], scale, cfg, fz)
+        tw, th = _tm.teg_size(row["teg_w"], row["teg_h"], scale, cfg, fz, vehicle)
         tc0 = str(row.get("top_cell") or "").strip()
         ref.setdefault(teg, []).append(
             {"x": float(row["ebeam_x"]), "y": float(row["ebeam_y"]), "w": tw, "h": th,
@@ -1331,6 +1331,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
 
     # ⚙️ 설정의 TEG Mapfile 체크 섹션 — flat 별 PCHK 오프셋, 모듈별 오프셋
     cfg = _tm.load_cfg()
+    default_teg_w, default_teg_h = _tm.vehicle_teg_default_size(cfg, vehicle)
     chk = cfg["check"]
 
     # 사용자 마커: 요청 값 + ⚙️ 설정 저장분 merge (요청 값이 앞 = 우선)
@@ -1558,8 +1559,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         product_rule = coord_ctx["product_rules"].get((used_t, config_name))
         # 설비 계산값의 실좌표(mm) + TEG 크기(mm) — 정답지에 없으면 기본 크기
         mm_x, mm_y = nx * scale, ny * scale
-        tw = cmp_["ref_w"] if cmp_["ref_w"] is not None else float(cfg["teg_default_w"])
-        th = cmp_["ref_h"] if cmp_["ref_h"] is not None else float(cfg["teg_default_h"])
+        tw = cmp_["ref_w"] if cmp_["ref_w"] is not None else default_teg_w
+        th = cmp_["ref_h"] if cmp_["ref_h"] is not None else default_teg_h
         # flat_used 가 v_R 이면 Vertical TEG — 기본 크기 사용 시 가로/세로 swap
         if cmp_["ref_w"] is None and used_t in ("v_R", "v_L"):
             tw, th = th, tw
@@ -1694,7 +1695,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # 칩 격자 모드면 내부 TEG 도 칩(die) 겹침 검사 — 일반 행과 동일 규약
         # (기본 TEG 크기 사용 — MAIN 내부 TEG 는 정답지에 없어 크기 정보가 없음)
         mm_x, mm_y = nx * scale, ny * scale
-        dw, dh = float(cfg["teg_default_w"]), float(cfg["teg_default_h"])
+        dw, dh = default_teg_w, default_teg_h
         overlap = None
         if shot.get("checked"):
             overlap = _overlaps_chip(shot["cells"], mm_x, mm_y, dw, dh,
@@ -2297,7 +2298,7 @@ def build_main_grid(vehicle: str, mains: list[str] | None = None,
     cfg = _tm.load_cfg()
     chk = cfg["check"]
     scale = float(cfg["ebeam_scale"]) or 1.0
-    tw, th = float(cfg["teg_default_w"]), float(cfg["teg_default_h"])
+    tw, th = _tm.vehicle_teg_default_size(cfg, veh)
     gx, gy = max(0.0, float(gap_x or 0.0)), max(0.0, float(gap_y or 0.0))
 
     merged_custom = merge_custom_markers(None, chk.get("custom_markers"))
