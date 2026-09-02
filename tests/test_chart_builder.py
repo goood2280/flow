@@ -787,13 +787,15 @@ MAX_ROWS = 10
     assert "WIDTH = 900\nHEIGHT = 500" in parsed["canonical_code"]
 
 
-def test_chart_builder_definition_round_trips_log_y_scale_and_positive_range():
+def test_chart_builder_definition_round_trips_manual_axis_ranges_and_log_y_scale():
     parsed = parse_chart_builder_definition("""
 Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT wafer_id, value
-CHART | TYPE=scatter | X=wafer_id | Y=value | Y_SCALE=log | Y_MIN=0.1 | Y_MAX=100
+CHART | TYPE=scatter | X=wafer_id | Y=value | X_MIN=0 | X_MAX=25 | Y_SCALE=log | Y_MIN=0.1 | Y_MAX=100
 """)
 
     assert parsed["chart"]["y_scale"] == "log"
+    assert parsed["chart"]["x_min"] == 0.0
+    assert parsed["chart"]["x_max"] == 25.0
     assert parsed["chart"]["y_min"] == 0.1
     assert parsed["chart"]["y_max"] == 100.0
     assert parse_chart_builder_definition(parsed["canonical_code"])["chart"] == parsed["chart"]
@@ -802,6 +804,36 @@ CHART | TYPE=scatter | X=wafer_id | Y=value | Y_SCALE=log | Y_MIN=0.1 | Y_MAX=10
         parse_chart_builder_definition("""
 Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT wafer_id, value
 CHART | TYPE=scatter | X=wafer_id | Y=value | Y_SCALE=log | Y_MIN=0 | Y_MAX=100
+""")
+
+    with pytest.raises(ChartBuilderDefinitionError, match="X_MIN은 X_MAX보다 작아야"):
+        parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT wafer_id, value
+CHART | TYPE=scatter | X=wafer_id | Y=value | X_MIN=10 | X_MAX=10
+""")
+
+
+def test_chart_builder_definition_round_trips_spec_out_wafer_map():
+    parsed = parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT root_lot_id, wafer_id, shot_x, shot_y, value
+CHART | TYPE=wafer_map | X=shot_x | MAP_Y=shot_y | Y=value | WAFER_MODE=spec_out | WAFER_SPEC_LOW=0 | WAFER_SPEC_HIGH=1.5
+""")
+
+    assert parsed["chart"]["wafer_mode"] == "spec_out"
+    assert parsed["chart"]["wafer_spec_low"] == 0.0
+    assert parsed["chart"]["wafer_spec_high"] == 1.5
+    assert parse_chart_builder_definition(parsed["canonical_code"])["chart"] == parsed["chart"]
+
+    with pytest.raises(ChartBuilderDefinitionError, match="WAFER_SPEC_LOW는 WAFER_SPEC_HIGH보다 작아야"):
+        parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT shot_x, shot_y, value
+CHART | TYPE=wafer_map | X=shot_x | MAP_Y=shot_y | Y=value | WAFER_MODE=spec_out | WAFER_SPEC_LOW=2 | WAFER_SPEC_HIGH=1
+""")
+
+    with pytest.raises(ChartBuilderDefinitionError, match="WAFER_SPEC_LOW 또는 WAFER_SPEC_HIGH"):
+        parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT shot_x, shot_y, value
+CHART | TYPE=wafer_map | X=shot_x | MAP_Y=shot_y | Y=value | WAFER_MODE=spec_out
 """)
 
 

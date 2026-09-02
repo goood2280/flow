@@ -48,6 +48,7 @@ function compactNumber(value) {
 export default function TegValueWaferMap({
   vehicle, points = [], panels = null, title = "WF MAP", valueLabel = "value", panelLimit = 25,
   palette: requestedPalette = "", low: requestedLow = null, center: requestedCenter = null, high: requestedHigh = null,
+  mode = "value", specLow = null, specHigh = null,
   interactive = true, onScaleChange = null,
 }) {
   const [data, setData] = useState(null);
@@ -66,6 +67,8 @@ export default function TegValueWaferMap({
   const defaultHigh = percentile(allValues, 0.9);
   const configuredNumber=value=>value==null||String(value).trim()===""?NaN:Number(value);
   const configuredLow=configuredNumber(requestedLow),configuredCenter=configuredNumber(requestedCenter),configuredHigh=configuredNumber(requestedHigh);
+  const configuredSpecLow=configuredNumber(specLow),configuredSpecHigh=configuredNumber(specHigh);
+  const specOut=mode==="spec_out"&&(Number.isFinite(configuredSpecLow)||Number.isFinite(configuredSpecHigh));
   const [low, setLow] = useState(Number.isFinite(configuredLow)?configuredLow:defaultLow);
   const [center, setCenter] = useState(Number.isFinite(configuredCenter)?configuredCenter:defaultCenter);
   const [high, setHigh] = useState(Number.isFinite(configuredHigh)?configuredHigh:defaultHigh);
@@ -125,6 +128,10 @@ export default function TegValueWaferMap({
     return () => { alive = false; };
   }, [vehicle]);
   const color = (value) => {
+    if(specOut){
+      const numeric=Number(value),out=Number.isFinite(numeric)&&((Number.isFinite(configuredSpecLow)&&numeric<configuredSpecLow)||(Number.isFinite(configuredSpecHigh)&&numeric>configuredSpecHigh));
+      return out?"#dc2626":"#94a3b8";
+    }
     const lo = Number(low);
     const mid = Number(center);
     const hi = Number(high);
@@ -144,6 +151,7 @@ export default function TegValueWaferMap({
   const mapKeys = new Set((data.shots || []).map((shot) => `${Number(shot.x)},${Number(shot.y)}`));
   const range = Math.max(1e-12, rawMax - rawMin);
   const step = range / 200;
+  const outCount=specOut?allValues.filter(value=>(Number.isFinite(configuredSpecLow)&&value<configuredSpecLow)||(Number.isFinite(configuredSpecHigh)&&value>configuredSpecHigh)).length:0;
   const panelCount = Array.isArray(panels) ? panels.length : 1;
   // wafer map 은 정사각이라 칸 폭이 곧 지도 크기다. auto-fit 격자에 맡기면 넓은
   // 화면에서 여덟 칸으로 쪼개져 한 장이 점 무더기가 된다 — 패널 수에 맞춰 열
@@ -151,14 +159,19 @@ export default function TegValueWaferMap({
   const grid = waferPanelGrid(panelRows.length);
   return <div style={{ border: "1px solid #d1d5db", borderRadius: 8, background: "#fff", color: "#111827", padding: "10px 12px" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}><strong>{title || "WF MAP"} · {data.vehicle}</strong><span style={{ fontSize: 12, color: "#475569", fontFamily: "monospace" }}>{panelCount > 1 ? `${panelRows.length}/${panelCount} panels · common scale` : "single map"}</span></div>
-    {interactive&&<div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>
+    {interactive&&!specOut&&<div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>
       <label style={{ fontSize: 12, color: "#475569" }}>Low · P10<input type="range" min={rawMin} max={rawMax} step={step} value={low} onChange={(event) => changeScale("low",Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP Low" type="number" value={low} step={step} onChange={(event) => changeScale("low",Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
       <label style={{ fontSize: 12, color: "#475569" }}>Center · median<input type="range" min={rawMin} max={rawMax} step={step} value={center} onChange={(event) => changeScale("center",Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%" }}/><input aria-label="WF MAP Center" type="number" value={center} step={step} onChange={(event) => changeScale("center",Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
       <label style={{ fontSize: 12, color: "#475569" }}>High · P90<input type="range" min={rawMin} max={rawMax} step={step} value={high} onChange={(event) => changeScale("high",Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP High" type="number" value={high} step={step} onChange={(event) => changeScale("high",Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
       <label style={{ fontSize: 12, color: "#475569" }}>Palette<select aria-label="WF MAP Palette" value={palette} onChange={(event) => changeScale("palette",event.target.value)} style={{ width: "100%", height: 28 }}>{Object.entries(palettes).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}</select></label>
     </div>}
-    <div style={{ height: 14, borderRadius: 999, background: palettes[palette].css, border: "1px solid #cbd5e1" }}/>
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", fontSize: 11, color: "#475569", marginTop: 2 }}><span>{compactNumber(low)} · P10</span><span style={{ textAlign: "center" }}>{compactNumber(center)} · median · {valueLabel}</span><span style={{ textAlign: "right" }}>{compactNumber(high)} · P90</span></div>
+    {specOut?<>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",height:14,borderRadius:999,overflow:"hidden",border:"1px solid #cbd5e1",marginTop:10}}><span style={{background:"#94a3b8"}}/><span style={{background:"#dc2626"}}/></div>
+      <div style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:11,color:"#475569",marginTop:3}}><span>회색 · In Spec {allValues.length-outCount}</span><span>{Number.isFinite(configuredSpecLow)?`LSL ${compactNumber(configuredSpecLow)}`:"LSL 없음"} · {Number.isFinite(configuredSpecHigh)?`USL ${compactNumber(configuredSpecHigh)}`:"USL 없음"}</span><span style={{color:"#b91c1c",fontWeight:800}}>빨강 · Spec Out {outCount}</span></div>
+    </>:<>
+      <div style={{ height: 14, borderRadius: 999, background: palettes[palette].css, border: "1px solid #cbd5e1" }}/>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", fontSize: 11, color: "#475569", marginTop: 2 }}><span>{compactNumber(low)} · P10</span><span style={{ textAlign: "center" }}>{compactNumber(center)} · median · {valueLabel}</span><span style={{ textAlign: "right" }}>{compactNumber(high)} · P90</span></div>
+    </>}
     {panelCount > panelLimit && <div style={{ fontSize: 12, color: "#b45309", marginTop: 8 }}>패널이 많아 정렬된 앞 {panelLimit}개만 표시합니다.</div>}
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${grid.columns},minmax(0,1fr))`, gap: 10, marginTop: 10, maxWidth: grid.maxWidth, marginLeft: "auto", marginRight: "auto" }}>
       {panelRows.map((panel) => {

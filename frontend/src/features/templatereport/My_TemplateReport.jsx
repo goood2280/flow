@@ -177,8 +177,9 @@ function reportChart(run){
   const title=text(config.title).trim()||[x,y].filter(Boolean).join(" × ")||run.chart_label||run.chart_id;
   const details={
     point_size:Number(config.point_size)||10,marker_opacity:Number(config.marker_opacity)||.82,line_width:Number(config.line_width)||2.3,
-    y_min:text(config.y_min).trim(),y_max:text(config.y_max).trim(),y_scale:config.y_scale||"linear",show_grid:config.show_grid!==false,
+    x_min:text(config.x_min).trim(),x_max:text(config.x_max).trim(),y_min:text(config.y_min).trim(),y_max:text(config.y_max).trim(),y_scale:config.y_scale||"linear",show_grid:config.show_grid!==false,
     legend_position:config.legend_position||"bottom",box_points:config.box_points||"outliers",show_legend:showLegend,
+    wafer_mode:config.wafer_mode||"value",wafer_spec_low:config.wafer_spec_low,wafer_spec_high:config.wafer_spec_high,
   };
   const labels={x_label:text(config.x_label).trim()||x,y_label:text(config.y_label).trim()||y};
   const decorate=row=>({...row,spec_low:config.spec_low&&columns.includes(config.spec_low)?row[config.spec_low]:row.spec_low,spec_high:config.spec_high&&columns.includes(config.spec_high)?row[config.spec_high]:row.spec_high});
@@ -332,7 +333,7 @@ function ReportChart({chart,layout}){
   const scale=hostSize.width&&hostSize.height?Math.min(hostSize.width/width,hostSize.height/height):0;
   return <div ref={hostRef} style={{width:"100%",height:"100%",overflow:"hidden",position:"relative"}}>
     {!!scale&&<div style={{position:"absolute",left:"50%",top:"50%",width,height,transform:`translate(-50%, -50%) scale(${scale})`,transformOrigin:"center center"}}>
-      <FlowPlotlyChart chart={chart} cfg={{...chart,width,height,point_size:12,compact:true,hide_title:true,emphasize_axes:true,axis_title_size:22,axis_line_width:2.6,tick_font_size:13}} height={height} dark={false}/>
+      {chart.chart_type==="wafer_map"?<TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label} palette={chart.wafer_palette} low={chart.wafer_low} center={chart.wafer_center} high={chart.wafer_high} mode={chart.wafer_mode} specLow={chart.wafer_spec_low} specHigh={chart.wafer_spec_high} interactive={false}/>:<FlowPlotlyChart chart={chart} cfg={{...chart,width,height,point_size:12,compact:true,hide_title:true,emphasize_axes:true,axis_title_size:22,axis_line_width:2.6,tick_font_size:13}} height={height} dark={false}/>}
     </div>}
   </div>;
 }

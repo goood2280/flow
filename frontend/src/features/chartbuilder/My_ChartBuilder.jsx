@@ -279,7 +279,7 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
   if((joins||[]).length)lines.push("");
   if(chart&&Object.keys(chart).length){
     lines.push("CHART");
-    [["type","TYPE"],["title","TITLE"],["x","X"],["y","Y"],["x_label","X_LABEL"],["y_label","Y_LABEL"],["color","COLOR"],["trellis","TRELLIS"],["trend_grain","TREND_GRAIN"],["aggregation","AGGREGATION"],["map_y","MAP_Y"],["map_scope","MAP_SCOPE"],["map_target","MAP_TARGET"],["pie_basis","PIE_BASIS"],["fit","FIT"],["point_size","POINT_SIZE"],["marker_opacity","MARKER_OPACITY"],["line_width","LINE_WIDTH"],["y_min","Y_MIN"],["y_max","Y_MAX"],["y_scale","Y_SCALE"],["legend_position","LEGEND_POSITION"],["spec_low","SPEC_LOW"],["spec_high","SPEC_HIGH"],["box_points","BOX_POINTS"],["wafer_palette","WAFER_PALETTE"],["wafer_low","WAFER_LOW"],["wafer_center","WAFER_CENTER"],["wafer_high","WAFER_HIGH"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
+    [["type","TYPE"],["title","TITLE"],["x","X"],["y","Y"],["x_label","X_LABEL"],["y_label","Y_LABEL"],["color","COLOR"],["trellis","TRELLIS"],["trend_grain","TREND_GRAIN"],["aggregation","AGGREGATION"],["map_y","MAP_Y"],["map_scope","MAP_SCOPE"],["map_target","MAP_TARGET"],["pie_basis","PIE_BASIS"],["fit","FIT"],["point_size","POINT_SIZE"],["marker_opacity","MARKER_OPACITY"],["line_width","LINE_WIDTH"],["x_min","X_MIN"],["x_max","X_MAX"],["y_min","Y_MIN"],["y_max","Y_MAX"],["y_scale","Y_SCALE"],["legend_position","LEGEND_POSITION"],["spec_low","SPEC_LOW"],["spec_high","SPEC_HIGH"],["box_points","BOX_POINTS"],["wafer_palette","WAFER_PALETTE"],["wafer_mode","WAFER_MODE"],["wafer_spec_low","WAFER_SPEC_LOW"],["wafer_spec_high","WAFER_SPEC_HIGH"],["wafer_low","WAFER_LOW"],["wafer_center","WAFER_CENTER"],["wafer_high","WAFER_HIGH"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
       if(text(chart[key]).trim())lines.push(`${label} = ${text(chart[key]).trim()}`);
     });
     (chart.color_rules||[]).forEach(rule=>{if(text(rule).trim())lines.push(`COLOR_RULE = ${text(rule).trim()}`);});
@@ -869,6 +869,8 @@ export default function My_ChartBuilder({user}){
   const[pointSize,setPointSize]=useState("9");
   const[markerOpacity,setMarkerOpacity]=useState("0.82");
   const[lineWidth,setLineWidth]=useState("2.3");
+  const[xMin,setXMin]=useState("");
+  const[xMax,setXMax]=useState("");
   const[yMin,setYMin]=useState("");
   const[yMax,setYMax]=useState("");
   const[yScale,setYScale]=useState("linear");
@@ -878,6 +880,9 @@ export default function My_ChartBuilder({user}){
   const[specHighCol,setSpecHighCol]=useState("");
   const[boxPoints,setBoxPoints]=useState("outliers");
   const[waferPalette,setWaferPalette]=useState("blue_gray_red");
+  const[waferRenderMode,setWaferRenderMode]=useState("value");
+  const[waferSpecLow,setWaferSpecLow]=useState("");
+  const[waferSpecHigh,setWaferSpecHigh]=useState("");
   const[waferLow,setWaferLow]=useState("");
   const[waferCenter,setWaferCenter]=useState("");
   const[waferHigh,setWaferHigh]=useState("");
@@ -1006,6 +1011,8 @@ export default function My_ChartBuilder({user}){
     point_size:Number(pointSize)||9,
     marker_opacity:Number(markerOpacity)||0.82,
     line_width:Number(lineWidth)||2.3,
+    x_min:text(xMin).trim(),
+    x_max:text(xMax).trim(),
     y_min:text(yMin).trim(),
     y_max:text(yMax).trim(),
     y_scale:yScale,
@@ -1015,6 +1022,9 @@ export default function My_ChartBuilder({user}){
     spec_high:specHighCol,
     box_points:boxPoints,
     wafer_palette:waferPalette,
+    wafer_mode:chartType==="wafer_map"?waferRenderMode:"",
+    wafer_spec_low:chartType==="wafer_map"&&waferRenderMode==="spec_out"?text(waferSpecLow).trim():"",
+    wafer_spec_high:chartType==="wafer_map"&&waferRenderMode==="spec_out"?text(waferSpecHigh).trim():"",
     wafer_low:text(waferLow).trim(),
     wafer_center:text(waferCenter).trim(),
     wafer_high:text(waferHigh).trim(),
@@ -1048,10 +1058,11 @@ export default function My_ChartBuilder({user}){
     setPieBasis(hasConfig&&config.pie_basis?text(config.pie_basis):"count");
     setCorrFitMode(hasConfig&&config.fit?text(config.fit):"linear");setRadiusFitMode(hasConfig&&config.fit?text(config.fit):"cubic");
     setPointSize(hasConfig&&config.point_size?text(config.point_size):"9");setMarkerOpacity(hasConfig&&config.marker_opacity!=null?text(config.marker_opacity):"0.82");setLineWidth(hasConfig&&config.line_width?text(config.line_width):"2.3");
+    setXMin(hasConfig&&config.x_min!=null?text(config.x_min):"");setXMax(hasConfig&&config.x_max!=null?text(config.x_max):"");
     setYMin(hasConfig&&config.y_min!=null?text(config.y_min):"");setYMax(hasConfig&&config.y_max!=null?text(config.y_max):"");setYScale(hasConfig&&config.y_scale?text(config.y_scale):"linear");
     setShowGrid(hasConfig?config.show_grid!==false:true);setLegendPosition(hasConfig&&config.legend_position?text(config.legend_position):"bottom");
     setSpecLowCol(hasConfig?text(config.spec_low):"");setSpecHighCol(hasConfig?text(config.spec_high):"");setBoxPoints(hasConfig&&config.box_points?text(config.box_points):"outliers");
-    setWaferPalette(hasConfig&&config.wafer_palette?text(config.wafer_palette):"blue_gray_red");setWaferLow(hasConfig&&config.wafer_low!=null?text(config.wafer_low):"");setWaferCenter(hasConfig&&config.wafer_center!=null?text(config.wafer_center):"");setWaferHigh(hasConfig&&config.wafer_high!=null?text(config.wafer_high):"");
+    setWaferPalette(hasConfig&&config.wafer_palette?text(config.wafer_palette):"blue_gray_red");setWaferRenderMode(hasConfig&&config.wafer_mode?text(config.wafer_mode):"value");setWaferSpecLow(hasConfig&&config.wafer_spec_low!=null?text(config.wafer_spec_low):"");setWaferSpecHigh(hasConfig&&config.wafer_spec_high!=null?text(config.wafer_spec_high):"");setWaferLow(hasConfig&&config.wafer_low!=null?text(config.wafer_low):"");setWaferCenter(hasConfig&&config.wafer_center!=null?text(config.wafer_center):"");setWaferHigh(hasConfig&&config.wafer_high!=null?text(config.wafer_high):"");
     setChartWidth(hasConfig&&config.width?text(config.width):"");
     setChartHeight(hasConfig&&config.height?text(config.height):"");
   };
@@ -1070,8 +1081,14 @@ export default function My_ChartBuilder({user}){
     if(requestedPointSize<2||requestedPointSize>30){toast.error("Point 크기는 2~30 사이로 입력해 주세요.");return;}
     if(requestedOpacity<0.05||requestedOpacity>1){toast.error("Marker 투명도는 0.05~1 사이로 입력해 주세요.");return;}
     if(requestedLineWidth<0.5||requestedLineWidth>8){toast.error("Line 굵기는 0.5~8 사이로 입력해 주세요.");return;}
+    if(text(activeChart?.x_min).trim()&&text(activeChart?.x_max).trim()&&Number(activeChart.x_min)>=Number(activeChart.x_max)){toast.error("X축 최소값은 최대값보다 작아야 합니다.");return;}
     if(text(activeChart?.y_min).trim()&&text(activeChart?.y_max).trim()&&Number(activeChart.y_min)>=Number(activeChart.y_max)){toast.error("Y축 최소값은 최대값보다 작아야 합니다.");return;}
     if(activeChart?.y_scale==="log"&&[activeChart?.y_min,activeChart?.y_max].some(value=>text(value).trim()&&Number(value)<=0)){toast.error("Log scale의 Y축 최소·최대는 0보다 커야 합니다.");return;}
+    if(activeChart?.type==="wafer_map"&&activeChart?.wafer_mode==="spec_out"){
+      const low=text(activeChart?.wafer_spec_low).trim(),high=text(activeChart?.wafer_spec_high).trim();
+      if(!low&&!high){toast.error("Spec Out WF MAP은 Spec Low 또는 Spec High를 입력해 주세요.");return;}
+      if(low&&high&&Number(low)>=Number(high)){toast.error("WF Spec Low는 Spec High보다 작아야 합니다.");return;}
+    }
     const colorErrors=text(activeChart?.color).toLowerCase()==="custom"?parseChartColorRules(activeChart.color_rules||[]).filter(rule=>rule.error):[];
     if(colorErrors.length){toast.error(`Custom Color ${colorErrors[0].error}`);return;}
     const canonical=config?.canonical_code||definitionFromForm(activeSources,activeJoins,activeMaxRows,activeChart);
@@ -1420,10 +1437,11 @@ export default function My_ChartBuilder({user}){
       y_label:text(yAxisLabel).trim()||chart.y_label,
       points:Array.isArray(chart.points)?chart.points.map(decorate):chart.points,
       point_size:Number(pointSize)||9,marker_opacity:Number(markerOpacity)||0.82,line_width:Number(lineWidth)||2.3,
-      y_min:text(yMin).trim(),y_max:text(yMax).trim(),y_scale:yScale,show_grid:showGrid,
+      x_min:text(xMin).trim(),x_max:text(xMax).trim(),y_min:text(yMin).trim(),y_max:text(yMax).trim(),y_scale:yScale,show_grid:showGrid,
       legend_position:legendPosition,box_points:boxPoints,show_legend:showLegend,
+      wafer_mode:waferRenderMode,wafer_spec_low:text(waferSpecLow).trim(),wafer_spec_high:text(waferSpecHigh).trim(),
     };
-  },[chart,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol]);
+  },[chart,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,xMin,xMax,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol,waferRenderMode,waferSpecLow,waferSpecHigh]);
   const isPie=chartType==="pie"||chartType==="donut";
   // 상자별 통계는 그림과 같은 묶음(색 계열 × x 값)에서 낸다 — 표와 그림이 어긋나면 안 된다.
   const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(displayChart?.points)?boxBucketsFromPoints(displayChart.points,colorCol):[],[chartType,displayChart,colorCol]);
@@ -1690,8 +1708,10 @@ export default function My_ChartBuilder({user}){
               <Field label="차트 제목"><input value={chartTitle} onChange={e=>setChartTitle(e.target.value)} placeholder="자동 제목" style={fieldInput}/></Field>
               <Field label="X축 제목"><input value={xAxisLabel} onChange={e=>setXAxisLabel(e.target.value)} placeholder={xCol||"자동"} style={fieldInput}/></Field>
               <Field label="Y축 제목"><input value={yAxisLabel} onChange={e=>setYAxisLabel(e.target.value)} placeholder={yCol||"자동"} style={fieldInput}/></Field>
-              <Field label="Y축 최소"><input aria-label="Y축 최소" type="number" value={yMin} onChange={e=>setYMin(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
-              <Field label="Y축 최대"><input aria-label="Y축 최대" type="number" value={yMax} onChange={e=>setYMax(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="X축 최소"><input aria-label="X축 최소" type="number" step="any" value={xMin} onChange={e=>setXMin(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="X축 최대"><input aria-label="X축 최대" type="number" step="any" value={xMax} onChange={e=>setXMax(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="Y축 최소"><input aria-label="Y축 최소" type="number" step="any" value={yMin} onChange={e=>setYMin(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="Y축 최대"><input aria-label="Y축 최대" type="number" step="any" value={yMax} onChange={e=>setYMax(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
               <Field label="Y축 Scale"><select value={yScale} onChange={e=>setYScale(e.target.value)} style={fieldInput}><option value="linear">Linear</option><option value="log">Log</option></select></Field>
               <Field label="Point 크기"><input aria-label="Point 크기" type="number" min="2" max="30" value={pointSize} onChange={e=>setPointSize(e.target.value)} style={fieldInput}/></Field>
               <Field label="Marker 투명도"><input aria-label="Marker 투명도" type="number" min="0.05" max="1" step="0.05" value={markerOpacity} onChange={e=>setMarkerOpacity(e.target.value)} style={fieldInput}/></Field>
@@ -1700,9 +1720,9 @@ export default function My_ChartBuilder({user}){
               <Field label="Grid"><label style={{...fieldInput,display:"flex",alignItems:"center",gap:7,minHeight:31,cursor:"pointer"}}><input type="checkbox" checked={showGrid} onChange={e=>setShowGrid(e.target.checked)}/>격자 표시</label></Field>
               {chartType==="box"&&<Field label="Box 점 표시"><select value={boxPoints} onChange={e=>setBoxPoints(e.target.value)} style={fieldInput}><option value="outliers">Outlier만</option><option value="all">전체 점</option><option value="none">점 숨김</option></select></Field>}
               {!isPie&&chartType!=="wafer_map"&&<><Field label="Spec Low 열"><select value={specLowCol} onChange={e=>setSpecLowCol(e.target.value)} style={fieldInput}><option value="">없음</option>{numericCols.map(c=><option key={c}>{c}</option>)}</select></Field><Field label="Spec High 열"><select value={specHighCol} onChange={e=>setSpecHighCol(e.target.value)} style={fieldInput}><option value="">없음</option>{numericCols.map(c=><option key={c}>{c}</option>)}</select></Field></>}
-              {chartType==="wafer_map"&&<><Field label="WF MAP Palette"><select value={waferPalette} onChange={e=>setWaferPalette(e.target.value)} style={fieldInput}><option value="blue_gray_red">Blue · Gray · Red</option><option value="red_gray_blue">Red · Gray · Blue</option><option value="viridis">Viridis</option><option value="gray">Gray</option></select></Field><Field label="WF Low"><input type="number" value={waferLow} onChange={e=>setWaferLow(e.target.value)} placeholder="P10 자동" style={fieldInput}/></Field><Field label="WF Center"><input type="number" value={waferCenter} onChange={e=>setWaferCenter(e.target.value)} placeholder="Median 자동" style={fieldInput}/></Field><Field label="WF High"><input type="number" value={waferHigh} onChange={e=>setWaferHigh(e.target.value)} placeholder="P90 자동" style={fieldInput}/></Field></>}
+              {chartType==="wafer_map"&&<><Field label="WF MAP 표시"><select aria-label="WF MAP 표시 모드" value={waferRenderMode} onChange={e=>setWaferRenderMode(e.target.value)} style={fieldInput}><option value="value">Value Scale</option><option value="spec_out">Spec Out</option></select></Field>{waferRenderMode==="spec_out"?<><Field label="WF Spec Low (LSL)"><input aria-label="WF Spec Low" type="number" step="any" value={waferSpecLow} onChange={e=>setWaferSpecLow(e.target.value)} placeholder="없음" style={fieldInput}/></Field><Field label="WF Spec High (USL)"><input aria-label="WF Spec High" type="number" step="any" value={waferSpecHigh} onChange={e=>setWaferSpecHigh(e.target.value)} placeholder="없음" style={fieldInput}/></Field></>:<><Field label="WF MAP Palette"><select value={waferPalette} onChange={e=>setWaferPalette(e.target.value)} style={fieldInput}><option value="blue_gray_red">Blue · Gray · Red</option><option value="red_gray_blue">Red · Gray · Blue</option><option value="viridis">Viridis</option><option value="gray">Gray</option></select></Field><Field label="WF Low"><input type="number" value={waferLow} onChange={e=>setWaferLow(e.target.value)} placeholder="P10 자동" style={fieldInput}/></Field><Field label="WF Center"><input type="number" value={waferCenter} onChange={e=>setWaferCenter(e.target.value)} placeholder="Median 자동" style={fieldInput}/></Field><Field label="WF High"><input type="number" value={waferHigh} onChange={e=>setWaferHigh(e.target.value)} placeholder="P90 자동" style={fieldInput}/></Field></>}</>}
             </div>
-            <div style={{padding:"0 10px 9px",fontSize:10,color:"#64748b"}}>이 설정은 전체 코드에 저장되며 Template Report 화면과 PPT 캡처에도 동일하게 적용됩니다. Y축 수동 범위는 최소·최대를 함께 입력합니다.</div>
+            <div style={{padding:"0 10px 9px",fontSize:10,color:"#64748b"}}>이 설정은 전체 코드에 저장되며 Template Report 화면과 PPT 캡처에도 동일하게 적용됩니다. 축 범위는 최소·최대 중 한쪽만 지정해도 나머지 경계는 자동으로 계산됩니다.</div>
           </details>
           {colorCol==="__custom__"&&<div style={{display:"grid",gridTemplateColumns:"minmax(320px,1fr) minmax(130px,220px)",gap:9,marginTop:10,alignItems:"start"}}>
             <Field label="tkout_time / 수식 컬러링 · 연동표 다음 순서"><textarea aria-label="Custom Color 수식 규칙" value={customColorRules} onChange={e=>setCustomColorRules(e.target.value)} rows={4} placeholder={"tkout_time WITHIN 3 DAYS THEN #dc2626\ntkout_time WITHIN 7 DAYS THEN #f59e0b"} style={{...fieldInput,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/></Field>
@@ -1713,7 +1733,7 @@ export default function My_ChartBuilder({user}){
         {chartType==="wafer_map"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(mapScope.startsWith("trellis_")?`${mapScope==="trellis_wafer"?"wafer":"root_lot_id | wafer_id"}별 패널에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계하고 공통 컬러 스케일을 적용합니다.`:`선택한 ${mapScope==="root_wafer"?"root lot·wafer":"root lot의 모든 wafer"}에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계합니다.`)}</div>}
         {chartType==="line"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(TREND_GRAINS.find(g=>g.key===trendGrain)?.desc||"")}</div>}
         {chartType==="radius"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(radiusBusy?"Chip_Radius.csv를 불러오는 중입니다.":`${radiusLayout?.file||"Chip_Radius.csv"} · ${radiusLayout?.mask||radiusSource?.product||"-"} · 좌표 ${chart?.radius_matched||0}/${chart?.radius_source_count||0} shot 매칭 · ${chart?.radius_mapping||""}`)}</div>}
-        {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
+        {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} mode={displayChart.wafer_mode} specLow={displayChart.wafer_spec_low} specHigh={displayChart.wafer_spec_high} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
         {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={displayChart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
     </div>}
   </div>;

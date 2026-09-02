@@ -30,8 +30,9 @@ CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
     r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else"
     r"|highlight|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
-    r"|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|y_min|y_max"
-    r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
+    r"|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
+    r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_mode"
+    r"|wafer_spec_low|wafer_spec_high|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 MAX_ROWS_RE = re.compile(r"^\s*max[_\s-]*rows\s*[:=]\s*(\d+)\s*$", re.IGNORECASE)
@@ -454,7 +455,7 @@ def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
         if not cleaned.isdigit():
             raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 픽셀 숫자여야 합니다.")
         chart[key] = int(cleaned)
-    elif key in {"marker_opacity", "line_width", "y_min", "y_max", "wafer_low", "wafer_center", "wafer_high"}:
+    elif key in {"marker_opacity", "line_width", "x_min", "x_max", "y_min", "y_max", "wafer_spec_low", "wafer_spec_high", "wafer_low", "wafer_center", "wafer_high"}:
         try:
             chart[key] = float(cleaned)
         except ValueError as exc:
@@ -510,8 +511,19 @@ def _validate_chart(chart: dict[str, Any]) -> None:
     line_width = float(chart.get("line_width") or 0)
     if line_width and not 0.5 <= line_width <= 8:
         raise ChartBuilderDefinitionError("CHART LINE_WIDTH는 0.5~8 사이여야 합니다.")
-    if chart.get("y_min") is not None and chart.get("y_max") is not None and float(chart["y_min"]) >= float(chart["y_max"]):
-        raise ChartBuilderDefinitionError("CHART Y_MIN은 Y_MAX보다 작아야 합니다.")
+    for axis in ("x", "y"):
+        lower = chart.get(f"{axis}_min")
+        upper = chart.get(f"{axis}_max")
+        if lower is not None and upper is not None and float(lower) >= float(upper):
+            raise ChartBuilderDefinitionError(
+                f"CHART {axis.upper()}_MIN은 {axis.upper()}_MAX보다 작아야 합니다."
+            )
+    wafer_spec_low = chart.get("wafer_spec_low")
+    wafer_spec_high = chart.get("wafer_spec_high")
+    if wafer_spec_low is not None and wafer_spec_high is not None and float(wafer_spec_low) >= float(wafer_spec_high):
+        raise ChartBuilderDefinitionError("CHART WAFER_SPEC_LOW는 WAFER_SPEC_HIGH보다 작아야 합니다.")
+    if str(chart.get("wafer_mode") or "").casefold() == "spec_out" and wafer_spec_low is None and wafer_spec_high is None:
+        raise ChartBuilderDefinitionError("CHART Spec Out WF MAP에는 WAFER_SPEC_LOW 또는 WAFER_SPEC_HIGH가 필요합니다.")
     enums = {
         "trend_grain": {"shot", "wafer", "daily", "weekly"},
         "aggregation": {"raw", "avg", "median", "p10", "p90", "min", "max", "count", "sum"},
@@ -522,6 +534,7 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         "legend_position": {"bottom", "top", "right", "inside"},
         "box_points": {"outliers", "all", "none"},
         "wafer_palette": {"blue_gray_red", "red_gray_blue", "viridis", "gray"},
+        "wafer_mode": {"value", "spec_out"},
     }
     for key, allowed in enums.items():
         value = str(chart.get(key) or "").casefold()
@@ -639,12 +652,15 @@ def format_chart_builder_definition(
             ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
             ("map_target", "MAP_TARGET"), ("pie_basis", "PIE_BASIS"), ("fit", "FIT"),
             ("point_size", "POINT_SIZE"), ("marker_opacity", "MARKER_OPACITY"), ("line_width", "LINE_WIDTH"),
-            ("y_min", "Y_MIN"), ("y_max", "Y_MAX"), ("y_scale", "Y_SCALE"),
+            ("x_min", "X_MIN"), ("x_max", "X_MAX"), ("y_min", "Y_MIN"), ("y_max", "Y_MAX"),
+            ("y_scale", "Y_SCALE"),
             ("legend_position", "LEGEND_POSITION"), ("spec_low", "SPEC_LOW"), ("spec_high", "SPEC_HIGH"),
-            ("box_points", "BOX_POINTS"), ("wafer_palette", "WAFER_PALETTE"), ("wafer_low", "WAFER_LOW"),
+            ("box_points", "BOX_POINTS"), ("wafer_palette", "WAFER_PALETTE"), ("wafer_mode", "WAFER_MODE"),
+            ("wafer_spec_low", "WAFER_SPEC_LOW"), ("wafer_spec_high", "WAFER_SPEC_HIGH"), ("wafer_low", "WAFER_LOW"),
             ("wafer_center", "WAFER_CENTER"), ("wafer_high", "WAFER_HIGH"), ("width", "WIDTH"), ("height", "HEIGHT"),
         ):
-            value = str(chart.get(key) or "").strip()
+            raw_value = chart.get(key)
+            value = "" if raw_value is None else str(raw_value).strip()
             if value:
                 lines.append(f"{label} = {value}")
         for rule in chart.get("color_rules") or []:

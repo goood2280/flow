@@ -32,6 +32,7 @@ Auto Report 의 WF MAP geometry(My_Function._wafer_circle_params)와 같은 수�
 from __future__ import annotations
 
 import datetime
+import copy
 import csv
 import io
 import json
@@ -227,6 +228,58 @@ _OLD_DEFAULTS = {"ebeam_scale": 1.0, "teg_default_w": 2.0, "teg_default_h": 2.0}
 
 _LOCK = threading.RLock()
 _INLINE_MAP_LOCK = threading.RLock()
+
+# 위치 조회 hot path 캐시. 운영 기준 파일은 공유 드라이브에 있고, 이전 구현은 제품을
+# 한 번 바꿀 때마다 전체 Product Info geometry·Chip_Radius·Teg_location·MAIN 표를
+# 다시 읽었다. 파일 fingerprint와 전체 설정 내용이 바뀌면 자동으로 다른 키가 되며,
+# 같은 제품 동시 요청은 한 빌드만 수행한다.
+_TEG_CACHE_LOCK = threading.RLock()
+_TEG_CATALOG_BUILD_LOCK = threading.Lock()
+_TEG_MAP_BUILD_LOCKS: dict[str, threading.Lock] = {}
+_TEG_PRODUCT_CATALOG_CACHE: dict[tuple, list[dict[str, str]]] = {}
+_TEG_MAP_PAYLOAD_CACHE: dict[tuple, dict] = {}
+_TEG_PRODUCT_CATALOG_CACHE_MAX = 4
+_TEG_MAP_PAYLOAD_CACHE_MAX = 32
+
+
+def _bounded_cache_put(cache: dict, key: tuple, value: Any, limit: int) -> None:
+    cache[key] = value
+    while len(cache) > limit:
+        cache.pop(next(iter(cache)))
+
+
+def _file_fingerprint(path: Path) -> tuple[str, int, int]:
+    try:
+        stat = path.stat()
+        return str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)
+    except OSError:
+        return str(path), 0, 0
+
+
+def _teg_source_signature(cfg: dict) -> tuple:
+    """Small metadata-only signature for every source that affects map output."""
+    configured_layout = resolve_path(cfg.get("layout_file") or DEFAULT_CFG["layout_file"])
+    default_layout = resolve_path(DEFAULT_CFG["layout_file"])
+    paths = {
+        configured_layout,
+        default_layout,
+        resolve_path(cfg.get("teg_file") or DEFAULT_CFG["teg_file"]),
+        resolve_path(cfg.get("main_chip_file") or DEFAULT_CFG["main_chip_file"]),
+        product_info_path(),
+    }
+    # 정상 설정에서는 네트워크 DB root를 매 요청마다 열거하지 않는다. configured/default
+    # layout이 모두 없어서 legacy 자동 탐색을 쓰는 설치에서만 후보들을 fingerprint한다.
+    if not configured_layout.is_file() and not default_layout.is_file():
+        try:
+            for path in roots.get_db_root().iterdir():
+                name = path.name.casefold()
+                if (path.is_file() and path.suffix.casefold() in (".csv", ".parquet", ".xlsx", ".xls")
+                        and (("chip" in name and "radius" in name) or ("chip" in name and "layout" in name))):
+                    paths.add(path)
+        except OSError:
+            pass
+    config_text = json.dumps(cfg, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+    return config_text, tuple(sorted((_file_fingerprint(path) for path in paths), key=lambda row: row[0].casefold()))
 
 
 # ────────────────────────────────────────── 저장소 위치
@@ -2459,9 +2512,8 @@ def _catalog_fallback_vehicles(cfg: dict) -> list[str]:
     return []
 
 
-def product_catalog() -> list[dict[str, str]]:
-    """모든 제품의 노드 경로. 목록 조회에서는 전체 shot geometry를 만들지 않는다."""
-    cfg = load_cfg()
+def _build_product_catalog(cfg: dict) -> list[dict[str, str]]:
+    """Build the catalog from source files. Call through :func:`product_catalog`."""
     configured = {str(k).casefold(): clean_node_path(v)
                   for k, v in (cfg.get("product_nodes") or {}).items()}
     product_info = _catalog_product_info(cfg)
@@ -2479,6 +2531,31 @@ def product_catalog() -> list[dict[str, str]]:
             "full_path": f"{node_path} / {vehicle}",
         })
     return sorted(rows, key=lambda row: (row["node_path"].casefold(), row["vehicle"].casefold()))
+
+
+def product_catalog() -> list[dict[str, str]]:
+    """모든 제품의 노드 경로 — 파일 변경 감지 캐시로 선택기 반복 스캔을 막는다."""
+    cfg = load_cfg()
+    key = _teg_source_signature(cfg)
+    with _TEG_CACHE_LOCK:
+        cached = _TEG_PRODUCT_CATALOG_CACHE.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+    # 여러 사용자가 동시에 첫 화면을 열어도 같은 공유 파일을 한 번만 읽는다.
+    with _TEG_CATALOG_BUILD_LOCK:
+        cfg = load_cfg()
+        key = _teg_source_signature(cfg)
+        with _TEG_CACHE_LOCK:
+            cached = _TEG_PRODUCT_CATALOG_CACHE.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+        built = _build_product_catalog(cfg)
+        with _TEG_CACHE_LOCK:
+            _bounded_cache_put(
+                _TEG_PRODUCT_CATALOG_CACHE, key, copy.deepcopy(built),
+                _TEG_PRODUCT_CATALOG_CACHE_MAX,
+            )
+        return built
 
 
 def user_departments(user: dict | None) -> list[str]:
@@ -2535,9 +2612,10 @@ def visible_product_catalog(user: dict | None) -> list[dict[str, str]]:
     return [row for row in product_catalog() if _can_access_catalog_row(user, row, rules)]
 
 
-def map_payload(vehicle: str) -> dict:
-    """vehicle 의 WF MAP 전체 payload — geometry + shot 목록 + TEG 목록 + 표시 설정."""
-    cfg = load_cfg()
+def _build_map_payload(vehicle: str, cfg: dict) -> dict:
+    """Build one vehicle payload from source tables. Call through :func:`map_payload`."""
+    # Keep loader calls argument-free for compatibility with the existing
+    # extension/test hooks.  The public cache already loaded ``cfg`` above.
     lay, lay_path = load_layout()
     if lay is None:
         raise FileNotFoundError(f"chip layout 파일 없음/무효: {lay_path}")
@@ -2705,6 +2783,37 @@ def map_payload(vehicle: str) -> dict:
         "layout_path": str(lay_path),
         "teg_path": str(teg_path) if tdf is not None else "",
     }
+
+
+def map_payload(vehicle: str) -> dict:
+    """vehicle WF MAP payload — fingerprint cache + per-product singleflight."""
+    veh = str(vehicle or "").strip()
+    if not veh:
+        raise LookupError("vehicle 이 비어 있습니다")
+    cfg = load_cfg()
+    key = (veh.casefold(), _teg_source_signature(cfg))
+    with _TEG_CACHE_LOCK:
+        cached = _TEG_MAP_PAYLOAD_CACHE.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        build_lock = _TEG_MAP_BUILD_LOCKS.setdefault(veh.casefold(), threading.Lock())
+
+    # 같은 제품을 여러 사용자가 동시에 처음 열면 한 요청만 pandas/geometry 빌드를 하고,
+    # 나머지는 그 결과를 공유한다. 제품이 다르면 서로 막지 않는다.
+    with build_lock:
+        cfg = load_cfg()
+        key = (veh.casefold(), _teg_source_signature(cfg))
+        with _TEG_CACHE_LOCK:
+            cached = _TEG_MAP_PAYLOAD_CACHE.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+        built = _build_map_payload(veh, cfg)
+        with _TEG_CACHE_LOCK:
+            _bounded_cache_put(
+                _TEG_MAP_PAYLOAD_CACHE, key, copy.deepcopy(built),
+                _TEG_MAP_PAYLOAD_CACHE_MAX,
+            )
+        return built
 
 
 def teg_radius_table(vehicle: str, teg: str) -> dict:

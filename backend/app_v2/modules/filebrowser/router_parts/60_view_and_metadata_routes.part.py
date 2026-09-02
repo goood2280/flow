@@ -1473,7 +1473,7 @@ _CHART_ASSISTANT_TYPES = {
 }
 _CHART_ASSISTANT_FIELDS = {
     "type", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
-    "color_rules", "color_else", "y_scale",
+    "color_rules", "color_else", "x_min", "x_max", "y_min", "y_max", "y_scale",
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
 _CHART_ASSISTANT_JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
@@ -1756,6 +1756,15 @@ def _chart_assistant_apply_operations(
                 if value not in {"linear", "log"}:
                     warnings.append("Y축 Scale은 linear 또는 log여야 합니다.")
                     continue
+            elif field in {"x_min", "x_max", "y_min", "y_max"}:
+                if value is None or value == "":
+                    value = ""
+                else:
+                    try:
+                        value = float(value)
+                    except Exception:
+                        warnings.append(f"{field.upper()}는 숫자로 입력해 주세요.")
+                        continue
             elif field == "color_rules":
                 if not isinstance(value, list):
                     warnings.append("색상 규칙은 목록 형식이어야 합니다.")

@@ -928,7 +928,7 @@ Return only an object with keys message and template. Preserve all unrelated fie
 The template must contain name, options, variables, and 1-30 pages. Each page contains title, subtitle, and slots.
 Allowed slot kinds: chart, split, text. A chart slot must contain position, x, y, chart_width, chart_height, chart_name, and a complete valid definition_code in Flow ChartBuilder DSL. chart_id may reference an existing id or be blank for an inline chart.
 Layout uses a 1920x1080 design: x/y are percentages and chart_width/chart_height are pixels. Every slot must stay inside the slide.
-ChartBuilder DSL uses Q1/TABLE/PRODUCT/SQL, optional JOIN, then CHART with TYPE/X/Y/COLOR/TRELLIS/WIDTH/HEIGHT and MAX_ROWS.
+ChartBuilder DSL uses Q1/TABLE/PRODUCT/SQL, optional JOIN, then CHART with TYPE/X/Y/COLOR/TRELLIS/X_MIN/X_MAX/Y_MIN/Y_MAX/WAFER_MODE/WAFER_SPEC_LOW/WAFER_SPEC_HIGH/WIDTH/HEIGHT and MAX_ROWS.
 Prefer readable one-page semiconductor meeting reports with bold axes and chart diversity when requested. Never invent database secrets or unsupported slot kinds."""
         available = list_charts(user).get("charts", [])[:40]
         payload = {

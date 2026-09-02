@@ -4174,6 +4174,9 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             "value_col": "value",
             "grain": "shot",
             "aggregation": "median",
+            "wafer_mode": "spec_out" if spec else "value",
+            "wafer_spec_low": spec.get("low") if spec else None,
+            "wafer_spec_high": spec.get("high") if spec else None,
         }
         if spec:
             answer = (

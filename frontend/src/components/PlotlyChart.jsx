@@ -151,12 +151,24 @@ export function FlowPlotlyChart({
   const showLegend = cfg.show_legend !== false && chart?.show_legend !== false;
   const showGrid = cfg.show_grid !== false && chart?.show_grid !== false;
   const legendPosition = String(cfg.legend_position || chart?.legend_position || "bottom");
+  const xMin = numberOrNull(cfg.x_min ?? chart?.x_min);
+  const xMax = numberOrNull(cfg.x_max ?? chart?.x_max);
   const yMin = numberOrNull(cfg.y_min ?? chart?.y_min);
   const yMax = numberOrNull(cfg.y_max ?? chart?.y_max);
-  const yRange = yMin != null && yMax != null ? [yMin, yMax] : undefined;
   const yScale = String(cfg.y_scale || chart?.y_scale || "linear") === "log" ? "log" : "linear";
   const valueAxisIsX = chartType === "bar_horizontal";
-  const scaledRange = yRange?.map(value => yScale === "log" ? Math.log10(Math.max(value, 1e-300)) : value);
+  const axisRange = (min, max, scale = "linear") => {
+    if (min == null && max == null) return {};
+    const scaled = value => value == null ? null : scale === "log" ? Math.log10(Math.max(value, 1e-300)) : value;
+    return {
+      range: [scaled(min), scaled(max)],
+      ...(min == null ? { autorange: "min" } : max == null ? { autorange: "max" } : {}),
+    };
+  };
+  // X/Y 범위는 ChartBuilder의 데이터 축을 따른다. 가로 막대에서는 Y 값축이
+  // 화면의 xaxis로 회전하므로 범위도 같은 축과 함께 회전한다.
+  const xAxisRange = axisRange(xMin, xMax);
+  const yAxisRange = axisRange(yMin, yMax, yScale);
   const boxPoints = String(cfg.box_points || chart?.box_points || "outliers");
   const fit = chart?.fit || chart?.fit_params || cfg.fit_params || null;
   const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
@@ -446,7 +458,7 @@ export function FlowPlotlyChart({
             xaxis: {
               title: { text: axisXLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
               tickfont: { size: tickFontSize, color: fg },
-              ...(valueAxisIsX ? { type: yScale, ...(scaledRange ? { range: scaledRange } : {}) } : {}),
+              ...(valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
               showticklabels: !hideXTicks,
               // 상자는 범주축에 균등 배치 — 그래야 아래 통계표 열과 자리가 맞는다.
               ...(chartType === "box" && categoryArray?.length
@@ -465,7 +477,7 @@ export function FlowPlotlyChart({
             yaxis: {
               title: { text: axisYLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
               tickfont: { size: tickFontSize, color: fg },
-              ...(!valueAxisIsX ? { type: yScale, ...(scaledRange ? { range: scaledRange } : {}) } : {}),
+              ...(!valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
               showgrid: showGrid,
               gridcolor: grid,
               zerolinecolor: grid,

@@ -895,7 +895,10 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
     };
   }, [data, mmMode]);
 
-  const tegList = data.tegs.filter(t => selectedTegs.has(t.teg));
+  const tegList = useMemo(
+    () => data.tegs.filter(t => selectedTegs.has(t.teg)),
+    [data.tegs, selectedTegs],
+  );
 
   // shot 별 제품 최외곽 판정 — 선택 TEG 사각형의 네 꼭짓점 중 하나라도
   // edge 원 밖이면 "걸림"(빨강), 전부 안이면 초록. TEG 미선택 시엔 shot 영역
@@ -920,6 +923,37 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
     const maxD = Math.hypot(Math.abs(s0.mm_x) + geo.shot_w_mm / 2, Math.abs(s0.mm_y) + geo.shot_h_mm / 2);
     return maxD > edgeMm;
   };
+
+  // Thousands of individual React <rect>/<circle> nodes made large maps stall.
+  // Build the same marker geometry as a few SVG paths (one per color/type).
+  const tegMarkerPaths = useMemo(() => {
+    if (!mmMode || !tegList.length) return [];
+    const groups = new Map();
+    const n = value => Number(value.toFixed(2));
+    for (const s0 of data.shots) {
+      const shotKey = `${s0.x},${s0.y}`;
+      if (hideUnmeasured && shotValues instanceof Map && !shotValues.has(shotKey)) continue;
+      for (const t of tegList) {
+        const box = tegBox(t);
+        const { x: ax, y: ay } = waferTegCartesianPosition(s0, t);
+        const color = tegColor(t.teg);
+        const die = !!box?.die;
+        const groupKey = `${color}|${die ? "die" : "teg"}`;
+        const current = groups.get(groupKey) || { key: groupKey, color, die, d: "" };
+        if (!box) {
+          const x = n(toX(ax) - 1.6), y = n(toY(ay) - 1.6);
+          current.d += `M${x} ${y}h3.2v3.2h-3.2Z`;
+        } else {
+          const w = n(Math.max(1.5, box.w * mmScale));
+          const h = n(Math.max(1.5, box.h * mmScale));
+          const x = n(toX(ax)), y = n(toY(ay) - h);
+          current.d += `M${x} ${y}h${w}v${h}h-${w}Z`;
+        }
+        groups.set(groupKey, current);
+      }
+    }
+    return [...groups.values()];
+  }, [data.shots, hideUnmeasured, mmMode, mmScale, shotValues, tegColor, tegList, toX, toY]);
 
   return (
     <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
@@ -989,26 +1023,16 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
               strokeDasharray={syn && !isSel ? "3 2" : undefined}>
               <title>{title}</title>
             </rect>
-            {/* TEG 마커 — 격자/그림은 shot 확대 뷰에서만. 앵커 = 좌하단(점 기준 위로) */}
-            {mmMode && tegList.map(t => {
-              const box = tegBox(t);
-              const { x: ax, y: ay } = waferTegCartesianPosition(s0, t);
-              if (!box) {   // MAIN 인데 chip 크기가 없음 — 점만
-                return <circle key={t.teg} cx={toX(ax)} cy={toY(ay)} r="1.6"
-                  fill={tegColor(t.teg)} opacity="0.9" pointerEvents="none" />;
-              }
-              const hpx = Math.max(1.5, box.h * mmScale);
-              return (
-                <rect key={t.teg} x={toX(ax)} y={toY(ay) - hpx}
-                  width={Math.max(1.5, box.w * mmScale)} height={hpx}
-                  fill={tegColor(t.teg)} opacity={box.die ? 0.35 : 0.9}
-                  stroke={box.die ? tegColor(t.teg) : "none"} strokeWidth={box.die ? 0.6 : 0}
-                  pointerEvents="none" />
-              );
-            })}
           </g>
         );
       })}
+      {/* TEG 마커 — shot×TEG 개별 DOM 대신 색/형태별 path로 묶어 렌더링. */}
+      {tegMarkerPaths.map(marker => (
+        <path key={marker.key} d={marker.d} fill={marker.color}
+          opacity={marker.die ? 0.35 : 0.9}
+          stroke={marker.die ? marker.color : "none"}
+          strokeWidth={marker.die ? 0.6 : 0} pointerEvents="none" />
+      ))}
       {/* 가장 가까운 샷 센터 = 빨간 점 — 실center에서 가장 가까운 shot 표시 */}
       {mmMode && nearestShot && (() => {
         const nx = toX(nearestShot.mm_x), ny = toY(-nearestShot.mm_y);
@@ -1207,24 +1231,38 @@ function TegCoordInfo({ data, selectedTegs, tegColor }) {
 
 /* ── 선택 TEG 들의 shot 별 radius 표 — TEG 목록 체크 상태를 그대로 따라감.
    radius = |shot 센터 + TEG 좌하단 offset| (mm). 클라이언트 계산이라 즉시 갱신. ── */
+const RADIUS_TEG_PAGE_SIZE = 10;
+
 function TegRadiusTable({ data, selectedTegs, tegColor }) {
   const geo = data?.geometry;
-  const tegList = (data?.tegs || []).filter(t => selectedTegs.has(t.teg));
+  const tegList = useMemo(
+    () => (data?.tegs || []).filter(t => selectedTegs.has(t.teg)),
+    [data?.tegs, selectedTegs],
+  );
+  const [tegPage, setTegPage] = useState(0);
+  const tegPageCount = Math.max(1, Math.ceil(tegList.length / RADIUS_TEG_PAGE_SIZE));
+  useEffect(() => {
+    setTegPage(current => Math.min(current, tegPageCount - 1));
+  }, [tegPageCount]);
+  const visibleTegs = useMemo(
+    () => tegList.slice(tegPage * RADIUS_TEG_PAGE_SIZE, (tegPage + 1) * RADIUS_TEG_PAGE_SIZE),
+    [tegList, tegPage],
+  );
   const rows = useMemo(() => {
-    if (!geo || geo.fit !== "radius" || !tegList.length) return [];
+    if (!geo || geo.fit !== "radius" || !visibleTegs.length) return [];
     const shots = (data.shots || []).filter(s0 => typeof s0.mm_x === "number");
     const out = shots.map(s0 => {
       const radii = {};
-      for (const t of tegList) {
+      for (const t of visibleTegs) {
         const p = waferTegCartesianPosition(s0, t);
         radii[t.teg] = Math.hypot(p.x, p.y);
       }
       return { x: s0.x, y: s0.y, radii, synthetic: !!s0.synthetic };
     });
-    const first = tegList[0].teg;
+    const first = visibleTegs[0].teg;
     out.sort((a, b) => a.radii[first] - b.radii[first]);
     return out;
-  }, [data, geo, tegList]);
+  }, [data, geo, visibleTegs]);
 
   const cell = { padding: "3px 10px", borderBottom: "1px solid var(--line)", fontSize: 12, textAlign: "right" };
   return (
@@ -1236,7 +1274,7 @@ function TegRadiusTable({ data, selectedTegs, tegColor }) {
       ) : (
         <div>
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {tegList.map(t => {
+            {visibleTegs.map(t => {
               const vals = rows.map(r => r.radii[t.teg]);
               return (
                 <span key={t.teg}>
@@ -1245,13 +1283,22 @@ function TegRadiusTable({ data, selectedTegs, tegColor }) {
                 </span>
               );
             })}
-            <span>· {rows.length} shots ({tegList[0].teg} radius 오름차순)</span>
+            <span>· {rows.length} shots ({visibleTegs[0].teg} radius 오름차순)</span>
             {rows.some(r => r.synthetic) && (
               <span title="full shot 격자로 채운 자리 — layout 파일에는 없는 shot 입니다">
                 · <b>＋</b> 표시 {rows.filter(r => r.synthetic).length}개 = full shot 격자
               </span>
             )}
           </div>
+          {tegPageCount > 1 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                선택 {tegList.length}개 · {tegPage + 1}/{tegPageCount} 페이지
+              </span>
+              <Button disabled={tegPage === 0} onClick={() => setTegPage(page => page - 1)}>이전</Button>
+              <Button disabled={tegPage >= tegPageCount - 1} onClick={() => setTegPage(page => page + 1)}>다음</Button>
+            </div>
+          )}
           <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--line)", borderRadius: 4 }}>
             <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <thead><tr>
@@ -1259,7 +1306,7 @@ function TegRadiusTable({ data, selectedTegs, tegColor }) {
                   title="chip_x_adj — shot 격자좌표 (ebeam 좌표계 아님)">shot x (격자)</th>
                 <th style={{ ...cell, color: "var(--muted)" }}
                   title="chip_y_adj — shot 격자좌표 (ebeam 좌표계 아님)">shot y (격자)</th>
-                {tegList.map(t => (
+                {visibleTegs.map(t => (
                   <th key={t.teg} style={{ ...cell, color: tegColor(t.teg) }}>{t.teg} radius (mm)</th>
                 ))}
               </tr></thead>
@@ -1269,7 +1316,7 @@ function TegRadiusTable({ data, selectedTegs, tegColor }) {
                     title={r.synthetic ? "full shot 격자로 채운 자리 — layout 파일에 없는 shot" : undefined}>
                     <td style={cell}>{r.synthetic ? <span style={{ color: "var(--muted)" }}>＋ </span> : null}{r.x}</td>
                     <td style={cell}>{r.y}</td>
-                    {tegList.map(t => (
+                    {visibleTegs.map(t => (
                       <td key={t.teg} style={{ ...cell, fontWeight: 600 }}>{fmt(r.radii[t.teg], 3)}</td>
                     ))}
                   </tr>
@@ -2189,6 +2236,8 @@ export default function My_TegMap({ user }) {
   const [vehicle, setVehicle] = useState("");
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
+  const [mapLoading, setMapLoading] = useState(false);
+  const mapRequestRef = useRef({ id: 0, controller: null });
   const [selectedTegs, setSelectedTegs] = useState(new Set());
   const [selectedShot, setSelectedShot] = useState(null);
   const [fullShot, setFullShot] = useState(false);   // wafer 전체를 덮는 shot 격자 표시
@@ -2240,20 +2289,32 @@ export default function My_TegMap({ user }) {
   const loadMap = useCallback(async (requestedVehicle = vehicle) => {
     const target = typeof requestedVehicle === "string" ? requestedVehicle : vehicle;
     if (!target) return;
+    mapRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    const requestId = mapRequestRef.current.id + 1;
+    mapRequestRef.current = { id: requestId, controller };
     setErr("");
+    setMapLoading(true);
+    setData(current => current?.vehicle === target ? current : null);
     try {
-      const r = await sf(`${API}/map?vehicle=${encodeURIComponent(target)}`);
+      const r = await sf(`${API}/map?vehicle=${encodeURIComponent(target)}`, { signal: controller.signal });
+      if (mapRequestRef.current.id !== requestId) return;
       setData(r);
       setSelectedShot(null);
       // 기본은 아무것도 선택하지 않는다 — 볼 TEG 를 직접 고르는 화면이고,
       // 임의의 첫 TEG 가 켜져 있으면 그게 기준인 줄 오해하게 된다.
       setSelectedTegs(new Set());
     } catch (e) {
+      if (controller.signal.aborted || e?.name === "AbortError") return;
+      if (mapRequestRef.current.id !== requestId) return;
       setData(null);
       setErr(String(e.message || e));
+    } finally {
+      if (mapRequestRef.current.id === requestId) setMapLoading(false);
     }
   }, [vehicle]);
   useEffect(() => { loadMap(); }, [loadMap]);
+  useEffect(() => () => mapRequestRef.current.controller?.abort(), []);
 
   // vehicle 그림 + die 사각형 — 그림 격자(image_cells)와 개발 격자(dev_cells) 둘 다 받는다.
   useEffect(() => {
@@ -2293,10 +2354,13 @@ export default function My_TegMap({ user }) {
   const showPicture = shotMode === "image" && !gridView;
 
   const tegNames = useMemo(() => tegListNames(data?.tegs), [data]);
+  const tegColorMap = useMemo(
+    () => new Map(tegNames.map((name, index) => [name, TEG_COLORS[index % TEG_COLORS.length]])),
+    [tegNames],
+  );
   const tegColor = useCallback((name) => {
-    const i = tegNames.indexOf(name);
-    return TEG_COLORS[(i >= 0 ? i : 0) % TEG_COLORS.length];
-  }, [tegNames]);
+    return tegColorMap.get(name) || TEG_COLORS[0];
+  }, [tegColorMap]);
 
   // shot 확대는 카드 폭에 맞춰 키운다. 우측 좌표 패널은 옆에 두고도 배치도가 충분히
   // 클 때만 자리를 내주고, 좁으면 패널을 아래로 흘려보내고 폭을 전부 쓴다 —
@@ -2402,7 +2466,9 @@ export default function My_TegMap({ user }) {
             </optgroup>)}
           </Select>
           {canEditReferenceFiles && <Button variant="primary" onClick={() => setProductOpen(true)}>+ 제품 추가</Button>}
-          <Button onClick={() => loadMap()}>새로고침</Button>
+          <Button disabled={mapLoading} onClick={() => loadMap()}>
+            {mapLoading ? "불러오는 중…" : "새로고침"}
+          </Button>
         </div>
         {canEditReferenceFiles && data &&
           <Button onClick={() => setGeometryOpen(true)}>config 변경</Button>}
@@ -2443,6 +2509,9 @@ export default function My_TegMap({ user }) {
       )}
       {err && vehicles && vehicles.length > 0 && (
         <EmptyState icon="⚠" title="WF MAP 을 불러오지 못했습니다" hint={err} />
+      )}
+      {mapLoading && !data && vehicles && vehicles.length > 0 && (
+        <EmptyState icon="⏳" title="WF MAP 계산 중" hint={`${vehicle} 좌표와 TEG 배치를 불러오고 있습니다.`} />
       )}
 
       {data && (

@@ -1,6 +1,8 @@
 import copy
 import math
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import pytest
@@ -2216,3 +2218,73 @@ def test_shot_info_prefers_exact_product_geometry_over_chip_radius_payload(monke
     assert fallback["geometry_source"] == "chip_radius"
     assert fallback["shot_w_mm"] == pytest.approx(24.1235)
     assert fallback["shot_h_mm"] == pytest.approx(18.9877)
+
+
+def test_map_payload_cache_is_copy_safe_and_invalidates_with_source_signature(monkeypatch):
+    signature = ["source-v1"]
+    builds = []
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: {"cfg": "same"})
+    monkeypatch.setattr(teg_map, "_teg_source_signature", lambda cfg: signature[0])
+    monkeypatch.setattr(
+        teg_map,
+        "_build_map_payload",
+        lambda vehicle, cfg: builds.append((vehicle, signature[0])) or {
+            "vehicle": vehicle, "shots": [{"x": 1}], "tegs": [],
+        },
+    )
+    teg_map._TEG_MAP_PAYLOAD_CACHE.clear()
+    try:
+        first = teg_map.map_payload("P")
+        first["shots"].append({"x": 999})
+        second = teg_map.map_payload("P")
+
+        assert builds == [("P", "source-v1")]
+        assert second["shots"] == [{"x": 1}]
+
+        signature[0] = "source-v2"
+        refreshed = teg_map.map_payload("P")
+        assert refreshed["vehicle"] == "P"
+        assert builds == [("P", "source-v1"), ("P", "source-v2")]
+    finally:
+        teg_map._TEG_MAP_PAYLOAD_CACHE.clear()
+
+
+def test_map_payload_singleflight_builds_once_for_concurrent_users(monkeypatch):
+    builds = []
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: {})
+    monkeypatch.setattr(teg_map, "_teg_source_signature", lambda cfg: "stable-source")
+
+    def build(vehicle, cfg):
+        builds.append(vehicle)
+        time.sleep(0.05)
+        return {"vehicle": vehicle, "shots": [], "tegs": []}
+
+    monkeypatch.setattr(teg_map, "_build_map_payload", build)
+    teg_map._TEG_MAP_PAYLOAD_CACHE.clear()
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(teg_map.map_payload, ["P"] * 6))
+        assert builds == ["P"]
+        assert [result["vehicle"] for result in results] == ["P"] * 6
+    finally:
+        teg_map._TEG_MAP_PAYLOAD_CACHE.clear()
+
+
+def test_product_catalog_cache_avoids_repeated_source_scans(monkeypatch):
+    builds = []
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: {})
+    monkeypatch.setattr(teg_map, "_teg_source_signature", lambda cfg: "catalog-source")
+    monkeypatch.setattr(
+        teg_map,
+        "_build_product_catalog",
+        lambda cfg: builds.append(True) or [{"vehicle": "P", "node_path": "N", "root_node": "N"}],
+    )
+    teg_map._TEG_PRODUCT_CATALOG_CACHE.clear()
+    try:
+        first = teg_map.product_catalog()
+        first[0]["vehicle"] = "mutated"
+        second = teg_map.product_catalog()
+        assert builds == [True]
+        assert second[0]["vehicle"] == "P"
+    finally:
+        teg_map._TEG_PRODUCT_CATALOG_CACHE.clear()

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { postJson } from "../lib/api";
+import TegValueWaferMap from "./TegValueWaferMap";
 
 const boxStyle = {
   border: "1px solid var(--border)",
@@ -138,6 +139,25 @@ function normalizeChart(tool) {
   return null;
 }
 
+function normalizeWaferMap(tool) {
+  const blocks = Array.isArray(tool?.blocks) ? tool.blocks : [];
+  const chartBlock = blocks.find((block) => String(block?.kind || "").includes("wafer_map"));
+  const payload = chartBlock?.payload || tool?.chart_result || tool?.chart || {};
+  const kind = String(payload?.kind || payload?.chart_type || tool?.chart_type || "");
+  if (!kind.includes("wafer_map") || !Array.isArray(payload?.points) || !payload.points.length) return null;
+  const config = payload.chart_config || payload.config || tool?.chart_config || tool?.config || {};
+  const spec = payload.spec || tool?.slots?.spec || {};
+  return {
+    title: chartBlock?.title || payload.title || "WF MAP",
+    vehicle: payload.product || config.product || tool?.slots?.product || "",
+    points: payload.points,
+    valueLabel: payload.value_label || payload.metric || config.metric || "value",
+    mode: payload.mode || config.wafer_mode || "value",
+    specLow: spec.low ?? config.wafer_spec_low,
+    specHigh: spec.high ?? config.wafer_spec_high,
+  };
+}
+
 function FlowiMiniChart({ chart }) {
   if (!chart?.points?.length) return null;
   const width = 260;
@@ -210,6 +230,7 @@ function FlowiCompactResult({ result }) {
   const tool = result?.tool || {};
   const table = useMemo(() => normalizeTable(tool), [tool]);
   const chart = useMemo(() => normalizeChart(tool), [tool]);
+  const waferMap = useMemo(() => normalizeWaferMap(tool), [tool]);
   const blocks = Array.isArray(tool?.blocks) ? tool.blocks : [];
   const goHome = () => {
     window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "home" } }));
@@ -233,7 +254,7 @@ function FlowiCompactResult({ result }) {
         </div>
       )}
       <FlowiMiniTable table={table} />
-      <FlowiMiniChart chart={chart} />
+      {waferMap?<div style={{marginTop:8}}><TegValueWaferMap vehicle={waferMap.vehicle} points={waferMap.points} title={waferMap.title} valueLabel={waferMap.valueLabel} mode={waferMap.mode} specLow={waferMap.specLow} specHigh={waferMap.specHigh} interactive={false}/></div>:<FlowiMiniChart chart={chart} />}
       {result?.llm?.error && (
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-secondary)" }}>LLM 확인 실패: {result.llm.error}</div>
       )}

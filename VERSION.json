@@ -1,7 +1,20 @@
 {
-  "version": "10.4.165",
+  "version": "10.4.166",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.166",
+      "date": "2026-09-02",
+      "tag": "perf",
+      "title": "TEG 위치조회 응답·렌더링 최적화와 차트 축·WF MAP 확장",
+      "changes": [
+        "[TEG 서버 병목] 제품 선택·권한 확인마다 Product Info geometry, Chip_Radius, Teg_location, MAIN chip 표를 다시 읽고 계산하던 경로에 원본 파일 fingerprint 기반 제품별 캐시와 동시 요청 singleflight를 적용해 같은 제품 재조회 계산을 공유하고 기준 파일 변경 시 자동 무효화",
+        "[TEG 화면 멈춤] shot×선택 TEG 수만큼 개별 SVG 노드를 만들던 마커를 색상·형태별 SVG path로 묶고 radius 표를 TEG 10개 단위로 페이지 처리해 대형 제품과 다중 선택에서 브라우저 DOM 폭증을 차단",
+        "[TEG 요청 경합] 제품을 빠르게 바꿀 때 이전의 느린 응답이 최신 선택을 덮어쓰던 요청 경쟁을 AbortController와 요청 순번으로 차단하고 계산 중 상태·새로고침 비활성화를 추가",
+        "[차트 생성] X/Y축 최소·최대 범위를 한쪽 또는 양쪽으로 직접 지정해 Chart Builder·Plotly·Template Report에서 재사용하고, HTML의 Spec Out WF MAP도 공용 내장 차트 렌더러로 통합",
+        "[검증] TEG 캐시 복사 안전성·원본 변경 무효화·6개 동시 요청 단일 계산·카탈로그 재사용 테스트를 추가하고 관련 Python 159건과 프런트 디자인·구조·production build 통과"
+      ]
+    },
     {
       "version": "10.4.165",
       "date": "2026-09-02",
