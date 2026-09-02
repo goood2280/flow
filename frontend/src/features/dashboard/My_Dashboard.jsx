@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import Loading from "../../components/Loading";
 import { Button, statusPalette, buildSeriesColors, SERIES_COLOR_LIMIT } from "../../components/UXKit";
-import { WipStackedBar } from "../../components/PlotlyChart";
+import { FlowPlotlyChart, WipStackedBar } from "../../components/PlotlyChart";
 import { PageGearButton } from "../../components/PageGear";
 import ProductOrderEditor from "../../components/ProductOrderEditor";
 import { toast } from "../../components/Toast";
@@ -453,11 +453,6 @@ function WipSplitPanel({ user }) {
   const bins = data?.bins || EMPTY_ARR;
   const splitValues = data?.split_values || EMPTY_ARR;
   const unassigned = data?.unassigned_label || "(미지정)";
-  const totalBySplit = useMemo(() => {
-    const acc = {};
-    for (const b of bins) for (const [k, v] of Object.entries(b.splits || {})) acc[k] = (acc[k] || 0) + Number(v || 0);
-    return acc;
-  }, [bins]);
   const grandTotal = data?.total_wafers || 0;
   const availableProducts = useMemo(() => mergeProductOrder([...(data?.products || EMPTY_ARR),...catalogProducts], productOrder), [data?.products,catalogProducts,productOrder]);
 
@@ -535,13 +530,15 @@ function WipSplitPanel({ user }) {
       .map((v) => ({ v, n: totals[v] || 0, pct: grandTotal ? ((totals[v] || 0) / grandTotal) * 100 : 0 }))
       .filter((r) => r.n > 0);
   }, [chart, grandTotal]);
-  // 아래 상세 패널은 읽기 편하게 물량 순으로.
-  const shareRows = useMemo(() => {
-    const rows = splitValues.map((v) => ({ v, n: totalBySplit[v] || 0, pct: grandTotal ? ((totalBySplit[v] || 0) / grandTotal) * 100 : 0 }));
-    rows.sort((a, b) => b.n - a.n);
-    return rows;
-  }, [splitValues, totalBySplit, grandTotal]);
-  const shareMax = shareRows.length ? shareRows[0].n : 0;
+  // 우측 하단 파이는 위 스택 차트와 같은 색/기타 묶음을 쓴다. PPID가 20종을
+  // 넘을 때 파이에 비슷한 작은 조각을 무한히 만들지 않고, 원값은 왼쪽 상세표에 남긴다.
+  const sharePieGroups = useMemo(() => ribbon.map(({ v, n, pct }) => ({
+    label: v,
+    value: n,
+    count: n,
+    percent: Number(pct.toFixed(1)),
+    color: colorMap[v] || foldedColor,
+  })), [ribbon, colorMap, foldedColor]);
 
   const matchedPct = grandTotal ? Math.round(((data?.matched_wafers ?? 0) / grandTotal) * 100) : 0;
 
@@ -884,22 +881,38 @@ function WipSplitPanel({ user }) {
           </div>
         </div>
 
-        <div style={{ ...cardStyle, padding: "10px 12px 12px" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 650, marginBottom: 8 }}>SPLIT 전체 비중</div>
-          <div style={{ display: "grid", gap: 7 }}>
-            {shareRows.map(({ v, n, pct }) => (
-              <div key={v} style={{ display: "grid", gap: 3 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
-                  <Dot color={colorOf(v)} />
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{v}</span>
-                  <span style={{ color: "var(--text-secondary)", ...numFont }}>{nf(n)} · {pct.toFixed(1)}%</span>
-                </div>
-                <div style={{ height: 3, borderRadius: 2, background: "var(--bg-tertiary)", overflow: "hidden" }}>
-                  <div style={{ width: `${shareMax ? (n / shareMax) * 100 : 0}%`, height: "100%", background: colorOf(v), borderRadius: 2 }} />
-                </div>
-              </div>
-            ))}
+        <div style={{ ...cardStyle, padding: "10px 12px 12px", minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 650, marginBottom: 4 }}>
+            {isAllProducts ? "제품" : (splitCol || "SPLIT")} 전체 비중
           </div>
+          {sharePieGroups.length ? <>
+            <div aria-label={`${isAllProducts ? "제품" : (splitCol || "SPLIT")}별 wafer 비중 파이차트`}>
+              <FlowPlotlyChart
+                chart={{ chart_type: "pie", groups: sharePieGroups, y_label: "WAFER", hide_title: true }}
+                cfg={{ chart_type: "pie", hide_title: true, show_legend: false, compact: true, use_svg: true }}
+                height={245}
+                dark={dark}
+              />
+            </div>
+            <div style={{ display: "grid", gap: 5, maxHeight: 190, overflow: "auto", paddingRight: 2 }}>
+              {sharePieGroups.map(({ label, count, percent, color }) => (
+                <div key={label} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+                  <Dot color={color} />
+                  <span title={label} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{label}</span>
+                  <span style={{ color: "var(--text-secondary)", whiteSpace: "nowrap", ...numFont }}>{nf(count)} · {percent.toFixed(1)}%</span>
+                </div>
+              ))}
+            </div>
+            {chart.foldedCount > 0 && (
+              <div style={{ marginTop: 7, fontSize: 10.5, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                하위 {chart.foldedCount}종은 기타 조각으로 합산했습니다. 개별 값은 왼쪽 상세표에서 확인할 수 있습니다.
+              </div>
+            )}
+          </> : (
+            <div style={{ minHeight: 245, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
+              표시할 비중 데이터가 없습니다.
+            </div>
+          )}
         </div>
       </div>
     </div>

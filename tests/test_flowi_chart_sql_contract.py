@@ -113,6 +113,21 @@ def test_wip_dashboard_defaults_to_step_desc_number_axis():
     assert 'q.set("axis", a || "step_desc")' in source
 
 
+def test_wip_dashboard_bottom_share_uses_pie_chart():
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "dashboard"
+        / "My_Dashboard.jsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'chart={{ chart_type: "pie", groups: sharePieGroups' in source
+    assert "별 wafer 비중 파이차트" in source
+    assert "하위 {chart.foldedCount}종은 기타 조각으로 합산했습니다" in source
+
+
 def test_wip_dashboard_tool_returns_inline_chart(monkeypatch):
     def fake_wip_split_summary(**kwargs):
         assert kwargs["product"] == "PRODA"

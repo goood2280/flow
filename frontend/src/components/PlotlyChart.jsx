@@ -197,7 +197,9 @@ export function FlowPlotlyChart({
           textposition: "inside",
           insidetextorientation: "horizontal",
           hovertemplate: `%{label}<br>${yLabel || "count"}=%{value}<br>%{percent}<extra></extra>`,
-          marker: { colors: groups.map((_, idx) => SERIES[idx % SERIES.length]) },
+          // 호출 화면이 이미 카테고리 색을 정했다면 그대로 써서 다른 차트/범례와
+          // 같은 값이 같은 색으로 보이게 한다. 색이 없을 때만 공용 순서색을 쓴다.
+          marker: { colors: groups.map((row, idx) => row?.color || colorMap[text(row?.label || row?.group || row?.value)] || SERIES[idx % SERIES.length]) },
           sort: false,
         }],
       };
