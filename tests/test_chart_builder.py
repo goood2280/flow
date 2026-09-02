@@ -1,6 +1,7 @@
 import polars as pl
 import datetime as dt
 import pytest
+from fastapi import HTTPException
 
 from core import audit
 from core.chart_builder_definition import (
@@ -66,6 +67,14 @@ def test_chart_assistant_sets_chart_type_axes_and_visibility_without_llm():
     assert changed["chart"]["y"] == "value"
     assert changed["chart"]["show_legend"] is False
     assert changed["llm"]["used"] is False
+
+
+def test_chart_assistant_switches_y_axis_scale_without_query_rerun():
+    changed = _assistant("Y축을 log scale로 바꿔줘")
+
+    assert changed["chart"]["y_scale"] == "log"
+    assert changed["requires_rerun"] is False
+    assert "Y_SCALE = log" in changed["canonical_code"]
 
 
 def test_chart_assistant_recommends_wafer_map_from_shot_columns_without_llm():
@@ -141,6 +150,62 @@ def test_saved_chart_names_are_unique_and_searchable(tmp_path, monkeypatch):
     monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "engineer"})
     search = filebrowser.chart_builder_history(object(), limit=100, q=second["history_id"])
     assert [row["name"] for row in search["history"]] == ["VTH 산포 (2)"]
+
+
+def test_chart_history_returns_all_pins_before_recent_500_and_manager_can_unpin(tmp_path, monkeypatch):
+    history_path = tmp_path / "chart_builder_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: history_path)
+    for index in range(505):
+        filebrowser.jsonl_append(history_path, {
+            "event": "history",
+            "history_id": f"chart_{index:03d}",
+            "name": f"Chart {index:03d}",
+            "timestamp": f"2026-08-01T00:{index // 60:02d}:{index % 60:02d}+00:00",
+            "username": "engineer",
+            "definition_code": ASSISTANT_CHART_CODE,
+            "chart": {"type": "scatter", "x": "wafer_id", "y": "value"},
+            "sources": [],
+        }, max_lines=None)
+
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "admin", "role": "admin"})
+    pinned = filebrowser.chart_builder_history_pin(
+        "chart_000", filebrowser.ChartBuilderPinReq(pinned=True), object(),
+    )["chart"]
+    assert pinned["pinned"] is True
+
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "admin", "role": "admin"})
+    payload = filebrowser.chart_builder_history(object(), limit=500, q="")
+    assert len(payload["history"]) == 501
+    assert payload["history"][0]["history_id"] == "chart_000"
+    assert payload["history"][0]["pinned"] is True
+    assert payload["history"][1]["history_id"] == "chart_504"
+    assert payload["pinned_count"] == 1
+    assert payload["recent_count"] == 500
+
+    unpinned = filebrowser.chart_builder_history_pin(
+        "chart_000", filebrowser.ChartBuilderPinReq(pinned=False), object(),
+    )["chart"]
+    assert unpinned["pinned"] is False
+    payload = filebrowser.chart_builder_history(object(), limit=500, q="")
+    assert len(payload["history"]) == 500
+    assert all(row["history_id"] != "chart_000" for row in payload["history"])
+
+
+def test_chart_history_pin_requires_chartbuilder_manager(tmp_path, monkeypatch):
+    history_path = tmp_path / "chart_builder_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: history_path)
+    filebrowser.jsonl_append(history_path, {
+        "event": "history", "history_id": "chart_one", "name": "One",
+        "definition_code": ASSISTANT_CHART_CODE,
+    }, max_lines=None)
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "viewer", "role": "user"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        filebrowser.chart_builder_history_pin(
+            "chart_one", filebrowser.ChartBuilderPinReq(pinned=True), object(),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 def test_chart_builder_runtime_recent_days_filters_raw_source(tmp_path, monkeypatch):
@@ -275,6 +340,34 @@ def test_chart_builder_runtime_root_lot_and_wafer_filters_push_down(tmp_path, mo
 
     assert result["joined"]["row_count"] == 1
     assert result["joined"]["rows"][0]["value"] == 2.0
+
+
+def test_chart_builder_derived_column_can_be_filtered_and_keeps_only_visible_helpers(tmp_path, monkeypatch):
+    source = tmp_path / "derived_filter.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1234", "A1234", "B5678"],
+        "wafer_id": ["1", "2", "1"],
+        "purpose": ["KEEP", "DROP", "KEEP"],
+        "value": [11.0, 12.0, 21.0],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="q1", root="ET", product="P", sql="SELECT value",
+            derived_columns=[{"name": "lot_wafer", "columns": ["root_lot_id", "wafer_id"], "separator": "_"}],
+            runtime_filters=[
+                {"column": "purpose", "operator": "in", "values": ["KEEP"]},
+                {"column": "lot_wafer", "operator": "equals", "values": ["B5678_1"]},
+            ],
+        )],
+        save_history=False,
+    ), object())
+
+    assert result["joined"]["columns"] == ["value", "lot_wafer"]
+    assert result["joined"]["rows"] == [{"value": 21.0, "lot_wafer": "B5678_1"}]
 
 
 def test_chart_builder_linked_color_table_filters_exact_lot_wafer_pairs(tmp_path, monkeypatch):
@@ -515,6 +608,32 @@ def test_chart_builder_definition_round_trips_named_queries_and_mapped_join_keys
     assert parsed["max_rows"] == 250
 
 
+def test_chart_builder_definition_round_trips_derived_columns_and_value_filters():
+    parsed = parse_chart_builder_definition("""
+Q1
+TABLE = ET
+PRODUCT = P
+SQL = SELECT root_lot_id, wafer_id, purpose, value
+DERIVE = lot_wafer | columns=root_lot_id,wafer_id | separator=_
+DERIVE = purpose_wafer = purpose + "-" + wafer_id
+FILTER = lot_wafer | operator=in | values=A1234_1, B5678_2
+FILTER = purpose | operator=not_contains | values=MONITOR
+""")
+
+    source = parsed["sources"][0]
+    assert source["derived_columns"] == [
+        {"name": "lot_wafer", "columns": ["root_lot_id", "wafer_id"], "separator": "_"},
+        {"name": "purpose_wafer", "columns": ["purpose", "wafer_id"], "separator": "-"},
+    ]
+    assert source["runtime_filters"] == [
+        {"column": "lot_wafer", "operator": "in", "values": ["A1234_1", "B5678_2"]},
+        {"column": "purpose", "operator": "not_contains", "values": ["MONITOR"]},
+    ]
+    reparsed = parse_chart_builder_definition(parsed["canonical_code"])["sources"][0]
+    assert reparsed["derived_columns"] == source["derived_columns"]
+    assert reparsed["runtime_filters"] == source["runtime_filters"]
+
+
 def test_chart_builder_definition_round_trips_chart_custom_color_and_reformatter():
     parsed = parse_chart_builder_definition("""
 Q1
@@ -624,6 +743,24 @@ MAX_ROWS = 10
     assert parsed["chart"]["width"] == 900
     assert parsed["chart"]["height"] == 500
     assert "WIDTH = 900\nHEIGHT = 500" in parsed["canonical_code"]
+
+
+def test_chart_builder_definition_round_trips_log_y_scale_and_positive_range():
+    parsed = parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT wafer_id, value
+CHART | TYPE=scatter | X=wafer_id | Y=value | Y_SCALE=log | Y_MIN=0.1 | Y_MAX=100
+""")
+
+    assert parsed["chart"]["y_scale"] == "log"
+    assert parsed["chart"]["y_min"] == 0.1
+    assert parsed["chart"]["y_max"] == 100.0
+    assert parse_chart_builder_definition(parsed["canonical_code"])["chart"] == parsed["chart"]
+
+    with pytest.raises(ChartBuilderDefinitionError, match="0보다 커야"):
+        parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT wafer_id, value
+CHART | TYPE=scatter | X=wafer_id | Y=value | Y_SCALE=log | Y_MIN=0 | Y_MAX=100
+""")
 
 
 def test_chart_builder_et_reformatter_uses_download_engine(tmp_path, monkeypatch):

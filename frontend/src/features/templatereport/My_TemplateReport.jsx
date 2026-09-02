@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
+import TegValueWaferMap from "../../components/TegValueWaferMap";
 import { chartPalette } from "../../components/UXKit";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
+import PageGear from "../../components/PageGear";
 import { toast } from "../../components/Toast";
 import Plotly from "../../lib/plotlyCustom";
 import { computeBoxStats } from "../../lib/boxStats";
 import { chartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
 import { chartColorListRules, parseChartColorList } from "../../lib/chartColorList";
 import { postDownload, postJson, sf } from "../../lib/api";
+import { canManagePage } from "../../lib/permissions";
 
 const API="/api/template-report";
 // 슬라이드 규약은 PPTX(backend/routers/template_report.py)와 같은 값이어야 한다 —
@@ -114,6 +117,22 @@ function templateApiError(error){
     :message;
 }
 function median(values){const sorted=values.filter(Number.isFinite).sort((a,b)=>a-b);if(!sorted.length)return NaN;const mid=(sorted.length-1)/2,lo=Math.floor(mid),hi=Math.ceil(mid);return(sorted[lo]+sorted[hi])/2;}
+function aggregateValues(values,method="median"){
+  const sorted=values.map(Number).filter(Number.isFinite).sort((a,b)=>a-b);if(!sorted.length)return NaN;
+  if(method==="avg")return sorted.reduce((sum,value)=>sum+value,0)/sorted.length;
+  if(method==="min")return sorted[0];if(method==="max")return sorted[sorted.length-1];if(method==="sum")return sorted.reduce((sum,value)=>sum+value,0);if(method==="count")return sorted.length;
+  const quantile=method==="p10"?.1:method==="p90"?.9:.5,position=(sorted.length-1)*quantile,lower=Math.floor(position),upper=Math.ceil(position);
+  return sorted[lower]+(sorted[upper]-sorted[lower])*(position-lower);
+}
+function reportTimeBucket(value,mode){
+  const raw=text(value).trim(),parsed=new Date(raw.replace(" ","T"));if(!raw||Number.isNaN(parsed.getTime()))return raw.slice(0,10);
+  if(mode==="weekly")parsed.setDate(parsed.getDate()-((parsed.getDay()+6)%7));
+  return `${parsed.getFullYear()}-${String(parsed.getMonth()+1).padStart(2,"0")}-${String(parsed.getDate()).padStart(2,"0")}`;
+}
+function reportLinearFit(points){
+  if(points.length<2)return null;const n=points.length,sx=points.reduce((a,p)=>a+p.x,0),sy=points.reduce((a,p)=>a+p.y,0),sxx=points.reduce((a,p)=>a+p.x*p.x,0),sxy=points.reduce((a,p)=>a+p.x*p.y,0),den=n*sxx-sx*sx;
+  if(!den)return null;const slope=(n*sxy-sx*sy)/den,intercept=(sy-slope*sx)/n;return{slope,intercept,equation:`y = ${slope.toFixed(4)}x ${intercept<0?"-":"+"} ${Math.abs(intercept).toFixed(4)}`};
+}
 // 저장된 코드 안의 {{LOT}} 같은 토큰 — 서버(core/report_variables)와 같은 문법이다.
 const VARIABLE_RE=/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|\s*[A-Za-z_]+\s*)?\}\}/g;
 function usedVariables(...texts){
@@ -143,7 +162,6 @@ function reportChart(run){
   const{rows,columns,config,x,y}=chartAxes(run);
   if(!rows.length)return null;
   let type=text(config.type||"scatter").toLowerCase();
-  if(["radius","wafer_map"].includes(type))type="scatter";
   const custom=["custom","__custom__"].includes(text(config.color).toLowerCase());
   const rules=custom?parseChartColorRules(config.color_rules).filter(rule=>!rule.error):[];
   const requestedColor=custom?"Custom Color":text(config.color);
@@ -156,18 +174,49 @@ function reportChart(run){
     if(config.color&&columns.includes(config.color))return row[config.color];
     return trellis&&columns.includes(trellis)?row[trellis]:"";
   };
-  const title=[x,y].filter(Boolean).join(" × ")||run.chart_label||run.chart_id;
+  const title=text(config.title).trim()||[x,y].filter(Boolean).join(" × ")||run.chart_label||run.chart_id;
+  const details={
+    point_size:Number(config.point_size)||10,marker_opacity:Number(config.marker_opacity)||.82,line_width:Number(config.line_width)||2.3,
+    y_min:text(config.y_min).trim(),y_max:text(config.y_max).trim(),y_scale:config.y_scale||"linear",show_grid:config.show_grid!==false,
+    legend_position:config.legend_position||"bottom",box_points:config.box_points||"outliers",show_legend:showLegend,
+  };
+  const labels={x_label:text(config.x_label).trim()||x,y_label:text(config.y_label).trim()||y};
+  const decorate=row=>({...row,spec_low:config.spec_low&&columns.includes(config.spec_low)?row[config.spec_low]:row.spec_low,spec_high:config.spec_high&&columns.includes(config.spec_high)?row[config.spec_high]:row.spec_high});
+  if(type==="wafer_map"){
+    const mapY=config.map_y&&columns.includes(config.map_y)?config.map_y:columns.find(column=>["shot_y","chip_y_pos"].includes(column.toLowerCase()));
+    const mapX=x&&columns.includes(x)?x:columns.find(column=>["shot_x","chip_x_pos"].includes(column.toLowerCase()));
+    if(!mapX||!mapY||!y)return null;
+    const lotCol=columns.find(column=>column.toLowerCase()==="root_lot_id")||"",waferCol=columns.find(column=>column.toLowerCase()==="wafer_id")||"";
+    const scope=config.map_scope||"root_wafer",aggregation=config.aggregation||"median",grouped=new Map();
+    rows.forEach(row=>{const lot=lotCol?text(row[lotCol]):"",wafer=waferCol?text(row[waferCol]):"",key=scope==="trellis_wafer"?wafer:`${lot}|${wafer}`,label=scope==="root_lot"?lot:scope==="trellis_wafer"?`W${wafer}`:`${lot} | W${wafer}`;if(!grouped.has(key))grouped.set(key,{key,label,lot,wafer,shots:new Map()});const group=grouped.get(key),coord=`${Number(row[mapX])},${Number(row[mapY])}`,shot=group.shots.get(coord)||{x:Number(row[mapX]),y:Number(row[mapY]),values:[]};const value=Number(row[y]);if(Number.isFinite(shot.x)&&Number.isFinite(shot.y)&&Number.isFinite(value)){shot.values.push(value);group.shots.set(coord,shot);}});
+    const groups=[...grouped.values()].map(group=>({...group,points:[...group.shots.values()].map(shot=>({x:shot.x,y:shot.y,value:aggregateValues(shot.values,aggregation),n:shot.values.length}))})).filter(group=>group.points.length);
+    const trellis=scope.startsWith("trellis_"),selected=groups.find(group=>group.key===config.map_target)||groups[0],source=(run?.result?.sources||[]).find(item=>item.product)||{};
+    return{chart_type:"wafer_map",title,x_label:labels.x_label,map_y_label:mapY,y_label:labels.y_label,product:source.product||"",points:trellis?[]:(selected?.points||[]),panels:trellis?groups.map(group=>({key:group.key,label:group.label,points:group.points})):null,aggregation,map_scope:scope,map_target:selected,...details,wafer_palette:config.wafer_palette||"blue_gray_red",wafer_low:config.wafer_low,wafer_center:config.wafer_center,wafer_high:config.wafer_high};
+  }
   if(type==="pie"||type==="donut"){
-    const buckets=new Map();rows.forEach(row=>{const label=text(row[x]).trim()||"(빈값)";buckets.set(label,(buckets.get(label)||0)+1);});
-    return{chart_type:type,title,x_label:x,y_label:"행 수",show_legend:showLegend,groups:[...buckets.entries()].map(([label,value])=>({label,value,count:value}))};
+    const basis=config.pie_basis||"count",buckets=new Map();rows.forEach(row=>{const label=text(row[x]).trim()||"(빈값)",value=basis==="sum"?Number(row[y]):1;if(Number.isFinite(value))buckets.set(label,(buckets.get(label)||0)+value);});
+    return{chart_type:type,title,x_label:labels.x_label,y_label:basis==="sum"?labels.y_label:"행 수",groups:[...buckets.entries()].map(([label,value])=>({label,value,count:value})),aggregation:basis,...details};
   }
   if(type==="bar"||type==="bar_horizontal"){
     const buckets=new Map();rows.forEach(row=>{const label=text(row[x]),value=Number(row[y]);if(!label||!Number.isFinite(value))return;if(!buckets.has(label))buckets.set(label,[]);buckets.get(label).push(value);});
-    return{chart_type:type,title,x_label:x,y_label:y,show_legend:showLegend,groups:[...buckets.entries()].map(([label,values])=>({label,value:median(values),count:values.length}))};
+    const aggregation=config.aggregation||"median";
+    return{chart_type:type,title,x_label:labels.x_label,y_label:labels.y_label,groups:[...buckets.entries()].map(([label,values])=>({label,value:aggregateValues(values,aggregation),count:values.length})),aggregation,...details};
   }
   if(!x||!y)return null;
-  const points=rows.slice(0,10000).map((row,index)=>({...row,x:row[x]??index,x_label:row[x],y:Number(row[y]),color_value:colorValue(row),trellis_value:trellis?row[trellis]:""})).filter(point=>Number.isFinite(point.y));
-  return{chart_type:type,title,x_label:x,y_label:y,color_by:colorBy,color_map:colorMap,show_legend:showLegend,points,point_size:10,emphasize_markers:type==="scatter"};
+  const pointFrom=(row,xValue,yValue)=>({...decorate(row),x:xValue,x_label:xValue,y:Number(yValue),color_value:colorValue(row),trellis_value:trellis?row[trellis]:""});
+  let points=[];
+  if(type==="line"&&["daily","weekly"].includes(config.trend_grain)){
+    const buckets=new Map();rows.forEach(row=>{const period=reportTimeBucket(row[x],config.trend_grain),series=text(colorValue(row)),key=`${series}\u001f${period}`;if(!period||!Number.isFinite(Number(row[y])))return;if(!buckets.has(key))buckets.set(key,{row,period,values:[]});buckets.get(key).values.push(Number(row[y]));});
+    points=[...buckets.values()].map(bucket=>pointFrom(bucket.row,bucket.period,aggregateValues(bucket.values,config.aggregation||"median")));
+  }else if(type==="line"&&config.trend_grain==="wafer"){
+    const lot=columns.find(column=>column.toLowerCase()==="root_lot_id"),wafer=columns.find(column=>column.toLowerCase()==="wafer_id"),buckets=new Map();rows.forEach(row=>{const key=`${text(row[lot])}|${text(row[wafer])}`,value=Number(row[y]);if(!Number.isFinite(value))return;if(!buckets.has(key))buckets.set(key,{row,values:[]});buckets.get(key).values.push(value);});points=[...buckets.values()].map(bucket=>pointFrom(bucket.row,bucket.row[x],aggregateValues(bucket.values,config.aggregation||"median")));type="scatter";
+  }else{
+    points=rows.slice(0,10000).map((row,index)=>pointFrom(row,row[x]??index,row[y])).filter(point=>Number.isFinite(point.y));
+    if(type==="line"&&(config.trend_grain||"shot")==="shot")type="scatter";
+  }
+  const numericFit=points.map((point,index)=>({x:Number(point.x),y:Number(point.y),index})).filter(point=>Number.isFinite(point.x)&&Number.isFinite(point.y));
+  const fit=config.fit==="linear"?reportLinearFit(numericFit):null;
+  return{chart_type:type==="radius"?"scatter":type,title,...labels,color_by:colorBy,color_map:colorMap,points,fit,cubic_fit:config.fit==="cubic",trend_grain:config.trend_grain||"",emphasize_markers:type==="scatter",...details};
 }
 
 /* 통계표 — 가리킨 차트의 결과를 그룹별로 갈라 숫자를 깐다. 그룹은 차트 코드가 정한
@@ -288,7 +337,7 @@ function ReportChart({chart,layout}){
   </div>;
 }
 
-function SlideCanvas({page,pageIndex,runs={},tables={},editing=false,charts=[],defaultSubtitle="",updatePage,updateSlot,removeSlot,addSlot}){
+function SlideCanvas({page,pageIndex,runs={},tables={},editing=false,charts=[],defaultSubtitle="",backgroundImage="",updatePage,updateSlot,removeSlot,addSlot}){
   const canvasRef=useRef(null),gestureRef=useRef(null);
   const[selectedPosition,setSelectedPosition]=useState(null),[chartRef,setChartRef]=useState("");
   const blocks=page.blocks||(page.slots||[]).map(slot=>({...slot,key:`${pageIndex}:${slot.position}`,...slotLayout(slot)}));
@@ -364,7 +413,7 @@ function SlideCanvas({page,pageIndex,runs={},tables={},editing=false,charts=[],d
         </div>
       </div>
     </div>}
-    <div ref={canvasRef} aria-label={`Page ${pageIndex+1} 자유 배치 슬라이드`} onPointerMove={moveGesture} onPointerUp={endGesture} onPointerCancel={endGesture} style={{position:"relative",background:IBM_PAGE,color:IBM_TEXT,aspectRatio:"16 / 9",overflow:"hidden",boxSizing:"border-box",boxShadow:"none",border:`1px solid ${editing?"#A3A3A3":IBM_BORDER}`,touchAction:"none",userSelect:editing?"none":"auto"}}>
+    <div ref={canvasRef} aria-label={`Page ${pageIndex+1} 자유 배치 슬라이드`} onPointerMove={moveGesture} onPointerUp={endGesture} onPointerCancel={endGesture} style={{position:"relative",backgroundColor:IBM_PAGE,backgroundImage:backgroundImage?`url(${JSON.stringify(backgroundImage)})`:"none",backgroundPosition:"center",backgroundSize:"cover",backgroundRepeat:"no-repeat",color:IBM_TEXT,aspectRatio:"16 / 9",overflow:"hidden",boxSizing:"border-box",boxShadow:"none",border:`1px solid ${editing?"#A3A3A3":IBM_BORDER}`,touchAction:"none",userSelect:editing?"none":"auto"}}>
       {/* 내부 회의용 얇은 헤더 — 제목보다 차트와 축을 우선한다. */}
       <div style={titleStyle}>
         {editing
@@ -442,10 +491,64 @@ function SlideCanvas({page,pageIndex,runs={},tables={},editing=false,charts=[],d
   </section>;
 }
 
+function TemplateBackgroundSettings({settings,canEdit,onChanged}){
+  const background=settings?.background||{};
+  const[pastedImage,setPastedImage]=useState("");
+  const[busy,setBusy]=useState(false);
+  const shownImage=pastedImage||background.data_url||"";
+  const handlePaste=event=>{
+    if(!canEdit)return;
+    const item=Array.from(event.clipboardData?.items||[]).find(entry=>entry.kind==="file"&&entry.type.startsWith("image/"));
+    const file=item?.getAsFile();
+    if(!file){toast.warn("클립보드에서 그림을 찾지 못했습니다. 그림을 복사한 뒤 이 영역에서 Ctrl+V 해 주세요.");return;}
+    event.preventDefault();
+    if(file.size>12*1024*1024){toast.error("배경 이미지는 12MB 이하만 사용할 수 있습니다.");return;}
+    const reader=new FileReader();
+    reader.onload=()=>{setPastedImage(text(reader.result));toast.ok("그림을 받았습니다. 미리보기 확인 후 저장해 주세요.");};
+    reader.onerror=()=>toast.error("클립보드 그림을 읽지 못했습니다.");
+    reader.readAsDataURL(file);
+  };
+  const saveBackground=async()=>{
+    if(!pastedImage){toast.warn("먼저 아래 영역을 누르고 그림을 붙여넣어 주세요.");return;}
+    setBusy(true);
+    try{
+      const out=await postJson(`${API}/settings/background`,{data_url:pastedImage});
+      setPastedImage("");onChanged(out.settings||{});toast.ok("기본 PPT 배경을 저장했습니다.");
+    }catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
+  };
+  const removeBackground=async()=>{
+    if(!window.confirm("Template Report 기본 배경을 제거할까요?"))return;
+    setBusy(true);
+    try{
+      const out=await sf(`${API}/settings/background`,{method:"DELETE"});
+      setPastedImage("");onChanged(out.settings||{});toast.ok("기본 PPT 배경을 제거했습니다.");
+    }catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
+  };
+  return <div style={{display:"grid",gap:10}}>
+    <div style={{fontSize:12,lineHeight:1.6,color:"var(--text-secondary)"}}>그림을 복사한 뒤 아래 영역을 한 번 누르고 <b style={{color:"var(--text-primary)"}}>Ctrl+V</b> 하세요. 저장하면 표지·본문·Appendix와 화면 미리보기의 기본 배경으로 사용합니다.</div>
+    <div
+      tabIndex={canEdit?0:undefined}
+      onPaste={handlePaste}
+      aria-label="Template Report 기본 배경 그림 붙여넣기"
+      style={{aspectRatio:"16 / 9",border:`2px dashed ${pastedImage?"var(--accent)":"var(--border)"}`,borderRadius:8,backgroundColor:"var(--bg-primary)",backgroundImage:shownImage?`url(${JSON.stringify(shownImage)})`:"none",backgroundPosition:"center",backgroundSize:"cover",backgroundRepeat:"no-repeat",display:"grid",placeItems:"center",outline:"none",cursor:canEdit?"text":"default",overflow:"hidden"}}
+    >
+      {!shownImage&&<span style={{padding:18,textAlign:"center",fontSize:12,color:"var(--text-secondary)"}}>{canEdit?"여기를 누르고 Ctrl+V":"설정된 기본 배경이 없습니다."}</span>}
+      {shownImage&&pastedImage&&<span style={{alignSelf:"end",margin:8,padding:"3px 8px",borderRadius:999,background:"rgba(0,0,0,.65)",color:"#fff",fontSize:10,fontWeight:800}}>저장 전 미리보기</span>}
+    </div>
+    <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+      {canEdit&&<button type="button" onClick={saveBackground} disabled={!pastedImage||busy} style={primary}>{busy?"처리 중…":"붙여넣은 그림 저장"}</button>}
+      {canEdit&&pastedImage&&<button type="button" onClick={()=>setPastedImage("")} disabled={busy} style={btn}>붙여넣기 취소</button>}
+      {canEdit&&background.configured&&!pastedImage&&<button type="button" onClick={removeBackground} disabled={busy} style={{...btn,color:"var(--danger)"}}>기본 배경 제거</button>}
+    </div>
+    {background.configured&&<div style={{fontSize:10,color:"var(--text-secondary)"}}>현재 배경 · {background.updated_by||"—"} · {formatTime(background.updated_at)}</div>}
+  </div>;
+}
+
 export default function My_TemplateReport({user}){
   const[templates,setTemplates]=useState([]),[charts,setCharts]=useState([]),[selectedId,setSelectedId]=useState("");
   const[draft,setDraft]=useState(null),[editing,setEditing]=useState(false),[loading,setLoading]=useState(true),[loadError,setLoadError]=useState("");
   const[templateSearch,setTemplateSearch]=useState("");
+  const[reportSettings,setReportSettings]=useState({background:{configured:false,data_url:""}});
   const[bindings,setBindings]=useState({}),[repeatText,setRepeatText]=useState("");
   const[contextRootLots,setContextRootLots]=useState(""),[contextWafers,setContextWafers]=useState("");
   const[overrideRecentDays,setOverrideRecentDays]=useState(false),[contextRecentDays,setContextRecentDays]=useState("7"),[contextDateColumn,setContextDateColumn]=useState("tkout_time");
@@ -458,8 +561,8 @@ export default function My_TemplateReport({user}){
 
   const load=useCallback(async()=>{
     setLoadError("");
-    const[data,chartData]=await Promise.all([sf(`${API}/templates`),sf(`${API}/charts`)]);
-    setTemplates(data.templates||[]);setCharts(chartData.charts||[]);
+    const[data,chartData,settingsData]=await Promise.all([sf(`${API}/templates`),sf(`${API}/charts`),sf(`${API}/settings`)]);
+    setTemplates(data.templates||[]);setCharts(chartData.charts||[]);setReportSettings(settingsData.settings||{background:{configured:false,data_url:""}});
     setSelectedId(current=>current||(data.templates?.[0]?.id||""));
   },[]);
   useEffect(()=>{load().catch(error=>{const message=templateApiError(error);setLoadError(message);toast.error(message);}).finally(()=>setLoading(false));},[load]);
@@ -468,6 +571,8 @@ export default function My_TemplateReport({user}){
   useEffect(()=>{if(selected&&!editing)setDraft(clone(selected));},[selected,editing]);
 
   const options=draft?.options||{};
+  const canManageSettings=canManagePage(user,"templatereport");
+  const backgroundImage=reportSettings?.background?.data_url||"";
   const defaultSubtitle=defaultPageSubtitle(user);
   const repeatVariable=text(options.repeat_variable||"LOT");
   // 실행 폼에 낼 변수 — 저장된 목록 + 지금 편집 중에 새로 등장한 이름.
@@ -762,13 +867,13 @@ export default function My_TemplateReport({user}){
           </div>}
         </div>
         {editing?<div style={{display:"grid",gap:12}}>
-          {draft.pages.map((page,pageIndex)=><div key={page.id} style={{display:"grid",gap:8}}><div style={{display:"flex",justifyContent:"flex-end"}}>{draft.pages.length>1&&<button type="button" onClick={()=>setDraft(old=>({...old,pages:old.pages.filter((_,index)=>index!==pageIndex)}))} style={{...btn,color:"var(--danger)"}}>Page {pageIndex+1} 삭제</button>}</div><SlideCanvas page={page} pageIndex={pageIndex} editing charts={charts} defaultSubtitle={defaultSubtitle} updatePage={updatePage} updateSlot={updateSlot} removeSlot={removeSlot} addSlot={addSlot}/></div>)}
+          {draft.pages.map((page,pageIndex)=><div key={page.id} style={{display:"grid",gap:8}}><div style={{display:"flex",justifyContent:"flex-end"}}>{draft.pages.length>1&&<button type="button" onClick={()=>setDraft(old=>({...old,pages:old.pages.filter((_,index)=>index!==pageIndex)}))} style={{...btn,color:"var(--danger)"}}>Page {pageIndex+1} 삭제</button>}</div><SlideCanvas page={page} pageIndex={pageIndex} editing charts={charts} defaultSubtitle={defaultSubtitle} backgroundImage={backgroundImage} updatePage={updatePage} updateSlot={updateSlot} removeSlot={removeSlot} addSlot={addSlot}/></div>)}
           <datalist id="template-report-chart-ids">{charts.flatMap(chart=>[
             <option key={`name-${chart.id}`} value={chart.name}>{chart.id} · {windowLabel(chart)} · {formatTime(chart.timestamp)} · {chart.label}</option>,
             <option key={`id-${chart.id}`} value={chart.id}>{chart.name} · {windowLabel(chart)} · {formatTime(chart.timestamp)} · {chart.label}</option>,
           ])}</datalist>
           <button type="button" onClick={()=>setDraft(old=>({...old,pages:[...old.pages,newPage(old.pages.length+1)]}))} disabled={draft.pages.length>=30} style={{...btn,justifySelf:"start"}}>＋ 다음 페이지</button>
-        </div>:<div style={{display:"grid",gap:16}}>{previewPages.map((page,pageIndex)=><SlideCanvas key={page.id||`p${page.index??pageIndex}`} page={page} pageIndex={page.index??pageIndex} runs={runs} tables={tables} defaultSubtitle={defaultSubtitle}/>)}</div>}
+        </div>:<div style={{display:"grid",gap:16}}>{previewPages.map((page,pageIndex)=><SlideCanvas key={page.id||`p${page.index??pageIndex}`} page={page} pageIndex={page.index??pageIndex} runs={runs} tables={tables} defaultSubtitle={defaultSubtitle} backgroundImage={backgroundImage}/>)}</div>}
         {editing&&<section id="template-report-code" style={{...card,padding:14,marginTop:16,borderColor:"var(--accent)"}}>
           <div style={{display:"flex",gap:8,alignItems:"baseline",flexWrap:"wrap",marginBottom:10}}>
             <strong style={{fontSize:15}}>Template 전체 코드</strong>
@@ -804,5 +909,8 @@ export default function My_TemplateReport({user}){
         </section>}
       </>}
     </main>
+    <PageGear title="Template Report 기본 배경" canEdit={canManageSettings} position="bottom-left" width={430}>
+      <TemplateBackgroundSettings settings={reportSettings} canEdit={canManageSettings} onChanged={setReportSettings}/>
+    </PageGear>
   </div>;
 }

@@ -45,11 +45,15 @@ function compactNumber(value) {
   return Number.isFinite(number) ? Number(number.toPrecision(6)) : 0;
 }
 
-export default function TegValueWaferMap({ vehicle, points = [], panels = null, title = "WF MAP", valueLabel = "value", panelLimit = 25 }) {
+export default function TegValueWaferMap({
+  vehicle, points = [], panels = null, title = "WF MAP", valueLabel = "value", panelLimit = 25,
+  palette: requestedPalette = "", low: requestedLow = null, center: requestedCenter = null, high: requestedHigh = null,
+  interactive = true, onScaleChange = null,
+}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [palette, setPalette] = useState("blue_gray_red");
+  const [palette, setPalette] = useState(palettes[requestedPalette] ? requestedPalette : "blue_gray_red");
   const panelRows = useMemo(() => {
     if (Array.isArray(panels) && panels.length) return panels.slice(0, panelLimit);
     return [{ key: "single", label: title, points }];
@@ -60,14 +64,26 @@ export default function TegValueWaferMap({ vehicle, points = [], panels = null, 
   const defaultLow = percentile(allValues, 0.1);
   const defaultCenter = percentile(allValues, 0.5);
   const defaultHigh = percentile(allValues, 0.9);
-  const [low, setLow] = useState(defaultLow);
-  const [center, setCenter] = useState(defaultCenter);
-  const [high, setHigh] = useState(defaultHigh);
+  const configuredNumber=value=>value==null||String(value).trim()===""?NaN:Number(value);
+  const configuredLow=configuredNumber(requestedLow),configuredCenter=configuredNumber(requestedCenter),configuredHigh=configuredNumber(requestedHigh);
+  const [low, setLow] = useState(Number.isFinite(configuredLow)?configuredLow:defaultLow);
+  const [center, setCenter] = useState(Number.isFinite(configuredCenter)?configuredCenter:defaultCenter);
+  const [high, setHigh] = useState(Number.isFinite(configuredHigh)?configuredHigh:defaultHigh);
   useEffect(() => {
-    setLow(defaultLow);
-    setCenter(defaultCenter);
-    setHigh(defaultHigh);
-  }, [defaultLow, defaultCenter, defaultHigh]);
+    setLow(Number.isFinite(configuredLow)?configuredLow:defaultLow);
+    setCenter(Number.isFinite(configuredCenter)?configuredCenter:defaultCenter);
+    setHigh(Number.isFinite(configuredHigh)?configuredHigh:defaultHigh);
+  }, [defaultLow, defaultCenter, defaultHigh, requestedLow, requestedCenter, requestedHigh]);
+  useEffect(()=>{if(palettes[requestedPalette])setPalette(requestedPalette);},[requestedPalette]);
+  const changeScale=(key,value)=>{
+    const next={low:Number(low),center:Number(center),high:Number(high),palette};
+    next[key]=value;
+    if(key==="low")setLow(value);
+    else if(key==="center")setCenter(value);
+    else if(key==="high")setHigh(value);
+    else setPalette(value);
+    onScaleChange?.(next);
+  };
   useEffect(() => {
     if (!vehicle) {
       setData(null);
@@ -135,12 +151,12 @@ export default function TegValueWaferMap({ vehicle, points = [], panels = null, 
   const grid = waferPanelGrid(panelRows.length);
   return <div style={{ border: "1px solid #d1d5db", borderRadius: 8, background: "#fff", color: "#111827", padding: "10px 12px" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}><strong>{title || "WF MAP"} · {data.vehicle}</strong><span style={{ fontSize: 12, color: "#475569", fontFamily: "monospace" }}>{panelCount > 1 ? `${panelRows.length}/${panelCount} panels · common scale` : "single map"}</span></div>
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>
-      <label style={{ fontSize: 12, color: "#475569" }}>Low · P10<input type="range" min={rawMin} max={rawMax} step={step} value={low} onChange={(event) => setLow(Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP Low" type="number" value={low} step={step} onChange={(event) => setLow(Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
-      <label style={{ fontSize: 12, color: "#475569" }}>Center · median<input type="range" min={rawMin} max={rawMax} step={step} value={center} onChange={(event) => setCenter(Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%" }}/><input aria-label="WF MAP Center" type="number" value={center} step={step} onChange={(event) => setCenter(Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
-      <label style={{ fontSize: 12, color: "#475569" }}>High · P90<input type="range" min={rawMin} max={rawMax} step={step} value={high} onChange={(event) => setHigh(Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP High" type="number" value={high} step={step} onChange={(event) => setHigh(Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
-      <label style={{ fontSize: 12, color: "#475569" }}>Palette<select aria-label="WF MAP Palette" value={palette} onChange={(event) => setPalette(event.target.value)} style={{ width: "100%", height: 28 }}>{Object.entries(palettes).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}</select></label>
-    </div>
+    {interactive&&<div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>
+      <label style={{ fontSize: 12, color: "#475569" }}>Low · P10<input type="range" min={rawMin} max={rawMax} step={step} value={low} onChange={(event) => changeScale("low",Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP Low" type="number" value={low} step={step} onChange={(event) => changeScale("low",Math.min(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
+      <label style={{ fontSize: 12, color: "#475569" }}>Center · median<input type="range" min={rawMin} max={rawMax} step={step} value={center} onChange={(event) => changeScale("center",Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%" }}/><input aria-label="WF MAP Center" type="number" value={center} step={step} onChange={(event) => changeScale("center",Math.max(Number(low), Math.min(Number(event.target.value), Number(high))))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
+      <label style={{ fontSize: 12, color: "#475569" }}>High · P90<input type="range" min={rawMin} max={rawMax} step={step} value={high} onChange={(event) => changeScale("high",Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%" }}/><input aria-label="WF MAP High" type="number" value={high} step={step} onChange={(event) => changeScale("high",Math.max(Number(event.target.value), Number(center)))} style={{ width: "100%", boxSizing: "border-box" }}/></label>
+      <label style={{ fontSize: 12, color: "#475569" }}>Palette<select aria-label="WF MAP Palette" value={palette} onChange={(event) => changeScale("palette",event.target.value)} style={{ width: "100%", height: 28 }}>{Object.entries(palettes).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}</select></label>
+    </div>}
     <div style={{ height: 14, borderRadius: 999, background: palettes[palette].css, border: "1px solid #cbd5e1" }}/>
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", fontSize: 11, color: "#475569", marginTop: 2 }}><span>{compactNumber(low)} · P10</span><span style={{ textAlign: "center" }}>{compactNumber(center)} · median · {valueLabel}</span><span style={{ textAlign: "right" }}>{compactNumber(high)} · P90</span></div>
     {panelCount > panelLimit && <div style={{ fontSize: 12, color: "#b45309", marginTop: 8 }}>패널이 많아 정렬된 앞 {panelLimit}개만 표시합니다.</div>}

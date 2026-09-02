@@ -6,7 +6,9 @@ from routers import admin
 def test_activity_summary_counts_unique_authenticated_users_by_day_and_month(monkeypatch, tmp_path):
     now = dt.datetime.now().replace(microsecond=0)
     yesterday = now - dt.timedelta(days=1)
-    previous_month = now.replace(day=1) - dt.timedelta(days=1)
+    # Use the first day of the previous month so this fixture never collides
+    # with ``yesterday`` when the test runs on the first of a month.
+    previous_month = (now.replace(day=1) - dt.timedelta(days=1)).replace(day=1)
     rows = [
         {"timestamp": now.isoformat(), "username": "alice", "action": "nav:home", "tab": "home"},
         {"timestamp": (now - dt.timedelta(minutes=3)).isoformat(), "username": "alice", "action": "nav:dashboard", "tab": "dashboard"},
@@ -24,8 +26,31 @@ def test_activity_summary_counts_unique_authenticated_users_by_day_and_month(mon
     assert result["active_users_by_day"][yesterday.strftime("%Y-%m-%d")] == 1
     assert len(result["active_users_by_day"]) == 30
     assert result["active_users_by_month"][now.strftime("%Y-%m")] == 2
-    assert result["active_users_by_month"][previous_month.strftime("%Y-%m")] == 1
+    expected_previous_month_users = 1 + int(
+        yesterday.strftime("%Y-%m") == previous_month.strftime("%Y-%m")
+    )
+    assert result["active_users_by_month"][previous_month.strftime("%Y-%m")] == expected_previous_month_users
     assert len(result["active_users_by_month"]) == 12
+    assert result["total"] == 5
+    assert result["unattributed_count"] == 1
+    assert "anonymous" not in result["by_user"]
+    assert all(row.get("username") != "anonymous" for row in result["recent"])
+
+
+def test_activity_features_excludes_unattributed_events(monkeypatch):
+    now = dt.datetime.now().replace(microsecond=0).isoformat()
+    rows = [
+        {"timestamp": now, "username": "hol", "action": "nav:admin", "tab": "admin"},
+        {"timestamp": now, "username": "anonymous", "action": "dashboard:wip_split", "tab": "dashboard"},
+    ]
+    monkeypatch.setattr(admin, "jsonl_read", lambda *args, **kwargs: rows)
+
+    result = admin.activity_features(days=1, _admin={"role": "admin"})
+
+    assert result["feature_count"] == 1
+    assert result["features"][0]["feature"] == "nav"
+    assert result["features"][0]["users"] == ["hol"]
+    assert result["unattributed_count"] == 1
 
 
 def test_activity_summary_returns_up_to_3000_recent_events(monkeypatch, tmp_path):

@@ -132,6 +132,8 @@ export function FlowPlotlyChart({
   const axisXLabel = chartType === "bar_horizontal" ? yLabel : xLabel;
   const axisYLabel = chartType === "bar_horizontal" ? xLabel : yLabel;
   const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 9);
+  const markerOpacity = Math.max(0.05, Math.min(1, Number(cfg.marker_opacity ?? chart?.marker_opacity ?? 0.82)));
+  const lineWidth = Math.max(0.5, Math.min(8, Number(cfg.line_width ?? chart?.line_width ?? 2.3)));
   const isTrendScatter = Boolean(cfg.trend_grain || chart?.trend_grain);
   const emphasizeMarkers = Boolean(isTrendScatter || cfg.emphasize_markers || chart?.emphasize_markers);
   const useSvg = Boolean(cfg.use_svg || chart?.use_svg);
@@ -147,6 +149,15 @@ export function FlowPlotlyChart({
   // 저장 차트의 SHOW_LEGEND=false 계약. Template Report에서 공통 범례 블록을
   // 따로 둘 때 각 차트 내부의 중복 범례만 감춘다.
   const showLegend = cfg.show_legend !== false && chart?.show_legend !== false;
+  const showGrid = cfg.show_grid !== false && chart?.show_grid !== false;
+  const legendPosition = String(cfg.legend_position || chart?.legend_position || "bottom");
+  const yMin = numberOrNull(cfg.y_min ?? chart?.y_min);
+  const yMax = numberOrNull(cfg.y_max ?? chart?.y_max);
+  const yRange = yMin != null && yMax != null ? [yMin, yMax] : undefined;
+  const yScale = String(cfg.y_scale || chart?.y_scale || "linear") === "log" ? "log" : "linear";
+  const valueAxisIsX = chartType === "bar_horizontal";
+  const scaledRange = yRange?.map(value => yScale === "log" ? Math.log10(Math.max(value, 1e-300)) : value);
+  const boxPoints = String(cfg.box_points || chart?.box_points || "outliers");
   const fit = chart?.fit || chart?.fit_params || cfg.fit_params || null;
   const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
   const fitLabel = fitOk && Number.isFinite(Number(fit.r2)) ? `R²=${Number(fit.r2).toFixed(4)}` : "";
@@ -200,7 +211,7 @@ export function FlowPlotlyChart({
           hovertemplate: horizontal ? `${xLabel}: %{y}<br>${yLabel}: %{x}<br>n=%{customdata}<extra></extra>` : `${xLabel}: %{x}<br>${yLabel}: %{y}<br>n=%{customdata}<extra></extra>`,
           // 값이 한 종류인 막대는 한 가지 색으로 그린다 — 막대마다 색을 바꾸면
           // 이름표가 이미 하는 구분을 색이 또 하면서 크기 비교를 방해한다.
-          marker: { color: SERIES[0], opacity: 0.88 },
+          marker: { color: SERIES[0], opacity: markerOpacity },
         }],
       };
     }
@@ -232,8 +243,8 @@ export function FlowPlotlyChart({
           ...(rows.length && means.every((value) => value != null) ? { mean: means, boxmean: true } : {}),
           customdata: rows.map((row) => Number(row?.n || 0)),
           hovertemplate: `%{x}<br>${yLabel}<br>max %{upperfence}<br>q3 %{q3}<br>median %{median}<br>q1 %{q1}<br>min %{lowerfence}<br>n=%{customdata}<extra></extra>`,
-          marker: { color: seriesColor, opacity: 0.8, size: 7 },
-          line: { color: seriesColor, width: 1.5 },
+          marker: { color: seriesColor, opacity: markerOpacity, size: markerSize },
+          line: { color: seriesColor, width: Math.max(0.5,lineWidth*0.7) },
           fillcolor: lightenHex(seriesColor, 0.62),
         }],
       };
@@ -264,11 +275,11 @@ export function FlowPlotlyChart({
           text: rows.map((point) => hoverLines(point, xLabel, yLabel, colorBy)),
           hoverinfo: "text",
           customdata: rows,
-          boxpoints: "outliers",
+          boxpoints: boxPoints === "none" ? false : boxPoints,
           jitter: 0.2,
           pointpos: 0,
-          marker: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], opacity: 0.78, size: 7 },
-          line: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], width: 1.5 },
+          marker: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], opacity: markerOpacity, size: markerSize },
+          line: { color: name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], width: Math.max(0.5,lineWidth*0.7) },
           fillcolor: lightenHex(name === "missing" ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length], 0.62),
         })),
       };
@@ -297,12 +308,12 @@ export function FlowPlotlyChart({
         marker: {
           size: markerSize,
           color: emphasizeMarkers ? lightenHex(seriesColor) : seriesColor,
-          opacity: emphasizeMarkers ? 0.96 : missing ? 0.58 : 0.82,
+          opacity: emphasizeMarkers ? Math.max(markerOpacity,0.92) : missing ? Math.min(markerOpacity,0.58) : markerOpacity,
           line: emphasizeMarkers
             ? { color: dark ? "#6b7280" : "#374151", width: 1.3 }
             : { color: dark ? "#111111" : "#ffffff", width: 0.6 },
         },
-        line: { color: seriesColor, width: chartType === "line" ? 2.3 : 1.8 },
+        line: { color: seriesColor, width: chartType === "line" ? lineWidth : Math.max(0.5,lineWidth*0.78) },
       };
     });
     if (cubicFit) {
@@ -367,7 +378,7 @@ export function FlowPlotlyChart({
       columnCount: 0,
       rowCount: 0,
     };
-  }, [points, groups, boxStats, colorBy, colorMap, chartType, xLabel, yLabel, markerSize, dark, fitOk, fit, fitLabel, cubicFit, isTrendScatter, emphasizeMarkers, useSvg]);
+  }, [points, groups, boxStats, colorBy, colorMap, chartType, xLabel, yLabel, markerSize, markerOpacity, lineWidth, boxPoints, dark, fitOk, fit, fitLabel, cubicFit, isTrendScatter, emphasizeMarkers, useSvg]);
 
   const [highlightSelection, setHighlightSelection] = useState(null);
   useEffect(() => { setHighlightSelection(null); }, [points, chartType, colorBy, enableHighlight]);
@@ -435,11 +446,13 @@ export function FlowPlotlyChart({
             xaxis: {
               title: { text: axisXLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
               tickfont: { size: tickFontSize, color: fg },
+              ...(valueAxisIsX ? { type: yScale, ...(scaledRange ? { range: scaledRange } : {}) } : {}),
               showticklabels: !hideXTicks,
               // 상자는 범주축에 균등 배치 — 그래야 아래 통계표 열과 자리가 맞는다.
               ...(chartType === "box" && categoryArray?.length
                 ? { type: "category", categoryorder: "array", categoryarray: categoryArray }
                 : {}),
+              showgrid: showGrid,
               gridcolor: grid,
               zerolinecolor: grid,
               color: fg,
@@ -452,6 +465,8 @@ export function FlowPlotlyChart({
             yaxis: {
               title: { text: axisYLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
               tickfont: { size: tickFontSize, color: fg },
+              ...(!valueAxisIsX ? { type: yScale, ...(scaledRange ? { range: scaledRange } : {}) } : {}),
+              showgrid: showGrid,
               gridcolor: grid,
               zerolinecolor: grid,
               color: fg,
@@ -462,12 +477,13 @@ export function FlowPlotlyChart({
               automargin: true,
             },
           }),
-          legend: {
-            orientation: "h",
-            y: -0.22,
-            x: 0,
-            font: { size: 11, color: fg },
-          },
+          legend: legendPosition==="right"
+            ? {orientation:"v",x:1.02,y:1,xanchor:"left",yanchor:"top",font:{size:11,color:fg}}
+            : legendPosition==="top"
+              ? {orientation:"h",x:0,y:1.08,xanchor:"left",yanchor:"bottom",font:{size:11,color:fg}}
+              : legendPosition==="inside"
+                ? {orientation:"v",x:0.99,y:0.99,xanchor:"right",yanchor:"top",bgcolor:dark?"rgba(17,17,17,.75)":"rgba(255,255,255,.8)",font:{size:11,color:fg}}
+                : {orientation:"h",y:-0.22,x:0,font:{size:11,color:fg}},
           showlegend: showLegend && (colorBy ? true : legendCounts.length > 1),
           // 회귀 라벨은 그림 "안쪽" 오른쪽 위에 둔다 — 예전처럼 y=1.08 로 밖에
           // 내보내면 위 여백이 좁을 때 글자 윗줄이 카드에 잘려 나갔다.

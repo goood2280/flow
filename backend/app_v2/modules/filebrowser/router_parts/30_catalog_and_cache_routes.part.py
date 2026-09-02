@@ -162,6 +162,8 @@ class ChartBuilderSourceReq(BaseModel):
     runtime_root_lot_ids: list[str] = []
     runtime_wafer_ids: list[str] = []
     runtime_lot_wafer_pairs: list[dict[str, str]] = []
+    derived_columns: list[dict] = []
+    runtime_filters: list[dict] = []
 
 
 class ChartBuilderJoinReq(BaseModel):
@@ -183,6 +185,10 @@ class ChartBuilderRunReq(BaseModel):
 
 class ChartBuilderDefinitionReq(BaseModel):
     code: str
+
+
+class ChartBuilderPinReq(BaseModel):
+    pinned: bool = True
 
 
 class ChartBuilderAssistantReq(BaseModel):

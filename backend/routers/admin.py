@@ -1863,6 +1863,7 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
     active_users_by_day: dict[str, set[str]] = collections.defaultdict(set)
     active_users_by_month: dict[str, set[str]] = collections.defaultdict(set)
     filtered: list = []
+    unattributed_count = 0
     now = _dt.datetime.now()
     active_day_start = now.date() - _dt.timedelta(days=29)
     active_month_start_index = now.year * 12 + now.month - 12
@@ -1886,9 +1887,15 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
             active_users_by_month[dt.strftime("%Y-%m")].add(username)
         if dt < cutoff:
             continue
+        # `/api/*` 인증 미들웨어가 도입된 현재 요청은 반드시 실제 username 을 가진다.
+        # anonymous 는 인증 전 시기의 기록 또는 Request 없이 라우트를 직접 호출했던
+        # 과거 테스트 산출물이다. 원본 감사 파일에는 보존하되 사용자/기능 사용 통계와
+        # 최근 사용자 이벤트에서는 제외해 실제 익명 접근처럼 오해되지 않게 한다.
+        if not is_authenticated_user:
+            unattributed_count += 1
+            continue
         filtered.append(r)
-        u = username or "anonymous"
-        by_user[u] += 1
+        by_user[username] += 1
         a = (r.get("action") or "") or "(unknown)"
         by_action[a] += 1
         t = (r.get("tab") or "") or "(none)"
@@ -1907,6 +1914,7 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
     return {
         "window_days": days,
         "total": len(filtered),
+        "unattributed_count": unattributed_count,
         "by_user": dict(by_user.most_common(20)),
         "by_action": dict(by_action.most_common(30)),
         "by_tab": dict(by_tab.most_common()),
@@ -1938,6 +1946,7 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
     rows = list(jsonl_read(ACTIVITY_LOG, limit=0) or [])
     cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
     features: dict = {}
+    unattributed_count = 0
     for r in rows:
         ts = (r.get("timestamp") or r.get("time") or "").strip()
         try:
@@ -1947,6 +1956,10 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
         except Exception:
             continue
         if dt < cutoff:
+            continue
+        username = str(r.get("username") or r.get("actor") or "").strip()
+        if not username or username.lower() == "anonymous":
+            unattributed_count += 1
             continue
         a = (r.get("action") or "").strip()
         if not a:
@@ -1959,7 +1972,7 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
             "sample_actions": collections.Counter(),
         })
         ent["count"] += 1
-        ent["users"].add((r.get("username") or r.get("actor") or "anonymous") or "anonymous")
+        ent["users"].add(username)
         if ts < ent["first_seen"]:
             ent["first_seen"] = ts
         if ts > ent["last_seen"]:
@@ -1976,7 +1989,12 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
             "last_seen": v["last_seen"],
             "top_actions": dict(v["sample_actions"].most_common(5)),
         })
-    return {"window_days": days, "features": out, "feature_count": len(out)}
+    return {
+        "window_days": days,
+        "features": out,
+        "feature_count": len(out),
+        "unattributed_count": unattributed_count,
+    }
 
 
 # ── Base CSV editor (v8.5.2) ──

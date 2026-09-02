@@ -10,15 +10,44 @@ def chart_builder_parse(req: ChartBuilderDefinitionReq, request: Request):
 
 
 @router.get("/chart-builder/history")
-def chart_builder_history(request: Request, limit: int = Query(100, ge=1, le=200), q: str = Query("")):
-    """Return shared ChartBuilder code history for all authenticated engineers."""
-    _require_filebrowser_user(request)
-    entries = _chart_builder_history_entries()
+def chart_builder_history(request: Request, limit: int = Query(CHART_BUILDER_VISIBLE_RECENT, ge=1, le=CHART_BUILDER_VISIBLE_RECENT), q: str = Query("")):
+    """Return every pinned chart followed by the rolling recent shared history."""
+    from core.auth import is_page_manager
+
+    me = _require_filebrowser_user(request)
+    entries = _chart_builder_visible_history_entries(recent_limit=limit)
     query = _cache_safe_text(q, 200).casefold()
     if query:
         entries = [entry for entry in entries if query in json.dumps(entry, ensure_ascii=False).casefold()]
-    entries = entries[-max(1, min(200, int(limit or 100))):]
-    return {"ok": True, "history": list(reversed(entries)), "limit": limit}
+    return {
+        "ok": True,
+        "history": entries,
+        "recent_limit": limit,
+        "pinned_count": sum(1 for entry in entries if entry.get("pinned")),
+        "recent_count": sum(1 for entry in entries if not entry.get("pinned")),
+        "can_manage": bool(is_page_manager(me, "chartbuilder")),
+    }
+
+
+@router.post("/chart-builder/history/{history_id}/pin")
+def chart_builder_history_pin(history_id: str, req: ChartBuilderPinReq, request: Request):
+    """Pin/unpin one shared chart. Permission is enforced server-side."""
+    from core.auth import is_page_manager
+
+    me = current_user(request)
+    if not is_page_manager(me, "chartbuilder"):
+        raise HTTPException(403, "Admin or page manager (chartbuilder) only")
+    try:
+        entry = _set_chart_builder_pin(
+            history_id,
+            pinned=bool(req.pinned),
+            username=str(me.get("username") or ""),
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "저장 차트를 찾지 못했습니다.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "chart": entry}
 
 
 @router.get("/chart-builder/radius-layout")
@@ -43,6 +72,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             raise HTTPException(400, f"중복 query id: {source_id}")
         files: list[Path] = []
         source_meta: dict = {}
+        hidden_runtime_columns: list[str] = []
+        hidden_inline_columns: list[str] = []
         source_root = str(source.root or "").strip()
         if source_root.upper() == YIELD_SHOT_ROOT:
             try:
@@ -104,7 +135,11 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     if len(all_columns) > 120:
                         warnings.append(f"{source_id}: 전체 {len(all_columns)}열 중 앞 120열만 조회했습니다. SELECT 열을 지정해 주세요.")
                 visible_selected = list(selected)
-                hidden_inline_columns: list[str] = []
+                for requested_column in _chart_builder_runtime_required_columns(source):
+                    actual_column = _chart_builder_runtime_column(all_columns, requested_column)
+                    if actual_column and actual_column not in selected:
+                        selected.append(actual_column)
+                        hidden_runtime_columns.append(actual_column)
                 if _chart_builder_is_inline_root(source_root):
                     for column in _chart_builder_inline_required_columns(all_columns):
                         if column not in selected:
@@ -129,9 +164,6 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                         df, source, source_id, warnings,
                     )
                     source_meta.update(inline_meta)
-                    removable = [column for column in hidden_inline_columns if column in df.columns]
-                    if removable:
-                        df = df.drop(removable)
                     mapping_status = source_meta.get("inline_coordinate_mapping") or {}
                     if mapping_status.get("applied"):
                         display_columns = list(visible_selected)
@@ -143,6 +175,13 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                 raise
             except Exception as exc:
                 raise HTTPException(400, f"{source_id} SQL 실행 실패: {exc}") from exc
+        df = _chart_builder_apply_derived_filters(df, source, source_id, warnings)
+        removable = [
+            column for column in dict.fromkeys([*hidden_runtime_columns, *hidden_inline_columns])
+            if column in df.columns
+        ]
+        if removable:
+            df = df.drop(removable)
         truncated = df.height > max_rows
         if truncated:
             df = df.head(max_rows)
@@ -165,6 +204,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
             "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
             "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
+            "derived_columns": _chart_builder_derived_specs(source.derived_columns),
+            "runtime_filters": _chart_builder_filter_specs(source.runtime_filters),
             **source_meta,
         })
 

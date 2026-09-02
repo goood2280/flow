@@ -31,6 +31,13 @@ MAX_ROWS = 500
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolated_template_report_background(tmp_path, monkeypatch):
+    """운영 data_root의 실제 기본 배경이 PPTX 테스트 결과에 섞이지 않게 한다."""
+    monkeypatch.setattr(template_report, "SETTINGS_FILE", tmp_path / "template_report_settings.json")
+    monkeypatch.setattr(template_report, "BACKGROUND_FILE", tmp_path / "template_report_background.png")
+
+
 def _seed_chart_history(tmp_path, monkeypatch):
     history_path = tmp_path / "chart_builder_history.jsonl"
     monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: history_path)
@@ -344,6 +351,46 @@ def test_template_pptx_is_wide_and_places_chart_image(tmp_path, monkeypatch):
     appendix_tables = [shape.table for shape in deck.slides[-1].shapes if shape.has_table]
     assert appendix_tables
     assert appendix_tables[0].cell(1, 2).text == "chart_demo_001"
+
+
+def test_pasted_background_is_saved_and_used_on_every_pptx_slide(tmp_path, monkeypatch):
+    saved = _save_demo_template(tmp_path, monkeypatch)
+
+    stored = template_report.save_template_report_background(
+        template_report.BackgroundSaveReq(data_url=_png_data_url()),
+        {"username": "report-manager", "role": "admin"},
+    )
+    background = stored["settings"]["background"]
+    assert background["configured"] is True
+    assert background["data_url"].startswith("data:image/png;base64,")
+    assert background["updated_by"] == "report-manager"
+    with Image.open(template_report.BACKGROUND_FILE) as image:
+        assert image.format == "PNG"
+
+    response = template_report.export_pptx(
+        template_report.ExportReq(
+            template_id=saved["id"],
+            images=[template_report.ExportImageReq(
+                page_index=0,
+                position=1,
+                chart_id="chart_demo_001",
+                data_url=_png_data_url(),
+            )],
+        ),
+        {"username": "viewer", "role": "user"},
+    )
+    deck = Presentation(io.BytesIO(response.body))
+    picture_counts = [len([shape for shape in slide.shapes if shape.shape_type == 13]) for slide in deck.slides]
+    assert picture_counts == [1, 2, 1]
+    for slide in deck.slides:
+        background_picture = next(shape for shape in slide.shapes if shape.shape_type == 13)
+        assert background_picture.width >= deck.slide_width or background_picture.height >= deck.slide_height
+
+    removed = template_report.delete_template_report_background(
+        {"username": "report-manager", "role": "admin"},
+    )
+    assert removed["settings"]["background"]["configured"] is False
+    assert not template_report.BACKGROUND_FILE.exists()
 
 
 def test_template_freeform_layout_is_saved_and_used_by_pptx(tmp_path, monkeypatch):

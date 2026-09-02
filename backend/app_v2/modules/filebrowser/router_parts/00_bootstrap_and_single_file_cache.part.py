@@ -70,7 +70,7 @@ from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
     jsonl_append, jsonl_read, jsonl_trim, csv_response, safe_filename,
     DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
-    data_files_limited, source_data_files, load_json, save_json,
+    data_files_limited, source_data_files, load_json, save_json, atomic_write_text,
 )
 from app_v2.shared.contracts import FileVersionMeta
 
@@ -164,7 +164,11 @@ FILEBROWSER_AI_SQL_FEEDBACK_FILE = "filebrowser_ai_sql_feedback.jsonl"
 FILEBROWSER_AI_SQL_HISTORY_FILE = "filebrowser_ai_sql_history.jsonl"
 FILEBROWSER_SQL_EXECUTION_HISTORY_FILE = "filebrowser_sql_execution_history.jsonl"
 CHART_BUILDER_HISTORY_FILE = "chart_builder_history.jsonl"
+CHART_BUILDER_PINS_FILE = "chart_builder_pins.json"
+CHART_BUILDER_VISIBLE_RECENT = 500
+CHART_BUILDER_RETAIN_RECENT = 1000
 _CHART_BUILDER_HISTORY_LOCK = threading.Lock()
+_CHART_BUILDER_PIN_LOCK = threading.Lock()
 _CHART_BUILDER_CACHE_LOCK = threading.Lock()
 _CHART_BUILDER_RESULT_CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
 try:

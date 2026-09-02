@@ -555,6 +555,33 @@ def _chart_builder_history_path() -> Path:
     return PATHS.data_root / CHART_BUILDER_HISTORY_FILE
 
 
+def _chart_builder_pins_path() -> Path:
+    # history path를 테스트/운영에서 다른 root로 바꾸면 pin registry도 반드시
+    # 같은 root를 따라가야 서로 다른 환경의 고정 상태가 섞이지 않는다.
+    return _chart_builder_history_path().with_name(CHART_BUILDER_PINS_FILE)
+
+
+def _chart_builder_pins() -> dict[str, dict]:
+    raw = load_json(_chart_builder_pins_path(), {}) or {}
+    values = raw.get("pins") if isinstance(raw, dict) else {}
+    if not isinstance(values, dict):
+        return {}
+    pins: dict[str, dict] = {}
+    for raw_id, raw_meta in values.items():
+        history_id = _cache_safe_text(raw_id, 120)
+        if not history_id or not isinstance(raw_meta, dict):
+            continue
+        pins[history_id] = {
+            "pinned_at": _cache_safe_text(raw_meta.get("pinned_at"), 80),
+            "pinned_by": _cache_safe_text(raw_meta.get("pinned_by"), 80),
+        }
+    return pins
+
+
+def _save_chart_builder_pins(pins: dict[str, dict]) -> None:
+    save_json(_chart_builder_pins_path(), {"version": 1, "pins": pins})
+
+
 def _chart_builder_name_base(value: dict | ChartBuilderRunReq) -> str:
     """Return an engineer-facing base name for a saved chart."""
     if isinstance(value, dict):
@@ -588,12 +615,13 @@ def _chart_builder_unique_name(base: str, used: set[str]) -> str:
 
 
 def _chart_builder_history_entries() -> list[dict]:
-    """Return chronological history with unique names, including legacy rows."""
+    """Return chronological history with unique names and server-owned pin metadata."""
     entries = jsonl_read(
         _chart_builder_history_path(),
-        limit=1000,
+        limit=0,
         filter_fn=lambda entry: isinstance(entry, dict) and entry.get("event") == "history",
     )
+    pins = _chart_builder_pins()
     used = {
         str(entry.get("history_id") or "").strip().casefold()
         for entry in entries
@@ -604,9 +632,86 @@ def _chart_builder_history_entries() -> list[dict]:
         row = dict(entry)
         name = _chart_builder_unique_name(_chart_builder_name_base(row), used)
         row["name"] = name
+        history_id = str(row.get("history_id") or "")
+        pin = pins.get(history_id) or {}
+        row.update({
+            "pinned": bool(pin),
+            "pinned_at": str(pin.get("pinned_at") or ""),
+            "pinned_by": str(pin.get("pinned_by") or ""),
+        })
         used.add(name.casefold())
         normalized.append(row)
     return normalized
+
+
+def _chart_builder_visible_history_entries(*, recent_limit: int = CHART_BUILDER_VISIBLE_RECENT) -> list[dict]:
+    """Pinned rows first, followed by newest unpinned rows.
+
+    Pinned rows do not consume the rolling recent allowance.  This is shared by
+    ChartBuilder and Template Report so both screens expose the same catalog.
+    """
+    entries = _chart_builder_history_entries()
+    pinned = [entry for entry in entries if entry.get("pinned")]
+    pinned.sort(
+        key=lambda entry: str(entry.get("pinned_at") or entry.get("timestamp") or ""),
+        reverse=True,
+    )
+    recent = [entry for entry in entries if not entry.get("pinned")]
+    recent = list(reversed(recent[-max(1, min(CHART_BUILDER_VISIBLE_RECENT, int(recent_limit or CHART_BUILDER_VISIBLE_RECENT))):]))
+    return [*pinned, *recent]
+
+
+def _set_chart_builder_pin(
+    history_id: str,
+    *,
+    pinned: bool,
+    username: str,
+) -> dict:
+    chart_id = _cache_safe_text(history_id, 120)
+    if not chart_id:
+        raise ValueError("Chart ID가 비어 있습니다.")
+    if not any(str(entry.get("history_id") or "") == chart_id for entry in _chart_builder_history_entries()):
+        raise KeyError(chart_id)
+    with _CHART_BUILDER_PIN_LOCK:
+        pins = _chart_builder_pins()
+        current = pins.get(chart_id) or {}
+        if not pinned:
+            pins.pop(chart_id, None)
+        else:
+            pins[chart_id] = {
+                "pinned_at": str(current.get("pinned_at") or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                "pinned_by": _cache_safe_text(current.get("pinned_by") or username, 80) or "system",
+            }
+        _save_chart_builder_pins(pins)
+    return next(entry for entry in _chart_builder_history_entries() if str(entry.get("history_id") or "") == chart_id)
+
+
+def _trim_chart_builder_history() -> None:
+    """Retain every pinned chart plus a bounded rolling unpinned history."""
+    entries = jsonl_read(
+        _chart_builder_history_path(),
+        limit=0,
+        filter_fn=lambda entry: isinstance(entry, dict) and entry.get("event") == "history",
+    )
+    if not entries:
+        return
+    pinned_ids = set(_chart_builder_pins())
+    unpinned_indexes = [
+        index for index, entry in enumerate(entries)
+        if str(entry.get("history_id") or "") not in pinned_ids
+    ]
+    keep_indexes = set(unpinned_indexes[-CHART_BUILDER_RETAIN_RECENT:])
+    keep_indexes.update(
+        index for index, entry in enumerate(entries)
+        if str(entry.get("history_id") or "") in pinned_ids
+    )
+    if len(keep_indexes) == len(entries):
+        return
+    kept = [entry for index, entry in enumerate(entries) if index in keep_indexes]
+    atomic_write_text(
+        _chart_builder_history_path(),
+        "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in kept),
+    )
 
 
 def _chart_builder_model_dict(value) -> dict:
@@ -676,6 +781,124 @@ def _chart_builder_runtime_pairs(values) -> list[dict[str, str]]:
     return out
 
 
+def _chart_builder_derived_specs(values) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in (values if isinstance(values, (list, tuple)) else []):
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "").strip()[:80]
+        key = name.casefold()
+        columns = [str(column).strip()[:120] for column in (raw.get("columns") or []) if str(column).strip()]
+        separator = str(raw.get("separator") if raw.get("separator") is not None else "_")[:8]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and columns and len(columns) <= 12 and key not in seen:
+            seen.add(key)
+            out.append({"name": name, "columns": columns, "separator": separator})
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _chart_builder_filter_specs(values) -> list[dict]:
+    out: list[dict] = []
+    allowed = {"in", "not_in", "equals", "not_equals", "contains", "not_contains", "is_blank", "not_blank"}
+    aliases = {"=": "equals", "==": "equals", "eq": "equals", "!=": "not_equals", "ne": "not_equals", "notin": "not_in", "blank": "is_blank", "is_not_blank": "not_blank"}
+    for raw in (values if isinstance(values, (list, tuple)) else []):
+        if not isinstance(raw, dict):
+            continue
+        column = str(raw.get("column") or "").strip()[:120]
+        operator = re.sub(r"[\s-]+", "_", str(raw.get("operator") or "in").strip().casefold())
+        operator = aliases.get(operator, operator)
+        clean: list[str] = []
+        seen: set[str] = set()
+        raw_values = raw.get("values") or []
+        if isinstance(raw_values, str):
+            raw_values = re.split(r"[,\n]+", raw_values)
+        for value in raw_values:
+            item = str(value or "").strip()[:160]
+            key = item.casefold()
+            if item and key not in seen:
+                seen.add(key)
+                clean.append(item)
+            if len(clean) >= 200:
+                break
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column) and operator in allowed and (clean or operator in {"is_blank", "not_blank"}):
+            out.append({"column": column, "operator": operator, "values": clean})
+        if len(out) >= 50:
+            break
+    return out
+
+
+def _chart_builder_runtime_required_columns(source: ChartBuilderSourceReq) -> list[str]:
+    required: list[str] = []
+    derived = _chart_builder_derived_specs(source.derived_columns)
+    derived_names = {item["name"].casefold() for item in derived}
+    for item in derived:
+        for column in item["columns"]:
+            if column.casefold() not in derived_names and column.casefold() not in {value.casefold() for value in required}:
+                required.append(column)
+    for item in _chart_builder_filter_specs(source.runtime_filters):
+        column = item["column"]
+        if column.casefold() not in derived_names and column.casefold() not in {value.casefold() for value in required}:
+            required.append(column)
+    return required
+
+
+def _chart_builder_filter_sql_expression(columns: list[str], source: ChartBuilderSourceReq, requested: str) -> str:
+    direct = _chart_builder_runtime_column(columns, requested)
+    if direct:
+        return f"CAST({duckdb_engine.quote_ident(direct)} AS VARCHAR)"
+    available = {str(column).casefold(): str(column) for column in columns}
+    derived_expressions: dict[str, str] = {}
+    for item in _chart_builder_derived_specs(source.derived_columns):
+        expressions: list[str] = []
+        valid = True
+        for requested_column in item["columns"]:
+            raw_column = available.get(requested_column.casefold())
+            nested = derived_expressions.get(requested_column.casefold())
+            if raw_column:
+                expressions.append(f"COALESCE(CAST({duckdb_engine.quote_ident(raw_column)} AS VARCHAR), '')")
+            elif nested:
+                expressions.append(f"COALESCE(({nested}), '')")
+            else:
+                valid = False
+                break
+        if valid:
+            separator = duckdb_engine.sql_literal(item["separator"])
+            derived_expressions[item["name"].casefold()] = f"CONCAT_WS({separator}, {', '.join(expressions)})"
+    return derived_expressions.get(str(requested or "").casefold(), "")
+
+
+def _chart_builder_generic_filter_where(
+    columns: list[str], source: ChartBuilderSourceReq, source_id: str, warnings: list[str],
+) -> str:
+    clauses: list[str] = []
+    for item in _chart_builder_filter_specs(source.runtime_filters):
+        expression = _chart_builder_filter_sql_expression(columns, source, item["column"])
+        if not expression:
+            warnings.append(f"{source_id}: 필터 열({item['column']})이 없어 적용하지 않았습니다.")
+            continue
+        normalized = f"UPPER(TRIM(COALESCE(({expression}), '')))"
+        values = [value.upper() for value in item["values"]]
+        operator = item["operator"]
+        if operator in {"in", "equals", "not_in", "not_equals"}:
+            literals = ", ".join(duckdb_engine.sql_literal(value) for value in values)
+            clause = f"{normalized} IN ({literals})"
+            if operator in {"not_in", "not_equals"}:
+                clause = f"NOT ({clause})"
+        elif operator in {"contains", "not_contains"}:
+            pieces = [f"STRPOS({normalized}, {duckdb_engine.sql_literal(value)}) > 0" for value in values]
+            clause = f"({' OR '.join(pieces)})"
+            if operator == "not_contains":
+                clause = f"NOT ({clause})"
+        elif operator == "is_blank":
+            clause = f"{normalized} = ''"
+        else:
+            clause = f"{normalized} <> ''"
+        clauses.append(clause)
+    return " AND ".join(f"({clause})" for clause in clauses)
+
+
 def _chart_builder_runtime_column(columns: list[str], requested: str) -> str:
     folded = str(requested or "").strip().casefold()
     return next((column for column in columns if str(column).casefold() == folded), "")
@@ -686,6 +909,7 @@ def _chart_builder_runtime_where(
 ) -> str:
     clauses: list[str] = []
     pairs = _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs)
+    pairs_applied = False
     if pairs:
         root_column = _chart_builder_runtime_column(columns, "root_lot_id")
         wafer_column = _chart_builder_runtime_column(columns, "wafer_id")
@@ -699,31 +923,37 @@ def _chart_builder_runtime_where(
                 f"AND {wafer_expr} = {duckdb_engine.sql_literal(pair['wafer_id'].upper())})"
                 for pair in pairs
             ]
-            return f"({' OR '.join(pair_clauses)})"
-        missing = ", ".join(name for name, column in (("root_lot_id", root_column), ("wafer_id", wafer_column)) if not column)
-        warnings.append(f"{source_id}: 연동표 조합 필터 열({missing})이 없어 Root Lot/Wafer 개별 필터로 적용했습니다.")
-    for requested, values, label in (
-        ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
-        ("wafer_id", source.runtime_wafer_ids, "Wafer"),
-    ):
-        clean = _chart_builder_runtime_values(values)
-        if not clean:
-            continue
-        column = _chart_builder_runtime_column(columns, requested)
-        if not column:
-            warnings.append(f"{source_id}: {label} 공통 필터 열({requested})이 없어 이 Query에는 적용하지 않았습니다.")
-            continue
-        quoted = duckdb_engine.quote_ident(column)
-        normalized = f"UPPER(TRIM(CAST({quoted} AS VARCHAR)))"
-        if requested == "wafer_id":
-            for pattern in ("^#\\s*", "^WAFER\\s*", "^WF\\s*", "^W\\s*"):
-                normalized = f"REGEXP_REPLACE({normalized}, '{pattern}', '')"
-            clean = [re.sub(r"^(?:#|WAFER|WF|W)\s*", "", value, flags=re.I) for value in clean]
-            clean = [value for value in clean if value]
+            clauses.append(f"({' OR '.join(pair_clauses)})")
+            pairs_applied = True
+        if not pairs_applied:
+            missing = ", ".join(name for name, column in (("root_lot_id", root_column), ("wafer_id", wafer_column)) if not column)
+            warnings.append(f"{source_id}: 연동표 조합 필터 열({missing})이 없어 Root Lot/Wafer 개별 필터로 적용했습니다.")
+    if not pairs_applied:
+        for requested, values, label in (
+            ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
+            ("wafer_id", source.runtime_wafer_ids, "Wafer"),
+        ):
+            clean = _chart_builder_runtime_values(values)
             if not clean:
                 continue
-        literals = ", ".join(duckdb_engine.sql_literal(value.upper()) for value in clean)
-        clauses.append(f"{normalized} IN ({literals})")
+            column = _chart_builder_runtime_column(columns, requested)
+            if not column:
+                warnings.append(f"{source_id}: {label} 공통 필터 열({requested})이 없어 이 Query에는 적용하지 않았습니다.")
+                continue
+            quoted = duckdb_engine.quote_ident(column)
+            normalized = f"UPPER(TRIM(CAST({quoted} AS VARCHAR)))"
+            if requested == "wafer_id":
+                for pattern in ("^#\\s*", "^WAFER\\s*", "^WF\\s*", "^W\\s*"):
+                    normalized = f"REGEXP_REPLACE({normalized}, '{pattern}', '')"
+                clean = [re.sub(r"^(?:#|WAFER|WF|W)\s*", "", value, flags=re.I) for value in clean]
+                clean = [value for value in clean if value]
+                if not clean:
+                    continue
+            literals = ", ".join(duckdb_engine.sql_literal(value.upper()) for value in clean)
+            clauses.append(f"{normalized} IN ({literals})")
+    generic = _chart_builder_generic_filter_where(columns, source, source_id, warnings)
+    if generic:
+        clauses.append(generic)
     return " AND ".join(f"({clause})" for clause in clauses)
 
 
@@ -744,6 +974,7 @@ def _chart_builder_filter_frame(
         else:
             warnings.append(f"{source_id}: 최근 {runtime_days}일 필터 열({requested_date_column})이 없어 원래 조건으로 조회했습니다.")
     pairs = _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs)
+    pairs_applied = False
     if pairs:
         root_column = _chart_builder_runtime_column(columns, "root_lot_id")
         wafer_column = _chart_builder_runtime_column(columns, "wafer_id")
@@ -755,29 +986,82 @@ def _chart_builder_filter_frame(
                 clause = (root_expr == pair["root_lot_id"].upper()) & (wafer_expr == pair["wafer_id"].upper())
                 pair_filter = clause if pair_filter is None else pair_filter | clause
             if pair_filter is not None:
-                return out.filter(pair_filter)
+                out = out.filter(pair_filter)
+                pairs_applied = True
         else:
             missing = ", ".join(name for name, column in (("root_lot_id", root_column), ("wafer_id", wafer_column)) if not column)
             warnings.append(f"{source_id}: 연동표 조합 필터 열({missing})이 없어 Root Lot/Wafer 개별 필터로 적용했습니다.")
-    for requested, values, label in (
-        ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
-        ("wafer_id", source.runtime_wafer_ids, "Wafer"),
-    ):
-        clean = _chart_builder_runtime_values(values)
-        if not clean:
-            continue
-        column = _chart_builder_runtime_column(columns, requested)
-        if not column:
-            warnings.append(f"{source_id}: {label} 공통 필터 열({requested})이 없어 이 Query에는 적용하지 않았습니다.")
-            continue
-        expr = pl.col(column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase()
-        if requested == "wafer_id":
-            expr = expr.str.replace(r"^(?:#|WAFER|WF|W)\s*", "")
-            clean = [re.sub(r"^(?:#|WAFER|WF|W)\s*", "", value, flags=re.I) for value in clean]
-            clean = [value for value in clean if value]
+    if not pairs_applied:
+        for requested, values, label in (
+            ("root_lot_id", source.runtime_root_lot_ids, "Root Lot"),
+            ("wafer_id", source.runtime_wafer_ids, "Wafer"),
+        ):
+            clean = _chart_builder_runtime_values(values)
             if not clean:
                 continue
-        out = out.filter(expr.is_in([value.upper() for value in clean]))
+            column = _chart_builder_runtime_column(columns, requested)
+            if not column:
+                warnings.append(f"{source_id}: {label} 공통 필터 열({requested})이 없어 이 Query에는 적용하지 않았습니다.")
+                continue
+            expr = pl.col(column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase()
+            if requested == "wafer_id":
+                expr = expr.str.replace(r"^(?:#|WAFER|WF|W)\s*", "")
+                clean = [re.sub(r"^(?:#|WAFER|WF|W)\s*", "", value, flags=re.I) for value in clean]
+                clean = [value for value in clean if value]
+                if not clean:
+                    continue
+            out = out.filter(expr.is_in([value.upper() for value in clean]))
+    return out
+
+
+def _chart_builder_apply_derived_filters(
+    frame: pl.DataFrame, source: ChartBuilderSourceReq, source_id: str, warnings: list[str],
+) -> pl.DataFrame:
+    """파생열을 만든 뒤 같은 규칙으로 필터한다. Reformatter/가상 DB도 이 경로를 공유한다."""
+    out = frame
+    for item in _chart_builder_derived_specs(source.derived_columns):
+        actual: list[str] = []
+        for requested in item["columns"]:
+            column = _chart_builder_runtime_column(list(out.columns), requested)
+            if not column:
+                warnings.append(f"{source_id}: 파생열 {item['name']}의 원본 열({requested})이 없어 만들지 않았습니다.")
+                actual = []
+                break
+            actual.append(column)
+        if not actual:
+            continue
+        expression = pl.concat_str(
+            [pl.col(column).cast(pl.String, strict=False).fill_null("") for column in actual],
+            separator=item["separator"],
+        ).alias(item["name"])
+        out = out.with_columns(expression)
+
+    for item in _chart_builder_filter_specs(source.runtime_filters):
+        column = _chart_builder_runtime_column(list(out.columns), item["column"])
+        if not column:
+            warnings.append(f"{source_id}: 필터 열({item['column']})이 없어 적용하지 않았습니다.")
+            continue
+        expression = pl.col(column).cast(pl.String, strict=False).fill_null("").str.strip_chars().str.to_uppercase()
+        values = [value.upper() for value in item["values"]]
+        operator = item["operator"]
+        if operator in {"in", "equals", "not_in", "not_equals"}:
+            condition = expression.is_in(values)
+            if operator in {"not_in", "not_equals"}:
+                condition = ~condition
+        elif operator in {"contains", "not_contains"}:
+            condition = None
+            for value in values:
+                piece = expression.str.contains(value, literal=True)
+                condition = piece if condition is None else condition | piece
+            if condition is None:
+                continue
+            if operator == "not_contains":
+                condition = ~condition
+        elif operator == "is_blank":
+            condition = expression == ""
+        else:
+            condition = expression != ""
+        out = out.filter(condition)
     return out
 
 
@@ -1133,11 +1417,10 @@ def _record_chart_builder_history(*, username: str, req: ChartBuilderRunReq, res
             "row_count": int(joined.get("row_count") or 0),
             "warnings": [str(item)[:500] for item in (result.get("warnings") or [])[:20]],
         }
-        jsonl_append(_chart_builder_history_path(), entry, max_lines=1000)
-        try:
-            jsonl_trim(_chart_builder_history_path(), 1000)
-        except Exception:
-            pass
+        # 고정 차트는 최근 이력 한도와 무관하게 남아야 하므로 일반 tail trim을
+        # 쓰지 않는다. 서버가 고정 전체 + 최근 이력만 골라 원자적으로 정리한다.
+        jsonl_append(_chart_builder_history_path(), entry, max_lines=None)
+        _trim_chart_builder_history()
     return entry
 
 
@@ -1146,7 +1429,7 @@ _CHART_ASSISTANT_TYPES = {
 }
 _CHART_ASSISTANT_FIELDS = {
     "type", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
-    "color_rules", "color_else",
+    "color_rules", "color_else", "y_scale",
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
 _CHART_ASSISTANT_JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
@@ -1295,6 +1578,12 @@ def _chart_assistant_deterministic_operations(
     highlight_context = "highlight" in folded or "하이라이트" in folded or "강조 선택" in folded
     if highlight_context:
         set_chart("highlight", not any(word in folded for word in ("없애", "해제", "끄기", "빼줘")))
+    y_scale_context = any(word in folded for word in ("y축", "y axis", "yscale", "y scale", "로그", "log", "linear", "선형"))
+    if y_scale_context:
+        if any(word in folded for word in ("로그", "log")):
+            set_chart("y_scale", "log")
+        elif any(word in folded for word in ("linear", "선형")):
+            set_chart("y_scale", "linear")
 
     join_context = "join" in folded or "조인" in folded
     if join_context:
@@ -1321,7 +1610,7 @@ def _chart_assistant_llm_operations(
         system = """You edit an existing Flow ChartBuilder definition by returning a minimal patch.
 Never rewrite unrelated settings and never invent a column, query id, or join.
 Allowed operations:
-- {scope:'chart', field:type|x|y|color|trellis|width|height|highlight|show_legend|color_rules|color_else, value:any}
+- {scope:'chart', field:type|x|y|color|trellis|width|height|highlight|show_legend|color_rules|color_else|y_scale, value:any}
 - {scope:'join', index:zero-based integer, field:left|right|left_on|right_on|how, value:any}
 If the request is ambiguous, return no operations and ask one short clarification in message.
 For a solid color set chart color='custom', color_rules=[], and color_else to the requested CSS color.
@@ -1418,6 +1707,11 @@ def _chart_assistant_apply_operations(
                     continue
             elif field in {"highlight", "show_legend"}:
                 value = value if isinstance(value, bool) else str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+            elif field == "y_scale":
+                value = str(value or "").strip().casefold()
+                if value not in {"linear", "log"}:
+                    warnings.append("Y축 Scale은 linear 또는 log여야 합니다.")
+                    continue
             elif field == "color_rules":
                 if not isinstance(value, list):
                     warnings.append("색상 규칙은 목록 형식이어야 합니다.")

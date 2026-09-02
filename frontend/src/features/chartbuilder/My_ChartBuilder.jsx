@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import BoxStatsTable from "../../components/BoxStatsTable";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
+import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import TegValueWaferMap from "../../components/TegValueWaferMap";
 import { toast } from "../../components/Toast";
 import { postJson, sf } from "../../lib/api";
 import { boxBucketsFromPoints, boxStatsAlignment } from "../../lib/boxStats";
 import { chartColorMap as buildChartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
 import { chartColorListRules, chartColorListTextFromRules, parseChartColorList, partitionChartColorRules } from "../../lib/chartColorList";
+import { canManagePage } from "../../lib/permissions";
 
 const card={border:"1px solid var(--border)",borderRadius:10,background:"var(--bg-secondary)",padding:14};
 const input={width:"100%",boxSizing:"border-box",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)",padding:"7px 9px",fontSize:13};
@@ -58,7 +60,32 @@ const JOIN_HOWS=[
   {how:"semi",short:"오른쪽에 있는 왼쪽 행만",desc:"오른쪽에 key 가 있는 왼쪽 행만 남기고, 오른쪽 열은 붙이지 않습니다. 값은 필요 없고 '오른쪽에 존재하는가'로 거르기만 할 때 씁니다(행이 늘지 않습니다)."},
   {how:"anti",short:"오른쪽에 없는 왼쪽 행만",desc:"semi 의 반대로, 오른쪽에 key 가 없는 왼쪽 행만 남깁니다. 매칭 실패분을 뽑아 원인을 볼 때 씁니다."},
 ];
-function newSource(index){return{id:`q${index}`,root:"",product:"",sql:"",select_cols:"",apply_reformatter:false,reformatter_items:"",runtime_recent_days:"",runtime_date_column:"",runtime_root_lot_ids:[],runtime_wafer_ids:[],runtime_lot_wafer_pairs:[]};}
+const DERIVED_GRID_COLUMNS=["name","columns","separator"];
+const FILTER_GRID_COLUMNS=["column","operator","values"];
+const DERIVED_GRID_MAX_ROWS=20;
+const FILTER_GRID_MAX_ROWS=50;
+const AUTO_REPORT_PRESETS=[
+  {key:"box",label:"Box",desc:"범주별 분포와 통계표"},
+  {key:"trend",label:"Trend",desc:"시간 순서 shot 추이"},
+  {key:"wafer_map",label:"WF MAP",desc:"shot 좌표 wafer 분포"},
+];
+function normalizeDerivedRows(rows){return normalizeSpreadsheetRows(rows,DERIVED_GRID_COLUMNS,{minRows:4,maxRows:DERIVED_GRID_MAX_ROWS});}
+function normalizeFilterRows(rows){return normalizeSpreadsheetRows(rows,FILTER_GRID_COLUMNS,{minRows:4,maxRows:FILTER_GRID_MAX_ROWS});}
+function cleanDerivedColumns(rows){
+  return(rows||[]).map(row=>({
+    name:text(row?.name).trim(),
+    columns:listValues(row?.columns),
+    separator:row?.separator==null||text(row.separator)===""?"_":text(row.separator).slice(0,8),
+  })).filter(row=>row.name&&row.columns.length).slice(0,DERIVED_GRID_MAX_ROWS);
+}
+function cleanRuntimeFilters(rows){
+  return(rows||[]).map(row=>({
+    column:text(row?.column).trim(),
+    operator:text(row?.operator).trim().toLowerCase().replace(/[\s-]+/g,"_")||"in",
+    values:listValues(row?.values),
+  })).filter(row=>row.column&&(row.values.length||["is_blank","not_blank","blank","is_not_blank"].includes(row.operator))).slice(0,FILTER_GRID_MAX_ROWS);
+}
+function newSource(index){return{id:`q${index}`,root:"",product:"",sql:"",select_cols:"",apply_reformatter:false,reformatter_items:"",runtime_recent_days:"",runtime_date_column:"",runtime_root_lot_ids:[],runtime_wafer_ids:[],runtime_lot_wafer_pairs:[],derived_columns:normalizeDerivedRows([]),runtime_filters:normalizeFilterRows([])};}
 // 시간 창은 저장 차트의 기본값이고, Template Report의 명시적 실행 컨텍스트가 이번 실행에만 덮어쓸 수 있다.
 const DEFAULT_DATE_COLUMN="tkout_time";
 function recentDaysValue(source){const days=Number(text(source?.runtime_recent_days).trim());return Number.isFinite(days)&&days>0?Math.min(3650,Math.round(days)):0;}
@@ -103,6 +130,8 @@ TABLE = INLINE
 PRODUCT = PRODA
 SQL = SELECT root_lot_id, wafer_id, item_id, value
       WHERE item_id = 'CD1'
+DERIVE = lot_wafer | columns=root_lot_id,wafer_id | separator=_
+FILTER = lot_wafer | operator=in | values=A1234_1,A1234_2
 
 Q2
 TABLE = ET
@@ -238,6 +267,8 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
       lines.push("REFORMATTER = true");
       if(text(source.reformatter_items).trim())lines.push(`ITEMS = ${text(source.reformatter_items).trim()}`);
     }
+    cleanDerivedColumns(source.derived_columns).forEach(row=>lines.push(`DERIVE = ${row.name} | columns=${row.columns.join(",")} | separator=${row.separator}`));
+    cleanRuntimeFilters(source.runtime_filters).forEach(row=>lines.push(`FILTER = ${row.column} | operator=${row.operator} | values=${row.values.join(",")}`));
     lines.push("");
   });
   (joins||[]).forEach(join=>{
@@ -248,13 +279,14 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
   if((joins||[]).length)lines.push("");
   if(chart&&Object.keys(chart).length){
     lines.push("CHART");
-    [["type","TYPE"],["x","X"],["y","Y"],["color","COLOR"],["trellis","TRELLIS"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
+    [["type","TYPE"],["title","TITLE"],["x","X"],["y","Y"],["x_label","X_LABEL"],["y_label","Y_LABEL"],["color","COLOR"],["trellis","TRELLIS"],["trend_grain","TREND_GRAIN"],["aggregation","AGGREGATION"],["map_y","MAP_Y"],["map_scope","MAP_SCOPE"],["map_target","MAP_TARGET"],["pie_basis","PIE_BASIS"],["fit","FIT"],["point_size","POINT_SIZE"],["marker_opacity","MARKER_OPACITY"],["line_width","LINE_WIDTH"],["y_min","Y_MIN"],["y_max","Y_MAX"],["y_scale","Y_SCALE"],["legend_position","LEGEND_POSITION"],["spec_low","SPEC_LOW"],["spec_high","SPEC_HIGH"],["box_points","BOX_POINTS"],["wafer_palette","WAFER_PALETTE"],["wafer_low","WAFER_LOW"],["wafer_center","WAFER_CENTER"],["wafer_high","WAFER_HIGH"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
       if(text(chart[key]).trim())lines.push(`${label} = ${text(chart[key]).trim()}`);
     });
     (chart.color_rules||[]).forEach(rule=>{if(text(rule).trim())lines.push(`COLOR_RULE = ${text(rule).trim()}`);});
     if(text(chart.color_else).trim())lines.push(`COLOR_ELSE = ${text(chart.color_else).trim()}`);
     if(chart.highlight!=null)lines.push(`HIGHLIGHT = ${chart.highlight?"true":"false"}`);
     if(chart.show_legend!=null)lines.push(`SHOW_LEGEND = ${chart.show_legend?"true":"false"}`);
+    if(chart.show_grid!=null)lines.push(`SHOW_GRID = ${chart.show_grid?"true":"false"}`);
     lines.push("");
   }
   lines.push(`MAX_ROWS = ${Math.max(1,Math.min(10000,Number(maxRows)||10000))}`);
@@ -683,6 +715,39 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
           :"기간 제한 없이 조회합니다. 필요하면 Template Report 실행 시 모든 차트 기간을 한꺼번에 지정할 수 있습니다."}
       </div>
     </div>
+    <details style={{marginTop:10,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)",overflow:"hidden"}}>
+      <summary style={{cursor:"pointer",padding:"9px 10px",fontSize:12,fontWeight:900,userSelect:"none"}}>특정 값 필터 · 여러 열 합치기</summary>
+      <div style={{padding:"10px",borderTop:"1px solid var(--border)",display:"grid",gap:9}}>
+        <div style={{fontSize:11,lineHeight:1.55,color:"var(--text-secondary)"}}>엑셀에서 여러 셀을 그대로 붙여 넣을 수 있습니다. 파생열을 먼저 만든 뒤 필터하므로 <code>root_lot_id + wafer_id → lot_wafer</code>처럼 합친 값도 바로 거를 수 있습니다.</div>
+        <strong style={{fontSize:12}}>여러 열 합치기</strong>
+        <SpreadsheetPasteGrid
+          ariaLabel={`Query ${index+1} 파생열`}
+          columns={DERIVED_GRID_COLUMNS}
+          rows={source.derived_columns||normalizeDerivedRows([])}
+          onChange={rows=>set("derived_columns",rows)}
+          columnLabels={{name:"새 열 이름",columns:"합칠 열 · 쉼표",separator:"구분자"}}
+          placeholders={{name:"lot_wafer",columns:"root_lot_id, wafer_id",separator:"_"}}
+          minRows={4}
+          maxRows={DERIVED_GRID_MAX_ROWS}
+          maxHeight={215}
+          minTableWidth={520}
+        />
+        <strong style={{fontSize:12}}>값 필터</strong>
+        <SpreadsheetPasteGrid
+          ariaLabel={`Query ${index+1} 값 필터`}
+          columns={FILTER_GRID_COLUMNS}
+          rows={source.runtime_filters||normalizeFilterRows([])}
+          onChange={rows=>set("runtime_filters",rows)}
+          columnLabels={{column:"필터 열",operator:"조건",values:"값 · 쉼표"}}
+          placeholders={{column:"lot_wafer",operator:"in",values:"A1234_1, A1234_2"}}
+          minRows={4}
+          maxRows={FILTER_GRID_MAX_ROWS}
+          maxHeight={215}
+          minTableWidth={560}
+        />
+        <div style={{fontSize:10,lineHeight:1.55,color:"var(--text-secondary)"}}>조건: <code>in</code>, <code>not_in</code>, <code>equals</code>, <code>not_equals</code>, <code>contains</code>, <code>not_contains</code>, <code>is_blank</code>, <code>not_blank</code>. 여러 필터 행은 모두 만족해야 합니다.</div>
+      </div>
+    </details>
     {isEt&&<div style={{marginTop:10,padding:10,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
       <label style={{display:"flex",alignItems:"center",gap:7,fontSize:12,fontWeight:800,cursor:"pointer"}}>
         <input type="checkbox" checked={Boolean(source.apply_reformatter)} onChange={e=>set("apply_reformatter",e.target.checked)}/>
@@ -765,6 +830,7 @@ export default function My_ChartBuilder({user}){
   const[history,setHistory]=useState([]);
   const[historySearch,setHistorySearch]=useState("");
   const[historyBusy,setHistoryBusy]=useState(false);
+  const[pinBusy,setPinBusy]=useState("");
   const[result,setResult]=useState(null);
   const[busy,setBusy]=useState(false);
   const[chartType,setChartType]=useState("scatter");
@@ -796,6 +862,24 @@ export default function My_ChartBuilder({user}){
   const[showLegend,setShowLegend]=useState(true);
   const[chartWidth,setChartWidth]=useState("");
   const[chartHeight,setChartHeight]=useState("");
+  const[chartTitle,setChartTitle]=useState("");
+  const[xAxisLabel,setXAxisLabel]=useState("");
+  const[yAxisLabel,setYAxisLabel]=useState("");
+  const[pointSize,setPointSize]=useState("9");
+  const[markerOpacity,setMarkerOpacity]=useState("0.82");
+  const[lineWidth,setLineWidth]=useState("2.3");
+  const[yMin,setYMin]=useState("");
+  const[yMax,setYMax]=useState("");
+  const[yScale,setYScale]=useState("linear");
+  const[showGrid,setShowGrid]=useState(true);
+  const[legendPosition,setLegendPosition]=useState("bottom");
+  const[specLowCol,setSpecLowCol]=useState("");
+  const[specHighCol,setSpecHighCol]=useState("");
+  const[boxPoints,setBoxPoints]=useState("outliers");
+  const[waferPalette,setWaferPalette]=useState("blue_gray_red");
+  const[waferLow,setWaferLow]=useState("");
+  const[waferCenter,setWaferCenter]=useState("");
+  const[waferHigh,setWaferHigh]=useState("");
   const[assistantPrompt,setAssistantPrompt]=useState("");
   const[assistantBusy,setAssistantBusy]=useState(false);
   const[assistantReply,setAssistantReply]=useState(null);
@@ -805,7 +889,7 @@ export default function My_ChartBuilder({user}){
   ])).catch(e=>toast.error(e.message));},[]);
   const loadHistory=(query=historySearch)=>{
     setHistoryBusy(true);
-    return sf(`/api/filebrowser/chart-builder/history?limit=200&q=${encodeURIComponent(text(query).trim())}`)
+    return sf(`/api/filebrowser/chart-builder/history?limit=500&q=${encodeURIComponent(text(query).trim())}`)
       .then(data=>setHistory(data.history||[]))
       .catch(error=>toast.error(`코드 히스토리 조회 실패: ${error.message||error}`))
       .finally(()=>setHistoryBusy(false));
@@ -851,7 +935,7 @@ export default function My_ChartBuilder({user}){
     rows.forEach(r=>{
       const lot=rootLotCol?text(r[rootLotCol]):"",wafer=waferMode?text(r[waferCol]):"";
       if((mapScope!=="trellis_wafer"&&!lot)||(waferMode&&!wafer))return;
-      const key=mapScope==="trellis_wafer"?wafer:`${lot}\u001f${wafer}`;
+      const key=mapScope==="trellis_wafer"?wafer:`${lot}|${wafer}`;
       const label=mapScope==="root_lot"?lot:mapScope==="trellis_wafer"?`W${wafer}`:`${lot} | W${wafer}`;
       if(!found.has(key))found.set(key,{key,lot,wafer,label});
     });
@@ -894,20 +978,45 @@ export default function My_ChartBuilder({user}){
       ||null;
   };
   // 시간 창은 폼에서는 빈칸(=전체 기간)이고 요청·코드에서는 숫자다. 형태만 여기서 맞춘다.
-  const formSource=source=>({...source,runtime_recent_days:recentDaysValue(source)||"",runtime_date_column:text(source?.runtime_date_column)});
+  const formSource=source=>({...source,runtime_recent_days:recentDaysValue(source)||"",runtime_date_column:text(source?.runtime_date_column),derived_columns:normalizeDerivedRows(source?.derived_columns),runtime_filters:normalizeFilterRows(source?.runtime_filters)});
   const requestSource=(source,linkedRows=[])=>{
     const resolved=resolveSourceRoot(source),days=recentDaysValue(resolved);
     const pairs=(linkedRows||[]).map(row=>({root_lot_id:text(row.root_lot_id).trim(),wafer_id:text(row.wafer_id).trim()})).filter(row=>row.root_lot_id&&row.wafer_id);
     const roots=pairs.length?listValues(pairs.map(row=>row.root_lot_id)):listValues(resolved.runtime_root_lot_ids||[]);
     const wafers=pairs.length?listValues(pairs.map(row=>row.wafer_id)):listValues(resolved.runtime_wafer_ids||[]);
-    return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:roots,runtime_wafer_ids:wafers,runtime_lot_wafer_pairs:pairs};
+    return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:roots,runtime_wafer_ids:wafers,runtime_lot_wafer_pairs:pairs,derived_columns:cleanDerivedColumns(resolved.derived_columns),runtime_filters:cleanRuntimeFilters(resolved.runtime_filters)};
   };
   const currentChartConfig=()=>({
     type:chartType,
+    title:text(chartTitle).trim(),
     x:xCol,
     y:yCol,
+    x_label:text(xAxisLabel).trim(),
+    y_label:text(yAxisLabel).trim(),
     color:colorCol==="__custom__"?"custom":colorCol,
     trellis:trellisCol,
+    trend_grain:chartType==="line"?trendGrain:"",
+    aggregation:chartType==="wafer_map"?mapAggregation:chartType==="line"?trendAggregation:chartType.startsWith("bar")?barAggregation:chartType==="radius"?radiusAggregation:"",
+    map_y:chartType==="wafer_map"?mapYCol:"",
+    map_scope:chartType==="wafer_map"?mapScope:"",
+    map_target:chartType==="wafer_map"?mapTarget:"",
+    pie_basis:isPie?pieBasis:"",
+    fit:chartType==="scatter"?corrFitMode:chartType==="radius"?radiusFitMode:"",
+    point_size:Number(pointSize)||9,
+    marker_opacity:Number(markerOpacity)||0.82,
+    line_width:Number(lineWidth)||2.3,
+    y_min:text(yMin).trim(),
+    y_max:text(yMax).trim(),
+    y_scale:yScale,
+    show_grid:showGrid,
+    legend_position:legendPosition,
+    spec_low:specLowCol,
+    spec_high:specHighCol,
+    box_points:boxPoints,
+    wafer_palette:waferPalette,
+    wafer_low:text(waferLow).trim(),
+    wafer_center:text(waferCenter).trim(),
+    wafer_high:text(waferHigh).trim(),
     color_rules:combinedColorRuleLines,
     color_else:customColorElse,
     highlight:highlightEnabled,
@@ -919,8 +1028,11 @@ export default function My_ChartBuilder({user}){
     const hasConfig=config&&Object.keys(config).length>0;
     const separated=partitionChartColorRules(hasConfig?(config.color_rules||[]):[]);
     setChartType(hasConfig&&config.type?text(config.type).toLowerCase():"scatter");
+    setChartTitle(hasConfig?text(config.title):"");
     setXCol(hasConfig?text(config.x):"");
     setYCol(hasConfig?text(config.y):"");
+    setXAxisLabel(hasConfig?text(config.x_label):"");
+    setYAxisLabel(hasConfig?text(config.y_label):"");
     setColorCol(hasConfig&&["custom","__custom__"].includes(text(config.color).toLowerCase())?"__custom__":hasConfig?text(config.color):"");
     setTrellisCol(hasConfig?text(config.trellis):"");
     setCustomColorRules(separated.formulaRules.join("\n"));
@@ -928,9 +1040,19 @@ export default function My_ChartBuilder({user}){
     setCustomColorElse(hasConfig?text(config.color_else||"gray"):"gray");
     setHighlightEnabled(hasConfig?config.highlight!==false:true);
     setShowLegend(hasConfig?config.show_legend!==false:true);
+    setTrendGrain(hasConfig&&config.trend_grain?text(config.trend_grain):"shot");
+    const aggregation=hasConfig&&config.aggregation?text(config.aggregation):"median";
+    setTrendAggregation(aggregation);setBarAggregation(aggregation);setMapAggregation(aggregation);setRadiusAggregation(aggregation==="raw"?"raw":"median");
+    setMapYCol(hasConfig?text(config.map_y):"");setMapScope(hasConfig&&config.map_scope?text(config.map_scope):"root_wafer");setMapTarget(hasConfig?text(config.map_target):"");
+    setPieBasis(hasConfig&&config.pie_basis?text(config.pie_basis):"count");
+    setCorrFitMode(hasConfig&&config.fit?text(config.fit):"linear");setRadiusFitMode(hasConfig&&config.fit?text(config.fit):"cubic");
+    setPointSize(hasConfig&&config.point_size?text(config.point_size):"9");setMarkerOpacity(hasConfig&&config.marker_opacity!=null?text(config.marker_opacity):"0.82");setLineWidth(hasConfig&&config.line_width?text(config.line_width):"2.3");
+    setYMin(hasConfig&&config.y_min!=null?text(config.y_min):"");setYMax(hasConfig&&config.y_max!=null?text(config.y_max):"");setYScale(hasConfig&&config.y_scale?text(config.y_scale):"linear");
+    setShowGrid(hasConfig?config.show_grid!==false:true);setLegendPosition(hasConfig&&config.legend_position?text(config.legend_position):"bottom");
+    setSpecLowCol(hasConfig?text(config.spec_low):"");setSpecHighCol(hasConfig?text(config.spec_high):"");setBoxPoints(hasConfig&&config.box_points?text(config.box_points):"outliers");
+    setWaferPalette(hasConfig&&config.wafer_palette?text(config.wafer_palette):"blue_gray_red");setWaferLow(hasConfig&&config.wafer_low!=null?text(config.wafer_low):"");setWaferCenter(hasConfig&&config.wafer_center!=null?text(config.wafer_center):"");setWaferHigh(hasConfig&&config.wafer_high!=null?text(config.wafer_high):"");
     setChartWidth(hasConfig&&config.width?text(config.width):"");
     setChartHeight(hasConfig&&config.height?text(config.height):"");
-    setMapYCol("");setMapTarget("");
   };
   const run=async(config=null,options={})=>{
     const activeChart=config?.chart??currentChartConfig();
@@ -943,6 +1065,12 @@ export default function My_ChartBuilder({user}){
     const requestedWidth=Number(activeChart?.width||0),requestedHeight=Number(activeChart?.height||0);
     if(requestedWidth&&(requestedWidth<320||requestedWidth>2400)){toast.error("차트 Width는 320~2400px 사이로 입력해 주세요.");return;}
     if(requestedHeight&&(requestedHeight<240||requestedHeight>1600)){toast.error("차트 Height는 240~1600px 사이로 입력해 주세요.");return;}
+    const requestedPointSize=Number(activeChart?.point_size||0),requestedOpacity=Number(activeChart?.marker_opacity||0),requestedLineWidth=Number(activeChart?.line_width||0);
+    if(requestedPointSize<2||requestedPointSize>30){toast.error("Point 크기는 2~30 사이로 입력해 주세요.");return;}
+    if(requestedOpacity<0.05||requestedOpacity>1){toast.error("Marker 투명도는 0.05~1 사이로 입력해 주세요.");return;}
+    if(requestedLineWidth<0.5||requestedLineWidth>8){toast.error("Line 굵기는 0.5~8 사이로 입력해 주세요.");return;}
+    if(text(activeChart?.y_min).trim()&&text(activeChart?.y_max).trim()&&Number(activeChart.y_min)>=Number(activeChart.y_max)){toast.error("Y축 최소값은 최대값보다 작아야 합니다.");return;}
+    if(activeChart?.y_scale==="log"&&[activeChart?.y_min,activeChart?.y_max].some(value=>text(value).trim()&&Number(value)<=0)){toast.error("Log scale의 Y축 최소·최대는 0보다 커야 합니다.");return;}
     const colorErrors=text(activeChart?.color).toLowerCase()==="custom"?parseChartColorRules(activeChart.color_rules||[]).filter(rule=>rule.error):[];
     if(colorErrors.length){toast.error(`Custom Color ${colorErrors[0].error}`);return;}
     const canonical=config?.canonical_code||definitionFromForm(activeSources,activeJoins,activeMaxRows,activeChart);
@@ -1050,6 +1178,18 @@ export default function My_ChartBuilder({user}){
     setDefinitionCode(code);
     applyDefinition(false,code);
     document.getElementById("chart-builder-code")?.scrollIntoView({behavior:"smooth",block:"start"});
+  };
+  const canManageHistory=canManagePage(user,"chartbuilder");
+  const toggleHistoryPin=async entry=>{
+    const historyId=text(entry?.history_id).trim();
+    if(!historyId||!canManageHistory)return;
+    setPinBusy(historyId);
+    try{
+      await postJson(`/api/filebrowser/chart-builder/history/${encodeURIComponent(historyId)}/pin`,{pinned:!entry.pinned});
+      toast.ok(entry.pinned?"차트 고정을 해제했습니다.":"차트를 공용 히스토리 위에 고정했습니다.");
+      await loadHistory(historySearch);
+    }catch(error){toast.error(error.message||String(error));}
+    finally{setPinBusy("");}
   };
   const download=()=>{
     if(!rows.length)return;
@@ -1267,21 +1407,77 @@ export default function My_ChartBuilder({user}){
     const fit=chartType==="scatter"&&numericX&&corrFitMode==="linear"?linearFit(points):null;
     return{chart_type:chartType,title:`${xCol} × ${yCol}`,x_label:xCol,y_label:yCol,color_by:colorLabel,color_map:chartColorMap,points,fit,corr:fit?.corr,emphasize_markers:chartType==="scatter",point_size:chartType==="scatter"?7:undefined};
   },[rows,xCol,yCol,mapYCol,colorCol,colorLabel,colorListText,customColorRules,customColorElse,trellisCol,chartType,result,shotPairs,rootLotCol,waferCol,mapScope,mapGroups,mapTarget,mapAggregation,trendGrain,trendAggregation,barAggregation,radiusAggregation,radiusFitMode,corrFitMode,pieBasis,radiusLayout,radiusMatcher,radiusBusy,radiusError]);
+  const displayChart=useMemo(()=>{
+    if(!chart)return chart;
+    const decorate=point=>({...point,spec_low:specLowCol?point?.[specLowCol]:point?.spec_low,spec_high:specHighCol?point?.[specHighCol]:point?.spec_high});
+    return{
+      ...chart,
+      title:text(chartTitle).trim()||chart.title,
+      x_label:text(xAxisLabel).trim()||chart.x_label,
+      y_label:text(yAxisLabel).trim()||chart.y_label,
+      points:Array.isArray(chart.points)?chart.points.map(decorate):chart.points,
+      point_size:Number(pointSize)||9,marker_opacity:Number(markerOpacity)||0.82,line_width:Number(lineWidth)||2.3,
+      y_min:text(yMin).trim(),y_max:text(yMax).trim(),y_scale:yScale,show_grid:showGrid,
+      legend_position:legendPosition,box_points:boxPoints,show_legend:showLegend,
+    };
+  },[chart,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol]);
   const isPie=chartType==="pie"||chartType==="donut";
   // 상자별 통계는 그림과 같은 묶음(색 계열 × x 값)에서 낸다 — 표와 그림이 어긋나면 안 된다.
-  const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(chart?.points)?boxBucketsFromPoints(chart.points,colorCol):[],[chartType,chart,colorCol]);
-  const boxStatsOn=chartType==="box"&&showBoxStats&&!chart?.error&&!trellisCol&&boxBuckets.length>0;
+  const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(displayChart?.points)?boxBucketsFromPoints(displayChart.points,colorCol):[],[chartType,displayChart,colorCol]);
+  const boxStatsOn=chartType==="box"&&showBoxStats&&!displayChart?.error&&!trellisCol&&boxBuckets.length>0;
   // Color 로 상자를 쪼개면 표는 (색 × x) 순서라 그림의 x 눈금과 열이 1:1 이 아니다 — 정렬 포기.
   const boxAlignGeometry=boxStatsOn&&!colorCol?boxGeometry:null;
   // 표를 눈금에 "맞춰" 붙일 때만 차트의 x 눈금 글자를 끈다 — 정렬을 포기하면
   // 이름을 읽을 곳이 사라지므로 눈금을 도로 켜야 한다.
   const boxStatsAligned=boxStatsAlignment(boxAlignGeometry,boxBuckets.length).aligned;
+  const applyAutoReportPreset=key=>{
+    const exact=(names,pool=columns)=>names.map(name=>pool.find(column=>column.toLowerCase()===name)).find(Boolean)||"";
+    const value=exact(["value","item_value","measurement_value","shot_yield"],numericCols)
+      ||numericCols.find(column=>!["wafer_id","shot_x","shot_y","chip_x_pos","chip_y_pos"].includes(column.toLowerCase()))
+      ||numericCols[0]||"";
+    const lot=exact(["root_lot_id"]),wafer=exact(["wafer_id"]);
+    if(key==="box"){
+      const category=columns.find(column=>/^(knob_|fab_|mask_|split)/i.test(column))||lot||wafer||columns.find(column=>column!==value)||"";
+      setChartType("box");setXCol(category);setYCol(value);setColorCol(category===lot?wafer:lot);setTrellisCol("");setShowBoxStats(true);setShowLegend(true);
+      if(!category||!value)toast.warn("Box 기본 차트에는 범주 열과 숫자 Value 열이 필요합니다.");
+      else toast.ok("Auto Report Box 기본 차트를 적용했습니다.");
+      return;
+    }
+    if(key==="trend"){
+      const time=exact(["tkout_time","time","date","datetime","timestamp"])
+        ||columns.find(column=>/(?:time|date)$/i.test(column))||columns[0]||"";
+      setChartType("line");setXCol(time);setYCol(value);setColorCol(lot);setTrellisCol("");setTrendGrain("shot");setShowLegend(true);
+      if(!time||!value)toast.warn("Trend 기본 차트에는 시간 열과 숫자 Value 열이 필요합니다.");
+      else toast.ok("Auto Report Trend 기본 차트를 적용했습니다.");
+      return;
+    }
+    const pair=shotPairs[0];
+    setChartType("wafer_map");setXCol(pair?.x||"");setMapYCol(pair?.y||"");setYCol(value);setColorCol("");setTrellisCol("");setMapScope("root_wafer");setMapTarget("");setMapAggregation("median");
+    if(!pair||!value)toast.warn("WF MAP 기본 차트에는 shot X/Y 좌표와 숫자 Value 열이 필요합니다.");
+    else toast.ok("Auto Report WF MAP 기본 차트를 적용했습니다.");
+  };
+  const pinnedHistory=history.filter(entry=>entry.pinned);
+  const recentHistory=history.filter(entry=>!entry.pinned);
+  const renderHistoryEntry=entry=><details key={entry.history_id} style={{borderBottom:"1px solid var(--border)",background:entry.pinned?"color-mix(in srgb, var(--accent-glow) 58%, var(--bg-primary))":"transparent"}}>
+    <summary style={{cursor:"pointer",padding:"10px 14px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",listStyle:"none"}}>
+      {entry.pinned&&<span title="고정 차트" aria-label="고정 차트" style={{fontSize:14}}>📌</span>}
+      <b style={{fontSize:13,color:"var(--text-primary)"}}>{entry.name}</b>
+      <code style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-tertiary)",padding:"3px 5px",borderRadius:4}}>{entry.history_id}</code>
+      <b style={{fontSize:13,color:"var(--accent)"}}>{entry.username||"anonymous"}</b>
+      <span style={{fontSize:12,color:"var(--text-secondary)"}}>{historyTime(entry.timestamp)}</span>
+      <span style={{fontSize:12,color:"var(--text-secondary)"}}>Query {entry.source_count||0} · JOIN {entry.join_count||0} · 결과 {Number(entry.row_count||0).toLocaleString()}행</span>
+      <span style={{fontSize:12,color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:180,flex:1}}>{(entry.sources||[]).map(source=>`${source.id}:${source.root}/${source.product}`).join(" · ")}</span>
+      {canManageHistory&&<button type="button" disabled={pinBusy===entry.history_id} title={entry.pinned?"고정 해제":"히스토리 위에 고정"} onClick={event=>{event.preventDefault();event.stopPropagation();toggleHistoryPin(entry);}} style={{...btn,padding:"5px 9px",opacity:pinBusy===entry.history_id?0.55:1}}>{pinBusy===entry.history_id?"처리 중…":entry.pinned?"고정 해제":"위에 고정"}</button>}
+      <button type="button" onClick={event=>{event.preventDefault();event.stopPropagation();loadHistoryEntry(entry);}} style={{...btn,padding:"5px 9px"}}>폼으로 불러오기</button>
+    </summary>
+    <div style={{padding:"0 14px 12px"}}>
+      <pre style={{margin:0,padding:11,borderRadius:7,background:"var(--bg-primary)",border:"1px solid var(--border)",whiteSpace:"pre-wrap",fontFamily:"'JetBrains Mono',monospace",fontSize:11,lineHeight:1.55,color:"var(--text-secondary)"}}>{entry.definition_code}</pre>
+    </div>
+  </details>;
   return <div style={{padding:"20px 24px 60px",maxWidth:1500,margin:"0 auto",color:"var(--text-primary)"}}>
     <section style={{...card,marginBottom:16,borderColor:"var(--accent)",background:"linear-gradient(135deg,var(--bg-secondary),var(--accent-glow))"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
         <strong style={{fontSize:15}}>🧭 차트 어시스트</strong>
-        <span style={{fontSize:11,padding:"3px 7px",borderRadius:99,border:"1px solid var(--ok-line)",background:"var(--ok-50)",color:"var(--ok)",fontWeight:800}}>AI 없이 규칙 우선</span>
-        <span style={{fontSize:12,color:"var(--text-secondary)"}}>차트 종류·축·범례·색·크기·Trellis·JOIN은 운영 API 규칙으로 바로 바꿉니다. 규칙 밖 요청만 연결된 AI를 시도합니다.</span>
       </div>
       <div style={{display:"flex",gap:8,alignItems:"stretch"}}>
         <textarea aria-label="차트 어시스트 요청" value={assistantPrompt} onChange={event=>setAssistantPrompt(event.target.value)} rows={2}
@@ -1292,10 +1488,10 @@ export default function My_ChartBuilder({user}){
           style={{...btn,minWidth:96,background:"var(--accent)",borderColor:"var(--accent)",color:"#fff",opacity:(assistantBusy||busy||codeBusy)?0.65:1}}>{assistantBusy?"수정 중…":"바꿔줘"}</button>
       </div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
-        {["기본 차트 자동 추천해줘","scatter로 바꾸고 X축은 shot_x, Y축은 value로","범례 숨겨줘","Trellis 해제해줘","첫 JOIN을 inner로 바꿔줘"].map(example=><button type="button" key={example} onClick={()=>askChartAssistant(example)} disabled={assistantBusy||busy||codeBusy} style={{...btn,padding:"4px 8px",fontSize:11,fontWeight:700}}>{example}</button>)}
+        {["기본 차트 자동 추천해줘","scatter로 바꾸고 X축은 shot_x, Y축은 value로","Y축을 log scale로 바꿔줘","범례 숨겨줘","Trellis 해제해줘","첫 JOIN을 inner로 바꿔줘"].map(example=><button type="button" key={example} onClick={()=>askChartAssistant(example)} disabled={assistantBusy||busy||codeBusy} style={{...btn,padding:"4px 8px",fontSize:11,fontWeight:700}}>{example}</button>)}
       </div>
       {assistantReply&&<div style={{marginTop:9,padding:"8px 10px",borderRadius:7,border:`1px solid ${assistantReply.ok===false?"var(--danger-line)":"var(--border)"}`,background:"var(--bg-primary)",fontSize:12,lineHeight:1.55,color:assistantReply.ok===false?"var(--danger)":"var(--text-primary)"}}>
-        <b>어시스트</b> <span style={{marginRight:5,color:"var(--text-secondary)"}}>· {assistantReply.llm?.used?"연결 AI 사용":"로컬 규칙 적용"}</span>· {assistantReply.message}
+        <b>어시스트</b> · {assistantReply.message}
         {assistantReply.requires_rerun&&<span style={{marginLeft:7,color:"var(--accent)",fontWeight:800}}>JOIN 변경 · 자동 재조회</span>}
         {!!assistantReply.warnings?.length&&<div style={{marginTop:3,color:"var(--warn)"}}>{assistantReply.warnings.join(" · ")}</div>}
       </div>}
@@ -1317,8 +1513,10 @@ export default function My_ChartBuilder({user}){
         <div><b style={{color:"var(--text-primary)"}}>Custom Color / 시간 강조</b> — 연동표의 고정 색상과 <code>tkout_time WITHIN 7 DAYS THEN #ef4444</code> 같은 수식 규칙을 따로 관리합니다. 연동표가 먼저 적용되고, 일치하지 않은 행만 수식 규칙을 위에서부터 확인한 뒤 나머지는 ELSE 색으로 표시됩니다. Plotly의 Box/Lasso Select 강조는 <code>HIGHLIGHT</code>로 별도 제어합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>연동 필터</b> — <code>root_lot_id</code>·<code>wafer_id</code>·<code>color</code> 3열 표를 붙여 넣습니다. 정확히 일치하는 Lot/Wafer 조합만 모든 Query에 적용되며, 색상 규칙은 저장 코드에 남아 현재 데이터가 없어도 다음 실행에서 같은 조합에 같은 색을 씁니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>기간</b> — Query마다 <code>RECENT_DAYS = 7</code>(선택 <code>DATE_COLUMN = tkout_time</code>)을 적으면 그 열 기준 최근 7일만 조회합니다. 저장값이 기본이며 Template Report 실행 컨텍스트에서 여러 차트의 기간을 한꺼번에 바꿀 수도 있습니다.</div>
+        <div><b style={{color:"var(--text-primary)"}}>특정 값 필터 / 합친 열</b> — Query의 표에서 <code>DERIVE = lot_wafer | columns=root_lot_id,wafer_id | separator=_</code>로 열을 합치고, <code>FILTER = lot_wafer | operator=in | values=A1234_1,A1234_2</code>로 원본 열이나 합친 열을 필터합니다. 저장 코드와 Template Report 재실행에도 그대로 유지됩니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>조회와 강조의 차이</b> — <code>RECENT_DAYS</code>는 오래된 행을 조회 결과에서 제외하고, <code>WITHIN N DAYS</code>는 조회된 행을 지우지 않고 색만 바꿉니다. 시간 열은 반드시 SQL SELECT 결과에 포함되어야 하며, 최근 여부는 ChartBuilder 또는 Template Report를 실행하는 현재 시각에 다시 계산됩니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>차트 크기</b> — <code>CHART</code> 블록의 <code>WIDTH = 1200</code>, <code>HEIGHT = 650</code>으로 픽셀 크기를 지정합니다. 생략하면 화면 폭에 맞춰 자동 조정됩니다.</div>
+        <div><b style={{color:"var(--text-primary)"}}>Y축 Scale</b> — 차트 디테일에서 Linear/Log를 고르거나 코드에 <code>Y_SCALE = log</code>를 적습니다. Log의 수동 최소·최대는 0보다 큰 값만 허용합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>ET Reformatter</b> — ET Query에서 ET 다운로드와 같은 REAL·ADDP 계산 item을 선택할 수 있습니다. 코드에서는 <code>REFORMATTER = true</code>, <code>ITEMS = alias1, alias2</code>를 사용합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Box Plot</b> — X 열의 값마다 상자 하나를 그리고, 그림 아래 통계표에서 상자별 Count·Median·StdDev 등을 골라 볼 수 있습니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Pie / Donut</b> — X 열의 값별 구성비입니다. 기준은 행 수 또는 Y 합계이고, 조각이 많으면 상위 {PIE_SLICE_LIMIT}개만 두고 나머지는 "기타"로 묶습니다.</div>
@@ -1345,6 +1543,7 @@ export default function My_ChartBuilder({user}){
         Query는 <code>Q1</code> 다음 줄에 <code>TABLE</code>·<code>PRODUCT</code>·<code>SQL</code>을 적고, 연결은 <code>JOIN q1 LEFT q2 ON root_lot_id, wafer_id</code>처럼 작성합니다.
         서로 다른 열은 <code>ON lot_id, wf_id = root_lot_id, wafer_id</code>로 씁니다. 한 줄 형식 <code>Q1 | TABLE=INLINE | PRODUCT=PRODA | SQL=SELECT ...</code>도 지원합니다.
         차트는 <code>CHART</code> 아래 <code>TYPE</code>·<code>X</code>·<code>Y</code>·<code>COLOR</code>·<code>TRELLIS</code>를 적으며, 생략하면 결과 열에서 기본 축을 자동 선택합니다.
+        합친 열과 필터는 Query 안에 <code>DERIVE</code>와 <code>FILTER</code>로 적습니다. 필터는 원본 열과 앞에서 만든 파생열 모두 사용할 수 있습니다.
         기간은 Query의 <code>RECENT_DAYS = 30</code>로 적고, 최근 데이터 색상은 별도 수식에 <code>COLOR_RULE = tkout_time WITHIN 7 DAYS THEN red</code>처럼 적습니다. 두 값 모두 저장되어 Template Report 실행에도 그대로 쓰입니다.
       </div>
       <SqlColumnAutocomplete id="chart-builder-definition-editor" ariaLabel="차트생성 전체 코드" value={definitionCode} onChange={setDefinitionCode} resolveContext={resolveDefinitionAutocomplete} rows={16}
@@ -1407,28 +1606,24 @@ export default function My_ChartBuilder({user}){
       {rows.length>0&&<button type="button" onClick={download} style={btn}>CSV 다운로드</button>}
       <span style={{fontSize:11,color:"var(--text-secondary)"}}>동일 이름은 자동으로 (2), (3)…을 붙여 저장합니다.</span>
     </div>
+    <section style={{...card,marginBottom:14,padding:0,overflow:"hidden",borderColor:"#93c5fd"}}>
+      <div style={{display:"flex",alignItems:"stretch",gap:7,flexWrap:"wrap",padding:"10px 12px",background:"linear-gradient(90deg,#eff6ff,#fff)"}}>
+        <div style={{minWidth:190,alignSelf:"center"}}><b style={{fontSize:13,color:"#0f172a"}}>Auto Report 기본 차트</b><div style={{fontSize:10,color:"#64748b",marginTop:2}}>공용 코드 히스토리 위에 항상 표시 · 조회 결과 열을 찾아 즉시 배치</div></div>
+        {AUTO_REPORT_PRESETS.map(preset=><button type="button" key={preset.key} onClick={()=>applyAutoReportPreset(preset.key)} style={{...btn,background:chartType===(preset.key==="trend"?"line":preset.key)?"#dbeafe":"#f8fafc",borderColor:chartType===(preset.key==="trend"?"line":preset.key)?"#3b82f6":"#cbd5e1",color:"#0f172a",padding:"6px 10px",textAlign:"left"}}><span style={{display:"block",fontSize:12}}>{preset.label}</span><span style={{display:"block",fontSize:9,color:"#64748b",fontWeight:600,marginTop:2}}>{preset.desc}</span></button>)}
+      </div>
+    </section>
     <details open style={{...card,marginBottom:14,padding:0,overflow:"hidden"}}>
-      <summary style={{cursor:"pointer",padding:"11px 14px",fontSize:14,fontWeight:900,userSelect:"none"}}>공용 코드 히스토리 · 최근 {history.length}건</summary>
+      <summary style={{cursor:"pointer",padding:"11px 14px",fontSize:14,fontWeight:900,userSelect:"none"}}>공용 코드 히스토리 · 고정 {pinnedHistory.length}건 + 최근 {recentHistory.length}건 / 최대 500</summary>
       <div style={{borderTop:"1px solid var(--border)",maxHeight:430,overflow:"auto"}}>
         <div style={{position:"sticky",top:0,zIndex:2,padding:"10px 14px",background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)"}}>
           <input aria-label="저장 차트 검색" value={historySearch} onChange={event=>setHistorySearch(event.target.value)} placeholder="Chart ID · Name · 작성자 · SQL 코드 검색" style={input}/>
         </div>
         {historyBusy&&!history.length&&<div style={{padding:16,fontSize:13,color:"var(--text-secondary)"}}>히스토리를 불러오는 중입니다.</div>}
         {!historyBusy&&!history.length&&<div style={{padding:16,fontSize:13,color:"var(--text-secondary)"}}>{historySearch?"검색 조건에 맞는 저장 차트가 없습니다.":"아직 실행 이력이 없습니다. SQL 실행이 성공하면 Chart ID, Name, 사용자 ID와 시각, 전체 코드가 여기에 남습니다."}</div>}
-        {history.map(entry=><details key={entry.history_id} style={{borderBottom:"1px solid var(--border)"}}>
-          <summary style={{cursor:"pointer",padding:"10px 14px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",listStyle:"none"}}>
-            <b style={{fontSize:13,color:"var(--text-primary)"}}>{entry.name}</b>
-            <code style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-tertiary)",padding:"3px 5px",borderRadius:4}}>{entry.history_id}</code>
-            <b style={{fontSize:13,color:"var(--accent)"}}>{entry.username||"anonymous"}</b>
-            <span style={{fontSize:12,color:"var(--text-secondary)"}}>{historyTime(entry.timestamp)}</span>
-            <span style={{fontSize:12,color:"var(--text-secondary)"}}>Query {entry.source_count||0} · JOIN {entry.join_count||0} · 결과 {Number(entry.row_count||0).toLocaleString()}행</span>
-            <span style={{fontSize:12,color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:180,flex:1}}>{(entry.sources||[]).map(source=>`${source.id}:${source.root}/${source.product}`).join(" · ")}</span>
-            <button type="button" onClick={event=>{event.preventDefault();event.stopPropagation();loadHistoryEntry(entry);}} style={{...btn,padding:"5px 9px"}}>폼으로 불러오기</button>
-          </summary>
-          <div style={{padding:"0 14px 12px"}}>
-            <pre style={{margin:0,padding:11,borderRadius:7,background:"var(--bg-primary)",border:"1px solid var(--border)",whiteSpace:"pre-wrap",fontFamily:"'JetBrains Mono',monospace",fontSize:11,lineHeight:1.55,color:"var(--text-secondary)"}}>{entry.definition_code}</pre>
-          </div>
-        </details>)}
+        {!!pinnedHistory.length&&<div style={{position:"sticky",top:55,zIndex:1,padding:"6px 14px",fontSize:10,fontWeight:900,color:"var(--accent)",background:"var(--accent-glow)",borderBottom:"1px solid var(--border)"}}>📌 고정 차트 · 최근 500건 한도에 포함되지 않음</div>}
+        {pinnedHistory.map(renderHistoryEntry)}
+        {!!recentHistory.length&&<div style={{padding:"6px 14px",fontSize:10,fontWeight:900,color:"var(--text-secondary)",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>최근 저장 차트</div>}
+        {recentHistory.map(renderHistoryEntry)}
       </div>
     </details>
     {result&&<div style={{display:"grid",gap:12}}>
@@ -1485,6 +1680,26 @@ export default function My_ChartBuilder({user}){
               {chartType==="scatter"&&<Field label="피팅"><select aria-label="Corr 피팅" value={corrFitMode} onChange={e=>setCorrFitMode(e.target.value)} style={fieldInput}><option value="none">없음</option><option value="linear">1차 회귀 + R²</option></select></Field>}
             </>}
           </div>
+          <details style={{marginTop:10,border:"1px solid #cbd5e1",borderRadius:7,background:"#fff",overflow:"hidden"}}>
+            <summary style={{cursor:"pointer",padding:"8px 10px",fontSize:12,fontWeight:900,color:"#0f172a"}}>차트 디테일 · 제목 / 축 / 점 / 선 / Spec / WF MAP 색</summary>
+            <div style={{padding:10,borderTop:"1px solid #e2e8f0",display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:9,alignItems:"end"}}>
+              <Field label="차트 제목"><input value={chartTitle} onChange={e=>setChartTitle(e.target.value)} placeholder="자동 제목" style={fieldInput}/></Field>
+              <Field label="X축 제목"><input value={xAxisLabel} onChange={e=>setXAxisLabel(e.target.value)} placeholder={xCol||"자동"} style={fieldInput}/></Field>
+              <Field label="Y축 제목"><input value={yAxisLabel} onChange={e=>setYAxisLabel(e.target.value)} placeholder={yCol||"자동"} style={fieldInput}/></Field>
+              <Field label="Y축 최소"><input aria-label="Y축 최소" type="number" value={yMin} onChange={e=>setYMin(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="Y축 최대"><input aria-label="Y축 최대" type="number" value={yMax} onChange={e=>setYMax(e.target.value)} placeholder="auto" style={fieldInput}/></Field>
+              <Field label="Y축 Scale"><select value={yScale} onChange={e=>setYScale(e.target.value)} style={fieldInput}><option value="linear">Linear</option><option value="log">Log</option></select></Field>
+              <Field label="Point 크기"><input aria-label="Point 크기" type="number" min="2" max="30" value={pointSize} onChange={e=>setPointSize(e.target.value)} style={fieldInput}/></Field>
+              <Field label="Marker 투명도"><input aria-label="Marker 투명도" type="number" min="0.05" max="1" step="0.05" value={markerOpacity} onChange={e=>setMarkerOpacity(e.target.value)} style={fieldInput}/></Field>
+              <Field label="Line 굵기"><input aria-label="Line 굵기" type="number" min="0.5" max="8" step="0.1" value={lineWidth} onChange={e=>setLineWidth(e.target.value)} style={fieldInput}/></Field>
+              <Field label="Legend 위치"><select value={legendPosition} onChange={e=>setLegendPosition(e.target.value)} style={fieldInput}><option value="bottom">아래</option><option value="top">위</option><option value="right">오른쪽</option><option value="inside">차트 안</option></select></Field>
+              <Field label="Grid"><label style={{...fieldInput,display:"flex",alignItems:"center",gap:7,minHeight:31,cursor:"pointer"}}><input type="checkbox" checked={showGrid} onChange={e=>setShowGrid(e.target.checked)}/>격자 표시</label></Field>
+              {chartType==="box"&&<Field label="Box 점 표시"><select value={boxPoints} onChange={e=>setBoxPoints(e.target.value)} style={fieldInput}><option value="outliers">Outlier만</option><option value="all">전체 점</option><option value="none">점 숨김</option></select></Field>}
+              {!isPie&&chartType!=="wafer_map"&&<><Field label="Spec Low 열"><select value={specLowCol} onChange={e=>setSpecLowCol(e.target.value)} style={fieldInput}><option value="">없음</option>{numericCols.map(c=><option key={c}>{c}</option>)}</select></Field><Field label="Spec High 열"><select value={specHighCol} onChange={e=>setSpecHighCol(e.target.value)} style={fieldInput}><option value="">없음</option>{numericCols.map(c=><option key={c}>{c}</option>)}</select></Field></>}
+              {chartType==="wafer_map"&&<><Field label="WF MAP Palette"><select value={waferPalette} onChange={e=>setWaferPalette(e.target.value)} style={fieldInput}><option value="blue_gray_red">Blue · Gray · Red</option><option value="red_gray_blue">Red · Gray · Blue</option><option value="viridis">Viridis</option><option value="gray">Gray</option></select></Field><Field label="WF Low"><input type="number" value={waferLow} onChange={e=>setWaferLow(e.target.value)} placeholder="P10 자동" style={fieldInput}/></Field><Field label="WF Center"><input type="number" value={waferCenter} onChange={e=>setWaferCenter(e.target.value)} placeholder="Median 자동" style={fieldInput}/></Field><Field label="WF High"><input type="number" value={waferHigh} onChange={e=>setWaferHigh(e.target.value)} placeholder="P90 자동" style={fieldInput}/></Field></>}
+            </div>
+            <div style={{padding:"0 10px 9px",fontSize:10,color:"#64748b"}}>이 설정은 전체 코드에 저장되며 Template Report 화면과 PPT 캡처에도 동일하게 적용됩니다. Y축 수동 범위는 최소·최대를 함께 입력합니다.</div>
+          </details>
           {colorCol==="__custom__"&&<div style={{display:"grid",gridTemplateColumns:"minmax(320px,1fr) minmax(130px,220px)",gap:9,marginTop:10,alignItems:"start"}}>
             <Field label="tkout_time / 수식 컬러링 · 연동표 다음 순서"><textarea aria-label="Custom Color 수식 규칙" value={customColorRules} onChange={e=>setCustomColorRules(e.target.value)} rows={4} placeholder={"tkout_time WITHIN 3 DAYS THEN #dc2626\ntkout_time WITHIN 7 DAYS THEN #f59e0b"} style={{...fieldInput,fontFamily:"'JetBrains Mono',monospace",resize:"vertical"}}/></Field>
             <Field label="ELSE 색상"><input aria-label="Custom Color ELSE" value={customColorElse} onChange={e=>setCustomColorElse(e.target.value)} placeholder="gray 또는 #9ca3af" style={fieldInput}/></Field>
@@ -1494,8 +1709,8 @@ export default function My_ChartBuilder({user}){
         {chartType==="wafer_map"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(mapScope.startsWith("trellis_")?`${mapScope==="trellis_wafer"?"wafer":"root_lot_id | wafer_id"}별 패널에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계하고 공통 컬러 스케일을 적용합니다.`:`선택한 ${mapScope==="root_wafer"?"root lot·wafer":"root lot의 모든 wafer"}에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계합니다.`)}</div>}
         {chartType==="line"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(TREND_GRAINS.find(g=>g.key===trendGrain)?.desc||"")}</div>}
         {chartType==="radius"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(radiusBusy?"Chip_Radius.csv를 불러오는 중입니다.":`${radiusLayout?.file||"Chip_Radius.csv"} · ${radiusLayout?.mask||radiusSource?.product||"-"} · 좌표 ${chart?.radius_matched||0}/${chart?.radius_source_count||0} shot 매칭 · ${chart?.radius_mapping||""}`)}</div>}
-        {chart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{chart.error}</div>:chart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label}/></div>:chart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...chart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:chart&&<FlowPlotlyChart chart={chart} cfg={{...chart,width:chartWidth,height:chartHeight,hide_title:true,emphasize_axes:true,hide_x_ticks:boxStatsAligned,show_legend:showLegend}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
-        {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={chart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
+        {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
+        {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={displayChart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
     </div>}
   </div>;
 }

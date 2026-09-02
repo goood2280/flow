@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from core.auth import current_user
+from core.auth import current_user, require_page_manager
 from core.chart_builder_definition import ChartBuilderDefinitionError, linked_chart_color_pairs, parse_chart_builder_definition
 from core.paths import PATHS
 from core.report_variables import (
@@ -52,7 +52,10 @@ from core.utils import load_json, save_json, safe_filename
 
 router = APIRouter(prefix="/api/template-report", tags=["template-report"])
 STORE_FILE = PATHS.data_root / "template_reports.json"
+SETTINGS_FILE = PATHS.data_root / "template_report_settings.json"
+BACKGROUND_FILE = PATHS.data_root / "template_report_background.png"
 _STORE_LOCK = threading.Lock()
+_SETTINGS_LOCK = threading.Lock()
 MAX_PAGES = 30
 MAX_CHARTS_PER_PAGE = 20
 MAX_REPEAT_VALUES = 20
@@ -93,6 +96,14 @@ REPORT_BORDER_STRONG = (163, 163, 163)
 REPORT_FONT = "Malgun Gothic"
 MAX_TABLE_ROWS = 26
 MAX_TABLE_COLUMNS = 24
+MAX_BACKGROUND_BYTES = 12 * 1024 * 1024
+MAX_BACKGROUND_PIXELS = 40_000_000
+DEFAULT_SETTINGS = {
+    # 배경 파일이 없으면 기존 Carbon 중립 배경을 그대로 쓴다. config seed가 없어도
+    # 첫 실행과 setup.py 배포에서 동작해야 하므로 기본값은 코드가 소유한다.
+    "background_updated_by": "",
+    "background_updated_at": "",
+}
 
 
 class TemplateSlotReq(BaseModel):
@@ -209,6 +220,10 @@ class ExportReq(BaseModel):
     tables: list[ExportTableReq] = []
 
 
+class BackgroundSaveReq(BaseModel):
+    data_url: str
+
+
 # ── 저장소 ────────────────────────────────────────────────────────────────────
 def _load_templates() -> list[dict]:
     raw = load_json(STORE_FILE, {}) or {}
@@ -247,10 +262,78 @@ def _save_templates(rows: list[dict]) -> None:
     save_json(STORE_FILE, {"version": 2, "templates": rows})
 
 
+def _load_settings() -> dict:
+    raw = load_json(SETTINGS_FILE, {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {**DEFAULT_SETTINGS, **raw}
+
+
+def _background_public_settings(*, include_data: bool = False) -> dict:
+    settings = _load_settings()
+    configured = BACKGROUND_FILE.is_file()
+    version = BACKGROUND_FILE.stat().st_mtime_ns if configured else 0
+    result = {
+        "configured": configured,
+        "url": f"/api/template-report/settings/background/image?v={version}" if configured else "",
+        "updated_by": _clean_text(settings.get("background_updated_by"), 120),
+        "updated_at": _clean_text(settings.get("background_updated_at"), 80),
+    }
+    if include_data:
+        payload = _background_bytes() if configured else b""
+        result["data_url"] = f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}" if payload else ""
+    return result
+
+
+def _decode_background(data_url: str) -> bytes:
+    """브라우저 clipboard 이미지를 PPTX가 안정적으로 읽는 PNG로 정규화한다."""
+    match = re.fullmatch(
+        r"data:image/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\s]+)",
+        str(data_url or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        raise HTTPException(400, "배경은 PNG, JPEG 또는 WebP 이미지여야 합니다.")
+    try:
+        payload = base64.b64decode(match.group(2), validate=False)
+    except Exception as exc:
+        raise HTTPException(400, "배경 이미지 base64를 해석하지 못했습니다.") from exc
+    if not payload or len(payload) > MAX_BACKGROUND_BYTES:
+        raise HTTPException(400, "배경 이미지는 12MB 이하여야 합니다.")
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+
+        with Image.open(io.BytesIO(payload)) as source:
+            source.load()
+            if source.width < 1 or source.height < 1 or source.width * source.height > MAX_BACKGROUND_PIXELS:
+                raise HTTPException(400, "배경 이미지 해상도가 너무 큽니다. 최대 4천만 픽셀까지 사용할 수 있습니다.")
+            image = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+            out = io.BytesIO()
+            image.save(out, format="PNG", optimize=True)
+            normalized = out.getvalue()
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(400, "유효한 배경 이미지가 아닙니다.") from exc
+    if len(normalized) > MAX_BACKGROUND_BYTES:
+        raise HTTPException(400, "PNG로 변환된 배경 이미지가 12MB를 넘습니다.")
+    return normalized
+
+
+def _background_bytes() -> bytes:
+    try:
+        payload = BACKGROUND_FILE.read_bytes()
+    except OSError:
+        return b""
+    return payload if payload else b""
+
+
 def _chart_history() -> dict[str, dict]:
     from routers import filebrowser
 
-    entries = filebrowser._chart_builder_history_entries()
+    # ChartBuilder와 같은 카탈로그 계약: Auto Report/관리자 고정 전체 + 최근 500.
+    entries = filebrowser._chart_builder_visible_history_entries(recent_limit=500)
     return {str(entry.get("history_id") or ""): entry for entry in entries if entry.get("history_id")}
 
 
@@ -472,9 +555,8 @@ def list_templates(_user=Depends(current_user)):
 @router.get("/charts")
 def list_charts(_user=Depends(current_user)):
     rows = list(_chart_history().values())
-    rows.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
     charts = []
-    for row in rows[:500]:
+    for row in rows:
         chart = row.get("chart") if isinstance(row.get("chart"), dict) else {}
         source_text = " · ".join(
             f"{source.get('id')}:{source.get('root')}/{source.get('product')}"
@@ -492,9 +574,62 @@ def list_charts(_user=Depends(current_user)):
             "definition_code": str(row.get("definition_code") or "")[:100_000],
             "variables": extract_variables(str(row.get("definition_code") or "")),
             "row_count": int(row.get("row_count") or 0),
+            "pinned": bool(row.get("pinned")),
             **_code_time_window(row.get("definition_code")),
         })
     return {"ok": True, "charts": charts}
+
+
+@router.get("/settings")
+def get_template_report_settings(_user=Depends(current_user)):
+    return {"ok": True, "settings": {"background": _background_public_settings(include_data=True)}}
+
+
+@router.get("/settings/background/image")
+def get_template_report_background(_user=Depends(current_user)):
+    payload = _background_bytes()
+    if not payload:
+        raise HTTPException(404, "설정된 Template Report 배경이 없습니다.")
+    return Response(
+        content=payload,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@router.post("/settings/background")
+def save_template_report_background(
+    req: BackgroundSaveReq,
+    user=Depends(require_page_manager("templatereport")),
+):
+    payload = _decode_background(req.data_url)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    with _SETTINGS_LOCK:
+        BACKGROUND_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = BACKGROUND_FILE.with_suffix(".tmp")
+        temporary.write_bytes(payload)
+        temporary.replace(BACKGROUND_FILE)
+        settings = _load_settings()
+        settings.update({
+            "background_updated_by": str(user.get("username") or ""),
+            "background_updated_at": now,
+        })
+        save_json(SETTINGS_FILE, settings)
+    return {"ok": True, "settings": {"background": _background_public_settings(include_data=True)}}
+
+
+@router.delete("/settings/background")
+def delete_template_report_background(user=Depends(require_page_manager("templatereport"))):
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    with _SETTINGS_LOCK:
+        BACKGROUND_FILE.unlink(missing_ok=True)
+        settings = _load_settings()
+        settings.update({
+            "background_updated_by": str(user.get("username") or ""),
+            "background_updated_at": now,
+        })
+        save_json(SETTINGS_FILE, settings)
+    return {"ok": True, "settings": {"background": _background_public_settings()}}
 
 
 # ── 저장 ──────────────────────────────────────────────────────────────────────
@@ -1239,7 +1374,34 @@ def _add_footer(slide, left_text: str, right_text: str):
     _write(right_box.text_frame, right_text, size=9, bold=False, color=grey, align=PP_ALIGN.RIGHT)
 
 
-def _add_cover(deck, title: str, subtitle: str, meta: str):
+def _add_background_picture(slide, deck, payload: bytes):
+    """배경을 16:9 슬라이드에 cover 방식으로 깐다(찌그러뜨리지 않고 중앙 crop)."""
+    if not payload:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(payload)) as image:
+            image_width, image_height = image.size
+    except (OSError, ValueError):
+        return None
+    if image_width < 1 or image_height < 1:
+        return None
+    slide_width, slide_height = int(deck.slide_width), int(deck.slide_height)
+    image_ratio = image_width / image_height
+    slide_ratio = slide_width / slide_height
+    if image_ratio >= slide_ratio:
+        height = slide_height
+        width = round(height * image_ratio)
+        left, top = (slide_width - width) // 2, 0
+    else:
+        width = slide_width
+        height = round(width / image_ratio)
+        left, top = 0, (slide_height - height) // 2
+    return slide.shapes.add_picture(io.BytesIO(payload), left, top, width=width, height=height)
+
+
+def _add_cover(deck, title: str, subtitle: str, meta: str, *, background_image: bytes = b""):
     """표지 — auto report `make_title_page` 와 같은 구성(상하 바·대제목·구분선)."""
     from pptx.dml.color import RGBColor
     from pptx.enum.shapes import MSO_SHAPE
@@ -1249,6 +1411,7 @@ def _add_cover(deck, title: str, subtitle: str, meta: str):
     slide = deck.slides.add_slide(deck.slide_layouts[6])
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
+    _add_background_picture(slide, deck, background_image)
     grey = _muted_color()
     _add_bar(slide, 0.0, COVER_BAR_HEIGHT_IN, deck.slide_width)
     _add_bar(slide, SLIDE_HEIGHT_IN - COVER_BAR_HEIGHT_IN, COVER_BAR_HEIGHT_IN, deck.slide_width)
@@ -1607,7 +1770,10 @@ def _add_info_card(slide, *, x: float, y: float, width: float, title: str, lines
     _write(body.text_frame, "\n".join(lines), size=8, bold=False, color=_text_color(), align=PP_ALIGN.LEFT)
 
 
-def _add_template_info_appendix(deck, template: dict, deck_spec: dict, *, report_user: str, report_generated_at: str):
+def _add_template_info_appendix(
+    deck, template: dict, deck_spec: dict, *, report_user: str,
+    report_generated_at: str, background_image: bytes = b"",
+):
     """항상 보고서 맨 뒤에 재생성 정보만 담은 별도 Appendix를 붙인다."""
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
@@ -1626,6 +1792,7 @@ def _add_template_info_appendix(deck, template: dict, deck_spec: dict, *, report
         slide = deck.slides.add_slide(blank)
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
+        _add_background_picture(slide, deck, background_image)
         heading = "Template Report Info" if total == 1 else f"Template Report Info ({index + 1}/{total})"
         _add_title_bar(slide, deck.slide_width, heading, "Appendix · Reproduction metadata")
         if index == 0:
@@ -1662,7 +1829,8 @@ def _block_label(block: dict) -> str:
 
 def _pptx_bytes(template: dict, images: dict[str, bytes], *,
                 deck_spec: dict | None = None, tables: dict[str, dict] | None = None,
-                report_user: str = "", report_generated_at: str = "") -> bytes:
+                report_user: str = "", report_generated_at: str = "",
+                background_image: bytes = b"") -> bytes:
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.util import Inches
@@ -1686,6 +1854,7 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
             str(deck_spec.get("title") or template.get("name") or "Template Report"),
             str(deck_spec.get("subtitle") or ""),
             "Flow Template Report",
+            background_image=background_image,
         )
 
     pages = deck_spec.get("pages") or []
@@ -1694,6 +1863,7 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
         slide = deck.slides.add_slide(blank)
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = _rgb(REPORT_PAGE)
+        _add_background_picture(slide, deck, background_image)
         for block in page.get("blocks") or []:
             key = str(block.get("key") or "")
             kind = str(block.get("kind") or "chart")
@@ -1731,6 +1901,7 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
         deck_spec,
         report_user=report_user or str(template.get("updated_by") or template.get("created_by") or ""),
         report_generated_at=report_generated_at or dt.datetime.now(dt.timezone.utc).isoformat(),
+        background_image=background_image,
     )
     out = io.BytesIO()
     deck.save(out)
@@ -1749,6 +1920,7 @@ def export_pptx(req: ExportReq, user=Depends(current_user)):
         tables=_decode_tables(req.tables),
         report_user=str(user.get("username") or ""),
         report_generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+        background_image=_background_bytes(),
     )
     stamp = dt.datetime.now().strftime("%Y%m%d")
     filename = safe_filename(f"{template.get('name') or 'template_report'}_{stamp}.pptx")

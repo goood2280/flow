@@ -22,12 +22,16 @@ QUERY_HEADER_RE = re.compile(
 FIELD_RE = re.compile(
     r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items"
     r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
-    r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?)\s*[:=]\s*(.*)$",
+    r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?"
+    r"|derive|derived|derived_column|combine|filter|filters?)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
-    r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else|highlight|show_legend|legend|width|height|size)\s*[:=]\s*(.*)$",
+    r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else"
+    r"|highlight|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
+    r"|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|y_min|y_max"
+    r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 MAX_ROWS_RE = re.compile(r"^\s*max[_\s-]*rows\s*[:=]\s*(\d+)\s*$", re.IGNORECASE)
@@ -73,6 +77,12 @@ FIELD_ALIASES = {
     "wafers": "runtime_wafer_ids",
     "wafer_id": "runtime_wafer_ids",
     "wafer_ids": "runtime_wafer_ids",
+    "derive": "derived_columns",
+    "derived": "derived_columns",
+    "derived_column": "derived_columns",
+    "combine": "derived_columns",
+    "filter": "runtime_filters",
+    "filters": "runtime_filters",
 }
 DEFAULT_DATE_COLUMN = "tkout_time"
 MAX_RECENT_DAYS = 3650
@@ -89,6 +99,9 @@ LINKED_COLOR_CONDITION_RE = re.compile(
 )
 JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
 CHART_TYPES = {"scatter", "line", "box", "bar", "bar_horizontal", "pie", "donut", "radius", "wafer_map"}
+MAX_DERIVED_COLUMNS = 20
+MAX_RUNTIME_FILTERS = 50
+FILTER_OPERATORS = {"in", "not_in", "equals", "not_equals", "contains", "not_contains", "is_blank", "not_blank"}
 
 
 class ChartBuilderDefinitionError(ValueError):
@@ -104,11 +117,93 @@ def _field_name(value: str) -> str:
     return FIELD_ALIASES.get(str(value or "").strip().casefold().replace("-", "_"), "")
 
 
+def _pipe_options(value: str) -> tuple[str, dict[str, str]]:
+    parts = [part.strip() for part in str(value or "").split("|")]
+    head = parts[0] if parts else ""
+    options: dict[str, str] = {}
+    for part in parts[1:]:
+        key, separator, item = part.partition("=")
+        if separator:
+            options[key.strip().casefold().replace("-", "_")] = item.strip()
+    return head, options
+
+
+def _parse_derived_column(value: str) -> dict[str, Any]:
+    cleaned = str(value or "").strip()
+    head, options = _pipe_options(cleaned)
+    # 복사해 쓰기 쉬운 수식 단축형도 허용한다:
+    #   DERIVE = lot_wf = root_lot_id + "_" + wafer_id
+    if not options and "=" in head:
+        name, expression = [part.strip() for part in head.split("=", 1)]
+        tokens = [part.strip() for part in expression.split("+") if part.strip()]
+        columns: list[str] = []
+        separator = "_"
+        for token in tokens:
+            quoted = re.fullmatch(r"(['\"])(.*)\1", token)
+            if quoted:
+                separator = quoted.group(2)
+            else:
+                columns.append(token.strip("` "))
+    else:
+        name = options.get("name") or head
+        columns = [part.strip().strip("`") for part in (options.get("columns") or options.get("cols") or "").split(",") if part.strip()]
+        separator = options.get("separator", options.get("sep", "_"))
+    name = str(name or "").strip()[:80]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ChartBuilderDefinitionError("DERIVE 이름은 영문/숫자/밑줄 열 이름이어야 합니다.")
+    if not columns or len(columns) > 12 or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column) for column in columns):
+        raise ChartBuilderDefinitionError("DERIVE columns는 쉼표로 구분한 1~12개 열 이름이어야 합니다.")
+    separator = str(separator if separator is not None else "_").replace("\\t", "\t")[:8]
+    return {"name": name, "columns": columns, "separator": separator}
+
+
+def _filter_operator(value: str) -> str:
+    normalized = re.sub(r"[\s-]+", "_", str(value or "in").strip().casefold())
+    aliases = {"=": "equals", "==": "equals", "eq": "equals", "notin": "not_in", "!=": "not_equals", "ne": "not_equals", "blank": "is_blank", "is_not_blank": "not_blank"}
+    return aliases.get(normalized, normalized)
+
+
+def _parse_runtime_filter(value: str) -> dict[str, Any]:
+    head, options = _pipe_options(value)
+    column = str(options.get("column") or options.get("col") or head or "").strip().strip("`")[:120]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
+        raise ChartBuilderDefinitionError("FILTER column은 올바른 열 이름이어야 합니다.")
+    operator = _filter_operator(options.get("operator") or options.get("op") or "in")
+    if operator not in FILTER_OPERATORS:
+        raise ChartBuilderDefinitionError(f"지원하지 않는 FILTER operator입니다: {operator}")
+    raw_values = options.get("values", options.get("value", ""))
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[,\n]+", raw_values):
+        item = raw.strip()[:160]
+        key = item.casefold()
+        if item and key not in seen:
+            seen.add(key)
+            values.append(item)
+        if len(values) >= 200:
+            break
+    if operator not in {"is_blank", "not_blank"} and not values:
+        raise ChartBuilderDefinitionError("FILTER values를 하나 이상 입력해 주세요.")
+    return {"column": column, "operator": operator, "values": values}
+
+
 def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: bool = False) -> None:
     field = _field_name(name)
     if not field:
         raise ChartBuilderDefinitionError(f"지원하지 않는 Query 항목입니다: {name}")
     cleaned = str(value or "").strip()
+    if field == "derived_columns":
+        rows = source.setdefault(field, [])
+        if len(rows) >= MAX_DERIVED_COLUMNS:
+            raise ChartBuilderDefinitionError(f"DERIVE는 Query마다 최대 {MAX_DERIVED_COLUMNS}개까지 사용할 수 있습니다.")
+        rows.append(_parse_derived_column(cleaned))
+        return
+    if field == "runtime_filters":
+        rows = source.setdefault(field, [])
+        if len(rows) >= MAX_RUNTIME_FILTERS:
+            raise ChartBuilderDefinitionError(f"FILTER는 Query마다 최대 {MAX_RUNTIME_FILTERS}개까지 사용할 수 있습니다.")
+        rows.append(_parse_runtime_filter(cleaned))
+        return
     if field == "apply_reformatter":
         source[field] = cleaned.casefold() in {"1", "true", "yes", "y", "on", "사용", "적용"}
         return
@@ -242,6 +337,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
                 "apply_reformatter": False, "reformatter_items": "",
                 "runtime_recent_days": 0, "runtime_date_column": "",
                 "runtime_root_lot_ids": [], "runtime_wafer_ids": [], "runtime_lot_wafer_pairs": [],
+                "derived_columns": [], "runtime_filters": [],
             }
             sources.append(current)
             in_chart = False
@@ -333,6 +429,7 @@ def _source_dict(source: Any) -> dict[str, Any]:
             "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items",
             "runtime_recent_days", "runtime_date_column",
             "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs",
+            "derived_columns", "runtime_filters",
         )
     }
 
@@ -353,11 +450,16 @@ def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
             raise ChartBuilderDefinitionError("CHART SIZE는 WIDTHxHEIGHT 형식이어야 합니다. 예: 1200x650")
         chart["width"] = int(match.group(1))
         chart["height"] = int(match.group(2))
-    elif key in {"width", "height"}:
+    elif key in {"width", "height", "point_size"}:
         if not cleaned.isdigit():
             raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 픽셀 숫자여야 합니다.")
         chart[key] = int(cleaned)
-    elif key in {"highlight", "show_legend"}:
+    elif key in {"marker_opacity", "line_width", "y_min", "y_max", "wafer_low", "wafer_center", "wafer_high"}:
+        try:
+            chart[key] = float(cleaned)
+        except ValueError as exc:
+            raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 숫자여야 합니다.") from exc
+    elif key in {"highlight", "show_legend", "show_grid"}:
         chart[key] = cleaned.casefold() not in {"0", "false", "no", "n", "off", "사용안함"}
     else:
         chart[key] = cleaned
@@ -399,6 +501,36 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         raise ChartBuilderDefinitionError("CHART WIDTH는 320~2400px 사이여야 합니다.")
     if height and not 240 <= height <= 1600:
         raise ChartBuilderDefinitionError("CHART HEIGHT는 240~1600px 사이여야 합니다.")
+    point_size = int(chart.get("point_size") or 0)
+    if point_size and not 2 <= point_size <= 30:
+        raise ChartBuilderDefinitionError("CHART POINT_SIZE는 2~30 사이여야 합니다.")
+    marker_opacity = float(chart.get("marker_opacity") or 0)
+    if marker_opacity and not 0.05 <= marker_opacity <= 1:
+        raise ChartBuilderDefinitionError("CHART MARKER_OPACITY는 0.05~1 사이여야 합니다.")
+    line_width = float(chart.get("line_width") or 0)
+    if line_width and not 0.5 <= line_width <= 8:
+        raise ChartBuilderDefinitionError("CHART LINE_WIDTH는 0.5~8 사이여야 합니다.")
+    if chart.get("y_min") is not None and chart.get("y_max") is not None and float(chart["y_min"]) >= float(chart["y_max"]):
+        raise ChartBuilderDefinitionError("CHART Y_MIN은 Y_MAX보다 작아야 합니다.")
+    enums = {
+        "trend_grain": {"shot", "wafer", "daily", "weekly"},
+        "aggregation": {"raw", "avg", "median", "p10", "p90", "min", "max", "count", "sum"},
+        "map_scope": {"root_wafer", "root_lot", "trellis_wafer", "trellis_root_wafer"},
+        "pie_basis": {"count", "sum"},
+        "fit": {"none", "linear", "cubic"},
+        "y_scale": {"linear", "log"},
+        "legend_position": {"bottom", "top", "right", "inside"},
+        "box_points": {"outliers", "all", "none"},
+        "wafer_palette": {"blue_gray_red", "red_gray_blue", "viridis", "gray"},
+    }
+    for key, allowed in enums.items():
+        value = str(chart.get(key) or "").casefold()
+        if value and value not in allowed:
+            raise ChartBuilderDefinitionError(f"지원하지 않는 CHART {key.upper()}입니다: {value}")
+    if str(chart.get("y_scale") or "").casefold() == "log":
+        for key in ("y_min", "y_max"):
+            if chart.get(key) is not None and float(chart[key]) <= 0:
+                raise ChartBuilderDefinitionError(f"CHART {key.upper()}은 LOG scale에서 0보다 커야 합니다.")
 
 
 def linked_chart_color_pairs(chart: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -469,6 +601,22 @@ def format_chart_builder_definition(
             reformatter_items = str(source.get("reformatter_items") or "").strip()
             if reformatter_items:
                 lines.append(f"ITEMS = {reformatter_items}")
+        for derived in source.get("derived_columns") or []:
+            if not isinstance(derived, dict):
+                continue
+            name = str(derived.get("name") or "").strip()
+            columns = [str(column).strip() for column in (derived.get("columns") or []) if str(column).strip()]
+            if name and columns:
+                separator = str(derived.get("separator") if derived.get("separator") is not None else "_").replace("\t", "\\t")
+                lines.append(f"DERIVE = {name} | columns={','.join(columns)} | separator={separator}")
+        for item in source.get("runtime_filters") or []:
+            if not isinstance(item, dict):
+                continue
+            column = str(item.get("column") or "").strip()
+            operator = _filter_operator(item.get("operator") or "in")
+            values = [str(value).strip() for value in (item.get("values") or []) if str(value).strip()]
+            if column and (values or operator in {"is_blank", "not_blank"}):
+                lines.append(f"FILTER = {column} | operator={operator} | values={','.join(values[:200])}")
         lines.append("")
 
     for raw_join in joins or []:
@@ -485,7 +633,17 @@ def format_chart_builder_definition(
     chart = chart if isinstance(chart, dict) else {}
     if chart:
         lines.append("CHART")
-        for key, label in (("type", "TYPE"), ("x", "X"), ("y", "Y"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("width", "WIDTH"), ("height", "HEIGHT")):
+        for key, label in (
+            ("type", "TYPE"), ("title", "TITLE"), ("x", "X"), ("y", "Y"), ("x_label", "X_LABEL"),
+            ("y_label", "Y_LABEL"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("trend_grain", "TREND_GRAIN"),
+            ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
+            ("map_target", "MAP_TARGET"), ("pie_basis", "PIE_BASIS"), ("fit", "FIT"),
+            ("point_size", "POINT_SIZE"), ("marker_opacity", "MARKER_OPACITY"), ("line_width", "LINE_WIDTH"),
+            ("y_min", "Y_MIN"), ("y_max", "Y_MAX"), ("y_scale", "Y_SCALE"),
+            ("legend_position", "LEGEND_POSITION"), ("spec_low", "SPEC_LOW"), ("spec_high", "SPEC_HIGH"),
+            ("box_points", "BOX_POINTS"), ("wafer_palette", "WAFER_PALETTE"), ("wafer_low", "WAFER_LOW"),
+            ("wafer_center", "WAFER_CENTER"), ("wafer_high", "WAFER_HIGH"), ("width", "WIDTH"), ("height", "HEIGHT"),
+        ):
             value = str(chart.get(key) or "").strip()
             if value:
                 lines.append(f"{label} = {value}")
@@ -498,6 +656,8 @@ def format_chart_builder_definition(
             lines.append(f"HIGHLIGHT = {'true' if bool(chart.get('highlight')) else 'false'}")
         if chart.get("show_legend") is not None:
             lines.append(f"SHOW_LEGEND = {'true' if bool(chart.get('show_legend')) else 'false'}")
+        if chart.get("show_grid") is not None:
+            lines.append(f"SHOW_GRID = {'true' if bool(chart.get('show_grid')) else 'false'}")
         lines.append("")
     lines.append(f"MAX_ROWS = {max(1, min(10000, int(max_rows or 10000)))}")
     return "\n".join(lines).strip() + "\n"
