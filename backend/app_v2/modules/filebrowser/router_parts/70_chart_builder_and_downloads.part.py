@@ -429,6 +429,9 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                  agg_func: str = Query(""),
                  agg_column: str = Query(""),
                  agg_group_by: str = Query(""),
+                 sort_column: str = Query(""),
+                 sort_direction: str = Query("asc"),
+                 sort_nulls: str = Query("last"),
                  apply_reformatter: bool = Query(True),
                  max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS),
                  max_bytes: int = Query(0, ge=0, le=MAX_CSV_DOWNLOAD_BYTES),
@@ -445,6 +448,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     try:
         settings = _load_filebrowser_settings()
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
         max_rows = _csv_download_max_rows(max_rows)
         max_bytes = _csv_download_max_bytes(max_bytes, settings)
         lazy_lf = None
@@ -559,6 +563,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                     source_size=duckdb_engine.total_size(source_files),
                     settings=settings,
                     aggregate_spec=aggregate_spec,
+                    sort_spec=sort_spec,
                 )
             except HTTPException:
                 raise
@@ -566,7 +571,15 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 if aggregate_spec or not _is_dtype_mismatch_error(e) or not source_files or not duckdb_engine.is_available():
                     raise
                 logger.warning("polars download fallback to duckdb label=%s: %s", label, e)
-                df, csv_bytes = _download_duckdb_csv(source_files, sql, select_cols, max_rows, max_bytes, settings=settings)
+                df, csv_bytes = _download_duckdb_csv(
+                    source_files,
+                    sql,
+                    select_cols,
+                    max_rows,
+                    max_bytes,
+                    settings=settings,
+                    sort_spec=sort_spec,
+                )
             _log_dl(username, label, sql, df.height, df.width,
                     select_cols=select_cols, size_bytes=len(csv_bytes))
             # 활동 대시보드: 무엇을 어떤 조건으로 CSV 다운로드했는지 (DL_LOG 와 별도).
@@ -595,8 +608,9 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 logger.warning(f"Reformatter skipped: {e}")
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
+        download_source_columns = list(df.columns)
         df_schema = {n: str(d) for n, d in df.schema.items()}
-        sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, {}, list(df.columns))
+        sql, select_cols, sort_spec = _merge_display_sql_into_args(sql, select_cols, sort_spec, list(df.columns))
         normalized_sql = _validate_where_expression(sql, list(df.columns))
         guard_select_cols = select_cols
         if aggregate_spec:
@@ -613,6 +627,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
         )
         if sql.strip():
             df = apply_sql_like(df, _normalize_polars_view_sql_filter(normalized_sql, list(df.columns), df_schema))
+        active_aggregate = {}
         if aggregate_spec:
             warnings: list[str] = []
             active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), warnings, "aggregate")
@@ -620,8 +635,10 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 _fb_error(400, "invalid_aggregate", warnings[0])
             df = _apply_aggregate_df(df, active_aggregate)
             select_cols = ""
-        sort_columns = list(df.columns)
+        sort_columns = download_source_columns + [c for c in df.columns if c not in download_source_columns]
         active_sort, _latest_order_col = _resolve_view_sort_spec(sort_spec, sort_columns)
+        if active_aggregate:
+            active_sort = _aggregate_sort_alias(active_sort, active_aggregate, sort_columns)
         if active_sort and active_sort.get("column") in df.columns:
             df = df.sort(
                 _sort_expr(active_sort, None),
@@ -632,11 +649,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
                 df = df.select(sel)
-        if df.height > max_rows:
-            raise HTTPException(
-                400,
-                f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
-            )
+        df = df.head(max_rows)
         csv_bytes = _csv_bytes_checked(df, max_bytes)
         _log_dl(username, label, sql, df.height, df.width,
                 select_cols=select_cols, size_bytes=len(csv_bytes))

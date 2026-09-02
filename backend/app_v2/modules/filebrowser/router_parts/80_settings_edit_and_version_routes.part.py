@@ -318,6 +318,12 @@ def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
         "db_name_aliases": _discovered_db_name_aliases(settings),
         "ok": True,
         "can_manage": True,
+        "max_csv_full_read_max_bytes": MAX_CSV_FULL_READ_MAX_BYTES,
+        "max_csv_download_max_rows": MAX_CSV_DOWNLOAD_MAX_ROWS,
+        "max_csv_download_max_bytes": MAX_CSV_DOWNLOAD_BYTES,
+        "max_sql_query_max_source_bytes": MAX_SQL_QUERY_MAX_SOURCE_BYTES,
+        "max_preview_max_columns": MAX_PREVIEW_MAX_COLUMNS,
+        "max_schema_column_page_size": MAX_SCHEMA_COLUMN_PAGE_SIZE,
     }
 
 

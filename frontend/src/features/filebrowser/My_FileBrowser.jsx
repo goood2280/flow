@@ -911,6 +911,7 @@ export default function My_FileBrowser({
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);const[productsLoading,setProductsLoading]=useState(false);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
+  const[showAggregateBuilder,setShowAggregateBuilder]=useState(false);const[aggregateFunction,setAggregateFunction]=useState("latest");const[aggregateColumn,setAggregateColumn]=useState("tkout_time");const[aggregateGroupByText,setAggregateGroupByText]=useState("root_lot_id, wafer_id");
   const[sampleLoading,setSampleLoading]=useState(false);const viewSeqRef=useRef(0);const viewAbortRef=useRef(null);
   const viewSessionRef=useRef(globalThis.crypto?.randomUUID?.()||(`fb-${Date.now()}-${Math.random()}`));
   const activeViewQueryRef=useRef("");
@@ -1679,7 +1680,7 @@ export default function My_FileBrowser({
   const cleanAggregateSpec=(agg)=>{
     if(!agg||typeof agg!=="object")return null;
     const fn=String(agg.function||agg.func||agg.type||"").trim().toLowerCase();
-    if(!["avg","sum","min","max","median","count"].includes(fn))return null;
+    if(!["latest","avg","sum","min","max","median","count"].includes(fn))return null;
     const column=String(agg.column||"").trim();
     const groupBy=Array.isArray(agg.group_by)?agg.group_by.map(c=>String(c||"").trim()).filter(Boolean):[];
     if(fn!=="count"&&!column)return null;
@@ -1700,6 +1701,37 @@ export default function My_FileBrowser({
     const cols=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
     (remoteCols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!cols.includes(text))cols.push(text);});
     return cols;
+  };
+  const aggregateBuilderSpec=()=>{
+    const columns=currentColumns();
+    const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
+    const rawGroups=String(aggregateGroupByText||"").split(",").map(c=>c.trim()).filter(Boolean);
+    const unknownGroups=rawGroups.filter(c=>!lookup.has(c.toLowerCase()));
+    if(unknownGroups.length){toast.error(`그룹 기준 컬럼을 찾을 수 없습니다: ${unknownGroups.join(", ")}`);return null;}
+    const groupBy=[];
+    rawGroups.forEach(c=>{const hit=lookup.get(c.toLowerCase());if(hit&&!groupBy.includes(hit))groupBy.push(hit);});
+    const rawColumn=String(aggregateColumn||"").trim();
+    const column=rawColumn?(lookup.get(rawColumn.toLowerCase())||""):"";
+    if(rawColumn&&!column){toast.error(`집계 대상 컬럼을 찾을 수 없습니다: ${rawColumn}`);return null;}
+    const next=cleanAggregateSpec({function:aggregateFunction,column,group_by:groupBy});
+    if(!next){toast.error("집계 대상과 함수를 확인하세요. count는 대상 컬럼 없이 전체 행 개수를 집계할 수 있습니다.");return null;}
+    return next;
+  };
+  const applyAggregateBuilder=()=>{
+    const next=aggregateBuilderSpec();
+    if(!next)return;
+    setAggregateSpec(next);
+    applySql(sql,selectedCols,sortSpec,next);
+  };
+  const applyLatestWaferPreset=()=>{
+    const columns=currentColumns();
+    const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
+    const required=["root_lot_id","wafer_id","tkout_time"];
+    const missing=required.filter(c=>!lookup.has(c));
+    if(missing.length){toast.error(`프리셋에 필요한 컬럼이 없습니다: ${missing.join(", ")}`);return;}
+    const next=cleanAggregateSpec({function:"latest",column:lookup.get("tkout_time"),group_by:[lookup.get("root_lot_id"),lookup.get("wafer_id")]});
+    setAggregateFunction("latest");setAggregateColumn(lookup.get("tkout_time"));setAggregateGroupByText(`${lookup.get("root_lot_id")}, ${lookup.get("wafer_id")}`);
+    setAggregateSpec(next);applySql(sql,selectedCols,sortSpec,next);
   };
   const displaySqlIdent=(name)=>{
     const text=String(name||"").trim();
@@ -2817,6 +2849,12 @@ export default function My_FileBrowser({
       url+="&agg_column="+encodeURIComponent(agg.column);
       url+="&agg_group_by="+encodeURIComponent(agg.group_by.join(","));
     }
+    const activeSort=cleanSortSpec(sortSpec);
+    if(activeSort){
+      url+="&sort_column="+encodeURIComponent(activeSort.column);
+      url+="&sort_direction="+encodeURIComponent(activeSort.direction);
+      url+="&sort_nulls="+encodeURIComponent(activeSort.nulls);
+    }
     if(mode==="base"){
       url+="&file="+encodeURIComponent(selBaseFile);
       if(accessScope)url+="&access_scope="+encodeURIComponent(accessScope);
@@ -2848,6 +2886,8 @@ export default function My_FileBrowser({
   ];
   const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="items"||s3Tab==="history"?"S3 동기화 실행/이력":"S3 동기화 설정 — aws s3 cp/sync"));
   const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || aggregateSpec || data?.selected_cols);
+  const effectiveCsvMaxRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number(fbSettings.csv_download_max_rows||500000)||500000));
+  const effectiveCsvMaxMb=Math.max(1,Math.round(Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number(fbSettings.csv_download_max_bytes||100000000)||100000000)/1000000));
   const activePreviewLimit=Number(data?.preview_row_limit||fbSettings.preview_max_rows||PAGE_SIZE)||PAGE_SIZE;
   const previewStatusLabel=data?.single_file_full_read
     ?"전체 표시"
@@ -3015,9 +3055,33 @@ export default function My_FileBrowser({
             columns={data?.all_columns||data?.columns||[]} disabled={mode==="base"&&isBaseEditing}/>
           <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
+          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={()=>setShowAggregateBuilder(v=>!v)} title="그룹 기준과 집계 함수를 선택합니다." style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:showAggregateBuilder?"var(--accent-glow)":"transparent",color:showAggregateBuilder?"var(--accent)":"var(--text-secondary)",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>피벗/집계</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
-          {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
+          {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 {effectiveCsvMaxRows.toLocaleString()}행/{effectiveCsvMaxMb.toLocaleString()}MB</span>}
         </div>
+        {showAggregateBuilder&&data&&!(mode==="base"&&isBaseEditing)&&<div style={{padding:"9px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"end",gap:8,flexWrap:"wrap"}}>
+          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:230,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
+            그룹 기준 (쉼표로 구분)
+            <input value={aggregateGroupByText} onChange={e=>setAggregateGroupByText(e.target.value)} placeholder="root_lot_id, wafer_id" style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
+          </label>
+          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:145,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
+            집계 함수
+            <select value={aggregateFunction} onChange={e=>setAggregateFunction(e.target.value)} style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
+              <option value="latest">최신값 (latest)</option><option value="avg">평균 (avg)</option><option value="sum">합계 (sum)</option><option value="min">최솟값 (min)</option><option value="max">최댓값 (max)</option><option value="median">중앙값 (median)</option><option value="count">건수 (count)</option>
+            </select>
+          </label>
+          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:190,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
+            대상 컬럼 {aggregateFunction==="count"?"(비우면 행 수)":""}
+            <select value={aggregateColumn} onChange={e=>setAggregateColumn(e.target.value)} style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}>
+              <option value="">{aggregateFunction==="count"?"전체 행":"컬럼 선택"}</option>
+              {currentColumns().map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <button onClick={applyAggregateBuilder} style={{padding:"7px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:"pointer"}}>집계 적용</button>
+          <button onClick={applyLatestWaferPreset} title="root_lot_id와 wafer_id별 tkout_time의 최댓값을 반환합니다." style={{padding:"7px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:"pointer"}}>Root Lot + Wafer별 최신 tkout_time</button>
+          <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"7px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>집계 해제</button>
+          <span style={{fontSize:11,color:"var(--text-secondary)"}}>latest는 그룹별 대상 컬럼의 가장 늦은 값만 반환합니다.</span>
+        </div>}
         {aggregateSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>AGG:</span>
           <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{aggregateLabel(aggregateSpec)}</span>
@@ -3649,7 +3713,7 @@ export default function My_FileBrowser({
                     <input type="number" min={1} max={Math.round((fbSettings.max_csv_download_max_bytes||100000000)/1048576)} step={1} value={fbDownloadMb} onChange={e=>setFbDownloadMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
                   </label>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 다운로드 최대 행 (보조)
+                    CSV 다운로드 최대 행 (1~{Number(fbSettings.max_csv_download_max_rows||500000).toLocaleString()})
                     <input type="number" min={1} max={fbSettings.max_csv_download_max_rows||500000} step={1000} value={fbDownloadRows} onChange={e=>setFbDownloadRows(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
                   </label>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>

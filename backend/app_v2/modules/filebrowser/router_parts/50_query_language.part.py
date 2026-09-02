@@ -1260,6 +1260,7 @@ def _build_ai_sql_display_sql(
     return f"{base} {order}".strip()
 
 _AI_SQL_AGG_FUNCTION_ALIASES = {
+    "latest": ("latest", "last", "newest", "최신", "가장 늦은"),
     "avg": ("avg", "average", "mean", "평균"),
     "sum": ("sum", "total", "합계", "합"),
     "min": ("min", "minimum", "최소", "최솟값"),
@@ -2266,6 +2267,8 @@ def _aggregate_expr(spec: dict):
     alias = spec.get("alias") or _aggregate_alias(function, column)
     if function == "count":
         expr = pl.col(column).count() if column else pl.len()
+    elif function == "latest":
+        expr = pl.col(column).max()
     elif function == "avg":
         expr = pl.col(column).cast(pl.Float64, strict=False).mean()
     elif function == "sum":
@@ -4369,14 +4372,9 @@ def _download_lazy_csv(
         lf = lf.select(selected)
     try:
         from core.parquet_perf import collect_streaming
-        df = collect_streaming(lf.head(max_rows + 1))
+        df = collect_streaming(lf.head(max_rows))
     except Exception:
-        df = lf.head(max_rows + 1).collect()
-    if df.height > max_rows:
-        raise HTTPException(
-            400,
-            f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
-        )
+        df = lf.head(max_rows).collect()
     csv_bytes = _csv_bytes_checked(df, _csv_download_max_bytes(max_bytes, settings))
     return df, csv_bytes
 
@@ -4426,15 +4424,10 @@ def _download_duckdb_csv(
         files,
         where=where,
         select_cols=selected,
-        limit=max_rows + 1,
+        limit=max_rows,
         order_by=active_sort.get("column") or "",
         descending=_sort_descending(active_sort),
     )
-    if df.height > max_rows:
-        raise HTTPException(
-            400,
-            f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
-        )
     csv_bytes = _csv_bytes_checked(df, _csv_download_max_bytes(max_bytes, settings))
     return df, csv_bytes
 
