@@ -4,7 +4,7 @@ def _custom_tags_path() -> Path:
 
 def _load_custom_tags_data() -> dict:
     # cached — _clean_overlay_store_data 는 입력을 수정하지 않고 새 컨테이너를 만든다.
-    data = load_json_cached(_custom_tags_path(), {"columns": [], "values": {}})
+    data = load_json_cached(_custom_tags_path(), {"columns": [], "values": {}, "colors": {}})
     cleaned, changed = _clean_overlay_store_data(data, allow_management=True)
     if changed:
         _save_custom_tags_data(cleaned)
@@ -15,6 +15,7 @@ def _save_custom_tags_data(data: dict) -> None:
     save_json(_custom_tags_path(), {
         "columns": list(data.get("columns") or []),
         "values": dict(data.get("values") or {}),
+        "colors": dict(data.get("colors") or {}),
     }, indent=2)
 
 
@@ -70,17 +71,34 @@ def _ensure_custom_tag_column(
 def _custom_tag_columns_for_product(product: str) -> list[dict]:
     product_key = str(product or "").strip()
     data = _load_custom_tags_data()
-    out = []
-    seen = set()
+    out = [{
+        "product": product_key,
+        "column": DEFAULT_CUSTOM_TAG_COLUMN,
+        "label": DEFAULT_CUSTOM_TAG_LABEL,
+        "module": "",
+        "builtin": True,
+    }]
+    seen = {DEFAULT_CUSTOM_TAG_COLUMN.upper()}
     for raw in data.get("columns") or []:
         if not isinstance(raw, dict):
             continue
         if raw.get("product") != product_key:
             continue
         column = str(raw.get("column") or "").strip()
-        if not column or column in seen:
+        column_key = column.upper()
+        if not column or column_key in seen:
+            # 저장된 기본 purpose 항목은 생성일/작성자/module 메타만 가상 기본행에 합친다.
+            if column_key == DEFAULT_CUSTOM_TAG_COLUMN.upper():
+                out[0] = {
+                    **raw,
+                    "product": product_key,
+                    "column": DEFAULT_CUSTOM_TAG_COLUMN,
+                    "label": DEFAULT_CUSTOM_TAG_LABEL,
+                    "module": _clean_tag_module(raw.get("module")),
+                    "builtin": True,
+                }
             continue
-        seen.add(column)
+        seen.add(column_key)
         label = str(raw.get("label") or column).strip() or column
         out.append({**raw, "column": column, "label": label, "module": _clean_tag_module(raw.get("module"))})
     return out
@@ -105,6 +123,27 @@ def _custom_tag_values_for_root(product: str, root_lot_id: str) -> dict[str, str
             continue
         out["|".join(parts[1:])] = str(value)
     return out
+
+
+def _custom_tag_colors_for_root(product: str, root_lot_id: str) -> dict[str, str]:
+    data = _load_custom_tags_data()
+    prefix = f"{product}|{root_lot_id}|"
+    out: dict[str, str] = {}
+    for key, raw_color in (data.get("colors") or {}).items():
+        if not str(key).startswith(prefix):
+            continue
+        parts = str(key).split("|", 3)
+        color = str(raw_color or "").strip().lower()
+        if len(parts) == 4 and color in CUSTOM_TAG_COLOR_PALETTE:
+            out["|".join(parts[1:])] = color
+    return out
+
+
+def _with_default_custom_tag(columns: list[str]) -> list[str]:
+    """purpose TAG를 어떤 prefix/custom 보기에서도 항상 첫 TAG 후보로 유지한다."""
+    return [DEFAULT_CUSTOM_TAG_COLUMN, *[
+        c for c in (columns or []) if str(c or "").strip().upper() != DEFAULT_CUSTOM_TAG_COLUMN.upper()
+    ]]
 
 
 def _custom_tag_column_values(product: str, column: str, limit: int = 200) -> list[str]:
@@ -615,6 +654,7 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
         # 수신 대상 = 계획 작성자 + 제품명과 동일한 이름의 그룹 멤버.
         group_recipients = _product_mismatch_group_members(product)
         sent = 0
+        ledger_changed = False
         mail_items: list[dict] = []
         mail_targets: list[str] = []
         for mm in mismatches[:100]:
@@ -633,8 +673,6 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
             for name in group_recipients:
                 if name not in targets:
                     targets.append(name)
-            if not targets:
-                continue
             alert_key = _plan_mismatch_alert_key(cell_key, plan, actual)
             root, wafer, column = _split_plan_cell_key(cell_key)
             payload = {
@@ -647,6 +685,30 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                 "actual": _clean_str(actual),
                 "plan_updated": plan_info.get("updated") or mm.get("plan_updated") or "",
             }
+            # 알림 수신자가 없거나 emit_event가 실패해도 매칭알람의
+            # 'SplitTable plan 이상항목들'에는 남아야 한다. 수신자별 알림 dedupe와
+            # 분리된 canonical 장부를 두고, 같은 cell의 더 오래된 actual 기록은
+            # 새 불일치로 교체한다.
+            ledger_key = f"{alert_key}|plan_knob_ledger"
+            for old_key, old_value in list(alerts.items()):
+                if (str(old_key).endswith("|plan_knob_ledger")
+                        and isinstance(old_value, dict)
+                        and str(old_value.get("cell") or "") == cell_key
+                        and old_key != ledger_key):
+                    alerts.pop(old_key, None)
+                    ledger_changed = True
+            prior_ledger = alerts.get(ledger_key) if isinstance(alerts.get(ledger_key), dict) else {}
+            ledger_value = {
+                "time": prior_ledger.get("time") or datetime.datetime.now().isoformat(),
+                "target_user": "",
+                "ledger": "plan_knob",
+                **payload,
+            }
+            if alerts.get(ledger_key) != ledger_value:
+                alerts[ledger_key] = ledger_value
+                ledger_changed = True
+            if not targets:
+                continue
             alert_body = (
                 f"! {product}/{root}"
                 + (f" WF{wafer}" if wafer else "")
@@ -688,7 +750,7 @@ def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], ac
                 for t in new_targets:
                     if t not in mail_targets:
                         mail_targets.append(t)
-        if sent:
+        if sent or ledger_changed:
             if len(alerts) > 2000:
                 for old_key in list(alerts.keys())[: len(alerts) - 2000]:
                     alerts.pop(old_key, None)

@@ -444,6 +444,7 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
   };
   const notificationLabel = (type) => {
     const normalized = notificationType(type);
+    if (normalized === "admin_notice") return "공지";
     return normalized === "warning" ? "! warning" : normalized;
   };
   const notificationBody = (n) => {
@@ -454,7 +455,8 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
     }
     return n?.body || "";
   };
-  const typeColor = { approval: "var(--warn)", message: "var(--info)", info: "var(--muted)", warning: "var(--danger)" };
+  const typeColor = { approval: "var(--warn)", message: "var(--info)", admin_notice: "var(--info)",
+                      info: "var(--muted)", warning: "var(--danger)" };
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>

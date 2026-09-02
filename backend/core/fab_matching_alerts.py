@@ -18,6 +18,7 @@ URLs and the page permission key (``valve``) do not need a migration.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -54,6 +55,7 @@ SCANNER_STALE_SECONDS = 60
 RECOMMENDATION_BATCH_INTERVAL_SECONDS = 60
 ACK_PATH = PATHS.data_root / "fab_matching_alert_acks.json"
 DECISIONS_PATH = PATHS.data_root / "fab_matching_alert_decisions.jsonl"
+PLAN_DIR = PATHS.data_root / "splittable"
 
 PPID_KNOB_FILE = "ppid_knob.csv"
 VEHICLE_MATCHING_FILE = "Vehicle_matching.csv"
@@ -1162,6 +1164,359 @@ def _step_desc_from_rows(rows: list[dict], product: str, step_id: str) -> str:
         if str(row.get("step_id") or "").strip() == step_id:
             return str(row.get("step_desc") or row.get("function_step") or "").strip()
     return ""
+
+
+def _csv_column(columns: list[str], *names: str) -> str:
+    """Resolve a CSV column without making casing part of the contract."""
+    lookup = {str(column or "").strip().casefold(): column for column in columns}
+    for name in names:
+        found = lookup.get(str(name or "").strip().casefold())
+        if found:
+            return found
+    return ""
+
+
+def _plan_product(product: Any) -> str:
+    value = str(product or "").strip()
+    if value.upper().startswith("ML_TABLE_"):
+        value = value[len("ML_TABLE_"):].strip()
+    return value
+
+
+def _row_applies_to_product(row: dict, product: str, product_col: str) -> bool:
+    if not product_col:
+        return True
+    raw = str(row.get(product_col) or "").strip()
+    if not raw:
+        return True
+    wanted = _norm(product)
+    return wanted in {
+        _norm(value) for value in re.split(r"[,;|]+", raw) if str(value or "").strip()
+    }
+
+
+def _plan_knob_anomaly_id(product: str, feature: str, plan: str, actual: str) -> str:
+    raw = "|".join([_norm(product), feature.casefold(), plan, actual])
+    return "SPA-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _plan_knob_context(knob_columns: list[str], knob_rows: list[dict],
+                       vehicle_rows: list[dict], product: str, feature: str,
+                       plan: str, actual: str) -> dict:
+    """Describe how a SplitTable mismatch would change ``ppid_knob.csv``.
+
+    A KNOB plan is the desired display/category name and the actual value is the
+    PPID observed in FAB.  Prefer the plan's existing rule to carry the same
+    function step; if the feature has only one step, that is a safe fallback.
+    """
+    feature_col = _csv_column(knob_columns, "feature_name") or "feature_name"
+    value_col = _csv_column(knob_columns, "value", "ppid") or "value"
+    category_col = _csv_column(knob_columns, "category") or "category"
+    step_desc_col = _csv_column(knob_columns, "step_desc")
+    function_step_col = _csv_column(knob_columns, "function_step")
+    product_col = _csv_column(knob_columns, "product")
+    step_id_col = _csv_column(knob_columns, "step_id")
+
+    def row_step(row: dict) -> str:
+        return str(
+            (row.get(step_desc_col) if step_desc_col else "")
+            or (row.get(function_step_col) if function_step_col else "")
+            or ""
+        ).strip()
+
+    feature_rows = [
+        row for row in knob_rows
+        if str(row.get(feature_col) or "").strip().casefold() == feature.casefold()
+        and _row_applies_to_product(row, product, product_col)
+    ]
+    actual_rows = [
+        row for row in feature_rows
+        if str(row.get(value_col) or "").strip() == actual
+    ]
+    if any(str(row.get(category_col) or "").strip() == plan for row in actual_rows):
+        return {"already_applied": True, "ready": False}
+
+    plan_rows = [
+        row for row in feature_rows
+        if str(row.get(value_col) or "").strip() == plan
+        or str(row.get(category_col) or "").strip() == plan
+    ]
+    step_descs = []
+    for row in [*plan_rows, *actual_rows, *feature_rows]:
+        value = row_step(row)
+        if value and value.casefold() not in {item.casefold() for item in step_descs}:
+            step_descs.append(value)
+    # A matching plan row is authoritative. Without one, only a single-step
+    # feature is unambiguous enough for an automatic rulebook write.
+    selected_step = row_step(plan_rows[0]) if plan_rows else ""
+    if not selected_step and len(step_descs) == 1:
+        selected_step = step_descs[0]
+
+    direct_step_ids: list[str] = []
+    for row in [*plan_rows, *actual_rows]:
+        if not step_id_col:
+            break
+        for value in re.split(r"[,;|]+", str(row.get(step_id_col) or "")):
+            value = value.strip()
+            if value and value.casefold() not in {item.casefold() for item in direct_step_ids}:
+                direct_step_ids.append(value)
+    if selected_step and not direct_step_ids:
+        wanted_product = _norm(product)
+        for row in vehicle_rows:
+            row_product = row.get("product") or row.get("vehicle")
+            row_desc = row.get("step_desc") or row.get("function_step")
+            if _norm(row_product) != wanted_product or str(row_desc or "").strip().casefold() != selected_step.casefold():
+                continue
+            step_id = str(row.get("step_id") or "").strip()
+            if step_id and step_id.casefold() not in {item.casefold() for item in direct_step_ids}:
+                direct_step_ids.append(step_id)
+
+    current_categories = []
+    for row in actual_rows:
+        category = str(row.get(category_col) or "").strip()
+        if category and category not in current_categories:
+            current_categories.append(category)
+    mode = "update" if actual_rows else "add"
+    ready = bool(actual_rows or selected_step)
+    reason = ""
+    if not ready:
+        reason = "plan과 연결되는 공정이 여러 개이거나 없어 자동 반영할 수 없습니다"
+    return {
+        "already_applied": False,
+        "ready": ready,
+        "reason": reason,
+        "mode": mode,
+        "step_desc": selected_step or (row_step(actual_rows[0]) if actual_rows else ""),
+        "step_ids": direct_step_ids,
+        "current_categories": current_categories,
+    }
+
+
+def list_plan_knob_anomalies(limit: int = 2000) -> dict:
+    """List current KNOB plan mismatches grouped by the rule they would create.
+
+    ``mismatch_alerts`` can contain one copy per notification recipient.  The
+    grouping key deliberately excludes lot/wafer, so a PPID observed on many
+    wafers is presented as one checkable rulebook change with occurrence count.
+    """
+    knob_path = Path(PATHS.db_root) / PPID_KNOB_FILE
+    vehicle_path = Path(PATHS.db_root) / VEHICLE_MATCHING_FILE
+    knob_columns, knob_rows = _read_csv(knob_path)
+    vehicle_columns, vehicle_rows = _read_csv(vehicle_path)
+    del vehicle_columns
+    if not knob_columns:
+        knob_columns = ["feature_name", "function_step", "rule_order", "operator", "value", "category"]
+
+    grouped: dict[str, dict] = {}
+    if not PLAN_DIR.is_dir():
+        return {"ok": True, "items": [], "total": 0, "source_files": 0}
+    source_files = 0
+    for path in PLAN_DIR.glob("*.json"):
+        data = load_json(path, {})
+        if not isinstance(data, dict) or not isinstance(data.get("plans"), dict):
+            continue
+        alerts = data.get("mismatch_alerts")
+        if not isinstance(alerts, dict):
+            continue
+        source_files += 1
+        plans = data["plans"]
+        seen_cells: set[tuple[str, str, str]] = set()
+        for alert in alerts.values():
+            if not isinstance(alert, dict):
+                continue
+            cell = str(alert.get("cell") or "").strip()
+            column = str(alert.get("column") or (cell.split("|", 2)[2] if cell.count("|") >= 2 else "")).strip()
+            if not column.upper().startswith("KNOB_"):
+                continue
+            plan_info = plans.get(cell)
+            if not isinstance(plan_info, dict):
+                continue
+            plan = str(plan_info.get("value") or "").strip()
+            actual = str(alert.get("actual") or "").strip()
+            # Old notification records remain append-only. Only a record that
+            # still describes the current plan is actionable.
+            if not plan or plan != str(alert.get("plan") or "").strip() or not actual or plan == actual:
+                continue
+            cell_key = (cell, plan, actual)
+            if cell_key in seen_cells:
+                continue
+            seen_cells.add(cell_key)
+            product = str(alert.get("product") or path.stem).strip()
+            feature = column[len("KNOB_"):].strip()
+            context = _plan_knob_context(
+                knob_columns, knob_rows, vehicle_rows, product, feature, plan, actual)
+            if context.get("already_applied"):
+                continue
+            item_id = _plan_knob_anomaly_id(product, feature, plan, actual)
+            item = grouped.get(item_id)
+            location = {
+                "root_lot_id": str(alert.get("root_lot_id") or cell.split("|", 1)[0] or ""),
+                "wafer_id": str(alert.get("wafer_id") or (cell.split("|")[1] if cell.count("|") >= 1 else "")),
+                "cell": cell,
+            }
+            if item is None:
+                item = {
+                    "id": item_id,
+                    "product": product,
+                    "product_key": _plan_product(product),
+                    "feature_name": feature,
+                    "column": column,
+                    "plan": plan,
+                    "actual_ppid": actual,
+                    "plan_user": str(plan_info.get("user") or alert.get("target_user") or ""),
+                    "plan_updated": str(plan_info.get("updated") or alert.get("plan_updated") or ""),
+                    "occurrences": 0,
+                    "locations": [],
+                    **context,
+                }
+                grouped[item_id] = item
+            item["occurrences"] += 1
+            if len(item["locations"]) < 8:
+                item["locations"].append(location)
+
+    items = sorted(grouped.values(), key=lambda item: (
+        _norm(item.get("product")), str(item.get("feature_name") or "").casefold(),
+        str(item.get("plan") or "").casefold(), str(item.get("actual_ppid") or "").casefold(),
+    ))
+    total = len(items)
+    return {"ok": True, "items": items[:max(1, int(limit))], "total": total,
+            "source_files": source_files, "truncated": total > limit}
+
+
+def apply_plan_knob_anomalies(item_ids: list[str], note: str, username: str = "") -> dict:
+    """Apply checked SplitTable anomalies to ppid_knob as one versioned batch."""
+    ids = [str(item_id or "").strip() for item_id in item_ids if str(item_id or "").strip()]
+    if not ids:
+        raise ValueError("반영할 SplitTable plan 이상항목을 선택하세요")
+    if len(ids) != len(set(ids)):
+        raise ValueError("중복된 이상항목이 포함되어 있습니다")
+    if len(ids) > 500:
+        raise ValueError("한 번에 최대 500건까지 반영할 수 있습니다")
+    comment = str(note or "").strip()
+    if not comment:
+        raise ValueError("반영 코멘트를 입력하세요")
+
+    current = list_plan_knob_anomalies(limit=10000)
+    candidates = {str(item.get("id") or ""): item for item in current.get("items") or []}
+    missing = [item_id for item_id in ids if item_id not in candidates]
+    if missing:
+        raise LookupError(f"이미 해소되었거나 찾을 수 없는 이상항목: {', '.join(missing[:5])}")
+    selected = [candidates[item_id] for item_id in ids]
+    blocked = [item for item in selected if not item.get("ready")]
+    if blocked:
+        raise ValueError(str(blocked[0].get("reason") or "자동 반영할 수 없는 항목이 포함되어 있습니다"))
+
+    actor = username or "flow"
+    batch_id = f"SPK-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    knob_path = Path(PATHS.db_root) / PPID_KNOB_FILE
+    vehicle_path = Path(PATHS.db_root) / VEHICLE_MATCHING_FILE
+    results: list[dict] = []
+    original: bytes | None = None
+    with _write_lock:
+        columns, rows = _read_csv(knob_path)
+        _vehicle_columns, vehicle_rows = _read_csv(vehicle_path)
+        if not columns:
+            columns = ["feature_name", "function_step", "rule_order", "operator", "value", "category"]
+        for column in ("feature_name", "rule_order", "operator", "value", "category", "product", "step_id", "step_desc"):
+            if column not in columns:
+                columns.append(column)
+        feature_col = _csv_column(columns, "feature_name") or "feature_name"
+        value_col = _csv_column(columns, "value", "ppid") or "value"
+        category_col = _csv_column(columns, "category") or "category"
+        order_col = _csv_column(columns, "rule_order") or "rule_order"
+        operator_col = _csv_column(columns, "operator") or "operator"
+        product_col = _csv_column(columns, "product") or "product"
+        step_id_col = _csv_column(columns, "step_id") or "step_id"
+        step_desc_col = _csv_column(columns, "step_desc") or "step_desc"
+        function_step_col = _csv_column(columns, "function_step")
+
+        for item in selected:
+            product = str(item.get("product") or "").strip()
+            feature = str(item.get("feature_name") or "").strip()
+            plan = str(item.get("plan") or "").strip()
+            actual = str(item.get("actual_ppid") or "").strip()
+            context = _plan_knob_context(columns, rows, vehicle_rows, product, feature, plan, actual)
+            if context.get("already_applied"):
+                raise ValueError(f"이미 반영된 PPID입니다: {feature} {actual} → {plan}")
+            if not context.get("ready"):
+                raise ValueError(str(context.get("reason") or f"공정을 결정할 수 없습니다: {feature}"))
+            applicable = [
+                row for row in rows
+                if str(row.get(feature_col) or "").strip().casefold() == feature.casefold()
+                and str(row.get(value_col) or "").strip() == actual
+                and _row_applies_to_product(row, product, product_col)
+            ]
+            step_desc = str(context.get("step_desc") or item.get("step_desc") or "").strip()
+            step_ids = [str(value).strip() for value in (context.get("step_ids") or item.get("step_ids") or []) if str(value).strip()]
+            change_mode = "update" if applicable else "add"
+            if applicable:
+                for row in applicable:
+                    row[category_col] = plan
+            else:
+                feature_indexes = [
+                    index for index, row in enumerate(rows)
+                    if str(row.get(feature_col) or "").strip().casefold() == feature.casefold()
+                ]
+                max_rule = 0
+                ro_position = None
+                for index in feature_indexes:
+                    order = str(rows[index].get(order_col) or "").strip().upper()
+                    if order == "RO":
+                        ro_position = index if ro_position is None else min(ro_position, index)
+                    elif order.startswith("R") and order[1:].isdigit():
+                        max_rule = max(max_rule, int(order[1:]))
+                rule_order = f"R{max_rule + 1}"
+                new_row = {column: "" for column in columns}
+                new_row.update({
+                    feature_col: feature,
+                    order_col: rule_order,
+                    operator_col: "eq",
+                    value_col: actual,
+                    category_col: plan,
+                    product_col: _plan_product(product),
+                    step_id_col: ",".join(step_ids),
+                    step_desc_col: step_desc,
+                })
+                if function_step_col:
+                    new_row[function_step_col] = step_desc
+                if "use" in columns:
+                    new_row["use"] = "true"
+                if ro_position is not None:
+                    rows.insert(ro_position, new_row)
+                elif feature_indexes:
+                    rows.insert(feature_indexes[-1] + 1, new_row)
+                else:
+                    rows.append(new_row)
+            results.append({
+                "id": item["id"], "change_mode": change_mode, "product": product,
+                "feature_name": feature, "ppid": actual, "category": plan,
+                "step_desc": step_desc, "step_ids": step_ids,
+            })
+
+        original = knob_path.read_bytes() if knob_path.exists() else None
+        try:
+            _write_csv_atomic(knob_path, columns, rows)
+        except Exception:
+            if original is None:
+                knob_path.unlink(missing_ok=True)
+            else:
+                rollback = knob_path.with_suffix(knob_path.suffix + ".rollback.tmp")
+                rollback.write_bytes(original)
+                rollback.replace(knob_path)
+            raise
+        post = _post_write(
+            knob_path, actor,
+            f"[SplitTable plan 이상항목] {batch_id}: {len(results)}건 | {comment}",
+        )
+
+    for result in results:
+        _append_decision({
+            **result, "alert_id": result["id"], "type": "plan_knob_anomaly",
+            "action": "plan_knob", "by": actor, "batch_id": batch_id,
+            "file": knob_path.name, "detail": comment,
+        })
+    return {"ok": True, "batch_id": batch_id, "count": len(results),
+            "results": results, "file": knob_path.name, **post}
 
 
 _EXPECTED_CHANGE_KIND = {

@@ -699,6 +699,14 @@ PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
 CUSTOM_TAG_PREFIX = "TAG"
+DEFAULT_CUSTOM_TAG_COLUMN = f"{CUSTOM_TAG_PREFIX}_purpose"
+DEFAULT_CUSTOM_TAG_LABEL = "purpose"
+CUSTOM_TAG_COLOR_PALETTE = {
+    "#ffffff", "#f3f4f6", "#d1d5db", "#fecaca", "#fed7aa",
+    "#fef3c7", "#d9f99d", "#bbf7d0", "#99f6e4", "#a5f3fc",
+    "#bfdbfe", "#c7d2fe", "#ddd6fe", "#e9d5ff", "#f5d0fe",
+    "#fbcfe8", "#fee2e2", "#ffedd5", "#ecfccb", "#e0f2fe",
+}
 MANAGEMENT_ROW_PREFIX = "MGMT"
 _INVALID_CUSTOM_TOKENS = {"undefined", "null"}
 # v8.8.6: paste 세트 공유 저장소 — LocalStorage 대신 BE 에 올려 팀 공용 풀 + CUSTOM 탭 연동.
@@ -779,7 +787,7 @@ def _sanitize_custom_record(record: Any, path: Path | None = None, *, persist: b
 
 def _clean_overlay_store_data(data: Any, *, allow_management: bool = True) -> tuple[dict, bool]:
     if not isinstance(data, dict):
-        return {"columns": [], "values": {}}, False
+        return {"columns": [], "values": {}, "colors": {}}, False
     changed = False
     cleaned_cols = []
     for raw in data.get("columns") if isinstance(data.get("columns"), list) else []:
@@ -810,7 +818,24 @@ def _clean_overlay_store_data(data: Any, *, allow_management: bool = True) -> tu
         if key != raw_key:
             changed = True
         cleaned_values[key] = value
-    return {"columns": cleaned_cols, "values": cleaned_values}, changed
+    cleaned_colors = {}
+    colors = data.get("colors") if isinstance(data.get("colors"), dict) else {}
+    for raw_key, raw_color in colors.items():
+        parts = str(raw_key or "").split("|", 3)
+        if len(parts) != 4:
+            changed = True
+            continue
+        column = _clean_custom_column_name(parts[3], allow_management=allow_management)
+        color = str(raw_color or "").strip().lower()
+        if not column or color not in CUSTOM_TAG_COLOR_PALETTE:
+            changed = True
+            continue
+        parts[3] = column
+        key = "|".join(parts)
+        if key != raw_key or color != raw_color:
+            changed = True
+        cleaned_colors[key] = color
+    return {"columns": cleaned_cols, "values": cleaned_values, "colors": cleaned_colors}, changed
 
 
 def _load_prefixes():

@@ -22,7 +22,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     files are returned as-is (truncated to first 2KB preview + full size) so
     `_uniques.json` can be inspected.
     """
-    _require_base_file_access(request, file, access_scope)
+    me, _ = _require_base_file_access(request, file, access_scope)
     # 활동 대시보드: 실제 데이터 조회만 기록 (스키마 로드/페이지 넘김 제외).
     if not meta_only and page == 0:
         from core.audit import record as _fb_audit
@@ -44,7 +44,10 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
     aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
     cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
-    single_file_folders = _single_file_folder_names(settings)
+    single_file_folders = _single_file_folder_names(
+        settings,
+        allow_credential=str((me or {}).get("role") or "").strip().casefold() == "admin",
+    )
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
         fp = _resolve_single_file_folder_data_path(file, (base_root, db_root), single_file_folders)
         if fp is None:

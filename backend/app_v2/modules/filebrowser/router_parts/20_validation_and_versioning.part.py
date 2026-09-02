@@ -35,6 +35,21 @@ def _require_base_file_access(request: Request, file: str, access_scope: str = "
     scope = str(access_scope or "").strip().casefold()
     if scope != TEG_REFERENCE_ACCESS_SCOPE:
         me = _require_filebrowser_manager(request) if manage else _require_filebrowser_user(request)
+        rel_parts = [str(part or "").strip().rstrip(" .").casefold() for part in Path(str(file or "")).parts]
+        credential_path = "credential" in rel_parts
+        if not credential_path:
+            for root in (_base_root(), _db_root()):
+                try:
+                    candidate = (root / Path(str(file or ""))).resolve()
+                    candidate.relative_to((root / "credential").resolve())
+                    credential_path = True
+                    break
+                except (OSError, ValueError):
+                    continue
+        if credential_path and str((me or {}).get("role") or "").strip().casefold() != "admin":
+            # 숨김은 권한이 아니다. URL을 직접 구성해도 credential 아래 파일은
+            # global admin 외에는 읽기/다운로드/편집할 수 없다.
+            raise HTTPException(403, "Admin only credential folder")
         return me, None
 
     from core import teg_map as _teg_map

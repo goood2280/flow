@@ -1,7 +1,144 @@
 {
-  "version": "10.4.168",
+  "version": "10.4.179",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.179",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "SplitTable purpose tag와 셀 배경색 내보내기",
+      "changes": [
+        "[기본 purpose 행] 제품별 TAG 설정 여부에 따라 purpose가 표에서 빠지거나 다른 Split 항목 사이에 섞임 → TAG_purpose를 삭제할 수 없는 기본 tag로 제공하고 SplitTable 최상단 첫 행에 고정",
+        "[우클릭 색상] purpose를 포함한 TAG 셀은 값만 저장되어 wafer별 용도를 색으로 구분할 수 없음 → Edit 모드 셀 우클릭에 랏 관리와 같은 20색 팔레트를 연결하고 값과 별도로 배경색을 저장",
+        "[다운로드 반영] 화면의 purpose 행과 선택 색상이 다운로드 결과에 이어지지 않음 → CSV에는 TAG_purpose 행과 값을 포함하고 XLSX에는 같은 값과 셀 배경색을 적용",
+        "[회귀 검증] 기본행 순서·삭제 차단·wafer별 값/색 저장·compact view 확장·CSV 행·XLSX 배경색 테스트와 프런트 디자인/구조/production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.178",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "MASK FAB 공정 매칭과 전체 Before/After 확인",
+      "changes": [
+        "[MASK 공정 매칭] 매칭 채우기에 mask.csv 대상을 추가하고 reticle_id를 FAB DB의 reticle_id와 대조해 product·step_id를 찾은 뒤 같은 제품·step_id의 Vehicle_matching에서 step_desc를 보강",
+        "[불변식 유지] 제품별 공정 메타는 mask.csv에 기록하고 제품 구분 없는 reticle_id→mask 2열 룰북인 mask_info.csv 구조는 변경하지 않음",
+        "[최종 확인] 모든 매칭 채우기 대상에서 반영할 선택 행 전체의 식별자·Before·After·상태를 최종 확인창으로 보여주며 확인 버튼을 누른 경우에만 CSV를 변경",
+        "[동시 변경 방지] 최종 확인 이후 제안이 교체됐거나 원본 CSV 값이 달라진 경우 반영을 거부하고 재검사와 Before/After 재확인을 요구"
+      ]
+    },
+    {
+      "version": "10.4.177",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "SplitTable plan 불일치의 PPID 룰 반영",
+      "changes": [
+        "[이상항목 목록] 매칭알람 아래에 ‘SplitTable plan 이상항목들’을 추가해 현재 KNOB plan과 실제 PPID가 다른 항목을 제품·KNOB·plan·PPID 기준으로 묶어 표시",
+        "[선택 반영] 반영할 항목을 여러 개 체크하고 필수 코멘트를 작성하면 실제 PPID를 해당 plan 이름으로 ppid_knob.csv에 일괄 추가하며 기존 오분류 룰은 중복 생성 대신 수정",
+        "[공정 연결] plan의 기존 PPID 룰에서 step_desc를 이어받고 제품별 Vehicle_matching의 step_id를 함께 기록해 SplitTable 적용 공정 정보와 step 순서에 바로 연결",
+        "[안전·이력] 변경된 plan과 맞지 않는 오래된 알림, 수신자별 중복 알림, 이미 반영된 룰을 제외하고 같은 lot·wafer 반복은 발생 건수로 집계하며 CSV 버전·배치·코멘트·판정자 이력을 보존"
+      ]
+    },
+    {
+      "version": "10.4.176",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "제품 SOP 기반 KNOB S0 스냅샷과 Split 편집",
+      "changes": [
+        "[S0 판정] credential/<제품>_sop.csv의 step_id별 POR PPID와 ML_TABLE_<제품>의 KNOB 공정 매칭을 매일 대조해 기존 KNOB를 현재 SOP로 최초 초기화하고 새 KNOB는 발견 당일 값으로만 확정",
+        "[불변 스냅샷] 제품·KNOB별 S0 PPID와 step_id·최초 확정일을 append-only 레지스트리에 저장해 이후 제품 SOP가 바뀌어도 이미 확정된 S0는 덮어쓰지 않으며 화면 캐시·Inform 스냅샷·PEMS·XLSX가 같은 S0 순서를 사용",
+        "[일별 이력] 제품 SOP를 credential/<제품>/<YYYY-MM-DD>.parquet로 매일 보관하고 이전 POR·변경 유형(추가/변경/삭제/동일)·원본 수정 시각을 함께 기록해 날짜별 변경을 복원 가능하게 유지",
+        "[Split 편집] Split 체크 보기에서 Edit을 유지한 채 KNOB 이름 우클릭→스플릿 추가로 S1/S2를 만들고 기존 후보 선택 또는 새 값 입력 후 wafer 셀 클릭·드래그로 연속 배정하며 기존 plan 저장 경로로 일괄 저장",
+        "[Credential 권한] 일반 사용자의 Files 목록과 직접 URL에서 credential 경로를 서버 차단하고 global admin에게만 폴더·SOP CSV·일별 Parquet 조회와 다운로드를 허용하며 역할별 캐시 키를 분리",
+        "[검증] credential 권한·직접 접근·POR 행 선택·일별 Parquet·기존 S0 불변·신규 KNOB 당일 확정·XLSX S0 순서·라우터 계약을 포함한 회귀 테스트와 프런트 프로덕션 빌드 통과"
+      ]
+    },
+    {
+      "version": "10.4.175",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "FAB PPID 기반 SplitTable 공정 매칭",
+      "changes": [
+        "[매칭 채우기] ppid_knob.csv의 value(PPID)를 FAB 원본 ppid와 대조하는 ‘PPID → FAB 공정’ 대상을 추가하고 product·step_id·step_desc 열을 각각 검사·검토·반영 가능하도록 확장",
+        "[공정 설명] FAB에서 찾은 제품·step_id와 같은 Vehicle_matching 행의 step_desc를 사용하며 제품이 지정된 Vehicle 행을 다른 제품의 fallback으로 섞지 않도록 제한",
+        "[SplitTable 연결] ppid_knob에 채운 product·step_id·step_desc를 제품별 KNOB 공정 메타의 우선 원천으로 사용해 적용 공정 정보와 Vehicle 설정 순서 정렬에 즉시 반영",
+        "[MASK 정정] 자체 step_id 또는 matching 원천이 없는 MASK에는 이름 기반 공정 추론을 적용하지 않고 공정 미매칭 항목으로 유지하며 INLINE은 inline_matching의 기존 step_id를 직접 사용"
+      ]
+    },
+    {
+      "version": "10.4.174",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "SplitTable 전체 prefix의 공정 순서 통합",
+      "changes": [
+        "[행 배치] KNOB·FAB·MASK·INLINE·VM을 prefix별로 묶어 표시하던 순서를 제거하고 각 parameter에 설정된 step_id의 Vehicle_matching 행 순서로 한 표에 교차 배치",
+        "[메타 통합] KNOB의 ppid 규칙, INLINE·VM matching, FAB·MASK 등 ML_TABLE stage 추론 결과를 공통 parameter→step rank에 등록하며 명시적 matching을 추론값보다 우선",
+        "[복수 공정] 한 parameter가 여러 step_id에 걸리면 가장 뒤 공정을 대표 위치로 사용하고 같은 step 안에서는 기존 자연 정렬을 유지하며 공정 미매칭 행은 뒤에 배치",
+        "[설정 호환] 숫자 stage가 없는 GATE_ETCH 같은 Vehicle step_desc도 추론 후보에 유지해 FAB·MASK 컬럼을 실제 설정 step_id에 연결하고 화면·CSV·XLSX가 같은 정렬을 사용"
+      ]
+    },
+    {
+      "version": "10.4.173",
+      "date": "2026-09-03",
+      "tag": "fix",
+      "title": "관리자 공지 미확인 배지 7일 자동 만료",
+      "changes": [
+        "[문의 배지] 읽지 않은 관리자 공지가 영구히 ✉️ 건수에 남던 동작을 게시 후 7일까지만 집계하도록 변경하고 관리자 답장 등 실제 문의 알림은 기존대로 유지",
+        "[알림 배지] 공지 등록 시 함께 생성되는 🔔 알림에 admin_notice 유형을 부여하고 신규·기존 New Notice 모두 7일 뒤 미확인 배지에서 제외",
+        "[이력 보존] 자동 만료는 상단 배지 조회에만 적용해 공지 목록, 관리자 공지 관리, 전체 알림 이력과 읽음 상태는 삭제하거나 변경하지 않음",
+        "[표시·검증] 🔔 드롭다운과 관리자 알림 화면에 공지 유형을 명확히 표시하고 7일 경계·레거시 공지·일반 업무 알림 보존 회귀 테스트 3건 통과"
+      ]
+    },
+    {
+      "version": "10.4.172",
+      "date": "2026-09-03",
+      "tag": "feat",
+      "title": "SplitTable 편집 셀 범위 복사·붙여넣기",
+      "changes": [
+        "[셀 복사] Edit 모드에서 표 내부 셀을 선택해 Ctrl+C 하면 현재 표시값과 미저장 편집값을 TSV로 복사하고 다른 셀에서 Ctrl+V로 plan·TAG·관리 값에 재사용",
+        "[멀티 셀] 마우스 드래그 또는 Shift+클릭으로 직사각형 범위를 선택하고 여러 행·열을 한 번에 복사·붙여넣으며, 단일 값 또는 원본 블록의 정수 배수 대상은 선택 범위 전체에 반복 적용",
+        "[선택 안정성] 드래그 종료 뒤 click 이벤트가 범위를 한 셀로 축소하던 경로와 빠른 드래그에서 이전 state를 참조하던 경로를 제거해 선택 범위를 안정적으로 유지",
+        "[편집 진입] Split 체크·PEMS 표시 상태에서도 Edit을 누르면 편집 가능한 셀 보기로 전환하고 단축키 안내를 함께 표시"
+      ]
+    },
+    {
+      "version": "10.4.171",
+      "date": "2026-09-02",
+      "tag": "perf",
+      "title": "대규모 TEG Mapfile 검증의 선형 확장",
+      "changes": [
+        "[서버 공간 색인] 각 S/L·MAIN TEG마다 전체 die/MAIN 셀을 반복 순회하던 행×셀 검사를 균일 격자 공간 색인으로 바꿔 실제로 겹칠 수 있는 주변 셀만 판정",
+        "[MAIN 집계] 같은 MAIN 그룹의 Purpose·칩 크기·기존 이름을 매 행 다시 조회하던 제곱 시간 경로를 그룹별 메타·이름 집합·suffix 카운터 캐시로 변경",
+        "[브라우저 상한] 이상 요약은 100건, 상세 표·MAIN 체크리스트는 200건, MAIN 그룹은 50그룹씩 페이지 처리하고 Shot SVG는 대상/MAIN 레이어별 200건으로 제한하며 닫힌 상세 패널은 DOM에 만들지 않아 전체 결과 접근성과 동시 렌더 상한을 함께 보장",
+        "[대용량 검증] MAIN 5,000건 + S/L 500건 합성 Mapfile을 1.55초에 검사하고 2.17 MiB 응답을 생성; 4,000 die×1,000 조회에서 die 검사는 1.10초→0.02초, MAIN 소속 검사는 18.76초→0.05초로 단축",
+        "[회귀] 공간 색인 전후 판정 동등성과 MAIN 외부/정보누락 구분 테스트를 추가해 TEG 좌표 회귀 100건 및 프런트 디자인·구조·production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.170",
+      "date": "2026-09-02",
+      "tag": "feat",
+      "title": "SplitTable 적용 공정 정보의 독립 열 표시",
+      "changes": [
+        "[화면 구조] 적용 공정 정보 체크 시 항목명이 step_id로 대체돼 원래 Split 항목을 함께 읽을 수 없음 → 항목 치환 방식이 공정 메타와 파라미터를 한 칸에 결합함 → 기존 항목을 보존하고 왼쪽에 step_id·step_desc 고정 열을 추가",
+        "[표시 형식] 기본 표만 바꾸면 Split 체크·PEMS·병합 보기에서 공정 정보가 다시 항목명으로 섞임 → 공정 두 열과 항목 열을 공용 prefix 구조로 만들어 모든 표시 형식에서 같은 순서와 줄바꿈을 유지",
+        "[다운로드] 적용 공정 정보 상태의 CSV·XLSX가 항목을 step_id로 바꾸거나 공정 매칭 없는 행을 제외함 → 화면과 같은 step_id·step_desc·Parameter 열을 내보내고 원래 행과 값은 모두 보존하며 XLSX 병합·freeze 좌표도 새 열 수에 맞춤",
+        "[공정 설명] INLINE 매칭은 step_id만 있어 step_desc 열이 비어 보일 수 있음 → 제품별 Vehicle_matching의 동일 step_id를 역조회해 step_desc를 보강하고, 공정 열·CSV·기본 XLSX·Split 체크 XLSX 회귀 테스트 및 프런트 production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.169",
+      "date": "2026-09-02",
+      "tag": "perf",
+      "title": "TEG Mapfile 검증의 Edge 멈춤 방지",
+      "changes": [
+        "[원인] 검증 응답 뒤 모든 Pattern 카드가 같은 Wafer Map의 색 구간을 개별 SVG rect로 즉시 복제해 80×80 맵·Pattern 100개만으로도 SVG rect 32만 개와 DOM 32만 개가 생성되며 브라우저 메인 스레드가 장시간 점유됨",
+        "[렌더링] Wafer Map 색 구간을 색상별 단일 SVG path로 합치고 map 객체별 계산을 재사용하며 Pattern 카드를 24개씩 페이지 처리해 전체 Pattern 접근성은 유지하면서 동시 DOM 크기를 제한",
+        "[대형 결과] Pattern 24개 초과 또는 5만 셀 초과 맵은 검증 판정 결과를 먼저 표시하고 Wafer Map을 자동 접어, 서버 응답 직후 대형 시각화가 결과 확인을 막지 않도록 변경",
+        "[요청 복구] 중복 재검사는 이전 요청을 취소하고 최신 응답만 반영하며 사용자가 검사 취소를 누를 수 있고 90초를 넘는 요청은 자동 종료해 무한 로딩 상태에서 회복 가능",
+        "[파서] 중복 Pattern 이름의 고유화가 Pattern 수에 따라 제곱 시간으로 늘던 집합 재생성을 다음 suffix 색인으로 바꿔 1만 개 합성 입력을 약 10.7초에서 0.06초 이내로 단축",
+        "[검증] TEG 좌표 회귀 테스트 98건과 프런트 디자인·구조·production build 통과; 80×80·Pattern 100개 브라우저 재현에서 초기 검증 3.19초/DOM 321,134개를 0.30초/접힌 결과로 줄이고 펼친 24개 페이지도 DOM 476개로 제한"
+      ]
+    },
     {
       "version": "10.4.168",
       "date": "2026-09-02",

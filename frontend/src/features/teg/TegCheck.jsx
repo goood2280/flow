@@ -7,7 +7,7 @@
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { postJson, putJson, sf } from "../../lib/api";
+import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
@@ -20,6 +20,12 @@ const SITE_HL = "#dc2626";
 const TEG_HL = "#2563eb";
 const MAX_CELLS = 400000;    // 렌더 상한 (w*h)
 const GRID_LINE_MAX = 6000;  // 이 이상이면 격자선 생략
+const PATTERN_PAGE_SIZE = 24; // Pattern 카드 대량 렌더로 브라우저 메인 스레드가 멎지 않게 제한
+const INSPECT_TIMEOUT_MS = 90000;
+const SUMMARY_PAGE_SIZE = 100;
+const ISSUE_PAGE_SIZE = 200;
+const MAIN_GROUP_PAGE_SIZE = 50;
+const SHOT_LAYER_LIMIT = 200;
 
 const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended: "🟣", missing: "⚪", noref: "—" };
 const LIGHT_ICON = { red: "🔴", orange: "🟠", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
@@ -215,6 +221,70 @@ function TrafficLight({ color }) {
     display: "inline-block", flexShrink: 0, boxShadow: `0 0 0 2px ${c}33` }} />;
 }
 
+function PageControls({ page, total, pageSize, onChange, label = "건" }) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (pages <= 1) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end",
+                  gap: 7, marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
+      <Button size="sm" disabled={page <= 0} onClick={() => onChange(page - 1)}>이전</Button>
+      <span>{page + 1}/{pages} 페이지 · {total}{label}</span>
+      <Button size="sm" disabled={page >= pages - 1} onClick={() => onChange(page + 1)}>다음</Button>
+    </div>
+  );
+}
+
+function SummaryIssueRows({ rows, category }) {
+  const [page, setPage] = useState(0);
+  const pages = Math.max(1, Math.ceil(rows.length / SUMMARY_PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const start = safePage * SUMMARY_PAGE_SIZE;
+  const visible = rows.slice(start, start + SUMMARY_PAGE_SIZE);
+  if (!rows.length) return null;
+  return (
+    <div style={{ minWidth: 0, marginTop: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5, color: "var(--text-primary)" }}>
+        {category} TEG별 판정 ·{" "}
+        <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{rows.length}건</strong>
+        {rows.length > SUMMARY_PAGE_SIZE && (
+          <span style={{ marginLeft: 6, color: "var(--muted)", fontWeight: 500 }}>
+            한 번에 {SUMMARY_PAGE_SIZE}건 표시
+          </span>
+        )}
+      </div>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 8,
+                    overflow: "auto", maxHeight: 300, background: "var(--bg-primary)" }}>
+        {visible.map((item, i) => (
+          <div key={`${item.issue_scope}-${item.issue_name}-${start + i}`}
+            style={{ display: "grid", gridTemplateColumns: "18px minmax(110px, 0.7fr) minmax(180px, 1.5fr)",
+                     gap: 7, alignItems: "center", padding: "7px 9px",
+                     borderBottom: i < visible.length - 1 ? "1px solid var(--line)" : "none",
+                     fontSize: 12 }}>
+            <TrafficLight color={item.light} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: "monospace", fontWeight: 800 }}>{item.issue_name}</div>
+              <div style={{ fontSize: 10, color: "var(--muted)" }}>{item.issue_scope}</div>
+            </div>
+            <div style={{ minWidth: 0,
+                          color: item.light === "red" ? "var(--text-primary)"
+                            : (LIGHT_COLORS[item.light] || "var(--warn)"),
+                          fontWeight: item.light === "red" ? 600 : 700 }}>
+              {item.issue_reason || "확인 필요"}
+              {item.dx !== null && item.dx !== undefined && (
+                <span style={{ display: "block", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>
+                  ΔX {fmtN(item.dx)} · ΔY {fmtN(item.dy)}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <PageControls page={safePage} total={rows.length} pageSize={SUMMARY_PAGE_SIZE}
+        onChange={setPage} />
+    </div>
+  );
+}
+
 /* 카드 안 신호등 요약 — 판정 목록마다 자기 개수를 자기 카드에서 켠다.
    items = [{light, label, n}]. 0 건은 접어 두지 않고 흐리게 남긴다
    (없다는 것도 판정 결과다). */
@@ -256,6 +326,39 @@ function siteStatus(map, x, y) {
   return classify(ch) === "measure" ? "측정" : "빈칸";
 }
 
+// 같은 Wafer Map을 Pattern 수만큼 반복 표시한다. 행의 연속 구간마다 <rect>를
+// 만들면 Pattern 100개 × 수천 구간이 수십만 DOM 노드가 되어 Edge가 멎는다.
+// 색별 단일 SVG path로 합치고 map 객체별로 한 번만 계산한다.
+const mapPathCache = new WeakMap();
+function mapColorPaths(map) {
+  const cached = mapPathCache.get(map);
+  if (cached) return cached;
+  const byKind = { measure: [], other: [] };
+  (map.rows || []).forEach((row, y) => {
+    let start = 0;
+    let kind = classify(row[0]);
+    for (let x = 1; x <= row.length; x++) {
+      const nextKind = x < row.length ? classify(row[x]) : null;
+      if (nextKind !== kind) {
+        if (kind !== "empty") byKind[kind].push(`M${start} ${y}h${x - start}v1H${start}Z`);
+        start = x;
+        kind = nextKind;
+      }
+    }
+  });
+  const paths = Object.entries(byKind)
+    .filter(([, parts]) => parts.length)
+    .map(([kind, parts]) => ({ kind, d: parts.join("") }));
+  mapPathCache.set(map, paths);
+  return paths;
+}
+
+function shouldAutoOpenWafer(result) {
+  const patterns = result?.patterns?.length || 0;
+  const hasLargeMap = (result?.maps || []).some(map => (map.w || 0) * (map.h || 0) > 50000);
+  return patterns <= PATTERN_PAGE_SIZE && !hasLargeMap;
+}
+
 function fmtN(v) {
   if (v === null || v === undefined) return "-";
   return String(v);
@@ -269,20 +372,7 @@ function WfSvg({ map, sitesHl = [], tegHl = [], px = 6, showLabels = false }) {
   const topLeft = map.origin === "top-left";
   // site 좌표(p.y) → SVG y: top-left 이면 p.y-1 (위가 0), bottom-left 이면 h-p.y
   const hlY = (py) => topLeft ? py - 1 : h - py;
-  const rects = useMemo(() => {
-    const out = [];
-    rows.forEach((row, y) => {
-      let s = 0, k = classify(row[0]);
-      for (let i = 1; i <= row.length; i++) {
-        const k2 = i < row.length ? classify(row[i]) : null;
-        if (k2 !== k) {
-          if (k !== "empty") out.push({ x: s, y, w: i - s, k });
-          s = i; k = k2;
-        }
-      }
-    });
-    return out;
-  }, [rows]);
+  const colorPaths = useMemo(() => mapColorPaths(map), [map]);
 
   if (w * h > MAX_CELLS) {
     return <div style={{ fontSize: 12, color: "var(--danger)" }}>
@@ -302,8 +392,8 @@ function WfSvg({ map, sitesHl = [], tegHl = [], px = 6, showLabels = false }) {
     <svg viewBox={`0 0 ${w} ${h}`} width={w * px} height={h * px}
       style={{ maxWidth: "100%", height: "auto", background: "#fff",
                border: "1px solid var(--line)", borderRadius: 4, display: "block" }}>
-      {rects.map((r, i) => (
-        <rect key={i} x={r.x} y={r.y} width={r.w} height={1} fill={MAP_COLORS[r.k]} />
+      {colorPaths.map(path => (
+        <path key={path.kind} d={path.d} fill={MAP_COLORS[path.kind]} />
       ))}
       {showLabels && w * h <= 2000 && rows.map((row, y) =>
         [...row].map((ch, x) => classify(ch) !== "empty" && (
@@ -332,12 +422,32 @@ function WfSvg({ map, sitesHl = [], tegHl = [], px = 6, showLabels = false }) {
   );
 }
 
-/* ── Pattern 카드 그리드 — 전체 pattern 의 WF MAP 을 작게 한번에 표시 ── */
+/* ── Pattern 카드 그리드 — Pattern이 많아도 한 페이지만 DOM에 올린다. ── */
 function PatternGrid({ res, px, selected, onSelect, mapFor }) {
   const maps = res.maps;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(res.patterns.length / PATTERN_PAGE_SIZE));
+  const start = page * PATTERN_PAGE_SIZE;
+  const visiblePatterns = res.patterns.slice(start, start + PATTERN_PAGE_SIZE);
+  useEffect(() => { setPage(0); }, [res]);
+  const changePage = next => {
+    setPage(Math.max(0, Math.min(pageCount - 1, next)));
+    onSelect(null);
+  };
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
-      {res.patterns.map((p, i) => {
+    <>
+      {pageCount > 1 && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8,
+                      fontSize: 12, color: "var(--muted)" }}>
+          <Button disabled={page === 0} onClick={() => changePage(page - 1)}>이전</Button>
+          <b style={{ color: "var(--text-primary)" }}>{page + 1}/{pageCount}</b>
+          <span>{start + 1}–{Math.min(start + PATTERN_PAGE_SIZE, res.patterns.length)} / {res.patterns.length}</span>
+          <Button disabled={page >= pageCount - 1} onClick={() => changePage(page + 1)}>다음</Button>
+        </div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
+      {visiblePatterns.map((p, pageIndex) => {
+        const i = start + pageIndex;
         const map = mapFor(i);
         const ok = p.points.filter(pt => siteStatus(map, pt.x, pt.y) === "측정").length;
         const allOk = ok === p.points.length;
@@ -365,7 +475,8 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
           </div>
         );
       })}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -381,19 +492,20 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
    문제가 다른 색 아래로 숨지 않게 한다.
    **대상 TEG 와 MAIN 내부 TEG 는 따로 걸러야 한다** — 한 덩어리로 돌리면
    수많은 MAIN TEG 가 대상 TEG 를 덮어 정작 봐야 할 것이 사라진다. */
-function dropOverlapping(items) {
+function dropOverlapping(items, limit = SHOT_LAYER_LIMIT) {
   const sorted = [...items].sort((a, b) =>
     (b.mm_y - a.mm_y)
     || ((a.light === "red" ? 0 : 1) - (b.light === "red" ? 0 : 1))
     || (a.mm_x - b.mm_x));
   const kept = [];
-  sorted.forEach(t => {
+  for (const t of sorted) {
+    if (kept.length >= limit) break;
     const x1 = t.mm_x + (t.w || 0), y1 = t.mm_y + (t.h || 0);
     const hit = kept.some(k =>
       t.mm_x < k.mm_x + (k.w || 0) && x1 > k.mm_x
       && t.mm_y < k.mm_y + (k.h || 0) && y1 > k.mm_y);
     if (!hit) kept.push(t);
-  });
+  }
   return kept;
 }
 
@@ -523,11 +635,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const { summary } = teg;
   // 신호등은 백엔드 판정(row.light)을 그대로 쓴다. Teg_location에 있는 항목만
   // S/L TEG이며, 없는 module은 MAIN 정보 누락으로 분리한다.
-  const mainInfoMissingRows = teg.rows.filter(r =>
-    r.teg_kind === "main_info_missing" && !r.ref_teg);
-  const slRows = teg.rows.filter(r => r.teg_kind !== "main_info_missing");
-  const bad = slRows.filter(r => r.light === "red");
-  const extended = teg.rows.filter(r => r.status === "extended");
+  const mainInfoMissingRows = useMemo(() => teg.rows.filter(r =>
+    r.teg_kind === "main_info_missing" && !r.ref_teg), [teg.rows]);
+  const slRows = useMemo(() => teg.rows.filter(r =>
+    r.teg_kind !== "main_info_missing"), [teg.rows]);
+  const bad = useMemo(() => slRows.filter(r => r.light === "red"), [slRows]);
+  const extended = useMemo(() => teg.rows.filter(r => r.status === "extended"), [teg.rows]);
   // MAIN 내부 TEG(정답지 미등록) 신호등 목록 — 자기 MAIN die 안·경계면 노란불,
   // 다른 die·die 밖이면 빨간불. 대상 TEG 판정과 같은 형식 (빨강 → 노랑 → 회색 순)
   const mainChecklist = useMemo(() => {
@@ -680,8 +793,19 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   // 대상 TEG 전체와 MAIN 내부 TEG 전체를 그린다. 어느 쪽이든 겹치는 것은
   // 종류별로 따로 걸러 가장 위의 것만 남긴다.
   const [shotAll, setShotAll] = useState(false);
-  const shotTargetRows = useMemo(() => (seeTarget
-    ? dropOverlapping(slRows
+  const [showAll, setShowAll] = useState(false);
+  const [showMain, setShowMain] = useState(false);
+  const [showWarn, setShowWarn] = useState(false);
+  const [showRule, setShowRule] = useState(false);
+  const [showTechnical, setShowTechnical] = useState(false);
+  const [checklistColorSort, setChecklistColorSort] = useState(true);
+  const [issuePage, setIssuePage] = useState(0);
+  const [warnPage, setWarnPage] = useState(0);
+  const [mainChecklistPage, setMainChecklistPage] = useState(0);
+  const [mainGroupPage, setMainGroupPage] = useState(0);
+  const needsShotItems = Boolean(res.shot?.available && (hasShotIssue || showTechnical));
+  const shotTargetCandidates = useMemo(() => (needsShotItems && seeTarget
+    ? slRows
         // Teg_location에 등록된 S/L TEG만 die_state를 표시한다.
         .filter(r => shotAll || r.light === "red" || r.die_state === "in")
         .map((r, i) => ({
@@ -689,25 +813,22 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           light: r.die_state === "in" ? "red" : r.light,
           light_reason: r.die_state === "in" ? (r.light_reason || "die 침범") : r.light_reason,
           key: `r${i}`, w: r.teg_w, h: r.teg_h,
-        })))
-    : []), [slRows, seeTarget, shotAll]);
-  const shotMainRows = useMemo(() => (seeMain
-    ? dropOverlapping([
+        }))
+    : []), [needsShotItems, slRows, seeTarget, shotAll]);
+  const shotMainCandidates = useMemo(() => (needsShotItems && seeMain
+    ? [
         ...mainInfoMissingRows.map(row => ({ ...row, teg: row.name, group: "정보없음" })),
         ...mainChecklist,
       ]
         // 정답지 정보는 없지만 비-IP 자기 MAIN 내부인 노랑도 즉시 비교할 수 있게 한다.
         .filter(t => shotAll || t.light === "red" || t.light === "orange" || t.light === "yellow")
-        .map(t => ({ ...t, name: t.teg, w: t.teg_w, h: t.teg_h })))
-    : []), [mainChecklist, mainInfoMissingRows, seeMain, shotAll]);
+        .map(t => ({ ...t, name: t.teg, w: t.teg_w, h: t.teg_h }))
+    : []), [needsShotItems, mainChecklist, mainInfoMissingRows, seeMain, shotAll]);
+  const shotTargetRows = useMemo(() => dropOverlapping(shotTargetCandidates), [shotTargetCandidates]);
+  const shotMainRows = useMemo(() => dropOverlapping(shotMainCandidates), [shotMainCandidates]);
   const shotItems = useMemo(
     () => [...shotTargetRows, ...shotMainRows], [shotTargetRows, shotMainRows]);
-  const [showAll, setShowAll] = useState(false);
-  const [showMain, setShowMain] = useState(false);
-  const [showWarn, setShowWarn] = useState(false);
-  const [showRule, setShowRule] = useState(false);
-  const [showTechnical, setShowTechnical] = useState(false);
-  const [checklistColorSort, setChecklistColorSort] = useState(true);
+  const shotCandidateCount = shotTargetCandidates.length + shotMainCandidates.length;
   const targets = teg.targets || { items: [], matched: 0, missing: 0, total: 0, source: "default" };
   // 이 Mapfile 의 flat → Teg_location direction. 방향이 다른 대상 TEG 는 애초에
   // 이 원문에 없는 게 정상이라 '미설정' 이 아니라 '판정 불가' 로 가른다.
@@ -938,41 +1059,25 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     </div>
   ));
 
-  const renderSummaryIssueRows = (rows, category) => rows.length > 0 ? (
-    <div style={{ minWidth: 0, marginTop: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5, color: "var(--text-primary)" }}>
-        {category} TEG별 판정 ·{" "}
-        <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{rows.length}건</strong>
-      </div>
-      <div style={{ border: "1px solid var(--line)", borderRadius: 8,
-                    overflow: "auto", maxHeight: 300, background: "var(--bg-primary)" }}>
-        {rows.map((item, i) => (
-          <div key={`${item.issue_scope}-${item.issue_name}-${i}`}
-            style={{ display: "grid", gridTemplateColumns: "18px minmax(110px, 0.7fr) minmax(180px, 1.5fr)",
-                     gap: 7, alignItems: "center", padding: "7px 9px",
-                     borderBottom: i < rows.length - 1 ? "1px solid var(--line)" : "none",
-                     fontSize: 12 }}>
-            <TrafficLight color={item.light} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: "monospace", fontWeight: 800 }}>{item.issue_name}</div>
-              <div style={{ fontSize: 10, color: "var(--muted)" }}>{item.issue_scope}</div>
-            </div>
-            <div style={{ minWidth: 0,
-                          color: item.light === "red" ? "var(--text-primary)"
-                            : (LIGHT_COLORS[item.light] || "var(--warn)"),
-                          fontWeight: item.light === "red" ? 600 : 700 }}>
-              {item.issue_reason || "확인 필요"}
-              {item.dx !== null && item.dx !== undefined && (
-                <span style={{ display: "block", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>
-                  ΔX {fmtN(item.dx)} · ΔY {fmtN(item.dy)}
-                </span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  ) : null;
+  const issuePages = Math.max(1, Math.ceil(combinedIssues.length / ISSUE_PAGE_SIZE));
+  const safeIssuePage = Math.min(issuePage, issuePages - 1);
+  const visibleIssues = combinedIssues.slice(
+    safeIssuePage * ISSUE_PAGE_SIZE, (safeIssuePage + 1) * ISSUE_PAGE_SIZE);
+  const warnPages = Math.max(1, Math.ceil(warningIssues.length / ISSUE_PAGE_SIZE));
+  const safeWarnPage = Math.min(warnPage, warnPages - 1);
+  const visibleWarnings = warningIssues.slice(
+    safeWarnPage * ISSUE_PAGE_SIZE, (safeWarnPage + 1) * ISSUE_PAGE_SIZE);
+  const mainChecklistPages = Math.max(1, Math.ceil(mainChecklist.length / ISSUE_PAGE_SIZE));
+  const safeMainChecklistPage = Math.min(mainChecklistPage, mainChecklistPages - 1);
+  const visibleMainChecklist = mainChecklist.slice(
+    safeMainChecklistPage * ISSUE_PAGE_SIZE,
+    (safeMainChecklistPage + 1) * ISSUE_PAGE_SIZE);
+  const allMainGroups = teg.main_groups || [];
+  const mainGroupPages = Math.max(1, Math.ceil(allMainGroups.length / MAIN_GROUP_PAGE_SIZE));
+  const safeMainGroupPage = Math.min(mainGroupPage, mainGroupPages - 1);
+  const visibleMainGroups = allMainGroups.slice(
+    safeMainGroupPage * MAIN_GROUP_PAGE_SIZE,
+    (safeMainGroupPage + 1) * MAIN_GROUP_PAGE_SIZE);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1025,7 +1130,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 {coordinateIssueNames.length ? ` (${compactNameList(coordinateIssueNames)}).` : "."}
               </div>
             </div>
-            {renderSummaryIssueRows(slSummaryRows, "S/L")}
+            <SummaryIssueRows rows={slSummaryRows} category="S/L" />
           </section>
         )}
 
@@ -1041,7 +1146,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <div style={{ display: "grid", gap: 2, marginTop: 9 }}>
               {renderSummaryMessages(mainTopErrorMessages)}
             </div>
-            {renderSummaryIssueRows(mainSummaryRows, "MAIN")}
+            <SummaryIssueRows rows={mainSummaryRows} category="MAIN" />
           </section>
         )}
 
@@ -1057,6 +1162,11 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
               Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요
             </div>
+            {shotCandidateCount > shotItems.length && (
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 5 }}>
+                후보 {shotCandidateCount}건 중 겹침 제거·레이어별 상위 {SHOT_LAYER_LIMIT}건만 표시
+              </div>
+            )}
             <ShotView shot={res.shot} items={shotItems} size={400} />
           </div>
         )}
@@ -1172,7 +1282,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       </LinkBtn>
 
       {/* ── 요약 패널 — ① 대상 TEG 판정 ①-2 MAIN 내부 TEG ② Mapfile 세팅 현황 ③ MAIN 종류 ── */}
-      <div style={{ display: showTechnical ? "grid" : "none", gap: 10, alignItems: "start",
+      {showTechnical && <div style={{ display: "grid", gap: 10, alignItems: "start",
                     gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
         {seeTarget && <MiniPanel title="① 대상 TEG 판정 (S/L TEG)"
           right={targets.total > 0 && (
@@ -1260,7 +1370,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               ]} />
               <div style={{ border: "1px solid var(--line)", borderRadius: 6,
                             overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
-                {mainChecklist.map(it => (
+                {visibleMainChecklist.map(it => (
                   <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 8,
                                              padding: "5px 8px", fontSize: 12,
                                              borderBottom: "1px solid var(--line)" }}>
@@ -1278,6 +1388,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   </div>
                 ))}
               </div>
+              <PageControls page={safeMainChecklistPage} total={mainChecklist.length}
+                pageSize={ISSUE_PAGE_SIZE} onChange={setMainChecklistPage} />
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
                 정답지 미등록 · 빨강=다른 MAIN 침범·자기 MAIN 밖·배치 금지 · 주황=MAIN 정보없음 ·
                 노랑=자기 MAIN die 안·경계 · 회색=판정 불가
@@ -1396,9 +1508,10 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                 <summary style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800,
                                   cursor: "pointer", userSelect: "none" }}>
                   🟠 MAIN 정보누락 TEG {mainInfoIssues.length}개
+                  {mainInfoIssues.length > ISSUE_PAGE_SIZE ? ` · 상위 ${ISSUE_PAGE_SIZE}개 표시` : ""}
                 </summary>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  {mainInfoIssues.map((item, index) => {
+                  {mainInfoIssues.slice(0, ISSUE_PAGE_SIZE).map((item, index) => {
                     const owner = item.group || item.main_group || "소속 MAIN 판정 불가";
                     const label = owner === item.issue_name ? item.issue_name : `${item.issue_name} · ${owner}`;
                     return (
@@ -1418,7 +1531,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             )}
             {(teg.main_groups || []).length > 0 && (
               <>
-              {teg.main_groups.map(g => (
+              {visibleMainGroups.map(g => (
                 <div key={g.group}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 700, fontFamily: "monospace", fontSize: 12 }}>{g.group}</span>
@@ -1436,7 +1549,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                     {g.red > 0 && (
                       <Pill tone="danger" size="sm"
                         title={g.tegs.filter(t => t.light === "red")
-                          .map(t => `${t.teg} — ${t.light_reason}`).join("\n")}>
+                          .slice(0, 100).map(t => `${t.teg} — ${t.light_reason}`).join("\n")
+                          + (g.red > 100 ? `\n… 외 ${g.red - 100}건` : "")}>
                         🔴 {g.red}
                       </Pill>
                     )}
@@ -1478,11 +1592,13 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   ))}
                 </div>
               ))}
+              <PageControls page={safeMainGroupPage} total={allMainGroups.length}
+                pageSize={MAIN_GROUP_PAGE_SIZE} onChange={setMainGroupPage} label="그룹" />
               </>
             )}
           </div>
         </MiniPanel>}
-      </div>
+      </div>}
 
       {/* 행별 이름 재지정 후 일괄 재검사 — 클릭마다 서버를 부르지 않고 모아서 1회 */}
       {pendingCount > 0 && (
@@ -1504,7 +1620,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger)", marginBottom: 6 }}>
             🔴 바로 확인할 이상 {combinedIssues.length}건
           </div>
-          <DataTable columns={issueCols} rows={combinedIssues} maxHeight={240} rowStyle={overlapRowStyle} />
+          <DataTable columns={issueCols} rows={visibleIssues} maxHeight={240} rowStyle={overlapRowStyle} />
+          <PageControls page={safeIssuePage} total={combinedIssues.length}
+            pageSize={ISSUE_PAGE_SIZE} onChange={setIssuePage} />
         </div>
       ) : (
         <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ok)" }}>🟢 불일치 없음</div>
@@ -1516,7 +1634,11 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             {showWarn ? "▾" : "▸"} 🟡 확인 필요 {warningIssues.length}건
           </LinkBtn>
           {showWarn && (
-            <DataTable columns={issueCols} rows={warningIssues} maxHeight={220} rowStyle={overlapRowStyle} />
+            <>
+              <DataTable columns={issueCols} rows={visibleWarnings} maxHeight={220} rowStyle={overlapRowStyle} />
+              <PageControls page={safeWarnPage} total={warningIssues.length}
+                pageSize={ISSUE_PAGE_SIZE} onChange={setWarnPage} />
+            </>
           )}
         </div>
       )}
@@ -1620,7 +1742,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               {fmtN(res.shot.shot_w_mm)}×{fmtN(res.shot.shot_h_mm)} mm · 기준 {res.shot.geometry_source === "product_info" ? "config 제품정보(우선)" : "Chip_Radius fallback"} · shot 센터 = ebeam (0,0)
               {seeTarget ? ` · 대상 TEG ${shotTargetRows.length}` : ""}
               {seeMain ? ` · MAIN 내부 TEG ${shotMainRows.length}` : ""}
-              {" 표시 (겹치면 가장 위의 것만)"}
+              {` 표시 / 후보 ${shotCandidateCount} (겹치면 가장 위, 레이어별 최대 ${SHOT_LAYER_LIMIT})`}
             </span>}
             {showTechnical && <Pill tone={res.shot.checked ? "ok" : "warn"} size="sm">
               {res.shot.checked
@@ -1947,6 +2069,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
   const textRef = useRef("");
   const lastTextRef = useRef("");                  // 마지막 검사 원문 (이름 재지정 무효화 판단)
   const lastRefreshRef = useRef(refreshKey);        // config 저장 뒤 현재 원문 자동 재검사
+  const inspectRequestRef = useRef({ id: 0, controller: null });
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showInput, setShowInput] = useState(true);
@@ -1975,21 +2098,56 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
     const markers = (h.length || v.length || vl.length) ? { h, v_R: v, v_L: vl } : null;
     const textChanged = text !== lastTextRef.current;
     const ov = textChanged ? {} : nameOv;
+    inspectRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    const requestId = inspectRequestRef.current.id + 1;
+    inspectRequestRef.current = { id: requestId, controller };
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, INSPECT_TIMEOUT_MS);
     setBusy(true);
     try {
-      const r = await postJson(API + "/inspect",
-        { vehicle: vehicle || "", text, flat: useFlat, markers,
-          name_overrides: Object.keys(ov).length ? ov : null });
+      const r = await sf(API + "/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vehicle: vehicle || "", text, flat: useFlat, markers,
+          name_overrides: Object.keys(ov).length ? ov : null }),
+        signal: controller.signal,
+      });
+      if (inspectRequestRef.current.id !== requestId) return;
       setRes(r);
       setShowInput(false);
-      // 새 검증 결과는 Wafer Map을 바로 확인할 수 있게 기본 펼침 상태로 연다.
-      setShowWafer(true);
+      // 큰 결과는 판정 요약을 먼저 보여 주고 무거운 Wafer Map은 사용자가 펼친다.
+      setShowWafer(shouldAutoOpenWafer(r));
       lastTextRef.current = text;
       if (textChanged) setNameOv({});
       if (flatOverride === undefined) { setSelPattern(null); setMapSel({}); }
-    } catch (e) { toast.error(String(e.message || e)); }
-    finally { setBusy(false); }
+    } catch (e) {
+      if (controller.signal.aborted || e?.name === "AbortError") {
+        if (timedOut && inspectRequestRef.current.id === requestId) {
+          toast.error("검사가 90초를 넘어 중단되었습니다. 원문 크기와 형식을 확인해 주세요.");
+        }
+        return;
+      }
+      if (inspectRequestRef.current.id === requestId) toast.error(String(e.message || e));
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (inspectRequestRef.current.id === requestId) {
+        inspectRequestRef.current.controller = null;
+        setBusy(false);
+      }
+    }
   };
+
+  const cancelInspect = () => {
+    inspectRequestRef.current.controller?.abort();
+    inspectRequestRef.current.controller = null;
+    setBusy(false);
+  };
+
+  useEffect(() => () => inspectRequestRef.current.controller?.abort(), []);
 
   useEffect(() => {
     if (lastRefreshRef.current === refreshKey) return;
@@ -2046,10 +2204,13 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
         right={<Pill tone={vehicle ? "ok" : "warn"}>{vehicle || "vehicle 미선택"}</Pill>}>
         {res && !showInput ? (
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ color: "var(--ok)", fontWeight: 700 }}>검증 완료</span>
+            <span style={{ color: busy ? "var(--warn)" : "var(--ok)", fontWeight: 700 }}>
+              {busy ? "재검사 중…" : "검증 완료"}
+            </span>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>
               원문을 수정하거나 다시 검사할 때만 펼쳐 보세요.
             </span>
+            {busy && <Button onClick={cancelInspect}>검사 취소</Button>}
             <Button onClick={() => setShowInput(true)} style={{ marginLeft: "auto" }}>원문 보기</Button>
           </div>
         ) : (
@@ -2065,6 +2226,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
               <Button variant="primary" disabled={busy} onClick={() => { setFlat(null); run(null); }}>
                 {busy ? "검사 중…" : "검사"}
               </Button>
+              {busy && <Button onClick={cancelInspect}>검사 취소</Button>}
               <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>맵 크기</span>
               <input type="range" min="2" max="30" step="1" value={px}
                 onChange={e => setPx(Number(e.target.value))} style={{ width: 110 }} />
@@ -2086,6 +2248,8 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
             {!showWafer ? (
               <div style={{ fontSize: 12, color: "var(--muted)" }}>
                 Wafer Map과 Pattern 상세는 필요할 때만 펼쳐 볼 수 있습니다.
+                {res.patterns.length > PATTERN_PAGE_SIZE
+                  ? ` Pattern ${res.patterns.length}개는 ${PATTERN_PAGE_SIZE}개씩 나누어 표시합니다.` : ""}
               </div>
             ) : !maps.length ? (
               <EmptyState icon="⚠" title="#wafer-map 의 ! ~ ! 블록을 찾지 못했습니다" />

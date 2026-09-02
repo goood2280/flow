@@ -2916,7 +2916,7 @@ def _shallow_embed_copy(embed: dict) -> dict:
 
 
 def _apply_step_labels_to_embed(embed: dict, product: str) -> dict:
-    """항목명을 연결 공정(step_id) 표기로 바꾼다.
+    """항목을 보존하고 왼쪽에 연결 공정 step_id / step_desc 열을 붙인다.
 
     SplitTable 화면이 현재 적용 공정 줄을 함께 보낸 경우 그 값을 정본으로 쓴다.
     저장 시점의 화면과 메일/엑셀이 달라지지 않게 하고, 메타 파일을 다시 읽지
@@ -2929,45 +2929,45 @@ def _apply_step_labels_to_embed(embed: dict, product: str) -> dict:
         return embed
     out = _shallow_embed_copy(embed)
     st = out["st_view"]
-    prelabelled = bool(st.get("step_labels") or out.get("step_labels"))
-    needs_meta = False
-    for row in st.get("rows") or []:
-        if not isinstance(row, dict) or not _step_match_kind(str(row.get("_param") or "")):
-            continue
-        supplied = row.get("_applied_process")
-        if not prelabelled and not isinstance(supplied, dict):
-            needs_meta = True
-            break
-    metas = _load_step_metas(product) if needs_meta else {"knob": {}, "inline": {}, "vm": {}}
+    params = [str(row.get("_param") or "") for row in (st.get("rows") or []) if isinstance(row, dict)]
+    needs_meta = any(
+        _step_match_kind(param)
+        and not isinstance(row.get("_process_columns"), dict)
+        and not isinstance(row.get("_applied_process"), dict)
+        for param, row in zip(params, [r for r in (st.get("rows") or []) if isinstance(r, dict)])
+    )
+    process_by_param = {}
+    if needs_meta:
+        try:
+            from routers.splittable import _build_step_process_columns
+            process_by_param = _build_step_process_columns(product, params)
+        except Exception:
+            process_by_param = {}
     rows_out = []
     applied_processes = []
     for row in st.get("rows") or []:
         if not isinstance(row, dict):
             continue
         param = str(row.get("_param") or "")
-        supplied = row.get("_applied_process") if isinstance(row.get("_applied_process"), dict) else {}
+        supplied = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else (
+            row.get("_applied_process") if isinstance(row.get("_applied_process"), dict) else {}
+        )
+        step_id = str(supplied.get("step_id") or "").strip()
+        step_desc = str(supplied.get("step_desc") or "").strip()
+        # 이전 저장 스냅샷은 lines/text만 가진다. step_id 열로 안전하게 승격한다.
         supplied_lines = supplied.get("lines") if isinstance(supplied.get("lines"), list) else []
         supplied_lines = [str(line or "").strip() for line in supplied_lines if str(line or "").strip()]
-        if supplied_lines:
-            text = "\n".join(supplied_lines)
-            kind = str(supplied.get("kind") or _step_match_kind(param))
-            normalized = {"kind": kind, "lines": supplied_lines, "text": text}
-            rows_out.append({**row, "_display": text, "_applied_process": normalized})
+        if not step_id and supplied_lines:
+            step_id = "\n".join(supplied_lines)
+        if not step_id and not step_desc:
+            generated = process_by_param.get(param) if isinstance(process_by_param.get(param), dict) else {}
+            step_id = str(generated.get("step_id") or "")
+            step_desc = str(generated.get("step_desc") or "")
+        kind = str(supplied.get("kind") or _step_match_kind(param))
+        normalized = {"kind": kind, "step_id": step_id, "step_desc": step_desc}
+        rows_out.append({**row, "_process_columns": {"step_id": step_id, "step_desc": step_desc}, "_applied_process": normalized})
+        if kind or step_id or step_desc:
             applied_processes.append({"parameter": param, **normalized})
-            continue
-        if prelabelled:
-            rows_out.append(row)
-            continue
-        kind, lines = _step_lines_for_param(param, metas)
-        if not kind:
-            rows_out.append(row)
-            continue
-        if not lines:
-            continue
-        text = "\n".join(lines)
-        normalized = {"kind": kind, "lines": lines, "text": text}
-        rows_out.append({**row, "_display": text, "_applied_process": normalized})
-        applied_processes.append({"parameter": param, **normalized})
     st["rows"] = rows_out
     st["step_labels"] = True
     # 행 데이터 외에도 적용 공정 목록을 명시적으로 보존해 상세/내보내기에서
@@ -2977,12 +2977,17 @@ def _apply_step_labels_to_embed(embed: dict, product: str) -> dict:
         out["applied_processes"] = applied_processes
     out["st_view"] = st
     out["step_labels"] = True
-    # legacy table 소비자도 raw parameter 대신 같은 적용 공정 표기를 받는다.
+    # legacy table 소비자도 동일한 세 개의 왼쪽 열을 받는다.
     headers = list(st.get("headers") or [])
     legacy_rows = []
     for row in rows_out:
         cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
-        legacy_row = [str(row.get("_display") or row.get("_param") or "")]
+        process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else {}
+        legacy_row = [
+            str(process.get("step_id") or ""),
+            str(process.get("step_desc") or ""),
+            str(row.get("_display") or row.get("_param") or ""),
+        ]
         for idx, _header in enumerate(headers):
             cell = cells.get(str(idx)) or cells.get(idx) or {}
             actual = cell.get("actual") if isinstance(cell, dict) else None
@@ -2997,6 +3002,7 @@ def _apply_step_labels_to_embed(embed: dict, product: str) -> dict:
                 legacy_row.append(plan_text or actual_text)
         legacy_rows.append(legacy_row)
     out["rows"] = legacy_rows
+    out["columns"] = ["step_id", "step_desc", "parameter", *headers]
     return out
 
 
@@ -3071,7 +3077,6 @@ def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[s
     headers = list(st_view.get("headers") or [])
     # 화면(buildSplitCheckStView)과 같이 미진행 칸 표시를 체크 행에 그대로 옮긴다.
     not_reached = NotReachedLookup(st_view)
-    # 적용 공정 표시(step_labels)면 `_display` 가 이미 step 표기라 prefix 를 떼면 안 된다.
     step_labels = bool(st_view.get("step_labels"))
     precision = st_view.get("precision") if isinstance(st_view.get("precision"), dict) else {}
     out_rows: list[dict[str, Any]] = []
@@ -3107,10 +3112,15 @@ def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[s
                     "split_check": True,
                     "not_reached": not_reached.cell(param, ci),
                 }
-            item_label = (display or param) if step_labels else split_param_display_name(display or param, param)
+            item_label = split_param_display_name(display or param, param)
             # 묶음은 raw 값 기준, 보여주는 값만 화면과 같은 소수 자리수로.
             value_label = format_split_cell_value(value, param, precision)
-            prefix_cells = [item_label, value_label, label]
+            process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else {}
+            prefix_cells = (
+                [str(process.get("step_id") or ""), str(process.get("step_desc") or ""),
+                 item_label, value_label, label]
+                if step_labels else [item_label, value_label, label]
+            )
             out_rows.append({
                 "_param": param or display,
                 "_display": display or param,
@@ -3135,10 +3145,12 @@ def _convert_splittable_embed_to_split_check(embed: dict[str, Any]) -> dict[str,
         return out
     # rows 를 통째로 새로 만드는 변환이라 원본 셀을 건드리지 않는다.
     split_rows, legacy_rows = _split_check_rows_from_st_view(st_view)
-    prefix_columns = ["항목", "값", "Split"]
+    step_labels = bool(st_view.get("step_labels") or out.get("step_labels"))
+    prefix_columns = (["step_id", "step_desc"] if step_labels else []) + ["항목", "값", "Split"]
     st_view["rows"] = split_rows
     st_view["prefix_columns"] = prefix_columns
     st_view["display_mode"] = "split_check"
+    st_view["parameter_prefix_index"] = 2 if step_labels else 0
     row_labels = dict(st_view.get("row_labels") or {})
     row_labels["parameter"] = prefix_columns[0]
     st_view["row_labels"] = row_labels
@@ -5450,8 +5462,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     def _param_label(row: dict) -> str:
         raw = str(row.get("_param") or "")
         display = str(row.get("_display") or raw or "")
-        # 적용 공정 표시 스냅샷은 항목 칸이 이미 step 표기다 — prefix 를 떼면 안 된다.
-        return display if step_labels else split_param_display_name(display, raw)
+        return split_param_display_name(display, raw)
 
     if split_check_mode and rows_st and headers:
         truncated = len(rows_st) > max_rows
@@ -5460,10 +5471,13 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         data_pad = "4px 5px" if dense else "4px 8px"
         font_sz = _MAIL_SNAPSHOT_FONT
         line_h = "1.25"
-        prefix_widths = [
-            (SPLIT_CHECK_PREFIX_PX[i] if i < len(SPLIT_CHECK_PREFIX_PX) else 100)
-            for i in range(len(prefix_columns))
-        ]
+        prefix_width_map = {"step_id": 168, "step_desc": 180, "항목": 240, "값": 140, "Split": 80}
+        prefix_widths = [prefix_width_map.get(label, 100) for label in prefix_columns]
+        parameter_prefix_index = max(0, min(
+            len(prefix_columns) - 1,
+            int(st.get("parameter_prefix_index") if st.get("parameter_prefix_index") is not None else (2 if step_labels and len(prefix_columns) >= 5 else 0)),
+        ))
+        split_prefix_index = parameter_prefix_index + 2
         prefix_total_px = sum(prefix_widths)
         prefix_col_styles = [_mail_px_col_style(w) for w in prefix_widths]
         first_col_style = prefix_col_styles[0]
@@ -5510,17 +5524,17 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             raw_prefix = r.get("_prefix_cells") if isinstance(r.get("_prefix_cells"), list) else []
             prefix_vals = list(raw_prefix[:len(prefix_columns)])
             while len(prefix_vals) < len(prefix_columns):
-                if len(prefix_vals) == 0:
+                if len(prefix_vals) == parameter_prefix_index:
                     prefix_vals.append(_param_label(r))
-                elif len(prefix_vals) == 1:
+                elif len(prefix_vals) == parameter_prefix_index + 1:
                     prefix_vals.append(str(r.get("_split_value") or ""))
-                elif len(prefix_vals) == 2:
+                elif len(prefix_vals) == parameter_prefix_index + 2:
                     prefix_vals.append(str(r.get("_split_label") or ""))
                 else:
                     prefix_vals.append("")
             cells = r.get("_cells") or {}
             row_cells = []
-            split_label = str(r.get("_split_label") or (prefix_vals[2] if len(prefix_vals) > 2 else "") or "")
+            split_label = str(r.get("_split_label") or (prefix_vals[split_prefix_index] if len(prefix_vals) > split_prefix_index else "") or "")
             split_color = _split_check_color_style(split_label)
             row_span = param_spans[ri] if ri < len(param_spans) else 1
             row_gray = _SPLIT_NOT_REACHED_BG if (
@@ -5528,14 +5542,14 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 or not_reached.row(r.get("_param"), len(headers))
             ) else ""
             for i, value in enumerate(prefix_vals):
-                if i == 0 and row_span == 0:
+                if i <= parameter_prefix_index and row_span == 0:
                     continue
                 style = prefix_col_styles[i] if i < len(prefix_col_styles) else data_col_style
                 body_html = esc(str(value or "")).replace("\n", "<br/>")
-                span_attr = f" rowspan='{row_span}'" if i == 0 and row_span > 1 else ""
+                span_attr = f" rowspan='{row_span}'" if i <= parameter_prefix_index and row_span > 1 else ""
                 row_cells.append(
                     f"<td{span_attr} style='{td_prefix}{style}"
-                    f"{split_color if i == 2 else ''}{row_gray}'>{body_html}</td>"
+                    f"{split_color if i == split_prefix_index else ''}{row_gray}'>{body_html}</td>"
                 )
             for i in range(len(headers)):
                 cell = cells.get(i) or cells.get(str(i)) or {}
@@ -5595,14 +5609,18 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         font_sz = _MAIL_SNAPSHOT_FONT
         line_h = "1.25"
         first_col_style, data_col_style = _mail_scroll_col_styles()
-        colgroup = _mail_colgroup_html(first_col_style, data_col_style, len(headers))
+        matrix_prefix_columns = ["step_id", "step_desc", param_row_label] if step_labels else [param_row_label]
+        matrix_prefix_widths = [168, 180, 240] if step_labels else [240]
+        matrix_prefix_styles = [_mail_px_col_style(width) for width in matrix_prefix_widths]
+        matrix_prefix_total = sum(matrix_prefix_widths)
+        colgroup = _mail_colgroup_from_widths([*matrix_prefix_widths, *([SPLIT_DATA_COL_PX] * len(headers))])
         td_first = (f"border:1px solid #d1d5db;padding:{first_pad};background:#f9fafb;color:{_MAIL_GRID_TEXT};"
                     f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};")
         td_cell_base = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
                         f"font-size:{font_sz};font-family:monospace;line-height:{line_h};color:{_MAIL_GRID_TEXT};")
         th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
                     f"font-size:{font_sz};color:#111827;text-align:center;font-family:monospace;line-height:{line_h};")
-        th_label = th_style + first_col_style + "text-align:left;font-weight:700;color:#6b7280;"
+        th_label = th_style + _mail_px_col_style(matrix_prefix_total) + "text-align:left;font-weight:700;color:#6b7280;"
         th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
                    f"font-size:{_MAIL_MIN_FONT};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
         th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
@@ -5618,12 +5636,18 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         body_parts = []
         for r in shown:
             param_raw = str(r.get("_param", ""))
-            param = esc(_param_label(r)).replace("\n", "<br/>")
             cells = r.get("_cells") or {}
             row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
             hilite = _MODULE_KNOB_HILITE if row_highlight else ""
             row_gray = _SPLIT_NOT_REACHED_BG if not_reached.row(param_raw, len(headers)) else ""
-            tds = [f"<td style='{td_first}{first_col_style}{hilite}{row_gray}'>{param}</td>"]
+            process = r.get("_process_columns") if isinstance(r.get("_process_columns"), dict) else {}
+            prefix_values = ([str(process.get("step_id") or ""), str(process.get("step_desc") or ""), _param_label(r)]
+                             if step_labels else [_param_label(r)])
+            tds = [
+                f"<td style='{td_first}{matrix_prefix_styles[idx]}{hilite}{row_gray}'>"
+                f"{esc(value).replace(chr(10), '<br/>')}</td>"
+                for idx, value in enumerate(prefix_values)
+            ]
             # 병합 대상이 아닌 행(INLINE/VM/TAG)은 _merged_runs 가 없다 — 아래 일반 경로로.
             if merged_mode and isinstance(r.get("_merged_runs"), list):
                 # 병합 표시 — 옆칸과 같은 값이면 colspan 으로 묶는다 (읽기 전용).
@@ -5680,12 +5704,12 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
 
         thead_parts = [
             "<tr>"
-            f"<th style='{th_label}'>{esc(root_row_label)}</th>"
+            f"<th colspan='{len(matrix_prefix_columns)}' style='{th_label}'>{esc(root_row_label)}</th>"
             f"<th colspan='{max(1, len(headers))}' style='{th_root}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(root_lot_id or '—')}</th>"
             "</tr>"
         ]
         if header_groups:
-            cells = [f"<th style='{th_label}'>{esc(lot_row_label)}</th>"]
+            cells = [f"<th colspan='{len(matrix_prefix_columns)}' style='{th_label}'>{esc(lot_row_label)}</th>"]
             for g in header_groups:
                 span = max(1, int(g.get("span") or 1))
                 cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or '—'))}</th>")
@@ -5693,16 +5717,16 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         else:
             thead_parts.append(
                 "<tr>"
-                f"<th style='{th_label}'>{esc(lot_row_label)}</th>"
+                f"<th colspan='{len(matrix_prefix_columns)}' style='{th_label}'>{esc(lot_row_label)}</th>"
                 f"<th colspan='{max(1, len(headers))}' style='{th_group}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(lot_id_label or '—')}</th>"
                 "</tr>"
             )
-        head_cells = [esc(param_row_label)] + [esc(h or "") for h in headers]
+        head_cells = [*[esc(label) for label in matrix_prefix_columns], *[esc(h or "") for h in headers]]
         thead_parts.append("<tr>" + "".join(
-            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
+            f"<th style='{th_style}{matrix_prefix_styles[i] if i < len(matrix_prefix_columns) else data_col_style}'>{c}</th>"
             for i, c in enumerate(head_cells)
         ) + "</tr>")
-        table_style = _mail_scroll_table_style(len(headers))
+        table_style = _mail_scroll_table_style(len(headers), prefix_px=matrix_prefix_total)
         table_html = (
             "<div style='overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%'>"
             f"<table style='{table_style}'>"

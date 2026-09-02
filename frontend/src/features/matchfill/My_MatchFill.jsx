@@ -1,10 +1,13 @@
-/* My_MatchFill.jsx — 매칭 테이블 product / module 채우기.
+/* My_MatchFill.jsx — 매칭 테이블 product / step / module 채우기.
  *
  * Vehicle_matching / Inline_matching 의 `product` 열을 raw DB(FAB/INLINE) 제품 폴더
  * 스캔으로 채운다. vm_matching 은 product 를 채우지 않는다 — 제품 귀속과 module 은
  * Vehicle_matching.csv 가 step_desc 로 이미 정해 두므로 그쪽 module 을 그대로 가져온다.
+ * PPID → FAB 공정은 ppid_knob.value를 FAB.ppid와 대조해 product/step_id를 찾고,
+ * Vehicle_matching에서 같은 제품·step_id의 step_desc를 별도 열로 보강한다.
+ * MASK → FAB 공정은 mask.reticle_id를 FAB.reticle_id와 같은 방식으로 대조한다.
  * 검사는 파일을 건드리지 않고 **제안**만 만들며, 관리자가 행 단위로 확인한 뒤
- * "반영"에서만 CSV 가 바뀐다.
+ * 전체 Before/After 확인창의 최종 확인을 눌렀을 때만 CSV 가 바뀐다.
  *
  * step_id 앞 두 글자로 검사할 제품을 좁히는 규칙(prefix_rules)은 엔지니어가 여기서 관리한다.
  */
@@ -45,6 +48,69 @@ function StatusPill({ status }) {
       display: "inline-flex", padding: "2px 9px", borderRadius: 999, fontSize: 12, fontWeight: 800,
       border: `1px solid ${m.tone.fg}`, color: m.tone.fg, background: m.tone.bg,
     }}>{m.label}</span>
+  );
+}
+
+function ApplyPreviewDialog({ preview, applying, onCancel, onConfirm }) {
+  if (!preview) return null;
+  const idCols = Array.from(new Set(preview.rows.flatMap(row => Object.keys(row.id || {}))));
+  const fillCount = preview.rows.filter(row => row.status === "fill").length;
+  const changeCount = preview.rows.filter(row => row.status === "change").length;
+  return (
+    <div role="presentation" onMouseDown={e => { if (e.target === e.currentTarget && !applying) onCancel(); }} style={{
+      position: "fixed", inset: 0, zIndex: 10020, display: "grid", placeItems: "center",
+      padding: 20, background: "rgba(0,0,0,0.68)", backdropFilter: "blur(3px)",
+    }}>
+      <section role="dialog" aria-modal="true" aria-label="전체 Before After 확인" style={{
+        width: "min(1180px, 96vw)", maxHeight: "92vh", overflow: "hidden", display: "grid",
+        gridTemplateRows: "auto auto minmax(0,1fr) auto", background: "var(--bg-card)",
+        border: "1px solid var(--border)", borderRadius: 12, boxShadow: "0 24px 80px rgba(0,0,0,.45)",
+      }}>
+        <div style={{ padding: "16px 18px 10px", display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>전체 Before / After 확인</div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 13 }}>
+              아래 선택 행 전체가 <b>{preview.file}</b>의 <b>{preview.column}</b> 열에 반영됩니다.
+            </div>
+          </div>
+          <Pill tone="warn" style={{ marginLeft: "auto" }}>{preview.rows.length}행</Pill>
+        </div>
+        <div style={{ padding: "0 18px 10px", display: "flex", gap: 8, flexWrap: "wrap", fontSize: 13 }}>
+          <Pill tone="ok">빈칸 채움 {fillCount}</Pill>
+          <Pill tone="warn">기존값 변경 {changeCount}</Pill>
+          <span style={{ color: "var(--text-secondary)" }}>검사 시각 {(preview.scannedAt || "").replace("T", " ")}</span>
+        </div>
+        <div style={{ margin: "0 18px", overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr>
+              <th style={{ ...th, width: 54 }}>행</th>
+              {idCols.map(c => <th key={c} style={th}>{c}</th>)}
+              <th style={th}>Before · {preview.column}</th>
+              <th style={th}>After · {preview.column}</th>
+              <th style={th}>상태</th>
+            </tr></thead>
+            <tbody>{preview.rows.map(row => (
+              <tr key={row.i} style={{ background: row.status === "change" ? "rgba(245,158,11,.07)" : "transparent" }}>
+                <td style={{ ...td, color: "var(--text-secondary)" }}>{Number(row.i) + 1}</td>
+                {idCols.map(c => <td key={c} style={td} title={row.id?.[c]}>{row.id?.[c] || "-"}</td>)}
+                <td style={{ ...td, color: "var(--text-secondary)" }}>{row.current || "(빈 값)"}</td>
+                <td style={{ ...td, fontWeight: 900, color: "var(--text-primary)" }}>{row.proposed || "(빈 값)"}</td>
+                <td style={td}><StatusPill status={row.status} /></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 8, borderTop: "1px solid var(--border)" }}>
+          <span style={{ color: WARN.fg, fontSize: 13, fontWeight: 700 }}>
+            확인을 누르기 전에는 CSV가 변경되지 않습니다.
+          </span>
+          <Btn variant="ghost" disabled={applying} onClick={onCancel} style={{ marginLeft: "auto" }}>취소</Btn>
+          <Btn variant="primary" disabled={applying} onClick={onConfirm}>
+            {applying ? "반영 중..." : `확인하고 ${preview.rows.length}행 반영`}
+          </Btn>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -175,11 +241,12 @@ export default function My_MatchFill({ user }) {
   const [targets, setTargets] = useState([]);
   const [dbRoot, setDbRoot] = useState("");
   const [active, setActive] = useState("vehicle");
-  const [column, setColumn] = useState("product");   // 채울 열: product | module
+  const [column, setColumn] = useState("product");   // 채울 열: product | step_id | step_desc | module
   const [settings, setSettings] = useState({ prefix_rules: [], module_rules: [], max_files_per_product: 0 });
   const [proposal, setProposal] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [applyPreview, setApplyPreview] = useState(null);
   const [skip, setSkip] = useState([]);          // 반영 제외 행 index
   const [onlyChanges, setOnlyChanges] = useState(true);
   const [search, setSearch] = useState("");
@@ -195,6 +262,10 @@ export default function My_MatchFill({ user }) {
   // module 원천: step 번호 구간표(step_range) vs Vehicle_matching step_desc.
   const moduleSource = current?.module_source || "step_range";
   const byStepDesc = moduleSource === "vehicle_step_desc";
+  const fabMatchSource = current?.match_source || "";
+  const fabProcessMatch = fabMatchSource === "fab_ppid" || fabMatchSource === "fab_reticle";
+  const fabKeyLabel = fabMatchSource === "fab_reticle" ? "RETICLE" : "PPID";
+  const hasCurrentColumn = (current?.columns || []).some(c => String(c).trim().toLowerCase() === column.toLowerCase());
 
   const loadTargets = () => sf(`${API}/targets`).then(d => {
     setTargets(d.targets || []);
@@ -214,6 +285,7 @@ export default function My_MatchFill({ user }) {
 
   useEffect(() => {
     setSkip([]);
+    setApplyPreview(null);
     sf(`${API}/proposal?target=${encodeURIComponent(active)}&column=${encodeURIComponent(column)}`)
       .then(d => setProposal(d.proposal || null))
       .catch(() => setProposal(null));
@@ -233,15 +305,32 @@ export default function My_MatchFill({ user }) {
       .finally(() => setScanning(false));
   };
 
-  const applyProposal = () => {
+  const openApplyPreview = () => {
     const n = applyRows.length;
     if (!n) { toast.warn("반영할 행이 없습니다."); return; }
-    if (!window.confirm(`${current?.file} 에 ${n}행을 반영합니다.\n이 파일은 SplitTable·Valve·인폼이 함께 읽습니다. 진행할까요?`)) return;
+    setApplyPreview({
+      target: active,
+      column,
+      file: current?.file || proposal?.file || "",
+      rows: applyRows.map(row => ({ ...row, id: { ...(row.id || {}) } })),
+      skipRows: [...skip],
+      scannedAt: proposal?.scanned_at || "",
+    });
+  };
+
+  const applyProposal = () => {
+    if (!applyPreview?.rows?.length) return;
     setApplying(true);
-    postJson(`${API}/apply`, { target: active, column, skip_rows: skip })
+    postJson(`${API}/apply`, {
+      target: applyPreview.target,
+      column: applyPreview.column,
+      skip_rows: applyPreview.skipRows,
+      proposal_scanned_at: applyPreview.scannedAt,
+    })
       .then(d => {
-        toast.ok(`${d.file} ${d.changed}행 반영됨${d.added_column ? " (product 열 새로 생성)" : ""}`);
+        toast.ok(`${d.file} ${d.changed}행 반영됨${d.added_column ? ` (${applyPreview.column} 열 새로 생성)` : ""}`);
         setProposal(p => (p ? { ...p, applied: true } : p));
+        setApplyPreview(null);
         loadTargets();
       })
       .catch(e => toast.error("반영 실패: " + (e.message || e)))
@@ -313,7 +402,9 @@ export default function My_MatchFill({ user }) {
 
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontWeight: 900 }}>채울 열</span>
-          {[["product", "product (DB 스캔)"],
+          {[["product", fabProcessMatch ? `product (FAB ${fabKeyLabel})` : "product (DB 스캔)"],
+            ["step_id", `step_id (FAB ${fabKeyLabel})`],
+            ["step_desc", "step_desc (Vehicle matching)"],
             ["module", byStepDesc ? "module (Vehicle_matching step_desc)" : "module (step 번호 구간)"]]
             .filter(([key]) => fillColumns.includes(key))
             .map(([key, label]) => {
@@ -334,11 +425,16 @@ export default function My_MatchFill({ user }) {
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <b style={{ fontFamily: "monospace" }}>{current.file}</b>
               <Pill tone={current.csv_exists ? "ok" : "bad"}>{current.csv_exists ? `${current.csv_rows}행` : "CSV 없음"}</Pill>
-              <Pill tone={(column === "product" ? current.has_product_col : current.has_module_col) ? "ok" : "warn"}>
-                {(column === "product" ? current.has_product_col : current.has_module_col)
+              <Pill tone={hasCurrentColumn ? "ok" : "warn"}>
+                {hasCurrentColumn
                   ? `${column} 열 있음` : `${column} 열 없음 — 맨 왼쪽에 생성`}
               </Pill>
-              {column === "product" ? (
+              {fabProcessMatch ? (
+                <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>
+                  기준: <b style={{ fontFamily: "monospace" }}>{fabMatchSource === "fab_reticle" ? "mask.reticle_id = FAB.reticle_id" : "ppid_knob.value = FAB.ppid"}</b>
+                  {column === "step_desc" ? <> → 같은 제품·step_id의 <b style={{ fontFamily: "monospace" }}>Vehicle_matching.step_desc</b></> : null}
+                </span>
+              ) : column === "product" ? (
                 <>
                   <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>
                     매칭 키: <b style={{ fontFamily: "monospace" }}>{(current.keys || []).join(" + ") || "-"}</b>
@@ -362,8 +458,9 @@ export default function My_MatchFill({ user }) {
                 {scanning ? "검사 중..." : "검사 실행"}
               </Btn>
             </div>
-            {scanning && <Loading text={column === "product"
-              ? "raw DB 제품 폴더를 스캔하는 중..."
+            {scanning && <Loading text={fabProcessMatch
+              ? `FAB ${fabKeyLabel}와 Vehicle 공정 정보를 대조하는 중...`
+              : column === "product" ? "raw DB 제품 폴더를 스캔하는 중..."
               : byStepDesc ? "Vehicle_matching 의 step_desc 를 대조하는 중..." : "step 번호 구간을 대조하는 중..."} size="sm" />}
             {column === "module" && !byStepDesc && !current.has_step_col && current.csv_exists && (
               <div style={{ color: WARN.fg, fontSize: 13 }}>이 파일에는 step_id 열이 없어 module 구간을 정할 수 없습니다.</div>
@@ -386,11 +483,12 @@ export default function My_MatchFill({ user }) {
 
         {/* 규칙 편집기는 규칙을 쓰는 모드에서만 보여준다 — Vehicle_matching step_desc
             기준 module 채우기는 구간표를 아예 읽지 않는다. */}
-        {column === "product"
+        {column === "product" && !fabProcessMatch
           ? <PrefixRules rules={settings.prefix_rules} products={current?.products || []}
               canEdit={canManage} onSave={saveRules} />
-          : byStepDesc ? null
-          : <ModuleRules rules={settings.module_rules} canEdit={canManage} onSave={saveModuleRules} />}
+          : column === "module" && !byStepDesc
+          ? <ModuleRules rules={settings.module_rules} canEdit={canManage} onSave={saveModuleRules} />
+          : null}
 
         {proposal && (
           <section style={{ display: "grid", gap: 8, padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
@@ -424,7 +522,7 @@ export default function My_MatchFill({ user }) {
                     <th style={th}>현재 {column}</th>
                     <th style={th}>제안 {column}</th>
                     <th style={th}>상태</th>
-                    <th style={th}>{column === "product" ? "검사 범위" : byStepDesc ? "맞춘 step_desc" : "step 번호"}</th>
+                    <th style={th}>{fabProcessMatch ? "FAB 매칭 (제품 · step_id · step_desc)" : column === "product" ? "검사 범위" : byStepDesc ? "맞춘 step_desc" : "step 번호"}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -464,7 +562,7 @@ export default function My_MatchFill({ user }) {
               </span>
               <Btn variant="ghost" disabled={!canManage} onClick={discard} style={{ marginLeft: "auto" }}>제안 폐기</Btn>
               <Btn variant="primary" disabled={!canManage || applying || proposal.applied || applyRows.length === 0}
-                onClick={applyProposal}>
+                onClick={openApplyPreview}>
                 {applying ? "반영 중..." : proposal.applied ? "반영 완료" : `확인 후 반영 (${applyRows.length}행)`}
               </Btn>
             </div>
@@ -473,12 +571,19 @@ export default function My_MatchFill({ user }) {
 
         {!proposal && current?.csv_exists && (
           <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)", border: "1px dashed var(--border)", borderRadius: 10 }}>
-            아직 검사 결과가 없습니다. <b>검사 실행</b>을 누르면 {column === "product"
-              ? "raw DB 를 훑어"
+            아직 검사 결과가 없습니다. <b>검사 실행</b>을 누르면 {fabProcessMatch
+              ? `FAB의 같은 ${fabKeyLabel}와 Vehicle 공정을 찾아`
+              : column === "product" ? "raw DB 를 훑어"
               : byStepDesc ? "Vehicle_matching 의 step_desc 로" : "step 번호 구간표로"} {column} 후보를 만듭니다 (파일은 바뀌지 않습니다).
           </div>
         )}
       </div>
+      <ApplyPreviewDialog
+        preview={applyPreview}
+        applying={applying}
+        onCancel={() => setApplyPreview(null)}
+        onConfirm={applyProposal}
+      />
     </PageShell>
   );
 }

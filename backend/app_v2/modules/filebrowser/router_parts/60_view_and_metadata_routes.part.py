@@ -36,7 +36,10 @@ def _resolve_data_file_for_schema(file: str, settings: dict | None = None) -> Pa
     if rel.is_absolute() or ".." in rel.parts:
         raise HTTPException(400, "Invalid file path")
     settings = settings or _load_filebrowser_settings()
-    single_file_folders = _single_file_folder_names(settings)
+    # Callers authenticate the file path before resolving it.  Include the
+    # credential namespace here so an authenticated global admin can inspect
+    # its CSV/Parquet schema; non-admin callers are rejected centrally.
+    single_file_folders = _single_file_folder_names(settings, allow_credential=True)
     base_root = _base_root()
     db_root = _db_root()
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:

@@ -457,7 +457,10 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             rel = Path(file)
             folder_key = str(rel.parts[0]).casefold() if rel.parts else ""
             single_file_fp = None
-            single_file_folders = _single_file_folder_names(settings)
+            single_file_folders = _single_file_folder_names(
+                settings,
+                allow_credential=str((me or {}).get("role") or "").strip().casefold() == "admin",
+            )
             if folder_key in single_file_folders:
                 single_file_fp = _resolve_single_file_folder_data_path(
                     file,

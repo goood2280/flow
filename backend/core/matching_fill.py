@@ -1,4 +1,4 @@
-"""core/matching_fill.py — 매칭 CSV 의 `product` 열을 raw DB 스캔으로 채운다.
+"""core/matching_fill.py — 매칭 CSV의 공정 메타 열을 raw DB 스캔으로 채운다.
 
 무엇을 하나
   `Vehicle_matching.csv` / `Inline_matching.csv` 는 어느 제품의 것인지가 비어 있는
@@ -64,6 +64,32 @@ TARGETS: dict[str, dict[str, Any]] = {
         "fill_columns": ("product", "module"),
         "module_source": "step_range",
     },
+    "ppid": {
+        # ppid_knob.csv의 value(PPID)를 FAB 원본 ppid와 대조해 실제 제품/step_id를
+        # 찾고, 같은 제품+step_id의 Vehicle_matching에서 step_desc를 가져온다.
+        "label": "PPID → FAB 공정",
+        "file": "ppid_knob.csv",
+        "db_roots": ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB"),
+        "keys": ("value",),
+        "db_key_aliases": {"value": ("ppid", "pp_id")},
+        "id_cols": ("feature_name", "function_step", "value", "product", "step_id", "step_desc"),
+        "fill_columns": ("product", "step_id", "step_desc"),
+        "match_source": "fab_ppid",
+    },
+    "mask": {
+        # mask.csv의 reticle_id를 FAB 원본 reticle_id와 대조해 제품/공정을 찾고,
+        # 같은 제품+step_id의 Vehicle_matching에서 step_desc를 가져온다.
+        "label": "MASK → FAB 공정",
+        "file": "mask.csv",
+        "db_roots": ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB"),
+        "keys": ("reticle_id",),
+        "id_cols": (
+            "reticle_id", "mask_version", "mask_vendor", "photo_step",
+            "product", "step_id", "step_desc",
+        ),
+        "fill_columns": ("product", "step_id", "step_desc"),
+        "match_source": "fab_reticle",
+    },
     "vm": {
         # vm_matching.csv 는 (step_desc, item_id) 만 들고 있다. 제품 귀속과
         # module 은 Vehicle_matching.csv 가 step_desc 로 이미 정해 두므로
@@ -87,8 +113,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "module_rules": [],
 }
 
-# 채울 수 있는 열. product 는 DB 스캔, module 은 step 번호 구간표로 정한다.
-FILL_COLUMNS = ("product", "module")
+# 채울 수 있는 열. PPID 대상은 FAB에서 product/step_id를 찾은 뒤 Vehicle에서
+# step_desc를 보강한다. module은 기존 step 번호 구간표/Vehicle 이름 매칭을 쓴다.
+FILL_COLUMNS = ("product", "step_id", "step_desc", "module")
 MODULE_COL = "module"
 # step_id = 앞 영문자 + 숫자(6자리 관행) + 꼬리. 구간 판정은 숫자 부분만 본다.
 _STEP_RE = re.compile(r"^\s*([A-Za-z]+)\s*(\d+)")
@@ -284,23 +311,32 @@ def _product_key_index(target: str, product: str, keys: tuple[str, ...], limit: 
         return set()
     try:
         lf = pl.scan_parquet([str(f) for f in files])
-        have = set(lf.collect_schema().names())
-        use = [k for k in keys if k in have]
-        if not use:
+        schema = lf.collect_schema().names()
+        folded = {str(name).strip().casefold(): name for name in schema}
+        aliases = (TARGETS.get(target) or {}).get("db_key_aliases") or {}
+        resolved: list[tuple[int, str]] = []
+        for pos, key in enumerate(keys):
+            candidates = [key, *(aliases.get(key) or ())]
+            actual = next((folded.get(str(candidate).strip().casefold()) for candidate in candidates
+                           if folded.get(str(candidate).strip().casefold())), None)
+            if actual:
+                resolved.append((pos, actual))
+        if not resolved:
             return set()
-        df = lf.select([pl.col(c).cast(pl.Utf8) for c in use]).unique().collect()
+        df = lf.select([
+            pl.col(actual).cast(pl.Utf8).alias(f"_key_{pos}") for pos, actual in resolved
+        ]).unique().collect()
     except Exception as e:
         logger.warning("[matching_fill] %s/%s 스캔 실패: %s", target, product, e)
         return set()
     rows = df.rows()
-    if len(use) == len(keys):
+    if len(resolved) == len(keys):
         return {tuple("" if v is None else str(v).strip() for v in r) for r in rows}
     # DB 에 없는 키는 와일드카드로 둔다 — 있는 열만으로 비교하도록 위치를 맞춘다.
-    idx = [keys.index(c) for c in use]
     out: set[tuple] = set()
     for r in rows:
         slot: list[str] = ["*"] * len(keys)
-        for pos, value in zip(idx, r):
+        for (pos, _actual), value in zip(resolved, r):
             slot[pos] = "" if value is None else str(value).strip()
         out.add(tuple(slot))
     return out
@@ -391,6 +427,179 @@ def _read_csv(target: str) -> tuple[list[str], list[dict]]:
     return list(cols), rows
 
 
+def _resolve_column(names: Iterable[str], *candidates: str) -> str:
+    folded = {str(name).strip().casefold(): str(name) for name in names or []}
+    for candidate in candidates:
+        hit = folded.get(str(candidate or "").strip().casefold())
+        if hit:
+            return hit
+    return ""
+
+
+def _fab_value_step_index(target: str, product: str, value_candidates: tuple[str, ...],
+                          value_label: str, limit: int = 0) -> dict[str, list[str]]:
+    """한 FAB 제품의 공정 식별자(casefold) → step_id 목록."""
+    files = _product_files(target, product, limit)
+    if not files:
+        return {}
+    try:
+        import polars as pl
+        lf = pl.scan_parquet([str(f) for f in files])
+        schema = lf.collect_schema().names()
+        value_col = _resolve_column(schema, *value_candidates)
+        step_col = _resolve_column(schema, "step_id", "stepid", "step")
+        if not value_col or not step_col:
+            return {}
+        frame = lf.select([
+            pl.col(value_col).cast(pl.Utf8).alias("value"),
+            pl.col(step_col).cast(pl.Utf8).alias("step_id"),
+        ]).drop_nulls().unique(maintain_order=True).collect()
+    except Exception as e:
+        logger.warning("[matching_fill] FAB %s 공정 스캔 실패 %s/%s: %s",
+                       value_label, target, product, e)
+        return {}
+    out: dict[str, list[str]] = {}
+    for value, step_id in frame.rows():
+        key = str(value or "").strip().casefold()
+        sid = str(step_id or "").strip()
+        if key and sid and sid not in out.setdefault(key, []):
+            out[key].append(sid)
+    return out
+
+
+def _fab_ppid_step_index(target: str, product: str, limit: int = 0) -> dict[str, list[str]]:
+    """한 FAB 제품의 PPID(casefold) → step_id 목록."""
+    return _fab_value_step_index(target, product, ("ppid", "pp_id"), "PPID", limit)
+
+
+def _fab_reticle_step_index(target: str, product: str, limit: int = 0) -> dict[str, list[str]]:
+    """한 FAB 제품의 reticle_id(casefold) → step_id 목록."""
+    return _fab_value_step_index(
+        target, product, ("reticle_id", "reticle", "reticleid"), "reticle_id", limit,
+    )
+
+
+def _vehicle_step_desc_lookup() -> tuple[dict[tuple[str, str], tuple[str, int]], dict[str, tuple[str, int]]]:
+    """(product, step_id) 및 step_id fallback → (step_desc, 설정 행 순서)."""
+    _cols, rows = _read_csv("vehicle")
+    exact: dict[tuple[str, str], tuple[str, int]] = {}
+    fallback: dict[str, tuple[str, int]] = {}
+    for order, row in enumerate(rows):
+        sid = _row_value_ci(row, "step_id")
+        desc = _row_value_ci(row, "step_desc")
+        products = [x.strip() for x in re.split(r"[,;|]+", _row_value_ci(row, PRODUCT_COL)) if x.strip()]
+        if not sid:
+            continue
+        sid_key = sid.casefold()
+        # product가 비어 있는 공통 Vehicle 행만 fallback으로 쓴다. 다른 제품의 같은
+        # step_id를 가져오면 PPID→제품→step 연결이 어긋날 수 있다.
+        if not products:
+            fallback.setdefault(sid_key, (desc, order))
+        for product in products:
+            exact.setdefault((product.casefold(), sid_key), (desc, order))
+    return exact, fallback
+
+
+def _scan_fab_process(target: str, spec: dict, cols: list[str], rows: list[dict],
+                      username: str, column: str, *, csv_keys: tuple[str, ...],
+                      index_builder, match_source: str) -> dict:
+    """CSV 공정 식별자를 FAB와 연결해 product/step_id/step_desc를 제안한다."""
+    cfg = settings()
+    products = list_products(target)
+    if not products:
+        raise FileNotFoundError("FAB raw DB 제품 폴더를 찾을 수 없습니다")
+    limit = cfg["max_files_per_product"]
+    value_indexes = {product: index_builder(target, product, limit) for product in products}
+    vehicle_exact, vehicle_fallback = _vehicle_step_desc_lookup()
+
+    out_rows: list[dict] = []
+    counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
+    for i, row in enumerate(rows):
+        source_value = next((_row_value_ci(row, key) for key in csv_keys if _row_value_ci(row, key)), "")
+        matches: list[dict] = []
+        for product in products:
+            for sid in value_indexes.get(product, {}).get(source_value.casefold(), []):
+                desc, order = vehicle_exact.get(
+                    (product.casefold(), sid.casefold()),
+                    vehicle_fallback.get(sid.casefold(), ("", 10**9)),
+                )
+                matches.append({"product": product, "step_id": sid, "step_desc": desc, "order": order})
+        matches.sort(key=lambda item: (item["order"], item["product"].casefold(), item["step_id"].casefold()))
+
+        values: list[str] = []
+        seen: set[str] = set()
+        for match in matches:
+            value = str(match.get(column) or "").strip()
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
+                values.append(value)
+        current = _row_value_ci(row, column) if _resolve_column(cols, column) else ""
+        proposed = ", ".join(values)
+        if not proposed:
+            status = "miss"
+        elif not current:
+            status = "fill"
+        elif current == proposed:
+            status = "same"
+        else:
+            status = "change"
+        counts[status] += 1
+        out_rows.append({
+            "i": i,
+            "keys": {csv_keys[0]: source_value},
+            "id": {c: row.get(c, "") for c in (spec.get("id_cols") or ()) if c in cols},
+            "current": current,
+            "proposed": proposed,
+            "status": status,
+            "scoped": [" · ".join(filter(None, (
+                str(m.get("product") or ""), str(m.get("step_id") or ""), str(m.get("step_desc") or ""),
+            ))) for m in matches],
+        })
+
+    proposal = {
+        "target": target,
+        "column": column,
+        "file": spec["file"],
+        "keys": [csv_keys[0]],
+        "products": products,
+        "add_column": column not in cols,
+        "rows": out_rows,
+        "counts": counts,
+        "scanned_at": _now(),
+        "scanned_by": username or "",
+        "applied": False,
+        "match_source": match_source,
+    }
+    with _lock:
+        store = _load_store()
+        store.setdefault("proposals", {})[_proposal_key(target, column)] = proposal
+        _save_store(store)
+    return proposal
+
+
+def _scan_ppid_fab(target: str, spec: dict, cols: list[str], rows: list[dict],
+                    username: str, column: str) -> dict:
+    """ppid_knob.value를 FAB ppid에 연결해 product/step_id/step_desc를 제안한다."""
+    return _scan_fab_process(
+        target, spec, cols, rows, username, column,
+        csv_keys=("value", "ppid"), index_builder=_fab_ppid_step_index,
+        match_source="fab_ppid",
+    )
+
+
+def _scan_reticle_fab(target: str, spec: dict, cols: list[str], rows: list[dict],
+                       username: str, column: str) -> dict:
+    """mask.csv.reticle_id를 FAB reticle_id에 연결해 공정 메타를 제안한다."""
+    if not _resolve_column(cols, "reticle_id", "reticle", "reticleid"):
+        raise ValueError(f"{spec['file']} 에 reticle_id 열이 없습니다")
+    return _scan_fab_process(
+        target, spec, cols, rows, username, column,
+        csv_keys=("reticle_id", "reticle", "reticleid"),
+        index_builder=_fab_reticle_step_index, match_source="fab_reticle",
+    )
+
+
 # ────────────────────────────────────────── 제안 생성
 def _proposal_key(target: str, column: str) -> str:
     return f"{target}:{column}"
@@ -414,6 +623,10 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     cols, rows = _read_csv(target)
     if not cols:
         raise FileNotFoundError(f"{spec['file']} 을 찾을 수 없습니다 ({_db_root()})")
+    if str(spec.get("match_source") or "") == "fab_ppid":
+        return _scan_ppid_fab(target, spec, cols, rows, username, column)
+    if str(spec.get("match_source") or "") == "fab_reticle":
+        return _scan_reticle_fab(target, spec, cols, rows, username, column)
     if column == MODULE_COL:
         if str(spec.get("module_source") or "step_range") == "vehicle_step_desc":
             return _scan_module_by_vehicle(target, spec, cols, rows, username)
@@ -633,15 +846,19 @@ def discard(target: str, column: str = "product") -> None:
 
 # ────────────────────────────────────────── 반영 (관리자)
 def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | None = None,
-                   column: str = "product") -> dict:
+                   column: str = "product", expected_scanned_at: str = "") -> dict:
     """관리자 확인이 끝난 제안을 CSV 에 쓴다. 대상 열이 없으면 **맨 왼쪽**에 만든다."""
     if column not in FILL_COLUMNS:
         raise ValueError(f"알 수 없는 열: {column}")
+    if column not in target_fill_columns(target):
+        raise ValueError(f"{target} 대상에는 {column} 열을 채울 수 없습니다")
     proposal = get_proposal(target, column)
     if not proposal:
         raise LookupError("반영할 제안이 없습니다. 먼저 검사를 실행하세요.")
     if proposal.get("applied"):
         raise ValueError("이미 반영된 제안입니다. 다시 검사해 주세요.")
+    if not expected_scanned_at or str(proposal.get("scanned_at") or "") != str(expected_scanned_at):
+        raise ValueError("미리보기 이후 제안이 바뀌었습니다. 전체 Before/After를 다시 확인해 주세요.")
 
     skip = {int(x) for x in (skip_rows or [])}
     fp = _csv_path(target)
@@ -653,13 +870,27 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
             cols = [column] + cols               # 없으면 제일 왼쪽에 새로 만든다
             for r in rows:
                 r.setdefault(column, "")
-        changed = 0
+        if target in {"ppid", "mask"}:
+            # 세 열을 어느 순서로 반영해도 최종 CSV 헤더는 항상 같은 순서다.
+            front = [name for name in (PRODUCT_COL, "step_id", "step_desc") if name in cols]
+            cols = front + [name for name in cols if name not in front]
+        selected = []
         for item in proposal.get("rows") or []:
             i = int(item.get("i", -1))
             if i in skip or i < 0 or i >= len(rows):
                 continue
             if item.get("status") in ("miss", "same"):
                 continue
+            actual = _row_value_ci(rows[i], column)
+            expected = str(item.get("current") or "").strip()
+            if actual != expected:
+                raise ValueError(
+                    f"{proposal['file']} {i + 1}행의 {column} 값이 검사 후 변경되었습니다. "
+                    "다시 검사해 전체 Before/After를 확인해 주세요."
+                )
+            selected.append((i, item))
+        changed = 0
+        for i, item in selected:
             rows[i][column] = item.get("proposed") or ""
             changed += 1
         _write_csv_atomic(fp, cols, rows)

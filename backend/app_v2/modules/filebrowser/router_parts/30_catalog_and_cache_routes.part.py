@@ -856,14 +856,15 @@ def base_dir_children(path: str = Query(""), request: Request = None):
     보이는데 열면 비어 있음). 화면이 폴더를 열 때 이 endpoint 로 그 칸만 읽으면
     깊이 제한 없이 parquet 까지 내려갈 수 있다.
     """
-    _require_filebrowser_user(request)
+    me = _require_filebrowser_user(request)
+    allow_credential = str((me or {}).get("role") or "").strip().casefold() == "admin"
     rel = str(path or "").strip()
     if not rel:
         return {"ok": True, "path": "", "entries": [], "truncated": False}
     base_root = _base_root()
     db_root = _db_root()
     settings = _load_filebrowser_settings()
-    folder_names = _single_file_folder_names(settings)
+    folder_names = _single_file_folder_names(settings, allow_credential=allow_credential)
     versioned_dirs = _versioned_single_file_dir_names(settings)
     entries: list[dict] = []
     seen: set[str] = set()
@@ -876,6 +877,7 @@ def base_dir_children(path: str = Query(""), request: Request = None):
         found, cut = _single_file_dir_children(
             root, source_root, rel,
             versioned_dirs=versioned_dirs, folder_names=folder_names,
+            allow_credential=allow_credential,
         )
         truncated = truncated or cut
         for item in found:
@@ -987,16 +989,18 @@ def base_files(request: Request = None, fast: bool = Query(False)):
     ML_TABLE_*.parquet, the small matching CSVs, and product_config/products.yaml.
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
-    _require_filebrowser_user(request)
+    me = _require_filebrowser_user(request)
+    allow_credential = str((me or {}).get("role") or "").strip().casefold() == "admin"
     base_root = _base_root()
     db_root = _db_root()
     settings = _load_filebrowser_settings()
-    single_file_folders = _single_file_folder_names(settings)
+    single_file_folders = _single_file_folder_names(settings, allow_credential=allow_credential)
     versioned_dirs = _versioned_single_file_dir_names(settings)
     description_sig = tuple(sorted((settings.get("file_descriptions") or {}).items()))
     if fast:
         cache_key = (
             "base_files_fast",
+            allow_credential,
             tuple(sorted(single_file_folders)),
             description_sig,
             _path_sig(base_root),
@@ -1047,6 +1051,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
                 source_root,
                 folder_name,
                 versioned_dirs=versioned_dirs,
+                allow_credential=allow_credential,
             )
             if not entries:
                 continue

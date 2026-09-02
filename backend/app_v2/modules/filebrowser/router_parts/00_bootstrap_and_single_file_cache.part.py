@@ -431,25 +431,26 @@ def _track_filebrowser_sql_execution(scope: str):
         return wrapped
     return decorate
 
-# credential/teg_location은 DB root 아래에 있어도 인증정보·도메인 내부 설정을 담는
-# 예약 폴더다. teg_location의 기준 CSV 자체는 DB root의 단일 파일로 계속 보이지만,
-# 설정 JSON과 제품 이미지를 담는 소문자 teg_location/ 폴더는 탐색기에 노출하지 않는다.
-# 관리자 설정에서 표시 폴더로 추가해도 Files/DB 탐색 API에는 절대 노출하지 않는다.
-# 필요한 관리자 기능은 각 도메인의 require_admin API를 통해서만 접근한다.
+# credential/teg_location은 DB root 아래의 예약 폴더다. credential은 global admin의
+# Files 트리에서만 보이고, 일반 사용자에게는 목록과 직접 접근을 모두 막는다.
+# teg_location과 cache는 관리자에게도 계속 숨기며 각 도메인 API로만 접근한다.
 _FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "credential", "teg_location"}
 _RAW_DB_DISPLAY_RE = re.compile(r"^1\.RAWDATA_DB(?:_(.+))?$", re.IGNORECASE)
 
 
-def _is_filebrowser_hidden_dir_name(name: str) -> bool:
+def _is_filebrowser_hidden_dir_name(name: str, *, allow_credential: bool = False) -> bool:
     """Hide internal/cache/backup directories from both DB and Files trees."""
     clean = str(name or "").strip()
     folded = clean.casefold()
+    reserved_hidden = folded in _FILEBROWSER_ALWAYS_HIDDEN_DIRS
+    if allow_credential and folded == "credential":
+        reserved_hidden = False
     return (
         not clean
         or clean.startswith(".")
         or clean.startswith("__")
         or clean.startswith("_")
-        or folded in _FILEBROWSER_ALWAYS_HIDDEN_DIRS
+        or reserved_hidden
         or "backup" in folded
     )
 
@@ -875,15 +876,17 @@ def _drop_in_folder_names(roots: tuple[Path, ...], registered: set[str]) -> set[
     return out
 
 
-def _single_file_folder_names(settings: dict | None = None) -> set[str]:
+def _single_file_folder_names(settings: dict | None = None, *, allow_credential: bool = False) -> set[str]:
     settings = settings or _load_filebrowser_settings()
     names = set(_hidden_db_dir_names(settings))
     clean: set[str] = set()
     for raw in names:
         name = str(raw or "").strip().strip("/\\").casefold()
-        if not name or name in {".", ".."} or "/" in name or "\\" in name or _is_filebrowser_hidden_dir_name(name):
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or _is_filebrowser_hidden_dir_name(name, allow_credential=allow_credential):
             continue
         clean.add(name)
+    if allow_credential:
+        clean.add("credential")
     # Files 폴더는 톱니바퀴의 "표시할 폴더"에 명시적으로 등록된 항목만 노출한다.
     # 예전의 drop-in 자동 탐지는 미등록 JSON/텍스트 폴더까지 화면에 나타나게 해
     # 관리자가 정한 허용 목록과 실제 화면이 달라지는 원인이었다.
@@ -928,7 +931,8 @@ def _single_file_folder_path(root: Path, folder_name: str) -> Path:
     return direct
 
 
-def _fast_scandir_entries(folder: Path, exts: set[str], root: Path, limit: int) -> list[tuple[os.DirEntry, str]]:
+def _fast_scandir_entries(folder: Path, exts: set[str], root: Path, limit: int,
+                          *, allow_credential: bool = False) -> list[tuple[os.DirEntry, str]]:
     entries = []
     stack = [folder]
     count = 0
@@ -940,7 +944,7 @@ def _fast_scandir_entries(folder: Path, exts: set[str], root: Path, limit: int) 
                     if count >= limit:
                         break
                     if entry.is_dir(follow_symlinks=False):
-                        if _is_filebrowser_hidden_dir_name(entry.name):
+                        if _is_filebrowser_hidden_dir_name(entry.name, allow_credential=allow_credential):
                             continue
                         rel_path = "/".join(Path(entry.path).relative_to(root).parts)
                         entries.append((entry, rel_path))
@@ -962,6 +966,7 @@ def _single_file_folder_entries(
     folder_name: str,
     *,
     versioned_dirs: set[str] | None = None,
+    allow_credential: bool = False,
 ) -> list[dict]:
     folder_key = str(folder_name or "").strip().casefold()
     if not folder_key:
@@ -974,7 +979,10 @@ def _single_file_folder_entries(
     exts = _single_file_folder_extensions(folder_key)
 
     try:
-        raw_candidates = _fast_scandir_entries(folder, exts, root, _SINGLE_FILE_FOLDER_MAX_FILES)
+        raw_candidates = _fast_scandir_entries(
+            folder, exts, root, _SINGLE_FILE_FOLDER_MAX_FILES,
+            allow_credential=allow_credential,
+        )
         if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
             folder_resolved = folder.resolve()
 
@@ -1038,6 +1046,7 @@ def _single_file_dir_children(
     *,
     versioned_dirs: set[str] | None = None,
     folder_names: set[str] | None = None,
+    allow_credential: bool = False,
 ) -> tuple[list[dict], bool]:
     """rel_path 폴더의 **바로 아래** 항목만 나열한다. 반환 (entries, truncated).
 
@@ -1054,7 +1063,7 @@ def _single_file_dir_children(
     parts = [p for p in rel.split("/") if p]
     if any(p in {".", ".."} for p in parts):
         raise HTTPException(400, "Invalid folder path")
-    if any(_is_filebrowser_hidden_dir_name(p) for p in parts):
+    if any(_is_filebrowser_hidden_dir_name(p, allow_credential=allow_credential) for p in parts):
         return [], False
     folder_key = str(parts[0] or "").casefold()
     if folder_names is not None and folder_key not in folder_names:
@@ -1088,7 +1097,7 @@ def _single_file_dir_children(
                     is_dir = entry.is_dir(follow_symlinks=False)
                 except OSError:
                     continue
-                if is_dir and _is_filebrowser_hidden_dir_name(entry.name):
+                if is_dir and _is_filebrowser_hidden_dir_name(entry.name, allow_credential=allow_credential):
                     continue
                 if not is_dir:
                     if Path(entry.name).suffix.lower() not in exts:

@@ -13,6 +13,7 @@ from core.utils import append_text_line
 
 NOTIFY_DIR = PATHS.data_root / "notifications"
 NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
+ADMIN_NOTICE_BADGE_TTL_DAYS = 7
 
 # 이벤트 → 기본 메시지 템플릿 (actor/payload 치환).
 # admin_settings.notify_rules.{username}.disabled = [] 로 유저별 off 가능.
@@ -131,10 +132,42 @@ def send_to_admins(title: str, body: str, type: str = "approval"):
                     send_notify(row["username"], title, body, type)
 
 
+def is_fresh_admin_notice(timestamp: str, now: datetime.datetime | None = None) -> bool:
+    """관리자 공지가 상단 미확인 배지에 남아 있을 기간인지 판정한다.
+
+    공지/알림 기록은 지우지 않고 배지 조회에서만 7일 TTL을 적용한다. 새 공지는
+    항상 ISO 시각을 쓰며, 날짜가 깨진 레거시 행은 무기한 배지가 되지 않게 제외한다.
+    """
+    raw = str(timestamp or "").strip()
+    if not raw:
+        return False
+    try:
+        created = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    current = now or datetime.datetime.now(created.tzinfo)
+    if created.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    elif created.tzinfo is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=created.tzinfo)
+    return current - created < datetime.timedelta(days=ADMIN_NOTICE_BADGE_TTL_DAYS)
+
+
+def _is_admin_notice(notification: dict) -> bool:
+    kind = str(notification.get("type") or "").strip().casefold()
+    title = str(notification.get("title") or "").strip().casefold()
+    return kind == "admin_notice" or title == "new notice"
+
+
 def get_notifications(username: str, unread_only: bool = False) -> list:
     notifs = _read_all(username)
     if unread_only:
-        notifs = [n for n in notifs if not n.get("read")]
+        notifs = [
+            n for n in notifs
+            if not n.get("read")
+            and (not _is_admin_notice(n)
+                 or is_fresh_admin_notice(n.get("timestamp") or n.get("created_at")))
+        ]
     return notifs[-50:]
 
 

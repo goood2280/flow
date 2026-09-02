@@ -267,7 +267,8 @@ class CustomTagColumnDeleteReq(BaseModel):
 
 class CustomTagValuesReq(BaseModel):
     product: str
-    values: dict
+    values: dict = Field(default_factory=dict)
+    colors: dict = Field(default_factory=dict)
     username: str = ""
     root_lot_id: str = ""
 
@@ -344,10 +345,20 @@ def save_custom_tag_module(req: CustomTagModuleReq, request: Request = None):
             for c in (data.get("columns") or [])
             if isinstance(c, dict)
             and str(c.get("product") or "").strip() == product
-            and str(c.get("column") or "").strip() == column
+            and str(c.get("column") or "").strip().upper() == column.upper()
         ),
         None,
     )
+    if entry is None and column.upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper():
+        entry = _ensure_custom_tag_column(
+            data,
+            product=product,
+            column=DEFAULT_CUSTOM_TAG_COLUMN,
+            label=DEFAULT_CUSTOM_TAG_LABEL,
+            actor=actor,
+            now=datetime.datetime.now().isoformat(timespec="seconds"),
+            module=module,
+        )
     if entry is None:
         raise HTTPException(404, f"tag column not found: {column}")
     entry["module"] = module
@@ -372,6 +383,8 @@ def delete_custom_tag_column(
     if not raw_column:
         raise HTTPException(400, "tag column required")
     column = _tag_column_id(raw_column)
+    if column.upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper():
+        raise HTTPException(400, "purpose tag is built-in and cannot be deleted")
     data = _load_custom_tags_data()
 
     columns = data.get("columns") if isinstance(data.get("columns"), list) else []
@@ -399,6 +412,16 @@ def delete_custom_tag_column(
 
     data["columns"] = kept_columns
     data["values"] = kept_values
+    colors = data.get("colors") if isinstance(data.get("colors"), dict) else {}
+    kept_colors = {
+        key: value for key, value in colors.items()
+        if not (
+            len((parts := str(key).split("|", 3))) == 4
+            and parts[0] == product and parts[3] == column
+        )
+    }
+    deleted_colors = len(colors) - len(kept_colors)
+    data["colors"] = kept_colors
     _save_custom_tags_data(data)
     actor = req.username or ""
     if not actor and isinstance(_perm, dict):
@@ -409,6 +432,7 @@ def delete_custom_tag_column(
         "column": column,
         "deleted_columns": deleted_columns,
         "deleted_values": deleted_values,
+        "deleted_colors": deleted_colors,
         "columns": _custom_tag_columns_for_product(product),
     }
 
@@ -425,6 +449,7 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
     now = datetime.datetime.now().isoformat(timespec="seconds")
     data = _load_custom_tags_data()
     values = data.setdefault("values", {})
+    colors = data.setdefault("colors", {})
     saved = 0
     deleted = 0
     rejected: list[str] = []
@@ -453,8 +478,45 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
         elif store_key in values:
             values.pop(store_key, None)
             deleted += 1
+    colors_saved = 0
+    colors_deleted = 0
+    rejected_colors: list[str] = []
+    for cell_key, raw_color in (req.colors or {}).items():
+        parts = str(cell_key or "").split("|", 2)
+        if len(parts) != 3:
+            rejected_colors.append(str(cell_key))
+            continue
+        root_lot_id, wafer_id, column = [p.strip() for p in parts]
+        color = str(raw_color or "").strip().lower()
+        if (not root_lot_id or not wafer_id
+                or not column.upper().startswith(f"{CUSTOM_TAG_PREFIX}_")
+                or color not in CUSTOM_TAG_COLOR_PALETTE):
+            rejected_colors.append(str(cell_key))
+            continue
+        _ensure_custom_tag_column(
+            data,
+            product=product,
+            column=column,
+            label=(DEFAULT_CUSTOM_TAG_LABEL if column.upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper()
+                   else column[len(CUSTOM_TAG_PREFIX) + 1:] or column),
+            actor=actor,
+            now=now,
+        )
+        store_key = _tag_value_key(product, root_lot_id, wafer_id, column)
+        # 흰색도 Lot 관리와 동일한 명시적 색 선택이므로 저장한다.
+        if colors.get(store_key) != color:
+            colors[store_key] = color
+            colors_saved += 1
     _save_custom_tags_data(data)
-    return {"ok": True, "saved": saved, "deleted": deleted, "rejected": rejected}
+    return {
+        "ok": True,
+        "saved": saved,
+        "deleted": deleted,
+        "rejected": rejected,
+        "colors_saved": colors_saved,
+        "colors_deleted": colors_deleted,
+        "rejected_colors": rejected_colors,
+    }
 
 
 @router.get("/management-rows")

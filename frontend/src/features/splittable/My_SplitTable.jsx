@@ -34,6 +34,15 @@ const CELL_COLORS=[
   {bg:"rgba(180,222,212,0.95)",fg:"rgba(11,83,69,0.95)"},  // teal
   {bg:"rgba(244,204,204,0.95)",fg:"rgba(117,25,76,0.95)"},  // pink
 ];
+// Lot 관리의 purpose/lot_id 셀과 같은 우클릭 배경색 팔레트.
+const TAG_CELL_PALETTE=[
+  "#ffffff","#f3f4f6","#d1d5db","#fecaca","#fed7aa",
+  "#fef3c7","#d9f99d","#bbf7d0","#99f6e4","#a5f3fc",
+  "#bfdbfe","#c7d2fe","#ddd6fe","#e9d5ff","#f5d0fe",
+  "#fbcfe8","#fee2e2","#ffedd5","#ecfccb","#e0f2fe",
+];
+const DEFAULT_PURPOSE_TAG="TAG_PURPOSE";
+const isDefaultPurposeTag=(value)=>String(value||"").trim().toUpperCase()===DEFAULT_PURPOSE_TAG;
 const COLOR_PREFIXES=["KNOB","MASK"];
 const HIST_PAGE=300;   // History 탭 1회 조회량 ("더 보기" 로 누적)
 const HIST_TH={textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:14,whiteSpace:"nowrap"};
@@ -115,11 +124,12 @@ const matchedWaferSummary=(matches)=>{
 };
 // module 묶음 열 폭 — Vehicle_matching 에 module 열이 있을 때만 붙는다.
 const MODULE_COL_W=86;
+const STEP_ID_COL_W=168;
+const STEP_DESC_COL_W=180;
 // ── 적용공정정보 표기 ────────────────────────────────────────────────────
-// "적용 공정 정보" 를 켜면 항목 칸은 이름 대신 **연결된 공정**을 보여준다.
-//   KNOB          → step_id (한 rule_order 안의 서로 다른 step_desc 조건만 `&`)
-//   INLINE / VM   → `step_id | item_id`
-// 어느 쪽이든 표시할 게 여러 개면 같은 칸에서 줄바꿈으로 쌓는다.
+// "적용 공정 정보" 를 켜면 항목명은 보존하고 그 왼쪽에 step_id / step_desc
+// 두 열을 붙인다. 복합 KNOB rule 은 같은 rule_order 안의 서로 다른
+// step_desc 조건 경계를 `&`로 유지한다.
 //
 // 한 step_desc 가 여러 step_id 로 매핑되면 같은 셀 안에서 줄바꿈한다. 그 step_id
 // 들은 AND 조건이 아니다. is_null 조건은 매핑 step_id 가 있더라도 표시 조합에서
@@ -179,6 +189,52 @@ const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
   if(kind==="inline_matching"||kind==="vm_matching")return stepItemLines(meta||{});
   return [];
 };
+// 적용 공정 정보는 항목명을 덮어쓰지 않고 별도 step_id / step_desc 열로 보인다.
+// 복합 KNOB rule 은 두 열 모두 같은 rule_order 경계(`&`)를 유지한다.
+const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
+  if(!kind||!meta)return {step_id:"",step_desc:""};
+  if(kind==="knob_ppid"){
+    const idBlocks=[];const descBlocks=[];
+    knobRuleSets(meta?.groups||[]).forEach(set=>{
+      const byDesc=new Map();
+      (set.conditions||[]).forEach(g=>{
+        if(isNullOperator(g?.operator))return;
+        if(excludeNotNull&&isNotNullOperator(g?.operator))return;
+        const desc=String(g?.step_desc||g?.func_step||"").trim();
+        if(!desc)return;
+        const key=desc.toLowerCase();
+        if(!byDesc.has(key))byDesc.set(key,{desc,ids:[],seen:new Set()});
+        const bucket=byDesc.get(key);
+        stepIdsForGroup(g).forEach(raw=>{
+          const sid=String(raw||"").trim();const sidKey=sid.toLowerCase();
+          if(sid&&!bucket.seen.has(sidKey)){bucket.seen.add(sidKey);bucket.ids.push(sid);}
+        });
+      });
+      const groups=Array.from(byDesc.values()).filter(g=>g.ids.length);
+      if(groups.length){
+        idBlocks.push(groups.map(g=>g.ids.join("\n")).join("\n&\n"));
+        descBlocks.push(groups.map(g=>g.desc).join("\n&\n"));
+      }
+    });
+    return {step_id:idBlocks.join("\n"),step_desc:descBlocks.join("\n")};
+  }
+  const ids=[];const descs=[];const seenIds=new Set();const seenDescs=new Set();
+  const fallbackDesc=String(meta?.step_desc||meta?.function_step||"").trim();
+  const push=(sid,desc)=>{
+    const id=String(sid||"").trim();const d=String(desc||fallbackDesc||"").trim();
+    const idKey=id.toLowerCase();const descKey=d.toLowerCase();
+    if(id&&!seenIds.has(idKey)){seenIds.add(idKey);ids.push(id);}
+    if(d&&!seenDescs.has(descKey)){seenDescs.add(descKey);descs.push(d);}
+  };
+  (Array.isArray(meta?.groups)?meta.groups:[]).forEach(g=>{
+    const groupDesc=g?.step_desc||g?.function_step||fallbackDesc;
+    const groupIds=stepIdsForGroup(g);
+    if(groupIds.length)groupIds.forEach(sid=>push(sid,groupDesc));
+    else push(g?.step_id,groupDesc);
+  });
+  if(!ids.length)(Array.isArray(meta?.step_ids)?meta.step_ids:[]).forEach(sid=>push(sid,fallbackDesc));
+  return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
+};
 // Vehicle_matching.csv 의 module 열이 유일한 원천이다. 그 열이 없으면 KNOB/VM 도
 // 빈 값이라 module 열 자체가 안 붙는다. INLINE 은 자기 CSV 에 module 이 없으므로
 // 백엔드가 항상 빈 값을 주고, 따로 묶이지 않고 '—' 로만 나온다.
@@ -223,6 +279,7 @@ const expandViewRows=(d)=>{
   const rows=d.rows.map(r=>{
     const vals=Array.isArray(r?.a)?r.a:[];
     const plans=r?.p||{};
+    const tagColors=r?.tc||{};
     const mism=new Set(Array.isArray(r?.m)?r.m:[]);
     const canPlan=!!r?.can_plan,isTag=!!r?.tag,isMgmt=!!r?.mgmt;
     const cells={};
@@ -236,6 +293,7 @@ const expandViewRows=(d)=>{
         mismatch:mism.has(ci),
         is_custom_tag:isTag,
         can_tag:isTag,
+        tag_color:isTag?(tagColors[key]||""):"",
         is_management_row:isMgmt,
         can_management_edit:isMgmt,
       };
@@ -362,7 +420,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   },[selProd,lotId,fabLotId]);
   // 새 검색 결과/표시 모드 변경 시 점진 렌더 한도를 초기화.
   useEffect(()=>{setRowRenderLimit(ROW_RENDER_INITIAL);},[data,viewMode]);
-  const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingManagement,setPendingManagement]=useState({});
+  const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingTagColors,setPendingTagColors]=useState({});const[pendingManagement,setPendingManagement]=useState({});
+  const[tagColorPicker,setTagColorPicker]=useState(null);
+  const[splitDraftValues,setSplitDraftValues]=useState({});
+  const[splitContextMenu,setSplitContextMenu]=useState(null);
   const[showConfirm,setShowConfirm]=useState(false);
   // 저장 1회당 선택 입력하는 변경 사유. 셀 메모(💬)와 별개로 이력에만 붙는다.
   const[planReason,setPlanReason]=useState("");
@@ -370,8 +431,27 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[activeCell,setActiveCell]=useState(null);
   const[selectedCellRange,setSelectedCellRange]=useState(null); // {startRow,startCol,endRow,endCol}
   const[selectionAnchor,setSelectionAnchor]=useState(null);
-  const[isDraggingSelection,setIsDraggingSelection]=useState(false);
+  // 드래그 중 React state 갱신 타이밍과 무관하게 마지막 anchor를 유지한다.
+  // state만 참조하면 빠르게 여러 셀을 지나갈 때 mouseenter가 이전 render의 값을 보고
+  // 범위 선택을 놓칠 수 있다.
+  const selectionAnchorRef=useRef(null);
+  const isDraggingSelectionRef=useRef(false);
   const[colValCache,setColValCache]=useState({});
+  useEffect(()=>{
+    if(!tagColorPicker)return;
+    const close=()=>setTagColorPicker(null);
+    const closeOnKey=(event)=>{if(event.key==="Escape")close();};
+    window.addEventListener("mousedown",close);
+    window.addEventListener("resize",close);
+    window.addEventListener("scroll",close,true);
+    window.addEventListener("keydown",closeOnKey);
+    return()=>{
+      window.removeEventListener("mousedown",close);
+      window.removeEventListener("resize",close);
+      window.removeEventListener("scroll",close,true);
+      window.removeEventListener("keydown",closeOnKey);
+    };
+  },[tagColorPicker]);
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
   // v8.4.9-b: Notes (wafer 태그 + param 메모). lot 단위로 fetch.
@@ -964,8 +1044,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   useEffect(()=>{clearCellSelection();},[data]);
 
   const prefixParam=isCustomMode?"":selPrefixes.join(",");
-  // "적용 공정 정보" 를 켠 채 받은 CSV/XLSX 는 화면과 같은 표기여야 한다 —
-  // 항목명 대신 연결 공정, 표시할 공정이 없는 매칭 행은 제외.
+  // "적용 공정 정보" 를 켠 채 받은 CSV/XLSX 는 화면과 같이 기존 항목을
+  // 보존하고 왼쪽에 step_id / step_desc 열을 추가한다.
   const stepLabelQ=showParamMeta
     ?`&step_labels=1&exclude_not_null=${excludeNotNullStepMeta?1:0}`
     :"";
@@ -1104,7 +1184,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       if(Array.isArray(d.available_fab_lots)&&d.available_fab_lots.length>0){
         setFabSuggestions(d.available_fab_lots);
       }
-      setPendingPlans({});setPendingTags({});setPendingManagement({});clearCellSelection();reloadNotes();
+      setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);clearCellSelection();reloadNotes();
       loadRelatedIssuesForView(d);
       loadLotManagementPurposesForView(d);
       const backgroundPreparing=d.background_cache?.queued===true;
@@ -1326,48 +1406,77 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       return next;
     });
   };
-  const clearCellSelection=()=>{setSelectedCellRange(null);setSelectionAnchor(null);setIsDraggingSelection(false);};
+  const ensureSplitSuggestions=(param)=>{
+    if(colValCache[param]!==undefined)return;
+    sf(API+"/column-values?product="+encodeURIComponent(selProd)+"&col="+encodeURIComponent(param)+"&limit=200")
+      .then(d=>setColValCache(m=>({...m,[param]:d.values||[]}))).catch(()=>setColValCache(m=>({...m,[param]:[]})));
+  };
+  const openSplitDraftEditor=(param,draftIndex,value="")=>{
+    ensureSplitSuggestions(param);
+    setActiveCell({key:`${lotId}|split|${param}`,param,value:String(value||""),kind:"split_value",draftIndex});
+  };
+  const addSplitDraft=(param)=>{
+    const clean=String(param||"").trim();
+    if(!clean)return;
+    const draftIndex=(splitDraftValues[clean]||[]).length;
+    setSplitDraftValues(current=>({...current,[clean]:[...(current[clean]||[]),""]}));
+    setSplitContextMenu(null);
+    openSplitDraftEditor(clean,draftIndex,"");
+  };
+  const assignSplitPlanValue=(param,value,ci)=>{
+    const cleanValue=String(value||"").trim();
+    if(!cleanValue)return;
+    const sourceRow=(data?.rows||[]).find(row=>String(row?._param||"")===String(param||""));
+    const cell=sourceRow?._cells?.[String(ci)]||sourceRow?._cells?.[ci];
+    if(!cell?.key||cell.can_plan===false)return;
+    setPendingPlans(current=>current[cell.key]===cleanValue?current:{...current,[cell.key]:cleanValue});
+    primePlanValueCache({[cell.key]:cleanValue});
+  };
+  const clearCellSelection=()=>{
+    selectionAnchorRef.current=null;
+    isDraggingSelectionRef.current=false;
+    setSelectedCellRange(null);
+    setSelectionAnchor(null);
+  };
   const normalizeCellRange=(r1,c1,r2,c2)=>({
     startRow:Math.min(r1,r2),
     startCol:Math.min(c1,c2),
     endRow:Math.max(r1,r2),
     endCol:Math.max(c1,c2),
   });
-  const pendingEditCount=Object.keys(pendingPlans).length+Object.keys(pendingTags).length+Object.keys(pendingManagement).length;
+  const pendingEditCount=Object.keys(pendingPlans).length+Object.keys(pendingTags).length+Object.keys(pendingTagColors).length+Object.keys(pendingManagement).length;
   const savePlans=()=>{if(!pendingEditCount)return;
     const plansToSave={...pendingPlans};
     const tagsToSave={...pendingTags};
+    const tagColorsToSave={...pendingTagColors};
     const managementToSave={...pendingManagement};
     const jobs=[];
     if(Object.keys(plansToSave).length){
       jobs.push(sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId,reason:planReason.trim()})}));
     }
-    if(Object.keys(tagsToSave).length){
-      jobs.push(sf(API+"/custom-tags/values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,values:tagsToSave,username:user?.username||"",root_lot_id:lotId})}));
+    if(Object.keys(tagsToSave).length||Object.keys(tagColorsToSave).length){
+      jobs.push(sf(API+"/custom-tags/values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,values:tagsToSave,colors:tagColorsToSave,username:user?.username||"",root_lot_id:lotId})}));
     }
     if(Object.keys(managementToSave).length){
       jobs.push(sf(API+"/management-rows/values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,values:managementToSave,username:user?.username||"",root_lot_id:lotId})}));
     }
     Promise.all(jobs)
-      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});setPlanReason("");reloadCustomTags();loadView();})
+      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);setPlanReason("");reloadCustomTags();loadView();})
       .catch(e=>toast.error(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
-  // 적용 공정 정보가 켜져 있으면 스냅샷도 화면과 같은 표기(항목명 대신 연결 공정)로
-  // 나가야 한다. 표시 대상 공정이 없는 매칭 행은 화면에서처럼 스냅샷에서도 뺀다.
+  // 적용 공정 정보가 켜져 있으면 스냅샷에도 별도 step_id / step_desc 열을 싣는다.
+  // 매칭이 없는 행도 원래 항목과 값을 보존하고 두 공정 칸만 비운다.
   const applyStepLabelsForSnapshot=(rows)=>{
     if(!showParamMeta)return rows;
-    const out=[];
-    (rows||[]).forEach(row=>{
+    return (rows||[]).map(row=>{
       const kind=matchKindOf(row?._param);
-      if(!kind){out.push(row);return;}
-      const lines=matchStepLines(kind,matchMetaFor(kind,row?._param),{excludeNotNull:excludeNotNullStepMeta});
-      if(!lines.length)return;
-      const text=lines.join("\n");
+      const columns=kind
+        ?matchProcessColumns(kind,matchMetaFor(kind,row?._param),{excludeNotNull:excludeNotNullStepMeta})
+        :{step_id:"",step_desc:""};
       // 적용 공정은 인폼 서버가 나중에 메타 CSV를 다시 읽어 복원하지 않도록
-      // 현재 화면에서 확정한 줄을 스냅샷 행에 그대로 싣는다.
-      out.push({...row,_display:text,_applied_process:{kind,lines:[...lines],text}});
+      // 현재 화면에서 확정한 두 열을 스냅샷 행에 그대로 싣는다.
+      return {...row,_process_columns:columns,_applied_process:{kind:kind||"",...columns}};
     });
-    return out;
   };
   const currentRowsForInformSnapshot=()=>{
     const rows=Array.isArray(data?.rows)?data.rows:[];
@@ -1420,7 +1529,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     const targetIsFab=!rootOnly&&Boolean(typedFabLot||viewFabLot||/[._\-/]/.test(targetLot));
     const draftFabLots=rootOnly?selectedFabLots:selectedFabLots.slice(0,1);
     const rowParams=rows.map(r=>String(r?._param||"").trim()).filter(Boolean);
-    const pendingCount=Object.keys(pendingPlans).length+Object.keys(pendingTags).length+Object.keys(pendingManagement).length;
+    const pendingCount=Object.keys(pendingPlans).length+Object.keys(pendingTags).length+Object.keys(pendingTagColors).length+Object.keys(pendingManagement).length;
     const currentView={
       headers:Array.isArray(data.headers)?data.headers:[],
       rows:rowsWithPendingPlans(rows),
@@ -1436,8 +1545,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       applied_processes:showParamMeta?rows.filter(r=>r?._applied_process).map(r=>({
         parameter:String(r?._param||""),
         kind:String(r?._applied_process?.kind||""),
-        lines:Array.isArray(r?._applied_process?.lines)?[...r._applied_process.lines]:[],
-        text:String(r?._applied_process?.text||r?._display||""),
+        step_id:String(r?._applied_process?.step_id||""),
+        step_desc:String(r?._applied_process?.step_desc||""),
       })):[],
       msg:`${rows.length} params · current SplitTable${showParamMeta?" · 적용 공정 정보 포함":""}${pendingCount?` · pending plan ${pendingCount}건 포함`:""}`,
     };
@@ -1451,7 +1560,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       // 화면에서 Split 체크로 보고 있으면 스냅샷도 같은 형식으로 잡는다 —
       // 예전엔 항상 matrix 여서 체크 상태가 스냅샷에 안 실렸다.
       display_mode:splitCheckViewActive?"split_check":(mergedViewActive?"merged":"matrix"),
-      // "적용 공정 정보" 도 화면과 같게 — 항목명이 step_id 로 나가야 인폼에서도 같은 표를 본다.
+      // "적용 공정 정보" 도 화면처럼 별도 step_id / step_desc 열로 보낸다.
       show_step_ids:!!showParamMeta,
     })}).then(d=>{
       const embed=d?.embed||{};
@@ -1605,6 +1714,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         setProductSchema(prev=>prev.filter(c=>c!==column));
         setCustomCols(prev=>cleanCustomColumns(prev).filter(c=>c!==column));
         setPendingTags(prev=>Object.fromEntries(Object.entries(prev||{}).filter(([k])=>!String(k).endsWith("|"+column))));
+        setPendingTagColors(prev=>Object.fromEntries(Object.entries(prev||{}).filter(([k])=>!String(k).endsWith("|"+column))));
         setData(cur=>cur?{...cur,all_columns:(cur.all_columns||[]).filter(c=>c!==column),rows:(cur.rows||[]).filter(r=>r?._param!==column)}:cur);
         toast.ok("꼬리표 열 삭제됨");
       })
@@ -2340,13 +2450,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ))}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
-            <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
+            <span title="셀을 드래그하거나 첫 셀 선택 후 Shift+클릭으로 범위를 선택합니다" style={{fontSize:13,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>드래그 선택 · Ctrl+C / Ctrl+V</span>
+            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);setSplitDraftValues({});setSplitContextMenu(null);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
+            <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+stepLabelQ+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
             <button onClick={()=>{const cols=cleanCustomColumns(customCols);const customQ=isCustomMode&&cols.length?"&custom_cols="+encodeURIComponent(cols.join(",")):(isCustomMode&&cleanCustomName(selCustom)?"&custom_name="+encodeURIComponent(cleanCustomName(selCustom)):"");const splitQ=pemsViewActive?"&display_mode=pems":(splitCheckViewActive?"&display_mode=split_check":(mergedViewActive?"&display_mode=merged":""));const fmtSuffix=pemsViewActive?"_pems":(splitCheckViewActive?"_split_check":(mergedViewActive?"_merged":""));const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+customQ+splitQ+stepLabelQ+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}${fmtSuffix}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--ok-line)",background:"transparent",color:"var(--ok)",fontSize:14,cursor:"pointer"}} title={pemsViewActive?"XLSX (PEMS 1~25 · S0/S1 표시 형식)":(splitCheckViewActive?"XLSX (Split 체크 표시 형식)":(mergedViewActive?"XLSX (좌측 동일값 병합 형식)":"XLSX (fab_lot_id 병합)"))}>⬇ XLSX</button>
-            <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
+            <button onClick={()=>{if(mergedViewActive||pemsViewActive)setTableFormat("cell");setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--info)",background:"transparent",color:"var(--info)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
           </>}
@@ -2362,15 +2473,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       :tab==="view"&&data?.rows?.length?(()=>{
         // 클라이언트 diff 필터: viewMode==='diff' 이면 non-null unique 값 >= 2 인 행만
         const diffRows = viewMode==="diff"
-          ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
+          ? data.rows.filter(r=>{if(isDefaultPurposeTag(r?._param))return true;const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
         const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
-        // 적용 공정 정보 모드 — 항목 칸을 연결 공정 표기로 바꾸고, 표시할 공정이
-        // 하나도 없는 매칭 행(KNOB/INLINE/VM)은 아예 감춘다. TAG/관리 행처럼
-        // 매칭 규칙이 없는 행은 원래대로 남는다.
-        const viewRows = showParamMeta
-          ? diffRows.filter(r=>{const k=matchKindOf(r?._param);return !k||matchStepLines(k,matchMetaFor(k,r?._param),{excludeNotNull:excludeNotNullStepMeta}).length>0;})
-          : diffRows;
+        // 적용 공정 정보는 기존 행/항목을 그대로 두고 왼쪽 두 열만 보강한다.
+        const viewRows = diffRows;
         // 점진 렌더: 한도까지만 그린다. slice(0,N) 이므로 행 인덱스(선택/paste)는 그대로 유효.
         const displayRows=rowRenderLimit<viewRows.length?viewRows.slice(0,rowRenderLimit):viewRows;
         // module 묶음 열. KNOB/VM 은 Vehicle_matching 의 module 열이 원천이고,
@@ -2384,6 +2491,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           return k?matchModuleOf(matchMetaFor(k,r?._param)):"";
         });
         const showModuleCol=rowModules.some(Boolean)||rowTagFlags.some(Boolean);
+        const processPrefixWidth=showParamMeta?(STEP_ID_COL_W+STEP_DESC_COL_W):0;
+        const stepIdLeft=showModuleCol?MODULE_COL_W:0;
+        const stepDescLeft=stepIdLeft+(showParamMeta?STEP_ID_COL_W:0);
+        const paramLeft=(showModuleCol?MODULE_COL_W:0)+processPrefixWidth;
         // TAG 행은 열마다 module 이 따로라 위아래로 합치지 않는다 — 행 인덱스를 키에 섞어 항상 span 1.
         const moduleGroupKey=(ri)=>rowTagFlags[ri]?`tag:${ri}`:`m:${rowModules[ri]}`;
         const moduleSpanAt=(ri)=>{
@@ -2448,34 +2559,31 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         //   Delete plan 삭제, paste)만 editing 으로 게이팅된다.
         const beginCellSelection=(e,ri,ci)=>{
           if(e.button!==0)return;
-          if(e.shiftKey&&selectionAnchor){
-            const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
+          // 텍스트 native selection 대신 spreadsheet 범위 선택을 사용한다.
+          e.preventDefault();
+          const currentAnchor=selectionAnchorRef.current||selectionAnchor;
+          if(e.shiftKey&&currentAnchor){
+            const nextRange=normalizeCellRange(currentAnchor.rowIndex,currentAnchor.colIndex,ri,ci);
             setSelectedCellRange(nextRange);
           }else{
-            setSelectionAnchor({rowIndex:ri,colIndex:ci});
+            const nextAnchor={rowIndex:ri,colIndex:ci};
+            selectionAnchorRef.current=nextAnchor;
+            setSelectionAnchor(nextAnchor);
             setSelectedCellRange(normalizeCellRange(ri,ci,ri,ci));
           }
           setActiveCell(null);
-          splitTableRef.current?.focus();
-          setIsDraggingSelection(true);
+          splitTableRef.current?.focus({preventScroll:true});
+          isDraggingSelectionRef.current=true;
         };
         const updateCellSelection=(ri,ci)=>{
-          if(!isDraggingSelection||!selectionAnchor)return;
-          const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
+          const currentAnchor=selectionAnchorRef.current||selectionAnchor;
+          if(!isDraggingSelectionRef.current||!currentAnchor)return;
+          const nextRange=normalizeCellRange(currentAnchor.rowIndex,currentAnchor.colIndex,ri,ci);
           setSelectedCellRange(nextRange);
           setActiveCell(null);
         };
-        const handleCellSelection=(e,ri,ci)=>{
-          if(e.shiftKey&&selectionAnchor){
-            const nextRange=normalizeCellRange(selectionAnchor.rowIndex,selectionAnchor.colIndex,ri,ci);
-            setSelectedCellRange(nextRange);
-          }else{
-            setSelectionAnchor({rowIndex:ri,colIndex:ci});
-            setSelectedCellRange(normalizeCellRange(ri,ci,ri,ci));
-          }
-          setActiveCell(null);
-          splitTableRef.current?.focus();
-          setIsDraggingSelection(false);
+        const finishCellSelection=()=>{
+          isDraggingSelectionRef.current=false;
         };
         const handleSplitPaste=(e)=>{
           if(!editing||!activeSelectionStart||activeCell)return;
@@ -2489,39 +2597,64 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             .filter((line,idx)=>!(idx===rows.length-1&&line===""))
             .map(line=>line.split("\t"));
           if(!matrix.length||matrix.every(r=>r.length===1&&r[0]===""))return;
-          const maxRow=displayRows?.length||0;
+          const sourceRowCount=matrix.length;
+          const sourceColCount=Math.max(1,...matrix.map(row=>row.length));
+          const rectangularMatrix=matrix.map(row=>Array.from({length:sourceColCount},(_,ci)=>row[ci]??""));
+          const selectionRowCount=normalizedSelection?(normalizedSelection.endRow-normalizedSelection.startRow+1):1;
+          const selectionColCount=normalizedSelection?(normalizedSelection.endCol-normalizedSelection.startCol+1):1;
+          // Excel처럼 단일 값은 선택 범위 전체를 채운다. 복사 범위와 대상 범위가 같은
+          // 크기이거나 정수 배수이면 원본 블록을 반복하고, 그 외에는 시작 셀부터 붙인다.
+          const fillSelectedRange=!!normalizedSelection&&(
+            (sourceRowCount===1&&sourceColCount===1)
+            ||(selectionRowCount%sourceRowCount===0&&selectionColCount%sourceColCount===0)
+          );
+          const pasteRowCount=fillSelectedRange?selectionRowCount:sourceRowCount;
+          const pasteColCount=fillSelectedRange?selectionColCount:sourceColCount;
+          const maxRow=viewRows?.length||0;
           const maxCol=(data?.headers||[]).length||0;
           e.preventDefault();
-          let changed=0;
+          const changedCells=[];
           const nextPlans={};
           const nextTags={};
           const nextManagement={};
-          matrix.forEach((rowVals,offR)=>{
+          for(let offR=0;offR<pasteRowCount;offR+=1){
             const rowIndex=activeSelectionStart.rowIndex+offR;
-            if(rowIndex>=maxRow)return;
-            const rowData=displayRows[rowIndex];
-            if(!rowData||!rowData._cells)return;
+            if(rowIndex>=maxRow)break;
+            const rowData=viewRows[rowIndex];
+            if(!rowData||!rowData._cells)continue;
             const cells=rowData._cells||{};
-            rowVals.forEach((rawValue,offC)=>{
+            for(let offC=0;offC<pasteColCount;offC+=1){
               const colIndex=activeSelectionStart.colIndex+offC;
-              if(colIndex>=maxCol)return;
+              if(colIndex>=maxCol)break;
               const cell=cells[String(colIndex)];
-              if(!cell||!cell.key)return;
+              if(!cell||!cell.key)continue;
               const canTag=cell.is_custom_tag===true;
               const canManagement=cell.is_management_row===true;
               const canPlan=cell.can_plan!==false;
-              if(!canTag&&!canManagement&&!canPlan)return;
+              if(!canTag&&!canManagement&&!canPlan)continue;
+              const rawValue=rectangularMatrix[offR%sourceRowCount][offC%sourceColCount];
               const nextVal=String(rawValue||"").trim();
-              if(!nextVal)return;
+              // 기존 저장 규칙대로 빈 clipboard 셀은 값 삭제로 해석하지 않는다.
+              if(!nextVal)continue;
               if(canTag)nextTags[cell.key]=nextVal;
               else if(canManagement)nextManagement[cell.key]=nextVal;
               else nextPlans[cell.key]=nextVal;
-              changed++;
-            });
-          });
+              changedCells.push({rowIndex,colIndex});
+            }
+          }
           if(Object.keys(nextPlans).length)setPendingPlans(p=>({...p,...nextPlans}));
           if(Object.keys(nextTags).length)setPendingTags(p=>({...p,...nextTags}));
           if(Object.keys(nextManagement).length)setPendingManagement(p=>({...p,...nextManagement}));
+          if(Object.keys(nextPlans).length)primePlanValueCache(nextPlans);
+          if(changedCells.length){
+            const end=changedCells[changedCells.length-1];
+            const nextRange=normalizeCellRange(activeSelectionStart.rowIndex,activeSelectionStart.colIndex,end.rowIndex,end.colIndex);
+            const nextAnchor={rowIndex:activeSelectionStart.rowIndex,colIndex:activeSelectionStart.colIndex};
+            selectionAnchorRef.current=nextAnchor;
+            setSelectionAnchor(nextAnchor);
+            setSelectedCellRange(nextRange);
+            splitTableRef.current?.focus({preventScroll:true});
+          }
         };
         // v9.1.x: Edit 모드에서 멀티셀 선택 후 Delete/Backspace → 선택 범위의 plan 일괄 삭제.
         //   미저장 pending plan 은 상태에서 제거하고, 저장된 plan 은 한 번의 /plan/delete 로 지운다.
@@ -2597,12 +2730,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const lotHeaderHeight = hasLotRow ? 24 : 0;
         const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
+        const splitLikePrefixColumns=showParamMeta
+          ?["step_id","step_desc",...SPLIT_CHECK_PREFIX_COLUMNS]
+          :SPLIT_CHECK_PREFIX_COLUMNS;
         const splitLikeSource={
           ...data,
           rows:displayRows,
           root_lot_id:lotHeaderRoot,
           lot_id_label:lotHeaderLot,
-          prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
+          prefix_columns:splitLikePrefixColumns,
           row_labels:{...(data.row_labels||{}),parameter:"항목"},
         };
         const splitLikeBuildOptions={
@@ -2613,14 +2749,16 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             return hasValue(raw)?raw:"";
           },
           displayForValue:(raw,row)=>String(formatCell(raw,row._param) ?? raw),
-          // Split 체크 뷰에서도 "적용 공정 정보" 는 그리드와 똑같이 보여야 한다.
-          labelForParam:(param)=>{
-            if(!showParamMeta)return "";
+          // Split 체크/PEMS도 기본 그리드와 같은 별도 공정 두 열을 쓴다.
+          processInfoForParam:(param)=>{
+            if(!showParamMeta)return null;
             const kind=matchKindOf(param);
-            if(!kind)return "";
-            const lines=matchStepLines(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta});
-            return lines.length?lines.join("\n"):"";
+            return kind
+              ?matchProcessColumns(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta})
+              :{step_id:"",step_desc:""};
           },
+          extraValuesForParam:(param)=>splitDraftValues[param]||[],
+          ensureEmptyRows:editing&&splitCheckViewActive,
         };
         // Split 체크와 PEMS는 같은 항목/값/S그룹 골격을 공유한다.
         const splitCheckStView=!splitCheckViewActive?null:buildSplitCheckStView({
@@ -2631,7 +2769,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ...splitLikeSource,
           display_mode:"pems",
         },splitLikeBuildOptions);
-        return <div ref={splitTableRef} tabIndex={0} onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={()=>setIsDraggingSelection(false)} onMouseLeave={()=>setIsDraggingSelection(false)} style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
+        return <div ref={splitTableRef} tabIndex={0} aria-label="SplitTable 셀 그리드" onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={finishCellSelection} onMouseLeave={finishCellSelection} style={{flex:1,overflow:"auto",background:"var(--bg-card)",outline:"none"}}>
         {data.background_cache?.queued&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(30,64,175,0.95)",background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>{data.background_cache.message||"관련 캐시를 백그라운드에서 준비 중입니다."}</div>}
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.lot_management_purposes)&&data.lot_management_purposes.length>0&&<div style={{padding:"8px 10px",fontSize:14,lineHeight:1.55,color:"var(--text-primary)"}}>
@@ -2667,31 +2805,43 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           showTitle={false}
           emptyMessage={pemsViewActive?"PEMS로 표시할 값이 없습니다":"Split 체크로 표시할 값이 없습니다"}
           maxHeight="none"
+          editable={editing&&splitCheckViewActive}
+          onAssignSplit={assignSplitPlanValue}
+          onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw)}
+          onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
         />
         ) : (
-        <table className="splittable-grid" style={{borderCollapse:"separate",borderSpacing:0,borderTop:GRID_LINE,borderLeft:GRID_LINE,fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(showModuleCol?MODULE_COL_W:0)+(data.headers?.length||1)*115}}>
+        <table className="splittable-grid" style={{borderCollapse:"separate",borderSpacing:0,borderTop:GRID_LINE,borderLeft:GRID_LINE,fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(showModuleCol?MODULE_COL_W:0)+processPrefixWidth+(data.headers?.length||1)*115}}>
           <colgroup>
             {showModuleCol&&<col style={{width:MODULE_COL_W}}/>}
+            {showParamMeta&&<col style={{width:STEP_ID_COL_W}}/>}
+            {showParamMeta&&<col style={{width:STEP_DESC_COL_W}}/>}
             <col style={{width:288}}/>
             {data.headers?.map((_,i)=><col key={i} style={{width:115}}/>)}
           </colgroup>
           <thead>
             {hasRootRow&&(()=>{const lotN=notesForLot().length;const drawerRoot=lotHeaderRoot || data.root_lot_id || lotId || "-";return(<tr style={{height:rootHeaderHeight}}>
               {showModuleCol&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5}}/>}
-              <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:showModuleCol?MODULE_COL_W:0,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:stepIdLeft,zIndex:5}}/>}
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:stepDescLeft,zIndex:5}}/>}
+              <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
                 {rootRowLabel}
               </th>
               <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
               {showModuleCol&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5}}/>}
-              <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:showModuleCol?MODULE_COL_W:0,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepIdLeft,zIndex:5}}/>}
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepDescLeft,zIndex:5}}/>}
+              <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0
                 ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
                 : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
             </tr>}
             <tr>
             {showModuleCol&&<th style={{textAlign:"center",padding:"8px 6px",fontWeight:700,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:0,zIndex:5}}>module</th>}
-            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:showModuleCol?MODULE_COL_W:0,zIndex:5,minWidth:260}}>{paramRowLabel}</th>
+            {showParamMeta&&<th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:stepIdLeft,zIndex:5}}>step_id</th>}
+            {showParamMeta&&<th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:stepDescLeft,zIndex:5}}>step_desc</th>}
+            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:paramLeft,zIndex:5,minWidth:260}}>{paramRowLabel}</th>
             {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
               <div>{h}</div>
               {wn>0&&<span style={{display:"inline-block",marginTop:2,padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>🏷 {wn}</span>}
@@ -2712,11 +2862,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const rowKnobStepTitle = rowMatchKind==="knob_ppid"
               ? knobStepSummaryText(rowKnob?.groups||[],{excludeNotNull:excludeNotNullStepMeta})
               : "";
-            // 적용공정 표기 — KNOB 은 step_desc 내부 step_id는 줄바꿈하고,
-            // 같은 rule_order의 서로 다른 유효 step_desc 사이에만 `&`를 둔다.
-            const rowStepLines = showParamMeta&&rowMatchKind
-              ? matchStepLines(rowMatchKind,matchMetaFor(rowMatchKind,rowParam),{excludeNotNull:excludeNotNullStepMeta})
-              : [];
+            const rowProcessColumns = showParamMeta&&rowMatchKind
+              ? matchProcessColumns(rowMatchKind,matchMetaFor(rowMatchKind,rowParam),{excludeNotNull:excludeNotNullStepMeta})
+              : {step_id:"",step_desc:""};
             const rowModuleSpan = moduleSpanAt(ri);
             const cellDisplayValueAt=(ci)=>{
               const cell=cells[String(ci)];
@@ -2759,8 +2907,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                     ?(rowMod||<span className="stm-module-hint" style={{fontWeight:400,color:"var(--text-secondary)"}}>+</span>)
                     :(rowMod||"—")}
                 </td>);})()}
+              {showParamMeta&&<td style={{padding:"6px 10px",fontWeight:700,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:stepIdLeft,zIndex:2,whiteSpace:"pre-line",wordBreak:"break-word",lineHeight:1.35,verticalAlign:"top"}}>{rowProcessColumns.step_id}</td>}
+              {showParamMeta&&<td style={{padding:"6px 10px",fontWeight:600,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:stepDescLeft,zIndex:2,whiteSpace:"pre-line",wordBreak:"break-word",lineHeight:1.35,verticalAlign:"top"}}>{rowProcessColumns.step_desc}</td>}
               {(()=>{const pLotN=notesForParam(row._param).length;return(
-              <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:showModuleCol?MODULE_COL_W:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+(rowKnobStepTitle?`\n${rowKnobStepTitle}`:"")+notReachedTitle} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
+              <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:paramLeft,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+(rowKnobStepTitle?`\n${rowKnobStepTitle}`:"")+notReachedTitle} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+step_desc 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
                     v10.0.8: KNOB 항목은 꼬리 `_Split` 도 라벨에서만 제거 (raw key 는 title/편집/plan 에 그대로).
@@ -2768,15 +2918,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam,row);}}
                     title={rowMatchKind ? `${rowParam}\n이 항목의 ${matchTitle} 보기` : ""}
                     style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>
-                    {/* 적용 공정 정보 모드에서는 항목명 대신 연결 공정을 줄바꿈으로 쌓는다. */}
-                    {rowStepLines.length
-                      ? <span style={{display:"inline-flex",flexDirection:"column",gap:2,fontSize:13,letterSpacing:0.2}}>
-                          {rowStepLines.map((line,li)=><span key={li} style={{whiteSpace:"pre-line"}}>{line}</span>)}
-                        </span>
-                      : splitParamDisplayName(row._display||rowParam||"",rowParam)}
+                    {splitParamDisplayName(row._display||rowParam||"",rowParam)}
                   </span>
                   {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>💬 {pLotN}</span>}
-                  {rowIsTag&&canManage&&<button onClick={(e)=>{e.stopPropagation();deleteCustomTagColumn(rowParam);}} title="TAG 열 삭제"
+                  {rowIsTag&&canManage&&!isDefaultPurposeTag(rowParam)&&<button onClick={(e)=>{e.stopPropagation();deleteCustomTagColumn(rowParam);}} title="TAG 열 삭제"
                     style={{marginLeft:"auto",padding:"0 6px",height:20,borderRadius:3,border:"1px solid rgba(239,68,68,0.65)",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,fontWeight:800,cursor:"pointer",lineHeight:"18px"}}>×</button>}
                 </div>
               </td>);})()}
@@ -2808,8 +2953,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 const cellNoteCount=notesForCell(wid,row._param).length;
                 if(!cell)return(<td key={ci} className="stm-cell"
                   onMouseDown={(e)=>{beginCellSelection(e,ri,ci);}}
-                  onMouseEnter={(e)=>{if(e.buttons===1)updateCellSelection(ri,ci);}}
-                  onMouseUp={()=>setIsDraggingSelection(false)}
+                  onMouseEnter={()=>updateCellSelection(ri,ci)}
+                  onMouseUp={finishCellSelection}
                   style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:cellNotReached?NOT_REACHED_BG:"var(--bg-card)",position:"relative",outline:isCellSelected(ri,ci)?"2px solid rgba(59,130,246,0.9)":"none",outlineOffset:-1}}>
                   {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
@@ -2819,7 +2964,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 const paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
                 const bgStyle=getCellBg(paintVal,uniqMap,row._param);const planStyle=getCellPlanStyle(effectiveCell);
                 const canPlan=cell.can_plan!==false; // default true for backward compat
-                const baseStyle={background:isCustomTag?"rgba(59,130,246,0.06)":isManagementRow?"rgba(16,185,129,0.05)":"var(--bg-card)",color:"var(--text-primary)"};
+                const tagColor=pendingTagColors[cell.key]??cell.tag_color??"";
+                const baseStyle={background:isCustomTag?(tagColor||"rgba(59,130,246,0.06)"):isManagementRow?"rgba(16,185,129,0.05)":"var(--bg-card)",color:isCustomTag&&tagColor?"#111827":"var(--text-primary)"};
                 const canEdit=isCustomTag||isManagementRow||canPlan;
                 const style={...baseStyle,...bgStyle,...planStyle,...(cellNotReached?{background:NOT_REACHED_BG}:{}),padding:"4px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative",outline:isCellSelected(ri,ci)?"2px solid rgba(59,130,246,0.9)":"none",outlineOffset:-1,boxShadow:isCellSelected(ri,ci)?"inset 0 0 0 1px rgba(147,197,253,0.35)":"none"};
                 const hasPlan=hasValue(effectiveCell.plan)&&!hasValue(effectiveCell.actual);
@@ -2844,13 +2990,23 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   };
                 return(<td key={ci} className={"stm-cell"+(isMismatch?" stm-mismatch":"")} style={style}
                   onMouseDown={(e)=>{beginCellSelection(e,ri,ci);}}
-                  onMouseEnter={(e)=>{if(e.buttons===1)updateCellSelection(ri,ci);}}
-                  onMouseUp={()=>setIsDraggingSelection(false)}
-                  onClick={(e)=>{if(editing&&canEdit)handleCellSelection(e,ri,ci);}}
+                  onMouseEnter={()=>updateCellSelection(ri,ci)}
+                  onMouseUp={finishCellSelection}
                   onDoubleClick={()=>{if(canEdit)openEdit();}}
-                  onContextMenu={e=>{if(cell.plan){e.preventDefault();deletePlan(cell.key);}}}
+                  onContextMenu={e=>{
+                    if(isCustomTag&&editing){
+                      e.preventDefault();e.stopPropagation();
+                      const paletteWidth=190,paletteHeight=142;
+                      setTagColorPicker({
+                        key:cell.key,
+                        color:tagColor||TAG_CELL_PALETTE[0],
+                        left:Math.max(8,Math.min(e.clientX,window.innerWidth-paletteWidth-8)),
+                        top:Math.max(8,Math.min(e.clientY,window.innerHeight-paletteHeight-8)),
+                      });
+                    }else if(cell.plan){e.preventDefault();deletePlan(cell.key);}
+                  }}
                   title={isCustomTag
-                    ? "꼬리표 값 입력 가능. 원본 파일은 수정하지 않고 flow-data에 저장됩니다."
+                    ? "꼬리표 값 입력 가능. Edit 모드에서 우클릭하면 배경색을 바꿀 수 있습니다. 원본 파일은 수정하지 않고 flow-data에 저장됩니다."
                     : isManagementRow
                     ? "관리 행 값 입력 가능. 원본 파일은 수정하지 않고 flow-data에 저장됩니다."
                     : canPlan
@@ -2870,7 +3026,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 </td>);})}
             </tr>);})}
             {displayRows.length<viewRows.length&&<tr ref={renderMoreRef}>
-              <td colSpan={1+(showModuleCol?1:0)+(data.headers?.length||0)} style={{padding:"10px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-secondary)"}}>
+              <td colSpan={1+(showModuleCol?1:0)+(showParamMeta?2:0)+(data.headers?.length||0)} style={{padding:"10px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-secondary)"}}>
                 {displayRows.length} / {viewRows.length} 행 표시 — 스크롤하면 자동으로 더 표시됩니다
               </td>
             </tr>}
@@ -2878,8 +3034,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 아래 셀들이 한 칸씩 밀리지 않는다 (마지막 wafer 아래가 비던 원인). */}
             <tr>
               {showModuleCol&&<td style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",left:0,zIndex:2}}/>}
+              {showParamMeta&&<td style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",left:stepIdLeft,zIndex:2}}/>}
+              {showParamMeta&&<td style={{borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",left:stepDescLeft,zIndex:2}}/>}
               <td onClick={promptCreateCustomTag} title="TAG 열 추가"
-                style={{padding:"7px 10px",fontWeight:800,fontSize:14,color:"rgba(37,99,235,0.95)",borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"rgba(59,130,246,0.08)",position:"sticky",left:showModuleCol?MODULE_COL_W:0,zIndex:2,whiteSpace:"nowrap",cursor:"pointer"}}>
+                style={{padding:"7px 10px",fontWeight:800,fontSize:14,color:"rgba(37,99,235,0.95)",borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"rgba(59,130,246,0.08)",position:"sticky",left:paramLeft,zIndex:2,whiteSpace:"nowrap",cursor:"pointer"}}>
                 + TAG
               </td>
               {data.headers?.map((h,ci)=>(
@@ -3034,7 +3192,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       suggestionsLoading={!!activeCell&&colValCache[activeCell.param]===undefined}
       onValueChange={(value)=>setActiveCell(c=>({...c,value}))}
       onCommit={(value)=>{
-        if(activeCell?.kind==="tag"){
+        if(activeCell?.kind==="split_value"){
+          const param=activeCell.param;const draftIndex=activeCell.draftIndex;
+          setSplitDraftValues(current=>{
+            const values=[...(current[param]||[])];
+            if(draftIndex>=0&&draftIndex<values.length)values[draftIndex]=String(value||"").trim();
+            return {...current,[param]:values};
+          });
+        }else if(activeCell?.kind==="tag"){
           setPendingTags(p=>({...p,[activeCell.key]:value}));
         }else if(activeCell?.kind==="management"){
           setPendingManagement(p=>({...p,[activeCell.key]:value}));
@@ -3045,6 +3210,26 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       }}
       onClose={()=>setActiveCell(null)}
     />
+    {tagColorPicker&&<div role="dialog" aria-label="TAG 셀 배경색 팔레트" onMouseDown={event=>event.stopPropagation()} onContextMenu={event=>event.preventDefault()}
+      style={{position:"fixed",left:tagColorPicker.left,top:tagColorPicker.top,zIndex:9998,width:190,padding:10,boxSizing:"border-box",border:"1px solid #9ca3af",borderRadius:8,background:"#ffffff",boxShadow:"0 8px 24px rgba(0,0,0,.24)"}}>
+      <div style={{fontSize:12,fontWeight:800,color:"#374151",marginBottom:8}}>배경색 선택</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:6}}>{TAG_CELL_PALETTE.map(color=>{
+        const selected=(pendingTagColors[tagColorPicker.key]||tagColorPicker.color||TAG_CELL_PALETTE[0])===color;
+        return <button key={color} type="button" onClick={()=>{setPendingTagColors(current=>({...current,[tagColorPicker.key]:color}));setTagColorPicker(null);}}
+          aria-label={`배경색 ${color}`} title={color}
+          style={{height:26,border:selected?"2px solid #2563eb":"1px solid #9ca3af",borderRadius:4,background:color,cursor:"pointer",boxShadow:selected?"0 0 0 1px #ffffff inset":"none"}}/>;
+      })}</div>
+    </div>}
+    {splitContextMenu&&<>
+      <div onMouseDown={()=>setSplitContextMenu(null)} style={{position:"fixed",inset:0,zIndex:9996}}/>
+      <div style={{position:"fixed",left:splitContextMenu.x,top:splitContextMenu.y,zIndex:9997,minWidth:150,padding:4,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",boxShadow:"0 8px 24px rgba(0,0,0,0.28)"}}>
+        <button onMouseDown={event=>{event.preventDefault();addSplitDraft(splitContextMenu.param);}}
+          style={{width:"100%",padding:"7px 10px",border:0,borderRadius:4,textAlign:"left",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}
+          onMouseEnter={event=>event.currentTarget.style.background="var(--accent-glow)"} onMouseLeave={event=>event.currentTarget.style.background="transparent"}>
+          ＋ 스플릿 추가
+        </button>
+      </div>
+    </>}
     {showConfirm&&<Modal open onClose={()=>setShowConfirm(false)} width={460} zIndex={9999}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>Confirm Changes</div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:12}}>{pendingEditCount} cells will be updated</div>
@@ -3065,6 +3250,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         <div style={{maxHeight:240,overflowY:"auto",border:"1px solid var(--border)",borderRadius:4,padding:"0 10px"}}>
         {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(249,115,22,0.95)",fontWeight:600}}>{v}</span></div>))}
         {Object.entries(pendingTags).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(37,99,235,0.95)",fontWeight:600}}>{v||"(clear)"}</span></div>))}
+        {Object.entries(pendingTagColors).map(([k,v])=>(<div key={`color-${k}`} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()} 배경색</span><span title={v} style={{width:20,height:20,border:"1px solid #9ca3af",borderRadius:3,background:v}}/></div>))}
         {Object.entries(pendingManagement).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{customLabelFor(k.split("|").pop())}</span><span style={{color:"rgba(5,150,105,0.95)",fontWeight:600}}>{v||"(clear)"}</span></div>))}
         </div>
         <div style={{display:"flex",gap:8,marginTop:16}}>

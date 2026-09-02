@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from core.paths import PATHS
 from core.utils import load_json, save_json
-from core.notify import send_notify, send_to_admins
+from core.notify import is_fresh_admin_notice, send_notify, send_to_admins
 from routers.auth import read_users
 from core.auth import verify_owner, require_admin  # v8.4.6 owner/admin checks
 
@@ -201,6 +201,10 @@ def unread_count(request: Request, username: str = Query(...)):
         if n.get("author") == username:
             continue
         if username in (n.get("read_by") or []):
+            continue
+        # 공지 기록과 공지 탭 목록은 보존하되, 게시 7일이 지나면 ✉️ 미확인 배지에는
+        # 더 이상 포함하지 않는다. 사용자가 영구 배지를 직접 지워야 했던 문제 방지.
+        if not is_fresh_admin_notice(n.get("created_at") or n.get("created")):
             continue
         notice_items.append({
             "id": n["id"],
@@ -419,7 +423,7 @@ def admin_notice_create(req: NoticeCreateReq, request: Request):
                     u["username"],
                     "New Notice",
                     title or (body[:120] if body else "(no content)"),
-                    "message",
+                    "admin_notice",
                 )
     except Exception:
         pass

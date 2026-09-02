@@ -128,11 +128,12 @@ function notificationType(type){
 }
 function notificationLabel(type){
   const normalized=notificationType(type);
+  if(normalized==="admin_notice")return "공지";
   return normalized==="warning"?"! warning":normalized;
 }
 function notificationColor(type){
   const normalized=notificationType(type);
-  return normalized==="approval"?WARN.fg:normalized==="message"?INFO.fg:normalized==="warning"?BAD.fg:SLATE;
+  return normalized==="approval"?WARN.fg:(normalized==="message"||normalized==="admin_notice")?INFO.fg:normalized==="warning"?BAD.fg:SLATE;
 }
 function notificationBody(n){
   const payload=_obj(n?.payload);

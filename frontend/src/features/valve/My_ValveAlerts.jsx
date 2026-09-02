@@ -30,7 +30,8 @@ function alertProducts(alert) {
 }
 
 function productMatches(value, selectedProduct) {
-  return String(value || "").trim().toLocaleLowerCase() === selectedProduct.toLocaleLowerCase();
+  const canonical = input => String(input || "").trim().replace(/^ML_TABLE_/i, "").toLocaleLowerCase();
+  return canonical(value) === canonical(selectedProduct);
 }
 
 function alertForProduct(alert, selectedProduct) {
@@ -537,6 +538,8 @@ export default function My_ValveAlerts({ user }) {
   const [inputs, setInputs] = useState({});   // alert_id -> {category, feature_name, step_desc}
   const [queued, setQueued] = useState({});   // alert_id -> true (일괄 반영 대기)
   const [batchNote, setBatchNote] = useState("");
+  const [planAnomalyNote, setPlanAnomalyNote] = useState("");
+  const [selectedPlanAnomalies, setSelectedPlanAnomalies] = useState({});
   const [busy, setBusy] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState("");
@@ -564,6 +567,7 @@ export default function My_ValveAlerts({ user }) {
   }, []);
 
   const alerts = data?.alerts || [];
+  const planAnomalies = useMemo(() => data?.plan_anomalies?.items || [], [data?.plan_anomalies?.items]);
   const products = useMemo(() => {
     const names = new Map();
     for (const product of data?.scanner?.product_list || []) {
@@ -573,8 +577,12 @@ export default function My_ValveAlerts({ user }) {
     for (const alert of alerts) {
       for (const product of alertProducts(alert)) names.set(product.toLocaleLowerCase(), product);
     }
+    for (const item of planAnomalies) {
+      const product = String(item.product_key || item.product || "").trim();
+      if (product) names.set(product.toLocaleLowerCase(), product);
+    }
     return Array.from(names.values()).sort((a, b) => a.localeCompare(b, "ko", { numeric: true }));
-  }, [alerts, data?.scanner?.product_list]);
+  }, [alerts, data?.scanner?.product_list, planAnomalies]);
   const productCounts = useMemo(() => Object.fromEntries(products.map(product => [
     product,
     alerts.filter(alert => alertProducts(alert).some(value => productMatches(value, product))).length,
@@ -599,6 +607,16 @@ export default function My_ValveAlerts({ user }) {
     })
     : decisions,
   [decisions, selectedProduct]);
+  const visiblePlanAnomalies = useMemo(() => selectedProduct
+    ? planAnomalies.filter(item => productMatches(item.product_key || item.product, selectedProduct)
+      || productMatches(item.product, selectedProduct))
+    : planAnomalies,
+  [planAnomalies, selectedProduct]);
+  const readyPlanAnomalies = useMemo(
+    () => visiblePlanAnomalies.filter(item => item.ready), [visiblePlanAnomalies]);
+  const checkedPlanAnomalies = useMemo(
+    () => planAnomalies.filter(item => selectedPlanAnomalies[item.id]),
+    [planAnomalies, selectedPlanAnomalies]);
   const alertsById = useMemo(
     () => new Map(alerts.map(alert => [alert.id, alert])),
     [alerts]);
@@ -618,6 +636,11 @@ export default function My_ValveAlerts({ user }) {
       setSelectedProduct("");
     }
   }, [products, selectedProduct]);
+  useEffect(() => {
+    const current = new Set(planAnomalies.map(item => item.id));
+    setSelectedPlanAnomalies(prev => Object.fromEntries(
+      Object.entries(prev).filter(([id, checked]) => checked && current.has(id))));
+  }, [planAnomalies]);
   // FAB 검사기가 제공하는 추가 근거 열. eqp는 아래 고정 열에서 표시한다.
   const extraCols = useMemo(
     () => (data?.alert_cols || []).filter(c => c !== "eqp_id" && c !== "eqp_model"),
@@ -744,6 +767,34 @@ export default function My_ValveAlerts({ user }) {
       return next;
     });
     setQueued({});
+  };
+
+  const togglePlanAnomaly = (id, checked) => setSelectedPlanAnomalies(prev => {
+    const next = { ...prev };
+    if (checked) next[id] = true;
+    else delete next[id];
+    return next;
+  });
+  const allVisiblePlanAnomaliesChecked = readyPlanAnomalies.length > 0
+    && readyPlanAnomalies.every(item => selectedPlanAnomalies[item.id]);
+  const toggleAllPlanAnomalies = () => setSelectedPlanAnomalies(prev => {
+    const next = { ...prev };
+    if (allVisiblePlanAnomaliesChecked) readyPlanAnomalies.forEach(item => delete next[item.id]);
+    else readyPlanAnomalies.forEach(item => { next[item.id] = true; });
+    return next;
+  });
+  const applyPlanAnomalies = () => {
+    if (!checkedPlanAnomalies.length) { toast.error("반영할 SplitTable plan 이상항목을 선택하세요"); return; }
+    if (!planAnomalyNote.trim()) { toast.error("반영 코멘트를 입력하세요"); return; }
+    act("__plan_anomalies__", async () => {
+      const result = await postJson(API + "/plan-anomalies/apply", {
+        ids: checkedPlanAnomalies.map(item => item.id), note: planAnomalyNote.trim(),
+      });
+      const version = result.version_meta?.display_version || result.version_meta?.version || "새 버전";
+      toast.ok(`${result.count}건을 ppid_knob.csv에 반영했습니다 · ${version}`);
+      setSelectedPlanAnomalies({});
+      setPlanAnomalyNote("");
+    });
   };
 
   const ack = (id, status) =>
@@ -918,6 +969,78 @@ export default function My_ValveAlerts({ user }) {
         )}
       </Card>
 
+      <Card
+        title="SplitTable plan 이상항목들"
+        right={<Pill tone={visiblePlanAnomalies.length ? "danger" : "neutral"}>
+          plan 불일치 · {visiblePlanAnomalies.length}건
+        </Pill>}
+      >
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.5 }}>
+          KNOB plan과 실제 PPID가 다른 항목입니다. 같은 제품·KNOB·plan·PPID는 여러 lot/wafer에서 발견돼도 한 줄로 묶입니다.
+          선택해 반영하면 실제 PPID를 plan 이름으로 <b>ppid_knob.csv</b>에 추가하거나 기존 분류를 수정합니다.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+          <Button style={compactButtonStyle} disabled={!canManage || !readyPlanAnomalies.length || !!busy}
+            onClick={toggleAllPlanAnomalies}>
+            {allVisiblePlanAnomaliesChecked ? "현재 목록 선택 해제" : `반영 가능 ${readyPlanAnomalies.length}건 전체 선택`}
+          </Button>
+          <input
+            style={{ ...inputStyle, minWidth: 280, flex: 1 }}
+            placeholder="반영 코멘트(필수)"
+            value={planAnomalyNote}
+            disabled={!canManage || busy === "__plan_anomalies__"}
+            onChange={event => setPlanAnomalyNote(event.target.value)}
+          />
+          <Button variant="primary"
+            disabled={!canManage || !checkedPlanAnomalies.length || !planAnomalyNote.trim() || !!busy}
+            onClick={applyPlanAnomalies}>
+            {busy === "__plan_anomalies__" ? "반영 중…" : `선택 ${checkedPlanAnomalies.length}건 PPID 룰 반영`}
+          </Button>
+        </div>
+        {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div>
+          : visiblePlanAnomalies.length === 0 ? (
+            <EmptyState title="SplitTable plan 이상항목 없음" hint="KNOB plan과 실제 PPID가 달라지면 여기에 표시됩니다" />
+          ) : (
+            <ScrollTable
+              rows={visiblePlanAnomalies}
+              minWidth={1120}
+              columns={["선택", "제품", "KNOB 항목", "plan 이름", "실제 PPID", "적용 공정", "발견 위치", "현재 분류", "반영 방식"]}
+              renderRow={item => {
+                const locations = (item.locations || []).map(location =>
+                  `${location.root_lot_id || "-"}${location.wafer_id ? ` WF${location.wafer_id}` : ""}`).join(", ");
+                return (
+                  <tr key={item.id}>
+                    <td style={nowrapCell}>
+                      <input type="checkbox" checked={!!selectedPlanAnomalies[item.id]}
+                        disabled={!canManage || !item.ready || !!busy}
+                        aria-label={`${item.feature_name} ${item.actual_ppid} 반영 선택`}
+                        onChange={event => togglePlanAnomaly(item.id, event.target.checked)} />
+                    </td>
+                    <td style={nowrapCell}>{item.product_key || item.product || "-"}</td>
+                    <td style={compactCell} title={item.column || ""}>{item.feature_name || item.column || "-"}</td>
+                    <td style={{ ...cellStyle, fontWeight: 700, color: "var(--accent)" }}>{item.plan || "-"}</td>
+                    <td style={{ ...cellStyle, fontFamily: "monospace" }}>{item.actual_ppid || "-"}</td>
+                    <td style={compactCell} title={(item.step_ids || []).join(", ")}>
+                      {item.step_desc || "-"}{(item.step_ids || []).length ? ` · ${(item.step_ids || []).join(", ")}` : ""}
+                    </td>
+                    <td style={compactCell} title={locations}>
+                      {locations || "-"}{item.occurrences > (item.locations || []).length ? ` 외 ${item.occurrences - item.locations.length}건` : ""}
+                    </td>
+                    <td style={compactCell}>{(item.current_categories || []).join(", ") || "-"}</td>
+                    <td style={nowrapCell} title={item.reason || ""}>
+                      {item.ready ? (
+                        <Pill tone={item.mode === "update" ? "warn" : "ok"}>
+                          {item.mode === "update" ? "기존 룰 수정" : "새 룰 추가"}
+                        </Pill>
+                      ) : <Pill tone="danger">공정 확인 필요</Pill>}
+                    </td>
+                  </tr>
+                );
+              }}
+            />
+          )}
+      </Card>
+
       <Card title="판정 이력">
         {visibleDecisions.length === 0 ? (
           <EmptyState title="판정 이력 없음" hint="룰 반영/매칭 추가/보류 처리 내역이 여기에 남습니다" />
@@ -943,14 +1066,17 @@ export default function My_ValveAlerts({ user }) {
                     </td>
                     <td style={{ ...cellStyle, fontFamily: "monospace", fontSize: 11 }}>{d.alert_id}</td>
                     <td style={cellStyle}>
-                      <Pill tone={["classify", "match", "add_mask"].includes(d.action) ? "ok" : "neutral"}>
+                      <Pill tone={["classify", "match", "add_mask", "plan_knob"].includes(d.action) ? "ok" : "neutral"}>
                         {d.action === "classify" ? "룰 반영"
                           : d.action === "match" ? "매칭 추가"
-                            : d.action === "add_mask" ? "마스크 추가" : d.action}
+                            : d.action === "add_mask" ? "마스크 추가"
+                              : d.action === "plan_knob" ? "plan PPID 반영" : d.action}
                       </Pill>
                     </td>
                     <td style={cellStyle}>
-                      {d.action === "classify"
+                      {d.action === "plan_knob"
+                        ? `${d.feature_name}: ${d.ppid} → ${d.category} (${d.change_mode === "update" ? "수정" : "추가"})`
+                        : d.action === "classify"
                         ? `${d.ppid} → ${d.category} (${d.feature_name} ${d.rule_order})`
                         : d.action === "match"
                           ? `${d.step_id} → ${d.step_desc}`

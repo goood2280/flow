@@ -151,7 +151,10 @@ def _resolve_base_file_for_version(file: str) -> Path:
     if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
         raise HTTPException(400, "Invalid file path")
     settings = _load_filebrowser_settings()
-    folder_fp = _resolve_single_file_folder_data_path(file, (_base_root(), _db_root()), _single_file_folder_names(settings))
+    folder_fp = _resolve_single_file_folder_data_path(
+        file, (_base_root(), _db_root()),
+        _single_file_folder_names(settings, allow_credential=True),
+    )
     if folder_fp is not None:
         return folder_fp
     if rel.parts and rel.parts[0] == "product_config":

@@ -233,7 +233,7 @@ function defaultInformForm() {
     attach_embed: false, embed: emptyEmbedTable(),
     // 스냅샷 표시 형식 — SplitTable 화면과 같은 3종 (matrix=기본 / split_check / merged).
     snapshot_mode: "matrix",
-    // SplitTable "적용 공정 정보" 와 동일 — 항목명을 연결 step_id 로.
+    // SplitTable "적용 공정 정보" 와 동일 — 항목 왼쪽에 step_id / step_desc 열 추가.
     show_step_ids: false,
   };
 }
@@ -5183,7 +5183,7 @@ function InformWizard({
                   </button>
                 );
               })}
-              <label title="항목명을 SplitTable 처럼 연결된 공정(step_id) 으로 바꿔 표시합니다"
+              <label title="SplitTable처럼 항목 왼쪽에 연결된 step_id와 step_desc 열을 표시합니다"
                 style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer" }}>
                 <input type="checkbox" checked={!!form.show_step_ids} onChange={e => setForm(f => ({ ...f, show_step_ids: e.target.checked }))} />
                 <span>적용 공정 표시</span>

@@ -2007,6 +2007,10 @@ def _attach_split_view_runtime_fields(
     view_stale: bool = False,
 ) -> dict:
     out = dict(payload)
+    product = out.get("product") or ""
+    compact_rows = out.get("rows_compact") or out.get("rows") or []
+    selected = [str(row.get("_param") or "") for row in compact_rows if isinstance(row, dict)]
+    out["s0_by_knob"] = _knob_s0_for_product(product, selected)
     if "lookup_cache" not in out:
         status = None
         try:
@@ -2128,6 +2132,7 @@ def _expand_view_rows(payload: dict) -> dict:
         mism = set(r.get("m") or [])
         can_plan = bool(r.get("can_plan"))
         is_tag = bool(r.get("tag"))
+        tag_colors = r.get("tc") or {}
         is_mgmt = bool(r.get("mgmt"))
         param = r.get("_param")
         cells = {}
@@ -2142,6 +2147,7 @@ def _expand_view_rows(payload: dict) -> dict:
                 "mismatch": ci in mism,
                 "is_custom_tag": is_tag,
                 "can_tag": is_tag,
+                "tag_color": tag_colors.get(key) if is_tag else "",
                 "is_management_row": is_mgmt,
                 "can_management_edit": is_mgmt,
             }
@@ -2495,6 +2501,8 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                         all_data.append(mgmt_col)
             sel = _select_columns(all_data, custom_name, prefix,
                                   max_fallback=50, custom_cols=custom_cols)
+            if DEFAULT_CUSTOM_TAG_COLUMN in tag_labels:
+                sel = _with_default_custom_tag(sel)
             if not custom_name and not custom_cols:
                 for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
                     for virt in _virtual_columns_for_prefix(product, raw_pref):
@@ -2503,7 +2511,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
             rename = _build_col_rename_map(sel, product)
             rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
             rename.update({col: label for col, label in management_labels.items()})
-            # ppid_knob step_desc → step_id 공정 순서 우선, 매핑 없는 행은 기존 자연 정렬.
+            # prefix별 묶음이 아니라 각 parameter의 step_id 공정 순서를 공통 기준으로 정렬.
             step_rank = _split_step_order_context(product).get("param_rank") or {}
             sel = sorted(sel, key=lambda c: _step_order_sort_key(c, rename.get(c, c), step_rank))
             keep_cols = []
@@ -2691,6 +2699,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
         plans = _plan_entries_for_root(product, root_lot_id)
         tag_labels = _custom_tag_label_map(product)
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
+        tag_colors = _custom_tag_colors_for_root(product, root_lot_id)
         management_labels = _management_row_label_map(product)
         management_values = _management_row_values_for_root(product, root_lot_id)
         _lap(runtime_profile, "overlay_ms")
@@ -2778,6 +2787,13 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                     row_c["can_plan"] = True
                 if is_tag_col:
                     row_c["tag"] = True
+                    cell_colors = {
+                        str(ci): color
+                        for ci, wf_key in enumerate(wf_sorted)
+                        if (color := tag_colors.get(f"{root_lot_id}|{wf_key}|{col_name}"))
+                    }
+                    if cell_colors:
+                        row_c["tc"] = cell_colors
                 if is_management_row:
                     row_c["mgmt"] = True
             rows_compact.append(row_c)

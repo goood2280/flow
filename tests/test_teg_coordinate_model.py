@@ -15,6 +15,74 @@ from routers import filebrowser
 from routers import teg_map as teg_router
 
 
+def test_mapfile_site_parsers_keep_duplicate_names_unique():
+    legacy = teg_check.parse_sites([
+        "<SITES>",
+        "Pattern DUP", "1 1 1",
+        "Pattern DUP", "1 2 2",
+        "Pattern DUP", "1 3 3",
+    ])
+    bracket = teg_check._parse_test_sites([
+        "[TEST_SITES]",
+        "DUP(Pattern) = (1)(1,1)",
+        "DUP(Pattern) = (1)(2,2)",
+        "DUP(Pattern) = (1)(3,3)",
+    ])
+
+    assert [item["name"] for item in legacy] == ["DUP", "DUP (2)", "DUP (3)"]
+    assert [item["name"] for item in bracket] == ["DUP", "DUP (2)", "DUP (3)"]
+
+    pre_suffixed = teg_check.parse_sites([
+        "<SITES>",
+        "Pattern DUP", "1 1 1",
+        "Pattern DUP (2)", "1 2 2",
+        "Pattern DUP", "1 3 3",
+    ])
+    assert [item["name"] for item in pre_suffixed] == ["DUP", "DUP (2)", "DUP (3)"]
+
+
+def test_rect_spatial_index_preserves_large_map_geometry_results():
+    cells = [
+        {"name": f"MAIN{y * 40 + x:04d}", "x": x * 2.0, "y": y * 2.0,
+         "w": 1.8, "h": 1.8}
+        for y in range(40) for x in range(40)
+    ]
+    index = teg_check._RectSpatialIndex(cells)
+    probes = [
+        (0.2, 0.2, 0.3, 0.3),
+        (25.9, 17.9, 0.4, 0.4),
+        (78.2, 78.2, 0.3, 0.3),
+        (-10.0, -10.0, 0.2, 0.2),
+    ]
+    for x, y, w, h in probes:
+        assert teg_check.die_proximity(cells, x, y, w, h) == teg_check.die_proximity(
+            cells, x, y, w, h, index=index)
+        assert teg_check.main_membership(cells, x, y, w, h) == teg_check.main_membership(
+            cells, x, y, w, h, index=index)
+        assert teg_check._overlaps_chip(cells, x, y, w, h) == teg_check._overlaps_chip(
+            cells, x, y, w, h, index=index)
+
+    # 한 점 조회가 1,600개 전체가 아니라 주변 bucket 후보만 돌려야 한다.
+    assert len(index.query(10.1, 10.1, 10.4, 10.4)) < len(cells) // 10
+
+
+def test_indexed_main_light_keeps_outside_as_red_not_missing_info():
+    cells = [
+        {"name": "MAIN01", "x": 0.0, "y": 0.0, "w": 10.0, "h": 10.0},
+        {"name": "MAIN02", "x": 20.0, "y": 0.0, "w": 10.0, "h": 10.0},
+    ]
+    index = teg_check._RectSpatialIndex(cells)
+    by_name = {
+        teg_map.normalize_chip_name(cell["name"]): [cell]
+        for cell in cells
+    }
+    plain = teg_check.main_die_light(cells, "MAIN01", 40.0, 40.0, 0.2, 0.2)
+    indexed = teg_check.main_die_light(
+        cells, "MAIN01", 40.0, 40.0, 0.2, 0.2,
+        index=index, cells_by_name=by_name)
+    assert plain == indexed == ("red", "MAIN01 밖")
+
+
 def test_sl_coordinate_warning_is_limited_to_two_raw_units_per_axis():
     assert teg_check._status_of(0, 0) == "match"
     assert teg_check._status_of(2, -2) == "warning"

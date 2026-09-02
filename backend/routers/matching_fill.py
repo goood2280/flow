@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """routers/matching_fill.py — 매칭 CSV `product` 열 채우기 API.
 
-  GET    /api/matching-fill/targets            대상 3종 + CSV/DB 존재 여부 + 제품 폴더
+  GET    /api/matching-fill/targets            대상 5종 + CSV/DB 존재 여부 + 제품 폴더
   GET    /api/matching-fill/settings           step_id prefix 규칙 / module 구간표 / 스캔 상한
   POST   /api/matching-fill/settings           규칙 저장 (manager)
   POST   /api/matching-fill/scan               검사 실행 → 제안 생성 (manager, 파일 변경 없음)
@@ -33,13 +33,14 @@ class SettingsReq(BaseModel):
 
 class ScanReq(BaseModel):
     target: str
-    column: str = "product"          # product = DB 스캔 / module = step 번호 구간표
+    column: str = "product"          # product/step_id = DB 스캔, step_desc = Vehicle 보강
 
 
 class ApplyReq(BaseModel):
     target: str
     column: str = "product"
     skip_rows: list[int] = []
+    proposal_scanned_at: str
 
 
 @router.get("/targets")
@@ -65,6 +66,7 @@ def targets(request: Request):
             # (제품 귀속은 Vehicle_matching.csv 가 step_desc 로 이미 정한다).
             "fill_columns": _mf.target_fill_columns(key),
             "module_source": str(spec.get("module_source") or "step_range"),
+            "match_source": str(spec.get("match_source") or ""),
             "proposals": {c: _proposal_summary(_mf.get_proposal(key, c)) for c in _mf.FILL_COLUMNS},
         })
     return {"targets": out, "db_root": str(_mf._db_root())}
@@ -121,7 +123,8 @@ def apply(req: ApplyReq, request: Request, me=Depends(_require_manager)):
         raise HTTPException(400, f"알 수 없는 대상: {req.target}")
     try:
         return _mf.apply_proposal(req.target, username=(me or {}).get("username", ""),
-                                  skip_rows=req.skip_rows, column=req.column)
+                                  skip_rows=req.skip_rows, column=req.column,
+                                  expected_scanned_at=req.proposal_scanned_at)
     except (LookupError, ValueError) as e:
         raise HTTPException(400, str(e))
 

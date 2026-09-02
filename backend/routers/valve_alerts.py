@@ -11,6 +11,8 @@
   POST /api/valve-alerts/classify-ppid  ro_ppid → ppid_knob.csv 다음 Rule 로 추가
   POST /api/valve-alerts/match-step     unmatched_step → Vehicle_matching.csv 추가
   POST /api/valve-alerts/add-mask       missing_reticle → mask_info.csv 에 reticle_id,mask 추가
+  GET  /api/valve-alerts/plan-anomalies SplitTable KNOB plan/actual 불일치 목록
+  POST /api/valve-alerts/plan-anomalies/apply 선택 PPID를 plan 이름으로 ppid_knob.csv 반영
   POST /api/valve-alerts/ack            반영불필요/해제(active)
   POST /api/valve-alerts/poll           개발 worker에 다음 제품 검사 요청
 
@@ -33,6 +35,7 @@ _require_manager = require_page_manager("valve")
 def alerts_list(_user=Depends(current_user)):
     data = _va.list_alerts()
     data["config"] = _va.load_cfg()
+    data["plan_anomalies"] = _va.list_plan_knob_anomalies()
     return data
 
 
@@ -161,6 +164,11 @@ class BatchApplyReq(BaseModel):
     note: str = ""
 
 
+class PlanAnomalyApplyReq(BaseModel):
+    ids: list[str]
+    note: str = ""
+
+
 @router.post("/batch-apply")
 def batch_apply(req: BatchApplyReq, user=Depends(_require_manager)):
     """Apply several alert decisions as one logical, versioned batch."""
@@ -178,6 +186,30 @@ def batch_apply(req: BatchApplyReq, user=Depends(_require_manager)):
     _audit_user(
         user.get("username", ""), "valve-alerts:batch_apply",
         detail=f"batch={out.get('batch_id')} changes={len(req.changes)}",
+        tab="valve",
+    )
+    return out
+
+
+@router.get("/plan-anomalies")
+def plan_anomalies(_user=Depends(current_user)):
+    return _va.list_plan_knob_anomalies()
+
+
+@router.post("/plan-anomalies/apply")
+def apply_plan_anomalies(req: PlanAnomalyApplyReq, user=Depends(_require_manager)):
+    """Map checked SplitTable actual PPIDs to their plan names in ppid_knob."""
+    try:
+        out = _va.apply_plan_knob_anomalies(
+            req.ids, note=req.note, username=user.get("username", ""))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    from core.audit import record_user as _audit_user
+    _audit_user(
+        user.get("username", ""), "valve-alerts:plan_knob_apply",
+        detail=f"batch={out.get('batch_id')} changes={out.get('count')} comment={req.note[:120]}",
         tab="valve",
     )
     return out

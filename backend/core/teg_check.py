@@ -29,6 +29,7 @@ Mapfile 좌표계 (UI 표기: h=Horizontal, v_R=Vertical(R)):
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -96,6 +97,22 @@ TEST_SITES_LINE_RE = re.compile(r"^(.*?)\s*=\s*(.*)$")               # "이름 =
 PATTERN_ANNOT_RE = re.compile(r"^(.*?)\s*\(\s*pattern\s*\)\s*$", re.IGNORECASE)  # 끝의 (Pattern) 주석
 
 
+def _unique_site_name(name: str, taken: set[str], next_suffix: dict[str, int]) -> str:
+    """Pattern 이름을 원문 순서대로 유일화하되 중복 수에 선형으로 처리한다."""
+    if name not in taken:
+        taken.add(name)
+        next_suffix.setdefault(name, 2)
+        return name
+    n = next_suffix.get(name, 2)
+    key = f"{name} ({n})"
+    while key in taken:
+        n += 1
+        key = f"{name} ({n})"
+    next_suffix[name] = n + 1
+    taken.add(key)
+    return key
+
+
 def _parse_point_map(lines: list[str]) -> list[dict]:
     """[TEST_POINT] 섹션 → 웨이퍼 맵 1개 (맵 문자 행만). 없으면 [].
 
@@ -132,6 +149,8 @@ def _parse_test_sites(lines: list[str]) -> list[dict]:
     """
     body = _section(lines, TEST_SITES_TAG, stop=SECTION_STOPS)
     sites: list[dict] = []
+    taken: set[str] = set()
+    next_suffix: dict[str, int] = {}
     for s in body:
         if not s or "=" not in s:
             continue
@@ -148,10 +167,7 @@ def _parse_test_sites(lines: list[str]) -> list[dict]:
                 pts.append({"pt": len(pts) + 1, "x": _num(nums[0]), "y": _num(nums[1])})
         if not pts:
             continue
-        key, n = name, 2
-        taken = {si["name"] for si in sites}
-        while key in taken:
-            key, n = f"{name} ({n})", n + 1
+        key = _unique_site_name(name, taken, next_suffix)
         sites.append({"name": key, "points": pts})
     return sites
 
@@ -246,15 +262,14 @@ def parse_sites(lines: list[str]) -> list[dict]:
     """<SITES> 안의 Pattern 블록들 → [{name, points:[{pt,x,y}]}, ...] (원문 순서)"""
     body = _section(lines, "<SITES>")
     sites: list[dict] = []
+    taken: set[str] = set()
+    next_suffix: dict[str, int] = {}
     name, pts = None, []
 
     def flush():
         if name is None or not pts:
             return
-        key, n = name, 2
-        taken = {s["name"] for s in sites}
-        while key in taken:
-            key, n = f"{name} ({n})", n + 1
+        key = _unique_site_name(name, taken, next_suffix)
         sites.append({"name": key, "points": list(pts)})
 
     for s in body:
@@ -976,8 +991,68 @@ def _chip_cells(display: dict, W: float, H: float) -> list[dict]:
             for r in range(rows) for c in range(cols)]
 
 
+class _RectSpatialIndex:
+    """작은 균일 격자 색인 — 수천 TEG가 모든 die를 반복 순회하지 않게 한다.
+
+    셀을 겹치는 bucket 모두에 넣으므로 큰 MAIN이 여러 bucket을 가로질러도 누락되지
+    않는다. 후보는 원래 순서로 돌려 기존 판정/이름 표시 순서를 그대로 보존한다.
+    """
+
+    def __init__(self, cells: list[dict] | None):
+        self.cells = list(cells or [])
+        self.buckets: dict[tuple[int, int], list[int]] = {}
+        self.cols = self.rows = 0
+        if not self.cells:
+            return
+        self.min_x = min(float(c["x"]) for c in self.cells)
+        self.min_y = min(float(c["y"]) for c in self.cells)
+        self.max_x = max(float(c["x"]) + float(c["w"]) for c in self.cells)
+        self.max_y = max(float(c["y"]) + float(c["h"]) for c in self.cells)
+        # bucket 하나에 평균 8개 정도가 들어가도록 하되 메모리 폭증은 막는다.
+        side = max(1, min(128, int(math.ceil(math.sqrt(len(self.cells) / 8.0)))))
+        self.cols = self.rows = side
+        self.step_x = max((self.max_x - self.min_x) / side, 1e-9)
+        self.step_y = max((self.max_y - self.min_y) / side, 1e-9)
+        for idx, cell in enumerate(self.cells):
+            x0, y0 = float(cell["x"]), float(cell["y"])
+            x1, y1 = x0 + float(cell["w"]), y0 + float(cell["h"])
+            bx0, by0 = self._bucket(x0, y0)
+            bx1, by1 = self._bucket(x1, y1)
+            for bx in range(bx0, bx1 + 1):
+                for by in range(by0, by1 + 1):
+                    self.buckets.setdefault((bx, by), []).append(idx)
+
+    def _bucket(self, x: float, y: float) -> tuple[int, int]:
+        bx = min(self.cols - 1, max(0, int((x - self.min_x) / self.step_x)))
+        by = min(self.rows - 1, max(0, int((y - self.min_y) / self.step_y)))
+        return bx, by
+
+    def query(self, x0: float, y0: float, x1: float, y1: float,
+              pad: float = 0.0) -> list[dict]:
+        if not self.cells:
+            return []
+        pad = max(0.0, float(pad))
+        x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad
+        if x1 < self.min_x or x0 > self.max_x or y1 < self.min_y or y0 > self.max_y:
+            return []
+        bx0, by0 = self._bucket(x0, y0)
+        bx1, by1 = self._bucket(x1, y1)
+        found: set[int] = set()
+        for bx in range(bx0, bx1 + 1):
+            for by in range(by0, by1 + 1):
+                found.update(self.buckets.get((bx, by), ()))
+        return [self.cells[i] for i in sorted(found)]
+
+
+def _rect_candidates(cells: list[dict], index: _RectSpatialIndex | None,
+                     x0: float, y0: float, w: float, h: float,
+                     pad: float = 0.0) -> list[dict]:
+    return index.query(x0, y0, x0 + w, y0 + h, pad) if index is not None else cells
+
+
 def _overlaps_chip(cells: list[dict], x0: float, y0: float, w: float, h: float,
-                   eps: float = 1e-9, tol: float = 0.0) -> bool:
+                   eps: float = 1e-9, tol: float = 0.0,
+                   index: _RectSpatialIndex | None = None) -> bool:
     """TEG 사각형이 칩 셀 위에 겹치는가 — TEG 는 칩 사이(스크라이브)에 있어야 정상.
 
     TEG 앵커 = 좌하단(Teg_location 규약), y 는 앵커에서 위(+h)로 뻗는다:
@@ -986,7 +1061,8 @@ def _overlaps_chip(cells: list[dict], x0: float, y0: float, w: float, h: float,
     """
     tx1, ty1 = x0 + w, y0 + h
     allowed = max(0.0, float(tol))
-    return any(_die_sep(c, x0, y0, tx1, ty1) < -(allowed + eps) for c in cells)
+    candidates = _rect_candidates(cells, index, x0, y0, w, h, allowed)
+    return any(_die_sep(c, x0, y0, tx1, ty1) < -(allowed + eps) for c in candidates)
 
 
 def _die_relation(cells: list[dict], x0: float, y0: float, w: float, h: float,
@@ -1034,7 +1110,8 @@ def _die_sep(c: dict, x0: float, y0: float, x1: float, y1: float) -> float:
 
 
 def die_proximity(cells: list[dict], x0: float, y0: float, w: float, h: float,
-                  tol: float = 0.0) -> tuple[str, list[dict]]:
+                  tol: float = 0.0,
+                  index: _RectSpatialIndex | None = None) -> tuple[str, list[dict]]:
     """TEG ↔ die 관계를 겹침 허용오차 ``tol``로 판정한다 → (상태, 관련 셀들).
 
     경계선이 정확히 맞닿거나 die 안쪽으로 ``tol`` 이하만 걸친 것은 정상(out)이다.
@@ -1043,7 +1120,7 @@ def die_proximity(cells: list[dict], x0: float, y0: float, w: float, h: float,
     """
     x1, y1 = x0 + w, y0 + h
     allowed = max(0.0, float(tol))
-    for c in cells:
+    for c in _rect_candidates(cells, index, x0, y0, w, h, allowed):
         sep = _die_sep(c, x0, y0, x1, y1)
         if sep < -(allowed + 1e-9):
             return DIE_IN, [c]
@@ -1075,14 +1152,16 @@ def _die_names(cells: list[dict]) -> str:
 
 
 def main_membership(cells: list[dict], x0: float, y0: float, w: float, h: float,
-                    tol: float = 0.0) -> str:
+                    tol: float = 0.0,
+                    index: _RectSpatialIndex | None = None) -> str:
     """정답지 미등록 행이 어느 MAIN chip 영역에 있는지 이름을 돌려준다.
 
     TEG 전체가 허용오차 안에서 한 MAIN에 들어오면 그 MAIN을 우선한다. 경계를
     물어 전체 포함이 아니면 중심점, 마지막으로 실제 겹친 MAIN 이름을 사용한다.
     여러 MAIN에 걸치면 쉼표로 모두 노출해 임의로 하나를 숨기지 않는다.
     """
-    named = [cell for cell in (cells or []) if str(cell.get("name") or "").strip()]
+    candidates = _rect_candidates(cells, index, x0, y0, w, h, tol)
+    named = [cell for cell in candidates if str(cell.get("name") or "").strip()]
     if not named:
         return ""
     allowed = max(0.0, float(tol))
@@ -1164,7 +1243,9 @@ def row_light(row: dict) -> tuple[str, str]:
 
 def main_die_light(cells: list[dict], group: str,
                    x0: float, y0: float, w: float, h: float,
-                   tol: float = 0.0) -> tuple[str, str]:
+                   tol: float = 0.0,
+                   index: _RectSpatialIndex | None = None,
+                   cells_by_name: dict[str, list[dict]] | None = None) -> tuple[str, str]:
     """MAIN 내부 TEG 신호등 — 사각형 전체가 자기 MAIN 안에 있어야 정상.
 
     · 자기 MAIN 안에 전체 포함 → yellow (정답지 미등록이라 위치 확인 성격)
@@ -1175,14 +1256,22 @@ def main_die_light(cells: list[dict], group: str,
     보지 않는다. 이는 일반 S/L TEG의 스크라이브 침범 판정과 다른 MAIN 전용 규칙이다.
     """
     key = _tm.normalize_chip_name(group)
+    if cells_by_name is None:
+        cells_by_name = {}
+        for c in cells:
+            if c.get("name"):
+                cells_by_name.setdefault(_tm.normalize_chip_name(c["name"]), []).append(c)
+    own_all = cells_by_name.get(key, [])
+    if not key or not own_all:
+        return "orange", f"MAIN 정보없음 · 소속 {group or 'MAIN 판정 불가'}"
+
+    candidates = _rect_candidates(cells, index, x0, y0, w, h, tol)
     own: list[dict] = []
     other: list[dict] = []
-    for c in cells:
+    for c in candidates:
         if not c.get("name"):
             continue
         (own if _tm.normalize_chip_name(c["name"]) == key else other).append(c)
-    if not key or not own:
-        return "orange", f"MAIN 정보없음 · 소속 {group or 'MAIN 판정 불가'}"
 
     tx1, ty1 = x0 + w, y0 + h
 
@@ -1454,6 +1543,27 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         main_anchors.append({"name": group, "x": ax * scale, "y": ay * scale})
     shot = (_shot_info(veh, main_anchors) if veh
             else {"available": False, "checked": False})
+    # die/MAIN 셀은 한 번만 색인한다. 대형 Mapfile에서 각 TEG가 수백~수천 셀을
+    # 처음부터 다시 훑으면 행×셀의 곱으로 느려지므로, 겹칠 가능성이 있는 셀만 본다.
+    die_cells = shot.get("cells") or []
+    main_cells = shot.get("main_cells") or []
+    die_index = _RectSpatialIndex(die_cells) if die_cells else None
+    main_index = (_RectSpatialIndex(main_cells) if main_cells
+                  else None)
+    main_cells_by_name: dict[str, list[dict]] = {}
+    for cell in main_cells:
+        if cell.get("name"):
+            main_cells_by_name.setdefault(
+                _tm.normalize_chip_name(cell["name"]), []).append(cell)
+    main_light_cells = main_cells or die_cells
+    main_light_index = main_index if main_cells else die_index
+    main_light_cells_by_name = main_cells_by_name
+    if not main_light_cells_by_name and main_light_cells:
+        main_light_cells_by_name = {}
+        for cell in main_light_cells:
+            if cell.get("name"):
+                main_light_cells_by_name.setdefault(
+                    _tm.normalize_chip_name(cell["name"]), []).append(cell)
 
     rows = []
     summary = {"match": 0, "warning": 0, "mismatch": 0, "extended": 0, "missing": 0,
@@ -1582,7 +1692,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             elif shot_state == SHOT_PARTIAL:
                 summary["shot_partial"] += 1
         main_group = main_membership(
-            shot.get("main_cells") or [], mm_x, mm_y, tw, th, die_tol_mm)
+            main_cells, mm_x, mm_y, tw, th, die_tol_mm, main_index)
         # Teg_location에 등록된 S/L TEG만 스크라이브/die 침범을 판정한다.
         # PCHK/PRBCHK는 Mapfile 좌표계의 원점이므로 die 검증 대상에서 제외한다.
         is_pchk_anchor = bool(
@@ -1601,7 +1711,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 die_check_reason = "PCHK/PRBCHK 기준행은 die 검사 제외"
             else:
                 die_state = die_proximity(
-                    shot["cells"], mm_x, mm_y, tw, th, die_tol_mm)[0]
+                    die_cells, mm_x, mm_y, tw, th, die_tol_mm, die_index)[0]
         overlap = True if die_state == DIE_IN else False if die_state is not None else None
         if overlap:
             summary["chip_overlap"] += 1
@@ -1667,48 +1777,59 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         main_chips = {}
     main_group_meta: dict[str, dict] = {}
     main_groups_map: dict[str, list[dict]] = {}
+    main_group_names: dict[str, set[str]] = {}
+    main_group_auto_counts: dict[str, int] = {}
+    main_group_next_suffix: dict[str, dict[str, int]] = {}
     for t in tegs_all:
         group = main_group_name(t)
         if not group:
             continue
-        purpose = _tm.main_purpose_for(veh, group, main_purposes)
-        purpose_warning = _tm.is_main_purpose_warning(purpose)
-        main_info_missing = _tm.chip_size_for(veh, group, main_chips) is None
-        main_group_meta[group] = {
-            "purpose": purpose,
-            "purpose_warning": purpose_warning,
-            "main_info_missing": main_info_missing,
-        }
+        meta = main_group_meta.get(group)
+        if meta is None:
+            purpose = _tm.main_purpose_for(veh, group, main_purposes)
+            meta = {
+                "purpose": purpose,
+                "purpose_warning": _tm.is_main_purpose_warning(purpose),
+                "main_info_missing": _tm.chip_size_for(veh, group, main_chips) is None,
+            }
+            main_group_meta[group] = meta
+        purpose = meta["purpose"]
+        purpose_warning = meta["purpose_warning"]
         detail = _main_detail(t, group)
         nx, ny = _main_xy(t, detail or group)
         entry = main_groups_map.setdefault(group, [])
+        names = main_group_names.setdefault(group, set())
+        suffixes = main_group_next_suffix.setdefault(group, {})
         auto = not detail
         if auto:
             # 이름 토큰이 없는 행은 그룹 이름으로 넘버링한다. 이 그룹에 자동 이름이
             # 하나뿐이면 아래 후처리에서 접미사를 떼어 그냥 그룹 이름이 된다.
-            detail = f"{group}_{sum(1 for e in entry if e['_auto']) + 1}"
-        names = {e["teg"] for e in entry}
-        base, n = detail, 2
+            auto_count = main_group_auto_counts.get(group, 0) + 1
+            main_group_auto_counts[group] = auto_count
+            detail = f"{group}_{auto_count}"
+        base, n = detail, suffixes.get(detail, 2)
         while detail in names:
             detail = f"{base}_{n}"
             n += 1
+        suffixes[base] = n
+        names.add(detail)
         # 칩 격자 모드면 내부 TEG 도 칩(die) 겹침 검사 — 일반 행과 동일 규약
         # (기본 TEG 크기 사용 — MAIN 내부 TEG 는 정답지에 없어 크기 정보가 없음)
         mm_x, mm_y = nx * scale, ny * scale
         dw, dh = default_teg_w, default_teg_h
         overlap = None
         if shot.get("checked"):
-            overlap = _overlaps_chip(shot["cells"], mm_x, mm_y, dw, dh,
-                                     tol=die_tol_mm)
+            overlap = _overlaps_chip(die_cells, mm_x, mm_y, dw, dh,
+                                     tol=die_tol_mm, index=die_index)
         # 신호등 — MAIN 내부 TEG 는 정답지에 없으므로 '자기 MAIN die 안인가'로 본다.
         # 블록 자체 행(auto: 이름 토큰 없음)은 die 좌하단 앵커라 판정 대상이 아니다.
         light, light_reason = ("gray", "")
-        main_cells = shot.get("main_cells") or shot.get("cells") or []
         if not auto and purpose_warning:
             light, light_reason = "red", f"purpose {_tm.normalize_main_purpose(purpose)} — TEG 배치 금지"
         elif not auto:
-            light, light_reason = main_die_light(main_cells, group, mm_x, mm_y,
-                                                 dw, dh, die_tol_mm)
+            light, light_reason = main_die_light(
+                main_light_cells, group, mm_x, mm_y, dw, dh, die_tol_mm,
+                main_light_index, main_light_cells_by_name)
         entry.append({"teg": detail, "main_group": group,
                       "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
                       "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),

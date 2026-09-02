@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 
 export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"];
 
@@ -14,6 +14,35 @@ export function splitParamDisplayName(name, rawParam) {
   let out = raw.replace(/^[A-Za-z]+_/, "");
   if (isKnob) out = out.replace(/_Split$/i, "");
   return out.trim() || raw;
+}
+
+function s0ValueForParam(source, param) {
+  const mapping = source?.s0_by_knob || {};
+  const exact = mapping?.[param];
+  if (exact?.ppid != null) return String(exact.ppid).trim();
+  const wanted = String(param || "").trim().toUpperCase();
+  const key = Object.keys(mapping).find(item => String(item || "").trim().toUpperCase() === wanted);
+  return key && mapping[key]?.ppid != null ? String(mapping[key].ppid).trim() : "";
+}
+
+function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = false) {
+  const order = [];
+  const seen = new Set();
+  const add = (raw, display, extra = {}) => {
+    const value = String(raw ?? "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    order.push({ raw: value, display: String(display ?? value), ...extra });
+  };
+  add(preferredValue, preferredValue, { is_s0: true });
+  (perCells || []).forEach(item => add(item.raw, item.display));
+  (draftValues || []).forEach((value, draftIndex) => {
+    const clean = String(value ?? "").trim();
+    if (clean) add(clean, clean, { is_draft: true, draft_index: draftIndex });
+    else order.push({ raw: "", display: "", is_draft: true, draft_index: draftIndex });
+  });
+  if (!order.length && ensureRow) order.push({ raw: "", display: "", is_s0: true });
+  return order;
 }
 
 const ST_CELL_COLORS = [
@@ -136,9 +165,9 @@ function splitTableHeaderGroups(st) {
   return groups;
 }
 
-// labelForParam: "적용 공정 정보" 가 켜졌을 때 항목 칸에 이름 대신 연결 공정을
-// 넣기 위한 훅. 여러 줄이면 개행 문자로 넘기고 셀은 pre-line 으로 그린다.
-export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam } = {}) {
+// processInfoForParam: 적용 공정 정보를 항목과 분리된 step_id / step_desc 열로
+// 넣기 위한 훅. labelForParam은 이전 저장 스냅샷 호환용으로만 유지한다.
+export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, ensureEmptyRows = false } = {}) {
   const source = matrix || {};
   const headers = Array.isArray(source.headers) ? source.headers : [];
   const rows = Array.isArray(source.rows) ? source.rows : [];
@@ -164,29 +193,36 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
       const displayRaw = displayForValue ? displayForValue(rawValue, row, cell, ci) : raw;
       return { raw, display: String(displayRaw ?? raw), not_reached: notReached };
     });
-    const order = [];
-    const seen = new Set();
-    perHeader.forEach(item => {
-      if (!item.raw || seen.has(item.raw)) return;
-      seen.add(item.raw);
-      order.push(item);
-    });
+    const preferred = preferredValueForParam
+      ? preferredValueForParam(row?._param, row)
+      : s0ValueForParam(source, row?._param);
+    const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
+    const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows);
     return order.map((item, idx) => {
       const label = `S${idx}`;
       const checkCells = {};
       perHeader.forEach((value, ci) => {
         checkCells[String(ci)] = { actual: value.raw && value.raw === item.raw ? "✓" : "", plan: "", split_check: true, not_reached: !!value.not_reached };
       });
+      const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
+      const basePrefix = [
+        (labelForParam && labelForParam(row?._param, row?._display))
+          || splitParamDisplayName(row?._display || row?._param || "", row?._param),
+        item.display, label,
+      ];
       return {
         _param: String(row?._param || row?._display || ""),
         _display: String(row?._display || row?._param || ""),
         _split_value: item.display,
+        _split_value_raw: item.raw,
         _split_label: label,
-        _prefix_cells: [
-          (labelForParam && labelForParam(row?._param, row?._display))
-            || splitParamDisplayName(row?._display || row?._param || "", row?._param),
-          item.display, label,
-        ],
+        _is_s0: idx === 0 && !!preferred,
+        _is_split_draft: !!item.is_draft,
+        _split_draft_index: item.draft_index,
+        _process_columns: process || undefined,
+        _prefix_cells: process
+          ? [String(process.step_id||""),String(process.step_desc||""),...basePrefix]
+          : basePrefix,
         _cells: checkCells,
         _not_reached_all: perHeader.length > 0 && perHeader.every(value => value.not_reached),
       };
@@ -196,7 +232,8 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     ...source,
     headers,
     rows: splitRows,
-    prefix_columns: SPLIT_CHECK_PREFIX_COLUMNS,
+    prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
+    parameter_prefix_index: processInfoForParam ? 2 : 0,
     display_mode: "split_check",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -205,7 +242,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
 // PEMS 표시: root lot 의 wafer 축을 물리 wafer 번호 1..25로 고정하고,
 // Split 체크와 같은 S0/S1... 그룹에 체크 대신 그룹명을 직접 표시한다.
 // 조회 결과에 없는 wafer(또는 값이 비어 있는 wafer)는 S0에 포함하되 회색으로 남긴다.
-export function buildPemsStView(matrix, { valueForCell, displayForValue, labelForParam } = {}) {
+export function buildPemsStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam } = {}) {
   const source = matrix || {};
   const sourceHeaders = Array.isArray(source.headers) ? source.headers : [];
   const sourceRows = Array.isArray(source.rows) ? source.rows : [];
@@ -248,13 +285,11 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
       const displayRaw = displayForValue ? displayForValue(rawValue, row, cell, sourceIndex) : raw;
       return { raw, display: String(displayRaw ?? raw), missing_wafer: missingWafer, not_reached: progressNotReached };
     });
-    const order = [];
-    const seen = new Set();
-    perWafer.forEach(item => {
-      if (!item.raw || seen.has(item.raw)) return;
-      seen.add(item.raw);
-      order.push(item);
-    });
+    const preferred = preferredValueForParam
+      ? preferredValueForParam(row?._param, row)
+      : s0ValueForParam(source, row?._param);
+    const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
+    const order = orderedSplitValues(perWafer, preferred, extras, true);
     // 실제 값이 하나도 없어도 PEMS 에서는 S0 행이 있어야 25개 wafer가 모두 보인다.
     if (!order.length) order.push({ raw: "", display: "" });
 
@@ -273,16 +308,25 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
           not_reached: !!(value.missing_wafer || value.not_reached),
         };
       });
+      const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
+      const basePrefix = [
+        (labelForParam && labelForParam(row?._param, row?._display))
+          || splitParamDisplayName(row?._display || row?._param || "", row?._param),
+        item.display, label,
+      ];
       return {
         _param: String(row?._param || row?._display || ""),
         _display: String(row?._display || row?._param || ""),
         _split_value: item.display,
+        _split_value_raw: item.raw,
         _split_label: label,
-        _prefix_cells: [
-          (labelForParam && labelForParam(row?._param, row?._display))
-            || splitParamDisplayName(row?._display || row?._param || "", row?._param),
-          item.display, label,
-        ],
+        _is_s0: idx === 0 && !!preferred,
+        _is_split_draft: !!item.is_draft,
+        _split_draft_index: item.draft_index,
+        _process_columns: process || undefined,
+        _prefix_cells: process
+          ? [String(process.step_id||""),String(process.step_desc||""),...basePrefix]
+          : basePrefix,
         _cells: splitCells,
         _not_reached_all: perWafer.every(value => value.not_reached),
       };
@@ -299,7 +343,8 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
     lot_id_label: "",
     hide_lot_id_row: true,
     pems_missing_wafer_indices: missingWaferIndices,
-    prefix_columns: SPLIT_CHECK_PREFIX_COLUMNS,
+    prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
+    parameter_prefix_index: processInfoForParam ? 2 : 0,
     display_mode: "pems",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -324,8 +369,13 @@ export default function SplitTableSnapshotView({
   showMeta = true, // v9.5.x: 메일 본문/미리보기에서 note 자동 생성 줄 + wafer 배지 같은 기술 메타를 숨기기 위한 스위치.
   emptyMessage = "Split 체크로 표시할 값이 없습니다",
   maxHeight = 620,
+  editable = false,
+  onAssignSplit = null,
+  onEditSplitValue = null,
+  onAddSplitRequest = null,
 }) {
   const st = stView || embed?.st_view;
+  const splitPaintRef = useRef(null);
   const stValid = st && Array.isArray(st?.headers) && Array.isArray(st?.rows);
 
   const effectiveSource = source ?? embed?.source ?? "";
@@ -342,10 +392,16 @@ export default function SplitTableSnapshotView({
   // 화면과 같은 표시 규약 — 소수 자리수와 미진행 회색은 스냅샷에 실려 온다.
   const precision = st?.precision || embed?.precision || {};
   const notReached = useMemo(() => buildNotReachedLookup(st || {}), [st]);
+  const rowLabels = st?.row_labels || {};
+  const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
+  const lotRowLabel = rowLabels.lot_id || "lot_id";
+  const paramRowLabel = rowLabels.parameter || "항목";
   const firstColWidth = 288;
   const dataColWidth = 115;
   const prefixColumns = splitCheckMode ? rawPrefixColumns : [];
-  const prefixColWidths = splitCheckMode ? [240, 140, 80].slice(0, prefixColumns.length) : [firstColWidth];
+  const matrixPrefixColumns = stepLabels ? ["step_id", "step_desc", paramRowLabel] : [paramRowLabel];
+  const widthForPrefix = label => String(label||"")===paramRowLabel?240:({step_id:168,step_desc:180,"항목":240,"값":140,"Split":80}[String(label||"")]||100);
+  const prefixColWidths = (splitCheckMode ? prefixColumns : matrixPrefixColumns).map(widthForPrefix);
   while (prefixColWidths.length < (splitCheckMode ? prefixColumns.length : 1)) prefixColWidths.push(100);
   const prefixTotalWidth = prefixColWidths.reduce((sum, value) => sum + value, 0);
   const stickyLeft = (idx) => prefixColWidths.slice(0, idx).reduce((sum, value) => sum + value, 0);
@@ -354,11 +410,11 @@ export default function SplitTableSnapshotView({
   const groupLotValues = [...new Set(headerGroups.map(g => String(g?.label || "").trim()).filter(Boolean))];
   const lotIdLabel = groupLotValues.join(", ") || String(st?.lot_id_label || "").trim();
   const hasLotContext = !!(rootLotId || lotIdLabel);
-  const rowLabels = st?.row_labels || {};
-  const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
-  const lotRowLabel = rowLabels.lot_id || "lot_id";
-  const paramRowLabel = rowLabels.parameter || "항목";
-  const visiblePrefixColumns = splitCheckMode ? prefixColumns : [paramRowLabel];
+  const visiblePrefixColumns = splitCheckMode ? prefixColumns : matrixPrefixColumns;
+  const parameterPrefixIndex = splitCheckMode
+    ? Math.max(0,Math.min(visiblePrefixColumns.length-1,Number.isInteger(st?.parameter_prefix_index)?st.parameter_prefix_index:(stepLabels&&visiblePrefixColumns.length>=5?2:0)))
+    : (stepLabels?2:0);
+  const splitPrefixIndex = splitCheckMode ? parameterPrefixIndex+2 : -1;
   const hasRootRow = hasLotContext;
   const hasLotRow = !pemsMode && (hasLotContext || headerGroups.length > 0);
   const rootHeaderHeight = hasRootRow ? 32 : 0;
@@ -422,7 +478,7 @@ export default function SplitTableSnapshotView({
   const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
   const stCellStyle = { background: "var(--bg-card)", color: ST_GRID_TEXT, padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
   const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: ST_GRID_TEXT });
-  const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === 0 ? 700 : 600, whiteSpace: "pre-line" });
+  const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === parameterPrefixIndex ? 700 : 600, whiteSpace: "pre-line" });
   const notReachedStyle = { background: "rgba(107,114,128,0.45)" };
   const pemsMissingWaferIndices = new Set(Array.isArray(st?.pems_missing_wafer_indices) ? st.pems_missing_wafer_indices.map(Number) : []);
 
@@ -441,7 +497,7 @@ export default function SplitTableSnapshotView({
           </span>
         </div>
       )}
-      <div style={scrollerStyle}>
+      <div style={scrollerStyle} onMouseLeave={() => { splitPaintRef.current = null; }}>
         <table style={stTableStyle}>
           <colgroup>
             {prefixColWidths.map((width, i) => <col key={`prefix-${i}`} style={{ width }} />)}
@@ -480,13 +536,14 @@ export default function SplitTableSnapshotView({
               const prefixValues = visiblePrefixColumns.map((_, idx) => {
                 if (splitCheckMode) {
                   if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
-                  if (idx === 0) return splitParamDisplayName(r._display || r._param || "", r._param);
-                  if (idx === 1) return String(r._split_value || "");
-                  if (idx === 2) return String(r._split_label || "");
+                  if (idx === parameterPrefixIndex) return splitParamDisplayName(r._display || r._param || "", r._param);
+                  if (idx === parameterPrefixIndex+1) return String(r._split_value || "");
+                  if (idx === parameterPrefixIndex+2) return String(r._split_label || "");
                   return "";
                 }
-                // 적용 공정 표시 스냅샷은 항목 칸이 이미 step 표기다 — prefix 를 떼면 안 된다.
-                if (stepLabels) return String(r._display || r._param || "");
+                const process = r?._process_columns || r?._applied_process || {};
+                if (stepLabels && idx === 0) return String(process.step_id || "");
+                if (stepLabels && idx === 1) return String(process.step_desc || "");
                 return splitParamDisplayName(r._display || r._param || "", r._param);
               });
               const span = rowSpans[ri] || 0;
@@ -500,11 +557,18 @@ export default function SplitTableSnapshotView({
               return (
                 <tr key={r.key || `${r._param || "row"}-${ri}`}>
                   {prefixValues.map((value, pi) => {
-                    if (splitCheckMode && pi === 0 && span === 0) return null;
-                    const splitStyle = splitCheckMode && pi === 2 ? splitCheckColorStyle(value) : {};
-                    const rowSpanProps = splitCheckMode && pi === 0 && span > 1 ? { rowSpan: span } : {};
+                    if (splitCheckMode && pi <= parameterPrefixIndex && span === 0) return null;
+                    const splitStyle = splitCheckMode && pi === splitPrefixIndex ? splitCheckColorStyle(value) : {};
+                    const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
                     return (
-                      <td key={`prefix-${pi}`} {...rowSpanProps} style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi === 0 ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}) }}>
+                      <td key={`prefix-${pi}`} {...rowSpanProps}
+                        onContextMenu={editable && splitCheckMode && pi === parameterPrefixIndex ? (event) => {
+                          event.preventDefault();
+                          onAddSplitRequest?.(event, r._param, r);
+                        } : undefined}
+                        onClick={editable && splitCheckMode && pi === parameterPrefixIndex + 1 && r._is_split_draft ? () => onEditSplitValue?.(r) : undefined}
+                        title={editable && splitCheckMode && pi === parameterPrefixIndex ? "우클릭: 스플릿 추가" : (editable && r._is_split_draft && pi === parameterPrefixIndex + 1 ? "클릭: KNOB 값 선택 또는 새 값 입력" : undefined)}
+                        style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi <= parameterPrefixIndex ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}), ...(editable && splitCheckMode && ((pi === parameterPrefixIndex) || (r._is_split_draft && pi === parameterPrefixIndex + 1)) ? { cursor: "pointer" } : {}) }}>
                         {value}
                       </td>
                     );
@@ -525,7 +589,7 @@ export default function SplitTableSnapshotView({
                     const display = hasStValue(cell.actual)
                       ? String(splitCheckMode ? cell.actual : (formatSplitCellValue(cell.actual, r._param, precision) ?? cell.actual))
                       : "";
-                    const bg = splitCheckMode ? (display ? splitCheckColorStyle(prefixValues[2] || r._split_label) : {}) : splitTableCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
+                    const bg = splitCheckMode ? (display ? splitCheckColorStyle(prefixValues[splitPrefixIndex] || r._split_label) : {}) : splitTableCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
                     const plan = splitCheckMode ? {} : stPlanStyle(cell);
                     const hasPlan = hasStValue(cell.plan);
                     const hasActual = hasStValue(cell.actual);
@@ -538,7 +602,20 @@ export default function SplitTableSnapshotView({
                       ? (cell.not_reached === true || pemsMissingWaferIndices.has(ci))
                       : (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
                     return (
-                      <td key={ci} style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}), ...(cellNotReached ? notReachedStyle : {}) }}>
+                      <td key={ci}
+                        onMouseDown={editable && splitCheckMode ? (event) => {
+                          if (event.button !== 0 || !r._split_value_raw) return;
+                          event.preventDefault();
+                          splitPaintRef.current = { param: r._param, value: r._split_value_raw };
+                          onAssignSplit?.(r._param, r._split_value_raw, ci);
+                        } : undefined}
+                        onMouseEnter={editable && splitCheckMode ? () => {
+                          const paint = splitPaintRef.current;
+                          if (paint && paint.param === r._param) onAssignSplit?.(paint.param, paint.value, ci);
+                        } : undefined}
+                        onMouseUp={editable && splitCheckMode ? () => { splitPaintRef.current = null; } : undefined}
+                        title={editable && splitCheckMode ? (r._split_value_raw ? `${r._split_label} 배정 · 클릭하거나 드래그` : "먼저 값 칸에서 KNOB 값을 입력하세요") : undefined}
+                        style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}), ...(cellNotReached ? notReachedStyle : {}), ...(editable && splitCheckMode ? { cursor: r._split_value_raw ? "cell" : "not-allowed" } : {}) }}>
                         {/* 진한 빨강 배경 위라 글자는 흰색이다 (stPlanStyle 과 한 쌍). */}
                         {splitCheckMode
                           ? display

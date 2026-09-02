@@ -106,6 +106,7 @@ def start_background_services(logger) -> None:
     owner_starters = [
         ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
         ("Inform registration postprocessor", "routers.informs", "start_inform_postprocess_worker"),
+        ("splittable KNOB S0 daily snapshot", "routers.splittable", "start_knob_s0_snapshot_scheduler"),
         ("splittable product cache rotation", "routers.splittable", "start_split_search_cache_maintainer"),
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),

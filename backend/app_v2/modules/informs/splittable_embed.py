@@ -475,9 +475,14 @@ def _embed_from_view(
         if not isinstance(row, dict):
             continue
         cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
-        # 적용 공정 모드의 첫 열은 raw parameter가 아니라 화면에서 확정한 공정 표기다.
-        legacy_row = [str(row.get("_display") or row.get("_param") or "") if step_labels
-                      else str(row.get("_param") or "")]
+        process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else (
+            row.get("_applied_process") if isinstance(row.get("_applied_process"), dict) else {}
+        )
+        legacy_row = (
+            [str(process.get("step_id") or ""), str(process.get("step_desc") or ""),
+             str(row.get("_display") or row.get("_param") or "")]
+            if step_labels else [str(row.get("_param") or "")]
+        )
         for idx, _header in enumerate(headers):
             cell = cells.get(str(idx)) or cells.get(idx) or {}
             legacy_row.append(_cell_text(cell if isinstance(cell, dict) else {}))
@@ -497,7 +502,7 @@ def _embed_from_view(
 
     embed = {
         "source": f"SplitTable/{strip_ml_prefix(ml_product)} @ {lot} · {label}",
-        "columns": ["parameter", *headers],
+        "columns": (["step_id", "step_desc", "parameter"] if step_labels else ["parameter"]) + headers,
         "rows": legacy_rows,
         "note": str(note or "")[:500],
         "st_view": {

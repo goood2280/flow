@@ -1638,7 +1638,7 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
         fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
         major = _stage_major(fs)
-        if major is None or not fs:
+        if not fs:
             continue
         item = {
             "func_step": fs,
@@ -1652,11 +1652,15 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
             "step_class": str(r.get("step_class") or "").strip(),
         }
         key = (item["func_step"], item["step_id"])
-        bucket_seen = seen.setdefault(major, set())
+        # 실제 Vehicle_matching의 step_desc는 `4.0 GATE_OX`처럼 번호가 붙는 경우뿐
+        # 아니라 `GATE_ETCH`처럼 이름만 있는 경우도 많다. 번호 없는 공정도 공통
+        # bucket에 보존해야 FAB/MASK 등의 stage 이름을 alias/function으로 연결할 수 있다.
+        bucket_major = major if major is not None else -1
+        bucket_seen = seen.setdefault(bucket_major, set())
         if key in bucket_seen:
             continue
         bucket_seen.add(key)
-        out.setdefault(major, []).append(item)
+        out.setdefault(bucket_major, []).append(item)
     return out
 
 
@@ -1840,14 +1844,50 @@ def _build_knob_meta(product: str = "") -> dict:
 
     # step_desc → [{step_id,module}, ...] (ordered, dedup)
     step_map = _product_step_map_by_desc(product, base)
+    step_by_id = {
+        str(item.get("step_id") or "").strip().casefold(): item
+        for items in step_map.values() for item in items
+        if str(item.get("step_id") or "").strip()
+    }
+
+    def _multi_values(value) -> list[str]:
+        return _dedup_list(_re.split(r"[,;|]+", str(value or "")))
+
+    requested_product = _canonical_product_name(product).casefold()
 
     # feature_name → CSV rule row groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
     for r in knob_rules:
-        # ppid_knob.csv is product-common. Legacy product columns are ignored;
-        # product scoping belongs only to Vehicle_matching.csv.
+        # 매칭 채우기가 만든 product/step_id/step_desc가 있으면 FAB에서 확인된 직접
+        # 매핑을 우선한다. 열이 없는 예전 rulebook은 기존 step_desc→Vehicle 경로를 쓴다.
+        row_products = _multi_values(r.get("product"))
+        matched_product_indexes = [
+            index for index, value in enumerate(row_products)
+            if _canonical_product_name(value).casefold() == requested_product
+        ] if requested_product and row_products else []
+        if requested_product and row_products and not matched_product_indexes:
+            continue
+        all_direct_ids = _multi_values(r.get("step_id"))
+        all_direct_descs = _multi_values(r.get("step_desc"))
+        direct_ids = (
+            [all_direct_ids[index] for index in matched_product_indexes if index < len(all_direct_ids)]
+            if matched_product_indexes and len(all_direct_ids) == len(row_products)
+            else all_direct_ids
+        )
+        direct_descs = (
+            [all_direct_descs[index] for index in matched_product_indexes if index < len(all_direct_descs)]
+            if matched_product_indexes and len(all_direct_descs) == len(row_products)
+            else all_direct_descs
+        )
+        direct_steps = [step_by_id.get(sid.casefold()) for sid in direct_ids]
+        direct_steps = [item for item in direct_steps if item]
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
-        step_desc = _row_step_desc(r, km)
+        step_desc = next((desc for desc in direct_descs if desc), "")
+        if not step_desc:
+            step_desc = next((str(item.get("step_desc") or "").strip() for item in direct_steps
+                              if str(item.get("step_desc") or "").strip()), "")
+        if not step_desc:
+            step_desc = _row_step_desc(r, km)
         step_desc_key = _step_desc_match_key(step_desc)
         value = _first_row_value(
             r,
@@ -1857,8 +1897,9 @@ def _build_knob_meta(product: str = "") -> dict:
             "ppid",
             "category",
         )
-        if not fname or not step_desc_key:
+        if not fname or (not step_desc_key and not direct_ids):
             continue
+        matched_steps = direct_steps if direct_ids else step_map.get(step_desc_key, [])
         order_label = _rule_order_label(r.get(km.get("rule_order_col", "rule_order")), len(feats.get(fname, [])) + 1)
         feats.setdefault(fname, []).append({
             "func_step": step_desc,
@@ -1869,8 +1910,8 @@ def _build_knob_meta(product: str = "") -> dict:
             "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
-            "step_ids": [str(x.get("step_id") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("step_id") or "").strip()],
-            "modules": [str(x.get("module") or "").strip() for x in step_map.get(step_desc_key, []) if str(x.get("module") or "").strip()],
+            "step_ids": direct_ids or [str(x.get("step_id") or "").strip() for x in matched_steps if str(x.get("step_id") or "").strip()],
+            "modules": [str(x.get("module") or "").strip() for x in matched_steps if str(x.get("module") or "").strip()],
         })
 
     # Sort each feature's groups by rule_order + build a human label
@@ -1915,10 +1956,10 @@ def _build_knob_meta(product: str = "") -> dict:
 
 
 # ── SplitTable 공정 순서(step order) 컨텍스트 ──
-#   ① 표시 순서: KNOB 행을 feature 번호(00.0) 자연 정렬이 아니라 ppid_knob.csv 에
-#      split 별로 지정된 step_desc → Vehicle_matching.csv step_id 의 공정 순서
-#      (파일 행 순서)로 정렬한다. 한 step_desc 가 여러 step_id 로 확장되면
-#      마지막 step_id 를 대표로 쓴다. 매핑이 없는 행은 기존 자연 정렬로 뒤에 붙는다.
+#   ① 표시 순서: 여러 prefix를 함께 볼 때 KNOB/FAB/MASK/INLINE/VM끼리 묶지 않고,
+#      각 parameter가 연결된 Vehicle_matching.csv step_id의 공정 순서(파일 행 순서)로
+#      한 줄에 섞어 정렬한다. 여러 step_id에 걸친 parameter는 마지막 step을 대표로
+#      쓰고, 매핑이 없는 행만 기존 자연 정렬로 뒤에 붙는다.
 #   ② 진행 셰이딩: 검색 root 의 latest-lot 캐시 step_id 보다 뒤(미진행) 공정에
 #      해당하는 행 목록을 payload.step_progress 로 내려 FE 가 회색으로 칠한다.
 _STEP_ORDER_CTX_CACHE: OrderedDict = OrderedDict()
@@ -1928,12 +1969,60 @@ _STEP_ORDER_CTX_LOCK = threading.Lock()
 _STEP_ID_PREFIX_NUM_RE = _re.compile(r"^([A-Za-z]+)(\d+)")
 
 
+def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
+    """메타가 가리키는 step 중 가장 뒤 공정을 대표 rank로 반환한다."""
+    if not isinstance(meta, dict):
+        return None, ""
+    step_ids: list[str] = []
+    for group in meta.get("groups") if isinstance(meta.get("groups"), list) else []:
+        if not isinstance(group, dict):
+            continue
+        ids = group.get("step_ids") if isinstance(group.get("step_ids"), list) else []
+        step_ids.extend(str(s or "").strip() for s in ids if str(s or "").strip())
+        sid = str(group.get("step_id") or "").strip()
+        if sid:
+            step_ids.append(sid)
+    ids = meta.get("step_ids") if isinstance(meta.get("step_ids"), list) else []
+    step_ids.extend(str(s or "").strip() for s in ids if str(s or "").strip())
+    sid = str(meta.get("step_id") or "").strip()
+    if sid:
+        step_ids.append(sid)
+    ranked = [(seq_rank.get(raw.upper()), raw.upper()) for raw in _dedup_list(step_ids)]
+    ranked = [(rank, raw) for rank, raw in ranked if rank is not None]
+    if not ranked:
+        return None, ""
+    return max(ranked, key=lambda item: item[0])
+
+
+def _register_step_order_meta(param_rank: dict[str, int], param_step: dict[str, str],
+                              meta_map: dict, prefix: str, seq_rank: dict[str, int],
+                              *, overwrite: bool = False) -> None:
+    """bare/full parameter 이름을 동일 공정 rank에 등록한다."""
+    pref = str(prefix or "").strip().upper()
+    for raw_name, meta in (meta_map or {}).items():
+        rank, sid = _step_order_rank_from_meta(meta, seq_rank)
+        if rank is None:
+            continue
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        tail = name.split("_", 1)[1] if pref and name.upper().startswith(pref + "_") else name
+        aliases = _dedup_list([name, tail, f"{pref}_{tail}" if pref else tail])
+        for alias in aliases:
+            key = str(alias or "").strip().upper()
+            if not key:
+                continue
+            if overwrite or key not in param_rank:
+                param_rank[key] = rank
+                param_step[key] = sid
+
+
 def _split_step_order_context(product: str) -> dict:
     """product 의 공정 순서 컨텍스트.
 
     seq_rank:     step_id(upper) → Vehicle_matching 행 순서 rank
     prefix_steps: 영문 프리픽스 → [(step 번호, rank)] (근사 매칭용, 번호 오름차순)
-    param_rank:   KNOB feature 명(물리 컬럼명/bare 명, upper) → rank
+    param_rank:   전체 prefix parameter 명(물리 컬럼명/bare 명, upper) → rank
     param_step:   같은 키 → 대표 step_id
     """
     key = str(product or "").strip().upper()
@@ -1968,22 +2057,37 @@ def _split_step_order_context(product: str) -> dict:
             steps.sort()
         param_rank: dict[str, int] = {}
         param_step: dict[str, str] = {}
-        for fname, meta in (_build_knob_meta(product) or {}).items():
-            groups = meta.get("groups") if isinstance(meta, dict) else None
-            if not groups:
+
+        # FAB/MASK 등 별도 matching CSV가 없는 prefix는 ML_TABLE 컬럼명과
+        # Vehicle step_desc/module의 stage 추론 결과로 먼저 등록한다.
+        schema_cols = _mltable_schema_columns(product)
+        schema_prefixes = {
+            str(col).split("_", 1)[0].strip().upper()
+            for col in schema_cols if "_" in str(col)
+        }
+        configured_prefixes = {
+            str(pref or "").strip().upper() for pref in (_load_prefixes() or [])
+            if str(pref or "").strip()
+        }
+        for pref in sorted(schema_prefixes | configured_prefixes):
+            # MASK는 자체 step_id/matching 원천이 없으므로 이름만 보고 공정을 만들지 않는다.
+            if pref in {"KNOB", "INLINE", "VM", "MASK"}:
                 continue
-            sid = ""
-            for g in groups:
-                sids = [str(s or "").strip() for s in (g.get("step_ids") or []) if str(s or "").strip()]
-                if sids:
-                    # 한 step_desc 가 복수 step_id 로 확장되면 마지막(뒤의) step_id 를 대표로.
-                    sid = sids[-1].upper()
-                    break
-            rank = seq_rank.get(sid) if sid else None
-            if rank is None:
-                continue
-            param_rank[str(fname).strip().upper()] = rank
-            param_step[str(fname).strip().upper()] = sid
+            _register_step_order_meta(
+                param_rank, param_step, _inferred_stage_meta(product, pref), pref, seq_rank,
+            )
+
+        # 명시적 matching 메타는 추론값보다 우선한다. KNOB 메타 안에는 매칭 CSV에
+        # 없는 컬럼의 추론 fallback도 함께 들어 있어 KNOB 전체를 한 번에 처리한다.
+        for pref, meta_builder in (
+            ("KNOB", _build_knob_meta),
+            ("INLINE", _build_inline_meta),
+            ("VM", _build_vm_meta),
+        ):
+            _register_step_order_meta(
+                param_rank, param_step, meta_builder(product) or {}, pref, seq_rank,
+                overwrite=True,
+            )
         ctx = {"seq_rank": seq_rank, "prefix_steps": prefix_steps,
                "param_rank": param_rank, "param_step": param_step}
     except Exception as e:
@@ -1999,13 +2103,13 @@ def _step_order_sort_key(col_name: str, display: str, param_rank: dict):
     """공정 순서 rank 우선, 같은 rank/매핑 없음은 기존 자연 정렬 유지.
 
     TAG_* 는 엔지니어가 직접 만든 주석 열이라 공정 순서와 무관하다. 표 맨 위에
-    고정해 어떤 prefix 를 같이 보든 항상 먼저 눈에 들어오게 한다 (TAG 끼리는
-    기존 자연 정렬 그대로).
+    고정하고, 기본 purpose를 첫 줄에 둔 뒤 나머지 TAG를 기존 자연 정렬로 붙인다.
     """
     tag_pfx = f"{CUSTOM_TAG_PREFIX}_"
     if (str(col_name or "").strip().upper().startswith(tag_pfx)
             or str(display or "").strip().upper().startswith(tag_pfx)):
-        return (-1, 0, _natural_param_key(display or col_name))
+        is_purpose = str(col_name or "").strip().upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper()
+        return (-1, 0 if is_purpose else 1, _natural_param_key(display or col_name))
     rank = param_rank.get(str(col_name or "").strip().upper())
     if rank is None:
         rank = param_rank.get(str(display or "").strip().upper())
@@ -2180,6 +2284,13 @@ def _build_inline_meta(product: str = "") -> dict:
     base = _base_root()
     rows = _load_csv_rows(base / "inline_matching.csv")
     im = _sch("inline_matching")
+    sid_to_desc: dict[str, str] = {}
+    for steps in _product_step_map_by_desc(product, base).values():
+        for step in steps:
+            sid = str(step.get("step_id") or "").strip()
+            desc = str(step.get("step_desc") or "").strip()
+            if sid and desc:
+                sid_to_desc.setdefault(sid.casefold(), desc)
     # module 은 inline_matching.csv 에 없다. step_id 로 Vehicle_matching 을 눌러
     # 채우던 보강은 뺐다 — INLINE 은 module 로 따로 묶지 않고 '—' 로 둔다.
     grouped: dict[str, list[dict]] = {}
@@ -2196,7 +2307,7 @@ def _build_inline_meta(product: str = "") -> dict:
         process_id = (r.get(im.get("process_id_col", "process_id")) or "").strip()
         desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
         matching_table = (r.get(im.get("matching_table_col", "matching_table")) or "").strip()
-        func_step = (r.get("function_step") or "").strip()
+        func_step = (r.get("function_step") or "").strip() or sid_to_desc.get(sid.casefold(), "")
         if not iid or not sid:
             continue
         grouped.setdefault(iid, []).append({
@@ -2206,6 +2317,7 @@ def _build_inline_meta(product: str = "") -> dict:
             "item_desc": desc,
             "matching_table": matching_table,
             "function_step": func_step,
+            "step_desc": func_step,
             "module": "",
         })
     out: dict[str, dict] = {}
@@ -2443,6 +2555,86 @@ def _step_label_lines_for_param(param: str, metas: dict, exclude_not_null: bool 
     if kind == "inline_matching":
         return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("inline") or {}, param, "INLINE"))
     return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("vm") or {}, param, "VM"))
+
+
+def _step_process_columns_for_param(param: str, metas: dict,
+                                    exclude_not_null: bool = True) -> dict[str, str]:
+    """Return the two display/export columns without replacing the parameter label."""
+    kind = _step_label_match_kind(param)
+    if not kind:
+        return {"step_id": "", "step_desc": ""}
+    if kind == "knob_ppid":
+        meta = _step_label_meta_lookup(metas.get("knob") or {}, param, "KNOB")
+        groups = (meta or {}).get("groups") or []
+        by_order: dict[str, list[dict]] = {}
+        order_seq: list[str] = []
+        for idx, group in enumerate(groups if isinstance(groups, list) else []):
+            if not isinstance(group, dict):
+                continue
+            order = str(group.get("rule_order") or f"R{idx + 1}").strip() or f"R{idx + 1}"
+            if order not in by_order:
+                by_order[order] = []
+                order_seq.append(order)
+            by_order[order].append(group)
+        id_blocks: list[str] = []
+        desc_blocks: list[str] = []
+        for order in order_seq:
+            by_desc: dict[str, dict] = {}
+            for group in by_order[order]:
+                operator = _re.sub(r"[\s-]+", "_", str(group.get("operator") or "").strip().lower())
+                if operator == "is_null" or (exclude_not_null and operator == "not_null"):
+                    continue
+                desc = str(group.get("step_desc") or group.get("func_step") or "").strip()
+                if not desc:
+                    continue
+                bucket = by_desc.setdefault(desc.casefold(), {"desc": desc, "ids": [], "seen": set()})
+                for sid in _step_label_group_ids(group):
+                    if sid.casefold() not in bucket["seen"]:
+                        bucket["seen"].add(sid.casefold())
+                        bucket["ids"].append(sid)
+            valid = [item for item in by_desc.values() if item["ids"]]
+            if valid:
+                id_blocks.append("\n&\n".join("\n".join(item["ids"]) for item in valid))
+                desc_blocks.append("\n&\n".join(item["desc"] for item in valid))
+        return {"step_id": "\n".join(id_blocks), "step_desc": "\n".join(desc_blocks)}
+
+    meta_key = "inline" if kind == "inline_matching" else "vm"
+    prefix = "INLINE" if kind == "inline_matching" else "VM"
+    meta = _step_label_meta_lookup(metas.get(meta_key) or {}, param, prefix)
+    ids: list[str] = []
+    descs: list[str] = []
+    seen_ids: set[str] = set()
+    seen_descs: set[str] = set()
+    fallback_desc = str((meta or {}).get("step_desc") or (meta or {}).get("function_step") or "").strip()
+    for group in ((meta or {}).get("groups") or []):
+        if not isinstance(group, dict):
+            continue
+        desc = str(group.get("step_desc") or group.get("function_step") or fallback_desc).strip()
+        for sid in _step_label_group_ids(group):
+            if sid.casefold() not in seen_ids:
+                seen_ids.add(sid.casefold())
+                ids.append(sid)
+        if desc and desc.casefold() not in seen_descs:
+            seen_descs.add(desc.casefold())
+            descs.append(desc)
+    if not ids:
+        for sid in ((meta or {}).get("step_ids") or []):
+            sid = str(sid or "").strip()
+            if sid and sid.casefold() not in seen_ids:
+                seen_ids.add(sid.casefold())
+                ids.append(sid)
+    if fallback_desc and fallback_desc.casefold() not in seen_descs:
+        descs.append(fallback_desc)
+    return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
+
+
+def _build_step_process_columns(product: str, selected: list[str],
+                                exclude_not_null: bool = True) -> dict[str, dict[str, str]]:
+    metas = _step_label_metas(product)
+    return {
+        str(column): _step_process_columns_for_param(str(column), metas, exclude_not_null)
+        for column in (selected or [])
+    }
 
 
 def _apply_step_label_columns(product: str, selected: list[str], col_rename: dict,
