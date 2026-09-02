@@ -181,6 +181,7 @@ class ChartBuilderRunReq(BaseModel):
     chart: dict = {}
     chart_name: str = ""
     save_history: bool = True
+    reuse_history_id: str = ""
 
 
 class ChartBuilderDefinitionReq(BaseModel):

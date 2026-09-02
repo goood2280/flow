@@ -334,6 +334,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
                       page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000),
+                      reuse_history_id: str = Query(""),
                       request: Request = None):
     # 활동 대시보드: 실제 데이터 조회만 기록 (스키마 로드/페이지 넘김 제외).
     if not meta_only and page == 0:
@@ -630,6 +631,10 @@ def _chart_builder_history_entries() -> list[dict]:
     normalized = []
     for entry in entries:
         row = dict(entry)
+        try:
+            row["reuse_count"] = max(0, int(row.get("reuse_count") or 0))
+        except (TypeError, ValueError):
+            row["reuse_count"] = 0
         name = _chart_builder_unique_name(_chart_builder_name_base(row), used)
         row["name"] = name
         history_id = str(row.get("history_id") or "")
@@ -1416,12 +1421,51 @@ def _record_chart_builder_history(*, username: str, req: ChartBuilderRunReq, res
             "max_rows": max(1, min(10000, int(req.max_rows or 10000))),
             "row_count": int(joined.get("row_count") or 0),
             "warnings": [str(item)[:500] for item in (result.get("warnings") or [])[:20]],
+            "reuse_count": 0,
         }
         # 고정 차트는 최근 이력 한도와 무관하게 남아야 하므로 일반 tail trim을
         # 쓰지 않는다. 서버가 고정 전체 + 최근 이력만 골라 원자적으로 정리한다.
         jsonl_append(_chart_builder_history_path(), entry, max_lines=None)
         _trim_chart_builder_history()
     return entry
+
+
+def _increment_chart_builder_history_reuse(*, history_id: str, username: str) -> dict:
+    """Update one chart history row in place instead of appending a duplicate."""
+    chart_id = _cache_safe_text(history_id, 120)
+    if not chart_id:
+        raise ValueError("Chart ID가 비어 있습니다.")
+    with _CHART_BUILDER_HISTORY_LOCK:
+        entries = jsonl_read(_chart_builder_history_path(), limit=0)
+        updated = None
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict) or entry.get("event") != "history":
+                continue
+            if str(entry.get("history_id") or "") != chart_id:
+                continue
+            row = dict(entry)
+            try:
+                reuse_count = max(0, int(row.get("reuse_count") or 0))
+            except (TypeError, ValueError):
+                reuse_count = 0
+            row.update({
+                "reuse_count": reuse_count + 1,
+                "last_reused_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_reused_by": _cache_safe_text(username, 80) or "anonymous",
+            })
+            entries[index] = row
+            updated = row
+            break
+        if updated is None:
+            raise KeyError(chart_id)
+        atomic_write_text(
+            _chart_builder_history_path(),
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+        )
+    return next(
+        entry for entry in _chart_builder_history_entries()
+        if str(entry.get("history_id") or "") == chart_id
+    )
 
 
 _CHART_ASSISTANT_TYPES = {

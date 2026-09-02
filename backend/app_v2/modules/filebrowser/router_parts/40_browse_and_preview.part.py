@@ -14,6 +14,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                    page: int = Query(0, ge=0),
                    page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000),
                    access_scope: str = Query(""),
+                   reuse_history_id: str = Query(""),
                    request: Request = None):
     """v4.1: Preview a file under the Base root.
 

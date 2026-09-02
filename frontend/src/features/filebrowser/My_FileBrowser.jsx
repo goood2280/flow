@@ -1880,9 +1880,20 @@ export default function My_FileBrowser({
     return()=>{alive=false;clearTimeout(t);};
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
+  const markSqlHistoryReused=historyId=>{
+    const key=String(historyId||"").trim();
+    if(!key)return;
+    setSqlHistory(items=>items.map(item=>item.history_id===key?{
+      ...item,
+      reuse_count:Number(item.reuse_count||0)+1,
+      last_reused_at:new Date().toISOString(),
+      last_reused_by:user?.username||"",
+    }:item));
+  };
+
   // 첫 클릭은 스키마(meta_only)를 즉시 그리고, 최신 파티션 500행 샘플은 백그라운드로 이어서 채운다.
   // SQL/SELECT/정렬/집계가 있으면 기존처럼 한 번에 조회한다.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined,reuseHistoryId=""}={})=>{
     const{seq,signal,queryId}=nextViewRequest();
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
@@ -1890,7 +1901,7 @@ export default function My_FileBrowser({
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
-    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,query_session:viewSessionRef.current,query_id:queryId,...sortParams(activeSort),...aggregateParams(activeAggregate)};
+    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,query_session:viewSessionRef.current,query_id:queryId,...sortParams(activeSort),...aggregateParams(activeAggregate),...(reuseHistoryId?{reuse_history_id:reuseHistoryId}:{})};
     const url=API+"/view"+qs(params);
     const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
     if(previewFirst){
@@ -1910,10 +1921,10 @@ export default function My_FileBrowser({
       }).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
       return;
     }
-    sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
+    sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined,reuseHistoryId=""}={})=>{
     const{seq,signal,queryId}=nextViewRequest();
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
@@ -1921,7 +1932,7 @@ export default function My_FileBrowser({
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
-    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,query_session:viewSessionRef.current,query_id:queryId,...sortParams(activeSort),...aggregateParams(activeAggregate)};
+    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,query_session:viewSessionRef.current,query_id:queryId,...sortParams(activeSort),...aggregateParams(activeAggregate),...(reuseHistoryId?{reuse_history_id:reuseHistoryId}:{})};
     const url=API+"/root-parquet-view"+qs(params);
     const previewFirst=full&&!(sqlQ||"").trim()&&!sc.length&&pageArg===0&&!activeSort&&!activeAggregate;
     if(previewFirst){
@@ -1939,7 +1950,7 @@ export default function My_FileBrowser({
       }).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
       return;
     }
-    sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
+    sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(sc.length?selectedColsFromResponse(d,sc):[]);setData(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message);setLoading(false);});
   };
 
   const currentSqlHistoryTargetParams=()=>{
@@ -1950,7 +1961,7 @@ export default function My_FileBrowser({
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
-  const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined,aggregateOverride=undefined)=>{
+  const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined,aggregateOverride=undefined,reuseHistoryId="")=>{
     const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
     if(mode==="base"&&isBaseEditing){
       setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
@@ -1966,7 +1977,7 @@ export default function My_FileBrowser({
         if(!resolved)throw new Error("현재 DB/파일에서 해당 SQL 고유키를 찾을 수 없습니다.");
         setSqlFromInput(resolved);
         setLoading(false);
-        applySql(resolved,undefined,sortOverride,aggregateOverride);
+        applySql(resolved,undefined,sortOverride,aggregateOverride,historyKey);
       }).catch(e=>{setError(e.message||String(e));setLoading(false);});
       return;
     }
@@ -1975,18 +1986,18 @@ export default function My_FileBrowser({
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     setSelectedCols(activeSelectedCols);
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate,reuseHistoryId});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
       if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
-      const url=API+"/base-file-view"+qs(withAccess({file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
+      const url=API+"/base-file-view"+qs(withAccess({file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),reuse_history_id:reuseHistoryId||"",
         select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)}));
-      sf(url).then(d=>{setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      sf(url).then(d=>{setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate,reuseHistoryId});
   };
 
   useEffect(()=>{
@@ -3047,6 +3058,7 @@ export default function My_FileBrowser({
                   <span style={{display:"inline-flex",alignItems:"center",gap:7,minWidth:0}}>
                     <span style={{fontWeight:900,color:h.ok?FB_OK.fg:FB_BAD.fg,flexShrink:0}}>{h.ok?"성공":"실패"}</span>
                     <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis"}} title="SQL 이력 고유키">{h.history_id||"-"}</span>
+                    <span style={{fontWeight:900,color:"var(--danger)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수">♥ {Number(h.reuse_count||0).toLocaleString()}</span>
                   </span>
                   <span style={{display:"inline-flex",alignItems:"center",justifyContent:"flex-end",gap:7,minWidth:0,marginLeft:"auto",overflow:"hidden"}}>
                     <span style={{color:"var(--text-primary)",fontWeight:700,flexShrink:0}}>{h.username||"-"}</span>

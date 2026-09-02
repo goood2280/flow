@@ -4458,6 +4458,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000),
                  query_session: str = Query(""),
                  query_id: str = Query(""),
+                 reuse_history_id: str = Query(""),
                  request: Request = None):
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
     # head 를 parquet reader 로 pushdown → 메모리 수 GB 제품도 안전.

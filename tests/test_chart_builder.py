@@ -152,6 +152,48 @@ def test_saved_chart_names_are_unique_and_searchable(tmp_path, monkeypatch):
     assert [row["name"] for row in search["history"]] == ["VTH 산포 (2)"]
 
 
+def test_chart_history_key_reuse_increments_count_without_new_row(tmp_path, monkeypatch):
+    history_path = tmp_path / "chart_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "reuser"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+    request = filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="q1", root="ET", product="PRODA", sql="SELECT shot_x, value",
+        )],
+        chart={"type": "scatter", "x": "shot_x", "y": "value"},
+        chart_name="VTH reuse",
+    )
+    result = {
+        "sources": [{"id": "q1", "root": "ET", "product": "PRODA", "row_count": 2}],
+        "joined": {"row_count": 2, "columns": ["shot_x", "value"], "rows": []},
+        "warnings": [],
+    }
+    first = filebrowser._record_chart_builder_history(username="owner", req=request, result=result)
+    original_timestamp = first["timestamp"]
+
+    monkeypatch.setattr(filebrowser, "_chart_builder_cache_get", lambda _key: dict(result))
+    reused = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=request.sources,
+        chart=request.chart,
+        chart_name=request.chart_name,
+        reuse_history_id=first["history_id"],
+    ), object())
+
+    rows = filebrowser.jsonl_read(history_path, limit=0)
+    assert len(rows) == 1
+    assert rows[0]["history_id"] == first["history_id"]
+    assert rows[0]["timestamp"] == original_timestamp
+    assert rows[0]["reuse_count"] == 1
+    assert rows[0]["last_reused_by"] == "reuser"
+    assert reused["saved_chart"] == {
+        "id": first["history_id"],
+        "name": "VTH reuse",
+        "reuse_count": 1,
+        "reused": True,
+    }
+
+
 def test_chart_history_returns_all_pins_before_recent_500_and_manager_can_unpin(tmp_path, monkeypatch):
     history_path = tmp_path / "chart_builder_history.jsonl"
     monkeypatch.setattr(filebrowser, "_chart_builder_history_path", lambda: history_path)

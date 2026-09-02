@@ -170,6 +170,7 @@ CHART_BUILDER_RETAIN_RECENT = 1000
 _CHART_BUILDER_HISTORY_LOCK = threading.Lock()
 _CHART_BUILDER_PIN_LOCK = threading.Lock()
 _CHART_BUILDER_CACHE_LOCK = threading.Lock()
+_FILEBROWSER_SQL_HISTORY_LOCK = threading.Lock()
 _CHART_BUILDER_RESULT_CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
 try:
     _CHART_BUILDER_CONCURRENCY = max(1, min(5, int(os.environ.get("FLOW_CHART_BUILDER_CONCURRENCY", "2") or 2)))
@@ -199,6 +200,110 @@ DEFAULT_FILEBROWSER_SETTINGS = {
 
 def _filebrowser_sql_execution_history_path() -> Path:
     return PATHS.data_root / FILEBROWSER_SQL_EXECUTION_HISTORY_FILE
+
+
+def _filebrowser_sql_history_matches(
+    entry: dict,
+    *,
+    history_id: str,
+    scope: str,
+    root: str = "",
+    product: str = "",
+    file: str = "",
+    sql: str = "",
+) -> bool:
+    if not isinstance(entry, dict) or entry.get("event") != "execution":
+        return False
+    if str(entry.get("history_id") or "") != history_id:
+        return False
+    normalized_scope = str(scope or "").strip().casefold()
+    if str(entry.get("scope") or "") != normalized_scope:
+        return False
+    if normalized_scope == "db_product":
+        if str(entry.get("root") or "") != _cache_safe_text(root, 160):
+            return False
+        if str(entry.get("product") or "") != _cache_safe_text(product, 160):
+            return False
+    elif str(entry.get("file") or "") != _cache_safe_text(file, 300):
+        return False
+    return str(entry.get("sql") or "").strip() == _cache_safe_text(sql, 4000)
+
+
+def _require_filebrowser_sql_history_reuse(
+    *,
+    history_id: str,
+    scope: str,
+    root: str = "",
+    product: str = "",
+    file: str = "",
+    sql: str = "",
+) -> dict:
+    reuse_id = _cache_safe_text(history_id, 80)
+    if not re.fullmatch(r"fb_sql_exec_[0-9a-f]{12}", reuse_id, flags=re.I):
+        raise ValueError("Invalid SQL history key")
+    with _FILEBROWSER_SQL_HISTORY_LOCK:
+        entries = jsonl_read(_filebrowser_sql_execution_history_path(), limit=0)
+    for entry in reversed(entries):
+        if _filebrowser_sql_history_matches(
+            entry,
+            history_id=reuse_id,
+            scope=scope,
+            root=root,
+            product=product,
+            file=file,
+            sql=sql,
+        ):
+            return dict(entry)
+    raise KeyError(reuse_id)
+
+
+def _increment_filebrowser_sql_history_reuse(
+    request: Request | None,
+    *,
+    history_id: str,
+    scope: str,
+    root: str = "",
+    product: str = "",
+    file: str = "",
+    sql: str = "",
+) -> dict:
+    """Increment one existing SQL history row without appending a duplicate."""
+    reuse_id = _cache_safe_text(history_id, 80)
+    me = current_user(request) if request is not None else {}
+    with _FILEBROWSER_SQL_HISTORY_LOCK:
+        entries = jsonl_read(_filebrowser_sql_execution_history_path(), limit=0)
+        updated = None
+        for index, entry in enumerate(entries):
+            if not _filebrowser_sql_history_matches(
+                entry,
+                history_id=reuse_id,
+                scope=scope,
+                root=root,
+                product=product,
+                file=file,
+                sql=sql,
+            ):
+                continue
+            row = dict(entry)
+            try:
+                reuse_count = max(0, int(row.get("reuse_count") or 0))
+            except (TypeError, ValueError):
+                reuse_count = 0
+            row.update({
+                "reuse_count": reuse_count + 1,
+                "last_reused_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_reused_by": _cache_safe_text((me or {}).get("username"), 80),
+            })
+            entries[index] = row
+            updated = row
+            break
+        if updated is None:
+            raise KeyError(reuse_id)
+        atomic_write_text(
+            _filebrowser_sql_execution_history_path(),
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+        )
+    return updated
 
 
 def _record_filebrowser_sql_execution(
@@ -238,8 +343,10 @@ def _record_filebrowser_sql_execution(
             "rows_returned": int(payload.get("showing") or len(payload.get("data") or [])),
             "total_rows": payload.get("total_rows") if isinstance(payload.get("total_rows"), int) else None,
             "error": _cache_safe_text(error, 600),
+            "reuse_count": 0,
         }
-        jsonl_append(_filebrowser_sql_execution_history_path(), entry, max_lines=5000)
+        with _FILEBROWSER_SQL_HISTORY_LOCK:
+            jsonl_append(_filebrowser_sql_execution_history_path(), entry, max_lines=5000)
     except Exception as exc:
         logger.warning("filebrowser sql execution history append failed: %s", exc)
 
@@ -250,6 +357,7 @@ def _track_filebrowser_sql_execution(scope: str):
         @functools.wraps(func)
         def wrapped(*args, **kwargs):
             sql_text = str(kwargs.get("sql") or "").strip()
+            reuse_history_id = _cache_safe_text(kwargs.get("reuse_history_id"), 80)
             should_record = bool(
                 sql_text
                 and not bool(kwargs.get("meta_only", True))
@@ -257,10 +365,52 @@ def _track_filebrowser_sql_execution(scope: str):
             )
             if not should_record:
                 return func(*args, **kwargs)
+            if reuse_history_id:
+                try:
+                    _require_filebrowser_sql_history_reuse(
+                        history_id=reuse_history_id,
+                        scope=scope,
+                        root=kwargs.get("root") or "",
+                        product=kwargs.get("product") or "",
+                        file=kwargs.get("file") or "",
+                        sql=sql_text,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                except KeyError as exc:
+                    raise HTTPException(404, "현재 DB/파일에서 해당 SQL 고유키를 찾을 수 없습니다.") from exc
             started = time.perf_counter()
             try:
                 result = func(*args, **kwargs)
             except Exception as exc:
+                if not reuse_history_id:
+                    _record_filebrowser_sql_execution(
+                        kwargs.get("request"),
+                        scope=scope,
+                        root=kwargs.get("root") or "",
+                        product=kwargs.get("product") or "",
+                        file=kwargs.get("file") or "",
+                        sql=sql_text,
+                        ok=False,
+                        duration_ms=round((time.perf_counter() - started) * 1000),
+                        status_code=int(getattr(exc, "status_code", 500) or 500),
+                        error=getattr(exc, "detail", "") or str(exc),
+                    )
+                raise
+            if reuse_history_id:
+                try:
+                    _increment_filebrowser_sql_history_reuse(
+                        kwargs.get("request"),
+                        history_id=reuse_history_id,
+                        scope=scope,
+                        root=kwargs.get("root") or "",
+                        product=kwargs.get("product") or "",
+                        file=kwargs.get("file") or "",
+                        sql=sql_text,
+                    )
+                except Exception as exc:
+                    logger.warning("filebrowser SQL history reuse increment failed: %s", exc)
+            else:
                 _record_filebrowser_sql_execution(
                     kwargs.get("request"),
                     scope=scope,
@@ -268,24 +418,11 @@ def _track_filebrowser_sql_execution(scope: str):
                     product=kwargs.get("product") or "",
                     file=kwargs.get("file") or "",
                     sql=sql_text,
-                    ok=False,
+                    ok=True,
                     duration_ms=round((time.perf_counter() - started) * 1000),
-                    status_code=int(getattr(exc, "status_code", 500) or 500),
-                    error=getattr(exc, "detail", "") or str(exc),
+                    status_code=200,
+                    result=result,
                 )
-                raise
-            _record_filebrowser_sql_execution(
-                kwargs.get("request"),
-                scope=scope,
-                root=kwargs.get("root") or "",
-                product=kwargs.get("product") or "",
-                file=kwargs.get("file") or "",
-                sql=sql_text,
-                ok=True,
-                duration_ms=round((time.perf_counter() - started) * 1000),
-                status_code=200,
-                result=result,
-            )
             return result
         return wrapped
     return decorate

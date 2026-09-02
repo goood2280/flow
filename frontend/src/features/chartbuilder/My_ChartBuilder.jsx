@@ -831,6 +831,7 @@ export default function My_ChartBuilder({user}){
   const[historySearch,setHistorySearch]=useState("");
   const[historyBusy,setHistoryBusy]=useState(false);
   const[pinBusy,setPinBusy]=useState("");
+  const[loadedHistoryId,setLoadedHistoryId]=useState("");
   const[result,setResult]=useState(null);
   const[busy,setBusy]=useState(false);
   const[chartType,setChartType]=useState("scatter");
@@ -1077,7 +1078,7 @@ export default function My_ChartBuilder({user}){
     setDefinitionCode(canonical);
     setBusy(true);
     try{
-      const out=await postJson("/api/filebrowser/chart-builder/run",{sources:activeSources,joins:activeJoins,max_rows:Number(activeMaxRows)||10000,chart:activeChart,chart_name:text(chartName).trim(),save_history:options.saveHistory!==false});
+      const out=await postJson("/api/filebrowser/chart-builder/run",{sources:activeSources,joins:activeJoins,max_rows:Number(activeMaxRows)||10000,chart:activeChart,chart_name:text(chartName).trim(),save_history:options.saveHistory!==false,reuse_history_id:options.reuseHistoryId??loadedHistoryId});
       setResult(out);applyChartConfig(activeChart);
       const mapSource=(out.sources||[]).find(s=>String(s.root||"").toUpperCase().includes("INLINE"));
       setMapAggregation(mapSource?"avg":"median");
@@ -1085,7 +1086,7 @@ export default function My_ChartBuilder({user}){
       setBarAggregation(mapSource?"avg":"median");
       setRadiusAggregation("raw");
       const saved=out.saved_chart;
-      toast.ok(saved?`'${saved.name}' 저장 완료 · ${saved.id}`:`JOIN 결과 ${Number(out.joined?.row_count||0).toLocaleString()}행`);
+      toast.ok(saved?(saved.reused?`♥ '${saved.name}' 재사용 ${Number(saved.reuse_count||0).toLocaleString()}회 · 새 이력은 만들지 않았습니다.`:`'${saved.name}' 저장 완료 · ${saved.id}`):`JOIN 결과 ${Number(out.joined?.row_count||0).toLocaleString()}행`);
       loadHistory(historySearch);
     }catch(e){toast.error(e.message||String(e));}
     finally{setBusy(false);}
@@ -1118,6 +1119,7 @@ export default function My_ChartBuilder({user}){
       const code=text(payload?.definition_code);
       if(!code.trim())return;
       try{window.sessionStorage.removeItem(CHART_BUILDER_TRANSFER_KEY);}catch(_error){}
+      setLoadedHistoryId("");
       setChartName(text(payload?.chart_name));
       setDefinitionCode(code);
       applyDefinition(false,code);
@@ -1174,6 +1176,7 @@ export default function My_ChartBuilder({user}){
   };
   const loadHistoryEntry=(entry)=>{
     const code=text(entry?.definition_code);
+    setLoadedHistoryId(text(entry?.history_id).trim());
     setChartName(text(entry?.name));
     setDefinitionCode(code);
     applyDefinition(false,code);
@@ -1463,6 +1466,7 @@ export default function My_ChartBuilder({user}){
       {entry.pinned&&<span title="고정 차트" aria-label="고정 차트" style={{fontSize:14}}>📌</span>}
       <b style={{fontSize:13,color:"var(--text-primary)"}}>{entry.name}</b>
       <code style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-tertiary)",padding:"3px 5px",borderRadius:4}}>{entry.history_id}</code>
+      <span style={{fontSize:12,fontWeight:900,color:"var(--danger)"}} title="이 저장 차트를 다시 실행한 횟수">♥ {Number(entry.reuse_count||0).toLocaleString()}</span>
       <b style={{fontSize:13,color:"var(--accent)"}}>{entry.username||"anonymous"}</b>
       <span style={{fontSize:12,color:"var(--text-secondary)"}}>{historyTime(entry.timestamp)}</span>
       <span style={{fontSize:12,color:"var(--text-secondary)"}}>Query {entry.source_count||0} · JOIN {entry.join_count||0} · 결과 {Number(entry.row_count||0).toLocaleString()}행</span>
@@ -1604,7 +1608,7 @@ export default function My_ChartBuilder({user}){
       </label>
       <button type="button" onClick={()=>run()} disabled={busy} style={{...btn,background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}}>{busy?"SQL 실행 중…":"SQL 실행 · JOIN 및 저장"}</button>
       {rows.length>0&&<button type="button" onClick={download} style={btn}>CSV 다운로드</button>}
-      <span style={{fontSize:11,color:"var(--text-secondary)"}}>동일 이름은 자동으로 (2), (3)…을 붙여 저장합니다.</span>
+      {loadedHistoryId?<><span style={{fontSize:11,fontWeight:800,color:"var(--danger)"}}>♥ {loadedHistoryId} 재사용 · 실행해도 새 이력은 생성되지 않습니다.</span><button type="button" onClick={()=>setLoadedHistoryId("")} style={{...btn,padding:"4px 7px",fontSize:10}}>새 이력으로 전환</button></>:<span style={{fontSize:11,color:"var(--text-secondary)"}}>동일 이름은 자동으로 (2), (3)…을 붙여 저장합니다.</span>}
     </div>
     <section style={{...card,marginBottom:14,padding:0,overflow:"hidden",borderColor:"#93c5fd"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:7,flexWrap:"wrap",padding:"10px 12px",background:"linear-gradient(90deg,#eff6ff,#fff)"}}>

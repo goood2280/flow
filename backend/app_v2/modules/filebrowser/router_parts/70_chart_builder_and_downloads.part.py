@@ -399,8 +399,24 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
     }
     if req.save_history:
         try:
-            saved = _record_chart_builder_history(username=me.get("username") or "", req=req, result=result)
-            result["saved_chart"] = {"id": saved["history_id"], "name": saved["name"]}
+            reused = bool(str(req.reuse_history_id or "").strip())
+            if reused:
+                saved = _increment_chart_builder_history_reuse(
+                    history_id=req.reuse_history_id,
+                    username=me.get("username") or "",
+                )
+            else:
+                saved = _record_chart_builder_history(username=me.get("username") or "", req=req, result=result)
+            result["saved_chart"] = {
+                "id": saved["history_id"],
+                "name": saved["name"],
+                "reuse_count": int(saved.get("reuse_count") or 0),
+                "reused": reused,
+            }
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "재사용할 저장 차트를 찾지 못했습니다.") from exc
         except Exception as exc:
             logger.warning("chart builder history append failed: %s", exc)
     return result
