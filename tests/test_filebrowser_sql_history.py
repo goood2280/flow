@@ -76,6 +76,85 @@ def test_filebrowser_sql_key_reuse_rejects_a_different_target(tmp_path, monkeypa
     assert len(filebrowser.jsonl_read(history_path, limit=0)) == 1
 
 
+def test_db_sql_key_reuse_is_shared_across_products_in_same_root(tmp_path, monkeypatch):
+    history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "engineer"})
+    filebrowser._record_filebrowser_sql_execution(
+        object(),
+        scope="db_product",
+        root="FAB_DB",
+        product="PRODUCT_A",
+        sql="wafer_id = 1",
+        ok=True,
+    )
+    original = filebrowser.jsonl_read(history_path, limit=0)[0]
+
+    @filebrowser._track_filebrowser_sql_execution("db_product")
+    def execute(*, root, product, sql, meta_only=True, page=0, reuse_history_id="", request=None):
+        return {"data": [{"wafer_id": 1}], "showing": 1}
+
+    execute(
+        root="FAB_DB",
+        product="PRODUCT_B",
+        sql="wafer_id = 1",
+        meta_only=False,
+        page=0,
+        reuse_history_id=original["history_id"],
+        request=object(),
+    )
+    rows = filebrowser.jsonl_read(history_path, limit=0)
+
+    assert len(rows) == 1
+    assert rows[0]["product"] == "PRODUCT_A"
+    assert rows[0]["reuse_count"] == 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        execute(
+            root="OTHER_DB",
+            product="PRODUCT_B",
+            sql="wafer_id = 1",
+            meta_only=False,
+            page=0,
+            reuse_history_id=original["history_id"],
+            request=object(),
+        )
+    assert exc_info.value.status_code == 404
+
+
+def test_db_sql_history_lists_all_products_in_same_root(tmp_path, monkeypatch):
+    history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "engineer"})
+    for root, product, sql in (
+        ("FAB_DB", "PRODUCT_A", "value > 1"),
+        ("FAB_DB", "PRODUCT_B", "value > 2"),
+        ("OTHER_DB", "PRODUCT_C", "value > 3"),
+    ):
+        filebrowser._record_filebrowser_sql_execution(
+            None,
+            scope="db_product",
+            root=root,
+            product=product,
+            sql=sql,
+            ok=True,
+        )
+
+    payload = filebrowser.filebrowser_sql_execution_history(
+        object(),
+        scope="db_product",
+        root="FAB_DB",
+        product="PRODUCT_B",
+        file="",
+        history_id="",
+        limit=500,
+        access_scope="",
+    )
+
+    assert [row["product"] for row in payload["history"]] == ["PRODUCT_B", "PRODUCT_A"]
+    assert [row["sql"] for row in payload["history"]] == ["value > 2", "value > 1"]
+
+
 def test_filebrowser_sql_history_returns_newest_500_rows(tmp_path, monkeypatch):
     history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
     monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)

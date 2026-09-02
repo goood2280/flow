@@ -228,8 +228,6 @@ def _filebrowser_sql_history_matches(
     if normalized_scope == "db_product":
         if str(entry.get("root") or "") != _cache_safe_text(root, 160):
             return False
-        if str(entry.get("product") or "") != _cache_safe_text(product, 160):
-            return False
     elif str(entry.get("file") or "") != _cache_safe_text(file, 300):
         return False
     return str(entry.get("sql") or "").strip() == _cache_safe_text(sql, 4000)

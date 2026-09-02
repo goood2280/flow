@@ -1986,7 +1986,7 @@ export default function My_FileBrowser({
   };
 
   const currentSqlHistoryTargetParams=()=>{
-    if(mode==="hive"&&selRoot&&selProd)return{scope:"db_product",root:selRoot,product:selProd};
+    if(mode==="hive"&&selRoot&&selProd)return{scope:"db_product",root:selRoot};
     if(mode==="rootpq"&&selRootPq)return{scope:"rootpq",file:selRootPq};
     if(mode==="base"&&selBaseFile)return withAccess({scope:"base",file:selBaseFile});
     return null;
@@ -3123,6 +3123,7 @@ export default function My_FileBrowser({
                     <span style={{fontWeight:900,color:h.ok?FB_OK.fg:FB_BAD.fg,flexShrink:0}}>{h.ok?"성공":"실패"}</span>
                     <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis"}} title="SQL 이력 고유키">{h.history_id||"-"}</span>
                     <span style={{fontWeight:900,color:"var(--danger)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수">♥ {Number(h.reuse_count||0).toLocaleString()}</span>
+                    {mode==="hive"&&h.product&&<span style={{padding:"1px 5px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}} title="최초 실행 제품">{h.product}</span>}
                   </span>
                   <span style={{display:"inline-flex",alignItems:"center",justifyContent:"flex-end",gap:7,minWidth:0,marginLeft:"auto",overflow:"hidden"}}>
                     <span style={{color:"var(--text-primary)",fontWeight:700,flexShrink:0}}>{h.username||"-"}</span>
