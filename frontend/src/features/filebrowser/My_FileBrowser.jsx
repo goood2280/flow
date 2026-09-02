@@ -2007,7 +2007,7 @@ export default function My_FileBrowser({
       setSqlHistory([]);setSqlHistoryError("");setSqlHistoryLoading(false);
       return undefined;
     }
-    const params={...targetParams,limit:100,_ts:Date.now()};
+    const params={...targetParams,limit:500,_ts:Date.now()};
     let alive=true;
     setSqlHistoryLoading(true);setSqlHistoryError("");
     sf(API+"/sql/execution-history"+qs(params)).then(d=>{
@@ -3029,7 +3029,7 @@ export default function My_FileBrowser({
             <div onClick={()=>{const next=!showGuide;setShowGuide(next);if(next)setShowSqlHistory(false);}} style={{fontSize:13,color:"var(--accent)",cursor:"pointer",padding:"3px 0"}}>
               {showGuide?"▼":"▶"} SQL 가이드(예시)</div>
             <div onClick={()=>{const next=!showSqlHistory;setShowSqlHistory(next);if(next)setShowGuide(false);}} style={{fontSize:13,color:"var(--accent)",cursor:"pointer",padding:"3px 0"}}>
-              {showSqlHistory?"▼":"▶"} SQL 이력</div>
+              {showSqlHistory?"▼":"▶"} SQL 이력 ({sqlHistory.length.toLocaleString()}/500)</div>
           </div>
           <div style={{display:(showGuide||showSqlHistory)?"grid":"none",gridTemplateColumns:showGuide&&showSqlHistory?"minmax(0,1fr) minmax(0,1fr)":"minmax(0,1fr)",gap:8,marginBottom:8}}>
           {showGuide&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"7px 10px",border:"1px solid var(--border)",fontSize:12,fontFamily:"monospace",lineHeight:1.6,color:"var(--text-secondary)",minWidth:0}}>

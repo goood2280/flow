@@ -194,7 +194,7 @@ def filebrowser_sql_execution_history(
     product: str = Query(""),
     file: str = Query(""),
     history_id: str = Query(""),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(500, ge=1, le=500),
     access_scope: str = Query(""),
 ):
     """Return newest actual SQL executions for one selected DB product/file."""

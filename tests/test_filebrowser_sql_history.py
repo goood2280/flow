@@ -74,3 +74,34 @@ def test_filebrowser_sql_key_reuse_rejects_a_different_target(tmp_path, monkeypa
 
     assert exc_info.value.status_code == 404
     assert len(filebrowser.jsonl_read(history_path, limit=0)) == 1
+
+
+def test_filebrowser_sql_history_returns_newest_500_rows(tmp_path, monkeypatch):
+    history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "engineer"})
+    for index in range(505):
+        filebrowser.jsonl_append(history_path, {
+            "event": "execution",
+            "history_id": f"fb_sql_exec_{index:012x}",
+            "scope": "rootpq",
+            "file": "sample.parquet",
+            "sql": f"value > {index}",
+            "timestamp": f"2026-09-02T00:{index // 60:02d}:{index % 60:02d}+00:00",
+        }, max_lines=None)
+
+    payload = filebrowser.filebrowser_sql_execution_history(
+        object(),
+        scope="rootpq",
+        root="",
+        product="",
+        file="sample.parquet",
+        history_id="",
+        limit=500,
+        access_scope="",
+    )
+
+    assert payload["limit"] == 500
+    assert len(payload["history"]) == 500
+    assert payload["history"][0]["sql"] == "value > 504"
+    assert payload["history"][-1]["sql"] == "value > 5"
