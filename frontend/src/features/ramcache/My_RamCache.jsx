@@ -1121,7 +1121,6 @@ export default function My_RamCache({ user }) {
           <TabStrip active={mainTab} onChange={setMainTab}
             items={[
               { k: "jobs", l: "캐싱 진행·스케줄" },
-              { k: "products", l: "제품별 Root Lot RAM" },
               { k: "speed_config", l: "검색 속도 & 설정" },
             ]} />
         </div>

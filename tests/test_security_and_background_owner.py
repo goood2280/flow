@@ -2,7 +2,6 @@ import ast
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 from core import auth as auth_core
 from core import background_owner
@@ -24,57 +23,9 @@ def test_username_validation_rejects_path_and_csv_injection(username):
         auth_core.validate_username(username)
 
 
-def test_bulk_user_creation_requires_explicit_strong_password():
-    request = object()
-    for password in ("", "1111", "hol12345!"):
-        with pytest.raises(HTTPException) as exc:
-            admin.bulk_create_users(
-                admin.BulkUsersReq(rows=[{"username": "safeuser"}], default_password=password),
-                request,
-                _admin={"role": "admin"},
-            )
-        assert exc.value.status_code == 400
-
-
-def test_bulk_user_creation_skips_unsafe_username(monkeypatch):
-    written = []
-    monkeypatch.setattr(admin, "read_users", lambda: [])
-    monkeypatch.setattr(admin, "write_users", lambda rows: written.append(rows))
-    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
-    result = admin.bulk_create_users(
-        admin.BulkUsersReq(
-            rows=[{"username": "../escape"}],
-            default_password="Strong-Temp-2026!",
-        ),
-        object(),
-        _admin={"role": "admin"},
-    )
-    assert result["created"] == []
-    assert result["skipped"] and "username" in result["skipped"][0]["reason"].lower()
-    assert written == [[]]
-
-
-def test_bulk_user_creation_always_starts_without_permissions(monkeypatch):
-    written = []
-    monkeypatch.setattr(admin, "read_users", lambda: [])
-    monkeypatch.setattr(admin, "write_users", lambda rows: written.append(rows))
-    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
-
-    result = admin.bulk_create_users(
-        admin.BulkUsersReq(
-            rows=[{"username": "newuser", "role": "admin", "tabs": "dashboard,filebrowser"}],
-            default_password="Strong-Temp-2026!",
-            default_tabs=["dashboard", "filebrowser"],
-        ),
-        object(),
-        _admin={"role": "admin"},
-    )
-
-    assert result["created"] == [
-        {"username": "newuser", "name": "", "role": "user", "tabs": ""}
-    ]
-    assert written[0][0]["role"] == "user"
-    assert written[0][0]["tabs"] == ""
+def test_admin_bulk_user_creation_route_is_removed():
+    paths = {route.path for route in admin.router.routes}
+    assert "/bulk-users" not in paths
 
 
 def test_permission_group_list_prunes_deleted_users_and_admins(monkeypatch):

@@ -77,10 +77,10 @@ TARGETS: dict[str, dict[str, Any]] = {
         "match_source": "fab_ppid",
     },
     "mask": {
-        # mask.csv의 reticle_id를 FAB 원본 reticle_id와 대조해 제품/공정을 찾고,
+        # mask_info.csv의 reticle_id를 FAB 원본 reticle_id와 대조해 제품/공정을 찾고,
         # 같은 제품+step_id의 Vehicle_matching에서 step_desc를 가져온다.
         "label": "MASK → FAB 공정",
-        "file": "mask.csv",
+        "file": "mask_info.csv",
         "db_roots": ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB"),
         "keys": ("reticle_id",),
         "id_cols": (
@@ -590,7 +590,7 @@ def _scan_ppid_fab(target: str, spec: dict, cols: list[str], rows: list[dict],
 
 def _scan_reticle_fab(target: str, spec: dict, cols: list[str], rows: list[dict],
                        username: str, column: str) -> dict:
-    """mask.csv.reticle_id를 FAB reticle_id에 연결해 공정 메타를 제안한다."""
+    """mask_info.csv.reticle_id를 FAB reticle_id에 연결해 공정 메타를 제안한다."""
     if not _resolve_column(cols, "reticle_id", "reticle", "reticleid"):
         raise ValueError(f"{spec['file']} 에 reticle_id 열이 없습니다")
     return _scan_fab_process(
@@ -834,7 +834,13 @@ def _wildcard_hit(key: tuple, index: set[tuple]) -> bool:
 
 
 def get_proposal(target: str, column: str = "product") -> dict | None:
-    return (_load_store().get("proposals") or {}).get(_proposal_key(target, column))
+    proposal = (_load_store().get("proposals") or {}).get(_proposal_key(target, column))
+    # 대상 파일 계약이 바뀐 뒤에도 디스크에 남은 예전 제안을 새 CSV의 같은 행 번호에
+    # 적용하면 전혀 다른 행을 덮어쓸 수 있다. 현재 정본 파일에서 만든 제안만 돌려준다.
+    expected_file = str((TARGETS.get(target) or {}).get("file") or "")
+    if proposal and str(proposal.get("file") or "") != expected_file:
+        return None
+    return proposal
 
 
 def discard(target: str, column: str = "product") -> None:

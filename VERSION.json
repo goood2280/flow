@@ -1,7 +1,69 @@
 {
-  "version": "10.4.180",
+  "version": "10.4.185",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.185",
+      "date": "2026-09-04",
+      "tag": "feat",
+      "title": "제품 SOP 기반 S0 자동 반영 및 스플릿 추가 시 추천 선택·직접 입력 지원",
+      "changes": [
+        "[S0 기준 반영] 제품 SOP에 정의된 표준공정(SOP) PPID를 S0로 자동 배정하고 ppid_knob 분류 매칭 시 split명(category), 없으면 PPID를 값 열에 즉시 표출",
+        "[스플릿 순차 추가] 데이터가 없는 공정도 스플릿 추가 시 S0, S1, S2 순서로 배치되고 목표 스플릿 식별자(S1 등)를 모달 상단에 시각화",
+        "[스플릿 입력 모달] 스플릿 추가 편집기에서 SOP 기준값 및 ppid_knob 규칙 분류를 원클릭으로 선택하거나 새 스플릿을 직접 타이핑하여 등록 가능하도록 UI 개선",
+        "[검증] Splittable pytest 회귀 검사 통과 및 브라우저 E2E를 통한 S0 기준값/S1 추가 동작 검증 완료"
+      ]
+    },
+    {
+      "version": "10.4.184",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "Split 체크 뷰 S0/S1/S2 라벨 컬럼 정렬 및 더미 제품 SOP 추가",
+      "changes": [
+        "[Split 체크 뷰] Split 체크 뷰에서 항목·값·Split 열이 어긋나 Split 열에 S0 대신 파라미터명이 표시되던 문제 → parameter_prefix_index 판정을 prefix_columns 컬럼 구성에 맞춰 수정하고 값과 Split(S0, S1, S2) 라벨이 올바른 열에 나타나도록 조치",
+        "[스플릿 추가] 편집 모드에서 '＋ 스플릿 추가' 시 새 스플릿이 S1, S2 라벨로 순차 추가되어 표시되도록 Split 식별자 배정 및 렌더링 수정",
+        "[제품 SOP] 제품별 SOP 파일이 없어 기준 S0 PPID가 부재하던 환경 지원 → credential/PRODA_sop.csv 및 PRODB_sop.csv 더미 SOP 카탈로그 파일 생성 및 11개 공정 기준값 반영",
+        "[검증] Splittable pytest 전건 통과, 브라우저 실화면에서 S0/S1/S2 표시 및 스플릿 추가 UI E2E 검증 완료"
+      ]
+    },
+    {
+      "version": "10.4.183",
+      "date": "2026-09-03",
+      "tag": "fix",
+      "title": "SplitTable module 열 조건·적용공정 중복제거·스프레드시트 모달 및 purpose 태그 개선",
+      "changes": [
+        "[SplitTable UI] 적용공정 정보가 꺼져 있어도 module 열이 보이던 문제 → 적용공정 토글 활성화 시에만 module 열이 함께 나타나도록 표시 조건 수정",
+        "[적용공정] knob 내 조건별로 동일 step_id·step_desc가 반복 표기되던 문제 → 제품별 해당 split의 unique한 step_id와 step_desc만 중복 없이 표시하도록 정제",
+        "[분류규칙 모달] knob 클릭 시 뱃지 나열로 비교가 불편하던 UI → ppid_knob 필터링 규칙과 일치 상태를 격자형 스프레드시트 표로 일목요연하게 렌더링",
+        "[purpose tag] purpose 태그가 본문에 노출되고 상단 배치가 어긋나던 문제 → thead의 root_lot_id와 lot_id 사이에 전용 행으로 배치하고 우클릭 팔레트로 셀별 색상 변경 즉시 반영 지원",
+        "[S0 매김·KNOB 순서] credential에 제품 SOP 부재 시 기존 좌측 wafer 기준 S0 배정으로 폴백하고, 매칭 step이 있는 KNOB이 _Split 및 별칭 불일치로 최하단으로 밀려나던 순서 판정 해결",
+        "[검증] Splittable pytest 8건, KNOB 랭크/S0 폴백 단위 테스트 통과 및 브라우저 E2E 검증 완료"
+      ]
+    },
+    {
+      "version": "10.4.182",
+      "date": "2026-09-03",
+      "tag": "fix",
+      "title": "신규 사용자 등록을 가입 신청으로 단일화",
+      "changes": [
+        "[관리자 화면] 사용자 탭의 일괄 생성 입력표·임시 비밀번호·생성 결과 UI를 제거하고 신규 사용자는 로그인 화면에서 가입 신청해야 한다는 안내로 교체",
+        "[서버 차단] 승인 완료 계정을 직접 만들던 POST /api/admin/bulk-users 라우트와 생성 로직을 제거해 관리자나 이전 화면이 API를 직접 호출해도 계정을 만들 수 없게 변경",
+        "[가입 흐름 유지] 로그인 화면 가입 신청 → 관리자 승인·거절 흐름과 기존 사용자 관리·권한 관리는 그대로 유지",
+        "[검증] 관리자 보안·백그라운드 소유권 테스트 31건과 프런트 디자인 시스템·기능 경계·production build 통과"
+      ]
+    },
+    {
+      "version": "10.4.181",
+      "date": "2026-09-03",
+      "tag": "fix",
+      "title": "캐시관리 폐기 RAM 탭 제거와 mask_info 매칭 보강",
+      "changes": [
+        "[캐시관리] 이미 폐기된 제품별 Root Lot RAM 사전적재 화면이 탭 목록에 다시 노출됨 → 재노출된 탭을 제거하되 SplitTable·Inform이 사용하는 실제 Lot 후보 캐시는 유지",
+        "[매칭채우기] MASK 대상 파일을 mask.csv가 아닌 권위 원천인 mask_info.csv로 변경하고 reticle_id 기준 product·step_id·step_desc 채우기를 해당 파일에 수행",
+        "[안전] 파일 대상 변경 전에 생성된 mask.csv 제안을 숨겨 행 번호가 다른 mask_info.csv에 잘못 반영되는 것을 차단하고 재검사를 요구",
+        "[검증] 매칭채우기·FAB 매칭알람·캐시관리 회귀 테스트 32건과 프런트 디자인/구조 검사 및 production build 통과"
+      ]
+    },
     {
       "version": "10.4.180",
       "date": "2026-09-03",

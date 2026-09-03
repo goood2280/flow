@@ -1,7 +1,8 @@
 /* My_ValveAlerts.jsx — 개발 서버 FAB 매칭 검사.
    - 개발 worker가 FAB 제품을 하나씩 순회하며 처음 보는 step_id/ppid/reticle_id를 표시한다.
    - step_id는 Vehicle_matching.csv, ppid는 ppid_knob.csv, reticle_id는 mask_info.csv에
-     엔지니어 판정으로 반영한다 (mask_info.csv는 제품 구분 없는 reticle_id,mask 2열).
+     엔지니어 판정으로 반영한다 (reticle_id→mask 규칙은 전 제품 공용이며
+     매칭채우기가 product/step_id/step_desc 메타데이터를 보강할 수 있다).
    - 판정 이력(누가/언제/무엇으로) + 반영불필요 상태를 관리한다.
 */
 import { useEffect, useMemo, useRef, useState } from "react";

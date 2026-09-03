@@ -14,7 +14,7 @@ import { orderProductItems } from "../../lib/productOrder";
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
 import { statusPalette } from "../../components/UXKit";
-import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS, splitParamDisplayName } from "../../components/SplitTableSnapshotView";
+import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
@@ -193,39 +193,28 @@ const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
 // 복합 KNOB rule 은 두 열 모두 같은 rule_order 경계(`&`)를 유지한다.
 const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
   if(!kind||!meta)return {step_id:"",step_desc:""};
-  if(kind==="knob_ppid"){
-    const idBlocks=[];const descBlocks=[];
-    knobRuleSets(meta?.groups||[]).forEach(set=>{
-      const byDesc=new Map();
-      (set.conditions||[]).forEach(g=>{
-        if(isNullOperator(g?.operator))return;
-        if(excludeNotNull&&isNotNullOperator(g?.operator))return;
-        const desc=String(g?.step_desc||g?.func_step||"").trim();
-        if(!desc)return;
-        const key=desc.toLowerCase();
-        if(!byDesc.has(key))byDesc.set(key,{desc,ids:[],seen:new Set()});
-        const bucket=byDesc.get(key);
-        stepIdsForGroup(g).forEach(raw=>{
-          const sid=String(raw||"").trim();const sidKey=sid.toLowerCase();
-          if(sid&&!bucket.seen.has(sidKey)){bucket.seen.add(sidKey);bucket.ids.push(sid);}
-        });
-      });
-      const groups=Array.from(byDesc.values()).filter(g=>g.ids.length);
-      if(groups.length){
-        idBlocks.push(groups.map(g=>g.ids.join("\n")).join("\n&\n"));
-        descBlocks.push(groups.map(g=>g.desc).join("\n&\n"));
-      }
-    });
-    return {step_id:idBlocks.join("\n"),step_desc:descBlocks.join("\n")};
-  }
   const ids=[];const descs=[];const seenIds=new Set();const seenDescs=new Set();
-  const fallbackDesc=String(meta?.step_desc||meta?.function_step||"").trim();
   const push=(sid,desc)=>{
-    const id=String(sid||"").trim();const d=String(desc||fallbackDesc||"").trim();
+    const id=String(sid||"").trim();const d=String(desc||"").trim();
     const idKey=id.toLowerCase();const descKey=d.toLowerCase();
     if(id&&!seenIds.has(idKey)){seenIds.add(idKey);ids.push(id);}
     if(d&&!seenDescs.has(descKey)){seenDescs.add(descKey);descs.push(d);}
   };
+  if(kind==="knob_ppid"){
+    (Array.isArray(meta?.groups)?meta.groups:[]).forEach(g=>{
+      if(isNullOperator(g?.operator))return;
+      if(excludeNotNull&&isNotNullOperator(g?.operator))return;
+      const desc=String(g?.step_desc||g?.func_step||"").trim();
+      const groupIds=stepIdsForGroup(g);
+      if(groupIds.length)groupIds.forEach(sid=>push(sid,desc));
+      else push(g?.step_id,desc);
+    });
+    if(!ids.length && Array.isArray(meta?.step_ids)){
+      meta.step_ids.forEach(sid=>push(sid,""));
+    }
+    return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
+  }
+  const fallbackDesc=String(meta?.step_desc||meta?.function_step||"").trim();
   (Array.isArray(meta?.groups)?meta.groups:[]).forEach(g=>{
     const groupDesc=g?.step_desc||g?.function_step||fallbackDesc;
     const groupIds=stepIdsForGroup(g);
@@ -331,21 +320,37 @@ const matchKnobRuleToRowValues=(group,row,pendingValueFor)=>{
 
 function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=false,onValueChange,onCommit,onClose}){
   if(!activeCell)return null;
-  const commit=(v)=>onCommit&&onCommit((v??"").trim());
-  return <Modal open onClose={onClose} width={360} zIndex={9998}>
+  const commit=(v)=>onCommit&&onCommit(String(typeof v==="object"?(v?.value??v?.label??""):(v??"")).trim());
+  return <Modal open onClose={onClose} width={380} zIndex={9998}>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
-    <div style={{fontSize:14,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+      <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</span>
+      {activeCell.splitLabel&&<span style={{padding:"2px 8px",borderRadius:4,background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.35)",color:"rgba(59,130,246,0.95)",fontWeight:800,fontSize:13}}>{activeCell.splitLabel}</span>}
+    </div>
     <input autoFocus value={activeCell.value} onChange={e=>onValueChange&&onValueChange(e.target.value)}
       onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;commit(activeCell.value);}else if(e.key==="Escape")onClose&&onClose();}}
       list={`cv-${activeCell.key}`}
-      placeholder="값 입력 또는 아래 리스트 선택"
+      placeholder="값 입력 또는 아래 리스트 클릭 선택"
       style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>
-    <datalist id={`cv-${activeCell.key}`}>{suggestions.map(v=><option key={v} value={v}/>)}</datalist>
-    <div style={{marginTop:10,maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
+    <datalist id={`cv-${activeCell.key}`}>{suggestions.map((v,i)=><option key={i} value={typeof v==="object"?v.value:v}>{typeof v==="object"?v.label:v}</option>)}</datalist>
+    <div style={{marginTop:10,maxHeight:200,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
       {suggestions.length===0?<div style={{padding:"10px 12px",fontSize:14,color:"var(--text-secondary)"}}>{suggestionsLoading?"로딩…":"suggestion 없음"}</div>
-       :suggestions.slice(0,100).map((v,i)=><div key={i} onClick={()=>commit(v)} style={{padding:"6px 10px",fontSize:14,fontFamily:"monospace",cursor:"pointer",borderBottom:i<suggestions.length-1?"1px solid var(--border)":"none"}} onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{v}</div>)}
+       :suggestions.slice(0,100).map((v,i)=>{
+         const itemVal=typeof v==="object"?v.value:v;
+         const itemLabel=typeof v==="object"?v.label:v;
+         const isSop=typeof v==="object"&&v.isSop;
+         return (
+           <div key={i} onClick={()=>commit(itemVal)}
+             style={{padding:"7px 10px",fontSize:13,fontFamily:"monospace",cursor:"pointer",borderBottom:i<suggestions.length-1?"1px solid var(--border)":"none",display:"flex",alignItems:"center",justifyContent:"space-between",background:isSop?"rgba(34,197,94,0.06)":"transparent"}}
+             onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"}
+             onMouseLeave={e=>e.currentTarget.style.background=isSop?"rgba(34,197,94,0.06)":"transparent"}>
+             <span style={{fontWeight:isSop?700:500}}>{itemLabel}</span>
+             {isSop&&<span style={{fontSize:11,padding:"1px 5px",borderRadius:3,background:"rgba(34,197,94,0.2)",color:"rgba(22,163,74,0.95)",fontWeight:800}}>SOP</span>}
+           </div>
+         );
+       })}
     </div>
-    {suggestions.length>0&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:6}}>{suggestions.length} 개 (전체 데이터셋 unique + plan 포함)</div>}
+    {suggestions.length>0&&<div style={{fontSize:12,color:"var(--text-secondary)",marginTop:6}}>{suggestions.length}개 선택 가능 (클릭 시 즉시 입력)</div>}
     <div style={{display:"flex",gap:8,marginTop:12}}>
       <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer",fontSize:14}}>Apply</button>
       <button onClick={onClose} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:14}}>Cancel</button>
@@ -928,6 +933,22 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     :kind==="vm_matching"?vmLookup(param)
     :null
   );
+  const resolveSplitDisplayName = (param, rawVal) => {
+    const clean = String(rawVal ?? "").trim();
+    if (!clean) return "";
+    const km = knobLookup(param);
+    const groups = Array.isArray(km?.groups) ? km.groups : [];
+    const cleanNorm = clean.toLowerCase();
+    const match = groups.find(g => {
+      const gVal = String(g?.value ?? "").trim().toLowerCase();
+      const gCat = String(g?.category ?? "").trim().toLowerCase();
+      return (gVal && gVal === cleanNorm) || (gCat && gCat === cleanNorm);
+    });
+    if (match && match.category && String(match.category).trim()) {
+      return String(match.category).trim();
+    }
+    return clean;
+  };
   const buildLineageSummary=(rows)=>{
     const out=[];
     const seen=new Set();
@@ -1387,8 +1408,28 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   };
   const suggestionValuesFor=(param,base=[])=>{
     const out=[];const seen=new Set();
-    const add=(v)=>{if(!hasValue(v))return;const s=String(v);if(seen.has(s))return;seen.add(s);out.push(s);};
+    const add=(v)=>{if(!hasValue(v))return;const s=String(v).trim();if(!s||seen.has(s))return;seen.add(s);out.push(s);};
+    // 1. SOP PPID & Split name from credential/<product>_sop.csv via s0_by_knob
+    const sopVal=s0ValueForParam(data,param);
+    if(sopVal){
+      const sopSplit=resolveSplitDisplayName(param,sopVal);
+      if(sopSplit&&sopSplit!==sopVal)add(sopSplit);
+      add(sopVal);
+    }
+    // 2. Rules from ppid_knob
+    const km=knobLookup(param);
+    (km?.groups||[]).forEach(g=>{
+      if(g.category&&String(g.category).trim()!==String(g.value||"").trim())add(g.category);
+      if(g.value)add(g.value);
+    });
+    // 3. Base column values
     (base||[]).forEach(add);
+    // 4. Existing values from row cells
+    const row=(data?.rows||[]).find(r=>String(r?._param||"")===String(param||""));
+    if(row?._cells){
+      Object.values(row._cells).forEach(c=>{add(c?.actual);add(c?.plan);});
+    }
+    // 5. Pending plans / tags / mgmt
     Object.entries(pendingPlans).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
     Object.entries(pendingTags).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
     Object.entries(pendingManagement).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
@@ -1411,17 +1452,25 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     sf(API+"/column-values?product="+encodeURIComponent(selProd)+"&col="+encodeURIComponent(param)+"&limit=200")
       .then(d=>setColValCache(m=>({...m,[param]:d.values||[]}))).catch(()=>setColValCache(m=>({...m,[param]:[]})));
   };
-  const openSplitDraftEditor=(param,draftIndex,value="")=>{
+  const openSplitDraftEditor=(param,draftIndex,value="",splitLabel="")=>{
     ensureSplitSuggestions(param);
-    setActiveCell({key:`${lotId}|split|${param}`,param,value:String(value||""),kind:"split_value",draftIndex});
+    setActiveCell({key:`${lotId}|split|${param}`,param,value:String(value||""),kind:"split_value",draftIndex,splitLabel});
   };
   const addSplitDraft=(param)=>{
     const clean=String(param||"").trim();
     if(!clean)return;
-    const draftIndex=(splitDraftValues[clean]||[]).length;
+    const existingDrafts=splitDraftValues[clean]||[];
+    const draftIndex=existingDrafts.length;
+    const sopVal=s0ValueForParam(data,clean);
+    const sourceRow=(data?.rows||[]).find(r=>String(r?._param||"")===clean);
+    const hasCellValues=sourceRow?._cells&&Object.values(sourceRow._cells).some(c=>hasValue(c?.actual)||hasValue(c?.plan));
+    const s0Exists=Boolean(sopVal||hasCellValues);
+    const targetSplitIdx=s0Exists ? (draftIndex + 1) : draftIndex;
+    const splitLabel=`S${targetSplitIdx}`;
+
     setSplitDraftValues(current=>({...current,[clean]:[...(current[clean]||[]),""]}));
     setSplitContextMenu(null);
-    openSplitDraftEditor(clean,draftIndex,"");
+    openSplitDraftEditor(clean,draftIndex,"",splitLabel);
   };
   const assignSplitPlanValue=(param,value,ci)=>{
     const cleanValue=String(value||"").trim();
@@ -2476,8 +2525,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ? data.rows.filter(r=>{if(isDefaultPurposeTag(r?._param))return true;const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
         const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
-        // 적용 공정 정보는 기존 행/항목을 그대로 두고 왼쪽 두 열만 보강한다.
-        const viewRows = diffRows;
+        // purpose tag는 thead(root_lot_id와 lot_id 사이)에 별도 행으로 표출되므로 본문에서 제외한다.
+        const viewRows = diffRows.filter(r => !isDefaultPurposeTag(r?._param));
         // 점진 렌더: 한도까지만 그린다. slice(0,N) 이므로 행 인덱스(선택/paste)는 그대로 유효.
         const displayRows=rowRenderLimit<viewRows.length?viewRows.slice(0,rowRenderLimit):viewRows;
         // module 묶음 열. KNOB/VM 은 Vehicle_matching 의 module 열이 원천이고,
@@ -2490,7 +2539,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           const k=matchKindOf(r?._param);
           return k?matchModuleOf(matchMetaFor(k,r?._param)):"";
         });
-        const showModuleCol=rowModules.some(Boolean)||rowTagFlags.some(Boolean);
+        const showModuleCol=showParamMeta && (rowModules.some(Boolean)||rowTagFlags.some(Boolean));
         const processPrefixWidth=showParamMeta?(STEP_ID_COL_W+STEP_DESC_COL_W):0;
         const stepIdLeft=showModuleCol?MODULE_COL_W:0;
         const stepDescLeft=stepIdLeft+(showParamMeta?STEP_ID_COL_W:0);
@@ -2724,11 +2773,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
         const lotRowLabel = rowLabels.lot_id || "lot_id";
         const paramRowLabel = rowLabels.parameter || "항목";
+        const purposeRow = (data?.rows || []).find(r => isDefaultPurposeTag(r?._param));
         const hasRootRow = hasLotContext;
+        const hasPurposeRow = !!purposeRow;
         const hasLotRow = hasLotContext || data.header_groups?.length>0;
         const rootHeaderHeight = hasRootRow ? 32 : 0;
+        const purposeHeaderHeight = hasPurposeRow ? 28 : 0;
+        const lotHeaderTop = rootHeaderHeight + purposeHeaderHeight;
         const lotHeaderHeight = hasLotRow ? 24 : 0;
-        const paramHeaderTop = rootHeaderHeight + lotHeaderHeight;
+        const paramHeaderTop = rootHeaderHeight + purposeHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
         const splitLikePrefixColumns=showParamMeta
           ?["step_id","step_desc",...SPLIT_CHECK_PREFIX_COLUMNS]
@@ -2748,7 +2801,17 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const raw=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
             return hasValue(raw)?raw:"";
           },
-          displayForValue:(raw,row)=>String(formatCell(raw,row._param) ?? raw),
+          displayForValue:(raw,row)=>{
+            if(!hasValue(raw))return "";
+            const param=row?._param||row?._display||"";
+            const kind=matchKindOf(param);
+            if(kind==="knob_ppid"){
+              const splitName=resolveSplitDisplayName(param,raw);
+              if(splitName)return splitName;
+            }
+            return String(formatCell(raw,param) ?? raw);
+          },
+          preferredValueForParam:(param)=>s0ValueForParam(data,param),
           // Split 체크/PEMS도 기본 그리드와 같은 별도 공정 두 열을 쓴다.
           processInfoForParam:(param)=>{
             if(!showParamMeta)return null;
@@ -2807,7 +2870,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           maxHeight="none"
           editable={editing&&splitCheckViewActive}
           onAssignSplit={assignSplitPlanValue}
-          onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw)}
+          onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw,row?._split_label)}
           onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
         />
         ) : (
@@ -2828,14 +2891,75 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 {rootRowLabel}
               </th>
               <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
+            {hasPurposeRow&&(()=>{
+              return (
+                <tr style={{height:purposeHeaderHeight}}>
+                  {showModuleCol&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5}}/>}
+                  {showParamMeta&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepIdLeft,zIndex:5}}/>}
+                  {showParamMeta&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepDescLeft,zIndex:5}}/>}
+                  <th style={{boxSizing:"border-box",height:purposeHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:paramLeft,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800}} title="Purpose Tag">purpose</th>
+                  {data.headers?.map((h, ci) => {
+                    const cell = purposeRow?._cells?.[String(ci)] || {};
+                    const cellKey = cell.key || (purposeRow?._param ? `${purposeRow._param}:${ci}` : "");
+                    const pendingVal = pendingTags[cellKey];
+                    const displayVal = pendingVal !== undefined ? pendingVal : (cell.actual ?? "");
+                    const tagColor = pendingTagColors[cellKey] || cell.tag_color || "";
+                    const bg = tagColor ? { background: tagColor } : { background: "var(--bg-card)" };
+                    return (
+                      <th key={ci} style={{
+                        boxSizing: "border-box",
+                        height: purposeHeaderHeight,
+                        padding: "2px 6px",
+                        textAlign: "center",
+                        fontWeight: displayVal ? 700 : 400,
+                        fontSize: 13,
+                        color: GRID_TEXT,
+                        borderBottom: GRID_LINE,
+                        borderRight: GRID_LINE,
+                        position: "sticky",
+                        top: rootHeaderHeight,
+                        zIndex: 4,
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
+                        cursor: "pointer",
+                        ...bg,
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const paletteWidth = 190, paletteHeight = 142;
+                        setTagColorPicker({
+                          key: cellKey,
+                          color: tagColor || TAG_CELL_PALETTE[0],
+                          left: Math.max(8, Math.min(e.clientX, window.innerWidth - paletteWidth - 8)),
+                          top: Math.max(8, Math.min(e.clientY, window.innerHeight - paletteHeight - 8)),
+                        });
+                      }}
+                      onDoubleClick={() => {
+                        if (!editing) setEditing(true);
+                        setActiveCell({
+                          key: cellKey,
+                          param: purposeRow?._param || DEFAULT_CUSTOM_TAG_COLUMN,
+                          value: displayVal,
+                          kind: "tag",
+                        });
+                      }}
+                      title="우클릭: 셀 배경색 변경 · 더블클릭: purpose 값 입력">
+                        {displayVal || <span style={{ opacity: 0.35, fontSize: 11 }}>-</span>}
+                      </th>
+                    );
+                  })}
+                </tr>
+              );
+            })()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
-              {showModuleCol&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepIdLeft,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepDescLeft,zIndex:5}}/>}
-              <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
+              {showModuleCol&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:0,zIndex:5}}/>}
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:stepIdLeft,zIndex:5}}/>}
+              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:stepDescLeft,zIndex:5}}/>}
+              <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0
-                ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
-                : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
+                ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
+                : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
             </tr>}
             <tr>
             {showModuleCol&&<th style={{textAlign:"center",padding:"8px 6px",fontWeight:700,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:0,zIndex:5}}>module</th>}
@@ -3215,7 +3339,23 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       <div style={{fontSize:12,fontWeight:800,color:"#374151",marginBottom:8}}>배경색 선택</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:6}}>{TAG_CELL_PALETTE.map(color=>{
         const selected=(pendingTagColors[tagColorPicker.key]||tagColorPicker.color||TAG_CELL_PALETTE[0])===color;
-        return <button key={color} type="button" onClick={()=>{setPendingTagColors(current=>({...current,[tagColorPicker.key]:color}));setTagColorPicker(null);}}
+        return <button key={color} type="button" onClick={()=>{
+          const nextColor = color;
+          setPendingTagColors(current=>({...current,[tagColorPicker.key]:nextColor}));
+          if(!editing && selProd && tagColorPicker.key){
+            sf(API+"/custom-tags/values", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                product: selProd,
+                values: {},
+                colors: { [tagColorPicker.key]: nextColor },
+                username: user?.username || "",
+              })
+            }).then(() => reloadCustomTags()).catch(err=>toast.error("색상 저장 실패: "+(err.message||err)));
+          }
+          setTagColorPicker(null);
+        }}
           aria-label={`배경색 ${color}`} title={color}
           style={{height:26,border:selected?"2px solid #2563eb":"1px solid #9ca3af",borderRadius:4,background:color,cursor:"pointer",boxShadow:selected?"0 0 0 1px #ffffff inset":"none"}}/>;
       })}</div>
@@ -3464,34 +3604,78 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           </div>
           {rbMatchData ? (
             <div style={{overflow:"auto"}}>
-              {rbMatchKind === "knob_ppid" && (()=>{const groups=Array.isArray(rbMatchData.groups)?rbMatchData.groups:[];const sets=knobRuleSets(groups);const composite=sets.length>1;const processText=knobStepSummaryText(groups,{excludeNotNull:excludeNotNullStepMeta});return(
-                <div style={{display:"grid",gap:8}}>
-                  <div style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-secondary)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",lineHeight:1.4}}>
-                    적용공정: {processText?<span style={{whiteSpace:"pre-line"}}>{processText}</span>:(groups.length?"표시 대상 없음":"매칭정보 없음")}
-                  </div>
-                  {groups.length===0 && <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>분류 규칙이 없습니다.</div>}
-                  {sets.map((set, si) => {const conditionMatches=set.conditions.map(g=>matchKnobRuleToRowValues(g,rbMatchRow,pendingValueFor));const checked=conditionMatches.length>0&&conditionMatches.every(ms=>ms.length>0);const allMatches=conditionMatches.flat();return(
-                    <div key={`${rbMatchParam}-${set.rule_order}-${si}`} style={{padding:"10px 12px",borderRadius:6,border:checked?"1px solid rgba(34,197,94,0.75)":"1px solid rgba(251,191,36,0.35)",background:checked?"rgba(34,197,94,0.06)":"var(--bg-card)"}}>
-                      <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
-                        <span title={checked?"현재 row 값이 이 rule_order 조건 묶음과 일치":"현재 row 값과 일치 없음"} style={{width:20,height:20,lineHeight:"18px",textAlign:"center",borderRadius:4,border:checked?"1px solid rgba(34,197,94,0.8)":"1px solid var(--border)",background:checked?"rgba(34,197,94,0.16)":"transparent",color:checked?"rgba(22,163,74,0.95)":"var(--text-secondary)",fontWeight:900,fontSize:14,flexShrink:0}}>{checked?"✓":""}</span>
-                        <span style={knobRuleBadgeStyle(composite)}>{set.rule_order}</span>
-                        <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center",fontFamily:"monospace",fontSize:14}}>
-                          {set.conditions.map((g,gi)=><span key={`${set.rule_order}-${gi}`} style={{display:"inline-flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
-                            {gi>0&&<span style={{color:"var(--text-secondary)",fontWeight:900}}>&amp;</span>}
-                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(148,163,184,0.10)",border:"1px solid rgba(148,163,184,0.25)",color:"var(--text-secondary)"}}>{g.step_desc||g.func_step||"-"}</span>
-                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.35)",fontWeight:700}}>{g.operator || "-"}</span>
-                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(34,197,94,0.12)",border:"1px solid rgba(34,197,94,0.35)",fontWeight:700}}>{g.value || "-"}</span>
-                            <span style={{padding:"1px 6px",borderRadius:3,background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",fontWeight:800,color:"rgba(180,83,9,0.95)"}}>{g.category || "-"}</span>
-                          </span>)}
-                        </div>
-                      </div>
-                      {allMatches.length>0&&<div style={{marginTop:8,marginLeft:54,fontSize:13,fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>
-                        {matchedWaferSummary(allMatches)}
-                      </div>}
+              {rbMatchKind === "knob_ppid" && (()=>{
+                const groups = Array.isArray(rbMatchData.groups) ? rbMatchData.groups : [];
+                const processText = knobStepSummaryText(groups, {excludeNotNull: excludeNotNullStepMeta});
+                return (
+                  <div style={{display:"grid", gap:10}}>
+                    <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 12px", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-secondary)", fontSize:13, fontFamily:"monospace"}}>
+                      <span>적용공정: <strong style={{color:"var(--text-primary)"}}>{processText || (groups.length ? "표시 대상 없음" : "매칭정보 없음")}</strong></span>
+                      <span style={{color:"var(--text-secondary)"}}>규칙 수: {groups.length}개</span>
                     </div>
-                  );})}
-                </div>
-              );})()}
+                    {groups.length === 0 ? (
+                      <div style={{padding:16, textAlign:"center", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-card)", color:"var(--text-secondary)", fontSize:14}}>
+                        등록된 분류 규칙이 없습니다.
+                      </div>
+                    ) : (
+                      <div style={{overflowX:"auto", border:"1px solid var(--border)", borderRadius:6}}>
+                        <table style={{width:"100%", borderCollapse:"collapse", fontSize:13, fontFamily:"monospace", background:"var(--bg-card)"}}>
+                          <thead>
+                            <tr style={{background:"var(--bg-tertiary)", borderBottom:"1px solid var(--border)", textAlign:"left"}}>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:46, textAlign:"center"}}>일치</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:85}}>Rule Order</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>공정명 (Step Desc)</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:110}}>공정 ID (Step ID)</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:80, textAlign:"center"}}>연산자</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>PPID (Value)</th>
+                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>분류 (Category)</th>
+                              <th style={{padding:"8px 10px"}}>매칭 Wafer</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {groups.map((g, gi) => {
+                              const matches = matchKnobRuleToRowValues(g, rbMatchRow, pendingValueFor);
+                              const isMatched = matches.length > 0;
+                              const stepIdStr = Array.isArray(g.step_ids) && g.step_ids.length ? g.step_ids.join(", ") : (g.step_id || "-");
+                              return (
+                                <tr key={gi} style={{
+                                  borderBottom:"1px solid var(--border)",
+                                  background: isMatched ? "rgba(34,197,94,0.08)" : (gi % 2 === 1 ? "var(--bg-secondary)" : "transparent"),
+                                }}>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(22,163,74,0.95)" : "var(--text-secondary)"}}>
+                                    {isMatched ? "✓" : "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"var(--accent)"}}>
+                                    {g.rule_order || "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", color:"var(--text-primary)"}}>
+                                    {g.step_desc || g.func_step || "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", color:"var(--text-secondary)"}}>
+                                    {stepIdStr}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", textAlign:"center", fontWeight:600, color:"rgba(59,130,246,0.95)"}}>
+                                    {g.operator || "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"rgba(16,185,129,0.95)"}}>
+                                    {g.value || "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"rgba(217,119,6,0.95)"}}>
+                                    {g.category || "-"}
+                                  </td>
+                                  <td style={{padding:"6px 10px", color: isMatched ? "rgba(22,163,74,0.95)" : "var(--text-secondary)", fontWeight: isMatched ? 700 : 400}}>
+                                    {matches.length > 0 ? matchedWaferSummary(matches) : "-"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {rbMatchKind === "inline_matching" && (()=>{const im=rbMatchData;const groups=Array.isArray(im.groups)?im.groups:[];return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>

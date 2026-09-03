@@ -16,25 +16,47 @@ export function splitParamDisplayName(name, rawParam) {
   return out.trim() || raw;
 }
 
-function s0ValueForParam(source, param) {
+export function normalizeKnobParamKey(str) {
+  return String(str || "")
+    .trim()
+    .toUpperCase()
+    .replace(/^KNOB[_\s]+/i, "")
+    .replace(/[_\s]*SPLIT$/i, "")
+    .replace(/[\s_]+/g, " ");
+}
+
+export function s0ValueForParam(source, param) {
   const mapping = source?.s0_by_knob || {};
+  if (!param) return "";
   const exact = mapping?.[param];
-  if (exact?.ppid != null) return String(exact.ppid).trim();
-  const wanted = String(param || "").trim().toUpperCase();
-  const key = Object.keys(mapping).find(item => String(item || "").trim().toUpperCase() === wanted);
+  if (exact?.ppid != null && String(exact.ppid).trim()) return String(exact.ppid).trim();
+  const wantedNorm = normalizeKnobParamKey(param);
+  const key = Object.keys(mapping).find(item => {
+    if (String(item || "").trim().toUpperCase() === String(param).trim().toUpperCase()) return true;
+    return normalizeKnobParamKey(item) === wantedNorm;
+  });
   return key && mapping[key]?.ppid != null ? String(mapping[key].ppid).trim() : "";
 }
 
-function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = false) {
+function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = false, resolveDisplay = null) {
   const order = [];
   const seen = new Set();
+  const getDisplay = (raw, fallbackDisplay) => {
+    if (typeof resolveDisplay === "function") {
+      const resolved = resolveDisplay(raw);
+      if (resolved) return resolved;
+    }
+    return String(fallbackDisplay ?? raw ?? "");
+  };
   const add = (raw, display, extra = {}) => {
     const value = String(raw ?? "").trim();
     if (!value || seen.has(value)) return;
     seen.add(value);
-    order.push({ raw: value, display: String(display ?? value), ...extra });
+    order.push({ raw: value, display: getDisplay(value, display), ...extra });
   };
-  add(preferredValue, preferredValue, { is_s0: true });
+  if (preferredValue && String(preferredValue).trim()) {
+    add(preferredValue, preferredValue, { is_s0: true });
+  }
   (perCells || []).forEach(item => add(item.raw, item.display));
   (draftValues || []).forEach((value, draftIndex) => {
     const clean = String(value ?? "").trim();
@@ -197,12 +219,19 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
       ? preferredValueForParam(row?._param, row)
       : s0ValueForParam(source, row?._param);
     const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
-    const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows);
+    const resolveDisplay = (val) => (displayForValue ? displayForValue(val, row) : val);
+    const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows, resolveDisplay);
     return order.map((item, idx) => {
       const label = `S${idx}`;
       const checkCells = {};
       perHeader.forEach((value, ci) => {
-        checkCells[String(ci)] = { actual: value.raw && value.raw === item.raw ? "✓" : "", plan: "", split_check: true, not_reached: !!value.not_reached };
+        const isMatch = value.raw && (
+          value.raw === item.raw ||
+          (item.display && value.display === item.display) ||
+          (item.raw && value.display === item.raw) ||
+          (item.display && value.raw === item.display)
+        );
+        checkCells[String(ci)] = { actual: isMatch ? "✓" : "", plan: "", split_check: true, not_reached: !!value.not_reached };
       });
       const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
       const basePrefix = [
@@ -216,7 +245,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
         _split_value: item.display,
         _split_value_raw: item.raw,
         _split_label: label,
-        _is_s0: idx === 0 && !!preferred,
+        _is_s0: idx === 0,
         _is_split_draft: !!item.is_draft,
         _split_draft_index: item.draft_index,
         _process_columns: process || undefined,
@@ -233,7 +262,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     headers,
     rows: splitRows,
     prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
-    parameter_prefix_index: processInfoForParam ? 2 : 0,
+    parameter_prefix_index: (Array.isArray(source.prefix_columns) && (source.prefix_columns.includes("step_id") || source.prefix_columns.includes("step_desc"))) ? 2 : 0,
     display_mode: "split_check",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -289,7 +318,8 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
       ? preferredValueForParam(row?._param, row)
       : s0ValueForParam(source, row?._param);
     const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
-    const order = orderedSplitValues(perWafer, preferred, extras, true);
+    const resolveDisplay = (val) => (displayForValue ? displayForValue(val, row) : val);
+    const order = orderedSplitValues(perWafer, preferred, extras, true, resolveDisplay);
     // 실제 값이 하나도 없어도 PEMS 에서는 S0 행이 있어야 25개 wafer가 모두 보인다.
     if (!order.length) order.push({ raw: "", display: "" });
 
@@ -344,7 +374,7 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
     hide_lot_id_row: true,
     pems_missing_wafer_indices: missingWaferIndices,
     prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
-    parameter_prefix_index: processInfoForParam ? 2 : 0,
+    parameter_prefix_index: (Array.isArray(source.prefix_columns) && (source.prefix_columns.includes("step_id") || source.prefix_columns.includes("step_desc"))) ? 2 : 0,
     display_mode: "pems",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -412,7 +442,7 @@ export default function SplitTableSnapshotView({
   const hasLotContext = !!(rootLotId || lotIdLabel);
   const visiblePrefixColumns = splitCheckMode ? prefixColumns : matrixPrefixColumns;
   const parameterPrefixIndex = splitCheckMode
-    ? Math.max(0,Math.min(visiblePrefixColumns.length-1,Number.isInteger(st?.parameter_prefix_index)?st.parameter_prefix_index:(stepLabels&&visiblePrefixColumns.length>=5?2:0)))
+    ? Math.max(0,Math.min(visiblePrefixColumns.length-1,visiblePrefixColumns.includes("step_id")?2:(Number.isInteger(st?.parameter_prefix_index)&&st.parameter_prefix_index<visiblePrefixColumns.length-2?st.parameter_prefix_index:0)))
     : (stepLabels?2:0);
   const splitPrefixIndex = splitCheckMode ? parameterPrefixIndex+2 : -1;
   const hasRootRow = hasLotContext;
@@ -535,10 +565,10 @@ export default function SplitTableSnapshotView({
               const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
               const prefixValues = visiblePrefixColumns.map((_, idx) => {
                 if (splitCheckMode) {
-                  if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
                   if (idx === parameterPrefixIndex) return splitParamDisplayName(r._display || r._param || "", r._param);
                   if (idx === parameterPrefixIndex+1) return String(r._split_value || "");
                   if (idx === parameterPrefixIndex+2) return String(r._split_label || "");
+                  if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
                   return "";
                 }
                 const process = r?._process_columns || r?._applied_process || {};

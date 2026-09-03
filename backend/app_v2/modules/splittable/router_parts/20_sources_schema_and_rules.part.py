@@ -1563,7 +1563,29 @@ def _knob_step_matching_path(base: Path | None = None) -> Path:
 
 
 def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
-    return _load_csv_rows(_knob_step_matching_path(base))
+    primary_path = _knob_step_matching_path(base)
+    rows = _load_csv_rows(primary_path)
+    root = base or _base_root()
+    meta = _RULEBOOK_FILES.get("step_matching", {})
+    legacy_fn = meta.get("legacy_filename")
+    if legacy_fn and primary_path.name.casefold() != str(legacy_fn).casefold():
+        legacy_path = root / str(legacy_fn)
+        if legacy_path.is_file():
+            legacy_rows = _load_csv_rows(legacy_path)
+            seen_pairs = {
+                (str(r.get("product") or "").strip().casefold(),
+                 str(r.get("step_desc") or r.get("function_step") or "").strip().casefold())
+                for r in rows
+            }
+            for lr in legacy_rows:
+                pair = (
+                    str(lr.get("product") or "").strip().casefold(),
+                    str(lr.get("step_desc") or lr.get("function_step") or "").strip().casefold()
+                )
+                if pair not in seen_pairs:
+                    rows.append(lr)
+                    seen_pairs.add(pair)
+    return rows
 
 
 # module 의 유일한 원천은 Vehicle_matching.csv 의 module 열이다.
@@ -1602,9 +1624,15 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
             "step_id": step_id,
             "module": _vehicle_module_of(r, sm),
         }
-        bucket = step_map.setdefault(step_desc_key, [])
-        if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
-            bucket.append(item)
+        for k in _dedup_list([
+            step_desc_key,
+            step_desc_key.replace("_", " "),
+            step_desc_key.replace(" ", "_"),
+            step_id.casefold(),
+        ]):
+            bucket = step_map.setdefault(k, [])
+            if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
+                bucket.append(item)
     return step_map
 
 
@@ -1889,6 +1917,12 @@ def _build_knob_meta(product: str = "") -> dict:
         if not step_desc:
             step_desc = _row_step_desc(r, km)
         step_desc_key = _step_desc_match_key(step_desc)
+        if not direct_ids and step_desc:
+            if step_desc.casefold() in step_by_id:
+                direct_ids = [step_desc]
+                direct_steps = [step_by_id[step_desc.casefold()]]
+            elif _re.match(r"^[A-Za-z]{2}\d{4,}", step_desc):
+                direct_ids = [step_desc]
         value = _first_row_value(
             r,
             km.get("value_col", "value"),
@@ -1940,16 +1974,24 @@ def _build_knob_meta(product: str = "") -> dict:
             parts.append(seg)
             if i < len(groups) - 1:
                 parts.append(" + ")
-        out[fname] = {
+        feature_entry = {
             "groups": groups,
             "label": "".join(parts),
             "modules": feat_modules,
         }
-        # SplitTable rows carry the physical ML_TABLE column name
-        # (for example `KNOB_5.0 PC`), while ppid_knob.csv stores only the
-        # feature tail (`5.0 PC`).  Expose both keys so row click / tooltip /
-        # display-rename paths all resolve to the same explicit ppid_knob rule.
-        out[f"KNOB_{fname}"] = out[fname]
+        clean_split = _re.sub(r"_split$", "", fname, flags=_re.I)
+        for base_k in _dedup_list([
+            fname,
+            clean_split,
+            fname.replace(" ", "_"),
+            clean_split.replace(" ", "_"),
+            fname.replace("_", " "),
+            clean_split.replace("_", " "),
+        ]):
+            out[base_k] = feature_entry
+            out[f"KNOB_{base_k}"] = feature_entry
+            out[f"{base_k}_Split"] = feature_entry
+            out[f"KNOB_{base_k}_Split"] = feature_entry
     for key, meta in _inferred_stage_meta(product, "KNOB").items():
         out.setdefault(key, meta)
     return out
@@ -2007,8 +2049,20 @@ def _register_step_order_meta(param_rank: dict[str, int], param_step: dict[str, 
         if not name:
             continue
         tail = name.split("_", 1)[1] if pref and name.upper().startswith(pref + "_") else name
-        aliases = _dedup_list([name, tail, f"{pref}_{tail}" if pref else tail])
-        for alias in aliases:
+        cand_list = [name, tail, f"{pref}_{tail}" if pref else tail]
+        variants = set()
+        for cand in cand_list:
+            if not cand:
+                continue
+            clean_split = _re.sub(r"_split$", "", cand, flags=_re.I)
+            for b in (cand, clean_split):
+                variants.add(b)
+                variants.add(f"{b}_Split")
+                variants.add(b.replace(" ", "_"))
+                variants.add(f"{b.replace(' ', '_')}_Split")
+                variants.add(b.replace("_", " "))
+                variants.add(f"{b.replace('_', ' ')}_Split")
+        for alias in variants:
             key = str(alias or "").strip().upper()
             if not key:
                 continue
@@ -2113,6 +2167,12 @@ def _step_order_sort_key(col_name: str, display: str, param_rank: dict):
     rank = param_rank.get(str(col_name or "").strip().upper())
     if rank is None:
         rank = param_rank.get(str(display or "").strip().upper())
+    if rank is None and col_name:
+        clean = _re.sub(r"_split$", "", str(col_name).strip(), flags=_re.I).upper()
+        rank = param_rank.get(clean) or param_rank.get(clean.replace(" ", "_")) or param_rank.get(clean.replace("_", " "))
+    if rank is None and display:
+        clean_disp = _re.sub(r"_split$", "", str(display).strip(), flags=_re.I).upper()
+        rank = param_rank.get(clean_disp) or param_rank.get(clean_disp.replace(" ", "_")) or param_rank.get(clean_disp.replace("_", " "))
     nat = _natural_param_key(display or col_name)
     if rank is None:
         return (1, 0, nat)

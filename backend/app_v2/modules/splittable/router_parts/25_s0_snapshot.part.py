@@ -458,6 +458,10 @@ def _ensure_knob_s0_snapshots_today() -> None:
 
 
 def _knob_s0_for_product(product: str, columns: list[str] | None = None) -> dict[str, dict]:
+    catalog = _s0_sop_catalog()
+    canonical_prod = _canonical_product_name(product).casefold()
+    if not canonical_prod or canonical_prod not in catalog:
+        return {}
     _ensure_knob_s0_snapshots_today()
     state = _s0_load_state()
     product_key = _canonical_product_name(product).upper()

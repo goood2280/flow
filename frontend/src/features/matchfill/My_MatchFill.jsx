@@ -5,7 +5,7 @@
  * Vehicle_matching.csv 가 step_desc 로 이미 정해 두므로 그쪽 module 을 그대로 가져온다.
  * PPID → FAB 공정은 ppid_knob.value를 FAB.ppid와 대조해 product/step_id를 찾고,
  * Vehicle_matching에서 같은 제품·step_id의 step_desc를 별도 열로 보강한다.
- * MASK → FAB 공정은 mask.reticle_id를 FAB.reticle_id와 같은 방식으로 대조한다.
+ * MASK → FAB 공정은 mask_info.reticle_id를 FAB.reticle_id와 같은 방식으로 대조한다.
  * 검사는 파일을 건드리지 않고 **제안**만 만들며, 관리자가 행 단위로 확인한 뒤
  * 전체 Before/After 확인창의 최종 확인을 눌렀을 때만 CSV 가 바뀐다.
  *
@@ -431,7 +431,7 @@ export default function My_MatchFill({ user }) {
               </Pill>
               {fabProcessMatch ? (
                 <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>
-                  기준: <b style={{ fontFamily: "monospace" }}>{fabMatchSource === "fab_reticle" ? "mask.reticle_id = FAB.reticle_id" : "ppid_knob.value = FAB.ppid"}</b>
+                  기준: <b style={{ fontFamily: "monospace" }}>{fabMatchSource === "fab_reticle" ? "mask_info.reticle_id = FAB.reticle_id" : "ppid_knob.value = FAB.ppid"}</b>
                   {column === "step_desc" ? <> → 같은 제품·step_id의 <b style={{ fontFamily: "monospace" }}>Vehicle_matching.step_desc</b></> : null}
                 </span>
               ) : column === "product" ? (

@@ -14,11 +14,6 @@ import LlmTab from "../../components/agent/LlmTab";
 // 이 목록은 _cleanTabs 의 화이트리스트다 — 여기 없는 탭 키는 권한 저장 시 조용히 버려지므로
 // backend core/auth.py 의 CANONICAL_PAGE_IDS 에 있는 사이드바 탭은 전부 실어둔다.
 const ALL_TABS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>tab.key);
-const BULK_GRID_COLUMNS=[
-  {key:"name",label:"name"},
-  {key:"username",label:"username"},
-];
-const BULK_GRID_HEADER_ALIASES={name:"name",이름:"name",username:"username",아이디:"username",id:"username"};
 const CANONICAL_PAGE_IDS=[...new Set([...ALL_TABS,"tablemap","groups","messages"])];
 const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",dbmap:"tablemap"};
 function _canonicalPageId(v){
@@ -77,26 +72,6 @@ function _tabCellMark(tokens,t){
   if(!subs.length)return"X";
   const all=(SUB_TABS[t]||[]).length;
   return all&&subs.length>=all?"O":"△";
-}
-function _newBulkUserRow(){return{name:"",username:""};}
-function _parseBulkGridText(text){
-  const src=String(text||"").replace(/\r/g,"");
-  const parse=(delimiter)=>{
-    const rows=[];let row=[],cell="",quoted=false;
-    for(let i=0;i<src.length;i++){
-      const ch=src[i],next=src[i+1];
-      if(quoted){
-        if(ch==='"'){if(next==='"'){cell+='"';i++;}else quoted=false;}else cell+=ch;
-      }else if(ch===delimiter){row.push(cell);cell="";}
-      else if(ch==='"'){quoted=true;}
-      else if(ch==="\n"){row.push(cell);rows.push(row);row=[];cell="";}
-      else cell+=ch;
-    }
-    row.push(cell);rows.push(row);
-    while(rows.length&&rows[rows.length-1].every(v=>v===""))rows.pop();
-    return rows;
-  };
-  return src.includes("\t")?parse("\t"):parse(",");
 }
 function _arr(v){return Array.isArray(v)?v:[];}
 function _obj(v){return v&&typeof v==="object"&&!Array.isArray(v)?v:{};}
@@ -334,12 +309,6 @@ export default function My_Admin({user}){
   // 멤버를 넣으면 멤버의 권한이 그룹 권한으로 자동 적용된다 (perm_groups.json).
   const[permGroups,setPermGroups]=useState([]);
   const[pgEdit,setPgEdit]=useState(null);   // {orig, name, tabs:[], members:[], departments:[]}
-  const[bulkUserRows,setBulkUserRows]=useState(()=>Array.from({length:8},_newBulkUserRow));
-  const[bulkDefaultPassword,setBulkDefaultPassword]=useState("");
-  const[bulkActiveCell,setBulkActiveCell]=useState({r:0,c:0});
-  const bulkGridRef=useRef(null);
-  const[bulkUsersResult,setBulkUsersResult]=useState(null);
-  const[bulkUsersBusy,setBulkUsersBusy]=useState(false);
   // v8.7.1: Admin Activity Log 필터
   const[logUsers,setLogUsers]=useState([]);
   const[logFilter,setLogFilter]=useState({username:"",action:"",tab:""});
@@ -471,80 +440,6 @@ export default function My_Admin({user}){
       .then(d=>{setPermGroups(d.groups||[]);toast.ok("권한 그룹 삭제됨");})
       .catch(e=>toast.error(e.message||"삭제 실패"));
   };
-  const patchBulkCell=(r,c,value)=>{
-    const key=BULK_GRID_COLUMNS[c]?.key;
-    if(!key)return;
-    setBulkUserRows(prev=>{
-      const next=prev.slice();
-      while(next.length<=r)next.push(_newBulkUserRow());
-      next[r]={...next[r],[key]:value};
-      return next;
-    });
-  };
-  const focusBulkCell=(r,c)=>{
-    const row=Math.max(0,r),col=Math.max(0,Math.min(c,BULK_GRID_COLUMNS.length-1));
-    setBulkActiveCell({r:row,c:col});
-    requestAnimationFrame(()=>{
-      const el=bulkGridRef.current?.querySelector(`input[data-bulk-row="${row}"][data-bulk-col="${col}"]`);
-      if(el){el.focus();el.select();}
-    });
-  };
-  const onBulkCellKeyDown=(e)=>{
-    if(e.nativeEvent?.isComposing||e.keyCode===229)return;
-    const r=Number(e.currentTarget.dataset.bulkRow),c=Number(e.currentTarget.dataset.bulkCol);
-    let nr=r,nc=c;
-    if(e.key==="Enter")nr+=e.shiftKey?-1:1;
-    else if(e.key==="Tab"){nc+=e.shiftKey?-1:1;if(nc>=BULK_GRID_COLUMNS.length){nc=0;nr+=1;}if(nc<0){nc=BULK_GRID_COLUMNS.length-1;nr-=1;}}
-    else if(e.key==="ArrowUp")nr-=1;
-    else if(e.key==="ArrowDown")nr+=1;
-    else return;
-    e.preventDefault();
-    if(nr>=bulkUserRows.length)setBulkUserRows(rows=>[...rows,_newBulkUserRow()]);
-    focusBulkCell(Math.max(0,nr),nc);
-  };
-  const onBulkGridPaste=(e)=>{
-    const text=e.clipboardData?.getData("text/plain")||"";
-    if(!text||(!/[\t\r\n]/.test(text)&&e.target?.tagName==="INPUT"))return;
-    e.preventDefault();
-    const pasted=_parseBulkGridText(text);
-    if(!pasted.length)return;
-    const headerKeys=(pasted[0]||[]).map(v=>BULK_GRID_HEADER_ALIASES[String(v||"").trim().toLowerCase()]||"");
-    const hasHeader=headerKeys.some(Boolean)&&headerKeys.filter(Boolean).length>=2;
-    const dataRows=hasHeader?pasted.slice(1):pasted;
-    const startR=bulkActiveCell.r||0,startC=bulkActiveCell.c||0;
-    setBulkUserRows(prev=>{
-      const next=prev.slice();
-      dataRows.forEach((values,ri)=>{
-        const targetR=startR+ri;
-        while(next.length<=targetR)next.push(_newBulkUserRow());
-        const row={...next[targetR]};
-        values.forEach((value,ci)=>{
-          const key=hasHeader?headerKeys[ci]:BULK_GRID_COLUMNS[startC+ci]?.key;
-          if(key)row[key]=String(value??"");
-        });
-        next[targetR]=row;
-      });
-      return next;
-    });
-    const endC=hasHeader?Math.max(0,headerKeys.reduce((m,key)=>key?Math.max(m,BULK_GRID_COLUMNS.findIndex(c=>c.key===key)):m,0))
-      :Math.min(BULK_GRID_COLUMNS.length-1,startC+Math.max(0,(pasted[0]?.length||1)-1));
-    setBulkActiveCell({r:startR+Math.max(0,dataRows.length-1),c:endC});
-  };
-  const submitBulkUsers=()=>{
-    const rows=bulkPreviewRows.filter(row=>!row.empty&&!row.issue).map(({name,username})=>({name,username}));
-    if(!rows.length){toast.warn("생성할 사용자 행이 없습니다.");return;}
-    if(bulkDefaultPassword.length<10){toast.warn("임시 비밀번호를 10자 이상 입력해 주세요.");return;}
-    setBulkUsersBusy(true);
-    sf("/api/admin/bulk-users",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({rows,default_password:bulkDefaultPassword})
-    }).then((d)=>{
-      setBulkUsersResult(d||{});
-      if(_arr(d?.created).length){setBulkUserRows(Array.from({length:8},_newBulkUserRow));setBulkDefaultPassword("");}
-      load();
-    }).catch((e)=>toast.error(e.message)).finally(()=>setBulkUsersBusy(false));
-  };
   const markRead=(ids)=>{if(!ids.length)return;sf("/api/admin/mark-read-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",ids})}).then(()=>{load();window.dispatchEvent(new CustomEvent("hol:notif-refresh"));}).catch(()=>{});};
   const toggleRead=(n)=>{if(!n.id)return;markRead([n.id]);};
   // "모두 읽음"은 화면에 로드된 id 만 보내면 안 된다. /all-notifications 는 최근
@@ -591,23 +486,6 @@ export default function My_Admin({user}){
    .filter(d=>(!dlFilter.source||d.source===dlFilter.source)
      &&(!dlFilter.q||`${d.username} ${d.target} ${d.detail}`.toLowerCase().includes(dlFilter.q.toLowerCase())));
   const resourceChartHours=resWindow==="7d"?168:24;
-  const bulkPreviewRows=useMemo(()=>{
-    const existing=new Set(_arr(users).map(u=>String(u?.username||"").trim().toLowerCase()).filter(Boolean));
-    const seen=new Set();
-    return _arr(bulkUserRows).map((row,index)=>{
-      const key=String(row.username||"").trim().toLowerCase();
-      let issue="";
-      const hasValue=[row.name,row.username].some(v=>String(v||"").trim());
-      if(!hasValue)return{...row,row:index+1,empty:true,issue:""};
-      if(!key)issue="아이디 누락";
-      else if(existing.has(key))issue="기존 사용자";
-      else if(seen.has(key))issue="중복 행";
-      else seen.add(key);
-      return{...row,role:"user",row:index+1,tabs:[],issue};
-    });
-  },[bulkUserRows,users]);
-  const bulkCreatableCount=bulkPreviewRows.filter(row=>!row.empty&&!row.issue).length;
-
   return(
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
       <PageHeader
@@ -666,69 +544,9 @@ export default function My_Admin({user}){
               </td></tr>)}</tbody>
           </table>
         </div>
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10}}>
-              <div>
-                <div style={{fontSize:14,fontWeight:700}}>사용자 일괄 생성</div>
-                <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4}}>아래 테이블에 사용자를 입력합니다. 생성 계정은 모든 권한이 없는 상태로 시작합니다.</div>
-              </div>
-              <Button variant="primary" onClick={submitBulkUsers} disabled={bulkUsersBusy||!bulkCreatableCount||bulkDefaultPassword.length<10}>{bulkUsersBusy?"생성 중...":`일괄 생성 ${bulkCreatableCount}건`}</Button>
-            </div>
-            {bulkUsersResult&&<Banner tone={_arr(bulkUsersResult.skipped).length?"warn":"ok"} style={{marginBottom:10}}>
-              생성 {_arr(bulkUsersResult.created).length}건 / 건너뜀 {_arr(bulkUsersResult.skipped).length}건
-            </Banner>}
-            <div style={{display:"grid",gap:10}}>
-              <label style={{display:"grid",gap:5,maxWidth:420,fontSize:13,color:"var(--text-secondary)"}}>
-                신규 계정 임시 비밀번호 (필수, 10자 이상)
-                <input type="password" value={bulkDefaultPassword} onChange={e=>setBulkDefaultPassword(e.target.value)} autoComplete="new-password"
-                  placeholder="공통 임시 비밀번호 입력" style={{height:36,padding:"0 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)"}}/>
-              </label>
-              <div style={{fontSize:12,color:"var(--text-secondary)"}}>Excel의 이름·아이디 두 열을 복사한 뒤 시작 셀에서 Ctrl+V로 붙여넣으세요. 헤더(name/이름, username/아이디)가 있으면 자동으로 제외합니다. 생성 계정은 일반 유저·이메일 없음·기본 권한 없음으로 저장됩니다.</div>
-              <div ref={bulkGridRef} onPaste={onBulkGridPaste} style={{border:"1px solid var(--border)",borderRadius:8,overflow:"auto",background:"var(--bg-primary)",maxHeight:390}}>
-                <table style={{width:"100%",borderCollapse:"separate",borderSpacing:0,fontSize:13,fontFamily:"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",minWidth:560}}>
-                  <thead><tr>
-                    <th style={{position:"sticky",top:0,left:0,zIndex:4,width:60,minWidth:60,height:34,background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",textAlign:"center"}}>#</th>
-                    {BULK_GRID_COLUMNS.map((col,ci)=><th key={col.key} onClick={()=>focusBulkCell(bulkActiveCell.r,ci)} style={{position:"sticky",top:0,zIndex:3,height:34,minWidth:220,padding:"0 10px",background:bulkActiveCell.c===ci?"#dbeafe":"var(--bg-tertiary)",color:"var(--text-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",textAlign:"left",whiteSpace:"nowrap"}}>{col.label}</th>)}
-                    <th style={{position:"sticky",top:0,zIndex:3,minWidth:112,padding:"0 10px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",textAlign:"left"}}>status</th>
-                  </tr></thead>
-                  <tbody>{bulkPreviewRows.map((row,ri)=><tr key={ri}>
-                    <td style={{position:"sticky",left:0,zIndex:2,height:34,padding:"0 6px",background:bulkActiveCell.r===ri?"rgba(59,130,246,0.12)":"var(--bg-tertiary)",color:"var(--text-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",textAlign:"center"}}>
-                      <span style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}><span>{ri+1}</span><button type="button" title={`${ri+1}행 삭제`} onClick={()=>setBulkUserRows(rows=>rows.length>1?rows.filter((_,i)=>i!==ri):[_newBulkUserRow()])} style={{width:20,height:20,padding:0,borderRadius:3,border:"1px solid var(--danger-line)",background:"transparent",color:"var(--danger,#ef4444)",cursor:"pointer"}}>×</button></span>
-                    </td>
-                    {BULK_GRID_COLUMNS.map((col,ci)=>{const active=bulkActiveCell.r===ri&&bulkActiveCell.c===ci;return <td key={col.key} onClick={()=>setBulkActiveCell({r:ri,c:ci})} style={{height:34,padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",background:active?"#dbeafe":bulkActiveCell.r===ri?"rgba(59,130,246,0.06)":bulkActiveCell.c===ci?"rgba(59,130,246,0.04)":"var(--bg-primary)"}}>
-                      <input value={String(bulkUserRows[ri]?.[col.key]??"")} onChange={e=>patchBulkCell(ri,ci,e.target.value)} onFocus={()=>setBulkActiveCell({r:ri,c:ci})} onKeyDown={onBulkCellKeyDown}
-                        data-bulk-row={ri} data-bulk-col={ci} spellCheck={false}
-                        style={{width:"100%",height:34,boxSizing:"border-box",padding:"0 10px",border:"none",outline:active?"2px solid var(--accent)":"none",outlineOffset:-2,background:"transparent",color:"var(--text-primary)",fontSize:13,fontFamily:"inherit"}}/>
-                    </td>;})}
-                    <td style={{height:34,padding:"0 9px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",fontFamily:"'Pretendard',sans-serif"}}>{row.empty?<span style={{color:"var(--text-secondary)"}}>-</span>:<Pill tone={row.issue?"warn":"ok"}>{row.issue||"생성 예정"}</Pill>}</td>
-                  </tr>)}</tbody>
-                </table>
-                <div style={{padding:8,borderTop:"1px solid var(--border)",background:"var(--bg-secondary)"}}><Button variant="subtle" onClick={()=>setBulkUserRows(rows=>[...rows,_newBulkUserRow()])}>＋ 행 추가</Button></div>
-              </div>
-            </div>
-            {bulkUsersResult&&<div style={{border:"1px solid var(--border)",borderRadius:8,overflow:"auto",marginTop:10,background:"var(--bg-primary)",maxHeight:180}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
-                <thead><tr>{["결과","행","아이디","상세"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",position:"sticky",top:0,zIndex:1}}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {!_arr(bulkUsersResult.created).length&&!_arr(bulkUsersResult.skipped).length&&<tr><td colSpan={4} style={{padding:18,textAlign:"center",color:"var(--text-secondary)"}}>결과 없음</td></tr>}
-                  {_arr(bulkUsersResult.created).map((row,idx)=><tr key={`c-${idx}`}>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone="ok">생성</Pill></td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>-</td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{row.username}</td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.role} · {row.name||"-"}</td>
-                  </tr>)}
-                  {_arr(bulkUsersResult.skipped).map((row,idx)=><tr key={`s-${idx}`}>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone="warn">건너뜀</Pill></td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.row}</td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{row.username||"-"}</td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.reason}</td>
-                  </tr>)}
-                </tbody>
-              </table>
-            </div>}
-          </div>
-        </div>
+        <Banner tone="info">
+          신규 사용자는 로그인 화면의 가입 신청으로만 등록됩니다. 가입 신청 후 이 화면에서 승인 또는 거절해 주세요.
+        </Banner>
       </div>}
 
       {/* Permissions (admin only) */}

@@ -100,6 +100,58 @@ def test_mask_scan_proposes_product_step_and_vehicle_desc(monkeypatch):
     assert step_desc["rows"][0]["scoped"] == ["PRODA · S20 · PHOTO"]
 
 
+def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
+    from core import matching_fill as matching
+    from core import valve_alerts
+
+    mask_info = tmp_path / "mask_info.csv"
+    legacy_mask = tmp_path / "mask.csv"
+    mask_info.write_text("reticle_id,mask\nRET_A,MASK_A\n", encoding="utf-8")
+    legacy_mask.write_text("reticle_id,mask\nLEGACY,OLD\n", encoding="utf-8")
+    monkeypatch.setattr(matching, "_db_root", lambda: tmp_path)
+
+    columns, rows = matching._read_csv("mask")
+    assert matching.TARGETS["mask"]["file"] == "mask_info.csv"
+    assert columns == ["reticle_id", "mask"]
+    assert rows[0]["reticle_id"] == "RET_A"
+
+    proposal = {
+        "target": "mask",
+        "column": "product",
+        "file": "mask_info.csv",
+        "scanned_at": "2026-09-03T09:00:00",
+        "applied": False,
+        "add_column": True,
+        "rows": [{
+            "i": 0, "status": "fill", "current": "", "proposed": "PRODA",
+        }],
+    }
+    monkeypatch.setattr(matching, "get_proposal", lambda *args, **kwargs: proposal)
+    monkeypatch.setattr(valve_alerts, "_after_write", lambda *args, **kwargs: {})
+
+    result = matching.apply_proposal(
+        "mask", column="product", expected_scanned_at=proposal["scanned_at"],
+    )
+
+    columns, rows = matching._read_csv("mask")
+    assert result["file"] == "mask_info.csv"
+    assert columns == ["product", "reticle_id", "mask"]
+    assert rows[0]["product"] == "PRODA"
+    assert legacy_mask.read_text(encoding="utf-8") == "reticle_id,mask\nLEGACY,OLD\n"
+
+
+def test_stale_mask_csv_proposal_is_hidden(monkeypatch):
+    from core import matching_fill as matching
+
+    monkeypatch.setattr(matching, "_load_store", lambda: {
+        "proposals": {
+            "mask:product": {"target": "mask", "column": "product", "file": "mask.csv"},
+        },
+    })
+
+    assert matching.get_proposal("mask", "product") is None
+
+
 def test_split_knob_meta_prefers_product_scoped_fab_step_columns(monkeypatch, tmp_path):
     from routers import splittable
 

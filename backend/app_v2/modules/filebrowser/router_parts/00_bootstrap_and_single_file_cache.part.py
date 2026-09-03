@@ -665,8 +665,8 @@ CORE_BASE_FILES = {
         "order": 50,
     },
     "mask_info.csv": {
-        "role": "RETICLE -> MASK (2열)",
-        "description": "제품 구분 없이 reticle_id 를 mask 이름으로 변환 — FAB 매칭알람이 갱신",
+        "role": "RETICLE -> MASK",
+        "description": "전역 reticle_id를 mask 이름으로 변환하고 제품/공정 메타데이터를 보강 — FAB 매칭알람·매칭채우기가 갱신",
         "order": 51,
     },
     "vm_matching.csv": {

@@ -25,7 +25,7 @@ from core.notify import (
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
 from routers.auth import read_users, write_users
-from core.auth import canonical_page_id, canonical_tab_token, canonical_username, effective_permissions, get_page_admins, require_admin, current_user, validate_username, verify_owner
+from core.auth import canonical_page_id, canonical_tab_token, effective_permissions, get_page_admins, require_admin, current_user, verify_owner
 from core.audit import ACTIVITY_LOG_MAX_BYTES, append_activity, record as _audit
 from core import s3_sync as _s3
 from core import root_profile
@@ -404,13 +404,6 @@ class BackupScheduleReq(BaseModel):
 class BackupRestoreReq(BaseModel):
     filename: str
     restore_db_root_files: bool = False
-class BulkUsersReq(BaseModel):
-    text: str = ""  # legacy API compatibility
-    rows: List[Dict[str, Any]] = []
-    default_password: str = ""
-    # 하위 호환 입력 필드. 신규 계정 권한은 서버에서 항상 없음으로 강제한다.
-    default_tabs: Any = None
-
 # ── 워커 분산 (v9.4.x — docs/WORKER_DISPATCH.md) ──────────────────────────────
 # 관리자 탭(모니터 → 워커 서버)에서 역할 확인/변경, 개발서버 신호등, 원격 기동.
 
@@ -627,113 +620,6 @@ def delete_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)
         detail += f";permission_groups={','.join(removed_groups)}"
     _audit(request, "admin:delete-user", detail=detail, tab="admin")
     return {"ok": True, "removed_from_permission_groups": removed_groups}
-
-
-@router.post("/bulk-users")
-def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(require_admin)):
-    from core.auth import hash_password
-    default_pw = str(req.default_password or "")
-    if len(default_pw) < 10:
-        raise HTTPException(400, "default_password must be explicitly set and at least 10 characters")
-    if default_pw.strip().casefold() in {"1111", "1234", "password", "password1", "hol12345!"}:
-        raise HTTPException(400, "default_password is too weak")
-
-    def _split_row(line: str) -> list[str]:
-        if "\t" in line:
-            return line.split("\t")
-        return line.split(",")
-
-    input_rows: list[tuple[int, dict[str, str]]] = []
-    if req.rows:
-        for idx, row in enumerate(req.rows, start=1):
-            if not isinstance(row, dict):
-                continue
-            input_rows.append((idx, {
-                "name": str(row.get("name") or "").strip(),
-                "username": str(row.get("username") or "").strip(),
-                "email": str(row.get("email") or "").strip(),
-                "role": str(row.get("role") or "user").strip() or "user",
-                "tabs": str(row.get("tabs") or "").strip(),
-            }))
-    else:
-        # Legacy callers may still send tab/comma separated text. The Admin UI
-        # now sends structured table rows instead.
-        raw = str(req.text or "").replace("\r\n", "\n").replace("\r", "\n")
-        lines = [ln for ln in raw.split("\n") if ln.strip()]
-        if lines:
-            parsed_rows = [_split_row(ln) for ln in lines]
-            header = [str(x or "").strip().lower() for x in parsed_rows[0]]
-            has_header = any(x in {"name", "username", "email", "role", "tabs"} for x in header)
-            body = parsed_rows[1:] if has_header else parsed_rows
-            for idx, parts in enumerate(body, start=1):
-                vals = [str(x or "").strip() for x in parts]
-                if has_header:
-                    data = {header[i]: vals[i] if i < len(vals) else "" for i in range(len(header))}
-                else:
-                    third = vals[2] if len(vals) >= 3 else ""
-                    data = {
-                        "name": vals[0] if len(vals) >= 1 else "",
-                        "username": vals[1] if len(vals) >= 2 else (vals[0] if vals else ""),
-                        "email": third if "@" in third else "",
-                        "role": (vals[3] if len(vals) >= 4 else "user") if "@" in third else (third or "user"),
-                        "tabs": (vals[4] if len(vals) >= 5 else "") if "@" in third else (vals[3] if len(vals) >= 4 and "," in vals[3] else ""),
-                    }
-                input_rows.append((idx, data))
-    if not input_rows:
-        raise HTTPException(400, "No rows provided")
-    users = read_users()
-    # `hong` 과 `hong@corp.com` 은 같은 계정 — 중복 판정도 canonical 키로 한다.
-    existing = {canonical_username(str(u.get("username") or "")) for u in users}
-    existing.discard("")
-    created = []
-    skipped = []
-    for idx, data in input_rows:
-      username = (data.get("username") or "").strip()
-      name = (data.get("name") or "").strip()
-      email = (data.get("email") or "").strip()
-      username = username.strip()
-      if not username:
-          skipped.append({"row": idx, "reason": "missing username"})
-          continue
-      try:
-          username = validate_username(username)
-      except ValueError as exc:
-          skipped.append({"row": idx, "username": username, "reason": str(exc)})
-          continue
-      key = canonical_username(username)
-      if key in existing:
-          skipped.append({"row": idx, "username": username, "reason": "already exists"})
-          continue
-      if not email and "@" in username:
-          email = username          # 전체 주소로 적어 왔으면 메일 주소로도 남긴다
-      username = key or username    # 저장은 사내 id 형태로 통일
-      if email and "@" not in email:
-          email = ""
-      # 관리자 화면/API에서 처음 만든 계정도 일반 가입과 동일하게 시작한다.
-      # 요청에 legacy role/tabs/default_tabs 값이 들어와도 초기 권한을 부여하지 않는다.
-      role = "user"
-      tabs = ""
-      user_row = {
-          "username": username,
-          "password_hash": hash_password(default_pw),
-          "role": role,
-          "status": "approved",
-          "created": dt.datetime.now().isoformat(),
-          "last_login": "",
-          "tabs": tabs,
-          "email": email,
-          "name": name,
-          "sso_id": "",
-          "department": "",
-          "permission_source": "",
-      }
-      users.append(user_row)
-      existing.add(key)
-      created.append({"username": username, "name": name, "role": role, "tabs": tabs})
-
-    write_users(users)
-    _audit(request, "admin:bulk-users", detail=f"created={len(created)} skipped={len(skipped)}", tab="admin")
-    return {"ok": True, "created": created, "skipped": skipped}
 
 
 # ── Permissions ──

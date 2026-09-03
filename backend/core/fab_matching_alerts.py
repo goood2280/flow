@@ -9,8 +9,9 @@ module makes Flow authoritative instead:
 * a PPID without an explicit rule for the step's function step becomes
   ``ro_ppid`` and can be added to ``ppid_knob.csv`` from the existing page;
 * a FAB ``reticle_id`` absent from ``mask_info.csv`` becomes ``missing_reticle``
-  and can be added there with its mask name.  That file has no product column,
-  so the alert is keyed by reticle_id alone and merged across products.
+  and can be added there with its mask name.  Reticle identity is global even
+  when matching-fill adds product/step metadata columns, so the alert remains
+  keyed by reticle_id alone and merged across products.
 
 The public shape deliberately matches the old valve-alert API so bookmarked
 URLs and the page permission key (``valve``) do not need a migration.
@@ -59,8 +60,9 @@ PLAN_DIR = PATHS.data_root / "splittable"
 
 PPID_KNOB_FILE = "ppid_knob.csv"
 VEHICLE_MATCHING_FILE = "Vehicle_matching.csv"
-# reticle_id → mask 이름 룰북.  제품 구분이 없는 2열(reticle_id, mask) 파일이라
-# 알람 키도 제품이 아니라 reticle_id 하나로 잡는다.
+# reticle_id → mask 이름 룰북. reticle_id/mask가 정본 열이고 매칭채우기가
+# product/step_id/step_desc 메타데이터 열을 덧붙일 수 있다. 알람 키는 제품이 아니라
+# 전역 reticle_id 하나로 잡는다.
 MASK_INFO_FILE = "mask_info.csv"
 MASK_INFO_COLUMNS = ["reticle_id", "mask"]
 
@@ -709,8 +711,8 @@ def _alerts_for_product(product: dict, observations: list[dict],
         if not reticle_id or _norm(reticle_id) in known_reticles:
             continue
         step_ids = list(evidence.get("step_ids") or [])
-        # mask_info.csv 에는 제품 열이 없다 — 알람 ID 도 reticle_id 로만 만들어
-        # 여러 제품에서 같은 reticle 이 빠져 있어도 판정은 한 번만 하게 한다.
+        # mask_info.csv에 제품 메타데이터 열이 있어도 reticle→mask 규칙은 전역이다.
+        # 알람 ID도 reticle_id로만 만들어 여러 제품의 동일 누락은 한 번만 판정한다.
         alert_id = f"fab-reticle|{_norm(reticle_id)}"
         alerts.append({**common(alert_id, step_ids[0] if step_ids else "", evidence),
                        "type": "missing_reticle", "reticle_id": reticle_id,
@@ -979,7 +981,7 @@ def list_alerts() -> dict:
             prior = merged_by_id.get(alert["id"])
             if prior is None:
                 alert["products"] = [alert.get("product")] if alert.get("product") else []
-                # mask_info.csv 는 전 제품 공용이라 reticle 알람 자체는 한 줄로
+                # mask_info.csv 의 reticle→mask 규칙은 전 제품 공용이라 알람은 한 줄로
                 # 합치되, 화면에서 제품을 골랐을 때는 그 제품에서 발견한 근거만
                 # 보여줄 수 있도록 합치기 전 수치를 함께 보존한다.
                 alert["product_evidence"] = [{
