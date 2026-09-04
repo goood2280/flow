@@ -1,4 +1,5 @@
 import datetime
+import json
 from pathlib import Path
 
 import polars as pl
@@ -7,22 +8,42 @@ from core import shared_lease
 from routers import splittable
 
 
-def test_sop_reader_prefers_explicit_por_row(tmp_path):
-    path = tmp_path / "PRODA_sop.csv"
-    path.write_text(
-        "step_id,ppid,status\nAA100,PP_SPLIT,split\nAA100,PP_STD,POR\nAA200,PP_TWO,\n",
-        encoding="utf-8",
-    )
-    rows = splittable._s0_read_sop_file(path)
-    assert rows["aa100"]["ppid"] == "PP_STD"
-    assert rows["aa200"]["ppid"] == "PP_TWO"
+def test_f_step_catalog_maps_product_step_to_current_recipe(tmp_path, monkeypatch):
+    db_root = tmp_path / "Fab"
+    confidential = db_root / "confidential"
+    confidential.mkdir(parents=True)
+    source_path = confidential / "f_step.parquet"
+    pl.DataFrame({
+        "product_id": ["PRODA", "PRODA", "PRODA", "PRODB"],
+        "step_id": ["AA100", "AA200", "AA100", "BB100"],
+        "recipe_id": ["PP_OLD", "PP_TWO", "PP_CURRENT", "PP_B"],
+    }).write_parquet(source_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: db_root)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path / "Base")
+    monkeypatch.setattr(splittable, "_S0_CATALOG_CACHE", None)
+
+    catalog = splittable._s0_sop_catalog()
+
+    assert catalog["proda"]["step_order"] == ["AA100", "AA200"]
+    assert catalog["proda"]["rows"]["aa100"]["ppid"] == "PP_CURRENT"
+    assert catalog["prodb"]["rows"]["bb100"]["ppid"] == "PP_B"
+
+
+def test_f_step_without_product_column_is_a_global_step_recipe_map(tmp_path):
+    path = tmp_path / "f_step.parquet"
+    pl.DataFrame({"step_id": ["AA100"], "recipe_id": ["PP_STD"]}).write_parquet(path)
+
+    catalog = splittable._s0_read_f_step_file(path)
+
+    assert catalog["*"]["step_order"] == ["AA100"]
+    assert splittable._s0_source_for_product(catalog, "ANY_PRODUCT")["rows"]["aa100"]["ppid"] == "PP_STD"
 
 
 def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path, monkeypatch):
-    credential = tmp_path / "Fab" / "credential"
-    credential.mkdir(parents=True)
-    source_path = credential / "PRODA_sop.csv"
-    source_path.write_text("step_id,ppid\nAA100,PP_A\n", encoding="utf-8")
+    confidential = tmp_path / "Fab" / "confidential"
+    confidential.mkdir(parents=True)
+    source_path = confidential / "f_step.parquet"
+    pl.DataFrame({"product": ["PRODA"], "step_id": ["AA100"], "recipe_id": ["PP_A"]}).write_parquet(source_path)
     state_file = tmp_path / "state" / "knob_s0_registry.json"
     daily_dir = tmp_path / "state" / "daily"
     mutable = {
@@ -43,6 +64,7 @@ def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path,
             "file": source_path.name,
             "path": source_path,
             "modified_at": "2026-09-03T01:00:00",
+            "step_order": ["AA100"],
             "rows": {"aa100": {"step_id": "AA100", "ppid": mutable["por"]["KNOB_ALPHA"]["ppid"]}},
         }
     })
@@ -55,7 +77,7 @@ def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path,
     assert first["knobs_captured"] == 1
     state = splittable._s0_load_state()
     assert state["products"]["PRODA"]["KNOB_ALPHA"]["ppid"] == "PP_A"
-    archived = credential / "PRODA" / "2026-09-03.parquet"
+    archived = daily_dir / "source" / "PRODA" / "2026-09-03.parquet"
     assert archived.is_file()
     frame = pl.read_parquet(archived)
     assert frame.filter(pl.col("step_id") == "AA100")["por_ppid"].item() == "PP_A"
@@ -73,7 +95,21 @@ def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path,
     state = splittable._s0_load_state()
     assert state["products"]["PRODA"]["KNOB_ALPHA"]["ppid"] == "PP_A"
     assert state["products"]["PRODA"]["KNOB_BETA"]["ppid"] == "PP_B"
-    assert (credential / "PRODA" / "2026-09-04.parquet").is_file()
+    assert (daily_dir / "source" / "PRODA" / "2026-09-04.parquet").is_file()
+
+
+def test_legacy_csv_s0_registry_is_reset_for_f_step_source(tmp_path, monkeypatch):
+    state_file = tmp_path / "knob_s0_registry.json"
+    state_file.write_text(json.dumps({
+        "schema_version": 1,
+        "products": {"PRODA": {"KNOB_A": {"ppid": "CSV_OLD"}}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(splittable, "_S0_STATE_FILE", state_file)
+
+    state = splittable._s0_load_state()
+
+    assert state["schema_version"] == 2
+    assert state["products"] == {}
 
 
 def test_split_exports_put_snapshot_por_in_s0_even_when_not_first_observed():

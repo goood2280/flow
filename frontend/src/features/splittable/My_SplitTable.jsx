@@ -1409,7 +1409,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const suggestionValuesFor=(param,base=[])=>{
     const out=[];const seen=new Set();
     const add=(v)=>{if(!hasValue(v))return;const s=String(v).trim();if(!s||seen.has(s))return;seen.add(s);out.push(s);};
-    // 1. SOP PPID & Split name from credential/<product>_sop.csv via s0_by_knob
+    // 1. Current POR recipe from confidential/f_step.parquet via s0_by_knob
     const sopVal=s0ValueForParam(data,param);
     if(sopVal){
       const sopSplit=resolveSplitDisplayName(param,sopVal);
@@ -2555,6 +2555,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         // 서버 step_progress: latest-lot 캐시 기준 현재 진행 step 보다 뒤(미진행) 공정의 행은 진한 회색.
         const fabMissing=data?.step_progress?.fab_missing===true;
         const notReachedParams=new Set(Array.isArray(data?.step_progress?.not_reached)?data.step_progress.not_reached:[]);
+        const trackedProgressParams=new Set(Array.isArray(data?.step_progress?.tracked)?data.step_progress.tracked:[]);
+        const hasTrackedProgressContract=Array.isArray(data?.step_progress?.tracked);
         const notReachedStep=data?.step_progress?.step_id||"";
         const waferStepProgress=Object.fromEntries(Object.entries(data?.step_progress?.by_wafer||{}).map(([wafer,meta])=>[
           String(wafer).replace(/^(?:#|WAFER|WF|W)\s*/i,"").replace(/^0+(?=\d)/,""),
@@ -2580,6 +2582,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         // 칸은 칠하지 않는다 — 가운데가 빈 건 "아직 안 왔다"가 아니라 그 step 에 값이
         // 없는 것뿐이다. 회색은 마지막으로 채워진 split **뒤에서만** 시작한다.
         //
+        // f_step route에 없는 step_id 미매칭 행은 표 하단에 그대로 보이지만 진행
+        // 경계에서는 제외한다. 그 행의 값이 실제 미진행 공정 회색을 막으면 안 된다.
         // viewRows(잘리기 전 전체)로 계산한다. displayRows 는 스크롤에 따라 늘어나는
         // 앞부분 슬라이스라(인덱스는 같다), 그걸로 재면 스크롤할 때마다 회색이 바뀐다.
         const displayValueOf=(row,ci)=>{
@@ -2590,12 +2594,23 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         };
         const headerCount=(data.headers||[]).length;
         const lastFilledRowByCol=new Array(headerCount).fill(-1);
+        const rowTracksStepProgress=viewRows.map(row=>{
+          const param=String(row?._param||"").trim();
+          if(!isKnobProgressRow(param))return false;
+          if(hasTrackedProgressContract)return trackedProgressParams.has(param);
+          const kind=matchKindOf(param);
+          const columns=kind?matchProcessColumns(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta}):null;
+          return Boolean(String(columns?.step_id||"").trim());
+        });
         const rowHasNoSplit=viewRows.map((row,ri)=>{
           let any=false;
           for(let ci=0;ci<headerCount;ci+=1){
-            if(hasValue(displayValueOf(row,ci))){any=true;lastFilledRowByCol[ci]=ri;}
+            if(hasValue(displayValueOf(row,ci))){
+              any=true;
+              if(rowTracksStepProgress[ri])lastFilledRowByCol[ci]=ri;
+            }
           }
-          return !any;
+          return rowTracksStepProgress[ri]&&!any;
         });
         const normalizedSelection=selectedCellRange
           ? normalizeCellRange(selectedCellRange.startRow,selectedCellRange.startCol,selectedCellRange.endRow,selectedCellRange.endCol)
@@ -3035,6 +3050,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             // 위 lastFilledRowByCol / rowHasNoSplit 주석 참조.
             const cellNotReachedAt=(ci)=>{
               if(!isKnobProgressRow(rowParam))return false;
+              if(!rowTracksStepProgress[ri])return false;
               if(hasValue(cellDisplayValueAt(ci)))return false;
               // 이 wafer 열에서 더 뒤 step 에 split 이 채워져 있으면 여긴 아직 회색이 아니다.
               if(ri<lastFilledRowByCol[ci])return false;

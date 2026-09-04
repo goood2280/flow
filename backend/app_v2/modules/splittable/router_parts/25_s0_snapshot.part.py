@@ -1,12 +1,14 @@
-"""Daily product SOP -> immutable SplitTable KNOB S0 assignments.
+"""Daily f_step route -> immutable SplitTable KNOB S0 assignments.
 
-The source CSV is intentionally kept under ``<db_root>/credential``.  A daily
-run reads current POR PPIDs, discovers KNOB columns from ML_TABLE schemas, and
-only appends assignments for KNOBs that have never been seen before.  Existing
-assignments are immutable so later SOP changes cannot rewrite historical S0.
+The authoritative source is ``<db_root>/confidential/f_step.parquet``.  Its
+``step_id`` identifies the process step and ``recipe_id`` is the current POR
+PPID used when an S0 assignment is first captured.  One file can contain every
+product; a product column is used when present, otherwise step IDs are treated
+as globally unique.  Existing assignments stay immutable so later POR changes
+cannot rewrite historical SplitTable S0 values.
 """
 
-_S0_STATE_VERSION = 1
+_S0_STATE_VERSION = 2
 _S0_STATE_FILE = PLAN_DIR / "knob_s0_registry.json"
 _S0_DAILY_DIR = PLAN_DIR / "knob_s0_daily"
 _S0_REFRESH_LOCK = threading.Lock()
@@ -16,17 +18,18 @@ _S0_ENSURE_INTERVAL_SEC = 300.0
 _S0_SCHEDULER_STARTED = False
 _S0_SCHEDULER_STOP = threading.Event()
 _S0_HEADER_CLEAN_RE = _re.compile(r"[^0-9a-z가-힣]+", _re.I)
+_S0_CATALOG_CACHE = None
+_S0_CATALOG_CACHE_LOCK = threading.Lock()
 
 _S0_STEP_HEADER_ALIASES = (
     "stepid", "step", "operationid", "operation", "oper", "operno",
     "공정id", "공정", "스텝id", "스텝",
 )
-_S0_PPID_HEADER_ALIASES = (
-    "currentporppid", "porppid", "standardppid", "currentppid", "공정ppid",
-    "표준ppid", "ppid", "recipeid", "recipe", "currentpor", "por",
+_S0_RECIPE_HEADER_ALIASES = (
+    "recipeid", "recipe",
 )
-_S0_STATUS_HEADER_ALIASES = (
-    "ispor", "por여부", "standard여부", "status", "state", "type", "condition", "구분",
+_S0_PRODUCT_HEADER_ALIASES = (
+    "product", "productid", "productcode", "prodid", "device", "deviceid", "vehicle",
 )
 
 
@@ -43,66 +46,11 @@ def _s0_find_column(fieldnames: list[str], aliases: tuple[str, ...]) -> str:
     return ""
 
 
-def _s0_is_por_marker(value: object) -> bool:
-    marker = str(value or "").strip().casefold()
-    return marker in {"1", "y", "yes", "true", "por", "standard", "std", "current", "현재", "기준"}
-
-
-def _s0_is_non_por_marker(value: object) -> bool:
-    marker = str(value or "").strip().casefold()
-    return marker in {"0", "n", "no", "false", "split", "experiment", "exp", "비기준"}
-
-
-def _s0_read_sop_file(path: Path) -> dict[str, dict]:
-    """Return case-insensitive step_id -> current POR metadata.
-
-    Both one-row-per-step SOPs and long SOPs with an is_por/status column are
-    accepted.  In a long file, an explicitly marked POR row wins.
-    """
-    if not path.is_file():
-        return {}
-    out: dict[str, tuple[int, int, dict]] = {}
-    try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv_mod.DictReader(handle)
-            fields = [str(name or "").lstrip("\ufeff").strip() for name in (reader.fieldnames or [])]
-            step_col = _s0_find_column(fields, _S0_STEP_HEADER_ALIASES)
-            ppid_col = _s0_find_column(fields, _S0_PPID_HEADER_ALIASES)
-            status_col = _s0_find_column(fields, _S0_STATUS_HEADER_ALIASES)
-            if not step_col or not ppid_col:
-                logger.warning("S0 SOP columns not found: %s (step=%s, ppid=%s)", path.name, step_col, ppid_col)
-                return {}
-            if status_col == ppid_col:
-                status_col = ""
-            for index, raw in enumerate(reader):
-                row = {str(key or "").lstrip("\ufeff").strip(): value for key, value in (raw or {}).items() if key is not None}
-                step_id = str(row.get(step_col) or "").strip()
-                ppid = str(row.get(ppid_col) or "").strip()
-                if not step_id or not ppid:
-                    continue
-                status = row.get(status_col) if status_col else ""
-                if status_col and _s0_is_non_por_marker(status):
-                    priority = 0
-                elif status_col and _s0_is_por_marker(status):
-                    priority = 2
-                else:
-                    priority = 1
-                key = step_id.casefold()
-                previous = out.get(key)
-                item = {"step_id": step_id, "ppid": ppid}
-                if previous is None or priority > previous[0]:
-                    out[key] = (priority, index, item)
-        return {key: item[2] for key, item in out.items() if item[0] > 0}
-    except Exception as exc:
-        logger.warning("S0 SOP read failed (%s): %s", path.name, exc)
-        return {}
-
-
-def _s0_sop_catalog() -> dict[str, dict]:
-    """Discover ``credential/<product>_sop.csv`` under configured data roots."""
-    catalog: dict[str, dict] = {}
+def _s0_f_step_paths() -> list[Path]:
+    """Find the configured DB confidential/f_step.parquet case-insensitively."""
+    paths: list[Path] = []
     seen: set[str] = set()
-    for root in (_base_root(), _db_base()):
+    for root in (_db_base(), _base_root()):
         try:
             resolved = root.resolve()
         except Exception:
@@ -111,40 +59,107 @@ def _s0_sop_catalog() -> dict[str, dict]:
         if root_key in seen:
             continue
         seen.add(root_key)
-        credential = resolved / "credential"
-        if not credential.is_dir():
+        confidential = _find_ci_child(resolved, "confidential")
+        if confidential is None:
             continue
         try:
-            files = sorted(
-                (path for path in credential.iterdir() if path.is_file() and path.name.casefold().endswith("_sop.csv")),
-                key=lambda path: path.name.casefold(),
+            path = next(
+                (candidate for candidate in confidential.iterdir()
+                 if candidate.is_file() and candidate.name.casefold() == "f_step.parquet"),
+                None,
             )
         except OSError:
-            files = []
-        for path in files:
-            product_raw = path.name[:-len("_sop.csv")].strip()
-            product = _canonical_product_name(product_raw)
-            if not product:
+            path = None
+        if path is not None:
+            paths.append(path)
+    return paths
+
+
+def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
+    """Read f_step and return product-keyed route/recipe metadata.
+
+    Duplicate steps preserve their first route position while the final
+    non-empty recipe_id wins, matching a current-state reference table.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        schema_names = pl.scan_parquet(path).collect_schema().names()
+        step_col = _s0_find_column(schema_names, _S0_STEP_HEADER_ALIASES)
+        recipe_col = _s0_find_column(schema_names, _S0_RECIPE_HEADER_ALIASES)
+        product_col = _s0_find_column(schema_names, _S0_PRODUCT_HEADER_ALIASES)
+        if not step_col or not recipe_col:
+            logger.warning(
+                "S0 f_step columns not found: %s (step_id=%s, recipe_id=%s)",
+                path, step_col, recipe_col,
+            )
+            return {}
+        columns = [step_col, recipe_col] + ([product_col] if product_col else [])
+        frame = pl.read_parquet(path, columns=list(dict.fromkeys(columns)))
+        try:
+            stat = path.stat()
+            modified = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+        except OSError:
+            modified = ""
+        catalog: dict[str, dict] = {}
+        route_seen: dict[str, set[str]] = {}
+        for raw in frame.iter_rows(named=True):
+            product = _canonical_product_name(raw.get(product_col)) if product_col else ""
+            if product_col and not product:
                 continue
-            rows = _s0_read_sop_file(path)
-            try:
-                stat = path.stat()
-                modified = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-            except OSError:
-                modified = ""
-            catalog[product.casefold()] = {
+            product_key = product.casefold() if product else "*"
+            source = catalog.setdefault(product_key, {
                 "product": product,
                 "file": path.name,
                 "path": path,
                 "modified_at": modified,
-                "rows": rows,
-            }
+                "rows": {},
+                "step_order": [],
+            })
+            step_id = str(raw.get(step_col) or "").strip()
+            recipe_id = str(raw.get(recipe_col) or "").strip()
+            if not step_id:
+                continue
+            step_key = step_id.casefold()
+            seen_steps = route_seen.setdefault(product_key, set())
+            if step_key not in seen_steps:
+                seen_steps.add(step_key)
+                source["step_order"].append(step_id)
+            if recipe_id:
+                source["rows"][step_key] = {"step_id": step_id, "ppid": recipe_id}
+        return catalog
+    except Exception as exc:
+        logger.warning("S0 f_step read failed (%s): %s", path, exc)
+        return {}
+
+
+def _s0_sop_catalog() -> dict[str, dict]:
+    """Load product SOPs from confidential/f_step.parquet with stat caching."""
+    global _S0_CATALOG_CACHE
+    paths = _s0_f_step_paths()
+    signature = tuple(_path_cache_sig(path) for path in paths)
+    with _S0_CATALOG_CACHE_LOCK:
+        cached = _S0_CATALOG_CACHE
+        if cached and cached[0] == signature:
+            return cached[1]
+    catalog: dict[str, dict] = {}
+    for path in paths:
+        for key, source in _s0_read_f_step_file(path).items():
+            # DB root is searched first and is authoritative when roots differ.
+            catalog.setdefault(key, source)
+    with _S0_CATALOG_CACHE_LOCK:
+        _S0_CATALOG_CACHE = (signature, catalog)
     return catalog
+
+
+def _s0_source_for_product(catalog: dict[str, dict], product: str) -> dict:
+    product_key = _canonical_product_name(product).casefold()
+    return (catalog or {}).get(product_key) or (catalog or {}).get("*") or {}
 
 
 def _s0_archive_daily_parquets(catalog: dict[str, dict], run_date: str,
                                moment: datetime.datetime) -> int:
-    """Archive each product SOP as a dated Parquet under credential/<product>/.
+    """Archive each resolved product route under writable SplitTable state.
 
     Every file is a complete daily snapshot and carries previous_por_ppid plus a
     change_type column, so it is both independently readable and useful as a
@@ -158,7 +173,7 @@ def _s0_archive_daily_parquets(catalog: dict[str, dict], run_date: str,
         product = str(source.get("product") or "").strip()
         if not product:
             continue
-        product_dir = source_path.parent / product
+        product_dir = _S0_DAILY_DIR / "source" / (product or "GLOBAL")
         product_dir.mkdir(parents=True, exist_ok=True)
         target = product_dir / f"{run_date}.parquet"
         previous: dict[str, str] = {}
@@ -258,7 +273,13 @@ def _s0_source_signature(catalog: dict[str, dict]) -> str:
             (str(step), str(item.get("ppid") or ""))
             for step, item in rows.items() if isinstance(item, dict)
         ))
-        sop_parts.append((key, str(source.get("file") or ""), str(source.get("modified_at") or ""), row_sig))
+        sop_parts.append((
+            key,
+            str(source.get("path") or ""),
+            str(source.get("modified_at") or ""),
+            tuple(str(step) for step in (source.get("step_order") or [])),
+            row_sig,
+        ))
     ml_parts = []
     seen: set[str] = set()
     for root in (_base_root(), _db_base()):
@@ -326,6 +347,10 @@ def _s0_load_state() -> dict:
     raw = load_json(_S0_STATE_FILE, {})
     if not isinstance(raw, dict):
         return _s0_empty_state()
+    if int(raw.get("schema_version") or 0) != _S0_STATE_VERSION:
+        # v1 captured values from credential/<product>_sop.csv.  Those values
+        # must not survive the authoritative-source switch to f_step.parquet.
+        return _s0_empty_state()
     state = _s0_empty_state()
     state.update(raw)
     if not isinstance(state.get("products"), dict):
@@ -369,7 +394,7 @@ def refresh_knob_s0_snapshots(*, force: bool = False, now: datetime.datetime | N
             discovered = 0
             unresolved = 0
             for product in _s0_ml_table_products():
-                sop = catalog.get(product.casefold())
+                sop = _s0_source_for_product(catalog, product)
                 if not sop:
                     continue
                 knobs = _mltable_schema_columns(product, "KNOB")
@@ -460,7 +485,7 @@ def _ensure_knob_s0_snapshots_today() -> None:
 def _knob_s0_for_product(product: str, columns: list[str] | None = None) -> dict[str, dict]:
     catalog = _s0_sop_catalog()
     canonical_prod = _canonical_product_name(product).casefold()
-    if not canonical_prod or canonical_prod not in catalog:
+    if not canonical_prod or not _s0_source_for_product(catalog, product):
         return {}
     _ensure_knob_s0_snapshots_today()
     state = _s0_load_state()

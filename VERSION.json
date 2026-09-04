@@ -1,7 +1,20 @@
 {
-  "version": "10.4.189",
+  "version": "10.4.190",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.190",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "f_step 기반 S0와 미매칭 공정 진행 회색 보정",
+      "changes": [
+        "[S0 권위 원천] 제품별 credential/<product>_sop.csv 대신 DB confidential/f_step.parquet를 읽고 step_id에 대응하는 recipe_id를 현재 POR PPID로 사용",
+        "[제품·전역 지원] f_step의 product/product_id 계열 열이 있으면 제품별 route로 분리하고 없으면 step_id 전역 맵으로 처리하며, 기존 CSV 기반 S0 레지스트리는 새 원천에서 1회 재생성",
+        "[공정 진행 판정] f_step 제품 route 순서로 현재 FAB step과 KNOB 공정을 비교해 아래쪽 미진행 step을 wafer별 회색 처리하고, f_step에 없는 step_id 또는 step_id 미매칭 행은 하단에 유지하되 진행 경계 계산에서 제외",
+        "[화면·내보내기 일치] 서버가 진행 추적 가능한 항목 목록을 함께 내려 화면의 빈 행 보조 판정과 XLSX 회색 표시가 같은 대상을 사용하도록 통일",
+        "[검증] S0·공정순서·회색 처리 관련 Python 회귀 49건 및 프런트 디자인·구조·production build 통과"
+      ]
+    },
     {
       "version": "10.4.189",
       "date": "2026-09-04",

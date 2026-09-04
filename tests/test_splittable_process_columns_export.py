@@ -1,5 +1,6 @@
 import asyncio
 import io
+from pathlib import Path
 
 import polars as pl
 
@@ -40,6 +41,7 @@ def test_step_order_interleaves_mapped_prefixes_and_leaves_mask_unranked(monkeyp
     from routers import splittable
 
     splittable._STEP_ORDER_CTX_CACHE.clear()
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {})
     monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
         {"product": "P1", "step_id": "ST300", "step_desc": "FAB STEP"},
         {"product": "P1", "step_id": "ST100", "step_desc": "KNOB STEP"},
@@ -80,11 +82,98 @@ def test_step_order_interleaves_mapped_prefixes_and_leaves_mask_unranked(monkeyp
         ),
     )
 
-    # step_id 문자열 자체의 자연 정렬이 아니라 Vehicle_matching 행 순서다.
+    # f_step이 없을 때는 기존 Vehicle_matching 행 순서를 유지한다.
     assert ordered == ["FAB_F", "KNOB_K", "INLINE_I", "VM_V", "MASK_M"]
     assert context["param_step"]["FAB_F"] == "ST300"
     assert "MASK_M" not in context["param_rank"]
     splittable._STEP_ORDER_CTX_CACHE.clear()
+
+
+def test_f_step_route_tracks_unmatched_current_step_and_excludes_unmapped_rows(monkeypatch):
+    from routers import splittable
+
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {
+        "p1": {
+            "product": "P1",
+            "step_order": ["ST100", "ST200", "ST300"],
+            "rows": {
+                "st100": {"step_id": "ST100", "ppid": "PP1"},
+                "st200": {"step_id": "ST200", "ppid": "PP2"},
+                "st300": {"step_id": "ST300", "ppid": "PP3"},
+            },
+        }
+    })
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
+        {"product": "P1", "step_id": "ST100", "step_desc": "UPPER"},
+        {"product": "P1", "step_id": "ST300", "step_desc": "LOWER"},
+        {"product": "P1", "step_id": "ST999", "step_desc": "NOT_IN_ROUTE"},
+    ])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "product_col": "product", "step_id_col": "step_id", "step_desc_col": "step_desc",
+    } if name == "step_matching" else {})
+    monkeypatch.setattr(splittable, "_load_prefixes", lambda: ["KNOB"])
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args, **kwargs: [
+        "KNOB_UPPER", "KNOB_LOWER", "KNOB_NOT_IN_ROUTE", "KNOB_NO_STEP",
+    ])
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda *args, **kwargs: {
+        "UPPER": {"groups": [{"step_ids": ["ST100"]}]},
+        "LOWER": {"groups": [{"step_ids": ["ST300"]}]},
+        "NOT_IN_ROUTE": {"groups": [{"step_ids": ["ST999"]}]},
+        "NO_STEP": {"groups": []},
+    })
+    monkeypatch.setattr(splittable, "_build_inline_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_vm_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_root_latest_step_state", lambda *args, **kwargs: {
+        "step_id": "ST200",
+        "by_wafer": {"1": "ST200"},
+    })
+
+    progress = splittable._split_step_progress(
+        "P1", "ROOT1",
+        ["KNOB_UPPER", "KNOB_LOWER", "KNOB_NOT_IN_ROUTE", "KNOB_NO_STEP"],
+        [1],
+    )
+
+    assert progress["tracked"] == ["KNOB_UPPER", "KNOB_LOWER"]
+    assert progress["not_reached"] == ["KNOB_LOWER"]
+    assert progress["by_wafer"]["1"]["not_reached"] == ["KNOB_LOWER"]
+    context = splittable._split_step_order_context("P1")
+    assert context["seq_rank"]["ST200"] == 1
+    assert "KNOB_NOT_IN_ROUTE" not in context["progress_param_rank"]
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+
+
+def test_fab_missing_greys_only_f_step_tracked_parameters(monkeypatch):
+    from routers import splittable
+
+    monkeypatch.setattr(splittable, "_split_step_order_context", lambda product: {
+        "progress_param_rank": {"KNOB_MAPPED": 1},
+    })
+
+    progress = splittable._split_step_progress(
+        "P1", "ROOT1", ["KNOB_MAPPED", "KNOB_NO_STEP"], [1], fab_present=False,
+    )
+
+    assert progress["tracked"] == ["KNOB_MAPPED"]
+    assert progress["not_reached"] == ["KNOB_MAPPED"]
+    assert progress["by_wafer"]["1"]["not_reached"] == ["KNOB_MAPPED"]
+
+
+def test_split_table_unmatched_steps_do_not_move_grey_boundary():
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "splittable"
+        / "My_SplitTable.jsx"
+    ).read_text(encoding="utf-8")
+
+    assert "trackedProgressParams" in source
+    assert "if(rowTracksStepProgress[ri])lastFilledRowByCol[ci]=ri" in source
+    assert "if(!rowTracksStepProgress[ri])return false" in source
 
 
 def test_stage_inference_keeps_vehicle_steps_without_numeric_step_desc(monkeypatch):

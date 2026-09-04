@@ -2005,9 +2005,9 @@ def _build_knob_meta(product: str = "") -> dict:
 
 # ── SplitTable 공정 순서(step order) 컨텍스트 ──
 #   ① 표시 순서: 여러 prefix를 함께 볼 때 KNOB/FAB/MASK/INLINE/VM끼리 묶지 않고,
-#      각 parameter가 연결된 Vehicle_matching.csv step_id의 공정 순서(파일 행 순서)로
-#      한 줄에 섞어 정렬한다. 여러 step_id에 걸친 parameter는 마지막 step을 대표로
-#      쓰고, 매핑이 없는 행만 기존 자연 정렬로 뒤에 붙는다.
+#      각 parameter가 연결된 step_id를 confidential/f_step.parquet의 제품별 route
+#      순서로 한 줄에 섞어 정렬한다. f_step에 없는 Vehicle matching step과 step_id
+#      미매칭 행은 route 뒤에 별도로 붙인다.
 #   ② 진행 셰이딩: 검색 root 의 latest-lot 캐시 step_id 보다 뒤(미진행) 공정에
 #      해당하는 행 목록을 payload.step_progress 로 내려 FE 가 회색으로 칠한다.
 _STEP_ORDER_CTX_CACHE: OrderedDict = OrderedDict()
@@ -2080,10 +2080,11 @@ def _register_step_order_meta(param_rank: dict[str, int], param_step: dict[str, 
 def _split_step_order_context(product: str) -> dict:
     """product 의 공정 순서 컨텍스트.
 
-    seq_rank:     step_id(upper) → Vehicle_matching 행 순서 rank
+    seq_rank:     step_id(upper) → f_step route 우선 공정 순서 rank
     prefix_steps: 영문 프리픽스 → [(step 번호, rank)] (근사 매칭용, 번호 오름차순)
     param_rank:   전체 prefix parameter 명(물리 컬럼명/bare 명, upper) → rank
     param_step:   같은 키 → 대표 step_id
+    progress_param_rank: f_step route에 실제 존재해 진행 회색 판정이 가능한 parameter
     """
     key = str(product or "").strip().upper()
     now = time.monotonic()
@@ -2091,14 +2092,22 @@ def _split_step_order_context(product: str) -> dict:
         hit = _STEP_ORDER_CTX_CACHE.get(key)
         if hit and now - hit[0] <= _STEP_ORDER_CTX_TTL_SEC:
             return hit[1]
-    ctx = {"seq_rank": {}, "prefix_steps": {}, "param_rank": {}, "param_step": {}}
+    ctx = {"seq_rank": {}, "prefix_steps": {}, "param_rank": {}, "param_step": {},
+           "progress_param_rank": {}}
     try:
         matching = _load_knob_step_matching_rows()
         sm = _sch("step_matching")
         p_col = sm.get("product_col", "product")
         has_product_col = any(p_col in r or "product" in r for r in matching)
         seq_rank: dict[str, int] = {}
-        prefix_steps: dict[str, list[tuple[int, int]]] = {}
+        route_source = _s0_source_for_product(_s0_sop_catalog(), product)
+        route_steps: set[str] = set()
+        for raw_step in route_source.get("step_order") or []:
+            sid = str(raw_step or "").strip().upper()
+            if not sid or sid in seq_rank:
+                continue
+            seq_rank[sid] = len(seq_rank)
+            route_steps.add(sid)
         for r in matching:
             row_prod = r.get(p_col)
             if row_prod is None and p_col != "product":
@@ -2108,8 +2117,9 @@ def _split_step_order_context(product: str) -> dict:
             sid = str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip().upper()
             if not sid or sid in seq_rank:
                 continue
-            rank = len(seq_rank)
-            seq_rank[sid] = rank
+            seq_rank[sid] = len(seq_rank)
+        prefix_steps: dict[str, list[tuple[int, int]]] = {}
+        for sid, rank in seq_rank.items():
             m = _STEP_ID_PREFIX_NUM_RE.match(sid)
             if m:
                 prefix_steps.setdefault(m.group(1).upper(), []).append((int(m.group(2)), rank))
@@ -2148,8 +2158,17 @@ def _split_step_order_context(product: str) -> dict:
                 param_rank, param_step, meta_builder(product) or {}, pref, seq_rank,
                 overwrite=True,
             )
+        # When f_step exists, only parameters whose representative step is in
+        # that route may drive not-reached shading.  Matching-only and missing
+        # step IDs remain visible at the bottom but cannot falsely move the
+        # per-wafer "last filled step" boundary.
+        progress_param_rank = {
+            name: rank for name, rank in param_rank.items()
+            if not route_steps or str(param_step.get(name) or "").upper() in route_steps
+        }
         ctx = {"seq_rank": seq_rank, "prefix_steps": prefix_steps,
-               "param_rank": param_rank, "param_step": param_step}
+               "param_rank": param_rank, "param_step": param_step,
+               "progress_param_rank": progress_param_rank}
     except Exception as e:
         logger.warning("split step-order context 실패 (product=%s): %s", product, e)
     with _STEP_ORDER_CTX_LOCK:
@@ -2157,6 +2176,20 @@ def _split_step_order_context(product: str) -> dict:
         while len(_STEP_ORDER_CTX_CACHE) > _STEP_ORDER_CTX_MAX:
             _STEP_ORDER_CTX_CACHE.popitem(last=False)
     return ctx
+
+
+def _step_order_param_rank(col_name: str, display: str, param_rank: dict):
+    """Resolve all physical/display aliases to one process rank."""
+    rank = param_rank.get(str(col_name or "").strip().upper())
+    if rank is None:
+        rank = param_rank.get(str(display or "").strip().upper())
+    if rank is None and col_name:
+        clean = _re.sub(r"_split$", "", str(col_name).strip(), flags=_re.I).upper()
+        rank = param_rank.get(clean) or param_rank.get(clean.replace(" ", "_")) or param_rank.get(clean.replace("_", " "))
+    if rank is None and display:
+        clean_disp = _re.sub(r"_split$", "", str(display).strip(), flags=_re.I).upper()
+        rank = param_rank.get(clean_disp) or param_rank.get(clean_disp.replace(" ", "_")) or param_rank.get(clean_disp.replace("_", " "))
+    return rank
 
 
 def _step_order_sort_key(col_name: str, display: str, param_rank: dict):
@@ -2170,15 +2203,7 @@ def _step_order_sort_key(col_name: str, display: str, param_rank: dict):
             or str(display or "").strip().upper().startswith(tag_pfx)):
         is_purpose = str(col_name or "").strip().upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper()
         return (-1, 0 if is_purpose else 1, _natural_param_key(display or col_name))
-    rank = param_rank.get(str(col_name or "").strip().upper())
-    if rank is None:
-        rank = param_rank.get(str(display or "").strip().upper())
-    if rank is None and col_name:
-        clean = _re.sub(r"_split$", "", str(col_name).strip(), flags=_re.I).upper()
-        rank = param_rank.get(clean) or param_rank.get(clean.replace(" ", "_")) or param_rank.get(clean.replace("_", " "))
-    if rank is None and display:
-        clean_disp = _re.sub(r"_split$", "", str(display).strip(), flags=_re.I).upper()
-        rank = param_rank.get(clean_disp) or param_rank.get(clean_disp.replace(" ", "_")) or param_rank.get(clean_disp.replace("_", " "))
+    rank = _step_order_param_rank(col_name, display, param_rank)
     nat = _natural_param_key(display or col_name)
     if rank is None:
         return (1, 0, nat)
@@ -2292,9 +2317,22 @@ def _split_step_progress(product: str, root_lot_id: str, selected: list[str],
     failure: a confirmed not-yet-in-FAB root has no current step, so every
     displayed process is not reached and must be grey.
     """
-    out = {"step_id": "", "not_reached": [], "by_wafer": {}, "fab_missing": False}
+    out = {"step_id": "", "not_reached": [], "by_wafer": {}, "fab_missing": False,
+           "tracked": []}
+    try:
+        ctx = _split_step_order_context(product)
+        progress_rank = ctx.get("progress_param_rank") or {}
+        tracked = [
+            str(col) for col in (selected or [])
+            if _step_order_param_rank(str(col), str(col), progress_rank) is not None
+        ]
+        out["tracked"] = list(dict.fromkeys(tracked))
+    except Exception as e:
+        logger.warning("split step-progress route 준비 실패 (%s): %s", product, e)
+        ctx = {}
+        progress_rank = {}
     if fab_present is False:
-        all_selected = list(dict.fromkeys(str(col) for col in (selected or []) if str(col)))
+        all_selected = list(out["tracked"])
         out["fab_missing"] = True
         out["not_reached"] = all_selected
         for raw in wafer_keys or []:
@@ -2306,17 +2344,15 @@ def _split_step_progress(product: str, root_lot_id: str, selected: list[str],
                 }
         return out
     try:
-        ctx = _split_step_order_context(product)
-        param_rank = ctx.get("param_rank") or {}
-        if not param_rank or not str(root_lot_id or "").strip():
+        if not progress_rank or not str(root_lot_id or "").strip():
             return out
         latest = _root_latest_step_state(product, root_lot_id)
         cur_sid = str(latest.get("step_id") or "")
         out["step_id"] = cur_sid
         cur_rank = _step_rank_for_progress(ctx, cur_sid)
         if cur_rank is not None:
-            for col in selected or []:
-                rank = param_rank.get(str(col or "").strip().upper())
+            for col in out["tracked"]:
+                rank = _step_order_param_rank(str(col), str(col), progress_rank)
                 if rank is not None and rank > cur_rank:
                     out["not_reached"].append(col)
 
@@ -2331,8 +2367,8 @@ def _split_step_progress(product: str, root_lot_id: str, selected: list[str],
             wafer_rank = _step_rank_for_progress(ctx, wafer_sid)
             not_reached = []
             if wafer_rank is not None:
-                for col in selected or []:
-                    rank = param_rank.get(str(col or "").strip().upper())
+                for col in out["tracked"]:
+                    rank = _step_order_param_rank(str(col), str(col), progress_rank)
                     if rank is not None and rank > wafer_rank:
                         not_reached.append(col)
             out["by_wafer"][wafer] = {
