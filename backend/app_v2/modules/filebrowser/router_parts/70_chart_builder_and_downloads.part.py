@@ -471,7 +471,11 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 if single_file_fp.suffix.lower() not in DATA_EXTENSIONS:
                     raise HTTPException(400, f"Unsupported file type for CSV download: {single_file_fp.suffix}")
                 source_files = [single_file_fp]
-                lazy_lf = scan_one_file(single_file_fp)
+                lazy_lf = (
+                    _scan_editable_csv_as_strings(single_file_fp)
+                    if single_file_fp.suffix.lower() == ".csv"
+                    else scan_one_file(single_file_fp)
+                )
                 if lazy_lf is None:
                     raise HTTPException(400, f"Cannot read: {file}")
                 label = file
@@ -520,7 +524,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 if fp is None:
                     raise HTTPException(404)
                 source_files = [fp]
-                lazy_lf = scan_one_file(fp)
+                lazy_lf = _scan_editable_csv_as_strings(fp) if fp.suffix.lower() == ".csv" else scan_one_file(fp)
                 if lazy_lf is None:
                     raise HTTPException(400, f"Cannot read: {file}")
                 label = file

@@ -236,7 +236,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                         "csv_rule_summary": None,
                         "row_count_unknown": False,
                     }, settings)
-            lf = scan_one_file(fp)
+            lf = _scan_editable_csv_as_strings(fp) if ext == ".csv" else scan_one_file(fp)
             if lf is None:
                 fallback = _csv_lenient_lazy_frame(fp)
                 if fallback:
@@ -326,7 +326,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["csv_rule_summary"] = csv_rule_summary
                 resp.update(csv_reinit_meta)
                 return _finalize_preview_response(resp, settings)
-            if not csv_reinit_meta and not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            if ext != ".csv" and not csv_reinit_meta and not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
                 try:
                     resp = _run_view_duckdb(
                         [fp], sql, select_cols, rows,

@@ -1405,7 +1405,10 @@ def _read_table(path: Path):
         return pd.read_parquet(path)
     if suf in (".xlsx", ".xls"):
         return pd.read_excel(path)
-    return pd.read_csv(path, encoding="utf-8-sig")
+    # 기준 CSV는 셀 원문을 먼저 보존하고 각 사용처에서 필요한 숫자 열만
+    # 명시적으로 변환한다. 앞쪽 값이 모두 정수여도 뒤의 30.12 같은 소수가
+    # dtype 추론 때문에 읽기 실패하거나 손실되지 않는다.
+    return pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
 
 
 def _find_col(df, *cands) -> str | None:

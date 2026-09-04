@@ -108,6 +108,33 @@ def _csv_lenient_lazy_frame(fp: Path) -> tuple[pl.LazyFrame, list[str], dict[str
     return df.lazy(), columns, schema, len(rows), meta
 
 
+def _scan_editable_csv_as_strings(fp: Path) -> pl.LazyFrame | None:
+    """Scan a FileBrowser-managed CSV without numeric type inference.
+
+    Reference CSVs are edited as text. Inferring a column as Int64 from the
+    first rows makes a later decimal such as ``30.12`` fail during collect.
+    Keeping every source column as String preserves the exact cell values;
+    SQL callers can still opt into numeric comparison with CAST.
+    """
+    if fp.suffix.lower() != ".csv":
+        return None
+    try:
+        lf = pl.scan_csv(
+            str(fp),
+            infer_schema=False,
+            try_parse_dates=False,
+            encoding="utf8-lossy",
+        )
+        columns = list(lf.collect_schema().names())
+        return _filter_valid_wafers_lazy(lf, columns)[0]
+    except Exception:
+        fallback = _csv_lenient_lazy_frame(fp)
+        if not fallback:
+            return None
+        lf, columns = fallback[0], fallback[1]
+        return _filter_valid_wafers_lazy(lf, columns)[0]
+
+
 def _resolve_base_file_for_edit(file: str) -> Path:
     name = (file or "").strip()
     if not name:
