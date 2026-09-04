@@ -1,7 +1,20 @@
 {
-  "version": "10.4.190",
+  "version": "10.4.191",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.191",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "credential 탐색 차단과 랏 노트 즉시 보기",
+      "changes": [
+        "[credential 비노출] DB root의 credential 예약 폴더를 일반 사용자뿐 아니라 global admin의 DB·Files 트리에서도 숨기고 직접 URL을 통한 조회·다운로드·편집도 역할과 무관하게 차단",
+        "[S3 경로 분리] FileBrowser 차단과 S3 ingest 경로를 분리해 credential 폴더는 S3 동기화 타겟 후보 및 직접 입력 대상으로 유지하고 다운로드·업로드·주기 갱신 설정 가능",
+        "[랏 노트 바로 보기] 랏관리의 lot_id 셀을 더블클릭하면 해당 fab lot의 SplitTable을 열고 응답에서 확정한 root_lot_id 기준으로 wafer 태그·parameter 메모·lot 노트를 전체 필터 상태로 즉시 표시",
+        "[조회 정확성] 임베디드 SplitTable 진입 시 React 상태 반영 전의 빈 lot_id로 노트를 조회하던 타이밍 문제를 제거하고 조회 응답의 canonical root_lot_id를 노트 API에 명시 전달",
+        "[검증] 파일탐색기·S3·랏관리 회귀 46건, 프런트 디자인 시스템·기능 경계 검사 및 production build 통과"
+      ]
+    },
     {
       "version": "10.4.190",
       "date": "2026-09-04",

@@ -358,7 +358,7 @@ function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=fals
   </Modal>;
 }
 
-export default function My_SplitTable({user,initialProduct="",initialFabLotId="",initialCustomName="",embedded=false}){
+export default function My_SplitTable({user,initialProduct="",initialFabLotId="",initialCustomName="",initialOpenNotes=false,embedded=false}){
   const normFabSource=(v)=>{
     let s=String(v||"").trim().replaceAll("\\","/");
     if(!s) return "";
@@ -468,6 +468,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[noteUploading,setNoteUploading]=useState(false);
   const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
   const[expandedNoteId,setExpandedNoteId]=useState("");
+  const initialNotesOpenedRef=useRef(false);
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
   const[noteSearch,setNoteSearch]=useState("");
   const SPLITTABLE_TABS=splittableTabs();
@@ -1190,7 +1191,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       const d=expandViewRows(raw);
       // LOT 관리 임베드에서는 fab_lot_id로 진입한다. plan 저장 API는 canonical
       // root_lot_id를 사용하므로 조회 응답에서 확정된 root를 편집 상태에 반영한다.
-      if(embedded&&d.root_lot_id&&!lotId)setLotId(String(d.root_lot_id));
+      const resolvedLotId=String(d.root_lot_id||lotId||"").trim();
+      if(embedded&&resolvedLotId&&!lotId)setLotId(resolvedLotId);
       const lc=d.lookup_cache||{};
       const preparing=!d.rows?.length&&(lc.queued===true||lc.status==="queued"||lc.status==="running");
       if(preparing&&prepAttempt<240){
@@ -1205,7 +1207,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       if(Array.isArray(d.available_fab_lots)&&d.available_fab_lots.length>0){
         setFabSuggestions(d.available_fab_lots);
       }
-      setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);clearCellSelection();reloadNotes();
+      setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);clearCellSelection();reloadNotes(selProd,resolvedLotId);
+      if(embedded&&initialOpenNotes&&resolvedLotId&&!initialNotesOpenedRef.current){
+        initialNotesOpenedRef.current=true;
+        setNoteFilter(null);setNoteDraftScope(null);setNoteSearch("");setExpandedNoteId("");setNotesOpen(true);
+      }
       loadRelatedIssuesForView(d);
       loadLotManagementPurposesForView(d);
       const backgroundPreparing=d.background_cache?.queued===true;
@@ -1224,7 +1230,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       toast.error(e.message);
     }).finally(()=>{if(loadingStarted&&!retryScheduled)setLoading(false);});};
   // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
-  const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
+  const reloadNotes=(productOverride="",lotOverride="")=>{const prod=productOverride||selProd, lot=lotOverride||lotId;if(!prod||!lot){setNotes([]);return;}
     sf(API+"/notes?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(lot))
       .then(d=>setNotes(d.notes||[])).catch(()=>setNotes([]));};
   const embeddedSearchRef=useRef("");

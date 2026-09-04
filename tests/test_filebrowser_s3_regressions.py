@@ -65,6 +65,17 @@ def test_s3_target_allows_folder_names_with_spaces():
     assert s3_ingest._validate_target("Auto report/PRODUCT A") is None
 
 
+def test_hidden_credential_folder_remains_available_to_s3_sync(tmp_path, monkeypatch):
+    credential = tmp_path / "credential"
+    credential.mkdir()
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+
+    available = s3_ingest.list_available(username="admin", _perm={"role": "admin"})
+
+    assert {row["name"] for row in available["dbs"]} >= {"credential"}
+    assert s3_ingest._validate_target("credential") is None
+
+
 def test_s3_save_accepts_auto_report_folder(monkeypatch):
     saved = {}
     monkeypatch.setattr(s3_ingest, "_load_cfg", lambda: {"items": []})

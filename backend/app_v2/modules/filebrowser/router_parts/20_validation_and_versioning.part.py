@@ -46,10 +46,11 @@ def _require_base_file_access(request: Request, file: str, access_scope: str = "
                     break
                 except (OSError, ValueError):
                     continue
-        if credential_path and str((me or {}).get("role") or "").strip().casefold() != "admin":
-            # 숨김은 권한이 아니다. URL을 직접 구성해도 credential 아래 파일은
-            # global admin 외에는 읽기/다운로드/편집할 수 없다.
-            raise HTTPException(403, "Admin only credential folder")
+        if credential_path:
+            # FileBrowser에서는 역할과 무관하게 예약 credential 영역을 열지 않는다.
+            # S3 ingest는 별도 라우터에서 DB root 상대 경로를 검증하므로 이 차단의
+            # 영향을 받지 않고 credential을 다운로드/업로드 대상으로 유지한다.
+            raise HTTPException(403, "Credential folder is not available in FileBrowser")
         return me, None
 
     from core import teg_map as _teg_map

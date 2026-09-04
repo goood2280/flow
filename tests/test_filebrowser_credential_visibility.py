@@ -14,7 +14,7 @@ def _fixture_roots(tmp_path: Path):
     return root
 
 
-def test_credential_folder_is_hidden_from_users_and_visible_to_global_admin(tmp_path, monkeypatch):
+def test_credential_folder_is_hidden_from_users_and_global_admin(tmp_path, monkeypatch):
     root = _fixture_roots(tmp_path)
     monkeypatch.setattr(filebrowser, "_base_root", lambda: root)
     monkeypatch.setattr(filebrowser, "_db_root", lambda: root)
@@ -27,13 +27,16 @@ def test_credential_folder_is_hidden_from_users_and_visible_to_global_admin(tmp_
 
     monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "admin", "role": "admin"})
     admin_payload = filebrowser.base_files(request=object(), fast=True)
-    assert "credential" in {item["name"].casefold() for item in admin_payload["files"]}
+    assert "credential" not in {item["name"].casefold() for item in admin_payload["files"]}
+
+    db_payload = filebrowser.list_roots(request=object(), all=True, fast=True)
+    assert "credential" not in {item["name"].casefold() for item in db_payload["roots"]}
 
     children = filebrowser.base_dir_children(path="credential", request=object())
-    assert "credential/proda_sop.csv" in {item["path"].casefold() for item in children["entries"]}
+    assert children["entries"] == []
 
 
-def test_credential_direct_file_access_requires_global_admin(monkeypatch):
+def test_credential_direct_file_access_is_blocked_for_every_role(monkeypatch):
     monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "delegate", "role": "user"})
     with pytest.raises(HTTPException) as exc:
         filebrowser._require_base_file_access(object(), "credential/PRODA_sop.csv")
@@ -43,6 +46,6 @@ def test_credential_direct_file_access_requires_global_admin(monkeypatch):
     assert alias_exc.value.status_code == 403
 
     monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "admin", "role": "admin"})
-    me, target = filebrowser._require_base_file_access(object(), "credential/PRODA_sop.csv")
-    assert me["role"] == "admin"
-    assert target is None
+    with pytest.raises(HTTPException) as admin_exc:
+        filebrowser._require_base_file_access(object(), "credential/PRODA_sop.csv")
+    assert admin_exc.value.status_code == 403

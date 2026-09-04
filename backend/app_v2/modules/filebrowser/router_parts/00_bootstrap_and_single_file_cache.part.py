@@ -431,9 +431,8 @@ def _track_filebrowser_sql_execution(scope: str):
         return wrapped
     return decorate
 
-# credential/teg_location은 DB root 아래의 예약 폴더다. credential은 global admin의
-# Files 트리에서만 보이고, 일반 사용자에게는 목록과 직접 접근을 모두 막는다.
-# teg_location과 cache는 관리자에게도 계속 숨기며 각 도메인 API로만 접근한다.
+# credential/teg_location은 DB root 아래의 예약 폴더다. FileBrowser에서는
+# 관리자에게도 노출하지 않고 각 도메인 API 또는 S3 동기화 설정으로만 접근한다.
 _FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "credential", "teg_location"}
 _RAW_DB_DISPLAY_RE = re.compile(r"^1\.RAWDATA_DB(?:_(.+))?$", re.IGNORECASE)
 
@@ -442,9 +441,10 @@ def _is_filebrowser_hidden_dir_name(name: str, *, allow_credential: bool = False
     """Hide internal/cache/backup directories from both DB and Files trees."""
     clean = str(name or "").strip()
     folded = clean.casefold()
+    # ``allow_credential`` is retained for call-site compatibility only.  S3
+    # ingestion does not use this FileBrowser helper and may still register the
+    # reserved credential path directly.
     reserved_hidden = folded in _FILEBROWSER_ALWAYS_HIDDEN_DIRS
-    if allow_credential and folded == "credential":
-        reserved_hidden = False
     return (
         not clean
         or clean.startswith(".")
@@ -885,8 +885,6 @@ def _single_file_folder_names(settings: dict | None = None, *, allow_credential:
         if not name or name in {".", ".."} or "/" in name or "\\" in name or _is_filebrowser_hidden_dir_name(name, allow_credential=allow_credential):
             continue
         clean.add(name)
-    if allow_credential:
-        clean.add("credential")
     # Files 폴더는 톱니바퀴의 "표시할 폴더"에 명시적으로 등록된 항목만 노출한다.
     # 예전의 drop-in 자동 탐지는 미등록 JSON/텍스트 폴더까지 화면에 나타나게 해
     # 관리자가 정한 허용 목록과 실제 화면이 달라지는 원인이었다.

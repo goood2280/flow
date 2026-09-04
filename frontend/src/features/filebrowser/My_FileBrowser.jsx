@@ -3674,7 +3674,7 @@ export default function My_FileBrowser({
                 <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                   Files에 표시할 폴더
                   <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={4} spellCheck={false} placeholder={"reformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                  <span style={{fontSize:12,fontWeight:400,color:"var(--text-secondary)",lineHeight:1.45}}>한 줄에 폴더 하나. 여기에 등록한 운영 폴더와 최상위 파일만 Files 목록에 보입니다. cache 및 이름에 backup이 포함된 폴더는 DB와 Files에서 항상 숨깁니다.</span>
+                  <span style={{fontSize:12,fontWeight:400,color:"var(--text-secondary)",lineHeight:1.45}}>한 줄에 폴더 하나. 여기에 등록한 운영 폴더와 최상위 파일만 Files 목록에 보입니다. cache, credential, teg_location 및 이름에 backup이 포함된 폴더는 관리자에게도 DB와 Files에서 항상 숨깁니다.</span>
                 </label>
                 <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                   폴더 안 파일 버전 관리
@@ -3881,7 +3881,7 @@ export default function My_FileBrowser({
                   <div style={{display:"flex",flexDirection:"column",gap:4}}>
                     <input list="s3-target-list" value={s3Form.target} onChange={e=>setS3Form(f=>({...f,target:e.target.value}))} placeholder={s3Form.kind==="db"?"예: DB/1.RAWDATA/제품명 (슬래시로 하위 경로 지정 가능)":"예: root_file.parquet"} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
                     <datalist id="s3-target-list">{(s3Form.kind==="db"?s3Avail.dbs:s3Avail.root_parquets).map(x=><option key={x.name} value={x.name}/>)}</datalist>
-                    <span style={{fontSize:14,color:"var(--text-secondary)"}}>DB_BASE 하위 경로. 슬래시(/)로 하위 디렉터리까지 지정 가능 — 예: <code>DB/1.RAWDATA/제품명</code></span>
+                    <span style={{fontSize:14,color:"var(--text-secondary)"}}>DB_BASE 하위 경로. 슬래시(/)로 하위 디렉터리까지 지정 가능 — 예: <code>DB/1.RAWDATA/제품명</code>. 파일탐색기에서 숨긴 <code>credential</code>도 S3 동기화 타겟으로 등록할 수 있습니다.</span>
                   </div>
                   <label>S3 URL</label>
                   <input value={s3Form.s3_url} onChange={e=>setS3Form(f=>({...f,s3_url:e.target.value}))} placeholder={s3Form.kind==="db"?"s3://bucket/prefix/INLINE/":"s3://bucket/prefix/file.parquet"} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>

@@ -110,6 +110,8 @@ export default function My_LotManagement({ user }) {
   const [diffLoading, setDiffLoading] = useState(null);
   const [purposeSearch, setPurposeSearch] = useState("");
   const [viewLot, setViewLot] = useState("");
+  const [viewLotNotes, setViewLotNotes] = useState(false);
+  const [viewRequestKey, setViewRequestKey] = useState(0);
   const [customs, setCustoms] = useState([]);
   const [selectedCustom, setSelectedCustom] = useState("");
   const [showCustom, setShowCustom] = useState(false);
@@ -129,6 +131,14 @@ export default function My_LotManagement({ user }) {
     if (!viewLot) return;
     splitViewRef.current?.scrollIntoView({behavior:"smooth", block:"start"});
   }, [viewLot]);
+
+  const openSplitView = (lotId, openNotes = false) => {
+    const nextLot = String(lotId || "").trim();
+    if (!nextLot) return;
+    setViewLot(nextLot);
+    setViewLotNotes(openNotes);
+    setViewRequestKey(value => value + 1);
+  };
 
   useEffect(() => {
     if (!colorPicker) return;
@@ -486,7 +496,7 @@ export default function My_LotManagement({ user }) {
         : tableError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표를 불러오지 못했습니다</div><div className="ds-feedback__message">{tableError}</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
         : !work ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표가 준비되지 않았습니다</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
         : <div className="flow-page__content">
-        {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => setViewLot("")}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} embedded/></Suspense></section>}
+        {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => {setViewLot("");setViewLotNotes(false);}}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}:${viewRequestKey}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} initialOpenNotes={viewLotNotes} embedded/></Suspense></section>}
         <div className="lot-management__grid-frame">
           <table className="lot-management__grid">
             <thead><tr><th style={{width:42}}>#</th>{work.columns.map(column => <Fragment key={column.id}><th onDoubleClick={() => editing && renameColumn(column)} style={{minWidth:column.id==="comment"?260:170,cursor:editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)?"pointer":"default"}}>{column.label}{editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)&&<Button variant="danger" size="compact" className="u-push-right" onClick={() => deleteColumn(column)} aria-label={`${column.label} 열 삭제`}>×</Button>}</th>{column.id==="lot_id"&&<th title="SplitTable 보기" style={{width:72}}>View</th>}</Fragment>)}{editing&&<th style={{width:42}}/>}</tr></thead>
@@ -499,7 +509,7 @@ export default function My_LotManagement({ user }) {
                 const computed = COMPUTED_COLUMNS.has(column.id);
                 const colorable = COLORABLE_COLUMNS.has(column.id);
                 return <Fragment key={column.id}>
-                  <td onContextMenu={editing&&colorable ? event => openCellColorPicker(event,row.id,column.id) : undefined} title={editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor}}>
+                  <td onContextMenu={editing&&colorable ? event => openCellColorPicker(event,row.id,column.id) : undefined} onDoubleClick={!editing&&column.id==="lot_id"&&String(value).trim() ? () => openSplitView(value,true) : undefined} title={!editing&&column.id==="lot_id"&&String(value).trim() ? "더블클릭: SplitTable과 전체 노트 보기" : editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor,cursor:!editing&&column.id==="lot_id"&&String(value).trim()?"pointer":undefined}}>
                     {editing ? (computed
                       ? <div className="lot-management__computed-cell">{value}</div>
                       : <div className="u-inline">{column.id==="lot_id"
@@ -507,7 +517,7 @@ export default function My_LotManagement({ user }) {
                         : <textarea className="lot-management__cell-input" value={value} onChange={e => updateCell(row.id,column.id,e.target.value)} onPaste={e => pasteBlock(e,row.id,column.id)} rows={1}/>}</div>)
                       : <div className="lot-management__readonly-cell">{value}</div>}
                   </td>
-                  {column.id==="lot_id"&&<td className="lot-management__cell-actions"><Button variant="secondary" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => setViewLot(String(row.values?.lot_id || "").trim())} title="SplitTable 보기" aria-label="SplitTable 보기">보기</Button></td>}
+                  {column.id==="lot_id"&&<td className="lot-management__cell-actions"><Button variant="secondary" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,false)} title="SplitTable 보기" aria-label="SplitTable 보기">보기</Button></td>}
                 </Fragment>;
               })}
               {editing&&<td className="lot-management__cell-actions"><Button variant="danger" size="compact" onClick={() => deleteRow(row.id)} aria-label={`${ri+1}행 삭제`}>×</Button></td>}

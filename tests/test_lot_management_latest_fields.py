@@ -403,6 +403,20 @@ def test_frontend_defers_status_candidates_and_split_table_bundle():
     assert "onSearch={searchLotCandidates}" in source
 
 
+def test_lot_id_double_click_opens_all_matching_split_table_notes():
+    root = Path(__file__).parents[1] / "frontend" / "src" / "features"
+    lot_source = (root / "lotmanagement" / "My_LotManagement.jsx").read_text(encoding="utf-8")
+    split_source = (root / "splittable" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+
+    assert 'onDoubleClick={!editing&&column.id==="lot_id"' in lot_source
+    assert "openSplitView(value,true)" in lot_source
+    assert "initialOpenNotes={viewLotNotes}" in lot_source
+    assert 'initialOpenNotes=false' in split_source
+    assert "reloadNotes(selProd,resolvedLotId)" in split_source
+    assert "setNoteFilter(null);setNoteDraftScope(null);setNoteSearch(\"\")" in split_source
+    assert "setNotesOpen(true)" in split_source
+
+
 def test_frontend_qty_uses_dash_until_positive_wafer_count_arrives():
     source = (
         Path(__file__).parents[1]
