@@ -83,6 +83,17 @@ function hasStValue(v) {
   return v != null && v !== "" && v !== "None" && v !== "null";
 }
 
+const DEFAULT_PURPOSE_TAG_PARAM = "TAG_PURPOSE";
+
+function isPurposeTagRow(row) {
+  return String(row?._param || "").trim().toUpperCase() === DEFAULT_PURPOSE_TAG_PARAM;
+}
+
+function purposeTagRowOf(source, rows) {
+  if (source?.purpose_row && isPurposeTagRow(source.purpose_row)) return source.purpose_row;
+  return (rows || []).find(isPurposeTagRow) || null;
+}
+
 function splitTableCellBg(val, uniq, pname) {
   if (!hasStValue(val)) return {};
   const pn = String(pname || "").toUpperCase();
@@ -193,6 +204,8 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
   const source = matrix || {};
   const headers = Array.isArray(source.headers) ? source.headers : [];
   const rows = Array.isArray(source.rows) ? source.rows : [];
+  const purposeRow = purposeTagRowOf(source, rows);
+  const splitSourceRows = rows.filter(row => !isPurposeTagRow(row));
   const normalizeWafer = value => String(value ?? "").replace(/^(?:#|WAFER|WF|W)\s*/i, "").replace(/^0+(?=\d)/, "");
   const rootNotReached = new Set(Array.isArray(source?.step_progress?.not_reached) ? source.step_progress.not_reached.map(String) : []);
   const byWafer = Object.fromEntries(Object.entries(source?.step_progress?.by_wafer || {}).map(([wafer, meta]) => [
@@ -200,7 +213,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     new Set(Array.isArray(meta?.not_reached) ? meta.not_reached.map(String) : []),
   ]));
   const hasWaferProgress = Object.keys(byWafer).length > 0;
-  const splitRows = rows.flatMap(row => {
+  const splitRows = splitSourceRows.flatMap(row => {
     const cells = row?._cells || {};
     const param = String(row?._param || "");
     const perHeader = headers.map((header, ci) => {
@@ -261,6 +274,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     ...source,
     headers,
     rows: splitRows,
+    purpose_row: purposeRow || undefined,
     prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
     parameter_prefix_index: (Array.isArray(source.prefix_columns) && (source.prefix_columns.includes("step_id") || source.prefix_columns.includes("step_desc"))) ? 2 : 0,
     display_mode: "split_check",
@@ -274,7 +288,9 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
 export function buildPemsStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam } = {}) {
   const source = matrix || {};
   const sourceHeaders = Array.isArray(source.headers) ? source.headers : [];
-  const sourceRows = Array.isArray(source.rows) ? source.rows : [];
+  const rawSourceRows = Array.isArray(source.rows) ? source.rows : [];
+  const sourcePurposeRow = purposeTagRowOf(source, rawSourceRows);
+  const sourceRows = rawSourceRows.filter(row => !isPurposeTagRow(row));
   const normalizeWafer = value => String(value ?? "").replace(/^(?:#|WAFER|WF|W)\s*/i, "").replace(/^0+(?=\d)/, "");
   const sourceIndexByWafer = new Map();
   sourceHeaders.forEach((header, ci) => {
@@ -287,6 +303,21 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
   const missingWaferIndices = waferKeys
     .map((wafer, ci) => sourceIndexByWafer.has(wafer) ? null : ci)
     .filter(ci => ci != null);
+  const purposeRow = sourcePurposeRow ? {
+    ...sourcePurposeRow,
+    _cells: Object.fromEntries(waferKeys.map((wafer, ci) => {
+      const sourceIndex = sourceIndexByWafer.get(wafer);
+      const sourceCell = sourceIndex == null
+        ? {
+            key: `${String(source?.root_lot_id || "")}|${wafer}|${String(sourcePurposeRow?._param || "TAG_purpose")}`,
+            actual: null,
+            plan: null,
+            is_custom_tag: true,
+          }
+        : (sourcePurposeRow?._cells?.[String(sourceIndex)] || sourcePurposeRow?._cells?.[sourceIndex] || {});
+      return [String(ci), { ...sourceCell }];
+    })),
+  } : null;
   const rootNotReached = new Set(Array.isArray(source?.step_progress?.not_reached) ? source.step_progress.not_reached.map(String) : []);
   const byWafer = Object.fromEntries(Object.entries(source?.step_progress?.by_wafer || {}).map(([wafer, meta]) => [
     normalizeWafer(wafer),
@@ -368,6 +399,7 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
     headers,
     wafer_keys: waferKeys,
     rows: pemsRows,
+    purpose_row: purposeRow || undefined,
     header_groups: [],
     wafer_fab_list: [],
     lot_id_label: "",
@@ -403,6 +435,8 @@ export default function SplitTableSnapshotView({
   onAssignSplit = null,
   onEditSplitValue = null,
   onAddSplitRequest = null,
+  onEditPurpose = null,
+  onPurposeContextMenu = null,
 }) {
   const st = stView || embed?.st_view;
   const splitPaintRef = useRef(null);
@@ -412,6 +446,9 @@ export default function SplitTableSnapshotView({
   const effectiveNote = note ?? embed?.note ?? "";
   const effectiveProduct = inferProductFromEmbed(embed, product, effectiveSource);
   const headers = st?.headers || [];
+  const rawRows = Array.isArray(st?.rows) ? st.rows : [];
+  const purposeRow = purposeTagRowOf(st || {}, rawRows);
+  const tableRows = useMemo(() => rawRows.filter(row => !isPurposeTagRow(row)), [rawRows]);
   const rawPrefixColumns = Array.isArray(st?.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
   const snapshotMode = String(st?.display_mode || embed?.display_mode || embed?.st_scope?.display_mode || "");
   const pemsMode = snapshotMode === "pems" && rawPrefixColumns.length >= 3;
@@ -446,29 +483,33 @@ export default function SplitTableSnapshotView({
     : (stepLabels?2:0);
   const splitPrefixIndex = splitCheckMode ? parameterPrefixIndex+2 : -1;
   const hasRootRow = hasLotContext;
+  const hasPurposeRow = !!purposeRow;
   const hasLotRow = !pemsMode && (hasLotContext || headerGroups.length > 0);
   const rootHeaderHeight = hasRootRow ? 32 : 0;
+  const purposeHeaderHeight = hasPurposeRow ? 28 : 0;
   const lotHeaderHeight = hasLotRow ? 24 : 0;
-  const waferTop = rootHeaderHeight + lotHeaderHeight;
+  const purposeTop = rootHeaderHeight;
+  const lotTop = rootHeaderHeight + purposeHeaderHeight;
+  const waferTop = rootHeaderHeight + purposeHeaderHeight + lotHeaderHeight;
   const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
   const rowSpans = useMemo(() => {
-    if (!splitCheckMode) return (st?.rows || []).map(() => 1);
-    return (st?.rows || []).map((row, idx) => {
+    if (!splitCheckMode) return tableRows.map(() => 1);
+    return tableRows.map((row, idx) => {
       const param = String(row?._param || "").trim();
       if (!param) return 1;
-      const prev = idx > 0 ? String((st?.rows || [])[idx - 1]?._param || "").trim() : "";
+      const prev = idx > 0 ? String(tableRows[idx - 1]?._param || "").trim() : "";
       if (prev === param) return 0;
       let span = 1;
-      for (let i = idx + 1; i < (st?.rows || []).length; i += 1) {
-        if (String((st?.rows || [])[i]?._param || "").trim() !== param) break;
+      for (let i = idx + 1; i < tableRows.length; i += 1) {
+        if (String(tableRows[i]?._param || "").trim() !== param) break;
         span += 1;
       }
       return span;
     });
-  }, [splitCheckMode, st?.rows]);
+  }, [splitCheckMode, tableRows]);
   const uniq = useMemo(() => {
     const out = {};
-    for (const r of (st?.rows || [])) {
+    for (const r of tableRows) {
       const pn = String(r._param || "").toUpperCase();
       if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) continue;
       const seen = {};
@@ -482,7 +523,7 @@ export default function SplitTableSnapshotView({
       out[pn] = seen;
     }
     return out;
-  }, [st?.rows]);
+  }, [tableRows]);
 
   // v9.3.x: early return을 훅 아래로 이동 (Rules-of-Hooks 준수)
   if (!stValid) return footer || null;
@@ -501,8 +542,10 @@ export default function SplitTableSnapshotView({
   };
   const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
   const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
-  const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 13, color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default" };
+  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
   const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
   const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
   const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
@@ -540,6 +583,25 @@ export default function SplitTableSnapshotView({
                 <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
               </tr>
             )}
+            {hasPurposeRow && (
+              <tr>
+                <th colSpan={visiblePrefixColumns.length} style={purposeLeftStyle} title="Purpose Tag">purpose</th>
+                {headers.map((_, ci) => {
+                  const cell = purposeRow?._cells?.[String(ci)] || purposeRow?._cells?.[ci] || {};
+                  const value = hasStValue(cell?.plan) ? cell.plan : (cell?.actual ?? "");
+                  const background = cell?.tag_color || "var(--bg-card)";
+                  return (
+                    <th key={ci}
+                      style={{ ...purposeHeadStyle, background, fontWeight: hasStValue(value) ? 700 : 400 }}
+                      onContextMenu={onPurposeContextMenu ? (event) => onPurposeContextMenu(event, cell, ci, purposeRow) : undefined}
+                      onDoubleClick={onEditPurpose ? () => onEditPurpose(cell, ci, purposeRow) : undefined}
+                      title={onEditPurpose || onPurposeContextMenu ? "우클릭: 셀 배경색 변경 · 더블클릭: purpose 값 입력" : "Purpose Tag"}>
+                      {hasStValue(value) ? String(value) : <span style={{ opacity: 0.35, fontSize: 11 }}>-</span>}
+                    </th>
+                  );
+                })}
+              </tr>
+            )}
             {hasLotRow && (
               <tr>
                 <th colSpan={visiblePrefixColumns.length} style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
@@ -561,7 +623,7 @@ export default function SplitTableSnapshotView({
             </tr>
           </thead>
           <tbody>
-            {st.rows.map((r, ri) => {
+            {tableRows.map((r, ri) => {
               const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
               const prefixValues = visiblePrefixColumns.map((_, idx) => {
                 if (splitCheckMode) {

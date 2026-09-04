@@ -244,7 +244,9 @@ _VIEW_CACHE_COMPACT_CELL_COST = 40  # v2 슬림 행(a/p/m) 셀당 비용 — 캐
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
-_VIEW_DISK_CACHE_VERSION = 2
+# v3: KNOB metadata aliases are lookup-only; cached payloads from v2 may contain
+# duplicate space/underscore/_Split virtual rows and must not survive deploy.
+_VIEW_DISK_CACHE_VERSION = 3
 _VIEW_DISK_CACHE_LOCK = threading.Lock()
 _VIEW_PRODUCT_SIG_CACHE: OrderedDict[tuple[str, ...], tuple[float, tuple]] = OrderedDict()
 _VIEW_PRODUCT_SIG_LOCK = threading.Lock()

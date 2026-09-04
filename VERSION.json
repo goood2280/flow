@@ -1,7 +1,19 @@
 {
-  "version": "10.4.187",
+  "version": "10.4.188",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.188",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "SplitTable KNOB 중복 행 제거와 purpose 전 뷰 고정",
+      "changes": [
+        "[KNOB 행 정리] 한 KNOB의 공백·언더스코어·_Split 별칭을 각각 가상 행으로 만들던 문제를 수정해 별칭은 매칭에만 사용하고 화면에는 실제 물리 컬럼 또는 대표 행 하나만 표시",
+        "[purpose 내장 TAG] TAG 선택 여부와 사용자 정의 세트 구성에 관계없이 TAG_purpose를 모든 SplitTable 조회와 CSV·XLSX에 항상 포함",
+        "[전 표시형식 고정] 기본·diff·병합뿐 아니라 Split 체크·PEMS에서도 purpose를 S0/S1 데이터로 변환하지 않고 root lot 아래 상단 고정 행으로 표시하며 값 편집과 셀 색상 변경 유지",
+        "[캐시·검증] 이전 중복 행 응답이 남지 않도록 SplitTable 디스크 캐시 버전을 갱신하고 관련 Python 테스트 37건 및 프런트 디자인·구조·production build 통과"
+      ]
+    },
     {
       "version": "10.4.187",
       "date": "2026-09-04",

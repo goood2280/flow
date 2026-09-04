@@ -105,6 +105,44 @@ def test_stage_inference_keeps_vehicle_steps_without_numeric_step_desc(monkeypat
     assert meta["FAB_4.0 GATE_OX"]["step_ids"] == ["CC942300"]
 
 
+def test_knob_virtual_columns_emit_one_row_per_rulebook_feature(monkeypatch):
+    from routers import splittable
+
+    pc = {"feature_name": "5.0 PC", "groups": []}
+    ldd = {"feature_name": "6.0 LDD", "groups": []}
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda *args, **kwargs: {
+        "5.0 PC": pc,
+        "KNOB_5.0 PC": pc,
+        "5.0_PC_Split": pc,
+        "KNOB_5.0_PC_Split": pc,
+        "6.0 LDD": ldd,
+        "KNOB_6.0_LDD_Split": ldd,
+    })
+
+    virtual = splittable._virtual_columns_for_prefix("P1", "KNOB")
+
+    assert virtual == ["KNOB_5.0 PC", "KNOB_6.0 LDD"]
+
+
+def test_knob_virtual_columns_do_not_duplicate_a_physical_alias(monkeypatch):
+    from routers import splittable
+
+    pc = {"feature_name": "5.0 PC", "groups": []}
+    ldd = {"feature_name": "6.0 LDD", "groups": []}
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda *args, **kwargs: {
+        "5.0 PC": pc,
+        "KNOB_5.0_PC_Split": pc,
+        "6.0 LDD": ldd,
+        "KNOB_6.0_LDD_Split": ldd,
+    })
+
+    virtual = splittable._virtual_columns_for_prefix(
+        "P1", "KNOB", existing_columns=["KNOB_5.0_PC_Split"],
+    )
+
+    assert virtual == ["KNOB_6.0 LDD"]
+
+
 def _patch_export_source(monkeypatch):
     from routers import splittable
 
@@ -158,7 +196,8 @@ def test_xlsx_process_columns_precede_preserved_parameter(monkeypatch):
     sheet = workbook.active
 
     assert [sheet.cell(5, col).value for col in range(1, 5)] == ["step_id", "step_desc", "Parameter", "#1"]
-    assert [sheet.cell(6, col).value for col in range(1, 5)] == ["S10", "ETCH", "KNOB_A", "PP_A"]
+    assert [sheet.cell(6, col).value for col in range(1, 5)] == [None, None, "TAG_purpose", None]
+    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["S10", "ETCH", "KNOB_A", "PP_A"]
 
 
 def test_split_check_xlsx_uses_the_same_process_prefix(monkeypatch):

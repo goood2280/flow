@@ -2774,6 +2774,16 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const lotRowLabel = rowLabels.lot_id || "lot_id";
         const paramRowLabel = rowLabels.parameter || "항목";
         const purposeRow = (data?.rows || []).find(r => isDefaultPurposeTag(r?._param));
+        const purposeViewRow = purposeRow ? (() => {
+          const effective = rowsWithPendingPlans([purposeRow])[0];
+          return {
+            ...effective,
+            _cells:Object.fromEntries(Object.entries(effective?._cells||{}).map(([ci,cell])=>[
+              ci,
+              {...cell,tag_color:pendingTagColors[cell?.key]||cell?.tag_color||""},
+            ])),
+          };
+        })() : null;
         const hasRootRow = hasLotContext;
         const hasPurposeRow = !!purposeRow;
         const hasLotRow = hasLotContext || data.header_groups?.length>0;
@@ -2789,6 +2799,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const splitLikeSource={
           ...data,
           rows:displayRows,
+          // TAG_purpose는 Split/S그룹으로 변환할 데이터 행이 아니라 모든 표시
+          // 형식의 상단 고정 행이다. TAG prefix 선택 여부와 무관하게 별도 전달한다.
+          purpose_row:purposeViewRow,
           root_lot_id:lotHeaderRoot,
           lot_id_label:lotHeaderLot,
           prefix_columns:splitLikePrefixColumns,
@@ -2872,6 +2885,27 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           onAssignSplit={assignSplitPlanValue}
           onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw,row?._split_label)}
           onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
+          onPurposeContextMenu={(e,cell)=>{
+            if(!cell?.key)return;
+            e.preventDefault();e.stopPropagation();
+            const paletteWidth=190,paletteHeight=142;
+            setTagColorPicker({
+              key:cell.key,
+              color:pendingTagColors[cell.key]||cell.tag_color||TAG_CELL_PALETTE[0],
+              left:Math.max(8,Math.min(e.clientX,window.innerWidth-paletteWidth-8)),
+              top:Math.max(8,Math.min(e.clientY,window.innerHeight-paletteHeight-8)),
+            });
+          }}
+          onEditPurpose={(cell,ci,row)=>{
+            const cellKey=cell?.key||`${data.root_lot_id||lotId}|${data.wafer_keys?.[ci]||ci+1}|${row?._param||DEFAULT_CUSTOM_TAG_COLUMN}`;
+            if(!editing)setEditing(true);
+            setActiveCell({
+              key:cellKey,
+              param:row?._param||DEFAULT_CUSTOM_TAG_COLUMN,
+              value:cell?.actual??"",
+              kind:"tag",
+            });
+          }}
         />
         ) : (
         <table className="splittable-grid" style={{borderCollapse:"separate",borderSpacing:0,borderTop:GRID_LINE,borderLeft:GRID_LINE,fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(showModuleCol?MODULE_COL_W:0)+processPrefixWidth+(data.headers?.length||1)*115}}>

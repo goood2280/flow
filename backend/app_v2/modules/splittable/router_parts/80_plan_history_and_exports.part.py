@@ -394,6 +394,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
 
     all_data_cols = _view_data_columns(df.columns, lot_col, wf_col)
     tag_labels = _custom_tag_label_map(product)
+    tag_labels[DEFAULT_CUSTOM_TAG_COLUMN] = DEFAULT_CUSTOM_TAG_LABEL
     for tag_col in tag_labels:
         if tag_col not in all_data_cols:
             all_data_cols.append(tag_col)
@@ -404,16 +405,10 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                 all_data_cols.append(mgmt_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
-    if DEFAULT_CUSTOM_TAG_COLUMN in tag_labels:
-        selected = _with_default_custom_tag(selected)
+    selected = _with_default_custom_tag(selected)
     if not custom_name and not custom_cols:
         for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
-            for virt in _virtual_columns_for_prefix(product, raw_pref):
-                if virt not in selected:
-                    selected.append(virt)
-    if not custom_name and not custom_cols:
-        for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
-            for virt in _virtual_columns_for_prefix(product, raw_pref):
+            for virt in _virtual_columns_for_prefix(product, raw_pref, existing_columns=selected):
                 if virt not in selected:
                     selected.append(virt)
     # v8.8.14: display rename (rule_order + step_desc) 적용.
@@ -761,6 +756,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
     all_data_cols = _view_data_columns(df.columns, lot_col, wf_col)
     tag_labels = _custom_tag_label_map(product)
+    tag_labels[DEFAULT_CUSTOM_TAG_COLUMN] = DEFAULT_CUSTOM_TAG_LABEL
     for tag_col in tag_labels:
         if tag_col not in all_data_cols:
             all_data_cols.append(tag_col)
@@ -771,8 +767,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 all_data_cols.append(mgmt_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
-    if DEFAULT_CUSTOM_TAG_COLUMN in tag_labels:
-        selected = _with_default_custom_tag(selected)
+    selected = _with_default_custom_tag(selected)
     # v8.8.14: display rename (rule_order + step_desc) 적용.
     # 정렬은 view와 동일 — prefix 구분 없이 parameter별 step_id 공정 순서 우선.
     col_rename = _build_col_rename_map(selected, product)

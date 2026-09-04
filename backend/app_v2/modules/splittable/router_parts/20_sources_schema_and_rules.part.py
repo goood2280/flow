@@ -1975,6 +1975,12 @@ def _build_knob_meta(product: str = "") -> dict:
             if i < len(groups) - 1:
                 parts.append(" + ")
         feature_entry = {
+            # ``out`` below intentionally exposes many aliases so a physical
+            # ML_TABLE column can find the same rule regardless of spaces,
+            # underscores, prefix, or the legacy ``_Split`` suffix.  Keep the
+            # original rulebook name separately: aliases are lookup keys, not
+            # independent rows to render.
+            "feature_name": fname,
             "groups": groups,
             "label": "".join(parts),
             "modules": feat_modules,
@@ -2727,7 +2733,8 @@ def _merge_view_allowed_param(param: str) -> bool:
     return any(u == p or u.startswith(f"{p}_") for p in MERGE_VIEW_PREFIXES)
 
 
-def _virtual_columns_for_prefix(product: str, prefix: str) -> list[str]:
+def _virtual_columns_for_prefix(product: str, prefix: str,
+                                existing_columns: list[str] | None = None) -> list[str]:
     pref = str(prefix or "").strip().upper()
     if not pref:
         return []
@@ -2745,8 +2752,26 @@ def _virtual_columns_for_prefix(product: str, prefix: str) -> list[str]:
 
     try:
         if pref == "KNOB":
-            for key in (_build_knob_meta(product) or {}).keys():
-                _push(key, "KNOB")
+            meta_map = _build_knob_meta(product) or {}
+            # _build_knob_meta keeps space/underscore/prefix/_Split aliases so
+            # lookup remains backward compatible.  Rendering every alias as a
+            # virtual column produced several near-identical blank KNOB rows;
+            # only the physical spelling had values.  Mark metadata objects
+            # already represented by a selected physical column, then emit at
+            # most one canonical virtual row for each genuinely absent KNOB.
+            represented: set[int] = set()
+            for column in existing_columns or []:
+                meta = _step_label_meta_lookup(meta_map, column, "KNOB")
+                if meta:
+                    represented.add(id(meta))
+            emitted: set[int] = set()
+            for key, meta in meta_map.items():
+                marker = id(meta)
+                if marker in represented or marker in emitted:
+                    continue
+                emitted.add(marker)
+                canonical = meta.get("feature_name") if isinstance(meta, dict) else ""
+                _push(canonical or key, "KNOB")
         elif pref == "INLINE":
             for key in (_build_inline_meta(product) or {}).keys():
                 _push(key, "INLINE")

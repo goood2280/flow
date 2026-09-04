@@ -2491,6 +2491,10 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
             view_schema = view_lf.collect_schema().names()
             all_data = _view_data_columns(view_schema, lot_col, wf_col, fab_lot_col)
             tag_labels = _custom_tag_label_map(product)
+            # purpose is a built-in SplitTable context row, not an opt-in TAG
+            # column.  Keep the invariant even if a legacy/custom tag catalog
+            # omits it.
+            tag_labels[DEFAULT_CUSTOM_TAG_COLUMN] = DEFAULT_CUSTOM_TAG_LABEL
             for tag_col in tag_labels:
                 if tag_col not in all_data:
                     all_data.append(tag_col)
@@ -2501,11 +2505,11 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                         all_data.append(mgmt_col)
             sel = _select_columns(all_data, custom_name, prefix,
                                   max_fallback=50, custom_cols=custom_cols)
-            if DEFAULT_CUSTOM_TAG_COLUMN in tag_labels:
-                sel = _with_default_custom_tag(sel)
+            sel = _with_default_custom_tag(sel)
             if not custom_name and not custom_cols:
                 for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
-                    for virt in _virtual_columns_for_prefix(product, raw_pref):
+                    for virt in _virtual_columns_for_prefix(
+                            product, raw_pref, existing_columns=sel):
                         if virt not in sel:
                             sel.append(virt)
             rename = _build_col_rename_map(sel, product)

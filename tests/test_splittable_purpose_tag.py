@@ -1,5 +1,6 @@
 import asyncio
 import io
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -37,6 +38,7 @@ def test_purpose_is_builtin_first_and_cannot_be_deleted(monkeypatch):
         key=lambda column: splittable._step_order_sort_key(column, column, {}),
     )
     assert ordered[:3] == ["TAG_purpose", "TAG_alpha", "TAG_zeta"]
+    assert splittable._with_default_custom_tag(["KNOB_A"]) == ["TAG_purpose", "KNOB_A"]
 
     with pytest.raises(HTTPException) as error:
         splittable.delete_custom_tag_column(
@@ -100,7 +102,9 @@ def test_purpose_is_in_csv_and_xlsx_keeps_its_background(monkeypatch):
     monkeypatch.setattr(splittable, "_product_path", lambda *args, **kwargs: None)
     monkeypatch.setattr(splittable, "_scan_product", lambda *args, **kwargs: frame.lazy())
     monkeypatch.setattr(splittable, "_load_plan_data", lambda *args, **kwargs: {"plans": {}})
-    monkeypatch.setattr(splittable, "_custom_tag_label_map", lambda *args, **kwargs: {"TAG_purpose": "purpose"})
+    # Even a legacy/empty TAG catalog must not make the built-in purpose row
+    # disappear from a KNOB-only selection or its exports.
+    monkeypatch.setattr(splittable, "_custom_tag_label_map", lambda *args, **kwargs: {})
     monkeypatch.setattr(splittable, "_custom_tag_values_for_root", lambda *args, **kwargs: {"L1|1|TAG_purpose": "DOE"})
     monkeypatch.setattr(splittable, "_custom_tag_colors_for_root", lambda *args, **kwargs: {"L1|1|TAG_purpose": "#fecaca"})
     monkeypatch.setattr(splittable, "_management_row_label_map", lambda *args, **kwargs: {})
@@ -127,3 +131,14 @@ def test_purpose_is_in_csv_and_xlsx_keeps_its_background(monkeypatch):
     assert sheet.cell(6, 2).value == "DOE"
     assert sheet.cell(6, 2).fill.fill_type == "solid"
     assert sheet.cell(6, 2).fill.fgColor.rgb.endswith("FECACA")
+
+
+def test_split_and_pems_views_keep_purpose_as_a_fixed_header_row():
+    root = Path(__file__).resolve().parents[1]
+    page = (root / "frontend/src/features/splittable/My_SplitTable.jsx").read_text("utf-8")
+    snapshot = (root / "frontend/src/components/SplitTableSnapshotView.jsx").read_text("utf-8")
+
+    assert "purpose_row:purposeViewRow" in page
+    assert "purpose_row: purposeRow || undefined" in snapshot
+    assert "{hasPurposeRow && (" in snapshot
+    assert "const splitSourceRows = rows.filter(row => !isPurposeTagRow(row));" in snapshot
