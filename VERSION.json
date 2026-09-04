@@ -1,7 +1,19 @@
 {
-  "version": "10.4.192",
+  "version": "10.4.193",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.193",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "병합뷰 좌측 컨텍스트 헤더 표시 보정",
+      "changes": [
+        "[병합뷰 헤더] 적용 공정 정보의 module·step_id·step_desc·항목 열 위에 있는 root_lot_id·purpose·lot_id 라벨을 각 행마다 하나의 병합 셀로 유지",
+        "[스크롤 표시 보정] 병합 헤더를 불투명한 독립 레이어로 고정하고 너비 상한을 실제 좌측 열 합계에 맞춰 sticky 하위 열 경계가 비치거나 셀이 벌어져 보이는 현상 방지",
+        "[스냅샷 일치] Inform 및 Auto report에서 렌더링하는 병합뷰 스냅샷에도 같은 좌측 병합·경계 보정 적용",
+        "[검증] SplitTable 공정·purpose·PEMS·S0·라우터 회귀 33건과 프런트 디자인 시스템·기능 경계 검사 및 production build 통과"
+      ]
+    },
     {
       "version": "10.4.192",
       "date": "2026-09-04",

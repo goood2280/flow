@@ -213,8 +213,8 @@ def test_default_view_merges_context_labels_and_uses_configurable_widths():
     snapshot = (root / "frontend/src/components/SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
 
     assert "const leftPrefixColumnCount=1+(showModuleCol?1:0)+(showParamMeta?2:0)" in page
-    assert "<th colSpan={leftPrefixColumnCount} title={lotContextTitle}" in page
-    assert "<th colSpan={leftPrefixColumnCount} style={{boxSizing:\"border-box\",height:purposeHeaderHeight" in page
+    assert "colSpan={leftPrefixColumnCount} title={lotContextTitle}" in page
+    assert "colSpan={leftPrefixColumnCount} style={{boxSizing:\"border-box\",height:purposeHeaderHeight" in page
     assert "columnWidths={columnWidths}" in page
     assert 'sf(API+"/display-settings")' in page
     assert 'sf(API+"/display-settings/save"' in page
@@ -222,6 +222,19 @@ def test_default_view_merges_context_labels_and_uses_configurable_widths():
         assert f'\"{label}\"' in page
     assert "normalizeSplitTableColumnWidths" in snapshot
     assert "effectiveColumnWidths.value" in snapshot
+
+
+def test_merged_view_keeps_live_and_snapshot_context_headers_visually_unified():
+    root = Path(__file__).parents[1]
+    page = (root / "frontend/src/features/splittable/My_SplitTable.jsx").read_text(encoding="utf-8")
+    snapshot = (root / "frontend/src/components/SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
+
+    assert "const mergedContextLeftStyle=mergedViewActive?" in page
+    assert page.count('stm-context-left--merged') >= 3
+    assert "maxWidth:leftPrefixWidth" in page
+    assert "const mergedContextLeftStyle = mergedMode ?" in snapshot
+    assert snapshot.count('stm-context-left--merged') >= 3
+    assert "maxWidth: prefixTotalWidth" in snapshot
 
 
 def test_stage_inference_keeps_vehicle_steps_without_numeric_step_desc(monkeypatch):

@@ -2595,6 +2595,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const paramLeft=(showModuleCol?moduleColWidth:0)+processPrefixWidth;
         const leftPrefixColumnCount=1+(showModuleCol?1:0)+(showParamMeta?2:0);
         const leftPrefixWidth=paramLeft+itemColWidth;
+        // 병합 뷰의 좌측 컨텍스트 헤더는 아래의 sticky 공정 열 여러 개를
+        // 가로지른다. 브라우저가 스크롤 중 하위 열 경계를 비쳐 보이지 않게
+        // 하나의 불투명한 stacking context로 고정한다.
+        const mergedContextLeftStyle=mergedViewActive?{
+          background:"var(--bg-tertiary)",backgroundClip:"border-box",
+          boxShadow:`inset -1px 0 0 ${GRID_BORDER}`,isolation:"isolate",
+        }:{};
         // TAG 행은 열마다 module 이 따로라 위아래로 합치지 않는다 — 행 인덱스를 키에 섞어 항상 span 1.
         const moduleGroupKey=(ri)=>rowTagFlags[ri]?`tag:${ri}`:`m:${rowModules[ri]}`;
         const moduleSpanAt=(ri)=>{
@@ -2985,14 +2992,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           </colgroup>
           <thead>
             {hasRootRow&&(()=>{const lotN=notesForLot().length;const drawerRoot=lotHeaderRoot || data.root_lot_id || lotId || "-";return(<tr style={{height:rootHeaderHeight}}>
-              <th colSpan={leftPrefixColumnCount} title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
+              <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word",...mergedContextLeftStyle}}>
                 {rootRowLabel}
               </th>
               <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {hasPurposeRow&&(()=>{
               return (
                 <tr style={{height:purposeHeaderHeight}}>
-                  <th colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800}} title="Purpose Tag">purpose</th>
+                  <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800,...mergedContextLeftStyle}} title="Purpose Tag">purpose</th>
                   {data.headers?.map((h, ci) => {
                     const cell = purposeRow?._cells?.[String(ci)] || {};
                     const cellKey = cell.key || (purposeRow?._param ? `${purposeRow._param}:${ci}` : "");
@@ -3048,7 +3055,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               );
             })()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
-              <th colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:lotHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:0,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
+              <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:lotHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:0,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800,...mergedContextLeftStyle}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0
                 ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
                 : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}

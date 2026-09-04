@@ -559,11 +559,14 @@ export default function SplitTableSnapshotView({
     minWidth: stTableWidth,
     fontFamily: "inherit",
   };
-  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  // Inform/Auto report의 병합 스냅샷도 live 표와 같은 단일 좌측 헤더로
+  // 보이도록, sticky 하위 열의 경계가 비치지 않는 불투명 레이어를 만든다.
+  const mergedContextLeftStyle = mergedMode ? { background: "var(--bg-tertiary)", backgroundClip: "border-box", boxShadow: "inset -1px 0 0 #555", isolation: "isolate" } : {};
+  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 13, color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default" };
-  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
+  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
   const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
   const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
@@ -598,13 +601,13 @@ export default function SplitTableSnapshotView({
           <thead>
             {hasRootRow && (
               <tr>
-                <th colSpan={visiblePrefixColumns.length} style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
+                <th className={mergedMode ? "stm-context-left stm-context-left--merged" : "stm-context-left"} colSpan={visiblePrefixColumns.length} style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
                 <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
               </tr>
             )}
             {hasPurposeRow && (
               <tr>
-                <th colSpan={visiblePrefixColumns.length} style={purposeLeftStyle} title="Purpose Tag">purpose</th>
+                <th className={mergedMode ? "stm-context-left stm-context-left--merged" : "stm-context-left"} colSpan={visiblePrefixColumns.length} style={purposeLeftStyle} title="Purpose Tag">purpose</th>
                 {headers.map((_, ci) => {
                   const cell = purposeRow?._cells?.[String(ci)] || purposeRow?._cells?.[ci] || {};
                   const value = hasStValue(cell?.plan) ? cell.plan : (cell?.actual ?? "");
@@ -623,7 +626,7 @@ export default function SplitTableSnapshotView({
             )}
             {hasLotRow && (
               <tr>
-                <th colSpan={visiblePrefixColumns.length} style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
+                <th className={mergedMode ? "stm-context-left stm-context-left--merged" : "stm-context-left"} colSpan={visiblePrefixColumns.length} style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
                 {headerGroups.length > 0
                   ? headerGroups.map((g, i) => (
                     <th key={i} colSpan={g.span} style={lotHeadStyle} title={g.label}>{g.label}</th>
