@@ -32,9 +32,31 @@ def test_process_columns_keep_step_id_and_step_desc_separate():
     columns = splittable._step_process_columns_for_param("KNOB_A", metas, exclude_not_null=True)
 
     assert columns == {
-        "step_id": "S10\nS11\n&\nS20",
-        "step_desc": "ETCH\n&\nCLEAN",
+        "step_id": "S10\nS11\nS20",
+        "step_desc": "ETCH\nCLEAN",
     }
+
+
+def test_xlsx_process_columns_dedupe_across_knob_rule_orders():
+    from routers import splittable
+
+    repeated = {
+        "knob": {
+            "KNOB_A": {
+                "groups": [
+                    {"rule_order": "R1", "step_desc": "ETCH", "step_ids": ["S10"]},
+                    {"rule_order": "R2", "step_desc": "ETCH", "step_ids": ["S10"]},
+                    {"rule_order": "R3", "step_desc": "ETCH", "step_ids": ["S10"]},
+                ]
+            }
+        },
+        "inline": {},
+        "vm": {},
+    }
+
+    columns = splittable._step_process_columns_for_param("KNOB_A", repeated)
+
+    assert columns == {"step_id": "S10", "step_desc": "ETCH"}
 
 
 def test_step_order_interleaves_mapped_prefixes_and_leaves_mask_unranked(monkeypatch):
@@ -348,6 +370,37 @@ def test_xlsx_process_columns_precede_preserved_parameter(monkeypatch):
     assert [sheet.cell(5, col).value for col in range(1, 5)] == ["step_id", "step_desc", "Parameter", "#1"]
     assert [sheet.cell(6, col).value for col in range(1, 5)] == [None, None, "TAG_purpose", None]
     assert [sheet.cell(7, col).value for col in range(1, 5)] == ["S10", "ETCH", "KNOB_A", "PP_A"]
+
+
+def test_xlsx_applied_process_columns_match_web_unique_values(monkeypatch):
+    from openpyxl import load_workbook
+    from routers import splittable
+
+    _patch_export_source(monkeypatch)
+    repeated = {
+        "knob": {
+            "KNOB_A": {
+                "groups": [
+                    {"rule_order": "R1", "step_desc": "ETCH", "step_ids": ["S10"]},
+                    {"rule_order": "R2", "step_desc": "ETCH", "step_ids": ["S10"]},
+                ]
+            }
+        },
+        "inline": {},
+        "vm": {},
+    }
+    monkeypatch.setattr(splittable, "_step_label_metas", lambda *args, **kwargs: repeated)
+    monkeypatch.setattr(splittable, "_split_step_progress", lambda *args, **kwargs: {})
+
+    response = splittable.download_xlsx(
+        product="P1", root_lot_id="L1", wafer_ids="", prefix="KNOB",
+        custom_name="", username="u", custom_cols="", display_mode="",
+        step_labels="1", exclude_not_null="1",
+    )
+    sheet = load_workbook(io.BytesIO(_response_bytes(response))).active
+
+    assert sheet.cell(7, 1).value == "S10"
+    assert sheet.cell(7, 2).value == "ETCH"
 
 
 def test_split_check_xlsx_uses_the_same_process_prefix(monkeypatch):

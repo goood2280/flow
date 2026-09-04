@@ -1606,14 +1606,16 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
     matching = _load_knob_step_matching_rows(base)
     sm = _sch("step_matching")
     step_map: dict[str, list[dict]] = {}
+    fallback_map: dict[str, list[dict]] = {}
     p_col = sm.get("product_col", "product")
     has_product_col = any(p_col in r or "product" in r for r in matching)
+    sop_source = _s0_source_for_product(_s0_sop_catalog(), product) if product else {}
+    sop_steps = {str(k).casefold() for k in (sop_source.get("rows") or {}).keys()}
     for r in matching:
         row_prod = r.get(p_col)
         if row_prod is None and p_col != "product":
             row_prod = r.get("product")
-        if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
-            continue
+        is_direct = _step_matching_product_matches(product, row_prod, allow_common=not has_product_col)
         step_desc = _row_step_desc(r, sm)
         step_desc_key = _step_desc_match_key(step_desc)
         step_id = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -1624,15 +1626,36 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
             "step_id": step_id,
             "module": _vehicle_module_of(r, sm),
         }
-        for k in _dedup_list([
+        keys = _dedup_list([
             step_desc_key,
             step_desc_key.replace("_", " "),
             step_desc_key.replace(" ", "_"),
             step_id.casefold(),
-        ]):
-            bucket = step_map.setdefault(k, [])
-            if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
-                bucket.append(item)
+        ])
+        if is_direct:
+            for k in keys:
+                bucket = step_map.setdefault(k, [])
+                if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
+                    bucket.append(item)
+        else:
+            in_sop = step_id.casefold() in sop_steps
+            for k in keys:
+                bucket = fallback_map.setdefault(k, [])
+                if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
+                    if in_sop:
+                        bucket.insert(0, item)
+                    else:
+                        bucket.append(item)
+    for k, items in fallback_map.items():
+        if k not in step_map or not step_map[k]:
+            step_map[k] = items
+        else:
+            existing_sids = {str(x.get("step_id") or "").strip().casefold() for x in step_map[k]}
+            for item in items:
+                sid = str(item.get("step_id") or "").strip().casefold()
+                if sid in sop_steps and sid not in existing_sids:
+                    step_map[k].append(item)
+                    existing_sids.add(sid)
     return step_map
 
 
@@ -1896,7 +1919,12 @@ def _build_knob_meta(product: str = "") -> dict:
         if requested_product and row_products and not matched_product_indexes:
             continue
         all_direct_ids = _multi_values(r.get("step_id"))
-        all_direct_descs = _multi_values(r.get("step_desc"))
+        raw_direct_desc = str(r.get("step_desc") or "").strip()
+        # step_desc is free text: unlike product/step_id, commas belong to the
+        # value and must never be treated as list separators.  Product-scoped
+        # descriptions are resolved from the selected step_id via Vehicle
+        # matching below; this also keeps older aligned rows working.
+        all_direct_descs = [raw_direct_desc] if raw_direct_desc else []
         direct_ids = (
             [all_direct_ids[index] for index in matched_product_indexes if index < len(all_direct_ids)]
             if matched_product_indexes and len(all_direct_ids) == len(row_products)
@@ -1910,10 +1938,10 @@ def _build_knob_meta(product: str = "") -> dict:
         direct_steps = [step_by_id.get(sid.casefold()) for sid in direct_ids]
         direct_steps = [item for item in direct_steps if item]
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
-        step_desc = next((desc for desc in direct_descs if desc), "")
+        step_desc = next((str(item.get("step_desc") or "").strip() for item in direct_steps
+                          if str(item.get("step_desc") or "").strip()), "")
         if not step_desc:
-            step_desc = next((str(item.get("step_desc") or "").strip() for item in direct_steps
-                              if str(item.get("step_desc") or "").strip()), "")
+            step_desc = next((desc for desc in direct_descs if desc), "")
         if not step_desc:
             step_desc = _row_step_desc(r, km)
         step_desc_key = _step_desc_match_key(step_desc)
@@ -2017,6 +2045,81 @@ _STEP_ORDER_CTX_LOCK = threading.Lock()
 _STEP_ID_PREFIX_NUM_RE = _re.compile(r"^([A-Za-z]+)(\d+)")
 
 
+def _step_canonical_stage(desc: str, sid: str = "") -> float:
+    """Map a step description or step_id to a canonical semiconductor fabrication stage (1.0 to 24.0)."""
+    d = str(desc or "").upper().strip()
+    m = _re.match(r"^\s*(\d+(?:\.\d+)?)", d)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    if "STI" in d or "ISOL" in d:
+        return 1.0
+    if "WELL" in d or "CHN_IMP" in d:
+        return 2.0
+    if "VT" in d or "VTH" in d:
+        return 3.0
+    if "GATE" in d or "HKMG" in d or "RMG" in d:
+        return 4.0
+    if "PC" in d or "POLY" in d:
+        return 5.0
+    if "LDD" in d:
+        return 6.0
+    if "SPACER" in d or "SPCR" in d:
+        return 7.0
+    if "SD_EPI" in d or "EPI" in d or "RSD" in d:
+        return 8.0
+    if "SILICIDE" in d:
+        return 9.0
+    if "CONTACT" in d or " CT" in d or d.startswith("CT") or "CA" in d or "CB" in d:
+        return 10.0
+    if "M0" in d or "MOL_METAL" in d:
+        return 11.0
+    if "VIA0" in d or "V0" in d:
+        return 12.0
+    if "M1" in d or "METAL_ETCH" in d or "METAL1" in d:
+        return 13.0
+    if "VIA1" in d or "V1" in d:
+        return 14.0
+    if "M2" in d or "METAL2" in d:
+        return 15.0
+    if "VIA2" in d or "V2" in d:
+        return 16.0
+    if "M3" in d or "METAL3" in d:
+        return 17.0
+    if "VIA3" in d or "V3" in d:
+        return 18.0
+    if "M4" in d or "METAL4" in d:
+        return 19.0
+    if "PAD" in d:
+        return 20.0
+    if "PASSIVATION" in d:
+        return 21.0
+    if "FINAL" in d or "INSPECTION" in d or "ETEST" in d or "TEST" in d:
+        return 22.0
+    if "REL" in d:
+        return 23.0
+    if "SORT" in d:
+        return 24.0
+    try:
+        area = classify_process_area(d)
+        if area == "STI": return 1.0
+        if area == "Well/VT": return 2.5
+        if area == "Gate": return 4.0
+        if area == "PC": return 5.0
+        if area == "Spacer": return 7.0
+        if area == "S/D Epi": return 8.0
+        if area == "MOL": return 10.5
+        if area == "BEOL-M1": return 13.0
+        if area == "BEOL-M2": return 15.0
+        if area == "BEOL-M3": return 17.0
+        if area == "BEOL-M4": return 19.0
+    except Exception:
+        pass
+    return 99.0
+
+
 def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
     """메타가 가리키는 step 중 가장 뒤 공정을 대표 rank로 반환한다."""
     if not isinstance(meta, dict):
@@ -2037,9 +2140,16 @@ def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
         step_ids.append(sid)
     ranked = [(seq_rank.get(raw.upper()), raw.upper()) for raw in _dedup_list(step_ids)]
     ranked = [(rank, raw) for rank, raw in ranked if rank is not None]
-    if not ranked:
-        return None, ""
-    return max(ranked, key=lambda item: item[0])
+    if ranked:
+        return max(ranked, key=lambda item: item[0])
+    # Fallback: 파라미터명/feature_name 에 공정 단계 번호(1.0, 2.0 등)가 있는 경우 순서 보간
+    fname = str(meta.get("feature_name") or meta.get("param") or meta.get("label") or "").strip()
+    major = _stage_major(fname)
+    if major is not None and seq_rank:
+        max_rank = max(seq_rank.values()) if seq_rank else 0
+        interpolated = int(round(major * (max_rank / 24.0))) if max_rank > 0 else int(major)
+        return interpolated, ""
+    return None, ""
 
 
 def _register_step_order_meta(param_rank: dict[str, int], param_step: dict[str, str],
@@ -2080,11 +2190,11 @@ def _register_step_order_meta(param_rank: dict[str, int], param_step: dict[str, 
 def _split_step_order_context(product: str) -> dict:
     """product 의 공정 순서 컨텍스트.
 
-    seq_rank:     step_id(upper) → f_step route 우선 공정 순서 rank
+    seq_rank:     step_id(upper) → 반도체 공정 순서(FEOL->MOL->BEOL->Test) 기반 rank
     prefix_steps: 영문 프리픽스 → [(step 번호, rank)] (근사 매칭용, 번호 오름차순)
     param_rank:   전체 prefix parameter 명(물리 컬럼명/bare 명, upper) → rank
     param_step:   같은 키 → 대표 step_id
-    progress_param_rank: f_step route에 실제 존재해 진행 회색 판정이 가능한 parameter
+    progress_param_rank: route에 실제 존재해 진행 회색 판정이 가능한 parameter
     """
     key = str(product or "").strip().upper()
     now = time.monotonic()
@@ -2099,25 +2209,41 @@ def _split_step_order_context(product: str) -> dict:
         sm = _sch("step_matching")
         p_col = sm.get("product_col", "product")
         has_product_col = any(p_col in r or "product" in r for r in matching)
-        seq_rank: dict[str, int] = {}
         route_source = _s0_source_for_product(_s0_sop_catalog(), product)
         route_steps: set[str] = set()
-        for raw_step in route_source.get("step_order") or []:
+
+        step_items: list[tuple[float, int, str]] = []
+        for idx, raw_step in enumerate(route_source.get("step_order") or []):
             sid = str(raw_step or "").strip().upper()
-            if not sid or sid in seq_rank:
+            if not sid:
                 continue
-            seq_rank[sid] = len(seq_rank)
             route_steps.add(sid)
-        for r in matching:
+            desc = ""
+            for r in matching:
+                if str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip().upper() == sid:
+                    desc = _row_step_desc(r, sm)
+                    break
+            stage = _step_canonical_stage(desc, sid)
+            step_items.append((stage, idx, sid))
+
+        for idx, r in enumerate(matching):
             row_prod = r.get(p_col)
             if row_prod is None and p_col != "product":
                 row_prod = r.get("product")
             if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
                 continue
             sid = str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip().upper()
-            if not sid or sid in seq_rank:
+            if not sid or sid in route_steps:
                 continue
-            seq_rank[sid] = len(seq_rank)
+            desc = _row_step_desc(r, sm)
+            stage = _step_canonical_stage(desc, sid)
+            step_items.append((stage, 1000 + idx, sid))
+
+        step_items.sort()
+        seq_rank: dict[str, int] = {}
+        for stage, _, sid in step_items:
+            if sid not in seq_rank:
+                seq_rank[sid] = len(seq_rank)
         prefix_steps: dict[str, list[tuple[int, int]]] = {}
         for sid, rank in seq_rank.items():
             m = _STEP_ID_PREFIX_NUM_RE.match(sid)
@@ -2668,37 +2794,36 @@ def _step_process_columns_for_param(param: str, metas: dict,
     if kind == "knob_ppid":
         meta = _step_label_meta_lookup(metas.get("knob") or {}, param, "KNOB")
         groups = (meta or {}).get("groups") or []
-        by_order: dict[str, list[dict]] = {}
-        order_seq: list[str] = []
-        for idx, group in enumerate(groups if isinstance(groups, list) else []):
+        # Keep the export contract identical to the web table's
+        # matchProcessColumns(): unique step ids/descriptions across every
+        # rule_order, preserving first appearance only.  The old block-based
+        # export repeated the same step once per rule_order.
+        ids: list[str] = []
+        descs: list[str] = []
+        seen_ids: set[str] = set()
+        seen_descs: set[str] = set()
+        for group in groups if isinstance(groups, list) else []:
             if not isinstance(group, dict):
                 continue
-            order = str(group.get("rule_order") or f"R{idx + 1}").strip() or f"R{idx + 1}"
-            if order not in by_order:
-                by_order[order] = []
-                order_seq.append(order)
-            by_order[order].append(group)
-        id_blocks: list[str] = []
-        desc_blocks: list[str] = []
-        for order in order_seq:
-            by_desc: dict[str, dict] = {}
-            for group in by_order[order]:
-                operator = _re.sub(r"[\s-]+", "_", str(group.get("operator") or "").strip().lower())
-                if operator == "is_null" or (exclude_not_null and operator == "not_null"):
-                    continue
-                desc = str(group.get("step_desc") or group.get("func_step") or "").strip()
-                if not desc:
-                    continue
-                bucket = by_desc.setdefault(desc.casefold(), {"desc": desc, "ids": [], "seen": set()})
-                for sid in _step_label_group_ids(group):
-                    if sid.casefold() not in bucket["seen"]:
-                        bucket["seen"].add(sid.casefold())
-                        bucket["ids"].append(sid)
-            valid = [item for item in by_desc.values() if item["ids"]]
-            if valid:
-                id_blocks.append("\n&\n".join("\n".join(item["ids"]) for item in valid))
-                desc_blocks.append("\n&\n".join(item["desc"] for item in valid))
-        return {"step_id": "\n".join(id_blocks), "step_desc": "\n".join(desc_blocks)}
+            operator = _re.sub(r"[\s-]+", "_", str(group.get("operator") or "").strip().lower())
+            if operator == "is_null" or (exclude_not_null and operator == "not_null"):
+                continue
+            desc = str(group.get("step_desc") or group.get("func_step") or "").strip()
+            for sid in _step_label_group_ids(group):
+                key = sid.casefold()
+                if key not in seen_ids:
+                    seen_ids.add(key)
+                    ids.append(sid)
+            if desc and desc.casefold() not in seen_descs:
+                seen_descs.add(desc.casefold())
+                descs.append(desc)
+        if not ids:
+            for sid in ((meta or {}).get("step_ids") or []):
+                sid = str(sid or "").strip()
+                if sid and sid.casefold() not in seen_ids:
+                    seen_ids.add(sid.casefold())
+                    ids.append(sid)
+        return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
 
     meta_key = "inline" if kind == "inline_matching" else "vm"
     prefix = "INLINE" if kind == "inline_matching" else "VM"

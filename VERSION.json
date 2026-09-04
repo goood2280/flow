@@ -1,7 +1,19 @@
 {
-  "version": "10.4.193",
+  "version": "10.4.194",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.194",
+      "date": "2026-09-04",
+      "tag": "feat",
+      "title": "SplitTable 적용공정·스프레드시트 룰·purpose 우클릭 개선",
+      "changes": [
+        "[적용공정 및 module] module 및 공정 열이 상시 노출되거나 중복 step_id·step_desc가 반복 표시되던 현상 → 적용공정 옵션 연동 누락 및 룰별 공정 ID 단순 병합 → 적용 공정 정보 선택 시에만 module 열이 함께 노출되도록 맞추고 제품별 unique step_id 및 unique step_desc만 깔끔하게 표시",
+        "[스플릿 룰 스프레드시트] Split 체크 및 기본 뷰에서 스플릿 클릭 시 분류 규칙 전체가 일반 테이블로 단순 표시되던 현상 → 필터 및 스프레드시트 규약 부재 → 클릭한 스플릿(S0/S1 등) 기준으로 자동 필터링되는 스프레드시트 모달을 구현하고 1px 격자 테두리, 고정 헤더, No 행번호, 전체보기 토글 칩 제공",
+        "[Purpose Tag 및 우클릭 색상] purpose tag가 헤더 사이에 위치하면서 셀 우클릭 색상 변경이 저장되지 않거나 키가 누락되던 현상 → 셀 식별키 누락 시 조기 리턴 및 저장 조건 제약 → purpose 행을 root_lot_id와 lot_id 사이에 배치하고 우클릭 팔레트 선택 시 셀 단위 배경색 즉시 저장 및 화면 반영",
+        "[S0 폴백 및 Knob 순서] credential 내 제품_sop 파일 부재 시 S0 할당 오류 및 일부 Knob이 아래로 밀리던 현상 → SOP 부재 시 좌측 첫 wafer 우선순위 처리 누락 및 CSV 라인 순서 기반 랭킹 → SOP 부재 시 좌측 wafer부터 S0 부여하고 제조 단계(FEOL~BEOL~Test) 표준 공정 순서 랭킹을 적용하여 Knob 위치 보정"
+      ]
+    },
     {
       "version": "10.4.193",
       "date": "2026-09-04",

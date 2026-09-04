@@ -119,3 +119,53 @@ def test_split_exports_put_snapshot_por_in_s0_even_when_not_first_observed():
     )
     assert rows[0][:3] == ["KNOB_A", "PP_STD", "S0"]
     assert rows[1][:3] == ["KNOB_A", "PP_X", "S1"]
+
+
+def test_credential_sop_catalog_loads_csv_and_falls_back_for_missing_product(tmp_path, monkeypatch):
+    credential_dir = tmp_path / "credential"
+    credential_dir.mkdir(parents=True, exist_ok=True)
+    sop_file = credential_dir / "PRODX_sop.csv"
+    sop_file.write_text(
+        "step_id,current_por_ppid,is_por\n"
+        "S10,PP_PRODX_S0,Y\n",
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_S0_CATALOG_CACHE", None)
+
+    catalog = splittable._s0_sop_catalog()
+    assert "prodx" in catalog
+    assert catalog["prodx"]["rows"]["s10"]["ppid"] == "PP_PRODX_S0"
+
+    # Missing product returns empty source and empty s0
+    assert splittable._s0_source_for_product(catalog, "UNKNOWN_PROD") == {}
+    assert splittable._knob_s0_for_product("UNKNOWN_PROD") == {}
+
+
+def test_step_order_context_ranks_feol_before_mol_and_test(monkeypatch, tmp_path):
+    matching_csv = tmp_path / "step_matching.csv"
+    matching_csv.write_text(
+        "product,step_id,function_step\n"
+        "PRODZ,AA100600,FINAL_INSPECTION\n"
+        "PRODZ,AA100100,CONTACT_LITHO\n"
+        "PRODZ,AA100210,STI_FORMATION\n"
+        "PRODZ,AA100220,WELL_IMPLANT\n",
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args: [
+        {"product": "PRODZ", "step_id": "AA100600", "function_step": "FINAL_INSPECTION"},
+        {"product": "PRODZ", "step_id": "AA100100", "function_step": "CONTACT_LITHO"},
+        {"product": "PRODZ", "step_id": "AA100210", "function_step": "STI_FORMATION"},
+        {"product": "PRODZ", "step_id": "AA100220", "function_step": "WELL_IMPLANT"},
+    ])
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {})
+
+    ctx = splittable._split_step_order_context("PRODZ")
+    # STI (stage 1) < WELL (stage 2) < CONTACT (stage 10) < FINAL_INSPECTION (stage 22)
+    assert ctx["seq_rank"]["AA100210"] < ctx["seq_rank"]["AA100220"]
+    assert ctx["seq_rank"]["AA100220"] < ctx["seq_rank"]["AA100100"]
+    assert ctx["seq_rank"]["AA100100"] < ctx["seq_rank"]["AA100600"]
+

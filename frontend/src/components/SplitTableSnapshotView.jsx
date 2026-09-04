@@ -269,6 +269,12 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
           || splitParamDisplayName(row?._display || row?._param || "", row?._param),
         item.display, label,
       ];
+      const hasModule = Array.isArray(source.prefix_columns) && source.prefix_columns.includes("module");
+      const prefixCells = process
+        ? (hasModule
+            ? [String(process.module || ""), String(process.step_id || ""), String(process.step_desc || ""), ...basePrefix]
+            : [String(process.step_id || ""), String(process.step_desc || ""), ...basePrefix])
+        : basePrefix;
       return {
         _param: String(row?._param || row?._display || ""),
         _display: String(row?._display || row?._param || ""),
@@ -279,21 +285,25 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
         _is_split_draft: !!item.is_draft,
         _split_draft_index: item.draft_index,
         _process_columns: process || undefined,
-        _prefix_cells: process
-          ? [String(process.step_id||""),String(process.step_desc||""),...basePrefix]
-          : basePrefix,
+        _prefix_cells: prefixCells,
         _cells: checkCells,
         _not_reached_all: perHeader.length > 0 && perHeader.every(value => value.not_reached),
       };
     });
   });
+  const prefixCols = Array.isArray(source.prefix_columns) && source.prefix_columns.length ? source.prefix_columns : SPLIT_CHECK_PREFIX_COLUMNS;
+  const paramIdx = prefixCols.indexOf("항목") >= 0
+    ? prefixCols.indexOf("항목")
+    : (prefixCols.includes("step_desc")
+        ? prefixCols.indexOf("step_desc") + 1
+        : (prefixCols.includes("step_id") ? prefixCols.indexOf("step_id") + 1 : 0));
   return {
     ...source,
     headers,
     rows: splitRows,
     purpose_row: purposeRow || undefined,
-    prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
-    parameter_prefix_index: (Array.isArray(source.prefix_columns) && (source.prefix_columns.includes("step_id") || source.prefix_columns.includes("step_desc"))) ? 2 : 0,
+    prefix_columns: prefixCols,
+    parameter_prefix_index: Math.max(0, paramIdx),
     display_mode: "split_check",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -392,6 +402,12 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
           || splitParamDisplayName(row?._display || row?._param || "", row?._param),
         item.display, label,
       ];
+      const hasModule = Array.isArray(source.prefix_columns) && source.prefix_columns.includes("module");
+      const prefixCells = process
+        ? (hasModule
+            ? [String(process.module || ""), String(process.step_id || ""), String(process.step_desc || ""), ...basePrefix]
+            : [String(process.step_id || ""), String(process.step_desc || ""), ...basePrefix])
+        : basePrefix;
       return {
         _param: String(row?._param || row?._display || ""),
         _display: String(row?._display || row?._param || ""),
@@ -402,14 +418,19 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
         _is_split_draft: !!item.is_draft,
         _split_draft_index: item.draft_index,
         _process_columns: process || undefined,
-        _prefix_cells: process
-          ? [String(process.step_id||""),String(process.step_desc||""),...basePrefix]
-          : basePrefix,
+        _prefix_cells: prefixCells,
         _cells: splitCells,
         _not_reached_all: perWafer.every(value => value.not_reached),
       };
     });
   });
+
+  const prefixCols = Array.isArray(source.prefix_columns) && source.prefix_columns.length ? source.prefix_columns : SPLIT_CHECK_PREFIX_COLUMNS;
+  const paramIdx = prefixCols.indexOf("항목") >= 0
+    ? prefixCols.indexOf("항목")
+    : (prefixCols.includes("step_desc")
+        ? prefixCols.indexOf("step_desc") + 1
+        : (prefixCols.includes("step_id") ? prefixCols.indexOf("step_id") + 1 : 0));
 
   return {
     ...source,
@@ -422,8 +443,8 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
     lot_id_label: "",
     hide_lot_id_row: true,
     pems_missing_wafer_indices: missingWaferIndices,
-    prefix_columns: Array.isArray(source.prefix_columns)&&source.prefix_columns.length?source.prefix_columns:SPLIT_CHECK_PREFIX_COLUMNS,
-    parameter_prefix_index: (Array.isArray(source.prefix_columns) && (source.prefix_columns.includes("step_id") || source.prefix_columns.includes("step_desc"))) ? 2 : 0,
+    prefix_columns: prefixCols,
+    parameter_prefix_index: Math.max(0, paramIdx),
     display_mode: "pems",
     row_labels: { ...(source.row_labels || {}), parameter: SPLIT_CHECK_PREFIX_COLUMNS[0] },
   };
@@ -454,6 +475,7 @@ export default function SplitTableSnapshotView({
   onAddSplitRequest = null,
   onEditPurpose = null,
   onPurposeContextMenu = null,
+  onViewRuleMatch = null,
   columnWidths = null,
 }) {
   const st = stView || embed?.st_view;
@@ -498,9 +520,19 @@ export default function SplitTableSnapshotView({
   const hasLotContext = !!(rootLotId || lotIdLabel);
   const visiblePrefixColumns = splitCheckMode ? prefixColumns : matrixPrefixColumns;
   const parameterPrefixIndex = splitCheckMode
-    ? Math.max(0,Math.min(visiblePrefixColumns.length-1,visiblePrefixColumns.includes("step_id")?2:(Number.isInteger(st?.parameter_prefix_index)&&st.parameter_prefix_index<visiblePrefixColumns.length-2?st.parameter_prefix_index:0)))
-    : (stepLabels?2:0);
-  const splitPrefixIndex = splitCheckMode ? parameterPrefixIndex+2 : -1;
+    ? (visiblePrefixColumns.indexOf(paramRowLabel) >= 0
+        ? visiblePrefixColumns.indexOf(paramRowLabel)
+        : (visiblePrefixColumns.indexOf("항목") >= 0
+            ? visiblePrefixColumns.indexOf("항목")
+            : (Number.isInteger(st?.parameter_prefix_index) && st.parameter_prefix_index < visiblePrefixColumns.length - 2
+                ? st.parameter_prefix_index
+                : (visiblePrefixColumns.includes("step_desc")
+                    ? visiblePrefixColumns.indexOf("step_desc") + 1
+                    : (visiblePrefixColumns.includes("step_id") ? visiblePrefixColumns.indexOf("step_id") + 1 : 0)))))
+    : (stepLabels ? (visiblePrefixColumns.includes("module") ? 3 : 2) : 0);
+  const splitPrefixIndex = splitCheckMode
+    ? (visiblePrefixColumns.indexOf("Split") >= 0 ? visiblePrefixColumns.indexOf("Split") : parameterPrefixIndex + 2)
+    : -1;
   const hasRootRow = hasLotContext;
   const hasPurposeRow = !!purposeRow;
   const hasLotRow = !pemsMode && (hasLotContext || headerGroups.length > 0);
@@ -647,17 +679,18 @@ export default function SplitTableSnapshotView({
           <tbody>
             {tableRows.map((r, ri) => {
               const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
-              const prefixValues = visiblePrefixColumns.map((_, idx) => {
+              const prefixValues = visiblePrefixColumns.map((colName, idx) => {
                 if (splitCheckMode) {
                   if (idx === parameterPrefixIndex) return splitParamDisplayName(r._display || r._param || "", r._param);
-                  if (idx === parameterPrefixIndex+1) return String(r._split_value || "");
-                  if (idx === parameterPrefixIndex+2) return String(r._split_label || "");
+                  if (idx === parameterPrefixIndex + 1) return String(r._split_value || "");
+                  if (idx === splitPrefixIndex) return String(r._split_label || "");
                   if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
                   return "";
                 }
                 const process = r?._process_columns || r?._applied_process || {};
-                if (stepLabels && idx === 0) return String(process.step_id || "");
-                if (stepLabels && idx === 1) return String(process.step_desc || "");
+                if (colName === "module") return String(process.module || "");
+                if (colName === "step_id") return String(process.step_id || "");
+                if (colName === "step_desc") return String(process.step_desc || "");
                 return splitParamDisplayName(r._display || r._param || "", r._param);
               });
               const span = rowSpans[ri] || 0;
@@ -672,17 +705,45 @@ export default function SplitTableSnapshotView({
                 <tr key={r.key || `${r._param || "row"}-${ri}`}>
                   {prefixValues.map((value, pi) => {
                     if (splitCheckMode && pi <= parameterPrefixIndex && span === 0) return null;
-                    const splitStyle = splitCheckMode && pi === splitPrefixIndex ? splitCheckColorStyle(value) : {};
+                    const isParamCol = splitCheckMode && pi === parameterPrefixIndex;
+                    const isValueCol = splitCheckMode && pi === parameterPrefixIndex + 1;
+                    const isSplitCol = splitCheckMode && pi === splitPrefixIndex;
+                    const splitStyle = isSplitCol ? splitCheckColorStyle(value) : {};
                     const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
+                    const isDraftValue = isValueCol && r._is_split_draft;
+                    const cellTitle = editable && isDraftValue
+                      ? "클릭: KNOB 값 선택 또는 새 값 입력"
+                      : (editable && isParamCol
+                          ? "클릭: 분류 규칙 보기 · 우클릭: 스플릿 추가"
+                          : (isSplitCol
+                              ? `클릭: '${value}' 분류 규칙 보기`
+                              : (isValueCol && value
+                                  ? `클릭: '${value}' 분류 규칙 보기`
+                                  : (isParamCol
+                                      ? "클릭: 분류 규칙 보기"
+                                      : undefined))));
+                    const isClickable = (editable && isDraftValue) || (editable && isParamCol) || isSplitCol || (isValueCol && value) || isParamCol;
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps}
-                        onContextMenu={editable && splitCheckMode && pi === parameterPrefixIndex ? (event) => {
+                        onContextMenu={editable && isParamCol ? (event) => {
                           event.preventDefault();
                           onAddSplitRequest?.(event, r._param, r);
                         } : undefined}
-                        onClick={editable && splitCheckMode && pi === parameterPrefixIndex + 1 && r._is_split_draft ? () => onEditSplitValue?.(r) : undefined}
-                        title={editable && splitCheckMode && pi === parameterPrefixIndex ? "우클릭: 스플릿 추가" : (editable && r._is_split_draft && pi === parameterPrefixIndex + 1 ? "클릭: KNOB 값 선택 또는 새 값 입력" : undefined)}
-                        style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi <= parameterPrefixIndex ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}), ...(editable && splitCheckMode && ((pi === parameterPrefixIndex) || (r._is_split_draft && pi === parameterPrefixIndex + 1)) ? { cursor: "pointer" } : {}) }}>
+                        onClick={() => {
+                          if (editable && isDraftValue) {
+                            onEditSplitValue?.(r);
+                            return;
+                          }
+                          if (isSplitCol) {
+                            onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
+                          } else if (isValueCol && (r._split_value_raw || r._split_value)) {
+                            onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
+                          } else if (isParamCol) {
+                            onViewRuleMatch?.("knob_ppid", r._param, r, null, null);
+                          }
+                        }}
+                        title={cellTitle}
+                        style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi <= parameterPrefixIndex ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}), cursor: isClickable ? "pointer" : "default" }}>
                         {value}
                       </td>
                     );

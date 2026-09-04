@@ -1015,12 +1015,19 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
   const[rbMatchParam,setRbMatchParam]=useState("");
   const[rbMatchRow,setRbMatchRow]=useState(null);
-  const openRuleMatchView=(kind,param,row=null)=>{
+  const[rbMatchFilter,setRbMatchFilter]=useState(null);
+  const[rbMatchSplitLabel,setRbMatchSplitLabel]=useState(null);
+  const openRuleMatchView=(kind,param,row=null,filterVal=null,splitLabel=null)=>{
     setRbMatchKind(kind);
     setRbMatchParam(String(param || "").trim());
     setRbMatchRow(kind==="knob_ppid"&&row?row:null);
+    setRbMatchFilter(filterVal ? String(filterVal).trim() : null);
+    setRbMatchSplitLabel(splitLabel ? String(splitLabel).trim() : null);
   };
-  const closeRuleMatchView=()=>{setRbMatchKind(null);setRbMatchParam("");setRbMatchRow(null);};
+  const closeRuleMatchView=()=>{
+    setRbMatchKind(null);setRbMatchParam("");setRbMatchRow(null);
+    setRbMatchFilter(null);setRbMatchSplitLabel(null);
+  };
   const parseCsvTokens=(value)=>String(value||"").split(",").map(s=>s.trim()).filter(Boolean);
   const rbMatchData = (() => {
     const p = String(rbMatchParam || "").trim();
@@ -2851,10 +2858,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           const effective = rowsWithPendingPlans([purposeRow])[0];
           return {
             ...effective,
-            _cells:Object.fromEntries(Object.entries(effective?._cells||{}).map(([ci,cell])=>[
-              ci,
-              {...cell,tag_color:pendingTagColors[cell?.key]||cell?.tag_color||""},
-            ])),
+            _cells:Object.fromEntries(Object.entries(effective?._cells||{}).map(([ci,cell])=>{
+              const cellKey = cell?.key || `${data.root_lot_id||lotId||""}|${data.wafer_keys?.[ci]??data.headers?.[ci]??(Number(ci)+1)}|TAG_PURPOSE`;
+              return [
+                ci,
+                {...cell,key:cellKey,tag_color:pendingTagColors[cellKey]||cell?.tag_color||""},
+              ];
+            })),
           };
         })() : null;
         const hasRootRow = hasLotContext;
@@ -2867,7 +2877,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const paramHeaderTop = rootHeaderHeight + purposeHeaderHeight + lotHeaderHeight;
         const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
         const splitLikePrefixColumns=showParamMeta
-          ?["step_id","step_desc",...SPLIT_CHECK_PREFIX_COLUMNS]
+          ?(showModuleCol?["module","step_id","step_desc",...SPLIT_CHECK_PREFIX_COLUMNS]:["step_id","step_desc",...SPLIT_CHECK_PREFIX_COLUMNS])
           :SPLIT_CHECK_PREFIX_COLUMNS;
         const splitLikeSource={
           ...data,
@@ -2902,9 +2912,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           processInfoForParam:(param)=>{
             if(!showParamMeta)return null;
             const kind=matchKindOf(param);
-            return kind
-              ?matchProcessColumns(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta})
+            const meta=kind?matchMetaFor(kind,param):null;
+            const cols=kind
+              ?matchProcessColumns(kind,meta,{excludeNotNull:excludeNotNullStepMeta})
               :{step_id:"",step_desc:""};
+            const mod=kind?matchModuleOf(meta):"";
+            return {module:mod,...cols};
           },
           extraValuesForParam:(param)=>splitDraftValues[param]||[],
           ensureEmptyRows:editing&&splitCheckViewActive,
@@ -2959,13 +2972,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           onAssignSplit={assignSplitPlanValue}
           onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw,row?._split_label)}
           onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
-          onPurposeContextMenu={(e,cell)=>{
-            if(!cell?.key)return;
+          onViewRuleMatch={(kind,param,row,filterVal,splitLabel)=>openRuleMatchView(kind,param,row,filterVal,splitLabel)}
+          onPurposeContextMenu={(e,cell,ci)=>{
             e.preventDefault();e.stopPropagation();
+            const cellKey=cell?.key||`${data.root_lot_id||lotId||""}|${data.wafer_keys?.[ci]??data.headers?.[ci]??(Number(ci)+1)}|TAG_PURPOSE`;
             const paletteWidth=190,paletteHeight=142;
             setTagColorPicker({
-              key:cell.key,
-              color:pendingTagColors[cell.key]||cell.tag_color||TAG_CELL_PALETTE[0],
+              key:cellKey,
+              color:pendingTagColors[cellKey]||cell?.tag_color||TAG_CELL_PALETTE[0],
               left:Math.max(8,Math.min(e.clientX,window.innerWidth-paletteWidth-8)),
               top:Math.max(8,Math.min(e.clientY,window.innerHeight-paletteHeight-8)),
             });
@@ -3002,7 +3016,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800,...mergedContextLeftStyle}} title="Purpose Tag">purpose</th>
                   {data.headers?.map((h, ci) => {
                     const cell = purposeRow?._cells?.[String(ci)] || {};
-                    const cellKey = cell.key || (purposeRow?._param ? `${purposeRow._param}:${ci}` : "");
+                    const cellKey = cell.key || `${data.root_lot_id||lotId||""}|${data.wafer_keys?.[ci]??data.headers?.[ci]??(Number(ci)+1)}|${purposeRow?._param||DEFAULT_CUSTOM_TAG_COLUMN}`;
                     const pendingVal = pendingTags[cellKey];
                     const displayVal = pendingVal !== undefined ? pendingVal : (cell.actual ?? "");
                     const tagColor = pendingTagColors[cellKey] || cell.tag_color || "";
@@ -3442,7 +3456,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         return <button key={color} type="button" onClick={()=>{
           const nextColor = color;
           setPendingTagColors(current=>({...current,[tagColorPicker.key]:nextColor}));
-          if(!editing && selProd && tagColorPicker.key){
+          if(selProd && tagColorPicker.key){
             sf(API+"/custom-tags/values", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -3707,65 +3721,78 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               {rbMatchKind === "knob_ppid" && (()=>{
                 const groups = Array.isArray(rbMatchData.groups) ? rbMatchData.groups : [];
                 const processText = knobStepSummaryText(groups, {excludeNotNull: excludeNotNullStepMeta});
+                const rawFilter = String(rbMatchFilter || "").trim();
+                const filterNorm = rawFilter.toLowerCase();
+                const isFilterActive = Boolean(filterNorm);
+                const filteredGroups = isFilterActive
+                  ? groups.filter(g => {
+                      const cat = String(g.category || "").trim().toLowerCase();
+                      const val = String(g.value || "").trim().toLowerCase();
+                      const ro = String(g.rule_order || "").trim().toLowerCase();
+                      return cat === filterNorm || val === filterNorm || ro === filterNorm ||
+                             cat.includes(filterNorm) || val.includes(filterNorm);
+                    })
+                  : groups;
+                const displayGroups = (isFilterActive && filteredGroups.length > 0) ? filteredGroups : groups;
+                const filterLabel = rbMatchSplitLabel ? `${rbMatchSplitLabel} (${rawFilter})` : rawFilter;
+
                 return (
                   <div style={{display:"grid", gap:10}}>
-                    <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 12px", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-secondary)", fontSize:13, fontFamily:"monospace"}}>
+                    <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, padding:"8px 12px", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-secondary)", fontSize:13, fontFamily:"monospace"}}>
                       <span>적용공정: <strong style={{color:"var(--text-primary)"}}>{processText || (groups.length ? "표시 대상 없음" : "매칭정보 없음")}</strong></span>
-                      <span style={{color:"var(--text-secondary)"}}>규칙 수: {groups.length}개</span>
+                      <div style={{display:"flex", alignItems:"center", gap:8}}>
+                        {isFilterActive ? (
+                          <>
+                            <span style={{display:"inline-flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:4, background:"rgba(59,130,246,0.15)", border:"1px solid rgba(59,130,246,0.35)", color:"rgba(37,99,235,0.95)", fontWeight:700, fontSize:13}}>
+                              필터: {filterLabel} ({displayGroups.length}개 / 전체 {groups.length}개)
+                            </span>
+                            <button type="button" onClick={()=>{setRbMatchFilter(null);setRbMatchSplitLabel(null);}}
+                              style={{padding:"3px 8px", borderRadius:4, border:"1px solid var(--border)", background:"var(--bg-card)", color:"var(--text-primary)", fontSize:12, fontWeight:700, cursor:"pointer"}}>
+                              전체 보기
+                            </button>
+                          </>
+                        ) : (
+                          <span style={{color:"var(--text-secondary)"}}>전체 규칙: {groups.length}개</span>
+                        )}
+                      </div>
                     </div>
                     {groups.length === 0 ? (
                       <div style={{padding:16, textAlign:"center", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-card)", color:"var(--text-secondary)", fontSize:14}}>
                         등록된 분류 규칙이 없습니다.
                       </div>
                     ) : (
-                      <div style={{overflowX:"auto", border:"1px solid var(--border)", borderRadius:6}}>
-                        <table style={{width:"100%", borderCollapse:"collapse", fontSize:13, fontFamily:"monospace", background:"var(--bg-card)"}}>
+                      <div style={{maxHeight:"60vh", overflow:"auto", border:"1px solid #555", borderRadius:2, background:"#ffffff"}}>
+                        <table style={{width:"100%", borderCollapse:"collapse", fontSize:13, fontFamily:"Consolas, Menlo, Monaco, monospace", background:"#ffffff", tableLayout:"auto"}}>
                           <thead>
-                            <tr style={{background:"var(--bg-tertiary)", borderBottom:"1px solid var(--border)", textAlign:"left"}}>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:46, textAlign:"center"}}>일치</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:85}}>Rule Order</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>공정명 (Step Desc)</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:110}}>공정 ID (Step ID)</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)", width:80, textAlign:"center"}}>연산자</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>PPID (Value)</th>
-                              <th style={{padding:"8px 10px", borderRight:"1px solid var(--border)"}}>분류 (Category)</th>
-                              <th style={{padding:"8px 10px"}}>매칭 Wafer</th>
+                            <tr style={{position:"sticky", top:0, zIndex:3, background:"#e5e7eb", borderBottom:"2px solid #555", textAlign:"left"}}>
+                              <th style={{padding:"6px 8px", border:"1px solid #777", width:36, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>No</th>
+                              <th style={{padding:"6px 8px", border:"1px solid #777", width:44, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>일치</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", width:85, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>Rule Order</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>공정명 (Step Desc)</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", width:110, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>공정 ID (Step ID)</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", width:75, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>연산자</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>PPID (Value)</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>분류 (Category)</th>
+                              <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>매칭 Wafer</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {groups.map((g, gi) => {
+                            {displayGroups.map((g, gi) => {
                               const matches = matchKnobRuleToRowValues(g, rbMatchRow, pendingValueFor);
                               const isMatched = matches.length > 0;
                               const stepIdStr = Array.isArray(g.step_ids) && g.step_ids.length ? g.step_ids.join(", ") : (g.step_id || "-");
+                              const rowBg = isMatched ? "rgba(198,239,206,0.6)" : (gi % 2 === 1 ? "#f9fafb" : "#ffffff");
                               return (
-                                <tr key={gi} style={{
-                                  borderBottom:"1px solid var(--border)",
-                                  background: isMatched ? "rgba(34,197,94,0.08)" : (gi % 2 === 1 ? "var(--bg-secondary)" : "transparent"),
-                                }}>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(22,163,74,0.95)" : "var(--text-secondary)"}}>
-                                    {isMatched ? "✓" : "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"var(--accent)"}}>
-                                    {g.rule_order || "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", color:"var(--text-primary)"}}>
-                                    {g.step_desc || g.func_step || "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", color:"var(--text-secondary)"}}>
-                                    {stepIdStr}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", textAlign:"center", fontWeight:600, color:"rgba(59,130,246,0.95)"}}>
-                                    {g.operator || "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"rgba(16,185,129,0.95)"}}>
-                                    {g.value || "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", borderRight:"1px solid var(--border)", fontWeight:700, color:"rgba(217,119,6,0.95)"}}>
-                                    {g.category || "-"}
-                                  </td>
-                                  <td style={{padding:"6px 10px", color: isMatched ? "rgba(22,163,74,0.95)" : "var(--text-secondary)", fontWeight: isMatched ? 700 : 400}}>
-                                    {matches.length > 0 ? matchedWaferSummary(matches) : "-"}
-                                  </td>
+                                <tr key={gi} style={{background: rowBg}}>
+                                  <td style={{padding:"5px 6px", border:"1px solid #d1d5db", textAlign:"center", color:"#6b7280", background:"#f9fafb", fontSize:12}}>{gi + 1}</td>
+                                  <td style={{padding:"5px 8px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(0,97,0,0.95)" : "#9ca3af"}}>{isMatched ? "✓" : "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:700, color:"#1d4ed8"}}>{g.rule_order || "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", color:"#111827", whiteSpace:"nowrap"}}>{g.step_desc || g.func_step || "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", color:"#374151", whiteSpace:"nowrap"}}>{stepIdStr}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:600, color:"#2563eb"}}>{g.operator || "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#047857", whiteSpace:"nowrap"}}>{g.value || "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#b45309", whiteSpace:"nowrap"}}>{g.category || "-"}</td>
+                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", color: isMatched ? "rgba(0,97,0,0.95)" : "#6b7280", fontWeight: isMatched ? 700 : 400, whiteSpace:"nowrap"}}>{matches.length > 0 ? matchedWaferSummary(matches) : "-"}</td>
                                 </tr>
                               );
                             })}

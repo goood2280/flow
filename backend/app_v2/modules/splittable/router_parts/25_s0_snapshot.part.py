@@ -26,7 +26,10 @@ _S0_STEP_HEADER_ALIASES = (
     "공정id", "공정", "스텝id", "스텝",
 )
 _S0_RECIPE_HEADER_ALIASES = (
-    "recipeid", "recipe",
+    "currentporppid", "porppid", "standardppid", "currentppid", "ppid", "recipeid", "recipe", "currentpor", "por",
+)
+_S0_STATUS_HEADER_ALIASES = (
+    "ispor", "status", "state", "type", "condition",
 )
 _S0_PRODUCT_HEADER_ALIASES = (
     "product", "productid", "productcode", "prodid", "device", "deviceid", "vehicle",
@@ -46,8 +49,65 @@ def _s0_find_column(fieldnames: list[str], aliases: tuple[str, ...]) -> str:
     return ""
 
 
-def _s0_f_step_paths() -> list[Path]:
-    """Find the configured DB confidential/f_step.parquet case-insensitively."""
+def _s0_is_por_marker(value: object) -> bool:
+    marker = str(value or "").strip().casefold()
+    return marker in {"1", "y", "yes", "true", "por", "standard", "std", "current"}
+
+
+def _s0_is_non_por_marker(value: object) -> bool:
+    marker = str(value or "").strip().casefold()
+    return marker in {"0", "n", "no", "false", "split", "experiment", "exp"}
+
+
+def _s0_read_sop_file(path: Path) -> dict:
+    """Return product route/recipe metadata from a credential/<product>_sop.csv file."""
+    if not path.is_file():
+        return {}
+    out: dict[str, tuple[int, int, dict]] = {}
+    order: list[str] = []
+    seen_order: set[str] = set()
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv_mod.DictReader(handle)
+            fields = [str(name or "").lstrip("\ufeff").strip() for name in (reader.fieldnames or [])]
+            step_col = _s0_find_column(fields, _S0_STEP_HEADER_ALIASES)
+            ppid_col = _s0_find_column(fields, _S0_RECIPE_HEADER_ALIASES)
+            status_col = _s0_find_column(fields, _S0_STATUS_HEADER_ALIASES)
+            if not step_col or not ppid_col:
+                logger.warning("S0 SOP columns not found: %s (step=%s, ppid=%s)", path.name, step_col, ppid_col)
+                return {}
+            if status_col == ppid_col:
+                status_col = ""
+            for index, raw in enumerate(reader):
+                row = {str(k or "").lstrip("\ufeff").strip(): v for k, v in (raw or {}).items() if k is not None}
+                step_id = str(row.get(step_col) or "").strip()
+                ppid = str(row.get(ppid_col) or "").strip()
+                if not step_id or not ppid:
+                    continue
+                status = row.get(status_col) if status_col else ""
+                if status_col and _s0_is_non_por_marker(status):
+                    priority = 0
+                elif status_col and _s0_is_por_marker(status):
+                    priority = 2
+                else:
+                    priority = 1
+                key = step_id.casefold()
+                if key not in seen_order:
+                    seen_order.add(key)
+                    order.append(step_id)
+                previous = out.get(key)
+                item = {"step_id": step_id, "ppid": ppid}
+                if previous is None or priority > previous[0]:
+                    out[key] = (priority, index, item)
+        rows = {key: item[2] for key, item in out.items() if item[0] > 0}
+        return {"rows": rows, "step_order": [s for s in order if s.casefold() in rows]}
+    except Exception as exc:
+        logger.warning("S0 SOP read failed (%s): %s", path.name, exc)
+        return {}
+
+
+def _s0_sop_paths() -> list[Path]:
+    """Find credential/<product>_sop.csv and confidential/f_step.parquet paths."""
     paths: list[Path] = []
     seen: set[str] = set()
     for root in (_db_base(), _base_root()):
@@ -59,19 +119,26 @@ def _s0_f_step_paths() -> list[Path]:
         if root_key in seen:
             continue
         seen.add(root_key)
+        credential = _find_ci_child(resolved, "credential")
+        if credential and credential.is_dir():
+            try:
+                for candidate in sorted(credential.iterdir(), key=lambda p: p.name.casefold()):
+                    if candidate.is_file() and candidate.name.casefold().endswith("_sop.csv"):
+                        paths.append(candidate)
+            except OSError:
+                pass
         confidential = _find_ci_child(resolved, "confidential")
-        if confidential is None:
-            continue
-        try:
-            path = next(
-                (candidate for candidate in confidential.iterdir()
-                 if candidate.is_file() and candidate.name.casefold() == "f_step.parquet"),
-                None,
-            )
-        except OSError:
-            path = None
-        if path is not None:
-            paths.append(path)
+        if confidential and confidential.is_dir():
+            try:
+                candidate = next(
+                    (p for p in confidential.iterdir()
+                     if p.is_file() and p.name.casefold() == "f_step.parquet"),
+                    None,
+                )
+                if candidate is not None:
+                    paths.append(candidate)
+            except OSError:
+                pass
     return paths
 
 
@@ -134,9 +201,9 @@ def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
 
 
 def _s0_sop_catalog() -> dict[str, dict]:
-    """Load product SOPs from confidential/f_step.parquet with stat caching."""
+    """Load product SOPs from credential/<product>_sop.csv and confidential/f_step.parquet."""
     global _S0_CATALOG_CACHE
-    paths = _s0_f_step_paths()
+    paths = _s0_sop_paths()
     signature = tuple(_path_cache_sig(path) for path in paths)
     with _S0_CATALOG_CACHE_LOCK:
         cached = _S0_CATALOG_CACHE
@@ -144,9 +211,31 @@ def _s0_sop_catalog() -> dict[str, dict]:
             return cached[1]
     catalog: dict[str, dict] = {}
     for path in paths:
-        for key, source in _s0_read_f_step_file(path).items():
-            # DB root is searched first and is authoritative when roots differ.
-            catalog.setdefault(key, source)
+        if path.name.casefold().endswith("_sop.csv"):
+            prod_name = path.name[:-len("_sop.csv")].strip()
+            product = _canonical_product_name(prod_name)
+            if not product:
+                continue
+            key = product.casefold()
+            if key in catalog:
+                continue
+            sop_data = _s0_read_sop_file(path)
+            try:
+                stat = path.stat()
+                modified = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+            except OSError:
+                modified = ""
+            catalog[key] = {
+                "product": product,
+                "file": path.name,
+                "path": path,
+                "modified_at": modified,
+                "rows": sop_data.get("rows") or {},
+                "step_order": sop_data.get("step_order") or [],
+            }
+        elif path.name.casefold() == "f_step.parquet":
+            for key, source in _s0_read_f_step_file(path).items():
+                catalog.setdefault(key, source)
     with _S0_CATALOG_CACHE_LOCK:
         _S0_CATALOG_CACHE = (signature, catalog)
     return catalog
@@ -154,6 +243,8 @@ def _s0_sop_catalog() -> dict[str, dict]:
 
 def _s0_source_for_product(catalog: dict[str, dict], product: str) -> dict:
     product_key = _canonical_product_name(product).casefold()
+    if not product_key:
+        return {}
     return (catalog or {}).get(product_key) or (catalog or {}).get("*") or {}
 
 

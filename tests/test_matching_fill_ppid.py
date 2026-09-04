@@ -187,6 +187,26 @@ def test_split_knob_meta_prefers_product_scoped_fab_step_columns(monkeypatch, tm
     assert group["module"] == "M2"
 
 
+def test_split_knob_meta_preserves_comma_inside_single_product_step_desc(monkeypatch, tmp_path):
+    from routers import splittable
+
+    knob_file = tmp_path / "ppid_knob.csv"
+    knob_file.write_text(
+        'feature_name,rule_order,step_desc,operator,value,category,product,step_id\n'
+        'KNOB_A,R1,"ETCH, CLEAN",eq,PP_A,S1,PRODA,S10\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+    group = meta["KNOB_A"]["groups"][0]
+
+    assert group["step_desc"] == "ETCH, CLEAN"
+    assert group["step_ids"] == ["S10"]
+
+
 def test_apply_requires_the_exact_preview_revision(monkeypatch):
     from core import matching_fill as matching
 
