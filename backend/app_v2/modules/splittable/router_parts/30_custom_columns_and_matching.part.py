@@ -1,5 +1,44 @@
 PRECISION_CFG = PLAN_DIR / "precision_config.json"
 DEFAULT_PRECISION = {"INLINE": 2, "VM": 2}
+DISPLAY_SETTINGS_CFG = PLAN_DIR / "display_settings.json"
+DEFAULT_SPLITTABLE_COLUMN_WIDTHS = {
+    "module": 86,
+    "step_id": 168,
+    "step_desc": 180,
+    "item": 288,
+    "value": 140,
+    "split": 80,
+    "wafer": 115,
+}
+
+
+def _normalize_splittable_column_widths(raw) -> dict:
+    source = raw if isinstance(raw, dict) else {}
+    out = dict(DEFAULT_SPLITTABLE_COLUMN_WIDTHS)
+    for key, default in DEFAULT_SPLITTABLE_COLUMN_WIDTHS.items():
+        try:
+            value = int(source.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        out[key] = max(48, min(640, value))
+    return out
+
+
+@router.get("/display-settings")
+def get_display_settings():
+    saved = load_json(DISPLAY_SETTINGS_CFG, {})
+    return {"column_widths": _normalize_splittable_column_widths(saved)}
+
+
+class DisplaySettingsReq(BaseModel):
+    column_widths: dict = {}
+
+
+@router.post("/display-settings/save")
+def save_display_settings(req: DisplaySettingsReq, _perm=Depends(require_page_manager("splittable"))):
+    widths = _normalize_splittable_column_widths(req.column_widths)
+    save_json(DISPLAY_SETTINGS_CFG, widths)
+    return {"ok": True, "column_widths": widths}
 
 
 @router.get("/precision")

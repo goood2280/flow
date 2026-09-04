@@ -1,6 +1,23 @@
 import { useMemo, useRef } from "react";
 
 export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"];
+export const SPLITTABLE_COLUMN_WIDTH_DEFAULTS = Object.freeze({
+  module: 86,
+  step_id: 168,
+  step_desc: 180,
+  item: 288,
+  value: 140,
+  split: 80,
+  wafer: 115,
+});
+
+export function normalizeSplitTableColumnWidths(raw = {}) {
+  return Object.fromEntries(Object.entries(SPLITTABLE_COLUMN_WIDTH_DEFAULTS).map(([key, fallback]) => {
+    const numeric = Number(raw?.[key]);
+    const value = Number.isFinite(numeric) ? Math.round(numeric) : fallback;
+    return [key, Math.max(48, Math.min(640, value))];
+  }));
+}
 
 // 표시용 항목명. 실제 데이터 키(_param)는 그대로 두고 화면 라벨만 다듬는다.
 //  - 선행 prefix(KNOB_/MASK_/INLINE_/VM_/ET_ ...) 제거
@@ -437,6 +454,7 @@ export default function SplitTableSnapshotView({
   onAddSplitRequest = null,
   onEditPurpose = null,
   onPurposeContextMenu = null,
+  columnWidths = null,
 }) {
   const st = stView || embed?.st_view;
   const splitPaintRef = useRef(null);
@@ -463,11 +481,12 @@ export default function SplitTableSnapshotView({
   const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
   const lotRowLabel = rowLabels.lot_id || "lot_id";
   const paramRowLabel = rowLabels.parameter || "항목";
-  const firstColWidth = 288;
-  const dataColWidth = 115;
+  const effectiveColumnWidths = normalizeSplitTableColumnWidths(columnWidths || st?.column_widths || embed?.column_widths || {});
+  const firstColWidth = effectiveColumnWidths.item;
+  const dataColWidth = effectiveColumnWidths.wafer;
   const prefixColumns = splitCheckMode ? rawPrefixColumns : [];
   const matrixPrefixColumns = stepLabels ? ["step_id", "step_desc", paramRowLabel] : [paramRowLabel];
-  const widthForPrefix = label => String(label||"")===paramRowLabel?240:({step_id:168,step_desc:180,"항목":240,"값":140,"Split":80}[String(label||"")]||100);
+  const widthForPrefix = label => String(label||"")===paramRowLabel?effectiveColumnWidths.item:({module:effectiveColumnWidths.module,step_id:effectiveColumnWidths.step_id,step_desc:effectiveColumnWidths.step_desc,"항목":effectiveColumnWidths.item,"값":effectiveColumnWidths.value,"Split":effectiveColumnWidths.split}[String(label||"")]||100);
   const prefixColWidths = (splitCheckMode ? prefixColumns : matrixPrefixColumns).map(widthForPrefix);
   while (prefixColWidths.length < (splitCheckMode ? prefixColumns.length : 1)) prefixColWidths.push(100);
   const prefixTotalWidth = prefixColWidths.reduce((sum, value) => sum + value, 0);

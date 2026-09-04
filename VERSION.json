@@ -1,7 +1,20 @@
 {
-  "version": "10.4.191",
+  "version": "10.4.192",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.192",
+      "date": "2026-09-04",
+      "tag": "feat",
+      "title": "SplitTable 공통 헤더 병합과 열 너비 설정",
+      "changes": [
+        "[기본 보기 헤더 병합] 적용 공정 정보로 module·step_id·step_desc 열이 추가되어도 root_lot_id·purpose·lot_id의 좌측 라벨 영역을 항목 열까지 하나의 셀로 병합해 Split 체크 보기와 같은 정돈된 구조로 표시",
+        "[열 너비 팀 설정] SplitTable 톱니바퀴 기본 탭에서 module·step_id·step_desc·항목·값·Split·wafer 열의 기본 너비를 48~640px 범위로 조정하고 팀 공용 설정으로 저장 가능",
+        "[표시 형식 일관성] 저장한 step/항목/값/Split/wafer 너비를 기본 보기뿐 아니라 Split 체크와 PEMS 공통 렌더러에도 적용",
+        "[안전한 기본값] 설정 파일이 없거나 일부 값이 잘못되어도 코드 기본값으로 보완하고 범위를 벗어난 값은 서버와 화면 양쪽에서 안전 범위로 정규화",
+        "[검증] SplitTable 공정·purpose·PEMS·S0·라우터 회귀 32건과 프런트 디자인 시스템·기능 경계 검사 및 production build 통과"
+      ]
+    },
     {
       "version": "10.4.191",
       "date": "2026-09-04",

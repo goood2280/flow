@@ -14,7 +14,7 @@ import { orderProductItems } from "../../lib/productOrder";
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
 import { statusPalette } from "../../components/UXKit";
-import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, SPLIT_CHECK_PREFIX_COLUMNS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
+import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, normalizeSplitTableColumnWidths, SPLIT_CHECK_PREFIX_COLUMNS, SPLITTABLE_COLUMN_WIDTH_DEFAULTS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
@@ -123,9 +123,9 @@ const matchedWaferSummary=(matches)=>{
   return wafers.length?`해당 WF #${wafers.join(",")}`:"";
 };
 // module 묶음 열 폭 — Vehicle_matching 에 module 열이 있을 때만 붙는다.
-const MODULE_COL_W=86;
-const STEP_ID_COL_W=168;
-const STEP_DESC_COL_W=180;
+const MODULE_COL_W=SPLITTABLE_COLUMN_WIDTH_DEFAULTS.module;
+const STEP_ID_COL_W=SPLITTABLE_COLUMN_WIDTH_DEFAULTS.step_id;
+const STEP_DESC_COL_W=SPLITTABLE_COLUMN_WIDTH_DEFAULTS.step_desc;
 // ── 적용공정정보 표기 ────────────────────────────────────────────────────
 // "적용 공정 정보" 를 켜면 항목명은 보존하고 그 왼쪽에 step_id / step_desc
 // 두 열을 붙인다. 복합 KNOB rule 은 같은 rule_order 안의 서로 다른
@@ -488,6 +488,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const toggleSettings=()=>setShowSettings(open=>!open);
   const closeSettings=()=>setShowSettings(false);
   const[precision,setPrecision]=useState({});const[precisionDraft,setPrecisionDraft]=useState({});
+  const[columnWidths,setColumnWidths]=useState(()=>normalizeSplitTableColumnWidths());
+  const[columnWidthDraft,setColumnWidthDraft]=useState(()=>normalizeSplitTableColumnWidths());
   const[enabledSources,setEnabledSources]=useState(null); // null = loading, Set of product names
   // v8.4.4: product 별 lot_id 컬럼 override (soft-landing)
   const[lotOverrides,setLotOverrides]=useState({});
@@ -716,6 +718,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       });
     reloadCustoms();
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
+    sf(API+"/display-settings").then(d=>{
+      const widths=normalizeSplitTableColumnWidths(d.column_widths||{});
+      setColumnWidths(widths);setColumnWidthDraft(widths);
+    }).catch(()=>{});
   },[]);
   // v9.2.x: flow-i 딥링크 — URL query(product/root) 를 1회 소비해 자동 검색까지 수행.
   const deepLinkRef=useRef(null);
@@ -1784,6 +1790,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});})
       .catch(e=>toast.error(e.message));
   };
+  const saveColumnWidths=()=>{
+    const widths=normalizeSplitTableColumnWidths(columnWidthDraft);
+    sf(API+"/display-settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({column_widths:widths})})
+      .then(d=>{
+        const saved=normalizeSplitTableColumnWidths(d.column_widths||widths);
+        setColumnWidths(saved);setColumnWidthDraft(saved);toast.ok("SplitTable 기본 열 너비를 저장했습니다.");
+      })
+      .catch(e=>toast.error("열 너비 저장 실패: "+(e.message||e)));
+  };
   const removePrefix=(p)=>{if(!confirm("Remove "+p+"?"))return;const next=prefixes.filter(x=>x!==p);
     sf(API+"/prefixes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prefixes:next})}).then(()=>setPrefixes(next));};
 
@@ -2023,6 +2038,29 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                     <span key={m.k} title={m.t} onClick={()=>{if(m.d)return;setTableFormat(m.k);}}
                       style={{padding:"3px 9px",borderRadius:4,fontSize:13,cursor:m.d?"not-allowed":"pointer",opacity:m.d?0.55:1,background:tableFormat===m.k?"var(--accent-glow)":"var(--bg-hover)",color:tableFormat===m.k?"var(--accent)":"var(--text-secondary)",fontWeight:tableFormat===m.k?700:400,border:"1px solid "+(tableFormat===m.k?"var(--accent)":"var(--border)")}}>{m.l}</span>
                   ))}
+                </div>
+                <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+                    <span style={{fontWeight:800,color:"var(--text-primary)"}}>기본 열 너비 (px)</span>
+                    <button type="button" onClick={()=>setColumnWidthDraft(normalizeSplitTableColumnWidths())}
+                      style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,fontWeight:700,cursor:"pointer"}}>기본값 복원</button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(125px,1fr))",gap:7}}>
+                    {[
+                      ["module","module"],["step_id","step_id"],["step_desc","step_desc"],
+                      ["item","항목"],["value","값"],["split","Split"],["wafer","wafer"],
+                    ].map(([key,label])=><label key={key} style={{display:"grid",gap:3,fontSize:12,fontWeight:800,color:"var(--text-secondary)"}}>
+                      <span style={{fontFamily:"monospace"}}>{label}</span>
+                      <input type="number" min={48} max={640} step={4} value={columnWidthDraft[key]}
+                        onChange={e=>setColumnWidthDraft(prev=>normalizeSplitTableColumnWidths({...prev,[key]:e.target.value}))}
+                        style={{minWidth:0,padding:"5px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
+                    </label>)}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <button type="button" onClick={saveColumnWidths}
+                      style={{padding:"6px 11px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:13,fontWeight:800,cursor:"pointer"}}>열 너비 저장</button>
+                    <span style={{fontSize:12,color:"var(--text-secondary)"}}>48~640px · 기본 보기와 Split 체크/PEMS 표에 함께 적용됩니다.</span>
+                  </div>
                 </div>
                 <div>표시 자리수, 데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
               </div>
@@ -2546,10 +2584,17 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           return k?matchModuleOf(matchMetaFor(k,r?._param)):"";
         });
         const showModuleCol=showParamMeta && (rowModules.some(Boolean)||rowTagFlags.some(Boolean));
-        const processPrefixWidth=showParamMeta?(STEP_ID_COL_W+STEP_DESC_COL_W):0;
-        const stepIdLeft=showModuleCol?MODULE_COL_W:0;
-        const stepDescLeft=stepIdLeft+(showParamMeta?STEP_ID_COL_W:0);
-        const paramLeft=(showModuleCol?MODULE_COL_W:0)+processPrefixWidth;
+        const moduleColWidth=columnWidths.module||MODULE_COL_W;
+        const stepIdColWidth=columnWidths.step_id||STEP_ID_COL_W;
+        const stepDescColWidth=columnWidths.step_desc||STEP_DESC_COL_W;
+        const itemColWidth=columnWidths.item||SPLITTABLE_COLUMN_WIDTH_DEFAULTS.item;
+        const waferColWidth=columnWidths.wafer||SPLITTABLE_COLUMN_WIDTH_DEFAULTS.wafer;
+        const processPrefixWidth=showParamMeta?(stepIdColWidth+stepDescColWidth):0;
+        const stepIdLeft=showModuleCol?moduleColWidth:0;
+        const stepDescLeft=stepIdLeft+(showParamMeta?stepIdColWidth:0);
+        const paramLeft=(showModuleCol?moduleColWidth:0)+processPrefixWidth;
+        const leftPrefixColumnCount=1+(showModuleCol?1:0)+(showParamMeta?2:0);
+        const leftPrefixWidth=paramLeft+itemColWidth;
         // TAG 행은 열마다 module 이 따로라 위아래로 합치지 않는다 — 행 인덱스를 키에 섞어 항상 span 1.
         const moduleGroupKey=(ri)=>rowTagFlags[ri]?`tag:${ri}`:`m:${rowModules[ri]}`;
         const moduleSpanAt=(ri)=>{
@@ -2903,6 +2948,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           emptyMessage={pemsViewActive?"PEMS로 표시할 값이 없습니다":"Split 체크로 표시할 값이 없습니다"}
           maxHeight="none"
           editable={editing&&splitCheckViewActive}
+          columnWidths={columnWidths}
           onAssignSplit={assignSplitPlanValue}
           onEditSplitValue={(row)=>openSplitDraftEditor(row?._param,row?._split_draft_index,row?._split_value_raw,row?._split_label)}
           onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
@@ -2929,30 +2975,24 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           }}
         />
         ) : (
-        <table className="splittable-grid" style={{borderCollapse:"separate",borderSpacing:0,borderTop:GRID_LINE,borderLeft:GRID_LINE,fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(showModuleCol?MODULE_COL_W:0)+processPrefixWidth+(data.headers?.length||1)*115}}>
+        <table className="splittable-grid" style={{borderCollapse:"separate",borderSpacing:0,borderTop:GRID_LINE,borderLeft:GRID_LINE,fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:itemColWidth+(showModuleCol?moduleColWidth:0)+processPrefixWidth+(data.headers?.length||1)*waferColWidth}}>
           <colgroup>
-            {showModuleCol&&<col style={{width:MODULE_COL_W}}/>}
-            {showParamMeta&&<col style={{width:STEP_ID_COL_W}}/>}
-            {showParamMeta&&<col style={{width:STEP_DESC_COL_W}}/>}
-            <col style={{width:288}}/>
-            {data.headers?.map((_,i)=><col key={i} style={{width:115}}/>)}
+            {showModuleCol&&<col style={{width:moduleColWidth}}/>}
+            {showParamMeta&&<col style={{width:stepIdColWidth}}/>}
+            {showParamMeta&&<col style={{width:stepDescColWidth}}/>}
+            <col style={{width:itemColWidth}}/>
+            {data.headers?.map((_,i)=><col key={i} style={{width:waferColWidth}}/>)}
           </colgroup>
           <thead>
             {hasRootRow&&(()=>{const lotN=notesForLot().length;const drawerRoot=lotHeaderRoot || data.root_lot_id || lotId || "-";return(<tr style={{height:rootHeaderHeight}}>
-              {showModuleCol&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:stepIdLeft,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:rootHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:stepDescLeft,zIndex:5}}/>}
-              <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
+              <th colSpan={leftPrefixColumnCount} title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontSize:14,lineHeight:1.25,color:GRID_TEXT,fontWeight:800,whiteSpace:"normal",wordBreak:"break-word"}}>
                 {rootRowLabel}
               </th>
               <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,position:"sticky",top:0,zIndex:4,cursor:"pointer"}} title={lotN>0?`LOT ${drawerRoot} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${drawerRoot} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{drawerRoot}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:GRID_TEXT,fontWeight:400}}>(diff: {viewRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {hasPurposeRow&&(()=>{
               return (
                 <tr style={{height:purposeHeaderHeight}}>
-                  {showModuleCol&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5}}/>}
-                  {showParamMeta&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepIdLeft,zIndex:5}}/>}
-                  {showParamMeta&&<th style={{boxSizing:"border-box",height:purposeHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:stepDescLeft,zIndex:5}}/>}
-                  <th style={{boxSizing:"border-box",height:purposeHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:paramLeft,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800}} title="Purpose Tag">purpose</th>
+                  <th colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:5,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800}} title="Purpose Tag">purpose</th>
                   {data.headers?.map((h, ci) => {
                     const cell = purposeRow?._cells?.[String(ci)] || {};
                     const cellKey = cell.key || (purposeRow?._param ? `${purposeRow._param}:${ci}` : "");
@@ -3008,10 +3048,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               );
             })()}
             {hasLotRow&&<tr style={{height:lotHeaderHeight}}>
-              {showModuleCol&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:0,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:stepIdLeft,zIndex:5}}/>}
-              {showParamMeta&&<th style={{boxSizing:"border-box",height:lotHeaderHeight,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:stepDescLeft,zIndex:5}}/>}
-              <th style={{boxSizing:"border-box",height:lotHeaderHeight,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:paramLeft,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
+              <th colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:lotHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,left:0,zIndex:5,textAlign:"left",fontSize:14,color:GRID_TEXT,fontWeight:800}} title={lotContextTitle}>{lotRowLabel}</th>
               {data.header_groups?.length>0
                 ? data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)
                 : <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:lotHeaderHeight,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:GRID_TEXT,background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:lotHeaderTop,zIndex:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={lotHeaderLot}>{lotHeaderLot || "-"}</th>}
@@ -3020,8 +3057,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             {showModuleCol&&<th style={{textAlign:"center",padding:"8px 6px",fontWeight:700,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:0,zIndex:5}}>module</th>}
             {showParamMeta&&<th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:stepIdLeft,zIndex:5}}>step_id</th>}
             {showParamMeta&&<th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:stepDescLeft,zIndex:5}}>step_desc</th>}
-            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:paramLeft,zIndex:5,minWidth:260}}>{paramRowLabel}</th>
-            {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
+            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:paramLeft,zIndex:5,width:itemColWidth,minWidth:itemColWidth}}>{paramRowLabel}</th>
+            {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE_STRONG,borderRight:GRID_LINE,background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",width:waferColWidth,minWidth:waferColWidth,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
               <div>{h}</div>
               {wn>0&&<span style={{display:"inline-block",marginTop:2,padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>🏷 {wn}</span>}
             </th>);})}

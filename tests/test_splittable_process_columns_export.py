@@ -176,6 +176,54 @@ def test_split_table_unmatched_steps_do_not_move_grey_boundary():
     assert "if(!rowTracksStepProgress[ri])return false" in source
 
 
+def test_display_settings_save_normalizes_shared_column_widths(tmp_path, monkeypatch):
+    from routers import splittable
+
+    settings_file = tmp_path / "display_settings.json"
+    monkeypatch.setattr(splittable, "DISPLAY_SETTINGS_CFG", settings_file)
+
+    saved = splittable.save_display_settings(
+        splittable.DisplaySettingsReq(column_widths={
+            "module": 120,
+            "step_id": 220,
+            "step_desc": 9999,
+            "item": 360,
+            "value": 40,
+        }),
+        _perm={"role": "admin"},
+    )
+
+    assert saved["column_widths"] == {
+        "module": 120,
+        "step_id": 220,
+        "step_desc": 640,
+        "item": 360,
+        "value": 48,
+        "split": 80,
+        "wafer": 115,
+    }
+    assert splittable.get_display_settings() == {
+        "column_widths": saved["column_widths"]
+    }
+
+
+def test_default_view_merges_context_labels_and_uses_configurable_widths():
+    root = Path(__file__).parents[1]
+    page = (root / "frontend/src/features/splittable/My_SplitTable.jsx").read_text(encoding="utf-8")
+    snapshot = (root / "frontend/src/components/SplitTableSnapshotView.jsx").read_text(encoding="utf-8")
+
+    assert "const leftPrefixColumnCount=1+(showModuleCol?1:0)+(showParamMeta?2:0)" in page
+    assert "<th colSpan={leftPrefixColumnCount} title={lotContextTitle}" in page
+    assert "<th colSpan={leftPrefixColumnCount} style={{boxSizing:\"border-box\",height:purposeHeaderHeight" in page
+    assert "columnWidths={columnWidths}" in page
+    assert 'sf(API+"/display-settings")' in page
+    assert 'sf(API+"/display-settings/save"' in page
+    for label in ("module", "step_id", "step_desc", "항목", "값", "Split", "wafer"):
+        assert f'\"{label}\"' in page
+    assert "normalizeSplitTableColumnWidths" in snapshot
+    assert "effectiveColumnWidths.value" in snapshot
+
+
 def test_stage_inference_keeps_vehicle_steps_without_numeric_step_desc(monkeypatch):
     from routers import splittable
 
