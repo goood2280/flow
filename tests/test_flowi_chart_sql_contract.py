@@ -126,6 +126,9 @@ def test_wip_dashboard_bottom_share_uses_pie_chart():
     assert 'chart={{ chart_type: "pie", groups: sharePieGroups' in source
     assert "별 wafer 비중 파이차트" in source
     assert "하위 {chart.foldedCount}종은 기타 조각으로 합산했습니다" in source
+    assert ".sort((a, b) => (b.count - a.count)" in source
+    assert 'role="progressbar"' in source
+    assert "percent / sharePieMaxPercent" in source
 
 
 def test_wip_dashboard_tool_returns_inline_chart(monkeypatch):

@@ -530,15 +530,20 @@ function WipSplitPanel({ user }) {
       .map((v) => ({ v, n: totals[v] || 0, pct: grandTotal ? ((totals[v] || 0) / grandTotal) * 100 : 0 }))
       .filter((r) => r.n > 0);
   }, [chart, grandTotal]);
-  // 우측 하단 파이는 위 스택 차트와 같은 색/기타 묶음을 쓴다. PPID가 20종을
-  // 넘을 때 파이에 비슷한 작은 조각을 무한히 만들지 않고, 원값은 왼쪽 상세표에 남긴다.
-  const sharePieGroups = useMemo(() => ribbon.map(({ v, n, pct }) => ({
-    label: v,
-    value: n,
-    count: n,
-    percent: Number(pct.toFixed(1)),
-    color: colorMap[v] || foldedColor,
-  })), [ribbon, colorMap, foldedColor]);
+  // 우측 하단 파이와 비교 막대는 위 스택 차트와 같은 색/기타 묶음을 쓴다. PPID가
+  // 20종을 넘을 때 작은 조각을 무한히 만들지 않고, 원값은 왼쪽 상세표에 남긴다.
+  // 파이와 목록 모두 점유율 내림차순을 공유해 가장 큰 KNOB가 항상 맨 위에 온다.
+  const sharePieGroups = useMemo(() => ribbon
+    .map(({ v, n, pct }) => ({
+      label: v,
+      value: n,
+      count: n,
+      percent: Number(pct.toFixed(1)),
+      color: colorMap[v] || foldedColor,
+    }))
+    .sort((a, b) => (b.count - a.count) || String(a.label).localeCompare(String(b.label), "ko")),
+  [ribbon, colorMap, foldedColor]);
+  const sharePieMaxPercent = sharePieGroups.reduce((max, group) => Math.max(max, group.percent), 0);
 
   const matchedPct = grandTotal ? Math.round(((data?.matched_wafers ?? 0) / grandTotal) * 100) : 0;
 
@@ -894,11 +899,23 @@ function WipSplitPanel({ user }) {
                 dark={dark}
               />
             </div>
-            <div style={{ display: "grid", gap: 5, maxHeight: 190, overflow: "auto", paddingRight: 2 }}>
-              {sharePieGroups.map(({ label, count, percent, color }) => (
-                <div key={label} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+            <div style={{ display: "grid", gap: 7, maxHeight: 190, overflow: "auto", paddingRight: 2 }}>
+              {sharePieGroups.map(({ label, count, percent, color }, index) => (
+                <div key={label} style={{ display: "grid", gridTemplateColumns: "18px 8px minmax(70px, 0.8fr) minmax(90px, 1.2fr) auto", gap: 6, alignItems: "center", fontSize: 12 }}>
+                  <span aria-label={`${index + 1}위`} style={{ color: "var(--text-secondary)", fontSize: 10.5, textAlign: "right", ...numFont }}>{index + 1}</span>
                   <Dot color={color} />
-                  <span title={label} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{label}</span>
+                  <span title={label} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{label}</span>
+                  <div
+                    role="progressbar"
+                    aria-label={`${label} 점유율 ${percent.toFixed(1)}%`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={percent}
+                    title={`${label}: ${nf(count)} wafers (${percent.toFixed(1)}%)`}
+                    style={{ height: 8, borderRadius: 999, overflow: "hidden", background: "var(--bg-tertiary)", minWidth: 0 }}
+                  >
+                    <div style={{ width: `${sharePieMaxPercent ? (percent / sharePieMaxPercent) * 100 : 0}%`, height: "100%", borderRadius: 999, background: color }} />
+                  </div>
                   <span style={{ color: "var(--text-secondary)", whiteSpace: "nowrap", ...numFont }}>{nf(count)} · {percent.toFixed(1)}%</span>
                 </div>
               ))}
