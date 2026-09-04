@@ -621,7 +621,15 @@ def reformatize(df: pl.DataFrame, table: List[Dict[str, Any]],
     if item_col not in df.columns or value_col not in df.columns:
         raise ValueError(f"ET 데이터에 {item_col}/{value_col} 컬럼이 없습니다")
     keys = [c for c in PIVOT_KEY_COLS if c in df.columns]
-    metas = [c for c in PIVOT_META_COLS if c in df.columns]
+    # PGM은 집계 직전의 표시용 메타가 아니라 측정 package 식별자다. 같은
+    # wafer/step/좌표를 재측정한 두 PGM을 여기서 합치면 각 site 값이 먼저
+    # 평균된 뒤 P10/P90이 계산되어 Spotfire·Excel과 달라진다. 원본 pgm이
+    # 없을 때는 tkout_time을 package 경계로 보존하고 뒤에서 PGM(pt)을 만든다.
+    if "pgm" in df.columns:
+        keys.append("pgm")
+    elif "tkout_time" in df.columns:
+        keys.append("tkout_time")
+    metas = [c for c in PIVOT_META_COLS if c in df.columns and c not in keys]
     if not keys:
         raise ValueError("pivot key 컬럼이 없습니다 (root_lot_id/wafer_id/shot_x ...)")
 

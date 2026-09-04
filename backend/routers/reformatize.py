@@ -1020,13 +1020,14 @@ class Filters(BaseModel):
     step_seq_filter: str = ""   # step_seq 포함 검색 (쉼표 = OR)
     wafer_filter: str = ""      # wafer_id 포함 검색 (쉼표 = OR)
     site_cnt_filter: str = ""   # total_site_cnt 정확 일치 (쉼표 = OR)
+    point_cnt_filter: str = ""  # 계산된 PGM(pt) 포인트 수 정확 일치 (쉼표 = OR)
     days: int = 0               # tkout_time 최신값 기준 최근 N일 — 지정 시 date_from/to 무시
     date_from: str = ""         # YYYY-MM-DD, tkout_time ≥ 해당일 00:00
     date_to: str = ""           # YYYY-MM-DD, tkout_time < 익일 00:00 (해당일 포함)
 
 
 def _filters_key(f: Filters) -> tuple:
-    """캐시 키용 정규화 필터 튜플 — 같은 조합이면 같은 캐시 엔트리."""
+    """raw/wide 계산 캐시 키. PGM point 필터는 wide 계산 뒤 적용하므로 제외."""
     return (f.lot_filter.strip().upper(), f.step_filter.strip().upper(),
             f.step_seq_filter.strip().upper(),
             f.wafer_filter.strip().upper(), f.site_cnt_filter.strip(),
@@ -1036,7 +1037,7 @@ def _filters_key(f: Filters) -> tuple:
 def _has_filter(f: Filters) -> bool:
     return bool(f.lot_filter.strip() or f.step_filter.strip() or f.step_seq_filter.strip()
                 or f.wafer_filter.strip()
-                or f.site_cnt_filter.strip() or f.days > 0
+                or f.site_cnt_filter.strip() or f.point_cnt_filter.strip() or f.days > 0
                 or f.date_from.strip() or f.date_to.strip())
 
 
@@ -1048,7 +1049,8 @@ def _filter_desc(f: Filters) -> str:
         parts.append(f"tkout={f.date_from.strip() or '…'}~{f.date_to.strip() or '…'}")
     for k, v in (("lot", f.lot_filter), ("step", f.step_filter),
                  ("step_seq", f.step_seq_filter),
-                 ("wafer", f.wafer_filter), ("site_cnt", f.site_cnt_filter)):
+                 ("wafer", f.wafer_filter), ("site_cnt", f.site_cnt_filter),
+                 ("pgm_pt", f.point_cnt_filter)):
         if v.strip():
             parts.append(f"{k}={v.strip()}")
     return ", ".join(parts)
@@ -1069,16 +1071,29 @@ def _contains_any(df: pl.DataFrame, col: str, spec: str,
     return df.filter(expr)
 
 
-def _site_cnt_filter(df: pl.DataFrame, spec: str) -> pl.DataFrame:
+def _exact_count_values(spec: str, label: str) -> list[int]:
     vals = [v.strip() for v in str(spec or "").split(",") if v.strip()]
     if not vals:
+        return []
+    nums: list[int] = []
+    for value in vals:
+        try:
+            numeric = float(value)
+            integer = int(numeric)
+        except (TypeError, ValueError, OverflowError):
+            raise HTTPException(400, f"{label} 필터는 정수만 허용됩니다: {spec}")
+        if numeric != integer or integer < 0:
+            raise HTTPException(400, f"{label} 필터는 0 이상의 정수만 허용됩니다: {spec}")
+        nums.append(integer)
+    return nums
+
+
+def _site_cnt_filter(df: pl.DataFrame, spec: str) -> pl.DataFrame:
+    nums = _exact_count_values(spec, "total_site_cnt")
+    if not nums:
         return df
     if "total_site_cnt" not in df.columns:
         raise HTTPException(400, "total_site_cnt 컬럼이 데이터에 없어 필터를 적용할 수 없습니다")
-    try:
-        nums = [int(float(v)) for v in vals]
-    except ValueError:
-        raise HTTPException(400, f"total_site_cnt 필터는 숫자만 허용됩니다: {spec}")
     return df.filter(pl.col("total_site_cnt").cast(pl.Int64, strict=False).is_in(nums))
 
 
@@ -1268,15 +1283,52 @@ def _ensure_pgm(wide: pl.DataFrame) -> pl.DataFrame:
     ).drop(["_pt", "_dup", "_dupmax"])
 
 
+def _aggregation_frame(wide: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+    """Return a frame with the exact root-lot/wafer/step/PGM grain.
+
+    ``lot_id`` is accepted only as the legacy root-lot fallback.  Missing grain
+    columns must fail loudly; aggregating across wafers or steps produces a
+    plausible but incorrect P10, which is worse than a visible input error.
+    """
+    w = wide
+    if "root_lot_id" not in w.columns and "lot_id" in w.columns:
+        w = w.with_columns(pl.col("lot_id").alias("root_lot_id"))
+    w = _ensure_pgm(w)
+    keys = ["root_lot_id", "wafer_id", "step_id", "pgm"]
+    missing = [key for key in keys if key not in w.columns]
+    if missing:
+        raise HTTPException(
+            400,
+            "집계 키(root_lot_id/wafer_id/step_id/PGM)가 부족합니다: " + ", ".join(missing),
+        )
+    has_pgm = w.select(
+        pl.col("pgm").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().ne("").any()
+    ).item()
+    if not has_pgm:
+        raise HTTPException(400, "PGM 컬럼이 비어 있고 step_seq도 없어 PGM별 집계를 만들 수 없습니다")
+    return w, keys
+
+
+def _point_cnt_filter(wide: pl.DataFrame, spec: str) -> pl.DataFrame:
+    """Filter whole PGM packages by the displayed ``PGM(npt)`` point count."""
+    nums = _exact_count_values(spec, "PGM point 수")
+    if not nums:
+        return wide
+    w, keys = _aggregation_frame(wide)
+    marker = "__flow_pgm_point_count"
+    return (
+        w.with_columns(pl.len().over(keys).alias(marker))
+        .filter(pl.col(marker).is_in(nums))
+        .drop(marker)
+    )
+
+
 def _aggregate(wide: pl.DataFrame, alias_cols: list[str], method: str) -> pl.DataFrame:
     """wide(shot 단위) → (root_lot_id, wafer_id, step_id, pgm) 그룹 집계."""
     method = str(method or "").strip().lower()
     if method not in _AGG_METHODS:
         raise HTTPException(400, f"지원하지 않는 집계 방식 '{method}' — 허용: {', '.join(_AGG_METHODS)}")
-    w = _ensure_pgm(wide)
-    keys = [c for c in ("root_lot_id", "wafer_id", "step_id", "pgm") if c in w.columns]
-    if not keys:
-        raise HTTPException(400, "집계 키(root_lot_id/wafer_id/step_id/PGM) 컬럼이 데이터에 없습니다")
+    w, keys = _aggregation_frame(wide)
     cols = [c for c in alias_cols if c in w.columns]
     if not cols:
         raise HTTPException(400, "집계할 index 컬럼이 없습니다 — Index 항목을 선택하세요")
@@ -1467,6 +1519,7 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
     if req_items:
         dep_tree = build_dependency_tree(table, req_items)
     wide = wide_full.select(out_cols) if out_cols else wide_full
+    wide = _point_cnt_filter(wide, req.point_cnt_filter)
     if req.agg.strip():
         report(f"{req.agg.strip().upper()} 집계 중")
         fixed = set(PIVOT_KEY_COLS) | set(PIVOT_META_COLS)
@@ -1597,7 +1650,8 @@ def _check_download_request(product: str, f: Filters, wanted: list[str],
     """
     if not _has_filter(f):
         raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
-                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·total_site_cnt "
+                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·"
+                                 "total_site_cnt·PGM point 수 "
                                  "중 하나 이상을 지정하세요")
     hidden = _hidden_for(product, is_admin)
     if not is_admin and not wanted and hidden:
@@ -1629,6 +1683,7 @@ def _build_download_frame(product: str, f: Filters, wanted: list[str], agg: str,
     if hidden:
         out_cols = [c for c in out_cols if c not in hidden]
     wide = wide_full.select(out_cols) if out_cols else wide_full
+    wide = _point_cnt_filter(wide, f.point_cnt_filter)
     agg_method = str(agg or "").strip().lower()
     if agg_method:
         (progress or _noop_progress)(f"{agg_method.upper()} 집계 중")
@@ -1668,7 +1723,8 @@ def _record_download(username: str, product: str, f: Filters, wanted: list[str],
 def download(product: str = Query(...), lot_filter: str = Query(""),
              step_filter: str = Query(""), step_seq_filter: str = Query(""),
              wafer_filter: str = Query(""),
-             site_cnt_filter: str = Query(""), days: int = Query(0),
+             site_cnt_filter: str = Query(""), point_cnt_filter: str = Query(""),
+             days: int = Query(0),
              date_from: str = Query(""), date_to: str = Query(""),
              items: str = Query(""), agg: str = Query(""), user=Depends(current_user)):
     """즉시(동기) CSV 다운로드 — 스크립트/외부 호출용 호환 경로.
@@ -1678,7 +1734,8 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
     """
     f = Filters(lot_filter=lot_filter, step_filter=step_filter, step_seq_filter=step_seq_filter,
                 wafer_filter=wafer_filter,
-                site_cnt_filter=site_cnt_filter, days=days, date_from=date_from, date_to=date_to)
+                site_cnt_filter=site_cnt_filter, point_cnt_filter=point_cnt_filter,
+                days=days, date_from=date_from, date_to=date_to)
     is_admin = user.get("role") == "admin"
     wanted = _check_download_request(
         product, f, [s.strip() for s in items.split(",") if s.strip()], is_admin)
@@ -1716,6 +1773,7 @@ def _filters_dump(f: Filters) -> dict:
     return {"lot_filter": f.lot_filter, "step_filter": f.step_filter,
             "step_seq_filter": f.step_seq_filter,
             "wafer_filter": f.wafer_filter, "site_cnt_filter": f.site_cnt_filter,
+            "point_cnt_filter": f.point_cnt_filter,
             "days": int(f.days or 0), "date_from": f.date_from, "date_to": f.date_to}
 
 
@@ -2039,6 +2097,7 @@ def _run_test(product: str, items: list[TestItem], f: Filters, auto_trim: bool =
             cols.append(c)
             seen.add(c)
     out = wide.select(cols)
+    out = _point_cnt_filter(out, f.point_cnt_filter)
     agg_method = str(agg or "").strip().lower()
     if agg_method:
         value_cols = [c for c in refs + test_aliases if c in out.columns]
@@ -2103,7 +2162,8 @@ def test_run(req: TestReq, _admin=Depends(require_admin)):
 def test_download(req: TestReq, admin=Depends(require_admin)):
     if not _has_filter(req):
         raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
-                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·total_site_cnt "
+                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·"
+                                 "total_site_cnt·PGM point 수 "
                                  "중 하나 이상을 지정하세요")
     out, test_aliases, _errors, vehicle_csv, _notice = _run_test(
         req.product, req.items, req, agg=req.agg)

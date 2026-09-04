@@ -81,7 +81,7 @@ function runDetail(p) {
 /* 조회/다운로드 필터 — 서버 Filters 모델과 1:1.
    days(최근 N일)와 date_from/to(기간)는 상호 배타 — 한쪽 입력 시 다른 쪽을 비운다. */
 const EMPTY_FILTERS = {
-  lot_filter: "", step_filter: "", step_seq_filter: "", wafer_filter: "", site_cnt_filter: "",
+  lot_filter: "", step_filter: "", step_seq_filter: "", wafer_filter: "", site_cnt_filter: "", point_cnt_filter: "",
   days: "", date_from: "", date_to: "",
 };
 
@@ -92,6 +92,7 @@ function filterBody(filters) {
     step_seq_filter: filters.step_seq_filter.trim(),
     wafer_filter: filters.wafer_filter.trim(),
     site_cnt_filter: filters.site_cnt_filter.trim(),
+    point_cnt_filter: filters.point_cnt_filter.trim(),
     days: Number(filters.days) || 0,
     date_from: filters.date_from,
     date_to: filters.date_to,
@@ -100,7 +101,7 @@ function filterBody(filters) {
 
 function hasAnyFilter(filters) {
   const f = filterBody(filters);
-  return Boolean(f.lot_filter || f.step_filter || f.step_seq_filter || f.wafer_filter || f.site_cnt_filter
+  return Boolean(f.lot_filter || f.step_filter || f.step_seq_filter || f.wafer_filter || f.site_cnt_filter || f.point_cnt_filter
     || f.days > 0 || f.date_from || f.date_to);
 }
 
@@ -297,7 +298,7 @@ function ResultTable({ result, highlight }) {
                     ? `ADDP: ${spec[c].addp_form || ""} — 클릭하여 상세`
                     : `REAL: ${spec[c].itemid || ""}${spec[c].abs ? " abs" : ""} ×${spec[c].scale ?? 1} — 클릭하여 상세`)
                 : roles[c] === "raw" ? `raw ITEMID 원본 값` : c}>
-              {c}
+              {c === "shot_count" ? "PGM point 수" : c}
               {roles[c] === "raw" && <span style={{ fontSize: 9, opacity: 0.6 }}> (raw)</span>}
               {roles[c] === "dep" && <span style={{ fontSize: 9, opacity: 0.6 }}> (dep)</span>}
             </th>
@@ -918,7 +919,7 @@ export default function My_Reformatize({ user }) {
         </summary>
         <ol style={{ margin: "10px 0 2px", paddingLeft: 22, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.8 }}>
           <li><b style={{ color: "var(--text-primary)" }}>제품 선택</b> — DB ET 제품을 고르고 적용되는 reformatter 규칙 CSV를 확인합니다.</li>
-          <li><b style={{ color: "var(--text-primary)" }}>조회 범위 지정</b> — 최근 N일 또는 시작~종료일을 입력하고, 필요하면 root_lot_id·step_id·step_seq·wafer_id·total_site_cnt로 더 좁힙니다.</li>
+          <li><b style={{ color: "var(--text-primary)" }}>조회 범위 지정</b> — 최근 N일 또는 시작~종료일을 입력하고, 필요하면 root_lot_id·step_id·step_seq·wafer_id·원본 total_site_cnt·화면 PGM point 수로 더 좁힙니다.</li>
           <li><b style={{ color: "var(--text-primary)" }}>Index 선택</b> — 아래 목록에서 필요한 REAL·ADDP Index를 하나 이상 선택합니다.</li>
           <li><b style={{ color: "var(--text-primary)" }}>집계 방식 선택</b> — shot 원본이 필요하면 shot raw를, PGM 단위 요약이 필요하면 MAX·MIN·MEDIAN·AVG·STD·P90·P10 중 하나를 선택합니다.</li>
           <li><b style={{ color: "var(--text-primary)" }}>조회 또는 다운로드</b> — 화면 확인은 조회, 전체 결과 저장은 CSV 다운로드를 사용합니다. CSV 다운로드에는 필터가 하나 이상 필요합니다.</li>
@@ -948,7 +949,7 @@ export default function My_Reformatize({ user }) {
         )}
       </div>
 
-      {/* 필터 — tkout_time 기간 + root_lot_id/step_id/step_seq/wafer_id/total_site_cnt.
+      {/* 필터 — tkout_time 기간 + root_lot_id/step_id/step_seq/wafer_id/total_site_cnt/PGM point 수.
           최근 N일과 시작~종료일은 상호 배타 (한쪽 입력 시 다른 쪽 초기화). */}
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>필터</span>
@@ -979,7 +980,12 @@ export default function My_Reformatize({ user }) {
           placeholder="wafer_id (쉼표=OR, 포함)" style={{ ...inputStyle, width: 160 }} />
         <input value={filters.site_cnt_filter} onChange={e => setF({ site_cnt_filter: e.target.value })}
           onKeyDown={onFilterEnter}
-          placeholder="total_site_cnt (쉼표=OR, 일치)" style={{ ...inputStyle, width: 180 }} />
+          placeholder="raw total_site_cnt (정확 일치)" title="원본 parquet의 total_site_cnt 열 값으로 필터링합니다. 화면 PGM의 (npt)와는 별개입니다."
+          style={{ ...inputStyle, width: 190 }} />
+        <input value={filters.point_cnt_filter} onChange={e => setF({ point_cnt_filter: e.target.value })}
+          onKeyDown={onFilterEnter}
+          placeholder="PGM point 수 (예: 25,49)" title="조회 결과 PGM(25pt)의 실제 포인트 수로 PGM package 전체를 필터링합니다. 쉼표는 OR입니다."
+          style={{ ...inputStyle, width: 190 }} />
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>집계</span>
         <select value={agg} onChange={e => { setAgg(e.target.value); setResult(null); setOffset(0); }}
           title="root_lot_id × wafer_id × step_id × PGM(pt) 그룹으로 index 를 집계해서 추출"
@@ -989,6 +995,9 @@ export default function My_Reformatize({ user }) {
             <option key={m} value={m}>{m.toUpperCase()}</option>
           ))}
         </select>
+        {agg && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+          {agg.toUpperCase()} · root lot × wafer × step × PGM · Spotfire/Excel 선형 분위수
+        </span>}
         {hasAnyFilter(filters) && (
           <Button onClick={() => setFilters(EMPTY_FILTERS)}>필터 초기화</Button>
         )}

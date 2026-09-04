@@ -1,7 +1,19 @@
 {
-  "version": "10.4.186",
+  "version": "10.4.187",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.187",
+      "date": "2026-09-04",
+      "tag": "fix",
+      "title": "ET P10 PGM 집계 입도와 실제 포인트 수 필터 수정",
+      "changes": [
+        "[P10 집계 입도] 같은 wafer·step·좌표의 서로 다른 PGM 값이 pivot 전에 평균되어 P10이 달라지던 문제를 수정하고, PGM이 없는 원본은 tkout_time을 package 식별자로 사용해 측정 묶음을 보존",
+        "[집계 키 고정] ET 집계를 root_lot_id × wafer_id × step_id × PGM 단위로 고정하고 필수 키가 없으면 잘못된 통합 집계 대신 입력 오류를 명확히 표시하며 P10은 Spotfire·Excel과 같은 inclusive 선형 분위수로 계산",
+        "[포인트 수 필터] 원본 total_site_cnt 정확 일치 필터와 조회 결과의 PGM 실제 포인트 수 필터를 분리하고 화면 조회·CSV 다운로드·ADDP 테스트에 동일하게 적용",
+        "[표시·검증] 집계 결과 shot_count를 PGM point 수로 표시하고 ET 필터·집계 회귀 테스트 26건 및 프런트 디자인·구조·production build 통과"
+      ]
+    },
     {
       "version": "10.4.186",
       "date": "2026-09-04",
