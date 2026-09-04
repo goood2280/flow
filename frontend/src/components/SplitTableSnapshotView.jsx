@@ -80,7 +80,7 @@ function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = f
     if (clean) add(clean, clean, { is_draft: true, draft_index: draftIndex });
     else order.push({ raw: "", display: "", is_draft: true, draft_index: draftIndex });
   });
-  if (!order.length && ensureRow) order.push({ raw: "", display: "", is_s0: true });
+  if (!order.length && ensureRow) order.push({ raw: "", display: "", is_s0: true, is_draft: true, draft_index: 0 });
   return order;
 }
 
@@ -217,7 +217,7 @@ function splitTableHeaderGroups(st) {
 
 // processInfoForParam: 적용 공정 정보를 항목과 분리된 step_id / step_desc 열로
 // 넣기 위한 훅. labelForParam은 이전 저장 스냅샷 호환용으로만 유지한다.
-export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, ensureEmptyRows = false } = {}) {
+export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, ensureEmptyRows = true } = {}) {
   const source = matrix || {};
   const headers = Array.isArray(source.headers) ? source.headers : [];
   const rows = Array.isArray(source.rows) ? source.rows : [];
@@ -251,6 +251,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
     const resolveDisplay = (val) => (displayForValue ? displayForValue(val, row) : val);
     const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows, resolveDisplay);
+    if (!order.length && ensureEmptyRows) order.push({ raw: "", display: "", is_s0: true, is_draft: true, draft_index: 0 });
     return order.map((item, idx) => {
       const label = `S${idx}`;
       const checkCells = {};
@@ -710,7 +711,7 @@ export default function SplitTableSnapshotView({
                     const isSplitCol = splitCheckMode && pi === splitPrefixIndex;
                     const splitStyle = isSplitCol ? splitCheckColorStyle(value) : {};
                     const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
-                    const isDraftValue = isValueCol && r._is_split_draft;
+                    const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw);
                     const cellTitle = editable && isDraftValue
                       ? "클릭: KNOB 값 선택 또는 새 값 입력"
                       : (editable && isParamCol

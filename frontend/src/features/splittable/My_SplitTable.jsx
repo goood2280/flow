@@ -1483,7 +1483,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     const sopVal=s0ValueForParam(data,clean);
     const sourceRow=(data?.rows||[]).find(r=>String(r?._param||"")===clean);
     const hasCellValues=sourceRow?._cells&&Object.values(sourceRow._cells).some(c=>hasValue(c?.actual)||hasValue(c?.plan));
-    const s0Exists=Boolean(sopVal||hasCellValues);
+    const s0Exists=Boolean(sopVal||hasCellValues||(existingDrafts.length>0&&existingDrafts[0]));
     const targetSplitIdx=s0Exists ? (draftIndex + 1) : draftIndex;
     const splitLabel=`S${targetSplitIdx}`;
 
@@ -2920,7 +2920,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             return {module:mod,...cols};
           },
           extraValuesForParam:(param)=>splitDraftValues[param]||[],
-          ensureEmptyRows:editing&&splitCheckViewActive,
+          ensureEmptyRows:true,
         };
         // Split 체크와 PEMS는 같은 항목/값/S그룹 골격을 공유한다.
         const splitCheckStView=!splitCheckViewActive?null:buildSplitCheckStView({
@@ -3434,7 +3434,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           const param=activeCell.param;const draftIndex=activeCell.draftIndex;
           setSplitDraftValues(current=>{
             const values=[...(current[param]||[])];
-            if(draftIndex>=0&&draftIndex<values.length)values[draftIndex]=String(value||"").trim();
+            const idx=(typeof draftIndex==="number"&&draftIndex>=0)?draftIndex:0;
+            while(values.length<=idx)values.push("");
+            values[idx]=String(value||"").trim();
             return {...current,[param]:values};
           });
         }else if(activeCell?.kind==="tag"){
