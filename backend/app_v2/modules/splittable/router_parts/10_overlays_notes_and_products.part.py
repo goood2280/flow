@@ -300,6 +300,50 @@ def _management_row_column_values(product: str, column: str, limit: int = 200) -
 #         "created_at": "2026-04-21T10:00:00" }
 #     ] }
 # 작성자 또는 admin 만 삭제 가능. 수정은 지원하지 않음 (메모 히스토리 유지).
+_NOTES_WRITE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _notes_transaction():
+    """Serialize read/modify/write across threads and shared-store processes.
+
+    Keep a separate stable lock file: locking NOTES_FILE itself would lock the
+    old inode after save_json's atomic replace. The OS releases this lock on
+    process exit, so a crashed writer cannot leave a stale lease behind.
+    """
+    with _NOTES_WRITE_LOCK:
+        lock_path = NOTES_FILE.with_name(NOTES_FILE.name + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a+b") as handle:
+            if os.name == "nt":
+                import msvcrt
+                if handle.seek(0, 2) == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                deadline = time.monotonic() + 5.0
+                while True:
+                    handle.seek(0)
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise HTTPException(409, "다른 사용자가 노트를 저장 중입니다. 다시 저장해 주세요.")
+                        time.sleep(0.02)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _load_notes() -> list:
     data = load_json(NOTES_FILE, {"entries": []})
     if isinstance(data, dict):
@@ -964,11 +1008,36 @@ def save_note(req: NoteSaveReq, request: Request):
         "username": username,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
-    entries = _load_notes()
-    entries.append(entry)
-    _save_notes(entries)
+    with _notes_transaction():
+        entries = _load_notes()
+        entries.append(entry)
+        _save_notes(entries)
     _append_splittable_note_knowledge(entry, actor=username, text=text)
     _notify_tracker_owner_for_note(entry, username)
+    if req.root_lot_id:
+        try:
+            from core.notify import emit_event
+            from core import watchlist as _wl
+            for watcher in _wl.get_users_watching_lot(req.root_lot_id):
+                snippet = text[:50] + "..." if len(text) > 50 else text
+                emit_event(
+                    "watched_lot_note_registered",
+                    actor=username,
+                    target_user=watcher,
+                    title=f"[관심랏 노트 등록] {req.root_lot_id}",
+                    body=f"{username} 님이 {req.product}/{req.root_lot_id} 에 노트를 등록했습니다: {snippet}",
+                    payload={
+                        "product": req.product,
+                        "root_lot_id": req.root_lot_id,
+                        "category": "관심랏",
+                        "badge": "노트 등록",
+                        "note_id": entry.get("id"),
+                        "allow_self": True,
+                    },
+                    allow_self=True,
+                )
+        except Exception:
+            pass
     return {"ok": True, "entry": entry}
 
 
@@ -981,19 +1050,20 @@ def add_note_comment(req: NoteCommentReq, request: Request):
     images = _normalize_note_images(req.images)
     if not text and not images:
         raise HTTPException(400, "empty text")
-    entries = _load_notes()
-    target = next((e for e in entries if e.get("id") == req.note_id), None)
-    if not target:
-        raise HTTPException(404, "note not found")
-    comment = {
-        "id": "c_" + datetime.datetime.now().strftime("%y%m%d%H%M%S%f"),
-        "text": text,
-        "images": images,
-        "username": username,
-        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }
-    target.setdefault("comments", []).append(comment)
-    _save_notes(entries)
+    with _notes_transaction():
+        entries = _load_notes()
+        target = next((e for e in entries if e.get("id") == req.note_id), None)
+        if not target:
+            raise HTTPException(404, "note not found")
+        comment = {
+            "id": "c_" + datetime.datetime.now().strftime("%y%m%d%H%M%S%f"),
+            "text": text,
+            "images": images,
+            "username": username,
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        target.setdefault("comments", []).append(comment)
+        _save_notes(entries)
     _append_splittable_note_knowledge(target, actor=username, text=text)
     return {"ok": True, "comment": comment}
 
@@ -1004,14 +1074,15 @@ def delete_note(req: NoteDeleteReq, request: Request):
     me = _cu(request)
     username = me.get("username") or ""
     role = me.get("role") or ""
-    entries = _load_notes()
-    target = next((e for e in entries if e.get("id") == req.id), None)
-    if not target:
-        raise HTTPException(404, "note not found")
-    if role != "admin" and target.get("username") != username:
-        raise HTTPException(403, "only author or admin can delete")
-    entries = [e for e in entries if e.get("id") != req.id]
-    _save_notes(entries)
+    with _notes_transaction():
+        entries = _load_notes()
+        target = next((e for e in entries if e.get("id") == req.id), None)
+        if not target:
+            raise HTTPException(404, "note not found")
+        if role != "admin" and target.get("username") != username:
+            raise HTTPException(403, "only author or admin can delete")
+        entries = [e for e in entries if e.get("id") != req.id]
+        _save_notes(entries)
     return {"ok": True}
 
 

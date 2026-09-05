@@ -1,11 +1,90 @@
 import datetime
 import json
+import threading
+import time
 from pathlib import Path
 
 import polars as pl
 
 from core import shared_lease
 from routers import splittable
+
+
+def test_s0_reader_never_waits_for_snapshot_refresh(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(splittable, "_S0_STATE_FILE", tmp_path / "registry.json")
+    monkeypatch.setattr(splittable, "_S0_LAST_ENSURE_MONOTONIC", 0.0)
+    monkeypatch.setattr(splittable, "_S0_ENSURE_RUNNING", False)
+    calls = []
+
+    def refresh():
+        calls.append(True)
+        entered.set()
+        release.wait(3)
+        return {"ok": True}
+
+    monkeypatch.setattr(splittable, "refresh_knob_s0_snapshots", refresh)
+    try:
+        started = time.perf_counter()
+        assert splittable._knob_s0_for_product("P", ["KNOB_A"]) == {}
+        assert time.perf_counter() - started < 0.5
+        assert entered.wait(1)
+        for _ in range(5):
+            splittable._ensure_knob_s0_snapshots_today()
+        assert len(calls) == 1
+    finally:
+        release.set()
+        deadline = time.monotonic() + 3
+        while splittable._S0_ENSURE_RUNNING and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert not splittable._S0_ENSURE_RUNNING
+
+
+def test_saved_s0_survives_temporary_source_disappearance(tmp_path, monkeypatch):
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps({"schema_version": 2, "products": {
+        "P": {"KNOB_A": {"ppid": "SOP_OLD", "captured_on": "2026-09-01"}}
+    }}), encoding="utf-8")
+    monkeypatch.setattr(splittable, "_S0_STATE_FILE", path)
+    monkeypatch.setattr(splittable, "_ensure_knob_s0_snapshots_today", lambda: None)
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {})
+    assert splittable._knob_s0_for_product("P", ["KNOB_A"])["KNOB_A"]["ppid"] == "SOP_OLD"
+    assert splittable._knob_s0_for_product("P", []) == {}
+
+
+def test_current_s0_resolves_large_knob_selection_with_one_metadata_read(monkeypatch):
+    knobs = [f"KNOB_{i}" for i in range(2000)]
+    rows = {f"step{i}": {"step_id": f"STEP{i}", "ppid": f"PP{i}"} for i in range(2000)}
+    calls = []
+    monkeypatch.setattr(splittable, "_s0_credential_f_step_paths", lambda: [Path("f_step.csv")])
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {"*": {"file": "f_step.csv", "rows": rows}})
+
+    def context(product):
+        calls.append(product)
+        return ({"param_step": {knob: f"STEP{i}" for i, knob in enumerate(knobs)}}, {}, {})
+
+    monkeypatch.setattr(splittable, "_s0_resolution_context", context)
+    started = time.perf_counter()
+    result = splittable._knob_current_s0_for_product("P", knobs)
+    assert time.perf_counter() - started < 0.5
+    assert len(result) == 2000
+    assert result["KNOB_1999"]["ppid"] == "PP1999"
+    assert calls == ["P"]
+    assert splittable._knob_current_s0_for_product("P", []) == {}
+    assert calls == ["P"]
+
+
+def test_global_f_step_keeps_same_day_revisions(tmp_path, monkeypatch):
+    source = tmp_path / "f_step.csv"
+    source.write_text("step_id,recipe_id\nAA100,A\n", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_S0_DAILY_DIR", tmp_path / "daily")
+    catalog = splittable._s0_read_f_step_file(source)
+    splittable._s0_archive_daily_parquets(catalog, "2026-09-05", datetime.datetime(2026, 9, 5, 1))
+    catalog["*"]["rows"]["aa100"]["ppid"] = "B"
+    splittable._s0_archive_daily_parquets(catalog, "2026-09-05", datetime.datetime(2026, 9, 5, 2))
+    revisions = list((tmp_path / "daily/source/GLOBAL/revisions").glob("*.parquet"))
+    assert len(revisions) == 2
+    assert {pl.read_parquet(p)["por_ppid"][0] for p in revisions} == {"A", "B"}
 
 
 def test_f_step_catalog_maps_product_step_to_current_recipe(tmp_path, monkeypatch):
@@ -39,11 +118,83 @@ def test_f_step_without_product_column_is_a_global_step_recipe_map(tmp_path):
     assert splittable._s0_source_for_product(catalog, "ANY_PRODUCT")["rows"]["aa100"]["ppid"] == "PP_STD"
 
 
+def test_credential_f_step_csv_is_authoritative_and_product_aware(tmp_path, monkeypatch):
+    credential = tmp_path / "credential"
+    confidential = tmp_path / "confidential"
+    credential.mkdir(parents=True)
+    confidential.mkdir(parents=True)
+    (credential / "f_step.csv").write_text(
+        "product_id,step_id,recipe_id\n"
+        "PRODA,AA100,PP_CSV_OLD\n"
+        "PRODA,AA100,PP_CSV_CURRENT\n"
+        "PRODA,AA200,\n"
+        "PRODB,BB100,PP_B\n",
+        encoding="utf-8-sig",
+    )
+    (credential / "PRODA_sop.csv").write_text(
+        "step_id,current_por_ppid,is_por\nAA100,PP_LEGACY,Y\n",
+        encoding="utf-8-sig",
+    )
+    pl.DataFrame({
+        "product_id": ["PRODA"], "step_id": ["AA100"], "recipe_id": ["PP_PARQUET"]
+    }).write_parquet(confidential / "f_step.parquet")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_S0_CATALOG_CACHE", None)
+
+    paths = splittable._s0_sop_paths()
+    catalog = splittable._s0_sop_catalog()
+
+    assert [path.name for path in paths] == ["f_step.csv"]
+    assert catalog["proda"]["rows"]["aa100"]["ppid"] == "PP_CSV_CURRENT"
+    assert "aa200" not in catalog["proda"]["rows"]
+    assert catalog["prodb"]["rows"]["bb100"]["ppid"] == "PP_B"
+
+
+def test_edit_s0_uses_current_f_step_recipe_and_omits_missing_mapping(monkeypatch):
+    source = {
+        "product": "PRODA",
+        "file": "f_step.csv",
+        "rows": {"aa100": {"step_id": "AA100", "ppid": "PP_CURRENT"}},
+    }
+    monkeypatch.setattr(splittable, "_s0_credential_f_step_paths", lambda: [Path("f_step.csv")])
+    monkeypatch.setattr(splittable, "_s0_resolution_context", lambda product: ({}, {}, {}))
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {"proda": source})
+    monkeypatch.setattr(
+        splittable,
+        "_s0_step_candidates",
+        lambda product, knob, context=None: ["AA100"] if knob == "KNOB_MATCHED" else ["AA999"],
+    )
+
+    current = splittable._knob_current_s0_for_product(
+        "PRODA", ["KNOB_MATCHED", "KNOB_MISSING"]
+    )
+
+    assert current == {
+        "KNOB_MATCHED": {
+            "ppid": "PP_CURRENT",
+            "step_id": "AA100",
+            "source_file": "f_step.csv",
+        }
+    }
+
+
+def test_edit_s0_stays_empty_without_credential_f_step_csv(monkeypatch):
+    monkeypatch.setattr(splittable, "_s0_credential_f_step_paths", lambda: [])
+    monkeypatch.setattr(
+        splittable,
+        "_s0_sop_catalog",
+        lambda: {"proda": {"rows": {"aa100": {"step_id": "AA100", "ppid": "PP_FALLBACK"}}}},
+    )
+
+    assert splittable._knob_current_s0_for_product("PRODA", ["KNOB_A"]) == {}
+
+
 def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path, monkeypatch):
     confidential = tmp_path / "Fab" / "confidential"
     confidential.mkdir(parents=True)
-    source_path = confidential / "f_step.parquet"
-    pl.DataFrame({"product": ["PRODA"], "step_id": ["AA100"], "recipe_id": ["PP_A"]}).write_parquet(source_path)
+    source_path = confidential / "f_step.csv"
+    pl.DataFrame({"product": ["PRODA"], "step_id": ["AA100"], "recipe_id": ["PP_A"]}).write_csv(source_path)
     state_file = tmp_path / "state" / "knob_s0_registry.json"
     daily_dir = tmp_path / "state" / "daily"
     mutable = {
@@ -55,8 +206,9 @@ def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path,
     monkeypatch.setattr(splittable, "_S0_STATE_FILE", state_file)
     monkeypatch.setattr(splittable, "_S0_DAILY_DIR", daily_dir)
     monkeypatch.setattr(splittable, "_s0_ml_table_products", lambda: ["PRODA"])
+    monkeypatch.setattr(splittable, "_s0_resolution_context", lambda product: ({}, {}, {}))
     monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda product, prefix="": list(mutable["knobs"]))
-    monkeypatch.setattr(splittable, "_s0_current_candidate", lambda product, knob, rows: dict(mutable["por"].get(knob) or {}))
+    monkeypatch.setattr(splittable, "_s0_current_candidate", lambda product, knob, rows, context=None: dict(mutable["por"].get(knob) or {}))
     monkeypatch.setattr(splittable, "_s0_source_signature", lambda catalog: mutable["signature"])
     monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {
         "proda": {
@@ -140,6 +292,8 @@ def test_credential_sop_catalog_loads_csv_and_falls_back_for_missing_product(tmp
 
     # Missing product returns empty source and empty s0
     assert splittable._s0_source_for_product(catalog, "UNKNOWN_PROD") == {}
+    monkeypatch.setattr(splittable, "_ensure_knob_s0_snapshots_today", lambda: None)
+    monkeypatch.setattr(splittable, "_S0_STATE_FILE", tmp_path / "registry.json")
     assert splittable._knob_s0_for_product("UNKNOWN_PROD") == {}
 
 
@@ -168,4 +322,3 @@ def test_step_order_context_ranks_feol_before_mol_and_test(monkeypatch, tmp_path
     assert ctx["seq_rank"]["AA100210"] < ctx["seq_rank"]["AA100220"]
     assert ctx["seq_rank"]["AA100220"] < ctx["seq_rank"]["AA100100"]
     assert ctx["seq_rank"]["AA100100"] < ctx["seq_rank"]["AA100600"]
-

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import BrandLogo from "../../components/BrandLogo";
 import { isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
+import HomeAlertsSection from "./HomeAlertsSection";
 
 const CARD_DESC = {
   filebrowser: "DB와 Files 데이터 조회",
@@ -213,6 +214,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
         <div className="home-welcome__title">
           {user?.username || "user"}님, 안녕하세요
         </div>
+        <HomeAlertsSection onNavigate={open} user={user} />
       </section>
       {orderedCards.length ? (
         <div className="home-feature-grid">

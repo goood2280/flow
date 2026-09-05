@@ -2339,13 +2339,50 @@ def _knob_prewarm_targets() -> list[tuple[str, str]]:
     return out
 
 
+def _knob_prewarm_requests() -> list[tuple[str, str, str]]:
+    """PI's managed FAB lots first, then legacy root-lot priorities.
+
+    Preserve the identifier kind: truncating a FAB lot into a root makes the
+    cache key differ from the actual LOT-management request.
+    """
+    out = []
+    seen = set()
+    limit = _knob_prewarm_max_lots()
+    tables = PATHS.data_root / "lot_management" / "tables"
+    for path in sorted(tables.glob("*.json")):
+        doc = load_json_cached(path, {})
+        if not isinstance(doc, dict):
+            continue
+        product = str(doc.get("product") or "").strip()
+        if not product:
+            continue
+        for row in doc.get("rows") or []:
+            if not isinstance(row, dict) or not isinstance(row.get("values"), dict):
+                continue
+            lot = str(row["values"].get("lot_id") or "").strip()
+            target = (product, "", lot)
+            if lot and target not in seen:
+                seen.add(target)
+                out.append(target)
+                if len(out) >= limit:
+                    return out
+    for product, root in _knob_prewarm_targets():
+        target = (product, root, "")
+        if target not in seen:
+            seen.add(target)
+            out.append(target)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _knob_prewarm_once() -> dict:
     warmed = skipped = failed = 0
     reason = ""
-    targets = _knob_prewarm_targets()
+    targets = _knob_prewarm_requests()
     if not targets:
         reason = "우선 lot 없음"
-    for product, root in targets:
+    for product, root, fab_lot in targets:
         if _KNOB_PREWARM_STOP.is_set():
             reason = "중지 요청"
             break
@@ -2358,7 +2395,7 @@ def _knob_prewarm_once() -> dict:
         except Exception:
             pass
         try:
-            key = _split_view_cache_key(product, root, "", "KNOB", "", "all", "all", "", "")
+            key = _split_view_cache_key(product, root, "", "KNOB", "", "all", "all", fab_lot, "")
             hard, soft = _split_view_cache_dep_signature(product)
             freshness, cached = _split_view_cache_get(key, hard, soft)
             if cached is not None and freshness == "fresh":
@@ -2367,7 +2404,7 @@ def _knob_prewarm_once() -> dict:
             params = {
                 "product": product, "root_lot_id": root, "wafer_ids": "", "prefix": "KNOB",
                 "custom_name": "", "view_mode": "all", "history_mode": "all",
-                "fab_lot_id": "", "custom_cols": "",
+                "fab_lot_id": fab_lot, "custom_cols": "",
             }
             result = _view_revalidate_execute(key, params) or {}
             hard, soft = _split_view_cache_dep_signature(product)

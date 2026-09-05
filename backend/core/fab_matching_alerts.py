@@ -1294,6 +1294,43 @@ def _plan_knob_context(knob_columns: list[str], knob_rows: list[dict],
     }
 
 
+def classify_plan_mismatch(
+    plan: str,
+    actual: str,
+    current_categories: list[str] | None = None,
+    ready: bool = True,
+    reason: str = "",
+) -> tuple[str, str, str]:
+    """Classify a SplitTable plan mismatch into (severity, badge, mismatch_type).
+    Returns:
+      severity: 'critical' or 'warning'
+      badge: 'Split 불일치' | 'RO 진행' | 'Step 미매칭'
+      mismatch_type: 'split_cross' | 'rework_ro' | 'step_unmatched'
+    """
+    clean_actual = str(actual or "").strip()
+    categories = [str(c).strip() for c in (current_categories or []) if str(c).strip()]
+
+    # 1. RO으로 빠진 ppid가 들어간 것 -> Warning
+    is_ro = bool(
+        re.search(r'(^|[_/-])RO([_/-]|\d|$)|REWORK|REROUTE', clean_actual.upper())
+        or any(re.search(r'(^|[\s_/-])RO([\s_/-]|\d|$)|REWORK|REROUTE', c.upper()) for c in categories)
+    )
+    if is_ro:
+        return ("warning", "RO 진행", "rework_ro")
+
+    # 2. 뒤의 split은 채워졌으나 step matching 등이 안되어서 비어있는 것 -> Warning
+    is_empty_or_unmatched = bool(
+        not clean_actual
+        or clean_actual.upper() in ("-", "NONE", "UNMATCHED", "EMPTY", "미매칭", "NULL")
+        or (not categories and not ready and "공정" in str(reason or ""))
+    )
+    if is_empty_or_unmatched:
+        return ("warning", "Step 미매칭", "step_unmatched")
+
+    # 3. 기존에 split으로 분류된 다른 것으로 간 것 (정상 split 조건 간 오투입/오진행) -> Critical
+    return ("critical", "Split 불일치", "split_cross")
+
+
 def list_plan_knob_anomalies(limit: int = 2000) -> dict:
     """List current KNOB plan mismatches grouped by the rule they would create.
 
@@ -1357,6 +1394,9 @@ def list_plan_knob_anomalies(limit: int = 2000) -> dict:
                 "cell": cell,
             }
             if item is None:
+                sev, badge, m_type = classify_plan_mismatch(
+                    plan, actual, context.get("current_categories"), context.get("ready"), context.get("reason")
+                )
                 item = {
                     "id": item_id,
                     "product": product,
@@ -1369,6 +1409,9 @@ def list_plan_knob_anomalies(limit: int = 2000) -> dict:
                     "plan_updated": str(plan_info.get("updated") or alert.get("plan_updated") or ""),
                     "occurrences": 0,
                     "locations": [],
+                    "severity": sev,
+                    "severity_badge": badge,
+                    "mismatch_type": m_type,
                     **context,
                 }
                 grouped[item_id] = item

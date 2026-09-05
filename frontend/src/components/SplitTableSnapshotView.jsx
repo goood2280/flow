@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import { moduleColor, moduleTextColor } from "../lib/moduleColors";
 
 export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"];
 export const SPLITTABLE_COLUMN_WIDTH_DEFAULTS = Object.freeze({
@@ -42,8 +43,7 @@ export function normalizeKnobParamKey(str) {
     .replace(/[\s_]+/g, " ");
 }
 
-export function s0ValueForParam(source, param) {
-  const mapping = source?.s0_by_knob || {};
+function s0ValueFromMapping(mapping, param) {
   if (!param) return "";
   const exact = mapping?.[param];
   if (exact?.ppid != null && String(exact.ppid).trim()) return String(exact.ppid).trim();
@@ -55,7 +55,34 @@ export function s0ValueForParam(source, param) {
   return key && mapping[key]?.ppid != null ? String(mapping[key].ppid).trim() : "";
 }
 
-function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = false, resolveDisplay = null) {
+export function s0ValueForParam(source, param) {
+  return s0ValueFromMapping(source?.s0_by_knob || {}, param);
+}
+
+export function currentS0ValueForParam(source, param) {
+  return s0ValueFromMapping(source?.s0_edit_by_knob || {}, param);
+}
+
+const planningS0Contexts = new WeakMap();
+export function planningS0ValueForParam(source, param) {
+  if (!source || typeof source !== "object") return "";
+  let context = planningS0Contexts.get(source);
+  if (!context) {
+    context = {
+      actualParams: new Set((source.rows || []).filter(row =>
+        Object.values(row._cells || {}).some(cell => hasStValue(cell?.actual))
+      ).map(row => row._param)),
+      progress: buildNotReachedLookup(source),
+    };
+    planningS0Contexts.set(source, context);
+  }
+  // Opening the editor must not renumber a completed step against today's SOP.
+  return context.actualParams.has(param) && !context.progress.row(param)
+    ? s0ValueForParam(source, param)
+    : currentS0ValueForParam(source, param);
+}
+
+function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = false, resolveDisplay = null, forceFirstDraftAsS0 = false) {
   const order = [];
   const seen = new Set();
   const getDisplay = (raw, fallbackDisplay) => {
@@ -71,17 +98,54 @@ function orderedSplitValues(perCells, preferredValue, draftValues, ensureRow = f
     seen.add(value);
     order.push({ raw: value, display: getDisplay(value, display), ...extra });
   };
-  if (preferredValue && String(preferredValue).trim()) {
-    add(preferredValue, preferredValue, { is_s0: true });
+  const hasCellValues = (perCells || []).some(item => hasStValue(item.raw));
+  const drafts = Array.isArray(draftValues) ? draftValues : [];
+  // f_step에 해당 step_id가 없을 때 사용자가 처음 추가한 빈 값은 S0다.
+  // wafer의 기존 관측값을 먼저 넣으면 그것이 S0로 승격되므로, 편집용 빈
+  // 드래프트를 맨 앞에 고정하고 관측값은 S1부터 배치한다.
+  if (forceFirstDraftAsS0 && drafts.length) {
+    const clean = String(drafts[0] ?? "").trim();
+    if (clean) {
+      seen.add(clean);
+      order.push({ raw: clean, display: getDisplay(clean, clean), is_draft: true, draft_index: 0, is_s0: true });
+    } else {
+      order.push({ raw: "", display: "", is_draft: true, draft_index: 0, is_s0: true });
+    }
   }
-  (perCells || []).forEach(item => add(item.raw, item.display));
-  (draftValues || []).forEach((value, draftIndex) => {
+  if (!forceFirstDraftAsS0 && preferredValue && String(preferredValue).trim()
+      && (hasCellValues || drafts.length)) {
+    add(preferredValue, preferredValue, { is_s0: true });
+    // Older plans may contain the SOP's category label. It is an alias of
+    // this reference, while other physical PPIDs must stay distinct even if
+    // their display labels happen to match.
+    const sopDisplay = getDisplay(preferredValue, preferredValue).trim();
+    if (sopDisplay) seen.add(sopDisplay);
+  }
+  if (hasCellValues) {
+    (perCells || []).forEach(item => add(item.raw, item.display));
+  }
+  drafts.forEach((value, draftIndex) => {
+    if (forceFirstDraftAsS0 && draftIndex === 0) return;
     const clean = String(value ?? "").trim();
-    if (clean) add(clean, clean, { is_draft: true, draft_index: draftIndex });
-    else order.push({ raw: "", display: "", is_draft: true, draft_index: draftIndex });
+    const isS0 = order.length === 0;
+    if (clean) add(clean, clean, { is_draft: true, draft_index: draftIndex, is_s0: isS0 });
+    else order.push({ raw: "", display: "", is_draft: true, draft_index: draftIndex, is_s0: isS0 });
   });
-  if (!order.length && ensureRow) order.push({ raw: "", display: "", is_s0: true, is_draft: true, draft_index: 0 });
+  if (!order.length && ensureRow) {
+    order.push({ raw: "", display: "", is_s0: false, is_draft: true, draft_index: 0, no_split_yet: true });
+  }
   return order;
+}
+
+function splitValueIndex(order, value) {
+  if (!value.raw) return -1;
+  const exact = order.findIndex(item => !item.no_split_yet && item.raw === value.raw);
+  if (exact >= 0) return exact;
+  // Only a legacy category alias falls back to its display. Two physical
+  // recipes with the same label must never tick two split rows at once.
+  return order.findIndex(item => !item.no_split_yet && (
+    (item.display && value.raw === item.display) || (item.raw && value.display === item.raw)
+  ));
 }
 
 const ST_CELL_COLORS = [
@@ -217,7 +281,7 @@ function splitTableHeaderGroups(st) {
 
 // processInfoForParam: 적용 공정 정보를 항목과 분리된 step_id / step_desc 열로
 // 넣기 위한 훅. labelForParam은 이전 저장 스냅샷 호환용으로만 유지한다.
-export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, ensureEmptyRows = true } = {}) {
+export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, forceFirstDraftAsS0ForParam, ensureEmptyRows = true } = {}) {
   const source = matrix || {};
   const headers = Array.isArray(source.headers) ? source.headers : [];
   const rows = Array.isArray(source.rows) ? source.rows : [];
@@ -249,19 +313,17 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
       ? preferredValueForParam(row?._param, row)
       : s0ValueForParam(source, row?._param);
     const extras = extraValuesForParam ? extraValuesForParam(row?._param, row) : [];
+    const forceFirstDraftAsS0 = forceFirstDraftAsS0ForParam
+      ? !!forceFirstDraftAsS0ForParam(row?._param, row)
+      : false;
     const resolveDisplay = (val) => (displayForValue ? displayForValue(val, row) : val);
-    const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows, resolveDisplay);
-    if (!order.length && ensureEmptyRows) order.push({ raw: "", display: "", is_s0: true, is_draft: true, draft_index: 0 });
+    const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows, resolveDisplay, forceFirstDraftAsS0);
+    if (!order.length && ensureEmptyRows) order.push({ raw: "", display: "", is_s0: false, is_draft: true, draft_index: 0, no_split_yet: true });
     return order.map((item, idx) => {
-      const label = `S${idx}`;
+      const label = item.no_split_yet ? "" : `S${idx}`;
       const checkCells = {};
       perHeader.forEach((value, ci) => {
-        const isMatch = value.raw && (
-          value.raw === item.raw ||
-          (item.display && value.display === item.display) ||
-          (item.raw && value.display === item.raw) ||
-          (item.display && value.raw === item.display)
-        );
+        const isMatch = splitValueIndex(order, value) === idx;
         checkCells[String(ci)] = { actual: isMatch ? "✓" : "", plan: "", split_check: true, not_reached: !!value.not_reached };
       });
       const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
@@ -282,7 +344,8 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
         _split_value: item.display,
         _split_value_raw: item.raw,
         _split_label: label,
-        _is_s0: idx === 0,
+        _is_s0: !item.no_split_yet && idx === 0,
+        _no_split_yet: !!item.no_split_yet,
         _is_split_draft: !!item.is_draft,
         _split_draft_index: item.draft_index,
         _process_columns: process || undefined,
@@ -387,7 +450,7 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
       const splitCells = {};
       perWafer.forEach((value, ci) => {
         // 빈 값과 조회 결과에 없는 wafer는 항상 S0 소속이다.
-        const belongs = idx === 0 ? (!value.raw || value.raw === item.raw) : value.raw === item.raw;
+        const belongs = !value.raw ? idx === 0 : splitValueIndex(order, value) === idx;
         splitCells[String(ci)] = {
           actual: belongs ? label : "",
           plan: "",
@@ -478,6 +541,7 @@ export default function SplitTableSnapshotView({
   onPurposeContextMenu = null,
   onViewRuleMatch = null,
   columnWidths = null,
+  moduleColors = {},
 }) {
   const st = stView || embed?.st_view;
   const splitPaintRef = useRef(null);
@@ -595,18 +659,20 @@ export default function SplitTableSnapshotView({
   // Inform/Auto report의 병합 스냅샷도 live 표와 같은 단일 좌측 헤더로
   // 보이도록, sticky 하위 열의 경계가 비치지 않는 불투명 레이어를 만든다.
   const mergedContextLeftStyle = mergedMode ? { background: "var(--bg-tertiary)", backgroundClip: "border-box", boxShadow: "inset -1px 0 0 #555", isolation: "isolate" } : {};
-  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
+  const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 20, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
-  const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 13, color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default" };
-  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 5, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
+  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 20, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
+  const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 13, color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default", width: dataColWidth, minWidth: dataColWidth, maxWidth: dataColWidth };
+  const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 20, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
   const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
-  const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
+  const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", width: dataColWidth, minWidth: dataColWidth, maxWidth: dataColWidth };
   const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
-  const stCellStyle = { background: "var(--bg-card)", color: ST_GRID_TEXT, padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
-  const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: ST_GRID_TEXT });
-  const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === parameterPrefixIndex ? 700 : 600, whiteSpace: "pre-line" });
+  const stCellStyle = { background: "var(--bg-card)", color: ST_GRID_TEXT, padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative", width: dataColWidth, minWidth: dataColWidth, maxWidth: dataColWidth, boxSizing: "border-box" };
+  // 왼쪽 고정열은 왼쪽일수록 높은 레이어여야 한다. 같은 z-index면 뒤쪽
+  // TAG/값 셀의 '+'가 가로 스크롤 중 앞 고정열 위로 비쳐 올라온다.
+  const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 10 + visiblePrefixColumns.length - idx, color: ST_GRID_TEXT, isolation: "isolate" });
+  const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 2 + visiblePrefixColumns.length - idx, fontWeight: idx === parameterPrefixIndex ? 700 : 600, whiteSpace: "pre-line", isolation: "isolate" });
   const notReachedStyle = { background: "rgba(107,114,128,0.45)" };
   const pemsMissingWaferIndices = new Set(Array.isArray(st?.pems_missing_wafer_indices) ? st.pems_missing_wafer_indices.map(Number) : []);
 
@@ -709,21 +775,24 @@ export default function SplitTableSnapshotView({
                     const isParamCol = splitCheckMode && pi === parameterPrefixIndex;
                     const isValueCol = splitCheckMode && pi === parameterPrefixIndex + 1;
                     const isSplitCol = splitCheckMode && pi === splitPrefixIndex;
+                    const isModuleCol = visiblePrefixColumns[pi] === "module";
                     const splitStyle = isSplitCol ? splitCheckColorStyle(value) : {};
+                    const moduleBg = isModuleCol && value ? moduleColor(value, moduleColors) : "";
+                    const moduleStyle = moduleBg ? { background: moduleBg, color: moduleTextColor(moduleBg), fontWeight: 800 } : {};
                     const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
-                    const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw);
+                    const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw || r._no_split_yet);
                     const cellTitle = editable && isDraftValue
-                      ? "클릭: KNOB 값 선택 또는 새 값 입력"
+                      ? (r._no_split_yet ? "클릭: S0 스플릿 추가" : "클릭: KNOB 값 선택 또는 새 값 입력")
                       : (editable && isParamCol
                           ? "클릭: 분류 규칙 보기 · 우클릭: 스플릿 추가"
-                          : (isSplitCol
+                          : (isSplitCol && value
                               ? `클릭: '${value}' 분류 규칙 보기`
                               : (isValueCol && value
                                   ? `클릭: '${value}' 분류 규칙 보기`
                                   : (isParamCol
                                       ? "클릭: 분류 규칙 보기"
                                       : undefined))));
-                    const isClickable = (editable && isDraftValue) || (editable && isParamCol) || isSplitCol || (isValueCol && value) || isParamCol;
+                    const isClickable = (editable && isDraftValue) || (editable && isParamCol) || (isSplitCol && !!value) || (isValueCol && !!value) || isParamCol;
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps}
                         onContextMenu={editable && isParamCol ? (event) => {
@@ -744,7 +813,7 @@ export default function SplitTableSnapshotView({
                           }
                         }}
                         title={cellTitle}
-                        style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi <= parameterPrefixIndex ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}), cursor: isClickable ? "pointer" : "default" }}>
+                        style={{ ...prefixCellStyle(pi), ...splitStyle, ...(splitCheckMode && pi <= parameterPrefixIndex ? { verticalAlign: "top" } : {}), ...(rowNotReached ? notReachedStyle : {}), ...moduleStyle, cursor: isClickable ? "pointer" : "default" }}>
                         {value}
                       </td>
                     );

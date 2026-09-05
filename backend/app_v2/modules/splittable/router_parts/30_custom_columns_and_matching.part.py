@@ -547,6 +547,36 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
             colors[store_key] = color
             colors_saved += 1
     _save_custom_tags_data(data)
+
+    if saved > 0 or colors_saved > 0:
+        try:
+            from core.notify import emit_event
+            from core import watchlist as _wl
+            affected_roots = set()
+            for ck in list((req.values or {}).keys()) + list((req.colors or {}).keys()):
+                r = str(ck or "").split("|")[0].strip()
+                if r:
+                    affected_roots.add(r)
+            for r_lot in affected_roots:
+                for watcher in _wl.get_users_watching_lot(r_lot):
+                    emit_event(
+                        "watched_lot_note_registered",
+                        actor=actor,
+                        target_user=watcher,
+                        title=f"[관심랏 태그 갱신] {r_lot}",
+                        body=f"{actor} 님이 {product}/{r_lot} 의 커스텀 태그를 수정했습니다.",
+                        payload={
+                            "product": product,
+                            "root_lot_id": r_lot,
+                            "category": "관심랏",
+                            "badge": "태그 갱신",
+                            "allow_self": True,
+                        },
+                        allow_self=True,
+                    )
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "saved": saved,

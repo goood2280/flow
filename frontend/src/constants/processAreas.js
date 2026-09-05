@@ -1,7 +1,6 @@
 /**
  * constants/processAreas.js — Process Area (공정 영역) taxonomy for 2nm GAA Nanosheet logic flow.
  *
- * Source: docs/ARCHITECTURE.md Domain Model (학계 공개 정보 기반).
  * Used by the matching-table UI (area dropdown + color chip) and by any rollup view
  * that groups SHAP importance / ML features by process region.
  *

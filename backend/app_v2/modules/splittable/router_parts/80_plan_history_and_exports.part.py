@@ -81,11 +81,17 @@ def save_plan(req: PlanReq, request: Request = None):
     batch_id = _new_history_batch_id()
     reason = _clean_plan_reason(req.reason)
     new_history: list[dict] = []
+    s0_bases = _knob_current_s0_for_product(req.product, list({
+        _split_plan_cell_key(ck)[2] for ck in req.plans
+    }))
     for ck, val in req.plans.items():
         old = data["plans"].get(ck, {}).get("value")
         prev_owner = original_owners.get(ck) or ""
         data["plans"][ck] = {"value": val, "user": req.username, "updated": now}
         cell_root, cell_wafer, cell_column = _split_plan_cell_key(ck)
+        s0_basis = s0_bases.get(cell_column)
+        if s0_basis:
+            data["plans"][ck]["s0_basis"] = {**s0_basis, "captured_at": now}
         entry = {
             "cell": ck, "old": old, "new": val, "user": req.username,
             "time": now, "action": "set", "root_lot_id": req.root_lot_id or cell_root,
@@ -95,6 +101,8 @@ def save_plan(req: PlanReq, request: Request = None):
             "batch": batch_id, "batch_size": len(req.plans),
             "prev_user": prev_owner, "reason": reason,
         }
+        if s0_basis:
+            entry["s0_basis"] = {**s0_basis, "captured_at": now}
         data["history"].append(entry)
         new_history.append(entry)
         changed_entries.append((ck, old, val))
@@ -138,31 +146,63 @@ def save_plan(req: PlanReq, request: Request = None):
                     "column": column,
                 })
             _notify_plan_actual_mismatches_once(product, save_mismatches, actor="flow")
-            # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
+            # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자 및 관심랏 등록 유저에게 전달.
             try:
                 from core.notify import emit_event
+                from core import watchlist as _wl
+                notified_users = set()
+                notified_watch_lots = set()
+
                 for ck, old, val in changed_entries:
                     if old == val:
                         continue
-                    target = original_owners.get(ck)
-                    if not target or target == username:
-                        continue
                     parts = (ck or "").split("|")
-                    emit_event(
-                        "my_plan_changed",
-                        actor=username,
-                        target_user=target,
-                        title="[plan 변경]",
-                        body=f"{username} 가 {product}/{parts[0] if parts else ''} plan 을 변경",
-                        payload={
-                            "product": product,
-                            "cell": ck,
-                            "root_lot_id": root_lot_id_req or (parts[0] if parts else ""),
-                            "wafer_id": parts[1] if len(parts) > 1 else "",
-                            "column": parts[2] if len(parts) > 2 else "",
-                            "old": old, "new": val,
-                        },
-                    )
+                    r_lot = root_lot_id_req or (parts[0] if parts else "")
+                    target = original_owners.get(ck)
+                    if target and target != username and (target, r_lot) not in notified_users:
+                        notified_users.add((target, r_lot))
+                        emit_event(
+                            "my_plan_changed",
+                            actor=username,
+                            target_user=target,
+                            title="[plan 변경]",
+                            body=f"{username} 가 {product}/{parts[0] if parts else ''} plan 을 변경",
+                            payload={
+                                "product": product,
+                                "cell": ck,
+                                "root_lot_id": r_lot,
+                                "wafer_id": parts[1] if len(parts) > 1 else "",
+                                "column": parts[2] if len(parts) > 2 else "",
+                                "old": old, "new": val,
+                            },
+                        )
+
+                    # 관심랏 등록 유저에게 알림
+                    if r_lot:
+                        watchers = _wl.get_users_watching_lot(r_lot)
+                        is_plan_add = not bool(str(old or "").strip()) and bool(str(val or "").strip())
+                        is_plan_del = bool(str(old or "").strip()) and not bool(str(val or "").strip())
+                        badge_name = "Plan 추가" if is_plan_add else ("Plan 삭제" if is_plan_del else "Plan 변경")
+                        action_text = "추가" if is_plan_add else ("삭제" if is_plan_del else "변경")
+                        for watcher in watchers:
+                            if (watcher, r_lot) not in notified_watch_lots:
+                                notified_watch_lots.add((watcher, r_lot))
+                                emit_event(
+                                    "watched_lot_split_changed",
+                                    actor=username,
+                                    target_user=watcher,
+                                    title=f"[관심랏 {badge_name}] {r_lot}",
+                                    body=f"{username} 님이 {product}/{r_lot} 의 Split Plan 을 {action_text}했습니다.",
+                                    payload={
+                                        "product": product,
+                                        "root_lot_id": r_lot,
+                                        "category": "관심랏",
+                                        "badge": badge_name,
+                                        "column": parts[2] if len(parts) > 2 else "",
+                                        "allow_self": True,
+                                    },
+                                    allow_self=True,
+                                )
             except Exception:
                 pass
         except Exception as exc:
@@ -877,7 +917,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     value_maps = {col_name: _xlsx_value_maps_for_col(col_name) for col_name in selected}
     s0_by_param = {
         column: str(meta.get("ppid") or "")
-        for column, meta in _knob_s0_for_product(product, selected).items()
+        for column, meta in _knob_s0_for_root(product, root_lot_id, selected).items()
         if isinstance(meta, dict) and str(meta.get("ppid") or "").strip()
     }
     pems_missing_wafer_indices: set[int] = set()

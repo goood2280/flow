@@ -1,6 +1,7 @@
 """Daily f_step route -> immutable SplitTable KNOB S0 assignments.
 
-The authoritative source is ``<db_root>/confidential/f_step.parquet``.  Its
+The authoritative source is ``<db_root>/credential/f_step.csv`` (with the
+older ``confidential/f_step.parquet`` kept as a fallback).  Its
 ``step_id`` identifies the process step and ``recipe_id`` is the current POR
 PPID used when an S0 assignment is first captured.  One file can contain every
 product; a product column is used when present, otherwise step IDs are treated
@@ -20,6 +21,100 @@ _S0_SCHEDULER_STOP = threading.Event()
 _S0_HEADER_CLEAN_RE = _re.compile(r"[^0-9a-z가-힣]+", _re.I)
 _S0_CATALOG_CACHE = None
 _S0_CATALOG_CACHE_LOCK = threading.Lock()
+_S0_ENSURE_RUNNING = False
+
+
+def _s0_update_source_history(state, catalog, moment):
+    from core.split_s0_history import observe, timestamp
+    histories = state.setdefault("sop_history", {})
+    # One-time migration of the already archived daily and same-day revisions.
+    # This runs under the refresh lease, never on the view request path.
+    if not state.get("sop_history_migrated"):
+        revisions = []
+        for path in (_S0_DAILY_DIR / "source").glob("**/*.parquet"):
+            frame = pl.read_parquet(path)
+            if frame.is_empty():
+                continue
+            records = frame.to_dicts()
+            first = records[0]
+            if str(first.get("source_file") or "").casefold() != "f_step.csv":
+                continue
+            at = first.get("snapshot_at")
+            if timestamp(at) is None:
+                continue
+            key = str(first.get("product") or "*").casefold()
+            rows = {str(r["step_id"]).casefold(): {"step_id": r["step_id"], "ppid": r["por_ppid"]}
+                    for r in records}
+            revisions.append((timestamp(at), key, str(at), rows))
+        for _, key, at, rows in sorted(revisions, key=lambda item: item[0]):
+            observe(histories.setdefault(key, {}), rows, at)
+        # Older global-source releases recorded the first KNOB basis before
+        # they archived global files. Preserve that known earlier observation.
+        for product, knobs in (state.get("products") or {}).items():
+            key = str(product).casefold()
+            if key not in histories and key not in catalog and ("*" in histories or "*" in catalog):
+                key = "*"
+            for meta in knobs.values():
+                if not isinstance(meta, dict) or str(meta.get("sop_file") or "").casefold() != "f_step.csv":
+                    continue
+                at = meta.get("captured_at") or meta.get("captured_on")
+                step = str(meta.get("step_id") or "").casefold()
+                if not step or not meta.get("ppid") or timestamp(at) is None:
+                    continue
+                events = histories.setdefault(key, {}).setdefault(step, [])
+                if not events or timestamp(at) < timestamp(events[0]["effective_at"]):
+                    events.insert(0, {"step_id": meta["step_id"], "ppid": meta["ppid"], "effective_at": at})
+        state["sop_history_migrated"] = True
+    for key, source in catalog.items():
+        if str(source.get("file") or "").casefold() == "f_step.csv":
+            observe(histories.setdefault(key.casefold(), {}), source.get("rows") or {}, moment.isoformat())
+
+
+def _knob_s0_as_of(product, column_times):
+    from core.split_s0_history import resolve
+    state = _s0_load_state(readonly=True)
+    histories = state.get("sop_history") or {}
+    history = histories.get(_canonical_product_name(product).casefold()) or histories.get("*") or {}
+    if not history or not column_times:
+        return {}
+    context = _s0_resolution_context(product)
+    out = {}
+    for knob, at in column_times.items():
+        if not str(knob).upper().startswith("KNOB_"):
+            continue
+        for step in _s0_step_candidates(product, knob, context):
+            meta = resolve(history.get(step.casefold()), at)
+            if meta is not None:
+                out[knob] = meta
+                break
+    return out
+
+
+def _knob_s0_for_root(product, root, columns):
+    """A displayed KNOB row uses its most recently saved Plan batch's SOP.
+
+    Stored bases survive later SOP/metadata changes. Legacy plans resolve from
+    the observed source timeline; plans predating it use the first receipt.
+    """
+    from core.split_s0_history import timestamp
+    out = _knob_s0_for_product(product, columns)
+    wanted = set(columns)
+    latest = {}
+    for cell, entry in _plan_entries_for_root(product, root).items():
+        _, _, knob = _split_plan_cell_key(cell)
+        at = timestamp(entry.get("updated"))
+        if knob not in wanted or at is None or entry.get("value") in (None, ""):
+            continue
+        if knob not in latest or at > latest[knob][0]:
+            latest[knob] = (at, entry)
+    times = {knob: entry["updated"] for knob, (_, entry) in latest.items()
+             if not entry.get("s0_basis")}
+    out.update(_knob_s0_as_of(product, times))
+    for knob, (_, entry) in latest.items():
+        basis = entry.get("s0_basis")
+        if isinstance(basis, dict) and basis.get("ppid"):
+            out[knob] = {**basis, "basis": "saved_plan", "as_of": entry["updated"]}
+    return out
 
 _S0_STEP_HEADER_ALIASES = (
     "stepid", "step", "operationid", "operation", "oper", "operno",
@@ -106,9 +201,46 @@ def _s0_read_sop_file(path: Path) -> dict:
         return {}
 
 
-def _s0_sop_paths() -> list[Path]:
-    """Find credential/<product>_sop.csv and confidential/f_step.parquet paths."""
+def _s0_credential_f_step_paths() -> list[Path]:
+    """Return exact credential/f_step.csv candidates in root priority order."""
     paths: list[Path] = []
+    seen: set[str] = set()
+    for root in (_db_base(), _base_root()):
+        try:
+            resolved = root.resolve()
+        except Exception:
+            resolved = root
+        root_key = str(resolved).casefold()
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        credential = _find_ci_child(resolved, "credential")
+        if credential and credential.is_dir():
+            try:
+                candidate = next(
+                    (p for p in credential.iterdir()
+                     if p.is_file() and p.name.casefold() == "f_step.csv"),
+                    None,
+                )
+                if candidate is not None:
+                    paths.append(candidate)
+            except OSError:
+                pass
+    return paths
+
+
+def _s0_sop_paths() -> list[Path]:
+    """Find the highest-priority available S0 source.
+
+    ``credential/f_step.csv`` is the live source requested by Split editing.
+    The parquet and per-product SOP files remain read-compatible fallbacks,
+    but must not silently override a present credential f_step file.
+    """
+    credential_f_step = _s0_credential_f_step_paths()
+    if credential_f_step:
+        return credential_f_step
+    parquet_f_step: list[Path] = []
+    legacy_sops: list[Path] = []
     seen: set[str] = set()
     for root in (_db_base(), _base_root()):
         try:
@@ -124,7 +256,7 @@ def _s0_sop_paths() -> list[Path]:
             try:
                 for candidate in sorted(credential.iterdir(), key=lambda p: p.name.casefold()):
                     if candidate.is_file() and candidate.name.casefold().endswith("_sop.csv"):
-                        paths.append(candidate)
+                        legacy_sops.append(candidate)
             except OSError:
                 pass
         confidential = _find_ci_child(resolved, "confidential")
@@ -136,10 +268,10 @@ def _s0_sop_paths() -> list[Path]:
                     None,
                 )
                 if candidate is not None:
-                    paths.append(candidate)
+                    parquet_f_step.append(candidate)
             except OSError:
                 pass
-    return paths
+    return parquet_f_step or legacy_sops
 
 
 def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
@@ -151,7 +283,12 @@ def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
     if not path.is_file():
         return {}
     try:
-        schema_names = pl.scan_parquet(path).collect_schema().names()
+        if path.suffix.casefold() == ".csv":
+            frame = pl.read_csv(path, infer_schema_length=0, encoding="utf8-lossy")
+            schema_names = frame.columns
+        else:
+            schema_names = pl.scan_parquet(path).collect_schema().names()
+            frame = None
         step_col = _s0_find_column(schema_names, _S0_STEP_HEADER_ALIASES)
         recipe_col = _s0_find_column(schema_names, _S0_RECIPE_HEADER_ALIASES)
         product_col = _s0_find_column(schema_names, _S0_PRODUCT_HEADER_ALIASES)
@@ -162,7 +299,10 @@ def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
             )
             return {}
         columns = [step_col, recipe_col] + ([product_col] if product_col else [])
-        frame = pl.read_parquet(path, columns=list(dict.fromkeys(columns)))
+        if frame is None:
+            frame = pl.read_parquet(path, columns=list(dict.fromkeys(columns)))
+        else:
+            frame = frame.select(list(dict.fromkeys(columns)))
         try:
             stat = path.stat()
             modified = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
@@ -201,7 +341,7 @@ def _s0_read_f_step_file(path: Path) -> dict[str, dict]:
 
 
 def _s0_sop_catalog() -> dict[str, dict]:
-    """Load product SOPs from credential/<product>_sop.csv and confidential/f_step.parquet."""
+    """Load the active f_step source, with legacy product SOP compatibility."""
     global _S0_CATALOG_CACHE
     paths = _s0_sop_paths()
     signature = tuple(_path_cache_sig(path) for path in paths)
@@ -233,7 +373,7 @@ def _s0_sop_catalog() -> dict[str, dict]:
                 "rows": sop_data.get("rows") or {},
                 "step_order": sop_data.get("step_order") or [],
             }
-        elif path.name.casefold() == "f_step.parquet":
+        elif path.name.casefold() in {"f_step.csv", "f_step.parquet"}:
             for key, source in _s0_read_f_step_file(path).items():
                 catalog.setdefault(key, source)
     with _S0_CATALOG_CACHE_LOCK:
@@ -262,8 +402,6 @@ def _s0_archive_daily_parquets(catalog: dict[str, dict], run_date: str,
         if not isinstance(source_path, Path):
             continue
         product = str(source.get("product") or "").strip()
-        if not product:
-            continue
         product_dir = _S0_DAILY_DIR / "source" / (product or "GLOBAL")
         product_dir.mkdir(parents=True, exist_ok=True)
         target = product_dir / f"{run_date}.parquet"
@@ -326,6 +464,23 @@ def _s0_archive_daily_parquets(catalog: dict[str, dict], run_date: str,
         frame = pl.DataFrame(records, schema={column: pl.Utf8 for column in columns}) if records else pl.DataFrame(
             {column: pl.Series([], dtype=pl.Utf8) for column in columns}
         )
+        # A second source update on the same day must not erase the first
+        # reference. Keep the existing daily file for compatibility and append
+        # immutable revisions for every distinct observed source state.
+        revision_dir = product_dir / "revisions"
+        revision_dir.mkdir(parents=True, exist_ok=True)
+        revision_hash = hashlib.sha256(repr([
+            (r["step_id"], r["por_ppid"], r["source_modified_at"]) for r in records
+        ]).encode("utf-8")).hexdigest()[:20]
+        revision = revision_dir / f"{run_date}_{revision_hash}.parquet"
+        if not revision.exists():
+            revision_temp = revision.with_suffix(f".tmp.{os.getpid()}.parquet")
+            try:
+                frame.write_parquet(revision_temp)
+                os.replace(revision_temp, revision)
+            finally:
+                with contextlib.suppress(OSError):
+                    revision_temp.unlink()
         temp = target.with_suffix(f".tmp.{os.getpid()}.parquet")
         try:
             frame.write_parquet(temp)
@@ -388,11 +543,18 @@ def _s0_source_signature(catalog: dict[str, dict]) -> str:
     return hashlib.sha256(raw).hexdigest()[:20]
 
 
-def _s0_step_candidates(product: str, knob: str) -> list[str]:
+def _s0_resolution_context(product: str) -> tuple:
+    # Build product-wide metadata once, rather than rereading all rule rows for
+    # every KNOB on every cache hit (typically thousands of KNOBs per view).
+    return (_split_step_order_context(product), _build_knob_meta(product) or {},
+            _inferred_stage_meta(product, "KNOB") or {})
+
+
+def _s0_step_candidates(product: str, knob: str, context: tuple | None = None) -> list[str]:
     """Resolve a KNOB to process step IDs, preferring the same representative
     step used by SplitTable's process-order contract.
     """
-    ctx = _split_step_order_context(product)
+    ctx, explicit, inferred = context if context is not None else _s0_resolution_context(product)
     candidates: list[str] = []
     key = str(knob or "").strip().upper()
     representative = str((ctx.get("param_step") or {}).get(key) or "").strip()
@@ -406,9 +568,7 @@ def _s0_step_candidates(product: str, knob: str) -> list[str]:
             if group.get("step_id"):
                 candidates.append(str(group.get("step_id") or "").strip())
 
-    explicit = _build_knob_meta(product) or {}
     add_from_meta(explicit.get(knob) or explicit.get(str(knob).removeprefix("KNOB_")))
-    inferred = _inferred_stage_meta(product, "KNOB") or {}
     add_from_meta(inferred.get(knob) or inferred.get(str(knob).removeprefix("KNOB_")))
 
     ordered: list[str] = []
@@ -422,8 +582,8 @@ def _s0_step_candidates(product: str, knob: str) -> list[str]:
     return ordered
 
 
-def _s0_current_candidate(product: str, knob: str, sop_rows: dict[str, dict]) -> dict:
-    for step_id in _s0_step_candidates(product, knob):
+def _s0_current_candidate(product: str, knob: str, sop_rows: dict[str, dict], context: tuple | None = None) -> dict:
+    for step_id in _s0_step_candidates(product, knob, context):
         hit = (sop_rows or {}).get(step_id.casefold())
         if hit and str(hit.get("ppid") or "").strip():
             return {"step_id": str(hit.get("step_id") or step_id), "ppid": str(hit.get("ppid") or "").strip()}
@@ -434,8 +594,8 @@ def _s0_empty_state() -> dict:
     return {"schema_version": _S0_STATE_VERSION, "last_run_date": "", "last_run_at": "", "products": {}, "last_stats": {}}
 
 
-def _s0_load_state() -> dict:
-    raw = load_json(_S0_STATE_FILE, {})
+def _s0_load_state(*, readonly: bool = False) -> dict:
+    raw = load_json_cached(_S0_STATE_FILE, {}) if readonly else load_json(_S0_STATE_FILE, {})
     if not isinstance(raw, dict):
         return _s0_empty_state()
     if int(raw.get("schema_version") or 0) != _S0_STATE_VERSION:
@@ -459,6 +619,7 @@ def refresh_knob_s0_snapshots(*, force: bool = False, now: datetime.datetime | N
         catalog = _s0_sop_catalog()
         source_signature = _s0_source_signature(catalog)
         if (not force and state.get("last_run_date") == run_date
+                and state.get("sop_history_migrated")
                 and state.get("last_source_signature") == source_signature
                 and daily_path.is_file()):
             return {"ok": True, "skipped": True, "run_date": run_date, **(state.get("last_stats") or {})}
@@ -474,10 +635,12 @@ def refresh_knob_s0_snapshots(*, force: bool = False, now: datetime.datetime | N
             # have completed today's pass while this one was waiting.
             state = _s0_load_state()
             if (not force and state.get("last_run_date") == run_date
+                    and state.get("sop_history_migrated")
                     and state.get("last_source_signature") == source_signature
                     and daily_path.is_file()):
                 return {"ok": True, "skipped": True, "run_date": run_date, **(state.get("last_stats") or {})}
 
+            _s0_update_source_history(state, catalog, moment)
             archived_products = _s0_archive_daily_parquets(catalog, run_date, moment)
             products_state = state.setdefault("products", {})
             daily_products: dict[str, dict] = {}
@@ -486,17 +649,21 @@ def refresh_knob_s0_snapshots(*, force: bool = False, now: datetime.datetime | N
             unresolved = 0
             for product in _s0_ml_table_products():
                 sop = _s0_source_for_product(catalog, product)
-                if not sop:
+                # Legacy route files can still supply process ordering, but
+                # cannot establish the requested historical f_step.csv basis.
+                if not sop or str(sop.get("file") or "").casefold() != "f_step.csv":
                     continue
                 knobs = _mltable_schema_columns(product, "KNOB")
                 product_key = _canonical_product_name(product).upper()
                 assigned = products_state.setdefault(product_key, {})
                 daily_knobs: dict[str, dict] = {}
+                context = _s0_resolution_context(product)
                 for knob in knobs:
                     discovered += 1
-                    candidate = _s0_current_candidate(product, knob, sop.get("rows") or {})
+                    candidate = _s0_current_candidate(product, knob, sop.get("rows") or {}, context)
                     existing = assigned.get(knob)
-                    if not isinstance(existing, dict) and candidate:
+                    if candidate and (not isinstance(existing, dict)
+                                      or str(existing.get("sop_file") or "").casefold() != "f_step.csv"):
                         existing = {
                             "ppid": candidate["ppid"],
                             "step_id": candidate["step_id"],
@@ -558,35 +725,48 @@ def refresh_knob_s0_snapshots(*, force: bool = False, now: datetime.datetime | N
 
 
 def _ensure_knob_s0_snapshots_today() -> None:
-    global _S0_LAST_ENSURE_MONOTONIC
+    global _S0_LAST_ENSURE_MONOTONIC, _S0_ENSURE_RUNNING
     current = time.monotonic()
     if current - _S0_LAST_ENSURE_MONOTONIC < _S0_ENSURE_INTERVAL_SEC:
         return
     with _S0_ENSURE_LOCK:
         current = time.monotonic()
-        if current - _S0_LAST_ENSURE_MONOTONIC < _S0_ENSURE_INTERVAL_SEC:
+        if _S0_ENSURE_RUNNING or current - _S0_LAST_ENSURE_MONOTONIC < _S0_ENSURE_INTERVAL_SEC:
             return
-        _S0_LAST_ENSURE_MONOTONIC = current
+        _S0_ENSURE_RUNNING = True
+
+    def run():
+        global _S0_LAST_ENSURE_MONOTONIC, _S0_ENSURE_RUNNING
         try:
-            refresh_knob_s0_snapshots()
+            result = refresh_knob_s0_snapshots()
+            if not result.get("busy"):
+                _S0_LAST_ENSURE_MONOTONIC = time.monotonic()
         except Exception:
             logger.warning("SplitTable KNOB S0 daily ensure failed", exc_info=True)
+        finally:
+            with _S0_ENSURE_LOCK:
+                _S0_ENSURE_RUNNING = False
+
+    try:
+        threading.Thread(target=run, name="splittable-s0-ensure", daemon=True).start()
+    except Exception:
+        with _S0_ENSURE_LOCK:
+            _S0_ENSURE_RUNNING = False
+        raise
 
 
 def _knob_s0_for_product(product: str, columns: list[str] | None = None) -> dict[str, dict]:
-    catalog = _s0_sop_catalog()
     canonical_prod = _canonical_product_name(product).casefold()
-    if not canonical_prod or not _s0_source_for_product(catalog, product):
+    if not canonical_prod:
         return {}
     _ensure_knob_s0_snapshots_today()
-    state = _s0_load_state()
+    state = _s0_load_state(readonly=True)
     product_key = _canonical_product_name(product).upper()
     assigned = (state.get("products") or {}).get(product_key) or {}
     wanted = {str(column) for column in (columns or []) if str(column).upper().startswith("KNOB_")}
     out: dict[str, dict] = {}
-    for knob, raw in assigned.items():
-        if wanted and knob not in wanted:
-            continue
+    for knob in (wanted if columns is not None else assigned):
+        raw = assigned.get(knob)
         if not isinstance(raw, dict) or not str(raw.get("ppid") or "").strip():
             continue
         out[str(knob)] = {
@@ -595,6 +775,41 @@ def _knob_s0_for_product(product: str, columns: list[str] | None = None) -> dict
             "captured_on": str(raw.get("captured_on") or ""),
         }
     return out
+
+
+def _knob_current_s0_for_product(product: str, columns: list[str] | None = None) -> dict[str, dict]:
+    """Resolve edit-time S0 directly from the current f_step step_id recipe.
+
+    The append-only registry above remains the historical/export contract.
+    Split-check editing, however, must seed S0 from the recipe currently present
+    in credential/f_step.csv.  Missing step/recipe mappings stay absent so the
+    browser can present an editable blank S0 instead of guessing from wafer data.
+    """
+    # 편집 계약은 credential/f_step.csv만 허용한다. 파일이 없을 때
+    # legacy SOP/parquet 값으로 채우면 사용자가 요청한 "없으면 빈 S0"가
+    # 깨지므로 역사/내보내기용 폴백과 의도적으로 분리한다.
+    if not _s0_credential_f_step_paths():
+        return {}
+    catalog = _s0_sop_catalog()
+    source = _s0_source_for_product(catalog, product)
+    if not source:
+        return {}
+    wanted = [str(column) for column in (columns if columns is not None else _mltable_schema_columns(product, "KNOB"))
+              if str(column).upper().startswith("KNOB_")]
+    out: dict[str, dict] = {}
+    if not wanted:
+        return out
+    context = _s0_resolution_context(product)
+    for knob in wanted:
+        candidate = _s0_current_candidate(product, knob, source.get("rows") or {}, context)
+        if not candidate:
+            continue
+        out[knob] = {
+            "ppid": str(candidate.get("ppid") or "").strip(),
+            "step_id": str(candidate.get("step_id") or "").strip(),
+            "source_file": str(source.get("file") or ""),
+        }
+    return {knob: meta for knob, meta in out.items() if meta["ppid"]}
 
 
 def _knob_s0_scheduler_loop() -> None:

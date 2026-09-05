@@ -38,18 +38,6 @@ class DcopSummaryReq(BaseModel):
     findings: list[dict[str, Any]] = Field(default_factory=list)
 
 
-ERROR_EXPLAIN_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "where": {"type": "string"},
-        "cause": {"type": "string"},
-        "how_to_fix": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["summary", "where", "cause", "how_to_fix"],
-    "additionalProperties": False,
-}
-
 DCOP_SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {"summary": {"type": "string"}},
@@ -97,71 +85,26 @@ def _fallback_error(req: ErrorExplainReq, raw_error: str) -> dict[str, Any]:
     }
 
 
-def _clean_explanation(value: Any, fallback: dict[str, Any], raw_error: str) -> dict[str, Any]:
-    obj = value if isinstance(value, dict) else {}
-
-    def line(key: str, limit: int) -> str:
-        text = " ".join(str(obj.get(key) or "").split())
-        return text[:limit] or str(fallback[key])
-
-    raw_fixes = obj.get("how_to_fix")
-    if isinstance(raw_fixes, str):
-        raw_fixes = raw_fixes.splitlines()
-    fixes = [" ".join(str(item).split())[:220] for item in (raw_fixes or []) if str(item).strip()][:4]
-    return {
-        "summary": line("summary", 220),
-        "where": line("where", 320),
-        "cause": line("cause", 360),
-        "how_to_fix": fixes or fallback["how_to_fix"],
-        "raw_error": raw_error,
-    }
-
-
-def _message(explanation: dict[str, Any]) -> str:
-    fixes = "\n".join(f"- {item}" for item in explanation.get("how_to_fix") or [])
-    return (
-        f"AI 오류 해석\n\n문제: {explanation['summary']}\n\n"
-        f"발생 위치: {explanation['where']}\n\n가능한 원인: {explanation['cause']}\n\n"
-        f"해결 방법:\n{fixes}\n\n원문 에러:\n{explanation['raw_error']}"
-    )
-
-
 @router.post("/error/explain")
 def explain_error(req: ErrorExplainReq, request: Request):
+    """Compatibility endpoint; runtime errors never consume an LLM call."""
     current_user(request)
     raw_error = _clip(req.raw_error or req.body)
     fallback = _fallback_error(req, raw_error)
-    if not llm_adapter.is_available() or not llm_adapter.should_attempt_llm():
-        return {"ok": True, "llm": {"available": llm_adapter.is_available(), "used": False}, "explanation": fallback, "message": raw_error}
-    prompt = "Flow 웹앱 오류를 한국어로 설명하고 해결 방법을 제시하세요. 제공된 사실만 사용하세요.\n" + json.dumps({
-        "status": req.status,
-        "method": req.method,
-        "url": req.url,
-        "page": req.page,
-        "context": _clip(req.context, 1000),
-        "body": _clip(req.body, 2500),
-        "raw_error": raw_error,
-    }, ensure_ascii=False)
-    try:
-        out = llm_adapter.complete_json(
-            prompt,
-            system="Return only JSON with summary, where, cause, and how_to_fix. Do not reveal secrets.",
-            schema=ERROR_EXPLAIN_SCHEMA,
-            timeout=8,
-            max_retries=1,
-        )
-        if not out.get("ok"):
-            return {"ok": True, "llm": {"available": True, "used": False}, "explanation": fallback, "message": raw_error}
-        explanation = _clean_explanation(out.get("obj"), fallback, raw_error)
-        return {"ok": True, "llm": {"available": True, "used": True}, "explanation": explanation, "message": _message(explanation)}
-    except Exception:
-        logger.warning("error explanation failed", exc_info=True)
-        return {"ok": True, "llm": {"available": True, "used": False}, "explanation": fallback, "message": raw_error}
+    return {
+        "ok": True,
+        "disabled": True,
+        "reason": "error_explanation_disabled",
+        "llm": {"available": False, "used": False},
+        "explanation": fallback,
+        "message": raw_error,
+    }
 
 
 @router.get("/status")
 def status(request: Request):
     me = current_user(request)
+    is_admin = (me.get("role") or "user") == "admin"
     try:
         config = llm_adapter.get_config(redact=True)
         available = llm_adapter.is_available()
@@ -169,10 +112,12 @@ def status(request: Request):
         logger.warning("llm status failed", exc_info=True)
         config, available = {}, False
     return {
-        "available": available,
-        "config": config,
+        "available": bool(available and is_admin),
+        "configured": available if is_admin else False,
+        "config": config if is_admin else {},
         "native_capabilities": llm_adapter.native_capability_snapshot(),
-        "admin": (me.get("role") or "user") == "admin",
+        "policy": llm_adapter.execution_policy_snapshot(),
+        "admin": is_admin,
     }
 
 
@@ -193,7 +138,9 @@ def _is_gpt_oss_120b() -> bool:
 
 @router.post("/dcop/summary")
 def dcop_summary(req: DcopSummaryReq, request: Request):
-    current_user(request)
+    me = current_user(request)
+    if str((me or {}).get("role") or "") != "admin":
+        raise HTTPException(403, "LLM execution is admin-only during POC")
     if not llm_adapter.is_available() or not _is_gpt_oss_120b() or not llm_adapter.should_attempt_llm():
         return {"ok": True, "used": False, "summary": "", "reason": "gpt_oss_120b_not_connected"}
     findings = [row for row in req.findings[:100] if isinstance(row, dict) and str(row.get("severity") or "").lower() in {"fail", "warning"}]

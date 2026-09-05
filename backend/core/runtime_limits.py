@@ -38,11 +38,10 @@ _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
 # 파일 캐시까지 RSS 로 계상됨) 0.65 는 10GB 급 호스트에서 상시 상한 초과를 유발했다.
 # 0.80 으로 올려 10GB→8.0 / 12GB→9.6 / 16GB→12.8 처럼 환경별로 여유 있게 잡는다.
 _PROCESS_MEMORY_LIMIT_FRACTION_DEFAULT = 0.80
-# 개발(small) 프로파일 프로세스 메모리 상한 하한(GB). FAB 매칭캐시 등 빌드가 순간
-# 수 GB(예: 6GB)를 쓰는데 분수 상한(총량×0.80, 10GB→8GB)이 너무 낮으면 가드가
-# 빌드를 조기 throttle 한다. 최소 이 값까지는 상한을 보장한다(총량-예약으로 클램프).
-# env FLOW_DEV_PROCESS_MEMORY_LIMIT_GB 로 조절.
-_DEV_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 9.5
+# No implicit floor: 10GB hosts need the same 20% request/OS reserve as 23GB
+# hosts. The old 9.5GB floor silently defeated the proportional default on
+# development hosts. Operators can still opt into an explicit floor by env.
+_DEV_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 0.0
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
 _PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}

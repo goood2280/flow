@@ -9,7 +9,9 @@ import { sf } from "../../lib/api";
 import { useUserRole } from "../../lib/permissions";
 import { orderProductItems } from "../../lib/productOrder";
 
-const LazySplitTable = lazy(() => import("../splittable/My_SplitTable"));
+const loadSplitTableModule = () => import("../splittable/My_SplitTable");
+const preloadSplitTable = () => { void loadSplitTableModule().catch(() => {}); };
+const LazySplitTable = lazy(loadSplitTableModule);
 
 const API = "/api/lot-management";
 const SPLIT_API = "/api/splittable";
@@ -23,13 +25,27 @@ const DEFAULT_COLUMNS = [
   { id: "purpose", label: "purpose" },
   { id: "lot_id", label: "lot_id" },
   { id: "current_step_id", label: "현step_id" },
+  { id: "alert_step_id", label: "알람 step_id" },
   { id: "step_desc", label: "step_desc" },
   { id: "qty", label: "Qty" },
   { id: "comment", label: "comment" },
 ];
 const COMPUTED_COLUMNS = new Set(["current_step_id", "step_desc", "qty"]);
 const COLORABLE_COLUMNS = new Set(["purpose", "lot_id"]);
+
+function isStepReachedOrExceeded(currStep, alertStep) {
+  const c = String(currStep || "").trim();
+  const a = String(alertStep || "").trim();
+  if (!c || !a) return false;
+  const numC = parseFloat(c.replace(/[^0-9.]/g, ""));
+  const numA = parseFloat(a.replace(/[^0-9.]/g, ""));
+  if (!Number.isNaN(numC) && !Number.isNaN(numA)) {
+    return numC >= numA;
+  }
+  return c.toLowerCase() === a.toLowerCase();
+}
 const TABLE_LOAD_TIMEOUT_MS = 20_000;
+const READONLY_POLL_MS = 30_000;
 const LOT_CANDIDATE_PREVIEW_LIMIT = 300;
 const LOT_CANDIDATE_SEARCH_LIMIT = 500;
 const buttonStyle = {padding:"6px 11px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:"pointer"};
@@ -98,6 +114,65 @@ export default function My_LotManagement({ user }) {
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
   const [productsReloadToken, setProductsReloadToken] = useState(0);
+  const [watchedLots, setWatchedLots] = useState(new Set());
+  const [isMyLotMode, setIsMyLotMode] = useState(false);
+  const [myLots, setMyLots] = useState([]);
+  const [myLotsLoading, setMyLotsLoading] = useState(false);
+  const [myLotsError, setMyLotsError] = useState("");
+  const [myLotsReloadToken, setMyLotsReloadToken] = useState(0);
+  const [viewProduct, setViewProduct] = useState("");
+
+  useEffect(() => {
+    sf("/api/watchlist/lots")
+      .then(d => {
+        if (Array.isArray(d?.lots)) {
+          setWatchedLots(new Set(d.lots.map(l => String(l).toUpperCase())));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isMyLotMode) return;
+    let active = true;
+    setMyLotsLoading(true);
+    setMyLotsError("");
+    sf(`${API}/my-lots`)
+      .then(d => {
+        if (!active) return;
+        setMyLots(Array.isArray(d?.rows) ? d.rows : []);
+      })
+      .catch(e => {
+        if (!active) return;
+        setMyLotsError(e?.message || "MY LOT 목록을 불러오지 못했습니다.");
+      })
+      .finally(() => {
+        if (active) setMyLotsLoading(false);
+      });
+    return () => { active = false; };
+  }, [isMyLotMode, myLotsReloadToken]);
+
+  const toggleWatchlist = (targetLot) => {
+    const clean = String(targetLot || "").trim().toUpperCase();
+    if (!clean) return;
+    sf("/api/watchlist/lots/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lot_id: clean }),
+    })
+      .then(d => {
+        const nextSet = new Set((d?.lots || []).map(l => String(l).toUpperCase()));
+        setWatchedLots(nextSet);
+        setMyLotsReloadToken(v => v + 1);
+        window.dispatchEvent(new CustomEvent("hol:notif-refresh"));
+        if (d?.watched) {
+          toast.ok(`주요랏 등록: ${clean}`);
+        } else {
+          toast.ok(`주요랏 해제: ${clean}`);
+        }
+      })
+      .catch(e => toast.error(`주요랏 설정 실패: ${e?.message || e}`));
+  };
   const [loading, setLoading] = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
   const [tableError, setTableError] = useState("");
@@ -126,15 +201,20 @@ export default function My_LotManagement({ user }) {
   const candidateSearchTimerRef = useRef(null);
   const candidateSearchControllerRef = useRef(null);
   const candidateQueryRef = useRef("");
+  const loadingRef = useRef(false);
+  const myLotsLoadingRef = useRef(false);
+  loadingRef.current = loading;
+  myLotsLoadingRef.current = myLotsLoading;
 
   useEffect(() => {
     if (!viewLot) return;
     splitViewRef.current?.scrollIntoView({behavior:"smooth", block:"start"});
   }, [viewLot]);
 
-  const openSplitView = (lotId, openNotes = false) => {
+  const openSplitView = (lotId, openNotes = false, targetProduct = "") => {
     const nextLot = String(lotId || "").trim();
     if (!nextLot) return;
+    setViewProduct(targetProduct || "");
     setViewLot(nextLot);
     setViewLotNotes(openNotes);
     setViewRequestKey(value => value + 1);
@@ -269,6 +349,79 @@ export default function My_LotManagement({ user }) {
       controller.abort();
     };
   }, [product, tableReloadToken]);
+
+  useEffect(() => {
+    if (!product || editing || isMyLotMode) return undefined;
+    let disposed = false;
+    let inFlight = false;
+    let controller = null;
+    const poll = async () => {
+      if (disposed || document.hidden || inFlight || loadingRef.current) return;
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const raw = await sf(`${API}/table?product=${encodeURIComponent(product)}&include_status=false`, {signal:controller.signal});
+        if (disposed) return;
+        let next = normalizeTable(raw, product);
+        const lotIds = [...new Set(next.rows.map(row => String(row.values?.lot_id || "").trim()).filter(Boolean))];
+        if (lotIds.length) {
+          const result = await sf(`${API}/statuses`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({product, lot_ids:lotIds}), signal:controller.signal});
+          if (disposed) return;
+          next = withStatuses(next, result?.statuses || {});
+        }
+        setTable(current => current?.product === product ? next : current);
+        setDraft(current => current?.product === product ? clone(next) : current);
+        setTableError("");
+      } catch (_error) {
+        // 폴링 실패 시 마지막 정상 표/코멘트를 유지한다.
+      } finally {
+        inFlight = false;
+        controller = null;
+      }
+    };
+    const timer = window.setInterval(poll, READONLY_POLL_MS);
+    const onVisibility = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      controller?.abort();
+    };
+  }, [product, editing, isMyLotMode]);
+
+  useEffect(() => {
+    if (!isMyLotMode) return undefined;
+    let disposed = false;
+    let inFlight = false;
+    let controller = null;
+    const poll = async () => {
+      if (disposed || document.hidden || inFlight || myLotsLoadingRef.current) return;
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const data = await sf(`${API}/my-lots`, {signal:controller.signal});
+        if (!disposed) {
+          setMyLots(Array.isArray(data?.rows) ? data.rows : []);
+          setMyLotsError("");
+        }
+      } catch (_error) {
+        // 폴링 실패 시 마지막 정상 MY LOT 코멘트를 유지한다.
+      } finally {
+        inFlight = false;
+        controller = null;
+      }
+    };
+    const timer = window.setInterval(poll, READONLY_POLL_MS);
+    const onVisibility = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      controller?.abort();
+    };
+  }, [isMyLotMode]);
 
   const searchLotCandidates = rawQuery => {
     const query = String(rawQuery || "").trim();
@@ -456,7 +609,21 @@ export default function My_LotManagement({ user }) {
     if (!query) return rows;
     return rows.filter(row => String(row.values?.purpose || "").trim().toLowerCase().includes(query));
   }, [work, purposeSearch]);
-  const tableColumnCount = 1 + (work?.columns?.length || 0) + (work?.columns?.some(column => column.id === "lot_id") ? 1 : 0) + (editing ? 1 : 0);
+  const filteredMyLots = useMemo(() => {
+    const query = purposeSearch.trim().toLowerCase();
+    if (!query) return myLots;
+    return myLots.filter(row => {
+      const p = String(row.product || "").toLowerCase();
+      const purp = String(row.values?.purpose || "").toLowerCase();
+      const lot = String(row.values?.lot_id || "").toLowerCase();
+      const step = String(row.values?.current_step_id || "").toLowerCase();
+      const alertStep = String(row.values?.alert_step_id || "").toLowerCase();
+      const desc = String(row.values?.step_desc || "").toLowerCase();
+      const cmt = String(row.values?.comment || "").toLowerCase();
+      return p.includes(query) || purp.includes(query) || lot.includes(query) || step.includes(query) || alertStep.includes(query) || desc.includes(query) || cmt.includes(query);
+    });
+  }, [myLots, purposeSearch]);
+  const tableColumnCount = 1 + (work?.columns?.length || 0) + (work?.columns?.some(column => column.id === "lot_id") ? 1 : 0) + (work?.columns?.some(column => column.id === "comment") ? 1 : 0) + (editing ? 1 : 0);
 
   return <PageShell layout="explorer" className="lot-management">
     <aside className="flow-layout-sidebar">
@@ -465,67 +632,361 @@ export default function My_LotManagement({ user }) {
         <span className="lot-management__product-count">{products.length}개</span>
       </div>
       <div className="flow-layout-sidebar__body">
-        {products.map(item => <button type="button" className="ds-sidebar-item" key={item.name} onClick={() => setProduct(item.name)} aria-current={product===item.name?"page":undefined}>{String(item.name || "").replace(/^ML_TABLE_/, "")}</button>)}
+        {products.map(item => (
+          <button
+            type="button"
+            className="ds-sidebar-item"
+            key={item.name}
+            onClick={() => { setIsMyLotMode(false); setProduct(item.name); setViewLot(""); setViewLotNotes(false); }}
+            aria-current={!isMyLotMode && product === item.name ? "page" : undefined}
+          >
+            {String(item.name || "").replace(/^ML_TABLE_/, "")}
+          </button>
+        ))}
+        <div style={{ margin: "8px 0", borderBottom: "1px solid var(--border-subtle)" }} />
+        <button
+          type="button"
+          className="ds-sidebar-item"
+          onClick={() => { setIsMyLotMode(true); setViewLot(""); setViewLotNotes(false); }}
+          aria-current={isMyLotMode ? "page" : undefined}
+          style={{
+            fontWeight: 700,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            color: isMyLotMode ? "var(--accent)" : "inherit",
+          }}
+        >
+          <span>★ MY LOT</span>
+          <span style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 10,
+            background: "var(--surface-subtle)",
+            color: "var(--text-muted)",
+          }}>
+            {watchedLots.size}개
+          </span>
+        </button>
       </div>
     </aside>
     <main className="flow-layout-main">
-      <PageHeader
-        title="랏 관리"
-        subtitle={product ? `${String(product).replace(/^ML_TABLE_/, "")} 제품의 LOT 배정과 진행 상태를 관리합니다.` : "제품을 선택해 주세요."}
-        status={editing ? <Pill tone="warn">편집 중</Pill> : <Pill tone="neutral">조회</Pill>}
-      />
-      <Toolbar>
-        <Input className="lot-management__toolbar-search" type="search" value={purposeSearch} onChange={e => setPurposeSearch(e.target.value)} placeholder="purpose 검색 (예: CS)" aria-label="purpose 검색" title="purpose에 입력한 문자가 포함된 LOT만 표시" autoComplete="off" disabled={!work}/>
-        <span className="u-muted">{visibleRows.length}건</span>
-        {statusLoading&&<span className="u-muted">LOT 현황 갱신 중…</span>}
-        <Select className="lot-management__toolbar-select" value={selectedCustom} onChange={e => setSelectedCustom(e.target.value)} title="LOT View에 적용할 SplitTable CUSTOM SET" disabled={!product}>
-          <option value="">CUSTOM SET 선택</option>{customs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-        </Select>
-        <Button variant="secondary" onClick={openCustomEditor} disabled={!product}>CUSTOM SET 편집</Button>
-        <span className="lot-management__version">{work?.version ? `v${work.version} · ${work.updated_by || "-"}` : "아직 저장되지 않음"}</span>
-        <Button variant="ghost" onClick={loadVersions} disabled={!product}>버전 기록</Button>
-        {editing ? <>
-          <Button variant="primary" disabled={saving} onClick={save}>{saving ? "저장 중…" : "저장"}</Button>
-          <Button variant="ghost" onClick={() => {setDraft(clone(table));setEditing(false);}}>취소</Button>
-        </> : <Button variant="primary" disabled={!table || loading} onClick={() => {setDraft(clone(table));setEditing(true);}}>편집</Button>}
-      </Toolbar>
-      {productsLoading ? <Loading text="제품 목록 로딩..."/>
-        : productsError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">제품 목록을 불러오지 못했습니다</div><div className="ds-feedback__message">{productsError}</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>다시 시도</Button></div></div>
-        : !product ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">표시할 제품이 없습니다</div><div className="ds-feedback__message">SplitTable 제품이 등록되면 랏 관리 표를 사용할 수 있습니다.</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>새로고침</Button></div></div>
-        : loading ? <Loading text="랏 관리 표 로딩..."/>
-        : tableError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표를 불러오지 못했습니다</div><div className="ds-feedback__message">{tableError}</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
-        : !work ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표가 준비되지 않았습니다</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
-        : <div className="flow-page__content">
-        {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => {setViewLot("");setViewLotNotes(false);}}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}:${viewRequestKey}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} initialOpenNotes={viewLotNotes} embedded/></Suspense></section>}
-        <div className="lot-management__grid-frame">
-          <table className="lot-management__grid">
-            <thead><tr><th style={{width:42}}>#</th>{work.columns.map(column => <Fragment key={column.id}><th onDoubleClick={() => editing && renameColumn(column)} style={{minWidth:column.id==="comment"?260:170,cursor:editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)?"pointer":"default"}}>{column.label}{editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)&&<Button variant="danger" size="compact" className="u-push-right" onClick={() => deleteColumn(column)} aria-label={`${column.label} 열 삭제`}>×</Button>}</th>{column.id==="lot_id"&&<th title="SplitTable 보기" style={{width:72}}>View</th>}</Fragment>)}{editing&&<th style={{width:42}}/>}</tr></thead>
-            <tbody>{visibleRows.length ? visibleRows.map((row, ri) => <tr key={row.id}>
-              <td className="lot-management__row-number">{ri+1}</td>
-              {work.columns.map(column => {
-                const key = `${row.id}:${column.id}`;
-                const cellColor = work.colors[key] || PALETTE[0];
-                const value = row.values?.[column.id] || "";
-                const computed = COMPUTED_COLUMNS.has(column.id);
-                const colorable = COLORABLE_COLUMNS.has(column.id);
-                return <Fragment key={column.id}>
-                  <td onContextMenu={editing&&colorable ? event => openCellColorPicker(event,row.id,column.id) : undefined} onDoubleClick={!editing&&column.id==="lot_id"&&String(value).trim() ? () => openSplitView(value,true) : undefined} title={!editing&&column.id==="lot_id"&&String(value).trim() ? "더블클릭: SplitTable과 전체 노트 보기" : editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor,cursor:!editing&&column.id==="lot_id"&&String(value).trim()?"pointer":undefined}}>
-                    {editing ? (computed
-                      ? <div className="lot-management__computed-cell">{value}</div>
-                      : <div className="u-inline">{column.id==="lot_id"
-                        ? <LotIdEditor value={value} candidates={lotCandidates} onChange={nextValue => updateLotId(row.id,nextValue)} onCommit={nextValue => refreshRowStatus(row.id,nextValue)} onPaste={e => pasteBlock(e,row.id,column.id)} onSearch={searchLotCandidates}/>
-                        : <textarea className="lot-management__cell-input" value={value} onChange={e => updateCell(row.id,column.id,e.target.value)} onPaste={e => pasteBlock(e,row.id,column.id)} rows={1}/>}</div>)
-                      : <div className="lot-management__readonly-cell">{value}</div>}
-                  </td>
-                  {column.id==="lot_id"&&<td className="lot-management__cell-actions"><Button variant="secondary" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,false)} title="SplitTable 보기" aria-label="SplitTable 보기">보기</Button></td>}
-                </Fragment>;
-              })}
-              {editing&&<td className="lot-management__cell-actions"><Button variant="danger" size="compact" onClick={() => deleteRow(row.id)} aria-label={`${ri+1}행 삭제`}>×</Button></td>}
-            </tr>) : <tr><td colSpan={tableColumnCount}><div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">검색 결과가 없습니다</div><div className="ds-feedback__message">purpose 검색어를 바꾸거나 지워 주세요.</div></div></div></td></tr>}</tbody>
-          </table>
-        </div>
-        {editing&&<div className="lot-management__footer-actions"><Button variant="secondary" onClick={addRow}>＋ 행 추가</Button><Button variant="secondary" onClick={addColumn}>＋ 열 추가</Button><span className="u-muted">purpose 또는 lot_id 셀을 우클릭해 배경색을 선택하세요.</span></div>}
-      </div>}
+      {isMyLotMode ? (
+        <>
+          <PageHeader
+            title="랏 관리"
+            subtitle="MY LOT — 등록된 주요랏의 현재 위치(현step_id), 알람 step_id, 공정 설명, Qty, 코멘트 등을 한눈에 확인합니다."
+            status={<Pill tone="accent">MY LOT</Pill>}
+          />
+          <Toolbar>
+            <Input
+              className="lot-management__toolbar-search"
+              type="search"
+              value={purposeSearch}
+              onChange={e => setPurposeSearch(e.target.value)}
+              placeholder="MY LOT 검색 (제품, purpose, LOT ID, 위치 등)"
+              aria-label="MY LOT 검색"
+              autoComplete="off"
+            />
+            <span className="u-muted">{filteredMyLots.length}건</span>
+            <Button variant="secondary" onClick={() => setMyLotsReloadToken(c => c + 1)}>새로고침</Button>
+            <Select className="lot-management__toolbar-select" value={selectedCustom} onChange={e => setSelectedCustom(e.target.value)} title="LOT View에 적용할 SplitTable CUSTOM SET">
+              <option value="">CUSTOM SET 선택</option>{customs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </Select>
+            <Button variant="secondary" onClick={openCustomEditor}>CUSTOM SET 편집</Button>
+          </Toolbar>
+          {myLotsLoading ? (
+            <Loading text="MY LOT 목록 로딩 중..." />
+          ) : myLotsError ? (
+            <div className="ds-feedback">
+              <div className="ds-feedback__inner">
+                <div className="ds-feedback__title">MY LOT을 불러오지 못했습니다</div>
+                <div className="ds-feedback__message">{myLotsError}</div>
+                <Button variant="secondary" onClick={() => setMyLotsReloadToken(v => v + 1)}>다시 시도</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flow-page__content">
+              {viewLot && (
+                <section ref={splitViewRef} className="lot-management__split-preview">
+                  <div className="lot-management__split-preview-header">
+                    <strong>LOT {viewLot} SplitTable {viewProduct ? `(${String(viewProduct).replace(/^ML_TABLE_/, "")})` : ""}</strong>
+                    <span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span>
+                    <Button className="u-push-right" variant="ghost" size="compact" onClick={() => { setViewLot(""); setViewLotNotes(false); setViewProduct(""); }}>닫기</Button>
+                  </div>
+                  <Suspense fallback={<Loading text="SplitTable 불러오는 중..." />}>
+                    <LazySplitTable
+                      key={`${viewProduct || product}:${viewLot}:${selectedCustom}:${viewRequestKey}`}
+                      user={user}
+                      initialProduct={viewProduct || product}
+                      initialFabLotId={viewLot}
+                      initialCustomName={selectedCustom}
+                      initialOpenNotes={viewLotNotes}
+                      initialTableFormat="split"
+                      embedded
+                    />
+                  </Suspense>
+                </section>
+              )}
+              <div className="lot-management__grid-frame">
+                <table className="lot-management__grid">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 42 }}>#</th>
+                      <th style={{ minWidth: 120 }}>제품</th>
+                      <th style={{ minWidth: 120 }}>purpose</th>
+                      <th style={{ minWidth: 140 }}>lot_id</th>
+                      <th title="SplitTable 보기 / 공유 노트" style={{ width: 126 }}>View / Notes</th>
+                      <th style={{ minWidth: 130 }}>현step_id</th>
+                      <th style={{ minWidth: 120 }}>알람 step_id</th>
+                      <th style={{ minWidth: 200 }}>step_desc</th>
+                      <th style={{ width: 80 }}>Qty</th>
+                      <th style={{ minWidth: 260 }}>comment</th>
+                      <th title="주요랏 등록 / 해제" style={{ width: 80, textAlign: "center" }}>주요랏</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMyLots.length ? (
+                      filteredMyLots.map((row, ri) => {
+                        const cleanLot = String(row.values?.lot_id || "").trim().toUpperCase();
+                        const isWatched = watchedLots.has(cleanLot);
+                        const prod = row.product || product || "";
+                        const isReached = isStepReachedOrExceeded(row.values?.current_step_id, row.values?.alert_step_id);
+                        return (
+                          <tr key={row.id || `${prod}_${cleanLot}`}>
+                            <td className="lot-management__row-number">{ri + 1}</td>
+                            <td>
+                              <div className="lot-management__readonly-cell" style={{ fontWeight: 600 }}>
+                                {String(prod).replace(/^ML_TABLE_/, "") || "-"}
+                              </div>
+                            </td>
+                            <td><div className="lot-management__readonly-cell">{row.values?.purpose || "-"}</div></td>
+                            <td
+                              onDoubleClick={cleanLot ? () => openSplitView(cleanLot, true, prod) : undefined}
+                              onContextMenu={cleanLot ? event => {event.preventDefault();openSplitView(cleanLot,true,prod);} : undefined}
+                              onMouseEnter={cleanLot ? preloadSplitTable : undefined}
+                              title={cleanLot ? "더블클릭 또는 우클릭: SplitTable과 전체 노트 보기" : undefined}
+                              style={{ cursor: cleanLot ? "pointer" : undefined }}
+                            >
+                              <div className="lot-management__readonly-cell" style={{ fontWeight: 700, color: "var(--accent)" }}>
+                                {cleanLot || "-"}
+                              </div>
+                            </td>
+                            <td className="lot-management__cell-actions" style={{ whiteSpace: "nowrap" }}>
+                              <Button
+                                variant="secondary"
+                                size="compact"
+                                disabled={!cleanLot}
+                                onClick={() => openSplitView(cleanLot, false, prod)}
+                                onMouseEnter={preloadSplitTable}
+                                onFocus={preloadSplitTable}
+                                title="SplitTable 보기"
+                                aria-label="SplitTable 보기"
+                              >
+                                보기
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="compact"
+                                disabled={!cleanLot}
+                                onClick={() => openSplitView(cleanLot, true, prod)}
+                                onMouseEnter={preloadSplitTable}
+                                onFocus={preloadSplitTable}
+                                title="공유 노트 열기"
+                                aria-label="공유 노트 열기"
+                              >
+                                노트
+                              </Button>
+                            </td>
+                            <td><div className="lot-management__computed-cell">{row.values?.current_step_id || "-"}</div></td>
+                            <td>
+                              <div className="lot-management__computed-cell" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                                <span>{row.values?.alert_step_id || "-"}</span>
+                                {row.values?.alert_step_id && isReached && (
+                                  <span className="home-alert-badge home-alert-badge--notice" style={{ fontSize: 10, padding: "1px 4px", flexShrink: 0 }} title="기준 Step 도달">
+                                    도달
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td><div className="lot-management__computed-cell">{row.values?.step_desc || "-"}</div></td>
+                            <td style={{ textAlign: "right" }}><div className="lot-management__computed-cell">{row.values?.qty || "-"}</div></td>
+                            <td><div className="lot-management__readonly-cell">{row.values?.comment || ""}</div></td>
+                            <td className="lot-management__cell-actions" style={{ textAlign: "center", verticalAlign: "middle" }}>
+                              <button
+                                type="button"
+                                onClick={() => toggleWatchlist(cleanLot)}
+                                title={isWatched ? "주요랏 해제" : "주요랏 등록"}
+                                aria-label={isWatched ? "주요랏 해제" : "주요랏 등록"}
+                                style={{
+                                  background: isWatched ? "var(--accent-glow)" : "transparent",
+                                  border: isWatched ? "1px solid var(--accent)" : "1px solid var(--border)",
+                                  color: isWatched ? "var(--accent)" : "var(--text-muted)",
+                                  borderRadius: 4,
+                                  padding: "2px 8px",
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                  cursor: "pointer",
+                                  verticalAlign: "middle",
+                                  lineHeight: "20px",
+                                  transition: "all 0.12s ease",
+                                }}
+                              >
+                                {isWatched ? "★" : "☆"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={11}>
+                          <div className="ds-feedback">
+                            <div className="ds-feedback__inner">
+                              <div className="ds-feedback__title">
+                                {purposeSearch ? "일치하는 주요랏이 없습니다" : "등록된 주요랏이 없습니다"}
+                              </div>
+                              <div className="ds-feedback__message">
+                                {purposeSearch
+                                  ? "검색어를 변경하거나 지워 주세요."
+                                  : "각 제품의 랏 관리 테이블에서 comment 우측의 ☆ 버튼을 클릭해 주요랏으로 등록하면 여기서 한눈에 모아볼 수 있습니다."}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <PageHeader
+            title="랏 관리"
+            subtitle={product ? `${String(product).replace(/^ML_TABLE_/, "")} 제품의 LOT 배정과 진행 상태를 관리합니다.` : "제품을 선택해 주세요."}
+            status={editing ? <Pill tone="warn">편집 중</Pill> : <Pill tone="neutral">조회</Pill>}
+          />
+          <Toolbar>
+            <Input className="lot-management__toolbar-search" type="search" value={purposeSearch} onChange={e => setPurposeSearch(e.target.value)} placeholder="purpose 검색 (예: CS)" aria-label="purpose 검색" title="purpose에 입력한 문자가 포함된 LOT만 표시" autoComplete="off" disabled={!work}/>
+            <span className="u-muted">{visibleRows.length}건</span>
+            {statusLoading&&<span className="u-muted">LOT 현황 갱신 중…</span>}
+            <Select className="lot-management__toolbar-select" value={selectedCustom} onChange={e => setSelectedCustom(e.target.value)} title="LOT View에 적용할 SplitTable CUSTOM SET" disabled={!product}>
+              <option value="">CUSTOM SET 선택</option>{customs.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </Select>
+            <Button variant="secondary" onClick={openCustomEditor} disabled={!product}>CUSTOM SET 편집</Button>
+            <span className="lot-management__version">{work?.version ? `v${work.version} · ${work.updated_by || "-"}` : "아직 저장되지 않음"}</span>
+            <Button variant="ghost" onClick={loadVersions} disabled={!product}>버전 기록</Button>
+            {editing ? <>
+              <Button variant="primary" disabled={saving} onClick={save}>{saving ? "저장 중…" : "저장"}</Button>
+              <Button variant="ghost" onClick={() => {setDraft(clone(table));setEditing(false);}}>취소</Button>
+            </> : <Button variant="primary" disabled={!table || loading} onClick={() => {setDraft(clone(table));setEditing(true);}}>편집</Button>}
+          </Toolbar>
+          {productsLoading ? <Loading text="제품 목록 로딩..."/>
+            : productsError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">제품 목록을 불러오지 못했습니다</div><div className="ds-feedback__message">{productsError}</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+            : !product ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">표시할 제품이 없습니다</div><div className="ds-feedback__message">SplitTable 제품이 등록되면 랏 관리 표를 사용할 수 있습니다.</div><Button variant="secondary" onClick={() => setProductsReloadToken(value => value + 1)}>새로고침</Button></div></div>
+            : loading ? <Loading text="랏 관리 표 로딩..."/>
+            : tableError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표를 불러오지 못했습니다</div><div className="ds-feedback__message">{tableError}</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+            : !work ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표가 준비되지 않았습니다</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
+            : <div className="flow-page__content">
+            {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => {setViewLot("");setViewLotNotes(false);}}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}:${viewRequestKey}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} initialOpenNotes={viewLotNotes} initialTableFormat="split" embedded/></Suspense></section>}
+            <div className="lot-management__grid-frame">
+              <table className="lot-management__grid">
+                <thead>
+                  <tr>
+                    <th style={{width:42}}>#</th>
+                    {work.columns.map(column => (
+                      <Fragment key={column.id}>
+                        <th
+                          onDoubleClick={() => editing && renameColumn(column)}
+                          style={{minWidth:column.id==="comment"?260:column.id==="alert_step_id"?120:170,cursor:editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)?"pointer":"default"}}
+                        >
+                          {column.label}
+                          {editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)&&<Button variant="danger" size="compact" className="u-push-right" onClick={() => deleteColumn(column)} aria-label={`${column.label} 열 삭제`}>×</Button>}
+                        </th>
+                        {column.id==="lot_id"&&<th title="SplitTable 보기 / 공유 노트" style={{width:126}}>View / Notes</th>}
+                        {column.id==="comment"&&<th title="주요랏(관심랏) 등록" style={{width:80,textAlign:"center"}}>주요랏</th>}
+                      </Fragment>
+                    ))}
+                    {editing&&<th style={{width:42}}/>}
+                  </tr>
+                </thead>
+                <tbody>{visibleRows.length ? visibleRows.map((row, ri) => <tr key={row.id}>
+                  <td className="lot-management__row-number">{ri+1}</td>
+                  {work.columns.map(column => {
+                    const key = `${row.id}:${column.id}`;
+                    const cellColor = work.colors[key] || PALETTE[0];
+                    const value = row.values?.[column.id] || "";
+                    const computed = COMPUTED_COLUMNS.has(column.id);
+                    const colorable = COLORABLE_COLUMNS.has(column.id);
+                    return <Fragment key={column.id}>
+                      <td onContextMenu={editing&&colorable
+                        ? event => openCellColorPicker(event,row.id,column.id)
+                        : !editing&&column.id==="lot_id"&&String(value).trim()
+                          ? event => {event.preventDefault();openSplitView(value,true);}
+                          : undefined}
+                        onDoubleClick={!editing&&column.id==="lot_id"&&String(value).trim() ? () => openSplitView(value,true) : undefined}
+                        onMouseEnter={!editing&&column.id==="lot_id"&&String(value).trim() ? preloadSplitTable : undefined}
+                        title={!editing&&column.id==="lot_id"&&String(value).trim() ? "더블클릭 또는 우클릭: SplitTable과 전체 노트 보기" : editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor,cursor:!editing&&column.id==="lot_id"&&String(value).trim()?"pointer":undefined}}>
+                        {editing ? (computed
+                          ? <div className="lot-management__computed-cell">{value}</div>
+                          : <div className="u-inline">{column.id==="lot_id"
+                            ? <LotIdEditor value={value} candidates={lotCandidates} onChange={nextValue => updateLotId(row.id,nextValue)} onCommit={nextValue => refreshRowStatus(row.id,nextValue)} onPaste={e => pasteBlock(e,row.id,column.id)} onSearch={searchLotCandidates}/>
+                            : <textarea className="lot-management__cell-input" value={value} onChange={e => updateCell(row.id,column.id,e.target.value)} onPaste={e => pasteBlock(e,row.id,column.id)} rows={1}/>}</div>)
+                          : <div className="lot-management__readonly-cell" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}>
+                              <span>{value}</span>
+                              {column.id === "alert_step_id" && value && isStepReachedOrExceeded(row.values?.current_step_id, value) && (
+                                <span className="home-alert-badge home-alert-badge--notice" style={{fontSize:10,padding:"1px 4px",flexShrink:0}} title="기준 Step 도달">
+                                  도달
+                                </span>
+                              )}
+                            </div>}
+                      </td>
+                      {column.id==="lot_id"&&<td className="lot-management__cell-actions" style={{whiteSpace:"nowrap"}}>
+                        <Button variant="secondary" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,false)} onMouseEnter={preloadSplitTable} onFocus={preloadSplitTable} title="SplitTable 보기" aria-label="SplitTable 보기">보기</Button>
+                        <Button variant="ghost" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,true)} onMouseEnter={preloadSplitTable} onFocus={preloadSplitTable} title="공유 노트 열기" aria-label="공유 노트 열기">노트</Button>
+                      </td>}
+                      {column.id==="comment"&&<td className="lot-management__cell-actions" style={{textAlign:"center",verticalAlign:"middle",whiteSpace:"nowrap"}}>
+                        {String(row.values?.lot_id || "").trim() && (()=>{
+                          const cleanLot = String(row.values.lot_id).trim().toUpperCase();
+                          const isWatched = watchedLots.has(cleanLot);
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => toggleWatchlist(cleanLot)}
+                              title={isWatched ? "주요랏 해제" : "주요랏 등록"}
+                              aria-label={isWatched ? "주요랏 해제" : "주요랏 등록"}
+                              style={{
+                                background: isWatched ? "var(--accent-glow)" : "transparent",
+                                border: isWatched ? "1px solid var(--accent)" : "1px solid var(--border)",
+                                color: isWatched ? "var(--accent)" : "var(--text-muted)",
+                                borderRadius: 4,
+                                padding: "2px 8px",
+                                fontSize: 13,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                verticalAlign: "middle",
+                                lineHeight: "20px",
+                                transition: "all 0.12s ease",
+                              }}
+                            >
+                              {isWatched ? "★" : "☆"}
+                            </button>
+                          );
+                        })()}
+                      </td>}
+                    </Fragment>;
+                  })}
+                  {editing&&<td className="lot-management__cell-actions"><Button variant="danger" size="compact" onClick={() => deleteRow(row.id)} aria-label={`${ri+1}행 삭제`}>×</Button></td>}
+                </tr>) : <tr><td colSpan={tableColumnCount}><div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">검색 결과가 없습니다</div><div className="ds-feedback__message">purpose 검색어를 바꾸거나 지워 주세요.</div></div></div></td></tr>}</tbody>
+              </table>
+            </div>
+            {editing&&<div className="lot-management__footer-actions"><Button variant="secondary" onClick={addRow}>＋ 행 추가</Button><Button variant="secondary" onClick={addColumn}>＋ 열 추가</Button><span className="u-muted">purpose 또는 lot_id 셀을 우클릭해 배경색을 선택하세요.</span></div>}
+          </div>}
+        </>
+      )}
     </main>
     {canManage&&<>
       <PageGearButton onClick={() => setShowSettings(true)} title="랏 관리 설정" position="bottom-right" zIndex={97}/>

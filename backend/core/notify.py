@@ -27,6 +27,10 @@ _DEFAULT_RULES = {
     "tracker_step_reached": True,
     "my_inform_comment": True,
     "my_calendar_event_invited": True,
+    "watched_lot_split_changed": True,
+    "watched_lot_note_registered": True,
+    "watched_lot_management_updated": True,
+    "lot_step_threshold_reached": True,
 }
 
 _EVENT_META = {
@@ -36,9 +40,13 @@ _EVENT_META = {
     "my_meeting_action_changed": ("회의 액션 갱신", "info"),
     "my_tracker_comment": ("이슈 댓글", "info"),
     "my_tracker_status_changed": ("이슈 상태 변경", "warn"),
-    "tracker_step_reached": ("Lot step 도달", "warn"),
+    "tracker_step_reached": ("Lot step 도달", "neutral"),
     "my_inform_comment": ("인폼 댓글", "info"),
     "my_calendar_event_invited": ("캘린더 초대", "info"),
+    "watched_lot_split_changed": ("관심랏 스플릿 변경", "info"),
+    "watched_lot_note_registered": ("관심랏 메모 등록", "info"),
+    "watched_lot_management_updated": ("관심랏 랏관리 갱신", "info"),
+    "lot_step_threshold_reached": ("기준 Step 도달", "neutral"),
 }
 
 
@@ -205,15 +213,17 @@ def dismiss_by_ids(username: str, ids: list):
 # v7.0: 이벤트 허브
 # ─────────────────────────────────────────────────────────
 def emit_event(event_type: str, actor: str = "", target_user: str = "",
-               title: str = "", body: str = "", payload: dict | None = None) -> bool:
+               title: str = "", body: str = "", payload: dict | None = None,
+               allow_self: bool = False) -> bool:
     """이벤트 단일 진입점.
-    - target_user 가 비어있거나 actor 와 같으면 no-op (자신이 한 행동은 알림 X)
+    - target_user 가 비어있으면 no-op
+    - actor 와 target_user 가 같을 때: allow_self 또는 watched_lot_ 이벤트가 아니면 no-op
     - 유저 구독 룰에서 off 면 no-op
     - 성공 시 bell 알림 생성, return True
     """
     if not target_user or not event_type:
         return False
-    if actor and actor == target_user:
+    if actor and actor == target_user and not allow_self and not event_type.startswith("watched_lot_"):
         return False
     if not _is_event_enabled(target_user, event_type):
         return False

@@ -151,6 +151,11 @@ def test_saved_chart_names_are_unique_and_searchable(tmp_path, monkeypatch):
     search = filebrowser.chart_builder_history(object(), limit=100, q=second["history_id"])
     assert [row["name"] for row in search["history"]] == ["VTH 산포 (2)"]
 
+    exact = filebrowser.chart_builder_history(
+        object(), limit=1, q="", history_id=first["history_id"],
+    )
+    assert [row["history_id"] for row in exact["history"]] == [first["history_id"]]
+
 
 def test_chart_history_key_reuse_increments_count_without_new_row(tmp_path, monkeypatch):
     history_path = tmp_path / "chart_history.jsonl"

@@ -9,6 +9,7 @@ import { boxBucketsFromPoints, boxStatsAlignment } from "../../lib/boxStats";
 import { chartColorMap as buildChartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
 import { chartColorListRules, chartColorListTextFromRules, parseChartColorList, partitionChartColorRules } from "../../lib/chartColorList";
 import { canManagePage } from "../../lib/permissions";
+import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
 
 const card={border:"1px solid var(--border)",borderRadius:10,background:"var(--bg-secondary)",padding:14};
 const input={width:"100%",boxSizing:"border-box",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)",padding:"7px 9px",fontSize:13};
@@ -820,6 +821,7 @@ function TrellisPlot({chart,column,enableHighlight=false}){
 }
 
 export default function My_ChartBuilder({user}){
+  const canUseLlm=user?.role==="admin";
   const[roots,setRoots]=useState([]);
   const[sources,setSources]=useState([newSource(1)]);
   const[joins,setJoins]=useState([]);
@@ -831,6 +833,7 @@ export default function My_ChartBuilder({user}){
   const[historySearch,setHistorySearch]=useState("");
   const[historyBusy,setHistoryBusy]=useState(false);
   const[pinBusy,setPinBusy]=useState("");
+  const[likeBusy,setLikeBusy]=useState("");
   const[loadedHistoryId,setLoadedHistoryId]=useState("");
   const[result,setResult]=useState(null);
   const[busy,setBusy]=useState(false);
@@ -1199,6 +1202,27 @@ export default function My_ChartBuilder({user}){
     applyDefinition(false,code);
     document.getElementById("chart-builder-code")?.scrollIntoView({behavior:"smooth",block:"start"});
   };
+  useEffect(()=>{
+    const historyId=historyIdFromLocation(/^[A-Za-z0-9_-]{1,120}$/);
+    if(!historyId)return;
+    let alive=true;
+    sf(`/api/filebrowser/chart-builder/history?history_id=${encodeURIComponent(historyId)}`)
+      .then(data=>{
+        if(!alive)return;
+        const entry=(data.history||[]).find(item=>text(item?.history_id)===historyId);
+        if(!entry)throw new Error("공유된 차트 이력을 찾지 못했습니다.");
+        loadHistoryEntry(entry);
+        toast.ok(`[${historyId}] 공유 차트 조건을 불러왔습니다. 실행 버튼을 눌러 조회하세요.`);
+      })
+      .catch(error=>{if(alive)toast.error(error.message||String(error));});
+    return()=>{alive=false;};
+  },[]);
+  const copyHistoryLink=async entry=>{
+    try{
+      await copyHistoryShareLink("/chartbuilder",entry?.history_id);
+      toast.ok("차트 이력 공유 링크를 복사했습니다.");
+    }catch(_error){toast.error("브라우저에서 공유 링크를 복사하지 못했습니다.");}
+  };
   const canManageHistory=canManagePage(user,"chartbuilder");
   const toggleHistoryPin=async entry=>{
     const historyId=text(entry?.history_id).trim();
@@ -1210,6 +1234,17 @@ export default function My_ChartBuilder({user}){
       await loadHistory(historySearch);
     }catch(error){toast.error(error.message||String(error));}
     finally{setPinBusy("");}
+  };
+  const toggleHistoryLike=async entry=>{
+    const historyId=text(entry?.history_id).trim();
+    if(!historyId)return;
+    setLikeBusy(historyId);
+    try{
+      await postJson(`/api/filebrowser/chart-builder/history/${encodeURIComponent(historyId)}/like`,{liked:!entry.liked});
+      toast.ok(entry.liked?"좋아요를 취소했습니다.":"이 차트를 좋아합니다!");
+      await loadHistory(historySearch);
+    }catch(error){toast.error(error.message||String(error));}
+    finally{setLikeBusy("");}
   };
   const download=()=>{
     if(!rows.length)return;
@@ -1484,20 +1519,24 @@ export default function My_ChartBuilder({user}){
       {entry.pinned&&<span title="고정 차트" aria-label="고정 차트" style={{fontSize:14}}>📌</span>}
       <b style={{fontSize:13,color:"var(--text-primary)"}}>{entry.name}</b>
       <code style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-tertiary)",padding:"3px 5px",borderRadius:4}}>{entry.history_id}</code>
-      <span style={{fontSize:12,fontWeight:900,color:"var(--danger)"}} title="이 저장 차트를 다시 실행한 횟수">♥ {Number(entry.reuse_count||0).toLocaleString()}</span>
+      <button type="button" disabled={likeBusy===entry.history_id} title={entry.liked?"좋아요 취소":"좋아요"} onClick={event=>{event.preventDefault();event.stopPropagation();toggleHistoryLike(entry);}} style={{...btn,padding:"3px 7px",fontSize:12,cursor:"pointer",color:entry.liked?"var(--danger)":"var(--text-secondary)",borderColor:entry.liked?"var(--danger)":"var(--border)",fontWeight:700,display:"inline-flex",alignItems:"center",gap:4,opacity:likeBusy===entry.history_id?0.55:1}}>
+        <span>{entry.liked?"❤️":"🤍"}</span> <span>{Number(entry.likes_count||0).toLocaleString()}</span>
+      </button>
+      <span style={{fontSize:12,fontWeight:700,color:"var(--text-secondary)"}} title="이 저장 차트를 다시 실행한 횟수">🔄 {Number(entry.reuse_count||0).toLocaleString()}</span>
       <b style={{fontSize:13,color:"var(--accent)"}}>{entry.username||"anonymous"}</b>
       <span style={{fontSize:12,color:"var(--text-secondary)"}}>{historyTime(entry.timestamp)}</span>
       <span style={{fontSize:12,color:"var(--text-secondary)"}}>Query {entry.source_count||0} · JOIN {entry.join_count||0} · 결과 {Number(entry.row_count||0).toLocaleString()}행</span>
       <span style={{fontSize:12,color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:180,flex:1}}>{(entry.sources||[]).map(source=>`${source.id}:${source.root}/${source.product}`).join(" · ")}</span>
-      {canManageHistory&&<button type="button" disabled={pinBusy===entry.history_id} title={entry.pinned?"고정 해제":"히스토리 위에 고정"} onClick={event=>{event.preventDefault();event.stopPropagation();toggleHistoryPin(entry);}} style={{...btn,padding:"5px 9px",opacity:pinBusy===entry.history_id?0.55:1}}>{pinBusy===entry.history_id?"처리 중…":entry.pinned?"고정 해제":"위에 고정"}</button>}
-      <button type="button" onClick={event=>{event.preventDefault();event.stopPropagation();loadHistoryEntry(entry);}} style={{...btn,padding:"5px 9px"}}>폼으로 불러오기</button>
+      {canManageHistory&&<button type="button" disabled={pinBusy===entry.history_id} title={entry.pinned?"고정 해제":"고정"} onClick={event=>{event.preventDefault();event.stopPropagation();toggleHistoryPin(entry);}} style={{...btn,padding:"5px 9px",opacity:pinBusy===entry.history_id?0.55:1}}>{pinBusy===entry.history_id?"처리 중…":entry.pinned?"고정 해제":"고정"}</button>}
+      <button type="button" onClick={event=>{event.preventDefault();event.stopPropagation();copyHistoryLink(entry);}} style={{...btn,padding:"5px 9px"}}>공유 링크</button>
+      <button type="button" onClick={event=>{event.preventDefault();event.stopPropagation();loadHistoryEntry(entry);}} style={{...btn,padding:"5px 9px"}}>폼 불러오기</button>
     </summary>
     <div style={{padding:"0 14px 12px"}}>
       <pre style={{margin:0,padding:11,borderRadius:7,background:"var(--bg-primary)",border:"1px solid var(--border)",whiteSpace:"pre-wrap",fontFamily:"'JetBrains Mono',monospace",fontSize:11,lineHeight:1.55,color:"var(--text-secondary)"}}>{entry.definition_code}</pre>
     </div>
   </details>;
   return <div style={{padding:"20px 24px 60px",maxWidth:1500,margin:"0 auto",color:"var(--text-primary)"}}>
-    <section style={{...card,marginBottom:16,borderColor:"var(--accent)",background:"linear-gradient(135deg,var(--bg-secondary),var(--accent-glow))"}}>
+    {canUseLlm&&<section style={{...card,marginBottom:16,borderColor:"var(--accent)",background:"linear-gradient(135deg,var(--bg-secondary),var(--accent-glow))"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
         <strong style={{fontSize:15}}>🧭 차트 어시스트</strong>
       </div>
@@ -1517,7 +1556,7 @@ export default function My_ChartBuilder({user}){
         {assistantReply.requires_rerun&&<span style={{marginLeft:7,color:"var(--accent)",fontWeight:800}}>JOIN 변경 · 자동 재조회</span>}
         {!!assistantReply.warnings?.length&&<div style={{marginTop:3,color:"var(--warn)"}}>{assistantReply.warnings.join(" · ")}</div>}
       </div>}
-    </section>
+    </section>}
     <details style={{...card,marginBottom:16,padding:0,overflow:"hidden"}}>
       <summary style={{cursor:"pointer",padding:"11px 14px",fontSize:14,fontWeight:900,userSelect:"none"}}>사용 가이드</summary>
       <div style={{padding:"0 14px 13px",borderTop:"1px solid var(--border)",fontSize:13,lineHeight:1.75,color:"var(--text-secondary)"}}>

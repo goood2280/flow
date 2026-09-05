@@ -90,7 +90,7 @@ def _knob_sidecar_usable(sidecar: Path, main: Path) -> bool:
     모두 들어 있어야 한다. 하나라도 어긋나면 전체 파일로 폴백한다 — 사이드카가
     결과를 바꾸는 경로를 만들지 않는다."""
     try:
-        if sidecar.stat().st_mtime < main.stat().st_mtime - 1.0:
+        if sidecar.stat().st_mtime_ns < main.stat().st_mtime_ns:
             return False
     except OSError:
         return False
@@ -260,7 +260,10 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                 # 오프로드된 빌드는 중단 신호가 워커까지 전파되지 않아 "중단을
                 # 눌러도 안 멈춘다" 로 보인다. 로컬 실행은 should_cancel 이
                 # 그대로 배선되므로 중단이 즉시 먹는다.
-                res = _local_build()
+                from core import worker_dispatch as _wd
+                res = _wd._run_local_heavy(
+                    "splittable_pivot_build", f"pivot:{canonical}",
+                    _local_build, product=canonical)
             else:
                 # v9.4.x: 개발서버(워커) 생존 시 빌드를 워커로 오프로드 — 결과는 공유
                 # cache/split_table 파일로 돌아온다. 워커 다운/타임아웃/원격 실패면
@@ -272,7 +275,7 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                     _local_build,
                     label=f"pivot:{canonical}",
                     local_idle_only=not immediate,
-                    local_fallback=bool(immediate),
+                    local_fallback=True,
                     durable=not immediate,
                     priority="normal" if immediate else "maintenance",
                     dedupe_key=f"pivot:{canonical}",
@@ -324,10 +327,16 @@ def _pivot_cache_needs_build(product: str, source_fp: Path) -> bool:
     """Cheap completeness check; the worker performs the expensive fingerprint."""
     try:
         out_dir = _pivot_cache_path(product, "__probe__").parent
+        from app_v2.modules.splittable.cache_builder import completed_cache_matches
+        if completed_cache_matches(out_dir, source_fp):
+            return False
         fingerprint_fp = out_dir / ".root_fingerprints.json"
         if not fingerprint_fp.is_file():
             return True
         if source_fp.stat().st_mtime > fingerprint_fp.stat().st_mtime:
+            return True
+        meta = json.loads(fingerprint_fp.read_text(encoding="utf-8"))
+        if meta.get("complete") is False:
             return True
         expected = {
             str(value or "").strip()
@@ -338,7 +347,6 @@ def _pivot_cache_needs_build(product: str, source_fp: Path) -> bool:
         }
         if not expected:
             return False
-        meta = json.loads(fingerprint_fp.read_text(encoding="utf-8"))
         built = {str(value or "").strip() for value in (meta.get("roots") or {})}
         if not expected.issubset(built):
             return True
@@ -2010,7 +2018,13 @@ def _attach_split_view_runtime_fields(
     product = out.get("product") or ""
     compact_rows = out.get("rows_compact") or out.get("rows") or []
     selected = [str(row.get("_param") or "") for row in compact_rows if isinstance(row, dict)]
-    out["s0_by_knob"] = _knob_s0_for_product(product, selected)
+    historical_s0 = _knob_s0_for_root(product, out.get("root_lot_id") or "", selected)
+    # 편집용 값은 append-only 이력과 분리한다. Split 추가 시점에는 현재
+    # credential/f_step.csv 의 step_id -> recipe_id를 그대로 사용해야 한다.
+    out["s0_edit_by_knob"] = _knob_current_s0_for_product(product, selected)
+    # First f_step arrival can race the asynchronous snapshot capture. Resolve
+    # previously unknown KNOBs immediately while preserving captured history.
+    out["s0_by_knob"] = {**out["s0_edit_by_knob"], **historical_s0}
     if "lookup_cache" not in out:
         status = None
         try:

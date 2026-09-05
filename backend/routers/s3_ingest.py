@@ -18,7 +18,6 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from core.paths import PATHS
-from core import llm_adapter
 from core import aws_credentials as _aws_credentials
 from core.utils import load_json, save_json, jsonl_append, jsonl_read, jsonl_trim
 from core.auth import require_admin, require_page_manager
@@ -182,13 +181,6 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-S3_ERROR_EXPLAIN_SCHEMA = {
-    "keys": ["summary", "cause", "how_to_fix"],
-    "required": [],
-    "properties": {"summary": {}, "cause": {}, "how_to_fix": {}},
-}
-
-
 def _clip_s3_text(value: Any, limit: int = 1200) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
@@ -197,14 +189,6 @@ def _clip_s3_text(value: Any, limit: int = 1200) -> str:
     if lines:
         text = "\n".join(lines[-10:])
     return text[-limit:] if len(text) > limit else text
-
-
-def _redact_s3_text(value: Any, limit: int = 1200) -> str:
-    text = _clip_s3_text(value, limit)
-    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;\"']+", r"\1<redacted>", text)
-    text = re.sub(r"(?i)(aws_secret_access_key|aws_session_token|secret_access_key)([\"'\s:=]+)([^\"'\s,;&]+)", r"\1\2<redacted>", text)
-    text = re.sub(r"(?i)(x-amz-security-token|x-amz-credential)([\"'\s:=]+)([^\"'\s,;&]+)", r"\1\2<redacted>", text)
-    return text
 
 
 def _s3_failure_reason(tail: str, exit_code: int | None = None, fallback: str = "") -> str:
@@ -216,72 +200,10 @@ def _s3_failure_reason(tail: str, exit_code: int | None = None, fallback: str = 
     return ""
 
 
-def _clean_s3_ai_explanation(obj: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(obj, dict):
-        return None
-
-    def line(key: str, limit: int = 260) -> str:
-        text = str(obj.get(key) or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
-        return text[:limit]
-
-    fixes = obj.get("how_to_fix")
-    if isinstance(fixes, str):
-        fixes = [part.strip(" -\t") for part in fixes.splitlines() if part.strip(" -\t")]
-    if not isinstance(fixes, list):
-        fixes = []
-    clean_fixes = []
-    for item in fixes:
-        text = str(item or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
-        if text:
-            clean_fixes.append(text[:180])
-        if len(clean_fixes) >= 3:
-            break
-    out = {
-        "summary": line("summary", 180),
-        "cause": line("cause", 300),
-        "how_to_fix": clean_fixes,
-    }
-    if not out["summary"] and not out["cause"] and not out["how_to_fix"]:
-        return None
-    return out
-
-
 def _explain_s3_failure(*, action: str, item_id: str, target: str, kind: str,
                         direction: str, reason: str, exit_code: int | None = None) -> dict[str, Any] | None:
-    clean_reason = _redact_s3_text(reason, 1600)
-    if not clean_reason:
-        return None
-    try:
-        if not llm_adapter.is_available():
-            return None
-        if not llm_adapter.should_attempt_llm():
-            return None
-        prompt = {
-            "surface": "FileBrowser S3",
-            "action": action,
-            "item_id": item_id,
-            "target": target,
-            "kind": kind,
-            "direction": direction,
-            "exit_code": exit_code,
-            "raw_error": clean_reason,
-        }
-        out = llm_adapter.complete_json(
-            "Flow FileBrowser S3 등록/동기화 실패를 한국어로 설명해줘. "
-            "summary, cause, how_to_fix JSON만 반환하고 확인되지 않은 내부 원인은 추측하지 마.\n\n"
-            + json.dumps(prompt, ensure_ascii=False),
-            system="You explain Flow app S3 errors for Korean end users. Return concise JSON only.",
-            schema=S3_ERROR_EXPLAIN_SCHEMA,
-            timeout=8,
-            max_retries=1,
-        )
-        if not out.get("ok"):
-            return None
-        return _clean_s3_ai_explanation(out.get("obj") or {})
-    except Exception:
-        return None
+    """Runtime failures are recorded verbatim and never sent to an LLM."""
+    return None
 
 
 def _append_s3_error_history(*, action: str, item_id: str = "", target: str = "",

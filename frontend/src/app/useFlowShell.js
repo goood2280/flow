@@ -68,6 +68,7 @@ export function useFlowShell() {
     }
   });
   const [notifs, setNotifs] = useState([]);
+  const notifRequestRef = useRef({ inFlight: false, sequence: 0, abort: null, mounted: false });
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
   const [authReady, setAuthReady] = useState(false);
@@ -200,29 +201,59 @@ export function useFlowShell() {
     postJson("/api/session/save", { username: user.username, last_tab: tab }).catch(() => {});
   }, [tab, user]);
 
-  const refreshNotifications = useCallback(() => {
+  const refreshNotifications = useCallback((force = false) => {
     if (!user) return Promise.resolve();
-    return sf("/api/admin/my-notifications?username=" + user.username)
-      .then((data) => setNotifs(data.notifications || []))
-      .catch(() => {});
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return Promise.resolve();
+    const request = notifRequestRef.current;
+    if (request.inFlight && !force) return request.promise || Promise.resolve();
+    if (request.inFlight) request.abort?.abort();
+    const sequence = ++request.sequence;
+    const controller = new AbortController();
+    request.inFlight = true;
+    request.abort = controller;
+    request.promise = sf("/api/home/alerts?limit=500", { signal: controller.signal })
+      .then((data) => {
+        if (request.mounted && sequence === request.sequence) setNotifs(Array.isArray(data.alerts) ? data.alerts : []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (sequence === request.sequence) {
+          request.inFlight = false;
+          request.abort = null;
+          request.promise = null;
+        }
+      });
+    return request.promise;
   }, [user]);
 
   useEffect(() => {
+    setNotifs([]);
     if (!user) return;
+    const request = notifRequestRef.current;
+    request.mounted = true;
     refreshNotifications();
     const intervalId = setInterval(refreshNotifications, 30000);
-    window.addEventListener("hol:notif-refresh", refreshNotifications);
+    const onRefresh = () => refreshNotifications(true);
+    window.addEventListener("hol:notif-refresh", onRefresh);
+    window.addEventListener("focus", onRefresh);
+    document.addEventListener("visibilitychange", onRefresh);
     return () => {
+      request.mounted = false;
+      request.sequence += 1;
+      request.abort?.abort();
+      request.inFlight = false;
       clearInterval(intervalId);
-      window.removeEventListener("hol:notif-refresh", refreshNotifications);
+      window.removeEventListener("hol:notif-refresh", onRefresh);
+      window.removeEventListener("focus", onRefresh);
+      document.removeEventListener("visibilitychange", onRefresh);
     };
   }, [refreshNotifications, user]);
 
   const nav = useCallback(
-    (tabKey) => {
+    (tabKey, search = "") => {
       if (!canAccess(tabKey) && tabKey !== "admin") return;
       startTransition(() => setTab(tabKey));
-      const nextUrl = `/${tabKey}`;
+      const nextUrl = `/${tabKey}${search || ""}`;
       if (window.location.pathname + window.location.search !== nextUrl) {
         window.history.pushState({ tab: tabKey }, "", nextUrl);
       }

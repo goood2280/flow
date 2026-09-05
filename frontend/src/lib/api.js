@@ -51,108 +51,12 @@ function _formatApiError(status, body, fallback) {
   return fallback || ("HTTP " + status);
 }
 
-const _errorExplainCache = new Map();
-const _AUTH_ERROR_EXPLAIN_EXEMPT = new Set([
-  "/api/auth/login",
-  "/api/auth/register",
-  "/api/auth/reset-request",
-  "/api/auth/forgot-password",
-  "/api/auth/logout",
-  "/api/auth/providers",
-]);
-const _RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT = new Set([
-  "resource_queue_timeout",
-  "resource_memory_guard",
-]);
-
-function _requestMethod(opts) {
-  return String((opts && opts.method) || "GET").toUpperCase();
-}
-
-function _pathOnly(url) {
-  const q = String(url || "").indexOf("?");
-  return q >= 0 ? String(url || "").slice(0, q) : String(url || "");
-}
-
-function _compactForExplain(value, limit = 5000) {
-  if (value === undefined || value === null || value === "") return "";
-  let text = "";
-  try {
-    text = typeof value === "string" ? value : JSON.stringify(value);
-  } catch (_) {
-    text = String(value);
-  }
-  if (text.length > limit) return text.slice(0, limit) + "\n...<truncated>";
-  return text;
-}
-
-function _canExplainApiError(url) {
-  if (typeof window === "undefined") return false;
-  if (typeof url !== "string" || !url.startsWith("/api/")) return false;
-  const path = _pathOnly(url);
-  if (_AUTH_ERROR_EXPLAIN_EXEMPT.has(path)) return false;
-  if (path === "/api/llm/error/explain") return false;
-  if (path === "/api/llm/status") return false;
-  return true;
-}
-
-function _explainCacheKey(url, method, status, rawMessage) {
-  return [method, url, status, String(rawMessage || "").slice(0, 500)].join("\n");
-}
-
-async function _explainApiError(url, opts, status, body, rawMessage) {
-  if (!_canExplainApiError(url)) return null;
-  if (_RESOURCE_GUARD_ERROR_EXPLAIN_EXEMPT.has(String(body?.error_code || ""))) return null;
-  const method = _requestMethod(opts);
-  const key = _explainCacheKey(url, method, status, rawMessage);
-  if (_errorExplainCache.has(key)) return _errorExplainCache.get(key);
-  const payload = {
-    status,
-    method,
-    url,
-    page: (window.location && (window.location.pathname + window.location.search)) || "",
-    raw_error: _compactForExplain(rawMessage, 6000),
-    body: _compactForExplain(body, 6000),
-  };
-  const promise = fetch("/api/llm/error/explain", _withAuthHeaders({
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Flow-Error-Explain": "1" },
-    body: JSON.stringify(payload),
-  })).then(async (r) => {
-    if (!r.ok) return null;
-    const ct = r.headers.get("content-type") || "";
-    if (!ct.includes("json")) return null;
-    const data = await r.json();
-    if (!data || !data.llm || !data.llm.used || !data.message) return null;
-    return data;
-  }).catch(() => null);
-  _errorExplainCache.set(key, promise);
-  const out = await promise;
-  if (_errorExplainCache.size > 40) {
-    const first = _errorExplainCache.keys().next().value;
-    _errorExplainCache.delete(first);
-  }
-  return out;
-}
-
 async function _throwApiError(url, opts, status, body, fallback) {
   const rawMessage = _formatApiError(status, body, fallback);
-  // v9.3.x: LLM 설명을 동기 대기하지 않고 즉시 에러를 throw.
-  // 설명은 백그라운드로 받아 err.explainPromise 에 첨부.
   const err = new Error(rawMessage);
   err.status = status;
   err.body = body;
   err.rawMessage = rawMessage;
-  err.explanation = null;
-  err.llm = null;
-  err.explainPromise = _explainApiError(url, opts, status, body, rawMessage).then(explained => {
-    if (explained && explained.message) {
-      err.explanation = explained.explanation || null;
-      err.llm = explained.llm || null;
-      err.message = explained.message;
-    }
-    return explained;
-  }).catch(() => null);
   throw err;
 }
 

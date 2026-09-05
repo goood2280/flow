@@ -184,3 +184,50 @@ def test_filebrowser_sql_history_returns_newest_500_rows(tmp_path, monkeypatch):
     assert len(payload["history"]) == 500
     assert payload["history"][0]["sql"] == "value > 504"
     assert payload["history"][-1]["sql"] == "value > 5"
+
+
+def test_sql_history_share_key_resolves_target_without_running_query(tmp_path, monkeypatch):
+    history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "engineer"})
+    filebrowser.jsonl_append(history_path, {
+        "event": "execution", "history_id": "fb_sql_exec_012345abcdef",
+        "scope": "db_product", "root": "FAB_DB", "product": "PRODUCT_A",
+        "sql": "value > 7",
+    })
+
+    payload = filebrowser.filebrowser_sql_execution_history(
+        object(), scope="", root="", product="", file="",
+        history_id="fb_sql_exec_012345abcdef", limit=1, access_scope="",
+    )
+
+    assert payload["history"][0]["root"] == "FAB_DB"
+    assert payload["history"][0]["product"] == "PRODUCT_A"
+    assert payload["history"][0]["sql"] == "value > 7"
+
+
+def test_sql_history_share_key_rechecks_base_file_access(tmp_path, monkeypatch):
+    history_path = tmp_path / "filebrowser_sql_execution_history.jsonl"
+    monkeypatch.setattr(filebrowser, "_filebrowser_sql_execution_history_path", lambda: history_path)
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"username": "engineer"})
+    checked = []
+    monkeypatch.setattr(filebrowser, "_require_base_file_access", lambda request, file, access_scope: checked.append((file, access_scope)))
+    filebrowser.jsonl_append(history_path, {
+        "event": "execution", "history_id": "fb_sql_exec_abcdef012345",
+        "scope": "base", "file": "private/sample.parquet", "sql": "value > 2",
+    })
+
+    payload = filebrowser.filebrowser_sql_execution_history(
+        object(), scope="", root="", product="", file="",
+        history_id="fb_sql_exec_abcdef012345", limit=1, access_scope="",
+    )
+
+    assert payload["history"][0]["sql"] == "value > 2"
+    assert checked == [("private/sample.parquet", "")]
+
+    checked.clear()
+    filebrowser.filebrowser_sql_execution_history(
+        object(), scope="base", root="", product="", file="private/sample.parquet",
+        history_id="", limit=500, access_scope="",
+    )
+    assert checked == [("private/sample.parquet", "")]

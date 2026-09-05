@@ -1004,11 +1004,13 @@ export default function My_ValveAlerts({ user }) {
           ) : (
             <ScrollTable
               rows={visiblePlanAnomalies}
-              minWidth={1120}
-              columns={["선택", "제품", "KNOB 항목", "plan 이름", "실제 PPID", "적용 공정", "발견 위치", "현재 분류", "반영 방식"]}
+              minWidth={1200}
+              columns={["선택", "구분", "제품", "KNOB 항목", "plan 이름", "실제 PPID", "적용 공정", "발견 위치", "현재 분류", "반영 방식"]}
               renderRow={item => {
                 const locations = (item.locations || []).map(location =>
                   `${location.root_lot_id || "-"}${location.wafer_id ? ` WF${location.wafer_id}` : ""}`).join(", ");
+                const isCritical = item.severity === "critical";
+                const isWarning = item.severity === "warning";
                 return (
                   <tr key={item.id}>
                     <td style={nowrapCell}>
@@ -1016,6 +1018,11 @@ export default function My_ValveAlerts({ user }) {
                         disabled={!canManage || !item.ready || !!busy}
                         aria-label={`${item.feature_name} ${item.actual_ppid} 반영 선택`}
                         onChange={event => togglePlanAnomaly(item.id, event.target.checked)} />
+                    </td>
+                    <td style={nowrapCell}>
+                      <Pill tone={isCritical ? "danger" : isWarning ? "warn" : "neutral"}>
+                        {item.severity_badge || (isCritical ? "Split 불일치" : isWarning ? "RO/미매칭" : "이상")}
+                      </Pill>
                     </td>
                     <td style={nowrapCell}>{item.product_key || item.product || "-"}</td>
                     <td style={compactCell} title={item.column || ""}>{item.feature_name || item.column || "-"}</td>

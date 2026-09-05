@@ -6,6 +6,7 @@ import { toast } from "../../components/Toast";
 import { dl, qs, sf } from "../../lib/api";
 import { allowedSubTabs } from "../../lib/permissions";
 import { statusPalette, chartPalette } from "../../components/UXKit";
+import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
 const API="/api/filebrowser";
 const PAGE_SIZE=100;
 // DB(hive) 제품 첫 프리뷰는 최신 date 파티션에서만 읽으므로 500행까지 요청한다.
@@ -956,6 +957,7 @@ export default function My_FileBrowser({
   const editVirtRef=useRef(null);
   const readVirtRef=useRef(null);
   const pendingFindScrollRef=useRef(null);
+  const restoringSqlHistoryRef=useRef(false);
   const findInputRef=useRef(null);
   const findHitsRef=useRef(0);
   // 행 단위 액션은 매 렌더 새로 만들어지는 함수라, memo 된 행에 그대로 내리면 memo 가 깨진다.
@@ -1814,6 +1816,33 @@ export default function My_FileBrowser({
     setSelectedCols(parsed.selectedColumns);
     setSortSpec(null);
   };
+  useEffect(()=>{
+    if(embedded)return;
+    const historyId=historyIdFromLocation(/^fb_sql_exec_[0-9a-f]{12}$/i);
+    if(!historyId)return;
+    let alive=true;
+    sf(API+"/sql/execution-history"+qs({history_id:historyId,limit:1,_ts:Date.now()})).then(d=>{
+      if(!alive)return;
+      const entry=d.history?.[0];
+      if(!entry)throw new Error("공유된 SQL 이력을 찾지 못했습니다.");
+      restoringSqlHistoryRef.current=true;
+      setTab("data");setShowGuide(false);setShowSqlHistory(true);setData(null);setError("");
+      setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSqlFromInput(entry.sql||"");
+      if(entry.scope==="db_product"){
+        setScope("DB");setMode("hive");setSelRoot(entry.root||"");setSelProd(entry.product||"");setSelRootPq("");setSelBaseFile("");
+      }else if(entry.scope==="rootpq"){
+        setScope("DB");setMode("rootpq");setSelRoot("");setSelProd("");setSelRootPq(entry.file||"");setSelBaseFile("");restoringSqlHistoryRef.current=false;
+      }else{
+        setScope("Base");setMode("base");setSelRoot("");setSelProd("");setSelRootPq("");setSelBaseFile(entry.file||"");restoringSqlHistoryRef.current=false;
+      }
+      toast.ok(`[${historyId}] 공유 SQL과 대상을 불러왔습니다. 실행 버튼을 눌러 조회하세요.`);
+    }).catch(e=>{if(alive){restoringSqlHistoryRef.current=false;setError(e.message||String(e));}});
+    return()=>{alive=false;};
+  },[embedded]);
+  const copySqlHistoryLink=async entry=>{
+    try{await copyHistoryShareLink("/filebrowser",entry?.history_id);toast.ok("SQL 이력 공유 링크를 복사했습니다.");}
+    catch(_error){toast.error("브라우저에서 공유 링크를 복사하지 못했습니다.");}
+  };
 
   const cancelActiveViewRequest=()=>{
     if(viewAbortRef.current)viewAbortRef.current.abort();
@@ -1876,6 +1905,7 @@ export default function My_FileBrowser({
       //   그 DB 에 같은 제품이 있을 경우 자동으로 view 를 갱신. UX: DB 를 바꿔도
       //   제품 클릭을 다시 안 해도 됨.
       if(selProd){
+        if(restoringSqlHistoryRef.current){restoringSqlHistoryRef.current=false;return;}
         const match=(d.products||[]).find(p=>p.name===selProd);
         if(match){
           setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);
@@ -3122,7 +3152,7 @@ export default function My_FileBrowser({
                   <span style={{display:"inline-flex",alignItems:"center",gap:7,minWidth:0}}>
                     <span style={{fontWeight:900,color:h.ok?FB_OK.fg:FB_BAD.fg,flexShrink:0}}>{h.ok?"성공":"실패"}</span>
                     <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis"}} title="SQL 이력 고유키">{h.history_id||"-"}</span>
-                    <span style={{fontWeight:900,color:"var(--danger)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수">♥ {Number(h.reuse_count||0).toLocaleString()}</span>
+                    <span style={{fontWeight:900,color:"var(--text-secondary)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수">🔄 {Number(h.reuse_count||0).toLocaleString()}</span>
                     {mode==="hive"&&h.product&&<span style={{padding:"1px 5px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}} title="최초 실행 제품">{h.product}</span>}
                   </span>
                   <span style={{display:"inline-flex",alignItems:"center",justifyContent:"flex-end",gap:7,minWidth:0,marginLeft:"auto",overflow:"hidden"}}>
@@ -3134,6 +3164,7 @@ export default function My_FileBrowser({
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:11,whiteSpace:"nowrap"}}>
                   <code style={{overflow:"hidden",textOverflow:"ellipsis",color:h.ok?"var(--text-primary)":FB_BAD.fg,fontFamily:"monospace"}} title={detail}>{detail}</code>
+                  <button type="button" onClick={()=>copySqlHistoryLink(h)} style={{marginLeft:"auto",flexShrink:0,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-secondary)",color:"var(--text-primary)",padding:"2px 6px",fontSize:10,cursor:"pointer"}}>공유 링크</button>
                 </div>
               </div>;
             })}

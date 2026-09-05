@@ -586,6 +586,63 @@ def _save_chart_builder_pins(pins: dict[str, dict]) -> None:
     save_json(_chart_builder_pins_path(), {"version": 1, "pins": pins})
 
 
+def _chart_builder_likes_path() -> Path:
+    return _chart_builder_history_path().with_name(CHART_BUILDER_LIKES_FILE)
+
+
+def _chart_builder_likes() -> dict[str, list[str]]:
+    raw = load_json(_chart_builder_likes_path(), {}) or {}
+    values = raw.get("likes") if isinstance(raw, dict) else {}
+    if not isinstance(values, dict):
+        return {}
+    likes: dict[str, list[str]] = {}
+    for raw_id, raw_users in values.items():
+        history_id = _cache_safe_text(raw_id, 120)
+        if not history_id or not isinstance(raw_users, list):
+            continue
+        likes[history_id] = [str(u).strip() for u in raw_users if str(u).strip()]
+    return likes
+
+
+def _save_chart_builder_likes(likes: dict[str, list[str]]) -> None:
+    save_json(_chart_builder_likes_path(), {"version": 1, "likes": likes})
+
+
+def _toggle_chart_builder_like(
+    history_id: str,
+    *,
+    username: str,
+    liked: bool | None = None,
+) -> dict:
+    chart_id = _cache_safe_text(history_id, 120)
+    user = str(username or "").strip()
+    if not chart_id:
+        raise ValueError("Chart ID가 비어 있습니다.")
+    if not any(str(entry.get("history_id") or "") == chart_id for entry in _chart_builder_history_entries()):
+        raise KeyError(chart_id)
+    with _CHART_BUILDER_LIKE_LOCK:
+        likes = _chart_builder_likes()
+        users = set(likes.get(chart_id) or [])
+        currently_liked = user in users if user else False
+        if liked is None:
+            new_state = not currently_liked
+        else:
+            new_state = bool(liked)
+
+        if new_state and user:
+            users.add(user)
+        elif not new_state and user:
+            users.discard(user)
+
+        likes[chart_id] = sorted(users)
+        _save_chart_builder_likes(likes)
+        return {
+            "history_id": chart_id,
+            "liked": new_state,
+            "likes_count": len(likes[chart_id]),
+        }
+
+
 def _chart_builder_name_base(value: dict | ChartBuilderRunReq) -> str:
     """Return an engineer-facing base name for a saved chart."""
     if isinstance(value, dict):
@@ -619,13 +676,14 @@ def _chart_builder_unique_name(base: str, used: set[str]) -> str:
 
 
 def _chart_builder_history_entries() -> list[dict]:
-    """Return chronological history with unique names and server-owned pin metadata."""
+    """Return chronological history with unique names and server-owned pin and like metadata."""
     entries = jsonl_read(
         _chart_builder_history_path(),
         limit=0,
         filter_fn=lambda entry: isinstance(entry, dict) and entry.get("event") == "history",
     )
     pins = _chart_builder_pins()
+    likes = _chart_builder_likes()
     used = {
         str(entry.get("history_id") or "").strip().casefold()
         for entry in entries
@@ -642,10 +700,13 @@ def _chart_builder_history_entries() -> list[dict]:
         row["name"] = name
         history_id = str(row.get("history_id") or "")
         pin = pins.get(history_id) or {}
+        liked_users = likes.get(history_id) or []
         row.update({
             "pinned": bool(pin),
             "pinned_at": str(pin.get("pinned_at") or ""),
             "pinned_by": str(pin.get("pinned_by") or ""),
+            "likes_count": len(liked_users),
+            "liked_users": liked_users,
         })
         used.add(name.casefold())
         normalized.append(row)
@@ -653,7 +714,7 @@ def _chart_builder_history_entries() -> list[dict]:
 
 
 def _chart_builder_visible_history_entries(*, recent_limit: int = CHART_BUILDER_VISIBLE_RECENT) -> list[dict]:
-    """Pinned rows first, followed by newest unpinned rows.
+    """Pinned rows first, followed by popular/recent unpinned rows.
 
     Pinned rows do not consume the rolling recent allowance.  This is shared by
     ChartBuilder and Template Report so both screens expose the same catalog.
@@ -664,8 +725,16 @@ def _chart_builder_visible_history_entries(*, recent_limit: int = CHART_BUILDER_
         key=lambda entry: str(entry.get("pinned_at") or entry.get("timestamp") or ""),
         reverse=True,
     )
-    recent = [entry for entry in entries if not entry.get("pinned")]
-    recent = list(reversed(recent[-max(1, min(CHART_BUILDER_VISIBLE_RECENT, int(recent_limit or CHART_BUILDER_VISIBLE_RECENT))):]))
+    unpinned = [entry for entry in entries if not entry.get("pinned")]
+    unpinned.sort(
+        key=lambda entry: (
+            (int(entry.get("likes_count") or 0) * 5) + int(entry.get("reuse_count") or 0),
+            str(entry.get("timestamp") or ""),
+        ),
+        reverse=True,
+    )
+    max_count = max(1, min(CHART_BUILDER_VISIBLE_RECENT, int(recent_limit or CHART_BUILDER_VISIBLE_RECENT)))
+    recent = unpinned[:max_count]
     return [*pinned, *recent]
 
 
@@ -1872,5 +1941,7 @@ def _chart_builder_assistant_plan(req: ChartBuilderAssistantReq) -> dict:
 @router.post("/chart-builder/assistant")
 def chart_builder_assistant(req: ChartBuilderAssistantReq, request: Request):
     """Apply a validated, minimal natural-language patch on the operating API."""
-    _require_filebrowser_user(request)
+    me = _require_filebrowser_user(request)
+    if str((me or {}).get("role") or "") != "admin":
+        raise HTTPException(403, "LLM execution is admin-only during POC")
     return _chart_builder_assistant_plan(req)

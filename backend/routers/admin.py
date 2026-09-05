@@ -404,7 +404,7 @@ class BackupScheduleReq(BaseModel):
 class BackupRestoreReq(BaseModel):
     filename: str
     restore_db_root_files: bool = False
-# ── 워커 분산 (v9.4.x — docs/WORKER_DISPATCH.md) ──────────────────────────────
+# ── 워커 분산 (v9.4.x) ───────────────────────────────────────────────────────
 # 관리자 탭(모니터 → 워커 서버)에서 역할 확인/변경, 개발서버 신호등, 원격 기동.
 
 class WorkerRoleReq(BaseModel):

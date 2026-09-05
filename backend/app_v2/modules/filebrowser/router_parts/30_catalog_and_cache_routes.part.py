@@ -192,6 +192,10 @@ class ChartBuilderPinReq(BaseModel):
     pinned: bool = True
 
 
+class ChartBuilderLikeReq(BaseModel):
+    liked: bool | None = None
+
+
 class ChartBuilderAssistantReq(BaseModel):
     instruction: str
     definition_code: str

@@ -45,6 +45,7 @@ INCLUDE_DIRS = [
     'backend/routers',
     'frontend/src',
     'frontend/public',
+    'frontend/scripts',
     # 빌드된 프런트 산출물. 예전엔 git 이 dist 를 추적해서 체크아웃만 하면 UI 가
     # 있었지만, 2026-07-27 저장소 축소 이후 origin/main 은 README+setup.py 뿐이라
     # 번들이 dist 의 유일한 출처다. 이게 빠지면 npm registry 가 막힌 사내망에서
@@ -83,6 +84,7 @@ INCLUDE_FILES = [
     # 에이전트 진입점 + 저장소 위생 규칙 + 번들 빌더 자신.
     # _build_setup.py 가 빠지면 setup.py 를 다시 만들 수단이 사라진다.
     'CLAUDE.md',
+    'AGENTS.md',
     '.gitignore',
     '.gitattributes',
     '_build_setup.py',

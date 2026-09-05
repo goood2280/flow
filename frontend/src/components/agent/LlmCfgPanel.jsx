@@ -25,6 +25,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
   const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
+  const[policy,setPolicy]=useState({mode:"poc",admin_only:true,error_explanation_enabled:false,daily_call_limit:30});
   const[showToken,setShowToken]=useState(false);
   const cleanProvider=(provider)=>{
     const p=(provider||"generic").toString().trim();
@@ -54,6 +55,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     return out;
   };
   const reload=()=>{
+    sf("/api/llm/status").then(d=>setPolicy(current=>d?.policy||current)).catch(()=>{});
     if(readOnly){
       sf("/api/llm/status").then(d=>{
         const active=normalizeWithDefaults(d.config||{},(d.config||{}).provider||"generic",{});
@@ -198,12 +200,19 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     auth_mode:authMode,
     headers:previewHeaders,
     body:previewBody,
-    users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
+    access:policy.admin_only?"POC admin only":"configured access policy",
+    error_explanation:policy.error_explanation_enabled?"enabled":"disabled",
+    daily_call_limit:policy.daily_call_limit,
   };
   return(<div className="llm-cfg-panel" style={{background:"transparent",border:"0",padding:0,maxWidth:"none",opacity:readOnly?0.58:1,pointerEvents:readOnly?"none":"auto"}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      Admin 이 저장한 credential 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 질문만 입력하고, 답변과 기능별 표/추천은 홈에서 바로 확인합니다.
+      POC 동안 LLM 실행은 관리자 요청에만 허용됩니다. 런타임 오류 해석에는 LLM을 사용하지 않습니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
+    </div>
+    <div style={{padding:"8px 10px",marginBottom:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:13,color:"var(--text-secondary)"}}>
+      정책 · 관리자 전용 · 오류 해석 꺼짐 · 일일 공용 한도 {policy.daily_call_limit ?? 30}회
+      {policy.daily_calls_used!=null&&` · 오늘 ${policy.daily_calls_used}회 사용 / ${policy.daily_calls_remaining}회 남음`}
+      {" · 한국시간 자정 초기화 · 연결 확인·재시도도 횟수에 포함"}
     </div>
     <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,marginBottom:6}}>
       <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>

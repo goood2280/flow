@@ -40,6 +40,8 @@ caller 규약:
 from __future__ import annotations
 
 import configparser
+import contextvars
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -58,6 +60,16 @@ from core.paths import PATHS
 from core.utils import load_json
 
 logger = logging.getLogger("flow.llm")
+
+# POC execution policy. This is deliberately code-owned rather than migrated
+# into admin_settings.json: existing saved provider profiles stay untouched,
+# while a missing policy can never widen access after an in-place deployment.
+_POC_ADMIN_ONLY = True
+_ERROR_EXPLANATION_ENABLED = False
+_EXECUTION_PRINCIPAL: contextvars.ContextVar[Dict[str, Any] | None] = contextvars.ContextVar(
+    "flow_llm_execution_principal",
+    default=None,
+)
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 _DOTENV_FILE = PATHS.app_root / ".env"
@@ -80,6 +92,41 @@ _DEFAULT: Dict[str, Any] = {
     "extra_body": {},
     "timeout_s": 20,
 }
+
+
+@contextmanager
+def request_execution_scope(user: Dict[str, Any] | None):
+    """Bind the authenticated request principal for all nested LLM calls.
+
+    The HTTP auth middleware owns this scope. Calls outside an authenticated
+    request (startup jobs, schedulers, tests, or a missed router gate) therefore
+    fail closed instead of borrowing the server-managed provider credential.
+    """
+    principal = dict(user) if isinstance(user, dict) else None
+    token = _EXECUTION_PRINCIPAL.set(principal)
+    try:
+        yield
+    finally:
+        _EXECUTION_PRINCIPAL.reset(token)
+
+
+def execution_policy_snapshot() -> Dict[str, Any]:
+    from core import llm_usage
+    principal = _EXECUTION_PRINCIPAL.get()
+    is_admin = bool(isinstance(principal, dict) and principal.get("role") == "admin")
+    return {
+        "mode": "poc",
+        "admin_only": _POC_ADMIN_ONLY,
+        "request_admin": is_admin,
+        "error_explanation_enabled": _ERROR_EXPLANATION_ENABLED,
+        **llm_usage.snapshot(),
+    }
+
+
+def _execution_denial() -> str:
+    if _POC_ADMIN_ONLY and not execution_policy_snapshot()["request_admin"]:
+        return "llm execution is admin-only during POC"
+    return ""
 
 # --- LLM health circuit breaker -------------------------------------------
 # When a live LLM call fails or times out, open a short breaker so the rest of
@@ -1195,6 +1242,10 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
                 "meta": {"invoked": False, "ok": False, "model": "", "profile": "", "provider": "",
                          "prompt_chars": 0, "response_chars": 0, "latency_ms": 0, "error": "empty prompt"}}
     cfg = _raw_config()
+    denial = _execution_denial()
+    if denial:
+        return {"ok": False, "text": "", "error": denial,
+                "meta": {**_call_summary(cfg, prompt_chars=len(prompt), error=denial), "invoked": False}}
     if not cfg.get("enabled"):
         return {"ok": False, "text": "", "error": "llm disabled",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm disabled")}
@@ -1230,6 +1281,12 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
     for attempt in range(2):
         try:
             req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+            from core import llm_usage
+            budget_error = llm_usage.reserve_attempt()
+            if budget_error:
+                return {"ok": False, "text": "", "error": budget_error,
+                        "meta": {**_call_summary(cfg, prompt_chars=len(prompt), error=budget_error),
+                                 "invoked": attempt > 0}}
             with urllib.request.urlopen(req, timeout=to) as resp:
                 raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
             _mark_llm_healthy(int((time.monotonic() - started_at) * 1000))

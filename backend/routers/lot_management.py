@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 import threading
 import uuid
 from typing import Any
@@ -29,6 +30,7 @@ DEFAULT_COLUMNS = [
     {"id": "purpose", "label": "purpose"},
     {"id": "lot_id", "label": "lot_id"},
     {"id": "current_step_id", "label": "현step_id"},
+    {"id": "alert_step_id", "label": "알람 step_id"},
     {"id": "step_desc", "label": "step_desc"},
     {"id": "qty", "label": "Qty"},
     {"id": "comment", "label": "comment"},
@@ -74,6 +76,23 @@ def _key(product: str) -> str:
 def _paths(product: str):
     key = _key(product)
     return TABLE_DIR / f"{key}.json", VERSION_DIR / key
+
+
+def _is_step_reached_or_exceeded(current_step: str, alert_step: str) -> bool:
+    curr = str(current_step or "").strip()
+    alert = str(alert_step or "").strip()
+    if not curr or not alert:
+        return False
+    if curr.upper() == alert.upper():
+        return True
+    curr_digits = re.findall(r"\d+", curr)
+    alert_digits = re.findall(r"\d+", alert)
+    if curr_digits and alert_digits:
+        try:
+            return int(curr_digits[0]) >= int(alert_digits[0])
+        except Exception:
+            pass
+    return curr.upper() >= alert.upper()
 
 
 def _lock(product: str) -> threading.RLock:
@@ -460,6 +479,91 @@ def save_table(req: TableSaveRequest, request: Request):
         path, _ = _paths(product)
         save_json(path, next_doc, indent=2)
         _write_snapshot(product, next_doc)
+
+        # 관심랏 알람 발행
+        try:
+            from core.notify import emit_event
+            from core import watchlist as _wl
+            changes = _version_diff(current, next_doc)
+            changed_lots = set()
+            for c in changes:
+                lid = str(c.get("lot_id") or "").strip().upper()
+                if lid:
+                    changed_lots.add(lid)
+            actor = str(user.get("username") or "")
+            for lid in changed_lots:
+                lot_changes = [c for c in changes if str(c.get("lot_id") or "").strip().upper() == lid]
+                has_comment = any(c.get("column") == "comment" for c in lot_changes)
+                has_purpose = any(c.get("column") == "purpose" for c in lot_changes)
+
+                if has_comment:
+                    c_item = next(c for c in lot_changes if c.get("column") == "comment")
+                    title = f"[주요랏 코멘트 변경] Lot {lid}"
+                    body = f"{actor} 님이 코멘트를 변경했습니다: {c_item.get('new') or '(비움)'}"
+                    badge = "코멘트 변경"
+                elif has_purpose:
+                    p_item = next(c for c in lot_changes if c.get("column") == "purpose")
+                    title = f"[주요랏 purpose 변경] Lot {lid}"
+                    body = f"{actor} 님이 purpose를 변경했습니다: {p_item.get('new') or '(비움)'}"
+                    badge = "용도 변경"
+                else:
+                    title = f"[주요랏 랏관리 갱신] Lot {lid}"
+                    body = f"{actor} 님이 {product} 랏관리 표를 갱신했습니다 (v{next_doc['version']})."
+                    badge = "랏관리 갱신"
+
+                for watcher in _wl.get_users_watching_lot(lid):
+                    emit_event(
+                        "watched_lot_management_updated",
+                        actor=actor,
+                        target_user=watcher,
+                        title=title,
+                        body=body,
+                        payload={
+                            "product": product,
+                            "lot_id": lid,
+                            "target_tab": "lot_management",
+                            "category": "관심랏",
+                            "badge": badge,
+                            "version": next_doc["version"],
+                            "allow_self": True,
+                        },
+                        allow_self=True,
+                    )
+
+                # 기준 step_id 도달/초과 알람 검출
+                try:
+                    all_lids = [str(r.get("values", {}).get("lot_id") or "").strip() for r in next_doc.get("rows") or []]
+                    latest_statuses = _latest_status_by_lot(product, [l for l in all_lids if l])
+                except Exception:
+                    latest_statuses = {}
+                for row in next_doc.get("rows") or []:
+                    vals = row.get("values") if isinstance(row.get("values"), dict) else {}
+                    lid_row = str(vals.get("lot_id") or "").strip().upper()
+                    alert_step = str(vals.get("alert_step_id") or "").strip()
+                    curr_step = str(latest_statuses.get(lid_row, {}).get("step_id") or vals.get("current_step_id") or "").strip()
+                    if lid_row and alert_step and curr_step and _is_step_reached_or_exceeded(curr_step, alert_step):
+                        for watcher in _wl.get_users_watching_lot(lid_row):
+                            emit_event(
+                                "lot_step_threshold_reached",
+                                actor=actor,
+                                target_user=watcher,
+                                title=f"[기준 Step 도달] Lot {lid_row} ({curr_step} >= {alert_step})",
+                                body=f"{product} Lot {lid_row} 가 설정된 기준 Step {alert_step} 에 도달/초과했습니다 (현재: {curr_step}).",
+                                payload={
+                                    "product": product,
+                                    "lot_id": lid_row,
+                                    "current_step_id": curr_step,
+                                    "alert_step_id": alert_step,
+                                    "target_tab": "lot_management",
+                                    "category": "랏관리",
+                                    "badge": "기준 Step 도달",
+                                    "allow_self": True,
+                                },
+                                allow_self=True,
+                            )
+        except Exception:
+            pass
+
     audit_record(request, "lot-management:save", f"product={product} version={next_doc['version']}", "lotmanage")
     return {"ok": True, "table": _with_latest_cache_fields(next_doc)}
 
@@ -542,3 +646,72 @@ def rollback(req: RollbackRequest, request: Request):
         _write_snapshot(product, restored)
     audit_record(request, "lot-management:rollback", f"product={product} from={req.version} version={restored['version']}", "lotmanage")
     return {"ok": True, "table": _with_latest_cache_fields(restored), "rolled_back_to": req.version}
+
+
+@router.get("/my-lots")
+def get_my_lots(request: Request):
+    """현재 사용자가 등록한 주요랏(관심랏)들의 랏관리 현황 및 실시간 위치/Qty/설명을 통합 반환합니다."""
+    me = current_user(request)
+    username = me.get("username", "")
+    from core import watchlist as _wl
+    watched_lots = _wl.get_user_watchlist(username)
+    if not watched_lots:
+        return {"ok": True, "rows": [], "total": 0, "watched_lots": []}
+
+    watched_set = {str(l).strip().upper() for l in watched_lots if str(l).strip()}
+    all_matched_rows = []
+    seen_matched_lots = set()
+
+    # 1. 존재하는 모든 제품의 랏관리 테이블 파일 스캔
+    if TABLE_DIR.is_dir():
+        for path in TABLE_DIR.glob("*.json"):
+            prod = path.stem
+            try:
+                doc = load_json(path, {})
+                source_rows = [r for r in (doc.get("rows") or []) if isinstance(r, dict)]
+                target_rows = []
+                for row in source_rows:
+                    vals = row.get("values") if isinstance(row.get("values"), dict) else {}
+                    lid = str(vals.get("lot_id") or "").strip().upper()
+                    if lid in watched_set:
+                        target_rows.append(row)
+                        seen_matched_lots.add(lid)
+                if target_rows:
+                    hydrated = _with_latest_cache_fields({"product": prod, "columns": doc.get("columns"), "rows": target_rows})
+                    for r in (hydrated.get("rows") or []):
+                        r_copy = dict(r)
+                        r_copy["product"] = prod
+                        all_matched_rows.append(r_copy)
+            except Exception:
+                continue
+
+    # 2. 랏관리 테이블에는 아직 없지만 관심 등록된 랏들도 상태 조회하여 포함
+    remaining_lots = [l for l in watched_lots if l.upper() not in seen_matched_lots]
+    if remaining_lots:
+        try:
+            summaries = _latest_status_by_lot("", remaining_lots)
+        except Exception:
+            summaries = {}
+        for l in remaining_lots:
+            key = l.upper()
+            summary = summaries.get(key) or {}
+            qty_val = _summary_qty(summary)
+            all_matched_rows.append({
+                "id": f"my_{key}",
+                "product": str(summary.get("product") or "-"),
+                "values": {
+                    "purpose": "-",
+                    "lot_id": l,
+                    "current_step_id": str(summary.get("step_id") or "-"),
+                    "step_desc": str(summary.get("step_desc") or "-"),
+                    "qty": str(qty_val) if qty_val is not None else "-",
+                    "comment": "(랏관리 미등록)",
+                }
+            })
+
+    return {
+        "ok": True,
+        "rows": all_matched_rows,
+        "total": len(all_matched_rows),
+        "watched_lots": watched_lots,
+    }

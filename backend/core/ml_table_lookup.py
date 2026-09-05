@@ -64,7 +64,9 @@ def _build_cancel_requested() -> bool:
     """
     try:
         from core import scan_gate
-        return bool(scan_gate.cancel_requested())
+        parent = str(getattr(_BUILD_CANCEL_CONTEXT, "parent_task_id", "") or "")
+        return bool(scan_gate.cancel_requested()
+                    or (parent and scan_gate.cancel_requested(parent)))
     except Exception:
         return False
 _META_CACHE_LOCK = threading.Lock()
@@ -135,6 +137,8 @@ _BUILD_IMMEDIATE: set[str] = set()
 # 워커로 넘기지 않는다. 큐를 꺼내는 워커 스레드는 요청 스레드와 다르므로 이
 # 플래그는 반드시 **경로에 붙여** 전달한다 (thread-local 은 전파되지 않는다).
 _BUILD_LOCAL_ONLY: set[str] = set()
+_BUILD_PARENT_TASKS: dict[str, str] = {}
+_BUILD_CANCEL_CONTEXT = threading.local()
 _BUILD_THREAD: threading.Thread | None = None
 _BUILD_RETRY_TIMERS: dict[str, threading.Timer] = {}
 _BUILD_RETRY_COUNTS: dict[str, int] = {}
@@ -3385,12 +3389,7 @@ def lookup_cache_build_chunk_default() -> int:
 
 
 def _lookup_cache_build_chunk_size() -> int:
-    """랏캐시(파티션) 빌드에서 한 번에 collect 할 root_lot_id 개수.
-
-    **올릴수록 빠르고, 메모리도 함께 내려간다** — 청크 결과를 스트리밍으로 받아
-    작업세트가 청크 크기에 매이지 않는 반면, 청크를 줄이면 소스 재스캔만 늘기
-    때문이다. 실측표는 `LOOKUP_CACHE_BUILD_CHUNK_SIZE_DEFAULT` 상수 주석에 있다.
-    수동 캐싱을 빨리 끝내야 하면 여기를 올리는 게 가장 직접적인 손잡이다.
+    """랏캐시 진행 보고/gc 청크. 쓰기는 항상 root 하나씩 스트리밍한다.
 
     우선순위: env(FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_CHUNK_SIZE) > 캐시관리 톱니바퀴의
     단일 캐싱 속도(1~5단계) > 기본 1 root.
@@ -3423,6 +3422,14 @@ def _wait_for_lookup_cache_memory(fp: Path) -> bool:
     )
     waited = 0.0
     while process_memory_high():
+        if _build_cancel_requested():
+            raise LookupBuildCancelled("cancelled while waiting for memory")
+        # Released Polars/Python arenas must be returned before waiting for
+        # headroom; sleeping alone cannot reclaim them on a single host.
+        from core.memory_trim import trim
+        trim(reason="lookup_memory_wait")
+        if not process_memory_high():
+            break
         if max_wait > 0 and waited >= max_wait:
             with _BUILD_LOCK:
                 _BUILD_STATE["paused"] = False
@@ -3439,7 +3446,7 @@ def _wait_for_lookup_cache_memory(fp: Path) -> bool:
             _BUILD_STATE["pause_reason"] = "memory_high"
             _BUILD_STATE["resource_snapshot"] = snapshot
         logger.info("ML_TABLE lookup cache build paused by memory guard source=%s snapshot=%s", fp, snapshot)
-        step = _lookup_cache_memory_wait_seconds()
+        step = max(0.1, min(1.0, _lookup_cache_memory_wait_seconds()))
         time.sleep(step)
         waited += max(step, 0.1)
     with _BUILD_LOCK:
@@ -3457,26 +3464,26 @@ def _sink_lookup_cache_partitions(lf: pl.LazyFrame, tmp_dir: Path) -> None:
         max_rows_per_file=_lookup_cache_partition_max_rows(),
         approximate_bytes_per_file="auto",
     )
-    lf.sink_parquet(sink_target, mkdir=True, maintain_order=False)
+    # Wide tables need small writer row groups as well as a streaming reader.
+    width = max(1, len(lf.collect_schema()))
+    rows = max(128, min(8192, (8 * 1024 * 1024) // (width * 16)))
+    lf.sink_parquet(sink_target, mkdir=True, maintain_order=False, row_group_size=rows)
 
 
 def _sink_lookup_cache_partitions_chunked(
     fp: Path, lf_base: pl.LazyFrame, tmp_dir: Path,
 ) -> dict[str, Any]:
-    """root_lot_id 단위 청크로 파티션 작성 — OOM 방지.
+    """Stream one root to disk at a time; collect only narrow candidate columns.
 
-    전체 파일을 한꺼번에 sink_parquet(PartitionBy) 하면 메모리가 급증해
-    8 GB 급 서버에서 OOM 이 발생했다. 대신:
-      1. unique root_lot_id 목록을 먼저 추출 (컬럼 1개만 스캔)
-      2. CHUNK_SIZE 개씩 묶어서 필터 → collect → 파티션 파일 쓰기
-      3. 매 청크 완료 후 gc.collect() + 메모리 체크
-    최대 메모리 사용량이 (전체 / 청크 수) 수준으로 제한된다.
+    Streaming collect still materializes the entire wide result. The old
+    chunk/root/slice frames also retained the previous root during the next
+    read. A single-root sink bounds active partition writers and avoids those
+    copies even when an operator selects a large cache-speed chunk.
     """
     import gc
     from core.parquet_perf import collect_streaming
 
     chunk_size = _lookup_cache_build_chunk_size()
-    max_rows = _lookup_cache_partition_max_rows()
     schema_names = lf_base.collect_schema().names()
     candidate_columns = [
         col for col in schema_names
@@ -3487,10 +3494,8 @@ def _sink_lookup_cache_partitions_chunked(
     truncated_columns: set[str] = set()
 
     def _harvest_candidate_values(frame: pl.DataFrame) -> None:
-        # chunk_df 는 파티션 쓰기를 위해 이미 메모리에 있다. 여기서 unique 를 같이
-        # 뽑으면 원천 parquet를 KNOB마다 다시 스캔하지 않고도 제품 전체 목록을
-        # 완성할 수 있다.
-        for col in candidate_columns:
+        # The frame contains at most 32 candidate columns from one cache file.
+        for col in frame.columns:
             bucket = candidate_values[col]
             cap = (
                 CANDIDATE_ID_VALUE_LIMIT
@@ -3515,7 +3520,7 @@ def _sink_lookup_cache_partitions_chunked(
 
     # ① unique root_lot_id 추출 (컬럼 하나만 스캔 — 메모리 부담 최소)
     root_lot_ids = (
-        collect_streaming(lf_base.select("root_lot_id").unique())["root_lot_id"]
+        collect_streaming(lf_base.select("root_lot_id").unique(), fallback=False)["root_lot_id"]
         .to_list()
     )
     root_lot_ids = sorted(set(str(r) for r in root_lot_ids if r))
@@ -3591,28 +3596,25 @@ def _sink_lookup_cache_partitions_chunked(
                     f"({chunk_start}/{total})"
                 )
 
-        # 이 청크의 root 만 필터 → collect. 스트리밍 엔진으로 읽어 파일 전체가
-        # 한꺼번에 디컴프레션되며 peak RAM 이 치솟는 것을 막는다(정렬 안 된 ML_TABLE
-        # 에서 is_in 필터는 row-group skip 이 안 돼 in-memory collect 는 파일 전체를
-        # 메모리에 올린다). 스트리밍은 morsel 단위로 처리 → peak = 청크 결과 크기 수준.
-        chunk_df = collect_streaming(
-            lf_base.filter(pl.col("root_lot_id").is_in(chunk_roots))
-        )
-        _harvest_candidate_values(chunk_df)
-
-        # 각 root_lot_id 별 파티션 디렉토리에 쓰기
         for root in chunk_roots:
-            root_df = chunk_df.filter(pl.col("root_lot_id") == root)
-            if root_df.height == 0:
-                continue
-            part_dir = tmp_dir / f"root_lot_id={root}"
-            part_dir.mkdir(parents=True, exist_ok=True)
-            for file_idx, row_start in enumerate(range(0, root_df.height, max_rows)):
-                part = root_df.slice(row_start, max_rows)
-                out_path = part_dir / f"{file_idx:04d}.parquet"
-                part.write_parquet(str(out_path))
-
-        del chunk_df
+            if _build_cancel_requested():
+                raise LookupBuildCancelled(f"cancelled at root {root}")
+            if not _wait_for_lookup_cache_memory(fp):
+                raise RuntimeError("memory guard timeout during lookup root build")
+            _sink_lookup_cache_partitions(
+                lf_base.filter(pl.col("root_lot_id") == root), tmp_dir)
+            # Read from the completed partition, never the product source.
+            # Projection bounds candidate harvesting even for thousands of KNOBs.
+            files = _partition_files(tmp_dir, root)
+            for offset in range(0, len(candidate_columns), 32):
+                selected = candidate_columns[offset:offset + 32]
+                for part_fp in files:
+                    candidates = collect_streaming(
+                        pl.scan_parquet(part_fp, hive_partitioning=False,
+                                        low_memory=True, parallel="none").select(selected),
+                        fallback=False)
+                    _harvest_candidate_values(candidates)
+                    del candidates
         gc.collect()
 
         done = min(chunk_start + chunk_size, total)
@@ -3685,11 +3687,13 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         pass
     cdir = cache_dir_for(fp)
     tmp_dir = cdir.with_name(cdir.name + ".tmp")
+    _recover_lookup_cache(cdir)
+    source_sig = _source_sig(fp)
     cols, schema = _scan_schema(fp)
     root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
     if not root_col:
         raise MlTableLookupError("missing_root_lot_id", "ML_TABLE에 root_lot_id 컬럼이 없습니다.", columns=cols[:80])
-    lf = pl.scan_parquet(str(fp))
+    lf = pl.scan_parquet(str(fp), low_memory=True, parallel="none")
     if root_col != "root_lot_id":
         if "root_lot_id" in cols:
             lf = lf.with_columns(_normalize_root_expr(root_col).alias("root_lot_id"))
@@ -3710,16 +3714,14 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
         raise
-    if cdir.exists():
-        shutil.rmtree(cdir)
-    tmp_dir.replace(cdir)
-    row_count, root_count = _lookup_cache_written_stats(cdir)
+    row_count, root_count = _lookup_cache_written_stats(tmp_dir)
     candidate_index = _build_candidate_index_from_cache(
-        fp, cdir, final_cols, harvested=harvested_candidates)
-    _write_candidate_index(fp, candidate_index)
+        fp, tmp_dir, final_cols, harvested=harvested_candidates)
+    if _source_sig(fp) != source_sig:
+        raise RuntimeError("lookup source changed during build; keeping previous cache")
     meta = {
         "version": CACHE_VERSION,
-        **_source_sig(fp),
+        **source_sig,
         "row_count": row_count,
         "total_cols": len(final_cols),
         "root_lot_id_count": root_count,
@@ -3732,7 +3734,14 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
         "built_at": _utc_now(),
         "build_seconds": round(time.monotonic() - started, 3),
     }
-    _write_meta(fp, meta)
+    # Finish and validate metadata BEFORE replacing the serving generation.
+    # Previously a failed index/meta write destroyed the last working cache.
+    (tmp_dir / CANDIDATE_INDEX_FILE).write_text(
+        json.dumps(candidate_index, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (tmp_dir / META_FILE).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    _publish_lookup_cache(tmp_dir, cdir)
+    with _META_CACHE_LOCK:
+        _META_CACHE[str(cdir / META_FILE)] = (time.monotonic(), dict(meta))
     try:
         from core.cache_event_log import record as _cache_log, stage_detail
         _cache_log("build", f"lookup 캐시 빌드 완료: {_prod_lbl} — {root_count} roots, {meta['build_seconds']}s",
@@ -3742,6 +3751,38 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
     except Exception:
         pass
     return {"ok": True, "cache_dir": str(cdir), "meta": meta}
+
+
+def _recover_lookup_cache(cdir: Path) -> None:
+    # A process can stop between the two directory renames. The next locked
+    # build restores its previous serving generation before doing any work.
+    backup = cdir.with_name(cdir.name + ".previous")
+    if not cdir.exists() and backup.is_dir():
+        backup.replace(cdir)
+
+
+def _publish_lookup_cache(tmp_dir: Path, cdir: Path) -> None:
+    """Keep the previous directory available for rollback until publication succeeds."""
+    backup = cdir.with_name(cdir.name + ".previous")
+    _recover_lookup_cache(cdir)
+    if backup.exists():
+        # Keep at most one previous generation, including failed cleanup after
+        # a sharing violation; never grow an unbounded directory backlog.
+        shutil.rmtree(backup)
+    had_previous = cdir.exists()
+    if had_previous:
+        cdir.replace(backup)
+    try:
+        tmp_dir.replace(cdir)
+    except BaseException:
+        if had_previous:
+            backup.replace(cdir)
+        raise
+    if had_previous:
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            logger.warning("lookup previous-generation cleanup deferred: %s", backup)
 
 
 def build_lookup_cache(fp: Path, *, force: bool = False) -> dict[str, Any]:
@@ -3825,6 +3866,7 @@ def _schedule_build_retry(
     """
     path = Path(fp).resolve()
     key = str(path)
+    parent_task_id = str(getattr(_BUILD_CANCEL_CONTEXT, "parent_task_id", "") or "")
     max_retries = _env_int(
         "FLOW_ML_TABLE_LOOKUP_CACHE_BUILD_RETRY_MAX",
         LOOKUP_CACHE_BUILD_RETRY_MAX_DEFAULT,
@@ -3857,7 +3899,21 @@ def _schedule_build_retry(
             # A retry must preserve where the operator asked the build to run.
             # Dropping local_only here silently moved a manual local build to
             # the development worker after its first transient failure.
-            enqueue_build(path, immediate=immediate, local_only=local_only)
+            from core import scan_gate
+            if parent_task_id:
+                state = scan_gate.snapshot()
+                active_ids = {str(item.get("id") or "") for item in
+                              [state.get("current") or {}, state.get("external") or {}]}
+                if scan_gate.cancel_requested(parent_task_id) or parent_task_id not in active_ids:
+                    _cancel_build_retry(path)
+                    return
+            _BUILD_CANCEL_CONTEXT.parent_task_id = parent_task_id
+            _BUILD_CANCEL_CONTEXT.retry_enqueue = True
+            try:
+                enqueue_build(path, immediate=immediate, local_only=local_only)
+            finally:
+                _BUILD_CANCEL_CONTEXT.parent_task_id = ""
+                _BUILD_CANCEL_CONTEXT.retry_enqueue = False
 
         timer = threading.Timer(delay, _retry)
         timer.daemon = True
@@ -3914,6 +3970,7 @@ def _worker_loop() -> None:
             _BUILD_IMMEDIATE.discard(str(fp.resolve()))
             local_only = str(fp.resolve()) in _BUILD_LOCAL_ONLY
             _BUILD_LOCAL_ONLY.discard(str(fp.resolve()))
+            _BUILD_CANCEL_CONTEXT.parent_task_id = _BUILD_PARENT_TASKS.pop(str(fp.resolve()), "")
             _BUILD_STATE["running"] = True
             _BUILD_STATE["paused"] = False
             _BUILD_STATE["pause_reason"] = ""
@@ -3947,7 +4004,9 @@ def _worker_loop() -> None:
                 # 관리자가 이 서버에서 누른 수동 캐싱 — 워커 큐를 거치지 않고
                 # 여기서 바로 빌드한다. 대기열 왕복이 없으니 중단도 이 서버의
                 # scan gate 로 바로 먹는다.
-                res = _local_build() or {}
+                res = _wd._run_local_heavy(
+                    "ml_lookup_cache_build", f"ml_lookup:{fp.stem}",
+                    _local_build, product=fp.stem) or {}
             else:
                 res = _wd.run_heavy(
                     "ml_lookup_cache_build",
@@ -3971,6 +4030,8 @@ def _worker_loop() -> None:
                     dedupe_key=f"ml_lookup:{fp.stem}",
                     timeout_sec=6 * 3600.0 if not immediate else None,
                 ) or {}
+            if res.get("cancelled"):
+                raise LookupBuildCancelled("cancelled_by_admin")
             fresh_after = lookup_artifacts_fresh(fp)
             if not fresh_after:
                 # durable 자동 빌드는 API가 worker queue에 영속 등록한 뒤 즉시
@@ -4060,6 +4121,14 @@ def _worker_loop() -> None:
             # remote build 직후 api가 자기 RAM을 채워야 "빌드는 됐는데 제품별 lot
             # 캐시는 다음 30분 tick까지 0"인 공백이 생기지 않는다.
             _warm_root_ram_after_lookup_build(fp)
+        except LookupBuildCancelled:
+            _cancel_build_retry(fp)
+            with _BUILD_LOCK:
+                _BUILD_STATE.update(last_error="cancelled_by_admin", last_source=str(fp.resolve()),
+                                    finished_at=_utc_now(), paused=False, pause_reason="",
+                                    resource_snapshot={})
+            _emit_build_event(fp.stem, f"lookup 캐시 관리자 중단: {fp.stem}",
+                              phase="skip", detail={"cancelled": True})
         except Exception as exc:
             logger.warning("ML_TABLE lookup cache build failed source=%s: %s", fp, exc, exc_info=True)
             # Exceptions used to be the one failure path that never scheduled
@@ -4087,6 +4156,8 @@ def _worker_loop() -> None:
                 _BUILD_STATE["paused"] = False
                 _BUILD_STATE["pause_reason"] = ""
                 _BUILD_STATE["resource_snapshot"] = {}
+        finally:
+            _BUILD_CANCEL_CONTEXT.parent_task_id = ""
 
 
 def enqueue_build(fp: Path, *, immediate: bool = False,
@@ -4096,6 +4167,9 @@ def enqueue_build(fp: Path, *, immediate: bool = False,
 
     local_only=True 면 개발 워커로 오프로드하지 않고 이 서버에서 빌드한다."""
     fp = Path(fp).resolve()
+    from core import scan_gate
+    parent_task_id = (scan_gate.current_task_id()
+                      or str(getattr(_BUILD_CANCEL_CONTEXT, "parent_task_id", "") or ""))
     with _BUILD_LOCK:
         queued_paths = {str(p.resolve()) for p in _BUILD_QUEUE}
         current = str(_BUILD_STATE.get("current") or "")
@@ -4105,7 +4179,13 @@ def enqueue_build(fp: Path, *, immediate: bool = False,
         if local_only:
             _BUILD_LOCAL_ONLY.add(target)
         if target != current and target not in queued_paths:
+            # A new product rotation/manual request gets a new retry budget.
+            # Timer-driven attempts preserve the current chain's bound.
+            if not getattr(_BUILD_CANCEL_CONTEXT, "retry_enqueue", False):
+                _BUILD_RETRY_COUNTS.pop(target, None)
             _BUILD_QUEUE.append(fp)
+            if parent_task_id:
+                _BUILD_PARENT_TASKS[target] = parent_task_id
         global _BUILD_THREAD
         if _BUILD_THREAD is None or not _BUILD_THREAD.is_alive():
             _BUILD_THREAD = threading.Thread(target=_worker_loop, name="ml-table-lookup-build", daemon=True)

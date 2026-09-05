@@ -126,6 +126,20 @@ _INFORM_POSTPROCESS_THREAD: threading.Thread | None = None
 INFORM_DASHBOARD_CACHE_TTL = 60.0
 _INFORM_DASHBOARD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
+
+def _clean_module_colors(raw: Any) -> dict[str, str]:
+    """Keep only safe CSS hex colors keyed by non-empty module names."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_name, raw_color in raw.items():
+        name = str(raw_name or "").strip()[:100]
+        color = str(raw_color or "").strip().lower()
+        if not name or not re.fullmatch(r"#[0-9a-f]{6}", color):
+            continue
+        out[name] = color
+    return out
+
 # 대시보드 캐시는 metric/groupby/필터 조합별 key 로 쌓이는데 만료 항목을 지우는
 # 코드가 없어 uptime 에 따라 무한히 커진다. 주기 sweep 으로 정리한다.
 from core import cache_sweeper as _cache_sweeper
@@ -163,7 +177,8 @@ def _load_config() -> dict:
             s = str(v.get("subject", "") or "")
             b = str(v.get("body", "") or "")
             rt_clean[str(k)] = {"subject": s, "body": b}
-    return {"modules": mods, "reasons": reas, "products": prods,
+    return {"modules": mods, "module_colors": _clean_module_colors(data.get("module_colors")),
+            "reasons": reas, "products": prods,
             "raw_db_root": raw_root, "reason_templates": rt_clean,
             "mail_links": _clean_mail_links(data.get("mail_links")),
             "mail_max_mb": _clean_mail_max_mb(data.get("mail_max_mb"))}
@@ -2094,6 +2109,7 @@ def _clean_inform_mail_draft(raw: Optional[dict]) -> dict:
 
 class ConfigReq(BaseModel):
     modules: Optional[List[str]] = None
+    module_colors: Optional[Dict[str, str]] = None
     reasons: Optional[List[str]] = None
     products: Optional[List[str]] = None
     raw_db_root: Optional[str] = None
@@ -2683,6 +2699,8 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_manager("in
     cfg = _load_config()
     if req.modules is not None:
         cfg["modules"] = [m.strip() for m in req.modules if m and m.strip()]
+    if req.module_colors is not None:
+        cfg["module_colors"] = _clean_module_colors(req.module_colors)
     if req.reasons is not None:
         cfg["reasons"] = [r.strip() for r in req.reasons if r and r.strip()]
     if req.raw_db_root is not None:

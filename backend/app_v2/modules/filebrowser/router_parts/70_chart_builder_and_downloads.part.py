@@ -10,12 +10,29 @@ def chart_builder_parse(req: ChartBuilderDefinitionReq, request: Request):
 
 
 @router.get("/chart-builder/history")
-def chart_builder_history(request: Request, limit: int = Query(CHART_BUILDER_VISIBLE_RECENT, ge=1, le=CHART_BUILDER_VISIBLE_RECENT), q: str = Query("")):
+def chart_builder_history(
+    request: Request,
+    limit: int = Query(CHART_BUILDER_VISIBLE_RECENT, ge=1, le=CHART_BUILDER_VISIBLE_RECENT),
+    q: str = Query(""),
+    history_id: str = Query(""),
+):
     """Return every pinned chart followed by the rolling recent shared history."""
     from core.auth import is_page_manager
 
     me = _require_filebrowser_user(request)
+    username = str(me.get("username") or "")
+    history_id = _cache_safe_text(history_id if isinstance(history_id, str) else "", 120)
+    if history_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", history_id):
+        raise HTTPException(400, "Invalid chart history key")
     entries = _chart_builder_visible_history_entries(recent_limit=limit)
+    if history_id:
+        entries = [
+            entry for entry in _chart_builder_history_entries()
+            if str(entry.get("history_id") or "") == history_id
+        ]
+    for entry in entries:
+        liked_users = entry.get("liked_users") or []
+        entry["liked"] = bool(username and username in liked_users)
     query = _cache_safe_text(q, 200).casefold()
     if query:
         entries = [entry for entry in entries if query in json.dumps(entry, ensure_ascii=False).casefold()]
@@ -48,6 +65,26 @@ def chart_builder_history_pin(history_id: str, req: ChartBuilderPinReq, request:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "chart": entry}
+
+
+@router.post("/chart-builder/history/{history_id}/like")
+def chart_builder_history_like(history_id: str, req: ChartBuilderLikeReq, request: Request):
+    """Toggle or set like state on a shared chart entry."""
+    me = _require_filebrowser_user(request)
+    username = str(me.get("username") or "")
+    if not username:
+        raise HTTPException(401, "로그인이 필요합니다.")
+    try:
+        result = _toggle_chart_builder_like(
+            history_id,
+            username=username,
+            liked=req.liked,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "저장 차트를 찾지 못했습니다.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "chart": result}
 
 
 @router.get("/chart-builder/radius-layout")

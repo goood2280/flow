@@ -908,6 +908,8 @@ def parse_template_code(req: TemplateCodeReq, user=Depends(current_user)):
 @router.post("/assistant")
 def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
     """Let the configured company LLM create/edit full Template code, then validate it."""
+    if str((user or {}).get("role") or "") != "admin":
+        raise HTTPException(403, "LLM execution is admin-only during POC")
     instruction = _clean_multiline(req.instruction, 3000)
     if not instruction:
         raise HTTPException(400, "AI에게 만들거나 수정할 Template 내용을 입력해 주세요.")

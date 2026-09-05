@@ -597,18 +597,33 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
             for row in rows:
                 _cancel_point()
                 if row.get("source"):
-                    row["pivot_queued"] = _enqueue_pivot_cache_build(
-                        row["product"], reason="manual_queue", immediate=True,
-                        local_only=local_only)
-                    finished = _wait_for(
-                        f"SplitTable pivot · {row['product']}",
-                        lambda prod=row["product"]: _pivot_cache_build_state(prod) != "building",
-                    )
-                    try:
+                    ready = not force and not _pivot_cache_needs_build(
+                        row["product"], Path(row["source"]))
+                    retries = int(_float_env_clamped("FLOW_PIVOT_BUILD_RETRY_MAX", 2, 0, 5))
+                    for attempt in range(retries + 1):
+                        if ready:
+                            break
+                        _cancel_point()
+                        row["pivot_queued"] = _enqueue_pivot_cache_build(
+                            row["product"], reason="manual_queue" if attempt == 0 else "retry",
+                            immediate=True, local_only=local_only)
+                        finished = _wait_for(
+                            f"SplitTable pivot · {row['product']}",
+                            lambda prod=row["product"]: _pivot_cache_build_state(prod) != "building",
+                        )
                         ready = finished and not _pivot_cache_needs_build(
                             row["product"], Path(row["source"]))
-                    except Exception:
-                        ready = False
+                        row["pivot_attempts"] = attempt + 1
+                        # Never duplicate an attempt that is still running.
+                        if ready or not finished or attempt >= retries:
+                            break
+                        _release_stage_memory("pivot_retry")
+                        delay = _float_env_clamped("FLOW_PIVOT_BUILD_RETRY_SEC", 15, 0, 300) * (attempt + 1)
+                        retry_at = time.monotonic() + delay
+                        record("scan", f"[Pivot캐시] {row['product']} 개별 재시도 대기 ({attempt + 1}/{retries})",
+                               product=row["product"], detail={"retry": attempt + 1})
+                        _wait_for("Pivot 재시도 대기", lambda: time.monotonic() >= retry_at,
+                                  timeout=delay + 2)
                     row["pivot_ready"] = bool(ready)
                     ok = ok and bool(ready)
             return ok
@@ -2421,7 +2436,8 @@ def _required_split_cache_status(product: str) -> dict:
         {"kind": "pivot", "label": "SplitTable pivot", "ready": pivot_ready,
          "state": "building" if pivot_running else ("ready" if pivot_ready else "missing"),
          "done": pivot_files, "total": lookup_roots,
-         "built_ts": _path_mtime(pivot_dir / ".root_fingerprints.json"), "build_seconds": 0.0,
+         "built_ts": max(_path_mtime(pivot_dir / ".root_fingerprints.json"),
+                         _path_mtime(pivot_dir / ".build_complete.json")), "build_seconds": 0.0,
          "message": f"Pivot 빌드 완료 — {pivot_files:,} roots"},
         {"kind": "latest_lot", "label": "WIP latest-lot", "ready": latest_ready,
          "state": "ready" if latest_ready else ("building" if _MANUAL_LATEST_REFRESH_RUNNING else "missing"),

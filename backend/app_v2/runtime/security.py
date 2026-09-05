@@ -38,6 +38,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        user = None
         if path.startswith("/api/") and not is_auth_exempt(path):
             token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
             if not token and _allow_query_token(path):
@@ -54,7 +55,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 except Exception:
                     pass
 
-        response = await call_next(request)
+        # One server-owned gate covers every current and future adapter caller.
+        # Non-API work has no authenticated principal and therefore fails closed.
+        from core import llm_adapter
+
+        with llm_adapter.request_execution_scope(user):
+            response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Referrer-Policy", "same-origin")

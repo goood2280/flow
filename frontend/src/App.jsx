@@ -414,6 +414,7 @@ function NoticeBanner({ user }) {
 
 function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
   const [open, setOpen] = useState(false);
+  const [importance, setImportance] = useState("all");
   const [sel, setSel] = useState(new Set());
   const ref = useRef();
   useEffect(() => {
@@ -425,7 +426,7 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
     const ids = [...sel].filter(Boolean);
     if (!ids.length) { toast.warn("선택된 항목이 없습니다"); return; }
     // Mark as read — removes from bell count but keeps history in Admin
-    postJson("/api/admin/mark-read-batch", { username: user.username, ids })
+    postJson("/api/home/alerts/mark-read", { ids })
       .then(() => { setSel(new Set()); onDismiss(); window.dispatchEvent(new CustomEvent("hol:notif-refresh")); })
       .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
   };
@@ -433,19 +434,30 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
   // 남아 배지가 계속 켜져 있는다 — 서버에서 전체를 읽음 처리하는 경로를 둔다.
   // (기록은 관리자 > 알림 탭에 그대로 남는다.)
   const markAllRead = () => {
-    postJson("/api/admin/mark-read", { username: user.username })
+    const ids = notifs.map(n => n.id).filter(Boolean);
+    if (!ids.length) return;
+    postJson("/api/home/alerts/mark-read", { ids })
       .then(() => { setSel(new Set()); onDismiss(); window.dispatchEvent(new CustomEvent("hol:notif-refresh")); toast.ok("모든 알림을 읽음 처리했습니다"); })
       .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
   };
-  const recent = notifs.slice(-8).reverse();
-  const notificationType = (type) => {
-    const raw = String(type || "info").trim().toLowerCase();
-    return raw === "warn" ? "warning" : raw;
+  const importanceOf = (n) => {
+    const raw = String(n?.priority_group || n?.tone || "info").toLowerCase();
+    return raw === "danger" ? "critical" : raw === "warn" ? "warning" : ["critical", "warning", "info", "notice"].includes(raw) ? raw : "info";
   };
-  const notificationLabel = (type) => {
-    const normalized = notificationType(type);
-    if (normalized === "admin_notice") return "공지";
-    return normalized === "warning" ? "! warning" : normalized;
+  const importanceCounts = notifs.reduce((counts, n) => {
+    counts.all += 1;
+    counts[importanceOf(n)] += 1;
+    return counts;
+  }, { all: 0, critical: 0, warning: 0, info: 0, notice: 0 });
+  const recent = notifs.filter((n) => importance === "all" || importanceOf(n) === importance).slice(0, 8);
+  const importanceTabs = [["all", "전체"], ["critical", "Critical"], ["warning", "Warning"], ["info", "Info"], ["notice", "Notice"]];
+  const notificationType = (type, priorityGroup) => {
+    const raw = String(priorityGroup || type || "info").trim().toLowerCase();
+    return raw === "warn" ? "warning" : ["critical", "warning", "info", "notice"].includes(raw) ? raw : "info";
+  };
+  const notificationLabel = (type, priorityGroup) => {
+    const normalized = notificationType(type, priorityGroup);
+    return normalized[0].toUpperCase() + normalized.slice(1);
   };
   const notificationBody = (n) => {
     const payload = n?.payload || {};
@@ -453,10 +465,9 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
       const wafer = payload.wafer_id ? ` WF${payload.wafer_id}` : "";
       return `! ${payload.product}/${payload.root_lot_id}${wafer} ${payload.column}: [plan] ${payload.plan || ""} → [actual] ${payload.actual || ""}`;
     }
-    return n?.body || "";
+    return n?.detail || n?.body || "";
   };
-  const typeColor = { approval: "var(--warn)", message: "var(--info)", admin_notice: "var(--info)",
-                      info: "var(--muted)", warning: "var(--danger)" };
+  const typeColor = { critical: "var(--danger)", warning: "var(--warn)", info: "var(--info)", notice: "var(--muted)" };
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
@@ -479,10 +490,18 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
             {sel.size > 0 && <button onClick={dismissSel} style={{ fontSize: 14, padding: "3px 8px", borderRadius: 4,
               border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", cursor: "pointer",
               fontWeight: 600 }}>읽음 처리 ({sel.size})</button>}
-            {notifs.length > 0 && <button onClick={markAllRead} title="목록에 안 보이는 오래된 알림까지 전부 읽음 처리합니다"
+            {notifs.length > 0 && <button onClick={markAllRead} title="현재 목록의 알림을 모두 읽음 처리합니다"
               style={{ fontSize: 14, padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)",
                 background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 600 }}>모두 읽음</button>}
           </div>
+        </div>
+        <div role="tablist" aria-label="알림 중요도" style={{ display: "flex", gap: 4, padding: "6px 10px", borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
+          {importanceTabs.map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={importance === key}
+            onClick={() => setImportance(key)} style={{ fontSize: 12, padding: "3px 7px", borderRadius: 4,
+              border: "1px solid var(--border)", background: importance === key ? "var(--accent-glow)" : "transparent",
+              color: importance === key ? "var(--accent)" : "var(--text-secondary)", cursor: "pointer", whiteSpace: "nowrap" }}>
+            {label} {importanceCounts[key]}
+          </button>)}
         </div>
         <div style={{ maxHeight: 320, overflow: "auto" }}>
           {recent.length === 0 && <div style={{ padding: 24, textAlign: "center", fontSize: 14,
@@ -492,10 +511,18 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
               borderBottom: "1px solid var(--border)", background: sel.has(n.id) ? "var(--accent-glow)" : "transparent" }}>
               <input type="checkbox" checked={sel.has(n.id)} onChange={() => toggle(n.id)}
                 style={{ marginTop: 2, accentColor: "var(--accent)", flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0, cursor: n.target_tab ? "pointer" : "default" }}
+                onClick={() => {
+                  if (!n.target_tab) return;
+                  postJson("/api/home/alerts/mark-read", { ids: [n.id] })
+                    .then(() => { onDismiss(); window.dispatchEvent(new CustomEvent("hol:notif-refresh")); })
+                    .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
+                  setOpen(false);
+                  onNavigate(n.target_tab, n.target_search || "");
+                }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: "#fff", padding: "1px 5px", borderRadius: 3,
-                    background: typeColor[notificationType(n.type)] || "var(--muted)", textTransform: "uppercase" }}>{notificationLabel(n.type)}</span>
+                    background: typeColor[notificationType(n.type, n.priority_group)] || "var(--muted)", textTransform: "uppercase" }}>{notificationLabel(n.type, n.priority_group)}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
                     whiteSpace: "nowrap" }}>{n.title}</span>
                 </div>

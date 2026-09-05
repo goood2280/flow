@@ -183,7 +183,7 @@ def test_lot_management_required_columns_and_cache_overlay(monkeypatch):
         {"id": "owner", "label": "owner"},
     ])
     assert [column["id"] for column in columns] == [
-        "purpose", "lot_id", "current_step_id", "step_desc", "qty", "comment", "owner",
+        "purpose", "lot_id", "current_step_id", "alert_step_id", "step_desc", "qty", "comment", "owner",
     ]
 
     monkeypatch.setattr(
@@ -395,7 +395,9 @@ def test_frontend_defers_status_candidates_and_split_table_bundle():
         / "My_LotManagement.jsx"
     ).read_text(encoding="utf-8")
 
-    assert 'lazy(() => import("../splittable/My_SplitTable"))' in source
+    assert 'const loadSplitTableModule = () => import("../splittable/My_SplitTable")' in source
+    assert "const LazySplitTable = lazy(loadSplitTableModule)" in source
+    assert "onMouseEnter={preloadSplitTable}" in source
     assert "include_status=false" in source
     assert 'sf(`${API}/statuses`' in source
     assert "const LOT_CANDIDATE_PREVIEW_LIMIT = 300" in source

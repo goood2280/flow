@@ -14,6 +14,7 @@ import { toast } from "../../components/Toast";
 import { Btn, Card, Chip, EmptyState, Input, Pill, Select, TabStrip, TableWrap, Tbl, Textarea, statusPalette, chartPalette } from "../../components/UXKit";
 import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import RichBoardEditor, { RichBoardContent, richTextHasContent } from "../../components/RichBoardEditor";
+import { moduleColor } from "../../lib/moduleColors";
 
 const API = "/api/informs";
 export const WIZARD_STEPS = ["lot_module", "splittable", "mail_preview"];
@@ -34,7 +35,7 @@ const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
 const INFO = statusPalette.info;
 const NEUTRAL = statusPalette.neutral;
-const MODULE_SERIES = [chartPalette.series[0], chartPalette.series[2], chartPalette.series[11], chartPalette.series[8], chartPalette.series[6], chartPalette.series[12], chartPalette.series[3]];
+const ModuleColorContext = React.createContext({});
 const INFORM_TABS_ALL = [
   ["inform", "인폼"],
   ["matrix", "매트릭스"],
@@ -468,25 +469,6 @@ function syncInformQuery(tab, filters) {
   window.history.replaceState(null, "", params.toString() ? next : window.location.pathname);
 }
 
-/* v8.7.1 — 모듈별 구분색 (좌측 리스트 / 루트카드 left border / Gantt bar fallback) */
-const MODULE_COLORS = {
-  GATE: BAD.fg,
-  STI: WARN.fg,
-  PC: chartPalette.series[1],
-  MOL: chartPalette.series[3],
-  BEOL: INFO.fg,
-  ET: chartPalette.series[6],
-  EDS: chartPalette.series[2],
-  "S-D Epi": chartPalette.series[11],
-  Spacer: chartPalette.series[7],
-  Well: chartPalette.series[10],
-  MASK: NEUTRAL.fg,
-  FAB: "rgba(51,65,85,0.95)",
-  KNOB: chartPalette.series[13],
-  "기타": "rgba(107,114,128,0.95)",
-};
-const FALLBACK_PALETTE = MODULE_SERIES;
-
 function NewInformButton({ onClick }) {
   return (
     <Btn variant="primary" type="button" onClick={onClick} style={{ minWidth: 140 }}>
@@ -584,12 +566,9 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
 }
 
 
-function moduleColor(name) {
-  if (!name) return MODULE_COLORS["기타"];
-  if (MODULE_COLORS[name]) return MODULE_COLORS[name];
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
-  return FALLBACK_PALETTE[Math.abs(h) % FALLBACK_PALETTE.length];
+function useModuleColorResolver() {
+  const configured = React.useContext(ModuleColorContext);
+  return React.useMemo(() => (name) => moduleColor(name, configured), [configured]);
 }
 
 function StatusBadge({ status, compact = false }) {
@@ -661,6 +640,7 @@ function stCellBg(val, uniq, pname) {
 }
 
 function EmbedTableView({ embed, product, canEdit = false, onRemoveSet, showTitle = true, showMeta = true }) {
+  const moduleColors = React.useContext(ModuleColorContext);
   if (!embed) return null;
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", maxWidth: "100%" };
   const scrollerStyle = { maxHeight: 620, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" };
@@ -719,7 +699,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet, showTitl
   );
   // v8.8.11: st_view(SplitTable /view 응답) 는 공통 SplitTableSnapshotView 로 렌더한다.
   if (embed.st_view && embed.st_view.headers && embed.st_view.rows) {
-    return <SplitTableSnapshotView embed={embed} product={product} footer={renderAttachedSets()} showTitle={showTitle} showMeta={showMeta} />;
+    return <SplitTableSnapshotView embed={embed} product={product} footer={renderAttachedSets()} showTitle={showTitle} showMeta={showMeta} moduleColors={moduleColors} />;
   }
   // legacy 2D rows 모드 — columns=[parameter, #1, #2, ...] + rows=[[param, v1, ...], ...].
   // v8.8.13: legacy 도 SplitTable 팔레트로 컬러링. columns[0] 이 parameter/param 류면 st_view 로 변환 후 같은 렌더.
@@ -828,6 +808,7 @@ function ThreadNode({
   node, childrenByParent, onReply, onDelete, onToggleCheck, onEdit, onReInform, user,
   depth = 0, constants,
 }) {
+  const colorForModule = useModuleColorResolver();
   const [replyOpen, setReplyOpen] = useState(false);
   // v8.8.13: 답글의 module 은 부모에서 자동 상속. UI 에선 읽기전용으로 표시.
   const [reply, setReply] = useState({ module: node.module || "", reason: node.reason || "", text: "" });
@@ -873,7 +854,7 @@ function ThreadNode({
         background: "transparent",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-          {node.module && (() => { const mc = moduleColor(node.module); return (
+          {node.module && (() => { const mc = colorForModule(node.module); return (
             <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{node.module}</span>
           ); })()}
           <CheckPill node={node} />
@@ -944,7 +925,7 @@ function ThreadNode({
             {/* v8.8.13: 답글의 module 은 부모 자동 상속 → 읽기전용 pill. */}
             <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: "var(--text-secondary)" }}>
               <span>상속:</span>
-              {(() => { const mc = moduleColor(reply.module || "—"); return (
+              {(() => { const mc = colorForModule(reply.module || "—"); return (
                 <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{reply.module || "(모듈 없음)"}</span>
               ); })()}
               <label style={{ fontSize: 14, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", marginLeft: "auto" }}>
@@ -1571,6 +1552,7 @@ function SplitNotesCard({ notes, root_lot_id }) {
 /* v8.7.8: Lot drill-down 모듈별 요약 테이블
    각 모듈에 대해 (등록됨, 메일 전송됨) 을 체크/미체크로 한눈에 */
 function LotModuleSummary({ thread, modules }) {
+  const colorForModule = useModuleColorResolver();
   const rows = (modules || []).map(m => {
     const entries = (thread || []).filter(e => (e.module || "") === m);
     const hasInform = entries.length > 0;
@@ -1620,7 +1602,7 @@ function LotModuleSummary({ thread, modules }) {
       </div>
       {!collapsed && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(126px,1fr))", gap: 5 }}>
         {rows.map(r => {
-          const mc = moduleColor(r.module);
+          const mc = colorForModule(r.module);
           const done = !!r.completedAt;
           const border = done ? OK.fg : (r.hasInform ? mc : "var(--border)");
           return (
@@ -1656,7 +1638,7 @@ export default function My_Inform({ user }) {
   const [auditLoading, setAuditLoading] = useState(false);
 
   // 제품 후보는 backend LOT progress cache 기준으로 채워진다.
-  const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "", reason_templates: {}, mail_links: [], mail_max_mb: 2 });
+  const [constants, setConstants] = useState({ modules: [], module_colors: {}, reasons: [], flow_statuses: [], products: [], raw_db_root: "", reason_templates: {}, mail_links: [], mail_max_mb: 2 });
   // v8.8.1: 선택 제품의 Lot 후보 (RAWDATA_DB 에서 폴더 스캔).
   const [productLots, setProductLots] = useState({ product: "", lots: [], source: "" });
   const [mode, setMode] = useState("all");           // all | mine | product | lot | wafer
@@ -1867,6 +1849,7 @@ export default function My_Inform({ user }) {
       setConstants(c => ({
         ...c,
         modules: (cfg.modules || []).length ? cfg.modules : ((moduleCfg.modules || []).length ? moduleCfg.modules : c.modules),
+        module_colors: cfg.module_colors || c.module_colors || {},
         reasons: (cfg.reasons || []).length ? cfg.reasons : ((moduleCfg.reasons || []).length ? moduleCfg.reasons : c.reasons),
         flow_statuses: (cfg.flow_statuses || []).length ? cfg.flow_statuses : ((moduleCfg.flow_statuses || []).length ? moduleCfg.flow_statuses : c.flow_statuses),
         products: productOptions.length ? productOptions : c.products,
@@ -1985,6 +1968,7 @@ export default function My_Inform({ user }) {
   useEffect(() => {
     sf(API + "/config").then(d => setConstants({
       modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
+      module_colors: d.module_colors || {},
       products: d.products || [], raw_db_root: d.raw_db_root || "",
       reason_templates: d.reason_templates || {},
       mail_links: d.mail_links || [], mail_max_mb: d.mail_max_mb ?? 2,
@@ -3043,6 +3027,7 @@ export default function My_Inform({ user }) {
   // v8.8.27: 새 모듈 이름 input 을 controlled state 로 승격 — 사용자가 Enter 대신 저장 버튼만
   //   눌러도 입력값이 drop 되지 않도록 보정. + 버튼으로 명시적 추가.
   const [modDraft, setModDraft] = useState(null);
+  const [modColorDraft, setModColorDraft] = useState(null);
   const [modNewName, setModNewName] = useState("");
   const commitPendingMod = (draft, pending) => {
     const v = (pending || "").trim();
@@ -3061,11 +3046,18 @@ export default function My_Inform({ user }) {
     if (!Array.isArray(modDraft)) return;
     // v8.8.27: 저장 직전에도 입력칸 값을 흡수 → "새 모듈 저장 안됨" 버그 방지.
     const finalList = commitPendingMod(modDraft, modNewName);
-    postJson("/api/informs/config", { modules: finalList })
+    const currentColors = modColorDraft && typeof modColorDraft === "object" ? modColorDraft : {};
+    const finalColors = Object.fromEntries(finalList.filter(m => currentColors[m]).map(m => [m, currentColors[m]]));
+    postJson("/api/informs/config", { modules: finalList, module_colors: finalColors })
       .then(d => {
-        setConstants(c => ({ ...c, modules: d.config?.modules || finalList }));
+        setConstants(c => ({
+          ...c,
+          modules: d.config?.modules || finalList,
+          module_colors: d.config?.module_colors || finalColors,
+        }));
         loadLotMatrix();
-        setModDraft(null); setModNewName("");
+        setModDraft(null); setModColorDraft(null); setModNewName("");
+        toast.ok("모듈 순서/색상 저장됨");
       })
       .catch(e => toast.error("모듈 순서 저장 실패: " + (e.message || e)));
   };
@@ -3108,6 +3100,7 @@ export default function My_Inform({ user }) {
   };
 
   return (
+    <ModuleColorContext.Provider value={constants.module_colors || {}}>
     <div className="flow-connected-page" style={{
       height: "calc(100vh - 52px)",
       background: "var(--bg-primary)",
@@ -3121,15 +3114,15 @@ export default function My_Inform({ user }) {
     }}>
       <PageGear title="인폼 설정" canEdit={canManageInform} position="bottom-left">
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-          제품 후보는 LOT progress cache 기준으로 자동 표시합니다. 여기서는 모듈 순서, 사유 옵션, 메일 템플릿만 관리합니다.
+          제품 후보는 LOT progress cache 기준으로 자동 표시합니다. 여기서는 모듈 순서와 색상, 사유 옵션, 메일 템플릿을 관리합니다.
         </div>
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-            모듈 표시 순서를 관리합니다.
+            모듈 표시 순서와 색상을 관리합니다. 지정하지 않은 색상은 모듈 이름에 따라 자동 배정되며 SplitTable에도 동일하게 적용됩니다.
           </div>
           {!modDraft && (
-            <Btn variant="outline" onClick={() => setModDraft([...(constants.modules || [])])} disabled={!canManageInform}>
-              모듈 순서 편집 ({(constants.modules || []).length})
+            <Btn variant="outline" onClick={() => { setModDraft([...(constants.modules || [])]); setModColorDraft({ ...(constants.module_colors || {}) }); }} disabled={!canManageInform}>
+              모듈 순서/색상 편집 ({(constants.modules || []).length})
             </Btn>
           )}
           {modDraft && (
@@ -3138,7 +3131,14 @@ export default function My_Inform({ user }) {
                 {modDraft.map((m, i) => (
                   <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>
                     <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
-                    <span style={{ flex: 1 }}>{m}</span>
+                    <input type="color" value={(modColorDraft || {})[m] || moduleColor(m)}
+                      onChange={e => setModColorDraft(d => ({ ...(d || {}), [m]: e.target.value }))}
+                      title={`${m} 색상`} style={{ width: 28, height: 24, padding: 0, border: "1px solid var(--border)", borderRadius: 4, background: "transparent", cursor: "pointer" }} />
+                    <span style={{ flex: 1, color: moduleColor(m, modColorDraft || {}) }}>{m}</span>
+                    <Btn size="sm" variant="ghost" title="지정 색상 해제 · 자동 색상 사용"
+                      onClick={() => setModColorDraft(d => { const next = { ...(d || {}) }; delete next[m]; return next; })}>
+                      {(modColorDraft || {})[m] ? "지정" : "자동"}
+                    </Btn>
                     <Btn size="sm" onClick={() => moveMod(i, -1)}>↑</Btn>
                     <Btn size="sm" onClick={() => moveMod(i, 1)}>↓</Btn>
                     <Btn size="sm" variant="danger" onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))}>×</Btn>
@@ -3152,7 +3152,7 @@ export default function My_Inform({ user }) {
                   onKeyDown={e => { if (e.key === "Enter") { if(e.nativeEvent?.isComposing||e.keyCode===229)return; e.preventDefault(); addPendingMod(); } }} />
                 <Btn variant="outline" onClick={addPendingMod} title="모듈 추가">+</Btn>
                 <Btn variant="primary" onClick={saveModuleOrder}>저장</Btn>
-                <Btn variant="ghost" onClick={() => { setModDraft(null); setModNewName(""); }}>취소</Btn>
+                <Btn variant="ghost" onClick={() => { setModDraft(null); setModColorDraft(null); setModNewName(""); }}>취소</Btn>
               </div>
             </div>
           )}
@@ -3333,6 +3333,7 @@ export default function My_Inform({ user }) {
 
       {mailDialogRoot && <MailDialog root={mailDialogRoot} user={user} reasonTemplates={constants.reason_templates || {}} onClose={() => setMailDialogRoot(null)} />}
     </div>
+    </ModuleColorContext.Provider>
   );
 
 }
@@ -3342,6 +3343,7 @@ export default function My_Inform({ user }) {
    이벤트: 인폼 등록 / 담당자 확인 / 메일 발송 / 댓글 / 수정(status_history 기타).
 */
 function TimelineLog({ thread, onOpen }) {
+  const colorForModule = useModuleColorResolver();
   // v8.8.0: Lot 검색 필터 + root_lot prefix 매칭.
   const [lotQ, setLotQ] = useState("");
   const events = useMemo(() => {
@@ -3451,7 +3453,7 @@ function TimelineLog({ thread, onOpen }) {
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
       {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{lotQ ? `'${lotQ}' 매칭 이력 없음.` : "이력 없음."}</div>}
       {filtered.map((e, i) => {
-        const mc = moduleColor(e.module);
+        const mc = colorForModule(e.module);
         const kindTone = e.kind === "인폼" ? "info"
           : e.kind === "담당자확인" ? "ok"
           : e.kind === "확인취소" ? "danger"
@@ -3642,7 +3644,8 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
 
 
 function ModulePill({ module, solid = false }) {
-  const mc = moduleColor(module || "기타");
+  const colorForModule = useModuleColorResolver();
+  const mc = colorForModule(module || "기타");
   return (
     <span title={module || "기타"} style={{
       display: "inline-flex", alignItems: "center", maxWidth: 150,
@@ -3823,6 +3826,7 @@ function matrixCellCount(cell) {
 }
 
 function LotProgressMatrix({ matrix, loading, filters, setFilters, productOptions, onOpenCell, onPickLot, onOpenLot, activeModules = [], onToggleModule, showControls = true }) {
+  const colorForModule = useModuleColorResolver();
   const modules = Array.isArray(matrix?.module_order) ? matrix.module_order : [];
   const activeStates = new Set(filters.states || []);
   const activeModuleSet = new Set(activeModules || []);
@@ -3988,7 +3992,7 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
                         const state = cell?.state || "";
                         const meta = LOT_MATRIX_STATES[state] || { fg: "var(--border)" };
                         const count = matrixCellCount(cell);
-                        const mc = moduleColor(module);
+                        const mc = colorForModule(module);
                         return (
                           <td key={module}
                             style={{
@@ -4137,12 +4141,13 @@ function rowRootLotLabel(root) {
 }
 
 function InformListRow({ root, node, depth = 0, selected, onOpen }) {
+  const colorForModule = useModuleColorResolver();
   const [hover, setHover] = useState(false);
   const row = node || root;
   const isChild = depth > 0 || !!row.parent_id;
   const status = normalizeFlowStatus(row.flow_status, row);
   const module = row.module || root.module || "기타";
-  const mc = moduleColor(module);
+  const mc = colorForModule(module);
   const titleText = isChild
     ? (reInformTextForDisplay(row).replace(/^\[RE\]\s*/, "") || informTitle(row))
     : informTitle(row);

@@ -55,6 +55,7 @@ _CACHE_FORMAT_MARKER = ".cache_format.json"
 # 지문은 한 번의 스트리밍 스캔으로 계산하며, 파일이 없거나 스키마/해시 계산이
 # 실패하면 None 을 반환해 기존 전체 재빌드로 폴백한다.
 _ROOT_FINGERPRINT_FILE = ".root_fingerprints.json"
+_BUILD_COMPLETE_FILE = ".build_complete.json"
 # 해시 합이 Int64 를 넘지 않도록 32bit 소수로 접는다 (root 당 수만 행이어도 여유).
 _FINGERPRINT_FOLD_PRIME = 4294967291
 
@@ -133,7 +134,8 @@ def _safe_root_filename(root_id: str) -> str:
     return f"{str(root_id).replace('/', '_').replace(chr(92), '_')}.parquet"
 
 
-def _compute_root_fingerprints(lf, key_expr, anchor_cols: list | None = None) -> dict | None:
+def _compute_root_fingerprints(lf, key_expr, anchor_cols: list | None = None,
+                               *, on_batch=None) -> dict | None:
     """Per-root (row_count, folded row-hash sum).
 
     ML_TABLE 은 행은 적고 컬럼이 수천 개인 wide 형이라, 전체 struct 해시는
@@ -164,7 +166,10 @@ def _compute_root_fingerprints(lf, key_expr, anchor_cols: list | None = None) ->
         names = lf.collect_schema().names()
         value_cols = [c for c in names if c not in anchors]
         totals: dict[str, list[int]] = {}
-        for start in range(0, len(value_cols), batch_width):
+        # Identity-only sources still have roots; hash their anchors once.
+        for start in range(0, max(1, len(value_cols)), batch_width):
+            if on_batch:
+                on_batch()
             batch = value_cols[start:start + batch_width]
             df = (
                 lf.select(batch + anchors)
@@ -176,16 +181,64 @@ def _compute_root_fingerprints(lf, key_expr, anchor_cols: list | None = None) ->
                 .group_by("__root")
                 .agg(pl.len().alias("n"), pl.col("__h").sum().alias("h"))
             )
-            df = collect_streaming(df)
+            df = collect_streaming(df, fallback=False)
             for root, n, h in df.iter_rows():
                 if root is None:
                     continue
                 slot = totals.setdefault(str(root), [int(n), 0])
                 slot[1] = (slot[1] + int(h or 0)) % (1 << 62)
         return totals
+    except _BuildInterrupted:
+        raise
     except Exception as e:
         logger.warning("root fingerprint 계산 실패 — 전체 재빌드로 폴백: %s", e)
         return None
+
+
+class _BuildInterrupted(RuntimeError):
+    pass
+
+
+def _source_signature(path: Path) -> dict:
+    stat = path.stat()
+    return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def completed_cache_matches(out_dir: Path, source: Path) -> bool:
+    """Completion does not depend on optional content-fingerprint optimization."""
+    try:
+        marker = out_dir / _BUILD_COMPLETE_FILE
+        meta = json.loads(marker.read_text("utf-8"))
+        completed_ns = marker.stat().st_mtime_ns
+        return (meta.get("format") == _CACHE_FORMAT_VERSION
+                and meta.get("source") == _source_signature(source)
+                and isinstance(meta.get("roots"), list)
+                and all((out_dir / _safe_root_filename(root)).is_file()
+                        and (out_dir / _safe_root_filename(root)).stat().st_mtime_ns <= completed_ns
+                        for root in meta["roots"]))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _build_checkpoint(should_cancel, on_chunk_done) -> None:
+    if _cancel_requested(should_cancel):
+        raise _BuildInterrupted("관리자 중단 요청")
+    _heartbeat(on_chunk_done)
+    if not process_memory_high():
+        return
+    from core.memory_trim import trim
+    limit = _int_env("FLOW_PIVOT_MEMORY_WAIT_SEC", 120, 1, 1800)
+    deadline = time.monotonic() + limit
+    while process_memory_high():
+        if _cancel_requested(should_cancel):
+            raise _BuildInterrupted("관리자 중단 요청")
+        trim(reason="pivot_memory_wait")
+        _heartbeat(on_chunk_done)
+        if not process_memory_high():
+            return
+        if time.monotonic() >= deadline:
+            raise _BuildInterrupted("메모리 여유 대기 시간 초과 — 기존 캐시 유지, 다음 시도에서 재개")
+        time.sleep(1.0)
 
 
 def _load_root_fingerprints(out_dir: Path) -> dict | None:
@@ -199,11 +252,11 @@ def _load_root_fingerprints(out_dir: Path) -> dict | None:
         return None
 
 
-def _save_root_fingerprints(out_dir: Path, fingerprints: dict) -> None:
+def _save_root_fingerprints(out_dir: Path, fingerprints: dict, *, complete: bool = True) -> None:
     try:
         _write_json_atomic(
             out_dir / _ROOT_FINGERPRINT_FILE,
-            {"format": _CACHE_FORMAT_VERSION, "roots": fingerprints},
+            {"format": _CACHE_FORMAT_VERSION, "roots": fingerprints, "complete": complete},
         )
     except Exception:
         pass
@@ -416,7 +469,8 @@ def build_pivoted_cache_for_product(
 
     start_time = time.monotonic()
     try:
-        lf = pl.scan_parquet(product_path)
+        source_sig = _source_signature(product_path)
+        lf = pl.scan_parquet(product_path, low_memory=True, parallel="none")
         schema = lf.collect_schema()
         columns = schema.names()
 
@@ -472,9 +526,10 @@ def build_pivoted_cache_for_product(
         else:
             fingerprints = _compute_root_fingerprints(
                 lf, key_expr,
-                anchor_cols=[c for c in (root_col, lot_col, wf_col) if c])
+                anchor_cols=[c for c in (root_col, lot_col, wf_col) if c],
+                on_batch=lambda: _build_checkpoint(should_cancel, on_chunk_done))
         if fingerprints is not None:
-            unique_roots = list(fingerprints.keys())
+            unique_roots = sorted(fingerprints.keys())
             previous = _load_root_fingerprints(out_dir) or {}
             # 지문 기록 이후에 다시 기록된 per-root 파일은 빌더 외부에서 쓰인
             # 것이다(테스트 픽스처/수동 조작 등) — 지문이 같아도 재빌드해서
@@ -502,22 +557,29 @@ def build_pivoted_cache_for_product(
             build_roots = [r for r in unique_roots if _root_needs_build(r)]
         else:
             unique_roots = (
-                lf.select(key_expr.alias("__root")).unique().collect()["__root"]
+                collect_streaming(lf.select(key_expr.alias("__root")).unique(), fallback=False)["__root"]
                 .drop_nulls().to_list()
             )
+            unique_roots = sorted(unique_roots)
             build_roots = list(unique_roots)
 
         try:
             catalog_cols = [c for c in (root_col, lot_col, _detect_col(columns, "fab_lot_id", "fab_lot")) if c]
             if catalog_cols:
-                cat_df = lf.select([pl.col(c).drop_nulls().unique() for c in catalog_cols]).collect()
-                catalog = {c: cat_df[c].drop_nulls().to_list() for c in catalog_cols}
+                cat_df = collect_streaming(lf.select([
+                    pl.col(c).drop_nulls().unique().implode() for c in dict.fromkeys(catalog_cols)
+                ]), fallback=False)
+                catalog = {c: cat_df[c].to_list()[0] for c in dict.fromkeys(catalog_cols)}
                 _write_json_atomic(out_dir / "_lot_catalog.json", catalog)
         except Exception as e:
             logger.warning(f"Failed to build lot catalog for {canonical}: {e}")
 
         import gc
         partitions_built = 0
+        pending_roots = set(build_roots)
+        committed_fingerprints = {
+            root: fingerprints[root] for root in unique_roots if root not in pending_roots
+        } if fingerprints is not None else {}
 
         i = 0
         total_roots = len(build_roots)
@@ -569,6 +631,7 @@ def build_pivoted_cache_for_product(
             # 키가 필요해서 붙였다가 쓰기 직전에 drop 했다. root 별로 직접 거르는
             # 지금은 붙일 이유가 없다(원본에 root 컬럼이 없는 LOT_ID 파생 경로 포함).
             for root_id_str in chunk_roots:
+                _build_checkpoint(should_cancel, on_chunk_done)
                 root_id_str = str(root_id_str or "")
                 if not root_id_str:
                     continue
@@ -578,7 +641,8 @@ def build_pivoted_cache_for_product(
                 final_path = out_dir / f"{safe_root}.parquet"
 
                 root_lf = lf.filter(key_expr == root_id_str)
-                root_lf.sink_parquet(tmp_path)
+                writer_rows = max(128, min(8192, (8 * 1024 * 1024) // (max(1, len(columns)) * 16)))
+                root_lf.sink_parquet(tmp_path, row_group_size=writer_rows)
 
                 # 예전 partition_by 경로는 행이 없는 root 의 파일을 아예 만들지
                 # 않았다. sink 는 빈 파일도 쓰므로 footer(메타데이터)만 읽어
@@ -606,12 +670,20 @@ def build_pivoted_cache_for_product(
                     try:
                         knob_dir.mkdir(parents=True, exist_ok=True)
                         knob_tmp = knob_dir / f"{safe_root}.tmp.parquet"
-                        pl.scan_parquet(final_path).select(knob_cols).sink_parquet(knob_tmp)
+                        pl.scan_parquet(final_path, low_memory=True, parallel="none").select(knob_cols).sink_parquet(
+                            knob_tmp, row_group_size=writer_rows)
                         knob_tmp.replace(knob_dir / f"{safe_root}.parquet")
                     except Exception as exc:
                         logger.debug("KNOB 사이드카 기록 실패 (%s/%s): %s", canonical, safe_root, exc)
+                if fingerprints is not None:
+                    committed_fingerprints[root_id_str] = fingerprints[root_id_str]
 
             gc.collect()
+            # Retain confirmed roots after an interrupted attempt. Readiness
+            # still requires the complete source generation; this is only a
+            # resume checkpoint and never marks unfinished roots as built.
+            if fingerprints is not None:
+                _save_root_fingerprints(out_dir, committed_fingerprints, complete=False)
 
             # lease keepalive — 30 분 TTL 을 청크마다 밀어 준다. 이게 없으면 30 분
             # 넘는 빌드에서 lease 가 stale 로 판정돼 다른 서버가 같은 제품을 동시에
@@ -647,6 +719,8 @@ def build_pivoted_cache_for_product(
                             canonical, partitions_built, total_roots)
                 return False
 
+        if _source_signature(product_path) != source_sig:
+            raise RuntimeError("pivot source changed during build; completion deferred")
         # 소스에서 사라진 root 의 stale 파일은 전체 빌드가 끝난 뒤에만 정리한다.
         # 빌드 실패 시에는 이 지점에 도달하지 않으므로 이전 파일이 그대로 남아
         # 다음 성공 빌드까지 계속 서빙된다.
@@ -662,6 +736,14 @@ def build_pivoted_cache_for_product(
         # 남아 다음 빌드가 변경 root 를 다시 잡는다.
         if fingerprints is not None:
             _save_root_fingerprints(out_dir, fingerprints)
+        # A memory-pressure build deliberately skips fingerprints. It still
+        # needs a completion authority, otherwise every successful build is
+        # reported missing forever. Publish only after all expected files exist.
+        if not all((out_dir / _safe_root_filename(root)).is_file() for root in unique_roots):
+            raise RuntimeError("pivot build incomplete: missing root files")
+        _write_json_atomic(out_dir / _BUILD_COMPLETE_FILE, {
+            "format": _CACHE_FORMAT_VERSION, "source": source_sig, "roots": unique_roots,
+        })
 
         elapsed = time.monotonic() - start_time
         logger.info("Built pivoted cache for %s (%d/%d roots, %d unchanged skipped) in %.2fs",

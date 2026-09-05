@@ -212,7 +212,7 @@ def test_template_ai_assistant_keeps_valid_code_when_company_llm_is_unavailable(
             instruction="trend와 box plot을 한 장에 배치해줘",
             template_code=code,
         ),
-        {"username": "engineer", "role": "user"},
+        {"username": "engineer", "role": "admin"},
     )
 
     assert result["changed"] is False

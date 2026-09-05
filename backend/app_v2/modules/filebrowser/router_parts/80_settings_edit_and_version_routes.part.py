@@ -199,6 +199,7 @@ def filebrowser_sql_execution_history(
 ):
     """Return newest actual SQL executions for one selected DB or file."""
     _require_filebrowser_user(request)
+    id_only_lookup = bool(str(history_id or "").strip() and not str(scope or "").strip())
     normalized_scope = _normalize_ai_sql_history_scope(scope)
     root = _cache_safe_text(root, 160)
     product = _cache_safe_text(product, 160)
@@ -206,7 +207,23 @@ def filebrowser_sql_execution_history(
     history_id = _cache_safe_text(history_id, 80)
     if history_id and not re.fullmatch(r"fb_sql_exec_[0-9a-f]{12}", history_id, flags=re.I):
         raise HTTPException(400, "Invalid SQL history key")
-    if normalized_scope == "base" and file and access_scope:
+    if id_only_lookup:
+        entries = jsonl_read(
+            _filebrowser_sql_execution_history_path(),
+            limit=1,
+            filter_fn=lambda entry: (
+                isinstance(entry, dict)
+                and entry.get("event") == "execution"
+                and str(entry.get("history_id") or "").casefold() == history_id.casefold()
+            ),
+        )
+        if not entries:
+            return {"ok": True, "history": [], "limit": limit}
+        entry = dict(entries[-1])
+        if str(entry.get("scope") or "") == "base":
+            _require_base_file_access(request, str(entry.get("file") or ""), "")
+        return {"ok": True, "history": [entry], "limit": limit}
+    if normalized_scope == "base" and file:
         _require_base_file_access(request, file, access_scope)
     if normalized_scope == "db_product" and not root:
         return {"ok": True, "history": [], "limit": limit}

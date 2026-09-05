@@ -3931,7 +3931,7 @@ def storage_manifest() -> dict[str, Any]:
             "description": "운영 중 추가되는 사내 지식/심층리서치/유저별 prior는 flow-data 아래 jsonl로 보존.",
         },
         "setup_policy": {
-            "bundled": ["backend/core/semiconductor_knowledge.py", "backend/core/semiconductor_rca_seed_knowledge.json", "backend/routers/semiconductor.py", "frontend/src/pages/My_Diagnosis.jsx", "docs/SEMICONDUCTOR_DIAGNOSIS_RCA.md"],
+            "bundled": ["backend/core/semiconductor_knowledge.py", "backend/core/semiconductor_rca_seed_knowledge.json", "backend/routers/semiconductor.py", "frontend/src/features/diagnosis/My_Diagnosis.jsx"],
             "not_bundled": ["data/DB", "data/Base", "data/flow-data", "FLOW_DATA_ROOT", "FLOW_DB_ROOT"],
             "operator_action": "setup.py는 기본 RCA seed를 flow-data에 없을 때만 생성하고, 기존 custom_knowledge/engineer_knowledge/diagnosis_runs는 덮어쓰지 않습니다.",
         },

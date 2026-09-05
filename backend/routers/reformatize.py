@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import logging
 import multiprocessing
 import os
@@ -34,14 +35,14 @@ import time
 from pathlib import Path
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app_v2.shared.source_adapter import resolve_named_child
-from core.auth import current_user, require_admin
+from core.auth import current_user, is_page_manager, require_admin
 from core.paths import PATHS
 from core.utils import (
-    jsonl_append, load_json, safe_filename,
+    jsonl_append, jsonl_read, load_json, safe_filename,
     save_json, serialize_rows,
 )
 from core.vehicle_reformatter import (
@@ -57,6 +58,13 @@ router = APIRouter(prefix="/api/reformatize", tags=["reformatize"])
 VEHICLE_DIR = PATHS.data_root / "reformatter"
 SETTINGS_FILE = PATHS.data_root / "reformatize_settings.json"
 VISIBILITY_FILE = PATHS.data_root / "reformatize_visibility.json"
+HISTORY_FILE = PATHS.data_root / "reformatize_history.jsonl"
+PINS_FILE = PATHS.data_root / "reformatize_pins.json"
+LIKES_FILE = PATHS.data_root / "reformatize_likes.json"
+REFORMATIZE_VISIBLE_RECENT = 500
+_REFORMATIZE_HISTORY_LOCK = threading.Lock()
+_REFORMATIZE_PIN_LOCK = threading.Lock()
+_REFORMATIZE_LIKE_LOCK = threading.Lock()
 DL_LOG = PATHS.download_log
 ET_ROOT_NAME = "ET"
 
@@ -1557,6 +1565,16 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
                 detail=f"product={req.product} items={_items_txt} agg={req.agg.strip() or 'raw'} "
                        f"rows={wide.height} filter=[{_filter_desc(req) or '없음'}]",
                 tab="reformatize")
+    try:
+        _save_or_increment_reformatize_history(
+            req.product,
+            items=req_items,
+            filters=req,
+            agg=req.agg,
+            username=str(user.get("username") or ""),
+        )
+    except Exception as exc:
+        logger.warning("Failed to auto-record reformatize history: %s", exc)
     return {
         "product": req.product,
         "vehicle_csv": vehicle_csv,
@@ -1944,6 +1962,16 @@ def download_start(req: DownloadJobReq, user=Depends(current_user)):
     )
     if not view.get("ok"):
         raise HTTPException(429, view.get("detail") or "다운로드 대기열이 가득 찼습니다")
+    try:
+        _save_or_increment_reformatize_history(
+            req.product,
+            items=wanted,
+            filters=req,
+            agg=agg_method,
+            username=username,
+        )
+    except Exception as exc:
+        logger.warning("Failed to auto-record reformatize history on download: %s", exc)
     return view
 
 
@@ -2186,3 +2214,435 @@ def test_download(req: TestReq, admin=Depends(require_admin)):
         })
 
     return _csv_stream_response(out, f"{safe_filename(req.product)}_addp_test", on_done=_log)
+
+
+# ── ET 다운로드 검색식 및 히스토리 관리 ───────────────────────────────────
+
+def _normalize_reformatize_filters(filters: dict | Filters | None) -> dict:
+    if filters is None:
+        return {
+            "lot_filter": "", "step_filter": "", "step_seq_filter": "",
+            "wafer_filter": "", "site_cnt_filter": "", "point_cnt_filter": "",
+            "days": 0, "date_from": "", "date_to": "",
+        }
+    if isinstance(filters, dict):
+        return {
+            "lot_filter": str(filters.get("lot_filter") or "").strip(),
+            "step_filter": str(filters.get("step_filter") or "").strip(),
+            "step_seq_filter": str(filters.get("step_seq_filter") or "").strip(),
+            "wafer_filter": str(filters.get("wafer_filter") or "").strip(),
+            "site_cnt_filter": str(filters.get("site_cnt_filter") or "").strip(),
+            "point_cnt_filter": str(filters.get("point_cnt_filter") or "").strip(),
+            "days": int(filters.get("days") or 0),
+            "date_from": str(filters.get("date_from") or "").strip(),
+            "date_to": str(filters.get("date_to") or "").strip(),
+        }
+    return {
+        "lot_filter": str(getattr(filters, "lot_filter", "") or "").strip(),
+        "step_filter": str(getattr(filters, "step_filter", "") or "").strip(),
+        "step_seq_filter": str(getattr(filters, "step_seq_filter", "") or "").strip(),
+        "wafer_filter": str(getattr(filters, "wafer_filter", "") or "").strip(),
+        "site_cnt_filter": str(getattr(filters, "site_cnt_filter", "") or "").strip(),
+        "point_cnt_filter": str(getattr(filters, "point_cnt_filter", "") or "").strip(),
+        "days": int(getattr(filters, "days", 0) or 0),
+        "date_from": str(getattr(filters, "date_from", "") or "").strip(),
+        "date_to": str(getattr(filters, "date_to", "") or "").strip(),
+    }
+
+
+def _format_reformatize_expression(
+    product: str,
+    items: list[str],
+    filters: dict | Filters | None,
+    agg: str,
+) -> str:
+    norm_filters = _normalize_reformatize_filters(filters)
+    clean_product = str(product or "").strip().upper()
+    clean_items = sorted(str(it).strip() for it in (items or []) if str(it).strip())
+    clean_agg = str(agg or "").strip().lower()
+
+    lines = [
+        "Q1",
+        "TABLE = et",
+        f"PRODUCT = {clean_product}",
+        "REFORMATTER = true",
+    ]
+    if clean_items:
+        lines.append(f"ITEMS = {', '.join(clean_items)}")
+    else:
+        lines.append("ITEMS = ALL")
+
+    sql_parts = ["SELECT root_lot_id, wafer_id, tkout_time, value"]
+    where_parts = []
+    if norm_filters.get("date_from"):
+        where_parts.append(f"tkout_time >= '{norm_filters['date_from']}'")
+    if norm_filters.get("date_to"):
+        where_parts.append(f"tkout_time <= '{norm_filters['date_to']}'")
+    if where_parts:
+        sql_parts.append(f"WHERE {' AND '.join(where_parts)}")
+    lines.append(f"SQL = {' '.join(sql_parts)}")
+
+    days = norm_filters.get("days", 0)
+    if days > 0:
+        lines.append(f"RECENT_DAYS = {days}")
+
+    if norm_filters.get("lot_filter"):
+        lines.append(f"ROOT_LOTS = {norm_filters['lot_filter']}")
+
+    if norm_filters.get("wafer_filter"):
+        lines.append(f"WAFERS = {norm_filters['wafer_filter']}")
+
+    if norm_filters.get("step_filter"):
+        lines.append(f"FILTER = step_id | operator=in | values={norm_filters['step_filter']}")
+
+    if norm_filters.get("step_seq_filter"):
+        lines.append(f"FILTER = step_seq | operator=in | values={norm_filters['step_seq_filter']}")
+
+    if norm_filters.get("site_cnt_filter"):
+        lines.append(f"FILTER = total_site_cnt | operator=in | values={norm_filters['site_cnt_filter']}")
+
+    if norm_filters.get("point_cnt_filter"):
+        lines.append(f"FILTER = shot_count | operator=in | values={norm_filters['point_cnt_filter']}")
+
+    if clean_agg:
+        lines.append(f"# AGG = {clean_agg.upper()}")
+
+    return "\n".join(lines)
+
+
+def _reformatize_expression_hash(
+    product: str,
+    items: list[str],
+    filters: dict | Filters | None,
+    agg: str,
+) -> str:
+    norm_filters = _normalize_reformatize_filters(filters)
+    clean_product = str(product or "").strip().upper()
+    clean_items = sorted(str(it).strip() for it in (items or []) if str(it).strip())
+    clean_agg = str(agg or "").strip().lower()
+    payload = {
+        "product": clean_product,
+        "items": clean_items,
+        "filters": {
+            k: v.upper() if isinstance(v, str) and k not in ("date_from", "date_to") else v
+            for k, v in norm_filters.items()
+        },
+        "agg": clean_agg,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _reformatize_pins() -> dict[str, dict]:
+    raw = load_json(PINS_FILE, {}) or {}
+    return raw.get("pins") if isinstance(raw, dict) and isinstance(raw.get("pins"), dict) else {}
+
+
+def _save_reformatize_pins(pins: dict[str, dict]) -> None:
+    save_json(PINS_FILE, {"version": 1, "pins": pins})
+
+
+def _reformatize_likes() -> dict[str, list[str]]:
+    raw = load_json(LIKES_FILE, {}) or {}
+    return raw.get("likes") if isinstance(raw, dict) and isinstance(raw.get("likes"), dict) else {}
+
+
+def _save_reformatize_likes(likes: dict[str, list[str]]) -> None:
+    save_json(LIKES_FILE, {"version": 1, "likes": likes})
+
+
+def _save_or_increment_reformatize_history(
+    product: str,
+    items: list[str],
+    filters: dict | Filters | None,
+    agg: str,
+    username: str,
+    name: str | None = None,
+    force_new: bool = False,
+) -> dict:
+    clean_product = str(product or "").strip().upper()
+    if not clean_product:
+        raise ValueError("제품명이 비어 있습니다.")
+    clean_items = sorted(str(it).strip() for it in (items or []) if str(it).strip())
+    norm_filters = _normalize_reformatize_filters(filters)
+    clean_agg = str(agg or "").strip().lower()
+    user = str(username or "anonymous").strip()
+    expr_hash = _reformatize_expression_hash(clean_product, clean_items, norm_filters, clean_agg)
+    expression = _format_reformatize_expression(clean_product, clean_items, norm_filters, clean_agg)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    with _REFORMATIZE_HISTORY_LOCK:
+        entries = jsonl_read(
+            HISTORY_FILE,
+            limit=0,
+            filter_fn=lambda e: isinstance(e, dict) and e.get("event") == "history",
+        )
+        existing_idx = None
+        if not force_new:
+            for idx, e in enumerate(entries):
+                if str(e.get("expression_hash") or "") == expr_hash:
+                    existing_idx = idx
+                    break
+
+        if existing_idx is not None:
+            entry = dict(entries[existing_idx])
+            entry["reuse_count"] = max(0, int(entry.get("reuse_count") or 0)) + 1
+            entry["last_used_at"] = now
+            if name and name.strip():
+                entry["name"] = name.strip()
+            entries[existing_idx] = entry
+            with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
+                for row in entries:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            return entry
+        else:
+            uid_seed = f"{expr_hash}_{time.time()}_{len(entries)}"
+            history_id = f"RH-{hashlib.md5(uid_seed.encode()).hexdigest()[:8].upper()}"
+            if name and name.strip():
+                entry_name = name.strip()
+            else:
+                items_summary = ", ".join(clean_items[:2]) + (" 등" if len(clean_items) > 2 else "") if clean_items else "전체 Index"
+                filter_parts = []
+                if norm_filters["days"]:
+                    filter_parts.append(f"{norm_filters['days']}일")
+                elif norm_filters["date_from"] or norm_filters["date_to"]:
+                    filter_parts.append(f"{norm_filters['date_from']}~{norm_filters['date_to']}")
+                if norm_filters["lot_filter"]:
+                    filter_parts.append(norm_filters["lot_filter"])
+                filter_suffix = f" ({', '.join(filter_parts)})" if filter_parts else ""
+                entry_name = f"{clean_product} · {items_summary}{filter_suffix}"
+
+            entry = {
+                "event": "history",
+                "history_id": history_id,
+                "name": entry_name,
+                "product": clean_product,
+                "items": clean_items,
+                "filters": norm_filters,
+                "agg": clean_agg,
+                "expression": expression,
+                "expression_hash": expr_hash,
+                "username": user,
+                "timestamp": now,
+                "last_used_at": now,
+                "reuse_count": 1,
+            }
+            jsonl_append(HISTORY_FILE, entry)
+            return entry
+
+
+def _reformatize_visible_history_entries(*, recent_limit: int = 500) -> list[dict]:
+    entries = jsonl_read(
+        HISTORY_FILE,
+        limit=0,
+        filter_fn=lambda e: isinstance(e, dict) and e.get("event") == "history",
+    )
+    pins = _reformatize_pins()
+    likes = _reformatize_likes()
+    normalized = []
+    for entry in entries:
+        row = dict(entry)
+        history_id = str(row.get("history_id") or "")
+        pin = pins.get(history_id) or {}
+        liked_users = likes.get(history_id) or []
+        row.update({
+            "pinned": bool(pin),
+            "pinned_at": str(pin.get("pinned_at") or ""),
+            "pinned_by": str(pin.get("pinned_by") or ""),
+            "likes_count": len(liked_users),
+            "liked_users": liked_users,
+            "reuse_count": max(0, int(row.get("reuse_count") or 0)),
+        })
+        normalized.append(row)
+
+    pinned = [e for e in normalized if e.get("pinned")]
+    pinned.sort(
+        key=lambda e: str(e.get("pinned_at") or e.get("timestamp") or ""),
+        reverse=True,
+    )
+    unpinned = [e for e in normalized if not e.get("pinned")]
+    unpinned.sort(
+        key=lambda e: (
+            int(e.get("reuse_count") or 0),
+            str(e.get("last_used_at") or e.get("timestamp") or ""),
+        ),
+        reverse=True,
+    )
+    max_count = max(1, min(1000, int(recent_limit or 500)))
+    recent = unpinned[:max_count]
+    return [*pinned, *recent]
+
+
+def _toggle_reformatize_like(history_id: str, *, username: str, liked: bool | None = None) -> dict:
+    clean_id = str(history_id or "").strip()
+    user = str(username or "").strip()
+    if not clean_id:
+        raise ValueError("ID가 비어 있습니다.")
+    with _REFORMATIZE_LIKE_LOCK:
+        likes = _reformatize_likes()
+        users = set(likes.get(clean_id) or [])
+        currently_liked = user in users if user else False
+        if liked is None:
+            new_state = not currently_liked
+        else:
+            new_state = bool(liked)
+
+        if new_state and user:
+            users.add(user)
+        elif not new_state and user:
+            users.discard(user)
+
+        likes[clean_id] = sorted(users)
+        _save_reformatize_likes(likes)
+        return {
+            "history_id": clean_id,
+            "liked": new_state,
+            "likes_count": len(likes[clean_id]),
+        }
+
+
+def _set_reformatize_pin(history_id: str, *, pinned: bool, username: str) -> dict:
+    clean_id = str(history_id or "").strip()
+    if not clean_id:
+        raise ValueError("ID가 비어 있습니다.")
+    with _REFORMATIZE_PIN_LOCK:
+        pins = _reformatize_pins()
+        if pinned:
+            pins[clean_id] = {
+                "pinned_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "pinned_by": str(username or ""),
+            }
+        else:
+            pins.pop(clean_id, None)
+        _save_reformatize_pins(pins)
+        return {"history_id": clean_id, "pinned": pinned}
+
+
+class ReformatizeSaveReq(BaseModel):
+    product: str
+    items: list[str] = []
+    filters: dict = {}
+    agg: str = ""
+    name: str = ""
+
+
+class ReformatizePinReq(BaseModel):
+    pinned: bool = True
+
+
+class ReformatizeLikeReq(BaseModel):
+    liked: bool | None = None
+
+
+@router.get("/history")
+def reformatize_history(
+    request: Request,
+    limit: int = Query(500, ge=1, le=1000),
+    q: str = Query(""),
+    history_id: str = Query(""),
+    user=Depends(current_user),
+):
+    """Return pinned and popular/recent Reformatize search/extraction history."""
+    username = str(user.get("username") or "")
+    history_id = str(history_id or "").strip() if isinstance(history_id, str) else ""
+    if history_id and not re.fullmatch(r"RH-[0-9A-F]{8}", history_id, flags=re.I):
+        raise HTTPException(400, "Invalid Reformatize history key")
+    if history_id:
+        entries = jsonl_read(
+            HISTORY_FILE,
+            limit=1,
+            filter_fn=lambda entry: (
+                isinstance(entry, dict)
+                and entry.get("event") == "history"
+                and str(entry.get("history_id") or "").casefold() == history_id.casefold()
+            ),
+        )
+        if entries:
+            entry = dict(entries[-1])
+            pin = _reformatize_pins().get(str(entry.get("history_id") or "")) or {}
+            liked_users = _reformatize_likes().get(str(entry.get("history_id") or "")) or []
+            entry.update({
+                "pinned": bool(pin),
+                "pinned_at": str(pin.get("pinned_at") or ""),
+                "pinned_by": str(pin.get("pinned_by") or ""),
+                "likes_count": len(liked_users),
+                "liked_users": liked_users,
+                "reuse_count": max(0, int(entry.get("reuse_count") or 0)),
+            })
+            entries = [entry]
+    else:
+        entries = _reformatize_visible_history_entries(recent_limit=limit)
+    for entry in entries:
+        liked_users = entry.get("liked_users") or []
+        entry["liked"] = bool(username and username in liked_users)
+    query = str(q or "").strip().casefold()
+    if query:
+        entries = [e for e in entries if query in json.dumps(e, ensure_ascii=False).casefold()]
+    return {
+        "ok": True,
+        "history": entries,
+        "recent_limit": limit,
+        "pinned_count": sum(1 for e in entries if e.get("pinned")),
+        "recent_count": sum(1 for e in entries if not e.get("pinned")),
+        "can_manage": bool(is_page_manager(user, "reformatize")),
+    }
+
+
+@router.post("/history/save")
+def reformatize_history_save(req: ReformatizeSaveReq, user=Depends(current_user)):
+    username = str(user.get("username") or "")
+    entry = _save_or_increment_reformatize_history(
+        req.product,
+        items=req.items,
+        filters=req.filters,
+        agg=req.agg,
+        username=username,
+        name=req.name.strip() if req.name else None,
+        force_new=bool(req.name.strip()),
+    )
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/history/{history_id}/pin")
+def reformatize_history_pin(history_id: str, req: ReformatizePinReq, user=Depends(current_user)):
+    if not is_page_manager(user, "reformatize"):
+        raise HTTPException(403, "관리자 또는 Reformatize 담당자만 고정할 수 있습니다.")
+    result = _set_reformatize_pin(history_id, pinned=req.pinned, username=str(user.get("username") or ""))
+    return {"ok": True, **result}
+
+
+@router.post("/history/{history_id}/like")
+def reformatize_history_like(history_id: str, req: ReformatizeLikeReq, user=Depends(current_user)):
+    username = str(user.get("username") or "")
+    if not username:
+        raise HTTPException(401, "로그인이 필요합니다.")
+    result = _toggle_reformatize_like(history_id, username=username, liked=req.liked)
+    return {"ok": True, "history": result}
+
+
+@router.post("/history/{history_id}/reuse")
+def reformatize_history_reuse(history_id: str, user=Depends(current_user)):
+    clean_id = str(history_id or "").strip()
+    with _REFORMATIZE_HISTORY_LOCK:
+        entries = jsonl_read(
+            HISTORY_FILE,
+            limit=0,
+            filter_fn=lambda e: isinstance(e, dict) and e.get("event") == "history",
+        )
+        found = False
+        target_entry = None
+        for idx, e in enumerate(entries):
+            if str(e.get("history_id") or "") == clean_id:
+                entry = dict(e)
+                entry["reuse_count"] = max(0, int(entry.get("reuse_count") or 0)) + 1
+                entry["last_used_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                entries[idx] = entry
+                target_entry = entry
+                found = True
+                break
+        if not found:
+            raise HTTPException(404, "이력을 찾을 수 없습니다.")
+        with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
+            for row in entries:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return {"ok": True, "entry": target_entry}

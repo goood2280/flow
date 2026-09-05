@@ -1,0 +1,1 @@
+function n(r){const t=new URLSearchParams(window.location.search||"").get("history_id")||"";return r.test(t)?t:""}function o(r,t){const i=new URL(r,window.location.origin);return i.searchParams.set("history_id",String(t||"").trim()),i.toString()}async function a(r,t){await navigator.clipboard.writeText(o(r,t))}export{a as c,n as h};

@@ -14,6 +14,8 @@ import Loading from "../../components/Loading";
 import PageGear from "../../components/PageGear";
 import usePolling from "../../hooks/usePolling";
 import { Banner, Button, EmptyState, PageShell, Pill } from "../../components/UXKit";
+import { canManagePage } from "../../lib/permissions";
+import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
 
 const API = "/api/reformatize";
 
@@ -716,6 +718,281 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
   );
 }
 
+function historyTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString("ko-KR", { hour12: false });
+}
+
+/* ── Reformatize 검색이력 패널 ───────────────────────── */
+function ReformatizeHistoryPanel({
+  user,
+  history,
+  historySearch,
+  setHistorySearch,
+  historyBusy,
+  loadHistory,
+  onLoadEntry,
+  pinBusy,
+  togglePin,
+  copyExpression,
+  copyKey,
+  copyLink,
+}) {
+  const isAdmin = user?.role === "admin" || canManagePage(user, "reformatize");
+
+  return (
+    <div style={{
+      border: "1px solid var(--border)",
+      borderRadius: 10,
+      background: "var(--bg-secondary)",
+      padding: "12px 16px",
+      marginBottom: 16,
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+        justifyContent: "space-between",
+        marginBottom: 10,
+        paddingBottom: 8,
+        borderBottom: "1px solid var(--border)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>
+            검색이력
+          </span>
+          <Pill tone="neutral">
+            총 {history.length}건
+          </Pill>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <input
+            value={historySearch}
+            onChange={e => setHistorySearch(e.target.value)}
+            placeholder="🔍 고유키(RH-), 제품, Index, 작성자 검색…"
+            style={{ ...inputStyle, width: 250, padding: "4px 8px", fontSize: 12 }}
+          />
+          <Button
+            onClick={() => loadHistory(historySearch)}
+            disabled={historyBusy}
+            style={{ padding: "4px 8px", fontSize: 12 }}
+            title="이력 새로고침"
+          >
+            {historyBusy ? "조회 중…" : "🔄"}
+          </Button>
+        </div>
+      </div>
+
+      {history.length === 0 ? (
+        <div style={{ padding: "16px 10px", textAlign: "center", color: "var(--text-secondary)", fontSize: 13 }}>
+          {historySearch.trim() ? "검색 조건에 맞는 검색식 이력이 없습니다." : "아직 검색 이력이 없습니다. 아래 폼에서 조회하거나 다운로드하면 자동으로 이력이 보관됩니다."}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+          {history.map((entry, idx) => {
+            const isPinned = Boolean(entry.pinned);
+            const rank = idx + 1;
+            return (
+              <details
+                key={entry.history_id}
+                style={{
+                  border: `1px solid ${isPinned ? "var(--accent)" : "var(--border)"}`,
+                  borderRadius: 8,
+                  background: isPinned
+                    ? "color-mix(in srgb, var(--accent-glow) 45%, var(--bg-primary))"
+                    : "var(--bg-primary)",
+                  overflow: "hidden",
+                }}
+              >
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    padding: "8px 12px",
+                    display: "flex",
+                    gap: 10,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    listStyle: "none",
+                    userSelect: "none",
+                  }}
+                >
+                  {isPinned ? (
+                    <span title="관리자 고정 식" aria-label="고정 식" style={{ fontSize: 14 }}>📌</span>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-secondary)", minWidth: 22 }}>
+                      #{rank}
+                    </span>
+                  )}
+                  <b style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                    {entry.name}
+                  </b>
+                  <code
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      color: "var(--text-secondary)",
+                      background: "var(--bg-tertiary)",
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    {entry.history_id}
+                    <button
+                      type="button"
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); copyKey(entry); }}
+                      title="고유키 복사"
+                      style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 11 }}
+                    >
+                      📋
+                    </button>
+                  </code>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "var(--text-secondary)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                    title="이 검색식으로 실제로 검색/조회한 횟수"
+                  >
+                    <span>🔄</span>
+                    <span>{Number(entry.reuse_count || 0).toLocaleString()}회</span>
+                  </span>
+                  <b style={{ fontSize: 12, color: "var(--accent)" }}>{entry.username || "anonymous"}</b>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    {historyTime(entry.last_used_at || entry.timestamp)}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-secondary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      flex: 1,
+                      minWidth: 140,
+                    }}
+                  >
+                    {entry.product} · Index {entry.items?.length ? `${entry.items.length}개` : "전체"} · {entry.agg ? entry.agg.toUpperCase() : "RAW"}
+                  </span>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        disabled={pinBusy === entry.history_id}
+                        title={entry.pinned ? "고정 해제" : "고정"}
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); togglePin(entry); }}
+                        style={{
+                          background: "var(--bg-secondary)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          padding: "3px 7px",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          color: "var(--text-primary)",
+                          opacity: pinBusy === entry.history_id ? 0.55 : 1,
+                        }}
+                      >
+                        {pinBusy === entry.history_id ? "처리 중…" : entry.pinned ? "고정 해제" : "고정"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); copyLink(entry); }}
+                      title="이 검색 조건을 여는 공유 링크 복사"
+                      style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:4,padding:"3px 7px",fontSize:11,cursor:"pointer",color:"var(--text-primary)"}}
+                    >공유 링크</button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); copyExpression(entry); }}
+                        title="차트생성 형식 검색식 복사"
+                        style={{
+                          background: "var(--bg-secondary)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          padding: "3px 7px",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          color: "var(--text-primary)",
+                        }}
+                      >
+                        식복사
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); onLoadEntry(entry); }}
+                      title="이 검색식을 아래 폼에 그대로 채웁니다"
+                      style={{
+                        background: "var(--accent)",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: 4,
+                        padding: "3px 9px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      폼 불러오기
+                    </button>
+                  </div>
+                </summary>
+                {isAdmin && (
+                  <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                        차트생성 호환 검색식 상세 (고유키: {entry.history_id})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyExpression(entry)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "var(--accent)",
+                          cursor: "pointer",
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        식복사 📋
+                      </button>
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 10,
+                        borderRadius: 6,
+                        background: "var(--bg-primary)",
+                        border: "1px solid var(--border)",
+                        fontFamily: "monospace",
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        color: "var(--text-primary)",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {entry.expression}
+                    </pre>
+                  </div>
+                )}
+              </details>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function My_Reformatize({ user }) {
   const isAdmin = user?.role === "admin";
   const [products, setProducts] = useState([]);
@@ -733,6 +1010,11 @@ export default function My_Reformatize({ user }) {
   const [agg, setAgg] = useState("");                    // ""=shot raw, max/min/median/avg/std/p90/p10
   const [dlJob, setDlJob] = useState(null);              // 진행 중인 다운로드 작업(대기열)
   const [runPhase, setRunPhase] = useState(null);        // 조회 진행 상황 {phase, done, total}
+  const [history, setHistory] = useState([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [pinBusy, setPinBusy] = useState("");
+  const [pendingItems, setPendingItems] = useState(null);
   // 진행 폴링은 공용 훅에 위임한다 — 타이머 정리·연속 실패 중단(무한 로딩 방지)이
   // 화면마다 재구현되던 부분. 다운로드와 조회는 서로 독립이라 인스턴스를 나눈다.
   const poll = usePolling();
@@ -740,11 +1022,107 @@ export default function My_Reformatize({ user }) {
 
   const clearJob = () => { poll.stop(); setDlJob(null); setDlBusy(false); };
 
+  const loadHistory = (query = historySearch) => {
+    setHistoryBusy(true);
+    return sf(API + "/history" + qs({ limit: 500, q: String(query || "").trim() }))
+      .then(d => setHistory(d.history || []))
+      .catch(err => toast.error(`이력 조회 실패: ${err.message || err}`))
+      .finally(() => setHistoryBusy(false));
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadHistory(historySearch), 250);
+    return () => window.clearTimeout(timer);
+  }, [historySearch]);
+
+  const togglePin = async (entry) => {
+    const historyId = String(entry?.history_id || "").trim();
+    if (!historyId) return;
+    setPinBusy(historyId);
+    try {
+      await postJson(API + `/history/${encodeURIComponent(historyId)}/pin`, { pinned: !entry.pinned });
+      toast.ok(entry.pinned ? "고정을 해제했습니다." : "공용 검색식 상단에 고정했습니다.");
+      await loadHistory(historySearch);
+    } catch (err) {
+      toast.error(err.message || String(err));
+    } finally {
+      setPinBusy("");
+    }
+  };
+
+  const copyExpression = async (entry) => {
+    try {
+      await navigator.clipboard.writeText(entry.expression || "");
+      toast.ok(`[${entry.history_id}] 검색식을 복사했습니다.`);
+    } catch (_e) {
+      toast.error("클립보드 복사 권한이 없습니다.");
+    }
+  };
+
+  const copyKey = async (entry) => {
+    try {
+      await navigator.clipboard.writeText(entry.history_id || "");
+      toast.ok(`고유키 [${entry.history_id}] 를 복사했습니다.`);
+    } catch (_e) {
+      toast.error("클립보드 복사 권한이 없습니다.");
+    }
+  };
+
+  const copyLink = async (entry) => {
+    try {
+      await copyHistoryShareLink("/reformatize", entry.history_id);
+      toast.ok(`[${entry.history_id}] 공유 링크를 복사했습니다.`);
+    } catch (_e) { toast.error("브라우저에서 공유 링크를 복사하지 못했습니다."); }
+  };
+
+  const loadHistoryEntry = async (entry) => {
+    if (!entry) return;
+    const nextProduct = entry.product || product;
+    const items = entry.items || [];
+    const entryFilters = entry.filters || {};
+    const entryAgg = entry.agg || "";
+
+    if (nextProduct !== product) {
+      setPendingItems(items);
+      setProduct(nextProduct);
+    } else {
+      setSelItems(new Set(items));
+    }
+    setFilters({
+      ...EMPTY_FILTERS,
+      ...entryFilters,
+      days: entryFilters.days ? String(entryFilters.days) : "",
+    });
+    setAgg(entryAgg);
+    toast.ok(`[${entry.history_id}] 검색식을 아래 폼에 적용했습니다.`);
+
+    document.getElementById("reformatize-form-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  useEffect(() => {
+    const historyId = historyIdFromLocation(/^RH-[0-9A-F]{8}$/i);
+    if (!historyId) return;
+    let alive = true;
+    sf(API + "/history" + qs({ history_id: historyId, limit: 1000 }))
+      .then(d => {
+        if (!alive) return;
+        const entry = (d.history || []).find(item => String(item?.history_id || "").toUpperCase() === historyId.toUpperCase());
+        if (!entry) throw new Error("공유된 ET 검색 이력을 찾지 못했습니다.");
+        loadHistoryEntry(entry);
+        toast.ok(`[${historyId}] 공유 검색 조건을 불러왔습니다. 조회 또는 다운로드를 직접 시작하세요.`);
+      })
+      .catch(err => { if (alive) toast.error(err.message || String(err)); });
+    return () => { alive = false; };
+  }, []);
+
   // 완료된 작업의 CSV 를 실제로 내려받는다 (이 시점에 downloads.jsonl 기록).
   const fetchResult = (job) => {
     setDlJob({ ...job, phase: "파일 저장 중" });
     dl(API + "/download/file" + qs({ job_id: job.job_id }), job.filename || `${job.product || product}_reformatize.csv`)
-      .then(() => toast.ok(`다운로드 완료 — ${(job.rows || 0).toLocaleString()}행 · 이력은 관리자 > 다운로드 탭에 기록됩니다`))
+      .then(() => {
+        toast.ok(`다운로드 완료 — ${(job.rows || 0).toLocaleString()}행 · 이력은 관리자 > 다운로드 탭에 기록됩니다`);
+        setTimeout(() => loadHistory(historySearch), 500);
+      })
       .catch(e => toast.error(e.message || "다운로드 실패"))
       .finally(clearJob);
   };
@@ -794,13 +1172,19 @@ export default function My_Reformatize({ user }) {
   // 기본 선택 없음 — 필요한 항목만 골라 가볍게 조회하도록 유도한다.
   // 서버가 유저에게는 비공개 항목을 제외하고, 관리자에게는 hidden 플래그를 준다.
   useEffect(() => {
-    setItemList([]); setSelItems(new Set()); setHiddenItems(new Set());
+    setItemList([]);
+    if (!pendingItems) setSelItems(new Set());
+    setHiddenItems(new Set());
     if (!product || !selected?.vehicle_csv) return;
     sf(API + "/items?product=" + encodeURIComponent(product))
       .then(d => {
         const items = d.items || [];
         setItemList(items);
         setHiddenItems(new Set(items.filter(it => it.hidden).map(it => it.alias)));
+        if (pendingItems) {
+          setSelItems(new Set(pendingItems));
+          setPendingItems(null);
+        }
       })
       .catch(() => {});
   }, [product, selected?.vehicle_csv]);
@@ -927,8 +1311,24 @@ export default function My_Reformatize({ user }) {
         </ol>
       </details>
 
+      {/* 검색이력 패널 */}
+      <ReformatizeHistoryPanel
+        user={user}
+        history={history}
+        historySearch={historySearch}
+        setHistorySearch={setHistorySearch}
+        historyBusy={historyBusy}
+        loadHistory={loadHistory}
+        onLoadEntry={loadHistoryEntry}
+        pinBusy={pinBusy}
+        togglePin={togglePin}
+        copyExpression={copyExpression}
+        copyKey={copyKey}
+        copyLink={copyLink}
+      />
+
       {/* 조회 조건 */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+      <div id="reformatize-form-anchor" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>제품</span>
         <select value={product} onChange={e => { setProduct(e.target.value); setResult(null); setOffset(0); }} style={{ ...inputStyle, minWidth: 160 }}>
           {products.length === 0 && <option value="">제품 없음</option>}

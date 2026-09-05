@@ -573,6 +573,7 @@ export default function My_TemplateReport({user}){
 
   const options=draft?.options||{};
   const canManageSettings=canManagePage(user,"templatereport");
+  const canUseLlm=user?.role==="admin";
   const backgroundImage=reportSettings?.background?.data_url||"";
   const defaultSubtitle=defaultPageSubtitle(user);
   const repeatVariable=text(options.repeat_variable||"LOT");
@@ -883,12 +884,12 @@ export default function My_TemplateReport({user}){
           </div>
           <div style={{display:"grid",gridTemplateColumns:"minmax(280px,.72fr) minmax(420px,1.28fr)",gap:10,alignItems:"stretch"}}>
             <div style={{display:"grid",gap:8,alignContent:"start"}}>
-              <div style={{border:"1px solid var(--border)",borderRadius:8,padding:10,background:"var(--bg-primary)",display:"grid",gap:7}}>
+              {canUseLlm&&<div style={{border:"1px solid var(--border)",borderRadius:8,padding:10,background:"var(--bg-primary)",display:"grid",gap:7}}>
                 <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}><strong style={{fontSize:12}}>✨ AI Template Assistant</strong><span style={{fontSize:10,color:"var(--text-secondary)"}}>전체 코드를 생성하거나 필요한 부분만 수정</span></div>
                 <textarea aria-label="AI Template 요청" value={templateAiPrompt} onChange={event=>setTemplateAiPrompt(event.target.value)} rows={5} placeholder={"예: 최근 14일 VTH trend를 위에 길게 두고, 아래에는 IDSAT corr·chamber box·leakage bar를 배치해줘\n예: 모든 차트의 root lot을 {{LOT}} 변수로 바꿔줘"} style={{...input,resize:"vertical",lineHeight:1.5}}/>
                 <button type="button" onClick={askTemplateAi} disabled={templateAiBusy} style={{...primary,justifySelf:"start"}}>{templateAiBusy?"AI가 전체 코드 작성 중…":"AI로 전체 코드 만들기·수정"}</button>
                 {templateAiMessage&&<div style={{fontSize:11,lineHeight:1.5,color:"var(--text-secondary)",whiteSpace:"pre-wrap"}}>{templateAiMessage}</div>}
-              </div>
+              </div>}
               <div style={{fontSize:11,lineHeight:1.65,color:"var(--text-secondary)",padding:"2px 3px"}}>
                 <b style={{color:"var(--text-primary)"}}>권장 흐름</b><br/>
                 1. 화면에서 차트를 배치하거나 AI에게 요청<br/>
