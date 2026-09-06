@@ -417,6 +417,36 @@ def _log_split_table_download(username: str, product: str, root_lot_id: str,
         pass
 
 
+def _split_download_name(*, product: str, root_lot_id: str, lot_col: str,
+                         df: pl.DataFrame, username: str, prefix: str,
+                         custom_name: str, custom_cols: str, extension: str,
+                         display_mode: str = "") -> str:
+    """Describe the SplitTable selection while keeping a lot as its natural key."""
+    lot_key = str(root_lot_id or "").strip()
+    if not lot_key and lot_col and lot_col in df.columns:
+        values = [
+            str(value).strip()
+            for value in df[lot_col].cast(pl.Utf8, strict=False).drop_nulls().unique().sort().head(3).to_list()
+            if str(value).strip()
+        ]
+        if len(values) == 1:
+            lot_key = values[0]
+        elif values:
+            lot_key = "+".join(values[:2]) + ("+more" if len(values) > 2 else "")
+    if custom_name or custom_cols:
+        selection = f"CUSTOM-{custom_name or 'selected-columns'}"
+    else:
+        selected_prefixes = [part.strip().upper() for part in str(prefix or "").split(",") if part.strip()]
+        selection = "+".join(selected_prefixes) or "ALL"
+    context = [product, selection]
+    if display_mode:
+        context.append(display_mode)
+    return download_filename(
+        "SplitTable", username=username, unique_id=lot_key,
+        context=context, extension=extension,
+    )
+
+
 # ── Transposed CSV ──
 @router.get("/download-csv")
 def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
@@ -425,7 +455,10 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                  username: str = Query(""),
                  custom_cols: str = Query(""),
                  step_labels: str = Query(""),
-                 exclude_not_null: str = Query("1")):
+                 exclude_not_null: str = Query("1"),
+                 user=Depends(current_user)):
+    if isinstance(user, dict):
+        username = user.get("username") or "anonymous"
     fp = _product_path(product)
     lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
     lot_col, wf_col = _detect_lot_wafer(lf)
@@ -551,7 +584,11 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
 
     _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
                               "csv", _log_rows, _log_cols, len(csv_bytes), selected)
-    return csv_response(csv_bytes, f"{product}_{root_lot_id or 'all'}.csv")
+    return csv_response(csv_bytes, _split_download_name(
+        product=product, root_lot_id=root_lot_id, lot_col=lot_col, df=df,
+        username=username, prefix=prefix, custom_name=custom_name,
+        custom_cols=custom_cols, extension="csv",
+    ))
 
 
 SPLIT_CHECK_XLSX_PREFIX_COLUMNS = ["항목", "값", "Split"]
@@ -768,13 +805,16 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                   custom_cols: str = Query(""),
                   display_mode: str = Query(""),
                   step_labels: str = Query(""),
-                  exclude_not_null: str = Query("1")):
+                  exclude_not_null: str = Query("1"),
+                  user=Depends(current_user)):
     """v8.4.4 — XLSX 내보내기. fab_lot_id 행이 동일 값 구간별로 셀 병합되어
     UI 의 그룹 헤더와 동일하게 표시.
     v8.8.33: custom_cols 추가 — save 없이 체크만 한 ad-hoc 컬럼.
     v8.8.34: display_mode=split_check 이면 화면의 Split 체크 표시 행 형식으로 export.
     PEMS: root lot 전용 1..25 고정 열 + S0/S1 직접 표기 형식으로 export.
     """
+    if isinstance(user, dict):
+        username = user.get("username") or "anonymous"
     openpyxl_error = None
     try:
         from openpyxl import Workbook
@@ -1079,7 +1119,12 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
         data = build_workbook([{"title": product[:31], "rows": rows, "merges": merges}])
         fmt_suffix = "_pems" if pems_mode else ("_split_check" if split_check_mode else ("_merged" if merged_mode else ""))
-        fname = f"{product}_{root_lot_id or 'all'}{fmt_suffix}.xlsx"
+        fname = _split_download_name(
+            product=product, root_lot_id=root_lot_id, lot_col=lot_col, df=df,
+            username=username, prefix=prefix, custom_name=custom_name,
+            custom_cols=custom_cols, extension="xlsx",
+            display_mode=fmt_suffix.lstrip("_") or "table",
+        )
         _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
                                   f"xlsx{fmt_suffix}",
                                   len(split_check_rows) if split_like_mode else len(selected),
@@ -1087,7 +1132,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         return StreamingResponse(
             iter([data]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            headers={"Content-Disposition": download_content_disposition(fname)},
         )
 
     wb = Workbook()
@@ -1247,14 +1292,18 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
         from fastapi.responses import StreamingResponse
         fmt_name = "pems" if pems_mode else "split_check"
-        fname = f"{product}_{root_lot_id or 'all'}_{fmt_name}.xlsx"
+        fname = _split_download_name(
+            product=product, root_lot_id=root_lot_id, lot_col=lot_col, df=df,
+            username=username, prefix=prefix, custom_name=custom_name,
+            custom_cols=custom_cols, extension="xlsx", display_mode=fmt_name,
+        )
         _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
                                   f"xlsx_{fmt_name}", len(split_check_rows),
                                   len(wf_sorted), buf.getbuffer().nbytes, selected)
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            headers={"Content-Disposition": download_content_disposition(fname)},
         )
 
     n_wafers = len(wf_sorted)
@@ -1485,14 +1534,19 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     buf.seek(0)
 
     from fastapi.responses import StreamingResponse
-    fname = f"{product}_{root_lot_id or 'all'}{'_merged' if merged_mode else ''}.xlsx"
+    fname = _split_download_name(
+        product=product, root_lot_id=root_lot_id, lot_col=lot_col, df=df,
+        username=username, prefix=prefix, custom_name=custom_name,
+        custom_cols=custom_cols, extension="xlsx",
+        display_mode="merged" if merged_mode else "table",
+    )
     _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
                               "xlsx_merged" if merged_mode else "xlsx", len(selected),
                               len(wf_sorted), buf.getbuffer().nbytes, selected)
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": download_content_disposition(fname)},
     )
 
 

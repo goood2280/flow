@@ -482,6 +482,18 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     if file:
         _require_base_file_access(request, file, access_scope)
     username = me.get("username") or "anonymous"
+
+    def _response_name(label: str) -> str:
+        search_context = f"where-{sql.strip()}" if sql.strip() else "all-rows"
+        column_context = f"cols-{select_cols}" if select_cols.strip() else "all-columns"
+        aggregate_context = (
+            f"agg-{agg_func}-{agg_column}-by-{agg_group_by}" if str(agg_func or "").strip() else ""
+        )
+        return download_filename(
+            "FileBrowser", username=username,
+            context=[label, search_context, column_context, aggregate_context],
+            extension="csv",
+        )
     try:
         settings = _load_filebrowser_settings()
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
@@ -633,7 +645,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                                   f"size_mb={round(len(csv_bytes) / 1e6, 2)} "
                                   f"select_cols={select_cols or 'all'} sql={sql.strip()}",
                            tab="filebrowser")
-            return csv_response(csv_bytes, label)
+            return csv_response(csv_bytes, _response_name(label))
 
         # v7.2: Apply reformatter rules BEFORE select/sql so derived cols can be selected/filtered.
         # This dataframe path is retained for reformatter-derived columns and small config files.
@@ -704,7 +716,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                               f"size_mb={round(len(csv_bytes) / 1e6, 2)} "
                               f"select_cols={select_cols or 'all'} sql={sql.strip()}",
                        tab="filebrowser")
-        return csv_response(csv_bytes, label)
+        return csv_response(csv_bytes, _response_name(label))
     except HTTPException:
         raise
     except Exception as e:

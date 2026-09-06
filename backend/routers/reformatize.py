@@ -33,6 +33,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -42,6 +43,7 @@ from app_v2.shared.source_adapter import resolve_named_child
 from core.auth import current_user, is_page_manager, require_admin
 from core.paths import PATHS
 from core.utils import (
+    download_content_disposition, download_filename,
     jsonl_append, jsonl_read, load_json, safe_filename,
     save_json, serialize_rows,
 )
@@ -99,9 +101,10 @@ def _find_csv(product: str) -> Path | None:
 # scale_applied: 원본 값에 reformatter REAL scale 이 이미 곱해져 있는 소스
 #   (예: auto report 가 만든 제품_시간.parquet 의 et_value). True 면 REAL 단계에서
 #   scale 을 다시 곱하지 않는다 — ADDP 수식은 우리가 계산하므로 그대로 적용.
-DEFAULT_SETTINGS = {"page_rows": 500, "max_download_rows": 100_000,
-                    "value_col": "", "scale_applied": False}
+DEFAULT_SETTINGS = {"page_rows": 500, "max_download_mb": 500, "max_download_rows": 100_000,
+                    "value_col": "", "scale_applied": False, "share_base_url": ""}
 PAGE_ROWS_MAX = 5_000
+DOWNLOAD_MB_MAX = 10_000
 DOWNLOAD_ROWS_MAX = 1_000_000
 
 # pivot+index 결과 캐시 — (product, 필터 조합) 별로 (full_sig 일치 시) 재사용.
@@ -216,24 +219,44 @@ def _settings() -> dict:
     except Exception:
         pass
     try:
-        out["max_download_rows"] = max(100, min(int(raw.get("max_download_rows", out["max_download_rows"])), DOWNLOAD_ROWS_MAX))
+        mb_val = raw.get("max_download_mb")
+        if mb_val is None:
+            mb_val = DEFAULT_SETTINGS["max_download_mb"]
+        out["max_download_mb"] = max(10, min(int(mb_val), DOWNLOAD_MB_MAX))
+    except Exception:
+        pass
+    try:
+        out["max_download_rows"] = max(100, min(int(raw.get("max_download_rows", out["max_download_mb"] * 1000)), DOWNLOAD_ROWS_MAX))
     except Exception:
         pass
     out["value_col"] = str(raw.get("value_col", "") or "").strip()[:64]
     out["scale_applied"] = bool(raw.get("scale_applied", False))
+    try:
+        from core.mail import get_share_base_url
+        shared_url = get_share_base_url()
+    except Exception:
+        shared_url = ""
+    out["share_base_url"] = shared_url or str(raw.get("share_base_url", "") or "").strip()
     return out
 
 
-def _ensure_raw_rows_within_limit(raw_rows: int, max_raw_rows: int | None) -> None:
-    """설정 한도를 넘는 wide pivot/CSV 생성을 공통으로 차단한다."""
-    if max_raw_rows is None or raw_rows <= max_raw_rows:
+def _ensure_size_within_limit(df: pl.DataFrame, max_mb: int | None, context: str = "조회/다운로드") -> None:
+    """설정 한도를 넘는 wide pivot/CSV 생성을 용량(MB) 단위로 차단한다."""
+    if max_mb is None or max_mb <= 0:
         return
-    raise HTTPException(
-        400,
-        f"필터된 raw 데이터 {raw_rows:,}행이 조회/다운로드 최대 "
-        f"{max_raw_rows:,}행을 초과합니다. 기간·lot 등 필터를 조정해 "
-        "행을 줄이거나 톱니바퀴 설정에서 상한을 올리세요.",
-    )
+    est_bytes = _df_est_bytes(df)
+    est_mb = est_bytes / (1024 * 1024)
+    if est_mb > max_mb:
+        raise HTTPException(
+            400,
+            f"용량초과: {context} 결과 용량({est_mb:.1f}MB)이 설정 한도({max_mb:,}MB)를 초과합니다. "
+            "필터(기간·lot 등)를 추가해 범위를 좁히거나 ⚙ 설정에서 최대 용량(MB)을 늘려주세요.",
+        )
+
+
+def _ensure_raw_rows_within_limit(raw_rows: int, max_raw_rows: int | None) -> None:
+    """하위 호환성 유지용 (용량 MB 제어로 전환되어 행 수 컷은 미사용)."""
+    pass
 
 
 def _et_root() -> Path:
@@ -885,9 +908,10 @@ def _trim_recent(df: pl.DataFrame, max_rows: int) -> pl.DataFrame:
 
 def _compute(product: str, f: Filters,
              selected_items: list[str] | None = None,
-             max_raw_rows: int | None = None,
+             max_mb: int | None = None,
              auto_trim: bool = False,
              progress=None,
+             max_raw_rows: int | None = None,
              ) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int, str]:
     """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블,
     필터된 raw 행수, 안내 문구).
@@ -897,13 +921,10 @@ def _compute(product: str, f: Filters,
       2) raw ET 데이터 로드 — needed_ids 로 **파일별 조기 필터** (OOM 방지)
       3) 사용자 필터(기간·lot 등) 적용
       4) reformatize (pivot + REAL/ADDP 계산)
+      5) 용량(MB) 단위 한도 검증 (_ensure_size_within_limit)
 
     ``selected_items`` 가 주어지면 ADDP 의존성을 재귀 해소해 필요한 ITEMID 만
     raw 에서 필터+pivot 한다. None 이면 테이블 전체 항목 기준.
-
-    ``auto_trim=True`` (조회 화면): raw 가 ``max_raw_rows`` 를 넘어도 400 대신
-    최신 데이터만 남기고 안내 문구(notice)를 돌려준다. 다운로드는 False —
-    부분 데이터를 조용히 내려주지 않도록 기존 한도 400 을 유지한다.
 
     ``progress`` 는 다운로드 대기열 작업이 넘기는 진행 보고 콜백(없으면 무시).
     캐시 HIT 이면 아무 단계도 보고되지 않고 곧바로 끝난다.
@@ -921,18 +942,15 @@ def _compute(product: str, f: Filters,
     csv_st = csv_fp.stat()
     full_sig = product_sig + ((str(csv_fp), csv_st.st_mtime, csv_st.st_size),)
     sel_key = tuple(sorted(set(selected_items))) if selected_items else ()
-    # auto_trim(조회)과 전량(다운로드) 결과는 내용이 다를 수 있어 키를 분리한다.
-    # value_col/scale_applied 설정은 결과 값 자체를 바꾸므로 키에 포함 —
-    # 톱니바퀴에서 바꾸면 다음 조회부터 즉시 반영된다.
     sett = _settings()
-    key = (product, _filters_key(f), sel_key, bool(auto_trim), int(max_raw_rows or 0),
+    effective_max_mb = max_mb if max_mb is not None else sett.get("max_download_mb", 500)
+    key = (product, _filters_key(f), sel_key, bool(auto_trim), int(effective_max_mb or 0),
            sett.get("value_col", ""), bool(sett.get("scale_applied")))
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
         if hit and hit[0] == full_sig:
             report("캐시된 Index 계산 결과 불러오는 중")
-            if not auto_trim:
-                _ensure_raw_rows_within_limit(hit[6], max_raw_rows)
+            _ensure_size_within_limit(hit[1], effective_max_mb, context="조회" if auto_trim else "조회/다운로드")
             return hit[1], hit[2], hit[3], hit[4], hit[5], hit[6], hit[7]
 
     # ── 2) vehicle 테이블 → 필요 ITEMID 결정 (raw 로딩 전!) ──
@@ -948,8 +966,7 @@ def _compute(product: str, f: Filters,
     # ── 3) raw 로딩 — 기간으로 파일을 먼저 버리고, 남은 파일에서도
     #      필요한 열 / needed_ids / 행 필터만 읽는다 (OOM·타임아웃 방지) ──
     df, notice = _load_raw(product, product_sig, full_sig, needed_ids=needed_ids, f=f,
-                           row_budget=(max_raw_rows if auto_trim else None),
-                           progress=progress)
+                           row_budget=None, progress=progress)
     if df.height == 0:
         raise HTTPException(400, f"'{product}' ET 데이터가 비어 있습니다")
     # pushdown 은 근사(컬럼 없음·형식 오류는 건너뜀)이므로 정확한 판정을 다시 한다.
@@ -959,27 +976,15 @@ def _compute(product: str, f: Filters,
         raise HTTPException(400, "필터 조건에 맞는 ET 데이터가 없습니다 — 기간·lot 등 필터를 조정하세요")
     raw_rows = df.height
 
-    if auto_trim:
-        # 조회 화면은 한도 초과를 에러로 돌려주지 않는다 — 최신 데이터만
-        # 남기고 안내한다. 전체가 필요하면 필터를 걸어 다운로드로 유도.
-        if max_raw_rows and raw_rows > max_raw_rows:
-            df = _trim_recent(df, max_raw_rows)
-            trim_note = (f"raw {raw_rows:,}행 중 최신 {df.height:,}행만 조회합니다 — "
-                         "전체가 필요하면 기간·lot 필터를 좁혀 주세요")
-            notice = f"{notice} · {trim_note}" if notice else trim_note
-            raw_rows = df.height
-    else:
-        # 다운로드(전량) 경로는 설정 한도 안에서만 pivot 한다. 이 검사를
-        # pivot 전에 수행해야 넓은 ET raw를 wide로 펼치다 서버가 502/OOM으로
-        # 끊기는 상황을 막을 수 있다.
-        _ensure_raw_rows_within_limit(raw_rows, max_raw_rows)
+    # 원본 메모리 용량 가드 (최종 허용 용량의 2배 초과 시 pivot 전 차단)
+    _ensure_size_within_limit(df, (effective_max_mb or 500) * 2, context="ET 원본 데이터")
 
     # 크기 가드 — 필터 후에도 너무 크면 pivot 전에 차단
     _MAX_RAW_FOR_PIVOT = 20_000_000
     if raw_rows > _MAX_RAW_FOR_PIVOT:
         raise HTTPException(
             400,
-            f"필터 후 raw 데이터가 {raw_rows:,}행으로 너무 큽니다 "
+            f"용량초과: 필터 후 raw 데이터가 {raw_rows:,}행으로 너무 큽니다 "
             f"(상한 {_MAX_RAW_FOR_PIVOT:,}). 기간·lot 등 필터를 더 좁혀 주세요.",
         )
     logger.info("reformatize [%s]: raw %d행, items=%s, filters=%s",
@@ -1011,6 +1016,7 @@ def _compute(product: str, f: Filters,
     except ValueError as e:
         raise HTTPException(400, str(e))
     report(f"Index 계산 완료 ({wide.height:,}행)")
+    _ensure_size_within_limit(wide, effective_max_mb, context="조회" if auto_trim else "조회/다운로드")
     est = _df_est_bytes(wide)
     with _CACHE_LOCK:
         _CACHE.pop(key, None)
@@ -1062,6 +1068,19 @@ def _filter_desc(f: Filters) -> str:
         if v.strip():
             parts.append(f"{k}={v.strip()}")
     return ", ".join(parts)
+
+
+def _download_name(product: str, f: Filters, username: str, *, unique_id: str = "",
+                   agg: str = "", suffix: str = "") -> str:
+    context = [product, _filter_desc(f) or "filtered"]
+    if agg:
+        context.append(f"agg-{agg}")
+    if suffix:
+        context.append(suffix)
+    return download_filename(
+        "ET-download", username=username, unique_id=unique_id,
+        context=context, extension="csv",
+    )
 
 
 def _contains_any(df: pl.DataFrame, col: str, spec: str,
@@ -1431,18 +1450,36 @@ def settings_get(_user=Depends(current_user)):
 
 class SettingsReq(BaseModel):
     page_rows: int = DEFAULT_SETTINGS["page_rows"]
-    max_download_rows: int = DEFAULT_SETTINGS["max_download_rows"]
+    max_download_mb: int = DEFAULT_SETTINGS["max_download_mb"]
+    max_download_rows: int | None = None
     value_col: str = ""          # "" = 자동 감지 (value/et_value/...)
     scale_applied: bool = False  # 원본 값에 REAL scale 이 이미 곱해진 소스
+    share_base_url: str | None = None
 
 
 @router.post("/settings")
 def settings_save(req: SettingsReq, user=Depends(current_user)):
+    share_base_url = _settings()["share_base_url"] if req.share_base_url is None else req.share_base_url.strip()
+    if share_base_url:
+        try:
+            from core.mail import validate_share_base_url
+            share_base_url = validate_share_base_url(share_base_url)
+        except ValueError:
+            raise HTTPException(400, "공유 기본 주소는 쿼리·인증정보 없이 http:// 또는 https:// 주소로 입력하세요.")
+    if req.share_base_url is not None:
+        try:
+            from core.mail import set_share_base_url
+            set_share_base_url(share_base_url)
+        except Exception as e:
+            logger.warning("Failed to sync share_base_url: %s", e)
+    mb_val = req.max_download_mb
     data = {
         "page_rows": max(10, min(int(req.page_rows), PAGE_ROWS_MAX)),
-        "max_download_rows": max(100, min(int(req.max_download_rows), DOWNLOAD_ROWS_MAX)),
+        "max_download_mb": max(10, min(int(mb_val), DOWNLOAD_MB_MAX)),
+        "max_download_rows": max(100, min(int(req.max_download_rows or (mb_val * 1000)), DOWNLOAD_ROWS_MAX)),
         "value_col": str(req.value_col or "").strip()[:64],
         "scale_applied": bool(req.scale_applied),
+        "share_base_url": share_base_url,
         "updated_by": user.get("username", ""),
     }
     save_json(SETTINGS_FILE, data)
@@ -1457,6 +1494,7 @@ class RunReq(Filters):
     agg: str = ""           # ""=shot raw, 또는 max/min/median/avg/std/p90/p10
     # 화면이 만든 1회용 토큰 — /run/progress 로 진행 상황을 폴링할 때 쓴다.
     progress_token: str = ""
+    history_id: str = ""
 
 
 @router.get("/run/progress")
@@ -1507,14 +1545,41 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
     try:
         wide_full, out_cols, errors, vehicle_csv, table, _raw_rows, notice = _compute(
             req.product, req, selected_items=req_items or None,
-            max_raw_rows=cfg["max_download_rows"], auto_trim=True, progress=report)
-    except HTTPException:
-        # 입력/행 수 한도 오류를 500으로 감싸면 프록시에서 502처럼 보일 수 있다.
-        # 사용자가 필터나 설정을 바로 조정할 수 있도록 원래 상태 코드를 보존한다.
+            max_mb=cfg.get("max_download_mb", 500), auto_trim=True, progress=report)
+    except HTTPException as exc:
+        try:
+            _save_or_increment_reformatize_history(
+                req.product,
+                items=req_items,
+                filters=req,
+                agg=req.agg,
+                username=str(user.get("username") or ""),
+                history_id=req.history_id,
+                status="error",
+                error_message=str(exc.detail or ""),
+                elapsed_ms=round((time.monotonic() - t0) * 1000),
+            )
+        except Exception as h_err:
+            logger.warning("Failed to record failed reformatize history: %s", h_err)
         raise
     except Exception as e:
         logger.exception("reformatize run failed: product=%s", req.product)
-        raise HTTPException(500, f"계산 실패: {e}")
+        err_msg = f"계산 실패: {e}"
+        try:
+            _save_or_increment_reformatize_history(
+                req.product,
+                items=req_items,
+                filters=req,
+                agg=req.agg,
+                username=str(user.get("username") or ""),
+                history_id=req.history_id,
+                status="error",
+                error_message=err_msg,
+                elapsed_ms=round((time.monotonic() - t0) * 1000),
+            )
+        except Exception as h_err:
+            logger.warning("Failed to record failed reformatize history: %s", h_err)
+        raise HTTPException(500, err_msg)
 
     # ── 의존성 트리 구축 + 출력 컬럼 결정 ──
     report("결과 표 준비 중")
@@ -1565,6 +1630,7 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
                 detail=f"product={req.product} items={_items_txt} agg={req.agg.strip() or 'raw'} "
                        f"rows={wide.height} filter=[{_filter_desc(req) or '없음'}]",
                 tab="reformatize")
+    elapsed = round((time.monotonic() - t0) * 1000)
     try:
         _save_or_increment_reformatize_history(
             req.product,
@@ -1572,6 +1638,11 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
             filters=req,
             agg=req.agg,
             username=str(user.get("username") or ""),
+            history_id=req.history_id,
+            status="success",
+            error_message="",
+            row_count=wide.height,
+            elapsed_ms=elapsed,
         )
     except Exception as exc:
         logger.warning("Failed to auto-record reformatize history: %s", exc)
@@ -1640,7 +1711,7 @@ def _csv_stream_response(df: pl.DataFrame, filename: str, on_done=None):
     return StreamingResponse(
         _gen(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": download_content_disposition(fname)},
     )
 
 
@@ -1663,14 +1734,9 @@ def _check_download_request(product: str, f: Filters, wanted: list[str],
                             is_admin: bool) -> list[str]:
     """다운로드 전제 조건 검증 — 실제로 뽑을 alias 목록을 돌려준다.
 
-    무거운 계산(대기열 적재) **전에** 400/403 을 내기 위해 분리했다. 필터 없는
-    전체 다운로드 차단과 비공개 항목 규칙은 UI 우회 호출에도 그대로 적용된다.
+    필터(날짜·lot 등) 미지정도 허용하며, 최종 결과 용량이 초과되면 계산 시 차단된다.
+    비공개 항목 규칙은 UI 우회 호출에도 그대로 적용된다.
     """
-    if not _has_filter(f):
-        raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
-                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·"
-                                 "total_site_cnt·PGM point 수 "
-                                 "중 하나 이상을 지정하세요")
     hidden = _hidden_for(product, is_admin)
     if not is_admin and not wanted and hidden:
         visible = _visible_aliases_for(product, hidden)
@@ -1693,9 +1759,10 @@ def _build_download_frame(product: str, f: Filters, wanted: list[str], agg: str,
     """
     hidden = _hidden_for(product, is_admin)
     cfg = _settings()
+    max_mb = cfg.get("max_download_mb", 500)
     wide_full, out_cols, _errors, vehicle_csv, table, raw_rows, _notice = _compute(
         product, f, selected_items=wanted or None,
-        max_raw_rows=cfg["max_download_rows"], progress=progress)
+        max_mb=max_mb, progress=progress)
     # Match the screen ordering and retain all raw ITEMIDs used by calculations.
     out_cols = _resolve_output_cols(out_cols, table, wanted, wide_full, include_raw=True)
     if hidden:
@@ -1708,6 +1775,7 @@ def _build_download_frame(product: str, f: Filters, wanted: list[str], agg: str,
         fixed = set(PIVOT_KEY_COLS) | set(PIVOT_META_COLS)
         value_cols = [c for c in out_cols if c not in fixed]
         wide = _aggregate(wide, value_cols, agg_method)
+    _ensure_size_within_limit(wide, max_mb, context="CSV 다운로드")
     return wide, vehicle_csv, raw_rows
 
 
@@ -1763,7 +1831,11 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
         _record_download(user.get("username", ""), product, f, wanted, agg, vehicle_csv,
                          wide.height, wide.width, raw_rows, sent_bytes)
 
-    return _csv_stream_response(wide, f"{safe_filename(product)}_reformatize", on_done=_log)
+    return _csv_stream_response(
+        wide,
+        _download_name(product, f, user.get("username", ""), agg=agg),
+        on_done=_log,
+    )
 
 
 # ── 다운로드 대기열 ──────────────────────────────────────────────────
@@ -1777,6 +1849,7 @@ class DownloadJobReq(Filters):
     product: str
     items: list[str] = []
     agg: str = ""
+    history_id: str = ""
 
 
 class JobRef(BaseModel):
@@ -1891,7 +1964,7 @@ def _run_download_isolated(ctx, *, product: str, f: Filters, wanted: list[str],
 
 
 def _download_job_runner(ctx, *, product: str, f: Filters, wanted: list[str], agg: str,
-                         is_admin: bool):
+                         is_admin: bool, username: str):
     """대기열 워커가 실행하는 실제 작업 — 계산 → 임시 CSV 파일."""
     from core import download_queue
 
@@ -1926,7 +1999,7 @@ def _download_job_runner(ctx, *, product: str, f: Filters, wanted: list[str], ag
         raise
     return {
         "path": path,
-        "filename": f"{safe_filename(product)}_reformatize.csv",
+        "filename": _download_name(product, f, username, unique_id=ctx.job_id, agg=agg),
         "rows": rows,
         "cols": cols,
         "meta": {"vehicle_csv": vehicle_csv, "raw_rows": raw_rows,
@@ -1941,17 +2014,32 @@ def download_start(req: DownloadJobReq, user=Depends(current_user)):
     from core import download_queue
 
     is_admin = user.get("role") == "admin"
-    wanted = _check_download_request(req.product, req, list(req.items or []), is_admin)
-    # 규칙 CSV/제품 자체가 잘못됐으면 대기열에 넣기 전에 알린다.
-    if _find_csv(req.product) is None:
-        raise HTTPException(400, f"'{req.product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
     username = user.get("username", "")
     agg_method = str(req.agg or "").strip().lower()
+    try:
+        wanted = _check_download_request(req.product, req, list(req.items or []), is_admin)
+        if _find_csv(req.product) is None:
+            raise HTTPException(400, f"'{req.product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
+    except HTTPException as exc:
+        try:
+            _save_or_increment_reformatize_history(
+                req.product,
+                items=list(req.items or []),
+                filters=req,
+                agg=agg_method,
+                username=username,
+                history_id=req.history_id,
+                status="error",
+                error_message=str(exc.detail or ""),
+            )
+        except Exception:
+            pass
+        raise
     dedupe = "|".join([req.product, str(_filters_key(req)), ",".join(sorted(wanted)), agg_method])
 
     def _run(ctx):
         return _download_job_runner(ctx, product=req.product, f=req, wanted=wanted,
-                                    agg=agg_method, is_admin=is_admin)
+                                    agg=agg_method, is_admin=is_admin, username=username)
 
     view = download_queue.submit(
         "reformatize", username, f"{req.product} ET 다운로드", _run,
@@ -1969,6 +2057,9 @@ def download_start(req: DownloadJobReq, user=Depends(current_user)):
             filters=req,
             agg=agg_method,
             username=username,
+            history_id=req.history_id,
+            status="success",
+            error_message="",
         )
     except Exception as exc:
         logger.warning("Failed to auto-record reformatize history on download: %s", exc)
@@ -2069,7 +2160,7 @@ def download_file(job_id: str = Query(...), user=Depends(current_user)):
     return StreamingResponse(
         _gen(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": download_content_disposition(fname)},
     )
 
 
@@ -2093,9 +2184,10 @@ class TestReq(Filters):
 def _run_test(product: str, items: list[TestItem], f: Filters, auto_trim: bool = False,
               agg: str = ""):
     """필터된 base wide + 테스트 ADDP 적용 → (결과 df[key+meta+참조+테스트], 테스트 alias, 에러, csv, notice)."""
-    max_raw = _settings()["max_download_rows"] if auto_trim else None
+    cfg = _settings()
+    max_mb = cfg.get("max_download_mb", 500)
     wide_full, out_cols, _base_errors, vehicle_csv, _table, _raw_rows, notice = _compute(
-        product, f, max_raw_rows=max_raw, auto_trim=auto_trim)
+        product, f, max_mb=max_mb, auto_trim=auto_trim)
     rows = []
     seen_alias: set[str] = set()
     for it in items:
@@ -2145,7 +2237,7 @@ def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
     if product:
         # 도움말은 참조 가능한 컬럼 이름만 필요하다 — 경량(auto_trim) 조회로 충분.
         wide_full, out_cols, _e, vehicle_csv, table, _raw_rows, _notice = _compute(
-            product, Filters(), max_raw_rows=_settings()["max_download_rows"], auto_trim=True)
+            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True)
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
         keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
         metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]
@@ -2188,18 +2280,10 @@ def test_run(req: TestReq, _admin=Depends(require_admin)):
 
 @router.post("/test/download")
 def test_download(req: TestReq, admin=Depends(require_admin)):
-    if not _has_filter(req):
-        raise HTTPException(400, "필터 없이 전체 다운로드는 허용되지 않습니다 — "
-                                 "기간(tkout_time)·root_lot_id·step_id·step_seq·wafer_id·"
-                                 "total_site_cnt·PGM point 수 "
-                                 "중 하나 이상을 지정하세요")
     out, test_aliases, _errors, vehicle_csv, _notice = _run_test(
         req.product, req.items, req, agg=req.agg)
     cfg = _settings()
-    if out.height > cfg["max_download_rows"]:
-        raise HTTPException(400, f"결과 {out.height:,}행이 다운로드 최대 {cfg['max_download_rows']:,}행을 "
-                                 f"초과합니다. 기간·lot 등 필터를 조정해 행을 줄이거나 "
-                                 f"톱니바퀴 설정에서 상한을 올리세요.")
+    _ensure_size_within_limit(out, cfg.get("max_download_mb", 500), context="테스트 CSV 다운로드")
 
     def _log(sent_bytes: int):
         jsonl_append(DL_LOG, {
@@ -2213,7 +2297,11 @@ def test_download(req: TestReq, admin=Depends(require_admin)):
             "size_mb": round(sent_bytes / 1e6, 2),
         })
 
-    return _csv_stream_response(out, f"{safe_filename(req.product)}_addp_test", on_done=_log)
+    return _csv_stream_response(
+        out,
+        _download_name(req.product, req, admin.get("username", ""), agg=req.agg, suffix="ADDP-test"),
+        on_done=_log,
+    )
 
 
 # ── ET 다운로드 검색식 및 히스토리 관리 ───────────────────────────────────
@@ -2359,6 +2447,11 @@ def _save_or_increment_reformatize_history(
     username: str,
     name: str | None = None,
     force_new: bool = False,
+    history_id: str | None = None,
+    status: str = "success",
+    error_message: str = "",
+    row_count: int = 0,
+    elapsed_ms: int = 0,
 ) -> dict:
     clean_product = str(product or "").strip().upper()
     if not clean_product:
@@ -2367,6 +2460,7 @@ def _save_or_increment_reformatize_history(
     norm_filters = _normalize_reformatize_filters(filters)
     clean_agg = str(agg or "").strip().lower()
     user = str(username or "anonymous").strip()
+    clean_history_id = str(history_id or "").strip()
     expr_hash = _reformatize_expression_hash(clean_product, clean_items, norm_filters, clean_agg)
     expression = _format_reformatize_expression(clean_product, clean_items, norm_filters, clean_agg)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -2379,15 +2473,28 @@ def _save_or_increment_reformatize_history(
         )
         existing_idx = None
         if not force_new:
-            for idx, e in enumerate(entries):
-                if str(e.get("expression_hash") or "") == expr_hash:
-                    existing_idx = idx
-                    break
+            if clean_history_id:
+                for idx, e in enumerate(entries):
+                    if (str(e.get("history_id") or "").casefold() == clean_history_id.casefold()
+                            and str(e.get("expression_hash") or "") == expr_hash):
+                        existing_idx = idx
+                        break
+            if existing_idx is None:
+                for idx, e in enumerate(entries):
+                    if str(e.get("expression_hash") or "") == expr_hash:
+                        existing_idx = idx
+                        break
 
         if existing_idx is not None:
             entry = dict(entries[existing_idx])
             entry["reuse_count"] = max(0, int(entry.get("reuse_count") or 0)) + 1
             entry["last_used_at"] = now
+            entry["status"] = status
+            entry["error_message"] = str(error_message or "")
+            if row_count:
+                entry["row_count"] = row_count
+            if elapsed_ms:
+                entry["elapsed_ms"] = elapsed_ms
             if name and name.strip():
                 entry["name"] = name.strip()
             entries[existing_idx] = entry
@@ -2426,6 +2533,10 @@ def _save_or_increment_reformatize_history(
                 "timestamp": now,
                 "last_used_at": now,
                 "reuse_count": 1,
+                "status": status,
+                "error_message": str(error_message or ""),
+                "row_count": row_count,
+                "elapsed_ms": elapsed_ms,
             }
             jsonl_append(HISTORY_FILE, entry)
             return entry
@@ -2452,20 +2563,27 @@ def _reformatize_visible_history_entries(*, recent_limit: int = 500) -> list[dic
             "likes_count": len(liked_users),
             "liked_users": liked_users,
             "reuse_count": max(0, int(row.get("reuse_count") or 0)),
+            "status": str(row.get("status") or "success"),
+            "error_message": str(row.get("error_message") or ""),
+            "row_count": int(row.get("row_count") or 0),
+            "elapsed_ms": int(row.get("elapsed_ms") or 0),
         })
         normalized.append(row)
 
+    # 1. 처음 수행한 검색이 1번이 되도록 생성 시각(timestamp) 기준 오름차순으로 seq 번호 부여
+    normalized.sort(key=lambda e: str(e.get("timestamp") or ""))
+    for i, row in enumerate(normalized, 1):
+        row["seq"] = i
+
+    # 2. 최근 검색이 제일 위에 오도록 last_used_at/timestamp 내림차순 정렬
     pinned = [e for e in normalized if e.get("pinned")]
     pinned.sort(
-        key=lambda e: str(e.get("pinned_at") or e.get("timestamp") or ""),
+        key=lambda e: str(e.get("last_used_at") or e.get("pinned_at") or e.get("timestamp") or ""),
         reverse=True,
     )
     unpinned = [e for e in normalized if not e.get("pinned")]
     unpinned.sort(
-        key=lambda e: (
-            int(e.get("reuse_count") or 0),
-            str(e.get("last_used_at") or e.get("timestamp") or ""),
-        ),
+        key=lambda e: str(e.get("last_used_at") or e.get("timestamp") or ""),
         reverse=True,
     )
     max_count = max(1, min(1000, int(recent_limit or 500)))

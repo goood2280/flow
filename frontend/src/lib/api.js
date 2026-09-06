@@ -138,6 +138,17 @@ export function putJson(url, body) {
   });
 }
 
+export function responseDownloadFilename(response, fallback = "download") {
+  const disposition = response?.headers?.get?.("content-disposition") || "";
+  const utf8 = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8?.[1]) {
+    try { return decodeURIComponent(utf8[1].trim().replace(/^"|"$/g, "")); } catch (_) {}
+  }
+  const plain = disposition.match(/filename\s*=\s*"([^"]+)"/i)
+    || disposition.match(/filename\s*=\s*([^;]+)/i);
+  return (plain?.[1] || fallback || "download").trim().replace(/^"|"$/g, "");
+}
+
 // Stream a URL to a file download. Returns promise resolving once triggered.
 export function dl(url, filename) {
   const _isApi = typeof url === "string" && url.startsWith("/api/");
@@ -157,10 +168,11 @@ export function dl(url, filename) {
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = filename || "download.csv";
+    a.download = responseDownloadFilename(r, filename || "download.csv");
     document.body.appendChild(a);
     a.click();
     a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
 }
 
@@ -186,7 +198,7 @@ export function postDownload(url, body, filename) {
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = filename || "download";
+    a.download = responseDownloadFilename(r, filename || "download");
     document.body.appendChild(a);
     a.click();
     a.remove();

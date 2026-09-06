@@ -8,6 +8,7 @@ import { Button, Input, PageHeader, PageShell, Pill, Select, Toolbar } from "../
 import { sf } from "../../lib/api";
 import { useUserRole } from "../../lib/permissions";
 import { orderProductItems } from "../../lib/productOrder";
+import LotNotesModal from "./LotNotesModal";
 
 const loadSplitTableModule = () => import("../splittable/My_SplitTable");
 const preloadSplitTable = () => { void loadSplitTableModule().catch(() => {}); };
@@ -210,6 +211,14 @@ export default function My_LotManagement({ user }) {
     if (!viewLot) return;
     splitViewRef.current?.scrollIntoView({behavior:"smooth", block:"start"});
   }, [viewLot]);
+
+  const [notesModalLot, setNotesModalLot] = useState(null);
+
+  const openNotesModal = (lotId, targetProduct = "") => {
+    const nextLot = String(lotId || "").trim();
+    if (!nextLot) return;
+    setNotesModalLot({ lotId: nextLot, product: targetProduct || product || "" });
+  };
 
   const openSplitView = (lotId, openNotes = false, targetProduct = "") => {
     const nextLot = String(lotId || "").trim();
@@ -601,7 +610,16 @@ export default function My_LotManagement({ user }) {
       .catch(error => toast.error(`제품 순서 저장 실패: ${error.message || error}`))
       .finally(() => setProductOrderBusy(false));
   };
-  const customPool = useMemo(() => schema.filter(c => c.toLowerCase().includes(customSearch.trim().toLowerCase())), [schema, customSearch]);
+  const customPool = useMemo(() => {
+    const raw = customSearch.trim().toLowerCase();
+    if (!raw) return schema;
+    const terms = raw.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+    if (!terms.length) return schema;
+    return schema.filter(c => {
+      const lc = c.toLowerCase();
+      return terms.some(t => lc.includes(t));
+    });
+  }, [schema, customSearch]);
   const work = editing ? draft : table;
   const visibleRows = useMemo(() => {
     const rows = work?.rows || [];
@@ -736,7 +754,7 @@ export default function My_LotManagement({ user }) {
                       <th style={{ minWidth: 120 }}>제품</th>
                       <th style={{ minWidth: 120 }}>purpose</th>
                       <th style={{ minWidth: 140 }}>lot_id</th>
-                      <th title="SplitTable 보기 / 공유 노트" style={{ width: 126 }}>View / Notes</th>
+                      <th title="SplitTable 보기" style={{ width: 70 }}>View</th>
                       <th style={{ minWidth: 130 }}>현step_id</th>
                       <th style={{ minWidth: 120 }}>알람 step_id</th>
                       <th style={{ minWidth: 200 }}>step_desc</th>
@@ -762,10 +780,8 @@ export default function My_LotManagement({ user }) {
                             </td>
                             <td><div className="lot-management__readonly-cell">{row.values?.purpose || "-"}</div></td>
                             <td
-                              onDoubleClick={cleanLot ? () => openSplitView(cleanLot, true, prod) : undefined}
-                              onContextMenu={cleanLot ? event => {event.preventDefault();openSplitView(cleanLot,true,prod);} : undefined}
-                              onMouseEnter={cleanLot ? preloadSplitTable : undefined}
-                              title={cleanLot ? "더블클릭 또는 우클릭: SplitTable과 전체 노트 보기" : undefined}
+                              onClick={cleanLot ? () => openNotesModal(cleanLot, prod) : undefined}
+                              title={cleanLot ? "클릭: LOT 노트 보기 및 작성" : undefined}
                               style={{ cursor: cleanLot ? "pointer" : undefined }}
                             >
                               <div className="lot-management__readonly-cell" style={{ fontWeight: 700, color: "var(--accent)" }}>
@@ -784,18 +800,6 @@ export default function My_LotManagement({ user }) {
                                 aria-label="SplitTable 보기"
                               >
                                 보기
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="compact"
-                                disabled={!cleanLot}
-                                onClick={() => openSplitView(cleanLot, true, prod)}
-                                onMouseEnter={preloadSplitTable}
-                                onFocus={preloadSplitTable}
-                                title="공유 노트 열기"
-                                aria-label="공유 노트 열기"
-                              >
-                                노트
                               </Button>
                             </td>
                             <td><div className="lot-management__computed-cell">{row.values?.current_step_id || "-"}</div></td>
@@ -906,7 +910,7 @@ export default function My_LotManagement({ user }) {
                           {column.label}
                           {editing&&!DEFAULT_COLUMNS.some(c=>c.id===column.id)&&<Button variant="danger" size="compact" className="u-push-right" onClick={() => deleteColumn(column)} aria-label={`${column.label} 열 삭제`}>×</Button>}
                         </th>
-                        {column.id==="lot_id"&&<th title="SplitTable 보기 / 공유 노트" style={{width:126}}>View / Notes</th>}
+                        {column.id==="lot_id"&&<th title="SplitTable 보기" style={{width:70}}>View</th>}
                         {column.id==="comment"&&<th title="주요랏(관심랏) 등록" style={{width:80,textAlign:"center"}}>주요랏</th>}
                       </Fragment>
                     ))}
@@ -924,18 +928,16 @@ export default function My_LotManagement({ user }) {
                     return <Fragment key={column.id}>
                       <td onContextMenu={editing&&colorable
                         ? event => openCellColorPicker(event,row.id,column.id)
-                        : !editing&&column.id==="lot_id"&&String(value).trim()
-                          ? event => {event.preventDefault();openSplitView(value,true);}
-                          : undefined}
-                        onDoubleClick={!editing&&column.id==="lot_id"&&String(value).trim() ? () => openSplitView(value,true) : undefined}
+                        : undefined}
+                        onClick={!editing&&column.id==="lot_id"&&String(value).trim() ? () => openNotesModal(String(value).trim(), product) : undefined}
                         onMouseEnter={!editing&&column.id==="lot_id"&&String(value).trim() ? preloadSplitTable : undefined}
-                        title={!editing&&column.id==="lot_id"&&String(value).trim() ? "더블클릭 또는 우클릭: SplitTable과 전체 노트 보기" : editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor,cursor:!editing&&column.id==="lot_id"&&String(value).trim()?"pointer":undefined}}>
+                        title={!editing&&column.id==="lot_id"&&String(value).trim() ? "클릭: LOT 노트 보기 및 작성" : editing&&colorable ? "우클릭: 배경색 팔레트 열기" : undefined} style={{padding:0,background:cellColor,cursor:!editing&&column.id==="lot_id"&&String(value).trim()?"pointer":undefined}}>
                         {editing ? (computed
                           ? <div className="lot-management__computed-cell">{value}</div>
                           : <div className="u-inline">{column.id==="lot_id"
                             ? <LotIdEditor value={value} candidates={lotCandidates} onChange={nextValue => updateLotId(row.id,nextValue)} onCommit={nextValue => refreshRowStatus(row.id,nextValue)} onPaste={e => pasteBlock(e,row.id,column.id)} onSearch={searchLotCandidates}/>
                             : <textarea className="lot-management__cell-input" value={value} onChange={e => updateCell(row.id,column.id,e.target.value)} onPaste={e => pasteBlock(e,row.id,column.id)} rows={1}/>}</div>)
-                          : <div className="lot-management__readonly-cell" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}>
+                          : <div className="lot-management__readonly-cell" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4,fontWeight:column.id==="lot_id"?700:undefined,color:column.id==="lot_id"?"var(--accent)":undefined}}>
                               <span>{value}</span>
                               {column.id === "alert_step_id" && value && isStepReachedOrExceeded(row.values?.current_step_id, value) && (
                                 <span className="home-alert-badge home-alert-badge--notice" style={{fontSize:10,padding:"1px 4px",flexShrink:0}} title="기준 Step 도달">
@@ -946,7 +948,6 @@ export default function My_LotManagement({ user }) {
                       </td>
                       {column.id==="lot_id"&&<td className="lot-management__cell-actions" style={{whiteSpace:"nowrap"}}>
                         <Button variant="secondary" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,false)} onMouseEnter={preloadSplitTable} onFocus={preloadSplitTable} title="SplitTable 보기" aria-label="SplitTable 보기">보기</Button>
-                        <Button variant="ghost" size="compact" disabled={!String(row.values?.lot_id || "").trim()} onClick={() => openSplitView(row.values?.lot_id,true)} onMouseEnter={preloadSplitTable} onFocus={preloadSplitTable} title="공유 노트 열기" aria-label="공유 노트 열기">노트</Button>
                       </td>}
                       {column.id==="comment"&&<td className="lot-management__cell-actions" style={{textAlign:"center",verticalAlign:"middle",whiteSpace:"nowrap"}}>
                         {String(row.values?.lot_id || "").trim() && (()=>{
@@ -1004,6 +1005,15 @@ export default function My_LotManagement({ user }) {
       })}</div>
     </div>}
     {showVersions&&<Modal open onClose={() => setShowVersions(false)} width={760} zIndex={2500}><div style={{fontWeight:900,fontSize:16,marginBottom:12}}>버전 기록 · {String(product).replace(/^ML_TABLE_/, "")}</div><div style={{maxHeight:560,overflow:"auto"}}>{versions.length ? versions.map(v => {const diff=versionDiffs[v.version];const open=openVersion===v.version;return <div key={v.version} style={{borderBottom:"1px solid var(--border)"}}><div style={{display:"grid",gridTemplateColumns:"70px 1fr auto auto",gap:8,alignItems:"center",padding:"9px 4px"}}><strong style={{fontFamily:"monospace",color:"var(--accent)"}}>v{v.version}</strong><div><div style={{fontSize:13}}>{v.note || "LOT table edit"}</div><div style={{fontSize:11,color:"var(--text-secondary)"}}>{v.updated_at?.slice(0,19).replace("T"," ")} · {v.updated_by || "-"} · {v.row_count}행 / {v.column_count}열</div></div><button style={buttonStyle} onClick={() => toggleVersionChanges(v.version)}>{open?"▾ 변경항목 닫기":`▸ 변경항목${diff?` (${diff.change_count})`:""}`}</button><button style={buttonStyle} onClick={() => rollback(v.version)}>롤백</button></div>{open&&<div style={{margin:"0 4px 10px 74px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>{diffLoading===v.version?<div style={{padding:12,fontSize:12,color:"var(--text-secondary)"}}>변경항목을 불러오는 중...</div>:diff?<>{!diff.comparison_available&&v.version>1&&<div style={{padding:"8px 10px",fontSize:12,color:"var(--warn)",borderBottom:"1px solid var(--border)"}}>비교할 직전 버전이 보존기간을 지나 현재 버전 전체를 기준으로 표시합니다.</div>}{diff.changes.length?diff.changes.map((change,index)=><div key={`${change.type}-${index}`} style={{display:"grid",gridTemplateColumns:"80px minmax(90px,140px) 1fr",gap:8,padding:"7px 9px",borderBottom:index===diff.changes.length-1?0:"1px solid var(--border)",fontSize:12,alignItems:"start"}}><span style={{fontWeight:800,color:change.type==="row_removed"||change.type==="column_removed"?"var(--danger)":change.type==="color_changed"?"var(--violet)":"var(--accent)"}}>{changeTypeLabel(change.type)}</span><span style={{fontFamily:"monospace",color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis"}} title={change.lot_id||change.row_id||""}>{change.lot_id||change.column||"-"}</span><div><span style={{fontWeight:700}}>{change.column||"행"}</span>{change.type==="color_changed"?<span style={{marginLeft:8,display:"inline-flex",alignItems:"center",gap:5}}><i style={{width:14,height:14,border:"1px solid #9ca3af",background:change.old,display:"inline-block"}}/> {change.old} → <i style={{width:14,height:14,border:"1px solid #9ca3af",background:change.new,display:"inline-block"}}/> {change.new}</span>:<div style={{marginTop:2,whiteSpace:"pre-wrap",wordBreak:"break-word"}}><span style={{color:"var(--danger)"}}>{change.old||"(없음)"}</span><span style={{margin:"0 6px",color:"var(--text-secondary)"}}>→</span><span style={{color:"var(--ok)"}}>{change.new||"(없음)"}</span></div>}</div></div>):<div style={{padding:12,fontSize:12,color:"var(--text-secondary)"}}>직전 버전과 달라진 항목이 없습니다.</div>}{diff.truncated&&<div style={{padding:8,fontSize:11,color:"var(--warn)"}}>변경항목이 많아 처음 1,000건만 표시합니다.</div>}</>:null}</div>}</div>}) : <div style={{padding:30,textAlign:"center",color:"var(--text-secondary)"}}>저장된 버전이 없습니다.</div>}</div></Modal>}
-    {showCustom&&<Modal open onClose={() => setShowCustom(false)} width={720} zIndex={2600}><div style={{fontWeight:900,fontSize:16,marginBottom:10}}>SplitTable CUSTOM SET</div><div style={{display:"flex",gap:8,marginBottom:10}}><input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...buttonStyle,flex:1}}/><input value={customSearch} onChange={e=>setCustomSearch(e.target.value)} placeholder="컬럼 검색" style={{...buttonStyle,flex:1}}/></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,maxHeight:420}}><div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"auto",padding:6}}>{customs.map(c => <button key={c.name} onClick={() => {setCustomName(c.name);setCustomColumns(c.columns || []);}} style={{...buttonStyle,width:"100%",textAlign:"left",marginBottom:4,background:customName===c.name?"var(--accent-glow)":"var(--bg-card)"}}>{c.name} <span style={{float:"right",color:"var(--text-secondary)"}}>{(c.columns||[]).length}</span></button>)}</div><div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"auto",padding:6}}>{customPool.map(column => {const checked=customColumns.includes(column);return <label key={column} style={{display:"block",padding:"5px 6px",fontSize:12,cursor:"pointer",color:checked?"var(--accent)":"var(--text-secondary)"}}><input type="checkbox" checked={checked} onChange={() => setCustomColumns(cur => checked?cur.filter(c=>c!==column):[...cur,column])}/> {column}</label>})}</div></div><div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:12}}><button style={buttonStyle} onClick={()=>setShowCustom(false)}>취소</button><button style={{...buttonStyle,background:"var(--accent)",color:"white"}} onClick={saveCustom}>저장</button></div></Modal>}
+    {showCustom&&<Modal open onClose={() => setShowCustom(false)} width={760} zIndex={2600}><div style={{fontWeight:900,fontSize:16,marginBottom:12}}>SplitTable CUSTOM SET</div><div style={{display:"flex",gap:8,marginBottom:12}}><input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...buttonStyle,flex:1}}/><input value={customSearch} onChange={e=>setCustomSearch(e.target.value)} placeholder="컬럼 검색 (쉼표 구분 가능, 예: KNOB, PPID)" style={{...buttonStyle,flex:1.2}}/></div><div style={{display:"grid",gridTemplateColumns:"1fr 1.2fr",gap:14,maxHeight:440}}><div style={{display:"flex",flexDirection:"column",gap:6}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"0 2px",minHeight:26}}><span style={{fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>저장된 세트 ({customs.length}개)</span></div><div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"auto",padding:6,height:380}}>{customs.map(c => <button key={c.name} onClick={() => {setCustomName(c.name);setCustomColumns(c.columns || []);}} style={{...buttonStyle,width:"100%",textAlign:"left",marginBottom:4,background:customName===c.name?"var(--accent-glow)":"var(--bg-card)"}}>{c.name} <span style={{float:"right",color:"var(--text-secondary)"}}>{(c.columns||[]).length}</span></button>)}</div></div><div style={{display:"flex",flexDirection:"column",gap:6}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"0 2px",minHeight:26}}><span style={{fontSize:12,color:"var(--text-secondary)",fontWeight:600}}>{customSearch.trim() ? `검색 ${customPool.length}개` : `전체 ${schema.length}개`} · 선택 {customColumns.length}개</span><div style={{display:"flex",gap:6}}><button type="button" style={{...buttonStyle,padding:"2px 8px",fontSize:12,color:"var(--accent)",borderColor:"var(--accent)"}} onClick={() => setCustomColumns(cur => {const set = new Set(cur);customPool.forEach(c => set.add(c));return Array.from(set);})} title={customSearch.trim() ? `검색된 ${customPool.length}개 컬럼 전체 선택` : "전체 컬럼 선택"}>전체 선택</button><button type="button" style={{...buttonStyle,padding:"2px 8px",fontSize:12,color:"var(--danger)",borderColor:"var(--border)"}} onClick={() => {if (customSearch.trim()) {const poolSet = new Set(customPool);setCustomColumns(cur => cur.filter(c => !poolSet.has(c)));} else {setCustomColumns([]);}}} title={customSearch.trim() ? `검색된 ${customPool.length}개 컬럼 전체 해제` : "선택된 전체 컬럼 해제"}>전체 해제</button></div></div><div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"auto",padding:6,height:380}}>{customPool.length ? customPool.map(column => {const checked=customColumns.includes(column);return <label key={column} style={{display:"block",padding:"5px 6px",fontSize:12,cursor:"pointer",color:checked?"var(--accent)":"var(--text-secondary)"}}><input type="checkbox" checked={checked} onChange={() => setCustomColumns(cur => checked?cur.filter(c=>c!==column):[...cur,column])}/> {column}</label>}) : <div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:13}}>일치하는 컬럼이 없습니다.</div>}</div></div></div><div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:12}}><button style={buttonStyle} onClick={()=>setShowCustom(false)}>취소</button><button style={{...buttonStyle,background:"var(--accent)",color:"white"}} onClick={saveCustom}>저장</button></div></Modal>}
+    {notesModalLot && (
+      <LotNotesModal
+        open
+        lotId={notesModalLot.lotId}
+        product={notesModalLot.product}
+        user={user}
+        onClose={() => setNotesModalLot(null)}
+      />
+    )}
   </PageShell>;
 }

@@ -511,6 +511,12 @@ def _scan_issue_lots(iss: dict, *, source_root: str, now_iso: str,
 def _issue_link(cfg: dict, issue_id: str) -> str:
     base = str(cfg.get("app_base_url") or "").strip().rstrip("/")
     if not base:
+        try:
+            from core.mail import get_share_base_url
+            base = get_share_base_url().rstrip("/")
+        except Exception:
+            base = ""
+    if not base:
         return ""
     return f"{base}/tracker?issue_id={issue_id}"
 

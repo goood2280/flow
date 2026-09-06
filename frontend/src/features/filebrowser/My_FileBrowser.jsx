@@ -2891,7 +2891,7 @@ export default function My_FileBrowser({
     }
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
-    dl(url,"data.csv").catch(e=>toast.error(e.message||"다운로드 실패"));
+    dl(url).catch(e=>toast.error(e.message||"다운로드 실패"));
   };
 
 

@@ -53,7 +53,7 @@ from core import search_timing_log as _search_timing_log
 from core import s3_sync as _s3
 from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, load_json_cached, save_json, safe_id,
-    csv_response, csv_writer_bytes,
+    csv_response, csv_writer_bytes, download_content_disposition, download_filename,
 )
 from core.splittable_sets_cache import invalidate as invalidate_splittable_sets_cache
 from app_v2.modules.splittable.rulebook_repository import RulebookRepository

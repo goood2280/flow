@@ -68,7 +68,7 @@ from core.auth import current_user
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
-    jsonl_append, jsonl_read, jsonl_trim, csv_response, safe_filename,
+    jsonl_append, jsonl_read, jsonl_trim, csv_response, download_filename, safe_filename,
     DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
     data_files_limited, source_data_files, load_json, save_json, atomic_write_text,
 )

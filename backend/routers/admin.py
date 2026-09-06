@@ -1245,6 +1245,11 @@ def get_settings(request: Request):
             }
         except Exception:
             merged["mail"] = None
+        try:
+            from core.mail import get_share_base_url
+            merged["share_base_url"] = get_share_base_url()
+        except Exception:
+            merged["share_base_url"] = str(adm.get("share_base_url") or "")
         # v8.7.7: LLM 설정도 admin 에게만 노출 (unredacted — 편집을 위해).
         try:
             merged["llm"] = _llm_active_from_admin(adm)
@@ -1309,6 +1314,7 @@ class MailCfgReq(BaseModel):
     enabled: Optional[bool] = None
     dep_ticket: Optional[str] = None              # v8.8.17: headers["x-dep-ticket"] shortcut
     domain: Optional[str] = None                  # v8.8.19: company email domain (예: "company.co.kr") — username-only 값 뒤에 자동 합성
+    app_base_url: Optional[str] = None
 
 
 class LLMCfgReq(BaseModel):
@@ -1350,6 +1356,7 @@ class SettingsSaveReq(BaseModel):
     llm: Optional[LLMCfgReq] = None
     flowi_defaults: Optional[FlowiDefaultsReq] = None
     flowi_persona: Optional[Dict[str, Any]] = None
+    share_base_url: Optional[str] = None
 
 
 @router.post("/settings/save")
@@ -1367,6 +1374,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     llm_in = data.pop("llm", None)
     flowi_defaults_in = data.pop("flowi_defaults", None)
     flowi_persona_in = data.pop("flowi_persona", None)
+    share_base_url_in = data.pop("share_base_url", None)
     # Clamp to sane bounds: dashboard 1..240 minutes, LOT progress cache 1..1440 minutes.
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
@@ -1499,12 +1507,18 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         current = _load_admin_settings()
         mail_cur = dict(current.get("mail") or {})
         # v8.8.19: `domain` 추가 — username-only 값 뒤에 @domain 자동 합성.
-        for k in ("api_url", "from_addr", "status_code", "dep_ticket", "domain"):
+        for k in ("api_url", "from_addr", "status_code", "dep_ticket", "domain", "app_base_url"):
             if mail_in.get(k) is not None:
                 v = str(mail_in.get(k) or "").strip()
                 if k == "domain":
                     v = v.lstrip("@")   # 허용: "company.co.kr" 또는 "@company.co.kr"
                 mail_cur[k] = v
+        if mail_in.get("app_base_url") is not None:
+            try:
+                from core.mail import set_share_base_url
+                set_share_base_url(mail_cur["app_base_url"])
+            except Exception:
+                pass
         # headers merge + dep_ticket 자동 반영.
         hdrs_out = dict(mail_cur.get("headers") or {})
         if mail_in.get("headers") is not None:
@@ -1574,10 +1588,42 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         }
         _save_admin_settings(current)
 
+    if share_base_url_in is not None:
+        try:
+            from core.mail import set_share_base_url
+            data["share_base_url"] = set_share_base_url(share_base_url_in)
+        except Exception as e:
+            logger.warning(f"admin save_settings failed to set share_base_url: {e}")
+
     _audit(request, "admin:settings-save",
            detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} flowi_persona={'yes' if flowi_persona_in is not None else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
+
+
+@router.get("/share-base-url")
+def admin_get_share_base_url():
+    """공통 공유 기본 URL 조회."""
+    try:
+        from core.mail import get_share_base_url
+        return {"ok": True, "share_base_url": get_share_base_url()}
+    except Exception:
+        return {"ok": True, "share_base_url": ""}
+
+
+class ShareBaseUrlReq(BaseModel):
+    share_base_url: str = ""
+
+
+@router.post("/share-base-url")
+def admin_set_share_base_url(req: ShareBaseUrlReq, _user=Depends(current_user)):
+    """공통 공유 기본 URL 저장."""
+    try:
+        from core.mail import set_share_base_url
+        url = set_share_base_url(req.share_base_url)
+        return {"ok": True, "share_base_url": url}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── LLM presets (P1) ──────────────────────────────────────────────

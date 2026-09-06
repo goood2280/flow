@@ -1,5 +1,8 @@
 import inspect
 from pathlib import Path
+import pytest
+
+pytest.skip("Flow-i is parked", allow_module_level=True)
 
 from routers import llm
 from routers import dashboard

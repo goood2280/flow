@@ -724,6 +724,57 @@ def safe_filename(s: str) -> str:
     return re.sub(r'[^\w\-.]', '_', s or "download")
 
 
+def download_filename(feature: str, *, username: str, context=None,
+                      unique_id: str = "", extension: str = "csv",
+                      now=None, max_length: int = 220) -> str:
+    """Build a descriptive, Windows-safe filename for a user download.
+
+    The stable order is feature, local download time, unique key, authenticated
+    user, then search context.  Mandatory identity fields are kept even when a
+    long query context has to be shortened.
+    """
+    import datetime as _datetime
+    import unicodedata as _unicodedata
+    import uuid as _uuid
+
+    def _part(value, limit: int) -> str:
+        text = _unicodedata.normalize("NFKC", str(value or "")).strip()
+        text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", text)
+        text = re.sub(r"\s+", "-", text)
+        text = re.sub(r"[-_.]{2,}", "-", text).strip(" .-_")
+        return (text or "none")[:limit].rstrip(" .-_") or "none"
+
+    stamp = (now or _datetime.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    uid = _part(unique_id or _uuid.uuid4().hex[:10], 32)
+    mandatory = [
+        _part(feature, 32),
+        stamp,
+        uid,
+        _part(username or "anonymous", 32),
+    ]
+    if isinstance(context, (str, bytes)) or context is None:
+        raw_context = [context] if context else []
+    else:
+        raw_context = list(context)
+    context_parts = [_part(value, 40) for value in raw_context if str(value or "").strip()]
+    ext = _part(str(extension or "csv").lstrip("."), 10)
+    stem = "_".join(mandatory)
+    budget = max(0, int(max_length) - len(ext) - 1 - len(stem) - (1 if context_parts else 0))
+    context_text = "_".join(context_parts)[:budget].rstrip(" .-_")
+    if context_text:
+        stem += "_" + context_text
+    return f"{stem}.{ext}"
+
+
+def download_content_disposition(filename: str) -> str:
+    """Return an ASCII fallback plus RFC 5987 UTF-8 download filename."""
+    from urllib.parse import quote as _url_quote
+
+    cleaned = safe_filename(str(filename or "download"))[:240]
+    ascii_name = cleaned.encode("ascii", "ignore").decode("ascii") or "download"
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{_url_quote(cleaned)}'
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # JSON / JSONL persistence
 # ──────────────────────────────────────────────────────────────────────────
@@ -968,7 +1019,7 @@ def csv_response(csv_bytes: bytes, filename: str):
     return StreamingResponse(
         iter([csv_bytes]),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": download_content_disposition(fname)},
     )
 
 

@@ -961,6 +961,12 @@ def list_notes(product: str = Query(""), root_lot_id: str = Query(""), username:
         lot_pfx = _notes_product_lot_prefix(product)
         entries = [e for e in entries
                    if str(e.get("key", "")).startswith(pg_pfx) or str(e.get("key", "")).startswith(lot_pfx)]
+    elif root_lot_id:
+        def _match_lot(e):
+            k = str(e.get("key", ""))
+            parts = k.split("__")
+            return len(parts) >= 3 and (parts[1] == root_lot_id or parts[2] == root_lot_id)
+        entries = [e for e in entries if _match_lot(e)]
     entries = [_normalize_note_entry(e) for e in entries]
     entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
     return {"notes": entries, "total": len(entries)}

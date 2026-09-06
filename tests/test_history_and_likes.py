@@ -73,10 +73,12 @@ def test_reformatize_history_lifecycle(tmp_path, monkeypatch):
     assert entry2["history_id"] != entry1["history_id"]
     assert entry2["reuse_count"] == 1
 
-    # Check visible history sorting: sorted by reuse_count descending (entry1 reuse=2 > entry2 reuse=1)
+    # Check visible history sorting: sorted by last activity descending (entry2 is most recent > entry1), and seq=1 for first search
     entries = reformatize._reformatize_visible_history_entries()
-    assert entries[0]["history_id"] == entry1["history_id"]
-    assert entries[0]["reuse_count"] == 2
+    assert entries[0]["history_id"] == entry2["history_id"]
+    assert entries[0]["seq"] == 2
+    assert entries[1]["history_id"] == entry1["history_id"]
+    assert entries[1]["seq"] == 1
 
     # 4. Pin entry2
     reformatize._set_reformatize_pin(entry2["history_id"], pinned=True, username="admin")
@@ -90,6 +92,37 @@ def test_reformatize_history_lifecycle(tmp_path, monkeypatch):
         user={"username": "engineer"},
     )
     assert [row["history_id"] for row in exact["history"]] == [entry1["history_id"]]
+
+    # 5. Reuse with specific history_id
+    entry1_reuse_by_id = reformatize._save_or_increment_reformatize_history(
+        "PRODA",
+        ["VTH_N"],
+        {"days": 3},
+        "raw",
+        "engineer_d",
+        history_id=entry1["history_id"],
+    )
+    assert entry1_reuse_by_id["history_id"] == entry1["history_id"]
+    assert entry1_reuse_by_id["reuse_count"] == 3
+    assert entry1_reuse_by_id["status"] == "success"
+
+    # 6. Record failed query
+    entry_fail = reformatize._save_or_increment_reformatize_history(
+        "PRODA",
+        ["VTH_N"],
+        {"lot_filter": "INVALID_LOT_XYZ"},
+        "raw",
+        "engineer_e",
+        status="error",
+        error_message="조건에 맞는 ET 데이터가 없습니다",
+    )
+    assert entry_fail["status"] == "error"
+    assert entry_fail["error_message"] == "조건에 맞는 ET 데이터가 없습니다"
+    all_entries = reformatize._reformatize_visible_history_entries()
+    found_fail = next(e for e in all_entries if e["history_id"] == entry_fail["history_id"])
+    assert found_fail["status"] == "error"
+    assert found_fail["error_message"] == "조건에 맞는 ET 데이터가 없습니다"
+
 
 
 def test_chart_builder_likes(tmp_path, monkeypatch):

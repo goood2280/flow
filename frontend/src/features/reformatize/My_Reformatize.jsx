@@ -7,15 +7,15 @@
    관리자 전용 🧪 ADDP 수식 테스트: vehicle CSV 를 고치기 전에 새 ADDP ITEM(alias)
    + ADDP Form 을 실제 ET 데이터로 계산해 보고 CSV 로 추출한다.
    수식은 기존 alias 와 raw item 을 {이름} 으로 참조 (auto report 와 동일). */
-import { useEffect, useMemo, useState } from "react";
-import { sf, postJson, dl, qs } from "../../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { sf, postJson, dl, qs, responseDownloadFilename } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import Loading from "../../components/Loading";
 import PageGear from "../../components/PageGear";
 import usePolling from "../../hooks/usePolling";
 import { Banner, Button, EmptyState, PageShell, Pill } from "../../components/UXKit";
 import { canManagePage } from "../../lib/permissions";
-import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
+import { copyHistoryShareLink, historyIdFromLocation, historyShareUrl, setCachedShareBaseUrl } from "../../lib/historyShare";
 
 const API = "/api/reformatize";
 
@@ -149,10 +149,11 @@ function dlPost(url, body, filename) {
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = filename || "download.csv";
+    a.download = responseDownloadFilename(r, filename || "download.csv");
     document.body.appendChild(a);
     a.click();
     a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
 }
 
@@ -604,7 +605,6 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
 
   const download = () => {
     if (!validItems.length) { toast.warn("alias 와 ADDP Form 을 입력하세요"); return; }
-    if (!hasAnyFilter(filters)) { toast.warn("다운로드는 필터가 필요합니다 — 상단 조회 조건에서 기간·lot 등 필터를 지정하세요"); return; }
     setDlBusy(true);
     dlPost(API + "/test/download", { product, items: validItems, ...filterBody(filters), agg }, `${product}_addp_test.csv`)
       .then(() => toast.ok("테스트 CSV 다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
@@ -723,6 +723,135 @@ function historyTime(value) {
   return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString("ko-KR", { hour12: false });
 }
 
+/* ── ET 검색식 파서 & 포맷터 ───────────────────────── */
+function formatReformatizeExpression({ product, filters, selItems, itemList, agg }) {
+  const f = filterBody(filters);
+  const allSelected = itemList?.length > 0 && selItems?.size === itemList.length;
+  const lines = [`PRODUCT = ${product || "미선택"}`];
+  if (f.days > 0) lines.push(`days = ${f.days}`);
+  if (f.date_from) lines.push(`date_from = ${f.date_from}`);
+  if (f.date_to) lines.push(`date_to = ${f.date_to}`);
+  if (f.lot_filter) lines.push(`root_lot_id = ${f.lot_filter}`);
+  if (f.step_filter) lines.push(`step_id = ${f.step_filter}`);
+  if (f.step_seq_filter) lines.push(`step_seq = ${f.step_seq_filter}`);
+  if (f.wafer_filter) lines.push(`wafer_id = ${f.wafer_filter}`);
+  if (f.site_cnt_filter) lines.push(`total_site_cnt = ${f.site_cnt_filter}`);
+  if (f.point_cnt_filter) lines.push(`point_cnt = ${f.point_cnt_filter}`);
+  lines.push(`ITEMS = ${allSelected ? "ALL" : selItems?.size > 0 ? [...selItems].join(", ") : "미선택"}`);
+  lines.push(`AGG = ${agg ? agg.toUpperCase() : "SHOT RAW"}`);
+  return lines.join("\n");
+}
+
+function parseReformatizeExpression(rawText) {
+  if (!rawText || !rawText.trim()) return null;
+  const lines = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+
+  const parsed = {
+    product: undefined,
+    filters: {},
+    items: undefined,
+    agg: undefined,
+  };
+  let hasFilterKeys = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("Q1") || trimmed.startsWith("TABLE =") || trimmed.startsWith("REFORMATTER =")) {
+      continue;
+    }
+
+    let effectiveLine = trimmed;
+    if (effectiveLine.startsWith("#")) {
+      effectiveLine = effectiveLine.slice(1).trim();
+    }
+
+    const kvMatch = effectiveLine.match(/^([a-zA-Z0-9_\uAC00-\uD7A3\s]+?)\s*[:=]\s*(.+)$/);
+    if (kvMatch) {
+      const key = kvMatch[1].trim().toLowerCase();
+      const val = kvMatch[2].trim().replace(/^['"]|['"]$/g, "");
+
+      if (key === "product" || key === "제품" || key === "prod") {
+        parsed.product = val;
+      } else if (key === "items" || key === "item" || key === "항목" || key === "index") {
+        const up = val.toUpperCase();
+        if (up === "ALL" || val === "전체") {
+          parsed.items = "ALL";
+        } else if (val === "미선택" || up === "NONE" || val === "") {
+          parsed.items = [];
+        } else {
+          parsed.items = val.split(",").map(s => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
+        }
+      } else if (key === "agg" || key === "집계" || key === "aggregation" || key === "method") {
+        const up = val.toUpperCase();
+        if (up === "SHOT RAW" || up === "RAW" || up === "" || val === "미선택") {
+          parsed.agg = "";
+        } else {
+          parsed.agg = val.toLowerCase();
+        }
+      } else if (key === "recent_days" || key === "days" || key === "day" || key === "recent_day" || key === "최근 n일" || key === "최근일수" || key === "최근" || key === "일수") {
+        const num = parseInt(val, 10);
+        if (!isNaN(num) && num > 0) {
+          parsed.filters.days = String(num);
+          parsed.filters.date_from = "";
+          parsed.filters.date_to = "";
+          hasFilterKeys = true;
+        } else if (val === "" || val === "0") {
+          parsed.filters.days = "";
+          hasFilterKeys = true;
+        }
+      } else if (key === "date_from" || key === "start_date" || key === "from" || key === "시작일" || key === "시작") {
+        parsed.filters.date_from = val;
+        parsed.filters.days = "";
+        hasFilterKeys = true;
+      } else if (key === "date_to" || key === "end_date" || key === "to" || key === "종료일" || key === "종료") {
+        parsed.filters.date_to = val;
+        parsed.filters.days = "";
+        hasFilterKeys = true;
+      } else if (key === "root_lots" || key === "root_lot_id" || key === "lot_filter" || key === "lots" || key === "lot" || key === "lot_id" || key === "root_lot" || key === "랏") {
+        parsed.filters.lot_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "wafers" || key === "wafer_id" || key === "wafer_filter" || key === "wafer" || key === "웨이퍼") {
+        parsed.filters.wafer_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "step_filter" || key === "step_id" || key === "steps" || key === "step" || key === "스텝") {
+        parsed.filters.step_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "step_seq_filter" || key === "step_seq" || key === "seq") {
+        parsed.filters.step_seq_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "site_cnt_filter" || key === "site_cnt" || key === "total_site_cnt" || key === "site" || key === "sites") {
+        parsed.filters.site_cnt_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "point_cnt_filter" || key === "point_cnt" || key === "shot_count" || key === "point" || key === "points" || key === "pgm_pt") {
+        parsed.filters.point_cnt_filter = val;
+        hasFilterKeys = true;
+      } else if (key === "sql") {
+        const fromM = val.match(/tkout_time\s*>=\s*['"]?([0-9\-]+)/i);
+        const toM = val.match(/tkout_time\s*<=\s*['"]?([0-9\-]+)/i);
+        if (fromM) { parsed.filters.date_from = fromM[1]; parsed.filters.days = ""; hasFilterKeys = true; }
+        if (toM) { parsed.filters.date_to = toM[1]; parsed.filters.days = ""; hasFilterKeys = true; }
+      } else if (key === "filter") {
+        const parts = val.split("|").map(s => s.trim());
+        const col = parts[0]?.toLowerCase();
+        const vpart = parts.find(p => p.startsWith("values="))?.slice(7)?.trim() || parts[2] || "";
+        if (col === "step_id") { parsed.filters.step_filter = vpart; hasFilterKeys = true; }
+        else if (col === "step_seq") { parsed.filters.step_seq_filter = vpart; hasFilterKeys = true; }
+        else if (col === "total_site_cnt") { parsed.filters.site_cnt_filter = vpart; hasFilterKeys = true; }
+        else if (col === "shot_count") { parsed.filters.point_cnt_filter = vpart; hasFilterKeys = true; }
+        else if (col === "root_lot_id") { parsed.filters.lot_filter = vpart; hasFilterKeys = true; }
+        else if (col === "wafer_id") { parsed.filters.wafer_filter = vpart; hasFilterKeys = true; }
+      }
+    } else {
+      const fromM = effectiveLine.match(/tkout_time\s*>=\s*['"]?([0-9\-]+)/i);
+      const toM = effectiveLine.match(/tkout_time\s*<=\s*['"]?([0-9\-]+)/i);
+      if (fromM) { parsed.filters.date_from = fromM[1]; parsed.filters.days = ""; hasFilterKeys = true; }
+      if (toM) { parsed.filters.date_to = toM[1]; parsed.filters.days = ""; hasFilterKeys = true; }
+    }
+  }
+
+  return { parsed, hasFilterKeys };
+}
+
 /* ── Reformatize 검색이력 패널 ───────────────────────── */
 function ReformatizeHistoryPanel({
   user,
@@ -743,40 +872,37 @@ function ReformatizeHistoryPanel({
   return (
     <div style={{
       border: "1px solid var(--border)",
-      borderRadius: 10,
+      borderRadius: 8,
       background: "var(--bg-secondary)",
-      padding: "12px 16px",
-      marginBottom: 16,
+      padding: "8px 12px",
+      marginBottom: 8,
     }}>
       <div style={{
         display: "flex",
         alignItems: "center",
-        gap: 10,
+        gap: 8,
         flexWrap: "wrap",
         justifyContent: "space-between",
-        marginBottom: 10,
-        paddingBottom: 8,
+        marginBottom: 5,
+        paddingBottom: 5,
         borderBottom: "1px solid var(--border)",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 15, fontWeight: 800, color: "var(--text-primary)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
             검색이력
           </span>
-          <Pill tone="neutral">
-            총 {history.length}건
-          </Pill>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <input
             value={historySearch}
             onChange={e => setHistorySearch(e.target.value)}
             placeholder="🔍 고유키(RH-), 제품, Index, 작성자 검색…"
-            style={{ ...inputStyle, width: 250, padding: "4px 8px", fontSize: 12 }}
+            style={{ ...inputStyle, width: 230, padding: "2px 8px", fontSize: 11, height: 25 }}
           />
           <Button
             onClick={() => loadHistory(historySearch)}
             disabled={historyBusy}
-            style={{ padding: "4px 8px", fontSize: 12 }}
+            style={{ padding: "2px 7px", fontSize: 11, height: 25 }}
             title="이력 새로고침"
           >
             {historyBusy ? "조회 중…" : "🔄"}
@@ -785,20 +911,21 @@ function ReformatizeHistoryPanel({
       </div>
 
       {history.length === 0 ? (
-        <div style={{ padding: "16px 10px", textAlign: "center", color: "var(--text-secondary)", fontSize: 13 }}>
+        <div style={{ padding: "10px 8px", textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>
           {historySearch.trim() ? "검색 조건에 맞는 검색식 이력이 없습니다." : "아직 검색 이력이 없습니다. 아래 폼에서 조회하거나 다운로드하면 자동으로 이력이 보관됩니다."}
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto", paddingRight: 4 }}>
           {history.map((entry, idx) => {
             const isPinned = Boolean(entry.pinned);
-            const rank = idx + 1;
+            const searchNo = entry.seq ?? (history.length - idx);
             return (
               <details
                 key={entry.history_id}
                 style={{
+                  flexShrink: 0,
                   border: `1px solid ${isPinned ? "var(--accent)" : "var(--border)"}`,
-                  borderRadius: 8,
+                  borderRadius: 6,
                   background: isPinned
                     ? "color-mix(in srgb, var(--accent-glow) 45%, var(--bg-primary))"
                     : "var(--bg-primary)",
@@ -808,36 +935,57 @@ function ReformatizeHistoryPanel({
                 <summary
                   style={{
                     cursor: "pointer",
-                    padding: "8px 12px",
+                    padding: "4px 10px",
+                    minHeight: 32,
                     display: "flex",
-                    gap: 10,
+                    gap: 8,
                     alignItems: "center",
-                    flexWrap: "wrap",
+                    flexWrap: "nowrap",
                     listStyle: "none",
                     userSelect: "none",
                   }}
                 >
-                  {isPinned ? (
-                    <span title="관리자 고정 식" aria-label="고정 식" style={{ fontSize: 14 }}>📌</span>
-                  ) : (
-                    <span style={{ fontSize: 11, fontWeight: 800, color: "var(--text-secondary)", minWidth: 22 }}>
-                      #{rank}
-                    </span>
-                  )}
-                  <b style={{ fontSize: 13, color: "var(--text-primary)" }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 800,
+                      color: isPinned ? "var(--accent)" : "var(--text-secondary)",
+                      minWidth: 28,
+                      flexShrink: 0,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 2,
+                    }}
+                    title={isPinned ? `관리자 고정 식 (검색 #${searchNo})` : `검색 #${searchNo}`}
+                  >
+                    {isPinned ? `📌 #${searchNo}` : `#${searchNo}`}
+                  </span>
+                  <b
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-primary)",
+                      maxWidth: 260,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      flexShrink: 1,
+                    }}
+                    title={entry.name}
+                  >
                     {entry.name}
                   </b>
                   <code
                     style={{
-                      fontSize: 11,
+                      fontSize: 10,
                       fontFamily: "monospace",
                       color: "var(--text-secondary)",
                       background: "var(--bg-tertiary)",
-                      padding: "2px 6px",
-                      borderRadius: 4,
+                      padding: "1px 4px",
+                      borderRadius: 3,
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 4,
+                      gap: 2,
+                      flexShrink: 0,
                     }}
                   >
                     {entry.history_id}
@@ -845,43 +993,99 @@ function ReformatizeHistoryPanel({
                       type="button"
                       onClick={e => { e.preventDefault(); e.stopPropagation(); copyKey(entry); }}
                       title="고유키 복사"
-                      style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 11 }}
+                      style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 10 }}
                     >
                       📋
                     </button>
                   </code>
                   <span
                     style={{
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: 700,
-                      color: "var(--text-secondary)",
+                      color: Number(entry.reuse_count || 0) > 1 ? "var(--text-primary)" : "var(--text-secondary)",
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 4,
+                      gap: 3,
+                      flexShrink: 0,
                     }}
-                    title="이 검색식으로 실제로 검색/조회한 횟수"
+                    title={`실제 조회/검색 횟수: ${Number(entry.reuse_count || 0).toLocaleString()}회`}
                   >
-                    <span>🔄</span>
+                    <span style={{ color: "#ef4444", fontSize: 11 }}>❤️</span>
                     <span>{Number(entry.reuse_count || 0).toLocaleString()}회</span>
                   </span>
-                  <b style={{ fontSize: 12, color: "var(--accent)" }}>{entry.username || "anonymous"}</b>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                  {entry.status === "error" ? (
+                    <span
+                      style={{
+                        fontSize: 10.5,
+                        fontWeight: 800,
+                        color: "#ef4444",
+                        background: "color-mix(in srgb, #ef4444 14%, transparent)",
+                        border: "1px solid #ef4444",
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 3,
+                        whiteSpace: "nowrap",
+                      }}
+                      title={`실패 사유: ${entry.error_message || "오류"}`}
+                    >
+                      ❌ 실패
+                    </span>
+                  ) : (
+                    <span
+                      style={{
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        color: "#10b981",
+                        background: "color-mix(in srgb, #10b981 12%, transparent)",
+                        border: "1px solid #10b981",
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 3,
+                        whiteSpace: "nowrap",
+                      }}
+                      title="성공"
+                    >
+                      ✓ 성공
+                    </span>
+                  )}
+                  {entry.status === "error" && entry.error_message && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: "#ef4444",
+                        fontWeight: 600,
+                        maxWidth: 240,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={`실패 사유: ${entry.error_message}`}
+                    >
+                      사유: {entry.error_message}
+                    </span>
+                  )}
+                  <b style={{ fontSize: 11, color: "var(--accent)", flexShrink: 0 }}>{entry.username || "anonymous"}</b>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", flexShrink: 0 }}>
                     {historyTime(entry.last_used_at || entry.timestamp)}
                   </span>
                   <span
                     style={{
-                      fontSize: 12,
+                      fontSize: 11,
                       color: "var(--text-secondary)",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
                       flex: 1,
-                      minWidth: 140,
+                      minWidth: 100,
                     }}
                   >
                     {entry.product} · Index {entry.items?.length ? `${entry.items.length}개` : "전체"} · {entry.agg ? entry.agg.toUpperCase() : "RAW"}
                   </span>
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
                     {isAdmin && (
                       <button
                         type="button"
@@ -891,23 +1095,25 @@ function ReformatizeHistoryPanel({
                         style={{
                           background: "var(--bg-secondary)",
                           border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          padding: "3px 7px",
-                          fontSize: 11,
+                          borderRadius: 3,
+                          padding: "2px 5px",
+                          fontSize: 10,
                           cursor: "pointer",
                           color: "var(--text-primary)",
                           opacity: pinBusy === entry.history_id ? 0.55 : 1,
                         }}
                       >
-                        {pinBusy === entry.history_id ? "처리 중…" : entry.pinned ? "고정 해제" : "고정"}
+                        {pinBusy === entry.history_id ? "…" : entry.pinned ? "고정 해제" : "고정"}
                       </button>
                     )}
                     <button
                       type="button"
                       onClick={e => { e.preventDefault(); e.stopPropagation(); copyLink(entry); }}
                       title="이 검색 조건을 여는 공유 링크 복사"
-                      style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:4,padding:"3px 7px",fontSize:11,cursor:"pointer",color:"var(--text-primary)"}}
-                    >공유 링크</button>
+                      style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 3, padding: "2px 5px", fontSize: 10, cursor: "pointer", color: "var(--text-primary)" }}
+                    >
+                      공유 링크
+                    </button>
                     {isAdmin && (
                       <button
                         type="button"
@@ -916,9 +1122,9 @@ function ReformatizeHistoryPanel({
                         style={{
                           background: "var(--bg-secondary)",
                           border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          padding: "3px 7px",
-                          fontSize: 11,
+                          borderRadius: 3,
+                          padding: "2px 5px",
+                          fontSize: 10,
                           cursor: "pointer",
                           color: "var(--text-primary)",
                         }}
@@ -934,9 +1140,9 @@ function ReformatizeHistoryPanel({
                         background: "var(--accent)",
                         color: "#ffffff",
                         border: "none",
-                        borderRadius: 4,
-                        padding: "3px 9px",
-                        fontSize: 11,
+                        borderRadius: 3,
+                        padding: "2px 7px",
+                        fontSize: 10,
                         fontWeight: 700,
                         cursor: "pointer",
                       }}
@@ -945,10 +1151,27 @@ function ReformatizeHistoryPanel({
                     </button>
                   </div>
                 </summary>
+                {entry.status === "error" && entry.error_message && (
+                  <div style={{
+                    padding: "6px 10px",
+                    margin: "4px 8px 6px",
+                    borderRadius: 6,
+                    background: "color-mix(in srgb, #ef4444 10%, var(--bg-primary))",
+                    border: "1px solid #ef4444",
+                    color: "#ef4444",
+                    fontSize: 11.5,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 6,
+                  }}>
+                    <span style={{ fontWeight: 800, whiteSpace: "nowrap" }}>⚠️ 실패 사유:</span>
+                    <span style={{ fontFamily: "monospace", wordBreak: "break-word" }}>{entry.error_message}</span>
+                  </div>
+                )}
                 {isAdmin && (
-                  <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                  <div style={{ padding: "6px 10px 8px", borderTop: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--text-secondary)" }}>
                         차트생성 호환 검색식 상세 (고유키: {entry.history_id})
                       </span>
                       <button
@@ -959,7 +1182,7 @@ function ReformatizeHistoryPanel({
                           border: "none",
                           color: "var(--accent)",
                           cursor: "pointer",
-                          fontSize: 11,
+                          fontSize: 10,
                           fontWeight: 700,
                         }}
                       >
@@ -969,15 +1192,18 @@ function ReformatizeHistoryPanel({
                     <pre
                       style={{
                         margin: 0,
-                        padding: 10,
-                        borderRadius: 6,
+                        padding: 6,
+                        borderRadius: 4,
                         background: "var(--bg-primary)",
                         border: "1px solid var(--border)",
                         fontFamily: "monospace",
-                        fontSize: 11,
-                        lineHeight: 1.5,
+                        fontSize: 10.5,
+                        lineHeight: 1.4,
                         color: "var(--text-primary)",
+                        maxHeight: 130,
+                        overflowY: "auto",
                         whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
                       }}
                     >
                       {entry.expression}
@@ -998,7 +1224,7 @@ export default function My_Reformatize({ user }) {
   const [products, setProducts] = useState([]);
   const [product, setProduct] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [settings, setSettings] = useState({ page_rows: 500, max_download_rows: 100000, value_col: "", scale_applied: false });
+  const [settings, setSettings] = useState({ page_rows: 500, max_download_mb: 500, max_download_rows: 100000, value_col: "", scale_applied: false, share_base_url: "" });
   const [gearForm, setGearForm] = useState(null);
   const [result, setResult] = useState(null);
   const [offset, setOffset] = useState(0);
@@ -1014,7 +1240,14 @@ export default function My_Reformatize({ user }) {
   const [historySearch, setHistorySearch] = useState("");
   const [historyBusy, setHistoryBusy] = useState(false);
   const [pinBusy, setPinBusy] = useState("");
-  const [pendingItems, setPendingItems] = useState(null);
+  const pendingItems = useRef(null);
+  const [sharedLink, setSharedLink] = useState("");
+  const [loadedHistoryId, setLoadedHistoryId] = useState("");
+  const [exprText, setExprText] = useState("");
+  const [exprDirty, setExprDirty] = useState(false);
+  const [lastSource, setLastSource] = useState(null);
+  const [searchNotice, setSearchNotice] = useState("");
+
   // 진행 폴링은 공용 훅에 위임한다 — 타이머 정리·연속 실패 중단(무한 로딩 방지)이
   // 화면마다 재구현되던 부분. 다운로드와 조회는 서로 독립이라 인스턴스를 나눈다.
   const poll = usePolling();
@@ -1070,9 +1303,14 @@ export default function My_Reformatize({ user }) {
 
   const copyLink = async (entry) => {
     try {
-      await copyHistoryShareLink("/reformatize", entry.history_id);
-      toast.ok(`[${entry.history_id}] 공유 링크를 복사했습니다.`);
-    } catch (_e) { toast.error("브라우저에서 공유 링크를 복사하지 못했습니다."); }
+      const latest = await sf(API + "/settings");
+      const baseUrl = latest.share_base_url || "";
+      setSharedLink(historyShareUrl("/reformatize", entry.history_id, baseUrl));
+      try {
+        await copyHistoryShareLink("/reformatize", entry.history_id, baseUrl);
+        toast.ok(`[${entry.history_id}] 공유 링크를 복사했습니다.`);
+      } catch (_e) { toast.warn("공유 링크를 생성했습니다. 아래 주소를 선택해 복사하세요."); }
+    } catch (e) { toast.error(e.message || "공유 링크 생성 실패"); }
   };
 
   const loadHistoryEntry = async (entry) => {
@@ -1082,21 +1320,167 @@ export default function My_Reformatize({ user }) {
     const entryFilters = entry.filters || {};
     const entryAgg = entry.agg || "";
 
-    if (nextProduct !== product) {
-      setPendingItems(items);
-      setProduct(nextProduct);
-    } else {
-      setSelItems(new Set(items));
-    }
-    setFilters({
-      ...EMPTY_FILTERS,
-      ...entryFilters,
+    // 빈 items는 저장된 이력에서 ALL을 뜻한다. 목록이 늦게 와도 유지한다.
+    pendingItems.current = { product: nextProduct, items };
+    const nextSel = new Set(items.length ? items : nextProduct === product ? itemList.map(it => it.alias) : []);
+    setSelItems(nextSel);
+    setProduct(nextProduct);
+    const nextFilters = {
+      ...Object.fromEntries(Object.keys(EMPTY_FILTERS).map(key => [key, String(entryFilters[key] ?? "")])),
       days: entryFilters.days ? String(entryFilters.days) : "",
-    });
+    };
+    setFilters(nextFilters);
     setAgg(entryAgg);
-    toast.ok(`[${entry.history_id}] 검색식을 아래 폼에 적용했습니다.`);
+    setLoadedHistoryId(entry.history_id || "");
+    setResult(null);
+    setOffset(0);
+
+    // 검색식과 필터식 둘 다 즉시 완벽히 채워주고, dirty=false 로 동기화
+    const expr = entry.expression || formatReformatizeExpression({
+      product: nextProduct,
+      filters: nextFilters,
+      selItems: nextSel,
+      itemList,
+      agg: entryAgg,
+    });
+    setExprText(expr);
+    setExprDirty(false);
+    setLastSource("filter");
+    setSearchNotice("");
+    toast.ok(`[${entry.history_id}] 검색식과 필터식을 모두 불러왔습니다. [조회]를 눌러 검색하세요.`);
 
     document.getElementById("reformatize-form-anchor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // 폼 상태(제품, 필터, Index, 집계) 변경 시 검색식 텍스트 동기화 (직접 타이핑 중이 아닐 때)
+  useEffect(() => {
+    if (!exprDirty) {
+      setExprText(formatReformatizeExpression({ product, filters, selItems, itemList, agg }));
+    }
+  }, [product, filters, selItems, itemList, agg, exprDirty]);
+
+  // 검색식 또는 고유키 직접 입력 후 [적용] 시 파싱하여 아래 폼과 검색식에 반영
+  const handleApplyExpression = async () => {
+    const rawText = String(exprText || "").trim();
+    if (!rawText) {
+      toast.warn("적용할 검색식 또는 고유키를 입력하세요.");
+      return;
+    }
+
+    // 0. 고유키 (RH-XXXXXXXX) 또는 순번 (#1 등) 입력 감지
+    const keyMatch = rawText.match(/(?:#|history_id=)?(RH-[0-9A-Fa-f]{8})\b/i);
+    const seqMatch = !keyMatch && rawText.match(/^#?(\d+)$/);
+
+    if (keyMatch || seqMatch) {
+      const targetKey = keyMatch ? keyMatch[1].toUpperCase() : null;
+      const targetSeq = seqMatch ? Number(seqMatch[1]) : null;
+
+      // 1) 로컬 history 목록에서 탐색
+      let foundEntry = history.find(e => {
+        if (targetKey && String(e.history_id || "").toUpperCase() === targetKey) return true;
+        if (targetSeq !== null && Number(e.seq) === targetSeq) return true;
+        return false;
+      });
+
+      // 2) 로컬에 없고 targetKey가 있으면 서버 API 조회
+      if (!foundEntry && targetKey) {
+        try {
+          const res = await sf(API + "/history" + qs({ history_id: targetKey, limit: 100 }));
+          foundEntry = (res.history || []).find(item => String(item?.history_id || "").toUpperCase() === targetKey);
+        } catch (_err) {
+          // fallback
+        }
+      }
+
+      if (foundEntry) {
+        await loadHistoryEntry(foundEntry);
+        toast.ok(`[${foundEntry.history_id}] 고유키에 맞는 검색식과 필터를 모두 반영했습니다. [조회]를 누르면 검색이 시작됩니다.`);
+        return;
+      }
+    }
+
+    const res = parseReformatizeExpression(rawText);
+    if (!res) {
+      toast.warn("적용할 검색식 내용이 없습니다.");
+      return;
+    }
+    const { parsed } = res;
+
+    // 1. 제품
+    let nextProd = product;
+    if (parsed.product) {
+      const match = products.find(p => p.product.toUpperCase() === parsed.product.toUpperCase());
+      nextProd = match ? match.product : parsed.product;
+      if (nextProd !== product) {
+        pendingItems.current = {
+          product: nextProd,
+          items: parsed.items === "ALL" ? [] : (Array.isArray(parsed.items) ? parsed.items : []),
+        };
+        setProduct(nextProd);
+      }
+    }
+
+    // 2. Index 항목
+    let nextSel = selItems;
+    if (parsed.items !== undefined) {
+      if (parsed.items === "ALL") {
+        nextSel = new Set(itemList.map(it => it.alias));
+        setSelItems(nextSel);
+      } else if (Array.isArray(parsed.items)) {
+        nextSel = new Set(parsed.items);
+        setSelItems(nextSel);
+      }
+    }
+
+    // 3. 필터: 검색식 내용을 아래 필터 입력창들에 즉각 동기화 반영
+    const nextFilters = { ...EMPTY_FILTERS };
+    if (parsed.filters.days) {
+      nextFilters.days = parsed.filters.days;
+      nextFilters.date_from = "";
+      nextFilters.date_to = "";
+    } else if (parsed.filters.date_from || parsed.filters.date_to) {
+      nextFilters.date_from = parsed.filters.date_from || "";
+      nextFilters.date_to = parsed.filters.date_to || "";
+      nextFilters.days = "";
+    }
+    for (const k of ["lot_filter", "step_filter", "step_seq_filter", "wafer_filter", "site_cnt_filter", "point_cnt_filter"]) {
+      if (parsed.filters[k] !== undefined) {
+        nextFilters[k] = parsed.filters[k];
+      }
+    }
+    setFilters(nextFilters);
+
+    // 4. 집계
+    let nextAgg = agg;
+    if (parsed.agg !== undefined) {
+      nextAgg = parsed.agg;
+      setAgg(nextAgg);
+    }
+
+    // 파싱된 조건으로 정돈된 검색식 텍스트 동기화
+    const formattedExpr = formatReformatizeExpression({
+      product: nextProd,
+      filters: nextFilters,
+      selItems: nextSel,
+      itemList,
+      agg: nextAgg,
+    });
+    setExprText(formattedExpr);
+
+    setResult(null);
+    setOffset(0);
+    setExprDirty(false);
+    setLastSource("filter");
+    toast.ok("검색식을 아래 필터에 반영했습니다. [조회]를 누르면 검색이 시작됩니다.");
+  };
+
+  const handleCopyExpression = async () => {
+    try {
+      await navigator.clipboard.writeText(exprText || "");
+      toast.ok("검색식을 복사했습니다.");
+    } catch (_e) {
+      toast.error("클립보드 복사 권한이 없습니다.");
+    }
   };
 
   useEffect(() => {
@@ -1156,9 +1540,12 @@ export default function My_Reformatize({ user }) {
     sf(API + "/products").then(d => {
       const list = d.products || [];
       setProducts(list);
-      if (list.length && !product) setProduct(list[0].product);
+      if (list.length) setProduct(current => current || list[0].product);
     }).catch(e => toast.error("제품 목록 로딩 실패: " + (e.message || e)));
-    sf(API + "/settings").then(d => setSettings(s => ({ ...s, ...d }))).catch(() => {});
+    sf(API + "/settings").then(d => {
+      setSettings(s => ({ ...s, ...d }));
+      if (d.share_base_url) setCachedShareBaseUrl(d.share_base_url);
+    }).catch(() => {});
     // 새로고침·재진입으로 화면이 다시 뜬 경우 진행 중인 내 다운로드를 이어서 표시.
     sf(API + "/download/queue").then(d => {
       const mine = (d.jobs || []).find(j => j.state === "queued" || j.state === "running");
@@ -1172,21 +1559,24 @@ export default function My_Reformatize({ user }) {
   // 기본 선택 없음 — 필요한 항목만 골라 가볍게 조회하도록 유도한다.
   // 서버가 유저에게는 비공개 항목을 제외하고, 관리자에게는 hidden 플래그를 준다.
   useEffect(() => {
+    let alive = true;
     setItemList([]);
-    if (!pendingItems) setSelItems(new Set());
     setHiddenItems(new Set());
     if (!product || !selected?.vehicle_csv) return;
     sf(API + "/items?product=" + encodeURIComponent(product))
       .then(d => {
+        if (!alive) return;
         const items = d.items || [];
         setItemList(items);
         setHiddenItems(new Set(items.filter(it => it.hidden).map(it => it.alias)));
-        if (pendingItems) {
-          setSelItems(new Set(pendingItems));
-          setPendingItems(null);
+        if (pendingItems.current?.product === product) {
+          const savedItems = pendingItems.current.items;
+          setSelItems(new Set(savedItems.length ? savedItems : items.map(it => it.alias)));
+          pendingItems.current = null;
         }
       })
       .catch(() => {});
+    return () => { alive = false; };
   }, [product, selected?.vehicle_csv]);
 
   // (admin) 항목 공개/비공개 토글 — 즉시 저장, 실패 시 원복
@@ -1221,7 +1611,100 @@ export default function My_Reformatize({ user }) {
   const allSelected = itemList.length > 0 && selItems.size === itemList.length;
   const selArray = () => (allSelected ? [] : [...selItems]);   // 전체 선택이면 서버 기본(전체) 사용
 
-  const setF = (patch) => setFilters(f => ({ ...f, ...patch }));
+  const setF = (patch) => {
+    setLastSource("filter");
+    setFilters(f => ({ ...f, ...patch }));
+  };
+
+  const resolveEffectiveQuery = () => {
+    let effProduct = product;
+    let effFilters = { ...filters };
+    let effItems = selArray();
+    let effAgg = agg;
+    let effHistoryId = loadedHistoryId;
+
+    if (exprDirty && exprText.trim()) {
+      const res = parseReformatizeExpression(exprText);
+      if (res) {
+        const { parsed, hasFilterKeys } = res;
+        if (lastSource === "filter") {
+          // 아래 필터를 우선 적용: 아래 필터에 비어있는 항목만 검색식에서 보충
+          if (!effProduct && parsed.product) {
+            const match = products.find(p => p.product.toUpperCase() === parsed.product.toUpperCase());
+            effProduct = match ? match.product : parsed.product;
+          }
+          if (hasFilterKeys) {
+            if (!effFilters.days && !effFilters.date_from && !effFilters.date_to) {
+              if (parsed.filters.days) effFilters.days = parsed.filters.days;
+              else if (parsed.filters.date_from || parsed.filters.date_to) {
+                effFilters.date_from = parsed.filters.date_from || "";
+                effFilters.date_to = parsed.filters.date_to || "";
+              }
+            }
+            for (const k of ["lot_filter", "step_filter", "step_seq_filter", "wafer_filter", "site_cnt_filter", "point_cnt_filter"]) {
+              if (!String(effFilters[k] || "").trim() && parsed.filters[k]) {
+                effFilters[k] = parsed.filters[k];
+              }
+            }
+          }
+          if (effItems.length === 0 && parsed.items && parsed.items !== "ALL") {
+            effItems = Array.isArray(parsed.items) ? parsed.items : [];
+          }
+          if (!effAgg && parsed.agg) {
+            effAgg = parsed.agg;
+          }
+        } else {
+          // 검색식을 직접 고친 경우: 검색식 내용을 폼과 쿼리에 반영
+          if (parsed.product) {
+            const match = products.find(p => p.product.toUpperCase() === parsed.product.toUpperCase());
+            effProduct = match ? match.product : parsed.product;
+            if (effProduct !== product) {
+              pendingItems.current = {
+                product: effProduct,
+                items: parsed.items === "ALL" ? [] : (Array.isArray(parsed.items) ? parsed.items : []),
+              };
+              setProduct(effProduct);
+            }
+          }
+          if (parsed.items !== undefined) {
+            if (parsed.items === "ALL") {
+              effItems = [];
+              setSelItems(new Set(itemList.map(it => it.alias)));
+            } else if (Array.isArray(parsed.items)) {
+              effItems = parsed.items;
+              setSelItems(new Set(parsed.items));
+            }
+          }
+          if (hasFilterKeys) {
+            const nextF = { ...EMPTY_FILTERS };
+            if (parsed.filters.days) {
+              nextF.days = parsed.filters.days;
+            } else if (parsed.filters.date_from || parsed.filters.date_to) {
+              nextF.date_from = parsed.filters.date_from || "";
+              nextF.date_to = parsed.filters.date_to || "";
+            }
+            for (const k of ["lot_filter", "step_filter", "step_seq_filter", "wafer_filter", "site_cnt_filter", "point_cnt_filter"]) {
+              if (parsed.filters[k] !== undefined) {
+                nextF[k] = parsed.filters[k];
+              }
+            }
+            effFilters = nextF;
+            setFilters(nextF);
+          }
+          if (parsed.agg !== undefined) {
+            effAgg = parsed.agg;
+            setAgg(parsed.agg);
+          }
+          effHistoryId = "";
+          setLoadedHistoryId("");
+        }
+      }
+      setExprDirty(false);
+    }
+
+    return { effProduct, effFilters, effItems, effAgg, effHistoryId };
+  };
+
   const onFilterEnter = (e) => {
     if (e.key !== "Enter") return;
     if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
@@ -1229,57 +1712,88 @@ export default function My_Reformatize({ user }) {
   };
 
   const run = (nextOffset = 0) => {
-    if (!product) { toast.warn("제품을 선택하세요"); return; }
-    if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
+    const { effProduct, effFilters, effItems, effAgg, effHistoryId } = resolveEffectiveQuery();
+    if (!effProduct) { toast.warn("제품을 선택하세요"); return; }
+    if (itemList.length && effItems.length === 0 && !allSelected) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     const token = `run${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     setBusy(true);
     setRunPhase(null);
-    // 계산과 병렬로 진행 상황을 폴링한다. 실패해도 조회는 그대로 진행되고
-    // 로딩창은 기본 문구로 남는다 — 진행 표시 때문에 조회를 깨지 않는다.
     runPoll.start(() => sf(API + "/run/progress" + qs({ token })), {
       intervalMs: RUN_POLL_MS,
       maxErrors: 5,
       onData: (d) => { if (d?.active) setRunPhase(d); },
       onError: () => runPoll.stop(),
     });
-    postJson(API + "/run", { product, offset: nextOffset, limit: settings.page_rows, ...filterBody(filters), items: selArray(), agg, progress_token: token })
-      .then(d => { setResult(d); setOffset(d.offset || 0); })
-      .catch(e => toast.error(e.message || "조회 실패"))
+    postJson(API + "/run", {
+      product: effProduct,
+      offset: nextOffset,
+      limit: settings.page_rows,
+      ...filterBody(effFilters),
+      items: effItems,
+      agg: effAgg,
+      history_id: effHistoryId,
+      progress_token: token,
+    })
+      .then(d => {
+        setResult(d);
+        setOffset(d.offset || 0);
+        setSearchNotice("아래 필터식이 반영되어 검색되었습니다");
+        toast.ok("아래 필터식이 반영되어 검색되었습니다");
+        loadHistory(historySearch);
+      })
+      .catch(e => {
+        toast.error(e.message || "조회 실패");
+        loadHistory(historySearch);
+      })
       .finally(() => { runPoll.stop(); setRunPhase(null); setBusy(false); });
   };
 
   const download = () => {
-    if (!product) return;
-    if (itemList.length && selItems.size === 0) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
-    if (!hasAnyFilter(filters)) {
-      toast.warn("필터 없이 전체 다운로드는 허용되지 않습니다 — 기간(tkout_time)·root_lot_id·step_id·step_seq 등 필터를 지정해 행 수를 줄이세요");
-      return;
-    }
-    // 다운로드는 대기열 작업으로 등록한다 — 여러 명이 동시에 걸어도 서버는
-    // 한 건씩 처리하고, 화면은 job 상태를 폴링해 진행을 보여준다.
+    const { effProduct, effFilters, effItems, effAgg, effHistoryId } = resolveEffectiveQuery();
+    if (!effProduct) return;
+    if (itemList.length && effItems.length === 0 && !allSelected) { toast.warn("Index 항목을 하나 이상 선택하세요"); return; }
     setDlBusy(true);
-    postJson(API + "/download/start", { product, ...filterBody(filters), items: selArray(), agg })
+    postJson(API + "/download/start", {
+      product: effProduct,
+      ...filterBody(effFilters),
+      items: effItems,
+      agg: effAgg,
+      history_id: effHistoryId,
+    })
       .then(d => {
         setDlJob(d);
         if (d.duplicate) toast.warn("같은 조건의 다운로드가 이미 진행 중입니다 — 그 작업을 이어서 표시합니다");
         else if (d.ahead > 0) toast.ok(`다른 다운로드가 진행 중이라 대기열에 등록했습니다 (앞에 ${d.ahead}건)`);
+        loadHistory(historySearch);
         pollJob(d.job_id);
       })
-      .catch(e => { clearJob(); toast.error(e.message || "다운로드 요청 실패"); });
+      .catch(e => {
+        clearJob();
+        toast.error(e.message || "다운로드 요청 실패");
+        loadHistory(historySearch);
+      });
   };
 
   const saveSettings = () => {
     const form = gearForm || settings;
     postJson(API + "/settings", {
       page_rows: Number(form.page_rows) || 500,
-      max_download_rows: Number(form.max_download_rows) || 100000,
+      max_download_mb: Number(form.max_download_mb) || 500,
       value_col: String(form.value_col || "").trim(),
       scale_applied: !!form.scale_applied,
+      share_base_url: String(form.share_base_url || "").trim(),
     }).then(d => {
-      setSettings({ page_rows: d.page_rows, max_download_rows: d.max_download_rows,
-                    value_col: d.value_col || "", scale_applied: !!d.scale_applied });
+      setSettings({
+        page_rows: d.page_rows,
+        max_download_mb: d.max_download_mb ?? 500,
+        max_download_rows: d.max_download_rows,
+        value_col: d.value_col || "",
+        scale_applied: !!d.scale_applied,
+        share_base_url: d.share_base_url || "",
+      });
+      setCachedShareBaseUrl(d.share_base_url || "");
       setGearForm(null);
-      toast.ok("설정 저장됨");
+      toast.ok("공통 공유 기본 주소 및 ET 다운로드 설정을 저장했습니다");
     }).catch(e => toast.error(e.message || "설정 저장 실패"));
   };
 
@@ -1296,19 +1810,42 @@ export default function My_Reformatize({ user }) {
         필요한 Index만 선택하면 속도가 더 좋아집니다.
       </Banner>
 
-      <div style={{ padding: "24px 32px" }}>
-      <details style={{ marginBottom: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)", padding: "10px 14px" }}>
+      <div style={{ padding: "16px 24px" }}>
+      <details style={{ marginBottom: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: "8px 12px" }}>
         <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, color: "var(--text-primary)" }}>
-          사용 가이드
+          ET 다운로드 사용 가이드 (2가지 검색 방식)
         </summary>
-        <ol style={{ margin: "10px 0 2px", paddingLeft: 22, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.8 }}>
-          <li><b style={{ color: "var(--text-primary)" }}>제품 선택</b> — DB ET 제품을 고르고 적용되는 reformatter 규칙 CSV를 확인합니다.</li>
-          <li><b style={{ color: "var(--text-primary)" }}>조회 범위 지정</b> — 최근 N일 또는 시작~종료일을 입력하고, 필요하면 root_lot_id·step_id·step_seq·wafer_id·원본 total_site_cnt·화면 PGM point 수로 더 좁힙니다.</li>
-          <li><b style={{ color: "var(--text-primary)" }}>Index 선택</b> — 아래 목록에서 필요한 REAL·ADDP Index를 하나 이상 선택합니다.</li>
-          <li><b style={{ color: "var(--text-primary)" }}>집계 방식 선택</b> — shot 원본이 필요하면 shot raw를, PGM 단위 요약이 필요하면 MAX·MIN·MEDIAN·AVG·STD·P90·P10 중 하나를 선택합니다.</li>
-          <li><b style={{ color: "var(--text-primary)" }}>조회 또는 다운로드</b> — 화면 확인은 조회, 전체 결과 저장은 CSV 다운로드를 사용합니다. CSV 다운로드에는 필터가 하나 이상 필요합니다.</li>
-          {isAdmin && <li><b style={{ color: "var(--text-primary)" }}>ADDP 수식 테스트</b> — 새 alias와 수식을 입력하면 같은 필터와 집계 방식으로 미리 계산하고 테스트 CSV를 받을 수 있습니다.</li>}
-        </ol>
+        <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 10 }}>
+          <div style={{ padding: "10px 12px", background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: "var(--accent)", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+              <span>📌</span>
+              <span>방법 1. 아래 필터 폼을 이용하는 방법 (일반 사용자 권장)</span>
+            </div>
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, lineHeight: 1.65, color: "var(--text-secondary)" }}>
+              <li><b style={{ color: "var(--text-primary)" }}>제품 및 기간 지정</b>: 제품을 선택하고 최근 N일 또는 시작~종료일을 설정합니다.</li>
+              <li><b style={{ color: "var(--text-primary)" }}>세부 필터 입력</b>: root_lot_id, step_id, step_seq, wafer_id 등을 원하는 만큼 입력합니다. (필터 변경 시 상단 검색식 텍스트도 실시간으로 함께 만들어집니다.)</li>
+              <li><b style={{ color: "var(--text-primary)" }}>Index 및 집계 선택</b>: 필요한 REAL/ADDP 항목을 선택하고 집계 방식(shot raw 또는 요약 집계)을 선택합니다.</li>
+              <li><b style={{ color: "var(--text-primary)" }}>조회 또는 다운로드</b>: <b style={{ color: "var(--text-primary)" }}>[조회]</b> 버튼을 누르면 화면에 표가 나타나며, <b style={{ color: "var(--text-primary)" }}>[⬇ CSV 다운로드]</b>로 전체 결과를 저장할 수 있습니다.</li>
+            </ol>
+          </div>
+          <div style={{ padding: "10px 12px", background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#2563eb", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+              <span>⚡</span>
+              <span>방법 2. 상단 검색식·고유키를 입력/수정하여 진행하는 방법 (공유/고급)</span>
+            </div>
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, lineHeight: 1.65, color: "var(--text-secondary)" }}>
+              <li><b style={{ color: "var(--text-primary)" }}>검색식 직접 편집</b>: 상단 검색식 창에 조건문(예: PRODUCT, days, root_lot_id 등)을 직접 타이핑하여 수정합니다.</li>
+              <li><b style={{ color: "var(--text-primary)" }}>고유키(이력 ID) 입력 지원</b>: 복사한 검색식 전문뿐만 아니라, 이력 고유키(예: <code style={{ fontFamily: "monospace", color: "var(--accent)" }}>RH-B570659B</code> 또는 순번 <code style={{ fontFamily: "monospace" }}>#1</code>)를 검색식 창에 입력해도 됩니다.</li>
+              <li><b style={{ color: "var(--text-primary)" }}>[✓ 적용] 클릭</b>: <b style={{ color: "var(--text-primary)" }}>[✓ 적용]</b> 버튼(또는 Ctrl+Enter)을 누르면 검색식/고유키의 조건이 아래 필터 폼에 채워지고 정돈된 검색식으로 변환됩니다. (이때는 조회가 바로 시작되지 않습니다.)</li>
+              <li><b style={{ color: "var(--text-primary)" }}>[조회] 클릭</b>: 아래 필터에 반영된 내용을 검토한 후 <b style={{ color: "var(--text-primary)" }}>[조회]</b> 버튼을 눌러 검색을 시작합니다.</li>
+            </ol>
+          </div>
+        </div>
+        {isAdmin && (
+          <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--text-secondary)", borderTop: "1px dashed var(--border)", paddingTop: 6 }}>
+            🛠 <b style={{ color: "var(--text-primary)" }}>관리자 전용 수식 테스트</b>: [새 ADDP 수식 테스트] 섹션에서 신규 alias와 수식을 작성해 vehicle CSV 반영 전 미리 검증할 수 있습니다.
+          </div>
+        )}
       </details>
 
       {/* 검색이력 패널 */}
@@ -1328,9 +1865,13 @@ export default function My_Reformatize({ user }) {
       />
 
       {/* 조회 조건 */}
-      <div id="reformatize-form-anchor" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+      {sharedLink && <Banner tone="info" style={{ marginBottom: 8 }}>
+        <label>공유 링크 <input aria-label="생성된 공유 링크" readOnly value={sharedLink} onFocus={e => e.target.select()} style={{ ...inputStyle, width: "100%" }} /></label>
+        <div>공유 기본 주소는 우측 아래 ⚙ ET 다운로드 설정에서 변경할 수 있습니다.</div>
+      </Banner>}
+      <div id="reformatize-form-anchor" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>제품</span>
-        <select value={product} onChange={e => { setProduct(e.target.value); setResult(null); setOffset(0); }} style={{ ...inputStyle, minWidth: 160 }}>
+        <select value={product} onChange={e => { pendingItems.current = null; setSelItems(new Set()); setLoadedHistoryId(""); setProduct(e.target.value); setResult(null); setOffset(0); setLastSource("filter"); }} style={{ ...inputStyle, minWidth: 160 }}>
           {products.length === 0 && <option value="">제품 없음</option>}
           {products.map(p => <option key={p.product} value={p.product}>{p.product}</option>)}
         </select>
@@ -1339,19 +1880,88 @@ export default function My_Reformatize({ user }) {
         )}
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "조회"}</Button>
         <Button disabled={dlBusy || !product || !selected?.vehicle_csv} onClick={download}
-          title={hasAnyFilter(filters) ? "필터 적용 결과를 CSV 로 다운로드 (여러 명이 동시에 걸면 순서대로 처리됩니다)" : "다운로드는 필터가 하나 이상 필요합니다"}>
+          title="필터 적용 결과를 CSV 로 다운로드 (여러 명이 동시에 걸면 순서대로 처리됩니다)">
           {dlBusy ? (dlJob?.state === "queued" ? "대기 중…" : "다운로드 준비 중…") : "⬇ CSV 다운로드"}
         </Button>
-        {!hasAnyFilter(filters) && (
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-            ⬇ 다운로드는 필터(기간·lot 등)를 하나 이상 지정해야 합니다
-          </span>
-        )}
+      </div>
+
+      {/* 검색식 편집 및 반영 바 — 항상 열려 있고 직접 값 입력 후 적용 가능. 필터 영역을 가리지 않도록 콤팩트하게 구성 */}
+      <div style={{
+        marginBottom: 8,
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        background: "var(--bg-secondary)",
+        padding: "6px 10px",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--text-primary)" }}>
+              검색식
+            </span>
+            {loadedHistoryId && (
+              <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 700 }}>
+                · 이력 {loadedHistoryId}
+              </span>
+            )}
+            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+              (직접 수정 후 [적용] 시 아래 필터에 반영)
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <Button
+              variant="primary"
+              onClick={handleApplyExpression}
+              style={{ padding: "2px 10px", fontSize: 11, fontWeight: 700 }}
+              title="검색식의 내용을 아래 필터에 반영합니다 (Ctrl+Enter). 실제 검색은 [조회] 버튼을 눌러야 실행됩니다."
+            >
+              ✓ 적용
+            </Button>
+            <Button
+              onClick={handleCopyExpression}
+              style={{ padding: "2px 8px", fontSize: 11 }}
+              title="검색식 복사"
+            >
+              📋 복사
+            </Button>
+          </div>
+        </div>
+        <textarea
+          value={exprText}
+          onChange={e => {
+            setExprDirty(true);
+            setLastSource("expr");
+            setExprText(e.target.value);
+          }}
+          onKeyDown={e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              e.preventDefault();
+              handleApplyExpression();
+            }
+          }}
+          aria-label="현재 ET 검색식"
+          placeholder="PRODUCT = ...&#10;days = 7&#10;root_lot_id = ...&#10;ITEMS = ALL&#10;AGG = SHOT RAW"
+          style={{
+            ...inputStyle,
+            width: "100%",
+            height: 48,
+            minHeight: 38,
+            maxHeight: 120,
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 11.5,
+            lineHeight: 1.35,
+            padding: "4px 8px",
+            resize: "vertical",
+            display: "block",
+            boxSizing: "border-box",
+            whiteSpace: "pre-wrap",
+            overflowWrap: "anywhere",
+          }}
+        />
       </div>
 
       {/* 필터 — tkout_time 기간 + root_lot_id/step_id/step_seq/wafer_id/total_site_cnt/PGM point 수.
           최근 N일과 시작~종료일은 상호 배타 (한쪽 입력 시 다른 쪽 초기화). */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>필터</span>
         <input type="number" min={1} value={filters.days}
           onChange={e => setF({ days: e.target.value, date_from: "", date_to: "" })}
@@ -1387,7 +1997,7 @@ export default function My_Reformatize({ user }) {
           placeholder="PGM point 수 (예: 25,49)" title="조회 결과 PGM(25pt)의 실제 포인트 수로 PGM package 전체를 필터링합니다. 쉼표는 OR입니다."
           style={{ ...inputStyle, width: 190 }} />
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>집계</span>
-        <select value={agg} onChange={e => { setAgg(e.target.value); setResult(null); setOffset(0); }}
+        <select value={agg} onChange={e => { setAgg(e.target.value); setResult(null); setOffset(0); setLastSource("filter"); }}
           title="root_lot_id × wafer_id × step_id × PGM(pt) 그룹으로 index 를 집계해서 추출"
           style={{ ...inputStyle, width: 170 }}>
           <option value="">shot raw (chip_x_pos × chip_y_pos별)</option>
@@ -1395,24 +2005,51 @@ export default function My_Reformatize({ user }) {
             <option key={m} value={m}>{m.toUpperCase()}</option>
           ))}
         </select>
-        {agg && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-          {agg.toUpperCase()} · root lot × wafer × step × PGM · Spotfire/Excel 선형 분위수
-        </span>}
         {hasAnyFilter(filters) && (
           <Button onClick={() => setFilters(EMPTY_FILTERS)}>필터 초기화</Button>
         )}
       </div>
 
+      {/* 아래 필터식 반영 안내 배너 */}
+      {searchNotice && (
+        <div
+          style={{
+            margin: "0 0 8px",
+            padding: "6px 12px",
+            borderRadius: 6,
+            background: "color-mix(in srgb, var(--accent) 12%, var(--bg-secondary))",
+            border: "1px solid color-mix(in srgb, var(--accent) 35%, var(--border))",
+            color: "var(--text-primary)",
+            fontSize: 12,
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 13, color: "var(--accent)" }}>ℹ️</span>
+          <span>{searchNotice}</span>
+          {result?.total_rows !== undefined && (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)", fontWeight: 500 }}>
+              (조회 결과: {result.total_rows.toLocaleString()}행 · {result.elapsed_ms || 0}ms)
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Index 항목 선택 — REAL(scale factor)/ADDP(form·참조) 확인 후 뽑을 항목 선택 */}
       <ItemSelectPanel
         items={itemList}
         selected={selItems}
-        onToggle={(alias) => setSelItems(prev => {
-          const key = aliasKey(alias);
-          const s = new Set([...prev].filter(a => aliasKey(a) !== key));
-          if (s.size === prev.size) s.add(alias);           // 없던 항목이면 추가
-          return s;
-        })}
+        onToggle={(alias) => {
+          setLastSource("filter");
+          setSelItems(prev => {
+            const key = aliasKey(alias);
+            const s = new Set([...prev].filter(a => aliasKey(a) !== key));
+            if (s.size === prev.size) s.add(alias);           // 없던 항목이면 추가
+            return s;
+          });
+        }}
         isAdmin={isAdmin}
         hidden={hiddenItems}
         onToggleHidden={toggleHidden}
@@ -1522,6 +2159,14 @@ export default function My_Reformatize({ user }) {
       <PageGear title="ET 다운로드 설정" position="bottom-right">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
+            <label style={{ fontSize: 13, fontWeight: 700 }}>공유 기본 주소
+              <input type="url" placeholder="https://flow.example.com" value={(gearForm || settings).share_base_url || ""}
+                onChange={e => setGearForm({ ...(gearForm || settings), share_base_url: e.target.value })}
+                style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
+            </label>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>다른 사용자가 접속할 서버 주소를 저장하세요. ET 검색이력뿐만 아니라 인폼/이슈 등 메일 알림 및 타 페이지 공유 링크에도 공통 적용되며, 비워 두면 현재 접속 주소를 사용합니다.</div>
+          </div>
+          <div>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>한 번에 조회할 행 수</div>
             <input type="number" min={10} max={5000}
               value={(gearForm || settings).page_rows}
@@ -1530,12 +2175,14 @@ export default function My_Reformatize({ user }) {
             <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>테이블 한 페이지에 표시할 행 수 (10~5,000)</div>
           </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>조회·CSV 다운로드 최대 raw 행</div>
-            <input type="number" min={100} max={1000000}
-              value={(gearForm || settings).max_download_rows}
-              onChange={e => setGearForm({ ...(gearForm || settings), max_download_rows: e.target.value })}
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>조회·CSV 다운로드 최대 용량 (MB)</div>
+            <input type="number" min={10} max={10000}
+              value={(gearForm || settings).max_download_mb ?? 500}
+              onChange={e => setGearForm({ ...(gearForm || settings), max_download_mb: e.target.value })}
               style={{ ...inputStyle, width: "100%" }} />
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>초과 시 pivot 전 중단됩니다. 기간·lot 등 필터를 조정하거나 상한을 올리세요 (100~1,000,000)</div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
+              조회 및 CSV 다운로드 시 생성되는 최종 결과의 최대 허용 용량(MB)입니다. 초과 시 용량초과 안내와 함께 안전하게 중단됩니다. (10~10,000 MB)
+            </div>
           </div>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>value 열 이름</div>

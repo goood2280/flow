@@ -405,18 +405,19 @@ def test_frontend_defers_status_candidates_and_split_table_bundle():
     assert "onSearch={searchLotCandidates}" in source
 
 
-def test_lot_id_double_click_opens_all_matching_split_table_notes():
+def test_lot_id_click_opens_lot_notes_modal_without_split_view():
     root = Path(__file__).parents[1] / "frontend" / "src" / "features"
     lot_source = (root / "lotmanagement" / "My_LotManagement.jsx").read_text(encoding="utf-8")
-    split_source = (root / "splittable" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+    notes_modal_source = (root / "lotmanagement" / "LotNotesModal.jsx").read_text(encoding="utf-8")
 
-    assert 'onDoubleClick={!editing&&column.id==="lot_id"' in lot_source
-    assert "openSplitView(value,true)" in lot_source
-    assert "initialOpenNotes={viewLotNotes}" in lot_source
-    assert 'initialOpenNotes=false' in split_source
-    assert "reloadNotes(selProd,resolvedLotId)" in split_source
-    assert "setNoteFilter(null);setNoteDraftScope(null);setNoteSearch(\"\")" in split_source
-    assert "setNotesOpen(true)" in split_source
+    assert 'onClick={!editing&&column.id==="lot_id"' in lot_source
+    assert "openNotesModal" in lot_source
+    assert "<LotNotesModal" in lot_source
+    assert "openSplitView(value,true)" not in lot_source
+    assert '<th title="SplitTable 보기" style={{width:70}}>View</th>' in lot_source
+    assert 'title="공유 노트 열기"' not in lot_source
+    assert "/notes/save" in notes_modal_source
+    assert "/notes/delete" in notes_modal_source
 
 
 def test_frontend_qty_uses_dash_until_positive_wafer_count_arrives():

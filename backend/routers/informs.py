@@ -5802,6 +5802,12 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
     # v8.8.30: created_at 을 "YYYY-MM-DD HH:MM" 로 정돈. 없으면 스킵.
     created_raw = (root.get("created_at") or "").strip()
     created_disp = created_raw.replace("T", " ")[:16] if created_raw else ""
+    try:
+        from core.mail import get_share_base_url
+        base_url = get_share_base_url().rstrip("/")
+    except Exception:
+        base_url = ""
+    root_id = str(root.get("id") or "").strip()
     meta_rows = []
     for k, label, disp in [
         ("product",    "제품",     root.get("product", "")),
@@ -5815,6 +5821,14 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         meta_rows.append(
             f"<tr><td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#6b7280;background:#f3f4f6;width:90px;'>{esc(label)}</td>"
             f"<td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#111827;font-family:monospace;'>{esc(val)}</td></tr>"
+        )
+    if base_url and root_id:
+        inform_link = f"{base_url}/informs?id={esc(root_id)}"
+        meta_rows.append(
+            f"<tr><td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#6b7280;background:#f3f4f6;width:90px;'>Flow 바로가기</td>"
+            f"<td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#2563eb;font-family:monospace;'>"
+            f"<a href='{inform_link}' target='_blank' rel='noopener noreferrer' style='color:#2563eb;font-weight:700;text-decoration:underline;'>"
+            f"Flow 인폼 열기 ↗</a></td></tr>"
         )
     meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
     prose_block = ""
@@ -5855,6 +5869,8 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         f"<h3 style='font-size:{_MAIL_MIN_FONT};margin:14px 0 6px 0;color:#374151;'>스레드</h3>{thread_html}"
         if (thread_html or "").strip() else ""
     )
+    target_flow_url = f"{base_url}/informs?id={esc(root_id)}" if (base_url and root_id) else (f"{base_url}/informs" if base_url else esc(_GO_FLOW_URL))
+    target_flow_label = "Flow 인폼 바로가기 ↗" if base_url else "go/flow_process-inform"
     return (
         f"<div style='font-family:{_MAIL_FONT_FAMILY};font-size:{_MAIL_MIN_FONT};color:#111827;width:100%;max-width:none;margin:0;'>"
         f"{prose_block}"
@@ -5864,8 +5880,8 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         f"{thread_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
         f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
-        f"<a href='{esc(_GO_FLOW_URL)}' target='_blank' rel='noopener noreferrer' "
-        f"style='color:#374151;text-decoration:underline;font-weight:700;'>go/flow_process-inform</a> 에서 진행해 주세요.</div>"
+        f"<a href='{target_flow_url}' target='_blank' rel='noopener noreferrer' "
+        f"style='color:#374151;text-decoration:underline;font-weight:700;'>{target_flow_label}</a> 에서 진행해 주세요.</div>"
         f"{_mail_links_html()}"
         "</div>"
     )

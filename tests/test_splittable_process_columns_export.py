@@ -352,6 +352,22 @@ def test_csv_process_columns_precede_preserved_parameter(monkeypatch):
     assert "S10,ETCH,KNOB_A,PP_A" in text
 
 
+def test_csv_download_header_uses_authenticated_user_and_split_context(monkeypatch):
+    from routers import splittable
+
+    _patch_export_source(monkeypatch)
+    response = splittable.download_csv(
+        product="P1", root_lot_id="L1", wafer_ids="", prefix="KNOB,FAB",
+        custom_name="", transposed="true", username="spoofed", custom_cols="",
+        step_labels="0", exclude_not_null="1",
+        user={"username": "auth-owner", "role": "user"},
+    )
+
+    disposition = response.headers["content-disposition"]
+    assert "filename*=UTF-8''" in disposition
+    assert "_L1_auth-owner_P1_KNOB_FAB.csv" in disposition
+
+
 def test_xlsx_process_columns_precede_preserved_parameter(monkeypatch):
     from openpyxl import load_workbook
     from routers import splittable

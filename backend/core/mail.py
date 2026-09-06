@@ -47,6 +47,7 @@ import json as _json
 import logging
 import mimetypes
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -65,6 +66,139 @@ File = Tuple[str, bytes, Optional[str]]   # (filename, content, mime)
 
 def _admin_settings_path() -> Path:
     return PATHS.data_root / "admin_settings.json"
+
+
+def validate_share_base_url(url: str) -> str:
+    """공유/알림 기본 URL 형식 검증.
+    - 빈 문자열이면 "" 반환.
+    - http:// 또는 https:// 스킴 필수.
+    - hostname 필수, query/fragment/username/password/backslash 불가, 길이 2048 이내.
+    - 끝의 '/' 는 제거하여 반환.
+    """
+    cleaned = str(url or "").strip()
+    if not cleaned:
+        return ""
+    if any(c.isspace() or ord(c) < 32 for c in cleaned) or "\\" in cleaned or len(cleaned) > 2048:
+        raise ValueError("공유 기본 주소 형식이 올바르지 않습니다.")
+    parsed = urllib.parse.urlsplit(cleaned)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("공유 기본 주소는 쿼리·인증정보 없이 http:// 또는 https:// 주소로 입력하세요.")
+    _ = parsed.port  # triggers ValueError if port is invalid
+    return urllib.parse.urlunsplit(parsed).rstrip("/")
+
+
+def get_share_base_url() -> str:
+    """시스템 공통 공유/알림 기본 주소.
+    1. admin_settings.json 의 `share_base_url` 또는 `mail.app_base_url`
+    2. reformatize_settings.json 의 `share_base_url` (폴백)
+    3. settings.json 의 `tracker_et_scan.app_base_url` (폴백)
+    """
+    p = _admin_settings_path()
+    try:
+        if p.is_file():
+            data = _json.loads(p.read_text("utf-8"))
+            if isinstance(data, dict):
+                val = str(data.get("share_base_url") or "").strip()
+                if val:
+                    return val.rstrip("/")
+                m = data.get("mail")
+                if isinstance(m, dict):
+                    m_val = str(m.get("app_base_url") or "").strip()
+                    if m_val:
+                        return m_val.rstrip("/")
+    except Exception as e:
+        logger.debug(f"get_share_base_url (admin_settings) read failed: {e}")
+
+    try:
+        ref_file = PATHS.data_root / "reformatize_settings.json"
+        if ref_file.is_file():
+            ref_data = _json.loads(ref_file.read_text("utf-8"))
+            if isinstance(ref_data, dict):
+                r_val = str(ref_data.get("share_base_url") or "").strip()
+                if r_val:
+                    return r_val.rstrip("/")
+    except Exception as e:
+        logger.debug(f"get_share_base_url (reformatize_settings) read failed: {e}")
+
+    try:
+        st_file = PATHS.data_root / "settings.json"
+        if st_file.is_file():
+            st_data = _json.loads(st_file.read_text("utf-8"))
+            if isinstance(st_data, dict):
+                t = st_data.get("tracker_et_scan")
+                if isinstance(t, dict):
+                    t_val = str(t.get("app_base_url") or "").strip()
+                    if t_val:
+                        return t_val.rstrip("/")
+    except Exception as e:
+        logger.debug(f"get_share_base_url (settings) read failed: {e}")
+
+    return ""
+
+
+def set_share_base_url(url: str | None) -> str:
+    """시스템 공통 공유/알림 기본 주소를 설정하고 각 설정 파일에 동기화.
+    - admin_settings.json (`share_base_url` 및 `mail.app_base_url`)
+    - reformatize_settings.json (`share_base_url`)
+    - settings.json (`tracker_et_scan.app_base_url` 및 `tracker.et_scan.app_base_url`, 파일이 존재할 경우)
+    """
+    clean_url = validate_share_base_url(str(url or "").strip()) if url is not None else ""
+    p = _admin_settings_path()
+    try:
+        admin_data = {}
+        if p.is_file():
+            try:
+                admin_data = _json.loads(p.read_text("utf-8"))
+            except Exception:
+                admin_data = {}
+        if not isinstance(admin_data, dict):
+            admin_data = {}
+        admin_data["share_base_url"] = clean_url
+        mail_cfg = admin_data.get("mail")
+        if isinstance(mail_cfg, dict):
+            mail_cfg["app_base_url"] = clean_url
+        else:
+            admin_data["mail"] = {"app_base_url": clean_url}
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(admin_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"set_share_base_url failed to update admin_settings: {e}")
+
+    try:
+        ref_p = PATHS.data_root / "reformatize_settings.json"
+        ref_data = {}
+        if ref_p.is_file():
+            try:
+                ref_data = _json.loads(ref_p.read_text("utf-8"))
+            except Exception:
+                ref_data = {}
+        if not isinstance(ref_data, dict):
+            ref_data = {}
+        ref_data["share_base_url"] = clean_url
+        ref_p.parent.mkdir(parents=True, exist_ok=True)
+        ref_p.write_text(_json.dumps(ref_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"set_share_base_url failed to update reformatize_settings: {e}")
+
+    try:
+        st_p = PATHS.data_root / "settings.json"
+        if st_p.is_file():
+            st_data = _json.loads(st_p.read_text("utf-8"))
+            if isinstance(st_data, dict):
+                changed = False
+                if isinstance(st_data.get("tracker_et_scan"), dict):
+                    st_data["tracker_et_scan"]["app_base_url"] = clean_url
+                    changed = True
+                if isinstance(st_data.get("tracker"), dict) and isinstance(st_data["tracker"].get("et_scan"), dict):
+                    st_data["tracker"]["et_scan"]["app_base_url"] = clean_url
+                    changed = True
+                if changed:
+                    st_p.write_text(_json.dumps(st_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"set_share_base_url failed to update settings.json: {e}")
+
+    return clean_url
 
 
 def load_mail_cfg() -> dict:
@@ -87,11 +221,13 @@ def load_mail_cfg() -> dict:
                         "status_code": str(m.get("status_code") or "").strip(),
                         "headers": m.get("headers") if isinstance(m.get("headers"), dict) else {},
                         "extra_data": m.get("extra_data") if isinstance(m.get("extra_data"), dict) else {},
+                        "app_base_url": str(m.get("app_base_url") or data.get("share_base_url") or "").strip(),
                     }
     except Exception as e:
         logger.warning(f"load_mail_cfg failed: {e}")
     return {"enabled": False, "api_url": "", "from_addr": "",
-            "domain": "", "status_code": "", "headers": {}, "extra_data": {}}
+            "domain": "", "status_code": "", "headers": {}, "extra_data": {},
+            "app_base_url": ""}
 
 
 def _apply_domain(s: str, domain: str) -> str:
