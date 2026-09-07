@@ -277,6 +277,88 @@ def test_stage_inference_keeps_vehicle_steps_without_numeric_step_desc(monkeypat
     assert meta["FAB_4.0 GATE_OX"]["step_ids"] == ["CC942300"]
 
 
+def test_vehicle_step_map_keeps_only_selected_product_rows(monkeypatch):
+    from routers import splittable
+
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
+        {"product": "proda", "step_id": "A100", "step_desc": "SHARED"},
+        {"product": "proda", "step_id": "A200", "step_desc": "ONLY_A"},
+        {"product": "prodb", "step_id": "B100", "step_desc": "SHARED"},
+        {"product": "prodb", "step_id": "B200", "step_desc": "ONLY_B"},
+    ])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "product_col": "product", "step_id_col": "step_id", "step_desc_col": "step_desc",
+    } if name == "step_matching" else {})
+    # 과거 fallback은 선택 제품 S0에 보이는 타 제품 step까지 다시 합쳤다.
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {
+        "proda": {"product": "PRODA", "rows": {"b100": {"step_id": "B100"}}},
+    })
+
+    step_map = splittable._product_step_map_by_desc("ML_TABLE_PRODA")
+
+    assert [item["step_id"] for item in step_map["shared"]] == ["A100"]
+    assert [item["step_id"] for item in step_map["only_a"]] == ["A200"]
+    assert "only_b" not in step_map
+    assert "b100" not in step_map
+
+
+def test_vehicle_file_excludes_legacy_steps_and_unassigned_products(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        'product,step_id,step_desc\nproda,A100,ETCH\nproda,A100,ETCH\n'
+        'prodb,B100,ETCH\n"proda,prodb",SHARED,CLEAN\n,UNASSIGNED,ETCH\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "step_matching.csv").write_text(
+        'product,step_id,function_step\nproda,LEGACY,OLD\n', encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    for product, expected in (("ML_TABLE_PRODA", {"A100", "SHARED"}),
+                              ("ML_TABLE_PRODB", {"B100", "SHARED"}),
+                              ("ML_TABLE_UNKNOWN", set())):
+        mapping = splittable._product_step_map_by_desc(product, tmp_path)
+        assert {row["step_id"] for rows in mapping.values() for row in rows} == expected
+
+
+def test_vm_process_info_uses_unique_vehicle_steps_for_selected_product(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "vm_matching.csv").write_text(
+        "step_desc,item_id\nSHARED,ITEM_1\nSHARED,ITEM_1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
+        {"product": "proda", "step_id": "A100", "step_desc": "SHARED"},
+        {"product": "proda", "step_id": "A100", "step_desc": "SHARED"},
+        {"product": "prodb", "step_id": "B100", "step_desc": "SHARED"},
+    ])
+    original_sch = splittable._sch
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "product_col": "product", "step_id_col": "step_id", "step_desc_col": "step_desc",
+    } if name == "step_matching" else original_sch(name))
+
+    meta = splittable._build_vm_meta("ML_TABLE_PRODA")
+
+    assert meta["SHARED_ITEM_1"]["step_ids"] == ["A100"]
+    assert meta["SHARED_ITEM_1"]["groups"][0]["step_ids"] == ["A100"]
+
+
+def test_inline_process_info_excludes_steps_outside_vehicle_product(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\nproda,A100,ETCH\nprodb,B100,ETCH\n", encoding="utf-8",
+    )
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id\nproda,A100,ITEM\nproda,B100,ITEM\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    assert splittable._build_inline_meta("ML_TABLE_PRODA")["ITEM"]["step_ids"] == ["A100"]
+
+
 def test_knob_virtual_columns_emit_one_row_per_rulebook_feature(monkeypatch):
     from routers import splittable
 

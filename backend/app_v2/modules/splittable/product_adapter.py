@@ -50,9 +50,6 @@ def step_matching_product_alias_keys(product: str) -> set[str]:
     aliases = {raw, core}
     if core:
         aliases.add(f"ML_TABLE_{core}")
-    up = core.upper()
-    if up == "PRODA0":
-        aliases.add("PRODA1")
     return {str(a).casefold() for a in aliases if str(a).strip()}
 
 def step_matching_product_matches(product: str, row_product: object, *, allow_common: bool = True) -> bool:

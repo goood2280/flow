@@ -197,7 +197,10 @@ def test_split_knob_meta_preserves_comma_inside_single_product_step_desc(monkeyp
         encoding="utf-8",
     )
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
-    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda *args, **kwargs: {
+        "etch, clean": [{"step_id": "S10", "step_desc": "ETCH, CLEAN", "module": ""}],
+        "s10": [{"step_id": "S10", "step_desc": "ETCH, CLEAN", "module": ""}],
+    })
     monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
 
     meta = splittable._build_knob_meta("ML_TABLE_PRODA")
@@ -205,6 +208,65 @@ def test_split_knob_meta_preserves_comma_inside_single_product_step_desc(monkeyp
 
     assert group["step_desc"] == "ETCH, CLEAN"
     assert group["step_ids"] == ["S10"]
+
+
+def test_split_knob_meta_filters_legacy_direct_steps_by_vehicle_product(monkeypatch, tmp_path):
+    from routers import splittable
+
+    knob_file = tmp_path / "ppid_knob.csv"
+    knob_file.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_load_csv_rows", lambda path: [{
+        "feature_name": "10.0 CONTACT",
+        "function_step": "CONTACT",
+        "value": "PP_A",
+        "operator": "eq",
+        "rule_order": "R1",
+        "step_id": "A100, B100, A100",
+    }])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "feature_col": "feature_name", "step_desc_col": "function_step",
+        "value_col": "value", "operator_col": "operator", "rule_order_col": "rule_order",
+        "category_col": "category",
+    } if name == "knob_ppid" else {})
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda *args, **kwargs: {
+        "contact": [{"step_id": "A100", "step_desc": "CONTACT", "module": "M1"}],
+        "a100": [{"step_id": "A100", "step_desc": "CONTACT", "module": "M1"}],
+    })
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+    group = meta["KNOB_10.0 CONTACT"]["groups"][0]
+
+    assert group["step_ids"] == ["A100"]
+
+
+def test_split_knob_meta_rejects_step_shaped_desc_outside_vehicle_product(monkeypatch, tmp_path):
+    from routers import splittable
+
+    knob_file = tmp_path / "ppid_knob.csv"
+    knob_file.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_load_csv_rows", lambda path: [{
+        "feature_name": "FOREIGN_STEP",
+        "function_step": "BB2000",
+        "value": "PP_B",
+        "operator": "eq",
+        "rule_order": "R1",
+    }])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "feature_col": "feature_name", "step_desc_col": "function_step",
+        "value_col": "value", "operator_col": "operator", "rule_order_col": "rule_order",
+        "category_col": "category",
+    } if name == "knob_ppid" else {})
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda *args, **kwargs: {
+        "aa1000": [{"step_id": "AA1000", "step_desc": "OWN_STEP", "module": "M1"}],
+    })
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert meta["KNOB_FOREIGN_STEP"]["groups"][0]["step_ids"] == []
 
 
 def test_apply_requires_the_exact_preview_revision(monkeypatch):

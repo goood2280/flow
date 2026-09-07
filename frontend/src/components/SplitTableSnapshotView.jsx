@@ -795,16 +795,14 @@ export default function SplitTableSnapshotView({
                     const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw || r._no_split_yet);
                     const cellTitle = editable && isDraftValue
                       ? (r._no_split_yet ? "클릭: S0 스플릿 추가" : "클릭: KNOB 값 선택 또는 새 값 입력")
-                      : (editable && isSplitCol
+                          : (editable && isSplitCol
                           ? "클릭: 스플릿 추가"
-                          : (isSplitCol && value
-                              ? `클릭: '${value}' 분류 규칙 보기`
-                              : (isValueCol && value
+                          : (isValueCol && value
                                   ? `클릭: '${value}' 분류 규칙 보기`
                                   : (isParamCol
                                       ? "클릭: 분류 규칙 보기"
-                                      : undefined))));
-                    const isClickable = (editable && isDraftValue) || (editable && isSplitCol) || (isSplitCol && !!value) || (isValueCol && !!value) || isParamCol;
+                                      : undefined)));
+                    const isClickable = (editable && isDraftValue) || (editable && isSplitCol) || (isValueCol && !!value) || isParamCol;
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps}
                         onClick={(event) => {
@@ -818,9 +816,7 @@ export default function SplitTableSnapshotView({
                             onAddSplitRequest?.(event, r._param, r);
                             return;
                           }
-                          if (isSplitCol) {
-                            onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
-                          } else if (isValueCol && (r._split_value_raw || r._split_value)) {
+                          if (isValueCol && (r._split_value_raw || r._split_value)) {
                             onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
                           } else if (isParamCol) {
                             onViewRuleMatch?.("knob_ppid", r._param, r, null, null);

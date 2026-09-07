@@ -546,7 +546,13 @@ def _s0_source_signature(catalog: dict[str, dict]) -> str:
 def _s0_resolution_context(product: str) -> tuple:
     # Build product-wide metadata once, rather than rereading all rule rows for
     # every KNOB on every cache hit (typically thousands of KNOBs per view).
-    return (_split_step_order_context(product), _build_knob_meta(product) or {},
+    ctx = dict(_split_step_order_context(product))
+    ctx["vehicle_step_ids"] = {
+        str(item.get("step_id") or "").strip().casefold()
+        for items in _product_step_map_by_desc(product).values() for item in items
+        if str(item.get("step_id") or "").strip()
+    }
+    return (ctx, _build_knob_meta(product) or {},
             _inferred_stage_meta(product, "KNOB") or {})
 
 
@@ -576,6 +582,8 @@ def _s0_step_candidates(product: str, knob: str, context: tuple | None = None) -
     for value in candidates:
         clean = str(value or "").strip()
         folded = clean.casefold()
+        if "vehicle_step_ids" in ctx and folded not in ctx["vehicle_step_ids"]:
+            continue
         if clean and folded not in seen:
             seen.add(folded)
             ordered.append(clean)

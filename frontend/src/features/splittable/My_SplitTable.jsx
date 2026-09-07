@@ -499,6 +499,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   // 범위 선택을 놓칠 수 있다.
   const selectionAnchorRef=useRef(null);
   const isDraggingSelectionRef=useRef(false);
+  const dragCopySourceRef=useRef(null);
   const[colValCache,setColValCache]=useState({});
   useEffect(()=>{
     if(!tagColorPicker)return;
@@ -992,32 +993,49 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
     if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
-    reloadCustomTags();
+    let active=true;
+    const product=selProd;
+    sf(API+"/custom-tags?product="+encodeURIComponent(product))
+      .then(d=>{if(active)setCustomTags(d.columns||[]);})
+      .catch(()=>{if(active)setCustomTags([]);});
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
+        if(!active)return;
         setProductSchema((d.columns||[]).map(c=>c.name||c));
         setOverrideCols(Array.isArray(d.override_cols_present)?d.override_cols_present:[]);
       })
-      .catch(()=>{setProductSchema([]);setOverrideCols([]);});
+      .catch(()=>{if(active){setProductSchema([]);setOverrideCols([]);}});
+    return()=>{active=false;};
   },[selProd]);
   // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
   useEffect(()=>{if(!selProd){setKnobMeta({});setCategoryColors({});return;}
+    let active=true;
+    setKnobMeta({});setCategoryColors({});
     sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
-      .then(d=>setKnobMeta(d.features||{})).catch(()=>setKnobMeta({}));
+      .then(d=>{if(active)setKnobMeta(d.features||{});}).catch(()=>{if(active)setKnobMeta({});});
     sf(API+"/category-colors?product="+encodeURIComponent(selProd))
-      .then(d=>setCategoryColors(d.colors||{})).catch(()=>setCategoryColors({}));
+      .then(d=>{if(active)setCategoryColors(d.colors||{});}).catch(()=>{if(active)setCategoryColors({});});
+    return()=>{active=false;};
   },[selProd]);
   // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
   const[vmMeta,setVmMeta]=useState({});
   useEffect(()=>{
+    if(!selProd){setVmMeta({});return;}
+    let active=true;
+    setVmMeta({});
     sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
-      .then(d=>setVmMeta(d.items||{})).catch(()=>setVmMeta({}));
+      .then(d=>{if(active)setVmMeta(d.items||{});}).catch(()=>{if(active)setVmMeta({});});
+    return()=>{active=false;};
   },[selProd]);
   // v8.8.15: INLINE meta — INLINE_<item_id> row 의 step_id sub-label 용.
   const[inlineMetaSt,setInlineMetaSt]=useState({});
   useEffect(()=>{
+    if(!selProd){setInlineMetaSt({});return;}
+    let active=true;
+    setInlineMetaSt({});
     sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
-      .then(d=>setInlineMetaSt(d.items||{})).catch(()=>setInlineMetaSt({}));
+      .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
+    return()=>{active=false;};
   },[selProd]);
   // 헤더의 빨간 핀은 LOT 관리 테이블을 정본으로 사용한다. 예전에는 별도
   // 캐시관리의 주요 Lot purpose를 읽어 같은 위치에 표시해 두 화면의 값이 달랐다.
@@ -1168,8 +1186,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     setRbMatchKind(kind);
     setRbMatchParam(String(param || "").trim());
     setRbMatchRow(kind==="knob_ppid"&&row?row:null);
-    setRbMatchFilter(filterVal ? String(filterVal).trim() : null);
-    setRbMatchSplitLabel(splitLabel ? String(splitLabel).trim() : null);
+    setRbMatchFilter(filterVal == null ? null : String(filterVal).trim());
+    setRbMatchSplitLabel(splitLabel == null ? null : String(splitLabel).trim());
   };
   const closeRuleMatchView=()=>{
     setRbMatchKind(null);setRbMatchParam("");setRbMatchRow(null);
@@ -1647,12 +1665,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       out.push(typeof extra==="object"&&Object.keys(extra).length>0?{value:s,label:s,...extra}:s);
     };
     // 1. 편집 시점의 POR recipe: 현재 f_step.csv/parquet step_id -> recipe_id.
-    // 구버전 응답과의 호환을 위해 current 값이 없을 때만 snapshot S0를 쓴다.
-    const sopVal=planningS0ValueForParam(data,param)||s0ValueForParam(data,param);
+    // 현재 매핑이 명시적으로 비어 있으면 과거 snapshot S0로 되돌아가지 않는다.
+    const sopVal=planningS0ValueForParam(data,param);
     if(sopVal){
       const sopSplit=resolveSplitDisplayName(param,sopVal);
-      if(sopSplit&&sopSplit!==sopVal)add(sopSplit,{isSop:true});
-      add(sopVal,{isSop:true});
+      const label=sopSplit&&sopSplit!==sopVal?`${sopVal} (${sopSplit})`:String(sopVal);
+      add(sopVal,{isSop:true,label});
     }
     // 2. Rules from ppid_knob
     const km=knobLookup(param);
@@ -1699,7 +1717,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if(!clean)return;
     const existingDrafts=splitDraftValues[clean]||[];
     const draftIndex=existingDrafts.length;
-    const sopVal=planningS0ValueForParam(data,clean)||s0ValueForParam(data,clean);
+    const sopVal=planningS0ValueForParam(data,clean);
     const sourceRow=(data?.rows||[]).find(r=>String(r?._param||"")===clean);
     const hasCellValues=sourceRow?._cells&&Object.values(sourceRow._cells).some(c=>hasValue(c?.actual)||hasValue(c?.plan));
     const cellValues=sourceRow?._cells?Object.values(sourceRow._cells).map(cell=>hasValue(cell?.plan)?cell.plan:cell?.actual):[];
@@ -1731,6 +1749,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const clearCellSelection=()=>{
     selectionAnchorRef.current=null;
     isDraggingSelectionRef.current=false;
+    dragCopySourceRef.current=null;
     setSelectedCellRange(null);
     setSelectionAnchor(null);
   };
@@ -2964,6 +2983,17 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         //   Delete plan 삭제, paste)만 editing 으로 게이팅된다.
         const beginCellSelection=(e,ri,ci)=>{
           if(e.button!==0)return;
+          dragCopySourceRef.current=null;
+          if(editing&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){
+            const row=displayRows[ri];
+            const cell=row?._cells?.[String(ci)];
+            if(cell?.key&&(cell.is_custom_tag||cell.is_management_row||cell.can_plan!==false)){
+              const {effectiveCell}=effectiveCellFor(cell);
+              const value=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
+              if(hasValue(value))dragCopySourceRef.current={rowIndex:ri,colIndex:ci,param:row._param,value,
+                kind:cell.is_custom_tag?"tag":cell.is_management_row?"management":"plan"};
+            }
+          }
           // 텍스트 native selection 대신 spreadsheet 범위 선택을 사용한다.
           e.preventDefault();
           const currentAnchor=selectionAnchorRef.current||selectionAnchor;
@@ -2983,12 +3013,33 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         const updateCellSelection=(ri,ci)=>{
           const currentAnchor=selectionAnchorRef.current||selectionAnchor;
           if(!isDraggingSelectionRef.current||!currentAnchor)return;
+          const copy=dragCopySourceRef.current;
+          if(editing&&copy){
+            // Like Split view assignment, drag only across wafers of the same
+            // parameter. Never copy one process recipe into another process.
+            if(ri!==copy.rowIndex||displayRows[ri]?._param!==copy.param)return;
+            const updates={};
+            for(let col=Math.min(copy.colIndex,ci);col<=Math.max(copy.colIndex,ci);col++){
+              if(col===copy.colIndex)continue;
+              const cell=displayRows[ri]?._cells?.[String(col)];
+              if(!cell?.key)continue;
+              if(copy.kind==="tag"&&!cell.is_custom_tag)continue;
+              if(copy.kind==="management"&&!cell.is_management_row)continue;
+              if(copy.kind==="plan"&&(cell.can_plan===false||cell.is_custom_tag||cell.is_management_row))continue;
+              updates[cell.key]=String(copy.value);
+            }
+            if(Object.keys(updates).length){
+              const setter=copy.kind==="tag"?setPendingTags:copy.kind==="management"?setPendingManagement:setPendingPlans;
+              setter(current=>({...current,...updates}));
+            }
+          }
           const nextRange=normalizeCellRange(currentAnchor.rowIndex,currentAnchor.colIndex,ri,ci);
           setSelectedCellRange(nextRange);
           setActiveCell(null);
         };
         const finishCellSelection=()=>{
           isDraggingSelectionRef.current=false;
+          dragCopySourceRef.current=null;
         };
         const handleSplitPaste=(e)=>{
           if(!editing||!activeSelectionStart||activeCell)return;
@@ -3442,12 +3493,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               {showParamMeta&&<td style={{boxSizing:"border-box",width:stepIdColWidth,minWidth:stepIdColWidth,maxWidth:stepIdColWidth,padding:"6px 10px",fontWeight:700,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:stepIdLeft,zIndex:stickyBodyZ(stepIdPrefixIndex),isolation:"isolate",whiteSpace:"pre-line",wordBreak:"break-word",lineHeight:1.35,verticalAlign:"top"}}>{rowProcessColumns.step_id}</td>}
               {showParamMeta&&<td style={{boxSizing:"border-box",width:stepDescColWidth,minWidth:stepDescColWidth,maxWidth:stepDescColWidth,padding:"6px 10px",fontWeight:600,fontSize:13,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:stepDescLeft,zIndex:stickyBodyZ(stepDescPrefixIndex),isolation:"isolate",whiteSpace:"pre-line",wordBreak:"break-word",lineHeight:1.35,verticalAlign:"top"}}>{rowProcessColumns.step_desc}</td>}
               {(()=>{const pLotN=notesForParam(row._param).length;return(
-              <td style={{boxSizing:"border-box",width:itemColWidth,minWidth:itemColWidth,maxWidth:itemColWidth,padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:paramLeft,zIndex:stickyBodyZ(itemPrefixIndex),isolation:"isolate",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+(rowKnobStepTitle?`\n${rowKnobStepTitle}`:"")+notReachedTitle} onClick={()=>{setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
+              <td style={{boxSizing:"border-box",width:itemColWidth,minWidth:itemColWidth,maxWidth:itemColWidth,padding:"6px 10px",fontWeight:600,fontSize:14,color:GRID_TEXT,borderBottom:GRID_LINE,borderRight:GRID_LINE,background:rowNotReached?NOT_REACHED_LABEL_BG:"var(--bg-secondary)",position:"sticky",left:paramLeft,zIndex:stickyBodyZ(itemPrefixIndex),isolation:"isolate",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={rowMatchKind?`${rowParam}\n이 항목의 ${matchTitle} 보기`:((pLotN>0?`${rowParam} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${rowParam} — 태그 보기/추가`)+(rowKnobStepTitle?`\n${rowKnobStepTitle}`:"")+notReachedTitle)} onClick={()=>{if(rowMatchKind){openRuleMatchView(rowMatchKind,rowParam,row);return;}setNoteFilter({scope:"param",param:rowParam});setNoteDraftScope(null);setNotesOpen(true);}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+step_desc 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시.
                     v10.0.8: KNOB 항목은 꼬리 `_Split` 도 라벨에서만 제거 (raw key 는 title/편집/plan 에 그대로).
                     KNOB/INLINE/VM 항목은 클릭 시 매칭 규칙 모달이 열리고, 설정값은 그때만 표출한다. */}
-                  <span onClick={(e)=>{if (!rowMatchKind) return; e.stopPropagation(); openRuleMatchView(rowMatchKind,rowParam,row);}}
+                  <span
                     title={rowMatchKind ? `${rowParam}\n이 항목의 ${matchTitle} 보기` : ""}
                     style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>
                     {splitParamDisplayName(row._display||rowParam||"",rowParam)}
@@ -4016,7 +4067,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             <div style={{overflow:"auto"}}>
               {rbMatchKind === "knob_ppid" && (()=>{
                 const groups = Array.isArray(rbMatchData.groups) ? rbMatchData.groups : [];
-                const processText = knobStepSummaryText(groups, {excludeNotNull: excludeNotNullStepMeta});
                 const rawFilter = String(rbMatchFilter || "").trim();
                 const filterNorm = rawFilter.toLowerCase();
                 const isFilterActive = Boolean(filterNorm);
@@ -4024,37 +4074,32 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   ? groups.filter(g => {
                       const cat = String(g.category || "").trim().toLowerCase();
                       const val = String(g.value || "").trim().toLowerCase();
-                      const ro = String(g.rule_order || "").trim().toLowerCase();
-                      return cat === filterNorm || val === filterNorm || ro === filterNorm ||
-                             cat.includes(filterNorm) || val.includes(filterNorm);
+                      return cat === filterNorm || val === filterNorm;
                     })
                   : groups;
-                const displayGroups = (isFilterActive && filteredGroups.length > 0) ? filteredGroups : groups;
+                const displayGroups = filteredGroups;
+                const processText = knobStepSummaryText(displayGroups, {excludeNotNull: excludeNotNullStepMeta});
                 const filterLabel = rbMatchSplitLabel ? `${rbMatchSplitLabel} (${rawFilter})` : rawFilter;
 
                 return (
                   <div style={{display:"grid", gap:10}}>
                     <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, padding:"8px 12px", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-secondary)", fontSize:13, fontFamily:"monospace"}}>
-                      <span>적용공정: <strong style={{color:"var(--text-primary)"}}>{processText || (groups.length ? "표시 대상 없음" : "매칭정보 없음")}</strong></span>
+                      {!isFilterActive&&<span>적용공정: <strong style={{color:"var(--text-primary)"}}>{processText || (groups.length ? "표시 대상 없음" : "매칭정보 없음")}</strong></span>}
                       <div style={{display:"flex", alignItems:"center", gap:8}}>
                         {isFilterActive ? (
                           <>
                             <span style={{display:"inline-flex", alignItems:"center", gap:4, padding:"3px 8px", borderRadius:4, background:"rgba(59,130,246,0.15)", border:"1px solid rgba(59,130,246,0.35)", color:"rgba(37,99,235,0.95)", fontWeight:700, fontSize:13}}>
                               필터: {filterLabel} ({displayGroups.length}개 / 전체 {groups.length}개)
                             </span>
-                            <button type="button" onClick={()=>{setRbMatchFilter(null);setRbMatchSplitLabel(null);}}
-                              style={{padding:"3px 8px", borderRadius:4, border:"1px solid var(--border)", background:"var(--bg-card)", color:"var(--text-primary)", fontSize:12, fontWeight:700, cursor:"pointer"}}>
-                              전체 보기
-                            </button>
                           </>
                         ) : (
                           <span style={{color:"var(--text-secondary)"}}>전체 규칙: {groups.length}개</span>
                         )}
                       </div>
                     </div>
-                    {groups.length === 0 ? (
+                    {displayGroups.length === 0 ? (
                       <div style={{padding:16, textAlign:"center", borderRadius:6, border:"1px solid var(--border)", background:"var(--bg-card)", color:"var(--text-secondary)", fontSize:14}}>
-                        등록된 분류 규칙이 없습니다.
+                        {isFilterActive ? "선택한 값과 일치하는 분류 규칙이 없습니다." : "등록된 분류 규칙이 없습니다."}
                       </div>
                     ) : (
                       <div style={{maxHeight:360, overflow:"auto", border:"1px solid #555", borderRadius:2, background:"#ffffff"}}>
@@ -4062,13 +4107,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                           <thead>
                             <tr style={{position:"sticky", top:0, zIndex:3, background:"#e5e7eb", borderBottom:"2px solid #555", textAlign:"left"}}>
                               <th style={{padding:"6px 8px", border:"1px solid #777", width:36, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>No</th>
-                              <th style={{padding:"6px 8px", border:"1px solid #777", width:44, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>일치</th>
+                              {!isFilterActive&&<th style={{padding:"6px 8px", border:"1px solid #777", width:44, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>일치</th>}
                               <th style={{padding:"6px 10px", border:"1px solid #777", width:85, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>Rule Order</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>공정명 (Step Desc)</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", width:75, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>연산자</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>PPID (Value)</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>분류 (Category)</th>
-                              <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>매칭 Wafer</th>
+                              {!isFilterActive&&<th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>매칭 Wafer</th>}
                             </tr>
                           </thead>
                           <tbody>
@@ -4079,13 +4124,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                               return (
                                 <tr key={gi} style={{background: rowBg}}>
                                   <td style={{padding:"5px 6px", border:"1px solid #d1d5db", textAlign:"center", color:"#6b7280", background:"#f9fafb", fontSize:12}}>{gi + 1}</td>
-                                  <td style={{padding:"5px 8px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(0,97,0,0.95)" : "#9ca3af"}}>{isMatched ? "✓" : "-"}</td>
+                                  {!isFilterActive&&<td style={{padding:"5px 8px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(0,97,0,0.95)" : "#9ca3af"}}>{isMatched ? "✓" : "-"}</td>}
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:700, color:"#1d4ed8"}}>{g.rule_order || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", color:"#111827", whiteSpace:"nowrap"}}>{g.step_desc || g.func_step || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:600, color:"#2563eb"}}>{g.operator || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#047857", whiteSpace:"nowrap"}}>{g.value || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#b45309", whiteSpace:"nowrap"}}>{g.category || "-"}</td>
-                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", color: isMatched ? "rgba(0,97,0,0.95)" : "#6b7280", fontWeight: isMatched ? 700 : 400, whiteSpace:"nowrap"}}>{matches.length > 0 ? matchedWaferSummary(matches) : "-"}</td>
+                                  {!isFilterActive&&<td style={{padding:"5px 10px", border:"1px solid #d1d5db", color: isMatched ? "rgba(0,97,0,0.95)" : "#6b7280", fontWeight: isMatched ? 700 : 400, whiteSpace:"nowrap"}}>{matches.length > 0 ? matchedWaferSummary(matches) : "-"}</td>}
                                 </tr>
                               );
                             })}
@@ -4095,7 +4140,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                     )}
                     {(()=>{
                       const categories=[];const seen=new Set();
-                      groups.forEach(g=>{const name=String(g?.category||"").trim();const key=name.toLowerCase();if(name&&!seen.has(key)){seen.add(key);categories.push(name);}});
+                      displayGroups.forEach(g=>{const name=String(g?.category||"").trim();const key=name.toLowerCase();if(name&&!seen.has(key)){seen.add(key);categories.push(name);}});
+                      if(isFilterActive&&!categories.length){
+                        const selected=resolveSplitDisplayName(rbMatchParam,rawFilter)||rawFilter;
+                        if(selected)categories.push(selected);
+                      }
                       if(!categories.length)return null;
                       return <div style={{padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
                         <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}>

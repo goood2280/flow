@@ -1563,29 +1563,10 @@ def _knob_step_matching_path(base: Path | None = None) -> Path:
 
 
 def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
-    primary_path = _knob_step_matching_path(base)
-    rows = _load_csv_rows(primary_path)
-    root = base or _base_root()
-    meta = _RULEBOOK_FILES.get("step_matching", {})
-    legacy_fn = meta.get("legacy_filename")
-    if legacy_fn and primary_path.name.casefold() != str(legacy_fn).casefold():
-        legacy_path = root / str(legacy_fn)
-        if legacy_path.is_file():
-            legacy_rows = _load_csv_rows(legacy_path)
-            seen_pairs = {
-                (str(r.get("product") or "").strip().casefold(),
-                 str(r.get("step_desc") or r.get("function_step") or "").strip().casefold())
-                for r in rows
-            }
-            for lr in legacy_rows:
-                pair = (
-                    str(lr.get("product") or "").strip().casefold(),
-                    str(lr.get("step_desc") or lr.get("function_step") or "").strip().casefold()
-                )
-                if pair not in seen_pairs:
-                    rows.append(lr)
-                    seen_pairs.add(pair)
-    return rows
+    # The configured Vehicle file is authoritative, including when empty.
+    # Path resolution already supports legacy-only installations; never merge
+    # obsolete steps from that file into an existing Vehicle file.
+    return _load_csv_rows(_knob_step_matching_path(base))
 
 
 # module 의 유일한 원천은 Vehicle_matching.csv 의 module 열이다.
@@ -1606,16 +1587,17 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
     matching = _load_knob_step_matching_rows(base)
     sm = _sch("step_matching")
     step_map: dict[str, list[dict]] = {}
-    fallback_map: dict[str, list[dict]] = {}
     p_col = sm.get("product_col", "product")
-    has_product_col = any(p_col in r or "product" in r for r in matching)
-    sop_source = _s0_source_for_product(_s0_sop_catalog(), product) if product else {}
-    sop_steps = {str(k).casefold() for k in (sop_source.get("rows") or {}).keys()}
     for r in matching:
         row_prod = r.get(p_col)
         if row_prod is None and p_col != "product":
             row_prod = r.get("product")
-        is_direct = _step_matching_product_matches(product, row_prod, allow_common=not has_product_col)
+        # Vehicle_matching.csv 에 product 열이 있으면 그 값이 제품별 step_id의
+        # 유일한 귀속 근거다. 예전에는 다른 제품 행을 fallback_map에 모은 뒤
+        # step_desc가 없거나 S0 route에 같은 step_id가 있다는 이유로 다시 합쳐
+        # SplitTable 공정정보에 여러 제품의 step_id가 섞였다.
+        if not _step_matching_product_matches(product, row_prod, allow_common=False):
+            continue
         step_desc = _row_step_desc(r, sm)
         step_desc_key = _step_desc_match_key(step_desc)
         step_id = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -1632,30 +1614,10 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
             step_desc_key.replace(" ", "_"),
             step_id.casefold(),
         ])
-        if is_direct:
-            for k in keys:
-                bucket = step_map.setdefault(k, [])
-                if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
-                    bucket.append(item)
-        else:
-            in_sop = step_id.casefold() in sop_steps
-            for k in keys:
-                bucket = fallback_map.setdefault(k, [])
-                if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
-                    if in_sop:
-                        bucket.insert(0, item)
-                    else:
-                        bucket.append(item)
-    for k, items in fallback_map.items():
-        if k not in step_map or not step_map[k]:
-            step_map[k] = items
-        else:
-            existing_sids = {str(x.get("step_id") or "").strip().casefold() for x in step_map[k]}
-            for item in items:
-                sid = str(item.get("step_id") or "").strip().casefold()
-                if sid in sop_steps and sid not in existing_sids:
-                    step_map[k].append(item)
-                    existing_sids.add(sid)
+        for k in keys:
+            bucket = step_map.setdefault(k, [])
+            if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
+                bucket.append(item)
     return step_map
 
 
@@ -1664,12 +1626,11 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
     sm = _sch("step_matching")
     exact_has_numeric = False
     p_col = sm.get("product_col", "product")
-    has_product_col = any(p_col in r or "product" in r for r in matching)
     for r in matching:
         row_prod = r.get(p_col)
         if row_prod is None and p_col != "product":
             row_prod = r.get("product")
-        if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
+        if not _step_matching_product_matches(product, row_prod, allow_common=False):
             continue
         if _stage_major(_row_step_desc(r, sm)) is not None:
             exact_has_numeric = True
@@ -1684,7 +1645,7 @@ def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
         if exact_has_numeric:
             if not _step_matching_product_matches(product, row_prod, allow_common=False):
                 continue
-        elif not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
+        elif not _step_matching_product_matches(product, row_prod, allow_common=False):
             continue
         fs = _row_step_desc(r, sm)
         sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -1930,6 +1891,13 @@ def _build_knob_meta(product: str = "") -> dict:
             if matched_product_indexes and len(all_direct_ids) == len(row_products)
             else all_direct_ids
         )
+        # ppid_knob.csv의 직접 step_id도 선택 제품의 Vehicle_matching 목록을
+        # 벗어나면 공정정보에 노출하지 않는다. 제품 열이 없는 legacy rulebook에서
+        # 여러 제품 step_id를 한 셀에 넣었던 경우의 교차 제품 누출을 차단한다.
+        if requested_product and direct_ids:
+            direct_ids = _dedup_list([
+                sid for sid in direct_ids if str(sid or "").strip().casefold() in step_by_id
+            ])
         direct_descs = (
             [all_direct_descs[index] for index in matched_product_indexes if index < len(all_direct_descs)]
             if matched_product_indexes and len(all_direct_descs) == len(row_products)
@@ -1949,7 +1917,10 @@ def _build_knob_meta(product: str = "") -> dict:
             if step_desc.casefold() in step_by_id:
                 direct_ids = [step_desc]
                 direct_steps = [step_by_id[step_desc.casefold()]]
-            elif _re.match(r"^[A-Za-z]{2}\d{4,}", step_desc):
+            elif (not requested_product and _re.match(r"^[A-Za-z]{2}\d{4,}", step_desc)):
+                # 제품 미지정 legacy 조회만 raw step_id 형태를 그대로 허용한다.
+                # 제품 조회에서는 위의 step_by_id(Vehicle_matching 제품 범위)에
+                # 존재해야만 직접 ID가 될 수 있다.
                 direct_ids = [step_desc]
         value = _first_row_value(
             r,
@@ -2533,6 +2504,8 @@ def _build_inline_meta(product: str = "") -> dict:
             continue
         iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
         sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
+        if product and sid.casefold() not in sid_to_desc:
+            continue
         process_id = (r.get(im.get("process_id_col", "process_id")) or "").strip()
         desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
         matching_table = (r.get(im.get("matching_table_col", "matching_table")) or "").strip()

@@ -74,6 +74,30 @@ def test_current_s0_resolves_large_knob_selection_with_one_metadata_read(monkeyp
     assert calls == ["P"]
 
 
+def test_current_sop_rejects_foreign_cached_and_inferred_steps(monkeypatch):
+    monkeypatch.setattr(splittable, "_split_step_order_context", lambda product: {
+        "param_step": {"KNOB_A": "B100"},
+    })
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda product: {
+        "etch": [{"step_id": "A100", "step_desc": "ETCH"}],
+    })
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda product: {
+        "KNOB_A": {"groups": [{"step_ids": ["B100", "A100", "A100"]}]},
+    })
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args: {
+        "KNOB_A": {"groups": [{"step_ids": ["B200"]}]},
+    })
+    recipes = {sid.casefold(): {"step_id": sid, "ppid": recipe} for sid, recipe in (
+        ("B100", "FOREIGN_1"), ("B200", "FOREIGN_2"), ("A100", "OWN_RECIPE"),
+    )}
+    context = splittable._s0_resolution_context("PRODA")
+    assert splittable._s0_step_candidates("PRODA", "KNOB_A", context) == ["A100"]
+    assert splittable._s0_current_candidate("PRODA", "KNOB_A", recipes, context) == {
+        "step_id": "A100", "ppid": "OWN_RECIPE",
+    }
+    assert splittable._s0_current_candidate("PRODA", "KNOB_A", {"b100": recipes["b100"]}, context) == {}
+
+
 def test_global_f_step_keeps_same_day_revisions(tmp_path, monkeypatch):
     source = tmp_path / "f_step.csv"
     source.write_text("step_id,recipe_id\nAA100,A\n", encoding="utf-8")
