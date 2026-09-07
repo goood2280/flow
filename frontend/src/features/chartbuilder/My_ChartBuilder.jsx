@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import BoxStatsTable from "../../components/BoxStatsTable";
+import Modal from "../../components/Modal";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import TegValueWaferMap from "../../components/TegValueWaferMap";
@@ -65,11 +66,6 @@ const DERIVED_GRID_COLUMNS=["name","columns","separator"];
 const FILTER_GRID_COLUMNS=["column","operator","values"];
 const DERIVED_GRID_MAX_ROWS=20;
 const FILTER_GRID_MAX_ROWS=50;
-const AUTO_REPORT_PRESETS=[
-  {key:"box",label:"Box",desc:"범주별 분포와 통계표"},
-  {key:"trend",label:"Trend",desc:"시간 순서 shot 추이"},
-  {key:"wafer_map",label:"WF MAP",desc:"shot 좌표 wafer 분포"},
-];
 function normalizeDerivedRows(rows){return normalizeSpreadsheetRows(rows,DERIVED_GRID_COLUMNS,{minRows:4,maxRows:DERIVED_GRID_MAX_ROWS});}
 function normalizeFilterRows(rows){return normalizeSpreadsheetRows(rows,FILTER_GRID_COLUMNS,{minRows:4,maxRows:FILTER_GRID_MAX_ROWS});}
 function cleanDerivedColumns(rows){
@@ -601,10 +597,12 @@ function linearFit(points){
   return{slope,intercept,r2:corr*corr,corr,equation:`y = ${slope.toFixed(4)}x ${intercept<0?"-":"+"} ${Math.abs(intercept).toFixed(4)}`};
 }
 
-function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onClone}){
+function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onClone,onApplyEt,onOpenEtModal}){
   const[products,setProducts]=useState([]);
   const[reformatterItems,setReformatterItems]=useState([]);
   const[reformatterBusy,setReformatterBusy]=useState(false);
+  const[etInline,setEtInline]=useState("");
+  const[etBusy,setEtBusy]=useState(false);
   const[columnSearch,setColumnSearch]=useState("KNOB_");
   const[schemaColumns,setSchemaColumns]=useState([]);
   const[schemaDtypes,setSchemaDtypes]=useState({});
@@ -666,10 +664,20 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
     preferred.forEach(name=>{const column=actualColumn(name);if(column&&!picked.includes(column))picked.push(column);});
     if(picked.length)applyColumns(picked);
   };
+  const handleApplyInlineEt=async()=>{
+    const raw=text(etInline).trim();
+    if(!raw){toast.warn("ET 고유키(RH-...) 또는 식을 입력해 주세요.");return;}
+    setEtBusy(true);
+    try{
+      const ok=await onApplyEt?.(raw,index);
+      if(ok)setEtInline("");
+    }finally{setEtBusy(false);}
+  };
   return <div style={card}>
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
       <strong style={{fontSize:14,color:"var(--text-primary)"}}>Query {index+1}</strong>
       <input value={source.id} onChange={e=>set("id",e.target.value)} title="JOIN에서 사용할 query id" style={{...input,width:100,fontFamily:"monospace"}}/>
+      <button type="button" onClick={()=>onOpenEtModal?.(index)} style={{...btn,padding:"4px 8px",fontSize:11,background:"#eff6ff",color:"#1d4ed8",borderColor:"#bfdbfe",fontWeight:700}} title="ET 다운로드 식 또는 고유키(RH-...) 불러오기">⚡ ET 식/키</button>
       <button type="button" onClick={onClone} style={{...btn,marginLeft:"auto"}}>복제</button>
       {onRemove&&<button type="button" onClick={onRemove} style={{...btn,color:"var(--danger)"}}>삭제</button>}
     </div>
@@ -750,6 +758,19 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
       </div>
     </details>
     {isEt&&<div style={{marginTop:10,padding:10,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:10,padding:8,background:"var(--bg-secondary)",borderRadius:6,border:"1px dashed var(--accent)"}}>
+        <span style={{fontSize:11,fontWeight:800,color:"var(--accent)"}}>⚡ ET 식/고유키:</span>
+        <input
+          value={etInline}
+          onChange={e=>setEtInline(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();handleApplyInlineEt();}}}
+          placeholder="RH-XXXXXXXX 또는 PRODUCT=... 식 붙여넣기"
+          disabled={etBusy}
+          style={{...input,flex:1,minWidth:160,fontFamily:"'JetBrains Mono',monospace",fontSize:11,padding:"4px 8px"}}
+        />
+        <button type="button" onClick={handleApplyInlineEt} disabled={etBusy} style={{...btn,padding:"4px 9px",fontSize:11,background:"var(--accent)",color:"#fff"}}>적용</button>
+        <button type="button" onClick={()=>onOpenEtModal?.(index)} style={{...btn,padding:"4px 8px",fontSize:11}}>이력 선택…</button>
+      </div>
       <label style={{display:"flex",alignItems:"center",gap:7,fontSize:12,fontWeight:800,cursor:"pointer"}}>
         <input type="checkbox" checked={Boolean(source.apply_reformatter)} onChange={e=>set("apply_reformatter",e.target.checked)}/>
         ET 다운로드 Reformatter 적용 (REAL / ADDP)
@@ -820,6 +841,132 @@ function TrellisPlot({chart,column,enableHighlight=false}){
   </div>;
 }
 
+function EtExpressionModal({
+  open,
+  onClose,
+  targetQueryIndex=0,
+  sourcesCount=1,
+  onApplyToQuery,
+  onAddAsNewQuery,
+  onLoadAsChart,
+}){
+  const[rawInput,setRawInput]=useState("");
+  const[historyList,setHistoryList]=useState([]);
+  const[historyBusy,setHistoryBusy]=useState(false);
+  const[filterQuery,setFilterQuery]=useState("");
+  const[actionBusy,setActionBusy]=useState(false);
+
+  useEffect(()=>{
+    if(!open)return;
+    setRawInput("");
+    setHistoryBusy(true);
+    sf("/api/reformatize/history?limit=50")
+      .then(res=>setHistoryList(res.history||[]))
+      .catch(()=>setHistoryList([]))
+      .finally(()=>setHistoryBusy(false));
+  },[open]);
+
+  const filteredHistory=useMemo(()=>{
+    if(!filterQuery.trim())return historyList;
+    const q=filterQuery.trim().toLowerCase();
+    return historyList.filter(item=>{
+      const id=String(item.history_id||"").toLowerCase();
+      const prod=String(item.product||"").toLowerCase();
+      const items=(Array.isArray(item.items)?item.items.join(" "):String(item.items||"")).toLowerCase();
+      return id.includes(q)||prod.includes(q)||items.includes(q);
+    });
+  },[historyList,filterQuery]);
+
+  const handleApplyToTarget=async(itemOrText)=>{
+    setActionBusy(true);
+    try{
+      const ok=await onApplyToQuery(itemOrText,targetQueryIndex);
+      if(ok)onClose();
+    }finally{setActionBusy(false);}
+  };
+
+  const handleAddAsNew=async(itemOrText)=>{
+    setActionBusy(true);
+    try{
+      const ok=await onAddAsNewQuery(itemOrText);
+      if(ok)onClose();
+    }finally{setActionBusy(false);}
+  };
+
+  const handleLoadAsChart=async(itemOrText)=>{
+    setActionBusy(true);
+    try{
+      const ok=await onLoadAsChart(itemOrText);
+      if(ok)onClose();
+    }finally{setActionBusy(false);}
+  };
+
+  if(!open)return null;
+
+  return <Modal open={open} onClose={onClose} title="⚡ ET 다운로드 식 / 고유키 불러오기" width={780} maxHeight="85vh">
+    <div style={{display:"grid",gap:14}}>
+      <div style={{fontSize:12,lineHeight:1.6,color:"var(--text-secondary)",background:"var(--bg-tertiary)",padding:"10px 12px",borderRadius:8,border:"1px solid var(--border)"}}>
+        ET 다운로드에서 복사한 <b>고유키(RH-XXXXXXXX)</b> 또는 <b>검색식(PRODUCT = ... ITEMS = ...)</b>을 붙여넣으면, ChartBuilder Query 및 차트 설정으로 자동 변환합니다.
+      </div>
+      <div style={{border:"1px solid var(--border)",borderRadius:8,padding:12,background:"var(--bg-secondary)"}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:6,color:"var(--text-primary)"}}>직접 입력 / 붙여넣기</div>
+        <textarea
+          value={rawInput}
+          onChange={e=>setRawInput(e.target.value)}
+          placeholder={"예시 1 (고유키):\nRH-4A8CC87F\n\n예시 2 (검색식):\nPRODUCT = VEHICLE_A\nITEMS = IDSAT_P, VTH_P\ndays = 14"}
+          rows={4}
+          style={{...input,fontFamily:"'JetBrains Mono', monospace",fontSize:12,lineHeight:1.5,resize:"vertical"}}
+        />
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:8,alignItems:"center"}}>
+          <button type="button" disabled={!rawInput.trim()||actionBusy} onClick={()=>handleLoadAsChart(rawInput)} style={{...btn,background:"var(--accent)",color:"#fff",borderColor:"var(--accent)",fontWeight:700}}>차트로 바로 열기 (Q1 + Scatter)</button>
+          <button type="button" disabled={!rawInput.trim()||actionBusy} onClick={()=>handleApplyToTarget(rawInput)} style={btn}>Query {targetQueryIndex+1}에 적용</button>
+          <button type="button" disabled={!rawInput.trim()||actionBusy||sourcesCount>=10} onClick={()=>handleAddAsNew(rawInput)} style={btn}>새 Query로 추가</button>
+        </div>
+      </div>
+      <div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <strong style={{fontSize:13,color:"var(--text-primary)"}}>최근 ET 다운로드 이력 ({filteredHistory.length}건)</strong>
+          <input value={filterQuery} onChange={e=>setFilterQuery(e.target.value)} placeholder="제품, 항목, 고유키 검색" style={{...input,width:180,padding:"4px 8px",fontSize:11}}/>
+        </div>
+        <div style={{maxHeight:280,overflow:"auto",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-primary)"}}>
+          {historyBusy?<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>이력 불러오는 중…</div>:filteredHistory.length===0?<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>조회된 ET 다운로드 이력이 없습니다.</div>:(
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead>
+                <tr style={{background:"var(--bg-tertiary)",textAlign:"left",position:"sticky",top:0,zIndex:1}}>
+                  <th style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>고유키</th>
+                  <th style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>제품</th>
+                  <th style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>항목 (Items)</th>
+                  <th style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>기간/필터</th>
+                  <th style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",textAlign:"right"}}>동작</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredHistory.map((item,idx)=>{
+                  const itemsStr=Array.isArray(item.items)?item.items.join(", "):String(item.items||"-");
+                  const days=item.filters?.days?`최근 ${item.filters.days}일`:(item.filters?.date_from?`${item.filters.date_from} ~ ${item.filters?.date_to||""}`:"전체");
+                  return <tr key={item.history_id||idx} style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"8px 10px",fontFamily:"monospace",fontWeight:700,color:"var(--accent)"}}>{item.history_id}</td>
+                    <td style={{padding:"8px 10px",fontWeight:600}}>{item.product}</td>
+                    <td style={{padding:"8px 10px",maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={itemsStr}>{itemsStr}</td>
+                    <td style={{padding:"8px 10px",color:"var(--text-secondary)",fontSize:11}}>{days}</td>
+                    <td style={{padding:"8px 10px",textAlign:"right"}}>
+                      <div style={{display:"inline-flex",gap:5}}>
+                        <button type="button" onClick={()=>handleLoadAsChart(item.expression||item.history_id)} disabled={actionBusy} style={{...btn,padding:"3px 7px",fontSize:11,background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}}>차트로 열기</button>
+                        <button type="button" onClick={()=>handleApplyToTarget(item.expression||item.history_id)} disabled={actionBusy} style={{...btn,padding:"3px 7px",fontSize:11}}>Q{targetQueryIndex+1} 적용</button>
+                        <button type="button" onClick={()=>handleAddAsNew(item.expression||item.history_id)} disabled={actionBusy||sourcesCount>=10} style={{...btn,padding:"3px 7px",fontSize:11}}>＋ 새 Query</button>
+                      </div>
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  </Modal>;
+}
+
 export default function My_ChartBuilder({user}){
   const canUseLlm=user?.role==="admin";
   const[roots,setRoots]=useState([]);
@@ -838,6 +985,8 @@ export default function My_ChartBuilder({user}){
   const[result,setResult]=useState(null);
   const[busy,setBusy]=useState(false);
   const[chartType,setChartType]=useState("scatter");
+  const[etModalOpen,setEtModalOpen]=useState(false);
+  const[etModalTargetIndex,setEtModalTargetIndex]=useState(0);
   const[xCol,setXCol]=useState("");
   const[yCol,setYCol]=useState("");
   const[mapYCol,setMapYCol]=useState("");
@@ -1260,6 +1409,44 @@ export default function My_ChartBuilder({user}){
     setSources(v=>[...v,next]);
     setJoins(v=>[...v,{left:anchor,right:next.id,left_on:"root_lot_id, wafer_id",right_on:"root_lot_id, wafer_id",how:"left"}]);
   };
+  const openEtModal=(targetIndex=0)=>{
+    setEtModalTargetIndex(targetIndex);
+    setEtModalOpen(true);
+  };
+  const applyEtToQuery=async(inputOrCode,targetIndex=0)=>{
+    const code=typeof inputOrCode==="string"?inputOrCode.trim():(inputOrCode?.expression||inputOrCode?.history_id||"");
+    if(!code){toast.warn("적용할 식 또는 고유키가 없습니다.");return false;}
+    try{
+      const parsed=await postJson("/api/filebrowser/chart-builder/parse",{code});
+      const src=parsed.sources?.[0];
+      if(!src){toast.error("ET 설정을 파싱하지 못했습니다.");return false;}
+      updateQuery(targetIndex,formSource(resolveSourceRoot(src)));
+      toast.ok(`Query ${targetIndex+1}에 ET 설정(${src.product||"ET"} · ${src.reformatter_items||""})을 적용했습니다.`);
+      return true;
+    }catch(err){toast.error(err.message||String(err));return false;}
+  };
+  const addEtAsNewQuery=async(inputOrCode)=>{
+    if(sources.length>=10){toast.warn("Query는 최대 10개까지 추가할 수 있습니다.");return false;}
+    const code=typeof inputOrCode==="string"?inputOrCode.trim():(inputOrCode?.expression||inputOrCode?.history_id||"");
+    if(!code){toast.warn("적용할 식 또는 고유키가 없습니다.");return false;}
+    try{
+      const parsed=await postJson("/api/filebrowser/chart-builder/parse",{code});
+      const src=parsed.sources?.[0];
+      if(!src){toast.error("ET 설정을 파싱하지 못했습니다.");return false;}
+      addQuery(formSource(resolveSourceRoot(src)));
+      toast.ok(`새 Query로 ET 설정(${src.product||"ET"} · ${src.reformatter_items||""})을 추가했습니다.`);
+      return true;
+    }catch(err){toast.error(err.message||String(err));return false;}
+  };
+  const loadEtAsChart=async(inputOrCode)=>{
+    const code=typeof inputOrCode==="string"?inputOrCode.trim():(inputOrCode?.expression||inputOrCode?.history_id||"");
+    if(!code){toast.warn("적용할 식 또는 고유키가 없습니다.");return false;}
+    try{
+      await applyDefinition(false,code);
+      window.setTimeout(()=>document.getElementById("chart-builder-code")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
+      return true;
+    }catch(err){toast.error(err.message||String(err));return false;}
+  };
   const updateQuery=(index,next)=>{
     const oldId=sources[index]?.id;
     setSources(old=>old.map((value,i)=>i===index?next:value));
@@ -1486,32 +1673,6 @@ export default function My_ChartBuilder({user}){
   // 표를 눈금에 "맞춰" 붙일 때만 차트의 x 눈금 글자를 끈다 — 정렬을 포기하면
   // 이름을 읽을 곳이 사라지므로 눈금을 도로 켜야 한다.
   const boxStatsAligned=boxStatsAlignment(boxAlignGeometry,boxBuckets.length).aligned;
-  const applyAutoReportPreset=key=>{
-    const exact=(names,pool=columns)=>names.map(name=>pool.find(column=>column.toLowerCase()===name)).find(Boolean)||"";
-    const value=exact(["value","item_value","measurement_value","shot_yield"],numericCols)
-      ||numericCols.find(column=>!["wafer_id","shot_x","shot_y","chip_x_pos","chip_y_pos"].includes(column.toLowerCase()))
-      ||numericCols[0]||"";
-    const lot=exact(["root_lot_id"]),wafer=exact(["wafer_id"]);
-    if(key==="box"){
-      const category=columns.find(column=>/^(knob_|fab_|mask_|split)/i.test(column))||lot||wafer||columns.find(column=>column!==value)||"";
-      setChartType("box");setXCol(category);setYCol(value);setColorCol(category===lot?wafer:lot);setTrellisCol("");setShowBoxStats(true);setShowLegend(true);
-      if(!category||!value)toast.warn("Box 기본 차트에는 범주 열과 숫자 Value 열이 필요합니다.");
-      else toast.ok("Auto Report Box 기본 차트를 적용했습니다.");
-      return;
-    }
-    if(key==="trend"){
-      const time=exact(["tkout_time","time","date","datetime","timestamp"])
-        ||columns.find(column=>/(?:time|date)$/i.test(column))||columns[0]||"";
-      setChartType("line");setXCol(time);setYCol(value);setColorCol(lot);setTrellisCol("");setTrendGrain("shot");setShowLegend(true);
-      if(!time||!value)toast.warn("Trend 기본 차트에는 시간 열과 숫자 Value 열이 필요합니다.");
-      else toast.ok("Auto Report Trend 기본 차트를 적용했습니다.");
-      return;
-    }
-    const pair=shotPairs[0];
-    setChartType("wafer_map");setXCol(pair?.x||"");setMapYCol(pair?.y||"");setYCol(value);setColorCol("");setTrellisCol("");setMapScope("root_wafer");setMapTarget("");setMapAggregation("median");
-    if(!pair||!value)toast.warn("WF MAP 기본 차트에는 shot X/Y 좌표와 숫자 Value 열이 필요합니다.");
-    else toast.ok("Auto Report WF MAP 기본 차트를 적용했습니다.");
-  };
   const pinnedHistory=history.filter(entry=>entry.pinned);
   const recentHistory=history.filter(entry=>!entry.pinned);
   const renderHistoryEntry=entry=><details key={entry.history_id} style={{borderBottom:"1px solid var(--border)",background:entry.pinned?"color-mix(in srgb, var(--accent-glow) 58%, var(--bg-primary))":"transparent"}}>
@@ -1648,8 +1809,12 @@ export default function My_ChartBuilder({user}){
         </div>
       </div>
     </details>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(390px,1fr))",gap:12}}>{sources.map((s,i)=><QueryCard key={`query-${i}`} source={s} index={i} roots={roots} autocompleteSource={queryAutocompleteSource(s,i)} onChange={next=>updateQuery(i,next)} onClone={()=>addQuery(s)} onRemove={sources.length>1?()=>removeQuery(i):null}/>)}</div>
-    <div style={{display:"flex",gap:8,margin:"10px 0 16px",flexWrap:"wrap",alignItems:"center"}}><button type="button" style={btn} onClick={()=>addQuery()} disabled={sources.length>=10}>＋ DB Query</button><span style={{fontSize:12,color:"var(--text-secondary)"}}>현재 {sources.length}개 · 최대 10개</span></div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(390px,1fr))",gap:12}}>{sources.map((s,i)=><QueryCard key={`query-${i}`} source={s} index={i} roots={roots} autocompleteSource={queryAutocompleteSource(s,i)} onChange={next=>updateQuery(i,next)} onClone={()=>addQuery(s)} onRemove={sources.length>1?()=>removeQuery(i):null} onApplyEt={applyEtToQuery} onOpenEtModal={openEtModal}/>)}</div>
+    <div style={{display:"flex",gap:8,margin:"10px 0 16px",flexWrap:"wrap",alignItems:"center"}}>
+      <button type="button" style={btn} onClick={()=>addQuery()} disabled={sources.length>=10}>＋ DB Query</button>
+      <button type="button" style={{...btn,background:"#2563eb",color:"#fff",borderColor:"#1d4ed8",fontWeight:700}} onClick={()=>openEtModal(sources.length-1)}>⚡ ET 다운로드 식/고유키 불러오기</button>
+      <span style={{fontSize:12,color:"var(--text-secondary)"}}>현재 {sources.length}개 · 최대 10개</span>
+    </div>
     {sources.length>1&&<div style={card}><strong style={{fontSize:14}}>JOIN 설정</strong>{joins.map((j,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"110px 1fr 28px 110px 1fr 110px 36px",gap:7,alignItems:"center",marginTop:9}}>
       <select value={j.left} onChange={e=>setJoins(v=>v.map((x,k)=>k===i?{...x,left:e.target.value}:x))} style={input}>{ids.map(id=><option key={id}>{id}</option>)}</select>
       <input value={j.left_on} placeholder="root_lot_id, wafer_id" onChange={e=>setJoins(v=>v.map((x,k)=>k===i?{...x,left_on:e.target.value}:x))} style={input}/><b style={{textAlign:"center"}}>=</b>
@@ -1667,12 +1832,6 @@ export default function My_ChartBuilder({user}){
       {rows.length>0&&<button type="button" onClick={download} style={btn}>CSV 다운로드</button>}
       {loadedHistoryId?<><span style={{fontSize:11,fontWeight:800,color:"var(--danger)"}}>♥ {loadedHistoryId} 재사용 · 실행해도 새 이력은 생성되지 않습니다.</span><button type="button" onClick={()=>setLoadedHistoryId("")} style={{...btn,padding:"4px 7px",fontSize:10}}>새 이력으로 전환</button></>:<span style={{fontSize:11,color:"var(--text-secondary)"}}>동일 이름은 자동으로 (2), (3)…을 붙여 저장합니다.</span>}
     </div>
-    <section style={{...card,marginBottom:14,padding:0,overflow:"hidden",borderColor:"#93c5fd"}}>
-      <div style={{display:"flex",alignItems:"stretch",gap:7,flexWrap:"wrap",padding:"10px 12px",background:"linear-gradient(90deg,#eff6ff,#fff)"}}>
-        <div style={{minWidth:190,alignSelf:"center"}}><b style={{fontSize:13,color:"#0f172a"}}>Auto Report 기본 차트</b><div style={{fontSize:10,color:"#64748b",marginTop:2}}>공용 코드 히스토리 위에 항상 표시 · 조회 결과 열을 찾아 즉시 배치</div></div>
-        {AUTO_REPORT_PRESETS.map(preset=><button type="button" key={preset.key} onClick={()=>applyAutoReportPreset(preset.key)} style={{...btn,background:chartType===(preset.key==="trend"?"line":preset.key)?"#dbeafe":"#f8fafc",borderColor:chartType===(preset.key==="trend"?"line":preset.key)?"#3b82f6":"#cbd5e1",color:"#0f172a",padding:"6px 10px",textAlign:"left"}}><span style={{display:"block",fontSize:12}}>{preset.label}</span><span style={{display:"block",fontSize:9,color:"#64748b",fontWeight:600,marginTop:2}}>{preset.desc}</span></button>)}
-      </div>
-    </section>
     <details open style={{...card,marginBottom:14,padding:0,overflow:"hidden"}}>
       <summary style={{cursor:"pointer",padding:"11px 14px",fontSize:14,fontWeight:900,userSelect:"none"}}>공용 코드 히스토리 · 고정 {pinnedHistory.length}건 + 최근 {recentHistory.length}건 / 최대 500</summary>
       <div style={{borderTop:"1px solid var(--border)",maxHeight:430,overflow:"auto"}}>
@@ -1775,5 +1934,14 @@ export default function My_ChartBuilder({user}){
         {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} mode={displayChart.wafer_mode} specLow={displayChart.wafer_spec_low} specHigh={displayChart.wafer_spec_high} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
         {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={displayChart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
     </div>}
+    <EtExpressionModal
+      open={etModalOpen}
+      onClose={()=>setEtModalOpen(false)}
+      targetQueryIndex={etModalTargetIndex}
+      sourcesCount={sources.length}
+      onApplyToQuery={applyEtToQuery}
+      onAddAsNewQuery={addEtAsNewQuery}
+      onLoadAsChart={loadEtAsChart}
+    />
   </div>;
 }

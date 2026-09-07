@@ -149,13 +149,26 @@ function splitValueIndex(order, value) {
 }
 
 const ST_CELL_COLORS = [
-  { bg: "rgba(198,239,206,0.95)", fg: "rgba(0,97,0,0.95)" },
-  { bg: "rgba(255,235,156,0.95)", fg: "rgba(156,87,0,0.95)" },
-  { bg: "rgba(251,229,214,0.95)", fg: "rgba(191,78,0,0.95)" },
-  { bg: "rgba(189,215,238,0.95)", fg: "rgba(31,78,121,0.95)" },
-  { bg: "rgba(226,191,238,0.95)", fg: "rgba(112,48,160,0.95)" },
-  { bg: "rgba(180,222,212,0.95)", fg: "rgba(11,83,69,0.95)" },
-  { bg: "rgba(244,204,204,0.95)", fg: "rgba(117,25,76,0.95)" },
+  { bg: "rgba(198,239,206,0.95)", fg: "rgba(0,97,0,0.95)" },   // S0 (#c6efce 초록)
+  { bg: "rgba(255,235,156,0.95)", fg: "rgba(156,87,0,0.95)" }, // S1 (#ffeb9c 노랑)
+  { bg: "rgba(251,229,214,0.95)", fg: "rgba(191,78,0,0.95)" }, // S2 (#fbe5d6 주황)
+  { bg: "rgba(189,215,238,0.95)", fg: "rgba(31,78,121,0.95)" }, // S3 (#bdd7ee 파랑)
+  { bg: "rgba(226,191,238,0.95)", fg: "rgba(112,48,160,0.95)" }, // S4 (#e2bfee 보라)
+  { bg: "rgba(180,222,212,0.95)", fg: "rgba(11,83,69,0.95)" }, // S5 (#b4ded4 청록)
+  { bg: "rgba(244,204,204,0.95)", fg: "rgba(117,25,76,0.95)" }, // S6 (#f4cccc 분홍)
+  { bg: "rgba(217,249,157,0.95)", fg: "rgba(54,83,20,0.95)" },  // S7 (#d9f99d 라임)
+  { bg: "rgba(153,246,228,0.95)", fg: "rgba(17,94,89,0.95)" },  // S8 (#99f6e4 민트)
+  { bg: "rgba(165,243,252,0.95)", fg: "rgba(14,116,144,0.95)" }, // S9 (#a5f3fc 하늘)
+  { bg: "rgba(187,247,208,0.95)", fg: "rgba(22,101,52,0.95)" }, // S10 (#bbf7d0 연초록)
+  { bg: "rgba(191,219,254,0.95)", fg: "rgba(30,64,175,0.95)" }, // S11 (#bfdbfe 소라)
+  { bg: "rgba(199,210,254,0.95)", fg: "rgba(55,48,163,0.95)" }, // S12 (#c7d2fe 연보라)
+  { bg: "rgba(221,214,254,0.95)", fg: "rgba(91,33,182,0.95)" }, // S13 (#ddd6fe 라벤더)
+  { bg: "rgba(245,208,254,0.95)", fg: "rgba(134,25,143,0.95)" }, // S14 (#f5d0fe 오키드)
+  { bg: "rgba(251,207,232,0.95)", fg: "rgba(157,23,77,0.95)" }, // S15 (#fbcfe8 로즈)
+  { bg: "rgba(254,215,170,0.95)", fg: "rgba(154,52,18,0.95)" }, // S16 (#fed7aa 살구)
+  { bg: "rgba(254,226,226,0.95)", fg: "rgba(153,27,27,0.95)" }, // S17 (#fee2e2 연빨강)
+  { bg: "rgba(243,244,246,0.95)", fg: "rgba(55,65,81,0.95)" },  // S18 (#f3f4f6 연회색)
+  { bg: "rgba(209,213,219,0.95)", fg: "rgba(31,41,55,0.95)" },  // S19 (#d1d5db 회색)
 ];
 const ST_COLOR_PREFIXES = ["KNOB", "MASK"];
 const ST_GRID_TEXT = "#000000";
@@ -352,6 +365,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
         _split_value: item.display,
         _split_value_raw: item.raw,
         _split_label: label,
+        _split_index: idx,
         _is_s0: !item.no_split_yet && idx === 0,
         _no_split_yet: !!item.no_split_yet,
         _is_split_draft: !!item.is_draft,
@@ -548,6 +562,7 @@ export default function SplitTableSnapshotView({
   onEditPurpose = null,
   onPurposeContextMenu = null,
   onViewRuleMatch = null,
+  onCategoryContextMenu = null,
   columnWidths = null,
   moduleColors = {},
   categoryColors = {},
@@ -670,8 +685,8 @@ export default function SplitTableSnapshotView({
   const mergedContextLeftStyle = mergedMode ? { background: "var(--bg-tertiary)", backgroundClip: "border-box", boxShadow: "inset -1px 0 0 #555", isolation: "isolate" } : {};
   const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 20, textAlign: "left", fontSize: 14, lineHeight: 1.25, color: ST_GRID_TEXT, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 20, textAlign: "left", fontSize: 13, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
-  const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 13, color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default", width: dataColWidth, minWidth: dataColWidth, maxWidth: dataColWidth };
+  const purposeLeftStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: purposeTop, left: 0, zIndex: 20, textAlign: "left", fontSize: 14, fontFamily: "inherit", color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
+  const purposeHeadStyle = { boxSizing: "border-box", height: purposeHeaderHeight, padding: "2px 6px", textAlign: "center", fontSize: 14, fontFamily: "inherit", color: ST_GRID_TEXT, border: "1px solid #555", position: "sticky", top: purposeTop, zIndex: 4, whiteSpace: "normal", wordBreak: "break-word", cursor: onEditPurpose || onPurposeContextMenu ? "pointer" : "default", width: dataColWidth, minWidth: dataColWidth, maxWidth: dataColWidth };
   const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, left: 0, zIndex: 20, textAlign: "left", fontSize: 14, color: ST_GRID_TEXT, fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth, maxWidth: prefixTotalWidth, ...mergedContextLeftStyle };
   const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: ST_GRID_TEXT, background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: lotTop, zIndex: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
   const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: ST_GRID_TEXT, border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
@@ -788,21 +803,21 @@ export default function SplitTableSnapshotView({
                     const categoryStyle = categoryColorStyle(r._split_value, categoryColors);
                     const splitStyle = isSplitCol
                       ? { ...splitCheckColorStyle(value), ...categoryStyle }
-                      : (isValueCol ? categoryStyle : {});
+                      : {};
                     const moduleBg = isModuleCol && value ? moduleColor(value, moduleColors) : "";
                     const moduleStyle = moduleBg ? { background: moduleBg, color: moduleTextColor(moduleBg), fontWeight: 800 } : {};
                     const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
                     const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw || r._no_split_yet);
                     const cellTitle = editable && isDraftValue
-                      ? (r._no_split_yet ? "클릭: S0 스플릿 추가" : "클릭: KNOB 값 선택 또는 새 값 입력")
-                          : (editable && isSplitCol
-                          ? "클릭: 스플릿 추가"
-                          : (isValueCol && value
-                                  ? `클릭: '${value}' 분류 규칙 보기`
-                                  : (isParamCol
-                                      ? "클릭: 분류 규칙 보기"
-                                      : undefined)));
-                    const isClickable = (editable && isDraftValue) || (editable && isSplitCol) || (isValueCol && !!value) || isParamCol;
+                      ? "클릭하여 값 수정"
+                      : (editable && isSplitCol
+                          ? "우클릭 또는 클릭하여 스플릿 추가"
+                          : (splitCheckMode && (isSplitCol || isValueCol) && value
+                              ? `클릭: '${value}' 분류 규칙 보기${onCategoryContextMenu ? " · 우클릭: 색상 변경" : ""}`
+                              : (isParamCol
+                                  ? "클릭: 분류 규칙 보기"
+                                  : undefined)));
+                    const isClickable = (editable && isDraftValue) || (editable && isSplitCol) || ((isValueCol || isSplitCol) && !!value) || isParamCol;
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps}
                         onClick={(event) => {
@@ -816,10 +831,17 @@ export default function SplitTableSnapshotView({
                             onAddSplitRequest?.(event, r._param, r);
                             return;
                           }
-                          if (isValueCol && (r._split_value_raw || r._split_value)) {
+                          if ((isValueCol || isSplitCol) && (r._split_value_raw || r._split_value)) {
                             onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
                           } else if (isParamCol) {
                             onViewRuleMatch?.("knob_ppid", r._param, r, null, null);
+                          }
+                        }}
+                        onContextMenu={(event) => {
+                          if (splitCheckMode && (isSplitCol || isValueCol) && (r._split_value_raw || r._split_value) && onCategoryContextMenu) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onCategoryContextMenu(event, r);
                           }
                         }}
                         title={cellTitle}

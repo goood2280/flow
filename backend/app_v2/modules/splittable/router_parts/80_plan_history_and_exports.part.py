@@ -487,7 +487,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
     # v8.8.14: display rename (rule_order + step_desc) 적용.
     # 정렬은 view와 동일 — prefix 구분 없이 parameter별 step_id 공정 순서 우선.
     col_rename = _build_col_rename_map(selected, product)
-    col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+    col_rename.update({col: label for col, label in tag_labels.items()})
     col_rename.update({col: label for col, label in management_labels.items()})
     _dl_step_rank = _split_step_order_context(product).get("param_rank") or {}
     selected = sorted(selected, key=lambda c: _step_order_sort_key(c, col_rename.get(c, c), _dl_step_rank))
@@ -536,6 +536,11 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         plans = _load_plan_data(product).get("plans", {})
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
         management_values = _management_row_values_for_root(product, root_lot_id)
+        lot_purpose_map = _lot_management_purposes_map(product)
+        purpose_by_idx = {
+            idx: _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans, wf2fab, lot_purpose_map)
+            for idx, wk in enumerate(wf_sorted)
+        }
 
         output = io.StringIO()
         writer = csv_mod.writer(output)
@@ -544,14 +549,20 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         writer.writerow(["downloaded_at", download_ts])
         writer.writerow(["username", username or ""])
         writer.writerow(["root_lot_id", root_lot_id or ""])
+        purpose_row_vals = [purpose_by_idx.get(idx, "") for idx in range(len(wf_sorted))]
+        writer.writerow((["", ""] if step_label_mode else []) + ["purpose"] + purpose_row_vals)
         if fab_col:
-            writer.writerow(["fab_lot_id"] + fab_row)
+            writer.writerow((["", ""] if step_label_mode else []) + ["fab_lot_id"] + fab_row)
         writer.writerow((["step_id", "step_desc"] if step_label_mode else []) + ["Parameter"] + headers)
-        for col_name in selected:
+        body_selected = [col for col in selected if not _is_default_purpose_tag(col)]
+        for col_name in body_selected:
             row_data = [""] * len(wf_sorted)
             if col_name in tag_labels:
                 for idx, wk in enumerate(wf_sorted):
-                    row_data[idx] = tag_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
+                    tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
+                    if not tv and _is_default_purpose_tag(col_name):
+                        tv = purpose_by_idx.get(idx, "")
+                    row_data[idx] = tv
             elif col_name in management_labels:
                 for idx, wk in enumerate(wf_sorted):
                     row_data[idx] = management_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
@@ -571,13 +582,14 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                     pv = plans.get(ck, {}).get("value")
                     row_data[idx] = "" if pv is None else str(pv)
             process = process_columns.get(str(col_name), {})
+            display_name = _export_param_display_name(col_rename.get(col_name, col_name), col_name)
             writer.writerow(
                 ([process.get("step_id", ""), process.get("step_desc", "")] if step_label_mode else [])
-                + [col_rename.get(col_name, col_name)] + row_data
+                + [display_name] + row_data
             )
         # v8.4.4: Excel 한글 깨짐 방지 — UTF-8 BOM prefix
         csv_bytes = b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
-        _log_rows, _log_cols = len(selected), len(wf_sorted)
+        _log_rows, _log_cols = len(body_selected), len(wf_sorted)
     else:
         csv_bytes = b"\xef\xbb\xbf" + df.write_csv().encode("utf-8")
         _log_rows, _log_cols = df.height, df.width
@@ -594,6 +606,66 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
 SPLIT_CHECK_XLSX_PREFIX_COLUMNS = ["항목", "값", "Split"]
 
 
+def _is_default_purpose_tag(column: str) -> bool:
+    return str(column or "").strip().upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper()
+
+
+def _lot_management_purposes_map(product: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        from routers.lot_management import _load as _load_lot_table
+        raw_product = str(product or "").strip()
+        candidates = [raw_product]
+        if raw_product.upper().startswith("ML_TABLE_"):
+            candidates.append(raw_product[len("ML_TABLE_"):].strip())
+        else:
+            candidates.append(f"ML_TABLE_{raw_product}")
+        for cand in candidates:
+            if not cand:
+                continue
+            doc = _load_lot_table(cand)
+            for row in doc.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                vals = row.get("values") if isinstance(row.get("values"), dict) else {}
+                lid = str(vals.get("lot_id") or "").strip()
+                purp = str(vals.get("purpose") or "").strip()
+                if lid and purp and lid.casefold() not in out:
+                    out[lid.casefold()] = purp
+            if out:
+                break
+    except Exception:
+        pass
+    return out
+
+
+def _resolve_wafer_purpose(
+    wk: Any,
+    root_lot_id: str,
+    tag_values: dict[str, str],
+    plans: dict,
+    wf2fab: dict,
+    lot_purpose_map: dict[str, str],
+) -> str:
+    ck = f"{root_lot_id}|{wk}|{DEFAULT_CUSTOM_TAG_COLUMN}"
+    tv = tag_values.get(ck)
+    if not _export_has_value(tv) and str(wk) != wk:
+        tv = tag_values.get(f"{root_lot_id}|{str(wk)}|{DEFAULT_CUSTOM_TAG_COLUMN}")
+    if _export_has_value(tv):
+        return str(tv).strip()
+    pv = plans.get(ck, {}).get("value")
+    if not _export_has_value(pv) and str(wk) != wk:
+        pv = plans.get(f"{root_lot_id}|{str(wk)}|{DEFAULT_CUSTOM_TAG_COLUMN}", {}).get("value")
+    if _export_has_value(pv):
+        return str(pv).strip()
+    fab = wf2fab.get(wk) or wf2fab.get(str(wk))
+    if fab and str(fab).strip().casefold() in lot_purpose_map:
+        return lot_purpose_map[str(fab).strip().casefold()]
+    if root_lot_id and str(root_lot_id).strip().casefold() in lot_purpose_map:
+        return lot_purpose_map[str(root_lot_id).strip().casefold()]
+    return ""
+
+
 def _export_has_value(value: Any) -> bool:
     text = "" if value is None else str(value).strip()
     return bool(text and text not in {"None", "null"})
@@ -607,6 +679,20 @@ def _split_check_export_supported(selected: list[str]) -> bool:
     return True
 
 
+def _export_param_display_name(name: str, raw_column: str = "") -> str:
+    """표시용 항목명: 선행 prefix(TAG_/FAB_/KNOB_/MASK_/INLINE_/VM_/MGMT_/ET_ 등) 제거 및 KNOB의 _Split 제거."""
+    import re as _re
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    source = str(raw_column or "").strip() or raw
+    is_knob = bool(_re.match(r"^KNOB_", source, flags=_re.I) or _re.match(r"^KNOB_", raw, flags=_re.I))
+    out = _re.sub(r"^[A-Za-z]+_", "", raw)
+    if is_knob:
+        out = _re.sub(r"_Split$", "", out, flags=_re.I)
+    return out.strip() or raw
+
+
 def _build_split_check_export_rows(
     selected: list[str],
     wafer_count: int,
@@ -618,7 +704,7 @@ def _build_split_check_export_rows(
     rename = col_rename or {}
     s0_values = s0_by_param or {}
     for column in selected or []:
-        display_name = str(rename.get(column, column) or column)
+        display_name = _export_param_display_name(str(rename.get(column, column) or column), column)
         actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
         values_by_idx: dict[int, str] = {}
         order: list[str] = []
@@ -663,12 +749,8 @@ def _build_pems_export_rows(
     s0_values = s0_by_param or {}
     wafer_count = 25
     for column in selected or []:
-        import re as _re
         raw_display_name = str(rename.get(column, column) or column)
-        display_name = _re.sub(r"^[A-Za-z]+_", "", raw_display_name)
-        if str(column or "").upper().startswith("KNOB_"):
-            display_name = _re.sub(r"_Split$", "", display_name, flags=_re.I)
-        display_name = display_name.strip() or raw_display_name
+        display_name = _export_param_display_name(raw_display_name, column)
         actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
         values_by_idx: dict[int, str] = {}
         order: list[str] = []
@@ -851,7 +933,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     # v8.8.14: display rename (rule_order + step_desc) 적용.
     # 정렬은 view와 동일 — prefix 구분 없이 parameter별 step_id 공정 순서 우선.
     col_rename = _build_col_rename_map(selected, product)
-    col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+    col_rename.update({col: label for col, label in tag_labels.items()})
     col_rename.update({col: label for col, label in management_labels.items()})
     _dl_step_rank = _split_step_order_context(product).get("param_rank") or {}
     selected = sorted(selected, key=lambda c: _step_order_sort_key(c, col_rename.get(c, c), _dl_step_rank))
@@ -891,6 +973,20 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     tag_values = _custom_tag_values_for_root(product, root_lot_id)
     tag_colors = _custom_tag_colors_for_root(product, root_lot_id)
     management_values = _management_row_values_for_root(product, root_lot_id)
+    lot_purpose_map = _lot_management_purposes_map(product)
+    purpose_by_idx: dict[int, str] = {}
+    purpose_color_by_idx: dict[int, str] = {}
+    for idx, wk in enumerate(wf_sorted):
+        purp = _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans, wf2fab, lot_purpose_map)
+        if purp:
+            purpose_by_idx[idx] = purp
+        color = (
+            tag_colors.get(f"{root_lot_id}|{wk}|{DEFAULT_CUSTOM_TAG_COLUMN}")
+            or tag_colors.get(f"{root_lot_id}|{str(wk)}|{DEFAULT_CUSTOM_TAG_COLUMN}")
+        )
+        if color:
+            purpose_color_by_idx[idx] = str(color)
+
     split_check_mode = (
         requested_display_mode == "split_check"
         and _split_check_export_supported(selected)
@@ -899,6 +995,15 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     merged_mode = (
         requested_display_mode == "merged"
         and not split_check_mode and not pems_mode
+    )
+    split_like_mode = split_check_mode or pems_mode
+    has_purpose_row = bool(
+        any(purpose_by_idx.values())
+        or any(purpose_color_by_idx.values())
+        or (
+            not split_like_mode
+            and ((DEFAULT_CUSTOM_TAG_COLUMN in tag_labels) or any(_is_default_purpose_tag(c) for c in selected))
+        )
     )
 
     def _export_wafer_index(wafer) -> int | None:
@@ -915,6 +1020,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
                 if _export_has_value(tv):
                     actual_by_idx[idx] = str(tv)
+                elif _is_default_purpose_tag(col_name) and idx in purpose_by_idx:
+                    actual_by_idx[idx] = purpose_by_idx[idx]
         elif col_name in management_labels:
             for idx, wk in enumerate(wf_sorted):
                 mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
@@ -976,25 +1083,26 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     not_reached_cells.add((str(raw_param), idx))
     else:
         not_reached_cells = _exclude_populated_not_reached_cells(not_reached_cells, value_maps)
+    split_cols = [col for col in selected if not _is_default_purpose_tag(col)]
     split_check_rows: list[list[str]] = []
     split_check_param_keys: list[str] = []
     if pems_mode:
         split_check_rows, split_check_param_keys = _build_pems_export_rows(
-            selected,
+            split_cols,
             value_maps,
             col_rename,
             s0_by_param,
         )
     elif split_check_mode:
         split_check_rows = _build_split_check_export_rows(
-            selected,
+            split_cols,
             len(wf_sorted),
             value_maps,
             col_rename,
             s0_by_param,
         )
         split_check_param_keys = _split_check_export_param_keys(
-            selected, len(wf_sorted), value_maps, s0_by_param,
+            split_cols, len(wf_sorted), value_maps, s0_by_param,
         )
     if step_label_mode and split_check_rows:
         split_check_rows = [
@@ -1036,6 +1144,35 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             if n_wafers > 1:
                 merges.append((3, prefix_count + 1, 3, last_col))
 
+            if has_purpose_row:
+                purpose_row = ["purpose", *([""] * (prefix_count - 1)), *["" for _ in range(n_wafers)]]
+                p_row_no = len(rows) + 1
+                merges.append((p_row_no, 1, p_row_no, prefix_count))
+                cur_val = None
+                start = 0
+                for i in range(n_wafers):
+                    v = purpose_by_idx.get(i, "")
+                    if not v:
+                        if cur_val and i - start > 0:
+                            purpose_row[prefix_count + start] = cur_val
+                            if i - start > 1:
+                                merges.append((p_row_no, prefix_count + 1 + start, p_row_no, prefix_count + i))
+                        cur_val = None
+                        start = i + 1
+                        continue
+                    if v != cur_val:
+                        if cur_val and i - start > 0:
+                            purpose_row[prefix_count + start] = cur_val
+                            if i - start > 1:
+                                merges.append((p_row_no, prefix_count + 1 + start, p_row_no, prefix_count + i))
+                        cur_val = v
+                        start = i
+                if cur_val and n_wafers - start > 0:
+                    purpose_row[prefix_count + start] = cur_val
+                    if n_wafers - start > 1:
+                        merges.append((p_row_no, prefix_count + 1 + start, p_row_no, prefix_count + n_wafers))
+                rows.append(purpose_row)
+
             has_fab_row = bool(not pems_mode and fab_col and wf_sorted)
             if has_fab_row:
                 fab_row = ["fab_lot_id", *([""] * (prefix_count - 1)), *["" for _ in wf_sorted]]
@@ -1070,10 +1207,32 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             if n_wafers > 1:
                 merges.append((3, prefix_count + 1, 3, last_col))
 
+            if has_purpose_row:
+                purpose_row = ["purpose", *([""] * (prefix_count - 1)), *["" for _ in range(n_wafers)]]
+                p_row_no = len(rows) + 1
+                merges.append((p_row_no, 1, p_row_no, prefix_count))
+                cur_val = None
+                start = 0
+                for i in range(n_wafers):
+                    v = purpose_by_idx.get(i, "")
+                    if v != cur_val:
+                        if cur_val is not None and i - start > 0:
+                            purpose_row[prefix_count + start] = cur_val
+                            if i - start > 1:
+                                merges.append((p_row_no, prefix_count + 1 + start, p_row_no, prefix_count + i))
+                        cur_val = v
+                        start = i
+                if cur_val is not None and n_wafers - start > 0:
+                    purpose_row[prefix_count + start] = cur_val
+                    if n_wafers - start > 1:
+                        merges.append((p_row_no, prefix_count + 1 + start, p_row_no, prefix_count + n_wafers))
+                rows.append(purpose_row)
+
             has_fab_row = bool(fab_col and wf_sorted)
             if has_fab_row:
                 fab_row = ["fab_lot_id", *([""] * (prefix_count - 1)), *["" for _ in wf_sorted]]
-                merges.append((4, 1, 4, prefix_count))
+                row_no = len(rows) + 1
+                merges.append((row_no, 1, row_no, prefix_count))
                 cur = None
                 start = 0
                 for i, w in enumerate(wf_sorted):
@@ -1082,19 +1241,20 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                         if cur is not None and i - start > 0:
                             fab_row[prefix_count + start] = cur
                             if i - start > 1:
-                                merges.append((4, prefix_count + 1 + start, 4, prefix_count + i))
+                                merges.append((row_no, prefix_count + 1 + start, row_no, prefix_count + i))
                         cur = f
                         start = i
                 if cur is not None and len(wf_sorted) - start > 0:
                     fab_row[prefix_count + start] = cur
                     if len(wf_sorted) - start > 1:
-                        merges.append((4, prefix_count + 1 + start, 4, prefix_count + len(wf_sorted)))
+                        merges.append((row_no, prefix_count + 1 + start, row_no, prefix_count + len(wf_sorted)))
                 rows.append(fab_row)
 
             regular_headers = (["step_id", "step_desc"] if step_label_mode else []) + ["Parameter"]
             rows.append([*regular_headers, *[f"#{w}" for w in wf_sorted]])
-            for col_name in selected:
-                display_name = col_rename.get(col_name, col_name)
+            body_selected = [col for col in selected if not _is_default_purpose_tag(col)]
+            for col_name in body_selected:
+                display_name = _export_param_display_name(col_rename.get(col_name, col_name), col_name)
                 actual_by_idx, plan_by_idx = value_maps.get(col_name, ({}, {}))
                 process = process_columns.get(str(col_name), {})
                 out = ([process.get("step_id", ""), process.get("step_desc", "")] if step_label_mode else []) + [display_name, *["" for _ in wf_sorted]]
@@ -1166,6 +1326,15 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 top=box, bottom=box,
             )
 
+    def _style_cell(cell, *, fill=None, font=None, alignment=None):
+        if fill is not None:
+            cell.fill = fill
+        if font is not None:
+            cell.font = font
+        if alignment is not None:
+            cell.alignment = alignment
+        cell.border = border
+
     if split_like_mode:
         prefix_count = len(export_prefix_columns)
         n_wafers = len(wf_sorted)
@@ -1176,13 +1345,26 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         prefix_font = Font(color="000000", bold=True, name="Consolas", size=11)
         value_font = Font(color="000000", name="Consolas", size=11)
         palette = [
-            ("C6EFCE", "000000"),
-            ("FFEB9C", "000000"),
-            ("FBE5D6", "000000"),
-            ("BDD7EE", "000000"),
-            ("E2BFEE", "000000"),
-            ("B4DED4", "000000"),
-            ("F4CCCC", "000000"),
+            ("C6EFCE", "000000"),  # S0 (#c6efce)
+            ("FFEB9C", "000000"),  # S1 (#ffeb9c)
+            ("FBE5D6", "000000"),  # S2 (#fbe5d6)
+            ("BDD7EE", "000000"),  # S3 (#bdd7ee)
+            ("E2BFEE", "000000"),  # S4 (#e2bfee)
+            ("B4DED4", "000000"),  # S5 (#b4ded4)
+            ("F4CCCC", "000000"),  # S6 (#f4cccc)
+            ("D9F99D", "000000"),  # S7 (#d9f99d)
+            ("99F6E4", "000000"),  # S8 (#99f6e4)
+            ("A5F3FC", "000000"),  # S9 (#a5f3fc)
+            ("BBF7D0", "000000"),  # S10 (#bbf7d0)
+            ("BFDBFE", "000000"),  # S11 (#bfdbfe)
+            ("C7D2FE", "000000"),  # S12 (#c7d2fe)
+            ("DDD6FE", "000000"),  # S13 (#ddd6fe)
+            ("F5D0FE", "000000"),  # S14 (#f5d0fe)
+            ("FBCFE8", "000000"),  # S15 (#fbcfe8)
+            ("FED7AA", "000000"),  # S16 (#fed7aa)
+            ("FEE2E2", "000000"),  # S17 (#fee2e2)
+            ("F3F4F6", "000000"),  # S18 (#f3f4f6)
+            ("D1D5DB", "000000"),  # S19 (#d1d5db)
         ]
 
         def _split_fill(label: str):
@@ -1192,15 +1374,6 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 return None
             bg, _fg = palette[int(m.group(1)) % len(palette)]
             return PatternFill("solid", fgColor=bg)
-
-        def _style_cell(cell, *, fill=None, font=None, alignment=None):
-            if fill is not None:
-                cell.fill = fill
-            if font is not None:
-                cell.font = font
-            if alignment is not None:
-                cell.alignment = alignment
-            cell.border = border
 
         ws.cell(row=1, column=1, value="downloaded_at")
         _style_cell(ws.cell(row=1, column=1), fill=hdr_fill, font=white)
@@ -1218,28 +1391,73 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         for col_idx in range(root_value_col, (prefix_count + n_wafers if n_wafers else root_value_col) + 1):
             _style_cell(ws.cell(row=3, column=col_idx), fill=hdr_fill, font=Font(color="FBBF24", bold=True, name="Consolas", size=13), alignment=center)
 
+        curr_row = 4
+        if has_purpose_row:
+            ws.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=prefix_count)
+            _style_cell(ws.cell(row=curr_row, column=1, value="purpose"), fill=hdr_fill, font=white, alignment=center)
+
+            def _apply_purpose_span(p_start: int, p_end: int, val: str, color_hex: str):
+                fill = PatternFill("solid", fgColor=color_hex.lstrip("#").upper()) if color_hex else fab_fill
+                font = Font(color="000000" if color_hex else "FFFFFF", bold=True)
+                for k in range(p_start, p_end):
+                    c = ws.cell(row=curr_row, column=first_wafer_col + k)
+                    _style_cell(c, fill=fill, font=font, alignment=center)
+                    if k == p_start:
+                        c.value = val
+                    else:
+                        c.value = None
+                if val and (p_end - p_start > 1):
+                    ws.merge_cells(start_row=curr_row, start_column=first_wafer_col + p_start,
+                                   end_row=curr_row, end_column=first_wafer_col + p_end - 1)
+
+            cur_val = None
+            cur_color = None
+            start = 0
+            for i in range(n_wafers):
+                v = purpose_by_idx.get(i, "")
+                col_hex = purpose_color_by_idx.get(i, "")
+                if not v:
+                    if cur_val is not None and i - start > 0:
+                        _apply_purpose_span(start, i, cur_val, cur_color)
+                    _apply_purpose_span(i, i + 1, "", col_hex)
+                    cur_val = None
+                    cur_color = None
+                    start = i + 1
+                    continue
+                if (v, col_hex) != (cur_val, cur_color):
+                    if cur_val is not None and i - start > 0:
+                        _apply_purpose_span(start, i, cur_val, cur_color)
+                    cur_val = v
+                    cur_color = col_hex
+                    start = i
+            if cur_val is not None and n_wafers - start > 0:
+                _apply_purpose_span(start, n_wafers, cur_val, cur_color)
+            curr_row += 1
+
         has_fab_row = bool(not pems_mode and fab_col and wf_sorted)
-        header_row = 5 if has_fab_row else 4
         if has_fab_row:
-            ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=prefix_count)
-            _style_cell(ws.cell(row=4, column=1, value="fab_lot_id"), fill=hdr_fill, font=white, alignment=center)
+            ws.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=prefix_count)
+            _style_cell(ws.cell(row=curr_row, column=1, value="fab_lot_id"), fill=hdr_fill, font=white, alignment=center)
             cur = None
             start = 0
             for i, w in enumerate(wf_sorted):
                 f = wf2fab.get(w, "")
                 if f != cur:
                     if cur is not None and i - start > 0:
-                        c = ws.cell(row=4, column=first_wafer_col + start, value=cur)
+                        c = ws.cell(row=curr_row, column=first_wafer_col + start, value=cur)
                         _style_cell(c, fill=fab_fill, font=fab_font, alignment=center)
                         if i - start > 1:
-                            ws.merge_cells(start_row=4, start_column=first_wafer_col + start, end_row=4, end_column=first_wafer_col + i - 1)
+                            ws.merge_cells(start_row=curr_row, start_column=first_wafer_col + start, end_row=curr_row, end_column=first_wafer_col + i - 1)
                     cur = f
                     start = i
             if cur is not None and len(wf_sorted) - start > 0:
-                c = ws.cell(row=4, column=first_wafer_col + start, value=cur)
+                c = ws.cell(row=curr_row, column=first_wafer_col + start, value=cur)
                 _style_cell(c, fill=fab_fill, font=fab_font, alignment=center)
                 if len(wf_sorted) - start > 1:
-                    ws.merge_cells(start_row=4, start_column=first_wafer_col + start, end_row=4, end_column=first_wafer_col + len(wf_sorted) - 1)
+                    ws.merge_cells(start_row=curr_row, start_column=first_wafer_col + start, end_row=curr_row, end_column=first_wafer_col + len(wf_sorted) - 1)
+            curr_row += 1
+
+        header_row = curr_row
 
         for i, label in enumerate(export_prefix_columns, start=1):
             c = ws.cell(row=header_row, column=i, value=label)
@@ -1324,32 +1542,75 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     c2v.font = Font(color="fbbf24", bold=True, name="Consolas", size=13)
     if n_wafers > 1:
         ws.merge_cells(start_row=3, start_column=first_wafer_col, end_row=3, end_column=last_col)
-    # Row 4: fab_lot_id (merged by contiguous groups)
-    FAB_ROW = 4
-    if fab_col and wf_sorted:
-        ws.cell(row=FAB_ROW, column=1, value="fab_lot_id").font = white
-        ws.cell(row=FAB_ROW, column=1).fill = hdr_fill
+    curr_row = 4
+    if has_purpose_row:
         if regular_prefix_count > 1:
-            ws.merge_cells(start_row=FAB_ROW, start_column=1, end_row=FAB_ROW, end_column=regular_prefix_count)
+            ws.merge_cells(start_row=curr_row, start_column=1, end_row=curr_row, end_column=regular_prefix_count)
+        _style_cell(ws.cell(row=curr_row, column=1, value="purpose"), fill=hdr_fill, font=white, alignment=center)
+
+        def _apply_reg_purpose_span(p_start: int, p_end: int, val: str, color_hex: str):
+            fill = PatternFill("solid", fgColor=color_hex.lstrip("#").upper()) if color_hex else fab_fill
+            font = Font(color="000000" if color_hex else "FFFFFF", bold=True)
+            for k in range(p_start, p_end):
+                c = ws.cell(row=curr_row, column=first_wafer_col + k)
+                _style_cell(c, fill=fill, font=font, alignment=center)
+                if k == p_start:
+                    c.value = val
+                else:
+                    c.value = None
+            if val and (p_end - p_start > 1):
+                ws.merge_cells(start_row=curr_row, start_column=first_wafer_col + p_start,
+                               end_row=curr_row, end_column=first_wafer_col + p_end - 1)
+
+        cur_val = None
+        cur_color = None
+        start = 0
+        for i in range(n_wafers):
+            v = purpose_by_idx.get(i, "")
+            col_hex = purpose_color_by_idx.get(i, "")
+            if not v:
+                if cur_val is not None and i - start > 0:
+                    _apply_reg_purpose_span(start, i, cur_val, cur_color)
+                _apply_reg_purpose_span(i, i + 1, "", col_hex)
+                cur_val = None
+                cur_color = None
+                start = i + 1
+                continue
+            if (v, col_hex) != (cur_val, cur_color):
+                if cur_val is not None and i - start > 0:
+                    _apply_reg_purpose_span(start, i, cur_val, cur_color)
+                cur_val = v
+                cur_color = col_hex
+                start = i
+        if cur_val is not None and n_wafers - start > 0:
+            _apply_reg_purpose_span(start, n_wafers, cur_val, cur_color)
+        curr_row += 1
+
+    if fab_col and wf_sorted:
+        fab_row_no = curr_row
+        ws.cell(row=fab_row_no, column=1, value="fab_lot_id").font = white
+        ws.cell(row=fab_row_no, column=1).fill = hdr_fill
+        if regular_prefix_count > 1:
+            ws.merge_cells(start_row=fab_row_no, start_column=1, end_row=fab_row_no, end_column=regular_prefix_count)
         cur = None; start = 0
         for i, w in enumerate(wf_sorted):
             f = wf2fab.get(w, "")
             if f != cur:
                 if cur is not None and i - start > 0:
-                    c = ws.cell(row=FAB_ROW, column=first_wafer_col+start, value=cur)
+                    c = ws.cell(row=fab_row_no, column=first_wafer_col+start, value=cur)
                     c.font = fab_font; c.fill = fab_fill; c.alignment = center; c.border = border
                     if i - start > 1:
-                        ws.merge_cells(start_row=FAB_ROW, start_column=first_wafer_col+start, end_row=FAB_ROW, end_column=first_wafer_col+i-1)
+                        ws.merge_cells(start_row=fab_row_no, start_column=first_wafer_col+start, end_row=fab_row_no, end_column=first_wafer_col+i-1)
                 cur = f; start = i
         if cur is not None and len(wf_sorted) - start > 0:
-            c = ws.cell(row=FAB_ROW, column=first_wafer_col+start, value=cur)
+            c = ws.cell(row=fab_row_no, column=first_wafer_col+start, value=cur)
             c.font = fab_font; c.fill = fab_fill; c.alignment = center; c.border = border
             if len(wf_sorted) - start > 1:
-                ws.merge_cells(start_row=FAB_ROW, start_column=first_wafer_col+start,
-                               end_row=FAB_ROW, end_column=first_wafer_col+len(wf_sorted)-1)
+                ws.merge_cells(start_row=fab_row_no, start_column=first_wafer_col+start,
+                               end_row=fab_row_no, end_column=first_wafer_col+len(wf_sorted)-1)
+        curr_row += 1
 
-    # Row 5: Parameter | #1 #2 ...
-    param_row = 5 if fab_col else 4
+    param_row = curr_row
     for prefix_idx, prefix_label in enumerate(regular_prefix_columns, start=1):
         prefix_cell = ws.cell(row=param_row, column=prefix_idx, value=prefix_label)
         prefix_cell.font = white
@@ -1371,10 +1632,11 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     ]
     COLOR_PREFIXES = ("KNOB_", "MASK_")
 
-    for r_off, col_name in enumerate(selected):
+    body_selected = [col for col in selected if not _is_default_purpose_tag(col)]
+    for r_off, col_name in enumerate(body_selected):
         rr = param_row + 1 + r_off
         # v8.8.14: display rename 된 이름을 표기 (원본 col_name 으로는 여전히 df 조회).
-        display_name = col_rename.get(col_name, col_name)
+        display_name = _export_param_display_name(col_rename.get(col_name, col_name), col_name)
         process = process_columns.get(str(col_name), {})
         if step_label_mode:
             for process_idx, key in enumerate(("step_id", "step_desc"), start=1):
@@ -1397,6 +1659,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
                 if tv:
                     actual_by_idx[idx] = str(tv)
+                elif _is_default_purpose_tag(col_name) and idx in purpose_by_idx:
+                    actual_by_idx[idx] = purpose_by_idx[idx]
         elif col_name in management_labels:
             for idx, wk in enumerate(wf_sorted):
                 mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
@@ -1522,7 +1786,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
     # v8.8.13: 전체 그리드 테두리 보강 — 값 없는 빈 셀·헤더 셀까지 기본 border 적용.
     # plan_border / mismatch_border 처럼 특수 스타일이 이미 들어간 셀은 건너뜀.
-    last_row = param_row + len(selected)
+    last_row = param_row + len(body_selected)
     for row_cells in ws.iter_rows(min_row=1, max_row=last_row, min_col=1, max_col=last_col):
         for c in row_cells:
             b = c.border
@@ -1541,8 +1805,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         display_mode="merged" if merged_mode else "table",
     )
     _log_split_table_download(username, product, root_lot_id, prefix, custom_name,
-                              "xlsx_merged" if merged_mode else "xlsx", len(selected),
-                              len(wf_sorted), buf.getbuffer().nbytes, selected)
+                              "xlsx_merged" if merged_mode else "xlsx", len(body_selected),
+                              len(wf_sorted), buf.getbuffer().nbytes, body_selected)
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

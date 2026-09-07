@@ -43,6 +43,48 @@ const TAG_CELL_PALETTE=[
   "#bfdbfe","#c7d2fe","#ddd6fe","#e9d5ff","#f5d0fe",
   "#fbcfe8","#fee2e2","#ffedd5","#ecfccb","#e0f2fe",
 ];
+// SplitCheck 뷰 S0, S1, S2... 기본 색상 순으로 정렬된 20종 카테고리 색상 팔레트.
+// S0: 초록(#c6efce), S1: 노랑(#ffeb9c), S2: 주황(#fbe5d6), S3: 파랑(#bdd7ee), S4: 보라(#e2bfee), S5: 청록(#b4ded4), S6: 분홍(#f4cccc) 순.
+const CATEGORY_CELL_PALETTE=[
+  "#c6efce", // S0 (초록)
+  "#ffeb9c", // S1 (노랑)
+  "#fbe5d6", // S2 (주황)
+  "#bdd7ee", // S3 (파랑)
+  "#e2bfee", // S4 (보라)
+  "#b4ded4", // S5 (청록)
+  "#f4cccc", // S6 (분홍)
+  "#d9f99d", // 라임
+  "#99f6e4", // 민트
+  "#a5f3fc", // 하늘
+  "#bbf7d0", // 연초록
+  "#bfdbfe", // 소라
+  "#c7d2fe", // 연보라
+  "#ddd6fe", // 라벤더
+  "#f5d0fe", // 오키드
+  "#fbcfe8", // 로즈
+  "#fed7aa", // 살구
+  "#fee2e2", // 연빨강
+  "#f3f4f6", // 연회색
+  "#d1d5db", // 회색
+];
+const normalizeColorHex = (color) => {
+  if (!color || typeof color !== "string") return "";
+  const s = color.trim().toLowerCase();
+  if (s.startsWith("#")) {
+    if (s.length === 4) {
+      return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`;
+    }
+    return s.slice(0, 7);
+  }
+  const m = s.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (m) {
+    const r = Math.max(0, Math.min(255, parseInt(m[1], 10))).toString(16).padStart(2, "0");
+    const g = Math.max(0, Math.min(255, parseInt(m[2], 10))).toString(16).padStart(2, "0");
+    const b = Math.max(0, Math.min(255, parseInt(m[3], 10))).toString(16).padStart(2, "0");
+    return `#${r}${g}${b}`;
+  }
+  return s;
+};
 const DEFAULT_PURPOSE_TAG="TAG_PURPOSE";
 const isDefaultPurposeTag=(value)=>String(value||"").trim().toUpperCase()===DEFAULT_PURPOSE_TAG;
 const COLOR_PREFIXES=["KNOB","MASK"];
@@ -485,6 +527,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   useEffect(()=>{setRowRenderLimit(ROW_RENDER_INITIAL);},[data,viewMode]);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});const[pendingTagColors,setPendingTagColors]=useState({});const[pendingManagement,setPendingManagement]=useState({});
   const[tagColorPicker,setTagColorPicker]=useState(null);
+  const[categoryColorPicker,setCategoryColorPicker]=useState(null);
   const[splitDraftValues,setSplitDraftValues]=useState({});
   const[splitContextMenu,setSplitContextMenu]=useState(null);
   const[showConfirm,setShowConfirm]=useState(false);
@@ -516,6 +559,21 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       window.removeEventListener("keydown",closeOnKey);
     };
   },[tagColorPicker]);
+  useEffect(()=>{
+    if(!categoryColorPicker)return;
+    const close=()=>setCategoryColorPicker(null);
+    const closeOnKey=(event)=>{if(event.key==="Escape")close();};
+    window.addEventListener("mousedown",close);
+    window.addEventListener("resize",close);
+    window.addEventListener("scroll",close,true);
+    window.addEventListener("keydown",closeOnKey);
+    return()=>{
+      window.removeEventListener("mousedown",close);
+      window.removeEventListener("resize",close);
+      window.removeEventListener("scroll",close,true);
+      window.removeEventListener("keydown",closeOnKey);
+    };
+  },[categoryColorPicker]);
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
   const[categoryColors,setCategoryColors]=useState({});
@@ -1110,7 +1168,108 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if(matchKindOf(param)!=="knob_ppid")return "";
     return savedCategoryColor(resolveSplitDisplayName(param,rawVal));
   };
-  const saveCategoryColor=(category,color)=>{
+  const findParamForCategory = (cat) => {
+    if (!cat) return "";
+    const catNorm = String(cat).trim().toLowerCase();
+    if (splitCheckStView && Array.isArray(splitCheckStView.rows)) {
+      const found = splitCheckStView.rows.find(r => {
+        const c = resolveSplitDisplayName(r._param, r._split_value_raw || r._split_value) || r._split_value_raw || r._split_value;
+        return String(c || "").trim().toLowerCase() === catNorm;
+      });
+      if (found?._param) return found._param;
+    }
+    if (knobMeta && typeof knobMeta === "object") {
+      for (const [p, km] of Object.entries(knobMeta)) {
+        const groups = Array.isArray(km?.groups) ? km.groups : [];
+        const has = groups.some(g => String(g?.category || g?.value || "").trim().toLowerCase() === catNorm);
+        if (has) return p;
+      }
+    }
+    return "";
+  };
+  const getDisallowedColorsMap = (rawParam, targetCategory) => {
+    const param = rawParam || findParamForCategory(targetCategory);
+    if (!param || !targetCategory) return new Map();
+
+    const targetNorm = String(targetCategory).trim().toLowerCase();
+    const paramNorm = String(param).trim().toLowerCase();
+    const disallowed = new Map();
+    const splits = [];
+    const seenCat = new Set();
+
+    if (splitCheckStView && Array.isArray(splitCheckStView.rows)) {
+      splitCheckStView.rows.forEach(r => {
+        const rParam = String(r._param || "").trim().toLowerCase();
+        if (rParam === paramNorm && !r._no_split_yet) {
+          const cat = resolveSplitDisplayName(r._param, r._split_value_raw || r._split_value) || r._split_value_raw || r._split_value;
+          const catNorm = String(cat || "").trim().toLowerCase();
+          if (cat && !seenCat.has(catNorm)) {
+            seenCat.add(catNorm);
+            splits.push({
+              category: cat,
+              label: r._split_label || (r._split_index != null ? `S${r._split_index}` : ""),
+              index: r._split_index != null ? r._split_index : (r._split_label ? Number(String(r._split_label).replace(/^S/i, "")) : null),
+            });
+          }
+        }
+      });
+    }
+
+    const km = knobLookup(param);
+    const groups = Array.isArray(km?.groups) ? km.groups : [];
+    groups.forEach((g, idx) => {
+      const cat = String(g.category || g.value || "").trim();
+      const catNorm = cat.toLowerCase();
+      if (cat && !seenCat.has(catNorm)) {
+        seenCat.add(catNorm);
+        splits.push({
+          category: cat,
+          label: `S${idx}`,
+          index: idx,
+        });
+      }
+    });
+
+    splits.forEach((s, idx) => {
+      const sCat = String(s.category || "").trim();
+      if (!sCat || sCat.toLowerCase() === targetNorm) return;
+      const saved = savedCategoryColor(sCat);
+      if (saved) {
+        const normSaved = normalizeColorHex(saved);
+        if (normSaved) {
+          disallowed.set(normSaved, {
+            label: s.label || `S${idx}`,
+            category: sCat,
+          });
+        }
+      } else {
+        const splitIdx = s.index != null && !isNaN(s.index) ? s.index : idx;
+        const defColor = CATEGORY_CELL_PALETTE[splitIdx % CATEGORY_CELL_PALETTE.length];
+        if (defColor) {
+          const normDef = normalizeColorHex(defColor);
+          if (normDef) {
+            disallowed.set(normDef, {
+              label: s.label || `S${splitIdx}`,
+              category: sCat,
+            });
+          }
+        }
+      }
+    });
+
+    return disallowed;
+  };
+  const saveCategoryColor=(category,color,param)=>{
+    if (color) {
+      const disMap = getDisallowedColorsMap(param, category);
+      const norm = normalizeColorHex(color);
+      if (disMap.has(norm)) {
+        const info = disMap.get(norm);
+        const label = info?.label ? `${info.label} (${info.category})` : (info?.category || "다른 스플릿");
+        toast.warning(`동일한 항목의 ${label}에서 이미 사용 중인 색상입니다.`);
+        return;
+      }
+    }
     const previous={...categoryColors};
     const next={...categoryColors};
     const existing=Object.keys(next).find(name=>name.toLowerCase()===String(category||"").trim().toLowerCase());
@@ -1192,6 +1351,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const closeRuleMatchView=()=>{
     setRbMatchKind(null);setRbMatchParam("");setRbMatchRow(null);
     setRbMatchFilter(null);setRbMatchSplitLabel(null);
+    setCategoryColorPicker(null);
   };
   const parseCsvTokens=(value)=>String(value||"").split(",").map(s=>s.trim()).filter(Boolean);
   const rbMatchData = (() => {
@@ -2839,7 +2999,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ))}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <span title="셀을 드래그하거나 첫 셀 선택 후 Shift+클릭으로 범위를 선택합니다" style={{fontSize:13,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>드래그 선택 · Ctrl+C / Ctrl+V</span>
             <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);setSplitDraftValues({});setSplitContextMenu(null);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--ok)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
             <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setPendingTagColors({});setPendingManagement({});setSplitDraftValues({});setSplitContextMenu(null);setTagColorPicker(null);setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
@@ -3315,6 +3474,20 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           }}
           onAddSplitRequest={(event,param)=>setSplitContextMenu({x:event.clientX,y:event.clientY,param})}
           onViewRuleMatch={(kind,param,row,filterVal,splitLabel)=>openRuleMatchView(kind,param,row,filterVal,splitLabel)}
+          onCategoryContextMenu={(event, row) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!canManage) return;
+            const category = resolveSplitDisplayName(row?._param, row?._split_value_raw || row?._split_value) || row?._split_value_raw || row?._split_value;
+            if (!category) return;
+            const paletteWidth = 204, paletteHeight = 220;
+            setCategoryColorPicker({
+              category,
+              param: row?._param,
+              left: Math.max(8, Math.min(event.clientX, window.innerWidth - paletteWidth - 8)),
+              top: Math.max(8, Math.min(event.clientY, window.innerHeight - paletteHeight - 8)),
+            });
+          }}
           onPurposeContextMenu={(e,cell,ci)=>{
             e.preventDefault();e.stopPropagation();
             const cellKey=cell?.key||`${data.root_lot_id||lotId||""}|${data.wafer_keys?.[ci]??data.headers?.[ci]??(Number(ci)+1)}|TAG_PURPOSE`;
@@ -3355,7 +3528,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             {hasPurposeRow&&(()=>{
               return (
                 <tr style={{height:purposeHeaderHeight}}>
-                  <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:20,textAlign:"left",fontSize:13,color:GRID_TEXT,fontWeight:800,...mergedContextLeftStyle}} title="Purpose Tag">purpose</th>
+                  <th className={mergedViewActive?"stm-context-left stm-context-left--merged":"stm-context-left"} colSpan={leftPrefixColumnCount} style={{boxSizing:"border-box",height:purposeHeaderHeight,width:leftPrefixWidth,minWidth:leftPrefixWidth,maxWidth:leftPrefixWidth,padding:"0 8px",background:"var(--bg-tertiary)",borderBottom:GRID_LINE,borderRight:GRID_LINE,position:"sticky",top:rootHeaderHeight,left:0,zIndex:20,textAlign:"left",fontSize:14,fontFamily:"inherit",color:GRID_TEXT,fontWeight:800,...mergedContextLeftStyle}} title="Purpose Tag">purpose</th>
                   {data.headers?.map((h, ci) => {
                     const cell = purposeRow?._cells?.[String(ci)] || {};
                     const cellKey = cell.key || `${data.root_lot_id||lotId||""}|${data.wafer_keys?.[ci]??data.headers?.[ci]??(Number(ci)+1)}|${purposeRow?._param||DEFAULT_CUSTOM_TAG_COLUMN}`;
@@ -3373,7 +3546,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                         padding: "2px 6px",
                         textAlign: "center",
                         fontWeight: displayVal ? 700 : 400,
-                        fontSize: 13,
+                        fontSize: 14,
+                        fontFamily: "inherit",
                         color: GRID_TEXT,
                         borderBottom: GRID_LINE,
                         borderRight: GRID_LINE,
@@ -3821,6 +3995,70 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           style={{height:26,border:selected?"2px solid #2563eb":"1px solid #9ca3af",borderRadius:4,background:color,cursor:"pointer",boxShadow:selected?"0 0 0 1px #ffffff inset":"none"}}/>;
       })}</div>
     </div>}
+    {categoryColorPicker&&(()=>{
+      const disallowedMap = getDisallowedColorsMap(categoryColorPicker.param, categoryColorPicker.category);
+      return (
+        <div role="dialog" aria-label="Category 색상 팔레트" onMouseDown={event=>event.stopPropagation()} onContextMenu={event=>event.preventDefault()}
+          style={{position:"fixed",left:categoryColorPicker.left,top:categoryColorPicker.top,zIndex:9998,width:204,padding:10,boxSizing:"border-box",border:"1px solid #9ca3af",borderRadius:8,background:"#ffffff",boxShadow:"0 8px 24px rgba(0,0,0,.24)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:4}}>
+            <div style={{fontSize:12,fontWeight:800,color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={categoryColorPicker.category}>
+              색상 선택 · {categoryColorPicker.category}
+            </div>
+            <button type="button" onClick={()=>{saveCategoryColor(categoryColorPicker.category,"",categoryColorPicker.param);setCategoryColorPicker(null);}} title="기본 색상(자동)으로 복원"
+              style={{padding:"1px 6px",border:"1px solid #d1d5db",borderRadius:4,background:"#f3f4f6",color:"#4b5563",fontSize:11,cursor:"pointer",fontWeight:700}}>
+              초기화
+            </button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:6}}>{CATEGORY_CELL_PALETTE.map((color, idx)=>{
+            const normColor = normalizeColorHex(color);
+            const disInfo = disallowedMap.get(normColor);
+            const isDisallowed = !!disInfo;
+            const selected = (savedCategoryColor(categoryColorPicker.category)||"").toLowerCase() === color.toLowerCase();
+            const colorTitle = idx < 20 ? `S${idx} 기본 색상 (${color})` : `색상 ${color}`;
+            const fullTitle = isDisallowed
+              ? `${colorTitle} · ${disInfo.label || disInfo.category}에서 이미 사용 중 (선택 불가)`
+              : colorTitle;
+            return (
+              <button
+                key={color}
+                type="button"
+                disabled={isDisallowed}
+                onClick={()=>{
+                  if (isDisallowed) return;
+                  saveCategoryColor(categoryColorPicker.category, color, categoryColorPicker.param);
+                  setCategoryColorPicker(null);
+                }}
+                aria-label={fullTitle}
+                title={fullTitle}
+                style={{
+                  position: "relative",
+                  height: 26,
+                  border: selected ? "2px solid #2563eb" : (isDisallowed ? "1px dashed #9ca3af" : "1px solid #9ca3af"),
+                  borderRadius: 4,
+                  background: color,
+                  cursor: isDisallowed ? "not-allowed" : "pointer",
+                  opacity: isDisallowed ? 0.28 : 1,
+                  boxShadow: selected ? "0 0 0 1px #ffffff inset" : "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                }}
+              >
+                {isDisallowed && (
+                  <span style={{fontSize: 10, fontWeight: 900, color: "#dc2626", lineHeight: 1, userSelect: "none"}}>✕</span>
+                )}
+              </button>
+            );
+          })}</div>
+          {disallowedMap.size > 0 && (
+            <div style={{marginTop: 6, fontSize: 11, color: "#dc2626", textAlign: "right", fontWeight: 600}}>
+              * 다른 스플릿 사용 색상 제외됨
+            </div>
+          )}
+        </div>
+      );
+    })()}
     {splitContextMenu&&<>
       <div onMouseDown={()=>setSplitContextMenu(null)} style={{position:"fixed",inset:0,zIndex:9996}}/>
       <div style={{position:"fixed",left:splitContextMenu.x,top:splitContextMenu.y,zIndex:9997,minWidth:150,padding:4,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",boxShadow:"0 8px 24px rgba(0,0,0,0.28)"}}>
@@ -4153,11 +4391,37 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                         </div>
                         <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{categories.map((category)=>{
                           const saved=savedCategoryColor(category);
-                          return <label key={category} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 8px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-card)",fontSize:12,fontWeight:700}}>
-                            <input type="color" value={saved||"#ffffff"} disabled={!canManage} onChange={e=>saveCategoryColor(category,e.target.value)} title={canManage?`${category} 색상 변경`:"SplitTable 관리 권한이 필요합니다"} style={{width:26,height:22,padding:0,border:0,background:"transparent",cursor:canManage?"pointer":"default"}}/>
+                          return <div key={category} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 8px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-card)",fontSize:12,fontWeight:700}}>
+                            <button
+                              type="button"
+                              disabled={!canManage}
+                              onClick={(e)=>{
+                                if(!canManage)return;
+                                const rect=e.currentTarget.getBoundingClientRect();
+                                setCategoryColorPicker(cur=>cur?.category===category?null:{
+                                  category,
+                                  param: rbMatchParam,
+                                  left:Math.min(window.innerWidth-210,Math.max(10,rect.left)),
+                                  top:Math.min(window.innerHeight-180,rect.bottom+6),
+                                });
+                              }}
+                              title={canManage?`${category} 색상 선택 (20가지 팔레트)`:"SplitTable 관리 권한이 필요합니다"}
+                              style={{
+                                width:24,
+                                height:20,
+                                padding:0,
+                                border:saved?"2px solid #3b82f6":"1px dashed #9ca3af",
+                                borderRadius:4,
+                                background:saved||"#ffffff",
+                                cursor:canManage?"pointer":"default",
+                                display:"inline-block",
+                                verticalAlign:"middle",
+                                boxShadow:saved?"0 1px 2px rgba(0,0,0,0.15)":"none",
+                              }}
+                            />
                             <span>{category}</span>
-                            {saved&&canManage?<button type="button" onClick={()=>saveCategoryColor(category,"")} style={{padding:"1px 5px",border:"1px solid var(--border)",borderRadius:3,background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>자동</button>:<span style={{fontSize:11,color:"var(--text-secondary)"}}>자동</span>}
-                          </label>;
+                            {saved&&canManage?<button type="button" onClick={()=>saveCategoryColor(category,"",rbMatchParam)} style={{padding:"1px 5px",border:"1px solid var(--border)",borderRadius:3,background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>자동</button>:<span style={{fontSize:11,color:"var(--text-secondary)"}}>자동</span>}
+                          </div>;
                         })}</div>
                       </div>;
                     })()}

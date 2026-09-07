@@ -1409,14 +1409,51 @@ def _chart_builder_reformatter_frame(
             requested_items = []
 
     request_limit = min(5000, max_rows + 1)
+    step_filters: list[str] = []
+    step_seq_filters: list[str] = []
+    site_cnt_filters: list[str] = []
+    point_cnt_filters: list[str] = []
+    for f in (source.runtime_filters or []):
+        col = str(getattr(f, "column", None) or (f.get("column") if isinstance(f, dict) else "")).strip().lower()
+        vals = getattr(f, "values", None) or (f.get("values") if isinstance(f, dict) else [])
+        if not isinstance(vals, list):
+            vals = [str(vals)]
+        str_vals = [str(v).strip() for v in vals if str(v).strip()]
+        if not str_vals:
+            continue
+        if col in ("step_id", "step_filter"):
+            step_filters.extend(str_vals)
+        elif col in ("step_seq", "step_seq_filter"):
+            step_seq_filters.extend(str_vals)
+        elif col in ("total_site_cnt", "site_cnt", "site_cnt_filter"):
+            site_cnt_filters.extend(str_vals)
+        elif col in ("shot_count", "point_cnt", "point_cnt_filter"):
+            point_cnt_filters.extend(str_vals)
+
+    date_from = ""
+    date_to = ""
+    if source.sql:
+        m_from = re.search(r"tkout_time\s*>=\s*['\"]?([0-9]{4}-[0-9]{2}-[0-9]{2})['\"]?", str(source.sql), re.I)
+        if m_from:
+            date_from = m_from.group(1)
+        m_to = re.search(r"tkout_time\s*<=\s*['\"]?([0-9]{4}-[0-9]{2}-[0-9]{2})['\"]?", str(source.sql), re.I)
+        if m_to:
+            date_to = m_to.group(1)
+
     reformat_request = et_reformatize.RunReq(
         product=source.product,
         items=requested_items,
         offset=0,
         limit=request_limit,
         days=max(0, min(3650, int(source.runtime_recent_days or 0))),
+        date_from=date_from,
+        date_to=date_to,
         lot_filter=",".join(_chart_builder_runtime_values(source.runtime_root_lot_ids)),
         wafer_filter=",".join(_chart_builder_runtime_values(source.runtime_wafer_ids)),
+        step_filter=",".join(step_filters),
+        step_seq_filter=",".join(step_seq_filters),
+        site_cnt_filter=",".join(site_cnt_filters),
+        point_cnt_filter=",".join(point_cnt_filters),
     )
     reformatted = et_reformatize.run(reformat_request, user=user)
     rows = reformatted.get("rows") if isinstance(reformatted.get("rows"), list) else []

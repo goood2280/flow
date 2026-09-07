@@ -431,7 +431,7 @@ def test_csv_process_columns_precede_preserved_parameter(monkeypatch):
     text = _response_bytes(response).decode("utf-8-sig")
 
     assert "step_id,step_desc,Parameter,#1" in text
-    assert "S10,ETCH,KNOB_A,PP_A" in text
+    assert "S10,ETCH,A,PP_A" in text
 
 
 def test_csv_download_header_uses_authenticated_user_and_split_context(monkeypatch):
@@ -465,9 +465,10 @@ def test_xlsx_process_columns_precede_preserved_parameter(monkeypatch):
     workbook = load_workbook(io.BytesIO(_response_bytes(response)))
     sheet = workbook.active
 
-    assert [sheet.cell(5, col).value for col in range(1, 5)] == ["step_id", "step_desc", "Parameter", "#1"]
-    assert [sheet.cell(6, col).value for col in range(1, 5)] == [None, None, "TAG_purpose", None]
-    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["S10", "ETCH", "KNOB_A", "PP_A"]
+    assert sheet.cell(4, 1).value == "purpose"
+    assert sheet.cell(5, 1).value == "fab_lot_id"
+    assert [sheet.cell(6, col).value for col in range(1, 5)] == ["step_id", "step_desc", "Parameter", "#1"]
+    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["S10", "ETCH", "A", "PP_A"]
 
 
 def test_xlsx_applied_process_columns_match_web_unique_values(monkeypatch):
@@ -519,7 +520,7 @@ def test_split_check_xlsx_uses_the_same_process_prefix(monkeypatch):
         "step_id", "step_desc", "항목", "값", "Split", "#1",
     ]
     assert [sheet.cell(6, col).value for col in range(1, 7)] == [
-        "S10", "ETCH", "KNOB_A", "PP_A", "S0", "✓",
+        "S10", "ETCH", "A", "PP_A", "S0", "✓",
     ]
 
 

@@ -1,7 +1,88 @@
 {
-  "version": "10.4.220",
+  "version": "10.4.229",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.229",
+      "date": "2026-09-07",
+      "tag": "chore",
+      "title": "차트 생성 화면 Auto Report 기본 차트 프리셋 영역 제거",
+      "changes": [
+        "[차트생성/UI] 차트 생성 화면의 공용 코드 히스토리 상단에 노출되던 Auto Report 기본 차트 프리셋 영역 제거 요청 → 공용 히스토리와 성격이 다른 정적 기본 프리셋 버튼이 상시 노출되어 화면 공간을 차지함 → Auto Report 기본 차트 프리셋 상수 및 핸들러와 상단 배너 영역을 제거하여 화면을 깔끔하게 정돈"
+      ]
+    },
+    {
+      "version": "10.4.228",
+      "date": "2026-09-07",
+      "tag": "feat",
+      "title": "차트 생성 ET 고유키 및 검색식 연동 지원",
+      "changes": [
+        "[차트생성/ET연동] 차트 생성에서 ET 데이터 조회 시 ET 다운로드의 고유키(RH-...)나 검색식을 직접 활용할 수 없어 제품·항목·필터를 매번 수동 재설정해야 하는 불편 → ChartBuilder 파서 및 UI에 ET 다운로드 고유키/검색식 연동 인터페이스가 부재함 → 코드 편집기 및 Query 폼에 RH-키/검색식 자동 파싱 및 1클릭 변환 모달을 신설하고, 최근 ET 다운로드 이력 조회·차트 즉시 매핑(X: tkout_time, Y: item) 및 스텝/샷 필터 전달 지원"
+      ]
+    },
+    {
+      "version": "10.4.227",
+      "date": "2026-09-07",
+      "tag": "feat",
+      "title": "Split 체크 동일 항목 내 스플릿 간 중복 색상 선택 방지 및 20종 고유 기본 색상 확장",
+      "changes": [
+        "[스플릿체크/UI] 동일 항목(Parameter)에서 스플릿이 분기될 때 서로 다른 스플릿에 같은 색상이 지정될 수 있어 구분이 어려움 → 카테고리 색상 선택 시 동일 항목의 다른 스플릿에서 사용 중인 색상에 대한 제외/중복방지 검증이 없었고 기본 색상 팔레트가 7개 후 반복 순환됨 → ST_CELL_COLORS 및 엑셀 팔레트를 20종 고유 색상으로 확장하고, 색상 선택 시 같은 항목의 다른 스플릿이 사용 중인 색상은 비활성화(✕ 표시) 및 저장 차단 토스트 처리"
+      ]
+    },
+    {
+      "version": "10.4.226",
+      "date": "2026-09-07",
+      "tag": "feat",
+      "title": "Split 체크 뷰 Category 색상 팔레트 S0~S6 기본 색상 순 정렬 및 셀 우클릭 색상 지정 지원",
+      "changes": [
+        "[스플릿체크/UI] S0, S1, S2... 등의 색상 선택 시 팔레트가 임의 순서로 노출되어 직관성이 떨어짐 → Category 색상 팔레트가 목적과 무관한 랏관리 순서로 되어 있었음 → S0(초록), S1(노랑), S2(주황), S3(파랑), S4(보라), S5(청록), S6(분홍) 순으로 20종 팔레트를 재정렬하고, 스플릿체크 뷰에서 S0~S6 셀 우클릭 시 즉시 색상 팔레트가 열리도록 개선"
+      ]
+    },
+    {
+      "version": "10.4.225",
+      "date": "2026-09-07",
+      "tag": "fix",
+      "title": "SplitTable purpose 글씨체 일원화 및 Excel/CSV 다운로드 파라미터 prefix 제거",
+      "changes": [
+        "[스플릿테이블/UI·내보내기] purpose 행 글씨체가 다른 행과 다르게 보이고, 엑셀/CSV 다운로드 시 TAG_, FAB_ 등 prefix가 붙어 다운로드되는 증상 → 웹 UI와 openpyxl에서 purpose 셀에 비표준 폰트/크기(13px, Consolas)가 지정되어 있었고 내보내기 시 표시명 변환이 누락됨 → 웹 UI(14px/inherit)와 openpyxl 헤더 폰트를 통일하고, CSV/XLSX 내보내기 시 TAG_, FAB_, KNOB_ 등 접두사와 KNOB _Split을 화면과 동일하게 떼고 다운로드되도록 수정"
+      ]
+    },
+    {
+      "version": "10.4.224",
+      "date": "2026-09-07",
+      "tag": "fix",
+      "title": "SplitTable 일반 XLSX/CSV 다운로드 시 TAG_purpose(purpose) 헤더를 fab_lot_id 상단에 배치",
+      "changes": [
+        "[스플릿테이블/내보내기] 웹 화면과 달리 일반 XLSX 및 CSV 다운로드 시 TAG_purpose가 fab_lot_id 위에 나오지 않고 데이터 행에 노출되는 증상 → 다운로드 로직에서 fab_lot_id 아래 Parameter 및 본문 컬럼으로 처리되던 헤더 배치 불일치 → 화면과 일치하도록 purpose 헤더 행을 root_lot_id 바로 다음(fab_lot_id 위) 4행에 배치하고 셀 색상/병합 적용 및 본문 데이터 행에서 제외하도록 수정"
+      ]
+    },
+    {
+      "version": "10.4.223",
+      "date": "2026-09-07",
+      "tag": "chore",
+      "title": "SplitTable 편집 모드 툴바 '드래그 선택 · Ctrl+C / Ctrl+V' 가이드 문구 제거",
+      "changes": [
+        "[스플릿테이블/UI] 편집 모드 상단 툴바에 드래그 선택 및 단축키 설명 문구가 상시 노출되어 툴바 영역이 번잡함 → 이미 정착된 복사/붙여넣기 사용법에 대해 상시 노출 텍스트 정리 필요 → 상단 툴바에서 '드래그 선택 · Ctrl+C / Ctrl+V' 안내 문구를 제거하여 버튼 및 조작 UI를 깔끔하게 정돈"
+      ]
+    },
+    {
+      "version": "10.4.222",
+      "date": "2026-09-07",
+      "tag": "feat",
+      "title": "Split 체크 뷰 값 셀 배경색 제외 및 Category 색상 20종 팔레트 선택 지원",
+      "changes": [
+        "[스플릿체크/UI] Split 체크 뷰에서 값에 따른 색상 지정 시 '값' 컬럼 셀 배경까지 칠해져 가독성을 저해하고, 규칙 매칭 모달에서 전체 RGB 컬러 피커를 사용하여 지정색 관리가 번거로움 → '값' 컬럼 셀(isValueCol)에 categoryStyle이 중복 적용되어 있었고 input type=color로 임의 RGB가 입력됨 → '값' 셀의 배경색 덮어쓰기를 제외하여 일반 컬럼 스타일을 유지하고, 랏 관리와 동일한 20종 사전 정의 팔레트 팝오버를 적용하여 직관적으로 색상을 선택/초기화하도록 개선"
+      ]
+    },
+    {
+      "version": "10.4.221",
+      "date": "2026-09-07",
+      "tag": "fix",
+      "title": "SplitTable 엑셀 다운로드 시 purpose 헤더 행 추가 및 LOT 관리 purpose 연동 개선",
+      "changes": [
+        "[스플릿테이블/XLSX] Split 체크 및 PEMS 엑셀 다운로드 시 purpose 행이 헤더에 나타나지 않고 본문 Split 규칙으로 오인되거나 누락되는 증상 → UI와 달리 XLSX 헤더에 purpose 행이 없고 selected 내 TAG_purpose가 Split 생성 루프에 포함되어 누락 또는 왜곡 발생 → XLSX/CSV 내보내기 시 purpose 헤더 행을 root_lot_id와 fab_lot_id 사이에 배치(셀 배경색 및 동일 값 구간 병합 지원)하고, 웨이퍼 태그 미지정 시 LOT 관리 purpose로 fallback 연동되도록 개선"
+      ]
+    },
     {
       "version": "10.4.220",
       "date": "2026-09-06",

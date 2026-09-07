@@ -921,3 +921,71 @@ def test_chart_builder_radius_layout_matches_product_mask(tmp_path, monkeypatch)
     assert result["mask"] == "VH_PRODA"
     assert result["row_count"] == 2
     assert result["rows"][0]["radius"] in {99.25, 120.5}
+
+
+def test_chart_builder_parse_reformatize_expression():
+    raw_expr = """
+    PRODUCT = VEHICLE_B
+    ITEMS = BV_D1, VT_N1
+    days = 14
+    root_lot_id = LOT123*
+    step_id = 2100
+    """
+    parsed = parse_chart_builder_definition(raw_expr)
+    assert len(parsed["sources"]) == 1
+    src = parsed["sources"][0]
+    assert src["root"] == "et"
+    assert src["product"] == "VEHICLE_B"
+    assert src["apply_reformatter"] is True
+    assert src["reformatter_items"] == "BV_D1, VT_N1"
+    assert src["runtime_recent_days"] == 14
+    assert src["runtime_root_lot_ids"] == ["LOT123*"]
+    assert any(rf.get("column") == "step_id" and rf.get("values") == ["2100"] for rf in src["runtime_filters"])
+    assert parsed["chart"]["type"] == "scatter"
+    assert parsed["chart"]["x"] == "tkout_time"
+    assert parsed["chart"]["y"] == "BV_D1"
+    assert "tkout_time WITHIN 7 DAYS THEN #2563eb" in parsed["chart"]["color_rules"][0]
+
+
+def test_chart_builder_parse_reformatize_key_and_query_field(tmp_path, monkeypatch):
+    from routers import reformatize
+    h_file = tmp_path / "reformatize_history.jsonl"
+    monkeypatch.setattr(reformatize, "HISTORY_FILE", h_file)
+
+    entry = reformatize._save_or_increment_reformatize_history(
+        "PRODA",
+        ["VTH_N", "VTH_P"],
+        {"days": 21, "lot_filter": "LOT999*"},
+        "raw",
+        "tester",
+    )
+    rh_key = entry["history_id"]
+
+    # 1. Parse raw key
+    parsed = parse_chart_builder_definition(rh_key)
+    assert len(parsed["sources"]) == 1
+    src = parsed["sources"][0]
+    assert src["root"] == "et"
+    assert src["product"] == "PRODA"
+    assert src["apply_reformatter"] is True
+    assert "VTH_N" in src["reformatter_items"]
+    assert src["runtime_recent_days"] == 21
+    assert src["runtime_root_lot_ids"] == ["LOT999*"]
+    assert parsed["chart"]["x"] == "tkout_time"
+
+    # 2. Parse KEY in Q1 definition
+    code = f"""
+    Q1
+    TABLE = et
+    KEY = {rh_key}
+
+    CHART
+    TYPE = scatter
+    """
+    parsed_q = parse_chart_builder_definition(code)
+    src_q = parsed_q["sources"][0]
+    assert src_q["product"] == "PRODA"
+    assert src_q["apply_reformatter"] is True
+    assert "VTH_N" in src_q["reformatter_items"]
+
+

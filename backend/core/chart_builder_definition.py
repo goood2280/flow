@@ -23,6 +23,7 @@ FIELD_RE = re.compile(
     r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items"
     r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
     r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?"
+    r"|key|reformatize_key|rh_key|et_key|expression"
     r"|derive|derived|derived_column|combine|filter|filters?)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -60,6 +61,11 @@ FIELD_ALIASES = {
     "items": "reformatter_items",
     "reformatter_item": "reformatter_items",
     "reformatter_items": "reformatter_items",
+    "key": "reformatize_key",
+    "reformatize_key": "reformatize_key",
+    "rh_key": "reformatize_key",
+    "et_key": "reformatize_key",
+    "expression": "reformatize_key",
     # 시간 창은 저장 차트의 기본값이다. Template Report의 명시적 실행 컨텍스트만
     # 원본 Template을 바꾸지 않고 이번 실행에 한해 이를 덮어쓸 수 있다.
     "recent": "runtime_recent_days",
@@ -230,6 +236,9 @@ def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: 
             raise ChartBuilderDefinitionError("ROOT_LOTS/WAFERS는 각각 최대 200개까지 지정할 수 있습니다.")
         source[field] = values
         return
+    if field == "reformatize_key":
+        _apply_reformatize_key_or_expr_to_source(source, cleaned)
+        return
     if field == "sql" and append_sql and source.get("sql"):
         source["sql"] = f"{source['sql']}\n{cleaned}".strip()
     else:
@@ -270,11 +279,240 @@ def _parse_join_keys(raw: str, left: str, right: str) -> tuple[str, str]:
     return ", ".join(left_keys), ", ".join(right_keys)
 
 
+def _lookup_reformatize_history(history_id: str) -> dict | None:
+    try:
+        from routers.reformatize import HISTORY_FILE
+        from core.utils import jsonl_read
+    except Exception:
+        return None
+
+    clean_id = str(history_id or "").strip()
+    if not clean_id:
+        return None
+    m = re.search(r"(RH-[0-9A-Za-z_-]{1,32})", clean_id, re.I)
+    target_key = m.group(1).upper() if m else clean_id.upper()
+    seq_match = re.match(r"^#?(\d+)$", clean_id)
+    target_seq = int(seq_match.group(1)) if seq_match else None
+
+    entries = jsonl_read(
+        HISTORY_FILE,
+        limit=1000,
+        filter_fn=lambda e: (
+            isinstance(e, dict)
+            and e.get("event") == "history"
+            and (
+                (target_key and str(e.get("history_id") or "").upper() == target_key)
+                or (target_seq is not None and e.get("seq") == target_seq)
+            )
+        ),
+    )
+    return entries[-1] if entries else None
+
+
+def _parse_reformatize_expression_dict(raw: str) -> dict[str, Any]:
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    product = ""
+    items: list[str] = []
+    filters: dict[str, Any] = {}
+    agg = ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Q1") or stripped.startswith("TABLE") or stripped.startswith("REFORMATTER"):
+            continue
+        if stripped.startswith("#"):
+            stripped = stripped[1:].strip()
+        m = re.match(r"^([a-zA-Z0-9_\uAC00-\uD7A3\s]+?)\s*[:=]\s*(.+)$", stripped)
+        if not m:
+            continue
+        k = m.group(1).strip().lower()
+        v = m.group(2).strip().strip("'\"")
+        if k in ("product", "제품", "prod"):
+            product = v
+        elif k in ("items", "item", "항목", "index"):
+            if v.upper() not in ("ALL", "전체", "NONE", "미선택", ""):
+                items = [s.strip().strip("'\"") for s in v.split(",") if s.strip()]
+        elif k in ("agg", "집계", "aggregation"):
+            agg = v
+        elif k in ("days", "recent_days", "day", "최근", "일수", "최근일수"):
+            if v.isdigit() and int(v) > 0:
+                filters["days"] = int(v)
+        elif k in ("date_from", "from", "start_date", "시작일"):
+            filters["date_from"] = v
+        elif k in ("date_to", "to", "end_date", "종료일"):
+            filters["date_to"] = v
+        elif k in ("root_lots", "root_lot_id", "lot_filter", "lots", "lot", "랏"):
+            filters["lot_filter"] = v
+        elif k in ("wafers", "wafer_id", "wafer_filter", "wafer", "웨이퍼"):
+            filters["wafer_filter"] = v
+        elif k in ("step_filter", "step_id", "steps", "step", "스텝"):
+            filters["step_filter"] = v
+        elif k in ("step_seq_filter", "step_seq", "seq"):
+            filters["step_seq_filter"] = v
+        elif k in ("site_cnt_filter", "site_cnt", "total_site_cnt", "site", "sites"):
+            filters["site_cnt_filter"] = v
+        elif k in ("point_cnt_filter", "point_cnt", "shot_count", "point", "points"):
+            filters["point_cnt_filter"] = v
+    return {"product": product, "items": items, "filters": filters, "agg": agg}
+
+
+def _apply_reformatize_entry_to_source(source: dict[str, Any], entry: dict[str, Any]) -> None:
+    source["root"] = "et"
+    if entry.get("product"):
+        source["product"] = str(entry["product"]).strip()
+    source["apply_reformatter"] = True
+    items = entry.get("items") or []
+    if items:
+        source["reformatter_items"] = ", ".join(str(it) for it in items if str(it).strip())
+    filters = entry.get("filters") or {}
+    days = int(filters.get("days") or 0)
+    if days:
+        source["runtime_recent_days"] = days
+        source["runtime_date_column"] = "tkout_time"
+    if filters.get("lot_filter"):
+        source["runtime_root_lot_ids"] = [s.strip() for s in str(filters["lot_filter"]).split(",") if s.strip()]
+    if filters.get("wafer_filter"):
+        source["runtime_wafer_ids"] = [s.strip() for s in str(filters["wafer_filter"]).split(",") if s.strip()]
+
+    rf = source.setdefault("runtime_filters", [])
+    for col_key, filter_col in [
+        ("step_filter", "step_id"),
+        ("step_seq_filter", "step_seq"),
+        ("site_cnt_filter", "total_site_cnt"),
+        ("point_cnt_filter", "shot_count"),
+    ]:
+        val = str(filters.get(col_key) or "").strip()
+        if val:
+            rf.append({"column": filter_col, "operator": "in", "values": [s.strip() for s in val.split(",") if s.strip()]})
+
+    sql_parts = ["SELECT root_lot_id, wafer_id, tkout_time, value"]
+    wheres = []
+    if filters.get("date_from"):
+        wheres.append(f"tkout_time >= '{filters['date_from']}'")
+    if filters.get("date_to"):
+        wheres.append(f"tkout_time <= '{filters['date_to']}'")
+    if wheres:
+        sql_parts.append(f"WHERE {' AND '.join(wheres)}")
+    source["sql"] = " ".join(sql_parts)
+
+
+def _apply_reformatize_key_or_expr_to_source(source: dict[str, Any], key_or_expr: str) -> None:
+    cleaned = str(key_or_expr or "").strip()
+    if not cleaned:
+        return
+    key_match = re.search(r"(RH-[0-9A-Za-z_-]{1,32})", cleaned, re.I)
+    entry = None
+    if key_match or re.match(r"^#?\d+$", cleaned):
+        entry = _lookup_reformatize_history(cleaned)
+    if entry:
+        _apply_reformatize_entry_to_source(source, entry)
+    else:
+        parsed = _parse_reformatize_expression_dict(cleaned)
+        if parsed.get("product") or parsed.get("items"):
+            _apply_reformatize_entry_to_source(source, parsed)
+
+
+def reformatize_key_to_chart_builder_code(history_id: str) -> str | None:
+    entry = _lookup_reformatize_history(history_id)
+    if not entry:
+        return None
+    expr = str(entry.get("expression") or "").strip()
+    if not expr:
+        from routers.reformatize import _format_reformatize_expression
+        expr = _format_reformatize_expression(
+            entry.get("product") or "",
+            entry.get("items") or [],
+            entry.get("filters") or {},
+            entry.get("agg") or "",
+        )
+    if "CHART" not in expr.upper():
+        items = entry.get("items") or []
+        first_item = items[0] if items else "value"
+        days = int((entry.get("filters") or {}).get("days") or 0)
+        chart_lines = [
+            "",
+            "CHART",
+            "TYPE = scatter",
+            "X = tkout_time",
+            f"Y = {first_item}",
+            "COLOR = custom",
+        ]
+        if days > 0:
+            color_days = min(7, days)
+            chart_lines.append(f"COLOR_RULE = tkout_time WITHIN {color_days} DAYS THEN #2563eb")
+            chart_lines.append("COLOR_ELSE = #cbd5e1")
+        else:
+            chart_lines.append("COLOR_ELSE = #2563eb")
+        chart_lines.extend([
+            "WIDTH = 1200",
+            "HEIGHT = 650",
+            "",
+            "MAX_ROWS = 10000",
+        ])
+        expr = expr.strip() + "\n" + "\n".join(chart_lines)
+    return expr
+
+
+def is_reformatize_expression(raw: str) -> bool:
+    stripped = raw.strip()
+    if re.search(r"^\s*(?:Q\d+|\[[^\]\n]+\]|CHART\b)", stripped, re.I):
+        return False
+    if re.search(r"^\s*TABLE\s*[:=]", stripped, re.M | re.I):
+        return False
+    has_prod = bool(re.search(r"^\s*(?:PRODUCT|제품)\s*[:=]", stripped, re.M | re.I))
+    has_other = bool(re.search(r"^\s*(?:ITEMS?|항목|INDEX|days?|date_from|root_lot_id|step_id|AGG)\s*[:=]", stripped, re.M | re.I))
+    return has_prod and has_other
+
+
+def reformatize_expression_to_chart_builder_code(raw: str) -> str:
+    parsed = _parse_reformatize_expression_dict(raw)
+    from routers.reformatize import _format_reformatize_expression
+    expr = _format_reformatize_expression(
+        parsed["product"],
+        parsed["items"],
+        parsed["filters"],
+        parsed["agg"],
+    )
+    items = parsed.get("items") or []
+    first_item = items[0] if items else "value"
+    days = int(parsed.get("filters", {}).get("days") or 0)
+    chart_lines = [
+        "",
+        "CHART",
+        "TYPE = scatter",
+        "X = tkout_time",
+        f"Y = {first_item}",
+        "COLOR = custom",
+    ]
+    if days > 0:
+        color_days = min(7, days)
+        chart_lines.append(f"COLOR_RULE = tkout_time WITHIN {color_days} DAYS THEN #2563eb")
+        chart_lines.append("COLOR_ELSE = #cbd5e1")
+    else:
+        chart_lines.append("COLOR_ELSE = #2563eb")
+    chart_lines.extend([
+        "WIDTH = 1200",
+        "HEIGHT = 650",
+        "",
+        "MAX_ROWS = 10000",
+    ])
+    return expr.strip() + "\n" + "\n".join(chart_lines)
+
+
 def parse_chart_builder_definition(code: str) -> dict[str, Any]:
     """Parse engineer-friendly text into ChartBuilder sources and joins."""
-    raw = str(code or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
-    if not raw.strip():
+    raw = str(code or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
         raise ChartBuilderDefinitionError("전체 코드를 입력해 주세요.")
+
+    key_match = re.fullmatch(r"#?\s*(RH-[0-9A-Za-z_-]{1,32})\s*", raw, flags=re.IGNORECASE)
+    if key_match:
+        rh_key = key_match.group(1).upper()
+        expanded_code = reformatize_key_to_chart_builder_code(rh_key)
+        if not expanded_code:
+            raise ChartBuilderDefinitionError(f"ET 다운로드 고유키를 찾을 수 없습니다: {rh_key}")
+        raw = expanded_code
+    elif is_reformatize_expression(raw):
+        raw = reformatize_expression_to_chart_builder_code(raw)
 
     sources: list[dict[str, Any]] = []
     joins: list[dict[str, str]] = []
