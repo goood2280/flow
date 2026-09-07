@@ -40,6 +40,7 @@ def _stat_for_db_product_cached(prod_dir: Path | None) -> dict | None:
 
 def _resolve_product_dir_fast(root: str, product: str) -> Path | None:
     """Resolve a logical product folder without recursively listing all files."""
+    _require_filebrowser_visible_root(root)
     root_path = (_db_root() / root).resolve()
     if not root_path.is_dir():
         return None
@@ -4453,6 +4454,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  query_id: str = Query(""),
                  reuse_history_id: str = Query(""),
                  request: Request = None):
+    _require_filebrowser_visible_root(root)
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
     # head 를 parquet reader 로 pushdown → 메모리 수 GB 제품도 안전.
     # v8.8.16: meta_only=True 는 스키마만 — 사이드바 제품 클릭 즉시 반응.

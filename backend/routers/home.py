@@ -270,6 +270,7 @@ def home_alerts(request: Request, limit: int = 50):
     # 3. 랏관리 특정 step_id 초과/도달 알람 검출 (Notice 계층)
     try:
         from routers import lot_management as lm
+        from core import watchlist as _wl
         table_dir = lm.TABLE_DIR
         if table_dir.is_dir():
             import json
@@ -280,6 +281,11 @@ def home_alerts(request: Request, limit: int = 50):
                         continue
                     prod_name = str(doc.get("product") or p_path.stem).strip()
                     clean_prod = prod_name.replace("ML_TABLE_", "") if prod_name.startswith("ML_TABLE_") else prod_name
+                    product_group_members = {
+                        str(member).strip().casefold()
+                        for member in lm._product_group_members(prod_name)
+                        if str(member).strip()
+                    }
                     # 캐시로부터 실시간 현재 step 오버레이
                     hydrated = lm._with_latest_cache_fields(doc)
                     for row in (hydrated.get("rows") or []):
@@ -289,6 +295,9 @@ def home_alerts(request: Request, limit: int = 50):
                         curr_step = str(vals.get("current_step_id") or "").strip()
                         step_desc = str(vals.get("step_desc") or "").strip()
                         if not (lid and alert_step and curr_step):
+                            continue
+                        if (str(username or "").strip().casefold() not in product_group_members
+                                and not _wl.is_lot_watched(username, lid)):
                             continue
                         if lm._is_step_reached_or_exceeded(curr_step, alert_step):
                             dedup = ("lot_step_threshold", prod_name, lid, alert_step)

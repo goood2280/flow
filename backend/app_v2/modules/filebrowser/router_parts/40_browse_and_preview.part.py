@@ -413,6 +413,7 @@ def list_products(root: str = Query(...), fast: bool = Query(False)):
       et_wafer, ...).  For tables in multi-table roots we aggregate the
       parquet count across all tables hosting that product.
     """
+    _require_filebrowser_visible_root(root)
     if str(root or "").strip().upper() == YIELD_SHOT_ROOT:
         from core import yield_map as _yield_map
         products = []
@@ -435,8 +436,6 @@ def list_products(root: str = Query(...), fast: bool = Query(False)):
                 count = 0 if fast else sum(1 for fp in directory.glob("*.parquet") if fp.is_file())
                 products.append({"name": directory.name, "date_count": 0, "parquet_count": count, "latest_date": "", "structure": "splittable"})
         return {"products": products, "metadata_deferred": bool(fast)}
-    if _is_filebrowser_hidden_dir_name(root):
-        raise HTTPException(404)
     db_root = _db_root()
     rp = resolve_named_child(db_root, root) or (db_root / root)
     if not rp.is_dir():

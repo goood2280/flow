@@ -2707,26 +2707,7 @@ function AWSPanel({user}){
   );
 }
 
-// v8.8.23: Admin 그룹 패널 내부에서 extra_emails 추가용 미니 인풋.
-function ExtraEmailAdd({current,onSave}){
-  const [v,setV]=useState("");
-  const submit=()=>{
-    const s=(v||"").trim();
-    if(!s||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)){toast.warn("이메일 형식이 올바르지 않습니다.");return;}
-    const next=Array.from(new Set([...(current?.extra_emails||[]),s]));
-    onSave(next);
-    setV("");
-  };
-  return (<div style={{display:"flex",gap:6}}>
-    <input value={v} onChange={e=>setV(e.target.value)} placeholder="외부 이메일 추가 (e.g. vendor@company.co.kr)"
-      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}}
-      style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
-    <button onClick={submit} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>추가</button>
-  </div>);
-}
-
-
-// ── Groups Panel (v8.8.3 — description 추가, 관심 WF 제거 · v8.8.23 extra_emails 통합) ──
+// ── Groups Panel ──
 function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [groups,setGroups]=useState([]);
   const [sel,setSel]=useState(null);
@@ -2735,6 +2716,9 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [editDesc,setEditDesc]=useState("");
   const [editDescSaved,setEditDescSaved]=useState(false);
   const [msg,setMsg]=useState("");
+  const [memberSearch,setMemberSearch]=useState("");
+  const [bulkMemberText,setBulkMemberText]=useState("");
+  const [bulkAdding,setBulkAdding]=useState(false);
   // v8.8.1: 그룹 멤버 후보. admin/test 제외 — 모든 로그인 유저가 조회 가능.
   const [eligible,setEligible]=useState([]);
   const load=()=>sf("/api/groups/list").then(d=>setGroups(d.groups||[])).catch(e=>setMsg(e.message));
@@ -2753,7 +2737,23 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
       .then(()=>{setSel(null);load();}).catch(e=>setMsg(e.message));};
   const addMember=(id,u)=>sf("/api/groups/members/add?id="+encodeURIComponent(id),
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
-    .then(load);
+    .then(()=>{setMemberSearch("");return load();}).catch(e=>setMsg(e.message));
+  const addMembersBulk=async(id)=>{
+    const entries=bulkMemberText.trim();
+    if(!entries){setMsg("일괄 등록할 이메일 또는 ID를 입력하세요.");return;}
+    setBulkAdding(true);
+    try{
+      const d=await sf("/api/groups/members/add-bulk?id="+encodeURIComponent(id),
+        {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entries})});
+      const notes=[`${(d.added||[]).length}명 추가`];
+      if((d.already_members||[]).length)notes.push(`${d.already_members.length}명 기존 멤버`);
+      if((d.not_found||[]).length)notes.push(`미등록 ID: ${d.not_found.join(", ")}`);
+      if((d.rejected||[]).length)notes.push(`제외: ${d.rejected.join(", ")}`);
+      setMsg(notes.join(" · "));
+      setBulkMemberText("");
+      await load();
+    }catch(e){setMsg(e.message);}finally{setBulkAdding(false);}
+  };
   const rmMember=(id,u)=>sf("/api/groups/members/remove?id="+encodeURIComponent(id),
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
     .then(load);
@@ -2780,10 +2780,19 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
 
   const cur=groups.find(g=>g.id===sel);
   // 선택 그룹 변경 시 editDesc 동기화.
-  useEffect(()=>{setEditDesc(cur?.description||"");setEditDescSaved(false);},[sel,cur?.description]);
+  useEffect(()=>{
+    setEditDesc(cur?.description||"");
+    setEditDescSaved(false);
+    setMemberSearch("");
+    setBulkMemberText("");
+  },[sel,cur?.description]);
   // v8.8.1: admin/test 제외된 후보 풀에서 이미 멤버인 사람 제외.
   // v8.8.27: 후보를 username 문자열이 아닌 유저 오브젝트({username,name})로 보존 → 드롭다운에서 이름+id 표시.
-  const availableUserObjs=(eligible||[]).filter(u=>u&&u.username&&!(cur?.members||[]).includes(u.username));
+  const currentMemberKeys=new Set((cur?.members||[]).map(m=>String(m||"").toLowerCase()));
+  const availableUserObjs=(eligible||[]).filter(u=>u&&u.username&&!currentMemberKeys.has(String(u.username).toLowerCase()));
+  const memberSearchResults=memberSearch.trim()
+    ?availableUserObjs.filter(u=>userMatches(u,memberSearch)).slice(0,12)
+    :[];
   // username→user 매핑(멤버 chip 에 이름을 붙이기 위해).
   const userIndex=Object.fromEntries((eligible||[]).filter(u=>u&&u.username).map(u=>[u.username,u]));
   // 편집 권한 — admin 또는 owner.
@@ -2864,48 +2873,42 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
             })}
             {(cur.members||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>멤버 없음 — 아래 + 멤버 추가 에서 선택</span>}
           </div>
-          {canEdit&&<div style={{display:"flex",gap:6,marginBottom:16}}>
-            <select onChange={e=>{if(e.target.value){addMember(cur.id,e.target.value);e.target.value="";}}}
-              style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minWidth:260}}>
-              <option value="">+ 멤버 추가…</option>
-              {/* v8.8.27: 옵션 텍스트도 name+id. 이름이 없으면 id 만. */}
-              {availableUserObjs.map(u=><option key={u.username} value={u.username}>{userLabel(u)}</option>)}
-            </select>
-            <span style={{fontSize:14,color:"var(--text-secondary)",alignSelf:"center"}}>test 계정만 자동 제외</span>
+          {canEdit&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>이름 또는 ID로 멤버 추가</div>
+            <input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)}
+              placeholder="이름, 로그인 ID 또는 사내 이메일 검색"
+              onKeyDown={e=>{
+                if(e.key!=="Enter"||e.nativeEvent?.isComposing||e.keyCode===229)return;
+                if(memberSearchResults[0])addMember(cur.id,memberSearchResults[0].username);
+              }}
+              style={{width:"100%",padding:"7px 9px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
+            {memberSearch.trim()&&<div style={{marginTop:6,border:"1px solid var(--border)",borderRadius:6,maxHeight:220,overflow:"auto",background:"var(--bg-primary)"}}>
+              {memberSearchResults.map(u=><button key={u.username} onClick={()=>addMember(cur.id,u.username)}
+                style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:12,padding:"7px 10px",border:"none",borderBottom:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer",textAlign:"left",fontSize:14}}>
+                <span>{userLabel(u)}</span><span style={{color:"var(--accent)",fontWeight:600}}>추가</span>
+              </button>)}
+              {memberSearchResults.length===0&&<div style={{padding:"9px 10px",fontSize:14,color:"var(--text-secondary)"}}>검색 결과가 없습니다.</div>}
+            </div>}
+
+            <div style={{fontSize:14,fontWeight:600,marginTop:14,marginBottom:6}}>여러 명 일괄 등록</div>
+            <textarea value={bulkMemberText} onChange={e=>setBulkMemberText(e.target.value)} rows={3}
+              placeholder="id@메일api도메인; id2@메일api도메인; id3@메일api도메인"
+              style={{width:"100%",padding:"7px 9px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",resize:"vertical"}}/>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginTop:6}}>
+              <button onClick={()=>addMembersBulk(cur.id)} disabled={bulkAdding||!bulkMemberText.trim()}
+                style={{padding:"7px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:bulkAdding?"wait":"pointer",opacity:(bulkAdding||!bulkMemberText.trim()) ? 0.55 : 1}}>
+                {bulkAdding?"등록 중…":"일괄 등록"}
+              </button>
+              <span style={{fontSize:14,color:"var(--text-secondary)"}}>세미콜론·쉼표·공백·줄바꿈 구분 · @ 앞의 ID로 등록</span>
+            </div>
           </div>}
-
-          {/* v8.8.5: 담당 모듈 UI 제거 — 불필요. 그룹은 단순 멤버 풀로 사용. */}
-
-          {/* v8.8.23: 외부 고정 수신자(extra_emails) — 인폼/회의 메일 발송 시 자동 포함되는 주소. */}
-          <div style={{marginTop:16}}>
-            <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>외부 수신자 이메일 ({(cur.extra_emails||[]).length})
-              <span style={{marginLeft:8,fontSize:14,color:"var(--text-secondary)",fontWeight:400}}>
-                메일 발송 시 members 의 사내 이메일과 함께 항상 포함됩니다.
-              </span>
-            </div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
-              {(cur.extra_emails||[]).map(e=>(
-                <span key={e} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:14,display:"inline-flex",alignItems:"center",gap:6,fontFamily:"monospace"}}>
-                  {e}
-                  {canEdit&&<button onClick={()=>{
-                    const next=(cur.extra_emails||[]).filter(x=>x!==e);
-                    sf("/api/groups/update?id="+encodeURIComponent(cur.id),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extra_emails:next})})
-                      .then(load).catch(err=>setMsg(err.message));
-                  }} style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
-                </span>
-              ))}
-              {(cur.extra_emails||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>외부 수신자 없음</span>}
-            </div>
-            {canEdit&&<ExtraEmailAdd current={cur} onSave={(next)=>
-              sf("/api/groups/update?id="+encodeURIComponent(cur.id),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extra_emails:next})})
-                .then(load).catch(err=>setMsg(err.message))
-            }/>}
-          </div>
 
           <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
             • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
             • <b>설명</b>은 그룹의 목적·소속 부서 등 자유 텍스트. 리스트 보조 텍스트로 노출됨.<br/>
+            • 그룹명이 제품명과 같으면 대소문자를 구분하지 않고 해당 제품 알람 그룹으로 사용됨.<br/>
+            • 일괄 등록의 이메일은 @ 앞 로그인 ID만 추출하며 외부 이메일 수신자로 저장하지 않음.<br/>
             • <b>v8.8.23</b> 메일 그룹과 이슈추적 그룹이 이 Admin 그룹으로 통합됨. 여기서 만든 그룹이
               인폼 메일 수신 드롭다운 / 이슈추적 그룹 선택 / 회의 mail_group_ids 에 모두 노출됩니다.
               기존 <code>mail_groups.json</code> 과 <code>admin_settings:recipient_groups</code> 는 자동 병합.<br/>

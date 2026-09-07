@@ -106,6 +106,7 @@ def _schema_for_data_file(fp: Path) -> dict[str, str]:
 
 
 def _schema_for_product_source(root: str, product: str) -> tuple[dict[str, str], int]:
+    _require_filebrowser_visible_root(root)
     if str(root or "").strip().upper() == YIELD_SHOT_ROOT:
         from core import yield_map as _yield_map
         frame = _yield_map.shot_yield_frame(product)
@@ -187,6 +188,7 @@ def search_columns(request: Request, root: str = Query(""), product: str = Query
         _require_base_file_access(request, file, access_scope)
     else:
         _require_filebrowser_user(request)
+        _require_filebrowser_visible_root(root)
     settings = _load_filebrowser_settings()
     schema: dict[str, str] = {}
     source_size = 0
@@ -249,6 +251,10 @@ def parquet_meta(request: Request, root: str = Query(""), product: str = Query("
     from core.auth import current_user
     from core.parquet_perf import get_or_compute_meta
     _ = current_user(request)
+    if file:
+        _require_base_file_access(request, file)
+    elif root:
+        _require_filebrowser_visible_root(root)
     # file 파라미터 사전 정규화 — ".." 제거
     if file:
         from pathlib import Path as _P
@@ -306,6 +312,10 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
+    if file:
+        _require_base_file_access(request, file)
+    elif root:
+        _require_filebrowser_visible_root(root)
     db_root = _db_root()
     count = 0
     if file and not product:
@@ -339,6 +349,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000),
                       reuse_history_id: str = Query(""),
                       request: Request = None):
+    _require_base_file_access(request, file)
     # 활동 대시보드: 실제 데이터 조회만 기록 (스키마 로드/페이지 넘김 제외).
     if not meta_only and page == 0:
         from core.audit import record as _fb_audit

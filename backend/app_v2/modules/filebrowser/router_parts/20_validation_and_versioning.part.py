@@ -36,21 +36,24 @@ def _require_base_file_access(request: Request, file: str, access_scope: str = "
     if scope != TEG_REFERENCE_ACCESS_SCOPE:
         me = _require_filebrowser_manager(request) if manage else _require_filebrowser_user(request)
         rel_parts = [str(part or "").strip().rstrip(" .").casefold() for part in Path(str(file or "")).parts]
-        credential_path = "credential" in rel_parts
-        if not credential_path:
+        reserved_path = any(part in _FILEBROWSER_BLOCKED_ACCESS_DIRS for part in rel_parts)
+        if not reserved_path:
             for root in (_base_root(), _db_root()):
-                try:
-                    candidate = (root / Path(str(file or ""))).resolve()
-                    candidate.relative_to((root / "credential").resolve())
-                    credential_path = True
+                for reserved_dir in _FILEBROWSER_BLOCKED_ACCESS_DIRS:
+                    try:
+                        candidate = (root / Path(str(file or ""))).resolve()
+                        candidate.relative_to((root / reserved_dir).resolve())
+                        reserved_path = True
+                        break
+                    except (OSError, ValueError):
+                        continue
+                if reserved_path:
                     break
-                except (OSError, ValueError):
-                    continue
-        if credential_path:
-            # FileBrowser에서는 역할과 무관하게 예약 credential 영역을 열지 않는다.
+        if reserved_path:
+            # FileBrowser에서는 역할과 무관하게 내부 예약 영역을 열지 않는다.
             # S3 ingest는 별도 라우터에서 DB root 상대 경로를 검증하므로 이 차단의
-            # 영향을 받지 않고 credential을 다운로드/업로드 대상으로 유지한다.
-            raise HTTPException(403, "Credential folder is not available in FileBrowser")
+            # 영향을 받지 않고 해당 폴더를 다운로드/업로드 대상으로 유지한다.
+            raise HTTPException(403, "Internal folder is not available in FileBrowser")
         return me, None
 
     from core import teg_map as _teg_map

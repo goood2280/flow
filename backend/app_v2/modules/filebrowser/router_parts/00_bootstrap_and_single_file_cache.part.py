@@ -433,9 +433,10 @@ def _track_filebrowser_sql_execution(scope: str):
         return wrapped
     return decorate
 
-# credential/teg_location은 DB root 아래의 예약 폴더다. FileBrowser에서는
+# confidential/credential/teg_location은 DB root 아래의 예약 폴더다. FileBrowser에서는
 # 관리자에게도 노출하지 않고 각 도메인 API 또는 S3 동기화 설정으로만 접근한다.
-_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "credential", "teg_location"}
+_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "confidential", "credential", "teg_location"}
+_FILEBROWSER_BLOCKED_ACCESS_DIRS = {"confidential", "credential", "teg_location"}
 _RAW_DB_DISPLAY_RE = re.compile(r"^1\.RAWDATA_DB(?:_(.+))?$", re.IGNORECASE)
 
 
@@ -455,6 +456,14 @@ def _is_filebrowser_hidden_dir_name(name: str, *, allow_credential: bool = False
         or reserved_hidden
         or "backup" in folded
     )
+
+
+def _require_filebrowser_visible_root(root: str) -> None:
+    """Reject direct FileBrowser access to an internal DB root."""
+    clean = str(root or "").strip().rstrip(" .")
+    parts = [str(part).strip().rstrip(" .") for part in Path(clean).parts]
+    if not clean or len(parts) != 1 or _is_filebrowser_hidden_dir_name(parts[0]):
+        raise HTTPException(404, "DB root not found")
 
 
 def _looks_like_db_root_fast(root: Path, max_entries: int = 256) -> bool:

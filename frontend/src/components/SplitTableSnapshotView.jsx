@@ -193,6 +193,14 @@ function splitCheckColorStyle(label) {
   return { background: c.bg, color: ST_GRID_TEXT, fontWeight: 900 };
 }
 
+function categoryColorStyle(category, colors) {
+  const wanted = String(category || "").trim().toLowerCase();
+  if (!wanted || !colors || typeof colors !== "object") return {};
+  const key = Object.keys(colors).find(name => String(name).trim().toLowerCase() === wanted);
+  const background = key ? String(colors[key] || "").trim() : "";
+  return background ? { background, color: moduleTextColor(background), fontWeight: 800 } : {};
+}
+
 // SplitTable 그리드(My_SplitTable getCellPlanStyle)와 같은 규약이어야 한다.
 //   왼쪽 파란선 = 이 셀에 plan 이 있다 · 칸 빨강(흰 글씨) = plan 과 다르게 진행됐다.
 const PLAN_LINE = "3px solid #3b82f6";
@@ -542,6 +550,7 @@ export default function SplitTableSnapshotView({
   onViewRuleMatch = null,
   columnWidths = null,
   moduleColors = {},
+  categoryColors = {},
 }) {
   const st = stView || embed?.st_view;
   const splitPaintRef = useRef(null);
@@ -776,15 +785,18 @@ export default function SplitTableSnapshotView({
                     const isValueCol = splitCheckMode && pi === parameterPrefixIndex + 1;
                     const isSplitCol = splitCheckMode && pi === splitPrefixIndex;
                     const isModuleCol = visiblePrefixColumns[pi] === "module";
-                    const splitStyle = isSplitCol ? splitCheckColorStyle(value) : {};
+                    const categoryStyle = categoryColorStyle(r._split_value, categoryColors);
+                    const splitStyle = isSplitCol
+                      ? { ...splitCheckColorStyle(value), ...categoryStyle }
+                      : (isValueCol ? categoryStyle : {});
                     const moduleBg = isModuleCol && value ? moduleColor(value, moduleColors) : "";
                     const moduleStyle = moduleBg ? { background: moduleBg, color: moduleTextColor(moduleBg), fontWeight: 800 } : {};
                     const rowSpanProps = splitCheckMode && pi <= parameterPrefixIndex && span > 1 ? { rowSpan: span } : {};
                     const isDraftValue = isValueCol && (r._is_split_draft || !r._split_value_raw || r._no_split_yet);
                     const cellTitle = editable && isDraftValue
                       ? (r._no_split_yet ? "클릭: S0 스플릿 추가" : "클릭: KNOB 값 선택 또는 새 값 입력")
-                      : (editable && isParamCol
-                          ? "클릭: 분류 규칙 보기 · 우클릭: 스플릿 추가"
+                      : (editable && isSplitCol
+                          ? "클릭: 스플릿 추가"
                           : (isSplitCol && value
                               ? `클릭: '${value}' 분류 규칙 보기`
                               : (isValueCol && value
@@ -792,16 +804,18 @@ export default function SplitTableSnapshotView({
                                   : (isParamCol
                                       ? "클릭: 분류 규칙 보기"
                                       : undefined))));
-                    const isClickable = (editable && isDraftValue) || (editable && isParamCol) || (isSplitCol && !!value) || (isValueCol && !!value) || isParamCol;
+                    const isClickable = (editable && isDraftValue) || (editable && isSplitCol) || (isSplitCol && !!value) || (isValueCol && !!value) || isParamCol;
                     return (
                       <td key={`prefix-${pi}`} {...rowSpanProps}
-                        onContextMenu={editable && isParamCol ? (event) => {
-                          event.preventDefault();
-                          onAddSplitRequest?.(event, r._param, r);
-                        } : undefined}
-                        onClick={() => {
+                        onClick={(event) => {
                           if (editable && isDraftValue) {
                             onEditSplitValue?.(r);
+                            return;
+                          }
+                          if (editable && isSplitCol) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onAddSplitRequest?.(event, r._param, r);
                             return;
                           }
                           if (isSplitCol) {
@@ -834,7 +848,9 @@ export default function SplitTableSnapshotView({
                     const display = hasStValue(cell.actual)
                       ? String(splitCheckMode ? cell.actual : (formatSplitCellValue(cell.actual, r._param, precision) ?? cell.actual))
                       : "";
-                    const bg = splitCheckMode ? (display ? splitCheckColorStyle(prefixValues[splitPrefixIndex] || r._split_label) : {}) : splitTableCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
+                    const bg = splitCheckMode
+                      ? (display ? { ...splitCheckColorStyle(prefixValues[splitPrefixIndex] || r._split_label), ...categoryColorStyle(r._split_value, categoryColors) } : {})
+                      : splitTableCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
                     const plan = splitCheckMode ? {} : stPlanStyle(cell);
                     const hasPlan = hasStValue(cell.plan);
                     const hasActual = hasStValue(cell.actual);

@@ -782,17 +782,16 @@ def _knob_current_s0_for_product(product: str, columns: list[str] | None = None)
 
     The append-only registry above remains the historical/export contract.
     Split-check editing, however, must seed S0 from the recipe currently present
-    in credential/f_step.csv.  Missing step/recipe mappings stay absent so the
+    in the active f_step source. Missing step/recipe mappings stay absent so the
     browser can present an editable blank S0 instead of guessing from wafer data.
     """
-    # 편집 계약은 credential/f_step.csv만 허용한다. 파일이 없을 때
-    # legacy SOP/parquet 값으로 채우면 사용자가 요청한 "없으면 빈 S0"가
-    # 깨지므로 역사/내보내기용 폴백과 의도적으로 분리한다.
-    if not _s0_credential_f_step_paths():
-        return {}
     catalog = _s0_sop_catalog()
     source = _s0_source_for_product(catalog, product)
     if not source:
+        return {}
+    # 제품별 legacy *_sop.csv는 이 편집 경로의 근거로 쓰지 않는다. 현재값
+    # 원천인 credential/f_step.csv 또는 confidential/f_step.parquet만 허용한다.
+    if str(source.get("file") or "").strip().casefold() not in {"f_step.csv", "f_step.parquet"}:
         return {}
     wanted = [str(column) for column in (columns if columns is not None else _mltable_schema_columns(product, "KNOB"))
               if str(column).upper().startswith("KNOB_")]

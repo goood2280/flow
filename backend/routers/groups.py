@@ -31,6 +31,7 @@ v8.8.1 정책 변경:
     - group_ids 가 있으면 유저가 최소 1개 그룹의 member 여야 통과.
 """
 import datetime
+import re
 import uuid
 from typing import List, Optional
 
@@ -77,6 +78,27 @@ def _sanitize_members(raw, users_by_name: dict | None = None) -> list:
             continue
         seen.add(s)
         out.append(s)
+    return out
+
+
+def _group_name_key(value: str) -> str:
+    """Group names are compared without case so product-name groups are stable."""
+    return str(value or "").strip().casefold()
+
+
+def _bulk_member_ids(raw: str) -> list[str]:
+    """Extract login IDs from semicolon/comma/whitespace-separated IDs or emails."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[;,\s]+", str(raw or "")):
+        clean = token.strip().strip("<>")
+        if not clean:
+            continue
+        username = clean.split("@", 1)[0].strip()
+        key = username.casefold()
+        if username and key not in seen:
+            seen.add(key)
+            out.append(username)
     return out
 
 GROUPS_DIR = PATHS.data_root / "groups"
@@ -346,6 +368,10 @@ class MemberReq(BaseModel):
     username: str
 
 
+class MembersBulkReq(BaseModel):
+    entries: str
+
+
 class LotReq(BaseModel):
     lot_id: str
 
@@ -381,7 +407,7 @@ def create_group(req: GroupCreate, request: Request):
     if not name:
         raise HTTPException(400, "name required")
     groups = _load()
-    if any(g.get("name") == name for g in groups):
+    if any(_group_name_key(g.get("name")) == _group_name_key(name) for g in groups):
         raise HTTPException(409, "group name already exists")
     gid = f"grp_{datetime.datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:6]}"
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -419,7 +445,7 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
         name = req.name.strip()
         if not name:
             raise HTTPException(400, "name empty")
-        if any(x.get("name") == name and x.get("id") != id for x in groups):
+        if any(_group_name_key(x.get("name")) == _group_name_key(name) and x.get("id") != id for x in groups):
             raise HTTPException(409, "group name already exists")
         g["name"] = name
     if req.description is not None:
@@ -503,6 +529,64 @@ def add_member(req: MemberReq, request: Request, id: str = Query(...)):
     _save(groups)
     _audit(me["username"], "member_add", id, req.username)
     return {"ok": True, "members": g["members"]}
+
+
+@router.post("/members/add-bulk")
+def add_members_bulk(req: MembersBulkReq, request: Request, id: str = Query(...)):
+    """Add registered users from `id@domain;id2@domain` style input in one write."""
+    me = current_user(request)
+    groups = _load()
+    g = _find(groups, id)
+    if not g:
+        raise HTTPException(404)
+    if not _can_edit(g, me["username"], me.get("role", "user")):
+        raise HTTPException(403)
+    if len(str(req.entries or "")) > 100_000:
+        raise HTTPException(400, "bulk member input too long")
+
+    users_by_name = _load_users_by_name()
+    canonical_users = {
+        str(username).strip().casefold(): str(username).strip()
+        for username in users_by_name
+        if str(username).strip()
+    }
+    existing = [str(member).strip() for member in (g.get("members") or []) if str(member).strip()]
+    existing_keys = {member.casefold() for member in existing}
+    added: list[str] = []
+    already_members: list[str] = []
+    not_found: list[str] = []
+    rejected: list[str] = []
+
+    for requested in _bulk_member_ids(req.entries)[:2000]:
+        actual = canonical_users.get(requested.casefold())
+        if not actual:
+            not_found.append(requested)
+            continue
+        if _is_blocked_member(actual, users_by_name):
+            rejected.append(actual)
+            continue
+        key = actual.casefold()
+        if key in existing_keys:
+            already_members.append(actual)
+            continue
+        existing_keys.add(key)
+        existing.append(actual)
+        added.append(actual)
+
+    if added:
+        g["members"] = sorted(existing, key=str.casefold)
+        g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+        _save(groups)
+        _audit(me["username"], "member_add_bulk", id, ",".join(added))
+
+    return {
+        "ok": True,
+        "members": g.get("members") or [],
+        "added": added,
+        "already_members": already_members,
+        "not_found": not_found,
+        "rejected": rejected,
+    }
 
 
 @router.post("/members/remove")

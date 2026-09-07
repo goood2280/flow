@@ -179,15 +179,21 @@ def test_edit_s0_uses_current_f_step_recipe_and_omits_missing_mapping(monkeypatc
     }
 
 
-def test_edit_s0_stays_empty_without_credential_f_step_csv(monkeypatch):
-    monkeypatch.setattr(splittable, "_s0_credential_f_step_paths", lambda: [])
+def test_edit_s0_uses_confidential_f_step_parquet_fallback(monkeypatch):
     monkeypatch.setattr(
         splittable,
         "_s0_sop_catalog",
-        lambda: {"proda": {"rows": {"aa100": {"step_id": "AA100", "ppid": "PP_FALLBACK"}}}},
+        lambda: {"proda": {
+            "file": "f_step.parquet",
+            "rows": {"aa100": {"step_id": "AA100", "ppid": "PP_FALLBACK"}},
+        }},
     )
+    monkeypatch.setattr(splittable, "_s0_resolution_context", lambda product: ({}, {}, {}))
+    monkeypatch.setattr(splittable, "_s0_step_candidates", lambda *args, **kwargs: ["AA100"])
 
-    assert splittable._knob_current_s0_for_product("PRODA", ["KNOB_A"]) == {}
+    assert splittable._knob_current_s0_for_product("PRODA", ["KNOB_A"]) == {
+        "KNOB_A": {"ppid": "PP_FALLBACK", "step_id": "AA100", "source_file": "f_step.parquet"}
+    }
 
 
 def test_daily_s0_snapshot_is_append_only_and_archives_product_parquet(tmp_path, monkeypatch):

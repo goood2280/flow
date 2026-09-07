@@ -2020,7 +2020,7 @@ def _attach_split_view_runtime_fields(
     selected = [str(row.get("_param") or "") for row in compact_rows if isinstance(row, dict)]
     historical_s0 = _knob_s0_for_root(product, out.get("root_lot_id") or "", selected)
     # 편집용 값은 append-only 이력과 분리한다. Split 추가 시점에는 현재
-    # credential/f_step.csv 의 step_id -> recipe_id를 그대로 사용해야 한다.
+    # 현재 f_step.csv/parquet 의 step_id -> recipe_id를 그대로 사용해야 한다.
     out["s0_edit_by_knob"] = _knob_current_s0_for_product(product, selected)
     # First f_step arrival can race the asynchronous snapshot capture. Resolve
     # previously unknown KNOBs immediately while preserving captured history.

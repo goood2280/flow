@@ -60,6 +60,46 @@ def test_teg_location_internal_folder_is_hidden_from_db_and_files(tmp_path, monk
     )
 
 
+def test_confidential_internal_folder_is_hidden_but_available_to_s3(tmp_path, monkeypatch):
+    confidential = tmp_path / "confidential"
+    confidential.mkdir()
+    (confidential / "f_step.parquet").write_bytes(b"internal")
+
+    monkeypatch.setattr(filebrowser, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(filebrowser, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        filebrowser,
+        "_require_filebrowser_user",
+        lambda request: {"username": "admin", "role": "admin"},
+    )
+    monkeypatch.setattr(
+        filebrowser,
+        "_load_filebrowser_settings",
+        lambda: {"hidden_db_dirs": ["confidential"], "db_name_aliases": {}},
+    )
+    filebrowser._LIST_CACHE.clear()
+
+    roots = filebrowser.list_roots(request=object(), all=True, fast=True)
+    files = filebrowser.base_files(request=object(), fast=True)
+
+    assert filebrowser._is_filebrowser_hidden_dir_name("confidential") is True
+    assert "confidential" not in {row["name"].casefold() for row in roots["roots"]}
+    assert "confidential" not in {row["name"].casefold() for row in files["files"]}
+
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"role": "admin"})
+    with pytest.raises(HTTPException) as exc:
+        filebrowser._require_base_file_access(object(), "confidential/f_step.parquet")
+    assert exc.value.status_code == 403
+    with pytest.raises(HTTPException) as root_exc:
+        filebrowser.list_products(root="confidential", fast=True)
+    assert root_exc.value.status_code == 404
+
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+    available = s3_ingest.list_available(username="admin", _perm={"role": "admin"})
+    assert "confidential" in {row["name"] for row in available["dbs"]}
+    assert s3_ingest._validate_target("confidential") is None
+
+
 def test_s3_target_allows_folder_names_with_spaces():
     assert s3_ingest._validate_target("Auto report") is None
     assert s3_ingest._validate_target("Auto report/PRODUCT A") is None

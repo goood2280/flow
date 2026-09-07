@@ -40,6 +40,7 @@ from routers.groups import (
     _can_edit,
     _is_blocked_member,
     _load_users_by_name,
+    _group_name_key,
 )
 
 router = APIRouter(prefix="/api/mail-groups", tags=["mail_groups"])
@@ -123,7 +124,7 @@ def create_group(req: MGCreate, request: Request):
     if len(name) > 80:
         raise HTTPException(400, "name too long (max 80)")
     items = _groups_load()
-    if any((g.get("name") or "").strip() == name for g in items):
+    if any(_group_name_key(g.get("name")) == _group_name_key(name) for g in items):
         raise HTTPException(409, "group name already exists")
     now = _now()
     users_by_name = _load_users_by_name()
@@ -163,7 +164,7 @@ def update_group(req: MGUpdate, request: Request, id: str = Query(...)):
         name = (req.name or "").strip()
         if not name:
             raise HTTPException(400, "name empty")
-        if any((x.get("name") or "").strip() == name and x.get("id") != id for x in items):
+        if any(_group_name_key(x.get("name")) == _group_name_key(name) and x.get("id") != id for x in items):
             raise HTTPException(409, "group name already exists")
         if name != g.get("name"):
             g["name"] = name

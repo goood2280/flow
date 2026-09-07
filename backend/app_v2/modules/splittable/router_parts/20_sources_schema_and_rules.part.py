@@ -1957,6 +1957,7 @@ def _build_knob_meta(product: str = "") -> dict:
             km.get("ppid_col", "ppid"),
             "value",
             "ppid",
+            "recipe_id",
             "category",
         )
         if not fname or (not step_desc_key and not direct_ids):

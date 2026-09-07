@@ -517,6 +517,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   },[tagColorPicker]);
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
+  const[categoryColors,setCategoryColors]=useState({});
   // v8.4.9-b: Notes (wafer 태그 + param 메모). lot 단위로 fetch.
   const[notes,setNotes]=useState([]);
   const[notesOpen,setNotesOpen]=useState(false);
@@ -1000,9 +1001,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .catch(()=>{setProductSchema([]);setOverrideCols([]);});
   },[selProd]);
   // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
-  useEffect(()=>{if(!selProd){setKnobMeta({});return;}
+  useEffect(()=>{if(!selProd){setKnobMeta({});setCategoryColors({});return;}
     sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
       .then(d=>setKnobMeta(d.features||{})).catch(()=>setKnobMeta({}));
+    sf(API+"/category-colors?product="+encodeURIComponent(selProd))
+      .then(d=>setCategoryColors(d.colors||{})).catch(()=>setCategoryColors({}));
   },[selProd]);
   // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
   const[vmMeta,setVmMeta]=useState({});
@@ -1080,6 +1083,25 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       return String(match.category).trim();
     }
     return clean;
+  };
+  const savedCategoryColor=(category)=>{
+    const key=Object.keys(categoryColors||{}).find(name=>String(name).trim().toLowerCase()===String(category||"").trim().toLowerCase());
+    return key?categoryColors[key]:"";
+  };
+  const categoryColorFor=(param,rawVal)=>{
+    if(matchKindOf(param)!=="knob_ppid")return "";
+    return savedCategoryColor(resolveSplitDisplayName(param,rawVal));
+  };
+  const saveCategoryColor=(category,color)=>{
+    const previous={...categoryColors};
+    const next={...categoryColors};
+    const existing=Object.keys(next).find(name=>name.toLowerCase()===String(category||"").trim().toLowerCase());
+    if(existing)delete next[existing];
+    if(color)next[category]=color;
+    setCategoryColors(next);
+    sf(API+"/category-colors/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,category,color})})
+      .then(d=>setCategoryColors(d.colors||next))
+      .catch(e=>{setCategoryColors(previous);toast.error("Category 색상 저장 실패: "+(e?.message||e));});
   };
   const buildLineageSummary=(rows)=>{
     const out=[];
@@ -1624,7 +1646,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       seen.add(s);
       out.push(typeof extra==="object"&&Object.keys(extra).length>0?{value:s,label:s,...extra}:s);
     };
-    // 1. 편집 시점의 POR recipe: credential/f_step.csv step_id -> recipe_id.
+    // 1. 편집 시점의 POR recipe: 현재 f_step.csv/parquet step_id -> recipe_id.
     // 구버전 응답과의 호환을 위해 current 값이 없을 때만 snapshot S0를 쓴다.
     const sopVal=planningS0ValueForParam(data,param)||s0ValueForParam(data,param);
     if(sopVal){
@@ -2035,6 +2057,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   };
   const getCellBg=(val,uniqueMap,paramName)=>{
     if(!val||val==="None"||val==="null"||val===null)return{};
+    const categoryColor=categoryColorFor(paramName,val);
+    if(categoryColor)return{background:categoryColor,color:moduleTextColor(categoryColor),fontWeight:700};
     const pn=(paramName||"").toUpperCase();
     const shouldColor=COLOR_PREFIXES.some(p=>pn.startsWith(p+"_"));
     if(!shouldColor)return{};
@@ -3229,6 +3253,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           editable={editing&&splitCheckViewActive}
           columnWidths={columnWidths}
           moduleColors={moduleColors}
+          categoryColors={categoryColors}
           onAssignSplit={assignSplitPlanValue}
           onEditSplitValue={(row)=>{
             if(row?._no_split_yet){
@@ -3979,8 +4004,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     )}
     {/* v9.0.5: Rulebook 규칙 미리보기 modal — 인덱스(KNOB/INLINE/VM) 클릭 시 연결 규칙 표시. */}
     {rbMatchKind && (
-      <Modal open onClose={closeRuleMatchView} width={860} zIndex={3001}>
-        <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
+      <Modal open onClose={closeRuleMatchView} width={rbMatchKind === "knob_ppid" ? 1180 : 860} maxHeight="96vh" zIndex={3001}>
+        <div style={{display:"flex",flexDirection:"column",maxHeight:"92vh"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchKind==="knob_ppid"?"KNOB 분류 규칙":`${rbMatchTitle} 매칭 규칙`}</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rbMatchParam}</span>
@@ -4032,7 +4057,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                         등록된 분류 규칙이 없습니다.
                       </div>
                     ) : (
-                      <div style={{maxHeight:"60vh", overflow:"auto", border:"1px solid #555", borderRadius:2, background:"#ffffff"}}>
+                      <div style={{maxHeight:360, overflow:"auto", border:"1px solid #555", borderRadius:2, background:"#ffffff"}}>
                         <table style={{width:"100%", borderCollapse:"collapse", fontSize:13, fontFamily:"Consolas, Menlo, Monaco, monospace", background:"#ffffff", tableLayout:"auto"}}>
                           <thead>
                             <tr style={{position:"sticky", top:0, zIndex:3, background:"#e5e7eb", borderBottom:"2px solid #555", textAlign:"left"}}>
@@ -4040,7 +4065,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                               <th style={{padding:"6px 8px", border:"1px solid #777", width:44, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>일치</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", width:85, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>Rule Order</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>공정명 (Step Desc)</th>
-                              <th style={{padding:"6px 10px", border:"1px solid #777", width:110, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>공정 ID (Step ID)</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", width:75, textAlign:"center", background:"#e5e7eb", color:"#111827", fontWeight:700}}>연산자</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>PPID (Value)</th>
                               <th style={{padding:"6px 10px", border:"1px solid #777", textAlign:"left", background:"#e5e7eb", color:"#111827", fontWeight:700}}>분류 (Category)</th>
@@ -4051,7 +4075,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                             {displayGroups.map((g, gi) => {
                               const matches = matchKnobRuleToRowValues(g, rbMatchRow, pendingValueFor);
                               const isMatched = matches.length > 0;
-                              const stepIdStr = Array.isArray(g.step_ids) && g.step_ids.length ? g.step_ids.join(", ") : (g.step_id || "-");
                               const rowBg = isMatched ? "rgba(198,239,206,0.6)" : (gi % 2 === 1 ? "#f9fafb" : "#ffffff");
                               return (
                                 <tr key={gi} style={{background: rowBg}}>
@@ -4059,7 +4082,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                                   <td style={{padding:"5px 8px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:900, color: isMatched ? "rgba(0,97,0,0.95)" : "#9ca3af"}}>{isMatched ? "✓" : "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:700, color:"#1d4ed8"}}>{g.rule_order || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", color:"#111827", whiteSpace:"nowrap"}}>{g.step_desc || g.func_step || "-"}</td>
-                                  <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", color:"#374151", whiteSpace:"nowrap"}}>{stepIdStr}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", textAlign:"center", fontWeight:600, color:"#2563eb"}}>{g.operator || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#047857", whiteSpace:"nowrap"}}>{g.value || "-"}</td>
                                   <td style={{padding:"5px 10px", border:"1px solid #d1d5db", fontWeight:700, color:"#b45309", whiteSpace:"nowrap"}}>{g.category || "-"}</td>
@@ -4071,6 +4093,25 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                         </table>
                       </div>
                     )}
+                    {(()=>{
+                      const categories=[];const seen=new Set();
+                      groups.forEach(g=>{const name=String(g?.category||"").trim();const key=name.toLowerCase();if(name&&!seen.has(key)){seen.add(key);categories.push(name);}});
+                      if(!categories.length)return null;
+                      return <div style={{padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                        <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}>
+                          <strong style={{fontSize:13}}>Category 색상</strong>
+                          <span style={{fontSize:12,color:"var(--text-secondary)"}}>제품별로 저장되며 Split 번호 색상보다 우선 적용됩니다.</span>
+                        </div>
+                        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{categories.map((category)=>{
+                          const saved=savedCategoryColor(category);
+                          return <label key={category} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 8px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-card)",fontSize:12,fontWeight:700}}>
+                            <input type="color" value={saved||"#ffffff"} disabled={!canManage} onChange={e=>saveCategoryColor(category,e.target.value)} title={canManage?`${category} 색상 변경`:"SplitTable 관리 권한이 필요합니다"} style={{width:26,height:22,padding:0,border:0,background:"transparent",cursor:canManage?"pointer":"default"}}/>
+                            <span>{category}</span>
+                            {saved&&canManage?<button type="button" onClick={()=>saveCategoryColor(category,"")} style={{padding:"1px 5px",border:"1px solid var(--border)",borderRadius:3,background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>자동</button>:<span style={{fontSize:11,color:"var(--text-secondary)"}}>자동</span>}
+                          </label>;
+                        })}</div>
+                      </div>;
+                    })()}
                   </div>
                 );
               })()}

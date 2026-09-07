@@ -1,6 +1,9 @@
 PRECISION_CFG = PLAN_DIR / "precision_config.json"
 DEFAULT_PRECISION = {"INLINE": 2, "VM": 2}
 DISPLAY_SETTINGS_CFG = PLAN_DIR / "display_settings.json"
+CATEGORY_COLORS_CFG = PLAN_DIR / "category_colors.json"
+_CATEGORY_COLORS_LOCK = threading.Lock()
+_CATEGORY_COLOR_RE = _re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_SPLITTABLE_COLUMN_WIDTHS = {
     "module": 86,
     "step_id": 168,
@@ -10,6 +13,70 @@ DEFAULT_SPLITTABLE_COLUMN_WIDTHS = {
     "split": 80,
     "wafer": 115,
 }
+
+
+def _category_color_product_key(product: str) -> str:
+    return _canonical_product_name(product).upper()
+
+
+def _normalize_category_colors(raw) -> dict[str, str]:
+    source = raw if isinstance(raw, dict) else {}
+    out: dict[str, str] = {}
+    seen: set[str] = set()
+    for category, color in source.items():
+        name = str(category or "").strip()
+        value = str(color or "").strip().lower()
+        folded = name.casefold()
+        if not name or folded in seen or not _CATEGORY_COLOR_RE.fullmatch(value):
+            continue
+        seen.add(folded)
+        out[name] = value
+    return out
+
+
+def _load_category_colors() -> dict:
+    raw = load_json(CATEGORY_COLORS_CFG, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+@router.get("/category-colors")
+def get_category_colors(product: str = Query("")):
+    key = _category_color_product_key(product)
+    stored = _load_category_colors()
+    return {"product": key, "colors": _normalize_category_colors(stored.get(key))}
+
+
+class CategoryColorReq(BaseModel):
+    product: str
+    category: str
+    color: str = ""
+
+
+@router.post("/category-colors/save")
+def save_category_color(req: CategoryColorReq, _perm=Depends(require_page_manager("splittable"))):
+    product_key = _category_color_product_key(req.product)
+    category = str(req.category or "").strip()
+    color = str(req.color or "").strip().lower()
+    if not product_key:
+        raise HTTPException(400, "product is required")
+    if not category:
+        raise HTTPException(400, "category is required")
+    if color and not _CATEGORY_COLOR_RE.fullmatch(color):
+        raise HTTPException(400, "color must be #RRGGBB")
+    with _CATEGORY_COLORS_LOCK:
+        stored = _load_category_colors()
+        colors = _normalize_category_colors(stored.get(product_key))
+        existing = next((name for name in colors if name.casefold() == category.casefold()), None)
+        if existing:
+            colors.pop(existing, None)
+        if color:
+            colors[category] = color
+        if colors:
+            stored[product_key] = colors
+        else:
+            stored.pop(product_key, None)
+        save_json(CATEGORY_COLORS_CFG, stored, indent=2)
+    return {"ok": True, "product": product_key, "colors": colors}
 
 
 def _normalize_splittable_column_widths(raw) -> dict:

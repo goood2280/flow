@@ -400,6 +400,8 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
     """Run ChartBuilder with a small shared cache and 5-core/10GB admission control."""
     started = time.monotonic()
     me = current_user(request)
+    for source in req.sources or []:
+        _require_filebrowser_visible_root(source.root)
     cache_key = _chart_builder_cache_key(req)
     result = _chart_builder_cache_get(cache_key)
     cache_hit = result is not None
@@ -481,6 +483,8 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     me = current_user(request)
     if file:
         _require_base_file_access(request, file, access_scope)
+    elif root:
+        _require_filebrowser_visible_root(root)
     username = me.get("username") or "anonymous"
 
     def _response_name(label: str) -> str:

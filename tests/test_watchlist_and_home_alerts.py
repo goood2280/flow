@@ -7,6 +7,7 @@ from starlette.datastructures import Headers
 from core import watchlist as wl
 from core import notify
 from routers import home
+from routers import lot_management
 from routers import watchlist as watchlist_router
 
 
@@ -48,6 +49,66 @@ def test_watchlist_crud(tmp_path, monkeypatch):
     assert removed is False
     assert wl.is_lot_watched("alice", "LOT-100") is False
     assert wl.get_users_watching_lot("LOT-100") == ["bob"]
+
+
+def test_lot_alert_recipients_union_watchers_and_product_group_without_duplicates(monkeypatch):
+    from routers import groups
+
+    monkeypatch.setattr(wl, "get_users_watching_lot", lambda lot_id: ["alice", "shared"])
+    monkeypatch.setattr(groups, "_load", lambda: [
+        {"name": "PRODA", "members": ["SHARED", "bob"]},
+        {"name": "OTHER", "members": ["charlie"]},
+    ])
+
+    assert lot_management._lot_alert_recipients("ML_TABLE_PRODA", "LOT-100") == [
+        "alice", "shared", "bob",
+    ]
+
+
+def test_lot_management_save_emits_each_alert_once_per_recipient(tmp_path, monkeypatch):
+    emitted = []
+    current = lot_management._empty("ML_TABLE_PRODA")
+
+    monkeypatch.setattr(lot_management, "current_user", lambda request: {"username": "actor"})
+    monkeypatch.setattr(lot_management, "_load", lambda product: current)
+    monkeypatch.setattr(
+        lot_management,
+        "_paths",
+        lambda product: (tmp_path / "table.json", tmp_path / "versions"),
+    )
+    monkeypatch.setattr(lot_management, "_write_snapshot", lambda product, doc: None)
+    monkeypatch.setattr(lot_management, "_with_latest_cache_fields", lambda doc: doc)
+    monkeypatch.setattr(
+        lot_management,
+        "_latest_status_by_lot",
+        lambda product, lot_ids: {"LOT-100": {"step_id": "200"}},
+    )
+    monkeypatch.setattr(
+        lot_management,
+        "_lot_alert_recipients",
+        lambda product, lot_id: ["watcher", "group_user"],
+    )
+    monkeypatch.setattr(notify, "emit_event", lambda event_type, **kwargs: emitted.append((event_type, kwargs["target_user"])))
+    monkeypatch.setattr(lot_management, "audit_record", lambda *args, **kwargs: None)
+
+    rows = [
+        {"id": "row-1", "values": {"lot_id": "LOT-100", "alert_step_id": "100"}},
+        {"id": "row-2", "values": {"lot_id": "LOT-100", "alert_step_id": "100"}},
+    ]
+    lot_management.save_table(
+        lot_management.TableSaveRequest(
+            product="ML_TABLE_PRODA",
+            columns=lot_management.DEFAULT_COLUMNS,
+            rows=rows,
+            expected_version=0,
+        ),
+        object(),
+    )
+
+    assert emitted.count(("watched_lot_management_updated", "watcher")) == 1
+    assert emitted.count(("watched_lot_management_updated", "group_user")) == 1
+    assert emitted.count(("lot_step_threshold_reached", "watcher")) == 1
+    assert emitted.count(("lot_step_threshold_reached", "group_user")) == 1
 
 
 def test_watchlist_router(tmp_path, monkeypatch):
@@ -240,3 +301,37 @@ def test_lot_step_threshold_reached_notice_priority(tmp_path, monkeypatch):
     assert notice_alert is not None
     assert notice_alert["priority_group"] == "notice"
     assert notice_alert["badge"] == "기준 Step 도달"
+
+
+def test_live_lot_step_alert_visible_only_to_watcher_or_product_group(tmp_path, monkeypatch):
+    table_dir = tmp_path / "tables"
+    table_dir.mkdir()
+    (table_dir / "proda.json").write_text(json.dumps({
+        "product": "ML_TABLE_PRODA",
+        "updated_at": "2026-09-07T12:00:00",
+        "rows": [{
+            "id": "row-1",
+            "values": {
+                "lot_id": "LOT-100",
+                "current_step_id": "200",
+                "alert_step_id": "100",
+                "step_desc": "ETCH",
+            },
+        }],
+    }), encoding="utf-8")
+
+    from core import fab_matching_alerts
+    monkeypatch.setattr(lot_management, "TABLE_DIR", table_dir)
+    monkeypatch.setattr(lot_management, "_with_latest_cache_fields", lambda doc: doc)
+    monkeypatch.setattr(lot_management, "_product_group_members", lambda product: ["group_user"])
+    monkeypatch.setattr(wl, "is_lot_watched", lambda username, lot_id: username == "watcher")
+    monkeypatch.setattr(notify, "get_notifications", lambda *args, **kwargs: [])
+    monkeypatch.setattr(fab_matching_alerts, "list_plan_knob_anomalies", lambda **kwargs: {"items": []})
+    monkeypatch.setattr(home._hda, "is_alert_dismissed", lambda username, alert_id: False)
+
+    for allowed_user in ("watcher", "group_user"):
+        result = home.home_alerts(_dummy_request(allowed_user))
+        assert any(item["type"] == "lot_step_threshold" for item in result["alerts"])
+
+    outsider = home.home_alerts(_dummy_request("outsider"))
+    assert not any(item["type"] == "lot_step_threshold" for item in outsider["alerts"])

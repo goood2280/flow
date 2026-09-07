@@ -95,6 +95,51 @@ def _is_step_reached_or_exceeded(current_step: str, alert_step: str) -> bool:
     return curr.upper() >= alert.upper()
 
 
+def _product_group_members(product: str) -> list[str]:
+    """Return members of the group whose name matches the product."""
+    raw = str(product or "").strip()
+    if not raw:
+        return []
+    group_names = {raw.casefold()}
+    if raw.upper().startswith("ML_TABLE_"):
+        short_name = raw[len("ML_TABLE_"):].strip()
+        if short_name:
+            group_names.add(short_name.casefold())
+    try:
+        from routers.groups import _load as _load_groups
+        members: list[str] = []
+        seen: set[str] = set()
+        for group in _load_groups():
+            if not isinstance(group, dict):
+                continue
+            if str(group.get("name") or "").strip().casefold() not in group_names:
+                continue
+            for member in group.get("members") or []:
+                username = str(member or "").strip()
+                key = username.casefold()
+                if username and key not in seen:
+                    seen.add(key)
+                    members.append(username)
+        return members
+    except Exception:
+        return []
+
+
+def _lot_alert_recipients(product: str, lot_id: str) -> list[str]:
+    """Return the de-duplicated union of LOT watchers and product-group members."""
+    from core import watchlist as _wl
+
+    recipients: list[str] = []
+    seen: set[str] = set()
+    for username in [*_wl.get_users_watching_lot(lot_id), *_product_group_members(product)]:
+        clean = str(username or "").strip()
+        key = clean.casefold()
+        if clean and key not in seen:
+            seen.add(key)
+            recipients.append(clean)
+    return recipients
+
+
 def _lock(product: str) -> threading.RLock:
     key = _key(product)
     with _LOCKS_GUARD:
@@ -483,7 +528,6 @@ def save_table(req: TableSaveRequest, request: Request):
         # 관심랏 알람 발행
         try:
             from core.notify import emit_event
-            from core import watchlist as _wl
             changes = _version_diff(current, next_doc)
             changed_lots = set()
             for c in changes:
@@ -511,7 +555,7 @@ def save_table(req: TableSaveRequest, request: Request):
                     body = f"{actor} 님이 {product} 랏관리 표를 갱신했습니다 (v{next_doc['version']})."
                     badge = "랏관리 갱신"
 
-                for watcher in _wl.get_users_watching_lot(lid):
+                for watcher in _lot_alert_recipients(product, lid):
                     emit_event(
                         "watched_lot_management_updated",
                         actor=actor,
@@ -530,19 +574,26 @@ def save_table(req: TableSaveRequest, request: Request):
                         allow_self=True,
                     )
 
-                # 기준 step_id 도달/초과 알람 검출
+            # 기준 step_id 도달/초과 알람 검출. 한 번의 저장에서 같은
+            # lot/기준/current 조합은 행 수나 변경 랏 수와 무관하게 한 번만 발행한다.
+            if changed_lots:
                 try:
                     all_lids = [str(r.get("values", {}).get("lot_id") or "").strip() for r in next_doc.get("rows") or []]
                     latest_statuses = _latest_status_by_lot(product, [l for l in all_lids if l])
                 except Exception:
                     latest_statuses = {}
+                seen_thresholds: set[tuple[str, str, str]] = set()
                 for row in next_doc.get("rows") or []:
                     vals = row.get("values") if isinstance(row.get("values"), dict) else {}
                     lid_row = str(vals.get("lot_id") or "").strip().upper()
                     alert_step = str(vals.get("alert_step_id") or "").strip()
                     curr_step = str(latest_statuses.get(lid_row, {}).get("step_id") or vals.get("current_step_id") or "").strip()
-                    if lid_row and alert_step and curr_step and _is_step_reached_or_exceeded(curr_step, alert_step):
-                        for watcher in _wl.get_users_watching_lot(lid_row):
+                    threshold_key = (lid_row, alert_step.casefold(), curr_step.casefold())
+                    if (lid_row and alert_step and curr_step
+                            and threshold_key not in seen_thresholds
+                            and _is_step_reached_or_exceeded(curr_step, alert_step)):
+                        seen_thresholds.add(threshold_key)
+                        for watcher in _lot_alert_recipients(product, lid_row):
                             emit_event(
                                 "lot_step_threshold_reached",
                                 actor=actor,
