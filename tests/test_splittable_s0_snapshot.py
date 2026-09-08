@@ -301,6 +301,8 @@ def test_split_exports_put_snapshot_por_in_s0_even_when_not_first_observed():
     )
     assert rows[0][:3] == ["A", "PP_STD", "S0"]
     assert rows[1][:3] == ["A", "PP_X", "S1"]
+    assert rows[0][3:] == ["", "S0"]
+    assert rows[1][3:] == ["S1", ""]
 
 
 def test_credential_sop_catalog_loads_csv_and_falls_back_for_missing_product(tmp_path, monkeypatch):

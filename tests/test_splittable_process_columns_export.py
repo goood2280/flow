@@ -520,7 +520,7 @@ def test_split_check_xlsx_uses_the_same_process_prefix(monkeypatch):
         "step_id", "step_desc", "항목", "값", "Split", "#1",
     ]
     assert [sheet.cell(6, col).value for col in range(1, 7)] == [
-        "S10", "ETCH", "A", "PP_A", "S0", "✓",
+        "S10", "ETCH", "A", "PP_A", "S0", "S0",
     ]
 
 
@@ -573,4 +573,4 @@ def test_inform_split_check_keeps_process_prefix_columns():
 
     assert result["st_view"]["prefix_columns"] == ["step_id", "step_desc", "항목", "값", "Split"]
     assert result["st_view"]["parameter_prefix_index"] == 2
-    assert result["rows"][0][:6] == ["S10", "ETCH", "A", "PP_A", "S0", "✓"]
+    assert result["rows"][0][:6] == ["S10", "ETCH", "A", "PP_A", "S0", "S0"]

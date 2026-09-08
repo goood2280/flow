@@ -381,7 +381,7 @@ const matchKnobRuleToRowValues=(group,row,pendingValueFor)=>{
   return out;
 };
 
-function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=false,onValueChange,onCommit,onClose}){
+export function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=false,onValueChange,onCommit,onClose}){
   if(!activeCell)return null;
   const commit=(v)=>onCommit&&onCommit(String(typeof v==="object"?(v?.value??v?.label??""):(v??"")).trim());
   return <Modal open onClose={onClose} width={380} zIndex={9998}>
@@ -391,7 +391,7 @@ function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=fals
       {activeCell.splitLabel&&<span style={{padding:"2px 8px",borderRadius:4,background:"rgba(59,130,246,0.15)",border:"1px solid rgba(59,130,246,0.35)",color:"rgba(59,130,246,0.95)",fontWeight:800,fontSize:13}}>{activeCell.splitLabel}</span>}
     </div>
     <input autoFocus value={activeCell.value} onChange={e=>onValueChange&&onValueChange(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;commit(activeCell.value);}else if(e.key==="Escape")onClose&&onClose();}}
+      onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;if(activeCell.kind!=="split_value")commit(activeCell.value);}else if(e.key==="Escape")onClose&&onClose();}}
       list={`cv-${activeCell.key}`}
       placeholder="값 입력 또는 아래 리스트 클릭 선택"
       style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>
@@ -403,7 +403,7 @@ function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=fals
          const itemLabel=typeof v==="object"?v.label:v;
          const isSop=typeof v==="object"&&v.isSop;
          return (
-           <div key={i} onClick={()=>commit(itemVal)}
+           <div key={i} onClick={()=>activeCell.kind==="split_value"?onValueChange?.(String(itemVal??"")):commit(itemVal)}
              style={{padding:"7px 10px",fontSize:13,fontFamily:"monospace",cursor:"pointer",borderBottom:i<suggestions.length-1?"1px solid var(--border)":"none",display:"flex",alignItems:"center",justifyContent:"space-between",background:isSop?"rgba(34,197,94,0.06)":"transparent"}}
              onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"}
              onMouseLeave={e=>e.currentTarget.style.background=isSop?"rgba(34,197,94,0.06)":"transparent"}>
@@ -413,7 +413,7 @@ function SplitTableCellEditor({activeCell,suggestions=[],suggestionsLoading=fals
          );
        })}
     </div>
-    {suggestions.length>0&&<div style={{fontSize:12,color:"var(--text-secondary)",marginTop:6}}>{suggestions.length}개 선택 가능 (클릭 시 즉시 입력)</div>}
+    {suggestions.length>0&&<div style={{fontSize:12,color:"var(--text-secondary)",marginTop:6}}>{suggestions.length}개 선택 가능 ({activeCell.kind==="split_value"?"선택 후 Apply로 적용":"클릭 시 즉시 입력"})</div>}
     <div style={{display:"flex",gap:8,marginTop:12}}>
       <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer",fontSize:14}}>Apply</button>
       <button onClick={onClose} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:14}}>Cancel</button>
@@ -478,6 +478,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[rowRenderLimit,setRowRenderLimit]=useState(ROW_RENDER_INITIAL);
   const renderMoreRef=useRef(null);
   const[showParamMeta,setShowParamMeta]=useState(false);
+  const[noWrapRows,setNoWrapRows]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
   const[showSplitCheckView,setShowSplitCheckView]=useState(initialTableFormat==="split");
   // v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 colSpan 으로 병합해 표시 (읽기 전용).
@@ -1095,22 +1096,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
     return()=>{active=false;};
   },[selProd]);
-  // 헤더의 빨간 핀은 LOT 관리 테이블을 정본으로 사용한다. 예전에는 별도
-  // 캐시관리의 주요 Lot purpose를 읽어 같은 위치에 표시해 두 화면의 값이 달랐다.
-  const lotManagementPurposeHit=(()=>{
-    const purposes=Array.isArray(data?.lot_management_purposes)
-      ? data.lot_management_purposes.filter(item=>String(item?.lot_id||"").trim()&&String(item?.purpose||"").trim())
-      : [];
-    const findExact=(raw)=>{
-      const key=String(raw||"").trim().toLowerCase();
-      return key?purposes.find(item=>String(item.lot_id||"").trim().toLowerCase()===key):null;
-    };
-    for(const raw of [fabLotId,lotId,data?.fab_lot_id,data?.lot_id]){
-      const hit=findExact(raw);
-      if(hit)return hit;
-    }
-    // root lot 검색 결과에 대응하는 LOT 관리 행이 하나뿐이면 그 목적을 표시한다.
-    return purposes.length===1?purposes[0]:null;
+  // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
+  const waferPurposeLabel=(()=>{
+    const row=(data?.rows||[]).find(item=>isDefaultPurposeTag(item?._param));
+    const values=Object.values(row?._cells||{}).map(cell=>{
+      const value=Object.prototype.hasOwnProperty.call(pendingTags,cell?.key)
+        ?pendingTags[cell.key]:cell?.actual;
+      return String(value??"").trim();
+    }).filter(value=>value&&value!=="None"&&value!=="null");
+    return [...new Set(values)].join(" · ");
   })();
   // v9.0.4: 이름이 같거나 prefix/casing 만 다른 경우도 soft-landing 으로 자동 매칭.
   const metaLookup=(metaMap, param, prefix)=>{
@@ -1893,7 +1887,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       defaultValue=sopVal||"";
     }
 
-    setSplitDraftValues(current=>({...current,[clean]:[...(current[clean]||[]),defaultValue]}));
+    // 기본값은 편집창 안에서만 제안한다. draft 추가는 Apply(onCommit)에서
+    // 수행해야 Cancel/ESC/바깥 클릭으로 닫아도 테이블에 SOP가 남지 않는다.
     setSplitContextMenu(null);
     openSplitDraftEditor(clean,draftIndex,defaultValue,splitLabel);
   };
@@ -2947,9 +2942,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             </button>
           );
         })()}
-        {lotManagementPurposeHit&&<span title={`LOT 관리 — ${lotManagementPurposeHit.lot_id} · ${lotManagementPurposeHit.purpose}`}
+        {waferPurposeLabel&&<span title={`Wafer purpose — ${waferPurposeLabel}`}
           style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}}>
-          📌 {lotManagementPurposeHit.purpose}</span>}
+          📌 {waferPurposeLabel}</span>}
         {isCustomMode&&<span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
           {"CUSTOM"+(selCustom?": "+selCustom:"")}</span>}
         {/* 관리자도 내부 source/fab_col@ts_col 대신 제품별 필수 4종 준비 상태만 본다.
@@ -2990,6 +2985,11 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             <input type="checkbox" checked={showParamMeta} onChange={e=>setShowParamMeta(e.target.checked)}/>
             적용 공정 정보
           </label>
+          <label title="행을 한 줄 높이로 표시합니다. 잘린 내용은 마우스를 올려 확인하거나 설정에서 열 너비를 늘려 보세요." style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:noWrapRows?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
+            <input type="checkbox" checked={noWrapRows} onChange={e=>setNoWrapRows(e.target.checked)}/>
+            행 줄바꿈 없음
+          </label>
+          {noWrapRows&&<button type="button" onClick={()=>{setSettingsTab("basic");setShowSettings(true);}} style={{padding:"2px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-card)",color:"var(--text-secondary)",cursor:"pointer"}}>열 너비 조절</button>}
 
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           <span style={{fontSize:14,color:"var(--text-secondary)"}}>표시</span>
@@ -3424,7 +3424,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ...splitLikeSource,
           display_mode:"pems",
         },splitLikeBuildOptions);
-        return <div ref={splitTableRef} tabIndex={0} aria-label="SplitTable 셀 그리드" onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={finishCellSelection} onMouseLeave={finishCellSelection} style={{flex:1,overflow:"auto",background:"var(--bg-card)",outline:"none"}}>
+        return <div ref={splitTableRef} className={noWrapRows?"stm-nowrap":undefined} onMouseOver={noWrapRows?(event)=>{const cell=event.target.closest("td,th");if(cell&&event.currentTarget.contains(cell)){const text=cell.textContent?.trim();if(text&&!String(cell.title||"").includes(text))cell.title=text+(cell.title?"\n"+cell.title:"");}}:undefined} tabIndex={0} aria-label="SplitTable 셀 그리드" onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={finishCellSelection} onMouseLeave={finishCellSelection} style={{flex:1,overflow:"auto",background:"var(--bg-card)",outline:"none"}}>
         {data.background_cache?.queued&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(30,64,175,0.95)",background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>{data.background_cache.message||"관련 캐시를 백그라운드에서 준비 중입니다."}</div>}
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.lot_management_purposes)&&data.lot_management_purposes.length>0&&<div style={{padding:"8px 10px",fontSize:14,lineHeight:1.55,color:"var(--text-primary)"}}>
@@ -3452,7 +3452,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           .splittable-grid td.stm-mismatch, .splittable-grid td.stm-mismatch *:not(.stm-note-btn) { color: #fff !important; }
           .splittable-grid td.stm-cell { user-select: none; }
           .splittable-grid td.stm-module-edit .stm-module-hint { opacity: 0; transition: opacity 0.15s; }
-          .splittable-grid td.stm-module-edit:hover .stm-module-hint { opacity: 1; }`}</style>
+          .splittable-grid td.stm-module-edit:hover .stm-module-hint { opacity: 1; }
+          .stm-nowrap table tbody tr { height: 32px; }
+          .stm-nowrap table td, .stm-nowrap table th { white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
+          .stm-nowrap table tbody td { height: 32px; box-sizing: border-box; padding-top: 4px !important; padding-bottom: 4px !important; line-height: 22px !important; }
+          .stm-nowrap table td *, .stm-nowrap table th * { white-space: nowrap !important; flex-wrap: nowrap !important; }
+          .stm-nowrap table td > div { overflow: hidden; text-overflow: ellipsis; }
+          .stm-nowrap table td > div > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+          .stm-nowrap table br { display: none; }`}</style>
         {splitCheckViewActive||pemsViewActive ? (
         <SplitTableSnapshotView
           stView={pemsViewActive?pemsStView:splitCheckStView}

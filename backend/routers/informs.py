@@ -3122,7 +3122,7 @@ def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[s
             check_cells: dict[str, dict[str, Any]] = {}
             checks: list[str] = []
             for ci, cell_value in enumerate(per_header):
-                mark = "✓" if cell_value == value else ""
+                mark = label if cell_value == value else ""
                 checks.append(mark)
                 check_cells[str(ci)] = {
                     "actual": mark,

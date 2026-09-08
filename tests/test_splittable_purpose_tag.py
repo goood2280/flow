@@ -131,6 +131,7 @@ def test_purpose_is_in_csv_and_xlsx_keeps_its_background(monkeypatch):
     assert sheet.cell(4, 2).value == "DOE"
     assert sheet.cell(4, 2).fill.fill_type == "solid"
     assert sheet.cell(4, 2).fill.fgColor.rgb.endswith("FECACA")
+    assert sheet.cell(4, 2).alignment.horizontal == "left"
     assert sheet.cell(5, 1).value == "fab_lot_id"
     assert sheet.cell(6, 1).value == "Parameter"
 
@@ -186,6 +187,7 @@ def test_split_check_xlsx_includes_purpose_header_row_with_colors_and_no_body_ta
     assert sheet.cell(4, 6).value == "DOE_ALPHA"
     assert sheet.cell(4, 6).fill.fill_type == "solid"
     assert sheet.cell(4, 6).fill.fgColor.rgb.endswith("D9F99D")
+    assert sheet.cell(4, 6).alignment.horizontal == "left"
     # Row 5: fab_lot_id
     assert sheet.cell(5, 1).value == "fab_lot_id"
     # Row 6: columns headers
@@ -198,7 +200,7 @@ def test_split_check_xlsx_includes_purpose_header_row_with_colors_and_no_body_ta
     assert "A" in body_items
 
 
-def test_xlsx_and_csv_fall_back_to_lot_management_purpose(monkeypatch):
+def test_xlsx_and_csv_do_not_fall_back_to_lot_management_purpose(monkeypatch):
     from openpyxl import load_workbook
     from routers import splittable
     import routers.lot_management
@@ -222,7 +224,7 @@ def test_xlsx_and_csv_fall_back_to_lot_management_purpose(monkeypatch):
     monkeypatch.setattr(splittable, "_log_split_table_download", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         routers.lot_management, "_load",
-        lambda prod: {"rows": [{"values": {"lot_id": "L1.1", "purpose": "POR_TEST_LOT"}}]},
+        lambda prod: (_ for _ in ()).throw(AssertionError("SplitTable export must not read LOT Management purpose")),
     )
 
     xlsx_response = splittable.download_xlsx(
@@ -231,8 +233,8 @@ def test_xlsx_and_csv_fall_back_to_lot_management_purpose(monkeypatch):
         step_labels="1", exclude_not_null="1",
     )
     sheet = load_workbook(io.BytesIO(_response_bytes(xlsx_response))).active
-    assert sheet.cell(4, 1).value == "purpose"
-    assert sheet.cell(4, 6).value == "POR_TEST_LOT"
+    assert sheet.cell(4, 1).value == "fab_lot_id"
+    assert all(sheet.cell(row, 1).value != "purpose" for row in range(1, sheet.max_row + 1))
 
     csv_response = splittable.download_csv(
         product="P1", root_lot_id="L1", wafer_ids="", prefix="KNOB",
@@ -240,5 +242,5 @@ def test_xlsx_and_csv_fall_back_to_lot_management_purpose(monkeypatch):
         step_labels="", exclude_not_null="1",
     )
     csv_text = _response_bytes(csv_response).decode("utf-8-sig")
-    assert "purpose,POR_TEST_LOT" in csv_text
-
+    assert "POR_TEST_LOT" not in csv_text
+    assert "purpose," in csv_text

@@ -536,9 +536,8 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         plans = _load_plan_data(product).get("plans", {})
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
         management_values = _management_row_values_for_root(product, root_lot_id)
-        lot_purpose_map = _lot_management_purposes_map(product)
         purpose_by_idx = {
-            idx: _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans, wf2fab, lot_purpose_map)
+            idx: _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans)
             for idx, wk in enumerate(wf_sorted)
         }
 
@@ -610,42 +609,11 @@ def _is_default_purpose_tag(column: str) -> bool:
     return str(column or "").strip().upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper()
 
 
-def _lot_management_purposes_map(product: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    try:
-        from routers.lot_management import _load as _load_lot_table
-        raw_product = str(product or "").strip()
-        candidates = [raw_product]
-        if raw_product.upper().startswith("ML_TABLE_"):
-            candidates.append(raw_product[len("ML_TABLE_"):].strip())
-        else:
-            candidates.append(f"ML_TABLE_{raw_product}")
-        for cand in candidates:
-            if not cand:
-                continue
-            doc = _load_lot_table(cand)
-            for row in doc.get("rows") or []:
-                if not isinstance(row, dict):
-                    continue
-                vals = row.get("values") if isinstance(row.get("values"), dict) else {}
-                lid = str(vals.get("lot_id") or "").strip()
-                purp = str(vals.get("purpose") or "").strip()
-                if lid and purp and lid.casefold() not in out:
-                    out[lid.casefold()] = purp
-            if out:
-                break
-    except Exception:
-        pass
-    return out
-
-
 def _resolve_wafer_purpose(
     wk: Any,
     root_lot_id: str,
     tag_values: dict[str, str],
     plans: dict,
-    wf2fab: dict,
-    lot_purpose_map: dict[str, str],
 ) -> str:
     ck = f"{root_lot_id}|{wk}|{DEFAULT_CUSTOM_TAG_COLUMN}"
     tv = tag_values.get(ck)
@@ -658,11 +626,6 @@ def _resolve_wafer_purpose(
         pv = plans.get(f"{root_lot_id}|{str(wk)}|{DEFAULT_CUSTOM_TAG_COLUMN}", {}).get("value")
     if _export_has_value(pv):
         return str(pv).strip()
-    fab = wf2fab.get(wk) or wf2fab.get(str(wk))
-    if fab and str(fab).strip().casefold() in lot_purpose_map:
-        return lot_purpose_map[str(fab).strip().casefold()]
-    if root_lot_id and str(root_lot_id).strip().casefold() in lot_purpose_map:
-        return lot_purpose_map[str(root_lot_id).strip().casefold()]
     return ""
 
 
@@ -726,7 +689,7 @@ def _build_split_check_export_rows(
                 order.append(text)
         for split_idx, value in enumerate(order):
             label = f"S{split_idx}"
-            checks = ["✓" if values_by_idx.get(idx) == value else "" for idx in range(max(0, int(wafer_count or 0)))]
+            checks = [label if values_by_idx.get(idx) == value else "" for idx in range(max(0, int(wafer_count or 0)))]
             rows.append([display_name, value, label, *checks])
     return rows
 
@@ -973,11 +936,10 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     tag_values = _custom_tag_values_for_root(product, root_lot_id)
     tag_colors = _custom_tag_colors_for_root(product, root_lot_id)
     management_values = _management_row_values_for_root(product, root_lot_id)
-    lot_purpose_map = _lot_management_purposes_map(product)
     purpose_by_idx: dict[int, str] = {}
     purpose_color_by_idx: dict[int, str] = {}
     for idx, wk in enumerate(wf_sorted):
-        purp = _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans, wf2fab, lot_purpose_map)
+        purp = _resolve_wafer_purpose(wk, root_lot_id, tag_values, plans)
         if purp:
             purpose_by_idx[idx] = purp
         color = (
@@ -1306,6 +1268,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     # fab_lot_id 헤더는 어두운 배경 + 흰 글자로 고정해 노란색 대비 문제를 피한다.
     fab_font = Font(color="FFFFFF", bold=True, name="Consolas", size=12)
     center = Alignment(horizontal="center", vertical="center")
+    purpose_left = Alignment(horizontal="left", vertical="center")
     thin = Side(style="thin", color="555555")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     download_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1401,7 +1364,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 font = Font(color="000000" if color_hex else "FFFFFF", bold=True)
                 for k in range(p_start, p_end):
                     c = ws.cell(row=curr_row, column=first_wafer_col + k)
-                    _style_cell(c, fill=fill, font=font, alignment=center)
+                    _style_cell(c, fill=fill, font=font, alignment=purpose_left)
                     if k == p_start:
                         c.value = val
                     else:
@@ -1553,7 +1516,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             font = Font(color="000000" if color_hex else "FFFFFF", bold=True)
             for k in range(p_start, p_end):
                 c = ws.cell(row=curr_row, column=first_wafer_col + k)
-                _style_cell(c, fill=fill, font=font, alignment=center)
+                _style_cell(c, fill=fill, font=font, alignment=purpose_left)
                 if k == p_start:
                     c.value = val
                 else:

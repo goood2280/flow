@@ -345,7 +345,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
       const checkCells = {};
       perHeader.forEach((value, ci) => {
         const isMatch = splitValueIndex(order, value) === idx;
-        checkCells[String(ci)] = { actual: isMatch ? "✓" : "", plan: "", split_check: true, not_reached: !!value.not_reached };
+        checkCells[String(ci)] = { actual: isMatch ? label : "", plan: "", split_check: true, not_reached: !!value.not_reached };
       });
       const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
       const basePrefix = [
