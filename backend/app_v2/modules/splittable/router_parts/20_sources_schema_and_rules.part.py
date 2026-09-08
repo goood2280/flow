@@ -2184,17 +2184,18 @@ def _split_step_order_context(product: str) -> dict:
         route_source = _s0_source_for_product(_s0_sop_catalog(), product)
         route_steps: set[str] = set()
 
+        # Index once: the old route x matching scan grew quadratically.
+        first_desc_by_step = {}
+        for row in matching:
+            sid = str(row.get(sm.get("step_id_col", "step_id")) or row.get("raw_step_id") or "").strip().upper()
+            first_desc_by_step.setdefault(sid, _row_step_desc(row, sm))
         step_items: list[tuple[float, int, str]] = []
         for idx, raw_step in enumerate(route_source.get("step_order") or []):
             sid = str(raw_step or "").strip().upper()
             if not sid:
                 continue
             route_steps.add(sid)
-            desc = ""
-            for r in matching:
-                if str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip().upper() == sid:
-                    desc = _row_step_desc(r, sm)
-                    break
+            desc = first_desc_by_step.get(sid, "")
             stage = _step_canonical_stage(desc, sid)
             step_items.append((stage, idx, sid))
 

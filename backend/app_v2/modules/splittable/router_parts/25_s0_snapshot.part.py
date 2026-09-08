@@ -22,6 +22,8 @@ _S0_HEADER_CLEAN_RE = _re.compile(r"[^0-9a-z가-힣]+", _re.I)
 _S0_CATALOG_CACHE = None
 _S0_CATALOG_CACHE_LOCK = threading.Lock()
 _S0_ENSURE_RUNNING = False
+_S0_RESOLUTION_CACHE = OrderedDict()
+_S0_RESOLUTION_CACHE_LOCK = threading.Lock()
 
 
 def _s0_update_source_history(state, catalog, moment):
@@ -72,6 +74,8 @@ def _s0_update_source_history(state, catalog, moment):
 
 def _knob_s0_as_of(product, column_times):
     from core.split_s0_history import resolve
+    if not column_times:
+        return {}
     state = _s0_load_state(readonly=True)
     histories = state.get("sop_history") or {}
     history = histories.get(_canonical_product_name(product).casefold()) or histories.get("*") or {}
@@ -544,16 +548,37 @@ def _s0_source_signature(catalog: dict[str, dict]) -> str:
 
 
 def _s0_resolution_context(product: str) -> tuple:
-    # Build product-wide metadata once, rather than rereading all rule rows for
-    # every KNOB on every cache hit (typically thousands of KNOBs per view).
-    ctx = dict(_split_step_order_context(product))
+    # Reuse derived product metadata on payload-cache hits. File signatures
+    # invalidate rules immediately; the step-order object also expires on its
+    # existing TTL. Retain the object itself so identity cannot be recycled.
+    order = _split_step_order_context(product)
+    base = _base_root()
+    paths = [base / "ppid_knob.csv", base / "knob_ppid.csv",
+             _knob_step_matching_path(base), RULEBOOK_SCHEMA_FILE]
+    signature = (tuple(_path_cache_sig(path) for path in paths),
+                 tuple(_mltable_schema_columns(product, "KNOB")))
+    key = (_canonical_product_name(product).casefold(), str(base))
+    with _S0_RESOLUTION_CACHE_LOCK:
+        cached = _S0_RESOLUTION_CACHE.get(key)
+        if cached and cached[0] == signature and cached[1] is order:
+            _S0_RESOLUTION_CACHE.move_to_end(key)
+            return cached[2]
+    ctx = dict(order)
     ctx["vehicle_step_ids"] = {
         str(item.get("step_id") or "").strip().casefold()
         for items in _product_step_map_by_desc(product).values() for item in items
         if str(item.get("step_id") or "").strip()
     }
-    return (ctx, _build_knob_meta(product) or {},
-            _inferred_stage_meta(product, "KNOB") or {})
+    # Keep inferred candidates separate: even explicit rules can miss the
+    # current route, in which case the existing fallback must still work.
+    result = (ctx, _build_knob_meta(product) or {},
+              _inferred_stage_meta(product, "KNOB") or {})
+    with _S0_RESOLUTION_CACHE_LOCK:
+        _S0_RESOLUTION_CACHE[key] = (signature, order, result)
+        _S0_RESOLUTION_CACHE.move_to_end(key)
+        while len(_S0_RESOLUTION_CACHE) > 32:
+            _S0_RESOLUTION_CACHE.popitem(last=False)
+    return result
 
 
 def _s0_step_candidates(product: str, knob: str, context: tuple | None = None) -> list[str]:
@@ -793,6 +818,8 @@ def _knob_current_s0_for_product(product: str, columns: list[str] | None = None)
     in the active f_step source. Missing step/recipe mappings stay absent so the
     browser can present an editable blank S0 instead of guessing from wafer data.
     """
+    if columns is not None and not any(str(column).upper().startswith("KNOB_") for column in columns):
+        return {}
     catalog = _s0_sop_catalog()
     source = _s0_source_for_product(catalog, product)
     if not source:

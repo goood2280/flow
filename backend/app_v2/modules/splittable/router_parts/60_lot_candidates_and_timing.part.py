@@ -2048,6 +2048,8 @@ def _clear_split_view_cache_product(product: str) -> None:
 
 def _clear_split_view_cache() -> None:
     global _VIEW_CACHE_BYTES
+    with _S0_RESOLUTION_CACHE_LOCK:
+        _S0_RESOLUTION_CACHE.clear()
     with _VIEW_CACHE_LOCK:
         _VIEW_CACHE.clear()
         _VIEW_CACHE_BYTES = 0

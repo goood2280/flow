@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, Fragment } from "react";
 import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
 import { PageGearButton } from "../../components/PageGear";
@@ -98,6 +98,22 @@ const CANDIDATE_SEARCH_LIMIT=120;
 const ROOT_LOT_CACHE_LIMIT_MAX=50000;
 const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
 const NOTES_POLL_MS=30_000;
+export const buildNormalizedLookup=(source={})=>{
+  const lookup=new Map();
+  Object.entries(source||{}).forEach(([key,value],order)=>{
+    const normalized=String(key||"").trim().toLowerCase();
+    if(normalized&&!lookup.has(normalized))lookup.set(normalized,{order,value});
+  });
+  return lookup;
+};
+export const firstNormalizedLookupValue=(lookup,candidates=[])=>{
+  let first=null;
+  (candidates||[]).forEach(candidate=>{
+    const hit=lookup.get(String(candidate||"").trim().toLowerCase());
+    if(hit&&(!first||hit.order<first.order))first=hit;
+  });
+  return first?.value??null;
+};
 const hasSplitDraftValue=(value)=>{
   const clean=String(value??"").trim();
   return !!clean&&clean!=="None"&&clean!=="null";
@@ -1053,48 +1069,52 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   useEffect(()=>{
     if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
     let active=true;
+    const controller=new AbortController();
     const product=selProd;
-    sf(API+"/custom-tags?product="+encodeURIComponent(product))
+    sf(API+"/custom-tags?product="+encodeURIComponent(product),{signal:controller.signal})
       .then(d=>{if(active)setCustomTags(d.columns||[]);})
       .catch(()=>{if(active)setCustomTags([]);});
-    sf(API+"/schema?product="+encodeURIComponent(selProd))
+    sf(API+"/schema?product="+encodeURIComponent(selProd),{signal:controller.signal})
       .then(d=>{
         if(!active)return;
         setProductSchema((d.columns||[]).map(c=>c.name||c));
         setOverrideCols(Array.isArray(d.override_cols_present)?d.override_cols_present:[]);
       })
       .catch(()=>{if(active){setProductSchema([]);setOverrideCols([]);}});
-    return()=>{active=false;};
+    return()=>{active=false;controller.abort();};
   },[selProd]);
   // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
   useEffect(()=>{if(!selProd){setKnobMeta({});setCategoryColors({});return;}
     let active=true;
+    const controller=new AbortController();
     setKnobMeta({});setCategoryColors({});
-    sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
+    sf(API+"/knob-meta?product="+encodeURIComponent(selProd),{signal:controller.signal})
       .then(d=>{if(active)setKnobMeta(d.features||{});}).catch(()=>{if(active)setKnobMeta({});});
-    sf(API+"/category-colors?product="+encodeURIComponent(selProd))
+    sf(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal})
       .then(d=>{if(active)setCategoryColors(d.colors||{});}).catch(()=>{if(active)setCategoryColors({});});
-    return()=>{active=false;};
+    return()=>{active=false;controller.abort();};
   },[selProd]);
   // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
   const[vmMeta,setVmMeta]=useState({});
   useEffect(()=>{
     if(!selProd){setVmMeta({});return;}
     let active=true;
+    const controller=new AbortController();
     setVmMeta({});
-    sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
+    sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
       .then(d=>{if(active)setVmMeta(d.items||{});}).catch(()=>{if(active)setVmMeta({});});
-    return()=>{active=false;};
+    return()=>{active=false;controller.abort();};
   },[selProd]);
   // v8.8.15: INLINE meta — INLINE_<item_id> row 의 step_id sub-label 용.
   const[inlineMetaSt,setInlineMetaSt]=useState({});
   useEffect(()=>{
     if(!selProd){setInlineMetaSt({});return;}
     let active=true;
+    const controller=new AbortController();
     setInlineMetaSt({});
-    sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
+    sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
       .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
-    return()=>{active=false;};
+    return()=>{active=false;controller.abort();};
   },[selProd]);
   // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
   const waferPurposeLabel=(()=>{
@@ -1107,23 +1127,23 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     return [...new Set(values)].join(" · ");
   })();
   // v9.0.4: 이름이 같거나 prefix/casing 만 다른 경우도 soft-landing 으로 자동 매칭.
-  const metaLookup=(metaMap, param, prefix)=>{
+  const knobMetaLookup=useMemo(()=>buildNormalizedLookup(knobMeta),[knobMeta]);
+  const vmMetaLookup=useMemo(()=>buildNormalizedLookup(vmMeta),[vmMeta]);
+  const inlineMetaLookup=useMemo(()=>buildNormalizedLookup(inlineMetaSt),[inlineMetaSt]);
+  const categoryColorLookup=useMemo(()=>buildNormalizedLookup(categoryColors),[categoryColors]);
+  const metaLookup=(metaMap, normalizedLookup, param, prefix)=>{
     if(!param||!metaMap) return null;
     const full=String(param||"").trim();
     const tail=full.replace(new RegExp(`^${prefix}_`,"i"),"").trim();
     if(metaMap[full]) return metaMap[full];
     if(metaMap[tail]) return metaMap[tail];
-    const fullLower=full.toLowerCase();
-    const tailLower=tail.toLowerCase();
-    const hitKey=Object.keys(metaMap).find(k=>{
-      const key=String(k||"").trim().toLowerCase();
-      return key===fullLower||key===tailLower;
-    });
-    return hitKey?metaMap[hitKey]:null;
+    // Legacy Object.keys().find matched full or prefix-stripped aliases in source
+    // insertion order. Keep that collision precedence while avoiding a scan per lookup.
+    return firstNormalizedLookupValue(normalizedLookup,[full,tail]);
   };
-  const knobLookup=(param)=>metaLookup(knobMeta,param,"KNOB");
-  const vmLookup=(param)=>metaLookup(vmMeta,param,"VM");
-  const inlineLookup=(param)=>metaLookup(inlineMetaSt,param,"INLINE");
+  const knobLookup=(param)=>metaLookup(knobMeta,knobMetaLookup,param,"KNOB");
+  const vmLookup=(param)=>metaLookup(vmMeta,vmMetaLookup,param,"VM");
+  const inlineLookup=(param)=>metaLookup(inlineMetaSt,inlineMetaLookup,param,"INLINE");
   // 항목명 prefix → 매칭 종류. 적용공정 표기/모달/행 숨김이 같은 판정을 쓴다.
   const matchKindOf=(param)=>{
     const u=String(param||"").trim().toUpperCase();
@@ -1155,8 +1175,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     return clean;
   };
   const savedCategoryColor=(category)=>{
-    const key=Object.keys(categoryColors||{}).find(name=>String(name).trim().toLowerCase()===String(category||"").trim().toLowerCase());
-    return key?categoryColors[key]:"";
+    return firstNormalizedLookupValue(categoryColorLookup,[category])||"";
   };
   const categoryColorFor=(param,rawVal)=>{
     if(matchKindOf(param)!=="knob_ppid")return "";
@@ -2257,7 +2276,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   // v8.8.23: view 응답의 all_columns 는 이미 오버라이드 조인 후 df.columns 이지만,
   //   lot 검색 전에는 비어있어 drawer/검색 UI 에 override 컬럼이 안 보였음.
   //   productSchema 와 overrideCols 를 union 해 어느 상태에서도 override 컬럼이 드롭될 일이 없게.
-  const allCols=(()=>{
+  const allCols=useMemo(()=>{
     const base = data?.all_columns || [];
     const seen = new Set(base);
     const out = [...base];
@@ -2265,20 +2284,20 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       if(c && !seen.has(c)){ seen.add(c); out.push(c); }
     }
     return out;
-  })();
+  },[data?.all_columns,overrideCols,productSchema]);
   // v8.8.16: CUSTOM 모드 전용 컬럼 풀 — productSchema (전체) + allCols (현재 lot) + customCols 합집합.
   //   lot 검색 전이라도 선택 가능하며, plan 전용 가상 컬럼(저장된 customCols) 도 보존.
   // v8.8.33: product/root_lot_id/wafer_id/lot_id/fab_lot_id 는 **항상** 자동 첨부되는 기본 식별자 —
   //   CUSTOM pool 에서 절대 노출 X (override 에서 왔든 아니든 동일). 사용자가 의미 있는 파라미터에만
   //   집중하도록 근본적으로 차단. 기존에 customCols 에 섞여있던 것도 로드 타임에 자동 제거.
-  const _CUSTOM_HIDDEN_BASE = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
-  const customPool=(()=>{const seen=new Set();const out=[];
+  const customPool=useMemo(()=>{const seen=new Set();const out=[];
+    const hidden=new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
     const candidateCols=cleanCustomColumns([...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t?.column)]);
     for(const c of candidateCols){
       const lc = String(c).toLowerCase();
-      if(_CUSTOM_HIDDEN_BASE.has(lc)) continue;
+      if(hidden.has(lc)) continue;
       if(!seen.has(c)){seen.add(c);out.push(c);}
-    }return out;})();
+    }return out;},[productSchema,allCols,customCols,overrideCols,customTags]);
   const customLabelFor=(column)=>{
     if(typeof column!=="string")return "";
     const hit=(customTags||[]).find(t=>t.column===column);
@@ -2989,7 +3008,6 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             <input type="checkbox" checked={noWrapRows} onChange={e=>setNoWrapRows(e.target.checked)}/>
             행 줄바꿈 없음
           </label>
-          {noWrapRows&&<button type="button" onClick={()=>{setSettingsTab("basic");setShowSettings(true);}} style={{padding:"2px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-card)",color:"var(--text-secondary)",cursor:"pointer"}}>열 너비 조절</button>}
 
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           <span style={{fontSize:14,color:"var(--text-secondary)"}}>표시</span>

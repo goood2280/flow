@@ -354,3 +354,47 @@ def test_step_order_context_ranks_feol_before_mol_and_test(monkeypatch, tmp_path
     assert ctx["seq_rank"]["AA100210"] < ctx["seq_rank"]["AA100220"]
     assert ctx["seq_rank"]["AA100220"] < ctx["seq_rank"]["AA100100"]
     assert ctx["seq_rank"]["AA100100"] < ctx["seq_rank"]["AA100600"]
+
+
+def test_s0_resolution_cache_reuses_metadata_and_invalidates_inputs(tmp_path, monkeypatch):
+    from collections import OrderedDict
+    monkeypatch.setattr(splittable, "_S0_RESOLUTION_CACHE", OrderedDict())
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_knob_step_matching_path", lambda base: tmp_path / "vehicle.csv")
+    order = {"value": {"param_step": {}}}
+    columns = ["KNOB_A"]
+    monkeypatch.setattr(splittable, "_split_step_order_context", lambda product: order["value"])
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args: columns)
+    monkeypatch.setattr(splittable, "_product_step_map_by_desc", lambda product: {})
+    calls = []
+    def build(product):
+        calls.append(product)
+        return {"KNOB_A": {"groups": [{"step_id": "A"}]}}
+    monkeypatch.setattr(splittable, "_build_knob_meta", build)
+    inferred = {"KNOB_A": {"groups": [{"step_id": "FALLBACK"}]}}
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args: inferred)
+    first = splittable._s0_resolution_context("P")
+    assert splittable._s0_resolution_context("P") is first
+    assert calls == ["P"]
+    assert first[2] is inferred
+    (tmp_path / "ppid_knob.csv").write_text("changed", encoding="utf-8")
+    assert splittable._s0_resolution_context("P") is not first
+    assert len(calls) == 2
+    columns.append("KNOB_B")
+    splittable._s0_resolution_context("P")
+    assert len(calls) == 3
+    order["value"] = {"param_step": {"KNOB_A": "NEW"}}
+    assert splittable._s0_resolution_context("P")[0]["param_step"]["KNOB_A"] == "NEW"
+    assert len(calls) == 4
+    splittable._s0_resolution_context("OTHER")
+    assert len(calls) == 5
+    for index in range(40):
+        splittable._s0_resolution_context(f"PRODUCT_{index}")
+    assert len(splittable._S0_RESOLUTION_CACHE) == 32
+
+
+def test_current_s0_without_knobs_does_not_read_catalog(monkeypatch):
+    def unexpected():
+        raise AssertionError("non-KNOB view must not load SOP sources")
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", unexpected)
+    assert splittable._knob_current_s0_for_product("P", ["TAG_purpose", "INLINE_A"]) == {}

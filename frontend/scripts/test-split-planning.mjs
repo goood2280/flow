@@ -11,6 +11,20 @@ const server = await createServer({
 try {
   const snapshot = await server.ssrLoadModule("/src/components/SplitTableSnapshotView.jsx");
   const splitTable = await server.ssrLoadModule("/src/features/splittable/My_SplitTable.jsx");
+  const normalizedLookup = splitTable.buildNormalizedLookup({
+    " KNOB_Recipe_A ": { id: 1 },
+    knob_recipe_b: { id: 2 },
+    "": { id: 3 },
+  });
+  assert.equal(normalizedLookup.size, 2);
+  assert.equal(normalizedLookup.get("knob_recipe_a").value.id, 1);
+  assert.equal(normalizedLookup.get("knob_recipe_b").value.id, 2);
+  const collisionLookup = splitTable.buildNormalizedLookup({ recipe_a: "tail-first", knob_recipe_a: "full-second" });
+  assert.equal(
+    splitTable.firstNormalizedLookupValue(collisionLookup, ["knob_recipe_a", "recipe_a"]),
+    "tail-first",
+    "case-insensitive full/tail collisions retain source insertion precedence",
+  );
   // Exercise the real editor callbacks without mounting the Modal portal.
   let editorValue = "SOP_RCP", commits = [], closes = 0;
   const editor = () => splitTable.SplitTableCellEditor({
